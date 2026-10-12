@@ -1,0 +1,74 @@
+---
+title: Tracks
+description: Several objectives for one piece of code, on one trunk.
+---
+
+<Note>Experimental: tracks.</Note>
+
+Sometimes you want to improve two things about the same code, for example the accuracy of a model and its cost to
+run. Run them as **tracks** of one project, not as two projects. Each track has its own primary metric. A keep on one
+track must hold the primary of every other track within a margin.
+
+## The example
+
+`piloop init --example titanic-tracks` creates a project with two tracks on Kaggle's Titanic data. Workers edit
+`solve.py`, which trains a model and predicts survival. One evaluate command prints two metrics:
+
+- `accuracy`: the accuracy on a fixed holdout. Higher is better.
+- `cost_seconds`: the CPU seconds that `solve.py` takes to train and predict. Lower is better.
+
+```toml
+[[metrics]]
+name = "accuracy"
+direction = "higher"
+role = "primary"
+track = "accuracy"
+margin = 0.02          # what a cost keep may give up per step
+floor = 0.74           # never below, whatever the bar
+
+[[metrics]]
+name = "cost_seconds"
+direction = "lower"
+role = "primary"
+track = "cost"
+margin = 0.3           # what an accuracy keep may add per step
+floor = 2.0            # an accuracy keep may not push the cost past this
+
+[tracks.accuracy]
+share = 0.75           # of [roles.worker] max_concurrent
+addendum = "briefs/accuracy.md"
+
+[tracks.cost]
+share = 0.25
+addendum = "briefs/cost.md"
+```
+
+## How tracks work
+
+- Each primary metric names its `track`. With several primaries, each one needs a `margin` and may have a `floor`.
+- Each track has a `[tracks.<name>]` table. `share` is the part of the worker slots that the track gets. The shares
+  sum to 1. `addendum` is a file that is added to the brief of the track's runs.
+- Every idea names its track: `piloop idea add <project> "<title>" --track cost`. With several tracks, piloop refuses
+  an idea without one.
+- A candidate is judged on the track of its idea. The primary of that track must beat the bar. The primary of every
+  other track is one more guardrail, with its own margin and floor.
+- All tracks share one trunk and one head. A keep on any track moves the head.
+
+A project with one primary metric is one track, named after the metric. It needs no `[tracks]` table.
+
+## What you see
+
+- `piloop status` and `piloop watch` show the head with the primary of every track. Then one line for each track: its
+  primary at the head and at the start, the distance to its floor, its keeps, and its share against its running runs.
+- A free worker slot goes to the track that is furthest below its share and has a ready idea. A track with no ready
+  idea gives its slot to the others. A share of 0 stops a track.
+- A keep on one track that makes the other track's primary worse than its margin is `interesting`. For example:
+  `guardrails: cost_seconds 0.49 vs 0.09 (+0.4; …) beyond its margin 0.3`.
+- A keep on one track that pushes the other track's primary past its floor is a `discard`. For example:
+  `floor: cost_seconds 2.3 past its floor 2`.
+- The research agent fills the backlog of each track by its share, and names the tracks that are short.
+
+## What is the same for every track
+
+The evaluate command, the `[stop]` conditions, the `[spend]` limit and the watchdog's timer are for the whole
+project. `[stop] target` is not allowed with several tracks.

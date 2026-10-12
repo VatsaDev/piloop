@@ -1,0 +1,44 @@
+---
+title: Environment variables
+description: The environment variables that piloop reads, and the ones that it sets for the programs it runs.
+---
+
+## Variables that you set
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PILOOP_HOME` | `~/.piloop` | The directory of the database (`piloop.db`), the daemon's files (`serve.pid`, `serve.log`) and the directories of the runs and agents. One daemon runs for each `PILOOP_HOME`. |
+| `PILOOP_ACTOR` | `human` | The name that this process signs its writes with. The database records it in `updated_by` and in the events. An orchestrator sets `PILOOP_ACTOR=orchestrator`, so that `piloop inbox wait` skips its own writes. |
+| `PILOOP_PROJECT_<KEY>` | none | Overrides a key of `piloop.toml` when `piloop init` reads it. Join nested keys with `__`, for example `PILOOP_PROJECT_RUNTIME=subprocess`. |
+| `PILOOP_SECRETS_COMMAND` | none | A shell command that prints `NAME=value` lines. The daemon adds them to its environment when it starts and when it restarts. See [Secrets](/guides/secrets). |
+| `PILOOP_HERDR_SESSION` | `piloop` | The name of the Herdr session that piloop uses. piloop starts its headless server on first use. It never uses the session that you work in. |
+| `PILOOP_DEBUG` | off | Set it to `1` to see the full traceback of an unexpected error. |
+| `PILOOP_TICK_SECONDS` | `2` | How often the daemon checks the triggers of every project and starts the requested agents. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | none | Sends the daemon's spans to this OpenTelemetry collector. |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's configuration directory. `piloop install-skills` writes Claude Code's skills to its `skills/` directory. |
+| `PILOOP_AGENT_SKILLS_DIR` | `~/.agents/skills` | The skill directory of Codex, pi, Gemini CLI and Cursor. |
+| `UV_TOOL_DIR` | uv's default | Where uv keeps its tools. `piloop upgrade` reads how piloop was installed from there. |
+| `PILOOP_SRC` | the GitHub repo | For `install.sh` only: install piloop from this checkout or URL instead. |
+
+### Timeouts
+
+These control how long piloop waits for Herdr and Entire. The defaults suit most machines.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PILOOP_HERDR_SERVER_START_SECONDS` | `10` | How long to wait for the Herdr server of the piloop session to answer after it starts. |
+| `PILOOP_HERDR_START_TIMEOUT_SECONDS` | `60` | How long Herdr may take to detect an agent that just started. |
+| `PILOOP_HERDR_CLI_TIMEOUT_SECONDS` | `30` | The timeout of one `herdr` command, in addition to the time that it waits. |
+| `PILOOP_HERDR_PROMPT_PICKUP_SECONDS` | `5` | How long to wait for an agent to start work after it gets a prompt. |
+| `PILOOP_HERDR_SHELL_READY_SECONDS` | `10` | How long to retry the start of an agent while the shell of a new tab starts. |
+| `PILOOP_HERDR_WAIT_CHUNK_SECONDS` | `10` | The longest single wait on an agent. A closed tab is noticed within this time. |
+| `PILOOP_ENTIRE_ATTACH_TIMEOUT_SECONDS` | `120` | How long `entire session attach` may take before piloop stops it. |
+
+## Variables that piloop sets
+
+| Variable | Set for | Meaning |
+|---|---|---|
+| `PILOOP_ACTOR` | every agent | The agent's signature, `<role>#<worker id>`, for example `worker#12`. A scout sweep signs `scout#<worker id>`. |
+| `PILOOP_HOME` | every agent | The same directory as the daemon's, so that the agent's `piloop` commands use the same database. |
+| `PILOOP_UNITS_FILE` | the evaluate command, in the daemon's measurements only | The path where the evaluate command may write its [per-unit results](/concepts/projects#per-unit-results). |
+| `PILOOP_WORKER_TOKEN` | every agent, with the Herdr runtime | A token that lets piloop find the background jobs that an agent started. |

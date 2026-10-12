@@ -1,0 +1,108 @@
+---
+title: The orchestrator and the inbox
+description: A coding agent of your choice runs the campaign for you and records every decision in your inbox.
+---
+
+## The orchestrator
+
+The **orchestrator** is a coding agent that runs the campaign for you. It answers what the other agents escalate,
+manages the ideas, asks for research and watchdog sweeps, steers workers and reports progress. It is not a role: the
+daemon never starts it, and the daemon needs none. It is any coding agent that you start in the repo, with the
+`piloop-operate` skill.
+
+Start one in the project repo and ask:
+
+```text
+orchestrate the piloop campaign
+```
+
+The skills come with the CLI. `piloop install-skills` copies them into the skill directory of every harness on your
+`PATH`. The installer and `piloop upgrade` run it for you, so the skills always match the installed CLI.
+
+| Harness | Skill directory |
+|---|---|
+| Claude Code | `~/.claude/skills/` (or `$CLAUDE_CONFIG_DIR/skills/`) |
+| Codex, pi, Gemini CLI, Cursor | `~/.agents/skills/` |
+
+The skills use only the `piloop` CLI, so no harness needs an extension. Claude Code can also give the loop to a
+background subagent, so that your session stays free.
+
+Run one orchestrator for each campaign. Two orchestrators answer the same escalation twice.
+
+## The loop
+
+The orchestrator waits on one command. The command blocks until something needs the orchestrator, so the model uses
+no tokens while nothing happens:
+
+```bash
+PILOOP_ACTOR=orchestrator piloop inbox wait my-project --timeout 1800
+```
+
+It returns, with one line for each event, when one of these happens:
+
+- A new inbox item that someone else wrote.
+- The daemon stops the project.
+- The daemon gives an anomaly to a watchdog.
+- The daemon gives a verdict on a measured candidate.
+
+Otherwise it returns at the timeout. Its last line is the command for the next wait, with a cursor
+(`--after <event id>`), so nothing is lost between two waits. `PILOOP_ACTOR=orchestrator` signs the orchestrator's
+writes, and the wait skips what the orchestrator wrote itself.
+
+## Comments
+
+Agents and humans talk through **comments** on any row: a project, an idea, a run, a candidate, a worker or another
+comment. A comment has a kind:
+
+| Kind | Use |
+|---|---|
+| `note` | Context or a short remark. |
+| `finding` | A result: what an agent tried and learned. |
+| `decision` | A decision, with the reason and how to revert it. |
+| `escalation` | A question that needs a decision. |
+
+A comment on an idea goes into the brief of the idea's next run.
+
+## The inbox
+
+The **inbox** is every comment that has a priority. These comments are addressed to you, the human. A comment without
+a priority is part of the forum, not of the inbox.
+
+| Priority | Meaning |
+|---|---|
+| 0 to 1 | Urgent. |
+| 2 to 4 | Can wait. |
+| none | Not in the inbox. |
+
+```bash
+piloop inbox                 # the unacknowledged items, most urgent first
+piloop inbox show 812        # one item and its thread
+piloop inbox ack 812         # mark it as seen
+```
+
+An escalation always has a priority.
+
+## Decisions
+
+You are often away, and work should not wait for you. So the orchestrator decides what comes up, and records each
+decision that it takes for you as a `decision` comment with a priority. You review the decisions in your inbox and
+revise the ones you disagree with. A decision says:
+
+```text
+[<category>, reversible|irreversible] <what it decided, in one line>
+Why: <the evidence, with ids>
+Changed: <the rows, files, settings or commits>
+Revert: <the command or edit that undoes it>
+```
+
+The `piloop-operate` skill has a table that sets the priority of each kind of decision. A change to a goal, a metric,
+a guardrail, the evaluate command or a stop condition is priority 0. A routine fix is priority 3 or 4. The
+orchestrator does not take a decision that cannot be undone and can wait: it leaves the escalation for you.
+
+To revise a decision, reply to it in `piloop watch` (key `r`), or write a `decision` comment on the same target. The
+orchestrator's next wait returns with it, and it applies your decision first.
+
+## Without an orchestrator
+
+Nothing in the daemon needs an orchestrator. Without one, escalations wait in the inbox until you read them with
+`piloop inbox` or `piloop watch`.

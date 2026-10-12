@@ -1,0 +1,102 @@
+---
+title: Watching a campaign
+description: piloop watch shows the campaign on one screen, with keys to act on it.
+---
+
+`piloop watch` is a terminal app over the database. It shows every project, or one project with
+`piloop watch <project>`. It reads the database again whenever the daemon or an agent writes to it.
+
+## The screens
+
+The first screen lists every project, the active ones first. Press `enter` to open one, and `esc` to come back.
+
+```text
+ piloop: 2 projects
+
+ project  status                                    head          vs baseline  agents    ready    inbox    tokens    last event
+ demo     active                                    4.0000 score  +3.0000      2 agents  1 ready  2 inbox  1.2M tok  comment.note 1m ago
+ other    stopped: max_runs: 50 runs, and more wo…  —             —            0 agents  0 ready  0 inbox  —         —
+```
+
+A project has a header, four panels on the left, and the selected row in full on the right:
+
+```text
+ demo · head score 4.0000 (candidate#4, +3.0000 vs baseline) · 3 kept / 4 candidates · 1 starting point · 1.2M tok
+ run 2/50 · 2.0h/12h · 1.2M/5.0M tok · 0/10 runs without a keep · target ≥ 10
+╭─ [1] Inbox 2 ──────────────────────────────────────╮╭─ [0] inbox ────────────────────────────────────────────────────╮
+│ p1  escalation  watchdog#3  30m  Codex cannot start││ comment#3 escalation on project#1 by watchdog#3, 30m ago · p1, │
+│ p2  decision    pi          20m  Keep #2: the floor││ unacknowledged                                                 │
+│                                                    ││                                                                │
+╰────────────────────────────────────────────────────╯│ Codex cannot start: trust dialog. Environment or harness?      │
+╭─ [2] Agents 2 · 1 blocked ─────────────────────────╮│                                                                │
+│ ◐ #1  worker    blocked  pi/m         3m   idea#2 l││                                                                │
+│ · #2  research  —        claude/opus  40s  low_wate││                                                                │
+╰────────────────────────────────────────────────────╯│                                                                │
+╭─ [3] Ideas 1 proposed · 1 ready · 1 scheduled ─────╮│                                                                │
+│ P2  proposed   #4  soft voting    —                ││                                                                │
+│ P1  ready      #3  shorter lines  —                ││                                                                │
+│ P2  scheduled  #2  longer lines   —                ││                                                                │
+╰────────────────────────────────────────────────────╯│                                                                │
+╭─ [4] Candidates ▁▆█ 1 → 4 · 1 starting point ──────╮│                                                                │
+│ #4  keep       4.0000  +2.0000  run#1  1h  [wip] st││                                                                │
+│ #3  discard    2.0000  -1.0000  run#1  1h  [wip] st││                                                                │
+│ #2  keep       3.0000  +2.0000  run#1  1h  [wip] st││                                                                │
+│ #1  keep       1.0000  —        —      3h  baseline││                                                                │
+│ #6  reference  —       —        —      0s  paper re││                                                                │
+╰────────────────────────────────────────────────────╯╰────────────────────────────────────────────────────────────────╯
+ a ack  A ack all shown  r reply  / filter  esc projects  q quit  ? keys
+```
+
+The header shows the head, the number of keeps, the spend and the tokens. The second line shows the progress against
+`[stop]`. With several [tracks](/concepts/tracks), one more line shows each track.
+
+## Panels and keys
+
+These keys work everywhere:
+
+| Key | Action |
+|---|---|
+| `1` to `4`, `tab` | Move between the panels. |
+| `0` | Move into the main pane, to scroll it. |
+| `↑` `↓`, `j` `k` | Select a row. |
+| `/` | Filter the panel. `enter` applies the filter, `esc` clears it. |
+| `?` | List the keys of the panel. |
+| `esc` | Go back to the list of projects. |
+| `q` | Quit. |
+
+| Panel | Rows | Main pane | Keys |
+|---|---|---|---|
+| [1] Inbox | The unacknowledged items, most urgent first, without the items that you wrote. | The item and its thread. | `a` acknowledge, `A` acknowledge every item shown, `r` reply |
+| [2] Agents | The running agents: `●` working, `○` idle, `◐` waiting on a dialog. | The agent, its task, and its last 60 lines of output. | `enter` open its Herdr tab, `s` steer |
+| [3] Ideas | Seeds, proposed, ready, scheduled and parked ideas, by priority. | Hypothesis, plan, links, runs and comments. | `y` approve, `p` park, `x` reject, `+` `-` priority |
+| [4] Candidates | The candidates, newest first, then the imported references. The title shows the head after each keep as a sparkline. | Verdict and reason, metrics against the parent, summary. | none |
+
+## What the keys write
+
+Each key writes as `PILOOP_ACTOR`, which is `human` unless you set it. The events table records the write like any
+other.
+
+- **Acknowledge** does what `piloop inbox ack` does.
+- **Reply** asks for the text and a priority (default 2). It writes a `decision` comment that replies to the first
+  item of the thread. The orchestrator's next wait returns with it, and the orchestrator acknowledges it after it
+  applies it.
+- **Steer** types text into the agent's pane, as `piloop prompt` does. Herdr refuses while the agent waits on a
+  dialog. Press `enter` to go to the agent's tab and answer the dialog.
+- **Approve, park and reject** ask why. Each one writes the status change and a `note` on the idea with the reason.
+  Approving a seed sends it to research first.
+
+## In Herdr
+
+With the Herdr runtime, piloop has its own Herdr session, `piloop`, with one workspace for each project. The first tab
+of a workspace is `home`: a shell on the left and `piloop watch <project>` on the right. Each agent gets its own tab,
+named after its role, its id and its idea:
+
+```text
+my-project
+  home                                shell │ piloop watch
+  worker-12 idea#5 Stacking with a meta-learner…
+  research-7
+  watchdog-13
+```
+
+`piloop attach <worker-id>` opens an agent's tab from any terminal.

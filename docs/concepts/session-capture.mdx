@@ -1,0 +1,63 @@
+---
+title: Session capture with Entire
+description: Keep the full session of every agent in your repo, next to the commits it made.
+---
+
+The candidates tell you what the code was. The sessions tell you what the agents did: their prompts, their tool
+calls and their reasoning. When [Entire](https://github.com/entireio/cli) is installed, piloop keeps the session of
+every agent in your repo as an Entire checkpoint. This covers every role: workers, research and watchdog sweeps.
+
+## How it works
+
+When an agent ends, and before piloop removes its worktree, piloop runs this command in the worktree:
+
+```bash
+entire session attach <session id> --agent <pi|claude-code|codex>
+```
+
+Entire finds the harness's own session file, parses it, redacts secrets that look like keys, and writes a checkpoint
+to the git ref `refs/entire/checkpoints/<id[-2:]>/<id>`. piloop records the checkpoint id in
+`workers.checkpoint_id`.
+
+- There is nothing to configure. `piloop init` writes `.entire/settings.json`, which keeps checkpoints as local git
+  refs with session push and telemetry off.
+- No data leaves the machine. Entire needs no login.
+- No git hooks are installed, and commits are not changed.
+- If `entire` is missing or fails, the agent's row is complete without a checkpoint, and the daemon records a
+  `worker.session_unattached` event.
+- When you stop the daemon, it does not wait for `entire`. The sessions of the agents that it stopped are not
+  attached. The harness's own session files still have them.
+
+piloop needs Entire CLI 0.10.6 or newer. The daemon checks `entire version` when it starts. With an older version, it
+logs `entire.too_old` and attaches nothing.
+
+## Install Entire
+
+The piloop installer installs Entire. To install or upgrade it by hand:
+
+```bash
+curl -fsSL https://entire.io/install.sh | bash
+```
+
+## Read a session
+
+Find the checkpoint of a candidate:
+
+```bash
+piloop sql "SELECT w.checkpoint_id FROM workers w JOIN candidates c ON c.run_id = w.run_id WHERE c.id = 42"
+```
+
+Then:
+
+```bash
+entire checkpoint explain <checkpoint id>                       # a summary: intent, prompts, files, tokens
+git show refs/entire/checkpoints/<id[-2:]>/<id>:0/full.jsonl    # the full transcript
+```
+
+The kept lineage in every brief lists the checkpoint of each candidate. Workers read the summary of earlier
+candidates before they repeat work.
+
+<Warning>
+  The checkpoint holds the whole brief and the home paths of the machine without redaction. Entire redacts only
+  strings that look like keys. Check a checkpoint before you push its ref to a shared remote.
+</Warning>

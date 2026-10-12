@@ -1,0 +1,16 @@
+name: Feature request
+description: Propose a change or a new feature.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and why piloop makes it hard today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Your proposal
+      description: What you want piloop to do. Include the commands or config you have in mind.

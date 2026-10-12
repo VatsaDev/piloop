@@ -1,0 +1,54 @@
+---
+title: Upgrading
+description: Upgrade the CLI, the skills and the database with one command.
+---
+
+```bash
+piloop upgrade
+```
+
+The command prints each step as it runs it:
+
+1. It upgrades the CLI with `uv tool upgrade --reinstall-package piloop piloop`, from the source that you installed
+   it from: PyPI (the latest release), the GitHub repo (the latest `main`), or a local checkout. It prints the version
+   before and after.
+2. It runs `piloop install-skills` from the new code, so the skills of every harness on your `PATH` match the new CLI.
+   A running harness reads them at its next session.
+3. It restarts a running daemon in place, as `piloop restart` does. The running agents continue. The new code
+   migrates the database as it starts, and connects to the agents again. When no daemon runs, the upgrade migrates the
+   database itself, and the daemon stays stopped.
+4. It runs `piloop doctor`. When a check fails, the upgrade exits with a non-zero status.
+
+`piloop --version` prints the version and the commit, for example `piloop 0.1.0 (a1b2c3d)`.
+
+## Check the install
+
+`piloop doctor` is read-only. You can run it at any time. It checks that:
+
+- The daemon runs the installed code.
+- The database has the current schema.
+- The `piloop.toml` of every project loads, and its MCP servers can start.
+- Every harness on your `PATH` has the skills of this CLI.
+- The harness CLIs are on your `PATH`, and Herdr answers with its hooks installed for them.
+
+Each failure prints the command that fixes it.
+
+## The database
+
+Every `piloop` command migrates the database to its own schema when it starts. You never recreate it by hand.
+`piloop migrate` does the same and prints what changed, for example `schema: 0001 → 0002`.
+
+An older piloop refuses to open a database that a newer one migrated, and tells you to run `piloop upgrade`.
+
+## Deprecated configuration keys
+
+When a release renames or removes a key of `piloop.toml`, the old key keeps working for at least one minor release.
+Each use shows a `PiloopDeprecationWarning` with the file, the line, the new key and the release that removes the old
+one. The [changelog](https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md) lists every deprecation.
+
+## Other install types
+
+- A checkout that you installed with `uv sync` is not a uv tool. Upgrade it with `git pull`.
+- Entire has its own installer. Run it again to upgrade Entire:
+  `curl -fsSL https://entire.io/install.sh | bash`.
+- An unexpected error prints one line. Set `PILOOP_DEBUG=1` to see the full traceback.

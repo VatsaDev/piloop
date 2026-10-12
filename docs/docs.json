@@ -1,0 +1,60 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "piloop",
+  "colors": {
+    "primary": "#C8552B",
+    "light": "#D98A3F",
+    "dark": "#A8431F"
+  },
+  "favicon": "/favicon.svg",
+  "navigation": {
+    "groups": [
+      {
+        "group": "Get started",
+        "pages": ["index", "quickstart", "setup"]
+      },
+      {
+        "group": "Concepts",
+        "pages": [
+          "concepts/projects",
+          "concepts/ideas-and-runs",
+          "concepts/verdict",
+          "concepts/roles",
+          "concepts/orchestrator",
+          "concepts/tracks",
+          "concepts/session-capture",
+          "concepts/cost"
+        ]
+      },
+      {
+        "group": "Guides",
+        "pages": [
+          "guides/running-for-days",
+          "guides/secrets",
+          "guides/mcp-servers",
+          "guides/upgrading",
+          "guides/watch",
+          "guides/reviewing"
+        ]
+      },
+      {
+        "group": "Reference",
+        "pages": ["reference/cli", "reference/configuration", "reference/schema", "reference/environment"]
+      }
+    ]
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "GitHub",
+        "href": "https://github.com/hiloopai/piloop"
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/hiloopai/piloop"
+    }
+  }
+}

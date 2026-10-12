@@ -1,0 +1,99 @@
+---
+title: Projects and the evaluate command
+description: A project is a git repo with a goal that a program can measure.
+---
+
+A **project** is a git repo that piloop knows about. It has three files at its root:
+
+- `piloop.toml`: the configuration. See the [configuration reference](/reference/configuration).
+- `brief.md`: the instructions that every agent reads before its task.
+- The **evaluate command**: the program that scores the code. The `evaluate` key in `piloop.toml` names it.
+
+`piloop init` registers the project in the piloop database, `~/.piloop/piloop.db`. Set `PILOOP_HOME` to use another
+directory. One database holds every project, and one daemon serves them all.
+
+## The evaluate command
+
+The evaluate command is the referee. piloop runs it in a clean worktree of every commit that a worker makes. The
+command must:
+
+- Run from the root of the repo.
+- Print one line `METRIC <name>=<value>` on stdout for each metric in `piloop.toml`. Other output is ignored.
+- Exit with status 0. A non-zero exit, or a run longer than `evaluate_timeout` seconds, makes the candidate a
+  `crash`. Print the reason on stderr.
+
+For example:
+
+```text
+METRIC bytes=3692731
+METRIC seconds=0.52
+```
+
+Make the command deterministic: fix the seeds and the data splits. Make sure that a worker can change the score only
+through the code that it is supposed to change. Tell the workers in `brief.md` which files they must not edit, such as
+the evaluate command and the data.
+
+## Metrics
+
+Each `[[metrics]]` table in `piloop.toml` describes one metric that the evaluate command prints:
+
+```toml
+[[metrics]]
+name = "accuracy"
+direction = "higher"   # or "lower"
+role = "primary"       # or "guardrail" or "watch"
+```
+
+- The **primary** metric is the one to improve. A project has exactly one, or one for each
+  [track](/concepts/tracks).
+- A **guardrail** must not get worse by more than its `margin`, and never past its `floor`.
+- A **watch** metric is recorded and has no effect on the verdict.
+
+[Candidates, the verdict and the head](/concepts/verdict) explains how piloop uses them.
+
+## Per-unit results
+
+A metric is often a sum or a mean over units: test examples, records, files. When the evaluate command reports the
+result of each unit, the verdict can tell a broad gain from a gain on a few lucky units.
+
+When piloop measures a candidate, it sets the environment variable `PILOOP_UNITS_FILE` to a file path. Write a JSON
+object to that path, with one entry for each metric and each unit:
+
+```json
+{"accuracy": {"passenger-12": 0.0056, "passenger-17": 0.0, "passenger-31": 0.0056}}
+```
+
+- For each metric, the values must sum to the value on its `METRIC` line, within 0.1%. For a mean over `n` units,
+  write each unit's value divided by `n`.
+- Leave out metrics that are not sums, such as a latency or a wall time.
+- A file that is not valid makes the evaluation fail.
+
+piloop stores the file outside every worktree and outside the database. Agents do not see it, so that they cannot tune
+their code to the result of each unit. The variable is set only for the daemon's own measurements, never when an agent
+runs the evaluate command.
+
+## Evaluators
+
+piloop records which evaluator produced each score. An **evaluator** is the evaluate command, the names and
+directions of the metrics, and `link`. When you change one of these and run `piloop init`, piloop makes a new
+evaluator. Old scores then never pass for new ones: the daemon measures every kept candidate again under the new
+evaluator, newest first. Until it has a score for every keep, it starts only runs of ideas that are pinned to a
+candidate.
+
+A change to a metric's role, margin or floor, or to `confidence`, does not make a new evaluator. It changes how the
+next candidates are judged.
+
+## Shared files
+
+- `link` in `piloop.toml` lists repo-relative paths that git ignores, such as `data` or `.venv`. piloop symlinks them
+  into every worktree.
+- `workspace/` is a directory that every agent of the project shares: notes, cached features, plots. piloop links it
+  into every worktree. It is never committed.
+
+## Where the results are
+
+- Every candidate commit is pinned in your repo under `refs/piloop/<project>/r<run>/<n>`. `git show`, `git diff` and
+  `git cherry-pick` work on all of them, also after the worktree is gone.
+- The database holds the ideas, runs, candidates, measurements, comments and events. Read it with
+  `piloop sql "<statement>"`. See the [database schema](/reference/schema).
+- The briefs, logs and screen transcripts of the agents are under `~/.piloop/runs/` and `~/.piloop/workers/`.

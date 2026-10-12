@@ -1,0 +1,137 @@
+---
+title: Quickstart
+description: Install piloop and run a campaign that compresses the first 10 MB of Wikipedia.
+---
+
+This example is a small version of the [Hutter Prize](http://prize.hutter1.net/). The task is to compress the first
+10 MB of enwik8, a dump of English Wikipedia, into as few bytes as possible. The agents edit one file,
+`compressor.py`. The baseline is zlib at level 9.
+
+## Install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hiloopai/piloop/main/install.sh | sh
+```
+
+The installer installs uv, Entire, the `piloop` CLI and the piloop skills for your coding agents. It is safe to run
+again. If you already have uv, you can install the CLI alone:
+
+```bash
+uv tool install piloop
+piloop install-skills
+```
+
+Log in to at least one coding agent CLI: `claude auth login`, `codex login`, or `pi` and then `/login`.
+
+## Run the example
+
+<Steps>
+  <Step title="Create the project">
+    ```bash
+    piloop init --example enwik8 ~/piloop-enwik8
+    cd ~/piloop-enwik8
+    ```
+
+    `piloop init` copies the example, downloads `data/enwik8.zip` (about 36 MB, not committed) and makes a git repo
+    with a baseline commit. Then it measures the baseline and registers the project. The baseline is about 3.69 MB.
+  </Step>
+  <Step title="Choose your agents">
+    The example uses Claude Code (`harnesses = ["claude"]` in `piloop.toml`). To use Codex or pi as well, or instead,
+    edit `harnesses`, for example `harnesses = ["claude", "codex"]`.
+
+    If you do not have [Herdr](https://herdr.dev), set `runtime = "subprocess"`. The agents then run in the
+    background, and you cannot see their screens.
+
+    Run `piloop init` again, so that piloop reads the changed file.
+
+    ```bash
+    piloop init
+    ```
+  </Step>
+  <Step title="Add an idea">
+    ```bash
+    piloop idea add enwik8 "Try lzma at the highest preset"
+    ```
+
+    You do not have to add more. When the backlog is short, the research agent adds ideas.
+  </Step>
+  <Step title="Start the daemon">
+    ```bash
+    piloop serve --detach
+    ```
+
+    The daemon starts a worker for the idea and a research sweep for more ideas. It writes its log to
+    `~/.piloop/serve.log`.
+  </Step>
+  <Step title="Watch the campaign">
+    ```bash
+    piloop watch
+    ```
+
+    Press `enter` to open the project. The four panels show the inbox, the agents, the ideas and the candidates. Press
+    `q` to quit. The daemon continues to run.
+  </Step>
+</Steps>
+
+<Note>
+  The example stops after 20 worker runs (`[stop] max_runs = 20` in `piloop.toml`). Stop it earlier with
+  `piloop stop`. To run longer, raise `max_runs` and run `piloop init`.
+</Note>
+
+## What happens
+
+Each worker edits `compressor.py` and commits. For each commit, the daemon runs `evaluate.py` in a clean worktree. The
+script checks that `decompress(compress(data))` gives back the exact input. If it does not, the commit is a crash.
+Then the script prints two metrics:
+
+- `bytes`: the compressed size plus the size of `compressor.py`. Lower is better. This is the primary metric. As in
+  the Hutter Prize, the size of the decompressor counts.
+- `seconds`: the time to compress and decompress. Lower is better. This is a guardrail: a commit may add at most 10 s
+  to the time of the head, and the time must stay below 120 s.
+
+```toml
+[[metrics]]
+name = "bytes"
+direction = "lower"
+role = "primary"
+
+[[metrics]]
+name = "seconds"
+direction = "lower"
+role = "guardrail"
+margin = 10
+floor = 120
+```
+
+A commit with fewer bytes that holds the guardrail is a `keep`, and it becomes the new head. The next runs start from
+it. To see the progress at any time, run:
+
+```bash
+piloop status enwik8
+```
+
+## Talk to an orchestrator
+
+The orchestrator is a coding agent that answers escalations and records its decisions in your inbox. To start one,
+open Claude Code, Codex or pi in `~/piloop-enwik8` and ask:
+
+```text
+orchestrate the piloop campaign
+```
+
+The agent follows the `piloop-operate` skill. See [The orchestrator and the inbox](/concepts/orchestrator).
+
+## Stop
+
+```bash
+piloop stop
+```
+
+The daemon stops the running agents. Their ideas go back to the backlog. Every candidate commit stays in the repo
+under `refs/piloop/`, so `git show` and `git cherry-pick` work on any of them.
+
+## Next steps
+
+- [Set up your own repo](/setup).
+- Try the second example, `piloop init --example titanic-tracks`, which has two objectives. See
+  [Tracks](/concepts/tracks).

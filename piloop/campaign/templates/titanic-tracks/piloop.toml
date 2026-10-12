@@ -1,0 +1,41 @@
+# Two objectives as tracks on one trunk. Reference: https://piloop.autoresearch.inc/concepts/tracks
+# A keep improves the primary metric of its own track with confidence. It must also keep the other track's
+# primary metric within its margin and on the right side of its floor.
+name = "titanic-tracks"
+evaluate = ["uv", "run", "python", "evaluate.py"]
+evaluate_timeout = 300
+runtime = "herdr"
+harnesses = ["pi", "claude", "codex"]
+link = ["data", ".venv"]
+
+[model]
+pi = "anthropic/claude-opus-5-5"
+claude = "claude-opus-5-5"
+codex = "gpt-6.1-sol"
+
+[roles.worker]
+timeout = 900
+
+[[metrics]]
+name = "accuracy"
+direction = "higher"
+role = "primary"
+track = "accuracy"
+margin = 0.02          # how much a cost keep may lose per step (about 3 of 178 holdout passengers)
+floor = 0.74           # never below the baseline
+
+[[metrics]]
+name = "cost_seconds"
+direction = "lower"
+role = "primary"
+track = "cost"
+margin = 0.3           # how much an accuracy keep may add per step, in CPU seconds
+floor = 2.0            # an accuracy keep may not make the CPU cost higher than this
+
+[tracks.accuracy]
+share = 0.75
+addendum = "briefs/accuracy.md"
+
+[tracks.cost]
+share = 0.25
+addendum = "briefs/cost.md"

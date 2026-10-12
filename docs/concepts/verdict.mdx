@@ -1,0 +1,117 @@
+---
+title: Candidates, the verdict and the head
+description: How piloop decides whether a commit is kept.
+---
+
+## Candidates
+
+A **candidate** is one state of the code, identified by its git tree. Each commit that a worker makes is a candidate.
+The baseline that `piloop init` measures is the first one.
+
+Because a candidate is a tree, a commit that goes back to a known state is that known candidate, and piloop does not
+measure it again. A candidate can have several measurements. Its score is their mean under the current
+[evaluator](/concepts/projects#evaluators).
+
+## The head and the bar
+
+The **head** is the latest kept candidate on the trunk. New runs start from it, unless an idea pins another starting
+point.
+
+Each run is judged against its **bar**. The bar starts at the base of the run, and moves to each keep that the run
+makes. For a normal run, the bar is the head. Each keep on the trunk beats the head before it, so the trunk is a chain
+of improvements.
+
+## The verdict
+
+The daemon gives each measured candidate one verdict:
+
+| Verdict | Meaning |
+|---|---|
+| `keep` | The primary metric beat the bar with confidence, and every guardrail held. On the trunk, the candidate becomes the new head. |
+| `interesting` | The primary metric went up, but without enough confidence, or a guardrail got worse by more than its margin. |
+| `discard` | The primary metric did not go up, or a guardrail went past its floor. |
+| `crash` | The candidate has no value for the primary metric: the evaluate command failed or did not print it. |
+| `reference` | A starting point imported with `piloop candidate import`. It is never judged. |
+
+The rule, in order:
+
+1. No value for the primary metric: `crash`.
+2. A guardrail past its `floor`: `discard`.
+3. The bar has no score under the current evaluator: `keep`.
+4. The primary metric is not better than the bar: `discard`.
+5. The primary metric is better, but its worst case at the `confidence` level is not above zero: `interesting`.
+6. A guardrail's worst case is worse than the bar by more than its `margin`: `interesting`.
+7. Otherwise: `keep`.
+
+Each verdict has a reason, for example:
+
+```text
+against candidate#14: bytes 2.71648e+06 vs 3.69273e+06 (-976249; aggregate: no per-unit results); guardrails: seconds 7.1 vs 0.52 (+6.58; aggregate: no per-unit results) within its margin 10
+```
+
+A candidate whose deciding metrics equal those of its parent has a reason that starts with `no-op`. The change did
+not reach what the evaluate command measures.
+
+## Metric roles
+
+- **primary**: the metric to improve. It must beat the bar with confidence for a `keep`.
+- **guardrail**: a metric that may get a little worse. `margin` is the largest regression from the bar that is
+  allowed, in the metric's own units. `floor` is an optional hard limit on the value itself: at least the floor for
+  `higher`, at most the floor for `lower`.
+- **watch**: recorded, and never part of the verdict.
+
+A margin applies to each step. Many keeps that each give up a margin can add up to a large regression. A floor stops
+that. Only an edit of `piloop.toml` moves a floor.
+
+<Note>
+  Put every margin and floor in `piloop.toml`. A limit that is only in `brief.md` is a request to the agents. A limit
+  in `piloop.toml` is enforced by the daemon.
+</Note>
+
+## Confidence
+
+When the evaluate command writes [per-unit results](/concepts/projects#per-unit-results), the verdict uses a paired
+bootstrap over the units:
+
+1. Take the units that the candidate and the bar both report, and the difference of each.
+2. Resample the units with replacement 4000 times, and sum the differences each time.
+3. The worst case is the `1 - confidence` quantile of these sums. With the default `confidence = 0.95`, it is the 5th
+   percentile.
+
+So a gain that comes from three units has the spread of three units, not of the whole test set. The random generator
+has a fixed seed, so the same numbers always give the same verdict.
+
+Without per-unit results, or when the two sides report different units, the verdict compares the aggregate values.
+Any gain then counts, and the reason says `aggregate`. This is right for a deterministic metric, such as a compressed
+size. For a noisy metric, write per-unit results.
+
+## When the head moves during a run
+
+Two runs can start from the same head. When the first one keeps, the head moves. If the second one then beats its own
+bar, it is `interesting`, with a reason that starts with `keeps against its own bar, but the head moved on`.
+
+The daemon then merges the second candidate onto the new head, as a commit with two parents. The merge is a new
+candidate of the same run, and the daemon measures and judges it against the new head. If the merge has conflicts,
+the daemon files a seed `Compose candidate#N onto the head` instead.
+
+## Override a verdict
+
+Any agent or human can change a verdict and say why:
+
+```bash
+piloop sql "UPDATE candidates SET verdict = 'interesting', verdict_by = 'human', verdict_reason = 'lucky seed' WHERE id = 42"
+```
+
+The daemon never overwrites a verdict that it did not set.
+
+## Notes
+
+A result that regressed can still be a good starting point. A **note** keeps it in view:
+
+```bash
+piloop candidate note 42 "faster tokenizer, but loses accuracy on long inputs" --follow-up "fix the long-input case"
+```
+
+The candidate becomes `interesting`, with a reason that starts with `note:`. Each `--follow-up` files a seed pinned to
+the candidate. A note is not a keep, and it does not move a bar. A worker notes its own commit with a
+`Piloop-Note: <why>` trailer in the commit message.

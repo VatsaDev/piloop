@@ -1,0 +1,137 @@
+---
+title: Roles
+description: The worker, the watchdog and the research agent. Every agent that piloop starts has one of these roles.
+---
+
+piloop starts three kinds of agents. Each kind is a **role**. Every agent is a coding agent CLI (a **harness**:
+Claude Code, Codex or pi) that runs in a git worktree of the project, with a brief, and reads and writes the piloop
+database.
+
+| Role | What it does | When the daemon starts one | Its worktree |
+|---|---|---|---|
+| **worker** | Implements one idea and commits. | A ready idea and a free worker slot. | At the starting point of its run. Its commits are scored. |
+| **watchdog** | Looks for problems and reports them. | The daemon detects an anomaly, on a timer, and once when the campaign stops. | At the head. Its commits are not scored. |
+| **research** | Develops seeds into ideas and adds ideas of its own. | A new seed, or a short backlog. | At the head. Its commits are not scored. |
+
+Every role has the same lifecycle. The daemon writes a `workers` row, starts the agent, waits until the agent ends or
+times out, saves the screen transcript, reads the tokens that the agent used, attaches the session to
+[Entire](/concepts/session-capture), and closes the row. `piloop status` lists the running agents with their ids.
+
+The [orchestrator](/concepts/orchestrator) is not a role. The daemon never starts it.
+
+## Configure a role
+
+Each role has a table in `piloop.toml`. These keys are common to every role:
+
+| Key | Meaning |
+|---|---|
+| `harnesses` | The harnesses that the role uses in turn. Unset: the project's `harnesses`. |
+| `model` | The model for each harness, merged over the project's `[model]`. |
+| `timeout` | Seconds before the daemon stops the agent. |
+| `max_concurrent` | Agents of this role that run at the same time. |
+| `addendum` | A file in the repo that is added to `brief.md` for this role only. |
+| `mcp` | The [MCP servers](/guides/mcp-servers) that the role's agents get. |
+
+The defaults:
+
+```toml
+[roles.worker]
+timeout = 1800
+max_concurrent = 4      # each worker is a coding agent process on this machine
+explore_every = 4       # at least 1 run in 4 starts from a pinned idea, when one is ready
+
+[roles.watchdog]
+interval = 1800         # seconds between progress reviews; 0 turns them off
+timeout = 600
+max_concurrent = 1
+
+[roles.research]
+max_ideas = 1           # ideas of its own per sweep, after the seeds
+buffer = 2              # ready ideas to keep beyond one per worker slot
+timeout = 900
+max_concurrent = 1
+```
+
+The top-level `[max_concurrent]` table limits one harness across every role, for example `claude = 2` when your
+account limits the request rate. When it is the turn of a harness at its limit, the slot goes to the next harness of
+the rotation.
+
+## Worker
+
+A worker gets one idea. Its brief has the worker instructions, your `brief.md`, the idea, the starting point and the
+recent results. It may edit the code in its worktree and commit. It writes a `finding` comment on its idea at the end.
+It must not change the rows of runs, candidates or measurements, and it files no ideas or seeds.
+
+## Watchdog
+
+The watchdog informs. It never edits code or changes a row. It writes comments: findings, notes and escalations for
+the orchestrator, and seeds for research. It runs in one of two modes:
+
+- An **incident sweep**, when the daemon detects an anomaly. Anomalies are a failed or timed-out run, an agent that
+  died at startup, a run on the wrong base, and a worker with no comment or commit for an hour while its jobs run.
+- A **progress review**, every `[roles.watchdog] interval` seconds. It asks whether the campaign is getting
+  closer to its goal. When the campaign stops, one last progress review writes the closing report.
+
+## Research
+
+The research agent keeps the workers supplied with ideas. A sweep:
+
+1. Reads the **research pack** that the daemon builds: the metrics, what each source of ideas produced, the analysis
+   files listed in `[roles.research] context`, what was tried for each mechanism, every idea with its outcome, the
+   kept lineage, and the findings. `piloop history` prints the same pack.
+2. Develops each waiting seed into an idea, or rejects it with the reason.
+3. Adds ideas of its own, up to `max_ideas`, where the head loses the most.
+4. Writes one `finding` on the project.
+
+The daemon starts a research sweep when:
+
+- A seed is filed.
+- The backlog is short: fewer ready ideas than one per worker slot plus `buffer`. When a sweep defines no idea,
+  research waits longer before the next one.
+
+Ask for a sweep at any time with `piloop launch <project> research`.
+
+### Scout mode
+
+<Note>Experimental: scout mode.</Note>
+
+A **scout** sweep searches outside the repo for techniques that could reduce a measured loss. It is a research sweep
+in another mode:
+
+1. It writes a problem statement first: the open problems as measured losses, what was tried, and the constraints.
+2. It searches X, GitHub and arXiv by problem, never by person.
+3. It ranks the results by substance: a number against a baseline, code, a method, an ablation.
+4. It files at most `seeds` of them as seeds. The others go to the technique library, the `techniques` table.
+5. It writes one `finding` on the project, at priority 3, so that it reaches your inbox.
+
+Turn it on with a table. `interval` has no default:
+
+```toml
+[roles.research.scout]
+interval = 86400   # seconds between scout sweeps
+seeds = 3          # seeds that one scout sweep may file
+```
+
+Ask for one scout sweep with `piloop launch <project> research --scout`. A search tool for X needs an MCP server; see
+[MCP servers](/guides/mcp-servers).
+
+## Ask for one more agent
+
+`piloop launch <project> research` (or `watchdog`) asks the daemon for one more agent of that role. The daemon starts
+it on its next tick, within `max_concurrent`. Use `--harness` and `--model` to pin them, and `--reason` to add a line
+to the brief.
+
+An agent can do the same with SQL. The `workers` table is the launch queue:
+
+```sql
+INSERT INTO workers (kind, project_id, state, reason) VALUES ('research', 1, 'requested', 'second opinion on idea#40')
+```
+
+## Look at an agent
+
+- `piloop attach <worker-id>` focuses the agent's tab in the piloop Herdr session and attaches your terminal.
+- `piloop prompt <worker-id> "<text>"` types text into the agent's pane.
+- `piloop watch` shows the agents with their last output.
+
+Each agent's brief, log and transcript are in `~/.piloop/runs/<run>/` for a worker, and in
+`~/.piloop/workers/<worker-id>/` for the other roles.

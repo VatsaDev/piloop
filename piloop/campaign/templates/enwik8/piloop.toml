@@ -1,0 +1,31 @@
+# Every key: https://piloop.autoresearch.inc/reference/configuration
+name = "enwik8"
+evaluate = ["uv", "run", "python", "evaluate.py"]
+evaluate_timeout = 900
+runtime = "herdr"
+harnesses = ["claude"]                   # add "codex" or "pi" if you have them
+link = ["data", ".venv"]
+
+[model]
+pi = "anthropic/claude-opus-5-5"
+claude = "claude-opus-5-5"
+codex = "gpt-6.1-sol"
+
+[stop]
+max_runs = 20                            # the campaign ends after 20 worker runs
+
+[roles.worker]
+timeout = 1800
+max_concurrent = 2
+
+[[metrics]]
+name = "bytes"
+direction = "lower"
+role = "primary"
+
+[[metrics]]
+name = "seconds"
+direction = "lower"
+role = "guardrail"
+margin = 10
+floor = 120

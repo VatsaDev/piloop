@@ -1,0 +1,95 @@
+---
+title: Set up your own repo
+description: Let a coding agent set up a campaign for your repo, or set it up by hand.
+---
+
+A campaign needs four things in your repo:
+
+- `piloop.toml`: the configuration, with the metrics.
+- `brief.md`: the instructions that every worker reads.
+- An evaluate command that prints `METRIC <name>=<value>` lines.
+- A registration, which `piloop init` does.
+
+## With a coding agent
+
+Install piloop first (see the [Quickstart](/quickstart#install)). The installer also installs the piloop skills for
+every coding agent on your `PATH`.
+
+Open Claude Code, Codex or pi in your repo and ask:
+
+```text
+set up an autoresearch campaign for this repo
+```
+
+The agent follows the `piloop-setup` skill:
+
+1. It checks the machine: git, uv, Herdr, the coding agent CLIs and their logins. It fixes what it can. It asks you
+   only to log in where a CLI needs a browser.
+2. It reads the repo. Then it asks you about the objective, the measurement, the guardrails, the files that workers
+   may edit, the budget, earlier work, the agents to use, and what needs your decision. It waits for your answers
+   before it writes a file.
+3. It writes `brief.md`, `piloop.toml` and the evaluate command, and runs the evaluate command once.
+4. It runs `piloop init .`. This measures the baseline and registers the project.
+5. It starts the daemon with `piloop serve --detach` and adds the first ideas, or asks for a research sweep.
+6. It offers to be the orchestrator of the campaign, in the same session or in a background subagent.
+
+To change an existing campaign later, ask the agent to re-configure it. It runs the same interview, with the current
+values as the first options.
+
+## By hand
+
+<Steps>
+  <Step title="Create the files">
+    ```bash
+    cd my-repo
+    piloop init
+    ```
+
+    In a repo without `piloop.toml`, `piloop init` writes `piloop.toml`, `brief.md` and an `evaluate.py` stub. It
+    keeps every file that exists already. It runs `git init` and makes a baseline commit when necessary. Then it
+    stops, because `evaluate.py` is still the stub.
+  </Step>
+  <Step title="Write the evaluate command">
+    Make `evaluate.py` measure your code, or set `evaluate` in `piloop.toml` to a command that you have already. See
+    [the evaluate command](/concepts/projects#the-evaluate-command) for the contract. Run it once yourself.
+  </Step>
+  <Step title="Edit piloop.toml">
+    Set `name`, `evaluate`, the `[[metrics]]` tables, `harnesses` and `[model]`. The template lists every key with its
+    default. The [configuration reference](/reference/configuration) describes each one.
+
+    Put margins and floors in `piloop.toml`, not only in `brief.md`. The daemon enforces only what is in
+    `piloop.toml`.
+  </Step>
+  <Step title="Edit brief.md">
+    Write to the worker: what to improve, how to measure it, which files it may edit, which files it must not touch,
+    and what needs a human decision. Keep it to one page. The template has a heading for each topic.
+  </Step>
+  <Step title="Register the project">
+    ```bash
+    piloop init
+    ```
+
+    This commits your edits, measures `HEAD` as the baseline and registers the project. Check the baseline value. A
+    value that surprises you usually means that the evaluate command is wrong.
+  </Step>
+  <Step title="Start the campaign">
+    ```bash
+    piloop serve --detach
+    piloop idea add my-repo "Cache the parsed input" --hypothesis "Parsing takes 40% of the time" --priority 1
+    piloop watch
+    ```
+  </Step>
+</Steps>
+
+## Change the configuration
+
+Edit `piloop.toml` and run `piloop init` again. piloop reads the file again and keeps the history of the project.
+
+A change to the evaluate command, to a metric's name or direction, or to `link` makes a new evaluator. Old scores
+then do not count as new ones: the daemon measures every kept candidate again under the new evaluator. A change to a
+role, a margin, a floor or `confidence` changes how the next candidates are judged, and keeps the scores.
+
+## Next steps
+
+- [Projects and the evaluate command](/concepts/projects)
+- [Running for days](/guides/running-for-days)

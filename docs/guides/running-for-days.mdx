@@ -1,0 +1,81 @@
+---
+title: Running for days
+description: Run the daemon in the background or under a service manager, and restart it without losing work.
+---
+
+## The daemon
+
+`piloop serve` is the daemon. It starts the agents, scores the commits and enforces the limits of every project.
+
+```bash
+piloop serve --detach     # start in the background; output goes to ~/.piloop/serve.log
+piloop status             # the first line shows the daemon's pid and uptime, or "not running"
+piloop stop               # stop it; waits up to --timeout seconds
+piloop restart            # restart it in place on the installed code
+```
+
+Without `--detach`, the daemon runs in the foreground. Ctrl-C stops it in the same way as `piloop stop`.
+
+Only one daemon runs for each `PILOOP_HOME`. The daemon holds a lock on `serve.pid` while it runs, so a second
+`piloop serve` refuses to start. The operating system releases the lock when the process ends, so a crash leaves
+nothing to clean up.
+
+## Stop and restart
+
+`piloop stop` stops the running agents:
+
+- The runs of the stopped workers fail with `daemon stopped`. This does not count as an attempt: the ideas go back to
+  `ready`.
+- What each run made is pinned under `refs/piloop/`, with a note that its next attempt reads.
+- Requested agents stay requested, and start when the daemon starts again.
+- The sessions of the stopped agents are not attached to Entire.
+
+`piloop restart` keeps the agents running. The daemon stops its loop, and the same process starts the installed
+code again, with the same pid and environment. The new daemon connects to every running agent again and finishes its
+run as if nothing happened. The timeout of each agent still counts from its start.
+
+A daemon that starts after a crash does the same: it connects again to the agents that are still running.
+
+## Under a service manager
+
+`piloop service-unit` prints a unit file for your service manager. It installs nothing.
+
+<Tabs>
+  <Tab title="Linux (systemd)">
+    ```bash
+    piloop service-unit > ~/.config/systemd/user/piloop.service
+    systemctl --user enable --now piloop
+    ```
+  </Tab>
+  <Tab title="macOS (launchd)">
+    ```bash
+    piloop service-unit > ~/Library/LaunchAgents/dev.piloop.serve.plist
+    launchctl load -w ~/Library/LaunchAgents/dev.piloop.serve.plist
+    ```
+  </Tab>
+</Tabs>
+
+The unit restarts the daemon when it fails. It sets `PILOOP_HOME` and your current `PATH`, because the daemon must
+find the harness CLIs on its `PATH`. Set `PILOOP_SECRETS_COMMAND` before you run `piloop service-unit`, and the unit
+includes it. See [Secrets](/guides/secrets).
+
+Under a service manager:
+
+- Start and stop the daemon with the service manager.
+- `piloop stop` stops the daemon until the service manager starts it again.
+- Do not use `piloop serve --detach`: it starts a second daemon that the service manager does not control, once the
+  first one has stopped.
+- `piloop restart` and `piloop upgrade` keep the daemon under the service manager, because the restart happens in
+  the same process.
+- After you change the unit file, restart with the service manager: `systemctl --user restart piloop`.
+
+## Logs and traces
+
+The daemon writes one line for each span and span event to stderr. With `--detach`, stderr goes to
+`~/.piloop/serve.log`. Set `OTEL_EXPORTER_OTLP_ENDPOINT` to also send the spans to an OpenTelemetry collector.
+
+The `events` table holds what happened to each row, and is the easiest record to query:
+
+```bash
+piloop sql "SELECT at, actor, kind, payload FROM events ORDER BY id DESC LIMIT 20"
+```

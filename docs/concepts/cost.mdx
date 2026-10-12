@@ -1,0 +1,77 @@
+---
+title: Cost and spend limits
+description: What the agents use in tokens, and a hard limit on what the campaign spends outside piloop.
+---
+
+A campaign costs money in two ways: the tokens that the agents use, and what the project pays outside piloop, such as
+GPU time or paid APIs. piloop measures the first and enforces a limit on both.
+
+## Tokens
+
+When an agent ends, piloop reads the tokens that it used from the harness's own session file. This works for Claude
+Code, Codex and pi, and does not need Entire. piloop writes the totals to `workers.usage`:
+
+```json
+{"input": 120345, "output": 18230, "cache_read": 950112, "cache_write": 40211, "total": 1128898, "turns": 41, "source": "…"}
+```
+
+- `piloop status` and `piloop watch` show the tokens of each project.
+- The kept lineage shows the tokens that each candidate cost.
+- `[stop] max_tokens` ends the campaign when every agent of the project together has used this many tokens.
+
+```toml
+[stop]
+max_tokens = 50_000_000
+```
+
+The token counts of different harnesses are not directly comparable. For Codex, `input` includes `cache_read`.
+
+## Stop conditions
+
+The `[stop]` table ends the campaign when one of its conditions holds:
+
+| Key | The campaign ends when |
+|---|---|
+| `target` | the primary metric of the head reaches this value. |
+| `max_runs` | this many worker runs are running or have a measured candidate. |
+| `max_hours` | this many hours have passed since the first run started. |
+| `max_tokens` | the agents of the project have used this many tokens. |
+| `plateau` | this many finished runs in a row produced no new keep. |
+
+`max_runs` and `plateau` count only runs that produced a measured candidate. A run that stopped before its first
+commit costs tokens, and `max_tokens` bounds that.
+
+When a condition holds, the project becomes `stopped`. The daemon tells the running workers to commit and stop, and
+ends them ten minutes later. It scores what they committed. It drops the queued runs, starts nothing new, and asks for
+one last watchdog review that writes the closing report. Without a `[stop]` table, the campaign runs until you stop
+the daemon.
+
+To resume a stopped project, change its `[stop]` table and run `piloop init`.
+
+## Spend outside piloop
+
+`[spend]` is a hard limit in US dollars on what the campaign costs outside piloop. piloop knows no vendor, so you give
+it a command that prints the spend so far:
+
+```toml
+[spend]
+command = ["uv", "run", "scripts/spend.py"]   # prints one number: the spend so far in USD
+limit = 1000                                  # nothing new starts at this spend
+notices = [300, 600]                          # each one posts a note to the inbox when crossed
+interval = 300                                # seconds between two runs of the command
+```
+
+The daemon runs the command every `interval` seconds, at the root of the repo, with its own environment. The command
+must print one number and exit 0 within a minute. Give it its keys through the daemon's environment; see
+[Secrets](/guides/secrets).
+
+- When the spend crosses a value in `notices`, the daemon posts one note at priority 1.
+- When the spend reaches `limit`, the daemon starts no agent and no evaluation for the project, and posts one
+  escalation at priority 0. What already runs finishes and is scored.
+- When the command fails, the daemon holds the project in the same way, with one escalation for each series of
+  failures. An unknown spend is never read as zero.
+
+This is a hold, not a stop: nothing is dropped. To resume, raise `limit` in `piloop.toml` and run `piloop init`.
+
+`piloop status` shows the spend as `$412.30/$1,000.00 spend`. Tokens are not part of the spend, because piloop has no
+price table. Use `[stop] max_tokens` for them.

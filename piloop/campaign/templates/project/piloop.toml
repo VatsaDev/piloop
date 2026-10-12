@@ -1,0 +1,66 @@
+# piloop project config. This file lists every key with its default value.
+# Reference: https://piloop.autoresearch.inc/reference/configuration
+# Override any key for one process with PILOOP_PROJECT_<KEY>. Join nested keys with __.
+
+name = "my-project"                       # short identifier; piloop names git refs and the Herdr workspace after it
+evaluate = ["uv", "run", "python", "evaluate.py"]  # command run in a clean worktree of each commit; prints METRIC lines
+evaluate_timeout = 600                    # seconds; a slower evaluation is stopped and recorded as a crash
+runtime = "herdr"                         # herdr: one visible pane per agent that you can read and prompt · subprocess: headless
+harnesses = ["pi", "claude", "codex"]     # runs use these harnesses in turn, unless an idea names one
+link = []                                 # gitignored paths to symlink into every worktree, for example "data" or ".venv"
+confidence = 0.95                         # a keep needs the primary metric's gain to be above zero at this confidence
+
+[model]                                   # the model for each harness, in that harness's own naming
+pi = "anthropic/claude-opus-5-5"
+claude = "claude-opus-5-5"
+codex = "gpt-6.1-sol"
+
+[max_concurrent]                          # the most agents of one harness at the same time, all roles together; e.g. claude = 2
+
+# [harness.<name>] overrides a built-in harness definition (executable, interactive, headless, startup_dialogs).
+
+[roles.worker]                            # a worker tries one idea in a new worktree
+# harnesses = ["pi", "claude", "codex"]   # if not set: the project's harnesses
+# model = { pi = "..." }                  # merged over [model]
+timeout = 1800
+max_concurrent = 4                        # the most runs at the same time; each run is one harness process on this machine
+explore_every = 4                         # at least 1 run in 4 starts from an alternative base, if an idea asks for one; 0 = off
+
+[roles.watchdog]                          # a watchdog investigates anomalies and reviews progress every `interval` seconds
+# harnesses = ["pi", "claude", "codex"]   # if not set: the project's harnesses
+# model = { pi = "..." }                  # merged over [model]
+interval = 1800                           # 0 turns the timer off
+timeout = 600
+max_concurrent = 1
+
+[roles.research]                          # research keeps one runnable idea per worker slot, plus `buffer` more
+# harnesses = ["pi", "claude", "codex"]   # if not set: the project's harnesses
+max_ideas = 1                             # new ideas per sweep, after the seeds; 0 = seeds only
+# context = ["docs/error-analysis.md"]    # files research reads first: where the best candidate loses, and by how much
+buffer = 2                                # ideas to keep ready beyond one per worker slot
+timeout = 900
+max_concurrent = 1                        # sweeps at the same time; more than one duplicate each other's work
+
+# [stop]                                  # any one of these ends the campaign; leave the table out to run until you stop it
+# target = 0.85                           # the best kept candidate reaches this value of the primary metric
+# max_runs = 200                          # worker runs that are in progress or have a measured candidate
+# max_hours = 12                          # hours since the project's first run started
+# plateau = 50                            # measured runs in a row without a new keep
+
+# [spend]                                 # a hard limit in USD on what the campaign costs outside piloop (GPUs, APIs)
+# command = ["uv", "run", "scripts/spend.py"]  # prints the spend so far in USD; it gets secrets from the daemon's environment
+# notices = [300, 600]                    # piloop posts one inbox note when the spend crosses each value
+# limit = 1000                            # above the limit nothing starts; raise it, then run `piloop init` again
+# interval = 300                          # seconds between two runs of the command
+
+[[metrics]]                               # one entry for each METRIC <name>=<value> line; exactly one is the primary
+name = "score"
+direction = "higher"                      # higher | lower
+role = "primary"                          # primary: must improve with confidence · guardrail · watch (the default)
+
+# [[metrics]]                             # a guardrail may get worse by at most `margin` (else interesting) and never past `floor` (else discard)
+# name = "latency_ms"
+# direction = "lower"
+# role = "guardrail"
+# margin = 20                             # in the metric's own units, compared with the run's base
+# floor = 500                             # optional hard limit on the value

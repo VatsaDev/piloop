@@ -1,0 +1,278 @@
+---
+title: CLI
+description: Every piloop command and its options.
+---
+
+Run `piloop --help` for the list of commands, and `piloop <command> --help` for the options of one command.
+
+Many commands take a `REF`: a project name, or a path inside the project's repo. When a command makes the `REF`
+optional and you leave it out, it uses the project of the current directory, else the only active project, else
+every project.
+
+Commands that write sign their writes with `PILOOP_ACTOR` (`human` by default). See
+[Environment variables](/reference/environment).
+
+## Set up
+
+### piloop init
+
+```text
+piloop init [PATH] [--example enwik8|titanic-tracks]
+```
+
+Makes `PATH` (default `.`) a piloop project and registers it. It is safe to run again.
+
+- Runs `git init` and makes a baseline commit when necessary.
+- When there is no `piloop.toml`, writes `piloop.toml`, `brief.md` and `evaluate.py` from the template. It keeps
+  files that exist already. While `evaluate.py` is the unchanged stub, it stops and says what to edit.
+- Measures `HEAD` as the baseline candidate and registers the project. When the project is registered already, it
+  reads `piloop.toml` again.
+
+`--example` creates a bundled example instead of the blank template.
+
+### piloop install-skills
+
+Copies the skills of this CLI into the skill directory of every harness on your `PATH`: `~/.claude/skills` for
+Claude Code (or `$CLAUDE_CONFIG_DIR/skills`), and `~/.agents/skills` for Codex, pi, Gemini CLI and Cursor. It replaces
+only piloop's own skills. The installer and `piloop upgrade` run it.
+
+### piloop doctor
+
+Checks the install, without changing anything. Each failure prints the command that fixes it. See
+[Upgrading](/guides/upgrading#check-the-install).
+
+### piloop upgrade
+
+```text
+piloop upgrade [--timeout SECONDS]
+```
+
+Upgrades the CLI, the skills and the database, and restarts a running daemon in place. `--timeout` (default 30) is
+how long to wait for the daemon to come back. See [Upgrading](/guides/upgrading).
+
+### piloop migrate
+
+Brings the database to the schema of this CLI and prints what changed. Every command does this silently when it
+starts.
+
+## The daemon
+
+### piloop serve
+
+```text
+piloop serve [--detach]
+```
+
+Runs the daemon in the foreground. `--detach` starts it in the background, with its output in
+`$PILOOP_HOME/serve.log`. Only one daemon runs for each `PILOOP_HOME`.
+
+### piloop stop
+
+```text
+piloop stop [--timeout SECONDS]
+```
+
+Sends SIGTERM to the daemon and waits up to `--timeout` seconds (default 30) for it to exit. The daemon stops the
+running agents, and their runs fail with `daemon stopped`.
+
+### piloop restart
+
+```text
+piloop restart [--timeout SECONDS]
+```
+
+Restarts the running daemon in place on the installed code. The process keeps its pid, its environment and its
+service manager. The running agents continue, and the new code connects to them again. `--timeout` (default 30) is how
+long to wait for the daemon to come back.
+
+### piloop service-unit
+
+Prints a systemd user unit (Linux) or a launchd agent (macOS) that keeps `piloop serve` running. It installs nothing.
+See [Running for days](/guides/running-for-days#under-a-service-manager).
+
+## Ideas and candidates
+
+### piloop idea add
+
+```text
+piloop idea add REF TITLE [options]
+```
+
+Adds a defined idea. A `ready` idea runs when a worker slot is free, in order of priority.
+
+| Option | Meaning |
+|---|---|
+| `--hypothesis` | Why the idea should help, and by how much. |
+| `--plan` | Concrete steps for the worker. |
+| `--from` | What prompted the idea, with ids or a URL. |
+| `--family` | The mechanism family. Ideas that try the same mechanism share it. |
+| `--priority` | 0 (urgent) to 4 (someday). Default 2. |
+| `--harness` | Pin a harness instead of the rotation. |
+| `--base` | The candidate id to start from, instead of the head. |
+| `--proposed` | Wait for a human to approve the idea. |
+| `--track` | The track. Required when the project has several. |
+| `--after` | An idea to wait for. Repeat it for several. |
+| `--supersedes` | An idea that this one refines. Repeat it for several. |
+
+A watchdog files a seed instead. A worker files neither.
+
+### piloop idea seed
+
+```text
+piloop idea seed REF HUNCH --from POINTERS [--base CANDIDATE] [--track TRACK]
+```
+
+Files a seed: a hunch in one line, with pointers to what prompted it. The research agent develops it into an idea,
+or rejects it. See [Seeds](/concepts/ideas-and-runs#seeds).
+
+### piloop idea develop
+
+```text
+piloop idea develop IDEA_ID --hypothesis … --evidence … --check … --metric … --effect … [options]
+```
+
+Develops a seed into a defined idea. Every one of these is required:
+
+| Option | Meaning |
+|---|---|
+| `--hypothesis` | The mechanism, and why it should move the metric. |
+| `--evidence` | What supports it, with ids and paths. |
+| `--check` | The cheapest measurement that could kill it, and the result that stops the run. |
+| `--metric` | What decides success: the primary metric, or the part of it that the idea targets. |
+| `--effect` | The expected size of the effect, in the metric's units, and why. |
+
+Optional: `--plan`, `--title`, `--family`, `--base`, `--priority` (default: the seed's) and `--proposed`.
+
+### piloop candidate import
+
+```text
+piloop candidate import REF COMMIT [--summary TEXT]
+```
+
+Registers the tree of a commit, branch or tag of the repo as a `reference` candidate: a starting point that an idea
+can pin with `--base`. The daemon measures it. It is never kept, never the head and never a bar. To import a candidate
+of another project, fetch its commit into this repo first: `git fetch <its repo> <sha>`.
+
+### piloop candidate note
+
+```text
+piloop candidate note CANDIDATE_ID REASON [--follow-up HUNCH]... [--track TRACK]
+```
+
+Keeps a measured `discard` or `interesting` candidate in view as a starting point. Its verdict becomes `interesting`,
+with the reason `note: <REASON>`. Each `--follow-up` files a seed pinned to the candidate. See
+[Notes](/concepts/verdict#notes).
+
+## Status and the inbox
+
+### piloop status
+
+```text
+piloop status [REF]
+```
+
+Prints the daemon's state, then for each project: the head, the tracks, the trajectory, the progress against
+`[stop]`, the open runs, the queue, the running agents with their last line, the recent candidates, the anomalies,
+the inbox, the latest decisions and the recent events. The watchdog and research agents get the same overview in
+their brief.
+
+### piloop watch
+
+```text
+piloop watch [REF]
+```
+
+Shows the campaign on one screen, with keys to act on it. See [Watching a campaign](/guides/watch).
+
+### piloop history
+
+```text
+piloop history [REF]
+```
+
+Prints the research pack: the metrics, the ideas by source, the analysis files, what was tried for each mechanism,
+every idea with its outcome, the kept lineage, the findings, the digests and the open escalations. A research sweep
+reads it before it proposes ideas.
+
+### piloop inbox
+
+```text
+piloop inbox [REF] [--kind KIND]... [--all]
+```
+
+Lists the unacknowledged items addressed to you, most urgent first. `--kind` keeps only items of one kind: `note`,
+`finding`, `decision` or `escalation`. `--all` includes acknowledged items. See
+[The orchestrator and the inbox](/concepts/orchestrator).
+
+### piloop inbox show
+
+```text
+piloop inbox show COMMENT_ID
+```
+
+Prints one item, then the comments linked to it: the comments it cites, the comments that cite it, and its replies.
+
+### piloop inbox ack
+
+```text
+piloop inbox ack [IDS]... [--up-to ID [--project REF]] [--kind KIND]...
+```
+
+Acknowledges items: you have seen them. `--up-to` acknowledges every unacknowledged item up to that id instead.
+Nothing waits on an acknowledgement. To revise a decision, write a `decision` comment on its target.
+
+### piloop inbox wait
+
+```text
+piloop inbox wait [REF] [--after EVENT_ID] [--timeout SECONDS]
+```
+
+Blocks until something needs the orchestrator, then prints it, one line each, and the command for the next wait. It
+returns for a new inbox item that someone else wrote, a project that the daemon stopped, an anomaly that the daemon
+gave to a watchdog, and the daemon's verdict on a measured candidate. `--after` is the cursor that the last wait
+printed (default: now). `--timeout` (default 1800) is how long to wait before it returns with nothing. Set the timeout
+of your shell tool above it.
+
+## Agents
+
+### piloop launch
+
+```text
+piloop launch REF ROLE [--harness NAME] [--model MODEL] [--reason TEXT] [--scout]
+```
+
+Asks the daemon for one more agent of `ROLE`: `watchdog` or `research`. The daemon starts it on its next tick,
+within the role's `max_concurrent`. `--scout` asks for a research sweep in [scout mode](/concepts/roles#scout-mode).
+Only the daemon starts workers, because a worker needs a run.
+
+### piloop attach
+
+```text
+piloop attach WORKER_ID
+```
+
+Focuses the agent's tab in the `piloop` Herdr session and attaches this terminal to it.
+
+### piloop prompt
+
+```text
+piloop prompt WORKER_ID TEXT
+```
+
+Types `TEXT` into a running agent of any role. This needs the Herdr runtime. The worker ids are in `piloop status`.
+
+## The database
+
+### piloop sql
+
+```text
+piloop sql STATEMENT
+```
+
+Runs one SQL statement against the piloop database. Schema changes and transactions are denied. Everything else,
+including `DELETE`, is allowed. See the [database schema](/reference/schema).
+
+### piloop schema
+
+Prints what `piloop sql` accepts, the conventions for writing to the database, and every table. Agents read it before
+they write.

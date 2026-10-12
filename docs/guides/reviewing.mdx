@@ -1,0 +1,72 @@
+---
+title: Reviewing a campaign
+description: Check that the gains are real, that no agent gamed the evaluation, and where the time and tokens went.
+---
+
+A campaign can end with a better number that does not hold up. Review a campaign before you trust its result.
+
+## With a coding agent
+
+Open Claude Code, Codex or pi in the project repo and ask:
+
+```text
+review the piloop campaign
+```
+
+The agent follows the `piloop-review` skill. It reads the database read-only, and never changes the running
+campaign. It answers four questions, in this order:
+
+1. **Is the result real?** The trajectory of the head, the noise between sibling candidates, and whether the gains
+   hold on data that no agent tuned against.
+2. **Did any agent game the evaluation?** Edits to frozen files, reads of labels or per-unit results, and tuning
+   against the evaluate command.
+3. **What did it cost?** Tokens and time for each role, and the work that produced nothing.
+4. **Whose fault is each failure?** The model, the harness, the environment, or the setup of the campaign.
+
+It tags each claim as measured or inferred. It ends with a report, bug reports for problems in the tools, and inbox
+items for the decisions that only you can take.
+
+## By hand
+
+The trajectory of the head and every keep:
+
+```bash
+piloop status my-project
+piloop history my-project     # the kept lineage, with the gain of each keep over its parent
+```
+
+The commit of a candidate, and its diff from its parent:
+
+```bash
+piloop sql "SELECT commit_sha, summary, verdict_reason FROM candidates WHERE id = 42"
+git show <commit_sha>
+```
+
+Check that no keep changed a frozen file, such as the evaluate command or the data:
+
+```bash
+git diff --stat <baseline commit> <head commit> -- evaluate.py data/
+```
+
+<Warning>
+  An evaluator is defined by the evaluate command and the metrics, not by the contents of `evaluate.py`. A worker that
+  edits `evaluate.py` changes the score without a new evaluator. Check the diffs of the kept candidates.
+</Warning>
+
+Read the session of an agent with [Entire](/concepts/session-capture):
+
+```bash
+entire checkpoint explain <checkpoint id>
+```
+
+Tokens and time for each role and harness:
+
+```bash
+piloop sql "SELECT kind, harness, COUNT(*) AS agents, SUM(usage->>'$.total') AS tokens FROM workers WHERE project_id = 1 GROUP BY kind, harness"
+```
+
+Who changed a verdict or a status, other than the daemon:
+
+```bash
+piloop sql "SELECT at, actor, kind, payload FROM events WHERE kind IN ('candidate.verdict', 'project.status') AND actor != 'daemon'"
+```

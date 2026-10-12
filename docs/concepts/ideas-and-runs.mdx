@@ -1,0 +1,112 @@
+---
+title: Ideas, seeds and runs
+description: An idea is what to test. A seed is a hunch that research develops into an idea. A run is one attempt at an idea.
+---
+
+## Ideas
+
+An **idea** is one thing to test: a title, a hypothesis and, optionally, a plan for the worker.
+
+```bash
+piloop idea add my-project "Gradient boosting on engineered features" \
+  --hypothesis "Trees use the title and family-size features better than the linear model" \
+  --priority 1
+```
+
+The daemon takes `ready` ideas in order of priority: 0 is urgent, 4 is someday, and 2 is the default. An idea has one
+of these statuses:
+
+| Status | Meaning |
+|---|---|
+| `seed` | A hunch that waits for the research agent. See [Seeds](#seeds). |
+| `proposed` | A defined idea that waits for a human to approve it. Add it with `--proposed`. |
+| `ready` | Waits for a free worker slot. |
+| `scheduled` | A run of it is queued or running. |
+| `done` | Its runs are finished and their commits are judged. |
+| `parked` | Set aside for now. The daemon does not run it. |
+| `rejected` | Will not run. |
+
+Who adds what:
+
+- You, the orchestrator and the research agent add defined ideas with `piloop idea add`.
+- The watchdog files only seeds.
+- A worker files neither. It writes a hunch in its `finding` comment, and the research agent reads it.
+
+Each idea records who wrote it. The research pack counts, for each source, how many of its ideas produced a keep.
+
+### Links between ideas
+
+- `--after <id>`: the idea waits until every idea that it names is `done`. Then it runs from the head, which holds
+  what those ideas kept. So a research sweep can propose a chain of ideas at once.
+- `--supersedes <id>`: the idea is a sharper version of the ideas that it names. The daemon rejects a superseded
+  idea that never ran, with a note that names the new one.
+
+### Starting points
+
+A run starts from the head by default: the latest keep. Pin another starting point with `--base <candidate>`. A run
+from another starting point is a **branch run**. Its keeps form a branch and do not move the head. Use a pin when an
+idea builds on a specific tree, such as an older keep or a [note](/concepts/verdict#notes).
+
+`piloop candidate import <project> <commit>` registers any commit of the repo as a **reference**: a starting point
+from outside the lineage, such as a branch or the result of another campaign. The daemon measures it, and an idea
+can start from it with `--base`.
+
+To make sure that the campaign explores, at least one run in `[roles.worker] explore_every` (4 by default) starts from
+a pinned idea when one is ready, whatever its priority.
+
+## Seeds
+
+A **seed** is a hunch with pointers: a follow-up that a result suggests, two candidates to combine, a paper. File one
+when you do not have time to define the idea:
+
+```bash
+piloop idea seed my-project "Combine the title feature of candidate#12 with the model of candidate#15" \
+  --from "candidate#12, candidate#15"
+```
+
+A seed starts a research sweep at once, however full the backlog is. The research agent reads the earlier work on the
+mechanism. Then it does one of two things:
+
+- It develops the seed into a defined idea with `piloop idea develop`: a hypothesis, the evidence, the cheapest check
+  that could kill it, the metric that decides success, and the expected effect.
+- It rejects the seed with a note that names the earlier work that settled the question.
+
+Seeds show in `piloop inbox` and at the top of the ideas panel in `piloop watch`.
+
+## Runs
+
+A **run** is one attempt at an idea by one worker, with one harness and one model. When a worker slot is free, the
+daemon:
+
+1. Takes the most urgent ready idea that no other idea blocks, and queues a run of it.
+2. Chooses the harness: the next one of the rotation in `harnesses`, unless the idea pins one with `--harness`.
+3. Creates a git worktree at the starting point of the run, and links the `link` paths and `workspace/` into it.
+4. Writes the brief: the worker instructions, your `brief.md`, the SQL procedures, the idea, the base candidate, the
+   recent candidates and every comment on the idea and on its earlier runs.
+5. Starts the worker. It runs until it exits or until `[roles.worker] timeout`.
+
+The worker implements the idea and commits. Every commit is scored, so a worker commits also when the idea did not
+work, and says so in the message. piloop commits uncommitted changes for the worker when it ends.
+
+After the worker ends, the daemon scores each new commit. The idea becomes `done`, or goes back to `ready` when it has
+attempts left. An idea has two attempts by default.
+
+An agent that failed to start, because its start failed or it ended within a minute without using a token, does not
+count as an attempt. The daemon queues its run again for a new worker. After three such failures within ten minutes,
+the daemon pauses the launches of the project and escalates.
+
+### Commit trailers
+
+A worker can end a commit message with a trailer:
+
+- `Piloop-Note: <why>`: the commit regressed, but it is worth starting from. See [Notes](/concepts/verdict#notes).
+- `Piloop-Eval: skip`: the commit is scaffolding. The daemon does not measure it and marks it `discard`.
+
+## Steer a running worker
+
+- A `note`, `finding` or `decision` comment on a running run, or on its idea, reaches the worker. On the next tick, the
+  daemon types the first line of the comment into the worker's pane. Put the instruction in the first line.
+- `piloop prompt <worker-id> "<text>"` sends text to a worker directly.
+
+Both need the Herdr runtime. A worker that runs as a background process cannot receive text. Its next run reads the
+comment in its brief.

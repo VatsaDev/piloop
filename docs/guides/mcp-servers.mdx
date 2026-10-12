@@ -1,0 +1,83 @@
+---
+title: MCP servers
+description: Give the agents of a role extra tools, such as web search, with one definition for every harness.
+---
+
+An MCP server gives an agent extra tools, such as web search. Define each server once in `piloop.toml`, and list it
+in the roles that need it. piloop gives the servers to each harness in that harness's own format.
+
+## Define a server
+
+A server is either streamable HTTP (`url`) or stdio (`command`):
+
+```toml
+[mcp.exa]
+url = "https://mcp.exa.ai/mcp?tools=web_search_exa,web_fetch_exa"
+headers_env = { "x-api-key" = "EXA_API_KEY" }
+
+[mcp.firecrawl]
+url = "https://mcp.firecrawl.dev/v2/mcp"
+bearer_token_env = "FIRECRAWL_API_KEY"
+
+[mcp.xai]
+command = ["python3", "/path/to/piloop/scripts/xai_search_mcp.py", "grok-4.7", "--max-usd", "1"]
+env = ["XAI_API_KEY"]
+
+[roles.research]
+mcp = ["exa", "firecrawl", "xai"]
+```
+
+| Key | Meaning |
+|---|---|
+| `url` | The streamable HTTP endpoint. SSE is not supported. |
+| `headers_env` | HTTP only. Each header name, with the environment variable that holds its value. |
+| `bearer_token_env` | HTTP only. The environment variable sent as `Authorization: Bearer <value>`. |
+| `command` | stdio only. The server's command (argv). |
+| `env` | stdio only. The environment variables that the server reads. |
+
+A role gets no servers unless its `mcp` key lists them. The [configuration reference](/reference/configuration#mcpserver)
+has every key.
+
+## Keys stay out of the file
+
+A server names the environment variables that hold its keys. It never holds a key. So `piloop.toml` is safe to
+commit.
+
+piloop copies each named variable from the daemon's environment into the agent's environment. The harness then puts
+the value into the header or into the server's environment. A variable that the daemon does not have makes the launch
+fail, with an error that names the variable. See [Secrets](/guides/secrets) for how to give the daemon its keys.
+`piloop doctor` lists the missing variables by name.
+
+<Warning>
+  The keys are in the agent's environment. An agent can read them with its shell tool. Codex agents are the exception:
+  piloop removes the role's variables from the environment of Codex's shell tool.
+</Warning>
+
+## What each harness gets
+
+Each built-in harness puts the role's servers at the `{mcp}` element of its command. The agents see only these
+servers, never the servers in your own harness configuration:
+
+- **Claude Code**: `--strict-mcp-config` and an inline `--mcp-config`.
+- **Codex**: every server of your Codex configuration is turned off, and the role's servers are added. A piloop
+  server with the same name as one of yours makes the launch fail.
+- **pi**: through pi-mcp-adapter in exclusive mode. pi takes servers only in its headless command, so a role that has
+  servers and pi in its rotation needs `runtime = "subprocess"`.
+
+A [custom harness](/reference/configuration#harness) takes servers when its command has an `{mcp}` element and it sets
+`mcp` to one of the renderers: `claude`, `codex` or `pi`.
+
+## The X search server
+
+piloop includes a small stdio server, `scripts/xai_search_mcp.py`, with one tool, `x_search`. It searches recent posts
+on X through xAI's API, and uses only the Python standard library.
+
+```bash
+XAI_API_KEY=… python3 scripts/xai_search_mcp.py <model> [--max-usd 1] [--max-tool-calls 10]
+```
+
+Each call costs money. The server limits the spend of one agent session: each reply states the cost of the call and
+the total so far, and the server refuses every call after the total reaches `--max-usd`. `--max-tool-calls` limits
+the searches of one call. The project's `[spend]` limit does not see this cost, so set `--max-usd`.
+
+Use the script from a clone of the piloop repo. It is not part of the installed CLI.

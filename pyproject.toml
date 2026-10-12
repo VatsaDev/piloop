@@ -1,0 +1,139 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "piloop"
+version = "0.1.0"
+description = "Autoresearch for any repo: coding agents try ideas, piloop scores every commit and keeps what wins"
+readme = "README.md"
+requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Autoresearch, Inc." }]
+keywords = ["autoresearch", "agents", "claude-code", "codex", "optimization", "experiments"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development",
+]
+dependencies = [
+    "alembic>=1.16",
+    "cyclopts>=3.20",
+    "gitpython>=3.1.45",
+    "httpx2>=2.12.0",
+    "opentelemetry-exporter-otlp-proto-http>=1.34",
+    "opentelemetry-sdk>=1.34",
+    "psutil>=7",
+    "pydantic>=2.11",
+    "pydantic-settings>=2.10",
+    "rich>=15.0.0",
+    "sqlalchemy>=2.0.41",
+    "textual>=8.2,<9",
+]
+
+[project.urls]
+Homepage = "https://github.com/hiloopai/piloop"
+Documentation = "https://piloop.autoresearch.inc"
+Changelog = "https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md"
+Issues = "https://github.com/hiloopai/piloop/issues"
+
+[project.scripts]
+piloop = "piloop.cli.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["piloop"]
+
+[tool.hatch.build.targets.wheel.force-include]
+# the Agent Skills package at the repo root ships inside the CLI: `piloop install-skills` copies the installed version
+"skills" = "piloop/cli/agent_skills"
+
+[tool.uv]
+default-groups = ["dev", "lint"]
+
+[dependency-groups]
+dev = [
+    "coverage[toml]>=7.9",
+    "dirty-equals>=0.9",
+    "inline-snapshot>=0.23",
+    "pytest>=8.4",
+    "pytest-mock>=3.14",
+    "pytest-pretty>=1.3",
+]
+lint = [
+    "pre-commit>=4.2",
+    "ruff>=0.12",
+    "ty>=0.0.1a",
+    "types-psutil>=7.2.2.20260906",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+include = ["piloop/**/*.py", "tests/**/*.py", "scripts/**/*.py"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+extend-select = ["Q", "RUF100", "RUF018", "C90", "UP", "I", "D", "PGH003", "B", "SIM", "TID252"]
+flake8-quotes = { inline-quotes = "single", multiline-quotes = "double" }
+mccabe = { max-complexity = 15 }
+ignore = ["D100", "D102", "D104", "D105", "D107"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+known-first-party = ["piloop"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["D"]
+"piloop/db/migrations/**/*.py" = ["D"]
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.ty.src]
+include = ["piloop", "tests", "scripts"]
+exclude = ["piloop/db/migrations/versions", "piloop/campaign/templates"]  # templates are projects with their own deps
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["herdr: needs a live Herdr server"]
+xfail_strict = true
+filterwarnings = [
+    "error",
+]
+
+[tool.coverage.run]
+data_file = ".coverage/.coverage"
+source = ["piloop"]
+omit = ["piloop/db/migrations/*", "piloop/__main__.py", "piloop/campaign/templates/*"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 100
+skip_covered = true
+show_missing = true
+precision = 2
+exclude_lines = [
+    'pragma: no cover',
+    'raise NotImplementedError',
+    'if TYPE_CHECKING:',
+    '@overload',
+    'assert_never\(',
+    'if __name__ == .__main__.:',
+    '^\s*\.\.\.$',
+]
+
+[tool.inline-snapshot]
+format-command = "ruff format --stdin-filename {filename}"

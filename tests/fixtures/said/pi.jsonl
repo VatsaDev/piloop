@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"01a0f41c-ca63-7673-b258-bb9bbb7267c2","cwd":"/home/me/.piloop/runs/10/worktree"}
+{"type":"message","id":"u1","message":{"role":"user","content":[{"type":"text","text":"# Worker\n[brief redacted]"}]}}
+{"type":"message","id":"a1","message":{"role":"assistant","content":[{"type":"text","text":"No new ideas since the freeze.\nI'll launch sweeps when there's something new to read."}],"usage":{"input":1,"output":2,"totalTokens":3}}}
+{"type":"message","id":"a2","message":{"role":"assistant","content":[{"type":"toolCall","id":"toolu_1","name":"bash","arguments":{"command":"[redacted]"}}],"usage":{"input":1,"output":2,"totalTokens":3}}}
+{"type":"message","id":"t1","message":{"role":"toolResult","toolCallId":"toolu_1","toolName":"bash","content":[{"type":"text","text":"[redacted tool output that is not the agent's words]"}],"isError":false}}
