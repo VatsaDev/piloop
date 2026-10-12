@@ -1,18 +1,71 @@
-"""Process-wide settings. Every environment variable piloop reads is declared here."""
+"""Process-wide settings. Every environment variable piloop reads is declared here.
 
+Also read from ``<PILOOP_HOME>/config.toml``, the global settings file (``[storage]``, say); an environment variable
+wins over the file, and a nested key is ``PILOOP_<TABLE>__<KEY>`` (``PILOOP_STORAGE__REMOTE``).
+"""
+
+import os
 from pathlib import Path
+from typing import Self
 
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic_settings import (
+    BaseSettings,
+    InitSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    TomlConfigSettingsSource,
+)
+
+DEFAULT_HOME = Path.home() / '.piloop'
+CONFIG_FILE = 'config.toml'
+STORE_DIR = 'store'
+KB = 1024
+GB = 1024**3
+
+
+class StorageSettings(BaseModel):
+    """``[storage]``: the artifact store every project of this PILOOP_HOME archives its workspace into.
+
+    Blobs live in ``<PILOOP_HOME>/store``, and in ``remote`` too when it is set. The artifact store page of the docs
+    describes the modes.
+    """
+
+    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    remote: str | None = None
+    """``s3://<bucket>[/<prefix>]``: every blob is uploaded there as it is stored, with boto3's credentials. Unset,
+    the store is the local directory alone and nothing is ever evicted."""
+    storage_class: str = 'GLACIER_IR'
+    """The S3 storage class of a blob of at least ``standard_below`` compressed bytes."""
+    standard_below: int = Field(default=128 * KB, ge=0)
+    """Compressed size under which a blob is stored as ``STANDARD``: Glacier IR bills every object as at least 128 KB."""
+    evict_after_days: float | None = Field(default=None, ge=0)
+    """Drop the local copy of a blob the remote holds once it is this old (since it was stored or fetched); 0 drops it
+    as soon as it is uploaded, so the local directory is only a staging area and every read fetches. Unset: by age
+    never."""
+    local_max_gb: float | None = Field(default=None, ge=0)
+    """Drop the local copies of the oldest blobs the remote holds until the local store is at most this size."""
+
+    @model_validator(mode='after')
+    def _check(self) -> Self:
+        if self.remote is None and (self.evict_after_days is not None or self.local_max_gb is not None):
+            raise ValueError('evict_after_days and local_max_gb need a remote: the local copy is the only one')
+        if self.remote is not None and not self.remote.startswith('s3://'):
+            raise ValueError(f'remote {self.remote!r}: only s3:// is supported')
+        return self
 
 
 class Settings(BaseSettings):
     """Settings of the daemon and the CLI. ``PILOOP_*`` environment variables override them."""
 
-    model_config = SettingsConfigDict(env_prefix='PILOOP_', frozen=True, use_attribute_docstrings=True)
+    model_config = SettingsConfigDict(
+        env_prefix='PILOOP_', env_nested_delimiter='__', frozen=True, use_attribute_docstrings=True
+    )
 
-    home: Path = Path.home() / '.piloop'
-    """The directory that holds the database and the directories of each run (worktrees, logs, workspaces)."""
+    home: Path = DEFAULT_HOME
+    """The directory that holds the database, the artifact store and the directories of each run (worktrees, logs,
+    workspaces)."""
 
     actor: str = 'human'
     """Who this process is. Every row it updates records this value in ``updated_by``. The daemon launches each agent
@@ -83,6 +136,28 @@ class Settings(BaseSettings):
     agent_skills_dir: Path = Path.home() / '.agents' / 'skills'
     """The user directory of Agent Skills, which Codex, pi, Gemini CLI and Cursor read. piloop installs the orchestrator
     skills there for them."""
+
+    storage: StorageSettings = StorageSettings()
+    """``[storage]`` in ``config.toml``: where archived workspace files go."""
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Arguments, then the environment, then ``config.toml`` under the home the arguments or environment name."""
+        given = init_settings.init_kwargs.get('home') if isinstance(init_settings, InitSettingsSource) else None
+        home = Path(given or os.environ.get('PILOOP_HOME', DEFAULT_HOME))
+        return init_settings, env_settings, TomlConfigSettingsSource(settings_cls, toml_file=home / CONFIG_FILE)
+
+    @property
+    def store_dir(self) -> Path:
+        """The artifact store's local directory, shared by every project (``piloop.store``)."""
+        return self.home / STORE_DIR
 
     @property
     def database_url(self) -> str:

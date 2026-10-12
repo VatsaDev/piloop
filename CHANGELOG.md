@@ -24,6 +24,18 @@ A deprecated configuration key shows a warning for at least one minor release be
 - The orchestrator's journal: `piloop journal "<line>"` appends one line of at most 280 bytes, and `piloop wake`
   prints a bounded overview for a new orchestrator session: the latest journal lines, the open inbox, the active
   projects' heads and the current lessons.
+- The artifact store. The daemon archives the shared workspace in the background, one job at a time: the entries of
+  a done idea (`workspace/idea<id>…`, and `w<n>…`/`worker<n>…` of the workers that ran it) once its last run is judged,
+  and what a stopped campaign left. `NOTES.md` and `research/` are never archived. Files go into one
+  content-addressed store per `PILOOP_HOME` (`$PILOOP_HOME/store`: BLAKE3 hashes of whole files, zstd at rest). Each
+  manifest is recorded in the new `archives` table, and the local copies are removed only once the store holds every
+  blob. `piloop restore <project> [<idea>|<path>]` writes files back. `piloop store status|evict|verify` show the
+  store and the backlog, and check it. `[storage]` in the new global settings file `$PILOOP_HOME/config.toml`
+  mirrors the store to S3 (Glacier Instant Retrieval, STANDARD under 128 KB), with eviction of local copies by age
+  and size, or remote only (`evict_after_days = 0`). The worker brief asks for output under `workspace/idea<id>/`, no
+  copies of the code tree, and evaluator output left in the project's cache. The research pack lists workspace files
+  from a bounded walk instead of the whole workspace. The first daemon start after the upgrade archives every done
+  idea and stopped campaign that is already there.
 
 ## [0.1.0] - 2026-10-13
 

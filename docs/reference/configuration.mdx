@@ -243,3 +243,22 @@ read as $0. To resume, raise `limit` and run `piloop init`.
 |---|---|---|---|
 | `documents` | list\[string\] | `[]` | Repo-relative globs of text documents, for example `["docs/evidence/**/*.md"]`: campaign reports, orchestrator logs, design notes. `piloop init` and the stop of the campaign copy them into the `documents` table, where every agent of every project can search them. Never name a document that is derived from validation or test data. |
 | `wake_budget` | integer | `400` | The size in tokens (about 4 characters each) of the overview that opens the briefs of workers and research sweeps: the current lessons of every project on the same repo, one line each, this project's first, then the newest. The brief then says how to read more. A role can change it with `[roles.<kind>] wake_budget`. 0 turns it off. |
+
+## Global settings: `config.toml`
+
+`$PILOOP_HOME/config.toml` holds the settings that every project of one `PILOOP_HOME` shares. To override a key, set `PILOOP_<TABLE>__<KEY>`, for example `PILOOP_STORAGE__REMOTE`.
+
+### `[storage]`
+
+`[storage]`: the artifact store every project of this PILOOP_HOME archives its workspace into.
+
+Blobs live in `<PILOOP_HOME>/store`, and in `remote` too when it is set. The artifact store page of the docs
+describes the modes.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `remote` | string \| null | `null` | `s3://<bucket>[/<prefix>]`: every blob is uploaded there as it is stored, with boto3's credentials. Unset, the store is the local directory alone and nothing is ever evicted. |
+| `storage_class` | string | `"GLACIER_IR"` | The S3 storage class of a blob of at least `standard_below` compressed bytes. |
+| `standard_below` | integer | `131072` | Compressed size under which a blob is stored as `STANDARD`: Glacier IR bills every object as at least 128 KB. |
+| `evict_after_days` | number \| null | `null` | Drop the local copy of a blob the remote holds once it is this old (since it was stored or fetched); 0 drops it as soon as it is uploaded, so the local directory is only a staging area and every read fetches. Unset: by age never. |
+| `local_max_gb` | number \| null | `null` | Drop the local copies of the oldest blobs the remote holds until the local store is at most this size. |

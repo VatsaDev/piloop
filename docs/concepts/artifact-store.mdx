@@ -1,0 +1,88 @@
+---
+title: The artifact store
+description: How piloop archives the shared workspace when it is done with it, and how to get files back.
+---
+
+Every project has one shared workspace, `$PILOOP_HOME/projects/<id>/workspace`. It is linked into every agent's
+worktree as `./workspace/`. Agents leave notes, logs, evaluation outputs and analysis arrays there. On a long campaign
+it grows to hundreds of gigabytes, much of it copies.
+
+piloop moves workspace files into a content-addressed **artifact store** once nothing needs them any more. It removes
+the local copies, and `piloop restore` brings them back.
+
+## What is archived, and when
+
+The daemon archives in the background, one job at a time. Its scheduling loop never waits for an archiving.
+
+- **When an idea is done** (its last run is judged), the entries that belong to it are archived:
+  `workspace/idea<id>…` (`idea12/`, `idea12-canary.log`), and `w<n>…`, `worker<n>…` or `worker-<n>…` when `<n>`
+  is a worker that ran the idea.
+- **When a campaign stops** and none of its agents is alive any more, everything left in its workspace is archived.
+- **Never archived**: `NOTES.md` and `research/` at the top of the workspace. These small knowledge files stay where
+  research sweeps read them.
+
+An archiving stores every file and symlink, stores a manifest that lists them, and checks that the store holds all of
+it. Only then does it record the archiving in the `archives` table and remove the local copies. It removes only the
+files that did not change while they were read. A file that an agent writes meanwhile stays.
+
+Which archivings are due is computed from the database. A daemon that stops in the middle of a backlog picks it up
+where it was when it starts again. Content that was already stored is found by its hash and is not stored twice. The
+first daemon start after an upgrade archives every done idea and stopped campaign that is already there.
+`piloop store status` shows how many are still due.
+
+Workers are told to put their output under `workspace/idea<id>/`, so it is archived with their idea. They are also
+told not to copy the code tree into the workspace (every candidate's tree is in git) and to leave evaluator output in
+the project's own cache.
+
+## Getting files back
+
+```bash
+piloop restore my-project 12            # the files of idea#12
+piloop restore my-project idea12/plots  # one path, or everything under it
+piloop restore my-project               # everything
+```
+
+`piloop restore` reads the files from the local store, or downloads them from the remote. A file that is already in
+the workspace with other content is kept and listed, never overwritten. Agents may run it too.
+
+## How the store works
+
+One store serves every project of a `PILOOP_HOME`, in `$PILOOP_HOME/store`.
+
+- **Content addressing.** A blob is addressed by the BLAKE3 hash of its whole content. A file that appears in many
+  places, or in two campaigns, is stored once.
+- **Compression.** Blobs are kept zstd-compressed. JSON and logs shrink about tenfold; arrays that are already
+  compressed (`.npz`) barely shrink.
+- **Streaming.** Files of any size are read and written in 1 MiB pieces, never held in memory.
+- **Manifests.** A manifest lists the paths of one archiving, each with its blob, size and mode (or a symlink's
+  target). It is a blob too, and the `archives` table records its address.
+
+Nothing is ever deleted from the store. There is no garbage collection.
+
+## A remote on S3
+
+Set `[storage]` in `$PILOOP_HOME/config.toml` to mirror the store to S3. The
+[configuration reference](/reference/configuration) lists every key.
+
+```toml
+[storage]
+remote = "s3://my-bucket/piloop"
+storage_class = "GLACIER_IR"   # the default
+standard_below = 131072        # compressed bytes; the default (128 KB)
+evict_after_days = 30
+local_max_gb = 200
+```
+
+- **Mirror.** With a `remote`, every blob is uploaded as it is stored. boto3 finds the credentials (environment,
+  profile or instance role).
+- **Storage class.** Each object gets Glacier Instant Retrieval (millisecond reads at a fraction of the price of
+  STANDARD), except objects under `standard_below`: Glacier IR bills each object as at least 128 KB, so small ones
+  are cheaper as STANDARD.
+- **Eviction.** Every hour, while no archiving is due, the daemon drops the local copies of blobs that the remote
+  holds: those older than `evict_after_days`, then the oldest ones until the local store fits `local_max_gb`.
+  `piloop store evict` does the same on demand. It first uploads any blob that was stored before you set the remote.
+- **Remote only.** With `evict_after_days = 0`, the local store is only a staging area: each blob's local copy is
+  dropped as soon as it is uploaded, and `piloop restore` downloads it.
+
+`piloop store verify` checks that every blob of every archive is still there. It hashes the local copies again and
+asks the remote for the evicted ones.

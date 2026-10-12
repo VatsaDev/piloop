@@ -670,6 +670,32 @@ class Journal(Base):
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
 
+class Archive(Base):
+    """A part of a project's shared workspace the daemon moved into the artifact store (``piloop.campaign.archive``).
+
+    One row per archiving: a done idea's subtree (``idea_id`` set) once its last run is judged, and whatever is left
+    when the campaign stops (``idea_id`` NULL). ``manifest`` names the stored tree; the local files go once its every
+    blob is in the store. ``piloop restore`` writes them back. Written by the daemon only; rows are never updated.
+    """
+
+    __tablename__ = 'archives'
+    __table_args__ = (Index('ix_archives_project_idea', 'project_id', 'idea_id'),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'))
+    idea_id: Mapped[int | None]
+    """The done idea whose subtree this is; NULL for what a stopped campaign left. Plain integer: the archive outlives
+    a deleted idea."""
+    manifest: Mapped[str | None]
+    """Address of the stored manifest (path → blob, size, mode) in the artifact store; NULL when there was nothing
+    to archive."""
+    files: Mapped[int] = mapped_column(default=0, server_default=text('0'))
+    """Files and symlinks archived."""
+    bytes: Mapped[int] = mapped_column(default=0, server_default=text('0'))
+    """Their total size, uncompressed."""
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
+
+
 class Worker(Tracked, Base):
     """An agent process in one of the roles. While ``state`` is ``requested``, the row is a request to start one.
 

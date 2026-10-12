@@ -160,6 +160,15 @@ erDiagram
         varchar line
         datetime created_at
     }
+    archives {
+        integer id PK
+        integer project_id FK
+        integer idea_id
+        varchar manifest
+        integer files
+        integer bytes
+        datetime created_at
+    }
     workers {
         integer id PK
         WorkerKind kind
@@ -202,6 +211,7 @@ erDiagram
     evaluators ||--o{ measurements : "evaluator_id"
     projects ||--o{ techniques : "project_id"
     projects ||--o{ documents : "project_id"
+    projects ||--o{ archives : "project_id"
     projects |o--o{ workers : "project_id"
     runs |o--o{ workers : "run_id"
 ```

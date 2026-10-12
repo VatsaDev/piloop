@@ -7,7 +7,7 @@ description: The environment variables that piloop reads, and the ones that it s
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PILOOP_HOME` | `~/.piloop` | The directory of the database (`piloop.db`), the daemon's files (`serve.pid`, `serve.log`) and the directories of the runs and agents. One daemon runs for each `PILOOP_HOME`. |
+| `PILOOP_HOME` | `~/.piloop` | The directory of the database (`piloop.db`), the global settings (`config.toml`), the artifact store (`store/`), the daemon's files (`serve.pid`, `serve.log`) and the directories of the runs and agents. One daemon runs for each `PILOOP_HOME`. |
 | `PILOOP_ACTOR` | `human` | The name that this process signs its writes with. The database records it in `updated_by` and in the events. An orchestrator sets `PILOOP_ACTOR=orchestrator`, so that `piloop inbox wait` skips its own writes. |
 | `PILOOP_PROJECT_<KEY>` | none | Overrides a key of `piloop.toml` when `piloop init` reads the file. `piloop init` stores the result, and the daemon uses it until the next `piloop init`. Set on `piloop serve`, it has no effect. Join nested keys with `__`, for example `PILOOP_PROJECT_RUNTIME=herdr`. `piloop doctor` reads it too. |
 | `PILOOP_SECRETS_COMMAND` | none | A shell command that prints `NAME=value` lines. The daemon adds them to its environment when it starts and when it restarts. See [Secrets](/guides/secrets). |

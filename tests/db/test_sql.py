@@ -71,6 +71,7 @@ def test_schema_ddl_lists_every_table_with_its_indexes_and_runs(tmp_path: Path) 
     ddl = sql.schema_ddl()
     assert sorted(line.split()[2] for line in ddl.splitlines() if line.startswith('CREATE TABLE')) == snapshot(
         [
+            'archives',
             'candidates',
             'comments',
             'documents',

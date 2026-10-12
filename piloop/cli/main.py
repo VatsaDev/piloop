@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from collections import Counter
 from collections.abc import Generator
 from contextlib import closing, contextmanager
 from datetime import timedelta
@@ -25,7 +26,7 @@ from sqlalchemy.orm import Session
 from piloop import deprecated, git
 from piloop.agents.roles import PROCEDURES, PROMPTS
 from piloop.agents.scout import SCOUT_EVENT
-from piloop.campaign import inbox
+from piloop.campaign import archive, inbox
 from piloop.campaign.ideas import Definition, NotASeed, develop, files_nothing, seeds_only
 from piloop.campaign.memory import sync_documents
 from piloop.campaign.project import (
@@ -54,6 +55,7 @@ from piloop.db import sql
 from piloop.db.events import emit
 from piloop.db.models import (
     JOURNAL_LINE_BYTES,
+    Archive,
     Candidate,
     Comment,
     CommentKind,
@@ -96,6 +98,10 @@ inbox_app = cyclopts.App(
     name='inbox', help='Read and acknowledge what the agents address to you: decisions, escalations and findings.'
 )
 app.command(inbox_app)
+store_app = cyclopts.App(
+    name='store', help='The artifact store that archived workspace files live in: what it holds, eviction, checks.'
+)
+app.command(store_app)
 console = Console()
 
 ProjectRef = Annotated[str, cyclopts.Parameter(help='The project name, or a path inside its repo.')]
@@ -721,6 +727,114 @@ def history(ref: ProjectRef | None = None, /) -> None:
             console.print(
                 Group(*pack_renderables(s, project, config_of(project), table_box=box.SIMPLE_HEAD, workspace=workspace))
             )
+
+
+@app.command
+def restore(
+    ref: ProjectRef,
+    target: Annotated[
+        str | None,
+        cyclopts.Parameter(
+            help='An idea (`12` or `idea#12`): its files; else a workspace-relative path: it or everything under it.'
+            ' Left out: every archived file.'
+        ),
+    ] = None,
+    /,
+) -> None:
+    """Write archived files back into the project's workspace (`./workspace/` in every agent's worktree).
+
+    The daemon archives a done idea's workspace files, and what is left when a campaign stops, into the artifact store
+    and removes the local copies. This brings them back from the local store or its remote. A file that is already
+    there with other content is kept, never overwritten.
+    """
+    idea = target.removeprefix('idea#') if target is not None else None
+    parsed: int | str | None = int(idea) if idea is not None and idea.isdigit() else target
+    with _session() as s:
+        project = _project(s, ref)
+        restored = archive.restore(s, archive.open_store(settings), settings.home, project, parsed)
+    done = restored.done
+    if done.written + done.same + len(done.kept) == 0:
+        what = f'idea#{parsed}' if isinstance(parsed, int) else parsed or 'anything'
+        raise SystemExit(f'nothing archived matches {what} in {restored.archives} archive(s) of {project.name}')
+    workspace = archive.workspace_of(settings.home, project.id)
+    console.print(
+        f'restored {done.written} file(s), {_size(done.bytes)}, into {workspace}; {done.same} already there',
+        markup=False,
+    )
+    if done.kept:
+        shown = ', '.join(done.kept[:10]) + (f' and {len(done.kept) - 10} more' if len(done.kept) > 10 else '')
+        console.print(f'kept {len(done.kept)} existing file(s) whose content differs: {shown}', markup=False)
+
+
+def _size(n: float) -> str:
+    units = ('B', 'KB', 'MB', 'GB', 'TB')
+    i = 0
+    while n >= 1024 and i < len(units) - 1:
+        n, i = n / 1024, i + 1
+    return f'{n:.0f} B' if i == 0 else f'{n:.1f} {units[i]}'
+
+
+@store_app.command(name='status')
+def store_status() -> None:
+    """What the store holds, where, and how much of each project's workspace was archived into it."""
+    store = archive.open_store(settings)
+    usage = store.usage()
+    remote = f'{usage.remote} on {store.remote.url}' if store.remote is not None else 'no remote ([storage] remote)'
+    console.print(
+        f'{store.root}: {usage.blobs} blob(s), {usage.local} local ({_size(usage.local_bytes)}), {remote}',
+        markup=False,
+    )
+    table = Table('project', 'archives', 'files', 'archived', box=box.SIMPLE_HEAD)
+    with _session() as s:
+        rows = s.execute(
+            select(Project.name, func.count(Archive.id), func.sum(Archive.files), func.sum(Archive.bytes))
+            .join(Archive, Archive.project_id == Project.id)
+            .group_by(Project.id)
+            .order_by(Project.id)
+        ).all()
+        owed = archive.backlog(s)
+        latest = s.scalar(select(func.max(Archive.created_at)))
+    for name, count, files, size in rows:
+        table.add_row(name, str(count), str(files), _size(size))
+    console.print(table)
+    since = f'; latest archiving {latest:%Y-%m-%d %H:%M} UTC' if latest is not None else ''
+    console.print(
+        f'to archive: {owed.ideas} done idea(s), {owed.projects} stopped project(s){since}'
+        ' (the daemon works through them in the background, one at a time)',
+        markup=False,
+    )
+
+
+@store_app.command(name='evict')
+def store_evict() -> None:
+    """Upload what the remote lacks, then drop local copies as `[storage]` says; the daemon does it hourly too."""
+    done = archive.open_store(settings).evict()
+    console.print(f'uploaded {done.uploaded} blob(s), evicted {done.evicted} ({_size(done.freed)})')
+
+
+@store_app.command(name='verify')
+def store_verify(ref: ProjectRef | None = None, /) -> None:
+    """Check that every blob of every archive is in the store: local copies are re-hashed, evicted ones asked of the remote.
+
+    Exits non-zero when one is missing or corrupt.
+    """
+    store = archive.open_store(settings)
+    with _session() as s:
+        query = select(Archive.manifest).where(Archive.manifest.is_not(None))
+        if ref is not None:
+            query = query.where(Archive.project_id == _project(s, ref).id)
+        manifests = [m for m in s.scalars(query).all() if m is not None]
+    hashes = set(manifests)
+    for manifest in manifests:
+        if store.check(manifest) == 'ok':
+            hashes |= store.manifest(manifest).blobs
+    found = Counter(store.check(h) for h in sorted(hashes))
+    console.print(
+        f'{len(manifests)} manifest(s), {len(hashes)} blob(s): {found["ok"]} ok, {found["missing"]} missing,'
+        f' {found["corrupt"]} corrupt'
+    )
+    if found['missing'] or found['corrupt']:
+        raise SystemExit(1)
 
 
 @app.command

@@ -6,6 +6,7 @@ import sys
 from types import FrameType
 
 from piloop.agents.capture import MIN_ENTIRE, AttachError, entire_version, usable
+from piloop.campaign.archive import open_store
 from piloop.daemon.runner import RunExecutor
 from piloop.daemon.scheduler import Scheduler
 from piloop.daemon.serve import RESTART_SIGNAL, SECRETS_COMMAND_ENV, SERVE_ARGV, SecretsError, acquire, secrets
@@ -30,7 +31,7 @@ class Daemon:
             raise
         self.tracer = tracer()
         self.executor = RunExecutor(self.db, self.tracer, cfg.home)
-        self.scheduler = Scheduler(self.db, self.executor, self.tracer, cfg.home)
+        self.scheduler = Scheduler(self.db, self.executor, self.tracer, cfg.home, store=open_store(cfg))
         self._cfg = cfg
         self._restart = False
 

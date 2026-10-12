@@ -17,11 +17,13 @@ from pathlib import Path
 
 import pytest
 from cyclopts import CycloptsError
+from pydantic import BaseModel
 
 from piloop.cli.main import app, sql_cmd
 from piloop.config import ProjectConfig
 from piloop.db import sql
 from piloop.db.session import Database, migrate
+from piloop.settings import StorageSettings
 
 ROOT = Path(__file__).parent.parent
 SOURCES = [
@@ -90,9 +92,20 @@ def merged(base: dict[str, object], over: dict[str, object]) -> dict[str, object
     return out
 
 
+GLOBAL_TABLES: dict[str, type[BaseModel]] = {'storage': StorageSettings}
+"""The tables of ``$PILOOP_HOME/config.toml``, the global settings file. Every other TOML block is ``piloop.toml``."""
+
+
 def check_toml(block: Block, _db: Path) -> None:
-    """A whole ``piloop.toml`` validates as it is. A fragment validates when it is merged into ``BASE_CONFIG``."""
+    """A whole ``piloop.toml`` validates as it is. A fragment validates when it is merged into ``BASE_CONFIG``.
+
+    A block of ``config.toml`` tables only validates against those tables.
+    """
     data = tomllib.loads(block.code)
+    if data.keys() <= GLOBAL_TABLES.keys() and data:
+        for table, values in data.items():
+            GLOBAL_TABLES[table].model_validate(values)
+        return
     ProjectConfig.model_validate(data if {'name', 'evaluate'} <= data.keys() else merged(BASE_CONFIG, data))
 
 

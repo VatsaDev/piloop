@@ -38,6 +38,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
         tables = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]
         assert tables == [
             'alembic_version',
+            'archives',
             'candidates',
             'comments',
             'comments_fts',

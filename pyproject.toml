@@ -26,6 +26,7 @@ classifiers = [
 dependencies = [
     "alembic>=1.16",
     "blake3>=1.0.11",
+    "boto3>=1.43.112",
     "cyclopts>=3.20",
     "gitpython>=3.1.45",
     "httpx2>=2.12.0",
@@ -60,9 +61,11 @@ default-groups = ["dev", "lint"]
 
 [dependency-groups]
 dev = [
+    "boto3-stubs[s3]>=1.43.112",
     "coverage[toml]>=7.9",
     "dirty-equals>=0.9",
     "inline-snapshot>=0.23",
+    "moto[s3]>=5.2.4",
     "pytest>=8.4",
     "pytest-mock>=3.14",
     "pytest-pretty>=1.3",
