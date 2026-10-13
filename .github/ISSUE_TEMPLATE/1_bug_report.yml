@@ -1,0 +1,32 @@
+name: Bug report
+description: Something in piloop does not work as the docs say.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The smallest set of steps or commands that shows the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `piloop --version` and `piloop doctor`
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Operating system and harnesses
+      placeholder: macOS 26, Claude Code 2.1, runtime = "herdr"
+    validations:
+      required: true

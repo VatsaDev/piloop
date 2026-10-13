@@ -1,0 +1,161 @@
+---
+title: Extension points
+description: Add a role, a trigger, a runtime, a harness, an MCP server or an evaluate command.
+---
+
+piloop has six extension points. Three need only configuration: a role, a harness and an MCP server. A trigger can be
+configuration (a `sql` query) or code in a package. A runtime needs code in piloop. The evaluate command is your own
+program.
+
+## Roles and triggers
+
+A role is a table in `piloop.toml`: what the agent is told (its prompt), when it starts (its triggers), where it works
+(its runtime and working copy), how it works (harnesses, models, MCP servers, timeout, concurrency) and what it may
+file. The built-in worker, watchdog and research roles are the same tables with defaults. [Roles](/concepts/roles)
+describes each key and each built-in trigger.
+
+### Define a role
+
+Add a table with a new name, a prompt file and at least one trigger. This role reads each new escalation in the inbox
+and writes a plan for it, one agent at a time, in the project checkout:
+
+```toml
+[roles.planner]
+prompt = "briefs/planner.md"
+triggers = [
+  { kind = "sql", when = "SELECT id FROM comments WHERE kind = 'escalation' AND acked_at IS NULL AND created_at > :since" },
+]
+workdir = "project"
+max_concurrent = 1
+timeout = 1200
+files = "seeds"
+writes = ["comments(finding) on the escalation", "seeds via idea seed"]
+```
+
+Then write the prompt and store the config:
+
+```bash
+mkdir -p briefs
+printf '# Planner\nFor each new escalation, write a finding with a plan of three steps.\n' > briefs/planner.md
+piloop init .
+```
+
+The daemon now checks the query on each tick. When it returns a row, the daemon requests a `planner` agent, and
+`piloop status` lists it as `planner#<worker id>`. The agent signs its comments `planner#<worker id>`.
+
+### Add a trigger or a role from a package
+
+A Python package can add triggers and roles through two entry point groups:
+
+- `piloop.triggers`: each entry point names a subclass of `piloop.triggers.Trigger`. Its name is the `kind`. Its
+  fields are its parameters. Its `fire(tick)` method returns a `Fire` (the reason, and how many agents) or None. `tick`
+  gives it the session, the project, the role and the queries that the built-in triggers use (`piloop.triggers.Tick`).
+- `piloop.roles`: each entry point names a `piloop.config.SweepRole`, the defaults of the role. Its name is the name of
+  the role. `piloop init` stores the role in the project's config, with the project's `[roles.<name>]` table over the
+  defaults.
+
+piloop loads each group once per process. A name that a built-in trigger or role has already is an error.
+
+```python
+from datetime import timedelta
+from pathlib import Path
+from typing import Literal
+
+from sqlalchemy import func, select
+
+from piloop.config import SweepRole
+from piloop.db.models import Candidate, Verdict, utcnow
+from piloop.triggers import Fire, Tick, Trigger
+
+
+class NoKeep(Trigger):
+    """``no_keep``: no new keep for ``hours`` hours, once per agent of the role."""
+
+    kind: Literal['no_keep'] = 'no_keep'
+    hours: float = 6
+
+    def fire(self, tick: Tick) -> Fire | None:
+        keeps = select(func.max(Candidate.created_at)).where(
+            Candidate.project_id == tick.project.id, Candidate.verdict == Verdict.KEEP
+        )
+        latest = tick.s.scalar(keeps) or tick.project.created_at
+        started = tick.last.started_at if tick.last is not None else latest
+        if utcnow() - max(latest, started) < timedelta(hours=self.hours):
+            return None
+        return Fire(f'no keep for {self.hours:g} hours')
+
+
+AUDITOR = SweepRole(prompt=str(Path(__file__).parent / 'auditor.md'), triggers=[NoKeep()], timeout=1800)
+```
+
+Register both in the package's `pyproject.toml`, and install the package in the environment of `piloop`:
+
+```text
+[project.entry-points."piloop.triggers"]
+no_keep = "my_package:NoKeep"
+
+[project.entry-points."piloop.roles"]
+auditor = "my_package:AUDITOR"
+```
+
+Any project can then use `{ kind = "no_keep", hours = 12 }` in the triggers of a role, and gets the `auditor` role at
+its next `piloop init`.
+
+## Runtimes
+
+A runtime is where an agent process runs. The daemon depends only on the `Runtime` protocol in
+`piloop/runtime/__init__.py`:
+
+| Method | What it does |
+|---|---|
+| `start(spec)` | Starts the agent from a `WorkerSpec` (the argv, the first prompt, the working directory) and returns a `Handle`. |
+| `wait(handle, timeout)` | Blocks until the agent ends. After `timeout` seconds, kills it and returns `timed_out`. |
+| `status(handle)` | Returns the current state without waiting. |
+| `session_id(handle)` | Returns the harness's session id, when the runtime can learn it. |
+| `jobs(handle)` | Lists the jobs that the agent started and that still run. |
+| `prompt(handle, text)` | Sends a message to the running agent, or raises `NotSteerable`. |
+| `read(handle, lines)` | Returns the recent output as plain text. |
+| `kill(handle)` | Stops the agent and what it left running. |
+
+piloop has two runtimes: `subprocess`, the default (a background process that cannot receive messages), and `herdr`
+(a terminal pane that you can watch and type into). To add one, implement the protocol, add a member to `RuntimeKind` in
+`piloop/config.py` and add one entry to `RUNTIMES` in `piloop/runtime/factory.py`. A project chooses its runtime with
+the `runtime` key of `piloop.toml`, and a role can choose another one with its own `runtime` key.
+
+## Harnesses
+
+A harness is a coding agent CLI. A `[harness.<name>]` table in `piloop.toml` says how to start it: the executable, the
+argv for an interactive session (`interactive`, for Herdr) and for a background run (`headless`), and the startup
+dialogs to accept. piloop fills in placeholders such as `{model}`, `{session_id}`, `{cwd}` and `{prompt}`.
+
+```toml
+harnesses = ["claude", "mycli"]
+model = { claude = "claude-opus-5-5", mycli = "my-model" }
+
+[harness.mycli]
+executable = "mycli"
+headless = ["--model", "{model}", "{prompt}"]
+```
+
+The built-in harnesses `pi`, `claude` and `codex` are definitions of the same kind, so a project can override any key
+of them. Two optional parts of a harness have their own registries in the code: the `usage` reader that reads the
+tokens from the harness's session files (`piloop/usage/`), and the `mcp` renderer that writes the MCP servers in the
+harness's own flags (`piloop/mcp/`). The [configuration reference](/reference/configuration#harness) has every key.
+
+## MCP servers
+
+An `[mcp.<name>]` table defines an MCP server once, and `[roles.<name>] mcp` gives it to the agents of a role. piloop
+writes it in the format of each harness, and passes API keys only as environment variables. See
+[MCP servers](/guides/mcp-servers).
+
+## The evaluate command
+
+The evaluate command is the contract between piloop and your project. The daemon runs it in a clean worktree of each
+commit. The command must:
+
+- print one line `METRIC <name>=<value>` on stdout for each metric in `piloop.toml`;
+- exit with status 0, within `evaluate_timeout` seconds. Otherwise the candidate is a `crash`.
+
+When the daemon sets `PILOOP_UNITS_FILE`, the command can also write the result of each unit (each example, record or
+file) to that path, so that the verdict can use a paired bootstrap. See
+[The evaluate command](/concepts/projects#the-evaluate-command) and [per-unit results](/concepts/projects#per-unit-results).
