@@ -1,0 +1,34 @@
+# Keeps main identical in hiloopai/piloop and its private mirror hiloopai/piloop-dev, in both directions. Experimental
+# branches live only in piloop-dev; merging one into its main publishes it. A diverged main fails here, never forces.
+name: Sync main
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-main
+
+jobs:
+  sync:
+    if: contains(fromJSON('["hiloopai/piloop", "hiloopai/piloop-dev"]'), github.repository)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - env:
+          DEPLOY_KEY: ${{ secrets.SYNC_DEPLOY_KEY }}
+          TARGET: ${{ github.repository == 'hiloopai/piloop' && 'hiloopai/piloop-dev' || 'hiloopai/piloop' }}
+          SSH_AUTH_SOCK: /tmp/ssh-agent.sock
+        run: |
+          ssh-agent -a "$SSH_AUTH_SOCK" > /dev/null
+          ssh-add - <<< "$DEPLOY_KEY"
+          mkdir -p ~/.ssh
+          ssh-keyscan github.com >> ~/.ssh/known_hosts
+          git push "git@github.com:$TARGET.git" HEAD:refs/heads/main
