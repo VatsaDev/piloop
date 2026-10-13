@@ -79,7 +79,8 @@ You file no ideas or seeds: `idea add` and `idea seed` refuse a worker.
 
 ## Messages while you work
 
-Comments on your idea or your run can arrive while you work. The daemon prompts each one into your session as a line:
+Comments on your idea or your run can arrive while you work. The daemon prompts each one into your session as a line
+(a Codex session gets them queued, when its current turn ends):
 `[piloop] decision on idea#12 by human: <first line> — full text: SELECT body FROM comments WHERE id=<n>`.
 
 - A `decision` is an instruction from the human or the orchestrator. Read the full body with the SQL tool and follow

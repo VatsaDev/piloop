@@ -59,6 +59,7 @@ DEFAULTS = {
         'result': {'type': 'pane_info', 'pane': {'pane_id': 'w7:p3', 'tab_id': 'w7:t1', 'workspace_id': 'w7'}}
     },
     'pane run': {'text': ''},
+    'pane send-text': {'text': ''},
     'pane list': {
         'result': {'type': 'pane_list', 'panes': [{'pane_id': 'w7:p2', 'tab_id': 'w7:t2', 'workspace_id': 'w7'}]}
     },

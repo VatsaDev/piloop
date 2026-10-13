@@ -308,7 +308,8 @@ without a priority), out of the inbox.
 - With `runtime = "herdr"`, each agent runs as a tab in the workspace of the project in the `piloop` Herdr session:
   - `piloop attach <worker_id>` focuses that tab. From a terminal outside that session, it also attaches to the
     session. It takes over the terminal, so it is for the human, not for your shell tool.
-  - `piloop prompt <worker_id> "…"` steers a running agent of any role.
+  - `piloop prompt <worker_id> "…"` steers a running agent of any role. A Codex agent gets it queued for the end of
+    its current turn: Codex would end the turn to take it.
 - To request one more sweep, run `piloop launch <name> <role> [--harness pi --model …] [--reason "…"]`: `watchdog`,
   `research`, or a role that `piloop.toml` defines.
   Or insert a request:
