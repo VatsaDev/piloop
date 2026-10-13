@@ -26,6 +26,7 @@ from piloop.runtime.subprocess import SubprocessRuntime
 from piloop.scoring.evaluate import run_evaluate
 from piloop.scoring.ledger import DAEMON, current_evaluator
 from piloop.settings import Settings
+from piloop.store import Store
 
 # Harness stand-ins: any argv that edits the worktree and commits.
 HARNESS_APPEND = '#!/bin/sh\necho line >> solve.txt\ngit commit -qam "add a line"\n'
@@ -297,6 +298,12 @@ def factory(rt: Runtime) -> RuntimeFactory:
         return rt
 
     return make
+
+
+@pytest.fixture(autouse=True)
+def plenty_of_disk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The archiver keeps ``[storage] min_free_gb`` free: a test must not depend on the free space of its machine."""
+    monkeypatch.setattr(Store, 'free', lambda self: 1 << 50)
 
 
 @pytest.fixture(autouse=True)

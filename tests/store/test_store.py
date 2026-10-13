@@ -1,5 +1,6 @@
 import io
 import os
+import shutil
 import time
 import tracemalloc
 from datetime import timedelta
@@ -166,6 +167,25 @@ def test_a_manifest_is_a_blob_naming_a_tree(tmp_path: Path) -> None:
     assert store.put_manifest(Manifest(tuple(reversed(manifest.entries)))) == blob, 'one tree, one address'
     with pytest.raises(ValueError, match='manifest version 2, expected 1'):
         Manifest.from_bytes(b'{"version": 2, "entries": []}')
+
+
+REAL_FREE = Store.free
+"""Captured before ``conftest.plenty_of_disk`` replaces it for every test."""
+
+
+def test_free_space_is_measured_where_the_store_is_or_will_be(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    asked: list[Path] = []
+
+    def usage(path: Path) -> shutil._ntuple_diskusage:
+        asked.append(path)
+        return shutil._ntuple_diskusage(100, 40, 60)
+
+    monkeypatch.setattr(store_module.shutil, 'disk_usage', usage)
+    store = Store(tmp_path / 'not' / 'yet')
+    assert REAL_FREE(store) == 60
+    (tmp_path / 'not' / 'yet').mkdir(parents=True)
+    REAL_FREE(store)
+    assert asked == [tmp_path, tmp_path / 'not' / 'yet']
 
 
 def test_eviction_needs_a_remote(tmp_path: Path) -> None:

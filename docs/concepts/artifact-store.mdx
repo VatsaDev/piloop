@@ -25,6 +25,15 @@ An archiving stores every file and symlink, stores a manifest that lists them, a
 it. Only then does it record the archiving in the `archives` table and remove the local copies. It removes only the
 files that did not change while they were read. A file that an agent writes meanwhile stays.
 
+Storing a file writes its compressed copy before the original goes, so archiving needs room on the disk of the
+store. It always leaves `min_free_gb` (`[storage]`, 20 GB by default) free there. A workspace larger than the free
+space above that is stored in batches: each batch is stored, recorded and removed from the workspace before the free
+space is measured again for the next one. When not one more file fits, the rest stays in the workspace and the daemon
+writes an `anomaly.disk` event on the project, with the bytes needed, the bytes free and the reserve. An idea with no
+batch stored stays due. Of an idea with some batches stored, the rest is archived when its campaign stops. After a
+failed or deferred archiving the daemon waits 10 minutes before the next one, twice as long after each one in a row,
+up to 6 hours.
+
 Which archivings are due is computed from the database. A daemon that stops in the middle of a backlog picks it up
 where it was when it starts again. Content that was already stored is found by its hash and is not stored twice. The
 first daemon start after an upgrade archives every done idea and stopped campaign that is already there.

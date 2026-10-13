@@ -46,6 +46,10 @@ class StorageSettings(BaseModel):
     never."""
     local_max_gb: float | None = Field(default=None, ge=0)
     """Drop the local copies of the oldest blobs the remote holds until the local store is at most this size."""
+    min_free_gb: float = Field(default=20, ge=0)
+    """Free space, in GB, that archiving always leaves on the disk of the local store. Storing a file writes its
+    compressed copy before the original goes, so the daemon archives in batches that fit above this, and waits when
+    not one more file fits."""
 
     @model_validator(mode='after')
     def _check(self) -> Self:

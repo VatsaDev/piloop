@@ -262,3 +262,4 @@ describes the modes.
 | `standard_below` | integer | `131072` | Compressed size under which a blob is stored as `STANDARD`: Glacier IR bills every object as at least 128 KB. |
 | `evict_after_days` | number \| null | `null` | Drop the local copy of a blob the remote holds once it is this old (since it was stored or fetched); 0 drops it as soon as it is uploaded, so the local directory is only a staging area and every read fetches. Unset: by age never. |
 | `local_max_gb` | number \| null | `null` | Drop the local copies of the oldest blobs the remote holds until the local store is at most this size. |
+| `min_free_gb` | number | `20` | Free space, in GB, that archiving always leaves on the disk of the local store. Storing a file writes its compressed copy before the original goes, so the daemon archives in batches that fit above this, and waits when not one more file fits. |

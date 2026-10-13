@@ -45,38 +45,85 @@ def _signature(st: os.stat_result) -> tuple[int, int]:
     return st.st_size, st.st_mtime_ns
 
 
-def put_tree(
-    store: Store, root: Path, names: Iterable[str], stop: threading.Event | None = None, *, workers: int = WORKERS
-) -> Stored:
-    """Store every file and symlink under ``root/<name>`` for each of ``names`` (files or directories).
+@dataclass
+class Walk:
+    """What ``walk`` found under some names: the files to store, and what stores at no cost (symlinks, directories).
 
-    The tree is walked first, then its files are put ``workers`` at a time: on a remote, each blob is its own upload,
-    and one at a time spent most of a measured archiving waiting on S3. Raises ``Cancelled`` once ``stop`` is set,
-    before the next file starts.
+    ``take`` splits it into the part that fits a byte budget and the files left over.
     """
-    entries: list[Entry] = []
-    files: list[tuple[str, os.stat_result]] = []
-    stored = Stored(Manifest(()))
+
+    files: list[tuple[str, os.stat_result]] = field(default_factory=list)
+    links: list[tuple[Entry, os.stat_result]] = field(default_factory=list)
+    dirs: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+
+    @property
+    def size(self) -> int:
+        """The bytes of its files, uncompressed: what storing them can take at most (zstd hardly grows any input)."""
+        return sum(st.st_size for _, st in self.files)
+
+    def take(self, budget: int) -> tuple[Walk, Walk]:
+        """Split off what fits in ``budget`` bytes; return it and a walk of the files left over.
+
+        The part taken has the links, directories and skipped paths, and the files that fit, in order, skipping each
+        that does not. What is left has the directories again, so that the ``prune`` of a later part removes those it
+        empties.
+        """
+        taken = Walk(links=self.links, dirs=self.dirs, skipped=self.skipped)
+        left = Walk(dirs=self.dirs)
+        for rel, st in self.files:
+            fits = st.st_size <= budget
+            (taken if fits else left).files.append((rel, st))
+            budget -= st.st_size if fits else 0
+        return taken, left
+
+
+def walk(root: Path, names: Iterable[str]) -> Walk:
+    """Find every file and symlink under ``root/<name>`` for each of ``names`` (files or directories)."""
+    found = Walk()
 
     def visit(rel: str) -> None:
         path = root / rel
         st = path.lstat()
         if stat.S_ISLNK(st.st_mode):
-            entries.append(Entry(rel, stat.S_IMODE(st.st_mode), link=os.readlink(path)))
-            stored.seen[rel] = _signature(st)
+            found.links.append((Entry(rel, stat.S_IMODE(st.st_mode), link=os.readlink(path)), st))
         elif stat.S_ISREG(st.st_mode):
-            files.append((rel, st))
+            found.files.append((rel, st))
         elif stat.S_ISDIR(st.st_mode):
             try:
                 children = sorted(os.listdir(path))
             except PermissionError:
-                stored.skipped.append(rel)
+                found.skipped.append(rel)
                 return
-            stored.dirs.append(rel)
+            found.dirs.append(rel)
             for child in children:
                 visit(f'{rel}/{child}')
         else:
-            stored.skipped.append(rel)
+            found.skipped.append(rel)
+
+    for name in sorted(names):
+        visit(name)
+    return found
+
+
+def put_tree(
+    store: Store, root: Path, names: Iterable[str], stop: threading.Event | None = None, *, workers: int = WORKERS
+) -> Stored:
+    """Store every file and symlink under ``root/<name>`` for each of ``names``: ``put_walk`` of ``walk``."""
+    return put_walk(store, root, walk(root, names), stop, workers=workers)
+
+
+def put_walk(
+    store: Store, root: Path, found: Walk, stop: threading.Event | None = None, *, workers: int = WORKERS
+) -> Stored:
+    """Store the files and symlinks of ``found`` (paths relative to ``root``).
+
+    Files are put ``workers`` at a time: on a remote, each blob is its own upload, and one at a time spent most of a
+    measured archiving waiting on S3. Raises ``Cancelled`` once ``stop`` is set, before the next file starts.
+    """
+    stored = Stored(Manifest(()), dirs=list(found.dirs), skipped=list(found.skipped))
+    entries = [entry for entry, _ in found.links]
+    stored.seen = {entry.path: _signature(st) for entry, st in found.links}
 
     def put(rel: str, st: os.stat_result) -> Entry | None:
         if stop is not None and stop.is_set():
@@ -87,8 +134,7 @@ def put_tree(
             return None
         return Entry(rel, stat.S_IMODE(st.st_mode), blob.size, blob.hash)
 
-    for name in sorted(names):
-        visit(name)
+    files = found.files
     pool = ThreadPoolExecutor(workers, thread_name_prefix='put-tree')
     try:
         for (rel, st), entry in zip(

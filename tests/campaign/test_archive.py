@@ -1,3 +1,5 @@
+import errno
+import math
 import os
 import threading
 import time
@@ -10,12 +12,18 @@ import pytest
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from sqlalchemy import select
 
+from piloop import settings as settings_module
 from piloop.campaign import archive as archive_module
 from piloop.campaign.archive import (
+    DISK_ANOMALY,
+    MAX_RETRY_SECONDS,
+    RETRY_SECONDS,
+    Archived,
     Archiver,
     Backlog,
     Job,
     NotArchived,
+    Short,
     archive,
     backlog,
     due,
@@ -26,12 +34,14 @@ from piloop.campaign.archive import (
 )
 from piloop.db.models import (
     Archive,
+    Event,
     Idea,
     IdeaStatus,
     Project,
     ProjectStatus,
     Run,
     RunStatus,
+    TargetKind,
     Worker,
     WorkerKind,
     WorkerState,
@@ -39,9 +49,11 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.otel import Tracer
-from piloop.settings import Settings, StorageSettings
-from piloop.store import Store
+from piloop.settings import GB, Settings, StorageSettings
+from piloop.store import Blob, Store
 from piloop.store.s3 import S3
+from piloop.store.tree import Stored, Walk
+from tests.conftest import events
 from tests.store.test_store import DirRemote
 
 
@@ -204,12 +216,12 @@ def test_a_done_idea_is_archived_then_the_rest_at_stop_and_restore_brings_back_a
     before = files(workspace)
     live = {k: v for k, v in before.items() if k.startswith(('NOTES.md', 'research/'))}
 
-    row = archive(db, store, home, Job(project.id, idea))
+    [row] = archive(db, store, home, Job(project.id, idea)).rows
     assert (row.idea_id, row.files, row.bytes) == (idea, 5, 2 * 5000 + 3 + 13)
     assert row.manifest is not None and not store.missing(store.manifest(row.manifest).blobs)
     assert sorted(p.name for p in workspace.iterdir()) == ['NOTES.md', 'boost465', f'idea{parked}', 'research']
 
-    rest = archive(db, store, home, Job(project.id, None))
+    [rest] = archive(db, store, home, Job(project.id, None)).rows
     assert (rest.idea_id, rest.files) == (None, 2)
     assert files(workspace) == live, 'NOTES.md and research/ are never archived'
     with db.session() as s:
@@ -230,7 +242,7 @@ def test_a_done_idea_is_archived_then_the_rest_at_stop_and_restore_brings_back_a
 def test_nothing_to_archive_is_recorded_too(db: Database, project: Project, home: Path, store: Store) -> None:
     idea = add_idea(db, project.id, 'empty')
     add_run(db, idea)
-    row = archive(db, store, home, Job(project.id, idea))
+    [row] = archive(db, store, home, Job(project.id, idea)).rows
     assert (row.manifest, row.files, row.bytes) == (None, 0, 0)
     with db.session() as s:
         assert due(s) is None
@@ -291,9 +303,11 @@ def test_the_archiver_runs_one_job_at_a_time_and_waits_after_a_failure(
     gate = threading.Event()
     real = archive_module.archive
 
-    def held(db: Database, store: Store, home: Path, job: Job, stop: threading.Event | None = None) -> Archive:
+    def held(
+        db: Database, store: Store, home: Path, job: Job, stop: threading.Event | None = None, *, reserve: int = 0
+    ) -> Archived:
         gate.wait(10)
-        return real(db, store, home, job, stop)
+        return real(db, store, home, job, stop, reserve=reserve)
 
     monkeypatch.setattr(archive_module, 'archive', held)
     archiver.tick()
@@ -309,7 +323,9 @@ def test_the_archiver_runs_one_job_at_a_time_and_waits_after_a_failure(
     third = add_idea(db, project.id, 'third')
     add_run(db, third)
 
-    def broken(db: Database, store: Store, home: Path, job: Job, stop: threading.Event | None = None) -> Archive:
+    def broken(
+        db: Database, store: Store, home: Path, job: Job, stop: threading.Event | None = None, *, reserve: int = 0
+    ) -> Archived:
         raise OSError('No space left on device')
 
     monkeypatch.setattr(archive_module, 'archive', broken)
@@ -344,10 +360,12 @@ def test_a_stopping_daemon_cancels_the_archiving_in_flight_and_the_next_one_resu
     stop = threading.Event()
     real = archive_module.archive
 
-    def stopping(db: Database, store: Store, home: Path, job: Job, stop: threading.Event | None = None) -> Archive:
+    def stopping(
+        db: Database, store: Store, home: Path, job: Job, stop: threading.Event | None = None, *, reserve: int = 0
+    ) -> Archived:
         assert stop is not None
         stop.set()  # the daemon stops while the archiving runs
-        return real(db, store, home, job, stop)
+        return real(db, store, home, job, stop, reserve=reserve)
 
     monkeypatch.setattr(archive_module, 'archive', stopping)
     archiver = Archiver(db, store, home, tracer, pool, stop)
@@ -401,3 +419,120 @@ def test_with_a_remote_and_nothing_due_the_archiver_evicts_hourly(
 def span_attrs(spans: InMemorySpanExporter, name: str) -> dict[str, object]:
     [span] = [s for s in spans.get_finished_spans() if s.name == name]
     return dict(span.attributes or {})
+
+
+def big_idea(db: Database, project: Project, home: Path) -> tuple[int, dict[str, bytes]]:
+    """A done idea whose workspace holds three 4000-byte files in nested directories and a symlink."""
+    idea = add_idea(db, project.id, 'big')
+    add_run(db, idea)
+    workspace = workspace_of(home, project.id)
+    for name in ('a/one.npy', 'a/b/two.npy', 'three.npy'):
+        write(workspace / f'idea{idea}' / name, os.urandom(4000))
+    (workspace / f'idea{idea}' / 'latest').symlink_to('three.npy')
+    return idea, files(workspace)
+
+
+def test_a_workspace_larger_than_the_free_space_above_the_reserve_is_archived_in_batches(
+    db: Database, project: Project, home: Path, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    idea, before = big_idea(db, project, home)
+    workspace = workspace_of(home, project.id)
+    monkeypatch.setattr(Store, 'free', lambda self: 1000 + 9000)
+    left_on_disk: list[int] = []
+    real_put = archive_module.put_walk
+
+    def counting(store: Store, root: Path, found: Walk, stop: threading.Event | None = None) -> Stored:
+        left_on_disk.append(len(list(workspace.rglob('*.npy'))))
+        return real_put(store, root, found, stop)
+
+    monkeypatch.setattr(archive_module, 'put_walk', counting)
+    done = archive(db, store, home, Job(project.id, idea), reserve=1000)
+    assert done.short is None
+    assert [(r.files, r.bytes) for r in done.rows] == [(3, 8000), (1, 4000)], 'two files fit, then the third'
+    assert left_on_disk == [3, 1], 'each batch is pruned before the next one is stored'
+    assert not (workspace / f'idea{idea}').exists(), 'the last batch removes the directories it empties'
+    with db.session() as s:
+        assert due(s) is None
+        assert restore(s, store, home, s.get_one(Project, project.id), idea).done.written == 4
+    assert files(workspace) == before
+
+
+def test_a_disk_that_fills_between_batches_leaves_the_rest_for_the_campaign_stop(
+    db: Database, project: Project, home: Path, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    idea, before = big_idea(db, project, home)
+    frees = iter([1000 + 9000, 1000 + 100])
+    monkeypatch.setattr(Store, 'free', lambda self: next(frees))
+    done = archive(db, store, home, Job(project.id, idea), reserve=1000)
+    assert [r.files for r in done.rows] == [3]
+    assert done.short == Short(needed=4000, free=1100, reserve=1000)
+    workspace = workspace_of(home, project.id)
+    assert [p.name for p in workspace.rglob('*.npy')] == ['three.npy'], 'what did not fit stays'
+    with db.session() as s:
+        s.get_one(Project, project.id).status = ProjectStatus.STOPPED
+        s.commit()
+        assert due(s) == Job(project.id, None), 'the idea is archived as far as it went; the stop sweep takes the rest'
+    monkeypatch.setattr(Store, 'free', lambda self: 1 << 40)
+    assert [r.files for r in archive(db, store, home, Job(project.id, None), reserve=1000).rows] == [1]
+    with db.session() as s:
+        restore(s, store, home, s.get_one(Project, project.id), idea)
+    assert files(workspace) == before
+
+
+def test_the_archiver_defers_a_job_the_disk_is_too_full_for_and_backs_off_on_each_failure_in_a_row(
+    db: Database,
+    project: Project,
+    home: Path,
+    store: Store,
+    tracer: Tracer,
+    spans: InMemorySpanExporter,
+    pool: ThreadPoolExecutor,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The incident: a 21 GB idea was stored into a disk with less free, ENOSPC, and stored again every 600 s."""
+    idea, before = big_idea(db, project, home)
+    workspace = workspace_of(home, project.id)
+    monkeypatch.setattr(settings_module, 'settings', Settings(storage=StorageSettings(min_free_gb=1)))
+    monkeypatch.setattr(Store, 'free', lambda self: GB + 100)
+    archiver = Archiver(db, store, home, tracer, pool, threading.Event())
+    assert archiver.retry_seconds == 0
+    archiver.tick()
+    settle(archiver)
+    assert files(workspace) == before, 'not one file fits above the reserve: nothing is touched'
+    with db.session() as s:
+        assert s.scalars(select(Archive)).all() == [] and due(s) == Job(project.id, idea), 'still due'
+        [event] = s.scalars(select(Event).where(Event.kind == DISK_ANOMALY)).all()
+        assert (event.target_kind, event.target_id) == (TargetKind.PROJECT, project.id)
+        assert event.payload == {
+            'needed': 12000,
+            'free': GB + 100,
+            'reserve': GB,
+            'idea': idea,
+            'retry_seconds': RETRY_SECONDS,
+        }
+    assert events(spans, DISK_ANOMALY)[0]['needed'] == 12000
+    jobs = archiver._job
+    archiver.tick()
+    assert archiver._job is jobs, 'it waits'
+
+    def full(*args: object) -> Blob:
+        raise OSError(errno.ENOSPC, 'No space left on device')
+
+    put_path = Store.put_path
+    monkeypatch.setattr(Store, 'free', lambda self: 1 << 40)
+    monkeypatch.setattr(Store, 'put_path', full)
+    archiver._failed_at = -math.inf  # the wait is over
+    archiver.tick()
+    settle(archiver)
+    assert archiver.retry_seconds == 2 * RETRY_SECONDS, 'a failure after a deferral waits twice as long'
+    for _ in range(10):
+        archiver._failed_at = -math.inf
+        archiver.tick()
+        settle(archiver)
+    assert archiver.retry_seconds == MAX_RETRY_SECONDS
+    monkeypatch.setattr(Store, 'put_path', put_path)
+    archiver._failed_at = -math.inf
+    archiver.tick()
+    settle(archiver)
+    assert archiver.retry_seconds == 0, 'a success ends the backoff'
+    assert not (workspace / f'idea{idea}').exists()

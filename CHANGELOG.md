@@ -35,7 +35,10 @@ A deprecated configuration key shows a warning for at least one minor release be
   and size, or remote only (`evict_after_days = 0`). The worker brief asks for output under `workspace/idea<id>/`, no
   copies of the code tree, and evaluator output left in the project's cache. The research pack lists workspace files
   from a bounded walk instead of the whole workspace. The first daemon start after the upgrade archives every done
-  idea and stopped campaign that is already there.
+  idea and stopped campaign that is already there. Archiving leaves `[storage] min_free_gb` (20 GB) free on the
+  store's disk: it stores a workspace in batches that fit above it, and when not one more file fits it leaves the
+  rest, writes an `anomaly.disk` event on the project and waits. Each failed or deferred archiving in a row doubles
+  the wait, from 10 minutes up to 6 hours.
 
 ## [0.1.0] - 2026-10-13
 

@@ -11,6 +11,10 @@ checks that the store holds every blob, records an ``archives`` row, and only th
 unchanged since they were read (``tree.prune``). ``restore`` writes an idea's files, a path or everything back. A top-level entry belongs to an idea when it is named
 ``idea<id>…`` or after a worker of one of its runs (``w<worker id>…``, ``worker<worker id>…``, ``worker-<worker id>…``),
 by the conventions agents use; anything else waits for the campaign to stop.
+
+Storing writes a compressed copy before the original goes, so an archiving keeps ``[storage] min_free_gb`` free on the
+store's disk: it goes in batches that fit above it (``archive``), and the daemon waits longer after each failed or
+short job in a row (``Archiver``).
 """
 
 import math
@@ -26,7 +30,9 @@ from pathlib import Path
 from sqlalchemy import Select, exists, func, select
 from sqlalchemy.orm import Session
 
+from piloop import settings as settings_module
 from piloop.campaign.project import WORKSPACE
+from piloop.db.events import emit
 from piloop.db.models import (
     ENDED,
     OPEN_RUNS,
@@ -36,6 +42,7 @@ from piloop.db.models import (
     Project,
     ProjectStatus,
     Run,
+    TargetKind,
     Worker,
     WorkerKind,
     count,
@@ -44,11 +51,14 @@ from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.settings import GB, Settings
 from piloop.store import Entry, Manifest, Store
-from piloop.store.tree import Cancelled, Materialised, materialise, prune, put_tree
+from piloop.store.tree import Cancelled, Materialised, Walk, materialise, prune, put_walk, walk
 
 RETRY_SECONDS = 600
 """After a failed archiving the daemon archives nothing for this long: a full disk or an unreachable remote is not
-retried every tick."""
+retried every tick. Each failure in a row doubles it, up to ``MAX_RETRY_SECONDS``."""
+MAX_RETRY_SECONDS = 6 * 3600
+DISK_ANOMALY = 'anomaly.disk'
+"""An event on a project: an archiving left files in its workspace because the store's disk was too full."""
 EVICT_SECONDS = 3600
 """How often the daemon applies ``[storage]``'s eviction, while no archiving is due: it scans the whole store."""
 LIVE = frozenset({'NOTES.md', 'research'})
@@ -178,14 +188,59 @@ def backlog(s: Session) -> Backlog:
     return Backlog(count(s, _due_ideas()), count(s, _due_projects()))
 
 
-def archive(db: Database, store: Store, home: Path, job: Job, stop: threading.Event | None = None) -> Archive:
-    """Archive ``job``'s entries of the workspace: store them, record the row, then remove the local copies."""
+@dataclass(frozen=True)
+class Short:
+    """The disk was too full to store what was left of a job: its bytes, the bytes free and the reserve."""
+
+    needed: int
+    free: int
+    reserve: int
+
+
+@dataclass(frozen=True)
+class Archived:
+    """What ``archive`` did: one row per batch, and ``short`` when some files did not fit and stayed."""
+
+    rows: list[Archive]
+    short: Short | None = None
+
+
+def archive(
+    db: Database, store: Store, home: Path, job: Job, stop: threading.Event | None = None, *, reserve: int = 0
+) -> Archived:
+    """Archive ``job``'s entries of the workspace, in batches that leave ``reserve`` bytes free on the store's disk.
+
+    Storing writes each file's compressed copy before the original goes, so the disk needs room for it. Each batch
+    holds the files whose sizes (what their compressed copies take at most) fit in the free space minus ``reserve``,
+    measured again before each batch. A batch is stored, gets its manifest and the store check, its ``archives`` row,
+    and only then loses its local copies. A workspace that fits is one batch and one row, as it always was.
+
+    When not one more file fits, the rest stays where it is, and ``short`` says so. With no batch done, the job has no
+    row and stays due. With some done, the idea is archived as far as it went, and the rest of its files go when the
+    campaign stops (the project's own job takes everything left).
+    """
     workspace = workspace_of(home, job.project_id)
     names = [entry.name for entry in workspace.iterdir() if entry.name not in LIVE] if workspace.is_dir() else []
     if job.idea_id is not None:
         with db.session() as s:
             names = [name for name, idea in owners(s, job.project_id, names).items() if idea == job.idea_id]
-    stored = put_tree(store, workspace, names, stop)
+    left = walk(workspace, names)
+    rows: list[Archive] = []
+    while True:
+        free = store.free()
+        batch, left = left.take(free - reserve)
+        if left.files and not batch.files:
+            return Archived(rows, Short(left.size, free, reserve))
+        rows.append(_archive_batch(db, store, workspace, job, batch, stop))
+        if not left.files:
+            return Archived(rows)
+
+
+def _archive_batch(
+    db: Database, store: Store, workspace: Path, job: Job, batch: Walk, stop: threading.Event | None
+) -> Archive:
+    """Store one batch, record its row, then remove the local copies."""
+    stored = put_walk(store, workspace, batch, stop)
     row = Archive(project_id=job.project_id, idea_id=job.idea_id, files=len(stored.manifest.entries), bytes=stored.size)
     if stored.manifest.entries:
         manifest = store.put_manifest(stored.manifest).hash
@@ -232,7 +287,13 @@ def restore(s: Session, store: Store, home: Path, project: Project, target: int 
 
 
 class Archiver:
-    """The daemon's side: at most one archiving (or eviction) at a time, on the daemon's pool, never blocking a tick."""
+    """The daemon's side: at most one archiving (or eviction) at a time, on the daemon's pool, never blocking a tick.
+
+    It keeps ``[storage] min_free_gb`` free on the store's disk (``archive``'s ``reserve``). A failed job, or one that
+    the disk was too full for, makes it wait ``RETRY_SECONDS``, twice as long after each one in a row up to
+    ``MAX_RETRY_SECONDS``: a full disk is not filled again every few minutes. A job that the disk was too full for also
+    writes an ``anomaly.disk`` event on its project, so at most one per wait.
+    """
 
     def __init__(
         self, db: Database, store: Store, home: Path, tracer: Tracer, pool: ThreadPoolExecutor, stop: threading.Event
@@ -241,14 +302,23 @@ class Archiver:
         self._pool, self._stop = pool, stop
         self._job: Future[None] | None = None
         self._failed_at = -math.inf
+        self._failures = 0
+        """Failed or short jobs in a row: the wait after the last one is ``retry_seconds``."""
         self._evicted_at = -math.inf
+
+    @property
+    def retry_seconds(self) -> float:
+        """How long the archiver waits after its last failed or short job."""
+        if not self._failures:
+            return 0
+        return min(RETRY_SECONDS * 2 ** (self._failures - 1), MAX_RETRY_SECONDS)
 
     def tick(self) -> None:
         """Start the next due archiving once the previous one ended; with nothing due, the eviction when it is time."""
         if self._stop.is_set() or (self._job is not None and not self._job.done()):
             return
         now = time.monotonic()
-        if now - self._failed_at < RETRY_SECONDS:
+        if now - self._failed_at < self.retry_seconds:
             return
         with self._db.session() as s:
             job = due(s)
@@ -258,25 +328,52 @@ class Archiver:
             self._evicted_at = now
             self._job = self._pool.submit(self._evict)
 
+    def _failed(self) -> None:
+        self._failures += 1
+        self._failed_at = time.monotonic()
+
     def _archive(self, job: Job) -> None:
         with self._tracer.span('piloop.archive', project=job.project_id, idea=job.idea_id) as span:
+            reserve = int(settings_module.settings.storage.min_free_gb * GB)
             try:
-                row = archive(self._db, self._store, self._home, job, self._stop)
+                done = archive(self._db, self._store, self._home, job, self._stop, reserve=reserve)
             except Cancelled:
                 span.set(cancelled=True)
                 return
             except Exception as e:  # the next tick must not retry at once; the span says what failed
-                self._failed_at = time.monotonic()
+                self._failed()
                 span.error(e)
                 return
-            span.set(files=row.files, bytes=row.bytes, manifest=row.manifest)
+            rows = done.rows
+            span.set(
+                archives=len(rows),
+                files=sum(r.files for r in rows),
+                bytes=sum(r.bytes for r in rows),
+                manifest=rows[-1].manifest if rows else None,
+            )
+            if done.short is None:
+                self._failures = 0
+                return
+            self._failed()
+            short = {
+                'needed': done.short.needed,
+                'free': done.short.free,
+                'reserve': done.short.reserve,
+                'idea': job.idea_id,
+                'retry_seconds': self.retry_seconds,
+            }
+            span.event(DISK_ANOMALY, **short)
+            with self._db.session() as s:
+                emit(s, DISK_ANOMALY, TargetKind.PROJECT, job.project_id, payload=dict(short))
+                s.commit()
 
     def _evict(self) -> None:
         with self._tracer.span('piloop.store.evict') as span:
             try:
                 done = self._store.evict()
             except Exception as e:  # as in _archive
-                self._failed_at = time.monotonic()
+                self._failed()
                 span.error(e)
                 return
+            self._failures = 0
             span.set(uploaded=done.uploaded, evicted=done.evicted, freed=done.freed)

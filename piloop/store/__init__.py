@@ -28,6 +28,7 @@ import base64
 import io
 import json
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -215,6 +216,13 @@ class Store:
     def staging(self) -> bool:
         """Local bytes are dropped once uploaded."""
         return self.remote is not None and self.evict_after == timedelta(0)
+
+    def free(self) -> int:
+        """Bytes free on the filesystem of the store's directory, or of its nearest parent before the first put."""
+        path = self.root
+        while not path.exists():
+            path = path.parent
+        return shutil.disk_usage(path).free
 
     def _dir(self, hash: str) -> Path:
         return self.root / 'blake3' / hash
