@@ -1,0 +1,8 @@
+{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"d96a2121-355c-4608-b2f7-8bfc85bba1b5"}
+{"parentUuid":null,"type":"user","message":{"role":"user","content":"# Worker\n[brief redacted]"},"uuid":"u1"}
+{"parentUuid":"u1","type":"assistant","message":{"id":"msg_01A","role":"assistant","content":[{"type":"text","text":"Reading the evaluator first."}]},"uuid":"a1"}
+{"parentUuid":"a1","type":"assistant","message":{"id":"msg_01B","role":"assistant","content":[{"type":"thinking","thinking":"[redacted]","signature":"[redacted]"}]},"uuid":"a2"}
+{"parentUuid":"a2","type":"assistant","message":{"id":"msg_01B","role":"assistant","content":[{"type":"text","text":"The smoke test passed (2 examples).\n\nStarting both training runs (16 processes each).\n"}]},"uuid":"a3"}
+{"parentUuid":"a3","type":"assistant","message":{"id":"msg_01B","role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"[redacted]"}}]},"uuid":"a4"}
+{"parentUuid":"a4","type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"[redacted]","is_error":false}]},"uuid":"u2"}
+{"type":"last-prompt","lastPrompt":"[redacted]"}
