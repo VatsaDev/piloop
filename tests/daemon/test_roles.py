@@ -1,5 +1,5 @@
-"""Roles as data: a role that piloop.toml defines, new triggers for a built-in role, and roles and triggers that packages
-add through entry points."""
+"""Roles as data: a sweeping role and a role that does runs that piloop.toml defines, new triggers for a built-in role,
+and the roles, triggers and runtimes that packages add through entry points."""
 
 import time
 from collections.abc import Iterator
@@ -10,26 +10,44 @@ import pytest
 from sqlalchemy import select
 
 from piloop import config as config_module, triggers as triggers_module
-from piloop.config import ROLE_GROUP, ConfigError, RuntimeKind, load_project_config
+from piloop.campaign.stop import ROLE_REMOVED
+from piloop.config import ROLE_GROUP, ConfigError, ProjectConfig, load_project_config
 from piloop.daemon.runner import RunExecutor
 from piloop.daemon.scheduler import Scheduler
-from piloop.db.models import Comment, CommentKind, Project, TargetKind, Worker, WorkerKind, WorkerState, utcnow
+from piloop.db.models import (
+    Candidate,
+    Comment,
+    CommentKind,
+    Idea,
+    IdeaStatus,
+    Measurement,
+    Project,
+    Run,
+    RunStatus,
+    TargetKind,
+    Verdict,
+    Worker,
+    WorkerKind,
+    WorkerState,
+    utcnow,
+)
 from piloop.db.session import Database
 from piloop.otel import Tracer
-from piloop.runtime import Runtime
-from piloop.runtime.factory import RuntimeFactory
+from piloop.runtime import Runtime, factory as factory_module
+from piloop.runtime.factory import RUNTIME_GROUP, RuntimeFactory, make_runtime
 from piloop.triggers import TRIGGER_GROUP
-from tests.conftest import ScriptRuntime, write_toml
+from tests.conftest import HARNESS_APPEND, HARNESS_PROMPT_TO_FILE, ScriptRuntime, write_toml
+from tests.daemon.test_scheduler import add_ideas
 from tests.daemon.test_triggers import BLOCKING, fail_a_run, reported_events, wait_for, workers
 
 REVIEW = "SELECT id FROM comments WHERE kind = 'decision' AND created_at > :since"
 PLUGIN = 'tests.fixtures.plugin'
 
 
-def recording(runtime: ScriptRuntime, kinds: list[RuntimeKind]) -> RuntimeFactory:
+def recording(runtime: ScriptRuntime, kinds: list[str]) -> RuntimeFactory:
     """A factory that runs every agent in ``runtime`` and records the kind of runtime that was asked for."""
 
-    def make(kind: RuntimeKind, *, project: str, project_path: Path) -> Runtime:
+    def make(kind: str, *, project: str, project_path: Path) -> Runtime:
         kinds.append(kind)
         return runtime
 
@@ -83,7 +101,7 @@ def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt
         'max_concurrent': 1,
     }
     configure(db, project, harness, reviewer=reviewer)
-    kinds: list[RuntimeKind] = []
+    kinds: list[str] = []
     sched = scheduler(db, recording(runtime, kinds), tmp_path)
     assert sched.tick() == [], 'no decision yet: the query returns no row'
 
@@ -113,7 +131,99 @@ def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt
     with db.session() as s:
         rows = s.scalars(select(Worker).where(Worker.kind == 'reviewer')).all()
         assert [(w.state, w.runtime, w.harness) for w in rows] == [(WorkerState.EXITED, 'herdr', 'script')] * 2
-    assert RuntimeKind.HERDR in kinds
+    assert 'herdr' in kinds
+
+
+HARNESS_SIGNS = '#!/bin/sh\necho "$PILOOP_ACTOR" >> solve.txt\ngit commit -qam "sign"\n'
+"""Commit a tree of one's own: an agent of another role that runs at the same time makes another candidate."""
+QUICK: dict[str, object] = {
+    'runs': True,
+    'prompt': 'quick.md',
+    'takes': "priority >= 3 AND title NOT LIKE 'skip:%'",
+    'timeout': 60,
+    'max_concurrent': 1,
+    'explore_every': 0,
+}
+
+
+def runs_by_role(db: Database) -> list[tuple[int, str, int, str]]:
+    """Return each run as ``(id, role, idea, kind of its agent)``."""
+    with db.session() as s:
+        return [
+            (run.id, run.role, run.idea_id, s.scalars(select(Worker.kind).where(Worker.run_id == run.id)).one())
+            for run in s.scalars(select(Run).order_by(Run.id))
+        ]
+
+
+def queue(db: Database, sched: Scheduler, project: Project) -> None:
+    """Queue runs for the free slots, as a tick does, without launching their agents."""
+    with db.session() as s:
+        p = s.get_one(Project, project.id)
+        sched._queue(s, p, ProjectConfig.model_validate(p.config))
+        s.commit()
+
+
+def test_a_role_that_does_runs_takes_its_ideas_with_its_own_prompt_and_its_commits_are_scored(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """``[roles.quick]`` with ``runs = true`` takes the idea that ``takes`` selects, and the worker takes the other one.
+
+    The quick agent works with its own prompt in a new worktree at the run's base, and its commit is measured and
+    judged.
+    """
+    (Path(project.path) / 'quick.md').write_text('# Quick\nTry the idea in a few minutes.\n')
+    configure(db, project, HARNESS_SIGNS, quick=QUICK)
+    (deep,) = add_ideas(db, project, 'deep', priority=1)
+    (cheap,) = add_ideas(db, project, 'cheap', priority=3)
+    sched = scheduler(db, recording(runtime, []), tmp_path)
+    assert sorted(sched.tick()) == [1, 2]
+    sched.wait(30)
+    sched.stop(timeout=5)
+    assert runs_by_role(db) == [(1, 'quick', cheap, 'quick'), (2, 'worker', deep, 'worker')]
+    assert (tmp_path / 'runs' / '1' / 'brief.md').read_text().startswith('# Quick\nTry the idea')
+    assert (tmp_path / 'runs' / '2' / 'brief.md').read_text().startswith('# Worker\n')
+    with db.session() as s:
+        assert s.get_one(Run, 1).status is RunStatus.SUCCEEDED
+        candidate = s.scalars(select(Candidate).where(Candidate.run_id == 1)).one()
+        assert candidate.verdict is not Verdict.PENDING
+        assert s.scalars(select(Measurement).where(Measurement.candidate_id == candidate.id)).all() != []
+
+
+def test_each_role_that_does_runs_fills_its_own_slots_and_the_worker_takes_what_waits(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """Quick has one slot, so its second idea goes to the worker. The worker takes what the roles before it leave."""
+    configure(db, project, HARNESS_APPEND, quick={**QUICK, 'prompt': None})
+    cheap, cheaper, later = (
+        add_ideas(db, project, t, priority=p)[0] for t, p in (('cheap', 3), ('cheaper', 4), ('later', 4))
+    )
+    sched = scheduler(db, recording(runtime, []), tmp_path)
+    queue(db, sched, project)
+    assert runs_by_role(db) == [(1, 'quick', cheap, 'quick'), (2, 'worker', cheaper, 'worker')]
+    with db.session() as s:
+        assert s.get_one(Idea, later).status is IdeaStatus.READY, 'both slots are busy'
+    sched.stop(timeout=5)
+
+
+def test_a_queued_run_of_a_role_that_piloop_toml_no_longer_has_fails_and_its_idea_goes_back_to_the_queue(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    (Path(project.path) / 'quick.md').write_text('# Quick\n')
+    configure(db, project, HARNESS_APPEND, quick=QUICK)
+    (cheap,) = add_ideas(db, project, 'cheap', priority=3)
+    sched = scheduler(db, recording(runtime, []), tmp_path)
+    queue(db, sched, project)
+    configure(db, project, HARNESS_APPEND)
+    assert sched.tick() == []
+    with db.session() as s:
+        run, worker, idea = s.get_one(Run, 1), s.get_one(Worker, 1), s.get_one(Idea, cheap)
+        assert (run.status, run.error) == (RunStatus.FAILED, ROLE_REMOVED)
+        assert (worker.state, worker.error) == (WorkerState.KILLED, 'no [roles.quick] in piloop.toml')
+        assert idea.status is IdeaStatus.READY, 'the removed role was not an attempt at the idea'
+    assert sched.tick() == [2]
+    sched.wait(30)
+    sched.stop(timeout=5)
+    assert runs_by_role(db)[1:] == [(2, 'worker', cheap, 'worker')]
 
 
 def test_a_built_in_role_takes_other_triggers(
@@ -191,7 +301,15 @@ ENTRY_POINTS = [
     EntryPoint('every_tick', f'{PLUGIN}:EveryTick', TRIGGER_GROUP),
     EntryPoint('broken', f'{PLUGIN}:Broken', TRIGGER_GROUP),
     EntryPoint('auditor', f'{PLUGIN}:AUDITOR', ROLE_GROUP),
+    EntryPoint('quick', f'{PLUGIN}:QUICK', ROLE_GROUP),
+    EntryPoint('typed', f'{PLUGIN}:Typed', RUNTIME_GROUP),
 ]
+
+
+def forget_loaded() -> None:
+    triggers_module.triggers.cache_clear()
+    config_module.registered_roles.cache_clear()
+    factory_module.runtimes.cache_clear()
 
 
 def installed(monkeypatch: pytest.MonkeyPatch, entries: list[EntryPoint]) -> None:
@@ -202,16 +320,15 @@ def installed(monkeypatch: pytest.MonkeyPatch, entries: list[EntryPoint]) -> Non
 
     monkeypatch.setattr(triggers_module, 'entry_points', entry_points)
     monkeypatch.setattr(config_module, 'entry_points', entry_points)
-    triggers_module.triggers.cache_clear()
-    config_module.registered_roles.cache_clear()
+    monkeypatch.setattr(factory_module, 'entry_points', entry_points)
+    forget_loaded()
 
 
 @pytest.fixture
 def plugins(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     installed(monkeypatch, ENTRY_POINTS)
     yield
-    triggers_module.triggers.cache_clear()
-    config_module.registered_roles.cache_clear()
+    forget_loaded()
 
 
 def test_a_package_adds_a_role_and_triggers_through_entry_points(
@@ -280,6 +397,10 @@ def test_a_package_role_takes_its_defaults_and_a_roles_value_that_is_not_a_table
         (EntryPoint('cron', f'{PLUGIN}:EveryTick', TRIGGER_GROUP), "'cron' is a trigger already"),
         (EntryPoint('auditor', f'{PLUGIN}:NOT_A_ROLE', ROLE_GROUP), 'is not a piloop SweepRole'),
         (EntryPoint('research', f'{PLUGIN}:AUDITOR', ROLE_GROUP), "'research' is a built-in role"),
+        (EntryPoint('typed', f'{PLUGIN}:NOT_A_RUNTIME', RUNTIME_GROUP), 'is not a piloop runtime class'),
+        (EntryPoint('other', f'{PLUGIN}:Typed', RUNTIME_GROUP), "it needs kind = 'other'"),
+        (EntryPoint('unsure', f'{PLUGIN}:Unsure', RUNTIME_GROUP), 'and an invocation'),
+        (EntryPoint('herdr', f'{PLUGIN}:Typed', RUNTIME_GROUP), "'herdr' is a runtime already"),
     ],
 )
 def test_an_entry_point_of_the_wrong_kind_fails_with_its_name(
@@ -290,6 +411,52 @@ def test_an_entry_point_of_the_wrong_kind_fails_with_its_name(
         with pytest.raises((TypeError, ValueError), match=error):
             triggers_module.triggers()
             config_module.registered_roles()
+            factory_module.runtimes()
     finally:
-        triggers_module.triggers.cache_clear()
-        config_module.registered_roles.cache_clear()
+        forget_loaded()
+
+
+def test_a_package_adds_a_role_that_does_runs(project_path: Path, plugins: None) -> None:
+    cfg = load_project_config(project_path)
+    assert list(cfg.roles.doing_runs()) == ['quick', 'worker']
+    quick = cfg.roles.doing_runs()['quick']
+    assert (quick.takes, quick.timeout, quick.max_concurrent) == ('priority >= 3', 60, 1)
+
+
+@pytest.fixture
+def typed(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Install only the ``typed`` runtime, so that no package role or trigger requests an agent."""
+    installed(monkeypatch, [EntryPoint('typed', f'{PLUGIN}:Typed', RUNTIME_GROUP)])
+    yield
+    forget_loaded()
+
+
+def test_a_package_adds_a_runtime_and_its_agents_start_the_argv_of_its_invocation(
+    db: Database, project: Project, tmp_path: Path, typed: None
+) -> None:
+    """``typed`` takes the interactive argv of the harness. Every lookup by name, after the start too, finds it."""
+    write_toml(Path(project.path), HARNESS_PROMPT_TO_FILE)
+    script = {'executable': str(tmp_path / 'harness.sh'), 'headless': ['{prompt}'], 'interactive': ['interactive']}
+    watchdog = {'runtime': 'typed', 'workdir': 'project', 'triggers': []}
+    with db.session() as s:
+        cfg = load_project_config(Path(project.path), harness={'script': script}, roles={'watchdog': watchdog})
+        s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
+        s.add(Worker(kind=WorkerKind.WATCHDOG, project_id=project.id, reason='by hand'))
+        s.commit()
+    sched = scheduler(db, make_runtime, tmp_path)
+    assert sched.tick() == [1]
+    sched.wait(30)
+    sched.stop(timeout=5)
+    with db.session() as s:
+        worker = s.get_one(Worker, 1)
+        assert (worker.state, worker.runtime) == (WorkerState.EXITED, 'typed')
+    assert (Path(project.path) / 'prompt.txt').read_text() == 'interactive'
+
+
+def test_a_runtime_that_is_not_registered_fails_with_the_registered_ones(project_path: Path, plugins: None) -> None:
+    with pytest.raises(
+        ConfigError, match=r"runtime = 'tmux': unknown runtime 'tmux'; registered runtimes: herdr, subprocess, typed"
+    ):
+        load_project_config(project_path, runtime='tmux')
+    with pytest.raises(ConfigError, match=r"roles.research.runtime = 'tmux': unknown runtime 'tmux'"):
+        load_project_config(project_path, roles={'research': {'runtime': 'tmux'}})

@@ -1,5 +1,6 @@
 """Built-in coding-agent harness definitions. A project may override any of them in ``piloop.toml``."""
 
+from enum import StrEnum
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -41,6 +42,15 @@ CODEX_TOOL_ENV = [
 out."""
 
 
+class Invocation(StrEnum):
+    """Which argument list of a harness a runtime starts (``Runtime.invocation``)."""
+
+    INTERACTIVE = 'interactive'
+    """``Harness.interactive``: a session in a terminal. The runtime types the first prompt after the start."""
+    HEADLESS = 'headless'
+    """``Harness.headless``: a process without a terminal. The first prompt is in the arguments."""
+
+
 def takes_session_id(args: list[str]) -> bool:
     """Whether an argument list passes a piloop-minted session id to the agent."""
     return any(SESSION_ID in a for a in args)
@@ -75,10 +85,11 @@ class Harness(BaseModel):
     executable: str
     """The program to run. Herdr also uses it as ``--kind`` to detect the agent."""
     interactive: list[str] = []
-    """The arguments for an interactive session (Herdr runtime). piloop types the first prompt, which names the file
-    that holds the brief, after the agent starts."""
+    """The arguments for an interactive session, for a runtime whose ``invocation`` is ``interactive`` (Herdr). The
+    runtime types the first prompt, which names the file that holds the brief, after the agent starts."""
     headless: list[str]
-    """The arguments for a run without a terminal (subprocess runtime). Must include ``{prompt}``."""
+    """The arguments for a run without a terminal, for a runtime whose ``invocation`` is ``headless`` (subprocess).
+    Must include ``{prompt}``."""
     startup_dialogs: list[tuple[str, list[str]]] = []
     """The dialogs the agent shows when it first starts in a new directory, in the order they appear. Each entry is
     the text to look for on the screen and the keys that accept the dialog."""
@@ -97,6 +108,10 @@ class Harness(BaseModel):
     """The renderer that expands the ``{mcp}`` element of the argv into the role's ``[mcp.<name>]`` servers:
     ``claude``, ``codex`` or ``pi``. Each renderer also keeps the user's own servers out, where its harness allows it.
     When unset, the harness takes no servers, and a role that lists servers cannot use it."""
+
+    def argv(self, invocation: Invocation) -> list[str]:
+        """The argument list that a runtime of ``invocation`` starts."""
+        return {Invocation.INTERACTIVE: self.interactive, Invocation.HEADLESS: self.headless}[invocation]
 
     @property
     def captures_session(self) -> bool:

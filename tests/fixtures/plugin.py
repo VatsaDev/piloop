@@ -1,9 +1,11 @@
-"""What a package can add to piloop through entry points: a trigger, a role, and objects of the wrong type."""
+"""What a package can add to piloop through entry points: triggers, roles, a runtime, and objects of the wrong type."""
 
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 
-from piloop.config import SweepRole
+from piloop.config import SweepRole, WorkerRole
+from piloop.harnesses import Invocation
+from piloop.runtime.subprocess import SubprocessRuntime
 from piloop.triggers import Fire, Tick, Trigger
 
 
@@ -26,6 +28,21 @@ class Broken(Trigger):
         raise RuntimeError('the probe is down')
 
 
+class Typed(SubprocessRuntime):
+    """``typed``: a background process, like ``subprocess``, that starts the interactive argument list of a harness."""
+
+    kind: ClassVar[str] = 'typed'
+    invocation: ClassVar[Invocation] = Invocation.INTERACTIVE
+
+
+class Unsure:
+    """A class with a runtime's name and without an invocation."""
+
+    kind: ClassVar[str] = 'unsure'
+
+
 AUDITOR = SweepRole(prompt=str(Path(__file__).parent / 'auditor.md'), triggers=[EveryTick(label='audit')], timeout=5)
+QUICK = WorkerRole(takes='priority >= 3', timeout=60, max_concurrent=1)
 NOT_A_TRIGGER = 'every_tick'
 NOT_A_ROLE = 'auditor'
+NOT_A_RUNTIME = 'typed'

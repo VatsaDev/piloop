@@ -408,7 +408,7 @@ class SqlTrigger(Trigger):
     @field_validator('when')
     @classmethod
     def _reads_only(cls, when: str) -> str:
-        if (error := sql_error(when)) is not None:
+        if (error := sql_error(when, SQL_PARAMETERS)) is not None:
             raise ValueError(f'the query does not run on the piloop database: {error}')
         return when
 
@@ -422,10 +422,11 @@ READS = (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION, sq
 
 
 @cache
-def sql_error(statement: str) -> str | None:
+def sql_error(statement: str, parameters: tuple[str, ...] = ()) -> str | None:
     """Return why ``statement`` is not one query that reads the piloop schema, or None when it is.
 
-    The statement is prepared on an empty copy of the schema, under an authorizer that denies every write.
+    The statement is prepared on an empty copy of the schema, under an authorizer that denies every write. It may use
+    the named ``parameters`` and no others.
     """
 
     def authorize(action: int, *_: str | None) -> int:
@@ -435,7 +436,7 @@ def sql_error(statement: str) -> str | None:
     try:
         con.executescript(schema_ddl())
         con.set_authorizer(authorize)
-        con.execute(f'EXPLAIN {statement}', dict.fromkeys(SQL_PARAMETERS, 0))
+        con.execute(f'EXPLAIN {statement}', dict.fromkeys(parameters, 0))
     except sqlite3.Error as e:
         return str(e)
     finally:

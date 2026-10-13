@@ -37,7 +37,6 @@ from piloop.db.models import (
     TargetKind,
     Verdict,
     Worker,
-    WorkerKind,
     utcnow,
 )
 from piloop.db.session import Database
@@ -140,11 +139,11 @@ class RunExecutor:
                 cfg = config_of(project)
                 base = s.get_one(Candidate, run.base_candidate_id)
                 brief = run.brief or compose_brief(
-                    role(cfg, WorkerKind.WORKER, Path(project.path)),
+                    role(cfg, run.role, Path(project.path)),
                     project,
                     worker_id,
                     reason=f'idea#{idea.id} is ready',
-                    context=self._context(s, cfg, idea, base, worker_id),
+                    context=self._context(s, cfg, idea, base, f'{run.role}#{worker_id}'),
                     track=cfg.track(idea.track),
                 )
                 run.brief = brief
@@ -234,7 +233,7 @@ class RunExecutor:
                     return False
                 run.status = RunStatus.QUEUED
                 worker = Worker(
-                    kind=WorkerKind.WORKER,
+                    kind=run.role,
                     project_id=run.idea.project_id,
                     run_id=run_id,
                     harness=run.harness,
@@ -244,7 +243,8 @@ class RunExecutor:
                 s.add(worker)
                 s.flush()
                 # Edit the brief, do not compose it again: a human may have changed it (``UPDATE runs SET brief``).
-                run.brief = re.sub(rf'\bworker#{worker_id}\b', f'worker#{worker.id}', run.brief or '')
+                signed = rf'\b(worker|{re.escape(run.role)})#{worker_id}\b'
+                run.brief = re.sub(signed, rf'\g<1>#{worker.id}', run.brief or '')
                 emit(s, 'run.relaunched', TargetKind.RUN, run_id, payload={'worker': worker_id, 'launches': launches})
                 s.commit()
             transcript = log_dir / TRANSCRIPT
@@ -279,14 +279,14 @@ class RunExecutor:
             s.commit()
 
     def _left_finding(self, run_id: int, idea_id: int, worker_id: int) -> bool:
-        """Return True if the worker signed a ``finding`` on its idea or its run, as ``worker#<id>`` or ``run#<id>``."""
+        """Return True if the agent signed a ``finding`` on its idea or its run, as ``<role>#<id>`` or ``run#<id>``."""
         on_idea = (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == idea_id)
         on_run = (Comment.target_kind == TargetKind.RUN) & (Comment.target_id == run_id)
         with self._db.session() as s:
+            signed = (f'{s.get_one(Worker, worker_id).kind}#{worker_id}', f'run#{run_id}')
             found = s.scalar(
                 select(Comment.id)
-                .where(on_idea | on_run, Comment.kind == CommentKind.FINDING)
-                .where(Comment.author.in_((f'worker#{worker_id}', f'run#{run_id}')))
+                .where(on_idea | on_run, Comment.kind == CommentKind.FINDING, Comment.author.in_(signed))
                 .limit(1)
             )
         return found is not None
@@ -655,7 +655,7 @@ class RunExecutor:
                         idea.status = IdeaStatus.DONE
                 s.commit()
 
-    def _context(self, s: Session, cfg: ProjectConfig, idea: Idea, base: Candidate, worker_id: int) -> str:
+    def _context(self, s: Session, cfg: ProjectConfig, idea: Idea, base: Candidate, author: str) -> str:
         """Return the worker's context: the idea, its base, and the comments on the idea and on all its runs.
 
         A comment on a run is about the idea too. Examples are a human's decision during attempt 1, or a watchdog's
@@ -690,7 +690,7 @@ class RunExecutor:
         lines += [
             f'- Shared workspace for artifacts and notes to future workers: `./{WORKSPACE}/` (not committed).',
             f'- Leave a finding on your idea when you are done: INSERT INTO comments (target_kind, target_id, author,'
-            f" kind, body) VALUES ('idea', {idea.id}, 'worker#{worker_id}', 'finding', '...').",
+            f" kind, body) VALUES ('idea', {idea.id}, '{author}', 'finding', '...').",
             '- The history below is what was tried in this project: do not repeat it; combine or go elsewhere.',
         ]
         lines += ['', f'## Your idea (idea#{idea.id}): {idea.title}', idea.hypothesis.rstrip()]

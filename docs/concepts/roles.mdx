@@ -17,9 +17,10 @@ Every role has the same lifecycle. The daemon writes a `workers` row, starts the
 times out, saves the screen transcript, reads the tokens that the agent used, attaches the session to
 [Entire](/concepts/session-capture), and closes the row. `piloop status` lists the running agents with their ids.
 
-The worker is the only role that does runs: the run queue starts it, it works at the starting point of its run, and
-its commits are scored and judged when it ends. Every other role is a **sweeping** role. Its triggers start it, it
-works at the head or in the project checkout, and nothing is scored when it ends.
+The worker **does runs**: the run queue starts it, it works at the starting point of its run, and its commits are
+scored and judged when it ends. A role that you define can do runs too ([Define a role that does
+runs](#define-a-role-that-does-runs)). Every other role is a **sweeping** role. Its triggers start it, it works at the
+head or in the project checkout, and nothing is scored when it ends.
 
 The [orchestrator](/concepts/orchestrator) is not a role. The daemon never starts it.
 
@@ -30,7 +31,7 @@ Each role has a table in `piloop.toml`. These keys are common to every role:
 | Key | Meaning |
 |---|---|
 | `prompt` | The file that starts the role's brief, instead of the built-in one. |
-| `runtime` | Where the role's agents run (`subprocess` or `herdr`). Unset: the project's `runtime`. |
+| `runtime` | Where the role's agents run: `subprocess`, `herdr`, or a runtime that a package adds. Unset: the project's `runtime`. |
 | `harnesses` | The harnesses that the role uses in turn. Unset: the project's `harnesses`. |
 | `model` | The model for each harness, merged over the project's `[model]`. |
 | `timeout` | Seconds before the daemon stops the agent. |
@@ -39,6 +40,14 @@ Each role has a table in `piloop.toml`. These keys are common to every role:
 | `mcp` | The [MCP servers](/guides/mcp-servers) that the role's agents get. |
 | `writes` | What the role's agents may write, as their brief states it. |
 | `files` | What the role's agents may file with `piloop idea`: `nothing`, `seeds` or `ideas`. The CLI refuses the rest. |
+
+A role that does runs also has these keys:
+
+| Key | Meaning |
+|---|---|
+| `runs` | `true`. It is what makes a table with a new name a role that does runs. |
+| `takes` | The ideas that the role takes: an SQL condition on the `ideas` table, for example `priority >= 3`. Unset: every runnable idea. |
+| `explore_every` | At least one run in this many of the role's runs starts from a pinned idea, when one is ready. 0 turns this off. |
 
 A sweeping role also has these keys:
 
@@ -139,6 +148,39 @@ A role name has at most 20 characters: lowercase letters, digits, `_` and `-`, a
 A Python package can also add roles and triggers. See
 [Extension points](/architecture/extension-points#roles-and-triggers).
 
+## Define a role that does runs
+
+A table with a new name and `runs = true` defines a role that does runs. It takes the worker's defaults, its prompt
+included, so every key is optional. This role takes the cheap ideas, with a short timeout and its own harness:
+
+```toml
+[roles.quick]
+runs = true
+takes = "priority >= 3"    # an SQL condition on the ideas table; unset: every runnable idea
+prompt = "briefs/quick.md" # unset: the worker's prompt
+harnesses = ["pi"]
+timeout = 300
+max_concurrent = 2
+explore_every = 0
+```
+
+On each tick, the roles that do runs fill their free slots in order: the roles that you define, in the order of the
+file, then the worker. So the worker takes every idea that the other roles leave. This includes an idea that waits
+for a free slot of a full role. To keep the worker away from the cheap ideas, give it a condition too, for example
+`[roles.worker] takes = "priority < 3"`.
+
+Some rules apply to each role that does runs, and some to every run of the project:
+
+- Each role: its own `max_concurrent`, its `takes`, its harness rotation, its prompt and timeout, its `explore_every`
+  (counted over its own runs), and the track shares (of its own slots).
+- Every run: `[stop] max_runs` and `plateau`, the attempts of an idea (`ideas.max_runs`), and the verdict. A keep of
+  a run of any role moves the head. A keep against a bar that the head left behind is merged onto the head in the same
+  way.
+  Research keeps a backlog of one idea per run slot of every role, plus `buffer`.
+
+`runs.role` records the role of each run, and its agents have that `workers.kind`. When `piloop init` removes a role,
+its queued runs fail. They do not count as attempts, so their ideas go back to the queue.
+
 ## Worker
 
 A worker gets one idea. Its brief has the worker instructions, your `brief.md`, the idea, the starting point and the
@@ -218,8 +260,8 @@ INSERT INTO workers (kind, project_id, state, reason) VALUES ('research', 1, 're
 - `piloop attach <worker-id>` focuses the agent's tab in the piloop Herdr session and attaches your terminal.
 - `piloop prompt <worker-id> "<text>"` types text into the agent's pane.
 
-`piloop attach` and `piloop prompt` need `runtime = "herdr"`. With the default `subprocess` runtime, every agent is a
-background process without a pane.
+`piloop attach` needs `runtime = "herdr"`, and `piloop prompt` needs a runtime that can deliver a message, such as
+Herdr. With the default `subprocess` runtime, every agent is a background process without a pane.
 
-Each agent's brief, log and transcript are in `~/.piloop/runs/<run>/` for a worker, and in
+Each agent's brief, log and transcript are in `~/.piloop/runs/<run>/` for an agent that does a run, and in
 `~/.piloop/workers/<worker-id>/` for the sweeping roles.

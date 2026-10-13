@@ -16,6 +16,11 @@ A deprecated configuration key shows a warning for at least one minor release be
   query on the piloop database.
 - Packages can add triggers and roles through the `piloop.triggers` and `piloop.roles` entry point groups.
 - `piloop launch` takes any sweeping role of the project.
+- A role that you define can do runs: `runs = true`. It takes the ideas that its `takes` condition selects, fills its
+  own `max_concurrent` slots before the worker, and its commits are scored and judged. `runs.role` records the role of
+  each run.
+- Runtimes are a registry. Packages can add runtimes through the `piloop.runtimes` entry point group. A runtime class
+  states which argument list of a harness it starts (`invocation`: `interactive` or `headless`).
 
 ### Changed
 

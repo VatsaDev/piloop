@@ -17,9 +17,18 @@ from enum import StrEnum
 from functools import cache
 from importlib.metadata import entry_points
 from pathlib import Path
-from typing import Annotated, Any, ClassVar, Self, cast
+from typing import Annotated, Any, ClassVar, Literal, Self, cast
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
 from sqlalchemy.orm import Session
 
@@ -27,6 +36,7 @@ from piloop import deprecated
 from piloop.db.models import Project, Worker, WorkerKind
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.mcp import MCP, RENDERERS, McpServer, ServerName
+from piloop.runtime.factory import runtimes
 from piloop.triggers import (
     AnomalyTrigger,
     CronTrigger,
@@ -34,6 +44,7 @@ from piloop.triggers import (
     ScoutTrigger,
     SeedTrigger,
     TriggerEntry,
+    sql_error,
 )
 
 CONFIG_FILE = 'piloop.toml'
@@ -47,11 +58,15 @@ class Direction(StrEnum):
     LOWER = 'lower'
 
 
-class RuntimeKind(StrEnum):
-    """Where worker processes run."""
+def _registered_runtime(name: str) -> str:
+    if name not in runtimes():
+        raise ValueError(f'unknown runtime {name!r}; registered runtimes: {", ".join(runtimes())}')
+    return name
 
-    HERDR = 'herdr'
-    SUBPROCESS = 'subprocess'
+
+RuntimeName = Annotated[str, AfterValidator(_registered_runtime)]
+"""The name of a registered runtime (``piloop.runtime.factory.runtimes``): ``subprocess``, ``herdr``, or one that a
+package adds."""
 
 
 class MetricRole(StrEnum):
@@ -129,9 +144,9 @@ class TrackConfig(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
 
     share: float = Field(default=1, ge=0, le=1)
-    """The fraction of ``[roles.worker] max_concurrent`` that the ideas of this track get. A free worker slot goes to
-    the track that is furthest below its share and has an idea that can run, and then to the most urgent idea of that
-    track. A track with no idea that can run gives its slot to another track. A share of 0 stops the track: its ideas
+    """The fraction of the ``max_concurrent`` of each role that does runs that the ideas of this track get. A free slot
+    of a role goes to the track that is furthest below its share and has an idea that can run, and then to the most
+    urgent idea of that track. A track with no idea that can run gives its slot to another track. A share of 0 stops the track: its ideas
     wait."""
     addendum: str | None = None
     """A repo-relative file that is appended to the brief of this track's runs, after ``[roles.worker] addendum``. Use
@@ -156,11 +171,12 @@ ROLE_NAME = r'[a-z][a-z0-9_-]{0,19}'
 RESERVED_NAMES = frozenset({'scout', 'run', 'orchestrator', 'human', 'daemon'})
 """Names that already sign writes: the scout mode, a run, and the actors that are not roles."""
 ROLE_GROUP = 'piloop.roles'
-"""The entry point group of the roles that packages add. Each entry point names a ``SweepRole`` with its defaults."""
+"""The entry point group of the roles that packages add. Each entry point names a ``SweepRole`` or a ``WorkerRole``
+with its defaults."""
 
 
 class Workdir(StrEnum):
-    """Where the agent of a sweeping role works. A worker always works in a new worktree at its run's base."""
+    """Where the agent of a sweeping role works. An agent that does a run works in a new worktree at its run's base."""
 
     HEAD = 'head'
     """A detached worktree at the head. It is removed when the agent ends, and nothing committed in it is scored."""
@@ -190,7 +206,7 @@ class RoleConfig(BaseModel):
     prompt: str | None = None
     """The file that starts the brief of this role: a path relative to the repo root, or an absolute path. When unset,
     a built-in role uses its built-in prompt. A new role needs it."""
-    runtime: RuntimeKind | None = None
+    runtime: RuntimeName | None = None
     """Where the agents of this role run. When unset, the role uses the project's ``runtime``."""
     harnesses: list[str] | None = Field(default=None, min_length=1)
     """The harness rotation of this role. When unset, the role uses the project's ``harnesses``."""
@@ -216,12 +232,20 @@ class RoleConfig(BaseModel):
 
 
 class WorkerRole(RoleConfig):
-    """``[roles.worker]``: a worker does one idea in a new worktree at its run's base. The run queue starts it.
+    """``[roles.worker]``, and every ``[roles.<name>]`` table with ``runs = true``: a role that does runs.
 
-    When it ends, its commits are scored and judged. Its trigger and its working copy are fixed.
+    The run queue starts its agents. Each agent does one idea in a new worktree at its run's base, and its commits are
+    scored and judged when it ends. A new role of this kind takes the worker's defaults, its prompt included.
     """
 
     PROMPT: ClassVar[str] = 'worker.md'
+
+    runs: Literal[True] = True
+    """The agents of this role do runs. A table without ``runs = true`` is a sweeping role."""
+    takes: str | None = None
+    """The ideas that this role takes: an SQL condition on the ``ideas`` table, without parameters, for example
+    ``priority >= 3`` or ``track = 'speed'``. When unset, the role takes every runnable idea. A free slot of a role
+    that you define is filled before a slot of the worker, so the worker takes what the other roles leave."""
 
     timeout: float = 1800
     """The number of seconds one worker may run before it is stopped."""
@@ -233,10 +257,22 @@ class WorkerRole(RoleConfig):
     files: Files = Files.NOTHING
     """A worker files no ideas and no seeds. Its hunches go in its finding, which research reads."""
     explore_every: int = Field(default=4, ge=0)
-    """At least one run in this many starts from an alternative starting point. When none of the last
-    ``explore_every - 1`` runs did, the next slot goes to the most urgent ready idea that is pinned to a base other
-    than the head (a reference, an older keep or a note), whatever its priority. Nothing changes while no such idea is
-    ready. 0 turns this off."""
+    """At least one run of this role in this many starts from an alternative starting point. When none of the role's
+    last ``explore_every - 1`` runs did, the next slot goes to the most urgent ready idea that is pinned to a base
+    other than the head (a reference, an older keep or a note), whatever its priority. Nothing changes while no such
+    idea is ready. 0 turns this off."""
+
+    @field_validator('takes')
+    @classmethod
+    def _reads_ideas(cls, takes: str | None) -> str | None:
+        if takes is not None and (error := sql_error(ideas_taken(takes))) is not None:
+            raise ValueError(f'the condition does not run on the ideas table: {error}')
+        return takes
+
+
+def ideas_taken(takes: str) -> str:
+    """Return the query that selects the ids of the ideas that ``[roles.<name>] takes`` selects."""
+    return f'SELECT id FROM ideas WHERE {takes}'
 
 
 class SweepRole(RoleConfig):
@@ -246,6 +282,8 @@ class SweepRole(RoleConfig):
     name defines a new role, and needs ``prompt`` and ``triggers``.
     """
 
+    runs: Literal[False] = False
+    """The agents of this role do no runs. Set ``runs = true`` in a new table to define a role that does runs."""
     triggers: list[TriggerEntry]
     """When the daemon requests an agent of this role: a list of ``{ kind = "<trigger>", ... }`` entries, checked in
     order on each tick. The built-in triggers are ``anomaly``, ``cron``, ``seed``, ``low_water`` (research only),
@@ -404,15 +442,26 @@ class Spend(BaseModel):
         return self
 
 
+def _role(table: object) -> object:
+    """Validate a ``[roles.<name>]`` table with a new name: a role that does runs with ``runs = true``, else a sweep."""
+    does_runs = isinstance(table, WorkerRole) or (isinstance(table, dict) and bool(table.get('runs')))
+    return (WorkerRole if does_runs else SweepRole).model_validate(table)
+
+
+RoleEntry = Annotated[WorkerRole | SweepRole, BeforeValidator(_role)]
+"""The type of a ``[roles.<name>]`` table with a new name."""
+
+
 class Roles(BaseModel):
     """One table for each role. A built-in role without a table uses its defaults.
 
-    A table with a new name defines a new sweeping role (``SweepRole``). A role that a package adds with a
-    ``piloop.roles`` entry point is in the config that ``piloop init`` stores, with its table over its defaults.
+    A table with a new name defines a new role: a role that does runs (``WorkerRole``) with ``runs = true``, else a
+    sweeping role (``SweepRole``). A role that a package adds with a ``piloop.roles`` entry point is in the config that
+    ``piloop init`` stores, with its table over its defaults.
     """
 
     model_config = ConfigDict(extra='allow', frozen=True, use_attribute_docstrings=True)
-    __pydantic_extra__: dict[str, SweepRole] = Field(init=False)
+    __pydantic_extra__: dict[str, RoleEntry] = Field(init=False)
 
     worker: WorkerRole = WorkerRole()
     """``[roles.worker]``."""
@@ -423,12 +472,13 @@ class Roles(BaseModel):
 
     @model_validator(mode='after')
     def _check(self) -> Self:
-        for name, role in self.sweeping().items():
+        for name in self.__pydantic_extra__:
             if not re.fullmatch(ROLE_NAME, name) or name in RESERVED_NAMES:
                 raise ValueError(
                     f'{name!r} is not a role name: use lowercase letters, digits, _ and - ({ROLE_NAME}), and none of'
                     f' {sorted(RESERVED_NAMES)}'
                 )
+        for name, role in self.sweeping().items():
             for trigger in role.triggers:
                 if trigger.ROLE is not None and name != trigger.ROLE:
                     raise ValueError(
@@ -437,27 +487,43 @@ class Roles(BaseModel):
         return self
 
     def sweeping(self) -> dict[str, SweepRole]:
-        """The sweeping roles by name: the watchdog, research, then the other roles in the order of the file."""
-        return {WorkerKind.WATCHDOG: self.watchdog, WorkerKind.RESEARCH: self.research, **self.__pydantic_extra__}
+        """The sweeping roles by name: the watchdog, research, then the sweeping roles of the file in its order."""
+        mine = {name: role for name, role in self.__pydantic_extra__.items() if isinstance(role, SweepRole)}
+        return {WorkerKind.WATCHDOG: self.watchdog, WorkerKind.RESEARCH: self.research, **mine}
+
+    def doing_runs(self) -> dict[str, WorkerRole]:
+        """The roles that do runs by name, in the order in which they fill their slots.
+
+        The roles that you define come first, in the order of the file, and the worker comes last.
+        """
+        mine = {name: role for name, role in self.__pydantic_extra__.items() if isinstance(role, WorkerRole)}
+        return {**mine, WorkerKind.WORKER: self.worker}
 
     def all(self) -> dict[str, RoleConfig]:
-        """Every role by name: the worker first, then the sweeping roles."""
-        return {WorkerKind.WORKER: self.worker, **self.sweeping()}
+        """Every role by name: the built-in roles, then the roles that you define in the order of the file."""
+        return {
+            WorkerKind.WORKER: self.worker,
+            WorkerKind.WATCHDOG: self.watchdog,
+            WorkerKind.RESEARCH: self.research,
+            **self.__pydantic_extra__,
+        }
 
 
 @cache
-def registered_roles() -> dict[str, SweepRole]:
+def registered_roles() -> dict[str, SweepRole | WorkerRole]:
     """Return the roles that packages add (``ROLE_GROUP``), by the name of their entry point.
 
     Raises:
-        TypeError: An entry point does not name a ``SweepRole``.
+        TypeError: An entry point does not name a ``SweepRole`` or a ``WorkerRole``.
         ValueError: An entry point reuses the name of a built-in role.
     """
-    found: dict[str, SweepRole] = {}
+    found: dict[str, SweepRole | WorkerRole] = {}
     for ep in entry_points(group=ROLE_GROUP):
         loaded = ep.load()
-        if not isinstance(loaded, SweepRole):
-            raise TypeError(f'entry point {ep.name} = {ep.value} in {ROLE_GROUP} is not a piloop SweepRole')
+        if not isinstance(loaded, SweepRole | WorkerRole):
+            raise TypeError(
+                f'entry point {ep.name} = {ep.value} in {ROLE_GROUP} is not a piloop SweepRole or WorkerRole'
+            )
         if ep.name in Roles.model_fields:
             raise ValueError(f'entry point {ep.name} = {ep.value} in {ROLE_GROUP}: {ep.name!r} is a built-in role')
         found[ep.name] = loaded
@@ -482,11 +548,11 @@ class ProjectConfig(BaseModel):
     evaluate: list[str] = Field(min_length=1)
     """The command (argv) that scores a commit. It runs in a clean worktree of the commit and must print
     ``METRIC <name>=<value>`` lines."""
-    runtime: RuntimeKind = RuntimeKind.SUBPROCESS
+    runtime: RuntimeName = 'subprocess'
     """Where agents run. With ``subprocess`` (the default), every agent is a background process; ``piloop watch``
     shows what it printed. With ``herdr`` (optional, needs Herdr), every agent gets a terminal pane that you and the
-    orchestrator can read, type into and steer with ``piloop prompt``. A role can override it (``[roles.<name>]
-    runtime``)."""
+    orchestrator can read, type into and steer with ``piloop prompt``. A package can add a runtime with a
+    ``piloop.runtimes`` entry point. A role can override it (``[roles.<name>] runtime``)."""
     harnesses: list[str] = Field(default=['pi'], min_length=1)
     """The enabled harnesses. Runs use them in turn, unless an idea pins one."""
     model: dict[str, str]
@@ -575,9 +641,10 @@ class ProjectConfig(BaseModel):
         if not self.role(kind).mcp:
             return
         runtime = self.role_runtime(kind)
+        invocation = runtimes()[runtime].invocation
         for name in self.role_harnesses(kind):
             harness = self.harness_for(name)
-            argv = harness.interactive if runtime is RuntimeKind.HERDR else harness.headless
+            argv = harness.argv(invocation)
             if harness.mcp is None or MCP not in argv:
                 raise ValueError(
                     f'roles.{kind}.mcp: harness {name!r} takes no MCP servers in its {runtime} argv; give it'
@@ -606,14 +673,19 @@ class ProjectConfig(BaseModel):
         """The model for each harness of a role: the project's map, with the role's overrides on top."""
         return {**self.model, **(self.role(kind).model or {})}
 
-    def role_runtime(self, kind: str) -> RuntimeKind:
-        """The runtime a role uses: its own, or else the project's."""
+    def role_runtime(self, kind: str) -> str:
+        """The name of the runtime a role uses: its own, or else the project's."""
         return self.role(kind).runtime or self.runtime
 
     @property
-    def runtimes(self) -> set[RuntimeKind]:
-        """The runtimes that the roles of the project use."""
+    def runtimes(self) -> set[str]:
+        """The names of the runtimes that the roles of the project use."""
         return {self.role_runtime(kind) for kind in self.roles.all()}
+
+    @property
+    def run_slots(self) -> int:
+        """The number of runs that can be open at the same time: the ``max_concurrent`` of every role that does runs."""
+        return sum(role.max_concurrent for role in self.roles.doing_runs().values())
 
     @property
     def guardrails(self) -> list[Metric]:

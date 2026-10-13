@@ -295,6 +295,11 @@ def test_the_stall_mark_is_half_the_plateau_else_two_rounds_of_the_worker_slots(
     assert stall(ProjectConfig.model_validate({**bare, 'stop': {'plateau': 15}})) == (8, 'half of [stop] plateau = 15')
     workers = ProjectConfig.model_validate({**bare, 'roles': {'worker': {'max_concurrent': 3}}})
     assert stall(workers) == (6, 'two rounds of [roles.worker] max_concurrent = 3')
+    quick = {'worker': {'max_concurrent': 3}, 'quick': {'runs': True, 'max_concurrent': 2}}
+    assert stall(ProjectConfig.model_validate({**bare, 'roles': quick})) == (
+        10,
+        'two rounds of [roles.quick] max_concurrent + [roles.worker] max_concurrent = 5',
+    )
 
 
 def test_runs_that_the_daemon_stopped_count_toward_no_budget(db: Database, project: Project) -> None:

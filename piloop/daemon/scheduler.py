@@ -28,7 +28,7 @@ from pathlib import Path
 from git import Repo
 from git.exc import InvalidGitRepositoryError, NoSuchPathError
 from pydantic import ValidationError
-from sqlalchemy import Select, exists, func, or_, select
+from sqlalchemy import Boolean, ColumnElement, Select, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from piloop import git
@@ -43,6 +43,7 @@ from piloop.campaign.project import WORKSPACE, worktree_links
 from piloop.campaign.spend import SpendError
 from piloop.campaign.stop import (
     CAMPAIGN_STOPPED_ERROR,
+    ROLE_REMOVED,
     STALE_ERROR,
     attempts,
     runs,
@@ -50,7 +51,7 @@ from piloop.campaign.stop import (
     stall,
     stop_reason,
 )
-from piloop.config import SCOUT_SEEDS, ProjectConfig, Spend, SweepRole, Workdir, config_of
+from piloop.config import SCOUT_SEEDS, ProjectConfig, Spend, SweepRole, Workdir, WorkerRole, config_of, ideas_taken
 from piloop.daemon.runner import RunExecutor
 from piloop.db.events import ANOMALY_EVENT, emit
 from piloop.db.models import (
@@ -346,9 +347,7 @@ class Scheduler:
 
     def _running_workers(self, s: Session) -> Sequence[Worker]:
         return s.scalars(
-            select(Worker)
-            .where(Worker.kind == WorkerKind.WORKER, Worker.state == WorkerState.RUNNING, Worker.run_id.is_not(None))
-            .order_by(Worker.id)
+            select(Worker).where(Worker.state == WorkerState.RUNNING, Worker.run_id.is_not(None)).order_by(Worker.id)
         ).all()
 
     def _unseen(self, s: Session, worker: Worker) -> list[Comment]:
@@ -378,7 +377,7 @@ class Scheduler:
             .where(func.strftime('%Y-%m-%d %H:%M:%S', Comment.created_at) >= since)
             .order_by(Comment.id)
         ).all()
-        own = (f'worker#{worker.id}', f'run#{run.id}')
+        own = (f'{worker.kind}#{worker.id}', f'run#{run.id}')
         return [c for c in comments if c.id not in settled and c.author not in own]
 
     def _push(self, s: Session, worker: Worker, comments: list[Comment]) -> None:
@@ -411,7 +410,7 @@ class Scheduler:
                 select(Worker)
                 .join(Project, Worker.project_id == Project.id)
                 .where(
-                    Worker.kind == WorkerKind.WORKER,
+                    Worker.run_id.is_not(None),
                     Worker.state == WorkerState.RUNNING,
                     Project.status == ProjectStatus.STOPPED,
                 )
@@ -553,7 +552,7 @@ class Scheduler:
             return []
 
     def _backlog(self, s: Session, project: Project, cfg: ProjectConfig) -> Backlog:
-        target = cfg.roles.worker.max_concurrent + cfg.roles.research.buffer
+        target = cfg.run_slots + cfg.roles.research.buffer
         if cfg.stop.max_runs is not None:
             target = min(target, cfg.stop.max_runs - runs(s, project))
         sweeps = count(
@@ -581,24 +580,31 @@ class Scheduler:
         return Backlog(
             tracks=tracks,
             target=target,
-            free=self._free_slots(s, project, cfg),
+            free=self._free_slots(s, project, cfg, cfg.roles.doing_runs()),
             sweeps=sweeps,
             per_sweep=cfg.roles.research.max_ideas,
         )
 
-    def _free_slots(self, s: Session, project: Project, cfg: ProjectConfig) -> int:
-        """Return the runs that the project can start now.
+    def _free_slots(self, s: Session, project: Project, cfg: ProjectConfig, roles: dict[str, WorkerRole]) -> int:
+        """Return the runs that ``roles`` can start now.
 
-        This is ``[roles.worker] max_concurrent`` minus the open runs, and never more than ``max_runs`` allows.
+        For each role, this is its ``max_concurrent`` minus its open runs. The sum is never more than ``max_runs``
+        allows.
         """
         open_runs = project_runs(project.id).where(Run.status.in_(OPEN_RUNS))
-        free = cfg.roles.worker.max_concurrent - count(s, open_runs)
+        free = sum(
+            max(role.max_concurrent - count(s, open_runs.where(done_by(name))), 0) for name, role in roles.items()
+        )
         if cfg.stop.max_runs is not None:
             free = min(free, cfg.stop.max_runs - runs(s, project))
         return max(free, 0)
 
     def _queue(self, s: Session, project: Project, cfg: ProjectConfig) -> None:
-        """Queue a run, and request its worker, for each free slot with a runnable idea, within ``[stop] max_runs``.
+        """Queue a run, and request its agent, for each free slot with a runnable idea, within ``[stop] max_runs``.
+
+        Each role that does runs fills its own slots with the ideas that it takes (``takes``), in the order of
+        ``Roles.doing_runs``. Its open runs count against its own ``max_concurrent``. Its ``explore_every`` and the
+        track shares apply to its own runs. ``max_runs`` and the attempts of an idea count the runs of every role.
 
         A ``ready`` idea with an ``after`` link to an idea that is not ``done`` is skipped and not changed. It stays
         ``ready`` and is taken when every prerequisite has finished. A runnable idea whose track is not in
@@ -607,21 +613,29 @@ class Scheduler:
         other ideas wait. Otherwise they could start from an old head while a better keep waits for its measurement.
         When an exploration run is due (``_explore``), the slot goes first to an idea pinned to an alternative base.
         Otherwise it goes to the most urgent idea of the track furthest below its share (``_pick``). An idea pinned to
-        a harness at its cap (``_full``) waits. When every harness of the rotation is at its cap, nothing more is
-        queued in this tick.
+        a harness at its cap (``_full``) waits. When every harness of a role's rotation is at its cap, the role queues
+        nothing more in this tick.
         """
         self._park_strays(s, project, cfg)
         live = [t.name for t in cfg.all_tracks if t.share > 0]
         query = select(Idea).where(Idea.project_id == project.id, runnable(), Idea.track.in_(live))
         if any(c.verdict is Verdict.KEEP for c in unmeasured(s, project)):
             query = query.where(Idea.base_candidate_id.is_not(None))
-        for _ in range(self._free_slots(s, project, cfg)):
-            full = self._full(s, project, cfg)
-            fits = query.where(or_(Idea.harness.is_(None), Idea.harness.not_in(full)))
-            explored = self._explore(s, project, cfg, fits)
-            idea, by_priority = (explored, explored) if explored is not None else self._pick(s, project, cfg, fits)
-            if idea is None or not self._enqueue(s, project, cfg, idea, full, by_priority=by_priority):
-                break
+        for name, role in cfg.roles.doing_runs().items():
+            takes = query
+            if role.takes is not None:
+                taken = s.connection().exec_driver_sql(ideas_taken(role.takes)).scalars().all()
+                takes = query.where(Idea.id.in_(taken))
+            for _ in range(self._free_slots(s, project, cfg, {name: role})):
+                full = self._full(s, project, cfg)
+                fits = takes.where(or_(Idea.harness.is_(None), Idea.harness.not_in(full)))
+                explored = self._explore(s, project, name, role, fits)
+                if explored is not None:
+                    idea, by_priority = explored, explored
+                else:
+                    idea, by_priority = self._pick(s, project, cfg, name, role, fits)
+                if idea is None or not self._enqueue(s, project, cfg, name, idea, full, by_priority=by_priority):
+                    break
 
     def _park_strays(self, s: Session, project: Project, cfg: ProjectConfig) -> None:
         """Park each runnable idea whose track is not in ``piloop.toml``, with a note that says how to fix it.
@@ -645,38 +659,42 @@ class Scheduler:
             self._tracer.event('idea.parked', project=project.name, idea=idea.id, reason=f'unknown track {idea.track}')
 
     def _pick(
-        self, s: Session, project: Project, cfg: ProjectConfig, query: Select[Idea]
+        self, s: Session, project: Project, cfg: ProjectConfig, name: str, role: WorkerRole, query: Select[Idea]
     ) -> tuple[Idea | None, Idea | None]:
         """Return the most urgent idea of the track furthest below its share, and the pick by priority alone.
 
-        A track's distance below its share is ``share × [roles.worker] max_concurrent`` minus its open runs. Only
-        tracks with an idea in ``query`` take part, so a track with nothing runnable gives its slot to another track.
-        Ties go to the track listed first. With one track, the two picks are the same.
+        A track's distance below its share is ``share × max_concurrent`` of the role minus the role's open runs on the
+        track. Only tracks with an idea in ``query`` take part, so a track with nothing runnable gives its slot to
+        another track. Ties go to the track listed first. With one track, the two picks are the same.
         """
         first = s.scalars(query.order_by(Idea.priority, Idea.id).limit(1)).first()
         if first is None or not cfg.multitrack:
             return first, first
-        open_runs = project_runs(project.id).where(Run.status.in_(OPEN_RUNS)).with_only_columns(Idea.track)
-        running = Counter(s.scalars(open_runs))
+        open_runs = project_runs(project.id).where(Run.status.in_(OPEN_RUNS), done_by(name))
+        running = Counter(s.scalars(open_runs.with_only_columns(Idea.track)))
         ready = set(s.scalars(query.with_only_columns(Idea.track)))
-        slots = cfg.roles.worker.max_concurrent
+        slots = role.max_concurrent
         track = max((t for t in cfg.all_tracks if t.name in ready), key=lambda t: t.share * slots - running[t.name])
         idea = s.scalars(query.where(Idea.track == track.name).order_by(Idea.priority, Idea.id).limit(1)).first()
         return idea, first
 
-    def _explore(self, s: Session, project: Project, cfg: ProjectConfig, query: Select[Idea]) -> Idea | None:
+    def _explore(self, s: Session, project: Project, name: str, role: WorkerRole, query: Select[Idea]) -> Idea | None:
         """Return the most urgent runnable idea pinned to an alternative base if an exploration run is due, else None.
 
-        An exploration run is due if none of the last ``explore_every - 1`` runs was a branch run. If no such idea is
-        ready, the queue uses its usual order. Instructions to research alone do not make enough branch runs, so the
-        daemon enforces this. It counts branch runs, not runs since the last exploration, so branch runs that research
-        or the orchestrator pinned on their own also count.
+        An exploration run is due if none of the role's last ``explore_every - 1`` runs was a branch run. If no such
+        idea is ready, the queue uses its usual order. Instructions to research alone do not make enough branch runs,
+        so the daemon enforces this. It counts branch runs, not runs since the last exploration, so branch runs that
+        research or the orchestrator pinned on their own also count.
         """
-        every = cfg.roles.worker.explore_every
+        every = role.explore_every
         if every == 0:
             return None
         latest = (
-            select(Run.branch).join(Idea).where(Idea.project_id == project.id).order_by(Run.id.desc()).limit(every - 1)
+            project_runs(project.id)
+            .where(done_by(name))
+            .with_only_columns(Run.branch)
+            .order_by(Run.id.desc())
+            .limit(every - 1)
         )
         recent = s.scalars(latest).all()
         if len(recent) < every - 1 or any(recent):
@@ -690,12 +708,13 @@ class Scheduler:
         s: Session,
         project: Project,
         cfg: ProjectConfig,
+        role: str,
         idea: Idea,
         full: Collection[str],
         *,
         by_priority: Idea | None,
     ) -> bool:
-        """Queue one run of ``idea`` on its pinned candidate if it has one, else on the current head.
+        """Queue one run of ``idea`` by ``role`` on its pinned candidate if it has one, else on the current head.
 
         A pin is a deliberate branch. ``run.queued`` then records ``pinned_base`` and ``computed_base``, so a wrong pin
         is easy to find. If the pin's bar (``ledger.bar_of``: the pin, or the nearest keep of a non-keep) is not the
@@ -705,8 +724,8 @@ class Scheduler:
 
         Returns False, and queues nothing, if the idea pins no harness and every harness of the rotation is ``full``.
         """
-        total_runs = count(s, project_runs(project.id))
-        harnesses = cfg.role_harnesses(WorkerKind.WORKER)
+        total_runs = count(s, project_runs(project.id).where(done_by(role)))
+        harnesses = cfg.role_harnesses(role)
         harness = idea.harness or free_harness(harnesses, harnesses[total_runs % len(harnesses)], full)
         if harness is None:
             return False
@@ -720,9 +739,10 @@ class Scheduler:
             idea.status = IdeaStatus.PARKED
             return True
         attempt = len(idea.runs) + 1
-        model = cfg.role_models(WorkerKind.WORKER)[harness]
+        model = cfg.role_models(role)[harness]
         run = Run(
             idea=idea,
+            role=role,
             attempt=attempt,
             base_candidate_id=base.id,
             branch=branches(pinned, computed),
@@ -740,7 +760,7 @@ class Scheduler:
         emit(s, 'run.queued', TargetKind.RUN, run.id, payload=payload)
         s.add(
             Worker(
-                kind=WorkerKind.WORKER,
+                kind=role,
                 project_id=project.id,
                 run_id=run.id,
                 harness=harness,
@@ -758,7 +778,7 @@ class Scheduler:
         """
         if not cfg.max_concurrent:
             return set()
-        queued = (Worker.state == WorkerState.REQUESTED) & (Worker.kind == WorkerKind.WORKER)
+        queued = (Worker.state == WorkerState.REQUESTED) & Worker.kind.in_(cfg.roles.doing_runs())
         on = select(Worker.harness).where(
             Worker.project_id == project.id, Worker.state.in_(LIVE) | queued, Worker.harness.in_(cfg.max_concurrent)
         )
@@ -766,11 +786,12 @@ class Scheduler:
         return {harness for harness, cap in cfg.max_concurrent.items() if agents[harness] >= cap}
 
     def _take(self, s: Session, project: Project, cfg: ProjectConfig) -> list[tuple[int, int | None]]:
-        """Mark requested rows ``starting``, up to each role's ``max_concurrent``. Refuse a worker without a run.
+        """Mark requested rows ``starting``, up to each role's ``max_concurrent``. Refuse a run role's row without a run.
 
         A sweep's harness is chosen here. A harness at its cap (``_full``) is skipped for the next one in the rotation.
         A sweep pinned to that harness stays requested. A run's harness was chosen when it was queued (``_reroute``).
-        A request for a role that ``piloop.toml`` no longer has is refused.
+        A request for a role that ``piloop.toml`` no longer has is refused, and its queued run fails
+        (``ROLE_REMOVED``), so that its idea goes back to the queue.
 
         Returns ``(worker_id, run_id)`` pairs. The run is what a worker executes. Nothing is taken while the startup
         breaker holds (``_paused``).
@@ -784,6 +805,8 @@ class Scheduler:
         )
         for worker in s.scalars(unknown):
             self._close(s, worker, f'no [roles.{worker.kind}] in piloop.toml')
+            if worker.run_id is not None:
+                self._fail_run(s, s.get_one(Run, worker.run_id), ROLE_REMOVED)
         full = self._full(s, project, cfg)
         for kind, rc in roles.items():
             mine = (Worker.project_id == project.id, Worker.kind == kind)
@@ -796,7 +819,7 @@ class Scheduler:
             ).all()
             rotation = cfg.role_harnesses(kind)
             for worker in requested:
-                if kind == WorkerKind.WORKER:
+                if isinstance(rc, WorkerRole):
                     if worker.run_id is None:
                         self._close(s, worker, NO_RUN_ERROR)
                         continue
@@ -827,7 +850,7 @@ class Scheduler:
             return False
         emit(s, 'run.rerouted', TargetKind.RUN, run.id, payload={'from': run.harness, 'to': harness})
         run.harness = worker.harness = harness
-        run.model = worker.model = cfg.role_models(WorkerKind.WORKER)[harness]
+        run.model = worker.model = cfg.role_models(worker.kind)[harness]
         return True
 
     def _paused(self, s: Session, project: Project) -> bool:
@@ -1124,6 +1147,15 @@ def _in_worktree(repo: Repo, wt_path: Path, agent: Callable[[], Outcome]) -> Non
         cleanup.callback(git.remove_worktree, repo, wt_path)
         if agent().handed_over:
             cleanup.pop_all()
+
+
+def done_by(role: str) -> ColumnElement[bool]:
+    """Select the runs of ``role``.
+
+    ``likely()`` tells SQLite that most runs match, as most runs are the worker's. Without it, SQLite drives a join
+    with ``ideas`` from ``runs`` and scans every run of every project.
+    """
+    return func.likely(Run.role == role, type_=Boolean)
 
 
 def branches(pinned: Candidate | None, computed: Candidate | None) -> bool:

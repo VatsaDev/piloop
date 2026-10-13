@@ -25,7 +25,7 @@ from rich import box
 from rich.console import Console, Group, RenderableType
 from rich.table import Table
 from rich.text import Text
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from piloop.campaign.ideas import yields
@@ -78,7 +78,7 @@ def renderables(
         *_seeds(s, project, heading),
         *history(s, project, cfg, table_box=table_box, heading=heading),
         Text(),
-        *_worker_findings(s, project, heading),
+        *_worker_findings(s, project, cfg, heading),
         *_digests(s, project, heading),
         *_escalations(s, project, heading),
     ]
@@ -268,12 +268,13 @@ def _seeds(s: Session, project: Project, heading: str) -> list[RenderableType]:
     return [title, *lines, Text()]
 
 
-def _worker_findings(s: Session, project: Project, heading: str) -> list[RenderableType]:
-    """List the latest worker findings, with more text than the ideas table shows."""
+def _worker_findings(s: Session, project: Project, cfg: ProjectConfig, heading: str) -> list[RenderableType]:
+    """List the latest findings of the agents that did runs, with more text than the ideas table shows."""
+    by_runs = or_(*(Comment.author.startswith(f'{name}#', autoescape=True) for name in cfg.roles.doing_runs()))
     rows = s.scalars(
         select(Comment)
         .join(Idea, (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == Idea.id))
-        .where(Idea.project_id == project.id, Comment.kind == CommentKind.FINDING, Comment.author.like('worker#%'))
+        .where(Idea.project_id == project.id, Comment.kind == CommentKind.FINDING, by_runs)
         .order_by(Comment.id.desc())
         .limit(FINDINGS_SHOWN)
     ).all()

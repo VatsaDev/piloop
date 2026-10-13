@@ -6,7 +6,9 @@ import signal
 import subprocess
 import time
 from pathlib import Path
+from typing import ClassVar
 
+from piloop.harnesses import Invocation
 from piloop.proc import alive, child_env, started
 from piloop.runtime import Handle, NotSteerable, Outcome, WorkerSpec, WorkerStatus
 
@@ -25,7 +27,8 @@ class SubprocessRuntime:
     another process can still be observed and killed by its pid and start time, but has no exit code.
     """
 
-    kind = 'subprocess'
+    kind: ClassVar[str] = 'subprocess'
+    invocation: ClassVar[Invocation] = Invocation.HEADLESS
 
     def __init__(self, project: str = '', project_path: Path | None = None) -> None:
         """Take the same arguments as every runtime constructor. A child process needs neither of them."""

@@ -23,13 +23,13 @@ import piloop
 from piloop import mcp
 from piloop.cli import skills
 from piloop.cli.version import installed
-from piloop.config import ConfigError, ProjectConfig, RuntimeKind, explain, load_project_config
+from piloop.config import ConfigError, ProjectConfig, explain, load_project_config
 from piloop.daemon.serve import SECRETS_COMMAND_ENV, SecretsError, running_pid, secrets
 from piloop.db.models import utcnow
 from piloop.db.session import MIGRATIONS
 from piloop.proc import child_env, environment
 from piloop.reports.overview import age
-from piloop.runtime.herdr import HERDR, HerdrError, integrations, server_running
+from piloop.runtime.herdr import HERDR, HerdrError, HerdrRuntime, integrations, server_running
 from piloop.settings import Settings
 
 
@@ -58,7 +58,7 @@ def checks(cfg: Settings) -> list[Check]:
         *(_mcp(name, c, env) for name, _, c in projects if isinstance(c, ProjectConfig) and c.mcp),
         *_skills(cfg),
         _harnesses(stored),
-        *(_herdr(herdr) if (herdr := [c for c in stored if RuntimeKind.HERDR in c.runtimes]) else []),
+        *(_herdr(herdr) if (herdr := [c for c in stored if HerdrRuntime.kind in c.runtimes]) else []),
     ]
 
 

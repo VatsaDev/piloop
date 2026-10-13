@@ -29,12 +29,13 @@ from piloop.usage import project_tokens
 
 STALE_ERROR = 'daemon exited while the run was in progress'
 CAMPAIGN_STOPPED_ERROR = 'campaign stopped'
-NOT_ATTEMPTS = (STOPPED_ERROR, STALE_ERROR, CAMPAIGN_STOPPED_ERROR)
+ROLE_REMOVED = 'its role is no longer in piloop.toml'
+NOT_ATTEMPTS = (STOPPED_ERROR, STALE_ERROR, CAMPAIGN_STOPPED_ERROR, ROLE_REMOVED)
 """Run errors that mean the daemon stopped the run, not that the idea was tried.
 
-The causes are a daemon stop or restart (``piloop upgrade``), a daemon crash, or a campaign stop while the run was
-queued. Such a run is not counted as an attempt at its idea. It does not count toward ``max_runs`` or ``plateau``,
-and it is not an anomaly."""
+The causes are a daemon stop or restart (``piloop upgrade``), a daemon crash, a campaign stop while the run was
+queued, or a ``piloop init`` that removed the role of a queued run. Such a run is not counted as an attempt at its
+idea. It does not count toward ``max_runs`` or ``plateau``, and it is not an anomaly."""
 
 
 def attempt() -> ColumnElement[bool]:
@@ -93,7 +94,7 @@ def _over_runs[T](s: Session, project: Project, aggregate: ColumnElement[T], *wh
 
 
 def runs(s: Session, project: Project) -> int:
-    """Count the project's worker runs that count toward ``max_runs`` (see ``counted``)."""
+    """Count the project's runs, of every role, that count toward ``max_runs`` (see ``counted``)."""
     return _over_runs(s, project, func.count(Run.id), counted()) or 0
 
 
@@ -116,12 +117,12 @@ def stall(cfg: ProjectConfig) -> tuple[int, str]:
     """Return the number of runs without a keep after which research must pivot, and how it was derived.
 
     The number is half of ``plateau``, so half of the campaign's patience remains after the pivot. Without
-    ``plateau``, it is two rounds of the worker slots.
+    ``plateau``, it is two rounds of the run slots (``ProjectConfig.run_slots``).
     """
     if cfg.stop.plateau is not None:
         return -(-cfg.stop.plateau // 2), f'half of [stop] plateau = {cfg.stop.plateau}'
-    slots = cfg.roles.worker.max_concurrent
-    return 2 * slots, f'two rounds of [roles.worker] max_concurrent = {slots}'
+    slots = ' + '.join(f'[roles.{name}] max_concurrent' for name in cfg.roles.doing_runs())
+    return 2 * cfg.run_slots, f'two rounds of {slots} = {cfg.run_slots}'
 
 
 def _max_runs(s: Session, project: Project, limit: int) -> str | None:

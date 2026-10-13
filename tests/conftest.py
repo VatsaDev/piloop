@@ -15,7 +15,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from sqlalchemy import select
 
 from piloop.campaign import project as project_module
-from piloop.config import RuntimeKind, load_project_config
+from piloop.config import load_project_config
 from piloop.daemon.main import ACTOR
 from piloop.db.models import Candidate, Measurement, Project, Verdict, Worker, WorkerState
 from piloop.db.session import Database, migrate
@@ -293,7 +293,7 @@ def span_named(spans: InMemorySpanExporter, name: str) -> ReadableSpan:
 
 
 def factory(rt: Runtime) -> RuntimeFactory:
-    def make(_kind: RuntimeKind, *, project: str, project_path: Path) -> Runtime:
+    def make(_kind: str, *, project: str, project_path: Path) -> Runtime:
         return rt
 
     return make

@@ -18,7 +18,7 @@ from piloop import git
 from piloop.agents.capture import ENTIRE_INSTALL, MIN_ENTIRE, AttachError, attach_session, attachable, usable
 from piloop.agents.refill import usage_of
 from piloop.agents.roles import role_of
-from piloop.config import BRIEF_FILE, RuntimeKind, config_of, harness_of
+from piloop.config import BRIEF_FILE, config_of, harness_of
 from piloop.db.events import emit
 from piloop.db.models import Comment, Project, Run, TargetKind, UsageJson, Worker, WorkerState, utcnow
 from piloop.db.session import Database
@@ -27,7 +27,7 @@ from piloop.mcp import RENDERERS, Launch, Rendered, expand, forwarded_env
 from piloop.otel import Span, Tracer
 from piloop.proc import child_env
 from piloop.runtime import Handle, Outcome, Runtime, StartFailed, WorkerSpec, WorkerStatus
-from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
+from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for, runtimes
 from piloop.text import cell
 from piloop.usage import UsageError
 
@@ -232,9 +232,9 @@ class Launcher:
             model = w.model or cfg.role_models(w.kind)[harness]
             definition = cfg.harness_for(harness)
             runtime_kind = cfg.role_runtime(w.kind)
-            template = definition.interactive if runtime_kind is RuntimeKind.HERDR else definition.headless
+            template = definition.argv(runtimes()[runtime_kind].invocation)
             session_id = str(uuid4()) if definition.captures_session and takes_session_id(template) else None
-            w.harness, w.model, w.runtime, w.log_dir = harness, model, runtime_kind.value, str(log_dir)
+            w.harness, w.model, w.runtime, w.log_dir = harness, model, runtime_kind, str(log_dir)
             w.state, w.started_at, w.session_id = WorkerState.STARTING, utcnow(), session_id
             emit(
                 s,

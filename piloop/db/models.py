@@ -406,7 +406,7 @@ class IdeaLink(Base):
 
 
 class Run(Tracked, Base):
-    """One attempt at an idea, by one worker with one harness and model."""
+    """One attempt at an idea, by one agent of a role that does runs, with one harness and model."""
 
     __tablename__ = 'runs'
     __table_args__ = (
@@ -417,6 +417,9 @@ class Run(Tracked, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     idea_id: Mapped[int] = mapped_column(ForeignKey('ideas.id', ondelete='CASCADE'))
+    role: Mapped[str] = mapped_column(default=WorkerKind.WORKER.value, server_default=WorkerKind.WORKER.value)
+    """The role that does the run: ``worker``, or a role of the project with ``runs = true``. Its agents have this
+    ``workers.kind``."""
     attempt: Mapped[int]
     base_candidate_id: Mapped[int]
     """The ``candidates.id`` that the worktree started from. The run's candidates descend from it. A plain integer,
@@ -424,7 +427,7 @@ class Run(Tracked, Base):
     branch: Mapped[bool] = mapped_column(default=False, server_default=text('0'))
     """Whether the run started from an alternative starting point: its idea pinned a base other than the head when it
     was queued (a reference, an older keep or a note). The run is judged against its own base only, so what it keeps
-    is a branch keep, which never moves the head. The scheduler sets it (``[roles.worker] explore_every``)."""
+    is a branch keep, which never moves the head. The scheduler sets it (``explore_every`` of the run's role)."""
     harness: Mapped[str]
     model: Mapped[str]
     status: Mapped[RunStatus] = mapped_column(default=RunStatus.QUEUED, server_default=RunStatus.QUEUED.value)
@@ -603,7 +606,7 @@ class Worker(Tracked, Base):
     project_id: Mapped[int | None] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'))
     """The project the agent works for. piloop always sets it, but readers must accept NULL."""
     run_id: Mapped[int | None] = mapped_column(ForeignKey('runs.id', ondelete='SET NULL'))
-    """The run that a row of kind ``worker`` does. Other roles have none."""
+    """The run that the row does, for a role that does runs. Sweeping roles have none."""
     harness: Mapped[str | None]
     model: Mapped[str | None]
     runtime: Mapped[str | None]

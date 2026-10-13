@@ -46,7 +46,7 @@ from piloop.campaign.project import (
 from piloop.cli import doctor as doctor_module, skills
 from piloop.cli.upgrade import requirement, source
 from piloop.cli.version import installed
-from piloop.config import ConfigError, Files, RuntimeKind, config_of
+from piloop.config import ConfigError, Files, config_of
 from piloop.daemon.main import Daemon
 from piloop.daemon.serve import restart as restart_in_place, running_pid, service_unit, spawn_detached, terminate
 from piloop.db import sql
@@ -74,7 +74,7 @@ from piloop.reports.overview import age, item_lines, overview
 from piloop.reports.pack import renderables as pack_renderables
 from piloop.runtime import NotSteerable
 from piloop.runtime.factory import handle_for, runtime_for
-from piloop.runtime.herdr import HERDR, HerdrError, focus_tab, session_socket
+from piloop.runtime.herdr import HERDR, HerdrError, HerdrRuntime, focus_tab, session_socket
 from piloop.runtime.subprocess import STDOUT
 from piloop.scoring.ledger import ImportRefused, NoteRefused, follow_up, import_reference, note, track_of
 from piloop.settings import settings
@@ -618,10 +618,11 @@ def launch(
         raise SystemExit('--scout is a mode of the research role: `piloop launch <project> research --scout`')
     with _session() as s:
         project = _project(s, ref)
-        sweeping = config_of(project).roles.sweeping()
+        roles = config_of(project).roles
+        sweeping = roles.sweeping()
         if role not in sweeping:
             workers = (
-                ' The daemon launches workers by itself, one for each queued run.' if role == WorkerKind.WORKER else ''
+                ' The daemon launches workers by itself, one for each queued run.' if role in roles.doing_runs() else ''
             )
             raise SystemExit(f'{project.name} has no sweeping role {role!r}; it has {", ".join(sweeping)}.{workers}')
         worker = Worker(kind=role, project_id=project.id, harness=harness, model=model, reason=reason)
@@ -757,7 +758,7 @@ def attach(worker_id: Annotated[int, cyclopts.Parameter(help='The id of the agen
         worker = s.scalars(select(Worker).where(Worker.id == worker_id, Worker.state == WorkerState.RUNNING)).first()
         if worker is None:
             raise SystemExit(f'worker#{worker_id} is not running')
-        if worker.runtime != RuntimeKind.HERDR:
+        if worker.runtime != HerdrRuntime.kind:
             console.print(
                 f'worker#{worker.id} is headless ({worker.runtime} runtime): {worker.log_dir}/{STDOUT} while it runs,'
                 f' transcript.txt once it ends'

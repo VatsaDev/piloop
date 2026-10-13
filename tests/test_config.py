@@ -7,12 +7,12 @@ from inline_snapshot import snapshot
 from piloop.config import (
     ConfigError,
     Direction,
+    Files,
     Metric,
     MetricRole,
     ProjectConfig,
     ResearchRole,
     Roles,
-    RuntimeKind,
     Stop,
     WatchdogRole,
     WorkerRole,
@@ -26,7 +26,7 @@ def test_load_precedence(project_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     cfg = load_project_config(project_path)
     assert (cfg.name, cfg.runtime, cfg.harnesses, cfg.model) == (
         'demo',
-        RuntimeKind.SUBPROCESS,
+        'subprocess',
         ['script'],
         {'script': 'test-model'},
     )
@@ -41,8 +41,8 @@ def test_load_precedence(project_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv('PILOOP_PROJECT_ROLES__WORKER__MAX_CONCURRENT', '3')
     monkeypatch.setenv('PILOOP_PROJECT_RUNTIME', 'herdr')
     cfg = load_project_config(project_path)
-    assert (cfg.roles.worker.max_concurrent, cfg.runtime) == (3, RuntimeKind.HERDR)
-    assert load_project_config(project_path, runtime=None).runtime is RuntimeKind.HERDR
+    assert (cfg.roles.worker.max_concurrent, cfg.runtime) == (3, 'herdr')
+    assert load_project_config(project_path, runtime=None).runtime == 'herdr'
 
 
 def test_roles_are_typed_per_kind(project_path: Path) -> None:
@@ -328,8 +328,8 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
     cfg = load_project_config(project_path, roles={'reviewer': good})
     assert list(cfg.roles.all()) == ['worker', 'watchdog', 'research', 'reviewer']
     assert list(cfg.roles.sweeping()) == ['watchdog', 'research', 'reviewer'], 'the worker does runs, not sweeps'
-    assert (cfg.role_runtime('reviewer'), cfg.role_runtime('research')) == (RuntimeKind.HERDR, RuntimeKind.SUBPROCESS)
-    assert cfg.runtimes == {RuntimeKind.HERDR, RuntimeKind.SUBPROCESS}
+    assert (cfg.role_runtime('reviewer'), cfg.role_runtime('research')) == ('herdr', 'subprocess')
+    assert cfg.runtimes == {'herdr', 'subprocess'}
     assert ProjectConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the project row'
 
     def fails(roles: dict[str, object]) -> str:
@@ -370,3 +370,34 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
         ), query
     for name in ('scout', 'Review Bot'):
         assert f'{name!r} is not a role name: use lowercase letters, digits, _ and -' in fails({name: good})
+
+
+def test_a_table_with_runs_defines_a_role_that_does_runs_with_the_worker_defaults(project_path: Path) -> None:
+    quick = {'runs': True, 'takes': "priority >= 3 OR track = 'speed'", 'timeout': 60, 'max_concurrent': 1}
+    cfg = load_project_config(project_path, roles={'quick': quick})
+    assert list(cfg.roles.all()) == ['worker', 'watchdog', 'research', 'quick']
+    assert list(cfg.roles.doing_runs()) == ['quick', 'worker'], 'the roles of the file fill their slots first'
+    assert list(cfg.roles.sweeping()) == ['watchdog', 'research']
+    role = cfg.roles.doing_runs()['quick']
+    assert (role.prompt, role.PROMPT, role.files, role.explore_every) == (None, 'worker.md', Files.NOTHING, 4)
+    assert cfg.run_slots == 1 + cfg.roles.worker.max_concurrent
+    assert ProjectConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the project row'
+
+    def fails(roles: dict[str, object]) -> str:
+        with pytest.raises(ConfigError) as e:
+            load_project_config(project_path, roles=roles)
+        return str(e.value).split('\n', 1)[1]
+
+    assert "roles.quick.takes = 'priority >>= 3': the condition does not run on the ideas table" in fails(
+        {'quick': {'runs': True, 'takes': 'priority >>= 3'}}
+    )
+    assert 'no such column: nope' in fails({'quick': {'runs': True, 'takes': 'nope = 1'}})
+    assert 'You did not supply a value for binding parameter :project' in fails(
+        {'quick': {'runs': True, 'takes': 'project_id = :project'}}
+    )
+    assert 'roles.quick.triggers: Extra inputs are not permitted' in fails({'quick': {'runs': True, 'triggers': []}})
+    assert "roles.quick.takes = 'priority > 1': Extra inputs are not permitted" in fails(
+        {'quick': {'takes': 'priority > 1', 'triggers': []}}
+    )
+    assert 'roles.watchdog.runs = True: Input should be False' in fails({'watchdog': {'runs': True}})
+    assert 'roles.worker.runs = False: Input should be True' in fails({'worker': {'runs': False}})

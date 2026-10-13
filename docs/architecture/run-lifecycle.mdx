@@ -60,7 +60,8 @@ sequenceDiagram
    it is `ready` and each of its prerequisites (an `after` link) is `done`. The slot goes to the most urgent idea of
    the track that is furthest below its share. At least one run in `[roles.worker] explore_every` starts from a
    pinned idea when one is ready. The scheduler inserts a `queued` run, chooses its harness from the rotation, and
-   inserts a `requested` worker row.
+   inserts a `requested` worker row. A [role that does runs](/concepts/roles#define-a-role-that-does-runs) fills its
+   own slots in the same way, with the ideas that its `takes` condition selects, before the worker.
 2. **Take.** In the same tick, the scheduler sets `requested` rows to `starting`, up to `max_concurrent` for each role
    and each harness. Each one goes to a thread of the daemon's pool.
 3. **Launch.** The run executor writes the brief and adds a git worktree at the run's base: the head, or the

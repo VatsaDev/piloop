@@ -14,7 +14,6 @@ from dirty_equals import IsFloat, IsPositive, IsStr
 from inline_snapshot import snapshot
 
 from piloop import settings as settings_module
-from piloop.config import RuntimeKind
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.runtime import Handle, StartFailed, WorkerSpec, WorkerStatus, herdr
 from piloop.runtime.factory import make_runtime
@@ -753,11 +752,11 @@ def test_missing_binary_and_malformed_output(tmp_path: Path, monkeypatch: pytest
         HerdrRuntime('demo', tmp_path).status(Handle('herdr', {'agent': 'w1'}))
 
 
-@pytest.mark.parametrize('kind', list(RuntimeKind))
-def test_every_runtime_kind_is_registered(kind: RuntimeKind, tmp_path: Path, herdr_log: Path) -> None:
+@pytest.mark.parametrize('kind', ['herdr', 'subprocess'])
+def test_every_runtime_kind_is_registered(kind: str, tmp_path: Path, herdr_log: Path) -> None:
     runtime = make_runtime(kind, project='p', project_path=tmp_path)
     assert runtime.kind == kind
-    assert isinstance(runtime, {RuntimeKind.HERDR: HerdrRuntime, RuntimeKind.SUBPROCESS: SubprocessRuntime}[kind])
+    assert isinstance(runtime, {'herdr': HerdrRuntime, 'subprocess': SubprocessRuntime}[kind])
 
 
 @pytest.mark.herdr

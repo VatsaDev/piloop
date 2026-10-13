@@ -34,10 +34,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from uuid import uuid4
 
 from piloop import settings as settings_module
+from piloop.harnesses import Invocation
 from piloop.proc import tagged
 from piloop.runtime import Handle, NotSteerable, Outcome, StartFailed, WorkerSpec, WorkerStatus
 
@@ -176,7 +177,8 @@ class HerdrError(RuntimeError):
 class HerdrRuntime:
     """Runs the ``herdr`` CLI against the piloop session, and starts its server when needed."""
 
-    kind = 'herdr'
+    kind: ClassVar[str] = 'herdr'
+    invocation: ClassVar[Invocation] = Invocation.INTERACTIVE
 
     def __init__(self, project: str, project_path: Path, *, sleep: Callable[[float], None] = time.sleep) -> None:
         if shutil.which(HERDR) is None:

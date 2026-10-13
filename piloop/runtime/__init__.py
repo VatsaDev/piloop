@@ -1,13 +1,16 @@
 """Where agent processes run and how the daemon talks to them.
 
-The daemon depends only on the ``Runtime`` protocol. ``herdr`` and ``subprocess`` implement it (see ``factory``). To add
-a runtime (tmux, a remote host), implement the protocol, add a ``RuntimeKind`` and add one ``factory.RUNTIMES`` entry.
+The daemon depends only on the ``Runtime`` protocol. ``herdr`` and ``subprocess`` implement it. To add a runtime (tmux,
+a remote host), implement the protocol in a class and register the class with an entry point in
+``factory.RUNTIME_GROUP``.
 """
 
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import ClassVar, Protocol
+
+from piloop.harnesses import Invocation
 
 
 class WorkerStatus(StrEnum):
@@ -84,9 +87,20 @@ class NotSteerable(RuntimeError):
 
 
 class Runtime(Protocol):
-    """Start, observe, steer and stop workers."""
+    """Start, observe, steer and stop workers.
 
-    kind: str
+    The registry (``factory.runtimes``) holds the classes. The class attributes say what the runtime is before it is
+    constructed: config validation reads them, and a constructor can fail when the runtime is not installed.
+    """
+
+    kind: ClassVar[str]
+    """The name of the runtime: ``runtime`` in ``piloop.toml``, and ``workers.runtime``."""
+    invocation: ClassVar[Invocation]
+    """Which argument list of a harness the runtime starts: ``interactive`` or ``headless``."""
+
+    def __init__(self, project: str, project_path: Path) -> None:
+        """Make the runtime of one project. Herdr names its workspace after the project."""
+        ...
 
     def start(self, spec: WorkerSpec) -> Handle:
         """Start the worker and return once it runs. For Herdr, this is when the agent is detected and has its brief.

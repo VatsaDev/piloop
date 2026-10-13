@@ -137,6 +137,7 @@ CREATE INDEX ix_idea_links_target ON idea_links (target_id, kind);
 CREATE TABLE runs (
 	id INTEGER NOT NULL,
 	idea_id INTEGER NOT NULL,
+	role VARCHAR DEFAULT 'worker' NOT NULL,
 	attempt INTEGER NOT NULL,
 	base_candidate_id INTEGER NOT NULL,
 	branch BOOLEAN DEFAULT 0 NOT NULL,

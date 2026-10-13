@@ -30,7 +30,7 @@ from piloop.campaign import inbox, spend
 from piloop.campaign.ideas import defined_by, links, runnable, superseded_by, yields
 from piloop.campaign.inbox import project_of
 from piloop.campaign.stop import attempt, hours, runs, runs_without_keep
-from piloop.config import Direction, Metric, ProjectConfig, RuntimeKind, Track, harness_of
+from piloop.config import Direction, Metric, ProjectConfig, Track, harness_of
 from piloop.db.events import ANOMALY_EVENT
 from piloop.db.models import (
     ENDED,
@@ -60,6 +60,7 @@ from piloop.db.models import (
 )
 from piloop.reports.history import IDEAS_IN_HISTORY, block
 from piloop.runtime.factory import handle_for, runtime_for
+from piloop.runtime.herdr import HerdrRuntime
 from piloop.scoring.ledger import (
     NOTE,
     baseline,
@@ -302,13 +303,13 @@ def live_workers(s: Session, project: Project) -> Sequence[Worker]:
 
 def tab_of(w: Worker) -> str | None:
     """Return the Herdr tab id of a launched agent, or None for a headless agent or one not launched yet."""
-    tab = w.handle.get('tab_id') if w.runtime == RuntimeKind.HERDR else None
+    tab = w.handle.get('tab_id') if w.runtime == HerdrRuntime.kind else None
     return None if tab is None else str(tab)
 
 
 def on(s: Session, w: Worker) -> str:
-    """Describe what the agent works on: the idea for a worker, the trigger reason for the other roles."""
-    if w.kind == WorkerKind.WORKER and w.run_id is not None:
+    """Describe what the agent works on: the idea of its run, or else the reason for its request."""
+    if w.run_id is not None:
         idea = s.get_one(Run, w.run_id).idea
         return f'idea#{idea.id} {cell(idea.title)}'
     return cell(w.reason or NONE)
@@ -466,7 +467,7 @@ def tracks_lines(s: Session, project: Project, cfg: ProjectConfig, now: datetime
     open_runs = project_runs(project.id).where(Run.status.in_(OPEN_RUNS)).with_only_columns(Idea.track)
     running = Counter(s.scalars(open_runs))
     ready = Counter(s.scalars(select(Idea.track).where(Idea.project_id == project.id, runnable())))
-    slots = cfg.roles.worker.max_concurrent
+    slots = cfg.run_slots
     lines = []
     for track in cfg.all_tracks:
         m = track.primary
@@ -581,7 +582,7 @@ def _now(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> lis
 
 def _runs_now(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> list[str]:
     open_runs = s.scalars(project_runs(project.id).where(Run.status.in_(OPEN_RUNS)).order_by(Run.id)).all()
-    lines = [f'- Worker slots: {len(open_runs)} of {cfg.roles.worker.max_concurrent} busy.']
+    lines = [f'- Worker slots: {len(open_runs)} of {cfg.run_slots} busy.']
     for run in open_runs:
         worker = latest_worker(s, run.id)
         state = f'{run.status}'
@@ -839,7 +840,7 @@ def _idle_queue(s: Session, project: Project, cfg: ProjectConfig) -> list[Anomal
     if project.status is not ProjectStatus.ACTIVE:
         return []
     open_runs = project_runs(project.id).where(Run.status.in_(OPEN_RUNS))
-    free = cfg.roles.worker.max_concurrent - count(s, open_runs)
+    free = cfg.run_slots - count(s, open_runs)
     if cfg.stop.max_runs is not None:
         free = min(free, cfg.stop.max_runs - runs(s, project))
     ready = count(s, select(Idea).where(Idea.project_id == project.id, runnable()))
@@ -875,7 +876,6 @@ def _silent(s: Session, project: Project, now: datetime, jobs: JobsProbe) -> lis
         select(Worker)
         .where(
             Worker.project_id == project.id,
-            Worker.kind == WorkerKind.WORKER,
             Worker.state == WorkerState.RUNNING,
             Worker.run_id.is_not(None),
         )
@@ -884,7 +884,7 @@ def _silent(s: Session, project: Project, now: datetime, jobs: JobsProbe) -> lis
     found: list[Anomaly] = []
     for worker in rows:
         run = s.get_one(Run, worker.run_id)
-        signed = (f'worker#{worker.id}', f'run#{run.id}')
+        signed = (f'{worker.kind}#{worker.id}', f'run#{run.id}')
         moments = [
             ('its run started', run.started_at or worker.started_at),
             ('its last comment', s.scalar(select(func.max(Comment.created_at)).where(Comment.author.in_(signed)))),
