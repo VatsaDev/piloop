@@ -20,7 +20,14 @@ from piloop.agents.roles import SQL_HINT
 from piloop.campaign import stop
 from piloop.campaign.project import sync
 from piloop.config import ProjectConfig, load_project_config
-from piloop.daemon.runner import INTERRUPTED, NO_CHANGES, UNCOMMITTED_SUMMARY, RunExecutor
+from piloop.daemon.runner import (
+    INTERRUPTED,
+    NO_CHANGES,
+    RECOVERED_REASON,
+    RECOVERY_REQUEUES,
+    UNCOMMITTED_SUMMARY,
+    RunExecutor,
+)
 from piloop.db.models import (
     Candidate,
     Comment,
@@ -167,6 +174,13 @@ def candidates(db: Database, run_id: int) -> list[Scored]:
         return [Scored(c) for c in rows]
 
 
+def candidates_measured(db: Database, run_id: int) -> list[Scored]:
+    """``candidates``, without the ones nothing measured (a skip commit, recovered work)."""
+    with db.session() as s:
+        rows = s.scalars(select(Candidate).where(Candidate.run_id == run_id).order_by(Candidate.id)).all()
+        return [Scored(c) for c in rows if c.measurements]
+
+
 def run_row(db: Database, run_id: int) -> Run:
     with db.session() as s:
         return s.get_one(Run, run_id)
@@ -272,25 +286,122 @@ def test_worse_commit_is_discarded(db: Database, project: Project, runtime: Scri
     assert run_row(db, run_id).status is RunStatus.SUCCEEDED
 
 
-def test_uncommitted_work_is_committed(db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path) -> None:
+def test_work_a_stopped_worker_left_uncommitted_is_recovered_and_a_new_run_finishes_it(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """comment#10936: a failed worker's uncommitted tree was scored, and could become the head, never declared ready.
+
+    It is now ``recovered``: committed, pinned, never measured, never a keep. The idea goes back to the queue with the
+    recovered candidate as its base, attempts left or not, and the run that finishes it is judged as any other.
+    """
     write_toml(Path(project.path), HARNESS_FORGETS_COMMIT)
     reload_project(db, project)
-    run_id = make_run(db, project)
+    run_id = make_run(db, project, max_runs=1)
     execute(executor(db, runtime, tmp_path), db, run_id)
-    [e] = candidates(db, run_id)
-    assert (e.summary, e.verdict) == (UNCOMMITTED_SUMMARY, Verdict.KEEP)
-    assert 'data' not in Repo(project.path).git.show('--stat', '--format=', e.commit_sha), (
-        'linked paths are never committed'
+    assert (run_row(db, run_id).status, run_row(db, run_id).error) == (RunStatus.FAILED, INTERRUPTED)
+    [(summary, verdict, reason, measurements, _)] = scored(db, run_id)
+    assert (summary, verdict, reason, measurements) == (
+        UNCOMMITTED_SUMMARY,
+        Verdict.RECOVERED,
+        RECOVERED_REASON.format(run=run_id),
+        0,
+    )
+    with db.session() as s:
+        recovered = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).one()
+        idea = s.get_one(Idea, run_row(db, run_id).idea_id)
+        assert (idea.status, idea.base_candidate_id) == (IdeaStatus.READY, recovered.id), 'max_runs=1 is spent'
+        [note] = s.scalars(select(Comment).where(Comment.target_kind == TargetKind.IDEA)).all()
+        assert note.body.startswith(f'requeued from candidate#{recovered.id}: run#{run_id} ended failed')
+        trunk = head(s, s.get_one(Project, project.id))
+        assert trunk is not None and trunk.id == baseline(db, project.id).id, 'the head did not move'
+        recovered_id, recovered_sha, idea_id = recovered.id, recovered.commit_sha, idea.id
+    repo = Repo(project.path)
+    assert 'data' not in repo.git.show('--stat', '--format=', recovered_sha), 'linked paths are never committed'
+    assert repo.git.log('-1', '--format=%(trailers:key=Piloop-Recovered,valueonly)', recovered_sha).strip() == (
+        f'run#{run_id}'
     )
 
+    write_toml(Path(project.path), HARNESS_APPEND)
+    reload_project(db, project)
+    with db.session() as s:
+        s.get_one(Idea, idea_id).status = IdeaStatus.SCHEDULED
+        run = Run(idea_id=idea_id, attempt=2, base_candidate_id=recovered_id, harness='script', model='test-model')
+        s.add(run)
+        s.flush()
+        s.add(
+            Worker(kind=WorkerKind.WORKER, project_id=project.id, run_id=run.id, harness='script', model='test-model')
+        )
+        s.commit()
+        finishing = run.id
+    ex = executor(db, runtime, tmp_path)
+    execute(ex, db, finishing)
+    with db.session() as s:
+        assert '- candidate#' in (s.get_one(Run, finishing).brief or '') and 'left uncommitted when its worker' in (
+            s.get_one(Run, finishing).brief or ''
+        )
+    [done] = candidates(db, finishing)
+    assert (done.summary, done.verdict, done.metrics['score'], done.parent_id) == (
+        'add a line',
+        Verdict.KEEP,
+        3.0,
+        recovered_id,
+    ), 'judged against the nearest keep below the recovered work, the baseline'
+    with db.session() as s:
+        assert s.get_one(Idea, idea_id).status is IdeaStatus.DONE
 
-def test_dirt_after_a_commit_is_amended(db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path) -> None:
+
+def test_dirt_after_a_commit_is_recovered_on_its_own_and_the_commit_is_scored_as_made(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
     write_toml(Path(project.path), HARNESS_COMMITS_AND_LEAVES_DIRT)
     reload_project(db, project)
     run_id = make_run(db, project)
     execute(executor(db, runtime, tmp_path), db, run_id)
-    [e] = candidates(db, run_id)
-    assert (e.summary, e.metrics['score']) == ('the idea', 3.0)
+    assert [(c[0], c[1], c[3]) for c in scored(db, run_id)] == [
+        ('the idea', Verdict.KEEP, 1),
+        (UNCOMMITTED_SUMMARY, Verdict.RECOVERED, 0),
+    ], 'never amended: the worker declared its commit, not the dirt after it'
+    [e] = [c for c in candidates_measured(db, run_id)]
+    assert e.metrics['score'] == 2.0
+    with db.session() as s:
+        idea = s.get_one(Idea, run_row(db, run_id).idea_id)
+        assert (idea.status, idea.base_candidate_id) == (IdeaStatus.DONE, None), 'a run that succeeded is not requeued'
+
+
+def test_an_idea_whose_workers_keep_dying_is_requeued_from_its_recovered_work_only_so_often(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    write_toml(Path(project.path), HARNESS_FORGETS_COMMIT)
+    reload_project(db, project)
+    run_id = make_run(db, project, max_runs=1)
+    ex = executor(db, runtime, tmp_path)
+    execute(ex, db, run_id)
+    for attempt in range(2, RECOVERY_REQUEUES + 3):
+        with db.session() as s:
+            idea = s.get_one(Idea, run_row(db, run_id).idea_id)
+            if idea.status is not IdeaStatus.READY:
+                break
+            idea.status = IdeaStatus.SCHEDULED
+            run = Run(
+                idea_id=idea.id,
+                attempt=attempt,
+                base_candidate_id=idea.base_candidate_id or 0,
+                harness='script',
+                model='test-model',
+            )
+            s.add(run)
+            s.flush()
+            s.add(
+                Worker(
+                    kind=WorkerKind.WORKER, project_id=project.id, run_id=run.id, harness='script', model='test-model'
+                )
+            )
+            s.commit()
+            run_id = run.id
+        execute(ex, db, run_id)
+    with db.session() as s:
+        idea = s.get_one(Idea, run_row(db, run_id).idea_id)
+        assert (idea.status, len(idea.runs)) == (IdeaStatus.DONE, RECOVERY_REQUEUES + 1)
 
 
 def test_no_changes_fails_the_run_and_retries_the_idea(
@@ -674,8 +785,8 @@ def test_uncommitted_changes_without_a_finding_are_scored_but_not_an_attempt_tha
     execute(executor(db, runtime, tmp_path), db, run_id)
     run = run_row(db, run_id)
     assert (run.status, run.error) == (RunStatus.FAILED, INTERRUPTED)
-    [e] = candidates(db, run_id)
-    assert (e.summary, e.verdict) == (UNCOMMITTED_SUMMARY, Verdict.KEEP), 'what it left is scored all the same'
+    [(summary, verdict, *_)] = scored(db, run_id)
+    assert (summary, verdict) == (UNCOMMITTED_SUMMARY, Verdict.RECOVERED), 'what it left is kept, not judged'
     with db.session() as s:
         assert s.get_one(Idea, run.idea_id).status is IdeaStatus.READY
 
@@ -849,15 +960,16 @@ def test_entire_settings_reach_a_worktree_whose_tree_lacks_them_without_being_co
     reload_project(db, project)
     run_id = make_run(db, project)
     execute(executor(db, runtime, tmp_path), db, run_id)
-    [e] = candidates(db, run_id)
-    assert repo.git.show(f'{e.commit_sha}:seen.json') == '{"enabled":true}', 'the worktree saw the project settings'
-    assert ENTIRE_DIR not in repo.git.ls_tree('--name-only', e.commit_sha), 'a link is never committed'
+    with db.session() as s:
+        sha = s.scalars(select(Candidate.commit_sha).where(Candidate.run_id == run_id)).one()
+    assert repo.git.show(f'{sha}:seen.json') == '{"enabled":true}', 'the worktree saw the project settings'
+    assert ENTIRE_DIR not in repo.git.ls_tree('--name-only', sha), 'a link is never committed'
     write_toml(Path(project.path), HARNESS_COMMITS_ENTIRE)
     reload_project(db, project)
     second = make_run(db, project, title='commit the settings')
     execute(executor(db, runtime, tmp_path), db, second)
-    [e] = candidates(db, second)
-    assert e.summary == 'entire settings' and e.metrics['score'] == 2.0, 'the dirt was amended into the commit'
+    [e] = candidates_measured(db, second)
+    assert e.summary == 'entire settings' and e.metrics['score'] == 1.0, 'the dirt after it is recovered on its own'
     assert repo.git.show(f'{e.commit_sha}:.entire/settings.json') == '{}', 'a tracked .entire stays in the commit'
 
 
@@ -1076,8 +1188,8 @@ def test_dirt_after_a_skip_commit_is_committed_on_its_own_and_evaluated(
     execute(executor(db, runtime, tmp_path), db, run_id)
     assert [(c[0], c[1], c[3]) for c in scored(db, run_id)] == [
         ('scaffold', Verdict.UNMEASURED, 0),
-        (UNCOMMITTED_SUMMARY, Verdict.KEEP, 1),
-    ], 'amending would have carried the trailer, and the work, past evaluation'
+        (UNCOMMITTED_SUMMARY, Verdict.RECOVERED, 0),
+    ], 'the work after a skip commit is recovered on its own: never amended into the commit'
 
 
 def test_a_commit_that_moves_no_deciding_metric_says_no_op(

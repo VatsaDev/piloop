@@ -302,8 +302,11 @@ def rebase(s: Session, cfg: ProjectConfig, repo: Repo, candidate: Candidate, ont
 
 
 def skipped(candidate: Candidate) -> bool:
-    """Return whether the candidate has the daemon's ``unmeasured`` verdict, which a measurement may replace."""
-    return candidate.verdict_by == DAEMON and candidate.verdict is Verdict.UNMEASURED
+    """Return whether the candidate has the daemon's ``unmeasured`` or ``recovered`` verdict.
+
+    A measurement may replace either: a later commit of the same tree is measured and judged like a new one.
+    """
+    return candidate.verdict_by == DAEMON and candidate.verdict in (Verdict.UNMEASURED, Verdict.RECOVERED)
 
 
 def resolve(
@@ -378,7 +381,7 @@ def note(candidate: Candidate, reason: str, actor: str) -> None:
 
     Raises:
         NoteRefused: the reason is empty, or the candidate is not a measured discard or interesting. A keep needs no
-            note. A pending, crashed, unmeasured or reference candidate has no result to note.
+            note. A pending, crashed, unmeasured, recovered or reference candidate has no result to note.
     """
     if not reason.strip():
         raise NoteRefused('a note needs a reason: what the follow-ups from this tree are')

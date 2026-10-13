@@ -85,8 +85,10 @@ daemon:
    recent candidates and every comment on the idea and on its earlier runs.
 5. Starts the worker. It runs until it exits or until `[roles.worker] timeout`.
 
-The worker implements the idea and commits. Every commit is scored, so a worker commits even when the idea did not
-work, and says so in the message. piloop commits uncommitted changes for the worker when it ends.
+The worker implements the idea and commits. Every commit is scored once the run ends, so a worker commits even when
+the idea did not work, and says so in the message. What it leaves uncommitted, piloop commits on its own as a
+`recovered` candidate: never measured, never kept. When the run did not succeed (the worker died, was killed or timed
+out), the idea goes back to the queue with that candidate as its base, so a new worker finishes the work.
 
 After the worker ends, the daemon scores each new commit. The idea becomes `done`. If the run failed or timed out and
 the idea has attempts left, the idea goes back to `ready` instead. An idea has two attempts by default.

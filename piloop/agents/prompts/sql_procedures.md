@@ -23,7 +23,8 @@ Timestamps are UTC ISO-8601 strings.
   a new evaluator row. A candidate can have many measurements: repeats, or a newer evaluator.
 - A candidate's **verdict** (`keep`, `interesting`, `discard` or `crash`) is the daemon's judgement of its mean score
   against its bar. The bar is the run's last keep, starting at its base. Anyone may override a verdict. A commit
-  marked `Piloop-Eval: skip` is `unmeasured`: no judgement at all.
+  marked `Piloop-Eval: skip` is `unmeasured`: no judgement at all. What a worker left uncommitted when it stopped
+  is `recovered`: committed by the daemon, never measured; if the run did not finish, a new run starts from it.
 - Every run that pins no base starts from the **head**: the latest *trunk keep*, which is a keep that no branch run
   made. So the trunk is a chain of keeps.
 - A candidate that keeps against its bar after the head moved on (another run kept meanwhile) is not kept. It is
@@ -154,6 +155,8 @@ Special reasons:
 - A reason that starts with `no-op:` means the primary and the guardrails equal the parent's exactly.
 - `not evaluated: Piloop-Eval: skip` is the reason of an `unmeasured` commit, one that asked not to be evaluated
   (scaffolding). It has no measurement and says nothing about the idea.
+- A reason that starts with `recovered:` is a `recovered` candidate: what a worker left uncommitted when it stopped.
+  It has no measurement. If its run did not finish, the idea was requeued with it as the base.
 - A reason that starts with `keeps against its own bar, but the head moved on` is a keep that was rebased. The rest of
   the reason names the merged candidate or the conflict.
 
