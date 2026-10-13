@@ -157,6 +157,16 @@ def test_the_pack_of_a_campaign(db: Database, project: Project, tmp_path: Path) 
     )
 
 
+def test_an_idea_whose_commits_were_all_skipped_is_unmeasured_not_a_dead_end(
+    db: Database, project: Project, tmp_path: Path
+) -> None:
+    with db.session() as s:
+        scaffold = idea(s, project, 'scaffold only', family='scaffolding', created_by='research#4')
+        scored(s, scaffold, 1, (Verdict.UNMEASURED, {}, None))
+        s.commit()
+    assert f'| scaffolding | 1 | 0 | 0 | 0 | 0 | #{scaffold.id} unmeasured |' in render(db, project, None)
+
+
 def test_an_empty_pack_says_what_is_missing(db: Database, project: Project, tmp_path: Path) -> None:
     text = render(db, project, tmp_path / 'no-such-dir')
     assert '- None configured: `[roles.research] context` in piloop.toml lists them.' in text

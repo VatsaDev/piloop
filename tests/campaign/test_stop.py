@@ -273,7 +273,7 @@ def test_only_runs_that_produced_a_measured_candidate_count_toward_max_runs_and_
     """
     configure(db, project, max_runs=3, plateau=2)
     add_run(db, project, status=RunStatus.FAILED, error='worker produced no commits', measured=False)
-    add_candidate(db, project, add_run(db, project, measured=False), Verdict.DISCARD, SKIPPED)
+    add_candidate(db, project, add_run(db, project, measured=False), Verdict.UNMEASURED, SKIPPED)
     with db.session() as s:
         row = s.get_one(Project, project.id)
         assert (runs(s, row), runs_without_keep(s, row)) == (0, 0)

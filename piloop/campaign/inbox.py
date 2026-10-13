@@ -92,7 +92,7 @@ def news(s: Session, after: int, *, project_id: int | None = None, me: str) -> t
     - seeds that someone else filed.
     - projects that the daemon stopped.
     - anomalies that the daemon gave to a watchdog.
-    - verdicts on measured candidates. Discards of skipped commits are not reported.
+    - verdicts on measured candidates. Skipped commits (``unmeasured``) are not reported.
 
     ``project_id`` filters all of them. The returned id is the cursor for the next call, so no event is missed.
     """

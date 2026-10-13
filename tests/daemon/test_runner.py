@@ -1029,12 +1029,12 @@ def test_a_commit_marked_skip_is_a_candidate_without_an_evaluation_and_moves_no_
         assert first is not None
         skip_id = first.id
     assert scored(db, run_id) == [
-        ('scaffold', Verdict.DISCARD, SKIPPED, 0, 1),
+        ('scaffold', Verdict.UNMEASURED, SKIPPED, 0, 1),
         ('work', Verdict.KEEP, IsStr(regex=r'against candidate#1: score 3 vs 1 .*'), 1, skip_id),
     ], 'the next commit descends from the scaffold and is judged against the bar, the baseline'
     with db.session() as s:
         judged = s.scalars(select(Event).where(Event.kind == 'candidate.judged').order_by(Event.id)).first()
-        assert judged is not None and judged.payload == {'verdict': 'discard', 'score': None, 'reason': SKIPPED}
+        assert judged is not None and judged.payload == {'verdict': 'unmeasured', 'score': None, 'reason': SKIPPED}
 
 
 def test_a_skipped_tree_reached_again_without_the_trailer_is_measured_and_judged(
@@ -1075,7 +1075,7 @@ def test_dirt_after_a_skip_commit_is_committed_on_its_own_and_evaluated(
     run_id = make_run(db, project)
     execute(executor(db, runtime, tmp_path), db, run_id)
     assert [(c[0], c[1], c[3]) for c in scored(db, run_id)] == [
-        ('scaffold', Verdict.DISCARD, 0),
+        ('scaffold', Verdict.UNMEASURED, 0),
         (UNCOMMITTED_SUMMARY, Verdict.KEEP, 1),
     ], 'amending would have carried the trailer, and the work, past evaluation'
 

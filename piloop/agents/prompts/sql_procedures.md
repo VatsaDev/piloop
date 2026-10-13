@@ -18,11 +18,12 @@ Timestamps are UTC ISO-8601 strings.
   - `supersedes`: the idea is a sharper version of older ideas. The daemon rejects the older ones that never ran.
 - The worker commits. Every new commit becomes a candidate: a distinct state of the code, identified by its git tree.
   A commit that reverts to a known state *is* that candidate.
-- The daemon scores an unmeasured candidate with the project's **evaluator** into a **measurement** (metrics, or an
+- The daemon scores each new candidate with the project's **evaluator** into a **measurement** (metrics, or an
   error). The evaluator is the evaluate command and the metric definitions as of the last config sync. A change makes
   a new evaluator row. A candidate can have many measurements: repeats, or a newer evaluator.
 - A candidate's **verdict** (`keep`, `interesting`, `discard` or `crash`) is the daemon's judgement of its mean score
-  against its bar. The bar is the run's last keep, starting at its base. Anyone may override a verdict.
+  against its bar. The bar is the run's last keep, starting at its base. Anyone may override a verdict. A commit
+  marked `Piloop-Eval: skip` is `unmeasured`: no judgement at all.
 - Every run that pins no base starts from the **head**: the latest *trunk keep*, which is a keep that no branch run
   made. So the trunk is a chain of keeps.
 - A candidate that keeps against its bar after the head moved on (another run kept meanwhile) is not kept. It is
@@ -151,8 +152,8 @@ starting at its base. The daemon writes why in `verdict_reason`:
 Special reasons:
 
 - A reason that starts with `no-op:` means the primary and the guardrails equal the parent's exactly.
-- `not evaluated: Piloop-Eval: skip` marks a commit that asked not to be evaluated (scaffolding). It has no
-  measurement. It is a `discard` that says nothing about the idea.
+- `not evaluated: Piloop-Eval: skip` is the reason of an `unmeasured` commit, one that asked not to be evaluated
+  (scaffolding). It has no measurement and says nothing about the idea.
 - A reason that starts with `keeps against its own bar, but the head moved on` is a keep that was rebased. The rest of
   the reason names the merged candidate or the conflict.
 

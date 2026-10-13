@@ -216,7 +216,7 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
         emit(s, ANOMALY_EVENT, TargetKind.WORKER, watchdog.id, payload={'key': 'k', 'anomaly': 'run#3 failed: boom'})
         judged: dict[str, object] = {'verdict': 'keep', 'score': 2.0, 'reason': 'score +1 over candidate#1\nmore'}
         emit(s, 'candidate.judged', TargetKind.CANDIDATE, 1, payload=judged)
-        emit(s, 'candidate.judged', TargetKind.CANDIDATE, 1, payload={'verdict': 'discard', 'reason': SKIPPED})
+        emit(s, 'candidate.judged', TargetKind.CANDIDATE, 1, payload={'verdict': 'unmeasured', 'reason': SKIPPED})
         s.get_one(Project, project.id).status = ProjectStatus.STOPPED
         s.get_one(Project, project.id).stopped_reason = 'max_tokens 100 reached'
         s.commit()

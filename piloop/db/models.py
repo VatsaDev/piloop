@@ -102,7 +102,8 @@ class Verdict(StrEnum):
     The daemon measures it with the current evaluator, and a pinned run may start from it. But it is never the head or
     a bar, and nothing that counts keeps counts it (the status, the sparkline, ``[stop]``). An ``interesting`` verdict
     whose reason starts with ``note:`` is an agent's note (``piloop candidate note``, the ``Piloop-Note`` trailer): the
-    result got worse, but the tree is worth starting from.
+    result got worse, but the tree is worth starting from. ``unmeasured`` is not a judgement either: the commit asked not
+    to be evaluated (``Piloop-Eval: skip``), so nothing was measured and it says nothing about the idea.
     """
 
     PENDING = 'pending'
@@ -111,6 +112,7 @@ class Verdict(StrEnum):
     DISCARD = 'discard'
     CRASH = 'crash'
     REFERENCE = 'reference'
+    UNMEASURED = 'unmeasured'
 
 
 class TargetKind(StrEnum):

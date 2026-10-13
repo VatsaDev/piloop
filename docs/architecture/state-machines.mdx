@@ -16,7 +16,7 @@ These are the values, generated from the enums in `piloop/db/models.py`:
 | `IdeaStatus` | `ideas.status` | `seed`, `proposed`, `ready`, `scheduled`, `done`, `parked`, `rejected` |
 | `RunStatus` | `runs.status` | `queued`, `running`, `succeeded`, `failed`, `timed_out` |
 | `WorkerState` | `workers.state` | `requested`, `starting`, `running`, `exited`, `killed` |
-| `Verdict` | `candidates.verdict` | `pending`, `keep`, `interesting`, `discard`, `crash`, `reference` |
+| `Verdict` | `candidates.verdict` | `pending`, `keep`, `interesting`, `discard`, `crash`, `reference`, `unmeasured` |
 
 {/* End of the generated part. */}
 
@@ -85,7 +85,8 @@ stateDiagram-v2
     [*] --> reference: candidate import
     pending --> keep: a significant gain, guardrails hold
     pending --> interesting: a gain that is not significant, a guardrail breached, or a keep to rebase
-    pending --> discard: no gain, a guardrail past its floor, or a skipped commit
+    pending --> discard: no gain, or a guardrail past its floor
+    pending --> unmeasured: a Piloop-Eval: skip commit
     pending --> crash: no primary value
     discard --> interesting: a note
 ```

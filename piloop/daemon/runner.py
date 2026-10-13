@@ -360,9 +360,9 @@ class RunExecutor:
         already a candidate is that candidate. It is measured only if the current evaluator has not measured it, and it
         keeps its verdict.
 
-        A commit with ``Piloop-Eval: skip`` is not measured. A new candidate gets the daemon's ``SKIPPED`` discard,
-        which moves no bar. That verdict is based on nothing, so a later commit without the trailer that has the same
-        tree is measured and judged like a new one. ``Piloop-Note`` trailers are applied when the commit is judged
+        A commit with ``Piloop-Eval: skip`` is not measured. A new candidate gets the daemon's ``unmeasured``
+        verdict, which moves no bar. So a later commit without the trailer that has the same tree is measured and
+        judged like a new one. ``Piloop-Note`` trailers are applied when the commit is judged
         (``_judge``).
         """
         with self._db.session() as s:
@@ -523,7 +523,7 @@ class RunExecutor:
         """Set the daemon's verdict on a new candidate, unless someone already judged it. Return the result.
 
         A known candidate keeps its verdict, because the same tree again (a revert) says nothing new about it. With
-        ``skip``, the verdict is the ``SKIPPED`` discard instead of the rule's verdict.
+        ``skip``, the verdict is ``unmeasured`` (``SKIPPED``) instead of the rule's verdict.
 
         A keep against a bar that is no longer the head stays off the trunk, unless the run is a branch run. The head
         moved while the run worked or while the daemon measured. The candidate becomes ``interesting`` (``MOVED``) and
@@ -540,7 +540,7 @@ class RunExecutor:
             candidate = s.get_one(Candidate, candidate_id)
             if judge_now and candidate.verdict_by in (None, DAEMON):
                 if skip:
-                    candidate.verdict, candidate.verdict_reason = Verdict.DISCARD, SKIPPED
+                    candidate.verdict, candidate.verdict_reason = Verdict.UNMEASURED, SKIPPED
                 else:
                     verdict, reason, onto = self._verdict(s, scope, candidate, bar_id)
                     candidate.verdict, candidate.verdict_reason = verdict, reason

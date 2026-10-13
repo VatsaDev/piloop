@@ -20,6 +20,9 @@ A deprecated configuration key shows a warning for at least one minor release be
 ### Changed
 
 - `workers.kind` holds any role name of the project. A trigger refuses a name that is not a role of the project.
+- A commit marked `Piloop-Eval: skip` gets the new verdict `unmeasured` instead of `discard`, so scaffolding no longer
+  counts as a dead end in the history, the research pack or agents' queries. Migration `0003` converts the daemon's
+  existing skip discards.
 
 ## [0.1.0] - 2026-10-13
 

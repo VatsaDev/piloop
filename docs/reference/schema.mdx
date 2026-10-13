@@ -179,7 +179,7 @@ CREATE TABLE candidates (
 	FOREIGN KEY(project_id) REFERENCES projects (id) ON DELETE CASCADE,
 	FOREIGN KEY(run_id) REFERENCES runs (id) ON DELETE SET NULL,
 	FOREIGN KEY(parent_id) REFERENCES candidates (id),
-	CONSTRAINT verdict CHECK (verdict IN ('pending', 'keep', 'interesting', 'discard', 'crash', 'reference'))
+	CONSTRAINT verdict CHECK (verdict IN ('pending', 'keep', 'interesting', 'discard', 'crash', 'reference', 'unmeasured'))
 );
 CREATE INDEX ix_candidates_parent ON candidates (parent_id);
 CREATE INDEX ix_candidates_project_verdict ON candidates (project_id, verdict);

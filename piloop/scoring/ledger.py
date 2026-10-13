@@ -38,10 +38,9 @@ from piloop.text import metric
 DAEMON = 'daemon'
 """The ``verdict_by`` of a verdict that the daemon set. The daemon never overwrites a verdict by anyone else."""
 SKIPPED = 'not evaluated: Piloop-Eval: skip'
-"""The ``verdict_reason`` of the daemon's ``discard`` on a commit that asked not to be evaluated.
+"""The ``verdict_reason`` of the daemon's ``unmeasured`` verdict on a commit that asked not to be evaluated.
 
-No measurement backs this verdict. So when a commit without the trailer reaches the same tree, the daemon measures and
-judges it (``skipped``).
+When a commit without the trailer reaches the same tree, the daemon measures and judges it (``skipped``).
 """
 
 
@@ -303,8 +302,8 @@ def rebase(s: Session, cfg: ProjectConfig, repo: Repo, candidate: Candidate, ont
 
 
 def skipped(candidate: Candidate) -> bool:
-    """Return whether the candidate has the daemon's ``SKIPPED`` verdict: a discard that no measurement backs."""
-    return candidate.verdict_by == DAEMON and candidate.verdict_reason == SKIPPED
+    """Return whether the candidate has the daemon's ``unmeasured`` verdict, which a measurement may replace."""
+    return candidate.verdict_by == DAEMON and candidate.verdict is Verdict.UNMEASURED
 
 
 def resolve(
@@ -379,11 +378,11 @@ def note(candidate: Candidate, reason: str, actor: str) -> None:
 
     Raises:
         NoteRefused: the reason is empty, or the candidate is not a measured discard or interesting. A keep needs no
-            note. A pending, crashed, skipped or reference candidate has no result to note.
+            note. A pending, crashed, unmeasured or reference candidate has no result to note.
     """
     if not reason.strip():
         raise NoteRefused('a note needs a reason: what the follow-ups from this tree are')
-    if candidate.verdict not in (Verdict.DISCARD, Verdict.INTERESTING) or skipped(candidate):
+    if candidate.verdict not in (Verdict.DISCARD, Verdict.INTERESTING):
         raise NoteRefused(
             f'candidate#{candidate.id} is {candidate.verdict} ({candidate.verdict_reason or "no reason"}):'
             ' only a measured discard or interesting takes a note'

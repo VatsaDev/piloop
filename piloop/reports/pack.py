@@ -51,7 +51,7 @@ DIGEST_CHARS = 1000
 ESCALATIONS_SHOWN = 8
 ESCALATION_CHARS = 300
 FAMILY_IDEAS_CHARS = 200
-OUTCOMES = (Verdict.KEEP, Verdict.INTERESTING, Verdict.DISCARD, Verdict.CRASH, Verdict.PENDING)
+OUTCOMES = (Verdict.KEEP, Verdict.INTERESTING, Verdict.DISCARD, Verdict.CRASH, Verdict.UNMEASURED, Verdict.PENDING)
 """Verdicts, best first. The outcome of an idea is the first verdict in this list that one of its candidates has."""
 
 

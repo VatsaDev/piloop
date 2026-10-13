@@ -33,6 +33,7 @@ The daemon gives each measured candidate one verdict:
 | `discard` | The primary metric did not improve, or a guardrail went past its floor. |
 | `crash` | The candidate has no successful measurement: the evaluate command failed or timed out, wrote a bad per-unit results file, or did not print every metric in `piloop.toml`. |
 | `reference` | A starting point imported with `piloop candidate import`. It is never judged. |
+| `unmeasured` | A commit marked `Piloop-Eval: skip`. It is never measured or judged, and says nothing about its idea. |
 
 The rule, in order:
 
