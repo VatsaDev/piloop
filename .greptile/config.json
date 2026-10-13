@@ -1,0 +1,117 @@
+{
+  "strictness": 2,
+  "commentTypes": [
+    "logic",
+    "syntax",
+    "style"
+  ],
+  "autoReview": [
+    "open",
+    "push"
+  ],
+  "statusCheck": true,
+  "excludeAuthors": [
+    "dependabot[bot]"
+  ],
+  "ignorePatterns": "uv.lock\ndocs/reference/configuration.mdx\ndocs/reference/schema.mdx\npiloop/db/actor_triggers.sql\npiloop/db/persistent_triggers.sql\ndocs/images/**\ntests/fixtures/**",
+  "instructions": "piloop is a daemon that manages a queue of ideas: coding agents try each idea in a git worktree, the evaluate command scores the commit, and the verdict keeps it only if it beats the head. Review for correctness first: the scheduler, the verdict statistics, the database triggers and the run lifecycle. CI already enforces ruff, ty, 100% branch coverage and generated-docs drift, so do not comment on formatting, import order or coverage numbers. Flag a change that makes the design less simple: a second way to do something that already exists, a compensating loop or retry for a design flaw, a flag or knob with no clear user.",
+  "rules": [
+    {
+      "id": "no-type-escapes",
+      "rule": "No typing.Any, no `# type: ignore` or `# ty: ignore`, no new `noqa`, and no weakened test or type to make something pass. Fix the cause.",
+      "scope": [
+        "piloop/**",
+        "tests/**",
+        "scripts/**"
+      ],
+      "severity": "high"
+    },
+    {
+      "id": "no-private-details",
+      "rule": "The repository is public. Flag any customer or company-internal name, private repository name or URL, internal hostname, personal home path (/home/<name>), private ticket or PR reference, API key or token, including in test data and fixtures.",
+      "severity": "high"
+    },
+    {
+      "id": "writing-style",
+      "rule": "Docs, skills and agent prompts use Simplified Technical English, in the style of pydantic-ai's docs: one idea per sentence, most sentences 20 words or fewer, active voice, present tense, the imperative for instructions, common words used with one meaning each, piloop's own terms (project, idea, seed, run, candidate, keep, head, track, worker, watchdog, research, orchestrator, evaluate command, inbox). No idioms, no history (no 'used to', PR numbers or dates), no retirement notes. Every command, key and code example must be real: tests/test_docs.py checks the code blocks.",
+      "scope": [
+        "docs/**",
+        "README.md",
+        "AGENTS.md",
+        "CONTRIBUTING.md",
+        "skills/**",
+        "piloop/agents/prompts/**"
+      ],
+      "severity": "low"
+    },
+    {
+      "id": "migrations-append-only",
+      "rule": "Never edit an existing Alembic revision under piloop/db/migrations/versions. A schema change is a new revision generated from piloop/db/models.py. A batch rebuild of a table must recreate its persistent triggers.",
+      "scope": [
+        "piloop/db/**"
+      ],
+      "severity": "high"
+    },
+    {
+      "id": "errors-keep-cause",
+      "rule": "Never swallow an error silently. Re-raise with `from e`, and make the message say what failed and what to do. A broad `except` needs a comment that says why.",
+      "scope": [
+        "piloop/**",
+        "scripts/**"
+      ],
+      "severity": "medium"
+    },
+    {
+      "id": "layering",
+      "rule": "Imports point down the package layering in CONTRIBUTING.md (db, then mcp/usage/config/harnesses, runtime, scoring, agents, campaign, reports, daemon, watch and cli). The shared modules settings, otel, git, proc, text and deprecated may be imported from anywhere. Flag an import that points up.",
+      "scope": [
+        "piloop/**"
+      ],
+      "severity": "medium"
+    },
+    {
+      "id": "spans-not-logging",
+      "rule": "No `logging` and no print-based diagnostics in piloop/: emit spans and span events through piloop.otel.",
+      "scope": [
+        "piloop/**"
+      ],
+      "severity": "medium"
+    },
+    {
+      "id": "generated-files",
+      "rule": "docs/reference/configuration.mdx, docs/reference/schema.mdx, the generated blocks in docs/architecture/*.mdx and piloop/db/*_triggers.sql come from scripts/gen_docs.py. A change to them must come with the change to the code or docstring they are generated from.",
+      "scope": [
+        "docs/**",
+        "piloop/db/**",
+        "scripts/**"
+      ],
+      "severity": "medium"
+    },
+    {
+      "id": "config-compat",
+      "rule": "A renamed or removed piloop.toml key needs a bridge in piloop/deprecated.py and a Deprecated line in CHANGELOG.md, so existing projects keep loading for at least one minor release.",
+      "scope": [
+        "piloop/config.py",
+        "piloop/deprecated.py"
+      ],
+      "severity": "medium"
+    },
+    {
+      "id": "changelog",
+      "rule": "A change a user can see (CLI, piloop.toml, database schema, agent behaviour, docs of a feature) has a line under [Unreleased] in CHANGELOG.md.",
+      "scope": [
+        "piloop/**",
+        "skills/**"
+      ],
+      "severity": "low"
+    },
+    {
+      "id": "regression-test",
+      "rule": "A bug fix comes with a test that fails without the fix.",
+      "scope": [
+        "piloop/**"
+      ],
+      "severity": "low"
+    }
+  ]
+}

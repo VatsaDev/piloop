@@ -1,0 +1,9 @@
+{
+  "files": [
+    { "path": "CONTRIBUTING.md", "description": "Development setup, checks, the package layering, migrations, deprecations and the changelog rule." },
+    { "path": "docs/architecture/overview.mdx", "description": "The core loop and the components: what the daemon, the roles, the database and the verdict do." },
+    { "path": "docs/concepts/verdict.mdx", "description": "How a candidate is judged: primary, guardrail and watch metrics, margins, floors, confidence.", "scope": ["piloop/scoring/**", "tests/scoring/**"] },
+    { "path": "docs/concepts/roles.mdx", "description": "The roles, their triggers, working copies and permissions.", "scope": ["piloop/agents/**", "piloop/daemon/**", "piloop/triggers.py"] },
+    { "path": "docs/architecture/data-model.mdx", "description": "Every table and its relationships.", "scope": ["piloop/db/**"] }
+  ]
+}
