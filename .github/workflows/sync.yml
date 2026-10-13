@@ -1,5 +1,5 @@
-# Keeps main identical in hiloopai/piloop and its private mirror hiloopai/piloop-dev, in both directions. Experimental
-# branches live only in piloop-dev; merging one into its main publishes it. A diverged main fails here, never forces.
+# Keeps main identical in piloop and its private mirror piloop-dev within this organization, in both directions.
+# Experimental branches live only in piloop-dev; merging one into main publishes it. A diverged main fails, never forces.
 name: Sync main
 
 on:
@@ -15,7 +15,9 @@ concurrency:
 
 jobs:
   sync:
-    if: contains(fromJSON('["hiloopai/piloop", "hiloopai/piloop-dev"]'), github.repository)
+    if: >-
+      github.repository_owner_id == '291932505' &&
+      contains(fromJSON('["1416093684", "1416293099"]'), github.repository_id)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -24,7 +26,7 @@ jobs:
           persist-credentials: false
       - env:
           DEPLOY_KEY: ${{ secrets.SYNC_DEPLOY_KEY }}
-          TARGET: ${{ github.repository == 'hiloopai/piloop' && 'hiloopai/piloop-dev' || 'hiloopai/piloop' }}
+          TARGET: ${{ format('{0}/{1}', github.repository_owner, github.repository_id == '1416093684' && 'piloop-dev' || 'piloop') }}
           SSH_AUTH_SOCK: /tmp/ssh-agent.sock
         run: |
           ssh-agent -a "$SSH_AUTH_SOCK" > /dev/null
