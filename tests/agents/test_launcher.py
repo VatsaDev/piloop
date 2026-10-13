@@ -537,7 +537,11 @@ def test_the_agents_token_usage_is_summed_from_its_session_file_when_it_ends(
     w = worker(db, silent)
     assert (w.state, w.error, w.usage) == (WorkerState.EXITED, None, None), 'the row is fine'
     assert events(spans, 'worker.usage_unknown') == [
-        {'worker': silent, 'error': f'no session file for {w.session_id} under {home}'}
+        {
+            'worker': silent,
+            'error': f'no session file for {w.session_id}: nothing matches'
+            f' {home}/.pi/agent/sessions/*/*_{w.session_id}.jsonl',
+        }
     ]
     use_harness(db, project, HARNESS_PROMPT_TO_FILE)
     plain = request(db, project)

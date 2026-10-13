@@ -12,7 +12,7 @@ from contextlib import closing, contextmanager
 from datetime import timedelta
 from functools import partial
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import cyclopts
 from rich import box
@@ -535,10 +535,10 @@ def inbox_wait(
 ) -> None:
     """Wait until something needs the orchestrator, print it one line per item, then print the command to wait again.
 
-    These events end the wait: a new unacknowledged inbox item that someone else wrote, a project that the daemon
-    stopped, an anomaly that the daemon gave to a watchdog, and the daemon's verdict on a measured candidate. Your own
-    decisions, as PILOOP_ACTOR, do not end it. At --timeout it returns with nothing. Set the timeout of your shell tool
-    higher than --timeout. Without a project, it waits for every project.
+    These events end the wait: a new unacknowledged inbox item that someone else wrote, a seed that someone else
+    filed, a project that the daemon stopped, an anomaly that the daemon gave to a watchdog, and the daemon's verdict
+    on a measured candidate. Your own decisions, as PILOOP_ACTOR, do not end it. At --timeout it returns with nothing.
+    Set the timeout of your shell tool higher than --timeout. Without a project, it waits for every project.
     """
     deadline = time.monotonic() + timeout
     with _session() as s:
@@ -567,7 +567,10 @@ def inbox_ack(
         ),
     ] = None,
     project: Annotated[str | None, cyclopts.Parameter(help='With --up-to: only the items of this project.')] = None,
-    kind: KindFilter = (),
+    kind: Annotated[
+        tuple[CommentKind, ...],
+        cyclopts.Parameter(name='--kind', help='With --up-to: only the items of this kind. Repeatable.'),
+    ] = (),
 ) -> None:
     """Acknowledge items to say that you have seen them.
 
@@ -575,6 +578,8 @@ def inbox_ack(
     """
     if bool(ids) == (up_to is not None):
         raise SystemExit('name the ids to acknowledge, or --up-to <id>')
+    if ids and (project or kind):
+        raise SystemExit('--project and --kind work only with --up-to <id>')
     with _session() as s:
         if up_to is not None:
             project_id = _project(s, project).id if project else None
@@ -586,7 +591,12 @@ def inbox_ack(
 @app.command
 def launch(
     ref: ProjectRef,
-    role: Annotated[WorkerKind, cyclopts.Parameter(help='The role of the agent.')],
+    role: Annotated[
+        Literal[WorkerKind.WATCHDOG, WorkerKind.RESEARCH],
+        cyclopts.Parameter(
+            help='The role of the agent. The daemon launches workers by itself, one for each queued run.'
+        ),
+    ],
     /,
     *,
     harness: Annotated[str | None, cyclopts.Parameter(help=HARNESS_HELP)] = None,
@@ -619,7 +629,8 @@ def launch(
 def sql_cmd(statement: Annotated[str, cyclopts.Parameter(help='One SQL statement.')], /) -> None:
     """Run one SQL statement on the piloop database.
 
-    Statements that change the schema are denied.
+    These are denied: schema changes, ATTACH, transactions, and writes to `alembic_version` and `session_actor`. Only
+    the PRAGMAs that describe the schema are allowed. A query prints at most 500 rows.
     """
     database = settings.home / 'piloop.db'
     with closing(sql.connect(database, actor=settings.actor)) as con:
@@ -655,9 +666,9 @@ def _cell(value: object) -> str:
 def history(ref: ProjectRef | None = None, /) -> None:
     """Print the research pack: what a research sweep reads before it proposes ideas.
 
-    It shows the metrics, the ideas by source, the analysis artifacts, what was tried per mechanism family, every idea
-    with its outcome, the kept lineage, the findings, the digests and the open escalations. Without a project, it uses
-    the project that the current directory is in, else the only active project, else every project.
+    It shows the metrics, the ideas by source, the analysis artifacts, what was tried per mechanism family, the latest
+    60 ideas with their outcomes, the kept lineage, the findings, the digests and the open escalations. Without a
+    project, it uses the project that the current directory is in, else the only active project, else every project.
     """
     with _session() as s:
         for project in _projects(s, ref):
@@ -920,7 +931,8 @@ def install_skills() -> None:
 def migrate_cmd() -> None:
     """Migrate the database to the schema of this piloop, and print what changed.
 
-    Every other command migrates without a message when it starts.
+    The daemon and the commands that read or change projects also migrate, without a message, when they start.
+    `piloop sql` and `piloop doctor` do not migrate.
     """
     db = Database(settings.database_url, actor=settings.actor)
     try:

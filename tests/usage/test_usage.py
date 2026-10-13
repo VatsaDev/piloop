@@ -1,5 +1,6 @@
 """Token usage: a spec names a reader and its parameters; the jsonl reader's encoders and tallies; the refill."""
 
+import re
 import shutil
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from piloop.config import ConfigError, load_project_config
 from piloop.db.models import Project, Worker, WorkerKind, WorkerState, utcnow
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
+from piloop.settings import Settings
 from piloop.usage import (
     READERS,
     Usage,
@@ -71,8 +73,11 @@ def store(
 
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """``{home}`` in every spec: a fresh directory."""
+    """``{home}`` in every spec: a fresh directory. Claude Code and Codex keep their defaults, ``.claude`` and ``.codex``."""
     monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setattr(
+        jsonl_module, 'settings', Settings(claude_config_dir=tmp_path / '.claude', codex_home=tmp_path / '.codex')
+    )
     return tmp_path
 
 
@@ -94,13 +99,13 @@ def test_the_registries_hold_the_shipped_pieces_and_nothing_names_a_harness_outs
             ),
             'claude': UsageSpec(
                 reader='jsonl',
-                file='{home}/.claude/projects/{cwd}/{session_id}.jsonl',
+                file='{claude_config_dir}/projects/{cwd}/{session_id}.jsonl',
                 cwd='dash_non_alnum',
                 tally='claude',
             ),
             'codex': UsageSpec(
                 reader='jsonl',
-                file='{home}/.codex/sessions/*/*/*/rollout-*-{session_id}.jsonl',
+                file='{codex_home}/sessions/*/*/*/rollout-*-{session_id}.jsonl',
                 cwd='none',
                 tally='codex',
             ),
@@ -141,11 +146,45 @@ def test_claude_tally_counts_each_api_response_once(home: Path) -> None:
     )
 
 
+def test_claude_sessions_are_found_under_claude_config_dir(
+    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_dir = tmp_path / 'elsewhere' / 'claude'
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(config_dir))
+    monkeypatch.setattr(jsonl_module, 'settings', Settings())
+    store(home, 'claude', CLAUDE_ID)
+    with pytest.raises(UsageError, match='no session file'):
+        read_usage(spec_of('claude'), CLAUDE_ID, CWD, None)
+    path = store(
+        config_dir, 'claude', CLAUDE_ID, name=f'projects/{CWD_ENCODERS["dash_non_alnum"](CWD)}/{CLAUDE_ID}.jsonl'
+    )
+    usage = read_usage(spec_of('claude'), CLAUDE_ID, CWD, None)
+    assert usage is not None and (usage.total, usage.source) == (110989, str(path)), (
+        'Claude Code writes its sessions under CLAUDE_CONFIG_DIR, not under the home directory'
+    )
+
+
 def test_codex_tally_takes_the_last_cumulative_token_count(home: Path) -> None:
     path = store(home, 'codex', CODEX_ID)
     assert read_usage(spec_of('codex'), CODEX_ID, CWD, None) == snapshot(
         Usage(input=39981, output=372, cache_read=23808, cache_write=0, total=40353, turns=2, source=str(path))
     ), "input_tokens includes the cached part, so total_tokens is Codex's input + output; a null info is not a turn"
+
+
+def test_codex_sessions_are_found_under_codex_home(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    codex_home = tmp_path / 'elsewhere' / 'codex'
+    monkeypatch.setenv('CODEX_HOME', str(codex_home))
+    monkeypatch.setattr(jsonl_module, 'settings', Settings())
+    store(home, 'codex', CODEX_ID)
+    with pytest.raises(UsageError, match='no session file'):
+        read_usage(spec_of('codex'), CODEX_ID, CWD, None)
+    path = store(
+        codex_home, 'codex', CODEX_ID, name=f'sessions/2026/09/11/rollout-2026-09-11T21-32-25-{CODEX_ID}.jsonl'
+    )
+    usage = read_usage(spec_of('codex'), CODEX_ID, CWD, None)
+    assert usage is not None and (usage.total, usage.source) == (40353, str(path)), (
+        'Codex writes its sessions under CODEX_HOME, not under the home directory'
+    )
 
 
 def test_the_file_is_found_by_the_encoded_cwd_then_by_a_scan_of_every_cwd_folder(home: Path) -> None:
@@ -300,7 +339,10 @@ def test_what_cannot_be_read_is_a_usage_error_or_nothing(home: Path) -> None:
     pi = spec_of('pi')
     with pytest.raises(UsageError, match='no session id'):
         read_usage(pi, None, CWD, None)
-    with pytest.raises(UsageError, match=f'no session file for {PI_ID} under {home}'):
+    with pytest.raises(
+        UsageError,
+        match=re.escape(f'no session file for {PI_ID}: nothing matches {home}/.pi/agent/sessions/*/*_{PI_ID}.jsonl'),
+    ):
         read_usage(pi, PI_ID, CWD, None)
     path = store(home, 'pi', PI_ID)
     path.write_text('{"type":"session","id":"x"}\nnot json\n[1, 2]\n{"type":"message","message":{"role":"user"}}\n')

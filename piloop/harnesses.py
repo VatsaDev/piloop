@@ -56,12 +56,13 @@ def fill(template: str, **values: str) -> str:
 class Harness(BaseModel):
     """``[harness.<name>]``: how to launch one coding agent.
 
-    piloop substitutes ``{model}``, ``{session_id}`` and ``{cwd}`` (the agent's working directory) in both argument
-    lists. It substitutes ``{prompt}`` (the first prompt, which names the file that holds the brief) and ``{log_dir}``
-    in ``headless`` only. An element that is exactly ``{mcp}`` expands to the role's MCP servers, in the form that
-    ``mcp`` names. The three built-in harnesses run without permission prompts: workers run in worktrees that the
-    daemon owns and throws away, and a sandbox that cannot reach the repo's ``.git`` cannot commit. A Claude agent
-    moves a foreground Bash command to the background after 5 minutes.
+    piloop substitutes these placeholders in both argument lists: ``{model}``, ``{session_id}``, ``{cwd}`` (the
+    agent's working directory), ``{log_dir}`` (the directory of the agent's brief and logs) and ``{prompt}`` (the first
+    prompt, which names the file that holds the brief). An element that is exactly ``{mcp}`` expands to the role's MCP
+    servers, in the form that ``mcp`` names. The three built-in harnesses run without permission prompts: workers run
+    in worktrees that the daemon owns and throws away, and a sandbox that cannot reach the repo's ``.git`` cannot
+    commit. The built-in Claude harness passes ``--settings`` that move a foreground Bash command to the background
+    after 5 minutes.
 
     When the argument list in use contains ``{session_id}``, piloop creates the session id. Otherwise the runtime
     reports it: Herdr detects it for every harness it knows, and the subprocess runtime needs ``session_id_pattern``.
@@ -90,8 +91,8 @@ class Harness(BaseModel):
     subprocess runtime for a harness that cannot take its id as an argument (``{session_id}``). For example, Codex
     ``exec --json`` prints ``{"type":"thread.started","thread_id":"<uuid>"}`` first."""
     usage: UsageSpec | None = None
-    """``[harness.<name>.usage]``: how to read the tokens an agent spent, when it ends, into ``workers.usage``. See
-    ``UsageSpec``. When unset, token usage is not recorded."""
+    """``[harness.<name>.usage]``: how to read the tokens an agent spent, when it ends, into ``workers.usage``. When
+    unset, token usage is not recorded."""
     mcp: str | None = None
     """The renderer that expands the ``{mcp}`` element of the argv into the role's ``[mcp.<name>]`` servers:
     ``claude``, ``codex`` or ``pi``. Each renderer also keeps the user's own servers out, where its harness allows it.
@@ -177,7 +178,9 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
         ],
         startup_dialogs=[('trust this folder', ['down', 'enter'])],
         entire_agent='claude-code',
-        usage=UsageSpec(file='{home}/.claude/projects/{cwd}/{session_id}.jsonl', cwd='dash_non_alnum', tally='claude'),
+        usage=UsageSpec(
+            file='{claude_config_dir}/projects/{cwd}/{session_id}.jsonl', cwd='dash_non_alnum', tally='claude'
+        ),
         mcp='claude',
     ),
     'codex': Harness(
@@ -225,7 +228,7 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
         entire_agent='codex',
         session_id_pattern=r'"thread_id":"([0-9a-f-]{36})"',
         # codex files its sessions by date, not by cwd; the thread id in the file name finds the file
-        usage=UsageSpec(file='{home}/.codex/sessions/*/*/*/rollout-*-{session_id}.jsonl', tally='codex'),
+        usage=UsageSpec(file='{codex_home}/sessions/*/*/*/rollout-*-{session_id}.jsonl', tally='codex'),
         mcp='codex',
     ),
 }

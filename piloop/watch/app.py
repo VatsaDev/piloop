@@ -49,11 +49,15 @@ REPLY_PRIORITY = 2
 CSS = """
 #header { height: 2; padding: 0 1; }
 #body { height: 1fr; }
-#left { width: 45%; }
-PanelTable { height: 1fr; border: round $panel; border-title-align: left; scrollbar-size-horizontal: 0; }
-PanelTable:focus { border: round $accent; }
-#main { width: 1fr; border: round $panel; padding: 0 1; }
-#main:focus { border: round $accent; }
+#left { width: 55%; }
+PanelTable {
+    height: auto; min-height: 3; max-height: 30%; border: round $panel; border-title-align: left;
+    border-title-color: $text-muted; scrollbar-size-horizontal: 0;
+}
+CandidatesTable { height: 1fr; max-height: 100%; }
+PanelTable:focus { border: round $accent; border-title-color: $accent; }
+#main { width: 1fr; border: round $panel; border-title-color: $text-muted; padding: 0 1; }
+#main:focus { border: round $accent; border-title-color: $accent; }
 #filter { dock: bottom; display: none; }
 #filter.shown { display: block; }
 #projects { height: 1fr; }
@@ -208,7 +212,7 @@ class AgentsTable(PanelTable):
         with self.campaign.db.session() as s:
             tab = tab_of(s.get_one(Worker, key))
         if tab is None:
-            self.campaign.say(f'worker#{key} has no Herdr tab (headless runtime): nothing to focus')
+            self.campaign.say(f'worker#{key} has no Herdr tab (runtime = "subprocess"): nothing to focus')
             return
         try:
             focus_tab(tab)
@@ -396,7 +400,8 @@ class CampaignScreen(Screen[None]):
 
     def on_mount(self) -> None:
         self.reload()
-        self.query_one(InboxTable).focus()
+        inbox = self.query_one(InboxTable)
+        (inbox if inbox.row_count else self.query_one(CandidatesTable)).focus()
 
     def tables(self) -> list[PanelTable]:
         return list(self.query(PanelTable))

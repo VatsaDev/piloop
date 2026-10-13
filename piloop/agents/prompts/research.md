@@ -36,7 +36,7 @@ The research pack at the end of this brief, after the project overview, is compu
 - the project's analysis artifacts;
 - what was tried, by mechanism family;
 - the seeds to develop;
-- every idea with its outcome;
+- the latest 60 ideas with their outcomes;
 - the kept lineage, with each keep's gain;
 - the starting points;
 - the latest findings, digests and open escalations.

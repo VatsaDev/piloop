@@ -150,7 +150,7 @@ def test_target_on_the_best_kept_candidate_in_the_metric_direction(db: Database,
         s.get_one(Candidate, 2).verdict = Verdict.DISCARD
         s.commit()
     add_run(db, project, keep_score=3.0)
-    assert reason(db, project) == 'target: score 3.0000 ≥ 3'
+    assert reason(db, project) == 'target: score 3 ≥ 3'
     with db.session() as s:
         s.get_one(Candidate, 3).verdict = Verdict.INTERESTING
         s.commit()
@@ -164,7 +164,7 @@ def test_target_on_the_best_kept_candidate_in_the_metric_direction(db: Database,
         for m in s.scalars(select(Measurement).where(Measurement.candidate_id == 3)):
             m.metrics = {'score': 3.4}
         s.commit()
-    assert reason(db, project) == 'target: score 3.4000 ≥ 3'
+    assert reason(db, project) == 'target: score 3.4 ≥ 3'
 
 
 def test_target_lower_is_better(db: Database, project: Project) -> None:
@@ -172,7 +172,7 @@ def test_target_lower_is_better(db: Database, project: Project) -> None:
         cfg = load_project_config(Path(project.path), metrics=LOWER_PRIMARY, stop={'target': 5})
         s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
         s.commit()
-    assert reason(db, project) == 'target: size 5.0000 ≤ 5', "the baseline's solve.txt is five bytes"
+    assert reason(db, project) == 'target: size 5 ≤ 5', "the baseline's solve.txt is five bytes"
 
 
 def test_max_runs_counts_every_run_created(db: Database, project: Project) -> None:

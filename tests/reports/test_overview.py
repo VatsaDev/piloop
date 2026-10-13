@@ -33,6 +33,8 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.reports import overview as overview_module
 from piloop.reports.overview import AnomalyKind, anomalies, overview
+from piloop.settings import Settings
+from piloop.usage import jsonl
 from tests.runtime.test_herdr import Response, calls, scripted
 
 T = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
@@ -203,8 +205,8 @@ def test_the_overview_of_a_campaign(db: Database, project: Project) -> None:
     text = render(db, project)
     lay, tools = text.split('### Tools\n')
     assert lay == snapshot("""\
-## Lay of the land (computed at 2026-10-01 14:00 UTC)
-demo · head score 3.0000 (candidate#2, +2.0000 vs baseline) · 2 kept / 3 candidates · 4k tok · evaluator #1, 0s old
+## Project overview (computed at 2026-10-01 14:00 UTC)
+demo · head score 3 (candidate#2, +2 vs baseline) · 2 kept / 3 candidates · 4k tok · evaluator #1, 0s old
 ### Goal
 - Primary metric: score, higher is better; also measured: size (lower, watch)
 - Campaign: active. Progress: run 2 · 1.9h (no [stop] condition: open-ended).
@@ -225,9 +227,9 @@ demo · head score 3.0000 (candidate#2, +2.0000 vs baseline) · 2 kept / 3 candi
 - Tokens: 4k (worker 3k, watchdog 0, research 500); 500 by agents that ended in the last hour.
 - Evaluations: 3 (0 crashed); median 3.0 min, first 5 3.0 min, latest 5 3.0 min; 6.0 min in all; 0 candidates waiting for a verdict.
 ### Recent candidates (3 of 3; score, vs parent)
-- candidate#1 keep 1.0000 (—), no run, 0s ago: baseline
-- candidate#2 keep 3.0000 (+2.0000), run#1, 0s ago: score 3
-- candidate#3 discard 3.0000 (+0.0000), run#1, 0s ago: score 3
+- candidate#1 keep 1 (—), no run, 0s ago: baseline
+- candidate#2 keep 3 (+2), run#1, 0s ago: score 3
+- candidate#3 discard 3 (+0), run#1, 0s ago: score 3
 ### Anomalies the daemon detected
 - [incident] run#2 failed, 1h ago: failed on script (idea#2): boom
 - [incident] worker#2 dead at startup, 1h ago: worker on script failed to start (5.0s): dialog
@@ -576,9 +578,9 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, projec
 - Tokens: 4k (worker 3k, watchdog 0, research 500); 500 by agents that ended in the last hour.
 - Evaluations: 3 (0 crashed); median 3.0 min, first 5 3.0 min, latest 5 3.0 min; 6.0 min in all; 0 candidates waiting for a verdict.
 ### Recent candidates (3 of 3; score, vs parent)
-- candidate#1 keep 1.0000 (—), no run, 0s ago: baseline
-- candidate#2 keep 3.0000 (+2.0000), run#1, 0s ago: score 3
-- candidate#3 discard 3.0000 (+0.0000), run#1, 0s ago: score 3
+- candidate#1 keep 1 (—), no run, 0s ago: baseline
+- candidate#2 keep 3 (+2), run#1, 0s ago: score 3
+- candidate#3 discard 3 (+0), run#1, 0s ago: score 3
 """)
     assert text[text.index('### Inbox') :].split('### Tools')[0] == snapshot("""\
 ### Inbox (1 unacknowledged), decisions, escalations and watchdog findings
@@ -630,6 +632,7 @@ def test_live_agents_say_their_last_words_from_the_session_file_else_the_screen_
     db: Database, project: Project, tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv('HOME', str(tmp_path))
+    monkeypatch.setattr(jsonl, 'settings', Settings(claude_config_dir=tmp_path / '.claude'))
     session = tmp_path / '.claude' / 'projects' / '-somewhere' / f'{SESSION_ID}.jsonl'
     session.parent.mkdir(parents=True)
     session.write_text((Path(__file__).parent.parent / 'fixtures' / 'said' / 'claude.jsonl').read_text())

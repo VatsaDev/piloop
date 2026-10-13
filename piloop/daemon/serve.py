@@ -13,6 +13,7 @@ import time
 import warnings
 
 from piloop.proc import child_env, kill_group
+from piloop.runtime.herdr import TOKEN_ENV
 from piloop.settings import Settings
 
 SERVE_ARGV = [sys.executable, '-m', 'piloop', 'serve']
@@ -24,6 +25,11 @@ RESTART_SIGNAL = signal.SIGUSR1
 Not SIGHUP, because a closing terminal sends SIGHUP to a daemon in the foreground."""
 SECRETS_COMMAND_ENV = 'PILOOP_SECRETS_COMMAND'
 """The environment variable for ``Settings.secrets_command``. ``piloop doctor`` reads it from the daemon."""
+CARRIED_ENV = ('OTEL_EXPORTER_OTLP_ENDPOINT', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME')
+"""The variables other than ``PILOOP_*`` that a service unit carries: where traces go and where agents keep sessions."""
+AGENT_ENV = ('PILOOP_ACTOR', TOKEN_ENV)
+"""The ``PILOOP_*`` variables that a service unit does not carry. piloop sets them for one agent. A daemon with them
+would sign its writes as that agent, and piloop would take the daemon for one of the agent's background jobs."""
 SECRETS_TIMEOUT_SECONDS = 60
 """The seconds that the secrets command can take before the daemon refuses to start."""
 SECRET_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
@@ -224,11 +230,14 @@ def service_unit(cfg: Settings, platform: str = sys.platform) -> str:
     """Return a systemd ``--user`` unit, or a launchd agent plist on macOS, that keeps the daemon running.
 
     The unit sets PATH, because the daemon finds harness CLIs on its PATH and a service manager's PATH is minimal.
-    It also sets the secrets command, if there is one.
+    It also carries the ``PILOOP_*`` and ``CARRIED_ENV`` variables that are set, so that the daemon has the same
+    settings as in this shell. It carries no other variable: API keys come from the secrets command.
     """
-    env = {'PILOOP_HOME': str(cfg.home), 'PATH': child_env()['PATH']}
-    if cfg.secrets_command is not None:
-        env[SECRETS_COMMAND_ENV] = cfg.secrets_command
+    shell = child_env()
+    env = {'PILOOP_HOME': str(cfg.home), 'PATH': shell['PATH']}
+    for key, value in sorted(shell.items()):
+        if (key.startswith('PILOOP_') or key in CARRIED_ENV) and key not in env and key not in AGENT_ENV:
+            env[key] = value
     if platform == 'darwin':
         plist = {
             'Label': 'dev.piloop.serve',

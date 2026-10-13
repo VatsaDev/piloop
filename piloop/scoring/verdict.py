@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from piloop.config import Direction, Metric, Track
 from piloop.db.models import Verdict
 from piloop.scoring.evaluate import Units
+from piloop.text import metric
 
 RESAMPLES = 4000
 """Bootstrap resamples per comparison. With 4000, the 5% quantile changes by much less than one unit between seeds."""
@@ -42,7 +43,7 @@ class Comparison:
         """
         sign = 1 if self.metric.direction is Direction.HIGHER else -1
         # + 0.0 turns -0 into +0 for a lower-is-better metric that did not change
-        change = f'{self.metric.name} {self.mine:g} vs {self.theirs:g} ({sign * self.gain + 0.0:+g}'
+        change = f'{self.metric.name} {metric(self.mine)} vs {metric(self.theirs)} ({metric(sign * self.gain + 0.0, signed=True)}'
         if self.units:
             return f'{change}; {confidence:.0%} worst case {sign * self.worst + 0.0:+.4g} over {self.units} units)'
         return f'{change}; aggregate: {self.why})'
@@ -111,7 +112,7 @@ def decide(
     if primary.name not in mine:
         return Verdict.CRASH, 'no successful measurement'
     floors = [
-        f'{m.name} {mine[m.name]:g} past its floor {m.floor:g}'
+        f'{m.name} {metric(mine[m.name])} past its floor {metric(m.floor)}'
         for m in track.guardrails
         if m.floor is not None and m.name in mine and m.better(m.floor, mine[m.name])
     ]
@@ -140,9 +141,10 @@ def decide(
             breached = True
             continue
         g = compare(m, mine[m.name], theirs[m.name], mine_units.get(m.name), theirs_units.get(m.name), confidence)
-        beyond = g.worst < -(m.margin or 0)
+        margin = m.margin or 0
+        beyond = g.worst < -margin
         breached |= beyond
-        guards.append(f'{g.text(confidence)} {"beyond" if beyond else "within"} its margin {m.margin:g}')
+        guards.append(f'{g.text(confidence)} {"beyond" if beyond else "within"} its margin {metric(margin)}')
     if guards:
         reason += '; guardrails: ' + '; '.join(guards)
     return (Verdict.INTERESTING if breached else Verdict.KEEP), reason

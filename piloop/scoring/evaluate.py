@@ -132,15 +132,20 @@ def read_units(path: Path, metrics: dict[str, float]) -> Units:
 
 
 def parse_metrics(stdout: str) -> dict[str, float]:
-    """Parse ``METRIC name=value`` lines into floats. Skip malformed lines. The caller checks that none is missing."""
+    """Parse ``METRIC name=value`` lines into floats. The caller checks that none is missing.
+
+    Skip a malformed line: one with no name, a value that is not a number, or a value that is NaN or infinite.
+    """
     metrics: dict[str, float] = {}
     for line in stdout.splitlines():
         head, sep, value = line.strip().partition('=')
-        if not sep or not head.startswith('METRIC '):
-            continue
         name = head.removeprefix('METRIC ').strip()
+        if not sep or not head.startswith('METRIC ') or not name:
+            continue
         try:
-            metrics[name] = float(value.strip())
+            number = float(value.strip())
         except ValueError:
             continue
+        if math.isfinite(number):
+            metrics[name] = number
     return metrics

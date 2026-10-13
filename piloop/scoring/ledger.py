@@ -33,6 +33,7 @@ from piloop.db.models import (
 )
 from piloop.scoring.evaluate import UNITS, Units
 from piloop.scoring.verdict import decide, same
+from piloop.text import metric
 
 DAEMON = 'daemon'
 """The ``verdict_by`` of a verdict that the daemon set. The daemon never overwrites a verdict by anyone else."""
@@ -230,7 +231,7 @@ def judge(
     leader = metrics(head, evaluator_id).get(primary.name) if head is not None else None
     if branch and verdict is Verdict.KEEP and head is not None and leader is not None:
         where = 'above' if primary.better(mine[primary.name], leader) else 'not above'
-        reason += f'; a branch keep, {where} the head candidate#{head.id} ({primary.name} {leader:g})'
+        reason += f'; a branch keep, {where} the head candidate#{head.id} ({primary.name} {metric(leader)})'
     parent = candidate.parent
     if parent is not None and same(track, mine, metrics(parent, evaluator_id)):
         which = 'primary and guardrails' if track.guardrails else primary.name

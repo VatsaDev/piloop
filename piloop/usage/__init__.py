@@ -3,8 +3,8 @@
 piloop reads the usage from the files that the agent's harness leaves when the agent ends. This module knows no
 harness. A harness definition has a ``UsageSpec``: the name of a *reader* and the reader's parameters. This module
 finds the reader in ``READERS`` and calls it. The one built-in reader, ``jsonl`` (``piloop/usage/jsonl.py``), reads a
-JSONL session file under the home directory. Its parameters say where the file is, how the harness names the folder
-of the agent's cwd, and which *tally* adds up the records. The tallies of the three built-in harnesses are modules
+JSONL session file. Its parameters say where the file is, how the harness names the folder of the agent's cwd, and
+which *tally* adds up the records. The tallies of the three built-in harnesses are modules
 under ``piloop/usage/tallies/`` that register themselves.
 
 So the usage of a new harness is a spec in ``piloop.toml``. A new file format is one tally module. A new kind of
@@ -72,13 +72,15 @@ class UsageSpec(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
 
     reader: str = 'jsonl'
-    """The reader to use. ``jsonl`` reads a JSONL session file under the home directory, which the keys below
-    describe. It is the only built-in reader."""
+    """The reader to use. ``jsonl`` reads a JSONL session file, which the keys below describe. It is the only
+    built-in reader."""
     file: str | None = None
-    """For ``jsonl``: a glob of the session file. piloop substitutes ``{home}``, ``{cwd}`` (the agent's cwd, encoded
-    as ``cwd`` says) and ``{session_id}``. Example: ``{home}/.pi/agent/sessions/{cwd}/*_{session_id}.jsonl``. When the
-    glob matches nothing, piloop tries again with ``*`` for ``{cwd}``. This searches one level of folders, not
-    deeper, and the session id makes the match unique. When several files match, piloop takes the newest one."""
+    """For ``jsonl``: a glob of the session file. piloop substitutes ``{home}``, ``{claude_config_dir}`` (Claude
+    Code's ``CLAUDE_CONFIG_DIR``, by default ``~/.claude``), ``{codex_home}`` (Codex's ``CODEX_HOME``, by default
+    ``~/.codex``), ``{cwd}`` (the agent's cwd, encoded as ``cwd`` says) and ``{session_id}``. Example:
+    ``{home}/.pi/agent/sessions/{cwd}/*_{session_id}.jsonl``. When the glob matches nothing, piloop tries again with
+    ``*`` for ``{cwd}``. This searches one level of folders, not deeper, and the session id makes the match unique.
+    When several files match, piloop takes the newest one."""
     cwd: str = 'none'
     """For ``jsonl``: how the harness names the folder of the agent's cwd. ``dash_separators_wrapped`` turns
     ``/home/me/repo`` into ``--home-me-repo--``. ``dash_non_alnum`` turns it into ``-home-me-repo``. ``none`` means

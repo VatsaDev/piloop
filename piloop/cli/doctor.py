@@ -1,4 +1,4 @@
-"""``piloop doctor``: read-only checks of an install. Each failure comes with the command that fixes it.
+"""``piloop doctor``: read-only checks of an install. Each failure says how to fix it, with the command when there is one.
 
 The checks find what can break after an upgrade: a daemon that still runs the old code, a database behind the code, a
 secrets command that fails, a ``piloop.toml`` that the new code refuses, an MCP server that cannot start, skills that

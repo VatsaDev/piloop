@@ -37,7 +37,7 @@ the same idea again and tells a worker where to start.
 
 ## 7. Harnesses and models
 
-Which coding agents run the workers and which run research. The runtime: Herdr panes or headless.
+Which coding agents run the workers and which run research. The runtime: background processes (`subprocess`, the default) or Herdr panes.
 
 ## 8. Escalation
 

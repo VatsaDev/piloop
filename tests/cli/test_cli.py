@@ -106,7 +106,7 @@ def test_project_and_idea_lifecycle(project_path: Path, out) -> None:
 
     run_cli(['status'])
     text = re.sub(r'\b\d+s (old|ago)\b', r'Ns \1', out())  # the second may tick over since init
-    assert 'demo · head score 1.0000 (candidate#1) · 1 kept / 1 candidates · evaluator #1, Ns old' in text
+    assert 'demo · head score 1 (candidate#1) · 1 kept / 1 candidates · evaluator #1, Ns old' in text
     assert '- Ideas: 1 runnable, 1 blocked (idea#3 on idea#1 (ready), idea#2 (proposed));' in text
     assert '  - idea#1 p1 "more lines" by human, Ns ago\n- Agents live: none' in text
     assert '### Tools' not in text, 'the cheat sheet is for agents'
@@ -473,6 +473,9 @@ def test_inbox_lists_what_waits_shows_one_with_its_thread_and_acknowledges(
         run_cli(['inbox', 'ack'])
     with pytest.raises(SystemExit, match='name the ids to acknowledge, or --up-to <id>'):
         run_cli(['inbox', 'ack', '1', '--up-to', '3'])
+    for narrow in (['--kind', 'note'], ['--project', 'demo']):
+        with pytest.raises(SystemExit, match='--project and --kind work only with --up-to <id>'):
+            run_cli(['inbox', 'ack', '1', *narrow])
     with pytest.raises(SystemExit, match='no comment#99'):
         run_cli(['inbox', 'show', '99'])
 
@@ -547,7 +550,7 @@ def test_candidate_import_registers_a_reference_shown_apart_and_refuses_a_bad_re
 
     run_cli(['status'])
     text = out()
-    assert 'demo · head score 1.0000 (candidate#1) · 1 kept / 1 candidates · 1 starting point ·' in text
+    assert 'demo · head score 1 (candidate#1) · 1 kept / 1 candidates · 1 starting point ·' in text
     assert '### Recent candidates (1 of 1; score, vs parent)' in text, (
         'a starting point is no candidate of the campaign'
     )
@@ -741,8 +744,9 @@ def test_launch_requests_a_worker(project_path: Path, out) -> None:
     assert '- Agents live: none; requested: research#1, watchdog#2' in out(), (
         'a request is not an agent until the daemon launches it'
     )
-    with pytest.raises(cyclopts.exceptions.CoercionError, match='Choose from: "worker", "watchdog", "research"'):
-        run_cli(['launch', 'demo', 'janitor'])
+    for role in ('janitor', 'worker'):
+        with pytest.raises(cyclopts.exceptions.CoercionError, match='Choose from: "watchdog", "research"'):
+            run_cli(['launch', 'demo', role])
     run_cli(['launch', 'demo', 'research', '--scout', '--reason', 'look outside'])
     assert out().strip() == 'worker#3 research (scout) requested for demo: look outside'
     db = Database(cli.settings.database_url, actor=cli.settings.actor)
@@ -824,13 +828,16 @@ def test_stop_and_status_do_not_mistake_a_reused_pid_for_the_daemon(out) -> None
 
 
 @pytest.mark.skipif(sys.platform != 'linux', reason='macOS gets a launchd plist; tests/daemon/test_serve.py checks it')
-def test_service_unit_prints_a_systemd_unit_on_linux(out) -> None:
+def test_service_unit_prints_a_systemd_unit_on_linux(tmp_path: Path, out) -> None:
     run_cli(['service-unit'])
     text = out()
     assert text.startswith('[Unit]\n') and text.endswith('WantedBy=default.target\n')
     assert (
         f'ExecStart={sys.executable} -m piloop serve\nRestart=on-failure\nEnvironment="PILOOP_HOME={cli.settings.home}"\n'
         in text
+    )
+    assert f'Environment="CLAUDE_CONFIG_DIR={tmp_path / "claude-config"}"\n' in text, (
+        'a setting of the shell reaches the daemon under the service manager'
     )
 
 

@@ -35,7 +35,7 @@ from piloop.db.models import Candidate, Comment, CommentKind, Idea, IdeaStatus, 
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.reports.history import BRIEF_WIDTH, block, renderables as history, text_row, titled_table
 from piloop.scoring.ledger import head, metrics
-from piloop.text import NONE, cell
+from piloop.text import NONE, cell, metric
 
 ARTIFACTS_SHOWN = 12
 WORKSPACE_SHOWN = 10
@@ -330,4 +330,4 @@ def _body_line(head: str, body: str, chars: int) -> Text:
 
 
 def _num(value: float | None) -> str:
-    return NONE if value is None else f'{value:g}'
+    return NONE if value is None else metric(value)

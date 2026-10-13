@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     actor: str = 'human'
     """Who this process is. Every row it updates records this value in ``updated_by``. The daemon launches each agent
-    with ``<kind>#<worker_id>``."""
+    with ``<role>#<worker_id>``, for example ``worker#12`` or ``scout#7``."""
 
     tick_seconds: float = 2
     """The number of seconds between two ticks. On each tick, the daemon checks the triggers of every project and
@@ -64,15 +64,21 @@ class Settings(BaseSettings):
     checkpoint. After that, it is stopped and the checkpoint stays NULL."""
 
     uv_tool_dir: Path = Field(default=Path.home() / '.local' / 'share' / 'uv' / 'tools', validation_alias='UV_TOOL_DIR')
-    """Where uv keeps its tools (uv's own ``UV_TOOL_DIR``, with the same default). ``piloop upgrade`` reads the
-    ``uv-receipt.toml`` of the piloop tool there to learn where the CLI was installed from."""
+    """Where uv keeps its tools (uv's own ``UV_TOOL_DIR``). The default is uv's default when ``XDG_DATA_HOME`` is not
+    set. ``piloop upgrade`` reads the ``uv-receipt.toml`` of the piloop tool there to learn where the CLI was installed
+    from."""
 
     debug: bool = False
-    """Show the full traceback of an unexpected error in the CLI, instead of a one-line message."""
+    """Show the full traceback of an unexpected error in the CLI, instead of a short message."""
 
     claude_config_dir: Path = Field(default=Path.home() / '.claude', validation_alias='CLAUDE_CONFIG_DIR')
     """The config directory of Claude Code (its own ``CLAUDE_CONFIG_DIR``, with the same default). piloop installs the
-    orchestrator skills in its ``skills/`` directory."""
+    orchestrator skills in its ``skills/`` directory, and reads the token usage of Claude Code agents from its
+    ``projects/`` directory."""
+
+    codex_home: Path = Field(default=Path.home() / '.codex', validation_alias='CODEX_HOME')
+    """The home directory of Codex (its own ``CODEX_HOME``, with the same default). piloop reads the token usage of
+    Codex agents from its ``sessions/`` directory."""
 
     agent_skills_dir: Path = Path.home() / '.agents' / 'skills'
     """The user directory of Agent Skills, which Codex, pi, Gemini CLI and Cursor read. piloop installs the orchestrator

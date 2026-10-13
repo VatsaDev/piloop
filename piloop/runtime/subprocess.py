@@ -1,4 +1,4 @@
-"""Workers as plain child processes: the headless runtime to use when Herdr is not available."""
+"""Agents as plain background processes: the default runtime. Herdr is the optional one with visible panes."""
 
 import os
 import re

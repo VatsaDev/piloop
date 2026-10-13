@@ -26,7 +26,7 @@ from piloop.campaign.ideas import links, superseded_by
 from piloop.config import Metric, ProjectConfig
 from piloop.db.models import Candidate, Comment, CommentKind, Idea, Project, TargetKind, count
 from piloop.scoring.ledger import fallback_track, keeps, references, score, session_checkpoint, session_tokens, track_of
-from piloop.text import NONE, cell
+from piloop.text import NONE, cell, metric
 from piloop.usage import human
 
 IDEAS_IN_HISTORY = 60
@@ -212,7 +212,7 @@ def block(text: str, chars: int = FINDING_CHARS) -> str:
 def _value(c: Candidate, primary: Metric, evaluator_id: int) -> str:
     """Format the score as a short number, or ``—`` if the current evaluator did not measure the candidate."""
     value = score(c, evaluator_id, primary)
-    return NONE if value is None else f'{value:g}'
+    return NONE if value is None else metric(value)
 
 
 def _delta(c: Candidate, primary: Metric, evaluator_id: int) -> str:
@@ -249,4 +249,4 @@ def _outcome(s: Session, idea: Idea, primary: Metric, evaluator_id: int) -> str:
     value, c, base_id = best
     base = score(s.get_one(Candidate, base_id), evaluator_id, primary)
     delta = f' ({value - base:+g} vs candidate#{base_id})' if base is not None else ''
-    return f'{c.verdict} {value:g}{delta} (candidate#{c.id})'
+    return f'{c.verdict} {metric(value)}{delta} (candidate#{c.id})'

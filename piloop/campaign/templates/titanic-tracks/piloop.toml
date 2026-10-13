@@ -4,7 +4,7 @@
 name = "titanic-tracks"
 evaluate = ["uv", "run", "python", "evaluate.py"]
 evaluate_timeout = 300
-runtime = "herdr"
+runtime = "subprocess"
 harnesses = ["pi", "claude", "codex"]
 link = ["data", ".venv"]
 
@@ -22,7 +22,7 @@ direction = "higher"
 role = "primary"
 track = "accuracy"
 margin = 0.02          # how much a cost keep may lose per step (about 3 of 178 holdout passengers)
-floor = 0.74           # never below the baseline
+floor = 0.74           # a cost keep may never push accuracy below this
 
 [[metrics]]
 name = "cost_seconds"

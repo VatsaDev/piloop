@@ -50,7 +50,7 @@ from piloop.reports.overview import (
 from piloop.runtime import WorkerStatus
 from piloop.runtime.factory import handle_for, runtime_for
 from piloop.scoring.ledger import metrics, references, score, track_of, trunk_keeps
-from piloop.text import NONE, cell
+from piloop.text import NONE, cell, metric
 from piloop.usage import human, project_tokens
 
 AGENT_LINES = 60
@@ -110,7 +110,7 @@ class Panel(Protocol):
 
 
 def header(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> Text:
-    """Return the summary line (head, kept, spend, stopped), the progress line against ``[stop]``, and one per track."""
+    """Return the summary line (head, kept, stopped), the progress line against ``[stop]`` (with the spend), and one per track."""
     text = Text(f'{summary(s, project, cfg)}{stopped(project)}\n', style='bold')
     text.append(progress(s, project, cfg, now), style='dim')
     if cfg.multitrack:
@@ -138,7 +138,7 @@ def projects(s: Session, now: datetime, me: str) -> list[Item]:
                     if p.status is ProjectStatus.STOPPED
                     else str(p.status),
                     ', '.join(f'{_four(value)} {track.primary.name}' for track, value, _ in values) or NONE,
-                    ', '.join(NONE if delta is None else f'{delta:+.4f}' for _, _, delta in values) or NONE,
+                    ', '.join(NONE if delta is None else metric(delta, signed=True) for _, _, delta in values) or NONE,
                     f'{len(live_workers(s, p))} agents',
                     f'{len(ready)} ready',
                     f'{len(waiting(s, p.id, me))} inbox',
@@ -336,8 +336,8 @@ class CandidatesPanel:
             f'metrics under evaluator#{evaluator} (vs parent):',
         ]
         for name in sorted(mine):
-            delta = f' ({mine[name] - theirs[name]:+.4f})' if name in theirs else ''
-            body.append(f'  {name} {mine[name]:.4f}{delta}')
+            delta = f' ({metric(mine[name] - theirs[name], signed=True)})' if name in theirs else ''
+            body.append(f'  {name} {metric(mine[name])}{delta}')
         if not mine:
             body.append(f'  {NONE}')
         body += ['', 'summary:', *(c.summary or NONE).strip().splitlines()]
@@ -364,7 +364,7 @@ def kept_scores(s: Session, project: Project, cfg: ProjectConfig) -> dict[str, l
 
 
 def _four(value: float | None) -> str:
-    return NONE if value is None else f'{value:.4f}'
+    return NONE if value is None else metric(value)
 
 
 def sparkline(values: list[float]) -> str:
@@ -373,4 +373,4 @@ def sparkline(values: list[float]) -> str:
         return NONE
     low, span = min(values), (max(values) - min(values)) or 1
     marks = ''.join(SPARKS[round((v - low) / span * (len(SPARKS) - 1))] for v in values)
-    return f'{marks} {values[0]:g} → {values[-1]:g}'
+    return f'{marks} {metric(values[0])} → {metric(values[-1])}'

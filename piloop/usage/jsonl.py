@@ -1,4 +1,4 @@
-"""The ``jsonl`` reader: a JSONL session file under the home directory, found by a glob and added up by a tally.
+"""The ``jsonl`` reader: a JSONL session file, found by a glob and added up by a tally.
 
 Every built-in harness keeps its transcript this way: one JSON object per line, with token counts for each response.
 The harnesses differ only in where the file is, how its folder is named after the agent's cwd, and which records
@@ -18,6 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
 
+from piloop.settings import settings
 from piloop.usage import Usage, UsageError, UsageSpec, reader
 
 type Record = dict[str, object]
@@ -146,13 +147,13 @@ class JsonlReader:
         """Add up the session file. This reader does not use ``log_dir``.
 
         Raises:
-            UsageError: There is no session id, no file for it under the home directory, or no usage in the file.
+            UsageError: There is no session id, no file for it, or no usage in the file.
         """
         if session_id is None:
             raise UsageError('no session id')
         path = self.session_file(session_id, cwd)
         if path is None:
-            raise UsageError(f'no session file for {session_id} under {Path.home()}')
+            raise UsageError(f'no session file for {session_id}: nothing matches {self.pattern(session_id)}')
         counts, turns = self.tally(records(path))
         if not turns:
             raise UsageError(f'no usage records in {path}')
@@ -192,15 +193,20 @@ class JsonlReader:
         """
         folders = [glob.escape(self.encode_cwd(cwd))] if cwd is not None else []
         for folder in [*folders, '*']:
-            pattern = (
-                self.file.replace('{home}', str(Path.home()))
-                .replace('{cwd}', folder)
-                .replace('{session_id}', glob.escape(session_id))
-            )
-            matches = [Path(p) for p in glob.glob(pattern)]
+            matches = [Path(p) for p in glob.glob(self.pattern(session_id, folder))]
             if matches:
                 return max(matches, key=lambda p: p.stat().st_mtime)
         return None
+
+    def pattern(self, session_id: str, folder: str = '*') -> str:
+        """The glob of the session file: ``file`` with its placeholders filled in."""
+        return (
+            self.file.replace('{home}', str(Path.home()))
+            .replace('{claude_config_dir}', str(settings.claude_config_dir))
+            .replace('{codex_home}', str(settings.codex_home))
+            .replace('{cwd}', folder)
+            .replace('{session_id}', glob.escape(session_id))
+        )
 
 
 def records(path: Path) -> Iterator[Record]:

@@ -7,6 +7,7 @@ import stat
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -49,7 +50,7 @@ def alive(pid: int) -> bool:
     return True
 
 
-def wait_until(predicate, *, timeout: float = 15) -> None:
+def wait_until(predicate: Callable[[], bool], *, timeout: float = 15) -> None:
     deadline = time.monotonic() + timeout
     while not predicate():
         assert time.monotonic() < deadline, 'condition not met in time'
@@ -105,7 +106,8 @@ def test_detach_survives_the_cli_and_stop_ends_it(tmp_path: Path) -> None:
 
     stopped = piloop(cfg.home, 'stop')
     assert (stopped.returncode, stopped.stdout.strip()) == (0, f'daemon pid {pid} stopped')
-    assert not alive(pid) and not cfg.pid_file.exists()
+    assert not cfg.pid_file.exists(), 'the daemon removes its pid file before it releases the lock'
+    wait_until(lambda: not alive(pid))  # stop returns once the lock is free; the process exits just after
     log = cfg.log_file.read_text()
     assert 'piloop.start' in log and 'piloop.shutdown' in log
     nothing = piloop(cfg.home, 'stop')
@@ -166,7 +168,8 @@ def test_simultaneous_starts_let_exactly_one_daemon_claim(tmp_path: Path) -> Non
     pid = int(cfg.pid_file.read_text())
     assert winner[0] == 0 and winner[1][0].startswith(f'daemon started: pid {pid},')
     assert loser[0] == 1 and f'already running (pid {pid}' in loser[1][1]
-    assert piloop(cfg.home, 'stop').returncode == 0 and not alive(pid)
+    assert piloop(cfg.home, 'stop').returncode == 0
+    wait_until(lambda: not alive(pid))  # stop returns once the lock is free; the process exits just after
 
 
 def test_a_free_lock_means_not_running_whatever_the_file_says(tmp_path: Path) -> None:
@@ -225,7 +228,15 @@ def test_acquire_creates_a_private_home_and_overwrites_a_stale_file(tmp_path: Pa
     os.close(fd)
 
 
-def test_service_unit_texts(tmp_path: Path) -> None:
+def clear_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove the variables that a service unit carries, so that the shell of the test run does not leak in."""
+    for key in os.environ:
+        if key.startswith('PILOOP_') or key in ('OTEL_EXPORTER_OTLP_ENDPOINT', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME'):
+            monkeypatch.delenv(key)
+
+
+def test_service_unit_texts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    clear_settings_env(monkeypatch)
     cfg = Settings(home=tmp_path)
     unit = service_unit(cfg, 'linux')
     assert f'ExecStart={sys.executable} -m piloop serve' in unit
@@ -243,12 +254,41 @@ def test_service_unit_texts(tmp_path: Path) -> None:
         'StandardOutPath': str(tmp_path / 'serve.log'),
         'StandardErrorPath': str(tmp_path / 'serve.log'),
     }
-    command = Settings(home=tmp_path, secrets_command="op inject -i '%h/keys'")
-    assert 'Environment="PILOOP_SECRETS_COMMAND=op inject -i \'%%h/keys\'"' in service_unit(command, 'linux')
-    env = plistlib.loads(service_unit(command, 'darwin').encode())['EnvironmentVariables']
-    assert env['PILOOP_SECRETS_COMMAND'] == "op inject -i '%h/keys'", (
-        'the unit starts the daemon with its secrets command'
+
+
+def test_the_service_unit_carries_the_settings_of_the_shell_and_no_other_variables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    carried = {
+        'PILOOP_SECRETS_COMMAND': "op inject -i '%h/keys'",
+        'PILOOP_TICK_SECONDS': '0.5',
+        'PILOOP_HERDR_SESSION': 'my <session> & "co"',
+        'PILOOP_PROJECT_RUNTIME': 'subprocess',
+        'OTEL_EXPORTER_OTLP_ENDPOINT': 'http://localhost:4318',
+        'CLAUDE_CONFIG_DIR': '/home/me/claude work',
+        'CODEX_HOME': '/home/me/100% codex',
+    }
+    dropped = {
+        'PILOOP_ACTOR': 'orchestrator',
+        'PILOOP_WORKER_TOKEN': 'w-1',
+        'PILOOP_UNITS_FILE': '/home/me/units.json',
+        'ANTHROPIC_API_KEY': 'sk-secret',
+        'HERDR_SOCKET_PATH': '/home/me/herdr.sock',
+    }
+    clear_settings_env(monkeypatch)
+    for key, value in (carried | dropped).items():
+        monkeypatch.setenv(key, value)
+    cfg = Settings(home=tmp_path)
+    env = plistlib.loads(service_unit(cfg, 'darwin').encode())['EnvironmentVariables']
+    assert list(env) == ['PILOOP_HOME', 'PATH', *sorted(carried)]
+    assert env == {'PILOOP_HOME': str(tmp_path), 'PATH': os.environ['PATH'], **carried}, (
+        "the daemon needs piloop's settings; it must not sign as an agent or get a key that the shell happens to hold"
     )
+    unit = service_unit(cfg, 'linux')
+    assert 'Environment="PILOOP_SECRETS_COMMAND=op inject -i \'%%h/keys\'"' in unit
+    assert 'Environment="PILOOP_HERDR_SESSION=my <session> & \\"co\\""' in unit
+    assert 'Environment="CODEX_HOME=/home/me/100%% codex"' in unit
+    assert not any(key in unit for key in dropped)
 
 
 def test_the_secrets_command_prints_name_value_lines() -> None:

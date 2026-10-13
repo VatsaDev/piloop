@@ -1,4 +1,8 @@
-"""Project configuration: ``piloop.toml`` at the repo root. ``PILOOP_PROJECT_*`` environment variables override it.
+"""Project configuration: ``piloop.toml`` at the repo root.
+
+``piloop init`` loads the file and stores it in ``projects.config``, and the daemon schedules from that copy.
+``PILOOP_PROJECT_*`` environment variables override the file when it is loaded, so they apply to ``piloop init`` and
+``piloop doctor``, not to the daemon.
 
 ``docs/reference/configuration.mdx`` is generated from these models. Run ``make docs`` after you change them.
 """
@@ -202,7 +206,7 @@ class Scout(BaseModel):
 
     interval: float = Field(gt=0)
     """The number of seconds between two scout sweeps, counted from the start of the last one. The first sweep counts
-    from the registration of the project. Required: there is no default."""
+    from the registration of the project."""
     seeds: int = Field(default=SCOUT_SEEDS, ge=1)
     """The maximum number of seeds one scout sweep may file. The other techniques it finds go to the library."""
 
@@ -237,8 +241,9 @@ class Stop(BaseModel):
 
     The daemon checks the conditions on every tick, before it requests anything. When one holds, the project is
     ``stopped`` (``projects.status``, ``stopped_reason``). Running workers are told to commit and stop, and are ended
-    ten minutes later. What they committed is scored. Pending requests and queued runs are dropped
-    (``campaign stopped``). One last watchdog sweep is requested, and nothing new starts.
+    10 minutes later. What they committed is scored. Pending requests and queued runs are dropped
+    (``campaign stopped``). One last watchdog sweep is requested, and the triggers request nothing more. An agent that
+    you request with ``piloop launch`` after the stop still starts.
 
     ``piloop init`` resumes a stopped project when this table changed.
     """
@@ -325,9 +330,10 @@ class ProjectConfig(BaseModel):
     evaluate: list[str] = Field(min_length=1)
     """The command (argv) that scores a commit. It runs in a clean worktree of the commit and must print
     ``METRIC <name>=<value>`` lines."""
-    runtime: RuntimeKind = RuntimeKind.HERDR
-    """Where workers run. With ``herdr``, every worker gets a terminal pane that you and the orchestrator can read and
-    type into. With ``subprocess``, every worker is a background process."""
+    runtime: RuntimeKind = RuntimeKind.SUBPROCESS
+    """Where agents run. With ``subprocess`` (the default), every agent is a background process; ``piloop watch``
+    shows what it printed. With ``herdr`` (optional, needs Herdr), every agent gets a terminal pane that you and the
+    orchestrator can read, type into and steer with ``piloop prompt``."""
     harnesses: list[str] = Field(default=['pi'], min_length=1)
     """The enabled harnesses. Runs use them in turn, unless an idea pins one."""
     model: dict[str, str]
@@ -343,13 +349,12 @@ class ProjectConfig(BaseModel):
     evaluate_timeout: float = 600
     """The number of seconds before the evaluate command is stopped. The evaluation is then a crash."""
     roles: Roles = Roles()
-    """The settings of each role (``[roles.worker]``, ``[roles.watchdog]``, ``[roles.research]``). See
-    https://piloop.autoresearch.inc/concepts/roles."""
+    """The settings of each role (``[roles.worker]``, ``[roles.watchdog]``, ``[roles.research]``)."""
     link: list[str] = []
     """Repo-relative paths, ignored by git, that piloop symlinks into every worktree, for example data or virtual
     environments."""
     mcp: dict[ServerName, McpServer] = {}
-    """``[mcp.<name>]``: the MCP servers that a role can list in ``[roles.<kind>] mcp``. See ``McpServer``."""
+    """``[mcp.<name>]``: the MCP servers that a role can list in ``[roles.<kind>] mcp``."""
     stop: Stop = Stop()
     """``[stop]``: conditions that end the campaign. None by default."""
     spend: Spend | None = None

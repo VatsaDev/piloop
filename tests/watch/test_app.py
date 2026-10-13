@@ -42,7 +42,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.watch.app import CampaignScreen, ProjectsScreen, Watch
+from piloop.watch.app import CampaignScreen, CandidatesTable, ProjectsScreen, Watch
 from piloop.watch.panels import PANELS, Context, kept_scores
 from tests.daemon.test_serve import wait_until
 from tests.reports.test_history import idea
@@ -257,55 +257,55 @@ def test_the_projects_screen_opens_a_project_and_esc_comes_back(
         [
             ' piloop: 2 projects',
             '',
-            ' project  status                                    head          vs baseline  agents    ready    inbox    tokens    last event',
-            ' demo     active                                    4.0000 score  +3.0000      2 agents  1 ready  2 inbox  1.2M tok  comment.note 1m ago',
-            ' other    stopped: max_runs: 50 runs, and more wo…  —             —            0 agents  0 ready  0 inbox  —         —',
+            ' project  status                                    head     vs baseline  agents    ready    inbox    tokens    last event',
+            ' demo     active                                    4 score  +3           2 agents  1 ready  2 inbox  1.2M tok  comment.note 1m ago',
+            ' other    stopped: max_runs: 50 runs, and more wo…  —        —            0 agents  0 ready  0 inbox  —         —',
         ]
     )
     assert shots[1] == snapshot("""\
- demo · head score 4.0000 (candidate#4, +3.0000 vs baseline) · 3 kept / 4 candidates · 1.2M tok
+ demo · head score 4 (candidate#4, +3 vs baseline) · 3 kept / 4 candidates · 1.2M tok
  run 2/50 · 2.0h/12h · 1.2M/5.0M tok · 0/10 runs without a keep · target ≥ 10 (head 4)
-╭─ [1] Inbox 2 ────────────────────────────────────────────────────────╮╭─ [0] inbox ──────────────────────────────────────────────────────────────────────────╮
-│ p1  escalation  watchdog#3  30m  Codex cannot start: trust dialog. En││ comment#3 escalation on project#1 by watchdog#3, 30m ago · p1, unacknowledged        │
-│ p2  decision    pi          20m  Keep #2: the floor holds.           ││                                                                                      │
-│                                                                      ││ Codex cannot start: trust dialog. Environment or harness?                            │
-│                                                                      ││ Second line.                                                                         │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-╰──────────────────────────────────────────────────────────────────────╯│                                                                                      │
-╭─ [2] Agents 2 ───────────────────────────────────────────────────────╮│                                                                                      │
-│ ● #1  worker    working  pi/m         3m   idea#2 longer lines       ││                                                                                      │
-│ · #2  research  —        claude/opus  40s  low_water: 1 ready < 10   ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-╰──────────────────────────────────────────────────────────────────────╯│                                                                                      │
-╭─ [3] Ideas 1 proposed · 1 ready · 1 scheduled ───────────────────────╮│                                                                                      │
-│ P2  proposed   #4  soft voting    —                                  ││                                                                                      │
-│ P1  ready      #3  shorter lines  —                                  ││                                                                                      │
-│ P2  scheduled  #2  longer lines   —                                  ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-╰──────────────────────────────────────────────────────────────────────╯│                                                                                      │
-╭─ [4] Candidates ▁▆█ 1 → 4 ───────────────────────────────────────────╮│                                                                                      │
-│ #4  keep     4.0000  +2.0000  run#1  1h  [wip] step 4                ││                                                                                      │
-│ #3  discard  2.0000  -1.0000  run#1  1h  [wip] step 3                ││                                                                                      │
-│ #2  keep     3.0000  +2.0000  run#1  1h  [wip] step 2                ││                                                                                      │
-│ #1  keep     1.0000  —        —      3h  baseline                    ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-╰──────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ [1] Inbox 2 ────────────────────────────────────────────────────────────────────────╮╭─ [0] inbox ──────────────────────────────────────────────────────────╮
+│ p1  escalation  watchdog#3  30m  Codex cannot start: trust dialog. Environment or har││ comment#3 escalation on project#1 by watchdog#3, 30m ago · p1,       │
+│ p2  decision    pi          20m  Keep #2: the floor holds.                           ││ unacknowledged                                                       │
+╰──────────────────────────────────────────────────────────────────────────────────────╯│                                                                      │
+╭─ [2] Agents 2 ───────────────────────────────────────────────────────────────────────╮│ Codex cannot start: trust dialog. Environment or harness?            │
+│ ● #1  worker    working  pi/m         3m   idea#2 longer lines                       ││ Second line.                                                         │
+│ · #2  research  —        claude/opus  40s  low_water: 1 ready < 10                   ││                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────╯│                                                                      │
+╭─ [3] Ideas 1 proposed · 1 ready · 1 scheduled ───────────────────────────────────────╮│                                                                      │
+│ P2  proposed   #4  soft voting    —                                                  ││                                                                      │
+│ P1  ready      #3  shorter lines  —                                                  ││                                                                      │
+│ P2  scheduled  #2  longer lines   —                                                  ││                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────╯│                                                                      │
+╭─ [4] Candidates ▁▆█ 1 → 4 ───────────────────────────────────────────────────────────╮│                                                                      │
+│ #4  keep     4  +2  run#1  1h  [wip] step 4                                          ││                                                                      │
+│ #3  discard  2  -1  run#1  1h  [wip] step 3                                          ││                                                                      │
+│ #2  keep     3  +2  run#1  1h  [wip] step 2                                          ││                                                                      │
+│ #1  keep     1  —   —      3h  baseline                                              ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────╯
  a ack  A ack all shown  r reply  / filter  esc projects  q quit  ? keys
 """)
     assert shots[2].splitlines()[:2] == snapshot(
@@ -421,49 +421,49 @@ def test_the_agents_panel_shows_the_selected_agents_output_and_its_state(
 
     drive(db, 'demo', scenario)
     assert shots[0] == snapshot("""\
- demo · head score 4.0000 (candidate#4, +3.0000 vs baseline) · 3 kept / 4 candidates · 1.2M tok
+ demo · head score 4 (candidate#4, +3 vs baseline) · 3 kept / 4 candidates · 1.2M tok
  run 2/50 · 2.0h/12h · 1.2M/5.0M tok · 0/10 runs without a keep · target ≥ 10 (head 4)
-╭─ [1] Inbox 2 ────────────────────────────────────────────────────────╮╭─ [0] agents ─────────────────────────────────────────────────────────────────────────╮
-│ p1  escalation  watchdog#3  30m  Codex cannot start: trust dialog. En││ worker-1 · pi/m · running 3m · tab w7:t2                                             │
-│ p2  decision    pi          20m  Keep #2: the floor holds.           ││ on: idea#2 longer lines                                                              │
-│                                                                      ││ blocked on a dialog: steering is refused until it is answered; enter focuses its tab │
-│                                                                      ││                                                                                      │
-│                                                                      ││ the last 1 lines it wrote                                                            │
-│                                                                      ││ hello from the agent                                                                 │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-╰──────────────────────────────────────────────────────────────────────╯│                                                                                      │
-╭─ [2] Agents 2 · 1 blocked ───────────────────────────────────────────╮│                                                                                      │
-│ ◐ #1  worker    blocked  pi/m         3m   idea#2 longer lines       ││                                                                                      │
-│ · #2  research  —        claude/opus  40s  low_water: 1 ready < 10   ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-╰──────────────────────────────────────────────────────────────────────╯│                                                                                      │
-╭─ [3] Ideas 1 proposed · 1 ready · 1 scheduled ───────────────────────╮│                                                                                      │
-│ P2  proposed   #4  soft voting    —                                  ││                                                                                      │
-│ P1  ready      #3  shorter lines  —                                  ││                                                                                      │
-│ P2  scheduled  #2  longer lines   —                                  ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-╰──────────────────────────────────────────────────────────────────────╯│                                                                                      │
-╭─ [4] Candidates ▁▆█ 1 → 4 ───────────────────────────────────────────╮│                                                                                      │
-│ #4  keep     4.0000  +2.0000  run#1  1h  [wip] step 4                ││                                                                                      │
-│ #3  discard  2.0000  -1.0000  run#1  1h  [wip] step 3                ││                                                                                      │
-│ #2  keep     3.0000  +2.0000  run#1  1h  [wip] step 2                ││                                                                                      │
-│ #1  keep     1.0000  —        —      3h  baseline                    ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-│                                                                      ││                                                                                      │
-╰──────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────────────────────╯
+╭─ [1] Inbox 2 ────────────────────────────────────────────────────────────────────────╮╭─ [0] agents ─────────────────────────────────────────────────────────╮
+│ p1  escalation  watchdog#3  30m  Codex cannot start: trust dialog. Environment or har││ worker-1 · pi/m · running 3m · tab w7:t2                             │
+│ p2  decision    pi          20m  Keep #2: the floor holds.                           ││ on: idea#2 longer lines                                              │
+╰──────────────────────────────────────────────────────────────────────────────────────╯│ blocked on a dialog: steering is refused until it is answered; enter │
+╭─ [2] Agents 2 · 1 blocked ───────────────────────────────────────────────────────────╮│ focuses its tab                                                      │
+│ ◐ #1  worker    blocked  pi/m         3m   idea#2 longer lines                       ││                                                                      │
+│ · #2  research  —        claude/opus  40s  low_water: 1 ready < 10                   ││ the last 1 lines it wrote                                            │
+╰──────────────────────────────────────────────────────────────────────────────────────╯│ hello from the agent                                                 │
+╭─ [3] Ideas 1 proposed · 1 ready · 1 scheduled ───────────────────────────────────────╮│                                                                      │
+│ P2  proposed   #4  soft voting    —                                                  ││                                                                      │
+│ P1  ready      #3  shorter lines  —                                                  ││                                                                      │
+│ P2  scheduled  #2  longer lines   —                                                  ││                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────╯│                                                                      │
+╭─ [4] Candidates ▁▆█ 1 → 4 ───────────────────────────────────────────────────────────╮│                                                                      │
+│ #4  keep     4  +2  run#1  1h  [wip] step 4                                          ││                                                                      │
+│ #3  discard  2  -1  run#1  1h  [wip] step 3                                          ││                                                                      │
+│ #2  keep     3  +2  run#1  1h  [wip] step 2                                          ││                                                                      │
+│ #1  keep     1  —   —      3h  baseline                                              ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+│                                                                                      ││                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────╯
  ⏎ focus tab  s steer  / filter  esc projects  q quit  ? keys
 """)
     assert 'proposing idea B' in shots[1], "a headless agent's saved transcript"
@@ -501,7 +501,7 @@ def test_agents_keys_focus_the_tab_and_steer(
     assert notes == [
         'focused worker#1 (tab w7:t2)',
         'steered worker#1',
-        'worker#2 has no Herdr tab (headless runtime): nothing to focus',
+        'worker#2 has no Herdr tab (runtime = "subprocess"): nothing to focus',
         'worker#2 is starting, not running: nothing to steer',
         'could not focus worker#1: tab_not_found: w7:t2 is gone',
         'not steered: worker-1 is blocked on an approval or question; read it and answer with herdr agent send-keys',
@@ -620,8 +620,8 @@ def test_the_ideas_and_candidates_details(db: Database, campaign: Project, herdr
             ' parent candidate#3 · run #1 · commit x · 1h ago',
             '',
             ' metrics under evaluator#1 (vs parent):',
-            '   score 4.0000 (+2.0000)',
-            '   size 1.0000 (+0.0000)',
+            '   score 4 (+2)',
+            '   size 1 (+0)',
             '',
             ' summary:',
             ' [wip] step 4',
@@ -650,11 +650,11 @@ def test_imported_references_are_listed_apart_as_starting_points(
     assert candidates[0].startswith('Candidates ▁▆█ 1 → 4 · 1 starting point ─')
     assert [line.split('│')[1].rstrip() for line in candidates[1:6]] == snapshot(
         [
-            ' #4  keep       4.0000  +2.0000  run#1  1h  [wip] step 4',
-            ' #3  discard    2.0000  -1.0000  run#1  1h  [wip] step 3',
-            ' #2  keep       3.0000  +2.0000  run#1  1h  [wip] step 2',
-            ' #1  keep       1.0000  —        —      3h  baseline',
-            ' #6  reference  —       —        —      0s  paper repro',
+            ' #4  keep       4  +2  run#1  1h  [wip] step 4',
+            ' #3  discard    2  -1  run#1  1h  [wip] step 3',
+            ' #2  keep       3  +2  run#1  1h  [wip] step 2',
+            ' #1  keep       1  —   —      3h  baseline',
+            ' #6  reference  —  —   —      0s  paper repro',
         ]
     )
 
@@ -680,7 +680,8 @@ def test_question_mark_shows_the_panels_keys_and_0_focuses_the_detail(
 
 def test_an_empty_project_takes_every_key_without_acting(db: Database, campaign: Project, herdr_log: Path) -> None:
     async def scenario(pilot: Pilot[None], app: Watch) -> None:
-        await pilot.press('a', 'A', 'r', '2', 'enter', 's', '3', 'y', 'plus')
+        assert isinstance(app.focused, CandidatesTable), 'an empty inbox does not take the focus'
+        await pilot.press('1', 'a', 'A', 'r', '2', 'enter', 's', '3', 'y', 'plus')
         await pilot.pause()
         assert campaign_screen(app).note == ''
         assert ' nothing here' in screen_text(app)

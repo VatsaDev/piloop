@@ -1,13 +1,16 @@
 import json
+import re
 from pathlib import Path
+from typing import get_args, get_origin
 
 from git import Repo
+from pydantic import BaseModel
 from pytest_mock import MockerFixture
 
 from piloop.agents.capture import ENTIRE_DIR
 from piloop.campaign import project as project_module
 from piloop.campaign.project import BLANK, TEMPLATES, create_project_repo, register, registered, stub_untouched
-from piloop.config import load_project_config
+from piloop.config import ProjectConfig, load_project_config
 from piloop.db.session import Database
 from tests.conftest import HARNESS_APPEND, write_toml
 
@@ -98,6 +101,73 @@ def test_example_templates_are_projects_with_entire_settings() -> None:
     assert (
         BLANK / ENTIRE_DIR / '.gitignore'
     ).read_text() == 'tmp/\nsettings.local.json\nmetadata/\nlogs/\nredactors/local/\n'
+
+
+HEADER = re.compile(r'^#?\s*\[\[?([^\]]+)\]')
+"""A table header line, commented or not: ``[stop]``, ``# [stop]``, ``[[metrics]]``."""
+
+
+def model_in(annotation: object) -> tuple[type[BaseModel], bool] | None:
+    """The model that a field holds, and whether it holds one per name (a dict, so one table for each name)."""
+    if get_origin(annotation) is dict:
+        value = get_args(annotation)[1]
+        return (value, True) if isinstance(value, type) and issubclass(value, BaseModel) else None
+    for arg in (annotation, *get_args(annotation)):
+        if isinstance(arg, type) and issubclass(arg, BaseModel):
+            return arg, False
+    return None
+
+
+def unnamed_keys(template: str) -> list[str]:
+    """The keys of ``ProjectConfig``, at every depth, that a ``piloop.toml`` text does not name.
+
+    A key is named by an assignment (``key =`` or ``# key =``) in its table, or by a header (``[table]``,
+    ``# [table]``) at its path. A table that lists its keys in a ``keys:`` comment may name a key there instead. A
+    nested table with no header of its own names its keys in the table above it.
+    """
+    sections: dict[str, str] = {}
+    name = ''
+    for line in template.splitlines():
+        if header := HEADER.match(line):
+            name = header.group(1)
+        sections[name] = sections.get(name, '') + line + '\n'
+
+    def walk(model: type[BaseModel], path: str, label: str, text: str) -> list[str]:
+        missing = []
+        for key, field in model.model_fields.items():
+            full = f'{path}\\.{re.escape(key)}' if path else re.escape(key)
+            where = f'{label}.{key}' if label else key
+            headed = any(re.fullmatch(rf'{full}(\..+)?', n) for n in sections)
+            named = (
+                headed
+                or re.search(rf'^#?\s*{re.escape(key)}\s*=', text, re.MULTILINE) is not None
+                or ('keys:' in text and re.search(rf'\b{re.escape(key)}\b', text) is not None)
+            )
+            if not named:
+                missing.append(where)
+            if (nested := model_in(field.annotation)) is not None:
+                table = full + (r'\.[^.]+' if nested[1] else '')
+                own = ''.join(t for n, t in sections.items() if re.fullmatch(table, n))
+                missing += walk(nested[0], table, where + ('.<name>' if nested[1] else ''), own or text)
+        return missing
+
+    return walk(ProjectConfig, '', '', sections.get('', ''))
+
+
+def test_the_project_template_names_every_key_of_the_config() -> None:
+    template = (BLANK / 'piloop.toml').read_text()
+    assert template.startswith('# piloop project config. This file lists every key.')
+    assert unnamed_keys(template) == [], 'the template says that it lists every key; add the missing ones to it'
+    gaps = {'explore_every = 4': 'every = 4', 'plateau': 'p', 'bearer_token_env': 'x', ' tally;': ';'}
+    without = template
+    for old, new in gaps.items():
+        without = without.replace(old, new)
+    assert unnamed_keys(without) == [
+        'harness.<name>.usage.tally',
+        'roles.worker.explore_every',
+        'mcp.<name>.bearer_token_env',
+        'stop.plateau',
+    ], 'the check finds a key missing from a table, from a keys: comment, and from a nested table without a header'
 
 
 def test_the_baseline_keeps_its_per_unit_results_under_the_daemon_home(db: Database, project_path: Path) -> None:

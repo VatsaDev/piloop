@@ -58,7 +58,7 @@ from piloop.db.models import (
     latest_worker,
     project_runs,
 )
-from piloop.reports.history import block
+from piloop.reports.history import IDEAS_IN_HISTORY, block
 from piloop.runtime.factory import handle_for, runtime_for
 from piloop.scoring.ledger import (
     NOTE,
@@ -72,7 +72,7 @@ from piloop.scoring.ledger import (
     track_of,
     trunk_keeps,
 )
-from piloop.text import NONE, cell
+from piloop.text import NONE, cell, metric
 from piloop.usage import human, project_tokens
 
 STEPS_SHOWN = 8
@@ -166,7 +166,7 @@ def overview(
     ``tools`` adds the summary of tools and schema that an agent needs and a human does not.
     """
     sections = [
-        f'## Lay of the land (computed at {now:%Y-%m-%d %H:%M} UTC)',
+        f'## Project overview (computed at {now:%Y-%m-%d %H:%M} UTC)',
         headline(s, project, cfg, now),
         '### Goal',
         *_goal(s, project, cfg, now),
@@ -223,12 +223,12 @@ def summary(s: Session, project: Project, cfg: ProjectConfig) -> str:
         head_text = 'no trunk keep'
     elif not cfg.multitrack:
         trunk, [(track, value, delta)] = at
-        vs_baseline = f', {delta:+.4f} vs baseline' if delta is not None else ''
+        vs_baseline = f', {metric(delta, signed=True)} vs baseline' if delta is not None else ''
         head_text = f'head {track.primary.name} {_four(value)} (candidate#{trunk.id}{vs_baseline})'
     else:
         trunk, values = at
         head_text = f'head candidate#{trunk.id}: ' + ', '.join(
-            f'{track.primary.name} {_four(value)}' + (f' ({delta:+.4f})' if delta is not None else '')
+            f'{track.primary.name} {_four(value)}' + (f' ({metric(delta, signed=True)})' if delta is not None else '')
             for track, value, delta in values
         )
     spent = project_tokens(s, project.id)
@@ -282,7 +282,7 @@ def progress(s: Session, project: Project, cfg: ProjectConfig, now: datetime) ->
         at = head_scores(s, project, cfg)
         value = at[1][0][1] if at is not None else None
         sign = '≥' if cfg.all_tracks[0].primary.direction is Direction.HIGHER else '≤'
-        parts.append(f'target {sign} {stop.target:g} (head {_num(value)})')
+        parts.append(f'target {sign} {metric(stop.target)} (head {_num(value)})')
     if (budget := spend.progress(project, cfg)) is not None:
         parts.append(budget)
     return ' · '.join(parts)
@@ -364,8 +364,8 @@ def scored(c: Candidate, evaluator_id: int, primary: Metric) -> tuple[str, str]:
     """Format the primary score of the candidate and its delta to its parent, each ``—`` when unknown."""
     value = score(c, evaluator_id, primary)
     parent = score(c.parent, evaluator_id, primary) if c.parent is not None else None
-    delta = f'{value - parent:+.4f}' if value is not None and parent is not None else NONE
-    return NONE if value is None else f'{value:.4f}', delta
+    delta = metric(value - parent, signed=True) if value is not None and parent is not None else NONE
+    return NONE if value is None else metric(value), delta
 
 
 def item_lines(s: Session, c: Comment, now: datetime) -> tuple[str, list[str]]:
@@ -448,8 +448,8 @@ def _goal(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> li
 
 def _metric(m: Metric) -> str:
     """Format a primary metric as a guardrail of another track: ``accuracy, higher, margin 0.01, floor 0.8``."""
-    margin = f', margin {m.margin:g}' if m.margin is not None else ''
-    floor = f', floor {m.floor:g}' if m.floor is not None else ''
+    margin = f', margin {metric(m.margin)}' if m.margin is not None else ''
+    floor = f', floor {metric(m.floor)}' if m.floor is not None else ''
     return f'{m.name}, {m.direction}{margin}{floor}'
 
 
@@ -475,7 +475,9 @@ def tracks_lines(s: Session, project: Project, cfg: ProjectConfig, now: datetime
         gain = f' ({value - start:+g} on the start)' if value is not None and start is not None else ''
         floor = ''
         if m.floor is not None:
-            floor = f'; floor {m.floor:g}' + (f', {m.gain(value, m.floor):g} to spare' if value is not None else '')
+            floor = f'; floor {metric(m.floor)}' + (
+                f', {metric(m.gain(value, m.floor))} to spare' if value is not None else ''
+            )
         mine = [c for c in steps if track_of(cfg, c).name == track.name]
         latest = f', the latest candidate#{mine[-1].id} {age(_known(mine[-1]), now)} ago' if mine else ''
         lines.append(
@@ -500,7 +502,7 @@ def _trajectory(s: Session, project: Project, cfg: ProjectConfig, now: datetime)
             gains.append(f'{track.primary.name} unmeasured')
             continue
         relative = f', {(b - a) / abs(a):+.1%}' if a else ''
-        gains.append(f'{track.primary.name} {a:g} → {b:g} ({b - a:+g}{relative})')
+        gains.append(f'{track.primary.name} {metric(a)} → {metric(b)} ({metric(b - a, signed=True)}{relative})')
     finished = project_runs(project.id).where(Run.status.in_(FINISHED_RUNS), attempt(), Run.finished_at > _known(last))
     lines = [
         f'- Start candidate#{first.id}, head candidate#{last.id}: {"; ".join(gains)}; {len(steps) - 1} trunk keeps.',
@@ -757,7 +759,8 @@ TOOLS = [
     ' It prints a table cut to the terminal width, so prefix `COLUMNS=400` for wide rows, or select one'
     " concatenated column (`a || ' | ' || b`); at most 500 rows.",
     "- Scores: `json_extract(m.metrics, '$.<metric>')`; a candidate's score is the mean over its measurements with"
-    ' `error IS NULL AND evaluator_id = projects.evaluator_id`. `piloop history` prints every idea with its outcome.',
+    ' `error IS NULL AND evaluator_id = projects.evaluator_id`.'
+    f' `piloop history` prints the latest {IDEAS_IN_HISTORY} ideas with their outcomes.',
     f'- Transcripts: `<runs.log_dir>/{TRANSCRIPT}` (a worker), `<workers.log_dir>/{TRANSCRIPT}` and `brief.md`'
     ' beside it (any agent); the whole session: `cd <repo> && entire checkpoint explain <workers.checkpoint_id>`.',
     '- Code: `git -C <repo> show <candidates.commit_sha>`; a candidate against its parent:'
@@ -910,8 +913,8 @@ def _minutes(seconds: float) -> str:
 
 
 def _num(value: float | None) -> str:
-    return NONE if value is None else f'{value:g}'
+    return NONE if value is None else metric(value)
 
 
 def _four(value: float | None) -> str:
-    return 'unmeasured' if value is None else f'{value:.4f}'
+    return 'unmeasured' if value is None else metric(value)

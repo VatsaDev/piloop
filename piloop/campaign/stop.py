@@ -24,6 +24,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.scoring.ledger import head, keeps, score
+from piloop.text import metric
 from piloop.usage import project_tokens
 
 STALE_ERROR = 'daemon exited while the run was in progress'
@@ -84,7 +85,7 @@ def _target(s: Session, project: Project, cfg: ProjectConfig, target: float) -> 
     if value is None or (value != target and not primary.better(value, target)):
         return None
     sign = '≥' if primary.direction is Direction.HIGHER else '≤'
-    return f'target: {primary.name} {value:.4f} {sign} {target:g}'
+    return f'target: {primary.name} {metric(value)} {sign} {metric(target)}'
 
 
 def _over_runs[T](s: Session, project: Project, aggregate: ColumnElement[T], *where: ColumnElement[bool]) -> T | None:
