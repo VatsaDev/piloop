@@ -12,17 +12,16 @@ A review answers four questions, in this order:
 3. **What did it cost?**
 4. **Who is responsible for each failure?**
 
-Then it ships fixes.
+Then it files fixes: bug reports, PRs and inbox items.
 
-During the whole review, do not change the live system:
+Rules for the whole review:
 
-- Open the database read-only, with `?mode=ro`.
+- Do not change the live system until the review ends. Post the inbox items only at the end (see Output).
+- Open the database read-only, with `?mode=ro`. If that fails with "unable to open database file" while the daemon
+  is stopped, use `?immutable=1` instead. Use `immutable=1` only when nothing writes the database.
 - Never prompt a running agent.
 - Never edit the working tree of a project repo.
 - Never change config.
-
-Two rules apply to the whole review:
-
 - **Verify before you claim.** Every number comes from a query, a diff or a transcript line that you can cite:
   `path:line`, `path @ timestamp`, or a database row id. An agent's own report is a claim to check, not evidence. This
   includes the orchestrator's final status.
@@ -38,14 +37,14 @@ Two rules apply to the whole review:
 | Daemon log | `<PILOOP_HOME>/serve.log` (OTEL spans on stderr) |
 | Briefs the agents got | `<PILOOP_HOME>/runs/<run>/brief.md`, `<PILOOP_HOME>/workers/<worker>/brief.md` |
 | Agent screen | `<PILOOP_HOME>/workers/<worker>/transcript.txt`; `runs.log_dir` |
-| Agent session file | `workers.usage->>'$.source'` names it. Claude Code: `~/.claude/projects/-<home>--piloop-{runs,workers}-<id>-worktree/*.jsonl`. Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (match `session_id`). pi: `~/.pi/agent/sessions/--<cwd>--/*.jsonl` |
-| Orchestrator | the harness that ran `piloop-operate`; its writes are signed `orchestrator`. pi: `~/.pi/agent/sessions/--<cwd>--/`, subagents in `~/.pi/agent/pi-subagents/` and `run-history.jsonl`. Claude Code: `~/.claude/projects/<cwd, non-alphanumerics as ->/*.jsonl`, subagents under `<session>/subagents/`. Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` |
+| Agent session file | `workers.usage->>'$.source'` names it. Claude Code: `$CLAUDE_CONFIG_DIR/projects/-<home>--piloop-{runs,workers}-<id>-worktree/*.jsonl` (default `~/.claude`). Codex: `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` (default `~/.codex`; match `session_id`). pi: `~/.pi/agent/sessions/--<cwd>--/*.jsonl` |
+| Orchestrator | the harness that ran `piloop-operate`; its writes are signed `orchestrator`. pi: `~/.pi/agent/sessions/--<cwd>--/`, subagents in `~/.pi/agent/pi-subagents/` and `run-history.jsonl`. Claude Code: `$CLAUDE_CONFIG_DIR/projects/<cwd, non-alphanumerics as ->/*.jsonl`, subagents under `<session>/subagents/`. Codex: `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` |
 | Candidates | the project repo: `refs/piloop/<project>/r<run>/<n>`, `git show <commit_sha>`; `entire checkpoint explain <workers.checkpoint_id>` when Entire is on |
-| Side effects outside piloop | `~/.claude/settings.json`, `~/.codex/config.toml`, `~/.claude/projects/*/memory/` |
+| Side effects outside piloop | `$CLAUDE_CONFIG_DIR/settings.json`, `$CODEX_HOME/config.toml`, `$CLAUDE_CONFIG_DIR/projects/*/memory/` |
 
 Token counts differ per harness:
 
-- Claude: `workers.usage.total` is input + output + cache read + cache write.
+- Claude Code: `workers.usage.total` is input + output + cache read + cache write.
 - Codex: `input` already contains `cache_read`. Codex records no price.
 - To compare harnesses, use the uncached input (Codex: input − cache_read).
 
@@ -90,7 +89,7 @@ Before you trust the results:
 
 - Check again every subagent number that the verdict depends on.
 - Send deep-dive subagents on the two or three findings that matter most. Record their corrections.
-- Read 20–30 traces yourself before you trust any category.
+- Read 20–30 traces yourself before you trust any failure category that a subagent reports.
 - In each trace, note the *first* thing that went wrong. Later errors usually follow from it.
 
 ## SQL queries
@@ -99,11 +98,14 @@ Before you trust the results:
 
 ```sql
 -- Trajectory: every measured candidate and the global best so far (MIN for a lower-is-better metric).
--- `keep` is relative to the bar of its run; this is the project-level view.
+-- `keep` is relative to the bar of its run; this is the project-level view. Only the current evaluator's scores
+-- count. References are left out, because an imported reference was never a keep.
 WITH s AS (SELECT c.id, c.run_id, c.parent_id, c.verdict, c.created_at,
                   AVG(json_extract(m.metrics, '$.<m>')) AS score, COUNT(*) AS n
            FROM candidates c JOIN measurements m ON m.candidate_id = c.id
-           WHERE c.project_id = <p> AND m.error IS NULL GROUP BY c.id)
+           WHERE c.project_id = <p> AND c.verdict != 'reference' AND m.error IS NULL
+             AND m.evaluator_id = (SELECT evaluator_id FROM projects WHERE id = <p>)
+           GROUP BY c.id)
 SELECT *, MAX(score) OVER (ORDER BY created_at ROWS UNBOUNDED PRECEDING) AS best FROM s ORDER BY created_at;
 
 -- Funnel
@@ -120,7 +122,8 @@ WHERE c.project_id = <p> AND c.verdict = 'keep' AND json_extract(m.metrics, '$.<
 -- Selection noise: spread among the candidates of one run (SQLite has no STDEV)
 SELECT run_id, COUNT(*) n, AVG(s) mean, SQRT(AVG(s*s) - AVG(s)*AVG(s)) sd, MIN(s), MAX(s)
 FROM (SELECT c.run_id, json_extract(m.metrics, '$.<m>') s FROM candidates c
-      JOIN measurements m ON m.candidate_id = c.id WHERE c.project_id = <p>) GROUP BY run_id HAVING n > 3;
+      JOIN measurements m ON m.candidate_id = c.id WHERE c.project_id = <p> AND m.error IS NULL
+        AND m.evaluator_id = (SELECT evaluator_id FROM projects WHERE id = <p>)) GROUP BY run_id HAVING n > 3;
 
 -- Repeat measurements of one tree (double evaluation) and their cost
 SELECT candidate_id, COUNT(*), SUM(seconds) FROM measurements m JOIN candidates c ON c.id = m.candidate_id
@@ -143,11 +146,13 @@ SELECT r.id, r.started_at, r.finished_at FROM runs r JOIN ideas i ON i.id = r.id
 WHERE i.project_id = <p> AND COALESCE(r.finished_at, 'now') > (SELECT MAX(at) FROM events WHERE kind = 'project.status'
       AND target_id = <p> AND payload->>'$.new' = 'stopped');
 
--- Escalations: who decided, how fast (limit to the campaign window; targets can be any kind of row)
+-- Escalations: who decided, how fast (limit to the campaign window; targets can be any kind of row).
+-- A decision is on the same row as the escalation, or a reply to the escalation itself (`piloop watch`, inbox reply).
 SELECT e.id, e.author, e.target_kind, e.target_id, e.created_at, d.author decided_by, d.created_at decided_at,
        substr(e.body, 1, 100)
-FROM comments e LEFT JOIN comments d ON d.id = (SELECT MIN(id) FROM comments WHERE kind = 'decision'
-       AND target_kind = e.target_kind AND target_id = e.target_id AND id > e.id)
+FROM comments e LEFT JOIN comments d ON d.id = (SELECT MIN(id) FROM comments WHERE kind = 'decision' AND id > e.id
+       AND ((target_kind = e.target_kind AND target_id = e.target_id)
+            OR (target_kind = 'comment' AND target_id = e.id)))
 WHERE e.kind = 'escalation' AND e.created_at BETWEEN '<start>' AND '<end>';
 
 -- Goalposts: verdict overrides, status changes, evaluator versions
@@ -171,8 +176,8 @@ Run all of them on every kept candidate. Cheating and honest overfitting both sh
 - **Diffs of frozen files.**
   - For each keep: `git -C <repo> diff --stat <baseline_sha> <commit_sha> -- <evaluate> <scorer> <references> <data>`.
   - Over `refs/piloop/`: `git log --all -- <frozen paths>`.
-  - The evaluator key hashes the command and the list of metrics, not the contents of `evaluate.py`. An edited
-    evaluator scores without any warning.
+  - The evaluator key hashes the evaluate command, the `link` list, and the name and direction of each metric. It
+    does not hash the contents of `evaluate.py` or of its data. An edited evaluator scores without any warning.
 - **Reads of labels and references.**
   - Run `rg -l '<label file>|<references dir>|<per-unit ledger>'` over the session file of every agent. Read the hits.
   - In the diffs, look for record-id literals and lookup tables keyed on inputs:
@@ -238,7 +243,7 @@ Give every failure one owner. Use the counterfactual: "if this were fixed, would
 | Owner | Typical failures |
 |---|---|
 | **model** | invented numbers, misread tool output, said one thing and did another, ignored the brief |
-| **harness** (piloop / pi / herdr / Codex / Claude Code) | idle read as done, runs left open, wrong base, unenforced guardrails, messages sent into the wrong session, cache churn |
+| **harness** (piloop / pi / Herdr / Codex / Claude Code) | idle read as done, runs left open, wrong base, unenforced guardrails, messages sent into the wrong session, cache churn |
 | **environment** | expired credentials, trust dialogs, quota, a remote job service down |
 | **spec** (brief, eval design, orchestrator decisions) | a brief that bans training but not tuning, a panel that is not held out, an oracle left readable, a goalpost moved after seeing the result |
 
@@ -250,7 +255,7 @@ Separate harness faults and environment faults before you blame a model.
    measured and inferred lists. Use short sentences. Put the numbers first.
 2. **Bug reports and PRs.** One for each harness fault.
    - Include the evidence (row ids, transcript lines) and a minimal reproduction where possible.
-   - Follow the rules of the repo you fix: one worktree per change, all checks green.
+   - Follow the contribution rules of the repo you fix, for example one worktree per change and all checks green.
    - In the PR body, cite the review evidence and say what you verified and what you did not.
    - Do not merge.
 3. **Inbox items for the human.** Decisions that only the human can make: goalposts, reverting an agent's config or
@@ -267,4 +272,4 @@ At the end of every review, check what reached the human and what did not:
 - items that reached the human but were noise.
 
 Propose changes to what is surfaced, at what priority, and what the orchestrator may decide and log.
-The policy is part of what the campaign is graded on.
+The review judges the surfacing policy along with the result.

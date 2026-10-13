@@ -5,9 +5,9 @@ description: Every piloop command and its options.
 
 Run `piloop --help` for the list of commands, and `piloop <command> --help` for the options of one command.
 
-Many commands take a `REF`: a project name, or a path inside the project's repo. When a command makes the `REF`
-optional and you leave it out, it uses the project of the current directory, else the only active project, else
-every project.
+Many commands take a `REF`: a project name, or a path inside the project's repo. Without a `REF`, `piloop status`
+and `piloop history` use the project of the current directory, else the only active project, else every project.
+`piloop inbox`, `piloop inbox wait` and `piloop watch` cover every project.
 
 Commands that write sign their writes with `PILOOP_ACTOR` (`human` by default). See
 [Environment variables](/reference/environment).
@@ -38,7 +38,7 @@ only piloop's own skills. The installer and `piloop upgrade` run it.
 
 ### piloop doctor
 
-Checks the install, without changing anything. Each failure prints the command that fixes it. See
+Checks the install, without changing anything. Each failure says how to fix it, often with the command to run. See
 [Upgrading](/guides/upgrading#check-the-install).
 
 ### piloop upgrade
@@ -52,8 +52,8 @@ how long to wait for the daemon to come back. See [Upgrading](/guides/upgrading)
 
 ### piloop migrate
 
-Brings the database to the schema of this CLI and prints what changed. Every command does this silently when it
-starts.
+Brings the database to the schema of this CLI and prints what changed. The daemon and every command that reads or
+writes projects do this silently when they start. `piloop doctor` and `piloop sql` do not.
 
 ## The daemon
 
@@ -73,7 +73,8 @@ piloop stop [--timeout SECONDS]
 ```
 
 Sends SIGTERM to the daemon and waits up to `--timeout` seconds (default 30) for it to exit. The daemon stops the
-running agents, and their runs fail with `daemon stopped`.
+running agents, and their runs fail with `daemon stopped`. The projects stay active, and the next `piloop serve`
+continues them. A campaign ends only at its `[stop]` limits.
 
 ### piloop restart
 
@@ -114,7 +115,8 @@ Adds a defined idea. A `ready` idea runs when a worker slot is free, in order of
 | `--after` | An idea to wait for. Repeat it for several. |
 | `--supersedes` | An idea that this one refines. Repeat it for several. |
 
-A watchdog files a seed instead. A worker files neither.
+Research, the orchestrator and humans add ideas. A watchdog files a seed with `piloop idea seed` instead, and a worker
+files neither.
 
 ### piloop idea seed
 
@@ -160,8 +162,8 @@ piloop candidate note CANDIDATE_ID REASON [--follow-up HUNCH]... [--track TRACK]
 ```
 
 Keeps a measured `discard` or `interesting` candidate in view as a starting point. Its verdict becomes `interesting`,
-with the reason `note: <REASON>`. Each `--follow-up` files a seed pinned to the candidate. See
-[Notes](/concepts/verdict#notes).
+and its reason becomes `note: <REASON>`, followed by the earlier reason. Each `--follow-up` files a seed pinned to the
+candidate. See [Notes](/concepts/verdict#notes).
 
 ## Status and the inbox
 
@@ -190,9 +192,9 @@ Shows the campaign on one screen, with keys to act on it. See [Watching a campai
 piloop history [REF]
 ```
 
-Prints the research pack: the metrics, the ideas by source, the analysis files, what was tried for each mechanism,
-every idea with its outcome, the kept lineage, the findings, the digests and the open escalations. A research sweep
-reads it before it proposes ideas.
+Prints the research pack: the metrics, the ideas by source, the analysis files, what was tried for each mechanism, the
+latest 60 ideas with their outcomes, the kept lineage, the findings, the digests and the open escalations. A research
+sweep reads it before it proposes ideas.
 
 ### piloop inbox
 
@@ -200,8 +202,9 @@ reads it before it proposes ideas.
 piloop inbox [REF] [--kind KIND]... [--all]
 ```
 
-Lists the unacknowledged items addressed to you, most urgent first. `--kind` keeps only items of one kind: `note`,
-`finding`, `decision` or `escalation`. `--all` includes acknowledged items. See
+Lists the unacknowledged items addressed to you, most urgent first, then the seeds that wait for research. `--kind`
+keeps only items of the given kind: `note`, `finding`, `decision` or `escalation`. Repeat it to keep several kinds.
+`--all` includes acknowledged items. See
 [The orchestrator and the inbox](/concepts/orchestrator).
 
 ### piloop inbox show
@@ -215,10 +218,13 @@ Prints one item, then the comments linked to it: the comments it cites, the comm
 ### piloop inbox ack
 
 ```text
-piloop inbox ack [IDS]... [--up-to ID [--project REF]] [--kind KIND]...
+piloop inbox ack IDS...
+piloop inbox ack --up-to ID [--project REF] [--kind KIND]...
 ```
 
-Acknowledges items: you have seen them. `--up-to` acknowledges every unacknowledged item up to that id instead.
+Marks items as seen. `--up-to` marks every unacknowledged item up to that id instead. With `--up-to`, `--project`
+keeps only the items of one project, and `--kind` keeps only the items of the given kinds. With `IDS`, `--project` and
+`--kind` are refused.
 Nothing waits on an acknowledgement. To revise a decision, write a `decision` comment on its target.
 
 ### piloop inbox wait
@@ -228,10 +234,10 @@ piloop inbox wait [REF] [--after EVENT_ID] [--timeout SECONDS]
 ```
 
 Blocks until something needs the orchestrator, then prints it, one line each, and the command for the next wait. It
-returns for a new inbox item that someone else wrote, a project that the daemon stopped, an anomaly that the daemon
-gave to a watchdog, and the daemon's verdict on a measured candidate. `--after` is the cursor that the last wait
-printed (default: now). `--timeout` (default 1800) is how long to wait before it returns with nothing. Set the timeout
-of your shell tool above it.
+returns for a new inbox item that someone else wrote, a seed that someone else filed, a project that the daemon stopped,
+an anomaly that the daemon gave to a watchdog, and the daemon's verdict on a measured candidate. `--after` is the cursor
+that the last wait printed (default: now). `--timeout` (default 1800) is how long to wait before it returns with
+nothing. Set the timeout of your shell tool above it.
 
 ## Agents
 
@@ -251,7 +257,7 @@ Only the daemon starts workers, because a worker needs a run.
 piloop attach WORKER_ID
 ```
 
-Focuses the agent's tab in the `piloop` Herdr session and attaches this terminal to it.
+Focuses the agent's tab in the `piloop` Herdr session and attaches this terminal to it. This needs the Herdr runtime.
 
 ### piloop prompt
 
@@ -269,8 +275,9 @@ Types `TEXT` into a running agent of any role. This needs the Herdr runtime. The
 piloop sql STATEMENT
 ```
 
-Runs one SQL statement against the piloop database. Schema changes and transactions are denied. Everything else,
-including `DELETE`, is allowed. See the [database schema](/reference/schema).
+Runs one SQL statement against the piloop database. Schema changes, transactions, `ATTACH` and all but the read-only
+`PRAGMA`s are denied. So are writes to piloop's internal tables and to the full-text indexes. Everything else,
+including `DELETE`, is allowed. The output stops at 500 rows. See the [database schema](/reference/schema).
 
 ### piloop schema
 

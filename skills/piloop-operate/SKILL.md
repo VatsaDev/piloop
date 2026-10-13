@@ -1,6 +1,6 @@
 ---
 name: piloop-operate
-description: Operate a running piloop autoresearch campaign as its orchestrator, from any harness with a shell (Claude Code, Codex, pi, Gemini CLI, Cursor), by looping on piloop inbox wait to decide escalations, manage ideas, launch sweeps, steer workers and judge candidates. Use when the human asks you to orchestrate, watch, run or report on a campaign, when an escalation arrives, or when you take a decision for the human; do not use it in an agent that piloop launched (PILOOP_ACTOR is a worker, watchdog or research id).
+description: Operate a running piloop autoresearch campaign as its orchestrator, from any harness with a shell (Claude Code, Codex, pi, Gemini CLI, Cursor), by looping on piloop inbox wait to decide escalations, manage ideas, launch sweeps, steer workers and judge candidates. Use when the human asks you to orchestrate, watch, run or report on a campaign, when an escalation arrives, or when you take a decision for the human; do not use it in an agent that piloop launched (PILOOP_ACTOR is a worker, watchdog, research or scout id).
 ---
 
 # Operate a piloop campaign
@@ -12,8 +12,9 @@ The database is the contract. Everything below is a `piloop` command in your she
 - Run every piloop command as `PILOOP_ACTOR=orchestrator piloop …`.
   - The rows you change, the items you acknowledge and their events are then signed `orchestrator`.
   - `piloop inbox wait` then skips what you wrote yourself.
-- Limit your queries to the project in the current directory. `SELECT id, name FROM projects WHERE path = '<cwd>'`
-  gives `<p>` and `<name>`.
+- Limit your queries to the projects that you orchestrate: the project in the current directory
+  (`SELECT id, name FROM projects WHERE path = '<cwd>'` gives `<p>` and `<name>`), or each project that the human names.
+  For several projects, leave the name out of `piloop inbox wait`: it then waits for every project.
 
 ## The loop
 
@@ -27,13 +28,15 @@ PILOOP_ACTOR=orchestrator piloop inbox wait [<name>] --after <cursor> --timeout 
 It returns, one line each, as soon as something needs you:
 
 - a new unacknowledged inbox item that someone else wrote,
+- a seed that someone else filed,
 - a project that the daemon stopped,
 - an anomaly that the daemon gave to a watchdog,
 - the daemon's verdict on a measured candidate.
 
 Otherwise it returns `nothing new` at the timeout.
-Its last line is the exact command to wait again. That command has the cursor (`--after <event id>`), so you miss
-nothing that arrives between two waits.
+Its last line, after `next: `, is the command to wait again, with the cursor (`--after <event-id>`), so you miss
+nothing that arrives between two waits. Run it in the form above, with `PILOOP_ACTOR=orchestrator` and your
+`--timeout`.
 
 Do not let your shell tool kill the wait:
 
@@ -156,11 +159,11 @@ When you or a worker write an analysis of where the head loses (against the refe
 1. Add its path to `[roles.research] context` in `piloop.toml`.
 2. Run `piloop init .`.
 
-The research pack of every sweep then lists it first.
+The research pack of every sweep then lists it under the analysis artifacts, newest first, before the history.
 
-### Reprioritise, park, reject
+### Reprioritize, park, reject
 
-- Reprioritise: `UPDATE ideas SET priority = 0 WHERE id = …`.
+- Reprioritize: `UPDATE ideas SET priority = 0 WHERE id = …`.
 - Park (for now): `UPDATE ideas SET status = 'parked' WHERE id = …`.
 - Reject (never): `UPDATE ideas SET status = 'rejected' WHERE id = …`.
 - Always say why in a `note` comment on the idea.
@@ -168,10 +171,11 @@ The research pack of every sweep then lists it first.
 ### Steer an idea
 
 - A comment on the idea goes into its next brief.
-- A `note` or `decision` comment on the idea, or on its *running* run, goes into that worker's pane. The daemon sends
-  it on the next tick, first line first, so put the instruction in the first line.
+- With `runtime = "herdr"`, a `note`, `finding` or `decision` comment (any kind except an escalation) on the idea, or
+  on its *running* run, goes into that worker's pane on the next tick. The pane gets only the first line (up to 200
+  characters) and a query for the full text, so put the instruction in the first line.
 - `comment.delivered` on the worker confirms that the comment arrived.
-- `piloop prompt <worker> "<text>"` sends text directly, when no comment is worth keeping.
+- `piloop prompt <worker> "<text>"` sends text directly, when no comment is worth keeping. It needs `runtime = "herdr"`.
 
 ### Start from a tree outside the lineage
 
@@ -182,15 +186,15 @@ Use this for a candidate of another campaign, or a branch.
 - The daemon measures it.
 - Start an idea from it with `piloop idea add <name> "<title>" --base <c>`.
 - A candidate of another project is its `commit_sha`. If it is in another repo, fetch it into this repo first.
-- A reference is never a keep, the head or a bar.
+- A reference is never a keep and never the head. It is the bar only of a run that is pinned to it.
 
 Branch runs:
 
 - A run pinned to a reference, or to an older keep, is a branch run. It is judged against its own base.
 - Its keeps form a branch and never move the head. The overview lists the latest keep of each lineage.
 - To bring a branch keep onto the trunk, file an unpinned idea that merges it into the head.
-- A note or another non-keep is not a bar. A run pinned to one starts from its tree and is judged against the nearest
-  keep. When that keep is the head, it is a trunk run.
+- A noted candidate (`piloop candidate note`) or any other non-keep is not a bar. A run pinned to one starts from its
+  tree and is judged against the nearest keep. When that keep is the head, it is a trunk run.
 - So pin a follow-up to a lead. Do not tell its worker to reset onto the lead.
 - One run in `[roles.worker] explore_every` (default 4) takes the most urgent ready idea pinned to a base other than
   the head, whatever its priority.
@@ -290,30 +294,33 @@ priority. Do not move away from it.
 | outside the campaign | global config (`~/.claude`, `~/.codex`, the shell), repo trust, a merge, a push to a default branch, deleting data | 0 irreversible, 1 reversible |
 | spend | above the brief's budget / within it | 1 / 3 |
 | scope | finalize, extend or pause a campaign; park or reject an idea a human proposed | 2 |
-| process | requeue, reprioritise, a brief or prompt fix, a workaround for a piloop bug | 3 |
+| process | requeue, reprioritize, a brief or prompt fix, a workaround for a piloop bug | 3 |
 | routine | a duplicate escalation, a false alarm you verified | 4 |
 
 Some findings the human should see: a piloop bug, a result that changes the plan, a doubt about the evaluation.
-Post each one as a `finding` with a priority from the same table. Everything else stays in the forum, without a
-priority.
+Post each one as a `finding` with a priority from the same table. Everything else stays in the forum (comments
+without a priority), out of the inbox.
 
 ## Agents
 
-- Each agent runs as a tab in the workspace of the project in the `piloop` Herdr session. The ids are in the status.
-- `piloop attach <worker_id>` focuses that tab. From a terminal outside that session, it also attaches to the session.
-  It takes over the terminal, so it is for the human, not for your shell tool.
-- `piloop prompt <worker_id> "…"` steers a running Herdr agent of any role.
+- The ids of the agents are in the status.
+- By default (`runtime = "subprocess"`), each agent is a background process. It cannot receive text.
+- With `runtime = "herdr"`, each agent runs as a tab in the workspace of the project in the `piloop` Herdr session:
+  - `piloop attach <worker_id>` focuses that tab. From a terminal outside that session, it also attaches to the
+    session. It takes over the terminal, so it is for the human, not for your shell tool.
+  - `piloop prompt <worker_id> "…"` steers a running agent of any role.
 - To request one more sweep, run `piloop launch <name> watchdog|research [--harness pi --model …] [--reason "…"]`.
   Or insert a request:
   `INSERT INTO workers (kind, project_id, state, reason) VALUES ('research', <p>, 'requested', '…')`.
   The daemon launches it on the next tick, within the `max_concurrent` of the role.
-- When an agent's Herdr tab closes, the agent ends. The daemon records the outcome on its `workers` row.
+- When an agent's process exits, or its Herdr tab closes, the agent ends. The daemon records the outcome on its
+  `workers` row.
 
 ## Read a candidate or a session
 
 - The commit is in the repo:
   - `SELECT commit_sha, summary FROM candidates WHERE id = <c>`, then `git show <commit_sha>`.
-  - `git diff <base_sha> <commit_sha>` compares it with its parent.
+  - `git diff <parent commit_sha> <commit_sha>` compares it with its parent (`candidates.parent_id`).
   - `git cherry-pick <commit_sha>` takes it.
   - The kept lineage in `piloop history` lists the commit and checkpoint of each candidate.
 - Why it was made: run `entire checkpoint explain <id>` on the checkpoint of the worker session that made it. It shows
@@ -329,7 +336,7 @@ priority.
 The daemon's verdict is mechanical:
 
 - `keep`: the candidate's primary metric beat the bar with confidence, and the guardrails held.
-- `interesting`: it gained, but without that confidence.
+- `interesting`: it gained, but without that confidence, or a guardrail went beyond its margin.
 - `discard`: otherwise.
 - `crash`: it failed to measure.
 
@@ -354,7 +361,8 @@ UPDATE candidates SET verdict = 'interesting', verdict_by = 'orchestrator', verd
 Rules:
 
 - Never change `runs.status` or `events`. Never change `workers`, except to insert a request.
-- If they look wrong, post a comment of kind `escalation` on the run. You, the orchestrator, reconcile it.
+- If they look wrong, record what you see in a `finding` on the run, and fix it through a piloop command. When no
+  command fixes it, escalate to the human.
 
 Find who changed what:
 
@@ -362,6 +370,6 @@ Find who changed what:
 SELECT at, actor, kind, payload FROM events WHERE target_kind = '<k>' AND target_id = <t> ORDER BY id
 ```
 
-- Status, priority and verdict changes carry `{old, new}` and the actor (`human`, `orchestrator`, `daemon`,
-  `watchdog#7` …).
-- Deletes leave `*.deleted` tombstones.
+- Changes to an idea's status, priority or track, a candidate's verdict and a project's status carry `{old, new}`
+  and the actor (`human`, `orchestrator`, `daemon`, `watchdog#7` …).
+- Deletes of ideas, comments and candidates leave `*.deleted` tombstones.

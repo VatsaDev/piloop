@@ -9,16 +9,18 @@ description: The environment variables that piloop reads, and the ones that it s
 |---|---|---|
 | `PILOOP_HOME` | `~/.piloop` | The directory of the database (`piloop.db`), the daemon's files (`serve.pid`, `serve.log`) and the directories of the runs and agents. One daemon runs for each `PILOOP_HOME`. |
 | `PILOOP_ACTOR` | `human` | The name that this process signs its writes with. The database records it in `updated_by` and in the events. An orchestrator sets `PILOOP_ACTOR=orchestrator`, so that `piloop inbox wait` skips its own writes. |
-| `PILOOP_PROJECT_<KEY>` | none | Overrides a key of `piloop.toml` when `piloop init` reads it. Join nested keys with `__`, for example `PILOOP_PROJECT_RUNTIME=subprocess`. |
+| `PILOOP_PROJECT_<KEY>` | none | Overrides a key of `piloop.toml` when `piloop init` reads the file. `piloop init` stores the result, and the daemon uses it until the next `piloop init`. Set on `piloop serve`, it has no effect. Join nested keys with `__`, for example `PILOOP_PROJECT_RUNTIME=herdr`. `piloop doctor` reads it too. |
 | `PILOOP_SECRETS_COMMAND` | none | A shell command that prints `NAME=value` lines. The daemon adds them to its environment when it starts and when it restarts. See [Secrets](/guides/secrets). |
-| `PILOOP_HERDR_SESSION` | `piloop` | The name of the Herdr session that piloop uses. piloop starts its headless server on first use. It never uses the session that you work in. |
-| `PILOOP_DEBUG` | off | Set it to `1` to see the full traceback of an unexpected error. |
+| `PILOOP_HERDR_SESSION` | `piloop` | The name of the Herdr session that piloop uses. piloop starts a headless Herdr server for this session on first use. It never uses the session that you work in. |
+| `PILOOP_DEBUG` | off | Set it to `1` to see the full traceback of an unexpected error, instead of a short message. |
 | `PILOOP_TICK_SECONDS` | `2` | How often the daemon checks the triggers of every project and starts the requested agents. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | none | Sends the daemon's spans to this OpenTelemetry collector. |
-| `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's configuration directory. `piloop install-skills` writes Claude Code's skills to its `skills/` directory. |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's configuration directory. `piloop install-skills` writes Claude Code's skills to its `skills/` directory. piloop reads the token usage of Claude Code agents from its `projects/` directory. |
+| `CODEX_HOME` | `~/.codex` | Codex's home directory. piloop reads the token usage of Codex agents from its `sessions/` directory. |
 | `PILOOP_AGENT_SKILLS_DIR` | `~/.agents/skills` | The skill directory of Codex, pi, Gemini CLI and Cursor. |
-| `UV_TOOL_DIR` | uv's default | Where uv keeps its tools. `piloop upgrade` reads how piloop was installed from there. |
-| `PILOOP_SRC` | the GitHub repo | For `install.sh` only: install piloop from this checkout or URL instead. |
+| `UV_TOOL_DIR` | `~/.local/share/uv/tools` | Where uv keeps its tools. `piloop upgrade` reads how piloop was installed from there. If you set `XDG_DATA_HOME`, uv uses another directory: set `UV_TOOL_DIR` to it. |
+| `PILOOP_SRC` | PyPI | For `install.sh` only: install piloop from this checkout or pip-style URL instead of from PyPI. |
+| `HERDR_SOCKET_PATH` | none | Herdr sets it in every pane that it manages. `piloop attach` reads it to tell whether it already runs in the piloop session. Do not set it yourself. |
 
 ### Timeouts
 
@@ -38,7 +40,8 @@ These control how long piloop waits for Herdr and Entire. The defaults suit most
 
 | Variable | Set for | Meaning |
 |---|---|---|
-| `PILOOP_ACTOR` | every agent | The agent's signature, `<role>#<worker id>`, for example `worker#12`. A scout sweep signs `scout#<worker id>`. |
+| `PILOOP_ACTOR` | every agent | The agent's signature, `<role>#<worker-id>`, for example `worker#12`. A scout sweep signs `scout#<worker-id>`. |
 | `PILOOP_HOME` | every agent | The same directory as the daemon's, so that the agent's `piloop` commands use the same database. |
-| `PILOOP_UNITS_FILE` | the evaluate command, in the daemon's measurements only | The path where the evaluate command may write its [per-unit results](/concepts/projects#per-unit-results). |
+| `PILOOP_UNITS_FILE` | the evaluate command, in piloop's own measurements only: the daemon's, and the baseline that `piloop init` measures. Never in an agent's environment. | The path where the evaluate command may write its [per-unit results](/concepts/projects#per-unit-results). |
 | `PILOOP_WORKER_TOKEN` | every agent, with the Herdr runtime | A token that lets piloop find the background jobs that an agent started. |
+| `CLAUDE_CODE_CHILD_SESSION` | every agent, set to empty | Claude Code sets it for every process that it runs. A Claude Code agent that inherits it saves no transcript, so piloop clears it. |

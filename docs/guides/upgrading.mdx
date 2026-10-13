@@ -19,7 +19,8 @@ The command prints each step as it runs it:
    database itself, and the daemon stays stopped.
 4. It runs `piloop doctor`. When a check fails, the upgrade exits with a non-zero status.
 
-`piloop --version` prints the version and the commit, for example `piloop 0.1.0 (a1b2c3d)`.
+`piloop --version` prints the version, for example `piloop 0.1.0`. For an install from the GitHub repo, it also
+prints the commit, for example `piloop 0.1.0 (a1b2c3d)`.
 
 ## Check the install
 
@@ -27,16 +28,22 @@ The command prints each step as it runs it:
 
 - The daemon runs the installed code.
 - The database has the current schema.
-- The `piloop.toml` of every project loads, and its MCP servers can start.
+- `PILOOP_SECRETS_COMMAND`, when it is set, runs and prints `NAME=value` lines. The check shows the names only.
+- The `piloop.toml` of every project loads.
+- The commands of each project's stdio MCP servers are on your `PATH`, and the variables that its servers need are
+  set. The check does not start the servers.
 - Every harness on your `PATH` has the skills of this CLI.
-- The harness CLIs are on your `PATH`, and Herdr answers with its hooks installed for them.
+- The harnesses that your projects use are on your `PATH`.
+- For a project with `runtime = "herdr"`: Herdr is installed, the piloop session answers, and Herdr's hooks are
+  current for the harnesses of that project.
 
-Each failure prints the command that fixes it.
+Each failure says how to fix it, often with the command to run.
 
 ## The database
 
-Every `piloop` command migrates the database to its own schema when it starts. You never recreate it by hand.
-`piloop migrate` does the same and prints what changed, for example `schema: 0001 → 0002`.
+The daemon, and every command that reads or writes projects (such as `init`, `status`, `inbox` and `watch`), migrates
+the database to its own schema when it starts. `piloop doctor` and `piloop sql` do not. You never recreate the
+database by hand. `piloop migrate` migrates it and prints what changed, for example `schema: 0001 → 0002`.
 
 An older piloop refuses to open a database that a newer one migrated, and tells you to run `piloop upgrade`.
 
@@ -51,4 +58,24 @@ one. The [changelog](https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md) 
 - A checkout that you installed with `uv sync` is not a uv tool. Upgrade it with `git pull`.
 - Entire has its own installer. Run it again to upgrade Entire:
   `curl -fsSL https://entire.io/install.sh | bash`.
-- An unexpected error prints one line. Set `PILOOP_DEBUG=1` to see the full traceback.
+
+## When something fails
+
+An unexpected error prints a short message without the traceback. Set `PILOOP_DEBUG=1` to see the full traceback.
+Then run `piloop doctor`.
+
+## What is stable
+
+Before 1.0, a minor release may contain breaking changes. These interfaces change only with an entry in the
+[changelog](https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md):
+
+- The `piloop` CLI: its commands and their flags.
+- The keys of `piloop.toml`. A renamed or removed key keeps working, with a warning, for at least one minor release.
+  See [Deprecated configuration keys](#deprecated-configuration-keys).
+- The contract of the [evaluate command](/concepts/projects#the-evaluate-command): the `METRIC <name>=<value>` lines,
+  the exit status and the per-unit results file.
+- The [database schema](/reference/schema), as `piloop sql` shows it. Each release migrates the database forward
+  automatically.
+
+The Python import API (the modules of the `piloop` package) is not stable. It can change in any release. To script
+piloop, use the CLI and `piloop sql`.

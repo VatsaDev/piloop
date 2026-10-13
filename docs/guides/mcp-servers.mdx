@@ -27,6 +27,9 @@ env = ["XAI_API_KEY"]
 mcp = ["exa", "firecrawl", "xai"]
 ```
 
+This example loads with the default `runtime = "subprocess"`. Under `runtime = "herdr"`, see
+[what each harness gets](#what-each-harness-gets).
+
 | Key | Meaning |
 |---|---|
 | `url` | The streamable HTTP endpoint. SSE is not supported. |
@@ -35,8 +38,8 @@ mcp = ["exa", "firecrawl", "xai"]
 | `command` | stdio only. The server's command (argv). |
 | `env` | stdio only. The environment variables that the server reads. |
 
-A role gets no servers unless its `mcp` key lists them. The [configuration reference](/reference/configuration#mcpserver)
-has every key.
+A role gets no servers unless its `mcp` key lists them. The [configuration
+reference](/reference/configuration#mcpserver) has every key.
 
 ## Keys stay out of the file
 
@@ -55,14 +58,20 @@ fail, with an error that names the variable. See [Secrets](/guides/secrets) for 
 
 ## What each harness gets
 
-Each built-in harness puts the role's servers at the `{mcp}` element of its command. The agents see only these
-servers, never the servers in your own harness configuration:
+Each built-in harness puts the role's servers at the `{mcp}` element of its command:
 
 - **Claude Code**: `--strict-mcp-config` and an inline `--mcp-config`.
 - **Codex**: every server of your Codex configuration is turned off, and the role's servers are added. A piloop
   server with the same name as one of yours makes the launch fail.
-- **pi**: through pi-mcp-adapter in exclusive mode. pi takes servers only in its headless command, so a role that has
-  servers and pi in its rotation needs `runtime = "subprocess"`.
+- **pi**: through `pi-mcp-adapter` in exclusive mode. pi takes servers only in its headless command, which the
+  default `runtime = "subprocess"` uses.
+
+Claude Code and Codex agents, and pi agents under the `subprocess` runtime, see only the role's servers, never the
+servers in your own configuration. Under the `herdr` runtime, pi keeps your own extensions on, because Herdr reads
+pi's state through one of them. So a pi agent under Herdr also loads your own MCP servers, and a role that lists
+servers cannot have pi in its rotation. `runtime` is a project key, so it applies to every agent of the project. To
+use Herdr with servers, leave pi out of that role's rotation, for example `harnesses = ["claude", "codex"]` under
+`[roles.research]`.
 
 A [custom harness](/reference/configuration#harness) takes servers when its command has an `{mcp}` element and it sets
 `mcp` to one of the renderers: `claude`, `codex` or `pi`.

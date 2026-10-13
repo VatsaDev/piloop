@@ -3,6 +3,9 @@ title: Running for days
 description: Run the daemon in the background or under a service manager, and restart it without losing work.
 ---
 
+A campaign can run for days. Keep the daemon running in the background or under a service manager, and restart it
+without stopping the agents.
+
 ## The daemon
 
 `piloop serve` is the daemon. It starts the agents, scores the commits and enforces the limits of every project.
@@ -28,11 +31,12 @@ nothing to clean up.
   `ready`.
 - What each run made is pinned under `refs/piloop/`, with a note that its next attempt reads.
 - Requested agents stay requested, and start when the daemon starts again.
+- The projects stay `active`. The next `piloop serve` continues them. A campaign ends only at its `[stop]` limits.
 - The sessions of the stopped agents are not attached to Entire.
 
 `piloop restart` keeps the agents running. The daemon stops its loop, and the same process starts the installed
-code again, with the same pid and environment. The new daemon connects to every running agent again and finishes its
-run as if nothing happened. The timeout of each agent still counts from its start.
+code again, with the same pid and environment. The new daemon connects to every running agent again, and each agent
+finishes its run without interruption. The timeout of each agent still counts from its start.
 
 A daemon that starts after a crash does the same: it connects again to the agents that are still running.
 
@@ -56,18 +60,24 @@ A daemon that starts after a crash does the same: it connects again to the agent
 </Tabs>
 
 The unit restarts the daemon when it fails. It sets `PILOOP_HOME` and your current `PATH`, because the daemon must
-find the harness CLIs on its `PATH`. Set `PILOOP_SECRETS_COMMAND` before you run `piloop service-unit`, and the unit
-includes it. See [Secrets](/guides/secrets).
+find the harness CLIs on its `PATH`. It also carries the `PILOOP_*` variables that are set in your shell, such as
+`PILOOP_SECRETS_COMMAND` and `PILOOP_TICK_SECONDS`, and `OTEL_EXPORTER_OTLP_ENDPOINT`, `CLAUDE_CONFIG_DIR` and
+`CODEX_HOME`. It never carries `PILOOP_ACTOR`, `PILOOP_WORKER_TOKEN` or `PILOOP_UNITS_FILE`, because piloop sets them
+for one agent or one evaluation, not for the daemon. It carries no other variable, so give API keys to the daemon
+through `PILOOP_SECRETS_COMMAND`. Set the variables before you run `piloop service-unit`. See
+[Secrets](/guides/secrets).
 
 Under a service manager:
 
 - Start and stop the daemon with the service manager.
 - `piloop stop` stops the daemon until the service manager starts it again.
-- Do not use `piloop serve --detach`: it starts a second daemon that the service manager does not control, once the
-  first one has stopped.
+- Do not use `piloop serve --detach`. After the managed daemon stops, it starts a daemon that the service manager does
+  not control.
 - `piloop restart` and `piloop upgrade` keep the daemon under the service manager, because the restart happens in
   the same process.
-- After you change the unit file, restart with the service manager: `systemctl --user restart piloop`.
+- After you change the unit file, load it again. On Linux, run `systemctl --user daemon-reload`, then
+  `systemctl --user restart piloop`. On macOS, run `launchctl unload` and then `launchctl load -w` on
+  `~/Library/LaunchAgents/dev.piloop.serve.plist`.
 
 ## Logs and traces
 

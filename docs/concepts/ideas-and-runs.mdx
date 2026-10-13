@@ -51,8 +51,8 @@ idea builds on a specific tree, such as an older keep or a [note](/concepts/verd
 from outside the lineage, such as a branch or the result of another campaign. The daemon measures it, and an idea
 can start from it with `--base`.
 
-To make sure that the campaign explores, at least one run in `[roles.worker] explore_every` (4 by default) starts from
-a pinned idea when one is ready, whatever its priority.
+So that the campaign explores, at least one run in every `[roles.worker] explore_every` runs (4 by default) starts
+from a pinned idea when one is ready, whatever its priority.
 
 ## Seeds
 
@@ -64,8 +64,8 @@ piloop idea seed my-project "Combine the title feature of candidate#12 with the 
   --from "candidate#12, candidate#15"
 ```
 
-A seed starts a research sweep at once, however full the backlog is. The research agent reads the earlier work on the
-mechanism. Then it does one of two things:
+A seed starts a research sweep as soon as a research slot is free, however full the backlog is. The research agent reads
+the earlier work on the mechanism. Then it does one of two things:
 
 - It develops the seed into a defined idea with `piloop idea develop`: a hypothesis, the evidence, the cheapest check
   that could kill it, the metric that decides success, and the expected effect.
@@ -85,15 +85,16 @@ daemon:
    recent candidates and every comment on the idea and on its earlier runs.
 5. Starts the worker. It runs until it exits or until `[roles.worker] timeout`.
 
-The worker implements the idea and commits. Every commit is scored, so a worker commits also when the idea did not
+The worker implements the idea and commits. Every commit is scored, so a worker commits even when the idea did not
 work, and says so in the message. piloop commits uncommitted changes for the worker when it ends.
 
-After the worker ends, the daemon scores each new commit. The idea becomes `done`, or goes back to `ready` when it has
-attempts left. An idea has two attempts by default.
+After the worker ends, the daemon scores each new commit. The idea becomes `done`. If the run failed or timed out and
+the idea has attempts left, the idea goes back to `ready` instead. An idea has two attempts by default.
 
-An agent that failed to start, because its start failed or it ended within a minute without using a token, does not
-count as an attempt. The daemon queues its run again for a new worker. After three such failures within ten minutes,
-the daemon pauses the launches of the project and escalates.
+A run whose agent could not be launched, or that ended within a minute without a token, a commit or a comment, is not
+an attempt. The daemon starts the same run again with a new worker, up to two times. If the third start fails too,
+the run fails and counts as an attempt. When that was the idea's last attempt, the idea is `parked`. After three
+failed starts within 10 minutes, the daemon stops launching agents for the project and escalates.
 
 ### Commit trailers
 
@@ -104,9 +105,10 @@ A worker can end a commit message with a trailer:
 
 ## Steer a running worker
 
-- A `note`, `finding` or `decision` comment on a running run, or on its idea, reaches the worker. On the next tick, the
-  daemon types the first line of the comment into the worker's pane. Put the instruction in the first line.
+- A `note`, `finding` or `decision` comment on a running run, or on its idea, reaches the worker. Within a few
+  seconds, the daemon types the first line of the comment (up to 200 characters) into the worker's pane, with a query
+  for the full text. Put the instruction in the first line.
 - `piloop prompt <worker-id> "<text>"` sends text to a worker directly.
 
-Both need the Herdr runtime. A worker that runs as a background process cannot receive text. Its next run reads the
-comment in its brief.
+Both need `runtime = "herdr"`. With the default `subprocess` runtime, a worker is a background process and cannot
+receive text. The next run of the idea reads the comment in its brief.

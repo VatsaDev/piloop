@@ -1,0 +1,82 @@
+---
+title: One run's life
+description: What the daemon does between a ready idea and the verdict on each of its commits.
+---
+
+A **run** is one attempt at an idea. The scheduler queues it on a tick. A thread of the daemon then executes it:
+the worktree, the agent, the scores and the verdicts. The code is in `piloop/daemon/scheduler.py` and
+`piloop/daemon/runner.py`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant S as Scheduler (tick)
+    participant DB as Database
+    participant X as Run executor
+    participant L as Launcher
+    participant R as Runtime
+    participant A as Worker agent
+    participant E as Evaluate command
+    participant G as git
+
+    S->>DB: select the runnable ideas
+    S->>DB: insert a queued run and a requested worker row
+    S->>DB: set the worker row to starting
+    S->>X: execute the run on a pool thread
+    X->>DB: write the brief, set the run to running
+    X->>G: add a worktree at the run's base
+    X->>L: launch the worker
+    L->>R: start(WorkerSpec), then wait
+    R->>A: the harness argv, the first prompt
+    A->>DB: read and write with piloop sql
+    A->>G: commit
+    opt a new comment on the run or the idea
+        S->>R: send it to the agent as a [piloop] line
+    end
+    R-->>L: Outcome
+    L->>DB: close the worker row (exited or killed), with its token usage
+    L-->>X: Outcome
+    X->>G: commit the work that is left uncommitted
+    X->>DB: close the run (succeeded, failed or timed_out)
+    loop each new commit, oldest first
+        X->>G: pin it under refs/piloop/
+        X->>DB: find or insert its candidate, by git tree
+        X->>E: run it in a clean worktree of the commit
+        E-->>X: METRIC lines
+        X->>DB: insert a measurement
+        X->>DB: judge it against the run's bar: keep, interesting, discard or crash
+        opt a keep, but the head moved past the bar
+            X->>G: merge it onto the head
+            X->>E: measure the merge
+            X->>DB: judge the merge against the head
+        end
+    end
+    X->>DB: set the idea to done, or back to ready if the run failed and attempts are left
+```
+
+## The steps
+
+1. **Queue.** On each tick, the scheduler fills the free worker slots with runnable ideas. An idea is runnable when
+   it is `ready` and each of its prerequisites (an `after` link) is `done`. The slot goes to the most urgent idea of
+   the track that is furthest below its share. At least one run in `[roles.worker] explore_every` starts from a
+   pinned idea when one is ready. The scheduler inserts a `queued` run, chooses its harness from the rotation, and
+   inserts a `requested` worker row.
+2. **Take.** In the same tick, the scheduler sets `requested` rows to `starting`, up to `max_concurrent` for each role
+   and each harness. Each one goes to a thread of the daemon's pool.
+3. **Launch.** The run executor writes the brief and adds a git worktree at the run's base: the head, or the
+   candidate that the idea pins. The launcher fills in the harness's argv and calls `Runtime.start`.
+4. **Work.** The agent reads its brief, implements the idea and commits. It reads and writes the database with
+   `piloop sql`. On each tick, the scheduler sends new comments on the run or the idea to the agent.
+5. **Close.** When the agent ends or times out, the launcher closes the worker row and reads its token usage. The
+   executor commits what is left uncommitted and closes the run. The worker slot is now free for the next run.
+6. **Score.** Each new commit becomes a candidate. Commits with the same git tree are the same candidate. The daemon
+   runs the evaluate command in a clean worktree of the commit, stores a measurement, and judges the candidate against
+   the run's bar. A keep becomes the bar for the run's next commit.
+7. **Rebase.** When a keep's bar is no longer the head, because another run kept meanwhile, the keep is marked
+   `interesting`. The daemon merges it onto the head, measures the merge and judges it there. A merge that conflicts
+   files a seed.
+8. **Settle.** The idea becomes `done`, or goes back to `ready` when its run failed and it has attempts left. The
+   idea stays `scheduled` until every commit is judged, so an idea that waits for it starts from its keeps.
+
+An agent that does not start to work is not an attempt. The executor queues the run again with a new worker row, up
+to two times. [The verdict](/concepts/verdict) explains the bar, the head and the statistics.

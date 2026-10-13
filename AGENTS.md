@@ -3,6 +3,9 @@
 This file is for a coding agent that a human asks to set up, run or review a piloop campaign. To change piloop's own
 code, read [CONTRIBUTING.md](CONTRIBUTING.md) instead.
 
+If `PILOOP_ACTOR` is already set to a `worker#`, `watchdog#`, `research#` or `scout#` id, piloop started you. Follow
+your brief, and ignore this file and the skills.
+
 piloop runs an autoresearch campaign on a git repo. A daemon starts coding agents (Claude Code, Codex or pi). Each
 agent tries an idea in its own git worktree. piloop scores every commit with the project's evaluate command and keeps
 what beats the head. You, the agent that the human talks to, set up the campaign and act as its orchestrator.
@@ -37,10 +40,8 @@ The database is the contract, and the `piloop` CLI is the only way in:
 
 - Run every command as `PILOOP_ACTOR=orchestrator piloop …`. Your writes are then signed as yours, and
   `piloop inbox wait` skips them.
-- Record every decision that you take for the human as a `decision` comment with a priority. The human reviews and
+- Record every decision that you make for the human as a `decision` comment with a priority. The human reviews and
   revises these decisions in the inbox. You do not have to wait for the human.
-- If `PILOOP_ACTOR` is already set to a `worker#`, `watchdog#` or `research#` id, piloop started you. Follow your
-  brief, not these skills.
 
 ## Documentation
 

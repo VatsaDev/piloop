@@ -1,5 +1,5 @@
 ---
-title: Candidates, the verdict and the head
+title: Candidates, the head and the verdict
 description: How piloop decides whether a commit is kept.
 ---
 
@@ -17,9 +17,10 @@ measure it again. A candidate can have several measurements. Its score is their 
 The **head** is the latest kept candidate on the trunk. New runs start from it, unless an idea pins another starting
 point.
 
-Each run is judged against its **bar**. The bar starts at the base of the run, and moves to each keep that the run
-makes. For a normal run, the bar is the head. Each keep on the trunk beats the head before it, so the trunk is a chain
-of improvements.
+Each run is judged against its **bar**. The bar starts at the base of the run. When the base is not a keep or a
+reference (a pinned `interesting` candidate, for example), the bar starts at the nearest kept ancestor of the base. The
+bar moves to each keep that the run makes. A run that starts from the head has the head as its bar. Each keep on the
+trunk beats the head before it, so the trunk is a chain of improvements.
 
 ## The verdict
 
@@ -28,9 +29,9 @@ The daemon gives each measured candidate one verdict:
 | Verdict | Meaning |
 |---|---|
 | `keep` | The primary metric beat the bar with confidence, and every guardrail held. On the trunk, the candidate becomes the new head. |
-| `interesting` | The primary metric went up, but without enough confidence, or a guardrail got worse by more than its margin. |
-| `discard` | The primary metric did not go up, or a guardrail went past its floor. |
-| `crash` | The candidate has no value for the primary metric: the evaluate command failed or did not print it. |
+| `interesting` | The primary metric improved, but without enough confidence, or a guardrail got worse by more than its margin. |
+| `discard` | The primary metric did not improve, or a guardrail went past its floor. |
+| `crash` | The candidate has no successful measurement: the evaluate command failed or timed out, wrote a bad per-unit results file, or did not print every metric in `piloop.toml`. |
 | `reference` | A starting point imported with `piloop candidate import`. It is never judged. |
 
 The rule, in order:
@@ -43,13 +44,13 @@ The rule, in order:
 6. A guardrail's worst case is worse than the bar by more than its `margin`: `interesting`.
 7. Otherwise: `keep`.
 
-Each verdict has a reason, for example:
+Each verdict has a reason. This one is from the enwik8 example campaign:
 
 ```text
-against candidate#14: bytes 2.71648e+06 vs 3.69273e+06 (-976249; aggregate: no per-unit results); guardrails: seconds 7.1 vs 0.52 (+6.58; aggregate: no per-unit results) within its margin 10
+against candidate#33: bytes 2361893 vs 2365922 (-4029; aggregate: no per-unit results); guardrails: seconds 24.48 vs 23.28 (+1.2; aggregate: no per-unit results) within its margin 10
 ```
 
-A candidate whose deciding metrics equal those of its parent has a reason that starts with `no-op`. The change did
+A candidate whose primary and guardrail values equal those of its parent has `no-op` in its reason. The change did
 not reach what the evaluate command measures.
 
 ## Metric roles
@@ -112,6 +113,6 @@ A result that regressed can still be a good starting point. A **note** keeps it 
 piloop candidate note 42 "faster tokenizer, but loses accuracy on long inputs" --follow-up "fix the long-input case"
 ```
 
-The candidate becomes `interesting`, with a reason that starts with `note:`. Each `--follow-up` files a seed pinned to
-the candidate. A note is not a keep, and it does not move a bar. A worker notes its own commit with a
-`Piloop-Note: <why>` trailer in the commit message.
+The candidate becomes `interesting`, with a reason that starts with `note:`, followed by its earlier reason. Each
+`--follow-up` files a seed pinned to the candidate. A note is not a keep, and it does not move a bar. A worker notes its
+own commit with a `Piloop-Note: <why>` trailer in the commit message.

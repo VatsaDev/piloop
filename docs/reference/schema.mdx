@@ -9,7 +9,8 @@ Every client reads and writes one SQLite database, `$PILOOP_HOME/piloop.db`. Run
 `piloop schema` prints the same tables with the conventions that agents follow. The agents' procedures are in
 [sql_procedures.md](https://github.com/hiloopai/piloop/blob/main/piloop/agents/prompts/sql_procedures.md).
 
-The indexes are part of the contract: they show which filters are cheap.
+The indexes are part of the contract: they show which filters are cheap. The [data model](/architecture/data-model)
+shows the same tables as a diagram.
 
 ```sql
 CREATE TABLE comments (

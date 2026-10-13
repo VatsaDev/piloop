@@ -1,137 +1,146 @@
 ---
 title: Quickstart
-description: Install piloop and run a campaign that compresses the first 10 MB of Wikipedia.
+description: Install piloop, open your coding agent in your repo and tell it what to improve. The agent does the rest.
 ---
 
-This example is a small version of the [Hutter Prize](http://prize.hutter1.net/). The task is to compress the first
-10 MB of enwik8, a dump of English Wikipedia, into as few bytes as possible. The agents edit one file,
-`compressor.py`. The baseline is zlib at level 9.
-
-## Install
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/hiloopai/piloop/main/install.sh | sh
-```
-
-The installer installs uv, Entire, the `piloop` CLI and the piloop skills for your coding agents. It is safe to run
-again. If you already have uv, you can install the CLI alone:
-
-```bash
-uv tool install piloop
-piloop install-skills
-```
-
-Log in to at least one coding agent CLI: `claude auth login`, `codex login`, or `pi` and then `/login`.
-
-## Run the example
+You run piloop through one coding agent. You tell it the goal in plain words. It sets up the campaign, starts it and
+runs it for you.
 
 <Steps>
-  <Step title="Create the project">
+  <Step title="Install piloop">
     ```bash
-    piloop init --example enwik8 ~/piloop-enwik8
-    cd ~/piloop-enwik8
+    curl -fsSL https://raw.githubusercontent.com/hiloopai/piloop/main/install.sh | sh
     ```
 
-    `piloop init` copies the example, downloads `data/enwik8.zip` (about 36 MB, not committed) and makes a git repo
-    with a baseline commit. Then it measures the baseline and registers the project. The baseline is about 3.69 MB.
-  </Step>
-  <Step title="Choose your agents">
-    The example uses Claude Code (`harnesses = ["claude"]` in `piloop.toml`). To use Codex or pi as well, or instead,
-    edit `harnesses`, for example `harnesses = ["claude", "codex"]`.
-
-    If you do not have [Herdr](https://herdr.dev), set `runtime = "subprocess"`. The agents then run in the
-    background, and you cannot see their screens.
-
-    Run `piloop init` again, so that piloop reads the changed file.
+    The installer installs uv, Entire, the `piloop` CLI and the piloop skills for every coding agent on your `PATH`.
+    It is safe to run again. If you already have uv, you can install the CLI alone:
 
     ```bash
-    piloop init
+    uv tool install piloop
+    piloop install-skills
     ```
   </Step>
-  <Step title="Add an idea">
-    ```bash
-    piloop idea add enwik8 "Try lzma at the highest preset"
-    ```
+  <Step title="Open your agent in your repo">
+    Start Claude Code, Codex, pi, Gemini CLI or Cursor in the repo that you want to improve. This agent is the only one
+    that you talk to.
 
-    You do not have to add more. When the backlog is short, the research agent adds ideas.
+    The workers run on Claude Code, Codex or pi, so at least one of these must be installed. The agent that you talk
+    to can be any of the five.
   </Step>
-  <Step title="Start the daemon">
-    ```bash
-    piloop serve --detach
+  <Step title="Tell it what to improve">
+    Describe the goal in plain words. Say "piloop", so that the agent uses the piloop skills:
+
+    ```text
+    Use piloop to make our tokenizer faster without changing its output.
     ```
 
-    The daemon starts a worker for the idea and a research sweep for more ideas. It writes its log to
-    `~/.piloop/serve.log`.
-  </Step>
-  <Step title="Watch the campaign">
-    ```bash
-    piloop watch
+    ```text
+    Use piloop to improve the holdout accuracy of the model in train.py.
     ```
 
-    Press `enter` to open the project. The four panels show the inbox, the agents, the ideas and the candidates. Press
-    `q` to quit. The daemon continues to run.
+    ```text
+    Use piloop to make the test suite run faster. Do not delete or skip tests.
+    ```
   </Step>
 </Steps>
 
-<Note>
-  The example stops after 20 worker runs (`[stop] max_runs = 20` in `piloop.toml`). Stop it earlier with
-  `piloop stop`. To run longer, raise `max_runs` and run `piloop init`.
-</Note>
+## The setup
 
-## What happens
+The agent follows the `piloop-setup` skill. It runs every command itself and reports each result in one line.
 
-Each worker edits `compressor.py` and commits. For each commit, the daemon runs `evaluate.py` in a clean worktree. The
-script checks that `decompress(compress(data))` gives back the exact input. If it does not, the commit is a crash.
-Then the script prints two metrics:
+1. **It checks your machine:** git, uv, the coding agent CLIs and their logins. It fixes what it can. It asks you only
+   to log in where a CLI needs a browser, and it asks for all the logins at the same time. It checks Herdr only if you
+   want to see and steer every agent in a terminal pane.
+2. **It reads your repo and interviews you.** It says what it learned from the repo, so you can correct it. Then it
+   asks only what the repo does not answer. It writes no file before you answer or skip the interview.
+3. **It writes the campaign:** `brief.md` for the workers, `piloop.toml` with the metrics and limits, and the evaluate
+   command. It runs the evaluate command once and shows you both files. It asks you once more before it continues.
+4. **It registers the project** with `piloop init .`. This measures the baseline. The agent tells you the baseline
+   value. A value that surprises you usually means that the evaluate command is wrong.
+5. **It starts the daemon** with `piloop serve --detach`. It adds the first ideas with you, or asks a research agent
+   for ideas.
+6. **It becomes the orchestrator.** It asks if it should run the campaign in this session or in a background
+   subagent, so that your session stays free.
 
-- `bytes`: the compressed size plus the size of `compressor.py`. Lower is better. This is the primary metric. As in
-  the Hutter Prize, the size of the decompressor counts.
-- `seconds`: the time to compress and decompress. Lower is better. This is a guardrail: a commit may add at most 10 s
-  to the time of the head, and the time must stay below 120 s.
+### What the interview asks
 
-```toml
-[[metrics]]
-name = "bytes"
-direction = "lower"
-role = "primary"
+The questions fit your problem. A typical interview covers these topics:
 
-[[metrics]]
-name = "seconds"
-direction = "lower"
-role = "guardrail"
-margin = 10
-floor = 120
-```
+| Topic | The agent asks |
+|---|---|
+| Objective | The one metric to improve, its direction, and what "done" is: a target, a deadline or a budget. |
+| Measurement | The command that measures it, how long it takes, and how much the result changes between identical runs. |
+| Guardrails | What must not get worse, such as latency, size or cost, and by how much it may. |
+| Scope | The files that workers may edit, the files they must not touch, and forbidden techniques. |
+| Budget | The time per run, the number of workers at the same time, and the total runs, hours or dollars. |
+| Prior art | What you tried already and what you expect to work. |
+| Agents | Which coding agents and models run the workers and the research. |
+| Escalation | What the agent must ask you about, and what it may decide alone. |
 
-A commit with fewer bytes that holds the guardrail is a `keep`, and it becomes the new head. The next runs start from
-it. To see the progress at any time, run:
+The agent puts each limit in `piloop.toml`, so that the daemon enforces it. A limit that is only in `brief.md` is not
+enforced.
 
-```bash
-piloop status enwik8
-```
+## While the campaign runs
 
-## Talk to an orchestrator
+Workers try ideas in their own git worktrees and commit. piloop scores every commit and keeps the ones that beat the
+best result so far. Your agent waits on the inbox with `piloop inbox wait`, so it uses no tokens while nothing
+happens. When something needs it, it acts:
 
-The orchestrator is a coding agent that answers escalations and records its decisions in your inbox. To start one,
-open Claude Code, Codex or pi in `~/piloop-enwik8` and ask:
+- It answers escalations from the other agents.
+- It adds ideas, changes their priority and asks for research or watchdog sweeps.
+- It records each decision that it takes for you in your inbox, with the reason and how to revert it.
+- It leaves for you the decisions that cannot be undone and can wait.
+
+When you are present, the agent reports at least every hour: the head against the baseline, what ran, and what it
+decided. When the campaign stops, it reports the result.
+
+## Check in later
+
+Ask your agent:
 
 ```text
-orchestrate the piloop campaign
+How is the campaign going?
 ```
 
-The agent follows the `piloop-operate` skill. See [The orchestrator and the inbox](/concepts/orchestrator).
+Any agent with the piloop skills can answer, also in a new session. It reads `piloop status`.
+
+To look yourself, run:
+
+```bash
+piloop watch
+```
+
+`piloop watch` shows the inbox, the agents, the ideas and the candidates. Press `r` on an inbox item to reply to a
+decision. Your agent applies your reply first. See [Watching a campaign](/guides/watch).
 
 ## Stop
+
+The campaign ends by itself at the limits in the `[stop]` table of `piloop.toml`, for example after a number of runs.
+To end it earlier, lower a limit in `[stop]` and run `piloop init` again, or ask your agent to do it.
+
+To pause every campaign, stop the daemon:
 
 ```bash
 piloop stop
 ```
 
-The daemon stops the running agents. Their ideas go back to the backlog. Every candidate commit stays in the repo
-under `refs/piloop/`, so `git show` and `git cherry-pick` work on any of them.
+`piloop stop` stops the daemon and every agent that it runs. The ideas of the stopped runs go back to the backlog.
+The projects stay active, and the next `piloop serve --detach` continues them. Every candidate commit stays in the
+repo under `refs/piloop/`, so `git show` and `git cherry-pick` work on any of them.
+
+## Try it on an example
+
+To see a campaign before you use your own repo, ask your agent:
+
+```text
+Set up the enwik8 example campaign from piloop.
+```
+
+The agents compress the first 10 MB of Wikipedia, as in the Hutter Prize. The baseline is zlib at level 9. The example
+stops after 20 scored worker runs. To run it without an agent, see [Run a campaign by hand](/by-hand).
 
 ## Next steps
 
-- [Set up your own repo](/setup).
-- Try the second example, `piloop init --example titanic-tracks`, which has two objectives. See
-  [Tracks](/concepts/tracks).
+- [Several campaigns](/several-campaigns): one agent runs a campaign in each of your repos.
+- [The orchestrator and the inbox](/concepts/orchestrator): how your agent decides and what it records.
+- [Running for days](/guides/running-for-days): keep the daemon running with a service manager.

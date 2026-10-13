@@ -12,7 +12,7 @@
     "groups": [
       {
         "group": "Get started",
-        "pages": ["index", "quickstart", "setup"]
+        "pages": ["index", "quickstart", "several-campaigns", "by-hand"]
       },
       {
         "group": "Concepts",
@@ -25,6 +25,17 @@
           "concepts/tracks",
           "concepts/session-capture",
           "concepts/cost"
+        ]
+      },
+      {
+        "group": "Architecture",
+        "pages": [
+          "architecture/overview",
+          "architecture/run-lifecycle",
+          "architecture/data-model",
+          "architecture/state-machines",
+          "architecture/code-layout",
+          "architecture/extension-points"
         ]
       },
       {
@@ -44,6 +55,12 @@
       }
     ]
   },
+  "redirects": [
+    {
+      "source": "/setup",
+      "destination": "/by-hand"
+    }
+  ],
   "navbar": {
     "links": [
       {
