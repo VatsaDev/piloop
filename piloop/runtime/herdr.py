@@ -51,6 +51,26 @@ STATUS_MAP = {
 GONE_CODES = {'agent_not_found', 'agent_not_running', 'pane_not_found', 'tab_not_found', 'workspace_not_found'}
 BLOCKED_ERROR = 'agent is blocked waiting for input'
 SERVER_NOT_RUNNING = 'server_not_running'
+SERVER_UNAVAILABLE = 'server_unavailable'
+"""Herdr's code when its server took the request but did not answer in time, e.g. on a loaded host."""
+RETRIED_READS = frozenset(
+    {
+        ('agent', 'wait'),
+        ('agent', 'get'),
+        ('agent', 'read'),
+        ('pane', 'read'),
+        ('pane', 'process-info'),
+        ('workspace', 'list'),
+        ('session', 'list'),
+        ('tab', 'close'),
+    }
+)
+"""The ``herdr`` commands that are retried while the server does not answer (``settings.herdr_unavailable_seconds``).
+
+Only reads, and ``tab close``, which is the same when sent twice. A prompt, keys or a new tab may have been applied by a
+server that did not answer, so they are never sent again."""
+UNAVAILABLE_BACKOFF_SECONDS = 1
+UNAVAILABLE_MAX_BACKOFF_SECONDS = 30
 SHELL_READY_POLL_SECONDS = 0.5
 DIALOG_REDRAW_POLL_SECONDS = 0.25
 SERVER_POLL_SECONDS = 0.1
@@ -655,14 +675,37 @@ def _call(*args: str, cli_timeout: float | None = None) -> dict[str, Any]:
 
 
 def _run(*args: str, cli_timeout: float | None = None) -> str:
-    """Run ``_cli``. When the server is not running, start it and try once more."""
+    """Run ``_answered``. When the server is not running, start it and try once more."""
     try:
-        return _cli(*args, cli_timeout=cli_timeout)
+        return _answered(*args, cli_timeout=cli_timeout)
     except HerdrError as e:
         if e.code != SERVER_NOT_RUNNING:
             raise
     _start_server()
-    return _cli(*args, cli_timeout=cli_timeout)
+    return _answered(*args, cli_timeout=cli_timeout)
+
+
+def _answered(*args: str, cli_timeout: float | None = None) -> str:
+    """Run ``_cli``. Retry a ``RETRIED_READS`` command, with a doubling backoff, while the server does not answer.
+
+    The server does not answer when it reports ``server_unavailable`` or when the call times out. After
+    ``settings.herdr_unavailable_seconds``, the last error is raised.
+    """
+    if tuple(args[:2]) not in RETRIED_READS:
+        return _cli(*args, cli_timeout=cli_timeout)
+    deadline = time.monotonic() + settings_module.settings.herdr_unavailable_seconds
+    backoff = UNAVAILABLE_BACKOFF_SECONDS
+    while True:
+        try:
+            return _cli(*args, cli_timeout=cli_timeout)
+        except HerdrError as e:
+            if e.code != SERVER_UNAVAILABLE or time.monotonic() >= deadline:
+                raise
+        except subprocess.TimeoutExpired:
+            if time.monotonic() >= deadline:
+                raise
+        time.sleep(backoff)
+        backoff = min(backoff * 2, UNAVAILABLE_MAX_BACKOFF_SECONDS)
 
 
 def _cli(*args: str, cli_timeout: float | None = None) -> str:

@@ -24,6 +24,11 @@ A deprecated configuration key shows a warning for at least one minor release be
   counts as a dead end in the history, the research pack or agents' queries. Migration `0003` converts the daemon's
   existing skip discards.
 
+### Fixed
+
+- A Herdr server that does not answer for a moment (`server_unavailable`, or a `herdr` call that times out) no longer
+  ends the agents the daemon watches: reads are retried for `herdr_unavailable_seconds` (300) before they fail.
+
 ## [0.1.0] - 2026-10-13
 
 Initial public release.

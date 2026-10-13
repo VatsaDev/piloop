@@ -540,6 +540,71 @@ def test_a_session_without_a_server_starts_one_and_polls_until_it_answers(
         herdr._call('workspace', 'list')
 
 
+UNAVAILABLE: Response = {
+    'error': {
+        'code': 'server_unavailable',
+        'message': 'request handling failed: timed out waiting for app response after 5000 ms',
+    }
+}
+
+
+def test_a_server_that_does_not_answer_for_a_moment_does_not_end_the_agent(
+    tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One ``server_unavailable`` under load killed four healthy workers (comments #11239, #11244): a read is retried."""
+    monkeypatch.setattr(herdr, 'UNAVAILABLE_BACKOFF_SECONDS', 0.01)
+    scripted(monkeypatch, agent_wait=[UNAVAILABLE, UNAVAILABLE, {'result': {'agent': AGENT}}])
+    handle = Handle('herdr', {'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': 'w1'})
+    outcome = HerdrRuntime('demo', tmp_path).wait(handle, timeout=60)
+    assert (outcome.status, outcome.error) == (WorkerStatus.IDLE, None)
+    verbs = [c[:2] for c in calls(herdr_log)]
+    assert verbs.count(['agent', 'wait']) == 3 and ['tab', 'close'] not in verbs, 'retried, and nothing was killed'
+
+
+def test_a_server_that_stays_unavailable_fails_the_read_after_the_window(
+    herdr_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(herdr, 'UNAVAILABLE_BACKOFF_SECONDS', 0.01)
+    monkeypatch.setattr(herdr, 'UNAVAILABLE_MAX_BACKOFF_SECONDS', 0.02)
+    monkeypatch.setattr(settings_module, 'settings', Settings(herdr_unavailable_seconds=0.2))
+    scripted(monkeypatch, agent_get=[UNAVAILABLE])
+    with pytest.raises(HerdrError, match='server_unavailable'):
+        herdr._call('agent', 'get', 'w1')
+    assert len(calls(herdr_log)) > 2, 'retried until the window ran out'
+
+
+def test_a_call_that_changes_something_is_never_sent_twice(herdr_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The server may have applied a prompt that it did not answer, so a retry could type it twice."""
+    monkeypatch.setattr(herdr, 'UNAVAILABLE_BACKOFF_SECONDS', 0.01)
+    scripted(monkeypatch, agent_prompt=[UNAVAILABLE, {'result': {'agent': AGENT}}])
+    with pytest.raises(HerdrError, match='server_unavailable'):
+        herdr._call('agent', 'prompt', 'w1', 'hello')
+    assert calls(herdr_log) == [['agent', 'prompt', 'w1', 'hello']]
+
+
+def test_a_read_that_times_out_is_retried(herdr_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A screen read that times out under load lost the transcripts of the workers it then killed (comment #11244)."""
+    monkeypatch.setattr(herdr, 'UNAVAILABLE_BACKOFF_SECONDS', 0.01)
+    real = subprocess.run
+    timeouts = [subprocess.TimeoutExpired(['herdr'], 30)]
+
+    def stalls_once(
+        argv: list[str], *, capture_output: bool, text: bool, timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        if timeouts:
+            raise timeouts.pop()
+        return real(argv, capture_output=capture_output, text=True, timeout=timeout)
+
+    monkeypatch.setattr(herdr.subprocess, 'run', stalls_once)
+    scripted(monkeypatch, pane_read=[{'text': 'the screen'}])
+    assert herdr._run('pane', 'read', 'w7:p2') == 'the screen'
+
+    monkeypatch.setattr(settings_module, 'settings', Settings(herdr_unavailable_seconds=0))
+    timeouts.append(subprocess.TimeoutExpired(['herdr'], 30))
+    with pytest.raises(subprocess.TimeoutExpired):
+        herdr._run('pane', 'read', 'w7:p2')
+
+
 def test_jobs_are_tagged_processes_outside_the_agents_session(
     tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

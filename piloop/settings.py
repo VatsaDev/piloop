@@ -40,6 +40,12 @@ class Settings(BaseSettings):
     herdr_cli_timeout_seconds: float = 30
     """The timeout in seconds of one ``herdr`` CLI call, in addition to any wait that the call itself does."""
 
+    herdr_unavailable_seconds: float = 300
+    """The number of seconds to keep retrying a read of the Herdr server that does not answer (``server_unavailable``,
+    or a ``herdr`` call that times out) before the read fails. A loaded host can stall the server for a while, and a
+    failed read of a working agent ends it. Calls that change something (a prompt, keys, a new tab) are never retried,
+    because the server may have applied them."""
+
     herdr_prompt_pickup_seconds: float = 5
     """The number of seconds to wait for an agent to start working after a prompt is sent. If the agent has not started
     by then and the screen does not show the prompt, the prompt is treated as lost."""
