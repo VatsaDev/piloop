@@ -65,8 +65,10 @@ Imports the database of a home of piloop's predecessor (`hiloopai/piloop-archive
 not have a database yet. Every project, idea, run, candidate, measurement, comment, worker and event keeps its id,
 and the result is migrated to this CLI's schema. The source is only read. It must be at the predecessor's last schema
 and have no open run or worker: stop its daemon first, or import a copy. A project that was active is stopped, so that
-two daemons never run one campaign; `UPDATE projects SET status = 'active', stopped_reason = NULL` resumes it. Paths
-in the rows, such as run logs, still point into the old home.
+two daemons never run one campaign; `UPDATE projects SET status = 'active', stopped_reason = NULL` resumes it. The
+open inbox items of the source are its history: they are acknowledged, by `import`, so that `piloop inbox` and
+`piloop wake` start with the new home's own items. `piloop inbox --all` lists them. Paths in the rows, such as run
+logs, still point into the old home.
 
 ## The daemon
 

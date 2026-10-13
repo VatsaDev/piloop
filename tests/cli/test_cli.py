@@ -962,8 +962,9 @@ def test_import_fills_a_new_home_from_a_predecessors_database_and_refuses_a_home
     run_cli(['import', str(source)])
     head = ScriptDirectory(str(MIGRATIONS)).get_current_head()
     assert out().strip() == (
-        f'imported {source} into {home / "piloop.db"} (schema {head}): 1 candidates, 2 comments, 0 evaluators, '
-        '1 events, 0 idea_links, 1 ideas, 0 measurements, 2 projects, 1 runs, 0 techniques, 1 workers'
+        f'imported {source} into {home / "piloop.db"} (schema {head}): 1 candidates, 3 comments, 0 evaluators, '
+        '1 events, 0 idea_links, 1 ideas, 0 measurements, 2 projects, 1 runs, 0 techniques, 1 workers;'
+        ' 1 open inbox items acknowledged (piloop inbox --all lists them)'
     )
     run_cli(['sql', 'SELECT name, status FROM projects ORDER BY id'])
     assert 'stopped' in out()

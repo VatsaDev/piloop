@@ -10,7 +10,8 @@ A deprecated configuration key shows a warning for at least one minor release be
 ### Added
 
 - `piloop import <old piloop.db>`: a new `PILOOP_HOME` starts with the whole history of a home of piloop's predecessor
-  (`hiloopai/piloop-archive`). Every row keeps its id; the source is only read; active projects are stopped.
+  (`hiloopai/piloop-archive`). Every row keeps its id; the source is only read; active projects are stopped; open
+  inbox items are acknowledged by `import`, so the old history does not fill `piloop inbox` and `piloop wake`.
 
 ## [0.1.0] - 2026-10-13
 

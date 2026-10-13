@@ -952,12 +952,13 @@ def import_cmd(
     """Import the history of a piloop-archive home into this new, empty PILOOP_HOME.
 
     Copies every project, idea, run, candidate, measurement, comment, worker and event with its id, then migrates.
-    The source is only read. Projects that were active are stopped: `piloop sql` can make one active again.
-    Paths in the rows (run logs, briefs) still point into the old home.
+    The source is only read. Projects that were active are stopped: `piloop sql` can make one active again. Open
+    inbox items are acknowledged as `import`: `piloop inbox --all` lists them. Paths in the rows (run logs, briefs)
+    still point into the old home.
     """
     target = settings.home / 'piloop.db'
     try:
-        copied = import_database(source, target)
+        imported = import_database(source, target)
     except NotImportable as e:
         raise SystemExit(str(e)) from e
     db = Database(settings.database_url, actor=settings.actor)
@@ -966,8 +967,13 @@ def import_cmd(
         schema = revision(db.engine)
     finally:
         db.close()
-    rows = ', '.join(f'{n} {table}' for table, n in copied.items())
-    console.print(f'imported {source} into {target} (schema {schema}): {rows}', markup=False, soft_wrap=True)
+    rows = ', '.join(f'{n} {table}' for table, n in imported.copied.items())
+    console.print(
+        f'imported {source} into {target} (schema {schema}): {rows}; {imported.acked} open inbox items acknowledged'
+        ' (piloop inbox --all lists them)',
+        markup=False,
+        soft_wrap=True,
+    )
 
 
 def _migrate(db: Database) -> None:

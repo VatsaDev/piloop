@@ -9,11 +9,15 @@ is complete, so a failed import leaves nothing behind. No trigger fires while th
 copied with the rest, and an escalation or a change must not be logged twice. The full-text indexes are rebuilt at the
 end. A project that was active is stopped, so that a daemon on the new home does not run a campaign that the source's
 daemon may still run on the same repo; ``UPDATE projects SET status = 'active', stopped_reason = NULL`` resumes it.
+Every open inbox item is acknowledged by ``ACKED_BY``: it is the source's history, and otherwise hundreds of old
+escalations fill ``piloop inbox`` and ``piloop wake`` before the first item of a campaign run on the new home.
+``piloop inbox --all`` still lists them.
 """
 
 import os
 import sqlite3
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 
 from sqlalchemy import create_engine
@@ -25,19 +29,29 @@ SCHEMA = '0001'
 """The revision whose tables and columns are the predecessor's last schema."""
 OPEN_RUNS = "status IN ('queued', 'running')"
 OPEN_WORKERS = "state IN ('requested', 'starting', 'running')"
+ACKED_BY = 'import'
+"""Who acknowledged the inbox items that the import copied open (``comments.acked_by``)."""
 
 
 class NotImportable(RuntimeError):
     """The source is not a database that this import can read, or the target exists already."""
 
 
-def import_database(source: Path, target: Path) -> dict[str, int]:
+@dataclass(frozen=True)
+class Imported:
+    """What ``import_database`` did: the rows copied, by table, and the open inbox items it acknowledged."""
+
+    copied: dict[str, int]
+    acked: int
+
+
+def import_database(source: Path, target: Path) -> Imported:
     """Copy every row of the predecessor's database ``source`` into a new database at ``target``, at revision 0001.
 
     Migrate ``target`` to head afterwards, as for any database.
 
     Returns:
-        The rows copied, by table.
+        The rows copied, by table, and how many open inbox items were acknowledged.
 
     Raises:
         NotImportable: ``target`` exists, ``source`` is not a piloop database, its tables differ from the schema at
@@ -57,16 +71,16 @@ def import_database(source: Path, target: Path) -> dict[str, int]:
             engine.dispose()
         with closing(sqlite3.connect(partial.as_uri(), uri=True, isolation_level=None)) as con:
             con.execute('ATTACH DATABASE ? AS old', (f'{source.resolve().as_uri()}?mode=ro',))
-            copied = _copy(con, source)
+            imported = _copy(con, source)
             con.execute('DETACH DATABASE old')
         os.replace(partial, target)
     finally:
         partial.unlink(missing_ok=True)
         Path(f'{partial}.migrate.lock').unlink(missing_ok=True)
-    return copied
+    return imported
 
 
-def _copy(con: sqlite3.Connection, source: Path) -> dict[str, int]:
+def _copy(con: sqlite3.Connection, source: Path) -> Imported:
     tables = [
         name
         for (name,) in con.execute(
@@ -98,6 +112,11 @@ def _copy(con: sqlite3.Connection, source: Path) -> dict[str, int]:
     for table in tables:
         columns = ', '.join(sorted(_columns(con, 'main', table)))
         copied[table] = con.execute(f'INSERT INTO main.{table} ({columns}) SELECT {columns} FROM old.{table}').rowcount
+    acked = con.execute(
+        'UPDATE main.comments SET acked_at = CURRENT_TIMESTAMP, acked_by = ? '
+        'WHERE priority IS NOT NULL AND acked_at IS NULL',
+        (ACKED_BY,),
+    ).rowcount
     for _, sql in triggers:
         con.execute(sql)
     for (index,) in con.execute("SELECT name FROM main.sqlite_master WHERE sql LIKE 'CREATE VIRTUAL TABLE%'"):
@@ -109,7 +128,7 @@ def _copy(con: sqlite3.Connection, source: Path) -> dict[str, int]:
     if violations := con.execute('PRAGMA main.foreign_key_check').fetchall():
         raise NotImportable(f'{source} has rows that point to missing rows: {violations[:5]}')
     con.execute('COMMIT')
-    return copied
+    return Imported(copied, acked)
 
 
 def _columns(con: sqlite3.Connection, schema: str, table: str) -> set[str]:

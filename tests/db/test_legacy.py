@@ -10,7 +10,7 @@ from alembic import command
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine
 
-from piloop.db.legacy import NotImportable, import_database
+from piloop.db.legacy import ACKED_BY, NotImportable, import_database
 from piloop.db.session import MIGRATIONS, migrate, revision
 from tests.db.test_migrations import alembic
 
@@ -27,6 +27,8 @@ ROWS = (
     "VALUES (17, 'project', 3, 'w', 'escalation', 'stuck on voting', 1)",
     'INSERT INTO comments (id, target_kind, target_id, author, kind, body) '
     "VALUES (19, 'idea', 7, 'w', 'decision', 'drop the hard vote')",
+    'INSERT INTO comments (id, target_kind, target_id, author, kind, body, priority, acked_at, acked_by) '
+    "VALUES (21, 'project', 5, 'w', 'finding', 'seen long ago', 3, '2026-01-02 03:04:05', 'human')",
 )
 
 
@@ -52,10 +54,12 @@ def test_import_copies_every_row_with_its_id_logs_nothing_twice_and_migrates_to_
     target = tmp_path / 'home' / 'piloop.db'
     target.parent.mkdir()
 
-    copied = import_database(source, target)
+    imported = import_database(source, target)
 
     assert digest(source) == before, 'the source is only read'
-    assert copied['projects'] == 2 and copied['comments'] == 2 and copied['events'] == 1 and copied['techniques'] == 0
+    copied = imported.copied
+    assert copied['projects'] == 2 and copied['comments'] == 3 and copied['events'] == 1 and copied['techniques'] == 0
+    assert imported.acked == 1, 'the one open inbox item; the log comment and the acked item are left alone'
     assert sorted(p.name for p in target.parent.iterdir()) == ['piloop.db'], 'no partial file or lock is left'
     engine = create_engine(f'sqlite:///{target}')
     assert revision(engine) == '0001'
@@ -68,6 +72,12 @@ def test_import_copies_every_row_with_its_id_logs_nothing_twice_and_migrates_to_
             (3, 'stopped', f'imported from {source}'),
             (5, 'stopped', 'x'),
         ], 'an active campaign stops: the source daemon may still run it on the same repo'
+        assert con.execute('SELECT id, acked_by, acked_at IS NOT NULL FROM comments ORDER BY id').fetchall() == [
+            (17, ACKED_BY, 1),
+            (19, None, 0),
+            (21, 'human', 1),
+        ], 'the old escalation no longer fills the new inbox; who acked an item before keeps it'
+        assert con.execute('SELECT acked_at FROM comments WHERE id = 21').fetchone() == ('2026-01-02 03:04:05',)
         assert con.execute("SELECT rowid FROM ideas_fts WHERE ideas_fts MATCH 'vote'").fetchall() == [(7,)]
         assert con.execute("SELECT rowid FROM comments_fts WHERE comments_fts MATCH 'voting'").fetchall() == [
             (17,),
