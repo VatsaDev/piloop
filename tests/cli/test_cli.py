@@ -44,10 +44,11 @@ from piloop.db.models import (
     WorkerState,
     utcnow,
 )
-from piloop.db.session import Database
+from piloop.db.session import MIGRATIONS, Database
 from piloop.settings import Settings
 from tests.conftest import hold_lock
 from tests.daemon.test_serve import alive, wait_until
+from tests.db.test_legacy import predecessor
 from tests.db.test_migrations import alembic
 from tests.fixtures.fake_herdr import SOCKET
 
@@ -953,6 +954,21 @@ def add_candidate_with_worker(
         s.add(candidate)
         s.commit()
         return candidate.id
+
+
+def test_import_fills_a_new_home_from_a_predecessors_database_and_refuses_a_home_with_one(out, tmp_path: Path) -> None:
+    source = predecessor(tmp_path / 'old.db')
+    home = cli.settings.home
+    run_cli(['import', str(source)])
+    head = ScriptDirectory(str(MIGRATIONS)).get_current_head()
+    assert out().strip() == (
+        f'imported {source} into {home / "piloop.db"} (schema {head}): 1 candidates, 2 comments, 0 evaluators, '
+        '1 events, 0 idea_links, 1 ideas, 0 measurements, 2 projects, 1 runs, 0 techniques, 1 workers'
+    )
+    run_cli(['sql', 'SELECT name, status FROM projects ORDER BY id'])
+    assert 'stopped' in out()
+    with pytest.raises(SystemExit, match='exists: import into a new PILOOP_HOME'):
+        run_cli(['import', str(source)])
 
 
 def test_migrate_reports_the_schema_change_and_a_newer_database_is_refused(out) -> None:

@@ -69,8 +69,8 @@ class SchemaAhead(RuntimeError):
     """A newer version of piloop migrated the database. Downgrades are not supported."""
 
 
-def migrate(engine: Engine) -> None:
-    """Migrate the database to the latest Alembic revision. Create it if it does not exist.
+def migrate(engine: Engine, *, to: str = 'head') -> None:
+    """Migrate the database to the latest Alembic revision, or to ``to``. Create it if it does not exist.
 
     Raises:
         SchemaAhead: The database is at a revision that this piloop does not know: an older CLI on a newer database.
@@ -82,7 +82,7 @@ def migrate(engine: Engine) -> None:
     cfg.set_main_option('sqlalchemy.url', engine.url.render_as_string(hide_password=False))
     try:
         with _migration_lock(path):
-            command.upgrade(cfg, 'head')
+            command.upgrade(cfg, to)
     except CommandError as e:
         if not isinstance(e.__cause__, ResolutionError):  # pragma: no cover - alembic fails here for no other reason
             raise

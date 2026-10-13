@@ -55,6 +55,19 @@ how long to wait for the daemon to come back. See [Upgrading](/guides/upgrading)
 Brings the database to the schema of this CLI and prints what changed. The daemon and every command that reads or
 writes projects do this silently when they start. `piloop doctor` and `piloop sql` do not.
 
+### piloop import
+
+```text
+piloop import SOURCE
+```
+
+Imports the database of a home of piloop's predecessor (`hiloopai/piloop-archive`) into this `PILOOP_HOME`, which must
+not have a database yet. Every project, idea, run, candidate, measurement, comment, worker and event keeps its id,
+and the result is migrated to this CLI's schema. The source is only read. It must be at the predecessor's last schema
+and have no open run or worker: stop its daemon first, or import a copy. A project that was active is stopped, so that
+two daemons never run one campaign; `UPDATE projects SET status = 'active', stopped_reason = NULL` resumes it. Paths
+in the rows, such as run logs, still point into the old home.
+
 ## The daemon
 
 ### piloop serve

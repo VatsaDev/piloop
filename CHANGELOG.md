@@ -7,6 +7,11 @@ A deprecated configuration key shows a warning for at least one minor release be
 
 ## [Unreleased]
 
+### Added
+
+- `piloop import <old piloop.db>`: a new `PILOOP_HOME` starts with the whole history of a home of piloop's predecessor
+  (`hiloopai/piloop-archive`). Every row keeps its id; the source is only read; active projects are stopped.
+
 ## [0.1.0] - 2026-10-13
 
 Initial public release.

@@ -51,6 +51,7 @@ from piloop.daemon.main import Daemon
 from piloop.daemon.serve import restart as restart_in_place, running_pid, service_unit, spawn_detached, terminate
 from piloop.db import sql
 from piloop.db.events import emit
+from piloop.db.legacy import NotImportable, import_database
 from piloop.db.models import (
     Candidate,
     Comment,
@@ -942,6 +943,31 @@ def migrate_cmd() -> None:
     finally:
         db.close()
     console.print(f'schema: {new}, current' if old == new else f'schema: {old or "none"} → {new}')
+
+
+@app.command(name='import')
+def import_cmd(
+    source: Annotated[Path, cyclopts.Parameter(help="The predecessor's piloop.db, or a copy of it.")], /
+) -> None:
+    """Import the history of a piloop-archive home into this new, empty PILOOP_HOME.
+
+    Copies every project, idea, run, candidate, measurement, comment, worker and event with its id, then migrates.
+    The source is only read. Projects that were active are stopped: `piloop sql` can make one active again.
+    Paths in the rows (run logs, briefs) still point into the old home.
+    """
+    target = settings.home / 'piloop.db'
+    try:
+        copied = import_database(source, target)
+    except NotImportable as e:
+        raise SystemExit(str(e)) from e
+    db = Database(settings.database_url, actor=settings.actor)
+    try:
+        _migrate(db)
+        schema = revision(db.engine)
+    finally:
+        db.close()
+    rows = ', '.join(f'{n} {table}' for table, n in copied.items())
+    console.print(f'imported {source} into {target} (schema {schema}): {rows}', markup=False, soft_wrap=True)
 
 
 def _migrate(db: Database) -> None:
