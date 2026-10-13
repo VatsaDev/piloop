@@ -68,6 +68,12 @@ npx mint broken-links --check-anchors
 
 In `.mdx` files, `{`, `}`, `<` and `>` in text are syntax. Put them in code spans, or escape them.
 
+`tests/test_docs.py` checks every code block in `docs/`, `README.md`, `AGENTS.md`, this file and the skills. A TOML
+block must be a valid `piloop.toml`, or a part of one. Every `piloop` command in a shell block must parse against the
+CLI. Each SQL statement, also in `piloop sql`, must compile on the current schema. Write a placeholder as `<name>` or
+`…`: the test replaces it with `1`. Give every code block a language. The test fails on a language that it does not
+know.
+
 ## Change the database schema
 
 1. Change the models in `piloop/db/models.py`.
