@@ -10,7 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from dirty_equals import IsPositive, IsStr
+from dirty_equals import IsFloat, IsPositive, IsStr
 from inline_snapshot import snapshot
 
 from piloop import settings as settings_module
@@ -74,7 +74,15 @@ def test_start_creates_workspace_tab_agent_and_prompts(tmp_path: Path, herdr_log
     token = IsStr(regex='[0-9a-f]{32}')
     assert handle == Handle(
         'herdr',
-        {'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': 'w1', 'token': token, 'kind': 'pi'},
+        {
+            'workspace_id': 'w7',
+            'tab_id': 'w7:t2',
+            'pane_id': 'w7:p2',
+            'agent': 'w1',
+            'token': token,
+            'kind': 'pi',
+            'prompted_at': IsFloat(approx=time.time(), delta=60),
+        },
     )
     assert calls(herdr_log) == (
         [
@@ -152,13 +160,13 @@ def test_a_brief_is_submitted_once_and_picked_up_by_a_state_change(
     again, because a second paste lands beside the first in the composer.
     """
     monkeypatch.setattr('piloop.runtime.herdr.PICKUP_POLL_SECONDS', 0.01)
-    monkeypatch.setattr('piloop.runtime.herdr.settings_module.settings', Settings(herdr_prompt_pickup_seconds=5))
+    monkeypatch.setattr('piloop.runtime.herdr.settings_module.settings', Settings(herdr_startup_grace_seconds=5))
     scripted(monkeypatch, agent_get=[seq(5), seq(5), seq(7, 'working')])
     HerdrRuntime('demo', tmp_path).start(spec(tmp_path))
     assert [c[:2] for c in calls(herdr_log)].count(['agent', 'prompt']) == 1, 'stale done, then picked up'
 
     herdr_log.write_text('')
-    monkeypatch.setattr('piloop.runtime.herdr.settings_module.settings', Settings(herdr_prompt_pickup_seconds=0.05))
+    monkeypatch.setattr('piloop.runtime.herdr.settings_module.settings', Settings(herdr_startup_grace_seconds=0.05))
     scripted(monkeypatch, agent_get=[seq(5)], pane_read=[{'text': 'Welcome to pi\n> do the thing\n'}])
     with pytest.raises(
         StartFailed, match='^HerdrError: prompt_lost: w1 did not start working after its brief was submitted$'
@@ -814,7 +822,7 @@ def test_a_failed_start_keeps_what_its_screen_showed_before_the_tab_closes(
 ) -> None:
     """A failed start reads the pane's screen before it closes the tab, so the screen is not lost with the pane."""
     monkeypatch.setattr('piloop.runtime.herdr.PICKUP_POLL_SECONDS', 0.01)
-    monkeypatch.setattr('piloop.runtime.herdr.settings_module.settings', Settings(herdr_prompt_pickup_seconds=0.02))
+    monkeypatch.setattr('piloop.runtime.herdr.settings_module.settings', Settings(herdr_startup_grace_seconds=0.02))
     scripted(monkeypatch, agent_get=[seq(5)], pane_read=[{'text': 'Welcome to Claude Code\n> do the thing\n'}])
     with pytest.raises(StartFailed) as raised:
         HerdrRuntime('demo', tmp_path).start(spec(tmp_path))
@@ -889,7 +897,7 @@ def test_a_brief_taken_by_an_agent_still_starting_or_retrying_is_delivered(
     what follows.
     """
     monkeypatch.setattr('piloop.runtime.herdr.PICKUP_POLL_SECONDS', 0.01)
-    monkeypatch.setattr('piloop.runtime.herdr.settings_module.settings', Settings(herdr_prompt_pickup_seconds=0.05))
+    monkeypatch.setattr('piloop.runtime.herdr.settings_module.settings', Settings(herdr_startup_grace_seconds=0.05))
     scripted(monkeypatch, agent_get=[seq(5)], pane_read=[screen])
     HerdrRuntime('demo', tmp_path).start(replace(spec(tmp_path), executable=kind))
     verbs = [c[:2] for c in calls(herdr_log)]
@@ -997,3 +1005,85 @@ def test_a_claude_turn_that_stopped_on_a_quota_503_is_resumed(
         ['agent', 'prompt', 'w1', herdr.RESUME_PROMPT]
     ]
     assert sleeps == [herdr.QUIET_SECONDS, 60, herdr.QUIET_SECONDS]
+
+
+CODEX_FIRST_TURN_SCREEN: Response = {
+    'text': '  >_ OpenAI Codex (v0.162.1)\n     ~/.piloop-new/runs/1506/worktree\n  permissions: YOLO mode\n\n'
+    '  Tip: Use /rename to rename your threads for easier thread resuming.\n\n\n'
+    '› Your brief is in /home/thomas/.piloop-new/runs/1506/brief.md. Read all of it, in parts if a\n'
+    '  read comes back cut short, then follow it.\n\n\n\n'
+    '› Ask Codex to do anything\n\n  GPT-6.1-Sol high · ~/.piloop-new/runs/1506/worktree                ⚠ 1 warning\n'
+}
+"""What worker#3042's pane showed when piloop closed it 3 s into its first turn: the brief submitted above an empty
+composer, no busy text. Its Codex session had recorded ``task_started`` 6 s before the pane closed."""
+
+
+def first_turn_handle(prompted_at: float) -> Handle:
+    return Handle('herdr', {**claude_handle('codex').data, herdr.PROMPTED_AT: prompted_at})
+
+
+def test_a_quiet_first_turn_is_not_finished_within_the_startup_grace(
+    tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A quiet idle screen within the grace of the first prompt is an agent still starting, not a finished turn.
+
+    The agent is watched until it works and goes idle after the grace. A handle from a daemon that did not record the
+    prompt's time (a re-attached older handle) gets no grace.
+    """
+    monkeypatch.setattr(settings_module, 'settings', Settings(herdr_startup_grace_seconds=60))
+    clock = [1000.0]
+    monkeypatch.setattr(herdr.time, 'time', lambda: clock[0])
+    sleeps: list[float] = []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += 20
+
+    working: Response = {'text': '• Working (12s • esc to interrupt)\n› Ask Codex to do anything\n'}
+    scripted(monkeypatch, pane_read=[CODEX_FIRST_TURN_SCREEN] * 4 + [working, DONE_SCREEN])
+    outcome = HerdrRuntime('demo', tmp_path, sleep=sleep).wait(first_turn_handle(clock[0]), timeout=1000)
+    assert (outcome.status, outcome.error) == (WorkerStatus.IDLE, None)
+    looks = [c[:2] for c in calls(herdr_log)].count(['agent', 'wait'])
+    assert (looks, clock[0]) == (4, 1080), 'two quiet looks in the grace, one at work, then idle past the grace'
+
+    herdr_log.write_text('')
+    scripted(monkeypatch, pane_read=[CODEX_FIRST_TURN_SCREEN])
+    outcome = HerdrRuntime('demo', tmp_path, sleep=sleep).wait(first_turn_handle(clock[0] - 61), timeout=1000)
+    assert outcome.status is WorkerStatus.IDLE and [c[:2] for c in calls(herdr_log)].count(['agent', 'wait']) == 1, (
+        'past the grace a quiet idle is finished, and the launcher judges whether it ever worked'
+    )
+    herdr_log.write_text('')
+    outcome = HerdrRuntime('demo', tmp_path, sleep=sleep).wait(claude_handle('codex'), timeout=1000)
+    assert outcome.status is WorkerStatus.IDLE and [c[:2] for c in calls(herdr_log)].count(['agent', 'wait']) == 1, (
+        'no prompted_at: no grace'
+    )
+
+
+def test_a_brief_picked_up_late_on_a_loaded_host_is_not_lost(
+    tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Herdr's state can change long after the old 5 s pickup window while the agent already works on its brief.
+
+    Pickup has the whole startup grace. A brief never picked up within it is still lost, and never pasted again.
+    """
+    monkeypatch.setattr(
+        settings_module, 'settings', Settings(herdr_prompt_pickup_seconds=0.01, herdr_startup_grace_seconds=5)
+    )
+    clock = [0.0]
+    monkeypatch.setattr(herdr.time, 'monotonic', lambda: clock[0])
+
+    def sleep(seconds: float) -> None:
+        clock[0] += 1
+
+    scripted(monkeypatch, agent_get=[seq(5)] * 4 + [seq(6, 'working')], pane_read=[CODEX_FIRST_TURN_SCREEN])
+    handle = HerdrRuntime('demo', tmp_path, sleep=sleep).start(replace(spec(tmp_path), executable='codex'))
+    verbs = [c[:2] for c in calls(herdr_log)]
+    assert (verbs.count(['agent', 'prompt']), ['tab', 'close'] in verbs) == (1, False)
+    assert clock[0] == 3 and herdr.PROMPTED_AT in handle.data, 'picked up 3 s in: past the old window, in the grace'
+
+    herdr_log.write_text('')
+    clock[0] = 0
+    scripted(monkeypatch, agent_get=[seq(5)], pane_read=[CODEX_FIRST_TURN_SCREEN])
+    with pytest.raises(StartFailed, match='prompt_lost'):
+        HerdrRuntime('demo', tmp_path, sleep=sleep).start(replace(spec(tmp_path), executable='codex'))
+    assert clock[0] == 5 and [c[:2] for c in calls(herdr_log)].count(['agent', 'prompt']) == 1

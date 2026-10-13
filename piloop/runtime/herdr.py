@@ -10,10 +10,11 @@ root pane runs the agent. Tabs are used instead of splits, so every worker is eq
 removes exactly its tab. A human selects workspace and tab in the Herdr sidebar, or presses ``enter`` on an agent in
 ``piloop watch``. The daemon addresses agents by ``spec.name``.
 
-An agent is finished when it is idle and nothing it started still runs. Harnesses run tool commands in sessions of
-their own (Claude Code's background shells, Codex's commands). The agent, its MCP servers and its helpers share the
-session of the pane's shell. Every process started in the pane inherits ``TOKEN_ENV``. So a tagged process in another
-session is work that the agent started and still waits on, even after its parent shell exited.
+An agent is finished when it is idle, nothing it started still runs, and its first turn is past the startup grace
+(``herdr_startup_grace_seconds``), within which a quiet agent may still be starting. Harnesses run tool commands in
+sessions of their own (Claude Code's background shells, Codex's commands). The agent, its MCP servers and its helpers
+share the session of the pane's shell. Every process started in the pane inherits ``TOKEN_ENV``. So a tagged process
+in another session is work that the agent started and still waits on, even after its parent shell exited.
 
 ``herdr`` prints ``{"result": …}`` JSON on stdout, and ``{"error": {"code", "message"}}`` on stderr with exit status
 1. Exceptions: ``pane run`` prints nothing, ``read`` prints the terminal text, and ``session list --json`` prints
@@ -140,6 +141,11 @@ RESUME_MARK = RESUME_PROMPT[:46]
 RESUME_BACKOFF_SECONDS = (60, 120, 240)
 """The wait before each resume of a turn that ended on an API error. Capacity errors usually clear within minutes."""
 TURN_FAILED_ERROR = 'the agent stopped on an API error and did not recover'
+PROMPTED_AT = 'prompted_at'
+"""The handle key that holds when the first prompt was submitted (``time.time()``), for the startup grace.
+
+Wall-clock time, because the handle is stored in ``workers.handle`` and a daemon restarted in place re-attaches to it.
+A handle from a daemon older than this key gets no grace."""
 
 
 class Screen(StrEnum):
@@ -221,12 +227,14 @@ class HerdrRuntime:
         return handle
 
     def _deliver(self, handle: Handle, prompt: str) -> None:
-        """Submit the first prompt once and confirm that the agent took it.
+        """Submit the first prompt once and confirm that the agent took it within ``herdr_startup_grace_seconds``.
 
         A TUI that still draws its welcome screen can drop a prompt. Pickup is a state change (Herdr's
-        ``state_change_seq`` advances after the prompt), not a state. An agent whose first-run dialogs were answered
-        in a background tab already reports ``done``, and a wait for ``working`` or ``done`` would take that for a
-        finished turn. Without a state change, a ``BUSY_SCREENS`` or ``FAILED_TURN_SCREENS`` text at the bottom of the
+        ``state_change_seq`` advances after the prompt), not a state. On a loaded host the change can come many
+        seconds after the agent started its turn: Codex records ``task_started`` a fraction of a second after the
+        prompt while Herdr still sees no change 5 s later. So pickup has the whole startup grace, not a short window.
+        An agent whose first-run dialogs were answered in a background tab already reports ``done``, and a wait for
+        ``working`` or ``done`` would take that for a finished turn. Without a state change, a ``BUSY_SCREENS`` or ``FAILED_TURN_SCREENS`` text at the bottom of the
         screen shows that the agent took the prompt while it starts up or retries the API. ``wait`` judges what
         follows. The prompt is never pasted again, because the composer or a queued turn may already hold it.
 
@@ -236,7 +244,8 @@ class HerdrRuntime:
         agent = _agent(handle)
         before = self._state_seq(agent)
         _call('agent', 'prompt', agent, prompt)
-        if self._state_changed(agent, before, settings_module.settings.herdr_prompt_pickup_seconds):
+        handle.data[PROMPTED_AT] = time.time()
+        if self._state_changed(agent, before, settings_module.settings.herdr_startup_grace_seconds):
             return
         tail = _tail(self._visible(handle))
         kind = str(handle.data['kind'])
@@ -345,6 +354,9 @@ class HerdrRuntime:
           working agent.
         - Idle on a ``FAILED_TURN_SCREENS`` text: the agent is resumed. When the backoffs are spent, the outcome has
           ``TURN_FAILED_ERROR``.
+        - Idle on a quiet screen within ``herdr_startup_grace_seconds`` of the first prompt (``PROMPTED_AT``): the
+          agent may still be starting its first turn. A first-turn Codex can show its submitted brief above an empty
+          composer, with no busy text, for seconds after its turn started.
 
         The wait is done in chunks. ``agent wait`` does not return when another thread closes the tab (``kill``), so
         each chunk asks again and gets ``agent_not_found`` once the worker is gone.
@@ -424,8 +436,9 @@ class HerdrRuntime:
         """Return what the screen of an agent that Herdr reports idle shows, and its bottom lines (``_tail``).
 
         The agent is working when the screen changed within ``QUIET_SECONDS`` (output streams in, a spinner's timer
-        counts) or shows a ``BUSY_SCREENS`` text. A screen that is gone with its pane shows done: the next
-        ``agent wait`` finds the agent gone.
+        counts) or shows a ``BUSY_SCREENS`` text, or when a quiet screen is still within the startup grace of the first
+        prompt (``_starting``). A screen that is gone with its pane shows done: the next ``agent wait`` finds the agent
+        gone.
         """
         first = self._visible(handle)
         self._sleep(min(QUIET_SECONDS, remaining))
@@ -436,6 +449,8 @@ class HerdrRuntime:
             return Screen.WORKING, tail
         if any(text in tail for text in FAILED_TURN_SCREENS.get(kind, ())):
             return Screen.FAILED_TURN, tail
+        if _starting(handle):
+            return Screen.WORKING, tail
         return Screen.DONE, tail
 
     def _visible(self, handle: Handle) -> str:
@@ -782,6 +797,13 @@ def _as_dict(value: object) -> dict[str, Any]:
 
 def _agent(handle: Handle) -> str:
     return str(handle.data['agent'])
+
+
+def _starting(handle: Handle) -> bool:
+    """Whether the agent's first prompt was submitted less than ``herdr_startup_grace_seconds`` ago."""
+    prompted = handle.data.get(PROMPTED_AT)
+    grace = settings_module.settings.herdr_startup_grace_seconds
+    return isinstance(prompted, float) and time.time() < prompted + grace
 
 
 def _export(pane_id: str, env: dict[str, str], fifo: Path) -> None:

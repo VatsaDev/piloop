@@ -91,7 +91,7 @@ work, and says so in the message. piloop commits uncommitted changes for the wor
 After the worker ends, the daemon scores each new commit. The idea becomes `done`. If the run failed or timed out and
 the idea has attempts left, the idea goes back to `ready` instead. An idea has two attempts by default.
 
-A run whose agent could not be launched, or that ended within a minute without a token, a commit or a comment, is not
+A run whose agent could not be launched, or that ended within two minutes without a token, a commit or a comment, is not
 an attempt. The daemon starts the same run again with a new worker, up to two times. If the third start fails too,
 the run fails and counts as an attempt. When that was the idea's last attempt, the idea is `parked`. After three
 failed starts within 10 minutes, the daemon stops launching agents for the project and escalates.

@@ -47,8 +47,15 @@ class Settings(BaseSettings):
     because the server may have applied them."""
 
     herdr_prompt_pickup_seconds: float = 5
-    """The number of seconds to wait for an agent to start working after a prompt is sent. If the agent has not started
-    by then and the screen does not show the prompt, the prompt is treated as lost."""
+    """The number of seconds to wait for an idle agent to start working again after piloop prompts it to resume, and
+    for Herdr to report the session id of a started agent. The first prompt has ``herdr_startup_grace_seconds``."""
+
+    herdr_startup_grace_seconds: float = 60
+    """The number of seconds an agent has to start its first turn after its brief is submitted.
+
+    Within it, an agent whose state has not changed yet is still starting, not a lost prompt, and a quiet idle screen
+    is not a finished turn: under load a TUI can take many seconds to show that it took the brief. After it, a brief
+    that was never picked up is lost, and an agent that never worked counts as failed to start."""
 
     herdr_shell_ready_seconds: float = 10
     """The number of seconds to retry ``agent start`` while the shell of a new tab is still starting."""

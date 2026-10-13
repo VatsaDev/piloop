@@ -385,6 +385,36 @@ def test_a_harness_that_prints_its_session_id_has_it_read_back_by_the_runtime(
     )
 
 
+def test_a_session_reported_late_is_asked_for_again_before_the_agent_is_released(
+    project: Project,
+    db: Database,
+    runtime: ScriptRuntime,
+    tmp_path: Path,
+    tracer: Tracer,
+    spans: InMemorySpanExporter,
+    mocker: MockerFixture,
+) -> None:
+    """A harness slow to start reports no session before the wait. It is asked again before its pane closes.
+
+    A failure of that last ask is recorded, and the agent is still released.
+    """
+    codex = DEFAULT_HARNESSES['codex']
+    use_harness(db, project, CODEX_LIKE, entire_agent='codex', session_id_pattern=codex.session_id_pattern)
+    mocker.patch.object(runtime, 'session_id', side_effect=[None, CODEX_ID])
+    late = request(db, project)
+    launch(db, runtime, tmp_path, late, tracer)
+    assert worker(db, late).session_id == CODEX_ID
+    assert events(spans, 'worker.session_unknown') == [], 'found on the second ask'
+
+    mocker.patch.object(runtime, 'session_id', side_effect=[None, RuntimeError('server_unavailable')])
+    lost = request(db, project)
+    launch(db, runtime, tmp_path, lost, tracer)
+    assert worker(db, lost).session_id is None and len(runtime.killed) == 2
+    assert events(spans, 'worker.session_unknown') == [
+        {'worker': lost, 'runtime': 'subprocess', 'error': 'server_unavailable'}
+    ]
+
+
 def test_the_session_is_attached_to_entire_from_the_cwd_when_the_agent_ends(
     project: Project,
     db: Database,

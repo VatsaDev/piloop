@@ -28,6 +28,10 @@ A deprecated configuration key shows a warning for at least one minor release be
 
 - A Herdr server that does not answer for a moment (`server_unavailable`, or a `herdr` call that times out) no longer
   ends the agents the daemon watches: reads are retried for `herdr_unavailable_seconds` (300) before they fail.
+- A Herdr agent is no longer closed during its first turn. Its brief has a startup grace
+  (`PILOOP_HERDR_STARTUP_GRACE_SECONDS`, 60 s) to be picked up instead of 5 s, and a quiet screen within the grace is
+  not a finished turn: on a loaded host a Codex that had started its turn was closed as `prompt_lost` or as idle after
+  3 s. A session id that Herdr had not reported yet is asked for again before the pane closes.
 
 ## [0.1.0] - 2026-10-13
 

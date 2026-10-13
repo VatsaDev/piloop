@@ -32,7 +32,8 @@ These control how long piloop waits for Herdr and Entire. The defaults suit most
 | `PILOOP_HERDR_START_TIMEOUT_SECONDS` | `60` | How long Herdr may take to detect an agent that just started. |
 | `PILOOP_HERDR_CLI_TIMEOUT_SECONDS` | `30` | The timeout of one `herdr` command, in addition to the time that it waits. |
 | `PILOOP_HERDR_UNAVAILABLE_SECONDS` | `300` | How long to retry a read of a Herdr server that does not answer before the read fails. Prompts and keys are never sent twice. |
-| `PILOOP_HERDR_PROMPT_PICKUP_SECONDS` | `5` | How long to wait for an agent to start work after it gets a prompt. |
+| `PILOOP_HERDR_PROMPT_PICKUP_SECONDS` | `5` | How long to wait for an idle agent to resume work after piloop prompts it, and for Herdr to report the session of a started agent. |
+| `PILOOP_HERDR_STARTUP_GRACE_SECONDS` | `60` | How long an agent has to start its first turn after its brief is submitted. Until then, a brief not yet picked up is not lost, and a quiet agent is not finished. |
 | `PILOOP_HERDR_SHELL_READY_SECONDS` | `10` | How long to retry the start of an agent while the shell of a new tab starts. |
 | `PILOOP_HERDR_WAIT_CHUNK_SECONDS` | `10` | The longest single wait on an agent. A closed tab is noticed within this time. |
 | `PILOOP_ENTIRE_ATTACH_TIMEOUT_SECONDS` | `120` | How long `entire session attach` may take before piloop stops it. |

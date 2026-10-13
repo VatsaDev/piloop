@@ -36,8 +36,11 @@ TRANSCRIPT_LINES = 2000
 START_SCREEN_LINES = 12
 """How many non-blank lines from the end of a failed start's screen go into the row's error."""
 STOPPED_ERROR = 'daemon stopped'
-STARTUP_SECONDS = 60
-"""An agent that ends sooner than this without spending a token did not start to work: a dialog, a crash."""
+STARTUP_SECONDS = 120
+"""An agent that ends sooner than this without spending a token did not start to work: a dialog, a crash.
+
+Longer than the default ``herdr_startup_grace_seconds``: a Herdr agent that never starts its first turn is watched
+for the whole grace, and must still count as a failed start, not as a run that worked and left nothing."""
 STARTUP_ANOMALY = 'anomaly.startup'
 """The event on a worker that did not start to work (``Outcome.startup_failed``): an environment fault, not bad work."""
 CLEARED_ENV = ('CLAUDE_CODE_CHILD_SESSION',)
@@ -201,13 +204,21 @@ class Launcher:
     ) -> Outcome:
         """Wait for a started agent to end, save its transcript and release it.
 
-        When ``unreported``, record the session id that the runtime reports first.
+        When ``unreported``, record the session id that the runtime reports, asked first before the wait and again
+        before the agent is released: a harness that is slow to start reports its session late, and an agent closed
+        early must still leave its session for the usage and the checkpoint.
         """
+        reported = not unreported
         try:
-            if unreported:
-                self._reported_session(worker_id, runtime, handle, span)
+            if not reported:
+                reported = self._reported_session(worker_id, runtime, handle, span, last=False)
             return runtime.wait(handle, timeout)
         finally:
+            if not reported:
+                try:
+                    self._reported_session(worker_id, runtime, handle, span, last=True)
+                except Exception as e:  # the pane or the server can be gone; releasing the agent comes first
+                    span.event('worker.session_unknown', worker=worker_id, runtime=runtime.kind, error=str(e))
             self._save_transcript(runtime, handle, log_dir)
             runtime.kill(handle)
 
@@ -276,19 +287,22 @@ class Launcher:
         runtime = self.runtime_factory(runtime_kind, project=project_name, project_path=project_path)
         return Prepared(spec, runtime, cfg.role(kind).timeout, definition.captures_session, session_id)
 
-    def _reported_session(self, worker_id: int, runtime: Runtime, handle: Handle, span: Span) -> None:
-        """Record the session id that the runtime reports for the started agent.
+    def _reported_session(self, worker_id: int, runtime: Runtime, handle: Handle, span: Span, *, last: bool) -> bool:
+        """Record the session id that the runtime reports for the started agent. Return whether there was one.
 
-        Without an id, the session cannot be attached. Then emit an event and leave the row's id NULL.
+        Without an id, the session cannot be attached. After the ``last`` ask, emit an event and leave the row's id
+        NULL.
         """
         session_id = runtime.session_id(handle)
         if session_id is None:
-            span.event('worker.session_unknown', worker=worker_id, runtime=runtime.kind)
-            return
+            if last:
+                span.event('worker.session_unknown', worker=worker_id, runtime=runtime.kind)
+            return False
         span.set(session_id=session_id)
         with self.lock, self.db.session() as s:
             s.get_one(Worker, worker_id).session_id = session_id
             s.commit()
+        return True
 
     def _start_error(self, e: Exception, log_dir: Path) -> str:
         """Return the row's error for a failed start.
