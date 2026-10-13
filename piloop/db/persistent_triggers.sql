@@ -42,6 +42,11 @@ WHEN (SELECT project_id FROM ideas WHERE id = NEW.idea_id) IS NOT (SELECT projec
 BEGIN
   SELECT RAISE(ABORT, 'idea_links: idea_id and target_id must be ideas of the same project');
 END;
+CREATE TRIGGER workers_kind BEFORE INSERT ON workers
+WHEN NEW.kind NOT IN ('worker', 'watchdog', 'research') AND (SELECT json_type(config, '$.roles.' || json_quote(NEW.kind)) FROM projects WHERE id = NEW.project_id) IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'workers.kind must be a role of the project: worker, watchdog, research or a [roles.<name>] table of its piloop.toml');
+END;
 CREATE TRIGGER ideas_fts_insert AFTER INSERT ON ideas
 BEGIN
   INSERT INTO ideas_fts (rowid, title, hypothesis, plan) VALUES (NEW.id, NEW.title, NEW.hypothesis, NEW.plan);

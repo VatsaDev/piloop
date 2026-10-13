@@ -308,7 +308,7 @@ def tab_of(w: Worker) -> str | None:
 
 def on(s: Session, w: Worker) -> str:
     """Describe what the agent works on: the idea for a worker, the trigger reason for the other roles."""
-    if w.kind is WorkerKind.WORKER and w.run_id is not None:
+    if w.kind == WorkerKind.WORKER and w.run_id is not None:
         idea = s.get_one(Run, w.run_id).idea
         return f'idea#{idea.id} {cell(idea.title)}'
     return cell(w.reason or NONE)
@@ -574,7 +574,7 @@ def _now(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> lis
     return [
         *_runs_now(s, project, cfg, now),
         *_queue(s, project, now),
-        *_agents(s, project, now),
+        *_agents(s, project, cfg, now),
         _evaluations(s, project),
     ]
 
@@ -615,7 +615,7 @@ def _queue(s: Session, project: Project, now: datetime) -> list[str]:
     return [f'- Ideas: {len(ready)} runnable, {len(blocked)} blocked{shown}; {rest}.', *queue]
 
 
-def _agents(s: Session, project: Project, now: datetime) -> list[str]:
+def _agents(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> list[str]:
     """Show the live agents with their last line, the agents per role, the yield of each source and the tokens."""
     rows = s.scalars(select(Worker).where(Worker.project_id == project.id).order_by(Worker.id)).all()
     path = Path(project.path)
@@ -629,14 +629,14 @@ def _agents(s: Session, project: Project, now: datetime) -> list[str]:
     requested = [f'{w.kind}#{w.id}' for w in rows if w.state is WorkerState.REQUESTED]
     per_kind: list[str] = []
     spend: list[str] = []
-    for kind in WorkerKind:
-        mine = [w for w in rows if w.kind is kind]
+    for kind in dict.fromkeys([*cfg.roles.all(), *(w.kind for w in rows)]):
+        mine = [w for w in rows if w.kind == kind]
         killed = sum(w.state is WorkerState.KILLED for w in mine)
         per_kind.append(f'{len(mine)} {kind}' + (f' ({killed} killed)' if killed else ''))
         spend.append(f'{kind} {human(sum(_tokens(w) for w in mine))}')
     defined = defined_by(s, project.id)
     scouts = set(s.scalars(select(Worker.id).where(Worker.project_id == project.id, scouting())))
-    sweeps = [w for w in rows if w.kind is WorkerKind.RESEARCH and w.state in ENDED and w.id not in scouts]
+    sweeps = [w for w in rows if w.kind == WorkerKind.RESEARCH and w.state in ENDED and w.id not in scouts]
     barren = sum(f'research#{w.id}' not in defined for w in sweeps)
     if scouts:
         per_kind.append(f'{len(scouts)} of the research in scout mode')

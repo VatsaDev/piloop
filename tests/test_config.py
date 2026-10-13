@@ -319,3 +319,54 @@ def test_default_claude_moves_a_long_bash_command_to_the_background() -> None:
     for argv in (claude.interactive, claude.headless):
         settings = json.loads(argv[argv.index('--settings') + 1])
         assert settings['env'] == {'BASH_DEFAULT_TIMEOUT_MS': '300000', 'BASH_MAX_TIMEOUT_MS': '600000'}
+
+
+def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_triggers(project_path: Path) -> None:
+    (project_path / 'reviewer.md').write_text('# Review\n')
+    when = 'SELECT 1 FROM ideas WHERE project_id = :project AND created_at > :since'
+    good = {'prompt': 'reviewer.md', 'triggers': [{'kind': 'sql', 'when': when}], 'runtime': 'herdr'}
+    cfg = load_project_config(project_path, roles={'reviewer': good})
+    assert list(cfg.roles.all()) == ['worker', 'watchdog', 'research', 'reviewer']
+    assert list(cfg.roles.sweeping()) == ['watchdog', 'research', 'reviewer'], 'the worker does runs, not sweeps'
+    assert (cfg.role_runtime('reviewer'), cfg.role_runtime('research')) == (RuntimeKind.HERDR, RuntimeKind.SUBPROCESS)
+    assert cfg.runtimes == {RuntimeKind.HERDR, RuntimeKind.SUBPROCESS}
+    assert ProjectConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the project row'
+
+    def fails(roles: dict[str, object]) -> str:
+        with pytest.raises(ConfigError) as e:
+            load_project_config(project_path, roles=roles)
+        return str(e.value).split('\n', 1)[1]
+
+    def reviewer(**keys: object) -> dict[str, object]:
+        return {'reviewer': {**good, **keys}}
+
+    assert fails({'reviewer': {'triggers': []}}) == snapshot(
+        '  roles.reviewer: a new role needs a prompt: the file that starts its brief. Fix:'
+        ' https://piloop.autoresearch.inc/reference/configuration describes the key'
+    )
+    assert fails({'reviewer': {'prompt': 'reviewer.md'}}) == snapshot(
+        '  roles.reviewer.triggers: Field required. Fix: add the key; https://piloop.autoresearch.inc/reference/configuration says what it takes'
+    )
+    assert "roles.reviewer.prompt = 'missing.md': no such file" in fails(reviewer(prompt='missing.md'))
+    assert (
+        "roles.reviewer.triggers[0]: unknown trigger kind 'nope'; known: anomaly, cron, seed, low_water, scout, sql"
+        in fails(reviewer(triggers=[{'kind': 'nope'}]))
+    )
+    assert 'roles.reviewer.triggers[0].every = 3: Extra inputs are not permitted' in fails(
+        reviewer(triggers=[{'kind': 'cron', 'every': 3}])
+    )
+    assert '[roles.reviewer] has the low_water trigger, which only research may have' in fails(
+        reviewer(triggers=[{'kind': 'low_water'}])
+    )
+    assert "Input should be 'head' or 'project'" in fails(reviewer(workdir='base'))
+    for query, error in {
+        'DELETE FROM ideas': 'not authorized',
+        'SELECT nope FROM ideas': 'no such column: nope',
+        'SELECT 1 FROM ideas WHERE id = :idea': 'You did not supply a value for binding parameter :idea',
+        'SELECT 1; SELECT 2': 'You can only execute one statement at a time',
+    }.items():
+        assert f'the query does not run on the piloop database: {error}' in fails(
+            reviewer(triggers=[{'kind': 'sql', 'when': query}])
+        ), query
+    for name in ('scout', 'Review Bot'):
+        assert f'{name!r} is not a role name: use lowercase letters, digits, _ and -' in fails({name: good})

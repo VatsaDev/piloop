@@ -107,8 +107,8 @@ flowchart LR
 - **The runtime** is where an agent process runs: a background process by default, or a [Herdr](https://herdr.dev)
   pane that you can watch and steer.
 - **The harness** is the coding agent CLI: Claude Code, Codex or pi. A `[harness.<name>]` table says how to start it.
-- **The agents** each work in their own git worktree. A worker tries one idea. Research and the watchdog are
-  [sweeps](/concepts/roles) that read the state of the campaign and write ideas, seeds and comments.
+- **The agents** each work in their own git worktree. A worker tries one idea. Research, the watchdog and the roles that
+  you define are [sweeps](/concepts/roles) that read the state of the campaign and write ideas, seeds and comments.
 - **The evaluate command** is your program. The daemon runs it in a clean worktree of each commit and stores what it
   prints as a measurement.
 - **The orchestrator** is any coding agent with the `piloop-operate` skill. It loops on `piloop inbox wait`. The
@@ -121,4 +121,5 @@ Everything runs on one machine: one SQLite file, one daemon, and local worktrees
 - [One run's life](/architecture/run-lifecycle): what happens between a ready idea and a verdict.
 - [State machines](/architecture/state-machines): the statuses of ideas, runs, agents and candidates.
 - [Code layout](/architecture/code-layout): the subpackages of `piloop` and how they depend on each other.
-- [Extension points](/architecture/extension-points): add a runtime, a harness, an MCP server or an evaluate command.
+- [Extension points](/architecture/extension-points): add a role, a trigger, a runtime, a harness, an MCP server or an
+  evaluate command.

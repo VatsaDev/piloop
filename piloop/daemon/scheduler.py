@@ -21,7 +21,7 @@ from collections.abc import Callable, Collection, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from contextlib import ExitStack
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 
@@ -35,8 +35,8 @@ from piloop import git
 from piloop.agents import scout
 from piloop.agents.launcher import STARTUP_ANOMALY, STOPPED_ERROR, rotate
 from piloop.agents.refill import usage_of
-from piloop.agents.roles import ROLES, SCOUT, Role, Trigger, WatchdogMode, compose_brief, role_of
-from piloop.agents.scout import SCOUT_EVENT, scouting
+from piloop.agents.roles import SCOUT, WatchdogMode, compose_brief, role_of
+from piloop.agents.scout import scouting
 from piloop.campaign import spend
 from piloop.campaign.ideas import defined_by, runnable, supersede, waiting
 from piloop.campaign.project import WORKSPACE, worktree_links
@@ -50,9 +50,9 @@ from piloop.campaign.stop import (
     stall,
     stop_reason,
 )
-from piloop.config import SCOUT_SEEDS, ProjectConfig, ResearchRole, RoleConfig, Spend, WatchdogRole, config_of
+from piloop.config import SCOUT_SEEDS, ProjectConfig, Spend, SweepRole, Workdir, config_of
 from piloop.daemon.runner import RunExecutor
-from piloop.db.events import emit
+from piloop.db.events import ANOMALY_EVENT, emit
 from piloop.db.models import (
     LIVE,
     OPEN_RUNS,
@@ -78,11 +78,12 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Tracer
-from piloop.reports.overview import ANOMALY_EVENT, Anomaly, anomalies, assigned, overview, reported
+from piloop.reports.overview import anomalies, assigned, overview, reported
 from piloop.reports.pack import pack
 from piloop.runtime import Outcome
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
 from piloop.scoring.ledger import bar_of, checkout_candidate, head, score, unmeasured
+from piloop.triggers import Backlog, Fire, Incident, TrackBacklog
 from piloop.usage import Usage
 
 NO_RUN_ERROR = 'a worker needs a run; the scheduler requests them from ready ideas'
@@ -111,81 +112,6 @@ LAUNCH_PAUSED = 'launch.paused'
 """Event on a project whose launches the startup breaker paused. ``comment`` in the payload is the escalation."""
 LAUNCH_RESUMED = 'launch.resumed'
 """Event on a project whose paused launches resumed. It ends the pause that ``LAUNCH_PAUSED`` started."""
-
-
-@dataclass(frozen=True)
-class TrackBacklog:
-    """One track's part of the backlog: its runnable and waiting ideas, and its share of the target."""
-
-    name: str
-    runnable: int
-    waiting: int
-    """Ideas that only prerequisites in flight block (``piloop.campaign.ideas.waiting``)."""
-    target: int
-    """The track's share of ``Backlog.target``, rounded up. It is 0 for a track with share 0."""
-
-    @property
-    def gap(self) -> int:
-        """The ideas that the track needs to reach its share. Negative if it has more."""
-        return self.target - self.runnable - self.waiting
-
-
-@dataclass(frozen=True)
-class Backlog:
-    """The input to ``low_water``: the runnable ideas, the target, and what the sweeps in flight will add."""
-
-    tracks: tuple[TrackBacklog, ...]
-    """One entry per track, in config order. A track below its share is short, whatever the other tracks have."""
-    target: int
-    """One idea per worker slot plus ``[roles.research] buffer``, but never more than ``[stop] max_runs`` allows."""
-    free: int
-    """The runs that the project can start now."""
-    sweeps: int
-    """The research sweeps in flight."""
-    pending: int
-    """The ideas that those sweeps can still insert: ``max_ideas`` each."""
-
-    @property
-    def runnable(self) -> int:
-        """The ideas that the queue can take now: ``ready``, not blocked, and on a track with a share."""
-        return sum(t.runnable for t in self.tracks)
-
-    @property
-    def waiting(self) -> int:
-        """The ideas that become runnable when the runs in flight that they wait for finish."""
-        return sum(t.waiting for t in self.tracks)
-
-    @property
-    def short(self) -> int:
-        """The ideas missing from the target after the sweeps in flight insert theirs.
-
-        This is the sum of the tracks' shortfalls. A surplus on one track does not cover a shortfall on another. If no
-        track is short, it is the negative surplus. An idea that waits for a run in flight is not missing.
-        """
-        gaps = [t.gap for t in self.tracks]
-        wanted = sum(g for g in gaps if g > 0) if any(g > 0 for g in gaps) else sum(gaps)
-        return wanted - self.pending
-
-    @property
-    def idle(self) -> int:
-        """The free worker slots that no runnable idea and no sweep in flight will fill."""
-        return self.free - self.runnable - self.pending
-
-    def held(self) -> str:
-        """Describe the backlog without the sweeps.
-
-        For example: ``1 of 3 runnable ideas, 2 more waiting on runs in flight``.
-        """
-        waits = f', {self.waiting} more waiting on runs in flight' if self.waiting else ''
-        return f'{self.runnable} of {self.target} runnable ideas{waits}'
-
-    def __str__(self) -> str:
-        coming = f', {self.pending} more from {self.sweeps} sweeps in flight' if self.sweeps else ''
-        per_track = ''
-        if len(self.tracks) > 1:
-            per_track = ' (' + ', '.join(f'{t.name} {t.runnable} of {t.target}' for t in self.tracks) + ')'
-        backlog = f'{self.held()}{per_track}{coming}'
-        return f'{self.idle} free worker slots without a runnable idea; {backlog}' if self.idle > 0 else backlog
 
 
 class Scheduler:
@@ -248,7 +174,8 @@ class Scheduler:
 
     def _reattachable(self, s: Session, worker: Worker) -> bool:
         if worker.run_id is None:
-            return (self._workers_dir / str(worker.id) / 'worktree').is_dir()
+            checkout = self._in_project(s, worker)
+            return (checkout or self._workers_dir / str(worker.id) / 'worktree').is_dir()
         wt = self._runs_dir / str(worker.run_id) / 'worktree'
         return wt.is_dir() and s.get_one(Run, worker.run_id).status is RunStatus.RUNNING
 
@@ -517,7 +444,7 @@ class Scheduler:
         self._tracer.event(WRAP_UP, worker=worker.id, **{k: str(v) for k, v in payload.items()})
 
     def _triggers(self, s: Session, project: Project, cfg: ProjectConfig) -> None:
-        """Stop the campaign if a ``[stop]`` condition holds. Otherwise check every role's triggers.
+        """Stop the campaign if a ``[stop]`` condition holds. Otherwise queue runs and check every role's triggers.
 
         A stopped project gets one closing watchdog sweep and nothing more from the triggers. Triggers requested
         everything that is pending at that moment, so it is all cancelled. Requested rows are closed and queued runs
@@ -526,8 +453,9 @@ class Scheduler:
         """
         reason = stop_reason(s, project, cfg)
         if reason is None:
-            for role in ROLES.values():
-                self._request(s, project, cfg, role)
+            self._queue(s, project, cfg)
+            for name, role in cfg.roles.sweeping().items():
+                self._request(s, project, cfg, name, role)
             return
         project.status, project.stopped_reason = ProjectStatus.STOPPED, reason
         self._tracer.event('project.stopped', project=project.name, reason=reason)
@@ -543,63 +471,76 @@ class Scheduler:
         ):
             self._close(s, worker, CAMPAIGN_STOPPED_ERROR)
 
-    def _request(self, s: Session, project: Project, cfg: ProjectConfig, role: Role) -> None:
+    def _request(self, s: Session, project: Project, cfg: ProjectConfig, name: str, role: SweepRole) -> None:
         """Insert requested rows when the role's triggers fire. One batch per call, however many triggers fire.
 
-        ``low_water`` requests enough sweeps to fill the backlog's shortfall at ``max_ideas`` each, within the role's
-        free slots. Each sweep uses the next harness of the rotation. The other triggers, ``seed`` included, request
-        one sweep. ``anomaly`` fires alone in its tick. Its row gets the new anomalies, one ``anomaly.reported`` event
-        each, which makes it an incident sweep. A timer that is due at the same time fires on a later tick.
+        The triggers fire in the order of the role's list (``piloop.triggers``). A fire that needs a row of its
+        own (``Fire.alone``) is requested alone when it comes first, and otherwise waits for a later tick. The others
+        share one batch: the largest count of rows, with every reason. The first row gets the events of the fires. A
+        trigger that raises is traced and does not fire.
         """
-        rc = cfg.role(role.kind)
-        if Trigger.QUEUE in role.triggers:
-            self._queue(s, project, cfg)
-        last = s.scalars(
+        latest = s.scalars(
             select(Worker)
-            .where(Worker.project_id == project.id, Worker.kind == role.kind)
+            .where(Worker.project_id == project.id, Worker.kind == name)
             .order_by(Worker.id.desc())
             .limit(1)
         ).first()
-        if last is not None and last.state is WorkerState.REQUESTED:
+        if latest is not None and latest.state is WorkerState.REQUESTED:
             return  # One pending request per role is enough.
-        if role.kind is WorkerKind.RESEARCH:
-            # The other research triggers ignore scout sweeps.
-            last = self._latest(s, project, role.kind, scout=False)
-        incidents = self._incidents(s, project, cfg) if Trigger.ANOMALY in role.triggers else []
-        reasons: dict[Trigger, str]
-        if incidents:
-            reasons = {Trigger.ANOMALY: 'anomaly: ' + ', '.join(a.key for a in incidents)}
-        else:
-            reasons = {
-                trigger: reason
-                for trigger in sorted(role.triggers - {Trigger.QUEUE, Trigger.ANOMALY})
-                if (reason := self._fires(s, project, cfg, rc, trigger, last)) is not None
-            }
-        if len(reasons) > 1:
-            reasons.pop(Trigger.SCOUT, None)  # A scout sweep is a separate mode, so it waits for a later tick.
-        if not reasons:
+        tick = self._tick(s, project, cfg, name, role)
+        fires: list[Fire] = []
+        for trigger in role.triggers:
+            try:
+                fire = trigger.fire(tick)
+            except Exception as e:  # A trigger of a package, or a query that the schema no longer runs.
+                self._tracer.event(
+                    'trigger.failed', project=project.name, role=name, trigger=trigger.kind, error=str(e)
+                )
+                continue
+            if fire is not None:
+                fires.append(fire)
+        if not fires:
             return
-        count = 1
-        if Trigger.LOW_WATER in reasons:
-            backlog = self._backlog(s, project, cfg)
-            count = min(-(-backlog.short // cfg.roles.research.max_ideas), rc.max_concurrent - backlog.sweeps)
-        reason = '; '.join(reasons.values())
-        rows = [Worker(kind=role.kind, project_id=project.id, reason=reason) for _ in range(count)]
+        fires = fires[:1] if fires[0].alone else [f for f in fires if not f.alone]
+        count = max(f.count for f in fires)
+        reason = '; '.join(f.reason for f in fires)
+        rows = [Worker(kind=name, project_id=project.id, reason=reason) for _ in range(count)]
         s.add_all(rows)
         s.flush()
-        now = utcnow()
-        for anomaly in incidents:
-            payload: dict[str, object] = {'key': anomaly.key, 'anomaly': anomaly.line(now)}
-            emit(s, ANOMALY_EVENT, TargetKind.WORKER, rows[0].id, payload=payload)
-        if Trigger.SCOUT in reasons:
-            emit(s, SCOUT_EVENT, TargetKind.WORKER, rows[0].id)
-        self._tracer.event('worker.requested', project=project.name, kind=role.kind, reason=reason, count=count)
+        for fire in fires:
+            for kind, payload in fire.events:
+                emit(s, kind, TargetKind.WORKER, rows[0].id, payload=payload)
+        self._tracer.event('worker.requested', project=project.name, kind=name, reason=reason, count=count)
 
-    def _incidents(self, s: Session, project: Project, cfg: ProjectConfig) -> list[Anomaly]:
+    def _tick(self, s: Session, project: Project, cfg: ProjectConfig, name: str, role: SweepRole) -> RoleTick:
+        """Return what the triggers of role ``name`` read in this tick."""
+        last = s.scalars(
+            select(Worker)
+            .where(Worker.project_id == project.id, Worker.kind == name, ~scouting())
+            .order_by(Worker.id.desc())
+            .limit(1)
+        ).first()
+        scout_mode = cfg.roles.research.scout if name == WorkerKind.RESEARCH else None
+        return RoleTick(
+            s=s,
+            project=project,
+            role=name,
+            last=last,
+            max_concurrent=role.max_concurrent,
+            interval=role.interval,
+            scout_interval=scout_mode.interval if scout_mode is not None else None,
+            backlog=partial(self._backlog, s, project, cfg),
+            incidents=partial(self._incidents, s, project, cfg),
+        )
+
+    def _incidents(self, s: Session, project: Project, cfg: ProjectConfig) -> list[Incident]:
         """Return the project's incident anomalies that no agent has received yet, oldest first."""
         given = reported(s, project.id)
+        now = utcnow()
         found = [
-            a for a in anomalies(s, project, cfg, utcnow(), partial(self._jobs, s)) if a.incident and a.key not in given
+            Incident(a.key, a.line(now))
+            for a in anomalies(s, project, cfg, now, partial(self._jobs, s))
+            if a.incident and a.key not in given
         ]
         return found[::-1]
 
@@ -610,125 +551,6 @@ class Scheduler:
         except Exception as e:  # A Herdr error must not stop the tick. The next tick checks the anomaly again.
             self._tracer.event('worker.jobs_failed', worker=worker.id, error=str(e))
             return []
-
-    def _fires(
-        self, s: Session, project: Project, cfg: ProjectConfig, rc: RoleConfig, trigger: Trigger, last: Worker | None
-    ) -> str | None:
-        """Return the reason that a trigger fires now, or None. ``last`` is the role's latest row in this project.
-
-        A trigger's settings are on the role's config class, so ``ROLES[kind].triggers`` and ``Roles`` must agree.
-        """
-        if trigger is Trigger.CRON and isinstance(rc, WatchdogRole):
-            routine = self._routine(s, project, last.kind) if last is not None else None
-            since = routine.started_at if routine is not None else project.created_at
-            due = rc.interval > 0 and utcnow() - since >= timedelta(seconds=rc.interval)
-            return f'timer: {rc.interval:g}s' if due else None
-        if trigger is Trigger.LOW_WATER and isinstance(rc, ResearchRole):
-            return self._low_water(s, project, cfg, rc, last)
-        if trigger is Trigger.SEED and isinstance(rc, ResearchRole):
-            return self._seeded(s, project, cfg, rc, last)
-        if trigger is Trigger.SCOUT and isinstance(rc, ResearchRole):
-            if rc.scout is None:
-                return None
-            latest = self._latest(s, project, WorkerKind.RESEARCH, scout=True)
-            since = latest.started_at if latest is not None and latest.started_at is not None else project.created_at
-            due = utcnow() - since >= timedelta(seconds=rc.scout.interval)
-            return f'scout: every {rc.scout.interval:g}s' if due else None
-        raise TypeError(f'{type(rc).__name__} has no settings for the {trigger} trigger')
-
-    def _latest(self, s: Session, project: Project, kind: WorkerKind, *, scout: bool) -> Worker | None:
-        """Return the role's latest row that is a scout sweep (if ``scout``) or that is not one."""
-        mode = scouting() if scout else ~scouting()
-        query = select(Worker).where(Worker.project_id == project.id, Worker.kind == kind, mode)
-        return s.scalars(query.order_by(Worker.id.desc()).limit(1)).first()
-
-    def _routine(self, s: Session, project: Project, kind: WorkerKind) -> Worker | None:
-        """Return the role's latest row that did not get an anomaly. The timer counts from it."""
-        given = exists().where(
-            Event.kind == ANOMALY_EVENT, Event.target_kind == TargetKind.WORKER, Event.target_id == Worker.id
-        )
-        return s.scalars(
-            select(Worker)
-            .where(Worker.project_id == project.id, Worker.kind == kind, ~given)
-            .order_by(Worker.id.desc())
-            .limit(1)
-        ).first()
-
-    def _seeded(
-        self, s: Session, project: Project, cfg: ProjectConfig, rc: ResearchRole, last: Worker | None
-    ) -> str | None:
-        """Fire one sweep if seeds wait that no sweep has read and a research slot is free, however full the backlog.
-
-        A seed filed after the role's latest row started is not in any sweep's brief yet. If the latest sweep got the
-        seed but was killed, the seed is retried, once per batch, as ``low_water`` retries. A seed that a sweep read
-        and did not develop is in the next sweep's brief, whatever trigger fires it. Gotcha: a sweep's brief is read
-        a moment before its row's ``started_at`` is set, so a seed filed in that moment waits for the next sweep.
-        """
-        if self._backlog(s, project, cfg).sweeps >= rc.max_concurrent:
-            return None
-        seeds = select(Idea).where(Idea.project_id == project.id, Idea.status == IdeaStatus.SEED)
-        waiting = count(s, seeds)
-        if not waiting:
-            return None
-        fresh = waiting if last is None else count(s, seeds.where(Idea.created_at > last.started_at))
-        if fresh:
-            return f'{fresh} new seeds to develop'
-        assert last is not None  # With no row yet, every waiting seed is fresh.
-        if last.state is WorkerState.KILLED and self._killed_streak(s, project, last.kind) <= rc.max_concurrent:
-            return f'{waiting} seeds to develop; retrying after worker#{last.id} was killed: {last.error}'
-        return None
-
-    def _low_water(
-        self, s: Session, project: Project, cfg: ProjectConfig, rc: ResearchRole, last: Worker | None
-    ) -> str | None:
-        """Fire if the backlog has fewer ideas than its target (``Backlog``) and there is a reason to sweep now.
-
-        The target is one idea per worker slot plus ``buffer``. So ideas exist before slots free up, and a free slot
-        does not wait a whole sweep for an idea. The ideas that sweeps in flight can insert already count as backlog.
-        Nothing is requested while every research slot is busy. Runnable ideas count. Ideas blocked only by
-        prerequisites in flight (``waiting``) also count, because they run when those finish. An idea blocked by a
-        prerequisite that is not running does not count. Below the target, a sweep fires for one of these reasons:
-
-        - The project has no sweep yet, so there is nothing to wait for.
-        - The last batch was killed. Lost prompts, timeouts or a daemon stop say nothing about the backlog, so the
-          batch is retried once. This applies to a streak of killed rows no longer than one batch
-          (``max_concurrent``). A second killed batch is a systemic fault and counts as a normal last sweep.
-        - New results: runs finished since the role's latest row started, which that sweep could not read. A sweep
-          with nothing new to read reads the same history and proposes nothing. So each consecutive sweep that
-          defined no idea doubles the number of finished runs the next sweep waits for (``_empty_sweeps``). A sweep
-          that defines an idea resets this. The wait is never longer than what can still come: with no run in flight,
-          the finished runs are all there is.
-        - The backlog is low. Research keeps sweeping while the backlog is short, not only when results come in or a
-          slot is idle. A sweep that defined an idea is followed at once. After empty sweeps, research rests
-          2**n − 1 times as long as its latest ended sweep took. n is the number of consecutive ended sweeps, killed
-          ones included, that defined no idea. An empty queue never deadlocks, and research that keeps finding nothing
-          uses at most 1/2**n of the wall-clock time.
-        """
-        if rc.max_ideas == 0:
-            return None
-        backlog = self._backlog(s, project, cfg)
-        if backlog.short <= 0 or backlog.sweeps >= rc.max_concurrent:
-            return None
-        if last is None:
-            return str(backlog)
-        if last.state is WorkerState.KILLED and self._killed_streak(s, project, last.kind) <= rc.max_concurrent:
-            return f'{backlog}; retrying after worker#{last.id} was killed: {last.error}'
-        mine = project_runs(project.id)
-        finished = count(s, mine.where(Run.finished_at > last.started_at))
-        in_flight = count(s, mine.where(Run.status.in_(OPEN_RUNS)))
-        barren = len(self._empty_sweeps(s, project, (WorkerState.EXITED,)))
-        if finished >= max(min(2**barren, finished + in_flight), 1):
-            backoff = f' (after {barren} sweeps that defined no idea)' if barren else ''
-            return f'{backlog}; {finished} runs finished since worker#{last.id} started{backoff}'
-        empty = self._empty_sweeps(s, project, (WorkerState.EXITED, WorkerState.KILLED))
-        if not empty:
-            return str(backlog)
-        latest = empty[0]
-        assert latest.ended_at is not None  # An exited or killed row has ended.
-        rest = (2 ** len(empty) - 1) * (latest.ended_at - latest.started_at)
-        if utcnow() - latest.ended_at < rest:
-            return None
-        return f'{backlog}; rested {rest.total_seconds():.0f}s after {len(empty)} sweeps that defined no idea'
 
     def _backlog(self, s: Session, project: Project, cfg: ProjectConfig) -> Backlog:
         target = cfg.roles.worker.max_concurrent + cfg.roles.research.buffer
@@ -761,7 +583,7 @@ class Scheduler:
             target=target,
             free=self._free_slots(s, project, cfg),
             sweeps=sweeps,
-            pending=sweeps * cfg.roles.research.max_ideas,
+            per_sweep=cfg.roles.research.max_ideas,
         )
 
     def _free_slots(self, s: Session, project: Project, cfg: ProjectConfig) -> int:
@@ -774,36 +596,6 @@ class Scheduler:
         if cfg.stop.max_runs is not None:
             free = min(free, cfg.stop.max_runs - runs(s, project))
         return max(free, 0)
-
-    def _empty_sweeps(self, s: Session, project: Project, states: tuple[WorkerState, ...]) -> list[Worker]:
-        """Return the latest research sweeps in ``states``, newest first, until one that defined an idea.
-
-        A sweep defined an idea if it inserted one or developed a seed into one (``defined_by``). Rows in other states
-        are skipped, not counted. The new-results back-off skips killed sweeps. A killed sweep stopped early, so its
-        empty result says nothing about what was left to propose. The idle rest counts killed sweeps. Otherwise, a
-        harness that dies every time would be launched again on every tick.
-        """
-        signed = defined_by(s, project.id)
-        ended = s.scalars(
-            select(Worker)
-            .where(
-                Worker.project_id == project.id,
-                Worker.kind == WorkerKind.RESEARCH,
-                Worker.state.in_(states),
-                ~scouting(),
-            )
-            .order_by(Worker.id.desc())
-        )
-        return list(itertools.takewhile(lambda worker: f'research#{worker.id}' not in signed, ended))
-
-    def _killed_streak(self, s: Session, project: Project, kind: WorkerKind) -> int:
-        """Count the role's latest rows, newest first and without scout sweeps, that were killed in a row."""
-        states = s.scalars(
-            select(Worker.state)
-            .where(Worker.project_id == project.id, Worker.kind == kind, ~scouting())
-            .order_by(Worker.id.desc())
-        )
-        return len(list(itertools.takewhile(lambda state: state is WorkerState.KILLED, states)))
 
     def _queue(self, s: Session, project: Project, cfg: ProjectConfig) -> None:
         """Queue a run, and request its worker, for each free slot with a runnable idea, within ``[stop] max_runs``.
@@ -978,6 +770,7 @@ class Scheduler:
 
         A sweep's harness is chosen here. A harness at its cap (``_full``) is skipped for the next one in the rotation.
         A sweep pinned to that harness stays requested. A run's harness was chosen when it was queued (``_reroute``).
+        A request for a role that ``piloop.toml`` no longer has is refused.
 
         Returns ``(worker_id, run_id)`` pairs. The run is what a worker executes. Nothing is taken while the startup
         breaker holds (``_paused``).
@@ -985,9 +778,14 @@ class Scheduler:
         taken: list[tuple[int, int | None]] = []
         if self._paused(s, project):
             return taken
+        roles = cfg.roles.all()
+        unknown = select(Worker).where(
+            Worker.project_id == project.id, Worker.state == WorkerState.REQUESTED, Worker.kind.not_in(roles)
+        )
+        for worker in s.scalars(unknown):
+            self._close(s, worker, f'no [roles.{worker.kind}] in piloop.toml')
         full = self._full(s, project, cfg)
-        for kind in WorkerKind:
-            rc = cfg.role(kind)
+        for kind, rc in roles.items():
             mine = (Worker.project_id == project.id, Worker.kind == kind)
             active = count(s, select(Worker).where(*mine, Worker.state.in_(LIVE)))
             requested = s.scalars(
@@ -998,7 +796,7 @@ class Scheduler:
             ).all()
             rotation = cfg.role_harnesses(kind)
             for worker in requested:
-                if kind is WorkerKind.WORKER:
+                if kind == WorkerKind.WORKER:
                     if worker.run_id is None:
                         self._close(s, worker, NO_RUN_ERROR)
                         continue
@@ -1083,79 +881,54 @@ class Scheduler:
         self._tracer.event(LAUNCH_PAUSED, project=project.name, deaths=len(deaths), load=load)
 
     def _sweep(self, worker_id: int) -> None:
-        """Run a sweep (watchdog or research) in a detached worktree at the head, with a brief made from its row.
+        """Run a sweep, an agent without a run, in its role's ``workdir``, with a brief made from its row.
 
-        Every sweep gets the project overview (``piloop.reports.overview``) in its context. A watchdog that got
-        anomalies is an incident sweep. The anomalies come first and the research pack is left out (``piloop
-        history`` prints it). Other watchdogs review progress and read the research pack (``piloop.reports.pack``),
-        as research does.
+        Every sweep gets the project overview (``piloop.reports.overview``) in its context. A sweep that got anomalies
+        investigates them: the anomalies come first and the research pack is left out (``piloop history`` prints it).
+        For the watchdog, that is an incident sweep, and every other watchdog sweep reviews progress. The other sweeps
+        read the research pack (``piloop.reports.pack``).
 
         Research also gets the number of waiting seeds, its share of the backlog's shortfall, the runs since the
         last keep against the stall mark (``piloop.campaign.stop.stall``), and the time the pack was read. With that
         time, it can query for ideas that parallel sweeps inserted later. A scout sweep gets its seed cap, its search
         window, the watch list and the technique library instead (``piloop.agents.scout``). Nothing that a sweep
-        commits in its worktree is scored. The commits are removed with the worktree when the agent ends.
+        commits is scored. In a worktree at the head, the commits are removed with the worktree when the agent ends.
         """
         with self._db.session() as s:
             worker = s.get_one(Worker, worker_id)
             project = s.get_one(Project, worker.project_id)
             cfg = config_of(project)
             role = role_of(s, worker)
+            in_project = self._in_project(s, worker) is not None
             base = checkout_candidate(s, project)
             values = ', '.join(
                 f'{t.primary.name}={"unmeasured" if (v := score(base, project.evaluator_id or 0, t.primary)) is None else v}'
                 for t in cfg.all_tracks
             )
             now = utcnow()
+            cwd = (
+                f'- Your cwd is the project checkout, shared with the human; the head is candidate#{base.id} ({values}).'
+                ' Leave it as you found it: nothing you change here is scored or kept.'
+                if in_project
+                else f'- Your cwd is a detached checkout of candidate#{base.id}, the head ({values}): read and run the'
+                ' code, try things. Nothing you commit here is scored or kept; it goes with the checkout when you end.'
+            )
             lines = [
-                f'- Your cwd is a detached checkout of candidate#{base.id}, the head ({values}): read and run the code,'
-                ' try things. Nothing you commit here is scored or kept; it goes with the checkout when you end.',
+                cwd,
                 f'- Shared workspace for notes and artifacts to other agents: `./{WORKSPACE}/` (not committed).',
             ]
-            if role is SCOUT:
-                seeds = cfg.roles.research.scout.seeds if cfg.roles.research.scout is not None else SCOUT_SEEDS
-                lines += scout.context(s, project.id, worker_id, seeds, now)
-            elif role.kind is WorkerKind.RESEARCH:
-                backlog = self._backlog(s, project, cfg)
-                most = cfg.roles.research.max_ideas
-                own = max(min(backlog.short + most, most), 0)  # This sweep's share of the shortfall.
-                seeds = count(s, select(Idea).where(Idea.project_id == project.id, Idea.status == IdeaStatus.SEED))
-                without, (mark, why) = runs_without_keep(s, project), stall(cfg)
-                stalled = ': stalled, so one of your own ideas pivots (section 3)' if without >= mark else ''
-                lines += [
-                    f'- Seeds to develop first: {seeds}, listed in the research pack oldest first.',
-                    f'- Ideas of your own after the seeds: propose {own} (the backlog holds {backlog.held()};'
-                    ' developed seeds do not count against it). Fewer only when what is left duplicates queued work;'
-                    ' name that work in your finding.',
-                    *(
-                        [
-                            '- Tracks short of their share of the backlog: '
-                            + (
-                                ', '.join(
-                                    f'{t.name} {t.gap} ({t.runnable} of {t.target} runnable)'
-                                    for t in backlog.tracks
-                                    if t.gap > 0
-                                )
-                                or 'none'
-                            )
-                            + '. Give every idea and every developed seed the track it serves (`--track`); fill the'
-                            ' short ones first.'
-                        ]
-                        if cfg.multitrack
-                        else []
-                    ),
-                    f'- Finished runs since the last keep: {without}, of the {mark} that mark a stall ({why}){stalled}.',
-                    f'- Sweep started at: {now.strftime("%Y-%m-%d %H:%M:%S")} (UTC; the research pack below is as of then).',
-                ]
-            incidents = assigned(s, worker_id) if role.kind is WorkerKind.WATCHDOG else []
+            contexts = {SCOUT.name: self._scout_context, WorkerKind.RESEARCH.value: self._research_context}
+            if (context := contexts.get(role.name)) is not None:
+                lines += context(s, project, cfg, worker_id, now)
+            incidents = assigned(s, worker_id)
             mode = None
-            if role.kind is WorkerKind.WATCHDOG:
+            if role.kind == WorkerKind.WATCHDOG:
                 mode = WatchdogMode.INCIDENT if incidents else WatchdogMode.PROGRESS
             sections = [*lines, '']
             if incidents:
                 sections += ['## Incidents to investigate', *incidents, '']
             sections.append(overview(s, project, cfg, now, partial(self._jobs, s)))
-            if mode is not WatchdogMode.INCIDENT:
+            if not incidents:
                 sections.append(pack(s, project, cfg, workspace=self._home / 'projects' / str(project.id) / WORKSPACE))
             brief = compose_brief(
                 role, project, worker_id, reason=worker.reason or 'requested', context='\n'.join(sections), mode=mode
@@ -1164,6 +937,9 @@ class Scheduler:
         if self._executor.launcher.cancelled.is_set():  # stop() closed the row, so do not create a worktree.
             return
         log_dir = self._workers_dir / str(worker_id)
+        if in_project:
+            self._executor.launcher.launch(worker_id, brief=brief, cwd=project_path, log_dir=log_dir)
+            return
         repo = git.open_repo(project_path)
         wt_path = log_dir / 'worktree'
         links = worktree_links(cfg, project_path, self._home / 'projects' / str(project_id))
@@ -1174,11 +950,60 @@ class Scheduler:
 
         _in_worktree(repo, wt_path, start)
 
+    def _research_context(
+        self, s: Session, project: Project, cfg: ProjectConfig, _worker_id: int, now: datetime
+    ) -> list[str]:
+        """Return the context lines of a research sweep: the seeds, its share of the backlog, the stall mark."""
+        backlog = self._backlog(s, project, cfg)
+        most = cfg.roles.research.max_ideas
+        own = max(min(backlog.short + most, most), 0)  # This sweep's share of the shortfall.
+        seeds = count(s, select(Idea).where(Idea.project_id == project.id, Idea.status == IdeaStatus.SEED))
+        without, (mark, why) = runs_without_keep(s, project), stall(cfg)
+        stalled = ': stalled, so one of your own ideas pivots (section 3)' if without >= mark else ''
+        short = [
+            '- Tracks short of their share of the backlog: '
+            + (
+                ', '.join(
+                    f'{t.name} {t.gap} ({t.runnable} of {t.target} runnable)' for t in backlog.tracks if t.gap > 0
+                )
+                or 'none'
+            )
+            + '. Give every idea and every developed seed the track it serves (`--track`); fill the short ones first.'
+        ]
+        return [
+            f'- Seeds to develop first: {seeds}, listed in the research pack oldest first.',
+            f'- Ideas of your own after the seeds: propose {own} (the backlog holds {backlog.held()};'
+            ' developed seeds do not count against it). Fewer only when what is left duplicates queued work;'
+            ' name that work in your finding.',
+            *(short if cfg.multitrack else []),
+            f'- Finished runs since the last keep: {without}, of the {mark} that mark a stall ({why}){stalled}.',
+            f'- Sweep started at: {now.strftime("%Y-%m-%d %H:%M:%S")} (UTC; the research pack below is as of then).',
+        ]
+
+    def _scout_context(
+        self, s: Session, project: Project, cfg: ProjectConfig, worker_id: int, now: datetime
+    ) -> list[str]:
+        """Return the context lines of a scout sweep (``piloop.agents.scout``)."""
+        seeds = cfg.roles.research.scout.seeds if cfg.roles.research.scout is not None else SCOUT_SEEDS
+        return scout.context(s, project.id, worker_id, seeds, now)
+
+    def _in_project(self, s: Session, worker: Worker) -> Path | None:
+        """Return the project checkout if a sweep works in it (``workdir = "project"``), else None."""
+        if worker.project_id is None or (project := s.get(Project, worker.project_id)) is None:
+            return None
+        role = config_of(project).roles.sweeping().get(worker.kind)
+        return Path(project.path) if role is not None and role.workdir is Workdir.PROJECT else None
+
     def _reattach_sweep(self, worker_id: int) -> None:
-        """Watch the agent of a sweep that a previous daemon process started, in its worktree, until it ends."""
+        """Watch the agent of a sweep that a previous daemon process started, in its workdir, until it ends."""
         log_dir = self._workers_dir / str(worker_id)
         with self._db.session() as s:
-            repo = git.open_repo(Path(s.get_one(Project, s.get_one(Worker, worker_id).project_id).path))
+            worker = s.get_one(Worker, worker_id)
+            checkout = self._in_project(s, worker)
+            repo = git.open_repo(Path(s.get_one(Project, worker.project_id).path))
+        if checkout is not None:
+            self._executor.launcher.reattach(worker_id, cwd=checkout, log_dir=log_dir)
+            return
         reattach = partial(self._executor.launcher.reattach, worker_id, cwd=log_dir / 'worktree', log_dir=log_dir)
         _in_worktree(repo, log_dir / 'worktree', reattach)
 
@@ -1244,6 +1069,53 @@ class Scheduler:
         self._fail_open(STOPPED_ERROR, remove_worktrees=False)
         self.wait(timeout)
         self._pool.shutdown(wait=False, cancel_futures=True)
+
+
+@dataclass(frozen=True)
+class RoleTick:
+    """The ``Tick`` of one sweeping role of one project: what its triggers read in this tick."""
+
+    s: Session
+    project: Project
+    role: str
+    last: Worker | None
+    max_concurrent: int
+    interval: float
+    scout_interval: float | None
+    backlog: Callable[[], Backlog]
+    incidents: Callable[[], list[Incident]]
+
+    def _mine(self) -> Select[Worker]:
+        return select(Worker).where(Worker.project_id == self.project.id, Worker.kind == self.role)
+
+    def live(self) -> int:
+        return count(self.s, self._mine().where(Worker.state.in_(LIVE), ~scouting()))
+
+    def killed_streak(self) -> int:
+        states = self.s.scalars(
+            self._mine().where(~scouting()).with_only_columns(Worker.state).order_by(Worker.id.desc())
+        )
+        return len(list(itertools.takewhile(lambda state: state is WorkerState.KILLED, states)))
+
+    def empty_sweeps(self, states: tuple[WorkerState, ...]) -> list[Worker]:
+        """See ``Tick.empty_sweeps``.
+
+        The new-results back-off of ``low_water`` skips killed sweeps. A killed sweep stopped early, so its empty
+        result says nothing about what was left to propose. The idle rest counts killed sweeps. Otherwise, a harness
+        that dies every time would be launched again on every tick.
+        """
+        signed = defined_by(self.s, self.project.id)
+        ended = self.s.scalars(self._mine().where(Worker.state.in_(states), ~scouting()).order_by(Worker.id.desc()))
+        return list(itertools.takewhile(lambda worker: f'{self.role}#{worker.id}' not in signed, ended))
+
+    def latest_scout(self) -> Worker | None:
+        return self.s.scalars(self._mine().where(scouting()).order_by(Worker.id.desc()).limit(1)).first()
+
+    def routine(self) -> Worker | None:
+        given = exists().where(
+            Event.kind == ANOMALY_EVENT, Event.target_kind == TargetKind.WORKER, Event.target_id == Worker.id
+        )
+        return self.s.scalars(self._mine().where(~given).order_by(Worker.id.desc()).limit(1)).first()
 
 
 def _in_worktree(repo: Repo, wt_path: Path, agent: Callable[[], Outcome]) -> None:

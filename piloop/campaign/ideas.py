@@ -33,7 +33,6 @@ from piloop.db.models import (
     Run,
     TargetKind,
     Verdict,
-    WorkerKind,
 )
 from piloop.db.triggers import DAEMON_ACTOR
 
@@ -191,29 +190,9 @@ def reprioritise(s: Session, idea_id: int, by: int) -> Idea:
     return idea
 
 
-SEEDING = frozenset({WorkerKind.WATCHDOG.value, 'scout'})
-"""Sources that file only seeds. A watchdog sees one incident, and a scout sees one outside technique.
-
-Their hunches go to research, which reads the whole campaign history before it gives one to a worker (``develop``)."""
-
-
 def source(created_by: str) -> str:
     """Return where an idea came from: its signature without the agent id (``research#12`` → ``research``)."""
     return created_by.partition('#')[0]
-
-
-def seeds_only(actor: str) -> bool:
-    """Return True if ``actor`` is a watchdog or a scout (``SEEDING``). These file seeds, never defined ideas."""
-    return source(actor) in SEEDING
-
-
-def files_nothing(actor: str) -> bool:
-    """Return True if ``actor`` is a worker. A worker files neither ideas nor seeds.
-
-    A worker writes its hunch in its run's finding, and the research pack shows it. Seeds from workers rarely
-    produced a keep, so workers do not file them.
-    """
-    return source(actor) == WorkerKind.WORKER.value
 
 
 @dataclass(frozen=True)

@@ -24,15 +24,15 @@ section.
 | `tracks` | dict\[string, [TrackConfig](#trackconfig)\] | `{}` | `[tracks.<name>]`: the share and addendum of each track. Needed only with several primaries. |
 | `confidence` | number | `0.95` | The confidence level of the paired bootstrap behind the verdict. For a `keep`, the lower bound of the primary's gain must be above zero at this level. A guardrail's margin is tested on the bound at this level too. |
 | `evaluate` | list\[string\] | required | The command (argv) that scores a commit. It runs in a clean worktree of the commit and must print `METRIC <name>=<value>` lines. |
-| `runtime` | `herdr` \| `subprocess` | `"subprocess"` | Where agents run. With `subprocess` (the default), every agent is a background process; `piloop watch` shows what it printed. With `herdr` (optional, needs Herdr), every agent gets a terminal pane that you and the orchestrator can read, type into and steer with `piloop prompt`. |
+| `runtime` | `herdr` \| `subprocess` | `"subprocess"` | Where agents run. With `subprocess` (the default), every agent is a background process; `piloop watch` shows what it printed. With `herdr` (optional, needs Herdr), every agent gets a terminal pane that you and the orchestrator can read, type into and steer with `piloop prompt`. A role can override it (`[roles.<name>] runtime`). |
 | `harnesses` | list\[string\] | `["pi"]` | The enabled harnesses. Runs use them in turn, unless an idea pins one. |
 | `model` | dict\[string, string\] | required | The model id for each harness, for example `{pi = "anthropic/claude-opus-5-5", claude = "claude-opus-5-5", codex = "gpt-6.1-sol"}`. |
 | `harness` | dict\[string, [Harness](#harness)\] | `{}` | Harness definitions by name: overrides of the built-in harnesses, or new ones. |
 | `max_concurrent` | dict\[string, integer\] | `{}` | The maximum number of agents of one harness, across all roles of the project, that are started or queued to start. Example: `{claude = 2}` when the provider of its model limits the request rate. When it is the turn of a harness at its limit, the slot goes to the next harness of the rotation. An idea or request that pins that harness waits. When unset, only the limits of the roles apply. |
 | `evaluate_timeout` | number | `600` | The number of seconds before the evaluate command is stopped. The evaluation is then a crash. |
-| `roles` | [Roles](#roles) | `{}` | The settings of each role (`[roles.worker]`, `[roles.watchdog]`, `[roles.research]`). |
+| `roles` | [Roles](#roles) | `{}` | The settings of each role (`[roles.worker]`, `[roles.watchdog]`, `[roles.research]`), and the roles that you define (`[roles.<name>]`). |
 | `link` | list\[string\] | `[]` | Repo-relative paths, ignored by git, that piloop symlinks into every worktree, for example data or virtual environments. |
-| `mcp` | dict\[string, [McpServer](#mcpserver)\] | `{}` | `[mcp.<name>]`: the MCP servers that a role can list in `[roles.<kind>] mcp`. |
+| `mcp` | dict\[string, [McpServer](#mcpserver)\] | `{}` | `[mcp.<name>]`: the MCP servers that a role can list in `[roles.<name>] mcp`. |
 | `stop` | [Stop](#stop) | `{}` | `[stop]`: conditions that end the campaign. None by default. |
 | `spend` | [Spend](#spend) \| null | `null` | `[spend]`: a hard budget on what the campaign spends outside piloop. None by default. |
 
@@ -110,7 +110,10 @@ names when the config loads.
 
 ## Roles
 
-One table for each role. A role without a table uses its defaults.
+One table for each role. A built-in role without a table uses its defaults.
+
+A table with a new name defines a new sweeping role (`SweepRole`). A role that a package adds with a
+`piloop.roles` entry point is in the config that `piloop init` stores, with its table over its defaults.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -120,26 +123,47 @@ One table for each role. A role without a table uses its defaults.
 
 ## RoleConfig
 
-The keys that every `[roles.<kind>]` table accepts. Each role's table below adds keys and sets defaults.
+The keys that every `[roles.<name>]` table accepts. Each role's table below adds keys and sets defaults.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
+| `prompt` | string \| null | `null` | The file that starts the brief of this role: a path relative to the repo root, or an absolute path. When unset, a built-in role uses its built-in prompt. A new role needs it. |
+| `runtime` | `herdr` \| `subprocess` \| null | `null` | Where the agents of this role run. When unset, the role uses the project's `runtime`. |
 | `harnesses` | list\[string\] \| null | `null` | The harness rotation of this role. When unset, the role uses the project's `harnesses`. |
 | `model` | dict\[string, string\] \| null | `null` | The model for each harness in this role. It is merged over the project's `model`. |
 | `timeout` | number | `600` | The number of seconds one agent may run before it is stopped. |
 | `max_concurrent` | integer | `1` | The maximum number of agents of this role that run at the same time. More requests stay `requested` until a slot is free. |
 | `addendum` | string \| null | `null` | A repo-relative file that is appended to `brief.md` in the briefs of this role only. Use it for instructions that only this role needs, for example how the research agent searches. |
 | `mcp` | list\[string\] | `[]` | The MCP servers that the agents of this role get, by the name of their `[mcp.<name>]` table. Every harness in the role's rotation must be able to take them (`[harness.<name>] mcp`). The built-in `claude`, `codex` and `pi` harnesses can. |
+| `writes` | list\[string\] | `[]` | What the agents of this role may write, as their brief states it. Only `files` is enforced. |
+| `files` | `nothing` \| `seeds` \| `ideas` | `"seeds"` | What the agents of this role may file with `piloop idea`: `nothing`, `seeds` or `ideas`. The CLI refuses the rest. |
 
 ## WorkerRole
 
-`[roles.worker]`: a worker does one idea in a worktree. The `queue` trigger starts it.
+`[roles.worker]`: a worker does one idea in a new worktree at its run's base. The run queue starts it.
+
+When it ends, its commits are scored and judged. Its trigger and its working copy are fixed.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `timeout` | number | `1800` | The number of seconds one worker may run before it is stopped. |
 | `max_concurrent` | integer | `4` | The maximum number of workers that run at the same time. Each worker is one harness process on this machine. A run that is being scored after its worker ended does not count. |
+| `writes` | list\[string\] | `["commits", "comments(finding) on your idea", "comments(note) on your run"]` | What a worker may write, as its brief states it. |
+| `files` | `nothing` \| `seeds` \| `ideas` | `"nothing"` | A worker files no ideas and no seeds. Its hunches go in its finding, which research reads. |
 | `explore_every` | integer | `4` | At least one run in this many starts from an alternative starting point. When none of the last `explore_every - 1` runs did, the next slot goes to the most urgent ready idea that is pinned to a base other than the head (a reference, an older keep or a note), whatever its priority. Nothing changes while no such idea is ready. 0 turns this off. |
+
+## SweepRole
+
+`[roles.<name>]` of a sweeping role: the watchdog, research, or a new role that you define.
+
+A sweep is an agent without a run. Its triggers request it, and nothing is scored when it ends. A table with a new
+name defines a new role, and needs `prompt` and `triggers`.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `triggers` | list\[[Trigger](#trigger)\] | required | When the daemon requests an agent of this role: a list of `{ kind = "<trigger>", ... }` entries, checked in order on each tick. The built-in triggers are `anomaly`, `cron`, `seed`, `low_water` (research only), `scout` (research only) and `sql`. An empty list means that agents start only on request (`piloop launch`). |
+| `workdir` | `head` \| `project` | `"head"` | Where the agent works: `head`, a detached worktree at the head, or `project`, the project checkout. |
+| `interval` | number | `0` | The number of seconds between two routine sweeps of the `cron` trigger, counted from the start of the last one. A sweep that investigates an anomaly is not a routine sweep. 0 turns the timer off. |
 
 ## WatchdogRole
 
@@ -147,7 +171,19 @@ The keys that every `[roles.<kind>]` table accepts. Each role's table below adds
 
 | Key | Type | Default | Description |
 |---|---|---|---|
+| `writes` | list\[string\] | `["comments(escalation, finding, note)", "seeds via idea seed"]` | What a watchdog may write, as its brief states it. |
+| `triggers` | list\[[Trigger](#trigger)\] | `[{"kind": "anomaly"}, {"kind": "cron"}]` | An anomaly requests an incident sweep, and the timer requests a progress review. |
 | `interval` | number | `1800` | The number of seconds between two progress reviews, counted from the last review. A sweep that investigates an anomaly is not a review. 0 turns the reviews off. |
+
+## Trigger
+
+One entry of `[roles.<name>] triggers`: `{ kind = "<trigger>", <parameter> = <value> }`.
+
+The daemon checks the entries in the order of the list.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | required | The name of the trigger: `anomaly`, `cron`, `seed`, `low_water`, `scout`, `sql`, or one that a package adds. |
 
 ## ResearchRole
 
@@ -157,6 +193,9 @@ The keys that every `[roles.<kind>]` table accepts. Each role's table below adds
 |---|---|---|---|
 | `timeout` | number | `900` | The number of seconds one sweep may run before it is stopped. |
 | `max_concurrent` | integer | `1` | The maximum number of sweeps that run at the same time, each on the next harness of the rotation. The default is 1: sweeps that run at the same time read the same evidence and often duplicate each other, and two of them can race to develop the same seed. |
+| `writes` | list\[string\] | `["seeds via idea develop, or their status to rejected with a note", "ideas via idea add", "comments(finding, escalation) on the project", "comments(note) on an idea"]` | What a research sweep may write, as its brief states it. |
+| `files` | `nothing` \| `seeds` \| `ideas` | `"ideas"` | Research develops seeds into ideas and adds ideas of its own. |
+| `triggers` | list\[[Trigger](#trigger)\] | `[{"kind": "low_water"}, {"kind": "seed"}, {"kind": "scout"}]` | A short backlog, a new seed, and the scout's timer when `[roles.research.scout]` is there. |
 | `max_ideas` | integer | `1` | The maximum number of new ideas one sweep may insert. The seeds it develops do not count. `low_water` requests enough sweeps to fill the backlog at this many ideas each. 0 turns `low_water` off: research then only develops seeds. |
 | `context` | list\[string\] | `[]` | Repo-relative files or globs (for example `docs/error-analysis-*.md`) that hold the project's analysis: error analyses, comparisons with a reference, evaluation reports. The research pack lists each one with its outline, newest first, so that research reads them before it proposes ideas. |
 | `buffer` | integer | `2` | The number of ready ideas that `low_water` keeps in addition to one for each worker slot (`[roles.worker] max_concurrent`). With this backlog, a free slot finds an idea at once and does not wait for a sweep. A larger value makes workers wait less for research, but the ideas they run are older. |
@@ -231,3 +270,93 @@ read as $0. To resume, raise `limit` and run `piloop init`.
 | `limit` | number | required | The spend in USD at which launches and evaluations stop. |
 | `notices` | list\[number\] | `[]` | Amounts in USD below `limit`. When the spend passes one, the daemon posts one note to the inbox. |
 | `interval` | number | `300` | The number of seconds between two runs of `command`. |
+
+## AnomalyTrigger
+
+`anomaly`: an incident-class anomaly (`piloop.reports.overview`) that no agent of the project got yet.
+
+The row gets the new anomalies, one `anomaly.reported` event each. For the watchdog, that makes it an incident
+sweep.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `"anomaly"` |  |
+
+## CronTrigger
+
+`cron`: the role's `interval` seconds since the start of its last routine row, one that got no anomaly.
+
+The first one counts from the registration of the project. An `interval` of 0 turns it off.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `"cron"` |  |
+
+## SeedTrigger
+
+`seed`: a seed filed after the role's latest row started, while a slot of the role is free.
+
+It fires however full the backlog is. If the latest row got the seed but was killed, the seed is retried, once per
+batch, as `low_water` retries. A seed that a sweep read and did not develop is in the next sweep's brief,
+whatever trigger fires it. Gotcha: a sweep's brief is read a moment before its row's `started_at` is set, so a
+seed filed in that moment waits for the next sweep.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `"seed"` |  |
+
+## LowWaterTrigger
+
+`low_water`: the backlog has fewer ideas than its target, and there is a reason to sweep now.
+
+Only the research role uses it. The target is one idea per worker slot plus `[roles.research] buffer`. So ideas
+exist before slots free up, and a free slot does not wait a whole sweep for an idea. The ideas that sweeps in
+flight can insert already count as backlog. Nothing is requested while every research slot is busy. Runnable
+ideas count. Ideas blocked only by prerequisites in flight also count, because they run when those finish. An idea
+blocked by a prerequisite that is not running does not count. Below the target, a sweep fires for one of these
+reasons:
+
+- The project has no sweep yet, so there is nothing to wait for.
+- The last batch was killed. Lost prompts, timeouts or a daemon stop say nothing about the backlog, so the batch
+  is retried once. This applies to a streak of killed rows no longer than one batch (`max_concurrent`). A second
+  killed batch is a systemic fault and counts as a normal last sweep.
+- New results: runs finished since the role's latest row started, which that sweep could not read. A sweep with
+  nothing new to read reads the same history and proposes nothing. So each consecutive sweep that defined no idea
+  doubles the number of finished runs the next sweep waits for. A sweep that defines an idea resets this. The
+  wait is never longer than what can still come: with no run in flight, the finished runs are all there is.
+- The backlog is low. Research keeps sweeping while the backlog is short, not only when results come in or a slot
+  is idle. A sweep that defined an idea is followed at once. After empty sweeps, research rests 2**n − 1 times as
+  long as its latest ended sweep took. n is the number of consecutive ended sweeps, killed ones included, that
+  defined no idea. An empty queue never deadlocks, and research that keeps finding nothing uses at most 1/2**n of
+  the wall-clock time.
+
+It requests enough sweeps to fill the shortfall at `max_ideas` each, within the role's free slots.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `"low_water"` |  |
+
+## ScoutTrigger
+
+`scout`: `[roles.research.scout] interval` seconds since the last scout sweep started. Research only.
+
+It requests a scout sweep, a research row in scout mode (`piloop.agents.scout`). It does nothing while the
+`[roles.research.scout]` table is not there.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `"scout"` |  |
+
+## SqlTrigger
+
+`sql`: a query on the piloop database that returns at least one row.
+
+The query may use two parameters: `:project`, the project's id, and `:since`, when the role's latest row
+started (or when the project was registered), as UTC text (`2026-01-31 12:00:00.000000`). Compare `:since` with
+a `created_at` column to fire only on what is new. The query is checked when `piloop.toml` loads: it must be
+one statement that only reads.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `"sql"` |  |
+| `when` | string | required | The query, for example `SELECT 1 FROM candidates WHERE project_id = :project AND verdict = 'keep' AND created_at > :since`. |

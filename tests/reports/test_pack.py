@@ -6,8 +6,9 @@ from pathlib import Path
 from inline_snapshot import snapshot
 from sqlalchemy.orm import Session
 
-from piloop.campaign.ideas import Yield, files_nothing, seeds_only, source, yields
-from piloop.config import ProjectConfig, load_project_config
+from piloop.agents.roles import files_of
+from piloop.campaign.ideas import Yield, source, yields
+from piloop.config import Files, ProjectConfig, load_project_config
 from piloop.db.models import Comment, CommentKind, IdeaStatus, Project, TargetKind, Verdict
 from piloop.db.session import Database
 from piloop.reports.pack import (
@@ -218,7 +219,7 @@ def test_yields_count_ideas_runs_keeps_and_interesting_per_source(db: Database, 
     assert Yield('worker', 3, 2, 1, 0).line() == 'worker 3 ideas, 2 ran → 1 keep, 0 interesting'
 
 
-def test_where_an_idea_comes_from_says_whether_it_may_be_more_than_a_seed() -> None:
+def test_where_an_idea_comes_from_says_whether_it_may_be_more_than_a_seed(project_path: Path) -> None:
     assert [source(a) for a in ('research#12', 'orchestrator', 'human', 'worker#3')] == [
         'research',
         'orchestrator',
@@ -226,5 +227,5 @@ def test_where_an_idea_comes_from_says_whether_it_may_be_more_than_a_seed() -> N
         'worker',
     ]
     actors = ('worker#3', 'watchdog#4', 'scout#6', 'research#5', 'orchestrator', 'human')
-    assert [seeds_only(a) for a in actors] == [False, True, True, False, False, False]
-    assert [files_nothing(a) for a in actors] == [True, False, False, False, False, False]
+    cfg = load_project_config(project_path)
+    assert [files_of(cfg, a) for a in actors] == [Files.NOTHING, Files.SEEDS, Files.SEEDS, Files.IDEAS, None, None]

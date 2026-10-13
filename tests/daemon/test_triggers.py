@@ -9,8 +9,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from piloop.agents.roles import Trigger
-from piloop.config import ProjectConfig, WorkerRole, load_project_config
+from piloop.config import load_project_config
 from piloop.daemon.main import ACTOR
 from piloop.daemon.runner import RunExecutor
 from piloop.daemon.scheduler import NO_RUN_ERROR, Scheduler
@@ -54,7 +53,7 @@ def configure(db: Database, project: Project, harness_body: str = HARNESS_NOOP, 
         s.commit()
 
 
-def workers(db: Database, kind: WorkerKind) -> list[tuple[int, WorkerState, str | None]]:
+def workers(db: Database, kind: str) -> list[tuple[int, WorkerState, str | None]]:
     with db.session() as s:
         rows = s.scalars(select(Worker).where(Worker.kind == kind).order_by(Worker.id)).all()
         return [(w.id, w.state, w.reason) for w in rows]
@@ -655,16 +654,6 @@ def test_low_water_retries_a_killed_batch_once(
     finish_a_run(db, project, 'one')
     assert sched.tick() == [7, 8, 9], 'a run finished since: research is back, killed sweeps are not barren ones'
     sched.stop(timeout=5)
-
-
-def test_a_trigger_needs_its_settings_on_the_role_config(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
-) -> None:
-    sched = scheduler(db, runtime, tmp_path)
-    with db.session() as s, pytest.raises(TypeError, match='WorkerRole has no settings for the low_water trigger'):
-        project_row = s.get_one(Project, project.id)
-        cfg = ProjectConfig.model_validate(project_row.config)
-        sched._fires(s, project_row, cfg, WorkerRole(), Trigger.LOW_WATER, None)
 
 
 def test_manual_requests_are_launched_under_max_concurrent(

@@ -21,11 +21,10 @@ from datetime import datetime, timedelta
 from sqlalchemy import ColumnElement, exists, select
 from sqlalchemy.orm import Session
 
+from piloop.db.events import SCOUT_EVENT
 from piloop.db.models import Candidate, Event, Idea, IdeaStatus, Run, TargetKind, Technique, Verdict, Worker, count
 from piloop.text import cell
 
-SCOUT_EVENT = 'scout.requested'
-"""The event that makes a research row a scout sweep. It is emitted when the row is requested."""
 WATCH_RUNS = 5
 """How many scout sweeps a source stays on the watch list after its last payoff. A source with a keep stays."""
 WINDOW = timedelta(days=30)

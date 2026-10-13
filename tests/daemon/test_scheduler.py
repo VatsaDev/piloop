@@ -51,6 +51,7 @@ from piloop.otel import Tracer
 from piloop.reports.overview import SILENT_SECONDS
 from piloop.runtime import Handle
 from piloop.scoring.ledger import current_evaluator, head, import_reference
+from piloop.triggers import LowWaterTrigger
 from tests.conftest import (
     HARNESS_APPEND,
     HARNESS_SLEEPS,
@@ -1760,7 +1761,8 @@ def test_low_water_counts_each_track_short_of_its_share_whatever_the_others_hold
         backlog = scheduler._backlog(s, p, cfg)
         assert (backlog.runnable, backlog.target, backlog.short) == (6, 4, 1), 'cost is one short; accuracy has 3 spare'
         assert str(backlog) == '6 of 4 runnable ideas (accuracy 6 of 3, cost 0 of 1)'
-        assert scheduler._low_water(s, p, cfg, cfg.roles.research, None) == str(backlog)
+        fire = LowWaterTrigger().fire(scheduler._tick(s, p, cfg, WorkerKind.RESEARCH, cfg.roles.research))
+        assert fire is not None and fire.reason == str(backlog)
     add_ideas(db, project, 'c0', track='cost')
     with db.session() as s:
         p = s.get_one(Project, project.id)

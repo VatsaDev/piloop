@@ -14,8 +14,8 @@ from sqlalchemy import select
 from piloop.agents import capture
 from piloop.agents.capture import ENTIRE_INSTALL, MIN_ENTIRE
 from piloop.agents.launcher import PROMPT, STARTUP_ANOMALY, STOPPED_ERROR, Launcher, fill
-from piloop.agents.roles import PILOOP_HINT, PROMPTS, ROLES, SQL_HINT, Role, compose_brief
-from piloop.config import ProjectConfig, load_project_config
+from piloop.agents.roles import PILOOP_HINT, PROMPTS, SQL_HINT, Role, compose_brief, role
+from piloop.config import ProjectConfig, config_of, load_project_config
 from piloop.db.models import Event, Project, Worker, WorkerKind, WorkerState
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES
@@ -47,7 +47,9 @@ CODEX_LIKE = f'#!/bin/sh\necho \'{{"type":"thread.started","thread_id":"{CODEX_I
 
 UUID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
 
-WATCHDOG: Role = ROLES[WorkerKind.WATCHDOG]
+
+def role_in(project: Project, kind: WorkerKind = WorkerKind.WATCHDOG) -> Role:
+    return role(config_of(project), kind, Path(project.path))
 
 
 def request(db: Database, project: Project, kind: WorkerKind = WorkerKind.WATCHDOG, **fields: object) -> int:
@@ -65,7 +67,7 @@ def launcher(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Trace
 def launch(db: Database, runtime: ScriptRuntime, tmp_path: Path, worker_id: int, tracer: Tracer | None = None):
     with db.session() as s:
         project = s.get_one(Project, s.get_one(Worker, worker_id).project_id)
-        brief = compose_brief(WATCHDOG, project, worker_id, reason='test', context='')
+        brief = compose_brief(role_in(project), project, worker_id, reason='test', context='')
     cwd = tmp_path / 'cwd'
     cwd.mkdir(exist_ok=True)
     return launcher(db, runtime, tmp_path, tracer).launch(worker_id, brief=brief, cwd=cwd, log_dir=tmp_path / 'w')
@@ -89,7 +91,8 @@ def use_harness(db: Database, project: Project, body: str, **definition: object)
 
 def test_brief_is_role_prompt_project_brief_procedures_then_context(project: Project, db: Database) -> None:
     with db.session() as s:
-        brief = compose_brief(WATCHDOG, s.get_one(Project, project.id), 7, reason='timer', context='- extra line')
+        p = s.get_one(Project, project.id)
+        brief = compose_brief(role_in(p), p, 7, reason='timer', context='- extra line')
     assert brief.startswith((PROMPTS / 'watchdog.md').read_text()[:40])
     assert (
         brief.index('# Watchdog')
@@ -120,8 +123,8 @@ def test_a_roles_addendum_follows_the_project_brief_in_that_roles_briefs_only(pr
         p.config = load_project_config(Path(project.path), roles={'research': {'addendum': 'research.md'}}).model_dump(
             mode='json'
         )
-        research = compose_brief(ROLES[WorkerKind.RESEARCH], p, 7, reason='timer', context='')
-        watchdog = compose_brief(WATCHDOG, p, 8, reason='timer', context='')
+        research = compose_brief(role_in(p, WorkerKind.RESEARCH), p, 7, reason='timer', context='')
+        watchdog = compose_brief(role_in(p), p, 8, reason='timer', context='')
     assert (
         research.index('# Demo') < research.index('# Search wide first') < research.index('# Working with the piloop')
     )

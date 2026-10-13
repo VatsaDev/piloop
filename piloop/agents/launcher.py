@@ -220,9 +220,10 @@ class Launcher:
             harness = w.harness or rotate(s, w, cfg.role_harnesses(w.kind))
             model = w.model or cfg.role_models(w.kind)[harness]
             definition = cfg.harness_for(harness)
-            template = definition.interactive if cfg.runtime is RuntimeKind.HERDR else definition.headless
+            runtime_kind = cfg.role_runtime(w.kind)
+            template = definition.interactive if runtime_kind is RuntimeKind.HERDR else definition.headless
             session_id = str(uuid4()) if definition.captures_session and takes_session_id(template) else None
-            w.harness, w.model, w.runtime, w.log_dir = harness, model, cfg.runtime.value, str(log_dir)
+            w.harness, w.model, w.runtime, w.log_dir = harness, model, runtime_kind.value, str(log_dir)
             w.state, w.started_at, w.session_id = WorkerState.STARTING, utcnow(), session_id
             emit(
                 s,
@@ -272,7 +273,7 @@ class Launcher:
             startup_dialogs=definition.startup_dialogs,
             session_id_pattern=definition.session_id_pattern,
         )
-        runtime = self.runtime_factory(cfg.runtime, project=project_name, project_path=project_path)
+        runtime = self.runtime_factory(runtime_kind, project=project_name, project_path=project_path)
         return Prepared(spec, runtime, cfg.role(kind).timeout, definition.captures_session, session_id)
 
     def _reported_session(self, worker_id: int, runtime: Runtime, handle: Handle, span: Span) -> None:

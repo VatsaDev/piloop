@@ -25,7 +25,7 @@ from piloop.cli import skills
 from piloop.cli.version import installed
 from piloop.config import ConfigError, ProjectConfig, RuntimeKind, explain, load_project_config
 from piloop.daemon.serve import SECRETS_COMMAND_ENV, SecretsError, running_pid, secrets
-from piloop.db.models import WorkerKind, utcnow
+from piloop.db.models import utcnow
 from piloop.db.session import MIGRATIONS
 from piloop.proc import child_env, environment
 from piloop.reports.overview import age
@@ -58,7 +58,7 @@ def checks(cfg: Settings) -> list[Check]:
         *(_mcp(name, c, env) for name, _, c in projects if isinstance(c, ProjectConfig) and c.mcp),
         *_skills(cfg),
         _harnesses(stored),
-        *(_herdr(herdr) if (herdr := [c for c in stored if c.runtime is RuntimeKind.HERDR]) else []),
+        *(_herdr(herdr) if (herdr := [c for c in stored if RuntimeKind.HERDR in c.runtimes]) else []),
     ]
 
 
@@ -160,7 +160,9 @@ def _mcp(name: str, config: ProjectConfig, env: tuple[str, set[str]]) -> Check:
             f'print them from {SECRETS_COMMAND_ENV}, or set them in the environment `piloop serve` runs in; then'
             ' restart the daemon',
         )
-    roles = '; '.join(f'{kind}: {", ".join(listed)}' for kind in WorkerKind if (listed := config.role(kind).mcp))
+    roles = '; '.join(
+        f'{kind}: {", ".join(listed)}' for kind, role in config.roles.all().items() if (listed := role.mcp)
+    )
     variables = mcp.env_names(servers)
     return Check(
         what,
@@ -184,7 +186,7 @@ def _skills(cfg: Settings) -> list[Check]:
 def _harnesses(configs: list[ProjectConfig]) -> Check:
     """Check that each harness that a role of a project can launch has its executable on PATH."""
     executables = {
-        c.harness_for(h).executable: h for c in configs for kind in WorkerKind for h in c.role_harnesses(kind)
+        c.harness_for(h).executable: h for c in configs for kind in c.roles.all() for h in c.role_harnesses(kind)
     }
     missing = sorted(f'{h} ({exe})' for exe, h in executables.items() if shutil.which(exe) is None)
     if missing:
@@ -215,7 +217,7 @@ def _herdr_hooks(configs: list[ProjectConfig]) -> Check:
     Without the hooks, Herdr reports no session for the agent. Then piloop cannot read its tokens, and a fast agent
     that committed can look dead at startup.
     """
-    kinds = {c.harness_for(h).executable for c in configs for kind in WorkerKind for h in c.role_harnesses(kind)}
+    kinds = {c.harness_for(h).executable for c in configs for kind in c.roles.all() for h in c.role_harnesses(kind)}
     try:
         states = integrations()
     except (subprocess.SubprocessError, OSError) as e:

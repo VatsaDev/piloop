@@ -142,7 +142,7 @@ erDiagram
     }
     workers {
         integer id PK
-        WorkerKind kind
+        varchar kind
         integer project_id FK
         integer run_id FK
         varchar harness

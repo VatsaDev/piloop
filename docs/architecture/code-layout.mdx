@@ -37,6 +37,7 @@ flowchart TB
     reports["reports/"]
     runtime["runtime/"]
     scoring["scoring/"]
+    triggers["triggers.py"]
     usage["usage/"]
     watch["watch/"]
     agents --> runtime
@@ -45,12 +46,14 @@ flowchart TB
     cli --> daemon
     cli --> watch
     config --> harnesses
+    config --> triggers
     daemon --> reports
     harnesses --> mcp
     harnesses --> usage
     reports --> campaign
     runtime --> config
     scoring --> config
+    triggers --> db
     usage --> db
     watch --> reports
 ```
@@ -62,8 +65,8 @@ The graph leaves out the shared modules `deprecated.py`, `git.py`, `otel.py`, `p
 | `agents/` | `config.py`, `db/`, `git.py`, `harnesses.py`, `mcp/`, `otel.py`, `proc.py`, `runtime/`, `settings.py`, `text.py`, `usage/` |
 | `campaign/` | `agents/`, `config.py`, `db/`, `git.py`, `proc.py`, `scoring/`, `settings.py`, `text.py`, `usage/` |
 | `cli/` | `agents/`, `campaign/`, `config.py`, `daemon/`, `db/`, `deprecated.py`, `git.py`, `mcp/`, `proc.py`, `reports/`, `runtime/`, `scoring/`, `settings.py`, `text.py`, `watch/` |
-| `config.py` | `db/`, `deprecated.py`, `harnesses.py`, `mcp/` |
-| `daemon/` | `agents/`, `campaign/`, `config.py`, `db/`, `git.py`, `otel.py`, `proc.py`, `reports/`, `runtime/`, `scoring/`, `settings.py`, `usage/` |
+| `config.py` | `db/`, `deprecated.py`, `harnesses.py`, `mcp/`, `triggers.py` |
+| `daemon/` | `agents/`, `campaign/`, `config.py`, `db/`, `git.py`, `otel.py`, `proc.py`, `reports/`, `runtime/`, `scoring/`, `settings.py`, `triggers.py`, `usage/` |
 | `db/` | `proc.py` |
 | `deprecated.py` | nothing |
 | `git.py` | nothing |
@@ -76,6 +79,7 @@ The graph leaves out the shared modules `deprecated.py`, `git.py`, `otel.py`, `p
 | `scoring/` | `config.py`, `db/`, `git.py`, `proc.py`, `text.py` |
 | `settings.py` | nothing |
 | `text.py` | nothing |
+| `triggers.py` | `db/` |
 | `usage/` | `db/`, `settings.py` |
 | `watch/` | `campaign/`, `config.py`, `db/`, `reports/`, `runtime/`, `scoring/`, `text.py`, `usage/` |
 

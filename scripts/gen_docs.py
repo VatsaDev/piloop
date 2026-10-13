@@ -29,6 +29,7 @@ from piloop.db.sql import schema_ddl
 from piloop.db.triggers import persistent_sql, temp_sql
 from piloop.db.triggers.fts import FTS_COLUMNS
 from piloop.deprecated import BRIDGES
+from piloop.triggers import BUILTIN_TRIGGERS
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = ROOT / 'piloop'
@@ -174,24 +175,27 @@ def _own_keys(model: type[BaseModel], base: type[BaseModel]) -> set[str]:
 
 
 def config_page() -> str:
-    """Return the configuration reference: the top-level keys, then one table per nested model.
+    """Return the configuration reference: the top-level keys, then one table per nested model, then the triggers.
 
-    A model that subclasses another config model gets the table of its base once (the keys that they share), and
-    then a table of its own keys and defaults.
+    A model that subclasses another config model gets the table of its base once, and then a table of the keys that
+    it adds or gives another default.
     """
     top = _schema(ProjectConfig)
     defs = top.get('$defs', {})
     out = CONFIG_HEADER + _table(top, defs)
     shown: list[type[BaseModel]] = []
-    for model in _nested(ProjectConfig, []):
+
+    def show(model: type[BaseModel]) -> str:
+        if model in shown:
+            return ''
+        shown.append(model)
         base = model.__mro__[1]
         if base is BaseModel or not issubclass(base, BaseModel):
-            out += _section(model, defs)
-            continue
-        if base not in shown:
-            shown.append(base)
-            out += _section(base, defs)
-        out += _section(model, defs, _own_keys(model, base))
+            return _section(model, defs)
+        return show(base) + _section(model, defs, _own_keys(model, base))
+
+    for model in [*_nested(ProjectConfig, []), *BUILTIN_TRIGGERS.values()]:
+        out += show(model)
     return out + deprecated_section()
 
 

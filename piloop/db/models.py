@@ -135,7 +135,10 @@ class CommentKind(StrEnum):
 
 
 class WorkerKind(StrEnum):
-    """The role of an agent process. It is also the config key, CLI name, pane prefix and prompt file of the role."""
+    """The names of the built-in roles. ``workers.kind`` holds a role name: one of these, or a role of the project.
+
+    A role's name is also its config table, CLI name, signature and pane prefix.
+    """
 
     WORKER = 'worker'
     WATCHDOG = 'watchdog'
@@ -209,7 +212,6 @@ class Base(DeclarativeBase):
         Verdict: _values(Verdict),
         TargetKind: _values(TargetKind),
         CommentKind: _values(CommentKind),
-        WorkerKind: _values(WorkerKind),
         WorkerState: _values(WorkerState),
     }
 
@@ -589,11 +591,13 @@ class Worker(Tracked, Base):
         Index('ix_workers_project_kind_state', 'project_id', 'kind', 'state'),
         # the session behind the candidates of a run (every kept-lineage row), and the FK action when a run is deleted
         Index('ix_workers_run', 'run_id'),
-        *text_checks('workers', nullable=('reason', 'harness', 'model')),
+        *text_checks('workers', 'kind', nullable=('reason', 'harness', 'model')),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    kind: Mapped[WorkerKind]
+    kind: Mapped[str]
+    """The agent's role: ``worker``, ``watchdog``, ``research``, or a ``[roles.<name>]`` table of its project. A trigger
+    refuses other names."""
     project_id: Mapped[int | None] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'))
     """The project the agent works for. piloop always sets it, but readers must accept NULL."""
     run_id: Mapped[int | None] = mapped_column(ForeignKey('runs.id', ondelete='SET NULL'))

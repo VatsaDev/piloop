@@ -309,7 +309,8 @@ without a priority), out of the inbox.
   - `piloop attach <worker_id>` focuses that tab. From a terminal outside that session, it also attaches to the
     session. It takes over the terminal, so it is for the human, not for your shell tool.
   - `piloop prompt <worker_id> "…"` steers a running agent of any role.
-- To request one more sweep, run `piloop launch <name> watchdog|research [--harness pi --model …] [--reason "…"]`.
+- To request one more sweep, run `piloop launch <name> <role> [--harness pi --model …] [--reason "…"]`: `watchdog`,
+  `research`, or a role that `piloop.toml` defines.
   Or insert a request:
   `INSERT INTO workers (kind, project_id, state, reason) VALUES ('research', <p>, 'requested', '…')`.
   The daemon launches it on the next tick, within the `max_concurrent` of the role.

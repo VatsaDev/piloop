@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from piloop import git
 from piloop.agents.launcher import TRANSCRIPT, Launcher
-from piloop.agents.roles import ROLES, compose_brief
+from piloop.agents.roles import compose_brief, role
 from piloop.campaign.project import WORKSPACE, worktree_links
 from piloop.campaign.stop import attempts
 from piloop.config import ProjectConfig, Track, config_of
@@ -140,7 +140,7 @@ class RunExecutor:
                 cfg = config_of(project)
                 base = s.get_one(Candidate, run.base_candidate_id)
                 brief = run.brief or compose_brief(
-                    ROLES[WorkerKind.WORKER],
+                    role(cfg, WorkerKind.WORKER, Path(project.path)),
                     project,
                     worker_id,
                     reason=f'idea#{idea.id} is ready',

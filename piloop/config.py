@@ -10,11 +10,14 @@
 import hashlib
 import json
 import math
+import re
 import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import cache
+from importlib.metadata import entry_points
 from pathlib import Path
-from typing import Annotated, Any, Self, cast
+from typing import Annotated, Any, ClassVar, Self, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
@@ -24,6 +27,14 @@ from piloop import deprecated
 from piloop.db.models import Project, Worker, WorkerKind
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.mcp import MCP, RENDERERS, McpServer, ServerName
+from piloop.triggers import (
+    AnomalyTrigger,
+    CronTrigger,
+    LowWaterTrigger,
+    ScoutTrigger,
+    SeedTrigger,
+    TriggerEntry,
+)
 
 CONFIG_FILE = 'piloop.toml'
 BRIEF_FILE = 'brief.md'
@@ -140,11 +151,47 @@ class Track:
     with its margin and floor."""
 
 
+ROLE_NAME = r'[a-z][a-z0-9_-]{0,19}'
+"""The form of a role name: the agents' signature, ``workers.kind``, and the start of their Herdr agent name."""
+RESERVED_NAMES = frozenset({'scout', 'run', 'orchestrator', 'human', 'daemon'})
+"""Names that already sign writes: the scout mode, a run, and the actors that are not roles."""
+ROLE_GROUP = 'piloop.roles'
+"""The entry point group of the roles that packages add. Each entry point names a ``SweepRole`` with its defaults."""
+
+
+class Workdir(StrEnum):
+    """Where the agent of a sweeping role works. A worker always works in a new worktree at its run's base."""
+
+    HEAD = 'head'
+    """A detached worktree at the head. It is removed when the agent ends, and nothing committed in it is scored."""
+    PROJECT = 'project'
+    """The project checkout itself, shared with you. piloop does not reset or remove it."""
+
+
+class Files(StrEnum):
+    """What the agents of a role may file with ``piloop idea``. The CLI refuses the rest."""
+
+    NOTHING = 'nothing'
+    """No ideas and no seeds. A hunch goes in a finding."""
+    SEEDS = 'seeds'
+    """Seeds (``piloop idea seed``), for research to develop."""
+    IDEAS = 'ideas'
+    """Defined ideas (``piloop idea add``, ``piloop idea develop``) and seeds."""
+
+
 class RoleConfig(BaseModel):
-    """The keys that every ``[roles.<kind>]`` table accepts. Each role's table below adds keys and sets defaults."""
+    """The keys that every ``[roles.<name>]`` table accepts. Each role's table below adds keys and sets defaults."""
 
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
 
+    PROMPT: ClassVar[str] = ''
+    """The built-in prompt of a built-in role, a file under ``piloop/agents/prompts/``. Empty for other roles."""
+
+    prompt: str | None = None
+    """The file that starts the brief of this role: a path relative to the repo root, or an absolute path. When unset,
+    a built-in role uses its built-in prompt. A new role needs it."""
+    runtime: RuntimeKind | None = None
+    """Where the agents of this role run. When unset, the role uses the project's ``runtime``."""
     harnesses: list[str] | None = Field(default=None, min_length=1)
     """The harness rotation of this role. When unset, the role uses the project's ``harnesses``."""
     model: dict[str, str] | None = None
@@ -161,16 +208,30 @@ class RoleConfig(BaseModel):
     """The MCP servers that the agents of this role get, by the name of their ``[mcp.<name>]`` table. Every harness in
     the role's rotation must be able to take them (``[harness.<name>] mcp``). The built-in ``claude``, ``codex`` and
     ``pi`` harnesses can."""
+    writes: list[str] = []
+    """What the agents of this role may write, as their brief states it. Only ``files`` is enforced."""
+    files: Files = Files.SEEDS
+    """What the agents of this role may file with ``piloop idea``: ``nothing``, ``seeds`` or ``ideas``. The CLI
+    refuses the rest."""
 
 
 class WorkerRole(RoleConfig):
-    """``[roles.worker]``: a worker does one idea in a worktree. The ``queue`` trigger starts it."""
+    """``[roles.worker]``: a worker does one idea in a new worktree at its run's base. The run queue starts it.
+
+    When it ends, its commits are scored and judged. Its trigger and its working copy are fixed.
+    """
+
+    PROMPT: ClassVar[str] = 'worker.md'
 
     timeout: float = 1800
     """The number of seconds one worker may run before it is stopped."""
     max_concurrent: int = Field(default=4, ge=1)
     """The maximum number of workers that run at the same time. Each worker is one harness process on this machine. A
     run that is being scored after its worker ended does not count."""
+    writes: list[str] = ['commits', 'comments(finding) on your idea', 'comments(note) on your run']
+    """What a worker may write, as its brief states it."""
+    files: Files = Files.NOTHING
+    """A worker files no ideas and no seeds. Its hunches go in its finding, which research reads."""
     explore_every: int = Field(default=4, ge=0)
     """At least one run in this many starts from an alternative starting point. When none of the last
     ``explore_every - 1`` runs did, the next slot goes to the most urgent ready idea that is pinned to a base other
@@ -178,12 +239,43 @@ class WorkerRole(RoleConfig):
     ready. 0 turns this off."""
 
 
-class WatchdogRole(RoleConfig):
+class SweepRole(RoleConfig):
+    """``[roles.<name>]`` of a sweeping role: the watchdog, research, or a new role that you define.
+
+    A sweep is an agent without a run. Its triggers request it, and nothing is scored when it ends. A table with a new
+    name defines a new role, and needs ``prompt`` and ``triggers``.
+    """
+
+    triggers: list[TriggerEntry]
+    """When the daemon requests an agent of this role: a list of ``{ kind = "<trigger>", ... }`` entries, checked in
+    order on each tick. The built-in triggers are ``anomaly``, ``cron``, ``seed``, ``low_water`` (research only),
+    ``scout`` (research only) and ``sql``. An empty list means that agents start only on request
+    (``piloop launch``)."""
+    workdir: Workdir = Workdir.HEAD
+    """Where the agent works: ``head``, a detached worktree at the head, or ``project``, the project checkout."""
+    interval: float = Field(default=0, ge=0)
+    """The number of seconds between two routine sweeps of the ``cron`` trigger, counted from the start of the last
+    one. A sweep that investigates an anomaly is not a routine sweep. 0 turns the timer off."""
+
+    @model_validator(mode='after')
+    def _check(self) -> Self:
+        if self.prompt is None and not self.PROMPT:
+            raise ValueError('a new role needs a prompt: the file that starts its brief')
+        return self
+
+
+class WatchdogRole(SweepRole):
     """``[roles.watchdog]``: the watchdog investigates the anomalies that the daemon detects and reviews progress."""
 
-    interval: float = 1800
+    PROMPT: ClassVar[str] = 'watchdog.md'
+
+    triggers: list[TriggerEntry] = [AnomalyTrigger(), CronTrigger()]
+    """An anomaly requests an incident sweep, and the timer requests a progress review."""
+    interval: float = Field(default=1800, ge=0)
     """The number of seconds between two progress reviews, counted from the last review. A sweep that investigates an
     anomaly is not a review. 0 turns the reviews off."""
+    writes: list[str] = ['comments(escalation, finding, note)', 'seeds via idea seed']
+    """What a watchdog may write, as its brief states it."""
 
 
 SCOUT_SEEDS = 3
@@ -211,9 +303,22 @@ class Scout(BaseModel):
     """The maximum number of seeds one scout sweep may file. The other techniques it finds go to the library."""
 
 
-class ResearchRole(RoleConfig):
+class ResearchRole(SweepRole):
     """``[roles.research]``: research develops seeds, keeps ideas ready for the workers and scouts for techniques."""
 
+    PROMPT: ClassVar[str] = 'research.md'
+
+    triggers: list[TriggerEntry] = [LowWaterTrigger(), SeedTrigger(), ScoutTrigger()]
+    """A short backlog, a new seed, and the scout's timer when ``[roles.research.scout]`` is there."""
+    writes: list[str] = [
+        'seeds via idea develop, or their status to rejected with a note',
+        'ideas via idea add',
+        'comments(finding, escalation) on the project',
+        'comments(note) on an idea',
+    ]
+    """What a research sweep may write, as its brief states it."""
+    files: Files = Files.IDEAS
+    """Research develops seeds into ideas and adds ideas of its own."""
     timeout: float = 900
     """The number of seconds one sweep may run before it is stopped."""
     max_concurrent: int = Field(default=1, ge=1)
@@ -300,9 +405,14 @@ class Spend(BaseModel):
 
 
 class Roles(BaseModel):
-    """One table for each role. A role without a table uses its defaults."""
+    """One table for each role. A built-in role without a table uses its defaults.
 
-    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+    A table with a new name defines a new sweeping role (``SweepRole``). A role that a package adds with a
+    ``piloop.roles`` entry point is in the config that ``piloop init`` stores, with its table over its defaults.
+    """
+
+    model_config = ConfigDict(extra='allow', frozen=True, use_attribute_docstrings=True)
+    __pydantic_extra__: dict[str, SweepRole] = Field(init=False)
 
     worker: WorkerRole = WorkerRole()
     """``[roles.worker]``."""
@@ -310,6 +420,48 @@ class Roles(BaseModel):
     """``[roles.watchdog]``."""
     research: ResearchRole = ResearchRole()
     """``[roles.research]``."""
+
+    @model_validator(mode='after')
+    def _check(self) -> Self:
+        for name, role in self.sweeping().items():
+            if not re.fullmatch(ROLE_NAME, name) or name in RESERVED_NAMES:
+                raise ValueError(
+                    f'{name!r} is not a role name: use lowercase letters, digits, _ and - ({ROLE_NAME}), and none of'
+                    f' {sorted(RESERVED_NAMES)}'
+                )
+            for trigger in role.triggers:
+                if trigger.ROLE is not None and name != trigger.ROLE:
+                    raise ValueError(
+                        f'[roles.{name}] has the {trigger.kind} trigger, which only {trigger.ROLE} may have'
+                    )
+        return self
+
+    def sweeping(self) -> dict[str, SweepRole]:
+        """The sweeping roles by name: the watchdog, research, then the other roles in the order of the file."""
+        return {WorkerKind.WATCHDOG: self.watchdog, WorkerKind.RESEARCH: self.research, **self.__pydantic_extra__}
+
+    def all(self) -> dict[str, RoleConfig]:
+        """Every role by name: the worker first, then the sweeping roles."""
+        return {WorkerKind.WORKER: self.worker, **self.sweeping()}
+
+
+@cache
+def registered_roles() -> dict[str, SweepRole]:
+    """Return the roles that packages add (``ROLE_GROUP``), by the name of their entry point.
+
+    Raises:
+        TypeError: An entry point does not name a ``SweepRole``.
+        ValueError: An entry point reuses the name of a built-in role.
+    """
+    found: dict[str, SweepRole] = {}
+    for ep in entry_points(group=ROLE_GROUP):
+        loaded = ep.load()
+        if not isinstance(loaded, SweepRole):
+            raise TypeError(f'entry point {ep.name} = {ep.value} in {ROLE_GROUP} is not a piloop SweepRole')
+        if ep.name in Roles.model_fields:
+            raise ValueError(f'entry point {ep.name} = {ep.value} in {ROLE_GROUP}: {ep.name!r} is a built-in role')
+        found[ep.name] = loaded
+    return found
 
 
 class ProjectConfig(BaseModel):
@@ -333,7 +485,8 @@ class ProjectConfig(BaseModel):
     runtime: RuntimeKind = RuntimeKind.SUBPROCESS
     """Where agents run. With ``subprocess`` (the default), every agent is a background process; ``piloop watch``
     shows what it printed. With ``herdr`` (optional, needs Herdr), every agent gets a terminal pane that you and the
-    orchestrator can read, type into and steer with ``piloop prompt``."""
+    orchestrator can read, type into and steer with ``piloop prompt``. A role can override it (``[roles.<name>]
+    runtime``)."""
     harnesses: list[str] = Field(default=['pi'], min_length=1)
     """The enabled harnesses. Runs use them in turn, unless an idea pins one."""
     model: dict[str, str]
@@ -349,12 +502,13 @@ class ProjectConfig(BaseModel):
     evaluate_timeout: float = 600
     """The number of seconds before the evaluate command is stopped. The evaluation is then a crash."""
     roles: Roles = Roles()
-    """The settings of each role (``[roles.worker]``, ``[roles.watchdog]``, ``[roles.research]``)."""
+    """The settings of each role (``[roles.worker]``, ``[roles.watchdog]``, ``[roles.research]``), and the roles that
+    you define (``[roles.<name>]``)."""
     link: list[str] = []
     """Repo-relative paths, ignored by git, that piloop symlinks into every worktree, for example data or virtual
     environments."""
     mcp: dict[ServerName, McpServer] = {}
-    """``[mcp.<name>]``: the MCP servers that a role can list in ``[roles.<kind>] mcp``."""
+    """``[mcp.<name>]``: the MCP servers that a role can list in ``[roles.<name>] mcp``."""
     stop: Stop = Stop()
     """``[stop]``: conditions that end the campaign. None by default."""
     spend: Spend | None = None
@@ -366,11 +520,12 @@ class ProjectConfig(BaseModel):
         self._check_harnesses(self.harnesses, self.model, 'project')
         if unknown := [h for h in self.max_concurrent if h not in DEFAULT_HARNESSES and h not in self.harness]:
             raise ValueError(f'max_concurrent: unknown harnesses {unknown}; built-ins are {sorted(DEFAULT_HARNESSES)}')
-        for kind in WorkerKind:
-            self._check_harnesses(self.role_harnesses(kind), self.role_models(kind), f'roles.{kind}')
-        for kind in WorkerKind:
-            self._check_mcp(kind)
-        addenda = [a for kind in WorkerKind if (a := self.role(kind).addendum) is not None]
+        roles = self.roles.all()
+        for name in roles:
+            self._check_harnesses(self.role_harnesses(name), self.role_models(name), f'roles.{name}')
+        for name in roles:
+            self._check_mcp(name)
+        addenda = [a for role in roles.values() if (a := role.addendum) is not None]
         addenda += [t.addendum for t in self.tracks.values() if t.addendum is not None]
         for rel in [*self.link, *addenda, *self.roles.research.context]:
             if Path(rel).is_absolute() or '..' in Path(rel).parts:
@@ -412,43 +567,53 @@ class ProjectConfig(BaseModel):
         if missing:
             raise ValueError(f'{where}: no model configured for harnesses {missing}')
 
-    def _check_mcp(self, kind: WorkerKind) -> None:
+    def _check_mcp(self, kind: str) -> None:
         """Every server the role lists exists, and every harness the role may run can take them in its argv."""
         unknown = [n for n in self.role(kind).mcp if n not in self.mcp]
         if unknown:
             raise ValueError(f'roles.{kind}.mcp: no [mcp.<name>] table for {unknown}')
         if not self.role(kind).mcp:
             return
+        runtime = self.role_runtime(kind)
         for name in self.role_harnesses(kind):
             harness = self.harness_for(name)
-            argv = harness.interactive if self.runtime is RuntimeKind.HERDR else harness.headless
+            argv = harness.interactive if runtime is RuntimeKind.HERDR else harness.headless
             if harness.mcp is None or MCP not in argv:
                 raise ValueError(
-                    f'roles.{kind}.mcp: harness {name!r} takes no MCP servers in its {self.runtime} argv; give it'
+                    f'roles.{kind}.mcp: harness {name!r} takes no MCP servers in its {runtime} argv; give it'
                     f' mcp = "<renderer>" and a {MCP} element ({sorted(RENDERERS)}), or take it out of the rotation'
                 )
             if why := RENDERERS[harness.mcp].refuses(argv):
-                raise ValueError(f'roles.{kind}.mcp: harness {name!r} under the {self.runtime} runtime: {why}')
+                raise ValueError(f'roles.{kind}.mcp: harness {name!r} under the {runtime} runtime: {why}')
 
-    def role_servers(self, kind: WorkerKind) -> dict[str, McpServer]:
+    def role_servers(self, kind: str) -> dict[str, McpServer]:
         """The MCP servers that the agents of a role get, by name."""
         return {name: self.mcp[name] for name in self.role(kind).mcp}
 
-    def role(self, kind: WorkerKind) -> RoleConfig:
-        """The ``[roles.<kind>]`` table. The keys that only one role has need ``self.roles.<kind>``."""
-        return {
-            WorkerKind.WORKER: self.roles.worker,
-            WorkerKind.WATCHDOG: self.roles.watchdog,
-            WorkerKind.RESEARCH: self.roles.research,
-        }[kind]
+    def role(self, kind: str) -> RoleConfig:
+        """The ``[roles.<kind>]`` table. The keys that only one role has need ``self.roles.<kind>``.
 
-    def role_harnesses(self, kind: WorkerKind) -> list[str]:
+        Raises:
+            KeyError: ``piloop.toml`` has no such role.
+        """
+        return self.roles.all()[kind]
+
+    def role_harnesses(self, kind: str) -> list[str]:
         """The rotation a role uses: its own list, or else the project's."""
         return self.role(kind).harnesses or self.harnesses
 
-    def role_models(self, kind: WorkerKind) -> dict[str, str]:
+    def role_models(self, kind: str) -> dict[str, str]:
         """The model for each harness of a role: the project's map, with the role's overrides on top."""
         return {**self.model, **(self.role(kind).model or {})}
+
+    def role_runtime(self, kind: str) -> RuntimeKind:
+        """The runtime a role uses: its own, or else the project's."""
+        return self.role(kind).runtime or self.runtime
+
+    @property
+    def runtimes(self) -> set[RuntimeKind]:
+        """The runtimes that the roles of the project use."""
+        return {self.role_runtime(kind) for kind in self.roles.all()}
 
     @property
     def guardrails(self) -> list[Metric]:
@@ -547,6 +712,21 @@ def explain(where: object, error: ValidationError) -> str:
     return '\n'.join(lines)
 
 
+def with_registered_roles(raw: dict[str, object]) -> None:
+    """Add each role that a package adds (``registered_roles``) to a parsed ``piloop.toml``, its table over its defaults.
+
+    A value that is not a table is left for the validation to refuse.
+    """
+    tables = raw.get('roles', {})
+    if not (added := registered_roles()) or not isinstance(tables, dict):
+        return
+    merged = dict(tables)
+    for name, role in added.items():
+        table = merged.get(name, {})
+        merged[name] = role.model_dump(mode='json') | table if isinstance(table, dict) else table
+    raw['roles'] = merged
+
+
 def load_project_config(project: Path, **overrides: object) -> ProjectConfig:
     """Load ``<project>/piloop.toml``.
 
@@ -555,7 +735,7 @@ def load_project_config(project: Path, **overrides: object) -> ProjectConfig:
 
     Raises:
         FileNotFoundError: The project has no ``piloop.toml``.
-        ConfigError: The file is not valid TOML or not a valid config.
+        ConfigError: The file is not valid TOML, not a valid config, or names a prompt file that does not exist.
     """
     toml = project / CONFIG_FILE
     if not toml.is_file():
@@ -565,6 +745,7 @@ def load_project_config(project: Path, **overrides: object) -> ProjectConfig:
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f'{toml} is not valid TOML: {e}') from e
     deprecated.bridge(toml, raw)
+    with_registered_roles(raw)
 
     class _Loader(BaseSettings, ProjectConfig):
         model_config = SettingsConfigDict(env_prefix='PILOOP_PROJECT_', env_nested_delimiter='__', extra='forbid')
@@ -583,6 +764,14 @@ def load_project_config(project: Path, **overrides: object) -> ProjectConfig:
     # pydantic validates the values; the cast only tells the type checker to let them through
     kwargs = cast(dict[str, Any], {k: v for k, v in overrides.items() if v is not None})
     try:
-        return ProjectConfig.model_validate(_Loader(**kwargs).model_dump())
+        cfg = ProjectConfig.model_validate(_Loader(**kwargs).model_dump())
     except ValidationError as e:
         raise ConfigError(explain(toml, e)) from e
+    missing = [
+        f'  roles.{name}.prompt = {role.prompt!r}: no such file. Fix: create it, or correct the path'
+        for name, role in cfg.roles.all().items()
+        if role.prompt is not None and not (project / role.prompt).is_file()
+    ]
+    if missing:
+        raise ConfigError('\n'.join([f'{toml} is not a valid piloop config ({len(missing)} problem(s)):', *missing]))
+    return cfg

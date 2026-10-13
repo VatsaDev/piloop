@@ -7,6 +7,20 @@ A deprecated configuration key shows a warning for at least one minor release be
 
 ## [Unreleased]
 
+### Added
+
+- Roles are configuration. A `[roles.<name>]` table with a new name defines a role: its prompt, its triggers, its
+  runtime, its working copy (`workdir`), its harnesses and limits, and what it may file (`files`). The worker, the
+  watchdog and research are the same tables with defaults, and each built-in role accepts every key.
+- Triggers are entries of `[roles.<name>] triggers`: `anomaly`, `cron`, `seed`, `low_water`, `scout`, and `sql`, a
+  query on the piloop database.
+- Packages can add triggers and roles through the `piloop.triggers` and `piloop.roles` entry point groups.
+- `piloop launch` takes any sweeping role of the project.
+
+### Changed
+
+- `workers.kind` holds any role name of the project. A trigger refuses a name that is not a role of the project.
+
 ## [0.1.0] - 2026-10-13
 
 Initial public release.

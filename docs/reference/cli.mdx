@@ -247,8 +247,9 @@ nothing. Set the timeout of your shell tool above it.
 piloop launch REF ROLE [--harness NAME] [--model MODEL] [--reason TEXT] [--scout]
 ```
 
-Asks the daemon for one more agent of `ROLE`: `watchdog` or `research`. The daemon starts it on its next tick,
-within the role's `max_concurrent`. `--scout` asks for a research sweep in [scout mode](/concepts/roles#scout-mode).
+Asks the daemon for one more agent of `ROLE`: `watchdog`, `research` or a
+[role that you defined](/concepts/roles#define-a-role). The daemon starts it on its next tick, within the role's
+`max_concurrent`. `--scout` asks for a research sweep in [scout mode](/concepts/roles#scout-mode).
 Only the daemon starts workers, because a worker needs a run.
 
 ### piloop attach

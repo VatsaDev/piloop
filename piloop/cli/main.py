@@ -12,7 +12,7 @@ from contextlib import closing, contextmanager
 from datetime import timedelta
 from functools import partial
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 
 import cyclopts
 from rich import box
@@ -23,10 +23,10 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from piloop import deprecated, git
-from piloop.agents.roles import PROCEDURES, PROMPTS
+from piloop.agents.roles import PROCEDURES, PROMPTS, files_of
 from piloop.agents.scout import SCOUT_EVENT
 from piloop.campaign import inbox
-from piloop.campaign.ideas import Definition, NotASeed, develop, files_nothing, seeds_only
+from piloop.campaign.ideas import Definition, NotASeed, develop
 from piloop.campaign.project import (
     BLANK,
     EVALUATE_CONTRACT,
@@ -46,7 +46,7 @@ from piloop.campaign.project import (
 from piloop.cli import doctor as doctor_module, skills
 from piloop.cli.upgrade import requirement, source
 from piloop.cli.version import installed
-from piloop.config import ConfigError, RuntimeKind, config_of
+from piloop.config import ConfigError, Files, RuntimeKind, config_of
 from piloop.daemon.main import Daemon
 from piloop.daemon.serve import restart as restart_in_place, running_pid, service_unit, spawn_detached, terminate
 from piloop.db import sql
@@ -229,14 +229,13 @@ def idea_add(
     Research, the orchestrator and humans add ideas. A watchdog files a seed instead (`piloop idea seed`). A worker
     files neither. The idea is signed as PILOOP_ACTOR.
     """
-    _refuse_worker()
-    if seeds_only(settings.actor):
-        raise SystemExit(
-            f'{settings.actor} files seeds, not ideas: `piloop idea seed {ref} "<hunch>" --from "<pointers>"`.'
-            ' Research develops each seed with the whole campaign in view.'
-        )
     with _session() as s:
         project = _project(s, ref)
+        if _files(project) is Files.SEEDS:
+            raise SystemExit(
+                f'{settings.actor} files seeds, not ideas: `piloop idea seed {ref} "<hunch>" --from "<pointers>"`.'
+                ' Research develops each seed with the whole campaign in view.'
+            )
         _check_base(s, project, base)
         idea = Idea(
             project_id=project.id,
@@ -287,11 +286,11 @@ def idea_seed(
     negative results. Then it defines the seed (`piloop idea develop`) or rejects it with the reason. The seed is
     signed as PILOOP_ACTOR.
     """
-    _refuse_worker()
-    if not from_.strip():
-        raise SystemExit('a seed needs pointers: --from "<ids, paths, numbers>"')
     with _session() as s:
         project = _project(s, ref)
+        _files(project)
+        if not from_.strip():
+            raise SystemExit('a seed needs pointers: --from "<ids, paths, numbers>"')
         _check_base(s, project, base)
         idea = Idea(
             project_id=project.id,
@@ -342,13 +341,12 @@ def idea_develop(
     each one. Reject a seed that does not hold up instead, with a note that names the earlier work (see
     `piloop schema`). The idea is signed as PILOOP_ACTOR.
     """
-    _refuse_worker()
-    if seeds_only(settings.actor):
-        raise SystemExit(f'{settings.actor} files seeds; research develops them')
     with _session() as s:
         idea = s.get(Idea, idea_id)
         if idea is None:
             raise SystemExit(f'no idea#{idea_id}')
+        if _files(idea.project) is Files.SEEDS:
+            raise SystemExit(f'{settings.actor} files seeds; research develops them')
         _check_base(s, idea.project, base)
         definition = Definition(hypothesis, evidence, check, metric, effect, plan)
         try:
@@ -359,12 +357,15 @@ def idea_develop(
         console.print(f'idea#{idea.id} {idea.status} p{idea.priority}: {idea.title}', markup=False)
 
 
-def _refuse_worker() -> None:
-    if files_nothing(settings.actor):
+def _files(project: Project) -> Files | None:
+    """Return what the actor may file in ``project`` (``[roles.<name>] files``). Exit if it may file nothing."""
+    files = files_of(config_of(project), settings.actor)
+    if files is Files.NOTHING:
         raise SystemExit(
             f"{settings.actor} files no ideas or seeds: say the hunch in your run's finding, with pointers."
             ' Research reads the findings of the workers.'
         )
+    return files
 
 
 def _track(project: Project, track: str | None) -> str:
@@ -444,12 +445,12 @@ def candidate_note(
     candidate. A worker files no follow-ups. When its candidate does not exist yet, a worker ends its commit message
     with a `Piloop-Note: <reason>` trailer instead, and the daemon applies the note when it judges the commit.
     """
-    if follow_ups:
-        _refuse_worker()
     with _session() as s:
         candidate = s.get(Candidate, candidate_id)
         if candidate is None:
             raise SystemExit(f'no candidate#{candidate_id}')
+        if follow_ups:
+            _files(s.get_one(Project, candidate.project_id))
         try:
             note(candidate, reason, settings.actor)
         except NoteRefused as e:
@@ -592,9 +593,10 @@ def inbox_ack(
 def launch(
     ref: ProjectRef,
     role: Annotated[
-        Literal[WorkerKind.WATCHDOG, WorkerKind.RESEARCH],
+        str,
         cyclopts.Parameter(
-            help='The role of the agent. The daemon launches workers by itself, one for each queued run.'
+            help='The role of the agent: watchdog, research or a role that piloop.toml defines. The daemon launches'
+            ' workers by itself, one for each queued run.'
         ),
     ],
     /,
@@ -612,10 +614,16 @@ def launch(
 
     The daemon launches it on its next tick, within the role's `max_concurrent`.
     """
-    if scout and role is not WorkerKind.RESEARCH:
+    if scout and role != WorkerKind.RESEARCH:
         raise SystemExit('--scout is a mode of the research role: `piloop launch <project> research --scout`')
     with _session() as s:
         project = _project(s, ref)
+        sweeping = config_of(project).roles.sweeping()
+        if role not in sweeping:
+            workers = (
+                ' The daemon launches workers by itself, one for each queued run.' if role == WorkerKind.WORKER else ''
+            )
+            raise SystemExit(f'{project.name} has no sweeping role {role!r}; it has {", ".join(sweeping)}.{workers}')
         worker = Worker(kind=role, project_id=project.id, harness=harness, model=model, reason=reason)
         s.add(worker)
         s.flush()

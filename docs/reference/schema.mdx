@@ -186,7 +186,7 @@ CREATE INDEX ix_candidates_project_verdict ON candidates (project_id, verdict);
 CREATE INDEX ix_candidates_run ON candidates (run_id);
 CREATE TABLE workers (
 	id INTEGER NOT NULL,
-	kind VARCHAR(16) NOT NULL,
+	kind VARCHAR NOT NULL,
 	project_id INTEGER,
 	run_id INTEGER,
 	harness VARCHAR,
@@ -205,10 +205,10 @@ CREATE TABLE workers (
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
 	updated_by VARCHAR,
 	PRIMARY KEY (id),
+	CONSTRAINT "workers.kind must be a text value" CHECK (typeof(kind) IN ('text')),
 	CONSTRAINT "workers.reason must be a text value" CHECK (typeof(reason) IN ('text', 'null')),
 	CONSTRAINT "workers.harness must be a text value" CHECK (typeof(harness) IN ('text', 'null')),
 	CONSTRAINT "workers.model must be a text value" CHECK (typeof(model) IN ('text', 'null')),
-	CONSTRAINT workerkind CHECK (kind IN ('worker', 'watchdog', 'research')),
 	FOREIGN KEY(project_id) REFERENCES projects (id) ON DELETE CASCADE,
 	FOREIGN KEY(run_id) REFERENCES runs (id) ON DELETE SET NULL,
 	CONSTRAINT workerstate CHECK (state IN ('requested', 'starting', 'running', 'exited', 'killed'))

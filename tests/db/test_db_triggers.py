@@ -67,6 +67,7 @@ def test_every_trigger_is_one_statement_named_table_what_and_references_real_col
             'workers_updated_at',
             'comments_escalation_event',
             'idea_links_project',
+            'workers_kind',
             'ideas_fts_insert',
             'ideas_fts_delete',
             'ideas_fts_update',

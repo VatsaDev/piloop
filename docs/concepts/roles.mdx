@@ -1,11 +1,11 @@
 ---
 title: Roles
-description: The worker, the watchdog and the research agent. Every agent that piloop starts has one of these roles.
+description: The worker, the watchdog, the research agent and the roles that you define. Every agent that piloop starts has a role.
 ---
 
-piloop starts three kinds of agents. Each kind is a **role**. Every agent is a coding agent CLI (a **harness**:
-Claude Code, Codex or pi) that runs in a git worktree of the project, with a brief, and reads and writes the piloop
-database.
+Every agent that piloop starts has a **role**. Every agent is a coding agent CLI (a **harness**: Claude Code, Codex or
+pi) that runs in a git worktree of the project, with a brief, and reads and writes the piloop database. piloop has
+three built-in roles. You can [define more](#define-a-role) in `piloop.toml`.
 
 | Role | What it does | When the daemon starts one | Its worktree |
 |---|---|---|---|
@@ -17,6 +17,10 @@ Every role has the same lifecycle. The daemon writes a `workers` row, starts the
 times out, saves the screen transcript, reads the tokens that the agent used, attaches the session to
 [Entire](/concepts/session-capture), and closes the row. `piloop status` lists the running agents with their ids.
 
+The worker is the only role that does runs: the run queue starts it, it works at the starting point of its run, and
+its commits are scored and judged when it ends. Every other role is a **sweeping** role. Its triggers start it, it
+works at the head or in the project checkout, and nothing is scored when it ends.
+
 The [orchestrator](/concepts/orchestrator) is not a role. The daemon never starts it.
 
 ## Configure a role
@@ -25,12 +29,24 @@ Each role has a table in `piloop.toml`. These keys are common to every role:
 
 | Key | Meaning |
 |---|---|
+| `prompt` | The file that starts the role's brief, instead of the built-in one. |
+| `runtime` | Where the role's agents run (`subprocess` or `herdr`). Unset: the project's `runtime`. |
 | `harnesses` | The harnesses that the role uses in turn. Unset: the project's `harnesses`. |
 | `model` | The model for each harness, merged over the project's `[model]`. |
 | `timeout` | Seconds before the daemon stops the agent. |
 | `max_concurrent` | Agents of this role that run at the same time. |
 | `addendum` | A file in the repo that is added to `brief.md` for this role only. |
 | `mcp` | The [MCP servers](/guides/mcp-servers) that the role's agents get. |
+| `writes` | What the role's agents may write, as their brief states it. |
+| `files` | What the role's agents may file with `piloop idea`: `nothing`, `seeds` or `ideas`. The CLI refuses the rest. |
+
+A sweeping role also has these keys:
+
+| Key | Meaning |
+|---|---|
+| `triggers` | When the daemon starts one of its agents. See [Triggers](#triggers). |
+| `workdir` | `head` (the default): a new worktree at the head, removed when the agent ends. `project`: the project checkout itself. |
+| `interval` | Seconds between two sweeps of the `cron` trigger. 0 turns the timer off. |
 
 The defaults:
 
@@ -41,11 +57,13 @@ max_concurrent = 4      # each worker is a coding agent process on this machine
 explore_every = 4       # at least 1 run in 4 starts from a pinned idea, when one is ready
 
 [roles.watchdog]
+triggers = [{ kind = "anomaly" }, { kind = "cron" }]
 interval = 1800         # seconds between progress reviews; 0 turns them off
 timeout = 600
 max_concurrent = 1
 
 [roles.research]
+triggers = [{ kind = "low_water" }, { kind = "seed" }, { kind = "scout" }]
 max_ideas = 1           # ideas of its own per sweep, after the seeds
 buffer = 2              # ready ideas to keep beyond one per worker slot
 timeout = 900
@@ -55,6 +73,71 @@ max_concurrent = 1
 The top-level `[max_concurrent]` table limits one harness across every role, for example `claude = 2` when your
 account limits the request rate. When it is the turn of a harness at its limit, the slot goes to the next harness of
 the rotation.
+
+## Triggers
+
+A trigger is a condition that the daemon checks on each tick, for each project. When a trigger of a sweeping role
+fires, the daemon requests one more agent of that role. The agent's brief shows the reason. Each entry of `triggers` is
+a table with the trigger's `kind` and its parameters:
+
+| Trigger | Fires when | Parameters |
+|---|---|---|
+| `anomaly` | The daemon detects an incident that no agent got yet. The agent gets the incidents to investigate. | none |
+| `cron` | The role's `interval` passed since its last routine sweep, one that got no anomaly. | none: it reads the role's `interval` |
+| `seed` | A seed was filed after the role's last agent started. | none |
+| `low_water` | The backlog of runnable ideas is short. Research only. | none: it reads `max_ideas` and `buffer` |
+| `scout` | `[roles.research.scout] interval` passed since the last scout sweep. Research only. | none |
+| `sql` | A query on the piloop database returns a row. | `when`: the query |
+
+The daemon checks the triggers in the order of the list. It requests at most one batch for each role on each tick,
+and it requests nothing while a request of the role waits to start. An `anomaly` or `scout` fire changes what the
+agent does, so it gets an agent of its own: it fires alone when it is the first trigger to fire, and otherwise waits
+for a later tick.
+
+A `sql` query can use two parameters: `:project`, the project's id, and `:since`, when the role's last agent started.
+Compare `:since` with a `created_at` column to fire only on what is new. `piloop init` checks the query on an empty
+copy of the database: it must be one statement that only reads.
+
+Change the triggers of a built-in role with its `triggers` key. For example, this watchdog does not investigate
+anomalies, and only reviews progress every hour:
+
+```toml
+[roles.watchdog]
+triggers = [{ kind = "cron" }]
+interval = 3600
+```
+
+An empty list turns the triggers off. The role then starts only when you ask (`piloop launch`).
+
+## Define a role
+
+A table with a new name defines a new sweeping role. It needs `prompt`, the file that starts its brief, and
+`triggers`. The other keys have the defaults of the [configuration reference](/reference/configuration#sweeprole).
+This reviewer reads each new keep and files a seed when it finds a problem:
+
+```toml
+[roles.reviewer]
+prompt = "briefs/reviewer.md"   # relative to the repo root
+triggers = [
+  { kind = "sql", when = "SELECT id FROM candidates WHERE project_id = :project AND verdict = 'keep' AND created_at > :since" },
+]
+workdir = "head"
+runtime = "subprocess"
+max_concurrent = 1
+timeout = 900
+files = "seeds"
+writes = ["comments(finding) on a candidate", "seeds via idea seed"]
+```
+
+The brief of a reviewer is your prompt, then `brief.md`, the database procedures and its context: its signature
+(`reviewer#<worker id>`), the reason it started, the project overview and the research pack. Run `piloop init` after
+you change the table. `piloop launch <project> reviewer` asks for one more reviewer by hand.
+
+A role name has at most 20 characters: lowercase letters, digits, `_` and `-`, and a letter first. `scout`, `run`,
+`orchestrator`, `human` and `daemon` are taken.
+
+A Python package can also add roles and triggers. See
+[Extension points](/architecture/extension-points#roles-and-triggers).
 
 ## Worker
 
@@ -118,7 +201,8 @@ Ask for one scout sweep with `piloop launch <project> research --scout`. A searc
 
 ## Ask for one more agent
 
-`piloop launch <project> research` (or `watchdog`) asks the daemon for one more agent of that role. The daemon starts
+`piloop launch <project> research` (or `watchdog`, or a role that you defined) asks the daemon for one more agent of
+that role. The daemon starts
 it on its next tick, within `max_concurrent`. Use `--harness` and `--model` to choose the agent's harness and model,
 and `--reason` to add a line to its brief.
 
@@ -138,4 +222,4 @@ INSERT INTO workers (kind, project_id, state, reason) VALUES ('research', 1, 're
 background process without a pane.
 
 Each agent's brief, log and transcript are in `~/.piloop/runs/<run>/` for a worker, and in
-`~/.piloop/workers/<worker-id>/` for the other roles.
+`~/.piloop/workers/<worker-id>/` for the sweeping roles.

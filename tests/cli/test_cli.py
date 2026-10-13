@@ -11,7 +11,6 @@ from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-import cyclopts
 import pytest
 from alembic.script import ScriptDirectory
 from git import Repo
@@ -744,9 +743,10 @@ def test_launch_requests_a_worker(project_path: Path, out) -> None:
     assert '- Agents live: none; requested: research#1, watchdog#2' in out(), (
         'a request is not an agent until the daemon launches it'
     )
-    for role in ('janitor', 'worker'):
-        with pytest.raises(cyclopts.exceptions.CoercionError, match='Choose from: "watchdog", "research"'):
-            run_cli(['launch', 'demo', role])
+    with pytest.raises(SystemExit, match="demo has no sweeping role 'janitor'; it has watchdog, research.$"):
+        run_cli(['launch', 'demo', 'janitor'])
+    with pytest.raises(SystemExit, match='The daemon launches workers by itself, one for each queued run'):
+        run_cli(['launch', 'demo', 'worker'])
     run_cli(['launch', 'demo', 'research', '--scout', '--reason', 'look outside'])
     assert out().strip() == 'worker#3 research (scout) requested for demo: look outside'
     db = Database(cli.settings.database_url, actor=cli.settings.actor)

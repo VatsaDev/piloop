@@ -30,11 +30,15 @@ codex = "gpt-6.1-sol"
 # command = ["python3", "server.py"]      # or a stdio server (keys: command, env)
 # env = ["XAI_API_KEY"]                   # the variables that a stdio server reads
 
-[roles.worker]                            # a worker tries one idea in a new worktree
+[roles.worker]                            # a worker tries one idea in a new worktree; its commits are scored
 # harnesses = ["pi", "claude", "codex"]   # if not set: the project's harnesses
 # model = { pi = "..." }                  # merged over [model]
 # addendum = "briefs/worker.md"           # a file appended to brief.md in this role's briefs only
 # mcp = ["exa"]                           # the [mcp.<name>] servers that this role's agents get; none by default
+# prompt = "briefs/my-worker.md"          # a file that replaces the built-in start of this role's brief
+# runtime = "herdr"                       # if not set: the project's runtime
+# writes = ["commits"]                    # what the brief says the role may write; default: what piloop expects of it
+# files = "nothing"                       # what its agents may file with `piloop idea`: nothing, seeds or ideas
 timeout = 1800                            # seconds one worker may run
 max_concurrent = 4                        # the most runs at the same time; each run is one harness process on this machine
 explore_every = 4                         # at least 1 run in 4 starts from a pinned idea, when one is ready; 0 = off
@@ -44,7 +48,13 @@ explore_every = 4                         # at least 1 run in 4 starts from a pi
 # model = { pi = "..." }                  # merged over [model]
 # addendum = "briefs/watchdog.md"         # a file appended to brief.md in this role's briefs only
 # mcp = []                                # the [mcp.<name>] servers that this role's agents get; none by default
-interval = 1800                           # 0 turns the timer off
+# prompt = "briefs/my-watchdog.md"        # a file that replaces the built-in start of this role's brief
+# runtime = "herdr"                       # if not set: the project's runtime
+# writes = ["comments(finding)"]          # what the brief says the role may write; default: what piloop expects of it
+# files = "seeds"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
+triggers = [{ kind = "anomaly" }, { kind = "cron" }]  # an anomaly, and the timer below; checked in this order
+# workdir = "project"                     # head (the default): a worktree at the head · project: the project checkout
+interval = 1800                           # seconds between two progress reviews of the cron trigger; 0 turns it off
 timeout = 600
 max_concurrent = 1
 
@@ -53,6 +63,13 @@ max_concurrent = 1
 # model = { pi = "..." }                  # merged over [model]
 # addendum = "briefs/research.md"         # a file appended to brief.md in this role's briefs only
 # mcp = ["exa"]                           # the [mcp.<name>] servers that this role's agents get; none by default
+# prompt = "briefs/my-research.md"        # a file that replaces the built-in start of this role's brief
+# runtime = "herdr"                       # if not set: the project's runtime
+# writes = ["ideas via idea add"]         # what the brief says the role may write; default: what piloop expects of it
+# files = "ideas"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
+triggers = [{ kind = "low_water" }, { kind = "seed" }, { kind = "scout" }]  # a short backlog, a new seed, the scout
+# workdir = "project"                     # head (the default): a worktree at the head · project: the project checkout
+# interval = 0                            # seconds between two sweeps of a cron trigger, if you add one
 max_ideas = 1                             # new ideas per sweep, after the seeds; 0 = seeds only
 context = []                              # files research reads first, for example ["docs/error-analysis.md"]
 buffer = 2                                # ideas to keep ready beyond one per worker slot
@@ -62,6 +79,11 @@ max_concurrent = 1                        # sweeps at the same time; more than o
 # [roles.research.scout]                  # experimental: research sweeps that search for outside techniques; off by default
 # interval = 86400                        # required in this table; seconds between two scout sweeps
 # seeds = 3                               # the most seeds one scout sweep may file
+
+# [roles.reviewer]                        # a role of your own: any new name; it needs a prompt and triggers
+# prompt = "briefs/reviewer.md"           # the file that starts its brief
+# triggers = [{ kind = "sql", when = "SELECT 1 FROM candidates WHERE project_id = :project AND verdict = 'keep' AND created_at > :since" }]
+# max_concurrent = 1                      # it takes every key of [roles.watchdog] except its defaults
 
 # [stop]                                  # any one of these ends the campaign; leave the table out to run with no end
 # target = 0.85                           # the primary metric at the head reaches this value (one track only)
