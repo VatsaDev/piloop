@@ -35,6 +35,7 @@ codex = "gpt-6.1-sol"
 # model = { pi = "..." }                  # merged over [model]
 # addendum = "briefs/worker.md"           # a file appended to brief.md in this role's briefs only
 # mcp = ["exa"]                           # the [mcp.<name>] servers that this role's agents get; none by default
+# wake_budget = 400                       # tokens of the lessons overview that opens the brief; if not set: [memory]'s
 timeout = 1800                            # seconds one worker may run
 max_concurrent = 4                        # the most runs at the same time; each run is one harness process on this machine
 explore_every = 4                         # at least 1 run in 4 starts from a pinned idea, when one is ready; 0 = off
@@ -44,6 +45,7 @@ explore_every = 4                         # at least 1 run in 4 starts from a pi
 # model = { pi = "..." }                  # merged over [model]
 # addendum = "briefs/watchdog.md"         # a file appended to brief.md in this role's briefs only
 # mcp = []                                # the [mcp.<name>] servers that this role's agents get; none by default
+wake_budget = 0                           # the lessons overview is off: the closing review reads the lessons itself
 interval = 1800                           # 0 turns the timer off
 timeout = 600
 max_concurrent = 1
@@ -53,6 +55,7 @@ max_concurrent = 1
 # model = { pi = "..." }                  # merged over [model]
 # addendum = "briefs/research.md"         # a file appended to brief.md in this role's briefs only
 # mcp = ["exa"]                           # the [mcp.<name>] servers that this role's agents get; none by default
+# wake_budget = 400                       # tokens of the lessons overview that opens the brief; if not set: [memory]'s
 max_ideas = 1                             # new ideas per sweep, after the seeds; 0 = seeds only
 context = []                              # files research reads first, for example ["docs/error-analysis.md"]
 buffer = 2                                # ideas to keep ready beyond one per worker slot
@@ -69,6 +72,10 @@ max_concurrent = 1                        # sweeps at the same time; more than o
 # max_hours = 12                          # hours since the project's first run started
 # max_tokens = 50000000                   # tokens that all the agents of the project spent together
 # plateau = 50                            # counted runs in a row without a new keep
+
+# [memory]                                # what past campaigns leave for the next ones; see the research memory page
+# documents = ["docs/evidence/**/*.md"]   # repo files that `piloop init` and the stop copy into `documents`; default none
+# wake_budget = 400                       # tokens of the current lessons that open worker and research briefs; 0 = off
 
 # [spend]                                 # a hard limit in USD on what the campaign costs outside piloop (GPUs, APIs)
 # command = ["uv", "run", "scripts/spend.py"]  # prints the spend so far in USD; it gets secrets from the daemon's environment

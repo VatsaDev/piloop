@@ -24,6 +24,7 @@ from piloop.daemon.runner import INTERRUPTED, NO_CHANGES, UNCOMMITTED_SUMMARY, R
 from piloop.db.models import (
     Candidate,
     Comment,
+    CommentKind,
     Event,
     Idea,
     IdeaStatus,
@@ -389,6 +390,36 @@ def test_brief_carries_history_and_comments(
     assert 'Tried so far' not in brief
     assert '-m piloop sql' in brief and "'worker#2', 'finding'" in brief
     assert '- A hunch worth a run of its own goes in your finding' in brief and 'idea seed demo' not in brief
+
+
+@pytest.mark.parametrize('budget', [400, 0])
+def test_a_worker_brief_opens_with_the_current_lessons_of_the_repo_within_its_budget(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, budget: int
+) -> None:
+    with db.session() as s:
+        p = s.get_one(Project, project.id)
+        p.repo = 'github.com/o/r'
+        p.config = load_project_config(Path(project.path), roles={'worker': {'wake_budget': budget}}).model_dump(
+            mode='json'
+        )
+        s.add(
+            Comment(
+                target_kind=TargetKind.PROJECT,
+                target_id=project.id,
+                author='watchdog#9',
+                kind=CommentKind.LESSON,
+                body='family: voting | status: dead | best: +0 score (evaluator#1)\nidea#1',
+            )
+        )
+        s.commit()
+    run_id = make_run(db, project)
+    execute(executor(db, runtime, tmp_path), db, run_id)
+    brief = run_row(db, run_id).brief or ''
+    line = '- [demo] family: voting | status: dead | best: +0 score (evaluator#1) (comment#1)'
+    if budget:
+        assert brief.index('# Worker') < brief.index(line) < brief.index('# Demo'), 'after the role, before the project'
+    else:
+        assert line not in brief and 'What past campaigns' not in brief, '[roles.worker] wake_budget = 0 turns it off'
 
 
 def test_pre_written_brief_is_used_verbatim(

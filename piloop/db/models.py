@@ -126,12 +126,38 @@ class TargetKind(StrEnum):
 
 
 class CommentKind(StrEnum):
-    """Why a comment was written. An ``escalation`` asks for a decision and is always in the human's inbox."""
+    """Why a comment was written. An ``escalation`` asks for a decision and is always in the human's inbox.
+
+    A ``lesson`` is the standing conclusion about one mechanism family (``ideas.family``) of a project. The closing
+    watchdog writes one for each family that a campaign tried. It replaces the findings on that family, and the newest
+    lesson for a (project, family) is the current one. It is on its project, and its first line is ``LESSON_FORMAT``
+    (CHECKs).
+    """
 
     NOTE = 'note'
     FINDING = 'finding'
     DECISION = 'decision'
     ESCALATION = 'escalation'
+    LESSON = 'lesson'
+
+
+LESSON_FORMAT = 'family: <family> | status: dead|promising|untested | best: <+N metric> (<evaluator/eval>)'
+"""The first line of a lesson. The lines below it say why, and cite idea and candidate ids."""
+LESSON_STATUSES = ('dead', 'promising', 'untested')
+
+
+def lesson_checks() -> tuple[CheckConstraint, ...]:
+    """A lesson is on a project, and the first line of its body is ``LESSON_FORMAT``.
+
+    Agents write lessons with raw SQL, and the queries that find the current lesson of a family read that line. The
+    name of each CHECK says what it requires, so the error that an agent gets says it too.
+    """
+    first = 'substr(body, 1, instr(body || char(10), char(10)) - 1)'
+    line = ' OR '.join(f"{first} GLOB 'family: ?* | status: {status} | best: ?*'" for status in LESSON_STATUSES)
+    return (
+        CheckConstraint("kind != 'lesson' OR target_kind = 'project'", name='a lesson is on its project'),
+        CheckConstraint(f"kind != 'lesson' OR ({line})", name=f'a lesson starts {LESSON_FORMAT}'),
+    )
 
 
 class WorkerKind(StrEnum):
@@ -259,6 +285,10 @@ class Project(Tracked, Base):
     """Why the last run of ``[spend] command`` failed. None after a run succeeds. While it is set, nothing launches."""
     spend_at: Mapped[datetime | None]
     """When ``[spend] command`` ran last, whatever the result. Its ``interval`` counts from this time."""
+    repo: Mapped[str | None]
+    """The repository that the project works on, the same for every clone of it: the URL of its ``origin`` remote
+    (else of its first remote) as ``host/owner/name``, else ``path``. ``piloop init`` sets it. Past work on the same
+    code is ``WHERE repo = (SELECT repo FROM projects WHERE id = <p>)``."""
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
     ideas: Mapped[list[Idea]] = relationship(back_populates='project', order_by='Idea.id')
@@ -531,6 +561,7 @@ class Comment(Tracked, Base):
         Index('ix_comments_inbox', 'priority', 'id', sqlite_where=text('priority IS NOT NULL AND acked_at IS NULL')),
         CheckConstraint("kind != 'escalation' OR priority IS NOT NULL", name='escalation_needs_priority'),
         *text_checks('comments', 'author', 'body'),
+        *lesson_checks(),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -573,6 +604,69 @@ class Technique(Base):
     """The primary source: a post, repo or paper. Unique in a project, so the same link is never filed twice."""
     created_by: Mapped[str]
     """Who filed it: the scout (``scout#<worker id>``) or someone else."""
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
+
+
+class Document(Tracked, Base):
+    """A text document of a project, for agents to search: a campaign report, an orchestrator log, a design note.
+
+    ``piloop init`` and the stop of a campaign copy in the repo files that ``[memory] documents`` names. Agents may
+    insert more with raw SQL: ``hash`` is ``blake3(body)``, a function that every piloop connection has. Each version
+    is a row. One path may have several versions, and the newest has the highest ``id``. The same text at the same
+    path is one row, however often it is synced. ``documents_fts`` indexes the title and the body. Never a document
+    derived from validation or test data: nothing that agents can search may show the scored data.
+    """
+
+    __tablename__ = 'documents'
+    __table_args__ = (
+        UniqueConstraint('project_id', 'path', 'hash'),
+        CheckConstraint(
+            "length(hash) = 64 AND hash NOT GLOB '*[^0-9a-f]*'", name='documents.hash is the blake3 hex digest of body'
+        ),
+        *text_checks('documents', 'path', 'title', 'body', 'created_by', nullable=('commit_sha',)),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'))
+    path: Mapped[str]
+    """Where it is: repo-relative for a synced file, or else wherever its writer keeps it."""
+    hash: Mapped[str]
+    """BLAKE3 of the UTF-8 bytes of the body, in lowercase hex. It makes a sync of unchanged text do nothing."""
+    title: Mapped[str]
+    """Its first heading, or else the file name."""
+    body: Mapped[str]
+    commit_sha: Mapped[str | None]
+    """The commit that last changed the file, when the sync read a clean, tracked file. NULL otherwise."""
+    created_by: Mapped[str]
+    """Who inserted it: the actor of ``piloop init``, or the daemon, for a synced file. Else the agent's signature."""
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
+
+
+JOURNAL_LINE_BYTES = 280
+"""The longest journal line, in UTF-8 bytes: one decision, plan or result, with its ids."""
+
+
+class Journal(Base):
+    """The orchestrator's journal: one line for each decision, plan or result, so a new session can pick up the work.
+
+    A coordinating session can lose its context (a crash, a full window). ``piloop wake`` prints the latest lines
+    first, next to the lessons, the inbox and the heads. ``piloop journal "<line>"`` appends a line, signed with the
+    actor. Rows are never updated or deleted.
+    """
+
+    __tablename__ = 'journal'
+    __table_args__ = (
+        CheckConstraint(
+            f"typeof(line) IN ('text') AND length(CAST(line AS BLOB)) BETWEEN 1 AND {JOURNAL_LINE_BYTES}",
+            name=f'journal.line is text of 1 to {JOURNAL_LINE_BYTES} bytes',
+        ),
+        *text_checks('journal', 'author'),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    author: Mapped[str]
+    """Who wrote it, for example ``orchestrator``."""
+    line: Mapped[str]
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
 

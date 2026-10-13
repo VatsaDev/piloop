@@ -22,7 +22,7 @@ from sqlalchemy.engine import ExceptionContext
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import ConnectionPoolEntry
 
-from piloop.db.sql import CONNECTION_PRAGMAS, install_actor, lock_holder, optimize
+from piloop.db.sql import CONNECTION_PRAGMAS, install_actor, install_functions, lock_holder, optimize
 
 MIGRATIONS = Path(__file__).parent / 'migrations'
 
@@ -49,6 +49,7 @@ def make_engine(url: str, actor: str) -> Engine:
     def on_connect(conn: sqlite3.Connection, _record: ConnectionPoolEntry) -> None:
         _pragmas(conn)
         install_actor(conn, actor)
+        install_functions(conn)
 
     def on_close(conn: sqlite3.Connection, _record: ConnectionPoolEntry) -> None:
         optimize(conn)
@@ -112,11 +113,19 @@ def _migration_lock(database: Path) -> Generator[None]:
 
 
 def revision(engine: Engine) -> str | None:
-    """The Alembic revision of the database. None when it was never migrated or does not exist yet."""
+    """The Alembic revision of the database. None when it was never migrated or does not exist yet.
+
+    It reads on a plain engine. The connections of a piloop engine install the actor triggers, and those name tables
+    that a database behind this piloop's schema does not have yet.
+    """
     if not Path(engine.url.database or '').is_file():
         return None
-    with engine.connect() as conn:
-        return MigrationContext.configure(conn).get_current_revision()
+    plain = create_engine(engine.url)
+    try:
+        with plain.connect() as conn:
+            return MigrationContext.configure(conn).get_current_revision()
+    finally:
+        plain.dispose()
 
 
 class Database:

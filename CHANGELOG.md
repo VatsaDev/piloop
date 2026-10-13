@@ -7,6 +7,24 @@ A deprecated configuration key shows a warning for at least one minor release be
 
 ## [Unreleased]
 
+### Added
+
+- Research memory: past research can be found by SQL from every agent, across every project on the same code.
+  - A `lesson` comment is the standing conclusion about one mechanism family. The newest for a project and family is
+    the current one. CHECKs keep it on its project, with the first line `family: <family> | status:
+    dead|promising|untested | best: <+N metric> (<evaluator/eval>)`. The closing watchdog writes one for each family
+    that the campaign tried.
+  - The `documents` table holds reports, logs and design notes. `[memory] documents` globs are copied in on `piloop
+    init` and when a campaign stops. Agents search them with `documents_fts`, and add their own with `hash =
+    blake3(body)`.
+  - `projects.repo` names the repository, whatever the clone.
+  - The briefs of workers and research sweeps open with the current lessons of the repo, in `[memory] wake_budget`
+    tokens (`[roles.<kind>] wake_budget` per role, 0 turns it off).
+  - The procedures, the briefs and the operate and review skills have the queries.
+- The orchestrator's journal: `piloop journal "<line>"` appends one line of at most 280 bytes, and `piloop wake`
+  prints a bounded overview for a new orchestrator session: the latest journal lines, the open inbox, the active
+  projects' heads and the current lessons.
+
 ## [0.1.0] - 2026-10-13
 
 Initial public release.

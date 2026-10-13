@@ -68,7 +68,9 @@ is no longer a seed.
    - notes, and discarded and interesting candidates (their diffs);
    - the evidence documents and the loss table;
    - `ideas_fts` and `comments_fts`, for the mechanism's names and synonyms. They hold every idea and comment the
-     project ever had, not only what the pack shows.
+     project ever had, not only what the pack shows;
+   - the lessons, prior attempts and documents of every project on this repo ("Remember past campaigns" in the
+     procedures).
 2. **Is it a duplicate?** If an idea that is ready, scheduled or done tests the same mechanism, reject the seed with a
    note that names that idea. If the seed adds an angle, also say so in a note on that idea, while it can still reach a
    worker.
@@ -143,11 +145,15 @@ ideas must be one of these:
 - a revisit of a discarded direction that was ruled out by reluctance, not by evidence: it never ran, or a finding
   dropped it for lack of support rather than for a measured loss.
 
-Before each idea, check what was tried: the families table, the ideas table, `ideas_fts` and `comments_fts`.
+Before each idea, check what was tried: the families table, the ideas table, `ideas_fts` and `comments_fts`, and what
+past campaigns on this repo left ("Remember past campaigns" in the procedures): their lessons and their attempts at
+the mechanism, each under its own evaluator.
 
-- A family that was tried is open only with a new angle that the hypothesis names.
+- A family that was tried, here or in another project, is open only with a new angle that the hypothesis names.
 - A hyperparameter of something tried is not a new angle.
-- A retry of an attempt that failed on implementation is a new angle (2.3).
+- A retry of an attempt that failed on implementation is a new angle (2.3), and so is one that a `dead` lesson's
+  evidence does not cover.
+- Name the prior work that you checked in `--from`.
 
 Other sweeps can run at the same time as yours. Before you add, read what landed since your sweep started (the time is
 in the context block):

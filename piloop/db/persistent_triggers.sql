@@ -31,6 +31,11 @@ WHEN NEW.updated_at IS OLD.updated_at AND NEW.updated_by IS OLD.updated_by
 BEGIN
   UPDATE workers SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = NEW.id;
 END;
+CREATE TRIGGER documents_updated_at AFTER UPDATE ON documents
+WHEN NEW.updated_at IS OLD.updated_at AND NEW.updated_by IS OLD.updated_by
+BEGIN
+  UPDATE documents SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = NEW.id;
+END;
 CREATE TRIGGER comments_escalation_event AFTER INSERT ON comments
 WHEN NEW.kind = 'escalation'
 BEGIN
@@ -67,4 +72,17 @@ CREATE TRIGGER comments_fts_update AFTER UPDATE OF id, body ON comments
 BEGIN
   INSERT INTO comments_fts (comments_fts, rowid, body) VALUES ('delete', OLD.id, OLD.body);
   INSERT INTO comments_fts (rowid, body) VALUES (NEW.id, NEW.body);
+END;
+CREATE TRIGGER documents_fts_insert AFTER INSERT ON documents
+BEGIN
+  INSERT INTO documents_fts (rowid, title, body) VALUES (NEW.id, NEW.title, NEW.body);
+END;
+CREATE TRIGGER documents_fts_delete AFTER DELETE ON documents
+BEGIN
+  INSERT INTO documents_fts (documents_fts, rowid, title, body) VALUES ('delete', OLD.id, OLD.title, OLD.body);
+END;
+CREATE TRIGGER documents_fts_update AFTER UPDATE OF id, title, body ON documents
+BEGIN
+  INSERT INTO documents_fts (documents_fts, rowid, title, body) VALUES ('delete', OLD.id, OLD.title, OLD.body);
+  INSERT INTO documents_fts (rowid, title, body) VALUES (NEW.id, NEW.title, NEW.body);
 END;

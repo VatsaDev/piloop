@@ -161,7 +161,9 @@ def register(s: Session, path: Path) -> tuple[Project, Measurement]:
         git.remove_worktree(repo, wt)
     if result.error is not None:
         raise ProjectError(f'baseline failed to evaluate: {result.error}; its log is in {log_dir}')
-    project = Project(name=cfg.name, path=str(path.resolve()), config=cfg.model_dump(mode='json'))
+    project = Project(
+        name=cfg.name, path=str(path.resolve()), repo=git.identity(path), config=cfg.model_dump(mode='json')
+    )
     s.add(project)
     s.flush()
     shutil.copytree(staging, settings.projects_dir / str(project.id), symlinks=True, dirs_exist_ok=True)
@@ -215,9 +217,11 @@ def sync(s: Session, project: Project) -> ProjectConfig:
     """Read the repo's ``piloop.toml`` into the project row again.
 
     A change to ``evaluate``, ``metrics`` or ``link`` makes a new evaluator. A stopped project whose ``[stop]`` table
-    changed becomes active again, because the human changed the stop conditions.
+    changed becomes active again, because the human changed the stop conditions. The repo's identity is read again
+    too, because a remote may have been added since.
     """
     cfg = load_project_config(Path(project.path))
+    project.repo = git.identity(Path(project.path))
     config = cfg.model_dump(mode='json')
     if project.status is ProjectStatus.STOPPED and config['stop'] != project.config.get('stop'):
         project.status, project.stopped_reason = ProjectStatus.ACTIVE, None

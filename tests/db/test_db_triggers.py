@@ -65,6 +65,7 @@ def test_every_trigger_is_one_statement_named_table_what_and_references_real_col
             'candidates_updated_at',
             'comments_updated_at',
             'workers_updated_at',
+            'documents_updated_at',
             'comments_escalation_event',
             'idea_links_project',
             'ideas_fts_insert',
@@ -73,6 +74,9 @@ def test_every_trigger_is_one_statement_named_table_what_and_references_real_col
             'comments_fts_insert',
             'comments_fts_delete',
             'comments_fts_update',
+            'documents_fts_insert',
+            'documents_fts_delete',
+            'documents_fts_update',
         ]
     )
     assert [t.name for t in TEMP] == snapshot(
@@ -83,6 +87,7 @@ def test_every_trigger_is_one_statement_named_table_what_and_references_real_col
             'candidates_updated_by',
             'comments_updated_by',
             'workers_updated_by',
+            'documents_updated_by',
             'ideas_status_event',
             'ideas_priority_event',
             'ideas_track_event',

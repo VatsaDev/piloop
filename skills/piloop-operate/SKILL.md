@@ -47,8 +47,10 @@ Do not let your shell tool kill the wait:
 
 Steps:
 
-1. **Start.** Run `piloop status` and `piloop inbox`. Items that already wait are yours too: the wait reports only
-   new items.
+1. **Start.** Run `PILOOP_ACTOR=orchestrator piloop wake` first. In a fixed budget (`--budget <tokens>`), it prints
+   your journal (what earlier sessions decided, planned and found), the open inbox, the head of each active project
+   and the current lessons. Then run `piloop status` and `piloop inbox`. Items that already wait are yours too: the
+   wait reports only new items.
 2. **Wait.** Run the command above.
 3. **Read** each line.
    - An item: `piloop inbox show <id>` shows it with its thread.
@@ -59,7 +61,11 @@ Steps:
    only the human can decide.
 6. **Act.** Apply the decision: ideas, priorities, sweeps, `piloop.toml` followed by `piloop init .`.
    Never raise `[spend] limit` yourself. A `Spend limit reached` escalation belongs to the human.
-7. **Report** when the human is present, at least every few waits or every hour. Then go back to step 2.
+7. **Journal** each decision, plan and result as you go, one line with its ids:
+   `PILOOP_ACTOR=orchestrator piloop journal "sync-r1: parked idea#412 (dup of #398); next: compose c#486+c#501"`.
+   At most 280 bytes. A session that loses its context (a crash, a full window) starts again from `piloop wake`, so
+   write what the next session needs, not what the database already says.
+8. **Report** when the human is present, at least every few waits or every hour. Then go back to step 2.
    - Give one short status: the head against the baseline (per track when there are several), what ran, what you
      decided. `piloop status <name>` has the numbers.
    - Include the keeps by source in every digest: the "ideas by source" table at the top of `piloop history <name>`.
@@ -330,6 +336,27 @@ without a priority), out of the inbox.
     for a specific question.
 - Every agent session is attached to Entire when the agent ends, if `entire` is installed
   (`curl -fsSL https://entire.io/install.sh | bash`). A session that a daemon stop cut short is not attached.
+
+## Past research
+
+Every campaign that ever ran is in the database. `projects.repo` names the code that each project worked on, the same
+for every clone. Before you add an idea, and when an agent asks whether something was tried, query it. `piloop
+schema` ("Remember past campaigns") has every query: implementations to copy from any project, documents, the
+session that worked a past idea.
+
+- Prior attempts on this repo, in every project, with what judged them. A discard under one evaluator is not dead
+  under another: `SELECT p.name, i.id, i.status, i.title FROM ideas_fts JOIN ideas i ON i.id = ideas_fts.rowid JOIN
+  projects p ON p.id = i.project_id WHERE ideas_fts MATCH '<mechanism>' AND p.repo = (SELECT repo FROM projects WHERE
+  id = <p>) ORDER BY bm25(ideas_fts) LIMIT 20`.
+- Lessons: the standing conclusion about each mechanism family, written by the closing watchdog when a campaign stops.
+  The newest for each project and family is the current one, and `piloop wake` lists them. You may write one too: a
+  comment of kind `lesson` on the project, with the first line `family: <family> | status: dead|promising|untested |
+  best: <+N metric> (<evaluator/eval>)`, then why, citing ids.
+- Documents: the reports and logs that `[memory] documents` in `piloop.toml` names, copied in on `piloop init` and
+  when the campaign stops. Search them with `documents_fts MATCH '<words>'`. Point the globs at reports, never at
+  anything derived from validation or test data.
+- Briefs of workers and research sweeps open with the current lessons of the repo, in `[memory] wake_budget` tokens
+  (0 turns it off; `[roles.<kind>] wake_budget` changes it for one role).
 
 ## Judge candidates
 

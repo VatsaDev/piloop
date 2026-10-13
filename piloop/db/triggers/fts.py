@@ -1,6 +1,6 @@
-"""Full-text search over ideas and comments: FTS5 external-content indexes and the sync triggers that update them.
+"""Full-text search over ideas, comments and documents: FTS5 external-content indexes and the sync triggers that update them.
 
-``ideas_fts`` and ``comments_fts`` index every row, so "has anyone tried soft voting" is one ``MATCH`` query, however
+``ideas_fts``, ``comments_fts`` and ``documents_fts`` index every row, so "has anyone tried soft voting" is one ``MATCH`` query, however
 long the campaign is. An external-content table (``content='ideas'``) stores only the index, never a second copy of
 the text. So three triggers on each table must tell the index about every insert, delete and change of the indexed
 columns.
@@ -10,7 +10,11 @@ The authorizer (``piloop.db.sql``) lets only these triggers write the indexes.
 
 from piloop.db.triggers.ddl import Trigger
 
-FTS_COLUMNS: dict[str, tuple[str, ...]] = {'ideas': ('title', 'hypothesis', 'plan'), 'comments': ('body',)}
+FTS_COLUMNS: dict[str, tuple[str, ...]] = {
+    'ideas': ('title', 'hypothesis', 'plan'),
+    'comments': ('body',),
+    'documents': ('title', 'body'),
+}
 """The indexed text columns of each searchable table. ``<table>_fts`` is the index. Its rowid is the row's ``id``."""
 FTS_TOKENIZER = 'porter unicode61 remove_diacritics 2'
 """Hypotheses are English text. Porter stemming makes vote, votes and voting one term (and encoder and encoding), so a

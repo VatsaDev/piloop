@@ -161,6 +161,9 @@ class RoleConfig(BaseModel):
     """The MCP servers that the agents of this role get, by the name of their ``[mcp.<name>]`` table. Every harness in
     the role's rotation must be able to take them (``[harness.<name>] mcp``). The built-in ``claude``, ``codex`` and
     ``pi`` harnesses can."""
+    wake_budget: int | None = Field(default=None, ge=0)
+    """The size in tokens of the lessons overview that opens this role's briefs. When unset, ``[memory]
+    wake_budget``. 0 turns it off for this role."""
 
 
 class WorkerRole(RoleConfig):
@@ -184,6 +187,9 @@ class WatchdogRole(RoleConfig):
     interval: float = 1800
     """The number of seconds between two progress reviews, counted from the last review. A sweep that investigates an
     anomaly is not a review. 0 turns the reviews off."""
+    wake_budget: int | None = Field(default=0, ge=0)
+    """The size in tokens of the lessons overview that opens a watchdog's brief. Off by default: the closing review
+    reads the lessons itself before it writes its own."""
 
 
 SCOUT_SEEDS = 3
@@ -299,6 +305,23 @@ class Spend(BaseModel):
         return self
 
 
+class Memory(BaseModel):
+    """``[memory]``: what past campaigns leave for the next ones. See the research memory page."""
+
+    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    documents: list[str] = []
+    """Repo-relative globs of text documents, for example ``["docs/evidence/**/*.md"]``: campaign reports, orchestrator
+    logs, design notes. ``piloop init`` and the stop of the campaign copy them into the ``documents`` table, where
+    every agent of every project can search them. Never name a document that is derived from validation or test
+    data."""
+    wake_budget: int = Field(default=400, ge=0)
+    """The size in tokens (about 4 characters each) of the overview that opens the briefs of workers and research
+    sweeps: the current lessons of every project on the same repo, one line each, this project's first, then the
+    newest. The brief then says how to read more. A role can change it with ``[roles.<kind>] wake_budget``. 0 turns
+    it off."""
+
+
 class Roles(BaseModel):
     """One table for each role. A role without a table uses its defaults."""
 
@@ -359,6 +382,8 @@ class ProjectConfig(BaseModel):
     """``[stop]``: conditions that end the campaign. None by default."""
     spend: Spend | None = None
     """``[spend]``: a hard budget on what the campaign spends outside piloop. None by default."""
+    memory: Memory = Memory()
+    """``[memory]``: documents to search and the lessons overview in briefs."""
 
     @model_validator(mode='after')
     def _check(self) -> Self:
@@ -441,6 +466,11 @@ class ProjectConfig(BaseModel):
             WorkerKind.WATCHDOG: self.roles.watchdog,
             WorkerKind.RESEARCH: self.roles.research,
         }[kind]
+
+    def wake_budget(self, kind: WorkerKind) -> int:
+        """The tokens of the lessons overview in a brief of this role: its own ``wake_budget``, or else ``[memory]``'s."""
+        own = self.role(kind).wake_budget
+        return self.memory.wake_budget if own is None else own
 
     def role_harnesses(self, kind: WorkerKind) -> list[str]:
         """The rotation a role uses: its own list, or else the project's."""

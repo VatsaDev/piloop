@@ -11,6 +11,7 @@ from piloop.campaign.stop import CAMPAIGN_STOPPED_ERROR, STALE_ERROR, runs, runs
 from piloop.config import ProjectConfig, load_project_config
 from piloop.db.models import (
     Candidate,
+    Document,
     Event,
     Idea,
     IdeaStatus,
@@ -402,3 +403,31 @@ def test_a_stopped_project_gets_one_closing_watchdog_and_no_trigger_requests(
     sched.stop(timeout=5)
     with db.session() as s:
         assert s.get_one(Worker, 3).state is WorkerState.EXITED
+
+
+def test_a_stop_syncs_the_memory_documents_before_the_closing_watchdog_whose_brief_asks_for_lessons(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer, spans: InMemorySpanExporter
+) -> None:
+    write_toml(Path(project.path), HARNESS_NOOP)
+    with db.session() as s:
+        cfg = load_project_config(Path(project.path), stop={'max_runs': 1}, memory={'documents': ['docs/*.md']})
+        s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
+        s.commit()
+    add_run(db, project)
+    Path(project.path, 'docs').mkdir()
+    Path(project.path, 'docs', 'report.md').write_text('# Closing report\n')
+    sched = make_scheduler(db, runtime, tmp_path, tracer)
+    [watchdog] = sched.tick()
+    sched.wait(10)
+    sched.stop(timeout=5)
+    with db.session() as s:
+        assert s.get_one(Worker, watchdog).reason == 'campaign stopped: max_runs: 1 runs'
+        [document] = s.scalars(select(Document)).all()
+        assert (document.path, document.title, document.created_by) == ('docs/report.md', 'Closing report', 'daemon')
+    assert dict(span_named(spans, 'documents.synced').attributes or {}) == {
+        'project': 'demo',
+        'result': 'documents: 1 added, 0 unchanged',
+    }
+    brief = (tmp_path / 'workers' / str(watchdog) / 'brief.md').read_text()
+    assert 'one `lesson` on the project for each mechanism family that this campaign' in brief
+    assert 'family: <family> | status: dead|promising|untested' in brief, 'the format, from the procedures'

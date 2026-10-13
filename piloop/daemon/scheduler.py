@@ -39,6 +39,7 @@ from piloop.agents.roles import ROLES, SCOUT, Role, Trigger, WatchdogMode, compo
 from piloop.agents.scout import SCOUT_EVENT, scouting
 from piloop.campaign import spend
 from piloop.campaign.ideas import defined_by, runnable, supersede, waiting
+from piloop.campaign.memory import sync_documents
 from piloop.campaign.project import WORKSPACE, worktree_links
 from piloop.campaign.spend import SpendError
 from piloop.campaign.stop import (
@@ -80,6 +81,7 @@ from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Tracer
 from piloop.reports.overview import ANOMALY_EVENT, Anomaly, anomalies, assigned, overview, reported
 from piloop.reports.pack import pack
+from piloop.reports.wake import lessons_overview
 from piloop.runtime import Outcome
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
 from piloop.scoring.ledger import bar_of, checkout_candidate, head, score, unmeasured
@@ -522,7 +524,8 @@ class Scheduler:
         A stopped project gets one closing watchdog sweep and nothing more from the triggers. Triggers requested
         everything that is pending at that moment, so it is all cancelled. Requested rows are closed and queued runs
         fail with ``CAMPAIGN_STOPPED_ERROR``. Their ideas go back to ``ready``. Rows that a human inserts after the stop
-        still launch. Workers in flight are told to stop (``_wind_down``), and their commits are scored.
+        still launch. Workers in flight are told to stop (``_wind_down``), and their commits are scored. The ``[memory]``
+        documents are synced first, so that the closing sweep can search the campaign's reports.
         """
         reason = stop_reason(s, project, cfg)
         if reason is None:
@@ -532,6 +535,8 @@ class Scheduler:
         project.status, project.stopped_reason = ProjectStatus.STOPPED, reason
         self._tracer.event('project.stopped', project=project.name, reason=reason)
         self._drain(s, project)
+        synced = sync_documents(s, project, cfg, DAEMON_ACTOR)
+        self._tracer.event('documents.synced', project=project.name, result=synced.line())
         s.add(Worker(kind=WorkerKind.WATCHDOG, project_id=project.id, reason=f'campaign stopped: {reason}'))
 
     def _drain(self, s: Session, project: Project) -> None:
@@ -1158,7 +1163,13 @@ class Scheduler:
             if mode is not WatchdogMode.INCIDENT:
                 sections.append(pack(s, project, cfg, workspace=self._home / 'projects' / str(project.id) / WORKSPACE))
             brief = compose_brief(
-                role, project, worker_id, reason=worker.reason or 'requested', context='\n'.join(sections), mode=mode
+                role,
+                project,
+                worker_id,
+                reason=worker.reason or 'requested',
+                context='\n'.join(sections),
+                mode=mode,
+                wake=lessons_overview(s, project, cfg.wake_budget(role.kind)),
             )
             project_path, project_id, base_sha = Path(project.path), project.id, base.commit_sha
         if self._executor.launcher.cancelled.is_set():  # stop() closed the row, so do not create a worktree.

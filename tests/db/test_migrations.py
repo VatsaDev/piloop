@@ -4,12 +4,14 @@ import sqlite3
 import threading
 import time
 from contextlib import closing
+from json import dumps, loads
 from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.config import Config as AlembicConfig
 from alembic.script import ScriptDirectory
+from git import Repo
 from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
 
@@ -43,6 +45,12 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
             'comments_fts_data',
             'comments_fts_docsize',
             'comments_fts_idx',
+            'documents',
+            'documents_fts',
+            'documents_fts_config',
+            'documents_fts_data',
+            'documents_fts_docsize',
+            'documents_fts_idx',
             'evaluators',
             'events',
             'idea_links',
@@ -52,6 +60,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
             'ideas_fts_data',
             'ideas_fts_docsize',
             'ideas_fts_idx',
+            'journal',
             'measurements',
             'projects',
             'runs',
@@ -178,3 +187,54 @@ def test_concurrent_migrations_of_a_fresh_database_run_one_at_a_time(
     assert entered == ['first', 'second'] and revision(engines[0]) == head
     for engine in engines:
         engine.dispose()
+
+
+def test_0002_admits_lessons_names_each_projects_repo_adds_documents_and_the_journal_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0001')
+    clone = Repo.init(tmp_path / 'clone')
+    clone.create_remote('origin', 'git@github.com:hiloopai/mudbench.git')
+    comment = "INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES ('project', 1, 'w', ?, ?)"
+    lesson = 'family: voting | status: dead | best: +0.002 acc (evaluator#1)\nidea#1'
+    config = {'name': 'p', 'roles': {'worker': {'wake_budget': 0}}, 'memory': {'documents': ['docs/*.md']}}
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO projects (name, path, config) VALUES ('p', ?, '{}')", (str(clone.working_dir),))
+        con.execute("INSERT INTO projects (name, path, config) VALUES ('q', '/gone', '{}')")
+        con.execute(comment, ('finding', 'voting gained nothing'))
+        with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: commentkind'):
+            con.execute(comment, ('lesson', lesson))
+    command.upgrade(cfg, 'head')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT repo FROM projects ORDER BY id').fetchall() == [
+            ('github.com/hiloopai/mudbench',),
+            ('/gone',),
+        ], 'filled from each checkout: its remote, else its path'
+        con.execute(comment, ('lesson', lesson))
+        with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: a lesson starts family'):
+            con.execute(comment, ('lesson', 'voting is dead'))
+        assert [r for (r,) in con.execute("SELECT rowid FROM comments_fts WHERE comments_fts MATCH 'voting'")] == [1, 2]
+        triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
+        assert triggers == sorted(t.name for t in PERSISTENT), 'the rebuilt comments table has its triggers back'
+        con.execute(
+            "INSERT INTO documents (project_id, path, hash, title, body, created_by) VALUES (1, 'r.md', ?, 'R', 'clock', 'me')",
+            ('0' * 64,),
+        )
+        assert con.execute("SELECT rowid FROM documents_fts WHERE documents_fts MATCH 'clock'").fetchall() == [(1,)]
+        con.execute("INSERT INTO journal (author, line) VALUES ('orchestrator', 'started')")
+        con.execute('UPDATE projects SET config = ? WHERE id = 1', (dumps(config),))
+    command.downgrade(cfg, '0001')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT kind, body FROM comments ORDER BY id').fetchall() == [
+            ('finding', 'voting gained nothing'),
+            ('finding', lesson),
+        ], "0001's code has no lessons; the text stays, as a finding"
+        names = "SELECT name FROM sqlite_master WHERE name LIKE 'documents%' OR name = 'journal'"
+        assert con.execute(names).fetchall() == []
+        assert 'repo' not in [c for (_, c, *_) in con.execute('PRAGMA table_info(projects)')]
+        assert [loads(c) for (c,) in con.execute('SELECT config FROM projects ORDER BY id')] == [
+            {'name': 'p', 'roles': {'worker': {}}},
+            {},
+        ], "0001's code refuses the memory and wake_budget keys"

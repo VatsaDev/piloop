@@ -107,7 +107,7 @@ def test_brief_is_role_prompt_project_brief_procedures_then_context(project: Pro
 - File a seed: `{PILOOP_HINT} idea seed demo "<hunch, one line>" --from "<pointers: ids, paths, numbers>"` (`--base\
  <candidate>` when it is about that tree): research checks it against the existing work and develops it into an idea,\
  or rejects it with the reason.
-- You may write: comments(escalation, finding, note), seeds via idea seed.
+- You may write: comments(escalation, finding, note), comments(lesson) on the project once it stopped, seeds via idea seed.
 - extra line
 """
     )

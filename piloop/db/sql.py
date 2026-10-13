@@ -5,8 +5,8 @@ ATTACH, transactions, writes to ``alembic_version`` and ``session_actor``, and a
 that describe the schema. The connection is in autocommit mode, because a forgotten BEGIN would lock the database.
 Everything else is allowed, DELETE included. The schema enforces the rules on the data.
 
-Anyone can read the full-text indexes (``ideas_fts``, ``comments_fts``) with ``MATCH``, ``bm25()`` and
-``snippet()``, but only their sync triggers write them. The authorizer sees the name of the trigger behind each
+Anyone can read the full-text indexes (``ideas_fts``, ``comments_fts``, ``documents_fts``) with ``MATCH``,
+``bm25()`` and ``snippet()``, but only their sync triggers write them. The authorizer sees the name of the trigger behind each
 statement of a trigger body and lets those statements through. So an agent's own ``INSERT INTO ideas_fts`` (or a
 ``'rebuild'``) is denied, while an insert into ``ideas`` still indexes the row. The authorizer cannot tell the shadow
 tables that FTS5 writes for itself (``ideas_fts_data`` and others) from a statement of an agent. SQLite's own guard
@@ -18,6 +18,9 @@ Every connection, here and in the daemon's engine, has an actor. ``install_actor
 ``piloop/db/actor_triggers.sql`` before the authorizer is turned on, because after that ``SQLITE_CREATE_TEMP_TRIGGER``
 is denied. From then on, every UPDATE sets ``updated_by``, and the tracked changes, deletes and comments go into
 ``events``. The authorizer does not protect ``events``, so the INSERTs of the trigger bodies pass.
+
+The orchestrator's ``journal`` is append-only: an agent's UPDATE or DELETE of it is denied. Every connection also has
+the SQL function ``blake3(text)`` (``install_functions``).
 """
 
 import os
@@ -25,6 +28,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from blake3 import blake3
 from sqlalchemy import MetaData
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateIndex, CreateTable
@@ -72,6 +76,8 @@ READ_ONLY_PRAGMAS = {
 MIGRATION_TABLE = 'alembic_version'
 ACTOR_TABLE = 'session_actor'
 PROTECTED_TABLES = {MIGRATION_TABLE, ACTOR_TABLE}
+JOURNAL = 'journal'
+"""Append-only for agents: ``piloop journal`` and INSERTs add lines, nothing changes or deletes one."""
 ACTOR_TRIGGERS = (Path(__file__).parent / 'actor_triggers.sql').read_text()
 WRITES = {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}
 BUSY_TIMEOUT_MS = 5000
@@ -114,7 +120,31 @@ def _authorize(action: int, arg1: str | None, arg2: str | None, _db: str | None,
         return sqlite3.SQLITE_DENY
     if action in WRITES and arg1 in FTS_TABLES and source not in FTS_TRIGGER_NAMES:
         return sqlite3.SQLITE_DENY
+    if action in (sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE) and arg1 == JOURNAL:
+        return sqlite3.SQLITE_DENY
     return sqlite3.SQLITE_OK
+
+
+def digest(text: str) -> str:
+    """BLAKE3 of the UTF-8 bytes of ``text``, in lowercase hex: ``documents.hash``."""
+    return blake3(text.encode()).hexdigest()
+
+
+def _blake3(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise TypeError(f'blake3() takes text, not {type(value).__name__}')
+    return digest(value)
+
+
+def install_functions(con: sqlite3.Connection) -> None:
+    """Add the SQL functions that every piloop connection has: ``blake3(text)``, which is ``digest``.
+
+    An agent's raw ``INSERT INTO documents`` says ``hash = blake3(body)``. A connection without the functions (the
+    ``sqlite3`` shell) reads the database just the same.
+    """
+    con.create_function('blake3', 1, _blake3, deterministic=True)
 
 
 def install_actor(con: sqlite3.Connection, actor: str) -> None:
@@ -213,6 +243,7 @@ def connect(path: Path, *, actor: str) -> sqlite3.Connection:
         for pragma in CONNECTION_PRAGMAS:
             con.execute(f'PRAGMA {pragma}')
         install_actor(con, actor)
+        install_functions(con)
         con.setconfig(sqlite3.SQLITE_DBCONFIG_DEFENSIVE, True)  # only FTS5 itself may write the shadow tables
         con.set_authorizer(_authorize)
     except BaseException:  # a locked database fails the setup: close, or the connection leaks

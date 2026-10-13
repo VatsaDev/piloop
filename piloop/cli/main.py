@@ -27,6 +27,7 @@ from piloop.agents.roles import PROCEDURES, PROMPTS
 from piloop.agents.scout import SCOUT_EVENT
 from piloop.campaign import inbox
 from piloop.campaign.ideas import Definition, NotASeed, develop, files_nothing, seeds_only
+from piloop.campaign.memory import sync_documents
 from piloop.campaign.project import (
     BLANK,
     EVALUATE_CONTRACT,
@@ -52,6 +53,7 @@ from piloop.daemon.serve import restart as restart_in_place, running_pid, servic
 from piloop.db import sql
 from piloop.db.events import emit
 from piloop.db.models import (
+    JOURNAL_LINE_BYTES,
     Candidate,
     Comment,
     CommentKind,
@@ -59,6 +61,7 @@ from piloop.db.models import (
     Idea,
     IdeaLink,
     IdeaStatus,
+    Journal,
     LinkKind,
     Project,
     ProjectStatus,
@@ -72,6 +75,7 @@ from piloop.db.session import Database, SchemaAhead, migrate, revision
 from piloop.proc import child_env
 from piloop.reports.overview import age, item_lines, overview
 from piloop.reports.pack import renderables as pack_renderables
+from piloop.reports.wake import orchestrator_overview
 from piloop.runtime import NotSteerable
 from piloop.runtime.factory import handle_for, runtime_for
 from piloop.runtime.herdr import HERDR, HerdrError, focus_tab, session_socket
@@ -102,6 +106,8 @@ HARNESS_HELP = 'Use this harness instead of the rotation.'
 FAMILY_HELP = 'The mechanism family. Ideas that try the same mechanism share it.'
 BASE_HELP = 'The candidate id to start from instead of the head. This makes a branch.'
 TRACK_HELP = 'The track it works on. Required when piloop.toml has more than one track.'
+WAKE_BUDGET = 2000
+"""The tokens that `piloop wake` prints by default."""
 
 
 @contextmanager
@@ -187,6 +193,10 @@ def init(
             console.print(
                 f'project {project.name} #{project.id} already registered; config re-read from piloop.toml{resumed}'
             )
+        synced = sync_documents(s, project, config_of(project), settings.actor)
+        s.commit()
+        if synced.added or synced.unchanged or synced.skipped:
+            console.print(synced.line(), markup=False, highlight=False, soft_wrap=True)
 
 
 @idea_app.command(name='add')
@@ -623,6 +633,40 @@ def launch(
             emit(s, SCOUT_EVENT, TargetKind.WORKER, worker.id, actor=settings.actor)
         s.commit()
         console.print(f'worker#{worker.id} {role}{" (scout)" if scout else ""} requested for {project.name}: {reason}')
+
+
+@app.command
+def journal(line: Annotated[str, cyclopts.Parameter(help=f'At most {JOURNAL_LINE_BYTES} bytes.')], /) -> None:
+    """Add one line to the orchestrator's journal: a decision, a plan or a result, with its ids.
+
+    The journal is how a new orchestrator session picks up the work: `piloop wake` prints the latest lines first.
+    """
+    line = ' '.join(line.split())
+    if not 0 < len(line.encode()) <= JOURNAL_LINE_BYTES:
+        raise SystemExit(f'a journal line is 1 to {JOURNAL_LINE_BYTES} bytes, not {len(line.encode())}: say less')
+    with _session() as s:
+        entry = Journal(author=settings.actor, line=line)
+        s.add(entry)
+        s.commit()
+        console.print(f'journal#{entry.id}', markup=False)
+
+
+@app.command
+def wake(
+    *,
+    budget: Annotated[
+        int, cyclopts.Parameter(help='Tokens to print, about 4 characters each. 0 prints nothing.')
+    ] = WAKE_BUDGET,
+) -> None:
+    """Print what an orchestrator session needs first, in a fixed budget.
+
+    The latest journal lines, the open inbox, the head of each active project and the current lessons on their repos.
+    Each section says how to read what did not fit. Run it at the start of every orchestrator session.
+    """
+    with _session() as s:
+        text = orchestrator_overview(s, budget, utcnow())
+    if text:
+        console.print(text, markup=False, highlight=False, soft_wrap=True)
 
 
 @app.command(name='sql')

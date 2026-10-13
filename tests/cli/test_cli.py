@@ -406,6 +406,47 @@ def test_sql(project_path: Path, out) -> None:
     assert '[wip] Soft [voting]' in out(), 'cells are data: brackets are printed, not read as rich markup'
 
 
+def test_init_syncs_the_memory_documents_and_names_the_repo(project_path: Path, out) -> None:
+    Repo(project_path).create_remote('origin', 'https://github.com/hiloopai/demo.git')
+    run_cli(['init', str(project_path)])
+    assert 'documents' not in out(), 'no [memory] documents: nothing to say'
+    (project_path / 'docs').mkdir()
+    (project_path / 'docs' / 'report.md').write_text('# Campaign report\n\nClock recovery kept twice.\n')
+    with (project_path / 'piloop.toml').open('a') as toml:
+        toml.write('\n[memory]\ndocuments = ["docs/*.md"]\n')
+    run_cli(['init', str(project_path)])
+    assert 'documents: 1 added, 0 unchanged' in out()
+    run_cli(['init', str(project_path)])
+    assert 'documents: 0 added, 1 unchanged' in out()
+    run_cli(
+        [
+            'sql',
+            "SELECT p.repo || ' ' || d.path || ' ' || d.title || ' ' || d.created_by FROM documents d JOIN projects p ON p.id = d.project_id",
+        ]
+    )
+    assert 'github.com/hiloopai/demo docs/report.md Campaign report human' in out()
+
+    run_cli(['sql', "SELECT 'hits: ' || count(*) FROM documents_fts WHERE documents_fts MATCH 'clock'"])
+    assert 'hits: 1' in out()
+
+
+def test_journal_lines_come_back_in_wake(project_path: Path, out, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_cli(['init', str(project_path)])
+    out()
+    monkeypatch.setattr(cli, 'settings', Settings(home=cli.settings.home, actor='orchestrator'))
+    run_cli(['journal', '  demo: parked idea#4,\n  dup of #2  '])
+    assert out().strip() == 'journal#1'
+    with pytest.raises(SystemExit, match='a journal line is 1 to 280 bytes, not 281: say less'):
+        run_cli(['journal', 'x' * 281])
+    run_cli(['wake'])
+    text = out()
+    assert text.startswith('# piloop wake, ')
+    assert 'orchestrator: demo: parked idea#4, dup of #2' in text, 'one line, signed with the actor'
+    assert '- demo · head score' in text
+    run_cli(['wake', '--budget', '0'])
+    assert out() == ''
+
+
 def test_inbox_lists_what_waits_shows_one_with_its_thread_and_acknowledges(
     project_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:

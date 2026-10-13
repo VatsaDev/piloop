@@ -35,6 +35,11 @@ WHEN NEW.updated_by IS NOT (SELECT actor FROM temp.session_actor)
 BEGIN
   UPDATE workers SET updated_by = (SELECT actor FROM temp.session_actor) WHERE id = NEW.id;
 END;
+CREATE TEMP TRIGGER documents_updated_by AFTER UPDATE ON documents
+WHEN NEW.updated_by IS NOT (SELECT actor FROM temp.session_actor)
+BEGIN
+  UPDATE documents SET updated_by = (SELECT actor FROM temp.session_actor) WHERE id = NEW.id;
+END;
 
 -- The change log: decisions leave a record in the append-only events table, signed by the same actor. Every client
 -- loads this file, so a raw UPDATE from the CLI or a worker is logged like an ORM write of the daemon.
