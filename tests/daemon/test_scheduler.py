@@ -21,7 +21,7 @@ from piloop.agents.roles import compose_brief
 from piloop.campaign.project import sync
 from piloop.campaign.stop import STALE_ERROR
 from piloop.config import ProjectConfig, load_project_config
-from piloop.daemon.runner import RunExecutor
+from piloop.daemon.runner import UNCOMMITTED_SUMMARY, RunExecutor
 from piloop.daemon.scheduler import STARTUP_BREAKER, STARTUP_WINDOW, STOPPED_ERROR, Scheduler
 from piloop.db import sql
 from piloop.db.models import (
@@ -789,15 +789,16 @@ def test_stop_keeps_the_work_of_the_runs_it_cuts_pinned_and_noted_for_the_next_a
     scheduler.stop(timeout=10)
 
     repo = Repo(project.path)
-    (head,) = git.pinned(repo, 'refs/piloop/demo/r1/')
-    commit = repo.commit(head)
-    assert commit.summary == 'step' and commit.tree['solve.txt'].data_stream.read().endswith(b'step\ndraft\n'), (
-        'the uncommitted line is amended into the last commit, as for any run'
-    )
+    step, head = git.pinned(repo, 'refs/piloop/demo/r1/')
+    assert repo.commit(step).summary == 'step'
+    recovered = repo.commit(head)
+    assert recovered.summary == UNCOMMITTED_SUMMARY and recovered.tree['solve.txt'].data_stream.read().endswith(
+        b'step\ndraft\n'
+    ), 'the uncommitted line is its own recovered commit, as for any run'
     with db.session() as s:
         (note,) = s.scalars(select(Comment).where(Comment.target_kind == TargetKind.RUN, Comment.target_id == 1)).all()
         assert (note.author, note.kind) == (DAEMON_ACTOR, CommentKind.NOTE)
-        assert f'its 1 commits are pinned, unscored, at refs/piloop/demo/r1/<n> (head {head})' in note.body
+        assert f'its 2 commits are pinned, unscored, at refs/piloop/demo/r1/<n> (head {head})' in note.body
         assert s.scalars(select(Candidate).where(Candidate.run_id == 1)).all() == [], 'pinned, not scored'
 
 
