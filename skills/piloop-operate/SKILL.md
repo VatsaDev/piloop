@@ -304,12 +304,13 @@ without a priority), out of the inbox.
 ## Agents
 
 - The ids of the agents are in the status.
-- By default (`runtime = "subprocess"`), each agent is a background process. It cannot receive text.
+- By default (`runtime = "subprocess"`), each agent is a background process. `piloop prompt <worker_id> "…"` queues a
+  message for it: when its turn ends, piloop resumes its session with the message.
 - With `runtime = "herdr"`, each agent runs as a tab in the workspace of the project in the `piloop` Herdr session:
   - `piloop attach <worker_id>` focuses that tab. From a terminal outside that session, it also attaches to the
     session. It takes over the terminal, so it is for the human, not for your shell tool.
-  - `piloop prompt <worker_id> "…"` steers a running agent of any role. A Codex agent gets it queued for the end of
-    its current turn: Codex would end the turn to take it.
+  - `piloop prompt <worker_id> "…"` steers a running agent of any role. The message waits for the end of the
+    agent's current turn; an idle agent takes it at once.
 - To request one more sweep, run `piloop launch <name> <role> [--harness pi --model …] [--reason "…"]`: `watchdog`,
   `research`, or a role that `piloop.toml` defines.
   Or insert a request:

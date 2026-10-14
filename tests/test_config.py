@@ -189,6 +189,14 @@ def test_default_harnesses_are_entire_agents_and_say_where_their_session_id_come
     assert interactive_only_by_herdr.interactive == [], 'the Herdr runtime reports the id: no placeholder needed there'
     Harness(executable='x', headless=['{prompt}'], entire_agent='codex', session_id_pattern='id=(\\w+)')
     Harness(executable='x', headless=['{prompt}'])
+    for resume in (['{prompt}'], ['--resume', '{session_id}']):
+        with pytest.raises(ValueError, match=r'resume must include \{session_id\} and \{prompt\}'):
+            Harness(executable='x', headless=['{prompt}'], resume=resume)
+    assert [' '.join(DEFAULT_HARNESSES[name].resume[:3]) for name in ('pi', 'claude', 'codex')] == [
+        '-p --mode json',
+        '-p --output-format json',
+        'exec resume --json',
+    ], 'each continues the session of its headless run (verified live with pi 0.99.2, Claude Code, codex-cli 0.162.1)'
 
 
 def test_interactive_pi_keeps_the_users_extensions() -> None:

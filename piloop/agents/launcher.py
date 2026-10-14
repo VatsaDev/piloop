@@ -22,7 +22,7 @@ from piloop.config import BRIEF_FILE, config_of, harness_of
 from piloop.db.events import emit
 from piloop.db.models import Comment, Project, Run, TargetKind, UsageJson, Worker, WorkerState, utcnow
 from piloop.db.session import Database
-from piloop.harnesses import fill, takes_session_id
+from piloop.harnesses import SESSION_ID, Invocation, fill, takes_session_id
 from piloop.mcp import RENDERERS, Launch, Rendered, expand, forwarded_env
 from piloop.otel import Span, Tracer
 from piloop.proc import child_env
@@ -232,7 +232,8 @@ class Launcher:
             model = w.model or cfg.role_models(w.kind)[harness]
             definition = cfg.harness_for(harness)
             runtime_kind = cfg.role_runtime(w.kind)
-            template = definition.argv(runtimes()[runtime_kind].invocation)
+            invocation = runtimes()[runtime_kind].invocation
+            template = definition.argv(invocation)
             session_id = str(uuid4()) if definition.captures_session and takes_session_id(template) else None
             w.harness, w.model, w.runtime, w.log_dir = harness, model, runtime_kind, str(log_dir)
             w.state, w.started_at, w.session_id = WorkerState.STARTING, utcnow(), session_id
@@ -272,6 +273,11 @@ class Launcher:
             if definition.mcp is not None
             else Rendered([])
         )
+        # {prompt} stays for the queued messages, and {session_id} for the id that a harness reports while it runs
+        resume = [
+            fill(a, model=model, log_dir=str(log_dir), session_id=session_id or SESSION_ID, cwd=str(cwd))
+            for a in (definition.resume if invocation is Invocation.HEADLESS else [])
+        ]
         spec = WorkerSpec(
             name=f'{kind}-{worker_id}',
             label=label,
@@ -283,6 +289,7 @@ class Launcher:
             env=env | mcp.env,
             startup_dialogs=definition.startup_dialogs,
             session_id_pattern=definition.session_id_pattern,
+            resume_args=expand(resume, mcp),
         )
         runtime = self.runtime_factory(runtime_kind, project=project_name, project_path=project_path)
         return Prepared(spec, runtime, cfg.role(kind).timeout, definition.captures_session, session_id)

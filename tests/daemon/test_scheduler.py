@@ -1369,7 +1369,7 @@ def test_a_comment_that_cannot_be_delivered_is_settled_as_undelivered_and_never_
     scheduler = make_scheduler(db, runtime, tmp_path, tracer)
     stuck = comment(db, 'decision', 'idea', idea, 'a headless worker has no input channel')
     assert scheduler.tick() == []
-    error = IsStr(regex='subprocess worker pid 4242 cannot be steered.*')
+    error = IsStr(regex='subprocess worker pid 4242 cannot take a message.*')
     assert settled(db, 'comment.delivered') == []
     assert settled(db, 'comment.undelivered') == [(1, {'comment': stuck, 'error': error})]
     assert events(spans, 'comment.undelivered') == [{'comment': stuck, 'worker': 1, 'error': error}]

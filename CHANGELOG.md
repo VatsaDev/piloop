@@ -37,14 +37,14 @@ A deprecated configuration key shows a warning for at least one minor release be
   (`PILOOP_HERDR_STARTUP_GRACE_SECONDS`, 60 s) to be picked up instead of 5 s, and a quiet screen within the grace is
   not a finished turn: on a loaded host a Codex that had started its turn was closed as `prompt_lost` or as idle after
   3 s. A session id that Herdr had not reported yet is asked for again before the pane closes.
-
-### Fixed
-
 - A message to a Codex agent (a pushed comment, `piloop prompt`, the wrap-up) no longer ends its turn. Submitted with
   Enter mid-turn, it made Codex send `response.interrupt`, which its websocket backend refuses with `400 unsupported
   websocket request type`, and the turn was lost. The message is now typed on one line and queued with Codex's queue
   key (Tab): Codex runs it when the turn ends, or at once when idle. The 400 banner also counts as a failed turn, which
   is resumed, instead of the end of the run.
+- A message to an agent under the `subprocess` runtime is no longer refused. It waits for the agent's turn to end,
+  then piloop continues the agent's session with it (`[harness.<name>] resume`, set for pi, Claude Code and Codex):
+  the same queue-for-the-next-turn as under Herdr.
 
 ## [0.1.0] - 2026-10-13
 

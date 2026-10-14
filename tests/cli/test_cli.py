@@ -884,7 +884,7 @@ def test_status_without_results_and_prompt_not_steerable(project_path: Path, out
     assert '  - worker#1 script/m 0s, on idea#1 x: —' in text, 'a headless agent has no tab'
     assert 'silent' not in text, 'a one-shot process tracks no jobs; a row not launched yet has no runtime to ask'
 
-    with pytest.raises(SystemExit, match='cannot be steered'):
+    with pytest.raises(SystemExit, match='cannot take a message'):
         run_cli(['prompt', '1', 'x'])
 
 
