@@ -16,7 +16,7 @@ from sqlalchemy.exc import OperationalError
 
 from piloop.daemon.main import ACTOR
 from piloop.db import sql
-from piloop.db.models import Base, CommentKind, Project
+from piloop.db.models import JOURNAL_LINE_BYTES, Base, CommentKind, Project
 from piloop.db.session import Database
 from tests.conftest import WRITER
 
@@ -71,10 +71,13 @@ def test_schema_ddl_lists_every_table_with_its_indexes_and_runs(tmp_path: Path) 
         [
             'candidates',
             'comments',
+            'documents',
             'evaluators',
             'events',
             'idea_links',
             'ideas',
+            'journal',
+            'lessons',
             'measurements',
             'projects',
             'runs',
@@ -87,7 +90,7 @@ def test_schema_ddl_lists_every_table_with_its_indexes_and_runs(tmp_path: Path) 
         con.executescript(ddl)
         indexes = [i for (i,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL")]
     assert sorted(indexes) == sorted(str(i.name) for t in Base.metadata.tables.values() for i in t.indexes)
-    assert ddl.count('CREATE VIRTUAL TABLE') == 2, (
+    assert ddl.count('CREATE VIRTUAL TABLE') == 3, (
         'the indexes are schema the agents query, listed without triggers too'
     )
 
@@ -130,7 +133,11 @@ def test_every_update_is_stamped_with_the_connection_actor(db: Database, tmp_pat
 def test_actor_triggers_cover_every_table_with_updated_by() -> None:
     tracked = {t.name for t in Base.metadata.sorted_tables if 'updated_by' in t.columns}
     triggered = set(re.findall(r'CREATE TEMP TRIGGER (\w+)_updated_by AFTER UPDATE ON \1', sql.ACTOR_TRIGGERS))
-    assert triggered == tracked == snapshot({'candidates', 'comments', 'ideas', 'projects', 'runs', 'workers'})
+    assert (
+        triggered
+        == tracked
+        == snapshot({'candidates', 'comments', 'documents', 'ideas', 'projects', 'runs', 'workers'})
+    )
 
 
 def test_every_client_connection_has_the_same_pragmas_and_optimizes_on_close(db: Database, tmp_path: Path) -> None:
@@ -356,6 +363,75 @@ def test_every_comment_kind_is_an_event_shaped_like_the_escalation_one(con: sqli
             ('comment.escalation', 'pi', 'comment', 4, '{"target_kind":"run","target_id":7}'),
         ]
     ), 'one event per comment: the persistent escalation trigger and the per-connection one never both fire'
+
+
+def test_a_lesson_has_a_status_and_an_effect_only_with_its_metric(con: sqlite3.Connection) -> None:
+    """Agents write lessons with raw SQL: a malformed one fails at insert, and the error names the rule."""
+    sql.run(con, "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+    insert = 'INSERT INTO lessons (project_id, family, status, effect, metric, body, created_by) VALUES (1, {})'
+    for values in (
+        "'voting', 'dead', 0.002, 'accuracy', 'the trees agree on every row: idea#3', 'watchdog#2'",
+        "'voting', 'promising', -40, 'seconds', 'faster: candidate#9', 'watchdog#2'",
+        "'pruning', 'untested', NULL, NULL, 'never ran: idea#4', 'orchestrator'",
+    ):
+        sql.run(con, insert.format(values))
+    refused = {
+        "'voting', 'maybe', NULL, NULL, 'b', 'w'": 'CHECK constraint failed: lessonstatus',
+        "'voting', 'dead', 0.1, NULL, 'b', 'w'": 'lessons.effect and lessons.metric go together',
+        "'voting', 'dead', NULL, 'accuracy', 'b', 'w'": 'lessons.effect and lessons.metric go together',
+        "'voting', 'dead', 'big', 'accuracy', 'b', 'w'": 'lessons.effect must be a number',
+        "'voting', 'dead', NULL, NULL, x'00', 'w'": 'lessons.body must be a text value',
+    }
+    for values, error in refused.items():
+        with pytest.raises(sqlite3.IntegrityError, match=re.escape(error)):
+            sql.run(con, insert.format(values))
+    with pytest.raises(sqlite3.IntegrityError, match='FOREIGN KEY'):
+        sql.run(con, insert.format("'voting', 'dead', NULL, NULL, 'b', 'w'").replace('(1, ', '(9, '))
+
+
+@pytest.mark.parametrize(
+    ('table', 'insert'),
+    [
+        ('journal', "INSERT INTO journal (author, line) VALUES ('orchestrator', 'parked idea#4: dup of #2')"),
+        (
+            'lessons',
+            'INSERT INTO lessons (project_id, family, status, body, created_by)'
+            " VALUES (1, 'voting', 'dead', 'idea#3', 'watchdog#2')",
+        ),
+    ],
+)
+def test_agents_never_rewrite_a_journal_line_or_a_lesson(con: sqlite3.Connection, table: str, insert: str) -> None:
+    """An UPDATE is denied, and an INSERT OR REPLACE of a row is refused: the authorizer does not see it."""
+    sql.run(con, "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+    sql.run(con, insert)
+    before = sql.run(con, f'SELECT * FROM {table}').rows
+    with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
+        sql.run(con, f'UPDATE {table} SET id = 2')
+    for replace in ('INSERT OR REPLACE INTO', 'REPLACE INTO'):
+        with pytest.raises(sqlite3.IntegrityError, match=f'{table} rows are never replaced: insert a new row'):
+            sql.run(con, f'{replace} {table} SELECT * FROM {table}')
+    assert sql.run(con, f'SELECT * FROM {table}').rows == before
+    sql.run(con, insert)
+    assert len(sql.run(con, f'SELECT id FROM {table}').rows) == 2, 'a new row is an append'
+
+
+def test_a_journal_line_is_never_deleted_but_a_lesson_goes_with_its_project(con: sqlite3.Connection) -> None:
+    sql.run(con, "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+    sql.run(con, "INSERT INTO journal (author, line) VALUES ('orchestrator', 'parked idea#4')")
+    sql.run(con, "INSERT INTO lessons (project_id, family, status, body, created_by) VALUES (1, 'v', 'dead', 'b', 'w')")
+    with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
+        sql.run(con, 'DELETE FROM journal')
+    sql.run(con, 'DELETE FROM projects')
+    assert sql.run(con, 'SELECT count(*) FROM lessons').rows == [(0,)]
+
+
+def test_the_journal_takes_short_lines(con: sqlite3.Connection) -> None:
+    sql.run(con, "INSERT INTO journal (author, line) VALUES ('orchestrator', 'parked idea#4: dup of #2')")
+    with pytest.raises(sqlite3.IntegrityError, match=f'journal.line is text of 1 to {JOURNAL_LINE_BYTES} bytes'):
+        sql.run(con, f"INSERT INTO journal (author, line) VALUES ('orchestrator', '{'é' * 141}')")
+    with pytest.raises(sqlite3.IntegrityError, match='journal.line is text of 1'):
+        sql.run(con, "INSERT INTO journal (author, line) VALUES ('orchestrator', '')")
+    assert sql.run(con, 'SELECT author, line FROM journal').rows == [('orchestrator', 'parked idea#4: dup of #2')]
 
 
 def test_acknowledging_an_inbox_item_is_logged_with_the_connection_actor(con: sqlite3.Connection) -> None:

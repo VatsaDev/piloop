@@ -10,6 +10,7 @@ from rich import box
 from rich.console import Group
 from sqlalchemy.orm import Session
 
+from piloop.campaign.memory import sync_documents
 from piloop.campaign.project import (
     BLANK,
     EVALUATE_CONTRACT,
@@ -88,6 +89,10 @@ def init(
             common.console.print(
                 f'project {project.name} #{project.id} already registered; config re-read from piloop.toml{resumed}'
             )
+        synced = sync_documents(s, project, config_of(project), common.settings.actor)
+        s.commit()
+        if synced.added or synced.unchanged or synced.skipped:
+            common.console.print(synced.line(), markup=False, highlight=False, soft_wrap=True)
 
 
 def history(ref: ProjectRef | None = None, /) -> None:

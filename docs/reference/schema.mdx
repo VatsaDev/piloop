@@ -47,6 +47,15 @@ CREATE TABLE events (
 	CONSTRAINT targetkind CHECK (target_kind IN ('project', 'idea', 'run', 'candidate', 'measurement', 'worker', 'comment'))
 );
 CREATE INDEX ix_events_target ON events (target_kind, target_id, id);
+CREATE TABLE journal (
+	id INTEGER NOT NULL,
+	author VARCHAR NOT NULL,
+	line VARCHAR NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	PRIMARY KEY (id),
+	CONSTRAINT "journal.line is text of 1 to 280 bytes" CHECK (typeof(line) IN ('text') AND length(CAST(line AS BLOB)) BETWEEN 1 AND 280),
+	CONSTRAINT "journal.author must be a text value" CHECK (typeof(author) IN ('text'))
+);
 CREATE TABLE projects (
 	id INTEGER NOT NULL,
 	name VARCHAR NOT NULL,
@@ -58,12 +67,35 @@ CREATE TABLE projects (
 	spend_usd DOUBLE,
 	spend_error VARCHAR,
 	spend_at DATETIME,
+	repo VARCHAR,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
 	updated_by VARCHAR,
 	PRIMARY KEY (id),
 	UNIQUE (name),
 	CONSTRAINT projectstatus CHECK (status IN ('active', 'stopped'))
+);
+CREATE TABLE documents (
+	id INTEGER NOT NULL,
+	project_id INTEGER NOT NULL,
+	path VARCHAR NOT NULL,
+	hash VARCHAR NOT NULL,
+	title VARCHAR NOT NULL,
+	body VARCHAR NOT NULL,
+	commit_sha VARCHAR,
+	created_by VARCHAR NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	updated_by VARCHAR,
+	PRIMARY KEY (id),
+	UNIQUE (project_id, path, hash),
+	CONSTRAINT "documents.hash is the blake3 hex digest of body" CHECK (length(hash) = 64 AND hash NOT GLOB '*[^0-9a-f]*'),
+	CONSTRAINT "documents.path must be a text value" CHECK (typeof(path) IN ('text')),
+	CONSTRAINT "documents.title must be a text value" CHECK (typeof(title) IN ('text')),
+	CONSTRAINT "documents.body must be a text value" CHECK (typeof(body) IN ('text')),
+	CONSTRAINT "documents.created_by must be a text value" CHECK (typeof(created_by) IN ('text')),
+	CONSTRAINT "documents.commit_sha must be a text value" CHECK (typeof(commit_sha) IN ('text', 'null')),
+	FOREIGN KEY(project_id) REFERENCES projects (id) ON DELETE CASCADE
 );
 CREATE TABLE evaluators (
 	id INTEGER NOT NULL,
@@ -107,6 +139,27 @@ CREATE TABLE ideas (
 	CONSTRAINT ideastatus CHECK (status IN ('seed', 'proposed', 'ready', 'scheduled', 'done', 'parked', 'rejected'))
 );
 CREATE INDEX ix_ideas_project_status_priority ON ideas (project_id, status, priority);
+CREATE TABLE lessons (
+	id INTEGER NOT NULL,
+	project_id INTEGER NOT NULL,
+	family VARCHAR NOT NULL,
+	status VARCHAR(16) NOT NULL,
+	effect DOUBLE,
+	metric VARCHAR,
+	body VARCHAR NOT NULL,
+	created_by VARCHAR NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	PRIMARY KEY (id),
+	CONSTRAINT "lessons.effect and lessons.metric go together" CHECK ((effect IS NULL) = (metric IS NULL)),
+	CONSTRAINT "lessons.effect must be a number" CHECK (typeof(effect) IN ('integer', 'real', 'null')),
+	CONSTRAINT "lessons.family must be a text value" CHECK (typeof(family) IN ('text')),
+	CONSTRAINT "lessons.body must be a text value" CHECK (typeof(body) IN ('text')),
+	CONSTRAINT "lessons.created_by must be a text value" CHECK (typeof(created_by) IN ('text')),
+	CONSTRAINT "lessons.metric must be a text value" CHECK (typeof(metric) IN ('text', 'null')),
+	FOREIGN KEY(project_id) REFERENCES projects (id) ON DELETE CASCADE,
+	CONSTRAINT lessonstatus CHECK (status IN ('dead', 'promising', 'untested'))
+);
+CREATE INDEX ix_lessons_project_family ON lessons (project_id, family);
 CREATE TABLE techniques (
 	id INTEGER NOT NULL,
 	project_id INTEGER NOT NULL,
@@ -231,4 +284,5 @@ CREATE TABLE measurements (
 CREATE INDEX ix_measurements_candidate_evaluator ON measurements (candidate_id, evaluator_id);
 CREATE VIRTUAL TABLE ideas_fts USING fts5(title, hypothesis, plan, content='ideas', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2');
 CREATE VIRTUAL TABLE comments_fts USING fts5(body, content='comments', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2');
+CREATE VIRTUAL TABLE documents_fts USING fts5(title, body, content='documents', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2');
 ```

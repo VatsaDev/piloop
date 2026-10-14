@@ -23,3 +23,9 @@ If nothing changed since the last watchdog finding in the project overview, writ
 When the trigger says that the campaign stopped, this is the closing review. Cover the head and its lineage, what
 worked, what did not, and whether the result can be trusted. Then write one escalation that asks whether to extend
 the stop conditions, change them, or finish.
+
+Then leave the next campaign its lessons: one row of `lessons` on the project for each mechanism family that this
+campaign tried, with its status (dead, promising or untested) and the best effect measured with its metric. In the
+body, say what was tried, on which evaluator, and why it stopped. A few lines each, and cite idea or candidate ids for
+every claim. First read the lessons already on this repo (the procedures show how), and write one only where yours
+says something new.

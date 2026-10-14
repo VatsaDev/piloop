@@ -45,6 +45,7 @@ from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Span, Tracer
 from piloop.proc import kill_group
 from piloop.reports.history import history
+from piloop.reports.wake import lessons_overview
 from piloop.runtime import WorkerStatus
 from piloop.runtime.factory import RuntimeFactory, make_runtime
 from piloop.scoring.evaluate import EvalResult, run_evaluate
@@ -155,6 +156,7 @@ class RunExecutor:
                     reason=f'idea#{idea.id} is ready',
                     context=self._context(s, cfg, idea, base, f'{run.role}#{worker_id}'),
                     track=cfg.track(idea.track),
+                    wake=lessons_overview(s, project, cfg.wake_budget(run.role)),
                 )
                 run.brief = brief
                 run.status = RunStatus.RUNNING

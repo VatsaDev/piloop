@@ -2,7 +2,7 @@
 
 from piloop.db.triggers.ddl import Trigger
 
-TRACKED_TABLES = ('projects', 'ideas', 'runs', 'candidates', 'comments', 'workers')
+TRACKED_TABLES = ('projects', 'ideas', 'runs', 'candidates', 'comments', 'workers', 'documents')
 """Every table with ``updated_at`` and ``updated_by`` (``models.Tracked``). Each one gets both triggers."""
 DAEMON_ACTOR = 'daemon'
 """What the daemon's connections record in ``updated_by``. ``piloop.daemon.main.ACTOR`` has this value."""

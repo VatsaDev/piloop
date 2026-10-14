@@ -84,8 +84,8 @@ Timestamps are UTC ISO-8601 strings.
 
 ### Search
 
-- `ideas_fts` (over title, hypothesis and plan) and `comments_fts` (over body) are full-text indexes of every row.
-  Triggers keep them current. Read them. Never write them.
+- `ideas_fts` (over title, hypothesis and plan), `comments_fts` (over body) and `documents_fts` (over title and
+  body) are full-text indexes of every row. Triggers keep them current. Read them. Never write them.
 - "Has anyone tried soft voting" is one query. Run it before you propose, whatever the history table shows.
 - Words are stemmed (vote = votes = voting) and accents are dropped.
 
@@ -117,6 +117,66 @@ The MATCH string is FTS5 syntax, not free text:
 - A lower `bm25()` is a better match. A term that almost every row has scores `-0.0` for all of them, because it
   carries no information. Read the snippets instead.
 - Join the base table for anything except the text.
+
+### Remember past campaigns
+
+Every campaign that ever ran is in this database. `projects.repo` names the code that each project worked on, the
+same for every clone. Before you propose or build a mechanism, look at what came of it before.
+
+Prior attempts on this repo, in every project, with what they came to and the primary metric that judged them. A
+discard under one project's evaluator is not dead under another's: read the idea's comments before you call it
+settled.
+
+```sql
+SELECT p.name AS project, i.id, i.status, i.family, i.title,
+  (SELECT group_concat(DISTINCT c.verdict) FROM runs r JOIN candidates c ON c.run_id = r.id WHERE r.idea_id = i.id) AS verdicts,
+  (SELECT group_concat(json_extract(m.value, '$.name')) FROM json_each(p.config, '$.metrics') m
+   WHERE json_extract(m.value, '$.role') = 'primary') AS judged_on
+FROM ideas_fts JOIN ideas i ON i.id = ideas_fts.rowid JOIN projects p ON p.id = i.project_id
+WHERE ideas_fts MATCH '"sync acquisition" OR onset' AND p.repo = (SELECT repo FROM projects WHERE id = 1)
+ORDER BY bm25(ideas_fts) LIMIT 20;
+```
+
+- An implementation to copy, from any project: drop the `p.repo` filter, keep what kept or was noted (`JOIN runs r ON
+  r.idea_id = i.id JOIN candidates c ON c.run_id = r.id WHERE c.verdict IN ('keep', 'interesting')`) and select
+  `p.path, c.commit_sha`. Then `git -C <path> show <commit_sha>`.
+- How a past idea was worked: `SELECT w.id, w.checkpoint_id, w.log_dir FROM workers w JOIN runs r ON r.id = w.run_id
+  WHERE r.idea_id = <idea>`. `entire checkpoint explain <checkpoint_id>`, run in that project's repo
+  (`projects.path`), summarises the session. `<log_dir>/transcript.txt` is its screen. An archived workspace can be
+  restored with `piloop restore`, once your piloop has it.
+
+Lessons: a row of `lessons` is the standing conclusion about one mechanism family, written when a campaign stops.
+The newest for each (project, family) is the current one. What is dead or promising on this repo:
+
+```sql
+SELECT p.name AS project, l.id, l.family, l.status, l.effect, l.metric
+FROM lessons l JOIN projects p ON p.id = l.project_id
+WHERE p.repo = (SELECT repo FROM projects WHERE id = 1)
+  AND l.id = (SELECT MAX(n.id) FROM lessons n WHERE n.project_id = l.project_id AND lower(n.family) = lower(l.family))
+ORDER BY l.status, l.family;
+```
+
+- `SELECT body FROM lessons WHERE id = <n>` reads why, with the ids it cites.
+- To write one: `INSERT INTO lessons (project_id, family, status, effect, metric, body, created_by) VALUES (<p>,
+  '<family>', 'dead', 0.002, '<metric>', '<what was tried, the evaluator that measured it, why it stopped, with ids>',
+  '<you>')`. `status` is `dead`, `promising` or `untested`. `effect` is the best effect measured, in the units of
+  `metric` and with its sign. Leave both NULL when none was measured. A lesson is never changed: a new conclusion is a
+  new row.
+
+Documents: campaign reports, logs and design notes (`[memory] documents` in `piloop.toml`, or inserted by an agent):
+
+```sql
+SELECT p.name AS project, d.id, d.path, snippet(documents_fts, 1, '[', ']', '…', 12) AS hit
+FROM documents_fts JOIN documents d ON d.id = documents_fts.rowid JOIN projects p ON p.id = d.project_id
+WHERE documents_fts MATCH '"clock recovery" OR acquisition' AND p.repo = (SELECT repo FROM projects WHERE id = 1)
+ORDER BY bm25(documents_fts) LIMIT 10;
+```
+
+- `SELECT body FROM documents WHERE id = <n>` reads one. It can be long.
+- To add one: `INSERT INTO documents (project_id, path, title, body, hash, created_by) SELECT <p>, '<path>',
+  '<title>', body, blake3(body), '<you>' FROM (SELECT '<text>' AS body)`.
+- Never add a document derived from validation or test data: nothing that agents can search may show the scored
+  data.
 
 ### Steer
 
@@ -186,7 +246,7 @@ The daemon never overwrites a verdict that is not its own.
 
 - `INSERT INTO comments (target_kind, target_id, author, kind, body)`.
 - Refer to other rows in the body as `idea#12`, `run#7`, `candidate#30`.
-- Kinds: `note`, `finding`, `decision`, `escalation`.
+- Kinds: `note`, `finding`, `decision`, `escalation`. A lesson is a row of `lessons` ("Remember past campaigns").
 - Every comment also inserts a `comment.<kind>` event (a trigger).
 - `comment.escalation` reaches the human through the orchestrator. Use `escalation` only when a human decision is
   needed.

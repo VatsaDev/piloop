@@ -25,6 +25,7 @@ classifiers = [
 ]
 dependencies = [
     "alembic>=1.16",
+    "blake3>=1.0.11",
     "cyclopts>=3.20",
     "gitpython>=3.1.45",
     "httpx2>=2.12.0",

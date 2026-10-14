@@ -31,6 +31,11 @@ WHEN NEW.updated_at IS OLD.updated_at AND NEW.updated_by IS OLD.updated_by
 BEGIN
   UPDATE workers SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = NEW.id;
 END;
+CREATE TRIGGER documents_updated_at AFTER UPDATE ON documents
+WHEN NEW.updated_at IS OLD.updated_at AND NEW.updated_by IS OLD.updated_by
+BEGIN
+  UPDATE documents SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = NEW.id;
+END;
 CREATE TRIGGER comments_escalation_event AFTER INSERT ON comments
 WHEN NEW.kind = 'escalation'
 BEGIN
@@ -46,6 +51,16 @@ CREATE TRIGGER workers_kind BEFORE INSERT ON workers
 WHEN NEW.kind NOT IN ('worker', 'watchdog', 'research') AND (SELECT json_type(config, '$.roles.' || json_quote(NEW.kind)) FROM projects WHERE id = NEW.project_id) IS NULL
 BEGIN
   SELECT RAISE(ABORT, 'workers.kind must be a role of the project: worker, watchdog, research or a [roles.<name>] table of its piloop.toml');
+END;
+CREATE TRIGGER journal_no_replace BEFORE INSERT ON journal
+WHEN EXISTS (SELECT 1 FROM journal WHERE id = NEW.id)
+BEGIN
+  SELECT RAISE(ABORT, 'journal rows are never replaced: insert a new row');
+END;
+CREATE TRIGGER lessons_no_replace BEFORE INSERT ON lessons
+WHEN EXISTS (SELECT 1 FROM lessons WHERE id = NEW.id)
+BEGIN
+  SELECT RAISE(ABORT, 'lessons rows are never replaced: insert a new row');
 END;
 CREATE TRIGGER ideas_fts_insert AFTER INSERT ON ideas
 BEGIN
@@ -72,4 +87,17 @@ CREATE TRIGGER comments_fts_update AFTER UPDATE OF id, body ON comments
 BEGIN
   INSERT INTO comments_fts (comments_fts, rowid, body) VALUES ('delete', OLD.id, OLD.body);
   INSERT INTO comments_fts (rowid, body) VALUES (NEW.id, NEW.body);
+END;
+CREATE TRIGGER documents_fts_insert AFTER INSERT ON documents
+BEGIN
+  INSERT INTO documents_fts (rowid, title, body) VALUES (NEW.id, NEW.title, NEW.body);
+END;
+CREATE TRIGGER documents_fts_delete AFTER DELETE ON documents
+BEGIN
+  INSERT INTO documents_fts (documents_fts, rowid, title, body) VALUES ('delete', OLD.id, OLD.title, OLD.body);
+END;
+CREATE TRIGGER documents_fts_update AFTER UPDATE OF id, title, body ON documents
+BEGIN
+  INSERT INTO documents_fts (documents_fts, rowid, title, body) VALUES ('delete', OLD.id, OLD.title, OLD.body);
+  INSERT INTO documents_fts (rowid, title, body) VALUES (NEW.id, NEW.title, NEW.body);
 END;

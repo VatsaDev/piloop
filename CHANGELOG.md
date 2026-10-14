@@ -21,6 +21,21 @@ A deprecated configuration key shows a warning for at least one minor release be
   each run.
 - Runtimes are a registry. Packages can add runtimes through the `piloop.runtimes` entry point group. A runtime class
   states which argument list of a harness it starts (`invocation`: `interactive` or `headless`).
+- Research memory: past research can be found by SQL from every agent, across every project on the same code.
+  - The `lessons` table: the standing conclusion about one mechanism family, with its status (`dead`, `promising` or
+    `untested`), the best effect and its metric. The newest for a project and family is the current one: a lesson is
+    never changed, a new conclusion is a new row. The closing watchdog writes one for each family that the campaign tried.
+  - The `documents` table holds reports, logs and design notes. `[memory] documents` globs are copied in on `piloop
+    init` and when a campaign stops. Agents search them with `documents_fts`, and add their own with `hash =
+    blake3(body)`.
+  - `projects.repo` names the repository, whatever the clone.
+  - The briefs of workers and research sweeps open with the current lessons of the repo, in `[memory] wake_budget`
+    tokens (`[roles.<kind>] wake_budget` per role, 0 turns it off). Lessons in the project's own metrics come first,
+    and effects are ranked within their metric, never by raw size across units.
+  - The procedures, the briefs and the operate and review skills have the queries.
+- The orchestrator's journal: `piloop journal "<line>"` appends one line of at most 280 bytes, and `piloop wake`
+  prints a bounded overview for a new orchestrator session: the latest journal lines, the open inbox, the active
+  projects' heads and the current lessons.
 
 ### Changed
 

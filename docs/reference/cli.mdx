@@ -27,6 +27,8 @@ Makes `PATH` (default `.`) a piloop project and registers it. It is safe to run 
   files that exist already. While `evaluate.py` is the unchanged stub, it stops and says what to edit.
 - Measures `HEAD` as the baseline candidate and registers the project. When the project is registered already, it
   reads `piloop.toml` again.
+- Copies the documents that `[memory] documents` names into the database. See
+  [research memory](/concepts/research-memory).
 
 `--example` creates a bundled example instead of the blank template.
 
@@ -238,6 +240,27 @@ returns for a new inbox item that someone else wrote, a seed that someone else f
 an anomaly that the daemon gave to a watchdog, and the daemon's verdict on a measured candidate. `--after` is the cursor
 that the last wait printed (default: now). `--timeout` (default 1800) is how long to wait before it returns with
 nothing. Set the timeout of your shell tool above it.
+
+### piloop wake
+
+```text
+piloop wake [--budget TOKENS]
+```
+
+Prints what an orchestrator session needs first, in a fixed budget (default 2000 tokens, about 4 characters each; 0
+prints nothing): the latest lines of the journal, the open inbox, the head of each active project, and the current
+lessons on their repos. Each section says how to read what did not fit. Run it at the start of every orchestrator
+session.
+
+### piloop journal
+
+```text
+piloop journal LINE
+```
+
+Adds one line, at most 280 bytes, to the orchestrator's journal: a decision, a plan or a result, with its ids. The
+journal is append-only. `piloop wake` prints the latest lines, so that a new session picks up where the last one
+stopped.
 
 ## Agents
 

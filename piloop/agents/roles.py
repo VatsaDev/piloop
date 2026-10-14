@@ -146,11 +146,13 @@ def compose_brief(
     context: str,
     mode: WatchdogMode | None = None,
     track: Track | None = None,
+    wake: str = '',
 ) -> str:
     """Compose a brief: the role prompt, the project brief, the role's addendum, the database procedures, the context.
 
-    A watchdog also gets its mode's prompt after the role prompt. A worker also gets its track's addendum after the
-    role's addendum. With several tracks, the context lists them.
+    A watchdog also gets its mode's prompt after the role prompt. ``wake``, the lessons overview of the repo
+    (``piloop.reports.wake``), follows the role prompt. A worker also gets its track's addendum after the role's
+    addendum. With several tracks, the context lists them.
     """
     author = f'{role.name}#{worker_id}'
     repo = Path(project.path)
@@ -159,6 +161,7 @@ def compose_brief(
     parts = [
         role.prompt.read_text().rstrip(),
         (PROMPTS / f'{role.kind}_{mode}.md').read_text().rstrip() if mode is not None else '',
+        wake.rstrip(),
         (repo / BRIEF_FILE).read_text().rstrip(),
         (repo / addendum).read_text().rstrip() if addendum else '',
         (repo / track.addendum).read_text().rstrip() if track is not None and track.addendum else '',
