@@ -135,13 +135,13 @@ Map each answer to its keys:
   - piloop refuses `[stop] target` when there are several tracks.
 - **Measurement → `evaluate`, `evaluate_timeout`.**
 - **Budget → `[roles.worker]` `timeout` and `max_concurrent`, and `[roles.research]`.**
-- **Prior art → `[roles.research]` `context`.** List the error analyses and evaluation reports of the repo (where the
-  current system loses to a reference). Every research sweep starts from them.
-- **Outside techniques → `[roles.research.scout]`**, only when the human wants them.
-  - `interval` is in seconds and has no default.
+- **Prior art → `context`** (a top-level key). List the error analyses and evaluation reports of the repo (where the
+  current system loses to a reference). Every sweep that reads the research pack starts from them.
+- **Outside techniques → `[roles.scout]`**, only when the human wants them.
+  - Set `interval` in seconds. The default, 0, keeps the scout off.
   - The X search needs an `[mcp.xai]` table that runs `scripts/xai_search_mcp.py`
-    (https://piloop.autoresearch.inc/guides/mcp-servers), `"xai"` in `[roles.research] mcp`, and `XAI_API_KEY` in
-    the daemon's environment.
+    (https://piloop.autoresearch.inc/guides/mcp-servers), `"xai"` in `[roles.scout] mcp`, and `XAI_API_KEY` in the
+    daemon's environment.
 - **Harnesses → `harnesses`, `[model]`, `runtime`.** Remove the harnesses that the human does not have.
 - **`link`:** gitignored data or virtualenvs that the evaluate command needs inside a worktree.
 - **Objective target and budget → `[stop]`:** `target`, `max_runs`, `max_hours`, `max_tokens`, and `plateau` when the

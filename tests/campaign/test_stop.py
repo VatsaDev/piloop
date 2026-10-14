@@ -39,11 +39,16 @@ LOWER_PRIMARY = [{'name': 'score', 'direction': 'higher'}, {'name': 'size', 'dir
 
 
 def configure(
-    db: Database, project: Project, max_workers: int = 1, harness: str = HARNESS_NOOP, **stop: float
+    db: Database,
+    project: Project,
+    max_workers: int = 1,
+    harness: str = HARNESS_NOOP,
+    roles: dict[str, object] | None = None,
+    **stop: float,
 ) -> ProjectConfig:
     write_toml(Path(project.path), harness, max_workers=max_workers)
     with db.session() as s:
-        cfg = load_project_config(Path(project.path), stop=stop)
+        cfg = load_project_config(Path(project.path), stop=stop, roles=roles)
         s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
         s.commit()
     return cfg
@@ -419,6 +424,26 @@ def test_stopping_drains_the_requests_and_queued_runs_pending_at_that_moment(
     sched.stop(timeout=5)
     with db.session() as s:
         assert s.get_one(Worker, 4).state is WorkerState.EXITED
+
+
+def test_the_closing_sweep_is_each_stopped_trigger_and_none_without_one(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """``[roles.watchdog] triggers = []`` drops the closing review; a ``stopped`` trigger of another role fires once."""
+    (Path(project.path) / 'closer.md').write_text('# Close\n')
+    closer = {'prompt': 'closer.md', 'triggers': [{'kind': 'stopped'}]}
+    configure(db, project, harness=HARNESS_WORSE, roles={'watchdog': {'triggers': []}, 'closer': closer}, max_runs=1)
+    add_ideas(db, project, 'a')
+    sched = make_scheduler(db, runtime, tmp_path)
+    assert sched.tick() == [1]
+    sched.wait(10)
+    assert sched.tick() == [2], 'the closer, and no watchdog'
+    sched.wait(10)
+    assert sched.tick() == [], 'it fires on the tick that stops the campaign only'
+    sched.stop(timeout=5)
+    with db.session() as s:
+        rows = [(w.kind, w.reason) for w in s.scalars(select(Worker).where(Worker.id > 1))]
+    assert rows == [('closer', 'campaign stopped: max_runs: 1 runs')]
 
 
 def test_a_stopped_project_gets_one_closing_watchdog_and_no_trigger_requests(

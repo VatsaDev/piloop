@@ -1,0 +1,163 @@
+{
+  "confidence": 0.95,
+  "evaluate": [
+    "./evaluate.sh"
+  ],
+  "evaluate_timeout": 600.0,
+  "harness": {
+    "mine": {
+      "entire_agent": null,
+      "executable": "mine",
+      "headless": [
+        "--session",
+        "{session_id}",
+        "{prompt}"
+      ],
+      "interactive": [],
+      "mcp": null,
+      "resume": [],
+      "session_id_pattern": null,
+      "startup_dialogs": [],
+      "usage": {
+        "cwd": "none",
+        "file": "{claude_config_dir}/projects/{cwd}/{session_id}.jsonl",
+        "reader": "jsonl",
+        "tally": "claude"
+      }
+    }
+  },
+  "harnesses": [
+    "claude",
+    "codex"
+  ],
+  "link": [],
+  "max_concurrent": {},
+  "mcp": {
+    "xai": {
+      "bearer_token_env": null,
+      "command": [
+        "uv",
+        "run",
+        "xai.py"
+      ],
+      "env": [],
+      "headers_env": {},
+      "url": null
+    }
+  },
+  "metrics": [
+    {
+      "direction": "higher",
+      "floor": null,
+      "margin": null,
+      "name": "score",
+      "role": "primary",
+      "track": null
+    }
+  ],
+  "model": {
+    "claude": "claude-model",
+    "codex": "codex-model"
+  },
+  "name": "demo",
+  "roles": {
+    "research": {
+      "addendum": "research.md",
+      "buffer": 5,
+      "context": [
+        "docs/analysis-*.md"
+      ],
+      "files": "ideas",
+      "harnesses": null,
+      "interval": 0.0,
+      "max_concurrent": 1,
+      "max_ideas": 2,
+      "mcp": [
+        "xai"
+      ],
+      "model": null,
+      "prompt": null,
+      "runs": false,
+      "runtime": null,
+      "scout": {
+        "interval": 86400.0,
+        "seeds": 4
+      },
+      "timeout": 1200.0,
+      "triggers": [
+        {
+          "kind": "low_water"
+        },
+        {
+          "kind": "seed"
+        },
+        {
+          "kind": "scout"
+        }
+      ],
+      "workdir": "head",
+      "writes": [
+        "seeds via idea develop, or their status to rejected with a note",
+        "ideas via idea add",
+        "comments(finding, escalation) on the project",
+        "comments(note) on an idea"
+      ]
+    },
+    "watchdog": {
+      "addendum": null,
+      "files": "seeds",
+      "harnesses": null,
+      "interval": 900.0,
+      "max_concurrent": 1,
+      "mcp": [],
+      "model": null,
+      "prompt": null,
+      "runs": false,
+      "runtime": null,
+      "timeout": 600.0,
+      "triggers": [
+        {
+          "kind": "anomaly"
+        },
+        {
+          "kind": "cron"
+        }
+      ],
+      "workdir": "head",
+      "writes": [
+        "comments(escalation, finding, note)",
+        "seeds via idea seed"
+      ]
+    },
+    "worker": {
+      "addendum": null,
+      "explore_every": 4,
+      "files": "nothing",
+      "harnesses": null,
+      "max_concurrent": 4,
+      "mcp": [],
+      "model": null,
+      "prompt": null,
+      "recovery_requeues": 2,
+      "runs": true,
+      "runtime": null,
+      "takes": null,
+      "timeout": 1800.0,
+      "writes": [
+        "commits",
+        "comments(finding) on your idea",
+        "comments(note) on your run"
+      ]
+    }
+  },
+  "runtime": "subprocess",
+  "spend": null,
+  "stop": {
+    "max_hours": null,
+    "max_runs": null,
+    "max_tokens": null,
+    "plateau": null,
+    "target": null
+  },
+  "tracks": {}
+}

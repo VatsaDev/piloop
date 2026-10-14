@@ -149,11 +149,11 @@ PILOOP_ACTOR=human piloop idea seed <name> "<its mechanism, one line>" --from "<
 
 ### Scout for outside techniques
 
-- This needs `[roles.research.scout]` in `piloop.toml`, with `interval` set.
-- Research then also runs scout sweeps. Each one searches X, GitHub and arXiv for techniques that address a measured
+- This needs `[roles.scout]` in `piloop.toml`, with `interval` set.
+- The scout then sweeps on that timer. Each sweep searches X, GitHub and arXiv for techniques that address a measured
   loss.
 - A scout sweep files at most `seeds` seeds, signed `scout#…`. The other techniques go to the `techniques` library.
-- `piloop launch <name> research --scout` asks for a scout sweep now.
+- `piloop launch <name> scout` asks for a scout sweep now.
 - Each scout sweep leaves a priority-3 `finding` that starts with its problem statement. Read it: a scout that
   misread the problem searched for the wrong thing.
 - In your digests, report the `scout` row of "ideas by source" next to the `research` row.
@@ -162,7 +162,7 @@ PILOOP_ACTOR=human piloop idea seed <name> "<its mechanism, one line>" --from "<
 
 When you or a worker write an analysis of where the head loses (against the reference, per slice):
 
-1. Add its path to `[roles.research] context` in `piloop.toml`.
+1. Add its path to the top-level `context` of `piloop.toml`.
 2. Run `piloop init .`.
 
 The research pack of every sweep then lists it under the analysis artifacts, newest first, before the history.

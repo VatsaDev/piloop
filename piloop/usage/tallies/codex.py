@@ -3,7 +3,8 @@
 ``{"type": "event_msg", "payload": {"type": "token_count", "info": {"total_token_usage": {input_tokens,
 cached_input_tokens, cache_write_input_tokens, output_tokens, total_tokens}}}}``. ``info`` is null when the event
 only updates rate limits. The convention is OpenAI's: ``input_tokens`` includes the cached part, so ``total_tokens``
-is input plus output. The same numbers are at the end of the stdout of ``codex exec --json`` (``turn.completed``),
+is input plus output. The tally subtracts the cached part from ``input``, so that ``input`` is the uncached input, as
+for the other harnesses. The same numbers are at the end of the stdout of ``codex exec --json`` (``turn.completed``),
 but the rollout file exists under both runtimes. Checked against Codex 0.153 files under ``~/.codex/sessions``.
 """
 
@@ -35,6 +36,7 @@ def sum_codex(records: Iterable[Record]) -> tuple[Counts, int]:
             cache_read='cached_input_tokens',
             cache_write='cache_write_input_tokens',
         )
+        counts.input -= counts.cache_read
         counts.total = as_int(usage.get('total_tokens'))
     return counts, turns
 

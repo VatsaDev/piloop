@@ -28,7 +28,7 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.otel import Tracer
 from tests.conftest import ScriptRuntime, factory
-from tests.daemon.test_triggers import add_ideas, configure, finish_a_run, last_reason, occupy
+from tests.daemon.test_triggers import add_ideas, configure, finish_a_run, last_reason, low_water, occupy
 
 PYTHON = shlex.quote(sys.executable)
 FAKE_RESEARCHER = f"""#!/bin/sh
@@ -129,7 +129,9 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
     The brief lists the seeds and asks for no new ideas. The developed seed is ready with its definition, and the
     sweep counts as one that defined an idea.
     """
-    configure(db, project, FAKE_DEVELOPER, worker={'max_concurrent': 1}, research={'buffer': 0, 'max_ideas': 2})
+    configure(
+        db, project, FAKE_DEVELOPER, worker={'max_concurrent': 1}, research={'triggers': low_water(0), 'max_ideas': 2}
+    )
     with db.session() as s:
         for title, by, pointers in (
             ('deeper trees', 'orchestrator', 'run#3'),

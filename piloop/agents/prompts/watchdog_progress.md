@@ -18,7 +18,7 @@ These questions are worth answering. They are not a checklist.
 Write one `finding` on the project. Start with your verdict (on track, inefficient, stuck, or suspect), then give the
 evidence.
 Make it an `escalation` when the orchestrator should change course now.
-If nothing changed since the last watchdog finding in the project overview, write nothing.
+If nothing changed since the last watchdog finding in the history (findings on the project), write nothing.
 
 When the trigger says that the campaign stopped, this is the closing review. Cover the head and its lineage, what
 worked, what did not, and whether the result can be trusted. Then write one escalation that asks whether to extend

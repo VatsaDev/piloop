@@ -11,9 +11,11 @@ A deprecated configuration key shows a warning for at least one minor release be
 
 - Roles are configuration. A `[roles.<name>]` table with a new name defines a role: its prompt, its triggers, its
   runtime, its working copy (`workdir`), its harnesses and limits, and what it may file (`files`). The worker, the
-  watchdog and research are the same tables with defaults, and each built-in role accepts every key.
-- Triggers are entries of `[roles.<name>] triggers`: `anomaly`, `cron`, `seed`, `low_water`, `scout`, and `sql`, a
-  query on the piloop database.
+  watchdog, research and the scout are the same tables with defaults, and each built-in role accepts every key.
+- Triggers are entries of `[roles.<name>] triggers`: `anomaly`, `cron`, `seed`, `low_water`, `stopped`, and `sql`, a
+  query on the piloop database. Any sweeping role may use any trigger.
+- A sweeping role's `incident_prompt` and `routine_prompt` add a file after its prompt in an incident sweep (one that
+  got anomalies) and in every other sweep. The watchdog's defaults are its incident and progress prompts.
 - Packages can add triggers and roles through the `piloop.triggers` and `piloop.roles` entry point groups.
 - `piloop launch` takes any sweeping role of the project.
 - A role that you define can do runs: `runs = true`. It takes the ideas that its `takes` condition selects, fills its
@@ -52,13 +54,20 @@ A deprecated configuration key shows a warning for at least one minor release be
   files from a bounded walk instead of the whole workspace. The first daemon start after the upgrade archives every
   done idea and stopped campaign that is already there. When not one more file fits above the reserve, archiving
   leaves the rest, writes an `anomaly.disk` event on the project and waits 10 minutes.
+- `[harness.<name>] busy_screens`, `failed_turn_screens` and `queue_key`: what the Herdr runtime reads on the screen
+  of an agent of the harness, and how it queues a message for it. They were built into the runtime for Claude Code and
+  Codex; the built-in harnesses set them now, and a definition that leaves one unset takes it from the built-in
+  harness with the same `executable`, so an override of `[harness.codex]` keeps Codex's queue key.
+- A usage glob reads an environment variable with `{env:NAME:default}`. The built-in Claude Code and Codex globs read
+  `CLAUDE_CONFIG_DIR` and `CODEX_HOME` this way, with the same defaults as before.
 - The `Runtime` protocol has four new methods: `focus` and `attach` show an agent, `view` names where you can see it,
   and `checks` reports to `piloop doctor`. `NotAttachable` says that a runtime cannot show an agent, and where to look
   instead. `RuntimeFailure` is the base of the errors that a runtime reports. **Breaking** for a runtime that a
   package adds: it must implement the four methods.
 - The docs have a [Runtimes](https://piloop.autoresearch.inc/concepts/runtimes) page. The tables of the built-in
-  runtimes, triggers, harnesses and role defaults, the `Runtime` methods and the `[stop]` keys are generated from the
-  code, so they no longer drift.
+  runtimes, triggers, harnesses and role defaults, the `Runtime` methods, the `[stop]` keys and the environment
+  variables are generated from the code, so they no longer drift. The extension points page gives each extension
+  point its contract, a generated table of the built-ins, and how to add your own, or says that you cannot yet.
 
 ### Changed
 
@@ -67,9 +76,42 @@ A deprecated configuration key shows a warning for at least one minor release be
   runtime, so a runtime that a package adds works with all of them. `piloop attach` on an agent that its runtime
   cannot show exits with an error that names its output file and its transcript.
 - `workers.kind` holds any role name of the project. A trigger refuses a name that is not a role of the project.
+- The scout is a built-in sweep role, `[roles.scout]`, instead of a mode of research. It is off until you set its
+  `interval`: its `cron` trigger then requests a sweep every `interval` seconds. `piloop launch <project> scout` asks
+  for one; `--scout` is gone. Its agents still sign `scout#<id>`. It has its own `max_concurrent`, so a scout sweep and
+  a research sweep can now run at the same time. Migration `0011` makes the earlier scout sweeps `scout` rows.
+- The closing review when a campaign stops is the `stopped` trigger, in the watchdog's default triggers.
+  `[roles.watchdog] triggers = []` now means no closing review, and a list that you set needs `{ kind = "stopped" }`
+  to keep it. Migration `0011` adds it to the stored copy of a list that you set, so a project keeps its closing review
+  until its next `piloop init`.
+- Any sweeping role can fill the backlog: `buffer` is a parameter of the `low_water` trigger, `max_ideas` is a key of
+  every sweeping role, and `low_water` counts the sweeps of its own role. The brief of a sweep that defines ideas
+  states its `max_ideas`.
+- The analysis files of the research pack are the project's top-level `context`.
+- The history shows the findings on the project of every role ("History: findings on the project"), not only those of
+  research and the scout. The overview no longer lists the watchdog's findings: its section is the inbox, the
+  decisions and the escalations.
+- The `input` of `workers.usage` is the uncached input for every harness. For Codex it included `cache_read`.
+  Migration `0012` subtracts it in the stored rows of every harness whose tally is `codex` (by the project's stored
+  config, or the built-in harness of that name; by the rollout file name when the harness is gone).
+- The service unit (`piloop service-unit`) carries the variables that the usage globs of the built-in harnesses and
+  of the projects' harnesses name, instead of a fixed `CLAUDE_CONFIG_DIR` and `CODEX_HOME`.
 - A commit marked `Piloop-Eval: skip` gets the new verdict `unmeasured` instead of `discard`, so scaffolding no longer
   counts as a dead end in the history, the research pack or agents' queries. Migration `0003` converts the daemon's
   existing skip discards.
+
+### Deprecated
+
+- `[roles.research.scout]`: write `[roles.scout]`. The keys of `[roles.research]` that the scout used (`runtime`,
+  `harnesses`, `model`, `timeout`, `mcp`, `addendum`, `workdir`) move with it. Removed in 0.3.0.
+- `{ kind = "scout" }` in `[roles.research] triggers`: delete it; the scout has its own `cron` trigger. Removed in
+  0.3.0.
+- `[roles.research] buffer`: write `buffer` on research's `low_water` trigger. Removed in 0.3.0.
+- `[roles.research] context`: write the top-level `context`. Removed in 0.3.0.
+- `herdr_<key>` in `config.toml`: write `<key>` in its `[runtimes.herdr]` table. The `PILOOP_HERDR_<KEY>` variables
+  do not change. Removed in 0.3.0.
+- `{claude_config_dir}` and `{codex_home}` in `[harness.<name>.usage] file`: write `{env:CLAUDE_CONFIG_DIR:~/.claude}`
+  and `{env:CODEX_HOME:~/.codex}`. Removed in 0.3.0.
 
 ### Fixed
 

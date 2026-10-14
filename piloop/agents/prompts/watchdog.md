@@ -10,7 +10,8 @@ Do not request agents or start projects.
 
 The daemon did the bookkeeping. The project overview at the end of this brief is computed from the database when your
 sweep started. It has the goal, the trajectory, what runs and waits, what was spent, the anomalies the daemon detected,
-the latest decisions and findings, and a summary of the tools and tables.
+the latest decisions and escalations, and a summary of the tools and tables. A progress review also has the research
+pack, with the findings of every role in its history.
 Start from it. Query the database only to go deeper. Do not restate it.
 
 ## How to write

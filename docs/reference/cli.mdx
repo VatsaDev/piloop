@@ -267,12 +267,12 @@ stopped.
 ### piloop launch
 
 ```text
-piloop launch REF ROLE [--harness NAME] [--model MODEL] [--reason TEXT] [--scout]
+piloop launch REF ROLE [--harness NAME] [--model MODEL] [--reason TEXT]
 ```
 
-Asks the daemon for one more agent of `ROLE`: `watchdog`, `research` or a
+Asks the daemon for one more agent of `ROLE`, a sweeping role: `watchdog`, `research`, `scout` or a
 [role that you defined](/concepts/roles#define-a-role). The daemon starts it on its next tick, within the role's
-`max_concurrent`. `--scout` asks for a research sweep in [scout mode](/concepts/roles#scout-mode).
+`max_concurrent`.
 Only the daemon starts workers, because a worker needs a run.
 
 ### piloop attach

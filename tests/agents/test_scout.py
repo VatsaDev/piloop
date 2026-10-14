@@ -1,4 +1,4 @@
-"""The research role's scout mode: its trigger, its brief and signature, its library and its watch list."""
+"""The scout role: its timer, its brief and signature, its library and its watch list."""
 
 import shlex
 import sys
@@ -6,24 +6,20 @@ import time
 from datetime import timedelta
 from pathlib import Path
 
-import pytest
 from sqlalchemy import select
 
-from piloop.agents.roles import SCOUT, role_of
-from piloop.agents.scout import MIN_WINDOW, SCOUT_EVENT, WATCH_RUNS, WINDOW, is_scout, sources, watch_list, window
+from piloop.agents.scout import MIN_WINDOW, WATCH_RUNS, WINDOW, sources, watch_list, window
 from piloop.campaign.ideas import yields
-from piloop.config import SCOUT_SEEDS, ConfigError, load_project_config
+from piloop.config import ScoutRole, load_project_config
 from piloop.db.models import (
     Candidate,
     Comment,
     CommentKind,
-    Event,
     Idea,
     IdeaStatus,
     Project,
     Run,
     RunStatus,
-    TargetKind,
     Technique,
     Verdict,
     Worker,
@@ -58,32 +54,25 @@ def scout_due(db: Database, project: Project, seconds: float) -> None:
         s.commit()
 
 
-def test_the_scout_is_off_without_its_table_and_needs_a_cadence(project: Project) -> None:
-    assert load_project_config(Path(project.path)).roles.research.scout is None
-    cfg = load_project_config(Path(project.path), roles={'research': {'scout': {'interval': 3600}}})
-    assert cfg.roles.research.scout is not None
-    assert (cfg.roles.research.scout.interval, cfg.roles.research.scout.seeds) == (3600, SCOUT_SEEDS)
-    with pytest.raises(ConfigError, match=r'roles\.research\.scout\.interval: Field required'):
-        load_project_config(Path(project.path), roles={'research': {'scout': {'seeds': 2}}})
+def test_the_scout_is_off_until_it_has_an_interval(project: Project) -> None:
+    scout = load_project_config(Path(project.path)).roles.scout
+    assert (scout.interval, scout.seeds, scout.files) == (0, ScoutRole().seeds, 'seeds')
+    on = load_project_config(Path(project.path), roles={'scout': {'interval': 3600}}).roles.scout
+    assert (on.interval, [t.kind for t in on.triggers]) == (3600, ['cron'])
 
 
-def test_a_scout_sweep_fires_on_its_interval_alone_and_waits_a_tick_when_another_research_trigger_fires(
+def test_a_scout_sweep_fires_on_its_interval_as_a_row_of_its_own_beside_research(
     db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    configure(db, project, research={'max_ideas': 0, 'scout': {'interval': 60}})
+    configure(db, project, research={'max_ideas': 0}, scout={'interval': 60})
     sched = scheduler(db, runtime, tmp_path)
     occupy(db, project)
     assert sched.tick() == [], 'registered a moment ago: not due'
     scout_due(db, project, 61)
     add_ideas(db, project, 1, by='watchdog#9', status=IdeaStatus.SEED)
-    assert sched.tick() == [1]
-    assert workers(db, WorkerKind.RESEARCH)[0][2] == '1 new seeds to develop', 'a seed sweep first, no scout in it'
-    sched.wait(10)
-    assert sched.tick() == [2]
-    assert workers(db, WorkerKind.RESEARCH)[1][2] == 'scout: every 60s'
-    with db.session() as s:
-        assert [is_scout(s, 1), is_scout(s, 2)] == [False, True]
-        assert role_of(s, s.get_one(Worker, 2)) is SCOUT
+    assert sorted(sched.tick()) == [1, 2], 'a seed sweep and a scout sweep, each in a slot of its own role'
+    assert workers(db, WorkerKind.RESEARCH)[0][2] == '1 new seeds to develop'
+    assert workers(db, WorkerKind.SCOUT)[0][2] == 'timer: 60s'
     sched.wait(10)
     assert sched.tick() == [], 'the last scout started a moment ago'
     backdate(db, 2, 61)
@@ -92,37 +81,10 @@ def test_a_scout_sweep_fires_on_its_interval_alone_and_waits_a_tick_when_another
     sched.stop(timeout=5)
 
 
-def test_a_scout_sweep_is_no_sweep_for_the_seed_and_low_water_triggers(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
-) -> None:
-    """A seed filed before a scout sweep started still fires a research sweep after it.
-
-    A scout sweep that defined no idea does not count as an empty sweep for the low-water trigger.
-    """
-    configure(db, project, research={'max_ideas': 1, 'buffer': 0})
-    sched = scheduler(db, runtime, tmp_path)
-    occupy(db, project)
-    add_ideas(db, project, 1)
-    add_ideas(db, project, 1, by='watchdog#9', status=IdeaStatus.SEED)
-    with db.session() as s:
-        scout = Worker(kind=WorkerKind.RESEARCH, project_id=project.id, reason='by hand')
-        s.add(scout)
-        s.flush()
-        s.add(Event(kind=SCOUT_EVENT, actor='human', target_kind=TargetKind.WORKER, target_id=scout.id))
-        s.get_one(Idea, 2).created_at = utcnow() - timedelta(seconds=5)
-        s.commit()
-    assert sched.tick() == [1], 'the scout request launches; the seed waits for the next tick'
-    sched.wait(10)
-    assert sched.tick() == [2], 'the seed predates the scout, but no sweep that develops seeds has read it'
-    assert workers(db, WorkerKind.RESEARCH)[1][2] == '1 new seeds to develop'
-    sched.wait(10)
-    sched.stop(timeout=5)
-
-
 def test_a_scout_sweep_reads_its_context_signs_as_a_scout_and_files_only_seeds_and_techniques(
     db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    configure(db, project, FAKE_SCOUT, research={'max_ideas': 0, 'scout': {'interval': 60, 'seeds': 2}})
+    configure(db, project, FAKE_SCOUT, research={'max_ideas': 0}, scout={'interval': 60, 'seeds': 2})
     occupy(db, project)
     scout_due(db, project, 61)
     sched = scheduler(db, runtime, tmp_path)
@@ -154,7 +116,7 @@ def test_a_scout_sweep_reads_its_context_signs_as_a_scout_and_files_only_seeds_a
         assert 'scout 1 ideas, 0 ran' in '; '.join(y.line() for y in yields(s, project.id))
         project_row = s.get_one(Project, project.id)
         cfg = load_project_config(Path(project.path))
-        assert '1 of the research in scout mode; 0 of 0 ended research sweeps defined no idea' in overview(
+        assert '0 research, 1 scout; 0 of 0 ended research sweeps defined no idea' in overview(
             s, project_row, cfg, utcnow(), lambda _: []
         )
         assert 'scout#1: Problem statement: digits' in history(s, project_row, cfg)
@@ -207,10 +169,7 @@ def add_scouts(db: Database, project: Project, n: int) -> None:
     with db.session() as s:
         for _ in range(n):
             time.sleep(0.01)
-            w = Worker(kind=WorkerKind.RESEARCH, project_id=project.id, state=WorkerState.EXITED, started_at=utcnow())
-            s.add(w)
-            s.flush()
-            s.add(Event(kind=SCOUT_EVENT, actor='daemon', target_kind=TargetKind.WORKER, target_id=w.id))
+            s.add(Worker(kind=WorkerKind.SCOUT, project_id=project.id, state=WorkerState.EXITED, started_at=utcnow()))
         s.commit()
 
 
@@ -231,48 +190,46 @@ def test_a_developed_source_joins_the_watch_list_and_ages_out_unless_it_kept(db:
     developed = developed_seed(db, project, 'developed', 'https://x.com/a/status/1 https://github.com/o/r')
     kept = developed_seed(db, project, 'kept', 'https://x.com/b/status/2', kept=True)
     with db.session() as s:
-        assert [(w.source, w.ideas, w.kept) for w in watch_list(s, project.id)] == [
+        assert [(w.source, w.ideas, w.kept) for w in watch_list(s, project.id, WorkerKind.SCOUT)] == [
             ('@b', [kept], True),
             ('@a', [developed], False),
             ('o/r', [developed], False),
         ]
-        assert watch_list(s, project.id)[1].line() == (
+        assert watch_list(s, project.id, WorkerKind.SCOUT)[1].line() == (
             f'- @a (developed, {WATCH_RUNS} more scout sweeps unless one pays off; idea#{developed})'
         )
-        assert watch_list(s, project.id)[0].line() == f'- @b (kept; idea#{kept})'
+        assert watch_list(s, project.id, WorkerKind.SCOUT)[0].line() == f'- @b (kept; idea#{kept})'
     add_scouts(db, project, WATCH_RUNS)
     with db.session() as s:
-        assert [w.source for w in watch_list(s, project.id)] == ['@b'], 'what never kept ages out'
+        assert [w.source for w in watch_list(s, project.id, WorkerKind.SCOUT)] == ['@b'], 'what never kept ages out'
 
 
 def test_the_search_window_starts_at_the_previous_scout_at_least_a_week_back(db: Database, project: Project) -> None:
     now = utcnow()
     with db.session() as s:
-        assert window(s, project.id, 99, now) == now - WINDOW
+        assert window(s, project.id, WorkerKind.SCOUT, 99, now) == now - WINDOW
     add_scouts(db, project, 1)
     with db.session() as s:
-        assert window(s, project.id, 99, now) == now - MIN_WINDOW, 'a scout an hour ago still looks a week back'
+        assert window(s, project.id, WorkerKind.SCOUT, 99, now) == now - MIN_WINDOW, (
+            'a scout an hour ago still looks a week back'
+        )
         started = s.get_one(Worker, 1).started_at = now - timedelta(days=12)
         s.commit()
-        assert window(s, project.id, 99, now) == started
+        assert window(s, project.id, WorkerKind.SCOUT, 99, now) == started
 
 
-def test_a_manual_scout_without_its_table_files_the_default_number_of_seeds(
+def test_a_scout_requested_by_hand_while_its_timer_is_off_files_the_default_number_of_seeds(
     db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     write_toml(Path(project.path), '#!/bin/sh\ncat ../brief.md > workspace/brief-seen.txt\n')
     configure(db, project, '#!/bin/sh\ncat ../brief.md > workspace/brief-seen.txt\n', research={'max_ideas': 0})
     occupy(db, project)
-    add_scouts(db, project, 0)
     with db.session() as s:
-        w = Worker(kind=WorkerKind.RESEARCH, project_id=project.id, reason='by hand')
-        s.add(w)
-        s.flush()
-        s.add(Event(kind=SCOUT_EVENT, actor='human', target_kind=TargetKind.WORKER, target_id=w.id))
+        s.add(Worker(kind=WorkerKind.SCOUT, project_id=project.id, reason='by hand'))
         s.commit()
     sched = scheduler(db, runtime, tmp_path)
     assert sched.tick() == [1]
     sched.wait(30)
     sched.stop(timeout=5)
     brief = (tmp_path / 'projects' / str(project.id) / 'workspace' / 'brief-seen.txt').read_text()
-    assert f'- Seeds you may file: at most {SCOUT_SEEDS};' in brief
+    assert f'- Seeds you may file: at most {ScoutRole().seeds};' in brief

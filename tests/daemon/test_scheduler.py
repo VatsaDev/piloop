@@ -64,6 +64,7 @@ from tests.conftest import (
     wait_for_worker_handle,
     write_toml,
 )
+from tests.daemon.test_triggers import low_water
 from tests.usage.test_usage import PI_ID, store
 
 
@@ -1773,19 +1774,21 @@ def test_an_idea_on_a_track_the_config_does_not_name_is_parked_and_a_track_at_sh
 def test_low_water_counts_each_track_short_of_its_share_whatever_the_others_hold(
     db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    research = {'buffer': 0, 'max_ideas': 1}
+    research = {'triggers': low_water(0), 'max_ideas': 1}
     set_config(db, project, roles={'worker': {'max_concurrent': 4}, 'research': research}, **TWO_TRACKS)
     add_ideas(db, project, *(f'a{i}' for i in range(6)), track='accuracy')
     scheduler = make_scheduler(db, runtime, tmp_path)
     with db.session() as s:
         p = s.get_one(Project, project.id)
         cfg = ProjectConfig.model_validate(p.config)
-        backlog = scheduler._backlog(s, p, cfg)
+        backlog = scheduler._backlog(s, p, cfg, WorkerKind.RESEARCH, 0)
         assert (backlog.runnable, backlog.target, backlog.short) == (6, 4, 1), 'cost is one short; accuracy has 3 spare'
         assert str(backlog) == '6 of 4 runnable ideas (accuracy 6 of 3, cost 0 of 1)'
-        fire = LowWaterTrigger().fire(scheduler._tick(s, p, cfg, WorkerKind.RESEARCH, cfg.roles.research))
+        fire = LowWaterTrigger(buffer=0).fire(scheduler._tick(s, p, cfg, WorkerKind.RESEARCH, cfg.roles.research))
         assert fire is not None and fire.reason == str(backlog)
     add_ideas(db, project, 'c0', track='cost')
     with db.session() as s:
         p = s.get_one(Project, project.id)
-        assert scheduler._backlog(s, p, cfg).short == -3, 'no track short: the surplus, as with one track'
+        assert scheduler._backlog(s, p, cfg, WorkerKind.RESEARCH, 0).short == -3, (
+            'no track short: the surplus, as with one track'
+        )

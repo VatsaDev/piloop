@@ -17,7 +17,6 @@ from sqlalchemy.orm import Session
 from piloop import git
 from piloop.agents.capture import ENTIRE_INSTALL, MIN_ENTIRE, AttachError, attach_session, attachable, usable
 from piloop.agents.refill import usage_of
-from piloop.agents.roles import role_of
 from piloop.config import BRIEF_FILE, config_of, harness_of
 from piloop.db.events import emit
 from piloop.db.models import Comment, Project, Run, TargetKind, UsageJson, Worker, WorkerState, utcnow
@@ -39,8 +38,8 @@ STOPPED_ERROR = 'daemon stopped'
 STARTUP_SECONDS = 120
 """An agent that ends sooner than this without spending a token did not start to work: a dialog, a crash.
 
-Longer than the default ``herdr_startup_grace_seconds``: a Herdr agent that never starts its first turn is watched
-for the whole grace, and must still count as a failed start, not as a run that worked and left nothing."""
+Longer than the default Herdr ``startup_grace_seconds``: a Herdr agent that never starts its first turn is watched for
+the whole grace, and must still count as a failed start, not as a run that worked and left nothing."""
 STARTUP_ANOMALY = 'anomaly.startup'
 """The event on a worker that did not start to work (``Outcome.startup_failed``): an environment fault, not bad work."""
 PARENT_SESSION_ENV = ('CLAUDE_CODE_CHILD_SESSION',)
@@ -249,7 +248,7 @@ class Launcher:
             s.commit()
             kind, reason, project_name, project_path = w.kind, w.reason, project.name, Path(project.path)
             label = _label(s, w)
-            actor = f'{role_of(s, w).name}#{worker_id}'
+            actor = f'{w.kind}#{worker_id}'
         span.set(kind=kind, harness=harness, model=model, reason=reason, session_id=session_id)
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / BRIEF_FILE).write_text(brief)
@@ -280,6 +279,7 @@ class Launcher:
             fill(a, model=model, log_dir=str(log_dir), session_id=session_id or SESSION_ID, cwd=str(cwd))
             for a in (definition.resume if invocation is Invocation.HEADLESS else [])
         ]
+        busy, failed, queue = definition.screens
         spec = WorkerSpec(
             name=f'{kind}-{worker_id}',
             label=label,
@@ -290,6 +290,9 @@ class Launcher:
             log_dir=log_dir,
             env=env | mcp.env,
             startup_dialogs=definition.startup_dialogs,
+            busy_screens=busy,
+            failed_turn_screens=failed,
+            queue_key=queue,
             session_id_pattern=definition.session_id_pattern,
             resume_args=expand(resume, mcp),
         )
@@ -367,7 +370,7 @@ class Launcher:
             definition = harness_of(s, w)
             if definition is None or definition.usage is None:
                 return False
-            signed = select(Comment.id).where(Comment.author == f'{role_of(s, w).name}#{worker_id}').limit(1)
+            signed = select(Comment.id).where(Comment.author == f'{w.kind}#{worker_id}').limit(1)
             return s.scalar(signed) is None
 
     def _attach(self, worker_id: int, cwd: Path, span: Span) -> str | None:

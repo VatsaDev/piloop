@@ -1,4 +1,4 @@
-"""The deprecation framework, tested with a bridge defined here: ``BRIDGES`` is empty until a key is deprecated."""
+"""The deprecation framework, tested with a bridge defined here, and each bridge of ``BRIDGES``."""
 
 import warnings
 from pathlib import Path
@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 
 from piloop import deprecated
+from piloop.config import ConfigError, load_project_config
 from piloop.deprecated import PiloopDeprecationWarning
+from tests.conftest import HARNESS_APPEND, write_toml
 
 
 def rename_size(toml: Path, raw: dict[str, object]) -> None:
@@ -50,5 +52,132 @@ def test_the_cli_shows_each_deprecation_once(tmp_path: Path) -> None:
     )
 
 
-def test_no_key_is_deprecated() -> None:
-    assert deprecated.BRIDGES == ()
+def test_a_dotted_key_warns_at_its_table_header_or_at_the_line_that_sets_its_last_part(tmp_path: Path) -> None:
+    toml = tmp_path / 'piloop.toml'
+    toml.write_text('[roles.research]\nbuffer = 3\n\n[roles.research.scout]\ninterval = 60\n')
+    with pytest.warns(PiloopDeprecationWarning) as record:
+        deprecated.warn(toml, 'roles.research.scout', 'old', removed_in='9.0.0')
+        deprecated.warn(toml, 'roles.research.buffer', 'old', removed_in='9.0.0')
+    assert [w.lineno for w in record] == [4, 2]
+
+
+def deprecated_config(project_path: Path, tables: str) -> Path:
+    """Write the test project's piloop.toml with ``tables`` in place of its research table."""
+    write_toml(project_path, HARNESS_APPEND)
+    toml = project_path / 'piloop.toml'
+    text = toml.read_text().replace('[roles.research]\ntimeout = 20\nmax_ideas = 0\nmax_concurrent = 1\n', '')
+    toml.write_text(text + tables)
+    return toml
+
+
+def test_research_scout_is_the_scout_role_with_the_research_keys_it_used(project_path: Path) -> None:
+    toml = deprecated_config(
+        project_path,
+        '[roles.research]\nmcp = []\ntimeout = 1200\nmax_concurrent = 2\n\n'
+        '[roles.research.scout]\ninterval = 86400\nseeds = 4\n',
+    )
+    with pytest.warns(PiloopDeprecationWarning, match=r'\[roles.research.scout\] is deprecated') as record:
+        cfg = load_project_config(project_path)
+    assert [(w.filename, w.lineno) for w in record] == [
+        (str(toml), toml.read_text().splitlines().index('[roles.research.scout]') + 1)
+    ]
+    scout = cfg.roles.scout
+    assert (scout.interval, scout.seeds, scout.timeout, scout.max_concurrent) == (86400, 4, 1200, 1), (
+        "the shared timeout moves with it; max_concurrent is the role's own"
+    )
+    assert cfg.roles.research.max_concurrent == 2
+
+
+def test_a_scout_table_wins_over_what_the_bridge_copies_from_research(project_path: Path) -> None:
+    deprecated_config(
+        project_path,
+        '[roles.research]\ntimeout = 1200\n\n[roles.research.scout]\ninterval = 60\n\n[roles.scout]\ntimeout = 300\n',
+    )
+    with pytest.warns(PiloopDeprecationWarning):
+        scout = load_project_config(project_path).roles.scout
+    assert (scout.interval, scout.timeout) == (60, 300)
+
+
+def test_the_scout_trigger_of_research_goes(project_path: Path) -> None:
+    toml = deprecated_config(
+        project_path, '[roles.research]\ntriggers = [{ kind = "low_water" }, { kind = "seed" }, { kind = "scout" }]\n'
+    )
+    toml.write_text(
+        toml.read_text().replace('[roles.watchdog]\n', '[roles.watchdog]\ntriggers = [{ kind = "cron" }]\n')
+    )
+    with pytest.warns(PiloopDeprecationWarning, match='the scout trigger is deprecated') as record:
+        cfg = load_project_config(project_path)
+    assert [t.kind for t in cfg.roles.research.triggers] == ['low_water', 'seed']
+    assert record[0].lineno == toml.read_text().splitlines().index('[roles.research]') + 2, 'research, not the watchdog'
+
+
+def test_a_buffer_beside_triggers_that_are_no_list_is_left_for_the_validation_to_refuse(project_path: Path) -> None:
+    deprecated_config(project_path, '[roles.research]\nbuffer = 5\ntriggers = "low_water"\n')
+    with pytest.warns(PiloopDeprecationWarning), pytest.raises(ConfigError, match=r'roles\.research\.triggers'):
+        load_project_config(project_path)
+
+
+def test_research_buffer_is_the_buffer_of_its_low_water_triggers(project_path: Path) -> None:
+    deprecated_config(project_path, '[roles.research]\nbuffer = 5\n')
+    with pytest.warns(PiloopDeprecationWarning, match=r'\[roles.research\] buffer is deprecated'):
+        cfg = load_project_config(project_path)
+    assert [t.model_dump() for t in cfg.roles.research.triggers] == [
+        {'kind': 'low_water', 'buffer': 5},
+        {'kind': 'seed'},
+    ], 'the default triggers, with the buffer'
+    deprecated_config(
+        project_path, '[roles.research]\nbuffer = 0\ntriggers = [{ kind = "low_water" }, { kind = "cron" }]\n'
+    )
+    with pytest.warns(PiloopDeprecationWarning):
+        cfg = load_project_config(project_path)
+    assert [t.model_dump() for t in cfg.roles.research.triggers] == [
+        {'kind': 'low_water', 'buffer': 0},
+        {'kind': 'cron'},
+    ]
+
+
+def test_research_context_is_the_top_level_context(project_path: Path) -> None:
+    toml = deprecated_config(project_path, '[roles.research]\ncontext = ["docs/b.md"]\n')
+    toml.write_text('context = ["docs/a.md"]\n' + toml.read_text())
+    with pytest.warns(PiloopDeprecationWarning, match=r'\[roles.research\] context is deprecated'):
+        assert load_project_config(project_path).context == ['docs/a.md', 'docs/b.md']
+
+
+def test_the_claude_and_codex_placeholders_of_a_usage_glob_are_env_placeholders(project_path: Path) -> None:
+    toml = project_path / 'piloop.toml'
+    toml.write_text(
+        toml.read_text().replace(
+            '[harness.script]',
+            '[harness.script.usage]\nfile = "{codex_home}/{session_id}.jsonl"\ntally = "codex"\n\n[harness.script]',
+        )
+    )
+    toml.write_text(toml.read_text().replace('headless = ["{prompt}"]', 'headless = ["{prompt}", "{session_id}"]'))
+    with pytest.warns(PiloopDeprecationWarning, match='{claude_config_dir} and {codex_home} are deprecated'):
+        usage = load_project_config(project_path).harness['script'].usage
+    assert usage is not None and usage.file == '{env:CODEX_HOME:~/.codex}/{session_id}.jsonl'
+
+
+TEMPLATES = Path(__file__).parent / 'fixtures' / 'templates'
+"""The project template that ``piloop init`` wrote in 0.1.0, and in this release before the scout was a role."""
+
+
+@pytest.mark.parametrize(
+    ('template', 'scout_table'),
+    [('piloop-0.1.0.toml', False), ('piloop-0.2.0.dev.toml', False), ('piloop-0.2.0.dev.toml', True)],
+    ids=['0.1.0', 'dev', 'dev-with-its-scout-table'],
+)
+def test_a_piloop_toml_that_an_earlier_template_wrote_still_loads(
+    template: str, scout_table: bool, tmp_path: Path
+) -> None:
+    """Every form of the deprecated keys that the earlier templates wrote, the scout table uncommented included."""
+    text = (TEMPLATES / template).read_text()
+    if scout_table:
+        text = text.replace('# [roles.research.scout]', '[roles.research.scout]')
+        text = text.replace('# interval = 86400', 'interval = 86400').replace('# seeds = 3 ', 'seeds = 3 ')
+    (tmp_path / 'piloop.toml').write_text(text)
+    with pytest.warns(PiloopDeprecationWarning):
+        cfg = load_project_config(tmp_path)
+    research = cfg.roles.research
+    assert [t.model_dump() for t in research.triggers] == [{'kind': 'low_water', 'buffer': 2}, {'kind': 'seed'}]
+    assert (cfg.context, research.max_ideas) == ([], 1)
+    assert (cfg.roles.scout.interval, cfg.roles.scout.seeds) == ((86400, 3) if scout_table else (0, 3))

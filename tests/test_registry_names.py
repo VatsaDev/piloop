@@ -37,9 +37,9 @@ LEAVES: dict[str, frozenset[str] | None] = {
     'usage/jsonl.py': frozenset({'jsonl'}),
     'usage/tallies/*.py': None,
     'runtime/subprocess.py': frozenset({'subprocess'}),
-    'runtime/herdr.py': frozenset({'herdr', 'claude', 'codex'}),
-    'config.py': frozenset({'subprocess', 'pi', 'scout'}),
-    'agents/roles.py': frozenset({'scout'}),
+    'runtime/herdr.py': frozenset({'herdr'}),
+    'config.py': frozenset({'subprocess', 'pi'}),
+    'deprecated.py': None,
     'cli/skills.py': frozenset({'claude', 'codex', 'pi'}),
     'cli/idea.py': frozenset({'seed'}),
     'cli/main.py': frozenset({'sql'}),
@@ -52,12 +52,9 @@ LEAVES: dict[str, frozenset[str] | None] = {
 
 - ``harnesses.py``, ``triggers.py``, ``db/models.py`` (``WorkerKind``), the MCP renderers and the usage readers and
   tallies define the entries. The migrations are history.
-- ``usage/jsonl.py`` fills the ``{claude_config_dir}`` and ``{codex_home}`` placeholders, which this test cannot see:
-  the folders of two harnesses are core settings. TODO: move them to the harness definitions.
-- ``runtime/subprocess.py`` and ``runtime/herdr.py`` define their runtime. TODO: the screens and the queue key of each
-  harness in ``runtime/herdr.py`` move to fields of ``Harness``.
-- ``config.py``: the defaults of ``runtime`` and ``harnesses``, and ``scout``, a reserved name.
-- ``agents/roles.py``: the scout mode of research, which signs as ``scout``.
+- ``runtime/subprocess.py`` and ``runtime/herdr.py`` define their runtime.
+- ``config.py``: the defaults of ``runtime`` and ``harnesses``.
+- ``deprecated.py``: the bridges rewrite the keys of earlier releases, which named built-in roles and triggers.
 - ``cli/skills.py``: the skill folder of each agent CLI, which is not the harness registry.
 - ``cli/idea.py`` and ``cli/main.py``: the commands ``piloop idea seed`` and ``piloop sql``.
 - ``campaign/inbox.py``, ``reports/overview.py`` and ``daemon/runner.py``: keys of event payloads (``anomaly`` of

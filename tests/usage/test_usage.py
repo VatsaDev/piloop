@@ -15,7 +15,6 @@ from piloop.config import ConfigError, load_project_config
 from piloop.db.models import Project, Worker, WorkerKind, WorkerState, utcnow
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
-from piloop.settings import Settings
 from piloop.usage import (
     READERS,
     Usage,
@@ -75,9 +74,8 @@ def store(
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """``{home}`` in every spec: a fresh directory. Claude Code and Codex keep their defaults, ``.claude`` and ``.codex``."""
     monkeypatch.setenv('HOME', str(tmp_path))
-    monkeypatch.setattr(
-        jsonl_module, 'settings', Settings(claude_config_dir=tmp_path / '.claude', codex_home=tmp_path / '.codex')
-    )
+    monkeypatch.delenv('CLAUDE_CONFIG_DIR', raising=False)
+    monkeypatch.delenv('CODEX_HOME', raising=False)
     return tmp_path
 
 
@@ -97,13 +95,13 @@ def test_the_registries_hold_the_shipped_pieces() -> None:
             ),
             'claude': UsageSpec(
                 reader='jsonl',
-                file='{claude_config_dir}/projects/{cwd}/{session_id}.jsonl',
+                file='{env:CLAUDE_CONFIG_DIR:~/.claude}/projects/{cwd}/{session_id}.jsonl',
                 cwd='dash_non_alnum',
                 tally='claude',
             ),
             'codex': UsageSpec(
                 reader='jsonl',
-                file='{codex_home}/sessions/*/*/*/rollout-*-{session_id}.jsonl',
+                file='{env:CODEX_HOME:~/.codex}/sessions/*/*/*/rollout-*-{session_id}.jsonl',
                 cwd='none',
                 tally='codex',
             ),
@@ -149,7 +147,6 @@ def test_claude_sessions_are_found_under_claude_config_dir(
 ) -> None:
     config_dir = tmp_path / 'elsewhere' / 'claude'
     monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(config_dir))
-    monkeypatch.setattr(jsonl_module, 'settings', Settings())
     store(home, 'claude', CLAUDE_ID)
     with pytest.raises(UsageError, match='no session file'):
         read_usage(spec_of('claude'), CLAUDE_ID, CWD, None)
@@ -165,14 +162,16 @@ def test_claude_sessions_are_found_under_claude_config_dir(
 def test_codex_tally_takes_the_last_cumulative_token_count(home: Path) -> None:
     path = store(home, 'codex', CODEX_ID)
     assert read_usage(spec_of('codex'), CODEX_ID, CWD, None) == snapshot(
-        Usage(input=39981, output=372, cache_read=23808, cache_write=0, total=40353, turns=2, source=str(path))
-    ), "input_tokens includes the cached part, so total_tokens is Codex's input + output; a null info is not a turn"
+        Usage(input=16173, output=372, cache_read=23808, cache_write=0, total=40353, turns=2, source=str(path))
+    ), (
+        "input_tokens includes the cached part, which input leaves out as for every harness; total_tokens is Codex's"
+        ' own input + output; a null info is not a turn'
+    )
 
 
 def test_codex_sessions_are_found_under_codex_home(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     codex_home = tmp_path / 'elsewhere' / 'codex'
     monkeypatch.setenv('CODEX_HOME', str(codex_home))
-    monkeypatch.setattr(jsonl_module, 'settings', Settings())
     store(home, 'codex', CODEX_ID)
     with pytest.raises(UsageError, match='no session file'):
         read_usage(spec_of('codex'), CODEX_ID, CWD, None)

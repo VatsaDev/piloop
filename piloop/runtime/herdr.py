@@ -1,6 +1,6 @@
 """Workers as Herdr agents: one Herdr session for piloop, one workspace per project, one tab per worker.
 
-Every ``herdr`` call targets the session that ``settings.herdr_session`` names (``--session``). piloop starts its
+Every ``herdr`` call targets the session that ``herdr_settings.session`` names (``--session``). piloop starts its
 headless server when it is not running. Nothing piloop starts lands in the session the human uses for other work.
 
 The workspace has the project name as its label and the project path as its ``root`` metadata token, because Herdr
@@ -11,7 +11,7 @@ removes exactly its tab. A human selects workspace and tab in the Herdr sidebar,
 ``piloop watch``. The daemon addresses agents by ``spec.name``.
 
 An agent is finished when it is idle, nothing it started still runs, and its first turn is past the startup grace
-(``herdr_startup_grace_seconds``), within which a quiet agent may still be starting. Harnesses run tool commands in
+(``startup_grace_seconds``), within which a quiet agent may still be starting. Harnesses run tool commands in
 sessions of their own (Claude Code's background shells, Codex's commands). The agent, its MCP servers and its helpers
 share the session of the pane's shell. Every process started in the pane inherits ``TOKEN_ENV``. So a tagged process
 in another session is work that the agent started and still waits on, even after its parent shell exited.
@@ -34,13 +34,17 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Self
 from uuid import uuid4
 
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
+
 from piloop import settings as settings_module
-from piloop.harnesses import Invocation
+from piloop.harnesses import Harness, Invocation, QueueKey
 from piloop.proc import tagged
 from piloop.runtime import Check, Handle, NotSteerable, Outcome, RuntimeFailure, StartFailed, WorkerSpec, WorkerStatus
+from piloop.settings import runtime_settings
 
 HERDR = 'herdr'
 STATUS_MAP = {
@@ -67,7 +71,7 @@ RETRIED_READS = frozenset(
         ('tab', 'close'),
     }
 )
-"""The ``herdr`` commands that are retried while the server does not answer (``settings.herdr_unavailable_seconds``).
+"""The ``herdr`` commands that are retried while the server does not answer (``herdr_settings.unavailable_seconds``).
 
 Only reads, and ``tab close``, which is the same when sent twice. A prompt, keys or a new tab may have been applied by a
 server that did not answer, so they are never sent again."""
@@ -109,61 +113,99 @@ Claude Code reports idle as soon as a prompt is typed into it while it streams, 
 streaming answer or a spinner's timer changes the screen within this time.
 """
 SCREEN_TAIL_LINES = 12
-"""How many non-blank lines at the bottom of an idle agent's screen to search for ``BUSY_SCREENS`` and
-``FAILED_TURN_SCREENS``. This covers the prompt box and the last output above it. The scrollback is not searched,
+"""How many non-blank lines at the bottom of an idle agent's screen to search for the ``busy_screens`` and
+``failed_turn_screens`` of its harness. This covers the prompt box and the last output above it. The scrollback is not searched,
 because an old banner or the agent's own output could match there."""
-BUSY_SCREENS: dict[str, tuple[str, ...]] = {
-    'claude': ('Press up to edit queued messages', 'Waiting for API response', 'Retrying in', '… (thinking'),
-    'codex': ('Waiting for startup',),
-}
-"""For each Herdr agent kind, text at the bottom of a still screen that shows the agent works while Herdr reports
-it idle.
-
-Herdr reads Claude Code's state from the title spinner only. The spinner stops while Claude Code holds a queued
-prompt, while it waits to retry the API (``Retrying in 0s`` can hold still) and while it thinks at length with no
-timer on screen. Codex holds a prompt submitted before its app server is up under ``Waiting for startup``, and
-submits it when the server is up. On a loaded host this can take 25 s or more, and Herdr reports idle for all of it.
-TODO: remove an entry once Herdr detects that state for its kind.
-"""
-FAILED_TURN_SCREENS: dict[str, tuple[str, ...]] = {
-    'claude': ('API Error', 'included_quota_unknown'),
-    'codex': (
-        'Selected model is at capacity',
-        'exceeded retry limit',
-        'stream disconnected before completion',
-        'unsupported websocket request type',
-    ),
-}
-"""For each Herdr agent kind, text at the bottom of the screen that shows the turn ended on an API error, not because
-the agent was done.
-
-The agent is resumed with ``RESUME_PROMPT`` after each wait in ``RESUME_BACKOFF_SECONDS``. After the last one, the run
-fails. A ``503 included_quota_unknown`` is transient: while Claude Code counts down a retry, it is a ``BUSY_SCREENS``
-text, and when the retries stop, it is a failed turn.
-"""
 
 
-@dataclass(frozen=True)
-class QueueKey:
-    """The key that queues a typed message for the end of the agent's turn, and how the screen shows it was not taken.
+class HerdrSettings(BaseSettings):
+    """Settings of the Herdr runtime: ``[runtimes.herdr]`` in ``config.toml``. ``PILOOP_HERDR_*`` variables win."""
 
-    The message is typed into the composer (``pane send-text``), then the key is pressed. A harness that reads a burst
-    of input as a paste swallows a key that arrives inside the burst, so the key waits until the text is drawn, and is
-    pressed again while ``pending`` is still at the bottom of the screen.
+    model_config = SettingsConfigDict(env_prefix='PILOOP_HERDR_', frozen=True, use_attribute_docstrings=True)
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Arguments, then the environment, then ``[runtimes.herdr]`` of ``config.toml``."""
+        return init_settings, env_settings, InitSettingsSource(settings_cls, runtime_settings(HERDR))
+
+    session: str = 'piloop'
+    """The name of the Herdr session that piloop owns. It has one workspace for each project, and every agent that
+    piloop starts runs there, never in the session you use for other work. ``piloop attach`` attaches a terminal to
+    it. piloop starts its server when it first needs it."""
+
+    socket_path: str | None = Field(default=None, validation_alias='HERDR_SOCKET_PATH')
+    """The socket of the Herdr session that this process runs in. Herdr sets it in every pane it manages.
+    ``piloop attach`` reads it to tell whether it already runs inside the piloop session."""
+
+    server_start_seconds: float = 10
+    """The number of seconds to wait for the Herdr server of the piloop session to answer after piloop starts it."""
+
+    start_timeout_seconds: float = 60
+    """The number of seconds Herdr may take to detect an agent that just started."""
+
+    cli_timeout_seconds: float = 30
+    """The timeout in seconds of one ``herdr`` CLI call, in addition to any wait that the call itself does."""
+
+    unavailable_seconds: float = 300
+    """The number of seconds to keep retrying a read of the Herdr server that does not answer (``server_unavailable``,
+    or a ``herdr`` call that times out) before the read fails. A loaded host can stall the server for a while, and a
+    failed read of a working agent ends it. Calls that change something (a prompt, keys, a new tab) are never retried,
+    because the server may have applied them."""
+
+    prompt_pickup_seconds: float = 5
+    """The number of seconds to wait for an idle agent to start working again after piloop prompts it to resume, and
+    for Herdr to report the session id of a started agent. The first prompt has ``startup_grace_seconds``."""
+
+    startup_grace_seconds: float = 60
+    """The number of seconds an agent has to start its first turn after its brief is submitted.
+
+    Within it, an agent whose state has not changed yet is still starting, not a lost prompt, and a quiet idle screen
+    is not a finished turn: under load a TUI can take many seconds to show that it took the brief. After it, a brief
+    that was never picked up is lost, and an agent that never worked counts as failed to start."""
+
+    shell_ready_seconds: float = 10
+    """The number of seconds to retry ``agent start`` while the shell of a new tab is still starting."""
+
+    wait_chunk_seconds: float = 10
+    """The longest ``agent wait`` call, in seconds. piloop notices a worker whose tab was closed within this time."""
+
+
+herdr_settings = HerdrSettings()
+
+
+class Screens(BaseModel):
+    """What the runtime looks for on the screen of an agent, from its harness (``Harness``), as its handle holds it.
+
+    The handle has them from the start of the agent, so a daemon that re-attaches to it reads the same ones.
     """
 
-    key: str
-    pending: str
-    """Text at the bottom of the screen while the composer still holds the typed message."""
+    model_config = ConfigDict(extra='ignore', frozen=True)
+
+    busy_screens: tuple[str, ...] = ()
+    failed_turn_screens: tuple[str, ...] = ()
+    queue_key: QueueKey | None = None
+
+    @classmethod
+    def of(cls, handle: Handle) -> Self:
+        """Return the screens in ``handle``.
+
+        A handle that an older daemon stored has none of them: it gets those of the built-in harness of its executable.
+        TODO: delete this fallback in the release after 0.2.0; an agent that a daemon before it started has ended by
+        then.
+        """
+        if 'busy_screens' in handle.data:
+            return cls.model_validate(handle.data)
+        busy, failed, queue = Harness(executable=str(handle.data.get('kind')), headless=['{prompt}']).screens
+        return cls(busy_screens=busy, failed_turn_screens=failed, queue_key=queue)
 
 
-QUEUE_KEYS = {'codex': QueueKey('tab', 'tab to queue message')}
-"""For each Herdr agent kind that ends its turn to take a message submitted mid-turn, how to queue it instead.
-
-Codex ends its turn to take a message submitted with Enter mid-turn: it sends ``response.interrupt``, which its
-websocket backend refuses with ``400 unsupported websocket request type``, and the turn is lost. Its ``composer.queue``
-key, Tab, queues the message as a follow-up that Codex submits when the turn ends, and sends it at once when Codex is
-idle (verified with codex-cli 0.162.1 under Herdr 0.8.2)."""
 QUEUE_ECHO_SECONDS = 5
 """How long to wait for the typed message to be drawn before the queue key is pressed anyway."""
 QUEUE_KEY_DELAY_SECONDS = 0.5
@@ -257,6 +299,11 @@ class HerdrRuntime:
                 'agent': spec.name,
                 'token': token,
                 'kind': spec.executable,
+                **Screens(
+                    busy_screens=spec.busy_screens,
+                    failed_turn_screens=spec.failed_turn_screens,
+                    queue_key=spec.queue_key,
+                ).model_dump(mode='json'),
             },
         )
         try:
@@ -270,14 +317,14 @@ class HerdrRuntime:
         return handle
 
     def _deliver(self, handle: Handle, prompt: str) -> None:
-        """Submit the first prompt once and confirm that the agent took it within ``herdr_startup_grace_seconds``.
+        """Submit the first prompt once and confirm that the agent took it within ``startup_grace_seconds``.
 
         A TUI that still draws its welcome screen can drop a prompt. Pickup is a state change (Herdr's
         ``state_change_seq`` advances after the prompt), not a state. On a loaded host the change can come many
         seconds after the agent started its turn: Codex records ``task_started`` a fraction of a second after the
         prompt while Herdr still sees no change 5 s later. So pickup has the whole startup grace, not a short window.
         An agent whose first-run dialogs were answered in a background tab already reports ``done``, and a wait for
-        ``working`` or ``done`` would take that for a finished turn. Without a state change, a ``BUSY_SCREENS`` or ``FAILED_TURN_SCREENS`` text at the bottom of the
+        ``working`` or ``done`` would take that for a finished turn. Without a state change, a ``busy_screens`` or ``failed_turn_screens`` text at the bottom of the
         screen shows that the agent took the prompt while it starts up or retries the API. ``wait`` judges what
         follows. The prompt is never pasted again, because the composer or a queued turn may already hold it.
 
@@ -288,11 +335,11 @@ class HerdrRuntime:
         before = self._state_seq(agent)
         _call('agent', 'prompt', agent, prompt)
         handle.data[PROMPTED_AT] = time.time()
-        if self._state_changed(agent, before, settings_module.settings.herdr_startup_grace_seconds):
+        if self._state_changed(agent, before, herdr_settings.startup_grace_seconds):
             return
         tail = _tail(self._visible(handle))
-        kind = str(handle.data['kind'])
-        if any(text in tail for text in (*BUSY_SCREENS.get(kind, ()), *FAILED_TURN_SCREENS.get(kind, ()))):
+        screens = Screens.of(handle)
+        if any(text in tail for text in (*screens.busy_screens, *screens.failed_turn_screens)):
             return
         raise HerdrError('prompt_lost', f'{agent} did not start working after its brief was submitted')
 
@@ -326,15 +373,15 @@ class HerdrRuntime:
             '--pane',
             pane_id,
             '--timeout',
-            _ms(settings_module.settings.herdr_start_timeout_seconds),
+            _ms(herdr_settings.start_timeout_seconds),
         ]
-        deadline = time.monotonic() + settings_module.settings.herdr_shell_ready_seconds
-        grace = settings_module.settings.herdr_cli_timeout_seconds
+        deadline = time.monotonic() + herdr_settings.shell_ready_seconds
+        grace = herdr_settings.cli_timeout_seconds
         ready = False
         while not ready:
             try:
                 # herdr waits up to --timeout for the agent, so the CLI timeout must be longer
-                _call(*start, '--', *args, cli_timeout=settings_module.settings.herdr_start_timeout_seconds + grace)
+                _call(*start, '--', *args, cli_timeout=herdr_settings.start_timeout_seconds + grace)
                 ready = True
             except HerdrError as e:
                 if e.code == 'agent_pane_busy' and time.monotonic() < deadline:
@@ -360,9 +407,7 @@ class HerdrRuntime:
             for key in dialog[1]:
                 _call('agent', 'send-keys', agent, key)
             screen = self._await_redraw(agent, pane_id, dialog[0], remaining)
-            result = self._agent_wait(
-                agent, ['idle', 'done', 'blocked'], settings_module.settings.herdr_start_timeout_seconds
-            )
+            result = self._agent_wait(agent, ['idle', 'done', 'blocked'], herdr_settings.start_timeout_seconds)
             ready = result['agent']['agent_status'] != 'blocked'
 
     def _await_redraw(self, agent: str, pane_id: str, answered: str, pending: list[tuple[str, list[str]]]) -> str:
@@ -371,7 +416,7 @@ class HerdrRuntime:
         ``agent wait`` cannot do this. Herdr reports these dialogs as ``idle``, so ``agent wait`` returns before the
         TUI redraws, and the next read would show the answered dialog again.
         """
-        deadline = time.monotonic() + settings_module.settings.herdr_start_timeout_seconds
+        deadline = time.monotonic() + herdr_settings.start_timeout_seconds
         while True:
             screen = self._screen(pane_id)
             if answered not in screen or any(text in screen for text, _ in pending):
@@ -393,11 +438,11 @@ class HerdrRuntime:
           resume by itself is prompted to read their results (``JOBS_DONE_PROMPT``).
         - Blocked, until the grace runs out on a screen that held still. A dialog can be answered or time out by
           itself, and an agent can keep working beside a question it queued.
-        - Idle on a screen that changes within ``QUIET_SECONDS`` or shows a ``BUSY_SCREENS`` text: Herdr misread a
+        - Idle on a screen that changes within ``QUIET_SECONDS`` or shows a ``busy_screens`` text: Herdr misread a
           working agent.
-        - Idle on a ``FAILED_TURN_SCREENS`` text: the agent is resumed. When the backoffs are spent, the outcome has
+        - Idle on a ``failed_turn_screens`` text: the agent is resumed. When the backoffs are spent, the outcome has
           ``TURN_FAILED_ERROR``.
-        - Idle on a quiet screen within ``herdr_startup_grace_seconds`` of the first prompt (``PROMPTED_AT``): the
+        - Idle on a quiet screen within ``startup_grace_seconds`` of the first prompt (``PROMPTED_AT``): the
           agent may still be starting its first turn. A first-turn Codex can show its submitted brief above an empty
           composer, with no busy text, for seconds after its turn started.
 
@@ -417,7 +462,7 @@ class HerdrRuntime:
             if remaining <= 0:
                 self.kill(handle)
                 return Outcome(WorkerStatus.TIMED_OUT, timeout, error=f'worker timeout after {timeout:g}s')
-            chunk = min(remaining, settings_module.settings.herdr_wait_chunk_seconds)
+            chunk = min(remaining, herdr_settings.wait_chunk_seconds)
             window = self._window(handle, block, now, chunk)
             if isinstance(window, str):
                 # the dialog is only on the visible screen, and the pane closes with the worker: keep it in the error
@@ -479,7 +524,7 @@ class HerdrRuntime:
         """Return what the screen of an agent that Herdr reports idle shows, and its bottom lines (``_tail``).
 
         The agent is working when the screen changed within ``QUIET_SECONDS`` (output streams in, a spinner's timer
-        counts) or shows a ``BUSY_SCREENS`` text, or when a quiet screen is still within the startup grace of the first
+        counts) or shows a ``busy_screens`` text, or when a quiet screen is still within the startup grace of the first
         prompt (``_starting``). A screen that is gone with its pane shows done: the next ``agent wait`` finds the agent
         gone.
         """
@@ -487,10 +532,10 @@ class HerdrRuntime:
         self._sleep(min(QUIET_SECONDS, remaining))
         screen = self._visible(handle)
         tail = _tail(screen)
-        kind = str(handle.data.get('kind'))
-        if screen != first or any(text in tail for text in BUSY_SCREENS.get(kind, ())):
+        screens = Screens.of(handle)
+        if screen != first or any(text in tail for text in screens.busy_screens):
             return Screen.WORKING, tail
-        if any(text in tail for text in FAILED_TURN_SCREENS.get(kind, ())):
+        if any(text in tail for text in screens.failed_turn_screens):
             return Screen.FAILED_TURN, tail
         if _starting(handle):
             return Screen.WORKING, tail
@@ -511,7 +556,7 @@ class HerdrRuntime:
         Claude Code is told when one of its background shells ends, and resumes by itself. An orphaned job tells
         nobody. A refused prompt counts as resumed, because the next ``agent wait`` shows what the agent does.
         """
-        pickup = settings_module.settings.herdr_prompt_pickup_seconds
+        pickup = herdr_settings.prompt_pickup_seconds
         if self._state_changed(agent, seq, pickup):
             return True
         try:
@@ -550,7 +595,7 @@ class HerdrRuntime:
             *flags,
             '--timeout',
             str(int(timeout * 1000)),
-            cli_timeout=timeout + settings_module.settings.herdr_cli_timeout_seconds,
+            cli_timeout=timeout + herdr_settings.cli_timeout_seconds,
         )
 
     def status(self, handle: Handle) -> WorkerStatus:
@@ -567,9 +612,9 @@ class HerdrRuntime:
         """Return the session id that Herdr detected for the agent (``agent_session.value`` of ``agent get``).
 
         Herdr learns it from the harness after the harness starts, so this polls for up to
-        ``herdr_prompt_pickup_seconds``. None when the id does not appear or the agent is gone.
+        ``prompt_pickup_seconds``. None when the id does not appear or the agent is gone.
         """
-        deadline = time.monotonic() + settings_module.settings.herdr_prompt_pickup_seconds
+        deadline = time.monotonic() + herdr_settings.prompt_pickup_seconds
         while True:
             try:
                 session = _call('agent', 'get', _agent(handle))['agent'].get('agent_session')
@@ -586,14 +631,11 @@ class HerdrRuntime:
     def prompt(self, handle: Handle, text: str) -> None:
         """Types the message into the agent's pane, where the agent keeps it until its turn ends.
 
-        Claude Code and pi queue text that arrives while they work. Codex would end its turn to take it, so piloop
-        queues it with Codex's queue key (Tab). While the agent waits on a dialog, the message is refused: answer the
-        dialog in the agent's tab.
-
-        Note:
-            An agent of a kind in ``QUEUE_KEYS`` gets the message through ``_queue``.
+        A harness that would end its turn to take the message has a queue key (``[harness.<name>] queue_key``), which
+        piloop presses to queue it. While the agent waits on a dialog, the message is refused: answer the dialog in the
+        agent's tab.
         """
-        queue = QUEUE_KEYS.get(str(handle.data.get('kind')))
+        queue = Screens.of(handle).queue_key
         try:
             if queue is None:
                 _call('agent', 'prompt', _agent(handle), text)
@@ -632,7 +674,7 @@ class HerdrRuntime:
                 self._sleep(QUEUE_KEY_DELAY_SECONDS)
                 if queue.pending not in _tail(self._visible(handle)):
                     return
-            elif self._state_changed(agent, seq, settings_module.settings.herdr_prompt_pickup_seconds):
+            elif self._state_changed(agent, seq, herdr_settings.prompt_pickup_seconds):
                 return
         raise HerdrError('prompt_not_queued', f'{agent} still holds the message in its composer after {queue.key}')
 
@@ -670,10 +712,10 @@ class HerdrRuntime:
             The Herdr client replaces this process. Without a terminal on stdout, nothing replaces it.
         """
         focused = self.focus(handle)
-        session = settings_module.settings.herdr_session
+        session = herdr_settings.session
         if not sys.stdout.isatty():
             return f'{focused}; not a terminal, so it does not attach to Herdr session {session}'
-        if settings_module.settings.herdr_socket_path == session_socket():
+        if herdr_settings.socket_path == session_socket():
             return focused
         os.execvp(HERDR, [HERDR, '--session', session])
 
@@ -770,7 +812,7 @@ def _close_tab(tab_id: str) -> None:
 def session_socket() -> str | None:
     """Return the socket path of the piloop session, or None when Herdr does not know that session name."""
     sessions = _as_dict(json.loads(_run('session', 'list', '--json')))['sessions']
-    return next((str(s['socket_path']) for s in sessions if s['name'] == settings_module.settings.herdr_session), None)
+    return next((str(s['socket_path']) for s in sessions if s['name'] == herdr_settings.session), None)
 
 
 def server_running() -> bool:
@@ -801,7 +843,7 @@ def integrations() -> dict[str, str]:
         [HERDR, 'integration', 'status'],
         capture_output=True,
         text=True,
-        timeout=settings_module.settings.herdr_cli_timeout_seconds,
+        timeout=herdr_settings.cli_timeout_seconds,
         check=True,
     ).stdout
     lines = (line.partition(': ') for line in out.splitlines())
@@ -849,11 +891,11 @@ def _answered(*args: str, cli_timeout: float | None = None) -> str:
     """Run ``_cli``. Retry a ``RETRIED_READS`` command, with a doubling backoff, while the server does not answer.
 
     The server does not answer when it reports ``server_unavailable`` or when the call times out. After
-    ``settings.herdr_unavailable_seconds``, the last error is raised.
+    ``herdr_settings.unavailable_seconds``, the last error is raised.
     """
     if tuple(args[:2]) not in RETRIED_READS:
         return _cli(*args, cli_timeout=cli_timeout)
-    deadline = time.monotonic() + settings_module.settings.herdr_unavailable_seconds
+    deadline = time.monotonic() + herdr_settings.unavailable_seconds
     backoff = UNAVAILABLE_BACKOFF_SECONDS
     while True:
         try:
@@ -871,10 +913,10 @@ def _answered(*args: str, cli_timeout: float | None = None) -> str:
 def _cli(*args: str, cli_timeout: float | None = None) -> str:
     """Run ``herdr --session <piloop> <args>`` and return stdout. Raise ``HerdrError`` when the command fails."""
     proc = subprocess.run(
-        [HERDR, '--session', settings_module.settings.herdr_session, *args],
+        [HERDR, '--session', herdr_settings.session, *args],
         capture_output=True,
         text=True,
-        timeout=cli_timeout or settings_module.settings.herdr_cli_timeout_seconds,
+        timeout=cli_timeout or herdr_settings.cli_timeout_seconds,
     )
     if proc.returncode != 0:
         raise HerdrError(*_error_fields(proc.stderr or proc.stdout))
@@ -888,7 +930,7 @@ def _start_server() -> None:
     with that one warning silenced.
     """
     server = subprocess.Popen(
-        [HERDR, '--session', settings_module.settings.herdr_session, 'server'],
+        [HERDR, '--session', herdr_settings.session, 'server'],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -897,7 +939,7 @@ def _start_server() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter('ignore', ResourceWarning)
         del server
-    deadline = time.monotonic() + settings_module.settings.herdr_server_start_seconds
+    deadline = time.monotonic() + herdr_settings.server_start_seconds
     while True:
         try:
             _cli('workspace', 'list')
@@ -945,9 +987,9 @@ def _agent(handle: Handle) -> str:
 
 
 def _starting(handle: Handle) -> bool:
-    """Whether the agent's first prompt was submitted less than ``herdr_startup_grace_seconds`` ago."""
+    """Whether the agent's first prompt was submitted less than ``startup_grace_seconds`` ago."""
     prompted = handle.data.get(PROMPTED_AT)
-    grace = settings_module.settings.herdr_startup_grace_seconds
+    grace = herdr_settings.startup_grace_seconds
     return isinstance(prompted, float) and time.time() < prompted + grace
 
 
@@ -972,7 +1014,7 @@ def _export(pane_id: str, env: dict[str, str], fifo: Path) -> None:
 
 def _open_writer(fifo: Path) -> int:
     """Open the FIFO's write end once a reader has the read end open (``ENXIO`` until then), and make it blocking."""
-    deadline = time.monotonic() + settings_module.settings.herdr_shell_ready_seconds
+    deadline = time.monotonic() + herdr_settings.shell_ready_seconds
     while True:
         try:
             fd = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)

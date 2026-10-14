@@ -148,6 +148,8 @@ def test_history_lists_every_idea_with_its_outcome_the_lineage_and_the_findings(
         comment(s, TargetKind.PROJECT, project.id, 'batch 1: extend appending\nrejected: deleting', author='research#1')
         comment(s, TargetKind.PROJECT, project.id, 'idle: best is #2; try longer lines', author='watchdog#2')
         comment(s, TargetKind.PROJECT, project.id, 'batch 2: nothing new worth proposing', author='research#3')
+        comment(s, TargetKind.PROJECT, project.id, 'the cache keep holds on fresh data', author='reviewer#7')
+        comment(s, TargetKind.PROJECT, project.id, 'digest: on track', author='orchestrator')
         s.commit()
     assert render(db, project) == snapshot("""\
 ## History: ideas (8 of 8)
@@ -173,10 +175,12 @@ def test_history_lists_every_idea_with_its_outcome_the_lineage_and_the_findings(
 | #6 | #5 | 4 | — | idea#4 (t) | 4410000 | — | — | two commits commit |
 
 
-## History: research findings (last 10)
+## History: findings on the project (last 10)
 - research#1: batch 1: extend appending
   rejected: deleting
+- watchdog#2: idle: best is #2; try longer lines
 - research#3: batch 2: nothing new worth proposing
+- reviewer#7: the cache keep holds on fresh data
 """)
 
 

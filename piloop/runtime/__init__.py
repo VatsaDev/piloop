@@ -10,7 +10,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar, Protocol
 
-from piloop.harnesses import Invocation
+from piloop.harnesses import Invocation, QueueKey
 
 
 class WorkerStatus(StrEnum):
@@ -46,6 +46,12 @@ class WorkerSpec:
     env: dict[str, str] = field(default_factory=dict)
     startup_dialogs: list[tuple[str, list[str]]] = field(default_factory=list)
     """First-launch dialogs to answer in order before the agent is ready: the text to find and the keys to send."""
+    busy_screens: tuple[str, ...] = ()
+    """Texts at the bottom of a still screen that show that the agent works (``Harness.busy_screens``)."""
+    failed_turn_screens: tuple[str, ...] = ()
+    """Texts at the bottom of the screen that show that a turn failed on an API error (``Harness.failed_turn_screens``)."""
+    queue_key: QueueKey | None = None
+    """How to queue a message for the end of the agent's turn (``Harness.queue_key``)."""
     session_id_pattern: str | None = None
     """The regex that finds the harness's session id in its stdout (``Harness.session_id_pattern``)."""
     resume_args: list[str] = field(default_factory=list)

@@ -11,10 +11,12 @@ import subprocess
 import sys
 import time
 import warnings
+from collections.abc import Iterable
 
+from piloop.harnesses import Harness
 from piloop.proc import child_env, kill_group
 from piloop.runtime.herdr import TOKEN_ENV
-from piloop.settings import Settings
+from piloop.settings import Settings, env_names
 
 SERVE_ARGV = [sys.executable, '-m', 'piloop', 'serve']
 """The command that starts the daemon. It uses the current interpreter, however the CLI was invoked."""
@@ -25,8 +27,8 @@ RESTART_SIGNAL = signal.SIGUSR1
 Not SIGHUP, because a closing terminal sends SIGHUP to a daemon in the foreground."""
 SECRETS_COMMAND_ENV = 'PILOOP_SECRETS_COMMAND'
 """The environment variable for ``Settings.secrets_command``. ``piloop doctor`` reads it from the daemon."""
-CARRIED_ENV = ('OTEL_EXPORTER_OTLP_ENDPOINT', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME')
-"""The variables other than ``PILOOP_*`` that a service unit carries: where traces go and where agents keep sessions."""
+CARRIED_ENV = ('OTEL_EXPORTER_OTLP_ENDPOINT',)
+"""The variables other than ``PILOOP_*`` that a service unit always carries: where traces go."""
 AGENT_ENV = ('PILOOP_ACTOR', TOKEN_ENV)
 """The ``PILOOP_*`` variables that a service unit does not carry. piloop sets them for one agent. A daemon with them
 would sign its writes as that agent, and piloop would take the daemon for one of the agent's background jobs."""
@@ -226,17 +228,25 @@ def _mtime_ns(cfg: Settings) -> int | None:
         return None
 
 
-def service_unit(cfg: Settings, platform: str = sys.platform) -> str:
+def carried_env(harnesses: Iterable[Harness]) -> tuple[str, ...]:
+    """Return ``CARRIED_ENV`` and the variables that the usage globs of ``harnesses`` name (``{env:NAME:default}``)."""
+    globs = [h.usage.file for h in harnesses if h.usage is not None and h.usage.file is not None]
+    return tuple(dict.fromkeys([*CARRIED_ENV, *(name for glob in globs for name in env_names(glob))]))
+
+
+def service_unit(cfg: Settings, harnesses: Iterable[Harness], platform: str = sys.platform) -> str:
     """Return a systemd ``--user`` unit, or a launchd agent plist on macOS, that keeps the daemon running.
 
     The unit sets PATH, because the daemon finds harness CLIs on its PATH and a service manager's PATH is minimal.
-    It also carries the ``PILOOP_*`` and ``CARRIED_ENV`` variables that are set, so that the daemon has the same
-    settings as in this shell. It carries no other variable: API keys come from the secrets command.
+    It also carries the ``PILOOP_*`` variables and those of ``carried_env(harnesses)`` that are set, so that the
+    daemon has the same settings as in this shell and finds the session files of the agents. It carries no other
+    variable: API keys come from the secrets command.
     """
     shell = child_env()
+    carried = carried_env(harnesses)
     env = {'PILOOP_HOME': str(cfg.home), 'PATH': shell['PATH']}
     for key, value in sorted(shell.items()):
-        if (key.startswith('PILOOP_') or key in CARRIED_ENV) and key not in env and key not in AGENT_ENV:
+        if (key.startswith('PILOOP_') or key in carried) and key not in env and key not in AGENT_ENV:
             env[key] = value
     if platform == 'darwin':
         plist = {

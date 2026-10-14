@@ -65,12 +65,17 @@ def test_roles_are_typed_per_kind(project_path: Path) -> None:
         metrics=[Metric(name='a', direction=Direction.HIGHER, role=MetricRole.PRIMARY)],
         evaluate=['true'],
         model={'pi': 'm'},
-    ).roles
+    )
+    assert defaults.context == [], 'no analysis artifacts unless the project names them'
+    defaults = defaults.roles
     assert (defaults.worker.timeout, defaults.worker.max_concurrent) == (1800, 4)
     assert (defaults.watchdog.harnesses, defaults.watchdog.model) == (None, None), 'the project rotation and models'
     assert (defaults.watchdog.timeout, defaults.watchdog.interval) == (600, 1800)
-    assert (defaults.research.timeout, defaults.research.max_ideas, defaults.research.buffer) == (900, 1, 2)
-    assert defaults.research.context == [], 'no analysis artifacts unless the project names them'
+    assert (defaults.research.timeout, defaults.research.max_ideas) == (900, 1)
+    assert [t.model_dump() for t in defaults.research.triggers] == [
+        {'kind': 'low_water', 'buffer': 2},
+        {'kind': 'seed'},
+    ]
     assert defaults.research.max_concurrent == 1, 'concurrent sweeps duplicate each other and race on seeds'
 
 
@@ -335,8 +340,10 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
     when = 'SELECT 1 FROM ideas WHERE project_id = :project AND created_at > :since'
     good = {'prompt': 'reviewer.md', 'triggers': [{'kind': 'sql', 'when': when}], 'runtime': 'herdr'}
     cfg = load_project_config(project_path, roles={'reviewer': good})
-    assert list(cfg.roles.all()) == ['worker', 'watchdog', 'research', 'reviewer']
-    assert list(cfg.roles.sweeping()) == ['watchdog', 'research', 'reviewer'], 'the worker does runs, not sweeps'
+    assert list(cfg.roles.all()) == ['worker', 'watchdog', 'research', 'scout', 'reviewer']
+    assert list(cfg.roles.sweeping()) == ['watchdog', 'research', 'scout', 'reviewer'], (
+        'the worker does runs, not sweeps'
+    )
     assert (cfg.role_runtime('reviewer'), cfg.role_runtime('research')) == ('herdr', 'subprocess')
     assert cfg.runtimes == {'herdr', 'subprocess'}
     assert ProjectConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the project row'
@@ -363,9 +370,13 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
     assert 'roles.reviewer.triggers[0].every = 3: Extra inputs are not permitted' in fails(
         reviewer(triggers=[{'kind': 'cron', 'every': 3}])
     )
-    assert '[roles.reviewer] has the low_water trigger, which only research may have' in fails(
-        reviewer(triggers=[{'kind': 'low_water'}])
+    filler = load_project_config(
+        project_path, roles=reviewer(triggers=[{'kind': 'low_water', 'buffer': 1}], files='ideas')
     )
+    assert cfg.roles.sweeping()['reviewer'].max_ideas == 1, 'any sweeping role can fill the backlog'
+    assert [t.model_dump() for t in filler.roles.sweeping()['reviewer'].triggers] == [
+        {'kind': 'low_water', 'buffer': 1}
+    ]
     assert "Input should be 'head' or 'project'" in fails(reviewer(workdir='base'))
     for query, error in {
         'DELETE FROM ideas': 'not authorized',
@@ -376,16 +387,16 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
         assert f'the query does not run on the piloop database: {error}' in fails(
             reviewer(triggers=[{'kind': 'sql', 'when': query}])
         ), query
-    for name in ('scout', 'Review Bot'):
+    for name in ('run', 'Review Bot'):
         assert f'{name!r} is not a role name: use lowercase letters, digits, _ and -' in fails({name: good})
 
 
 def test_a_table_with_runs_defines_a_role_that_does_runs_with_the_worker_defaults(project_path: Path) -> None:
     quick = {'runs': True, 'takes': "priority >= 3 OR track = 'speed'", 'timeout': 60, 'max_concurrent': 1}
     cfg = load_project_config(project_path, roles={'quick': quick})
-    assert list(cfg.roles.all()) == ['worker', 'watchdog', 'research', 'quick']
+    assert list(cfg.roles.all()) == ['worker', 'watchdog', 'research', 'scout', 'quick']
     assert list(cfg.roles.doing_runs()) == ['quick', 'worker'], 'the roles of the file fill their slots first'
-    assert list(cfg.roles.sweeping()) == ['watchdog', 'research']
+    assert list(cfg.roles.sweeping()) == ['watchdog', 'research', 'scout']
     role = cfg.roles.doing_runs()['quick']
     assert (role.prompt, role.PROMPT, role.files, role.explore_every) == (None, 'worker.md', Files.NOTHING, 4)
     assert cfg.run_slots == 1 + cfg.roles.worker.max_concurrent
@@ -409,3 +420,22 @@ def test_a_table_with_runs_defines_a_role_that_does_runs_with_the_worker_default
     )
     assert 'roles.watchdog.runs = True: Input should be False' in fails({'watchdog': {'runs': True}})
     assert 'roles.worker.runs = False: Input should be True' in fails({'worker': {'runs': False}})
+
+
+def test_an_override_of_a_built_in_harness_keeps_the_screens_and_queue_key_of_its_executable(
+    project_path: Path,
+) -> None:
+    """A ``[harness.<name>]`` table replaces the built-in definition; what it leaves out of these keys is inherited."""
+    codex = {'executable': 'codex', 'headless': ['exec', '{prompt}']}
+    cfg = load_project_config(
+        project_path,
+        harness={'codex': codex, 'mine': codex | {'busy_screens': ['Thinking'], 'failed_turn_screens': []}},
+    )
+    built_in = DEFAULT_HARNESSES['codex']
+    assert cfg.harness_for('codex').screens == (
+        tuple(built_in.busy_screens or ()),
+        tuple(built_in.failed_turn_screens or ()),
+        built_in.queue_key,
+    ), 'an override that sets none of them'
+    assert cfg.harness_for('mine').screens == (('Thinking',), (), built_in.queue_key), 'what it sets wins, [] included'
+    assert DEFAULT_HARNESSES['pi'].screens == ((), (), None), 'an executable without any'

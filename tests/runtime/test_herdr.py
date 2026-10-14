@@ -17,9 +17,8 @@ from piloop import settings as settings_module
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.runtime import Handle, NotSteerable, StartFailed, WorkerSpec, WorkerStatus, herdr
 from piloop.runtime.factory import make_runtime
-from piloop.runtime.herdr import HerdrError, HerdrRuntime
+from piloop.runtime.herdr import HerdrError, HerdrRuntime, HerdrSettings
 from piloop.runtime.subprocess import SubprocessRuntime
-from piloop.settings import Settings
 from tests.fixtures.fake_herdr import AGENT, AGENT_SESSION, SESSION_ID
 
 Response = dict[str, object]
@@ -59,6 +58,15 @@ def spec(tmp_path: Path) -> WorkerSpec:
     )
 
 
+def as_harness(worker: WorkerSpec, name: str, **changes: object) -> WorkerSpec:
+    """``worker`` as an agent of the built-in harness ``name``: its executable, its screens and its queue key."""
+    h = DEFAULT_HARNESSES[name]
+    busy, failed, queue = h.screens
+    return replace(
+        worker, executable=h.executable, busy_screens=busy, failed_turn_screens=failed, queue_key=queue, **changes
+    )
+
+
 def home_calls(tab_id: str, pane_id: str, cwd: Path) -> list[list[str]]:
     """What laying out a home tab sends: the rename (a workspace's first tab), the split, ``piloop watch`` in it."""
     watch = f'{shlex.quote(sys.executable)} -m piloop watch {shlex.quote(str(cwd))}'
@@ -80,6 +88,9 @@ def test_start_creates_workspace_tab_agent_and_prompts(tmp_path: Path, herdr_log
             'agent': 'w1',
             'token': token,
             'kind': 'pi',
+            'busy_screens': [],
+            'failed_turn_screens': [],
+            'queue_key': None,
             'prompted_at': IsFloat(approx=time.time(), delta=60),
         },
     )
@@ -137,7 +148,7 @@ def test_a_shell_that_never_reads_its_env_fails_the_start(
     tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr('piloop.runtime.herdr.SHELL_READY_POLL_SECONDS', 0.01)
-    monkeypatch.setattr(settings_module, 'settings', Settings(herdr_shell_ready_seconds=0.05))
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(shell_ready_seconds=0.05))
     scripted(monkeypatch, pane_run=[{'text': ''}])
     with pytest.raises(StartFailed, match='HerdrError: shell_not_ready: the pane shell did not read its environment'):
         HerdrRuntime('demo', tmp_path).start(spec(tmp_path))
@@ -159,13 +170,13 @@ def test_a_brief_is_submitted_once_and_picked_up_by_a_state_change(
     again, because a second paste lands beside the first in the composer.
     """
     monkeypatch.setattr('piloop.runtime.herdr.PICKUP_POLL_SECONDS', 0.01)
-    monkeypatch.setattr('piloop.runtime.herdr.settings_module.settings', Settings(herdr_startup_grace_seconds=5))
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(startup_grace_seconds=5))
     scripted(monkeypatch, agent_get=[seq(5), seq(5), seq(7, 'working')])
     HerdrRuntime('demo', tmp_path).start(spec(tmp_path))
     assert [c[:2] for c in calls(herdr_log)].count(['agent', 'prompt']) == 1, 'stale done, then picked up'
 
     herdr_log.write_text('')
-    monkeypatch.setattr('piloop.runtime.herdr.settings_module.settings', Settings(herdr_startup_grace_seconds=0.05))
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(startup_grace_seconds=0.05))
     scripted(monkeypatch, agent_get=[seq(5)], pane_read=[{'text': 'Welcome to pi\n> do the thing\n'}])
     with pytest.raises(
         StartFailed, match='^HerdrError: prompt_lost: w1 did not start working after its brief was submitted$'
@@ -265,7 +276,7 @@ def test_start_accepts_a_known_first_launch_dialog_herdr_reports_as_not_ready(
 ) -> None:
     trust: Response = {'text': 'Quick safety check: do you trust this folder?\n'}
     scripted(monkeypatch, agent_start=[NOT_READY], pane_read=[trust, {'text': 'Welcome to Claude Code\n'}])
-    HerdrRuntime('demo', tmp_path).start(replace(spec(tmp_path), executable='claude', startup_dialogs=CLAUDE_DIALOGS))
+    HerdrRuntime('demo', tmp_path).start(as_harness(spec(tmp_path), 'claude', startup_dialogs=CLAUDE_DIALOGS))
     assert dialog_calls(herdr_log) == snapshot(
         [
             ['pane', 'read', 'w7:p2', '--source', 'visible'],
@@ -282,7 +293,7 @@ def test_start_answers_two_dialogs_in_order_when_herdr_reports_them_as_idle(
 ) -> None:
     """Herdr reports Codex's trust and hooks screens as ``idle``, so ``agent start`` succeeds with them on screen."""
     scripted(monkeypatch, pane_read=[TRUST_SCREEN, HOOKS_SCREEN, WELCOME_SCREEN])
-    HerdrRuntime('demo', tmp_path).start(replace(spec(tmp_path), executable='codex', startup_dialogs=CODEX_DIALOGS))
+    HerdrRuntime('demo', tmp_path).start(as_harness(spec(tmp_path), 'codex', startup_dialogs=CODEX_DIALOGS))
     assert dialog_calls(herdr_log) == snapshot(
         [
             ['pane', 'read', 'w7:p2', '--source', 'visible'],
@@ -306,7 +317,7 @@ def test_a_stale_redraw_of_an_answered_dialog_does_not_skip_the_next_one(
     """Herdr reports ``idle`` while the dialog is up, so ``agent wait`` returns before the TUI redraws."""
     scripted(monkeypatch, pane_read=[TRUST_SCREEN, TRUST_SCREEN, HOOKS_SCREEN, WELCOME_SCREEN])
     monkeypatch.setattr('piloop.runtime.herdr.DIALOG_REDRAW_POLL_SECONDS', 0.01)
-    HerdrRuntime('demo', tmp_path).start(replace(spec(tmp_path), executable='codex', startup_dialogs=CODEX_DIALOGS))
+    HerdrRuntime('demo', tmp_path).start(as_harness(spec(tmp_path), 'codex', startup_dialogs=CODEX_DIALOGS))
     assert sent_keys(herdr_log) == ['enter', 't']
     assert [c[:2] for c in calls(herdr_log)].count(['pane', 'read']) == 4
 
@@ -316,9 +327,9 @@ def test_a_dialog_that_never_leaves_the_screen_fails_the_start(
 ) -> None:
     scripted(monkeypatch, pane_read=[TRUST_SCREEN])
     monkeypatch.setattr('piloop.runtime.herdr.DIALOG_REDRAW_POLL_SECONDS', 0.01)
-    monkeypatch.setattr(settings_module, 'settings', Settings(herdr_start_timeout_seconds=0.1))
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(start_timeout_seconds=0.1))
     with pytest.raises(StartFailed, match='still shows a startup dialog after it was answered$'):
-        HerdrRuntime('demo', tmp_path).start(replace(spec(tmp_path), executable='codex', startup_dialogs=CODEX_DIALOGS))
+        HerdrRuntime('demo', tmp_path).start(as_harness(spec(tmp_path), 'codex', startup_dialogs=CODEX_DIALOGS))
     assert sent_keys(herdr_log) == ['enter'] and calls(herdr_log)[-1] == ['tab', 'close', 'w7:t2']
 
 
@@ -326,12 +337,12 @@ def test_start_answers_only_the_dialogs_on_screen(
     tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     scripted(monkeypatch, agent_start=[NOT_READY], pane_read=[HOOKS_SCREEN, WELCOME_SCREEN])
-    HerdrRuntime('demo', tmp_path).start(replace(spec(tmp_path), executable='codex', startup_dialogs=CODEX_DIALOGS))
+    HerdrRuntime('demo', tmp_path).start(as_harness(spec(tmp_path), 'codex', startup_dialogs=CODEX_DIALOGS))
     assert sent_keys(herdr_log) == ['t'], 'the trusted directory'
 
     before = len(calls(herdr_log))
     scripted(monkeypatch, pane_read=[WELCOME_SCREEN])
-    HerdrRuntime('demo', tmp_path).start(replace(spec(tmp_path), executable='codex', startup_dialogs=CODEX_DIALOGS))
+    HerdrRuntime('demo', tmp_path).start(as_harness(spec(tmp_path), 'codex', startup_dialogs=CODEX_DIALOGS))
     assert [c[:2] for c in calls(herdr_log)[before:]].count(['agent', 'send-keys']) == 0, 'nothing to answer'
 
 
@@ -343,14 +354,14 @@ def test_codex_defaults_answer_the_hooks_list(tmp_path: Path, herdr_log: Path, m
     }
     scripted(monkeypatch, agent_start=[NOT_READY], pane_read=[hooks_list, WELCOME_SCREEN])
     dialogs = DEFAULT_HARNESSES['codex'].startup_dialogs
-    HerdrRuntime('demo', tmp_path).start(replace(spec(tmp_path), executable='codex', startup_dialogs=dialogs))
+    HerdrRuntime('demo', tmp_path).start(as_harness(spec(tmp_path), 'codex', startup_dialogs=dialogs))
     assert sent_keys(herdr_log) == ['down', 'enter']
 
 
 def test_start_fails_on_an_unexpected_dialog(tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     scripted(monkeypatch, agent_start=[NOT_READY], pane_read=[{'text': 'Something else entirely\n'}])
     with pytest.raises(StartFailed, match='unexpected startup dialog$'):
-        HerdrRuntime('demo', tmp_path).start(replace(spec(tmp_path), executable='codex', startup_dialogs=CODEX_DIALOGS))
+        HerdrRuntime('demo', tmp_path).start(as_harness(spec(tmp_path), 'codex', startup_dialogs=CODEX_DIALOGS))
     assert calls(herdr_log)[-1] == ['tab', 'close', 'w7:t2']
 
 
@@ -360,7 +371,7 @@ def test_start_fails_on_an_unexpected_dialog_after_a_known_one(
     blocked: Response = {'result': {'type': 'agent_info', 'agent': {'agent_status': 'blocked'}}}
     scripted(monkeypatch, agent_wait=[blocked], pane_read=[TRUST_SCREEN, {'text': 'Something else entirely\n'}])
     with pytest.raises(StartFailed, match='unexpected startup dialog'):
-        HerdrRuntime('demo', tmp_path).start(replace(spec(tmp_path), executable='codex', startup_dialogs=CODEX_DIALOGS))
+        HerdrRuntime('demo', tmp_path).start(as_harness(spec(tmp_path), 'codex', startup_dialogs=CODEX_DIALOGS))
     assert sent_keys(herdr_log) == ['enter'], 'the first was answered'
 
 
@@ -442,7 +453,7 @@ def test_a_blocked_agent_whose_screen_moves_is_not_stuck_however_long_herdr_says
     clock = [0.0]
     monkeypatch.setattr('piloop.runtime.herdr.time', type('Clock', (), {'monotonic': staticmethod(lambda: clock[0])}))
     grace = herdr.BLOCKED_GRACE_SECONDS
-    states = ['blocked'] + [None] * int(2 * grace / settings_module.settings.herdr_wait_chunk_seconds) + ['idle']
+    states = ['blocked'] + [None] * int(2 * grace / herdr.herdr_settings.wait_chunk_seconds) + ['idle']
 
     def agent_wait(agent: str, until: list[str], timeout: float) -> dict[str, object]:
         state = states.pop(0)
@@ -542,7 +553,7 @@ def test_a_session_without_a_server_starts_one_and_polls_until_it_answers(
     )
 
     scripted(monkeypatch, workspace_list=[not_running])
-    monkeypatch.setattr(herdr.settings_module, 'settings', Settings(herdr_server_start_seconds=0.05))
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(server_start_seconds=0.05))
     with pytest.raises(HerdrError, match='server_not_running'):
         herdr._call('workspace', 'list')
 
@@ -573,7 +584,7 @@ def test_a_server_that_stays_unavailable_fails_the_read_after_the_window(
 ) -> None:
     monkeypatch.setattr(herdr, 'UNAVAILABLE_BACKOFF_SECONDS', 0.01)
     monkeypatch.setattr(herdr, 'UNAVAILABLE_MAX_BACKOFF_SECONDS', 0.02)
-    monkeypatch.setattr(settings_module, 'settings', Settings(herdr_unavailable_seconds=0.2))
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(unavailable_seconds=0.2))
     scripted(monkeypatch, agent_get=[UNAVAILABLE])
     with pytest.raises(HerdrError, match='server_unavailable'):
         herdr._call('agent', 'get', 'w1')
@@ -606,7 +617,7 @@ def test_a_read_that_times_out_is_retried(herdr_log: Path, monkeypatch: pytest.M
     scripted(monkeypatch, pane_read=[{'text': 'the screen'}])
     assert herdr._run('pane', 'read', 'w7:p2') == 'the screen'
 
-    monkeypatch.setattr(settings_module, 'settings', Settings(herdr_unavailable_seconds=0))
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(unavailable_seconds=0))
     timeouts.append(subprocess.TimeoutExpired(['herdr'], 30))
     with pytest.raises(subprocess.TimeoutExpired):
         herdr._run('pane', 'read', 'w7:p2')
@@ -663,7 +674,7 @@ def test_wait_is_chunked_so_a_tab_closed_from_outside_is_noticed(
     timed_out: Response = {'error': {'code': 'timeout', 'message': 'timed out'}}
     gone: Response = {'error': {'code': 'agent_not_found', 'message': 'closed from outside'}}
     scripted(monkeypatch, agent_wait=[timed_out, gone])
-    monkeypatch.setattr(settings_module, 'settings', Settings(herdr_wait_chunk_seconds=0.5))
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(wait_chunk_seconds=0.5))
     handle = Handle('herdr', {'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': 'w1'})
     assert HerdrRuntime('demo', tmp_path).wait(handle, timeout=60).status is WorkerStatus.EXITED
     assert [c[-1] for c in calls(herdr_log)] == ['500', '500']
@@ -673,7 +684,7 @@ def test_session_id_is_what_herdr_detected_once_the_harness_started(
     tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr('piloop.runtime.herdr.PICKUP_POLL_SECONDS', 0.01)
-    monkeypatch.setattr('piloop.runtime.herdr.settings_module.settings', Settings(herdr_prompt_pickup_seconds=0.5))
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(prompt_pickup_seconds=0.5))
     rt = HerdrRuntime('demo', tmp_path)
     handle = Handle('herdr', {'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': 'w1'})
     assert rt.session_id(handle) == SESSION_ID
@@ -769,7 +780,7 @@ def test_real_herdr_session_is_started_headless_and_layout_roundtrips(
     No agent is started, because that costs a model call. The human's own sessions are not touched.
     """
     session = f'piloop-test-{os.getpid()}'
-    monkeypatch.setattr(settings_module, 'settings', Settings(herdr_session=session))
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(session=session))
     rt = HerdrRuntime('demo', tmp_path)
     try:
         workspace_id = rt._workspace()
@@ -809,9 +820,7 @@ def test_agent_start_may_take_the_whole_window_piloop_asks_herdr_for(
         return real(argv, capture_output=capture_output, text=True, timeout=timeout)
 
     monkeypatch.setattr(herdr.subprocess, 'run', spy)
-    monkeypatch.setattr(
-        settings_module, 'settings', Settings(herdr_start_timeout_seconds=60, herdr_cli_timeout_seconds=30)
-    )
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(start_timeout_seconds=60, cli_timeout_seconds=30))
     HerdrRuntime('demo', tmp_path).start(spec(tmp_path))
     assert (timeouts['agent start'], timeouts['tab create']) == (90, 30), 'the requested window plus transport grace'
 
@@ -821,7 +830,7 @@ def test_a_failed_start_keeps_what_its_screen_showed_before_the_tab_closes(
 ) -> None:
     """A failed start reads the pane's screen before it closes the tab, so the screen is not lost with the pane."""
     monkeypatch.setattr('piloop.runtime.herdr.PICKUP_POLL_SECONDS', 0.01)
-    monkeypatch.setattr('piloop.runtime.herdr.settings_module.settings', Settings(herdr_startup_grace_seconds=0.02))
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(startup_grace_seconds=0.02))
     scripted(monkeypatch, agent_get=[seq(5)], pane_read=[{'text': 'Welcome to Claude Code\n> do the thing\n'}])
     with pytest.raises(StartFailed) as raised:
         HerdrRuntime('demo', tmp_path).start(spec(tmp_path))
@@ -896,9 +905,9 @@ def test_a_brief_taken_by_an_agent_still_starting_or_retrying_is_delivered(
     what follows.
     """
     monkeypatch.setattr('piloop.runtime.herdr.PICKUP_POLL_SECONDS', 0.01)
-    monkeypatch.setattr('piloop.runtime.herdr.settings_module.settings', Settings(herdr_startup_grace_seconds=0.05))
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(startup_grace_seconds=0.05))
     scripted(monkeypatch, agent_get=[seq(5)], pane_read=[screen])
-    HerdrRuntime('demo', tmp_path).start(replace(spec(tmp_path), executable=kind))
+    HerdrRuntime('demo', tmp_path).start(as_harness(spec(tmp_path), kind))
     verbs = [c[:2] for c in calls(herdr_log)]
     assert verbs.count(['agent', 'prompt']) == 1 and ['tab', 'close'] not in verbs
 
@@ -1029,7 +1038,7 @@ def test_a_quiet_first_turn_is_not_finished_within_the_startup_grace(
     The agent is watched until it works and goes idle after the grace. A handle from a daemon that did not record the
     prompt's time (a re-attached older handle) gets no grace.
     """
-    monkeypatch.setattr(settings_module, 'settings', Settings(herdr_startup_grace_seconds=60))
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(startup_grace_seconds=60))
     clock = [1000.0]
     monkeypatch.setattr(herdr.time, 'time', lambda: clock[0])
     sleeps: list[float] = []
@@ -1065,9 +1074,7 @@ def test_a_brief_picked_up_late_on_a_loaded_host_is_not_lost(
 
     Pickup has the whole startup grace. A brief never picked up within it is still lost, and never pasted again.
     """
-    monkeypatch.setattr(
-        settings_module, 'settings', Settings(herdr_prompt_pickup_seconds=0.01, herdr_startup_grace_seconds=5)
-    )
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(prompt_pickup_seconds=0.01, startup_grace_seconds=5))
     clock = [0.0]
     monkeypatch.setattr(herdr.time, 'monotonic', lambda: clock[0])
 
@@ -1075,7 +1082,7 @@ def test_a_brief_picked_up_late_on_a_loaded_host_is_not_lost(
         clock[0] += 1
 
     scripted(monkeypatch, agent_get=[seq(5)] * 4 + [seq(6, 'working')], pane_read=[CODEX_FIRST_TURN_SCREEN])
-    handle = HerdrRuntime('demo', tmp_path, sleep=sleep).start(replace(spec(tmp_path), executable='codex'))
+    handle = HerdrRuntime('demo', tmp_path, sleep=sleep).start(as_harness(spec(tmp_path), 'codex'))
     verbs = [c[:2] for c in calls(herdr_log)]
     assert (verbs.count(['agent', 'prompt']), ['tab', 'close'] in verbs) == (1, False)
     assert clock[0] == 3 and herdr.PROMPTED_AT in handle.data, 'picked up 3 s in: past the old window, in the grace'
@@ -1084,7 +1091,7 @@ def test_a_brief_picked_up_late_on_a_loaded_host_is_not_lost(
     clock[0] = 0
     scripted(monkeypatch, agent_get=[seq(5)], pane_read=[CODEX_FIRST_TURN_SCREEN])
     with pytest.raises(StartFailed, match='prompt_lost'):
-        HerdrRuntime('demo', tmp_path, sleep=sleep).start(replace(spec(tmp_path), executable='codex'))
+        HerdrRuntime('demo', tmp_path, sleep=sleep).start(as_harness(spec(tmp_path), 'codex'))
     assert clock[0] == 5 and [c[:2] for c in calls(herdr_log)].count(['agent', 'prompt']) == 1
 
 
@@ -1174,7 +1181,7 @@ def test_an_idle_codex_takes_a_message_when_its_turn_starts_and_a_swallowed_tab_
     tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Tab sends at once to an idle Codex. Its taking the text is a new turn (a state change), not a screen hint."""
-    monkeypatch.setattr(settings_module, 'settings', Settings(herdr_prompt_pickup_seconds=0))
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(prompt_pickup_seconds=0))
     scripted(monkeypatch, agent_get=[seq(9, 'idle'), seq(9, 'idle'), seq(10, 'working')], pane_read=[CODEX_TYPED])
     HerdrRuntime('demo', tmp_path, sleep=lambda _: None).prompt(claude_handle('codex'), STEER)
     assert [c[:2] for c in calls(herdr_log)].count(['agent', 'send-keys']) == 2, 'the first Tab was swallowed'
@@ -1184,7 +1191,7 @@ def test_a_message_codex_will_not_queue_or_a_blocked_codex_is_an_error_and_types
     tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     rt = HerdrRuntime('demo', tmp_path, sleep=lambda _: None)
-    monkeypatch.setattr(settings_module, 'settings', Settings(herdr_prompt_pickup_seconds=0))
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(prompt_pickup_seconds=0))
     scripted(monkeypatch, agent_get=[seq(9, 'working')], pane_read=[CODEX_TYPED])
     monkeypatch.setattr(herdr, 'QUEUE_ECHO_SECONDS', 0)
     with pytest.raises(HerdrError, match='prompt_not_queued'):
@@ -1210,3 +1217,14 @@ def test_a_message_for_claude_is_still_a_plain_prompt(tmp_path: Path, herdr_log:
     """Claude Code queues a prompt typed mid-turn by itself."""
     HerdrRuntime('demo', tmp_path).prompt(claude_handle('claude'), STEER)
     assert calls(herdr_log) == [['agent', 'prompt', 'w1', STEER]]
+
+
+def test_the_screens_and_the_queue_key_come_from_the_handle_or_for_an_older_handle_from_the_built_in_harness(
+    tmp_path: Path, herdr_log: Path
+) -> None:
+    """A daemon restarted in place after an upgrade re-attaches to Herdr agents whose handles predate these keys."""
+    handle = HerdrRuntime('demo', tmp_path).start(as_harness(spec(tmp_path), 'codex'))
+    assert herdr.Screens.of(handle).queue_key == DEFAULT_HARNESSES['codex'].queue_key
+    older = Handle('herdr', {k: v for k, v in handle.data.items() if k not in herdr.Screens.model_fields})
+    assert herdr.Screens.of(older) == herdr.Screens.of(handle), 'the built-in harness of its executable'
+    assert herdr.Screens.of(Handle('herdr', {'kind': 'mine'})) == herdr.Screens(), 'none for another executable'

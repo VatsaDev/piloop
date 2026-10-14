@@ -25,12 +25,11 @@ from sqlalchemy.orm import Session
 
 from piloop import git
 from piloop.agents.launcher import STARTUP_ANOMALY, TRANSCRIPT
-from piloop.agents.scout import scouting
 from piloop.campaign import inbox, spend
 from piloop.campaign.ideas import defined_by, links, runnable, superseded_by, yields
 from piloop.campaign.inbox import project_of
 from piloop.campaign.stop import attempt, hours, runs, runs_without_keep
-from piloop.config import Direction, Metric, ProjectConfig, Track, harness_of
+from piloop.config import Direction, Files, Metric, ProjectConfig, Track, harness_of
 from piloop.db.events import ANOMALY_EVENT
 from piloop.db.models import (
     ENDED,
@@ -52,7 +51,6 @@ from piloop.db.models import (
     TargetKind,
     Verdict,
     Worker,
-    WorkerKind,
     WorkerState,
     count,
     latest_worker,
@@ -631,17 +629,17 @@ def _agents(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> 
         per_kind.append(f'{len(mine)} {kind}' + (f' ({killed} killed)' if killed else ''))
         spend.append(f'{kind} {human(sum(_tokens(w) for w in mine))}')
     defined = defined_by(s, project.id)
-    scouts = set(s.scalars(select(Worker.id).where(Worker.project_id == project.id, scouting())))
-    sweeps = [w for w in rows if w.kind == WorkerKind.RESEARCH and w.state in ENDED and w.id not in scouts]
-    barren = sum(f'research#{w.id}' not in defined for w in sweeps)
-    if scouts:
-        per_kind.append(f'{len(scouts)} of the research in scout mode')
+    barren = []
+    for kind in defining(cfg):
+        sweeps = [w for w in rows if w.kind == kind and w.state in ENDED]
+        empty = sum(f'{kind}#{w.id}' not in defined for w in sweeps)
+        barren.append(f'; {empty} of {len(sweeps)} ended {kind} sweeps defined no idea')
     hour = sum(_tokens(w) for w in rows if w.ended_at is not None and now - w.ended_at <= timedelta(hours=1))
     by_source = '; '.join(y.line() for y in yields(s, project.id)) or 'none yet'
     return [
         f'- Agents live: {len(live) or "none"}' + (f'; requested: {", ".join(requested)}' if requested else ''),
         *live,
-        f'- Agents so far: {", ".join(per_kind)}; {barren} of {len(sweeps)} ended research sweeps defined no idea.',
+        f'- Agents so far: {", ".join(per_kind)}{"".join(barren)}.',
         f'- Ideas by source: {by_source}.',
         f'- Tokens: {human(sum(_tokens(w) for w in rows))} ({", ".join(spend)}); {human(hour)} by agents that ended in'
         ' the last hour.',
@@ -709,16 +707,13 @@ def _anomalies(found: list[Anomaly], now: datetime) -> list[str]:
 
 
 def _comments(s: Session, project: Project, now: datetime) -> list[str]:
-    """List the inbox and the latest decisions, escalations and watchdog findings, newest first.
+    """List the inbox and the latest decisions and escalations, newest first.
 
-    A sweep reads this so it does not repeat a finding, and a human sees what waits for an acknowledgement.
+    A sweep reads this so it does not repeat an escalation, and a human sees what waits for an acknowledgement. The
+    findings of every role are in the history (``piloop.reports.history``).
     """
     unacked = Comment.priority.is_not(None) & Comment.acked_at.is_(None)
-    said = (
-        unacked
-        | Comment.kind.in_((CommentKind.DECISION, CommentKind.ESCALATION))
-        | ((Comment.kind == CommentKind.FINDING) & Comment.author.like('watchdog#%'))
-    )
+    said = unacked | Comment.kind.in_((CommentKind.DECISION, CommentKind.ESCALATION))
     rows = s.scalars(
         select(Comment)
         .where(said, project_of(Comment.target_kind, Comment.target_id) == project.id)
@@ -732,7 +727,7 @@ def _comments(s: Session, project: Project, now: datetime) -> list[str]:
         for c in rows
     ]
     return [
-        f'### Inbox ({waiting} unacknowledged), decisions, escalations and watchdog findings',
+        f'### Inbox ({waiting} unacknowledged), decisions and escalations',
         *(lines or ['- None.']),
     ]
 
@@ -843,14 +838,20 @@ def _idle_queue(s: Session, project: Project, cfg: ProjectConfig) -> list[Anomal
         latest = s.scalar(project_runs(project.id).with_only_columns(func.max(column)))
         if latest is not None:
             moments.append(latest)
-    research = s.scalars(
-        select(Worker).where(
+    kinds = defining(cfg)
+    pending = s.scalars(
+        select(Worker)
+        .where(
             Worker.project_id == project.id,
-            Worker.kind == WorkerKind.RESEARCH,
+            Worker.kind.in_(kinds),
             Worker.state.in_((WorkerState.REQUESTED, *LIVE)),
         )
+        .order_by(Worker.id)
     ).all()
-    sweeps = ', '.join(f'research#{w.id} {w.state}' for w in research) or 'no research sweep pending'
+    sweeps = (
+        ', '.join(f'{w.kind}#{w.id} {w.state}' for w in pending)
+        or f'no {" or ".join(kinds) or "defining"} sweep pending'
+    )
     detail = f'{free} free worker slots and no runnable idea; {sweeps}'
     return [Anomaly(AnomalyKind.IDLE_QUEUE, f'project#{project.id}', max(moments), detail)]
 
@@ -894,6 +895,11 @@ def _silent(s: Session, project: Project, now: datetime, jobs: JobsProbe) -> lis
         )
         found.append(Anomaly(AnomalyKind.SILENT, f'worker#{worker.id}', last + limit, detail))
     return found
+
+
+def defining(cfg: ProjectConfig) -> list[str]:
+    """Return the sweeping roles that define ideas (``files = "ideas"``): the ones that fill the queue."""
+    return [name for name, role in cfg.roles.sweeping().items() if role.files is Files.IDEAS]
 
 
 def _tokens(w: Worker) -> int:

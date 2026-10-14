@@ -135,6 +135,59 @@ def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt
     assert 'herdr' in kinds
 
 
+def test_a_role_adds_its_incident_prompt_to_an_incident_sweep_and_its_routine_prompt_to_any_other(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """The keys that give the watchdog its two kinds of sweep work for a role that ``piloop.toml`` defines."""
+    repo = Path(project.path)
+    for name, text in (('triage.md', '# Triage'), ('incident.md', '## An incident'), ('routine.md', '## A routine')):
+        (repo / name).write_text(text + '\n')
+    triage: dict[str, object] = {
+        'prompt': 'triage.md',
+        'triggers': [{'kind': 'anomaly'}],
+        'incident_prompt': 'incident.md',
+        'routine_prompt': 'routine.md',
+    }
+    configure(db, project, '#!/bin/sh\ntrue\n', triage=triage, watchdog={'triggers': []})
+    sched = scheduler(db, recording(runtime, []), tmp_path)
+    fail_a_run(db, project, 'broken')
+    assert sched.tick() == [1]
+    sched.wait(10)
+    with db.session() as s:
+        s.add(Worker(kind='triage', project_id=project.id, reason='by hand'))
+        s.commit()
+    assert sched.tick() == [2]
+    sched.wait(10)
+    sched.stop(timeout=5)
+    incident, routine = ((tmp_path / 'workers' / str(w) / 'brief.md').read_text() for w in (1, 2))
+    assert incident.startswith('# Triage\n\n## An incident\n\n# Demo') and '## Incidents to investigate' in incident
+    assert routine.startswith('# Triage\n\n## A routine\n\n# Demo') and '## Research pack' in routine
+    with pytest.raises(ConfigError, match=r"roles\.triage\.routine_prompt = 'gone\.md': no such file"):
+        load_project_config(repo, roles={'triage': triage | {'routine_prompt': 'gone.md'}})
+
+
+def test_a_role_that_defines_ideas_is_told_how_many_its_sweep_may_add(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """``low_water`` counts on ``max_ideas`` from each sweep of the role, so the brief of the sweep states it."""
+    (Path(project.path) / 'ideator.md').write_text('# Ideate\n')
+    ideator: dict[str, object] = {
+        'prompt': 'ideator.md',
+        'triggers': [{'kind': 'low_water', 'buffer': 1}],
+        'files': 'ideas',
+        'max_ideas': 2,
+    }
+    configure(db, project, '#!/bin/sh\ntrue\n', ideator=ideator, research={'triggers': []}, watchdog={'triggers': []})
+    sched = scheduler(db, recording(runtime, []), tmp_path)
+    assert sched.tick() == [1], 'no runnable idea: the backlog is short'
+    sched.wait(10)
+    sched.stop(timeout=5)
+    brief = (tmp_path / 'workers' / '1' / 'brief.md').read_text()
+    assert '- New ideas of your own in this sweep: at most 2 (`max_ideas`).' in brief
+    [(_, _, reason)] = workers(db, 'ideator')
+    assert reason is not None and reason.startswith('1 free worker slots without a runnable idea')
+
+
 HARNESS_SIGNS = '#!/bin/sh\necho "$PILOOP_ACTOR" >> solve.txt\ngit commit -qam "sign"\n'
 """Commit a tree of one's own: an agent of another role that runs at the same time makes another candidate."""
 QUICK: dict[str, object] = {

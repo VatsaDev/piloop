@@ -7,14 +7,12 @@ Every role shares one lifecycle (``piloop.agents.launcher``). A role differs in 
 import shlex
 import sys
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from piloop.agents.scout import is_scout
-from piloop.config import BRIEF_FILE, Files, ProjectConfig, Track, config_of
-from piloop.db.models import Project, Worker, WorkerKind
+from piloop.config import BRIEF_FILE, Files, ProjectConfig, SweepRole, Track, config_of
+from piloop.db.models import Project, Worker
 
 PROMPTS = Path(__file__).resolve().parent / 'prompts'
 PROCEDURES = 'sql_procedures.md'
@@ -22,31 +20,22 @@ PILOOP_HINT = f'{shlex.quote(sys.executable)} -m piloop'
 SQL_HINT = f'{PILOOP_HINT} sql'
 
 
-class WatchdogMode(StrEnum):
-    """What a watchdog sweep is for, set by what requested it. The brief adds ``prompts/watchdog_<mode>.md``."""
-
-    INCIDENT = 'incident'
-    """Requested for anomalies the daemon detected (``anomaly.reported`` events on its row): find their causes."""
-    PROGRESS = 'progress'
-    """Every other sweep (the timer, the campaign's stop, a request by hand): check that the campaign makes progress."""
-
-
 @dataclass(frozen=True)
 class Role:
     """The part of a brief that changes with the role. ``Launcher.launch`` does everything else.
 
-    It comes from the role's ``[roles.<kind>]`` table (``role``), except for the scout mode of research (``SCOUT``).
+    It comes from the role's ``[roles.<kind>]`` table (``role``).
     """
 
     kind: str
-    """The role's name in ``piloop.toml``, and so ``workers.kind``."""
-    name: str
-    """The signature of its agents (``<name>#<worker id>``), and so the source of the ideas they file.
-
-    It is the kind, except for the scout mode of the research role (``SCOUT``).
-    """
+    """The role's name in ``piloop.toml``, and so ``workers.kind``, the signature of its agents
+    (``<kind>#<worker id>``) and the source of the ideas they file."""
     prompt: Path
     """The file that starts the brief."""
+    incident: Path | None
+    """The file that follows ``prompt`` in an incident sweep, one that got anomalies. None: nothing follows."""
+    routine: Path | None
+    """The file that follows ``prompt`` in every other sweep. None for a role that does runs, or a role without one."""
     writes: tuple[str, ...]
     """What the role may write. The brief states it."""
     files: Files
@@ -80,31 +69,6 @@ IDEAS: dict[Files, str] = {
 }
 """The ideas line of the brief for each value of ``files``."""
 
-SCOUT = Role(
-    kind=WorkerKind.RESEARCH,
-    name='scout',
-    prompt=PROMPTS / 'research_scout.md',
-    writes=(
-        'seeds via idea seed (at most the count under Context)',
-        'techniques (the library), by INSERT',
-        'one comments(finding) on the project',
-    ),
-    files=Files.SEEDS,
-    ideas=(
-        '- File a seed: `{piloop} idea seed {project} "<technique: its mechanism, one line>" --from "<link>; targets'
-        ' <the measured loss it might reduce, with its size>; <its substance: a number, code, an ablation>"`: research'
-        ' develops it into an idea or rejects it with the reason.'
-        '\n- File a technique into the library: `{piloop} sql "INSERT INTO techniques (project_id, title, mechanism,'
-        " url, created_by) VALUES (<project id>, '<technique>', '<mechanism and its substance, one line>', '<link>',"
-        " '<your signature>')\"`."
-    ),
-)
-"""The scout mode of the research role.
-
-A research row requested with a ``SCOUT_EVENT`` (``piloop.agents.scout``) runs this brief and signs ``scout#<id>``. It
-shares the research role's config table, rotation, concurrency and MCP servers.
-"""
-
 
 def role(cfg: ProjectConfig, kind: str, repo: Path) -> Role:
     """Return the role of ``[roles.<kind>]`` in a project at ``repo``.
@@ -113,14 +77,25 @@ def role(cfg: ProjectConfig, kind: str, repo: Path) -> Role:
         KeyError: ``piloop.toml`` has no such role.
     """
     table = cfg.role(kind)
-    prompt = repo / table.prompt if table.prompt is not None else PROMPTS / table.PROMPT
-    return Role(kind, kind, prompt, tuple(table.writes), table.files, IDEAS[table.files])
+    prompt = _prompt(repo, table.prompt, table.PROMPT)
+    assert prompt is not None  # a table without its own prompt is a built-in role, which has one
+    incident = routine = None
+    if isinstance(table, SweepRole):
+        incident = _prompt(repo, table.incident_prompt, table.INCIDENT_PROMPT)
+        routine = _prompt(repo, table.routine_prompt, table.ROUTINE_PROMPT)
+    ideas = table.IDEAS or IDEAS[table.files]
+    return Role(kind, prompt, incident, routine, tuple(table.writes), table.files, ideas)
+
+
+def _prompt(repo: Path, configured: str | None, built_in: str) -> Path | None:
+    """Return the file of a prompt key: the configured file in the repo, else the built-in one, else None."""
+    if configured is not None:
+        return repo / configured
+    return PROMPTS / built_in if built_in else None
 
 
 def role_of(s: Session, worker: Worker) -> Role:
-    """Return the role of a row: its kind's role, or the scout mode for a research row requested as a scout."""
-    if worker.kind == WorkerKind.RESEARCH and is_scout(s, worker.id):
-        return SCOUT
+    """Return the role of a row: the role of its kind in its project."""
     project = s.get_one(Project, worker.project_id)
     return role(config_of(project), worker.kind, Path(project.path))
 
@@ -130,10 +105,7 @@ def files_of(cfg: ProjectConfig, actor: str) -> Files | None:
 
     None for an actor that is not a role, such as ``orchestrator`` or ``human``: it may file anything.
     """
-    source = actor.partition('#')[0]
-    if source == SCOUT.name:
-        return SCOUT.files
-    table = cfg.roles.all().get(source)
+    table = cfg.roles.all().get(actor.partition('#')[0])
     return None if table is None else table.files
 
 
@@ -144,23 +116,24 @@ def compose_brief(
     *,
     reason: str,
     context: str,
-    mode: WatchdogMode | None = None,
+    incident: bool = False,
     track: Track | None = None,
     wake: str = '',
 ) -> str:
     """Compose a brief: the role prompt, the project brief, the role's addendum, the database procedures, the context.
 
-    A watchdog also gets its mode's prompt after the role prompt. ``wake``, the lessons overview of the repo
-    (``piloop.reports.wake``), follows the role prompt. A worker also gets its track's addendum after the role's
-    addendum. With several tracks, the context lists them.
+    A sweep also gets its role's incident or routine prompt after the role prompt: the incident prompt when it got
+    anomalies (``incident``). ``wake``, the lessons overview of the repo (``piloop.reports.wake``), follows them. A
+    worker also gets its track's addendum after the role's addendum. With several tracks, the context lists them.
     """
-    author = f'{role.name}#{worker_id}'
+    author = f'{role.kind}#{worker_id}'
     repo = Path(project.path)
     cfg = config_of(project)
     addendum = cfg.role(role.kind).addendum
+    follows = role.incident if incident else role.routine
     parts = [
         role.prompt.read_text().rstrip(),
-        (PROMPTS / f'{role.kind}_{mode}.md').read_text().rstrip() if mode is not None else '',
+        follows.read_text().rstrip() if follows is not None else '',
         wake.rstrip(),
         (repo / BRIEF_FILE).read_text().rstrip(),
         (repo / addendum).read_text().rstrip() if addendum else '',
@@ -169,7 +142,7 @@ def compose_brief(
         '\n'.join(
             [
                 '# Context',
-                f'- You are worker#{worker_id}, the {role.name} for project#{project.id} ({project.name}).',
+                f'- You are worker#{worker_id}, the {role.kind} for project#{project.id} ({project.name}).',
                 f'- Project repo: {project.path} (every candidate commit and Entire checkpoint is in it).',
                 f"- Sign what you write as '{author}' (comments.author, ideas.created_by).",
                 f'- Trigger: {reason}',

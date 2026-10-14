@@ -24,7 +24,10 @@ command = ["python3", "/path/to/piloop/scripts/xai_search_mcp.py", "grok-4.7", "
 env = ["XAI_API_KEY"]
 
 [roles.research]
-mcp = ["exa", "firecrawl", "xai"]
+mcp = ["exa", "firecrawl"]
+
+[roles.scout]
+mcp = ["exa", "xai"]
 ```
 
 Whether a harness takes servers can depend on the runtime of the role. See

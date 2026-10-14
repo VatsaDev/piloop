@@ -27,10 +27,10 @@ JAN_1 = 1_767_225_600
 """A fixed modification time for artifacts (2026-01-01 00:00 UTC), so their order and dates are stable."""
 
 
-def configure(db: Database, project: Project, **research: object) -> None:
+def configure(db: Database, project: Project, **keys: object) -> None:
     with db.session() as s:
         row = s.get_one(Project, project.id)
-        row.config = load_project_config(Path(project.path), roles={'research': research}).model_dump(mode='json')
+        row.config = load_project_config(Path(project.path), **keys).model_dump(mode='json')
         s.commit()
 
 
@@ -92,7 +92,7 @@ def test_the_pack_of_a_campaign(db: Database, project: Project, tmp_path: Path) 
     workspace = campaign(db, project, tmp_path)
     text = render(db, project, workspace)
     head, rest = text.split('## History: ideas', 1)
-    _, tail = rest.split('## History: research findings (last 10)\n', 1)
+    _, tail = rest.split('## History: findings on the project (last 10)\n', 1)
     assert head == snapshot("""\
 ## Research pack: metrics (confidence 0.95; start candidate#1, head candidate#2)
 
@@ -169,7 +169,7 @@ def test_an_idea_whose_commits_were_all_skipped_is_unmeasured_not_a_dead_end(
 
 def test_an_empty_pack_says_what_is_missing(db: Database, project: Project, tmp_path: Path) -> None:
     text = render(db, project, tmp_path / 'no-such-dir')
-    assert '- None configured: `[roles.research] context` in piloop.toml lists them.' in text
+    assert '- None configured: `context` in piloop.toml lists them.' in text
     assert 'shared workspace' not in text, 'no section without a workspace directory'
     assert '## Research pack: seeds to develop (oldest first)\n- None.' in text
     for title, empty in [
@@ -209,7 +209,9 @@ def test_the_pack_is_bounded(db: Database, project: Project, tmp_path: Path) -> 
     assert text.count(' worker#1 on idea#') == FINDINGS_SHOWN
     assert text.count(' finding by orchestrator on project#') == DIGESTS_SHOWN
     assert text.count(' p2 by watchdog#1 on project#') == ESCALATIONS_SHOWN
-    pack_only = text.split('## History: ideas', 1)[0] + text.split('## History: research findings (last 10)', 1)[1]
+    pack_only = (
+        text.split('## History: ideas', 1)[0] + text.split('## History: findings on the project (last 10)', 1)[1]
+    )
     assert len(pack_only) < 45_000, 'the module docstring promises about 45 KB on top of the history'
 
 

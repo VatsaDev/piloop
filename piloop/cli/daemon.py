@@ -5,11 +5,15 @@ from datetime import timedelta
 from typing import Annotated
 
 import cyclopts
+from sqlalchemy import select
 
 from piloop.cli import common
+from piloop.config import config_of
 from piloop.daemon.main import Daemon
 from piloop.daemon.serve import restart as restart_in_place, running_pid, service_unit, spawn_detached, terminate
+from piloop.db.models import Project
 from piloop.db.session import SchemaAhead
+from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.proc import Inherited
 
 
@@ -75,9 +79,15 @@ def restarted(pid: int, timeout: float) -> int:
 def service_unit_cmd() -> None:
     """Print a systemd user unit (a launchd plist on macOS) that keeps `piloop serve` running.
 
-    It prints the unit only, and installs nothing.
+    It prints the unit only, and installs nothing. The unit carries the variables that the usage globs of the built-in
+    harnesses and of the registered projects' harnesses name.
     """
-    common.console.print(service_unit(common.settings), end='', markup=False, highlight=False, soft_wrap=True)
+    harnesses = list(DEFAULT_HARNESSES.values())
+    with common.session() as s:
+        for project in s.scalars(select(Project)):
+            harnesses += config_of(project).harness.values()
+    unit = service_unit(common.settings, harnesses)
+    common.console.print(unit, end='', markup=False, highlight=False, soft_wrap=True)
 
 
 def daemon_line() -> str:

@@ -44,6 +44,11 @@ def scheduler(db: Database, runtime: ScriptRuntime, tmp_path: Path) -> Scheduler
     return Scheduler(db, executor, Tracer(None), tmp_path, factory(runtime))
 
 
+def low_water(buffer: int) -> list[dict[str, object]]:
+    """Research's default triggers, with ``buffer`` on its ``low_water``."""
+    return [{'kind': 'low_water', 'buffer': buffer}, {'kind': 'seed'}]
+
+
 def configure(db: Database, project: Project, harness_body: str = HARNESS_NOOP, **roles: dict[str, object]) -> None:
     """Rewrite the project's harness script and role settings (merged over the test toml)."""
     write_toml(Path(project.path), harness_body)
@@ -301,7 +306,7 @@ def test_low_water_keeps_a_slot_s_worth_plus_the_buffer_and_tops_it_up_on_new_re
     Below that target a sweep starts. Each sweep that defined no idea doubles the number of finished runs the next
     sweep waits for. A sweep that defined an idea resets the wait.
     """
-    configure(db, project, research={'max_ideas': 1, 'buffer': 2})
+    configure(db, project, research={'max_ideas': 1, 'triggers': low_water(2)})
     sched = scheduler(db, runtime, tmp_path)
     occupy(db, project)
     first, *_ = add_ideas(db, project, 3)
@@ -341,7 +346,7 @@ def test_low_water_keeps_sweeping_a_short_backlog_though_every_slot_is_busy_rest
     A sweep that defined an idea is followed at once. A sweep that defined no idea is followed by a rest as long as
     the sweep took.
     """
-    configure(db, project, research={'max_ideas': 1, 'buffer': 2})
+    configure(db, project, research={'max_ideas': 1, 'triggers': low_water(2)})
     sched = scheduler(db, runtime, tmp_path)
     occupy(db, project)
     assert sched.tick() == [1]
@@ -479,7 +484,7 @@ def test_low_water_sizes_the_batch_to_the_shortfall_net_of_the_sweeps_in_flight(
                 'model': {'b': 'mb', 'c': 'mc'},
                 'max_concurrent': 4,
                 'max_ideas': 2,
-                'buffer': 1,
+                'triggers': low_water(1),
             },
         },
     )
@@ -518,7 +523,12 @@ def test_low_water_counts_ideas_waiting_only_on_a_prerequisite_in_flight_as_back
     Such an idea runs when its prerequisites finish, with no sweep in between. An idea that waits on a prerequisite
     that is not running is not backlog.
     """
-    configure(db, project, worker={'max_concurrent': 2}, research={'max_ideas': 1, 'max_concurrent': 1, 'buffer': 1})
+    configure(
+        db,
+        project,
+        worker={'max_concurrent': 2},
+        research={'max_ideas': 1, 'max_concurrent': 1, 'triggers': low_water(1)},
+    )
     sched = scheduler(db, runtime, tmp_path)
     with db.session() as s:
         prerequisite = s.get_one(Run, occupy(db, project)).idea

@@ -6,12 +6,10 @@ import cyclopts
 from sqlalchemy import select
 
 from piloop.agents.launcher import TRANSCRIPT
-from piloop.agents.scout import SCOUT_EVENT
 from piloop.cli import common
 from piloop.cli.common import HARNESS_HELP, ProjectRef
 from piloop.config import config_of
-from piloop.db.events import emit
-from piloop.db.models import TargetKind, Worker, WorkerKind, WorkerState
+from piloop.db.models import Worker, WorkerState
 from piloop.runtime import Handle, NotAttachable, NotSteerable, Runtime, RuntimeFailure
 from piloop.runtime.factory import handle_for, runtime_for
 
@@ -21,8 +19,8 @@ def launch(
     role: Annotated[
         str,
         cyclopts.Parameter(
-            help='The role of the agent: watchdog, research or a role that piloop.toml defines. The daemon launches'
-            ' workers by itself, one for each queued run.'
+            help='The role of the agent: a sweeping role of the project (`[roles.<name>]`). The daemon launches the'
+            ' agents of a role that does runs by itself, one for each queued run.'
         ),
     ],
     /,
@@ -32,16 +30,11 @@ def launch(
     reason: Annotated[
         str, cyclopts.Parameter(help="Why you request the agent. The agent's brief includes it.")
     ] = 'requested from the CLI',
-    scout: Annotated[
-        bool, cyclopts.Parameter(help='Research only: run a scout sweep that looks for outside techniques.')
-    ] = False,
 ) -> None:
     """Ask the daemon for one more agent of a role.
 
     The daemon launches it on its next tick, within the role's `max_concurrent`.
     """
-    if scout and role != WorkerKind.RESEARCH:
-        raise SystemExit('--scout is a mode of the research role: `piloop launch <project> research --scout`')
     with common.session() as s:
         project = common.project(s, ref)
         roles = config_of(project).roles
@@ -53,13 +46,8 @@ def launch(
             raise SystemExit(f'{project.name} has no sweeping role {role!r}; it has {", ".join(sweeping)}.{workers}')
         worker = Worker(kind=role, project_id=project.id, harness=harness, model=model, reason=reason)
         s.add(worker)
-        s.flush()
-        if scout:
-            emit(s, SCOUT_EVENT, TargetKind.WORKER, worker.id, actor=common.settings.actor)
         s.commit()
-        common.console.print(
-            f'worker#{worker.id} {role}{" (scout)" if scout else ""} requested for {project.name}: {reason}'
-        )
+        common.console.print(f'worker#{worker.id} {role} requested for {project.name}: {reason}')
 
 
 def prompt(

@@ -11,6 +11,7 @@ def known_role() -> Trigger:
     another row, so this is a trigger. The daemon never changes the kind of a row, so the trigger checks INSERT only.
     """
     built_in = ', '.join(f"'{kind}'" for kind in WorkerKind)
+    names = ', '.join(WorkerKind)
     return Trigger(
         'workers_kind',
         'workers',
@@ -20,7 +21,7 @@ def known_role() -> Trigger:
             ' FROM projects WHERE id = NEW.project_id) IS NULL'
         ),
         body=(
-            "SELECT RAISE(ABORT, 'workers.kind must be a role of the project: worker, watchdog, research or a"
-            " [roles.<name>] table of its piloop.toml')"
+            f"SELECT RAISE(ABORT, 'workers.kind must be a role of the project: {names} or a [roles.<name>] table of"
+            " its piloop.toml')"
         ),
     )

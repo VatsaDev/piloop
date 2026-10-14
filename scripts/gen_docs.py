@@ -27,24 +27,27 @@ from typing import Any, get_args
 
 from pydantic import BaseModel
 from pydantic.json_schema import GenerateJsonSchema
+from pydantic_settings import BaseSettings
 from sqlalchemy import Column, Enum
 from sqlalchemy.dialects import sqlite
 
+from piloop.campaign.project import EXAMPLE_DATA, TEMPLATES
 from piloop.config import ProjectConfig, RoleConfig, Roles, Stop, SweepRole, WorkerRole
 from piloop.db.models import Base, IdeaStatus, RunStatus, Verdict, WorkerState
 from piloop.db.sql import schema_ddl
 from piloop.db.triggers import persistent_sql, temp_sql
 from piloop.db.triggers.fts import FTS_COLUMNS
-from piloop.deprecated import BRIDGES
+from piloop.deprecated import BRIDGES, CONFIG_BRIDGES
 from piloop.harnesses import DEFAULT_HARNESSES, Invocation
-from piloop.mcp import RENDERERS
+from piloop.mcp import RENDERERS, McpServer
 from piloop.runtime import Runtime
 from piloop.runtime.factory import BUILTIN_RUNTIMES
-from piloop.settings import StorageSettings
+from piloop.runtime.herdr import HerdrSettings
+from piloop.settings import Settings, StorageSettings
 from piloop.store.config import BUILTIN_REMOTES
 from piloop.triggers import BUILTIN_TRIGGERS
 from piloop.usage import READERS
-from piloop.usage.jsonl import TALLIES
+from piloop.usage.jsonl import CWD_ENCODERS, TALLIES
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = ROOT / 'piloop'
@@ -58,6 +61,8 @@ RUNTIMES_PAGE = ROOT / 'docs' / 'concepts' / 'runtimes.mdx'
 ROLES_PAGE = ROOT / 'docs' / 'concepts' / 'roles.mdx'
 COST_PAGE = ROOT / 'docs' / 'concepts' / 'cost.mdx'
 MCP_PAGE = ROOT / 'docs' / 'guides' / 'mcp-servers.mdx'
+IDEAS_PAGE = ROOT / 'docs' / 'concepts' / 'ideas-and-runs.mdx'
+ENVIRONMENT_PAGE = ROOT / 'docs' / 'reference' / 'environment.mdx'
 ACTOR_SQL = ROOT / 'piloop' / 'db' / 'actor_triggers.sql'
 PERSISTENT_SQL = ROOT / 'piloop' / 'db' / 'persistent_triggers.sql'
 STATE_ENUMS: tuple[type[StrEnum], ...] = (IdeaStatus, RunStatus, WorkerState, Verdict)
@@ -277,14 +282,19 @@ def global_section() -> str:
         schema = _schema(backend)
         out += f'\n### `[storage.remote]` with `kind = "{kind}"`\n\n{mdx(schema.get("description", ""))}\n\n'
         out += _table(schema, schema.get('$defs', {}))
+    herdr = _schema(HerdrSettings)
+    out += (
+        '\n### `[runtimes.<name>]`\n\nThe settings of a runtime, which the runtime reads and checks. An environment'
+        ' variable wins over the file. The `herdr` runtime reads `[runtimes.herdr]`, and `PILOOP_HERDR_<KEY>`'
+        ' overrides a key:\n\n'
+        f'{_table(herdr, {}, {k for k in herdr["properties"] if k.islower()})}'
+    )
     return out
 
 
 def deprecated_section() -> str:
     """Return the keys that ``piloop.deprecated`` still accepts, one bullet per bridge; nothing when there are none."""
-    if not BRIDGES:
-        return ''
-    bullets = '\n'.join(f'- {mdx(" ".join(str(inspect.getdoc(b)).split()))}' for b in BRIDGES)
+    bullets = '\n'.join(f'- {mdx(" ".join(str(inspect.getdoc(b)).split()))}' for b in (*BRIDGES, *CONFIG_BRIDGES))
     return (
         '\n## Deprecated keys\n\nThese keys still work. Each one shows a `PiloopDeprecationWarning` that names the file,'
         ' the key, its replacement and the release that removes it. The changelog lists them too.\n\n'
@@ -364,12 +374,11 @@ def runtime_protocol() -> str:
 
 
 def triggers_table() -> str:
-    """Return a table of the built-in triggers: when each one fires, its parameters, and the role that may use it."""
-    rows = ['| Trigger | Fires when | Parameters | Role |', '|---|---|---|---|']
+    """Return a table of the built-in triggers: when each one fires, and its parameters."""
+    rows = ['| Trigger | Fires when | Parameters |', '|---|---|---|']
     for kind, trigger in BUILTIN_TRIGGERS.items():
         params = ', '.join(f'`{name}`' for name in trigger.model_fields if name != 'kind') or 'none'
-        role = f'`{trigger.ROLE}` only' if trigger.ROLE else 'any sweeping role'
-        rows.append(f'| `{kind}` | {cell(lead(trigger, trigger.__name__))} | {params} | {role} |')
+        rows.append(f'| `{kind}` | {cell(lead(trigger, trigger.__name__))} | {params} |')
     return '\n'.join(rows) + '\n'
 
 
@@ -408,6 +417,46 @@ def role_keys() -> dict[str, str]:
     }
 
 
+def roles_table() -> str:
+    """Return a table of the built-in roles: whether each does runs, its triggers, what it files, what it is."""
+    rows = ['| Role | Does runs | Triggers | Files | What it is |', '|---|---|---|---|---|']
+    for name, role in Roles().all().items():
+        triggers = ', '.join(f'`{t.kind}`' for t in getattr(role, 'triggers', [])) or 'the run queue'
+        what = cell(lead(type(role), type(role).__name__)).split(': ', 1)[-1]
+        what = what[:1].upper() + what[1:]
+        rows.append(
+            f'| `{name}` | {"yes" if isinstance(role, WorkerRole) else "no"} | {triggers} | `{role.files}` | {what} |'
+        )
+    return '\n'.join(rows) + '\n'
+
+
+def remotes_table() -> str:
+    """Return a table of the built-in storage backends: the ``kind``, what it stores into, and its keys."""
+    rows = ['| Backend | What it is | Keys |', '|---|---|---|']
+    for kind, backend in BUILTIN_REMOTES.items():
+        what = cell(lead(backend, backend.__name__)).split(': ', 1)[-1]
+        what = what[:1].upper() + what[1:]
+        keys = ', '.join(f'`{k}`' for k in backend.model_fields if k != 'kind')
+        rows.append(f'| `{kind}` | {what} | {keys} |')
+    return '\n'.join(rows) + '\n'
+
+
+def registry_table(head: str, entries: dict[str, object]) -> str:
+    """Return a table of a registry of the code: each name, and the first paragraph of its docstring."""
+    rows = [f'| {head} | What it does |', '|---|---|']
+    rows += [f'| `{name}` | {cell(lead(entry, name))} |' for name, entry in entries.items()]
+    return '\n'.join(rows) + '\n'
+
+
+def examples_table() -> str:
+    """Return a table of the bundled example projects that ``piloop init --example`` writes: name, goal, data."""
+    rows = ['| Example | Goal | Data it downloads |', '|---|---|---|']
+    for name, data in EXAMPLE_DATA.items():
+        goal = (TEMPLATES / name / 'brief.md').read_text().splitlines()[0].removeprefix('# ')
+        rows.append(f'| `{name}` | {cell(goal)} | {", ".join(f"`{d}`" for d in data)} |')
+    return '\n'.join(rows) + '\n'
+
+
 def harnesses_table() -> str:
     """Return a table of the built-in harnesses: program, usage reader, MCP renderer, where it takes MCP servers."""
     head = ['Harness', 'Executable', 'Usage reader', 'MCP renderer', *(f'MCP servers, {i}' for i in Invocation)]
@@ -416,6 +465,43 @@ def harnesses_table() -> str:
         usage = f'`{h.usage.reader}` (tally `{h.usage.tally}`)' if h.usage else 'none'
         servers = ['yes' if h.refuses_servers(i) is None else 'no' for i in Invocation]
         rows.append(f'| `{name}` | `{h.executable}` | {usage} | `{h.mcp or "none"}` | {" | ".join(servers)} |')
+    return '\n'.join(rows) + '\n'
+
+
+def queue_keys() -> str:
+    """Return how each built-in harness takes a message under an interactive runtime, from its ``queue_key``."""
+    queued = [f'`{name}` (`{h.queue_key.key}`)' for name, h in DEFAULT_HARNESSES.items() if h.queue_key is not None]
+    typed = [f'`{name}`' for name, h in DEFAULT_HARNESSES.items() if h.queue_key is None]
+    return (
+        f"Under the `herdr` runtime, piloop types the message into the agent's pane. {_and(typed)} keep what arrives "
+        f'while they work for the end of the turn. {_and(queued)} would end the turn to take it, so piloop presses the '
+        'queue key of the harness (`[harness.<name>] queue_key`) to queue it.\n'
+    )
+
+
+def _and(items: list[str]) -> str:
+    """Return ``items`` as a list in a sentence: ``a``, ``a and b``, ``a, b and c``."""
+    return ' and '.join(filter(None, [', '.join(items[:-1]), items[-1]]))
+
+
+def environment(settings: type[BaseSettings]) -> str:
+    """Return a table of the environment variables of a settings class: each name, its default and its meaning."""
+    prefix = str(settings.model_config.get('env_prefix', ''))
+    rows = ['| Variable | Default | Meaning |', '|---|---|---|']
+    for name, field in settings.model_fields.items():
+        alias = field.validation_alias
+        variable = alias if isinstance(alias, str) else f'{prefix}{name}'.upper()
+        value = field.default
+        if isinstance(value, dict):  # [runtimes.<name>]: each runtime's own settings class has its variables
+            continue
+        if isinstance(value, BaseModel):  # a table of config.toml: one variable for each of its keys
+            rows.append(
+                f'| `{variable}__<KEY>` | [its table](/reference/configuration#{name}) | {cell(field.description or "")} |'
+            )
+            continue
+        default = 'none' if value is None else f'`{str(value).replace(str(Path.home()), "~")}`'
+        default = '`false`' if value is False else default
+        rows.append(f'| `{variable}` | {default} | {cell(field.description or "")} |')
     return '\n'.join(rows) + '\n'
 
 
@@ -552,12 +638,33 @@ def main(check: bool) -> int:
         STATES_PAGE: splice(STATES_PAGE, {'states': state_values()}),
         LAYOUT_PAGE: splice(LAYOUT_PAGE, {'imports': code_layout()}),
         EXTENSIONS_PAGE: splice(
-            EXTENSIONS_PAGE, {'runtime-protocol': runtime_protocol(), 'harnesses': harnesses_table()}
+            EXTENSIONS_PAGE,
+            {
+                'roles': roles_table(),
+                'triggers': triggers_table(),
+                'runtimes': runtimes_table(),
+                'runtime-protocol': runtime_protocol(),
+                'remotes': remotes_table(),
+                'harnesses': harnesses_table(),
+                'mcp-keys': _meanings(McpServer),
+                'renderers': registry_table(
+                    'Renderer', {n: sys.modules[r.render.__module__] for n, r in RENDERERS.items()}
+                ),
+                'readers': registry_table('Reader', dict(READERS)),
+                'tallies': registry_table('Tally', {n: sys.modules[t.__module__] for n, t in TALLIES.items()}),
+                'cwd-encoders': registry_table('`cwd`', dict(CWD_ENCODERS)),
+                'evaluate-examples': examples_table(),
+                'stop': _meanings(Stop),
+            },
         ),
         RUNTIMES_PAGE: splice(RUNTIMES_PAGE, {'runtimes': runtimes_table()}),
         ROLES_PAGE: splice(ROLES_PAGE, {**role_keys(), 'role-defaults': role_defaults(), 'triggers': triggers_table()}),
         COST_PAGE: splice(COST_PAGE, {'stop': _meanings(Stop)}),
         MCP_PAGE: splice(MCP_PAGE, {'harnesses': harnesses_table()}),
+        IDEAS_PAGE: splice(IDEAS_PAGE, {'queue-keys': queue_keys()}),
+        ENVIRONMENT_PAGE: splice(
+            ENVIRONMENT_PAGE, {'settings': environment(Settings), 'herdr-settings': environment(HerdrSettings)}
+        ),
         ACTOR_SQL: temp_sql(),
         PERSISTENT_SQL: persistent_sql(),
     }

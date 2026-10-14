@@ -18,8 +18,6 @@ from pytest_mock import MockerFixture
 from rich.console import Console
 from sqlalchemy import select
 
-from piloop import settings as settings_module
-from piloop.agents.scout import is_scout
 from piloop.campaign import inbox, project as project_module
 from piloop.campaign.ideas import defined_by
 from piloop.cli import common, inbox as inbox_cli, main as cli, project as project_cli
@@ -46,6 +44,8 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
+from piloop.runtime import herdr
+from piloop.runtime.herdr import HerdrSettings
 from piloop.settings import Settings
 from tests.conftest import hold_lock
 from tests.daemon.test_serve import alive, wait_until
@@ -718,7 +718,7 @@ def test_attach_focuses_a_worker_tab(
     assert out().strip() == 'focused tab w7:t3; not a terminal, so it does not attach to Herdr session piloop'
     tty.isatty.return_value = True
     monkeypatch.setenv('HERDR_SOCKET_PATH', SOCKET)
-    monkeypatch.setattr(settings_module, 'settings', Settings(home=common.settings.home))
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings())
     run_cli(['attach', '1'])
     assert out().strip() == 'focused tab w7:t3' and execvp.call_count == 1, 'already inside the piloop session'
     with pytest.raises(SystemExit) as headless:
@@ -789,18 +789,12 @@ def test_launch_requests_a_worker(project_path: Path, out) -> None:
     assert '- Agents live: none; requested: research#1, watchdog#2' in out(), (
         'a request is not an agent until the daemon launches it'
     )
-    with pytest.raises(SystemExit, match="demo has no sweeping role 'janitor'; it has watchdog, research.$"):
+    with pytest.raises(SystemExit, match="demo has no sweeping role 'janitor'; it has watchdog, research, scout.$"):
         run_cli(['launch', 'demo', 'janitor'])
     with pytest.raises(SystemExit, match='The daemon launches workers by itself, one for each queued run'):
         run_cli(['launch', 'demo', 'worker'])
-    run_cli(['launch', 'demo', 'research', '--scout', '--reason', 'look outside'])
-    assert out().strip() == 'worker#3 research (scout) requested for demo: look outside'
-    db = Database(common.settings.database_url, actor=common.settings.actor)
-    with db.session() as s:
-        assert [is_scout(s, w) for w in (1, 2, 3)] == [False, False, True]
-    db.close()
-    with pytest.raises(SystemExit, match='--scout is a mode of the research role'):
-        run_cli(['launch', 'demo', 'watchdog', '--scout'])
+    run_cli(['launch', 'demo', 'scout', '--reason', 'look outside'])
+    assert out().strip() == 'worker#3 scout requested for demo: look outside', 'the scout is a role like any other'
 
 
 def test_serve_builds_a_daemon(mocker: MockerFixture) -> None:
@@ -887,6 +881,24 @@ def test_service_unit_prints_a_systemd_unit_on_linux(tmp_path: Path, out) -> Non
     assert f'Environment="CLAUDE_CONFIG_DIR={tmp_path / "claude-config"}"\n' in text, (
         'a setting of the shell reaches the daemon under the service manager'
     )
+
+
+def test_the_service_unit_carries_what_the_usage_globs_of_a_projects_harnesses_name(
+    project_path: Path, out, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    toml = project_path / 'piloop.toml'
+    usage = '[harness.script.usage]\nfile = "{env:SCRIPT_HOME:~/.script}/{session_id}.jsonl"\ntally = "pi"\n\n'
+    toml.write_text(
+        toml.read_text()
+        .replace('[harness.script]', usage + '[harness.script]')
+        .replace('headless = ["{prompt}"]', 'headless = ["{prompt}", "{session_id}"]')
+    )
+    run_cli(['init', str(project_path)])
+    monkeypatch.setenv('SCRIPT_HOME', '/somewhere/script')
+    out()
+    run_cli(['service-unit'])
+    unit = out()  # a systemd unit, or a launchd plist on macOS
+    assert 'SCRIPT_HOME' in unit and '/somewhere/script' in unit, 'a harness of a registered project'
 
 
 def test_status_without_results_and_prompt_not_steerable(project_path: Path, out, mocker: MockerFixture) -> None:

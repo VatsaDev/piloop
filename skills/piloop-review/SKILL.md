@@ -43,11 +43,11 @@ Rules for the whole review:
 | Candidates | the project repo: `refs/piloop/<project>/r<run>/<n>`, `git show <commit_sha>`; `entire checkpoint explain <workers.checkpoint_id>` when Entire is on |
 | Side effects outside piloop | `$CLAUDE_CONFIG_DIR/settings.json`, `$CODEX_HOME/config.toml`, `$CLAUDE_CONFIG_DIR/projects/*/memory/` |
 
-Token counts differ per harness:
+Token counts:
 
-- Claude Code: `workers.usage.total` is input + output + cache read + cache write.
-- Codex: `input` already contains `cache_read`. Codex records no price.
-- To compare harnesses, use the uncached input (Codex: input − cache_read).
+- `input` (uncached), `cache_read` and `cache_write` mean the same for every harness, so they compare.
+- `workers.usage.total` is the harness's own count. Claude Code: input + output + cache read + cache write.
+- Codex records no price.
 
 ## Structure: fan out, then combine
 

@@ -5,7 +5,7 @@ repo when a research sweep or a progress review starts. ``piloop history`` print
 
 - the metrics with their roles, tracks, margins and floors, and the start and the head on each;
 - the keeps that the ideas of each source produced (``piloop.campaign.ideas.yields``);
-- the analysis artifacts (``[roles.research] context``) and the shared workspace, newest first, as file pointers
+- the analysis artifacts (``context``) and the shared workspace, newest first, as file pointers
   with an outline;
 - what was tried, by family (``ideas.family``), and the seeds that other roles filed for research to develop;
 - the history (``piloop.reports.history``);
@@ -162,21 +162,21 @@ def _yields(s: Session, project: Project, table_box: box.Box, heading: str) -> T
 
 
 def _artifacts(project: Project, cfg: ProjectConfig, workspace: Path | None, heading: str) -> list[RenderableType]:
-    """List the analysis artifacts in ``[roles.research] context``, then the shared workspace, newest first.
+    """List the analysis artifacts in ``context``, then the shared workspace, newest first.
 
     A pattern that matches no file is listed, so that a renamed report shows as missing instead of disappearing.
     """
     repo = Path(project.path)
     found: dict[str, Path] = {}
     missing: list[str] = []
-    for pattern in cfg.roles.research.context:
+    for pattern in cfg.context:
         matches = [p for p in sorted(repo.glob(pattern)) if p.is_file()]
         missing += [] if matches else [pattern]
         found |= {str(p): p for p in matches}
     lines = _file_lines(found, ARTIFACTS_SHOWN)
     lines += [Text(f'- {pattern}: matches no file in {repo}') for pattern in missing]
-    if not cfg.roles.research.context:
-        lines = [Text('- None configured: `[roles.research] context` in piloop.toml lists them.')]
+    if not cfg.context:
+        lines = [Text('- None configured: `context` in piloop.toml lists them.')]
     title = f'{heading}Research pack: analysis artifacts (read before proposing; newest first)'
     sections: list[RenderableType] = [Text(title, style='bold'), *lines, Text()]
     if workspace is not None and workspace.is_dir():

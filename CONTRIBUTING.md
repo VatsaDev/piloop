@@ -51,8 +51,9 @@ with the enwik8 example.
 - `docs/reference/schema.mdx`, from `piloop/db/models.py`.
 - `piloop/db/actor_triggers.sql` and `piloop/db/persistent_triggers.sql`, from `piloop/db/triggers/`.
 - The parts between the markers in other pages: the diagram of the tables, the values of the state enums and the
-  graph of the imports (`docs/architecture/`), and the tables of the built-in runtimes, triggers, harnesses, role
-  keys and defaults, `Runtime` methods and `[stop]` keys. They come from the docstrings and the built-in registries,
+  graph of the imports (`docs/architecture/`), the tables of the built-in runtimes, triggers, harnesses, role
+  keys and defaults, `Runtime` methods and `[stop]` keys, the environment variables of the settings classes, and how
+  each harness takes a message under Herdr. They come from the docstrings and the built-in registries,
   so write those docstrings for the reader of the page. A missing docstring stops `make docs`.
 
 `make docs-check` fails when one of them is stale. The pre-commit hook runs it.

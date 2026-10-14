@@ -41,8 +41,8 @@ from piloop.triggers import (
     AnomalyTrigger,
     CronTrigger,
     LowWaterTrigger,
-    ScoutTrigger,
     SeedTrigger,
+    StoppedTrigger,
     TriggerEntry,
     sql_error,
 )
@@ -168,8 +168,8 @@ class Track:
 
 ROLE_NAME = r'[a-z][a-z0-9_-]{0,19}'
 """The form of a role name: the agents' signature, ``workers.kind``, and the start of their Herdr agent name."""
-RESERVED_NAMES = frozenset({'scout', 'run', 'orchestrator', 'human', 'daemon'})
-"""Names that already sign writes: the scout mode, a run, and the actors that are not roles."""
+RESERVED_NAMES = frozenset({'run', 'orchestrator', 'human', 'daemon'})
+"""Names that already sign writes: a run, and the actors that are not roles."""
 ROLE_GROUP = 'piloop.roles'
 """The entry point group of the roles that packages add. Each entry point names a ``SweepRole`` or a ``WorkerRole``
 with its defaults."""
@@ -202,6 +202,9 @@ class RoleConfig(BaseModel):
 
     PROMPT: ClassVar[str] = ''
     """The built-in prompt of a built-in role, a file under ``piloop/agents/prompts/``. Empty for other roles."""
+    IDEAS: ClassVar[str] = ''
+    """The ideas line of a built-in role's brief when the line for its ``files`` does not fit it. ``{piloop}`` is the CLI
+    and ``{project}`` is the project's name. Empty: the line for ``files`` (``piloop.agents.roles.IDEAS``)."""
 
     prompt: str | None = None
     """The file that starts the brief of this role: a path relative to the repo root, or an absolute path. When unset,
@@ -283,11 +286,16 @@ def ideas_taken(takes: str) -> str:
 
 
 class SweepRole(RoleConfig):
-    """``[roles.<name>]`` of a sweeping role: the watchdog, research, or a new role that you define.
+    """``[roles.<name>]`` of a sweeping role: the watchdog, research, the scout, or a new role that you define.
 
     A sweep is an agent without a run. Its triggers request it, and nothing is scored when it ends. A table with a new
     name defines a new role, and needs ``prompt`` and ``triggers``.
     """
+
+    INCIDENT_PROMPT: ClassVar[str] = ''
+    """The built-in ``incident_prompt`` of a built-in role, a file under ``piloop/agents/prompts/``. Empty: none."""
+    ROUTINE_PROMPT: ClassVar[str] = ''
+    """The built-in ``routine_prompt`` of a built-in role, a file under ``piloop/agents/prompts/``. Empty: none."""
 
     runs: Literal[False] = False
     """The agents of this role do no runs. Set ``runs = true`` in a new table to define a role that does runs."""
@@ -300,6 +308,17 @@ class SweepRole(RoleConfig):
     interval: float = Field(default=0, ge=0)
     """The number of seconds between two routine sweeps of the ``cron`` trigger, counted from the start of the last
     one. A sweep that investigates an anomaly is not a routine sweep. 0 turns the timer off."""
+    max_ideas: int = Field(default=1, ge=0)
+    """The maximum number of new ideas one sweep may insert, as its brief states it. The seeds it develops do not
+    count. ``low_water`` requests enough sweeps to fill the backlog at this many ideas each. 0 turns ``low_water``
+    off."""
+    incident_prompt: str | None = None
+    """A file that follows ``prompt`` in the brief of an incident sweep, a sweep that got anomalies (the ``anomaly``
+    trigger): a path relative to the repo root, or an absolute path. When unset, a built-in role uses its built-in
+    file (the watchdog's ``watchdog_incident.md``), and another role adds nothing."""
+    routine_prompt: str | None = None
+    """A file that follows ``prompt`` in the brief of every other sweep. When unset, a built-in role uses its built-in
+    file (the watchdog's ``watchdog_progress.md``), and another role adds nothing."""
 
     @model_validator(mode='after')
     def _check(self) -> Self:
@@ -312,9 +331,12 @@ class WatchdogRole(SweepRole):
     """``[roles.watchdog]``: the watchdog investigates the anomalies that the daemon detects and reviews progress."""
 
     PROMPT: ClassVar[str] = 'watchdog.md'
+    INCIDENT_PROMPT: ClassVar[str] = 'watchdog_incident.md'
+    ROUTINE_PROMPT: ClassVar[str] = 'watchdog_progress.md'
 
-    triggers: list[TriggerEntry] = [AnomalyTrigger(), CronTrigger()]
-    """An anomaly requests an incident sweep, and the timer requests a progress review."""
+    triggers: list[TriggerEntry] = [AnomalyTrigger(), CronTrigger(), StoppedTrigger()]
+    """An anomaly requests an incident sweep, the timer requests a progress review, and the campaign's stop requests
+    the closing review."""
     interval: float = Field(default=1800, ge=0)
     """The number of seconds between two progress reviews, counted from the last review. A sweep that investigates an
     anomaly is not a review. 0 turns the reviews off."""
@@ -329,38 +351,13 @@ class WatchdogRole(SweepRole):
     reads the lessons itself before it writes its own."""
 
 
-SCOUT_SEEDS = 3
-"""The number of seeds a scout sweep may file when ``[roles.research.scout] seeds`` is not set."""
-
-
-class Scout(BaseModel):
-    """``[roles.research.scout]``: the scout mode of the research role. It is off when the table is not there.
-
-    Every ``interval`` seconds, a research sweep runs in scout mode (``prompts/research_scout.md``). It states the open
-    problems of the campaign from the evidence, and searches X, GitHub and arXiv for outside techniques that address
-    them. It files at most ``seeds`` of them as seeds, signed ``scout#<worker id>``, and puts the rest in the technique
-    library (the ``techniques`` table). It never files a defined idea. The search tool limits what one sweep spends on
-    xAI (``scripts/xai_search_mcp.py --max-usd``). Scout sweeps stop with all other launches under ``[spend]``.
-
-    Experimental: scout mode.
-    """
-
-    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
-
-    interval: float = Field(gt=0)
-    """The number of seconds between two scout sweeps, counted from the start of the last one. The first sweep counts
-    from the registration of the project."""
-    seeds: int = Field(default=SCOUT_SEEDS, ge=1)
-    """The maximum number of seeds one scout sweep may file. The other techniques it finds go to the library."""
-
-
 class ResearchRole(SweepRole):
-    """``[roles.research]``: research develops seeds, keeps ideas ready for the workers and scouts for techniques."""
+    """``[roles.research]``: research develops seeds and keeps ideas ready for the workers."""
 
     PROMPT: ClassVar[str] = 'research.md'
 
-    triggers: list[TriggerEntry] = [LowWaterTrigger(), SeedTrigger(), ScoutTrigger()]
-    """A short backlog, a new seed, and the scout's timer when ``[roles.research.scout]`` is there."""
+    triggers: list[TriggerEntry] = [LowWaterTrigger(), SeedTrigger()]
+    """A short backlog, and a new seed."""
     writes: list[str] = [
         'seeds via idea develop, or their status to rejected with a note',
         'ideas via idea add',
@@ -376,20 +373,44 @@ class ResearchRole(SweepRole):
     """The maximum number of sweeps that run at the same time, each on the next harness of the rotation. The default
     is 1: sweeps that run at the same time read the same evidence and often duplicate each other, and two of them can
     race to develop the same seed."""
-    max_ideas: int = Field(default=1, ge=0)
-    """The maximum number of new ideas one sweep may insert. The seeds it develops do not count. ``low_water``
-    requests enough sweeps to fill the backlog at this many ideas each. 0 turns ``low_water`` off: research then only
-    develops seeds."""
-    context: list[str] = []
-    """Repo-relative files or globs (for example ``docs/error-analysis-*.md``) that hold the project's analysis:
-    error analyses, comparisons with a reference, evaluation reports. The research pack lists each one with its
-    outline, newest first, so that research reads them before it proposes ideas."""
-    buffer: int = Field(default=2, ge=0)
-    """The number of ready ideas that ``low_water`` keeps in addition to one for each worker slot
-    (``[roles.worker] max_concurrent``). With this backlog, a free slot finds an idea at once and does not wait for a
-    sweep. A larger value makes workers wait less for research, but the ideas they run are older."""
-    scout: Scout | None = None
-    """``[roles.research.scout]``: sweeps that search for outside techniques on a schedule. Off by default."""
+
+
+class ScoutRole(SweepRole):
+    """``[roles.scout]``: the scout files outside techniques as seeds for the measured losses. It is off by default.
+
+    Every ``interval`` seconds, a scout sweep states the open problems of the campaign from the evidence, and searches
+    X, GitHub and arXiv for outside techniques that address them. It files at most ``seeds`` of them as seeds, signed
+    ``scout#<worker id>``, and puts the rest in the technique library (the ``techniques`` table). It never files a
+    defined idea. The search tool limits what one sweep spends on xAI (``scripts/xai_search_mcp.py --max-usd``).
+
+    Experimental: the scout.
+    """
+
+    PROMPT: ClassVar[str] = 'scout.md'
+    IDEAS: ClassVar[str] = (
+        '- File a seed: `{piloop} idea seed {project} "<technique: its mechanism, one line>" --from "<link>; targets'
+        ' <the measured loss it might reduce, with its size>; <its substance: a number, code, an ablation>"`: research'
+        ' develops it into an idea or rejects it with the reason.'
+        '\n- File a technique into the library: `{piloop} sql "INSERT INTO techniques (project_id, title, mechanism,'
+        " url, created_by) VALUES (<project id>, '<technique>', '<mechanism and its substance, one line>', '<link>',"
+        " '<your signature>')\"`."
+    )
+
+    triggers: list[TriggerEntry] = [CronTrigger()]
+    """The timer: a scout sweep every ``interval`` seconds."""
+    interval: float = Field(default=0, ge=0)
+    """The number of seconds between two scout sweeps, counted from the start of the last one. The first sweep counts
+    from the registration of the project. 0 (the default) turns the scout off."""
+    seeds: int = Field(default=3, ge=1)
+    """The maximum number of seeds one scout sweep may file. The other techniques it finds go to the library."""
+    writes: list[str] = [
+        'seeds via idea seed (at most the count under Context)',
+        'techniques (the library), by INSERT',
+        'one comments(finding) on the project',
+    ]
+    """What a scout sweep may write, as its brief states it."""
+    timeout: float = 900
+    """The number of seconds one sweep may run before it is stopped."""
 
 
 class Stop(BaseModel):
@@ -398,8 +419,9 @@ class Stop(BaseModel):
     The daemon checks the conditions on every tick, before it requests anything. When one holds, the project is
     ``stopped`` (``projects.status``, ``stopped_reason``). Running workers are told to commit and stop, and are ended
     10 minutes later. What they committed is scored. Pending requests and queued runs are dropped
-    (``campaign stopped``). One last watchdog sweep is requested, and the triggers request nothing more. An agent that
-    you request with ``piloop launch`` after the stop still starts.
+    (``campaign stopped``). The ``stopped`` triggers fire once, which by default requests the watchdog's closing
+    review, and the triggers request nothing more. An agent that you request with ``piloop launch`` after the stop
+    still starts.
 
     ``piloop init`` resumes a stopped project when this table changed.
     """
@@ -513,6 +535,8 @@ class Roles(BaseModel):
     """``[roles.watchdog]``."""
     research: ResearchRole = ResearchRole()
     """``[roles.research]``."""
+    scout: ScoutRole = ScoutRole()
+    """``[roles.scout]``."""
 
     @model_validator(mode='after')
     def _check(self) -> Self:
@@ -522,18 +546,17 @@ class Roles(BaseModel):
                     f'{name!r} is not a role name: use lowercase letters, digits, _ and - ({ROLE_NAME}), and none of'
                     f' {sorted(RESERVED_NAMES)}'
                 )
-        for name, role in self.sweeping().items():
-            for trigger in role.triggers:
-                if trigger.ROLE is not None and name != trigger.ROLE:
-                    raise ValueError(
-                        f'[roles.{name}] has the {trigger.kind} trigger, which only {trigger.ROLE} may have'
-                    )
         return self
 
     def sweeping(self) -> dict[str, SweepRole]:
-        """The sweeping roles by name: the watchdog, research, then the sweeping roles of the file in its order."""
+        """The sweeping roles by name: the built-in ones, then the sweeping roles of the file in its order."""
         mine = {name: role for name, role in self.__pydantic_extra__.items() if isinstance(role, SweepRole)}
-        return {WorkerKind.WATCHDOG: self.watchdog, WorkerKind.RESEARCH: self.research, **mine}
+        return {
+            WorkerKind.WATCHDOG: self.watchdog,
+            WorkerKind.RESEARCH: self.research,
+            WorkerKind.SCOUT: self.scout,
+            **mine,
+        }
 
     def doing_runs(self) -> dict[str, WorkerRole]:
         """The roles that do runs by name, in the order in which they fill their slots.
@@ -549,6 +572,7 @@ class Roles(BaseModel):
             WorkerKind.WORKER: self.worker,
             WorkerKind.WATCHDOG: self.watchdog,
             WorkerKind.RESEARCH: self.research,
+            WorkerKind.SCOUT: self.scout,
             **self.__pydantic_extra__,
         }
 
@@ -610,11 +634,15 @@ class ProjectConfig(BaseModel):
     evaluate_timeout: float = 600
     """The number of seconds before the evaluate command is stopped. The evaluation is then a crash."""
     roles: Roles = Roles()
-    """The settings of each role (``[roles.worker]``, ``[roles.watchdog]``, ``[roles.research]``), and the roles that
-    you define (``[roles.<name>]``)."""
+    """The settings of each role (``[roles.worker]``, ``[roles.watchdog]``, ``[roles.research]``, ``[roles.scout]``),
+    and the roles that you define (``[roles.<name>]``)."""
     link: list[str] = []
     """Repo-relative paths, ignored by git, that piloop symlinks into every worktree, for example data or virtual
     environments."""
+    context: list[str] = []
+    """Repo-relative files or globs (for example ``docs/error-analysis-*.md``) that hold the project's analysis:
+    error analyses, comparisons with a reference, evaluation reports. The research pack lists each one with its
+    outline, newest first, so that every sweep that reads the pack reads them before it proposes work."""
     mcp: dict[ServerName, McpServer] = {}
     """``[mcp.<name>]``: the MCP servers that a role can list in ``[roles.<name>] mcp``."""
     stop: Stop = Stop()
@@ -637,7 +665,7 @@ class ProjectConfig(BaseModel):
             self._check_mcp(name)
         addenda = [a for role in roles.values() if (a := role.addendum) is not None]
         addenda += [t.addendum for t in self.tracks.values() if t.addendum is not None]
-        for rel in [*self.link, *addenda, *self.roles.research.context]:
+        for rel in [*self.link, *addenda, *self.context]:
             if Path(rel).is_absolute() or '..' in Path(rel).parts:
                 raise ValueError(f'{rel!r} must be a relative path inside the repo')
         return self
@@ -844,6 +872,14 @@ def with_registered_roles(raw: dict[str, object]) -> None:
     raw['roles'] = merged
 
 
+def prompt_files(role: RoleConfig) -> dict[str, str]:
+    """Return the prompt files that a role's table sets, by key: ``prompt``, and a sweep's two prompts."""
+    keys = {'prompt': role.prompt}
+    if isinstance(role, SweepRole):
+        keys |= {'incident_prompt': role.incident_prompt, 'routine_prompt': role.routine_prompt}
+    return {key: rel for key, rel in keys.items() if rel is not None}
+
+
 def load_project_config(project: Path, **overrides: object) -> ProjectConfig:
     """Load ``<project>/piloop.toml``.
 
@@ -885,9 +921,10 @@ def load_project_config(project: Path, **overrides: object) -> ProjectConfig:
     except ValidationError as e:
         raise ConfigError(explain(toml, e)) from e
     missing = [
-        f'  roles.{name}.prompt = {role.prompt!r}: no such file. Fix: create it, or correct the path'
+        f'  roles.{name}.{key} = {rel!r}: no such file. Fix: create it, or correct the path'
         for name, role in cfg.roles.all().items()
-        if role.prompt is not None and not (project / role.prompt).is_file()
+        for key, rel in prompt_files(role).items()
+        if not (project / rel).is_file()
     ]
     if missing:
         raise ConfigError('\n'.join([f'{toml} is not a valid piloop config ({len(missing)} problem(s)):', *missing]))

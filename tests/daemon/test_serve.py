@@ -21,6 +21,7 @@ from piloop.daemon.serve import (
     SecretsError,
     _mtime_ns,
     acquire,
+    carried_env,
     restart,
     running_pid,
     secrets,
@@ -28,8 +29,10 @@ from piloop.daemon.serve import (
 )
 from piloop.db.models import Idea, Run, RunStatus, Worker, WorkerState
 from piloop.db.session import Database, migrate
+from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.proc import child_env
 from piloop.settings import Settings
+from piloop.usage import UsageSpec
 from tests.conftest import HARNESS_SLEEPS, hold_lock, register, wait_for_worker_handle, write_toml
 
 PILOOP = [sys.executable, '-m', 'piloop']
@@ -258,6 +261,9 @@ def test_acquire_creates_a_private_home_and_overwrites_a_stale_file(tmp_path: Pa
     os.close(fd)
 
 
+BUILT_IN = list(DEFAULT_HARNESSES.values())
+
+
 def clear_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove the variables that a service unit carries, so that the shell of the test run does not leak in."""
     for key in os.environ:
@@ -268,13 +274,15 @@ def clear_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_service_unit_texts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     clear_settings_env(monkeypatch)
     cfg = Settings(home=tmp_path)
-    unit = service_unit(cfg, 'linux')
+    unit = service_unit(cfg, BUILT_IN, 'linux')
     assert f'ExecStart={sys.executable} -m piloop serve' in unit
     assert 'Restart=on-failure' in unit and f'Environment="PILOOP_HOME={tmp_path}"' in unit
     assert f'Environment="PATH={os.environ["PATH"]}"' in unit
     awkward = Settings(home=tmp_path / 'my "home" 50% back\\slash')
-    assert f'Environment="PILOOP_HOME={tmp_path}/my \\"home\\" 50%% back\\\\slash"' in service_unit(awkward, 'linux')
-    plist = plistlib.loads(service_unit(cfg, 'darwin').encode())
+    assert f'Environment="PILOOP_HOME={tmp_path}/my \\"home\\" 50%% back\\\\slash"' in service_unit(
+        awkward, BUILT_IN, 'linux'
+    )
+    plist = plistlib.loads(service_unit(cfg, BUILT_IN, 'darwin').encode())
     assert plist == {
         'Label': 'dev.piloop.serve',
         'ProgramArguments': SERVE_ARGV,
@@ -309,16 +317,29 @@ def test_the_service_unit_carries_the_settings_of_the_shell_and_no_other_variabl
     for key, value in (carried | dropped).items():
         monkeypatch.setenv(key, value)
     cfg = Settings(home=tmp_path)
-    env = plistlib.loads(service_unit(cfg, 'darwin').encode())['EnvironmentVariables']
+    env = plistlib.loads(service_unit(cfg, BUILT_IN, 'darwin').encode())['EnvironmentVariables']
     assert list(env) == ['PILOOP_HOME', 'PATH', *sorted(carried)]
     assert env == {'PILOOP_HOME': str(tmp_path), 'PATH': os.environ['PATH'], **carried}, (
         "the daemon needs piloop's settings; it must not sign as an agent or get a key that the shell happens to hold"
     )
-    unit = service_unit(cfg, 'linux')
+    unit = service_unit(cfg, BUILT_IN, 'linux')
     assert 'Environment="PILOOP_SECRETS_COMMAND=op inject -i \'%%h/keys\'"' in unit
     assert 'Environment="PILOOP_HERDR_SESSION=my <session> & \\"co\\""' in unit
     assert 'Environment="CODEX_HOME=/home/me/100%% codex"' in unit
     assert not any(key in unit for key in dropped)
+
+
+def test_the_service_unit_carries_the_variables_that_the_usage_globs_of_the_harnesses_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clear_settings_env(monkeypatch)
+    for key in ('CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'MINE_HOME', 'NOT_NAMED'):
+        monkeypatch.setenv(key, f'/somewhere/{key}')
+    usage = UsageSpec(file='{env:MINE_HOME:~/.mine}/{session_id}.jsonl', tally='pi')
+    mine = Harness(executable='mine', headless=['{prompt}', '{session_id}'], usage=usage)
+    assert carried_env([mine]) == ('OTEL_EXPORTER_OTLP_ENDPOINT', 'MINE_HOME')
+    env = plistlib.loads(service_unit(Settings(home=tmp_path), [*BUILT_IN, mine], 'darwin').encode())
+    assert list(env['EnvironmentVariables']) == ['PILOOP_HOME', 'PATH', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'MINE_HOME']
 
 
 def test_the_secrets_command_prints_name_value_lines() -> None:

@@ -1,5 +1,6 @@
 """The schema at head: what the migrations create, that models and migrations agree, and that 0001 upgrades to head."""
 
+import json
 import sqlite3
 import threading
 import time
@@ -15,9 +16,11 @@ from git import Repo
 from sqlalchemy import create_engine
 from sqlalchemy.exc import IntegrityError
 
+from piloop.config import ProjectConfig
 from piloop.db.models import Idea, Project
 from piloop.db.session import MIGRATIONS, Database, SchemaAhead, migrate, revision
 from piloop.db.triggers import PERSISTENT
+from piloop.db.triggers.roles import known_role
 
 INBOX = 'ix_comments_inbox'
 INBOX_WHERE = 'priority IS NOT NULL AND acked_at IS NULL'
@@ -412,3 +415,97 @@ def test_0010_marks_the_runs_that_a_stopped_daemon_was_scoring_and_checks_the_fl
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert 'scoring' not in [c for (_, c, *_) in con.execute('PRAGMA table_info(runs)')]
         assert con.execute('SELECT count(*) FROM runs').fetchone() == (4,)
+
+
+STORED_0005 = Path(__file__).parent.parent / 'fixtures' / 'config_0005.json'
+"""A ``projects.config`` as piloop stored it at revision 0005: every key dumped, a scout table under research."""
+
+
+def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgrades(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0010')
+    kinds = 'SELECT kind FROM workers ORDER BY id'
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute('INSERT INTO projects (name, path, config) VALUES (?, ?, ?)', ('p', '/p', STORED_0005.read_text()))
+        con.execute("INSERT INTO projects (name, path, config) VALUES ('q', '/q', '{}')")
+        released = json.dumps({'roles': {'research': {'buffer': 3}}})
+        con.execute("INSERT INTO projects (name, path, config) VALUES ('r', '/r', ?)", (released,))
+        con.execute("INSERT INTO workers (kind, project_id) VALUES ('research', 1), ('research', 1)")
+        con.execute(
+            "INSERT INTO events (kind, actor, target_kind, target_id) VALUES ('scout.requested', 'h', 'worker', 2)"
+        )
+    command.upgrade(cfg, '0011')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute(kinds).fetchall() == [('research',), ('scout',)]
+        stored = [json.loads(c) for (c,) in con.execute('SELECT config FROM projects ORDER BY id')]
+        assert stored[1] == {}, 'a config without the keys is left as it is'
+        assert stored[2] == {
+            'roles': {'research': {'triggers': [{'kind': 'low_water', 'buffer': 3}, {'kind': 'seed'}]}}
+        }, "a release's config has no triggers: research's defaults, with its buffer"
+        p = ProjectConfig.model_validate(stored[0])
+        assert (p.roles.scout.interval, p.roles.scout.seeds) == (86400, 4)
+        assert (p.roles.scout.mcp, p.roles.scout.timeout, p.roles.scout.addendum) == (['xai'], 1200, 'research.md'), (
+            'the keys of research that the scout used'
+        )
+        assert [t.model_dump() for t in p.roles.research.triggers] == [
+            {'kind': 'low_water', 'buffer': 5},
+            {'kind': 'seed'},
+        ], 'the scout trigger leaves, and the buffer moves into low_water'
+        assert p.roles.research.max_ideas == 2
+        assert p.context == ['docs/analysis-*.md'], 'research context is the project context'
+        usage = p.harness['mine'].usage
+        assert usage is not None and usage.file == '{env:CLAUDE_CONFIG_DIR:~/.claude}/projects/{cwd}/{session_id}.jsonl'
+        assert [t.kind for t in p.roles.watchdog.triggers] == ['anomaly', 'cron', 'stopped'], 'the closing review stays'
+        con.execute("INSERT INTO workers (kind, project_id) VALUES ('scout', 2)")
+        sql = con.execute("SELECT sql FROM sqlite_master WHERE name = 'workers_kind'").fetchone()[0]
+        assert sql + ';' == known_role().sql()
+        triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
+        assert triggers == sorted(t.name for t in PERSISTENT)
+    command.downgrade(cfg, '0010')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute(kinds).fetchall() == [('research',), ('research',), ('research',)]
+        scouts = "SELECT target_id FROM events WHERE kind = 'scout.requested' ORDER BY target_id"
+        assert con.execute(scouts).fetchall() == [(2,), (3,)], 'every scout row is a scout sweep of research again'
+        with pytest.raises(sqlite3.IntegrityError, match='workers.kind must be a role of the project'):
+            con.execute("INSERT INTO workers (kind, project_id) VALUES ('scout', 2)")
+
+
+def test_0012_leaves_the_cached_input_out_of_the_input_of_codex_rows_and_downgrades(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0011')
+    usage = {'input': 100, 'output': 5, 'cache_read': 60, 'cache_write': 0, 'total': 105, 'turns': 1}
+    rollout = '/h/.codex/sessions/2026/01/01/rollout-2026-01-01T00-00-00-x.jsonl'
+    rows = [
+        ('codex', usage | {'source': rollout}),
+        ('claude', usage | {'source': '/h/.claude/projects/-wt/x.jsonl'}),
+        ('mine', usage | {'source': '/h/.mine/x.jsonl'}),
+        ('gone', usage | {'source': rollout}),
+        ('gone', usage | {'source': '/h/elsewhere/x.jsonl'}),
+        ('notes', usage | {'source': rollout}),
+    ]
+    harness = {
+        'mine': {'executable': 'mine', 'headless': [], 'usage': {'file': '/h/.mine/*.jsonl', 'tally': 'codex'}},
+        'notes': {'executable': 'notes', 'headless': [], 'usage': {'file': '/h/rollout-*.jsonl', 'tally': 'pi'}},
+    }
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute(
+            "INSERT INTO projects (name, path, config) VALUES ('p', '/p', ?)", (json.dumps({'harness': harness}),)
+        )
+        for name, row in rows:
+            con.execute(
+                "INSERT INTO workers (kind, project_id, harness, usage) VALUES ('worker', 1, ?, ?)",
+                (name, json.dumps(row)),
+            )
+        con.execute("INSERT INTO workers (kind, project_id) VALUES ('worker', 1)")
+    inputs = "SELECT json_extract(usage, '$.input'), json_extract(usage, '$.total') FROM workers ORDER BY id"
+    command.upgrade(cfg, '0012')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert [i for i, _ in con.execute(inputs)] == [40, 100, 40, 40, 100, 100, None], (
+            'by the tally of the harness in the stored config or built in, else by a rollout file'
+        )
+        assert {total for _, total in con.execute(inputs)} == {105, None}, 'total stays'
+    command.downgrade(cfg, '0011')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert [i for i, _ in con.execute(inputs)] == [100, 100, 100, 100, 100, 100, None]

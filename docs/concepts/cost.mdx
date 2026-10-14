@@ -24,7 +24,8 @@ Code, Codex and pi, and does not need Entire. piloop writes the totals to `worke
 max_tokens = 50_000_000
 ```
 
-The token counts of different harnesses are not directly comparable. For Codex, `input` includes `cache_read`.
+For every harness, `input` is the input that the prompt cache did not serve, and `cache_read` and `cache_write` are
+the cached input. `total` is the harness's own count of the session's tokens.
 
 ## Stop conditions
 
@@ -43,9 +44,9 @@ The `[stop]` table ends the campaign when one of its conditions holds:
 {/* End of the generated part: stop. */}
 
 When a condition holds, the project becomes `stopped`. The daemon tells the running workers to commit and stop, and
-ends them 10 minutes later. It scores what they committed. It drops the queued runs and the requested agents, and
-asks for one last watchdog review that writes the closing report. The triggers request nothing more, but an agent that
-you request with `piloop launch` still starts. Without a `[stop]` table, the campaign has no end. `piloop stop` stops
+ends them 10 minutes later. It scores what they committed. It drops the queued runs and the requested agents. Then
+the `stopped` triggers fire once: by default, the watchdog's closing review, which writes the closing report. The
+triggers request nothing more, but an agent that you request with `piloop launch` still starts. Without a `[stop]` table, the campaign has no end. `piloop stop` stops
 the daemon, not the campaign.
 
 To resume a stopped project, change its `[stop]` table and run `piloop init`.

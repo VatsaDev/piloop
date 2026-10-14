@@ -157,6 +157,7 @@ class WorkerKind(StrEnum):
     WORKER = 'worker'
     WATCHDOG = 'watchdog'
     RESEARCH = 'research'
+    SCOUT = 'scout'
 
 
 class WorkerState(StrEnum):
@@ -786,9 +787,9 @@ class Worker(Tracked, Base):
     """The tokens the agent spent, added up from the harness's own session file when the agent ended:
     ``{"input", "output", "cache_read", "cache_write", "total", "turns", "source"}``. ``total`` is what the harness
     itself counts as the session's tokens (sum ``json_extract(usage, '$.total')`` for the spend). ``turns`` is the
-    number of model responses, and ``source`` is the file that was read. The cache fields follow the harness:
-    Anthropic's ``input`` does not include cached tokens, and Codex's does. NULL while the agent runs, or when no
-    session file was found (``worker.usage_unknown``)."""
+    number of model responses, and ``source`` is the file that was read. For every harness, ``input`` is the uncached
+    input, and ``cache_read`` and ``cache_write`` the input read from and written to the prompt cache. NULL while the
+    agent runs, or when no session file was found (``worker.usage_unknown``)."""
 
 
 class Event(Base):

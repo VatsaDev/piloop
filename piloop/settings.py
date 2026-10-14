@@ -1,21 +1,21 @@
-"""Process-wide settings. Every environment variable piloop reads is declared here.
+"""Process-wide settings. Every environment variable piloop reads is declared here, or named by a placeholder.
 
 Also read from ``<PILOOP_HOME>/config.toml``, the global settings file (``[storage]``, say); an environment variable
-wins over the file, and a nested key is ``PILOOP_<TABLE>__<KEY>`` (``PILOOP_STORAGE__MIN_FREE_GB``).
+wins over the file, and a nested key is ``PILOOP_<TABLE>__<KEY>`` (``PILOOP_STORAGE__MIN_FREE_GB``). A
+``{env:NAME:default}`` placeholder in a value of ``piloop.toml`` (a usage glob) reads ``NAME`` when piloop fills it
+in (``expand_env``).
 """
 
 import os
+import re
+import tomllib
 from pathlib import Path
 from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from pydantic_settings import (
-    BaseSettings,
-    InitSettingsSource,
-    PydanticBaseSettingsSource,
-    SettingsConfigDict,
-    TomlConfigSettingsSource,
-)
+from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
+
+from piloop import deprecated
 
 DEFAULT_HOME = Path.home() / '.piloop'
 CONFIG_FILE = 'config.toml'
@@ -85,47 +85,6 @@ class Settings(BaseSettings):
     """The number of seconds between two ticks. On each tick, the daemon checks the triggers of every project and
     launches the requested workers."""
 
-    herdr_session: str = 'piloop'
-    """The name of the Herdr session that piloop owns. It has one workspace for each project, and every agent that
-    piloop starts runs there, never in the session you use for other work. ``piloop attach`` attaches a terminal to
-    it. piloop starts its server when it first needs it."""
-
-    herdr_socket_path: str | None = Field(default=None, validation_alias='HERDR_SOCKET_PATH')
-    """The socket of the Herdr session that this process runs in. Herdr sets it in every pane it manages.
-    ``piloop attach`` reads it to tell whether it already runs inside the piloop session."""
-
-    herdr_server_start_seconds: float = 10
-    """The number of seconds to wait for the Herdr server of the piloop session to answer after piloop starts it."""
-
-    herdr_start_timeout_seconds: float = 60
-    """The number of seconds Herdr may take to detect an agent that just started."""
-
-    herdr_cli_timeout_seconds: float = 30
-    """The timeout in seconds of one ``herdr`` CLI call, in addition to any wait that the call itself does."""
-
-    herdr_unavailable_seconds: float = 300
-    """The number of seconds to keep retrying a read of the Herdr server that does not answer (``server_unavailable``,
-    or a ``herdr`` call that times out) before the read fails. A loaded host can stall the server for a while, and a
-    failed read of a working agent ends it. Calls that change something (a prompt, keys, a new tab) are never retried,
-    because the server may have applied them."""
-
-    herdr_prompt_pickup_seconds: float = 5
-    """The number of seconds to wait for an idle agent to start working again after piloop prompts it to resume, and
-    for Herdr to report the session id of a started agent. The first prompt has ``herdr_startup_grace_seconds``."""
-
-    herdr_startup_grace_seconds: float = 60
-    """The number of seconds an agent has to start its first turn after its brief is submitted.
-
-    Within it, an agent whose state has not changed yet is still starting, not a lost prompt, and a quiet idle screen
-    is not a finished turn: under load a TUI can take many seconds to show that it took the brief. After it, a brief
-    that was never picked up is lost, and an agent that never worked counts as failed to start."""
-
-    herdr_shell_ready_seconds: float = 10
-    """The number of seconds to retry ``agent start`` while the shell of a new tab is still starting."""
-
-    herdr_wait_chunk_seconds: float = 10
-    """The longest ``agent wait`` call, in seconds. piloop notices a worker whose tab was closed within this time."""
-
     secrets_command: str | None = None
     """A shell command that prints ``NAME=value`` lines: the API keys that the ``[mcp.<name>]`` servers name, from
     wherever you keep them. The daemon runs it when it starts and on every ``piloop restart``. The keys go into the
@@ -147,21 +106,16 @@ class Settings(BaseSettings):
     debug: bool = False
     """Show the full traceback of an unexpected error in the CLI, instead of a short message."""
 
-    claude_config_dir: Path = Field(default=Path.home() / '.claude', validation_alias='CLAUDE_CONFIG_DIR')
-    """The config directory of Claude Code (its own ``CLAUDE_CONFIG_DIR``, with the same default). piloop installs the
-    orchestrator skills in its ``skills/`` directory, and reads the token usage of Claude Code agents from its
-    ``projects/`` directory."""
-
-    codex_home: Path = Field(default=Path.home() / '.codex', validation_alias='CODEX_HOME')
-    """The home directory of Codex (its own ``CODEX_HOME``, with the same default). piloop reads the token usage of
-    Codex agents from its ``sessions/`` directory."""
-
     agent_skills_dir: Path = Path.home() / '.agents' / 'skills'
     """The user directory of Agent Skills, which Codex, pi, Gemini CLI and Cursor read. piloop installs the orchestrator
     skills there for them."""
 
     storage: StorageSettings = StorageSettings()
     """``[storage]`` in ``config.toml``: where archived workspace files go."""
+
+    runtimes: dict[str, dict[str, object]] = {}
+    """``[runtimes.<name>]`` in ``config.toml``: the settings of a runtime, which the runtime's own settings class
+    reads and checks (``piloop.runtime.herdr.HerdrSettings``, say)."""
 
     @classmethod
     def settings_customise_sources(
@@ -174,8 +128,8 @@ class Settings(BaseSettings):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         """Arguments, then the environment, then ``config.toml`` under the home the arguments or environment name."""
         given = init_settings.init_kwargs.get('home') if isinstance(init_settings, InitSettingsSource) else None
-        home = Path(given or os.environ.get('PILOOP_HOME', DEFAULT_HOME))
-        return init_settings, env_settings, TomlConfigSettingsSource(settings_cls, toml_file=home / CONFIG_FILE)
+        home = Path(given) if given else home_of_env()
+        return init_settings, env_settings, InitSettingsSource(settings_cls, config_file(home))
 
     @property
     def store_dir(self) -> Path:
@@ -206,4 +160,43 @@ class Settings(BaseSettings):
         return self.home / 'serve.log'
 
 
+def home_of_env() -> Path:
+    """Return the piloop home that the environment names (``PILOOP_HOME``), else the default."""
+    return Path(os.environ.get('PILOOP_HOME', DEFAULT_HOME))
+
+
+def config_file(home: Path) -> dict[str, object]:
+    """Return the parsed ``config.toml`` under ``home``, its deprecated keys bridged, or nothing without the file."""
+    path = home / CONFIG_FILE
+    if not path.is_file():
+        return {}
+    raw = tomllib.loads(path.read_text())
+    deprecated.bridge(path, raw, deprecated.CONFIG_BRIDGES)
+    return raw
+
+
+def runtime_settings(name: str) -> dict[str, object]:
+    """Return the ``[runtimes.<name>]`` table of the ``config.toml`` under the home that the environment names."""
+    table = config_file(home_of_env()).get('runtimes', {})
+    found = table.get(name, {}) if isinstance(table, dict) else {}
+    return found if isinstance(found, dict) else {}
+
+
 settings = Settings()
+
+ENV_PLACEHOLDER = re.compile(r'\{env:(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?::(?P<default>[^}]*))?\}')
+"""``{env:NAME:default}``: the value of the environment variable ``NAME``, or ``default`` when it is unset or empty."""
+
+
+def expand_env(text: str) -> str:
+    """Fill in the ``{env:NAME:default}`` placeholders of ``text``. A default that starts with ``~`` is in the home."""
+
+    def value(m: re.Match[str]) -> str:
+        return os.environ.get(m['name']) or os.path.expanduser(m['default'] or '')
+
+    return ENV_PLACEHOLDER.sub(value, text)
+
+
+def env_names(text: str) -> list[str]:
+    """Return the environment variables that the placeholders of ``text`` name, once each, in order."""
+    return list(dict.fromkeys(m['name'] for m in ENV_PLACEHOLDER.finditer(text)))

@@ -64,6 +64,22 @@ def fill(template: str, **values: str) -> str:
     return template
 
 
+class QueueKey(BaseModel):
+    """``queue_key``: the key that queues a typed message for the end of the agent's turn.
+
+    The message is typed into the composer, then the key is pressed. A harness that reads a burst of input as a paste
+    swallows a key that arrives inside the burst, so the key waits until the text is drawn, and is pressed again while
+    ``pending`` is still at the bottom of the screen, which shows that the agent did not take it yet.
+    """
+
+    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    key: str
+    """The key, as ``herdr agent send-keys`` names it, for example ``tab``."""
+    pending: str
+    """Text at the bottom of the screen while the composer still holds the typed message."""
+
+
 class Harness(BaseModel):
     """``[harness.<name>]``: how to launch one coding agent.
 
@@ -99,6 +115,18 @@ class Harness(BaseModel):
     startup_dialogs: list[tuple[str, list[str]]] = []
     """The dialogs the agent shows when it first starts in a new directory, in the order they appear. Each entry is
     the text to look for on the screen and the keys that accept the dialog."""
+    busy_screens: list[str] | None = None
+    """For an interactive runtime: texts at the bottom of a still screen that show that the agent works while the
+    runtime reads it as idle, for example a prompt that the agent holds in its queue, or a retry of the API. When
+    unset, those of the built-in harness with the same ``executable``, so an override of ``claude`` keeps them."""
+    failed_turn_screens: list[str] | None = None
+    """For an interactive runtime: texts at the bottom of the screen that show that the turn ended on an API error, not
+    because the agent was done. The agent is then resumed. When unset, those of the built-in harness with the same
+    ``executable``."""
+    queue_key: QueueKey | None = None
+    """For an interactive runtime: how to queue a message for the end of the agent's turn, for a harness that ends its
+    turn to take a message submitted while it works. When unset, the queue key of the built-in harness with the same
+    ``executable``, if it has one; else the message is submitted, and the agent queues it by itself."""
     entire_agent: str | None = None
     """Entire's name for this agent, as ``entire agent list`` shows it. When it is set and ``entire`` is installed,
     the agent's session is attached to Entire as a checkpoint when the agent ends. When unset, the session is not
@@ -125,6 +153,17 @@ class Harness(BaseModel):
         if self.mcp is None or MCP not in argv:
             return f'it takes no MCP servers in its {invocation} argv; give it mcp = "<renderer>" and a {MCP} element'
         return RENDERERS[self.mcp].refuses(argv)
+
+    @property
+    def screens(self) -> tuple[tuple[str, ...], tuple[str, ...], QueueKey | None]:
+        """The ``busy_screens``, ``failed_turn_screens`` and ``queue_key`` in use.
+
+        Each one that this definition leaves unset comes from the built-in harness with the same ``executable``.
+        """
+        built_in = next((h for h in DEFAULT_HARNESSES.values() if h.executable == self.executable), self)
+        busy = self.busy_screens if self.busy_screens is not None else built_in.busy_screens
+        failed = self.failed_turn_screens if self.failed_turn_screens is not None else built_in.failed_turn_screens
+        return tuple(busy or ()), tuple(failed or ()), self.queue_key or built_in.queue_key
 
     @property
     def captures_session(self) -> bool:
@@ -241,9 +280,17 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
             '{prompt}',
         ],
         startup_dialogs=[('trust this folder', ['down', 'enter'])],
+        # Herdr reads Claude Code's state from the title spinner only, which stops while it holds a queued prompt,
+        # waits to retry the API (``Retrying in 0s`` can hold still) or thinks at length with no timer on screen.
+        # A ``503 included_quota_unknown`` is a busy screen while the retries count down, and a failed turn after.
+        # TODO: remove a busy screen once Herdr detects that state for Claude Code.
+        busy_screens=['Press up to edit queued messages', 'Waiting for API response', 'Retrying in', '… (thinking'],
+        failed_turn_screens=['API Error', 'included_quota_unknown'],
         entire_agent='claude-code',
         usage=UsageSpec(
-            file='{claude_config_dir}/projects/{cwd}/{session_id}.jsonl', cwd='dash_non_alnum', tally='claude'
+            file='{env:CLAUDE_CONFIG_DIR:~/.claude}/projects/{cwd}/{session_id}.jsonl',
+            cwd='dash_non_alnum',
+            tally='claude',
         ),
         mcp='claude',
     ),
@@ -307,10 +354,24 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
             ('Press t to trust all', ['t']),
             ('Hooks need review', ['down', 'enter']),
         ],
+        # Codex holds a prompt submitted before its app server is up under "Waiting for startup", which can take 25 s
+        # or more on a loaded host, and Herdr reports idle for all of it. TODO: remove it once Herdr detects that state.
+        busy_screens=['Waiting for startup'],
+        failed_turn_screens=[
+            'Selected model is at capacity',
+            'exceeded retry limit',
+            'stream disconnected before completion',
+            'unsupported websocket request type',
+        ],
+        # Codex ends its turn to take a message submitted with Enter mid-turn: it sends ``response.interrupt``, which
+        # its websocket backend refuses with ``400 unsupported websocket request type``, and the turn is lost. Its
+        # ``composer.queue`` key, Tab, queues the message as a follow-up that Codex submits when the turn ends, and
+        # sends it at once when Codex is idle (verified with codex-cli 0.162.1 under Herdr 0.8.2).
+        queue_key=QueueKey(key='tab', pending='tab to queue message'),
         entire_agent='codex',
         session_id_pattern=r'"thread_id":"([0-9a-f-]{36})"',
         # codex files its sessions by date, not by cwd; the thread id in the file name finds the file
-        usage=UsageSpec(file='{codex_home}/sessions/*/*/*/rollout-*-{session_id}.jsonl', tally='codex'),
+        usage=UsageSpec(file='{env:CODEX_HOME:~/.codex}/sessions/*/*/*/rollout-*-{session_id}.jsonl', tally='codex'),
         mcp='codex',
     ),
 }

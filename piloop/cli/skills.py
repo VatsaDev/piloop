@@ -11,13 +11,13 @@ import shutil
 from collections.abc import Callable
 from pathlib import Path
 
-from piloop.settings import Settings
+from piloop.settings import Settings, expand_env
 
 PREFIX = 'piloop-'
 """Every skill that piloop ships is named ``piloop-*``. A directory with this prefix in a skills directory is piloop's.
 """
 SKILL_DIRS: dict[str, Callable[[Settings], Path]] = {
-    'claude': lambda s: s.claude_config_dir / 'skills',
+    'claude': lambda _: Path(expand_env('{env:CLAUDE_CONFIG_DIR:~/.claude}/skills')),
     'codex': lambda s: s.agent_skills_dir,
     'pi': lambda s: s.agent_skills_dir,
     'gemini': lambda s: s.agent_skills_dir,

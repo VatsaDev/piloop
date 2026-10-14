@@ -30,8 +30,9 @@ section.
 | `harness` | dict\[string, [Harness](#harness)\] | `{}` | Harness definitions by name: overrides of the built-in harnesses, or new ones. |
 | `max_concurrent` | dict\[string, integer\] | `{}` | The maximum number of agents of one harness, across all roles of the project, that are started or queued to start. Example: `{claude = 2}` when the provider of its model limits the request rate. When it is the turn of a harness at its limit, the slot goes to the next harness of the rotation. An idea or request that pins that harness waits. When unset, only the limits of the roles apply. |
 | `evaluate_timeout` | number | `600` | The number of seconds before the evaluate command is stopped. The evaluation is then a crash. |
-| `roles` | [Roles](#roles) | `{}` | The settings of each role (`[roles.worker]`, `[roles.watchdog]`, `[roles.research]`), and the roles that you define (`[roles.<name>]`). |
+| `roles` | [Roles](#roles) | `{}` | The settings of each role (`[roles.worker]`, `[roles.watchdog]`, `[roles.research]`, `[roles.scout]`), and the roles that you define (`[roles.<name>]`). |
 | `link` | list\[string\] | `[]` | Repo-relative paths, ignored by git, that piloop symlinks into every worktree, for example data or virtual environments. |
+| `context` | list\[string\] | `[]` | Repo-relative files or globs (for example `docs/error-analysis-*.md`) that hold the project's analysis: error analyses, comparisons with a reference, evaluation reports. The research pack lists each one with its outline, newest first, so that every sweep that reads the pack reads them before it proposes work. |
 | `mcp` | dict\[string, [McpServer](#mcpserver)\] | `{}` | `[mcp.<name>]`: the MCP servers that a role can list in `[roles.<name>] mcp`. |
 | `stop` | [Stop](#stop) | `{}` | `[stop]`: conditions that end the campaign. None by default. |
 | `spend` | [Spend](#spend) \| null | `null` | `[spend]`: a hard budget on what the campaign spends outside piloop. None by default. |
@@ -90,10 +91,26 @@ read the tokens the agent spent.
 | `headless` | list\[string\] | required | The arguments for a run without a terminal, for a runtime whose `invocation` is `headless`. Must include `{prompt}`. |
 | `resume` | list\[string\] | `[]` | The arguments that continue the session of a run without a terminal with a new prompt, for a `headless` runtime. When the agent's turn ends with messages queued for it (comments, `piloop prompt`), the runtime runs the harness again with these, `{prompt}` being the messages and `{session_id}` the session's id. Must include both. When empty, the agent takes no message while it runs. |
 | `startup_dialogs` | list\[tuple\[string, list\[string\]\]\] | `[]` | The dialogs the agent shows when it first starts in a new directory, in the order they appear. Each entry is the text to look for on the screen and the keys that accept the dialog. |
+| `busy_screens` | list\[string\] \| null | `null` | For an interactive runtime: texts at the bottom of a still screen that show that the agent works while the runtime reads it as idle, for example a prompt that the agent holds in its queue, or a retry of the API. When unset, those of the built-in harness with the same `executable`, so an override of `claude` keeps them. |
+| `failed_turn_screens` | list\[string\] \| null | `null` | For an interactive runtime: texts at the bottom of the screen that show that the turn ended on an API error, not because the agent was done. The agent is then resumed. When unset, those of the built-in harness with the same `executable`. |
+| `queue_key` | [QueueKey](#queuekey) \| null | `null` | For an interactive runtime: how to queue a message for the end of the agent's turn, for a harness that ends its turn to take a message submitted while it works. When unset, the queue key of the built-in harness with the same `executable`, if it has one; else the message is submitted, and the agent queues it by itself. |
 | `entire_agent` | string \| null | `null` | Entire's name for this agent, as `entire agent list` shows it. When it is set and `entire` is installed, the agent's session is attached to Entire as a checkpoint when the agent ends. When unset, the session is not captured. |
 | `session_id_pattern` | string \| null | `null` | A regex with one group that finds the session id in the first lines of the process's stdout. Use it in a `headless` runtime for a harness that cannot take its id as an argument (`{session_id}`). For example, Codex `exec --json` prints `{"type":"thread.started","thread_id":"<uuid>"}` first. |
 | `usage` | [UsageSpec](#usagespec) \| null | `null` | `[harness.<name>.usage]`: how to read the tokens an agent spent, when it ends, into `workers.usage`. When unset, token usage is not recorded. |
 | `mcp` | string \| null | `null` | The renderer that expands the `{mcp}` element of the argv into the role's `[mcp.<name>]` servers. Each renderer also keeps the user's own servers out, where its harness allows it. When unset, the harness takes no servers, and a role that lists servers cannot use it. Built in: `claude`, `codex`, `pi`. |
+
+## QueueKey
+
+`queue_key`: the key that queues a typed message for the end of the agent's turn.
+
+The message is typed into the composer, then the key is pressed. A harness that reads a burst of input as a paste
+swallows a key that arrives inside the burst, so the key waits until the text is drawn, and is pressed again while
+`pending` is still at the bottom of the screen, which shows that the agent did not take it yet.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `key` | string | required | The key, as `herdr agent send-keys` names it, for example `tab`. |
+| `pending` | string | required | Text at the bottom of the screen while the composer still holds the typed message. |
 
 ## UsageSpec
 
@@ -106,7 +123,7 @@ names when the config loads.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `reader` | string | `"jsonl"` | The reader to use. `jsonl` reads a JSONL session file, which the keys below describe. Built in: `jsonl`. |
-| `file` | string \| null | `null` | For `jsonl`: a glob of the session file. piloop substitutes `{home}`, `{claude_config_dir}` (Claude Code's `CLAUDE_CONFIG_DIR`, by default `~/.claude`), `{codex_home}` (Codex's `CODEX_HOME`, by default `~/.codex`), `{cwd}` (the agent's cwd, encoded as `cwd` says) and `{session_id}`. Example: `{home}/.pi/agent/sessions/{cwd}/*_{session_id}.jsonl`. When the glob matches nothing, piloop tries again with `*` for `{cwd}`. This searches one level of folders, not deeper, and the session id makes the match unique. When several files match, piloop takes the newest one. |
+| `file` | string \| null | `null` | For `jsonl`: a glob of the session file. piloop substitutes `{home}`, `{env:NAME:default}` (the environment variable `NAME`, or `default` when it is unset; a default may start with `~`), `{cwd}` (the agent's cwd, encoded as `cwd` says) and `{session_id}`. Examples: `{home}/.pi/agent/sessions/{cwd}/*_{session_id}.jsonl`, `{env:CLAUDE_CONFIG_DIR:~/.claude}/projects/{cwd}/*.jsonl`. The service unit of the daemon (`piloop service-unit`) carries every variable that a placeholder names. When the glob matches nothing, piloop tries again with `*` for `{cwd}`. This searches one level of folders, not deeper, and the session id makes the match unique. When several files match, piloop takes the newest one. |
 | `cwd` | string | `"none"` | For `jsonl`: how the harness names the folder of the agent's cwd. `dash_separators_wrapped` turns `/home/me/repo` into `--home-me-repo--`. `dash_non_alnum` turns it into `-home-me-repo`. `none` means that the folders are not named after the cwd, and matches any folder (`*`). |
 | `tally` | string \| null | `null` | For `jsonl`: the file format, which says which records have token counts, how they add up, and which records hold the agent's own text. Built in: `claude`, `codex`, `pi`. |
 
@@ -123,6 +140,7 @@ sweeping role (`SweepRole`). A role that a package adds with a `piloop.roles` en
 | `worker` | [WorkerRole](#workerrole) | `{}` | `[roles.worker]`. |
 | `watchdog` | [WatchdogRole](#watchdogrole) | `{}` | `[roles.watchdog]`. |
 | `research` | [ResearchRole](#researchrole) | `{}` | `[roles.research]`. |
+| `scout` | [ScoutRole](#scoutrole) | `{}` | `[roles.scout]`. |
 
 ## RoleConfig
 
@@ -162,7 +180,7 @@ scored and judged when it ends. A new role of this kind takes the worker's defau
 
 ## SweepRole
 
-`[roles.<name>]` of a sweeping role: the watchdog, research, or a new role that you define.
+`[roles.<name>]` of a sweeping role: the watchdog, research, the scout, or a new role that you define.
 
 A sweep is an agent without a run. Its triggers request it, and nothing is scored when it ends. A table with a new
 name defines a new role, and needs `prompt` and `triggers`.
@@ -170,9 +188,12 @@ name defines a new role, and needs `prompt` and `triggers`.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `runs` | boolean | `false` | The agents of this role do no runs. Set `runs = true` in a new table to define a role that does runs. |
-| `triggers` | list\[[Trigger](#trigger)\] | required | When the daemon requests an agent of this role: a list of `{ kind = "<trigger>", ... }` entries, checked in order on each tick. A package can add triggers. An empty list means that agents start only on request (`piloop launch`). Built in: `anomaly`, `cron`, `low_water`, `scout`, `seed`, `sql`. |
+| `triggers` | list\[[Trigger](#trigger)\] | required | When the daemon requests an agent of this role: a list of `{ kind = "<trigger>", ... }` entries, checked in order on each tick. A package can add triggers. An empty list means that agents start only on request (`piloop launch`). Built in: `anomaly`, `cron`, `low_water`, `seed`, `sql`, `stopped`. |
 | `workdir` | `head` \| `project` | `"head"` | Where the agent works: `head`, a detached worktree at the head, or `project`, the project checkout. |
 | `interval` | number | `0` | The number of seconds between two routine sweeps of the `cron` trigger, counted from the start of the last one. A sweep that investigates an anomaly is not a routine sweep. 0 turns the timer off. |
+| `max_ideas` | integer | `1` | The maximum number of new ideas one sweep may insert, as its brief states it. The seeds it develops do not count. `low_water` requests enough sweeps to fill the backlog at this many ideas each. 0 turns `low_water` off. |
+| `incident_prompt` | string \| null | `null` | A file that follows `prompt` in the brief of an incident sweep, a sweep that got anomalies (the `anomaly` trigger): a path relative to the repo root, or an absolute path. When unset, a built-in role uses its built-in file (the watchdog's `watchdog_incident.md`), and another role adds nothing. |
+| `routine_prompt` | string \| null | `null` | A file that follows `prompt` in the brief of every other sweep. When unset, a built-in role uses its built-in file (the watchdog's `watchdog_progress.md`), and another role adds nothing. |
 
 ## WatchdogRole
 
@@ -182,7 +203,7 @@ name defines a new role, and needs `prompt` and `triggers`.
 |---|---|---|---|
 | `writes` | list\[string\] | `["comments(escalation, finding, note)", "lessons on the project once it stopped", "seeds via idea seed"]` | What a watchdog may write, as its brief states it. |
 | `wake_budget` | integer \| null | `0` | The size in tokens of the lessons overview that opens a watchdog's brief. Off by default: the closing review reads the lessons itself before it writes its own. |
-| `triggers` | list\[[Trigger](#trigger)\] | `[{"kind": "anomaly"}, {"kind": "cron"}]` | An anomaly requests an incident sweep, and the timer requests a progress review. |
+| `triggers` | list\[[Trigger](#trigger)\] | `[{"kind": "anomaly"}, {"kind": "cron"}, {"kind": "stopped"}]` | An anomaly requests an incident sweep, the timer requests a progress review, and the campaign's stop requests the closing review. |
 | `interval` | number | `1800` | The number of seconds between two progress reviews, counted from the last review. A sweep that investigates an anomaly is not a review. 0 turns the reviews off. |
 
 ## Trigger
@@ -193,11 +214,11 @@ The daemon checks the entries in the order of the list.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | required | The name of the trigger. A package can add triggers. Built in: `anomaly`, `cron`, `low_water`, `scout`, `seed`, `sql`. |
+| `kind` | string | required | The name of the trigger. A package can add triggers. Built in: `anomaly`, `cron`, `low_water`, `seed`, `sql`, `stopped`. |
 
 ## ResearchRole
 
-`[roles.research]`: research develops seeds, keeps ideas ready for the workers and scouts for techniques.
+`[roles.research]`: research develops seeds and keeps ideas ready for the workers.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -205,27 +226,25 @@ The daemon checks the entries in the order of the list.
 | `max_concurrent` | integer | `1` | The maximum number of sweeps that run at the same time, each on the next harness of the rotation. The default is 1: sweeps that run at the same time read the same evidence and often duplicate each other, and two of them can race to develop the same seed. |
 | `writes` | list\[string\] | `["seeds via idea develop, or their status to rejected with a note", "ideas via idea add", "comments(finding, escalation) on the project", "comments(note) on an idea"]` | What a research sweep may write, as its brief states it. |
 | `files` | `nothing` \| `seeds` \| `ideas` | `"ideas"` | Research develops seeds into ideas and adds ideas of its own. |
-| `triggers` | list\[[Trigger](#trigger)\] | `[{"kind": "low_water"}, {"kind": "seed"}, {"kind": "scout"}]` | A short backlog, a new seed, and the scout's timer when `[roles.research.scout]` is there. |
-| `max_ideas` | integer | `1` | The maximum number of new ideas one sweep may insert. The seeds it develops do not count. `low_water` requests enough sweeps to fill the backlog at this many ideas each. 0 turns `low_water` off: research then only develops seeds. |
-| `context` | list\[string\] | `[]` | Repo-relative files or globs (for example `docs/error-analysis-*.md`) that hold the project's analysis: error analyses, comparisons with a reference, evaluation reports. The research pack lists each one with its outline, newest first, so that research reads them before it proposes ideas. |
-| `buffer` | integer | `2` | The number of ready ideas that `low_water` keeps in addition to one for each worker slot (`[roles.worker] max_concurrent`). With this backlog, a free slot finds an idea at once and does not wait for a sweep. A larger value makes workers wait less for research, but the ideas they run are older. |
-| `scout` | [Scout](#scout) \| null | `null` | `[roles.research.scout]`: sweeps that search for outside techniques on a schedule. Off by default. |
+| `triggers` | list\[[Trigger](#trigger)\] | `[{"kind": "low_water", "buffer": 2}, {"kind": "seed"}]` | A short backlog, and a new seed. |
 
-## Scout
+## ScoutRole
 
-`[roles.research.scout]`: the scout mode of the research role. It is off when the table is not there.
+`[roles.scout]`: the scout files outside techniques as seeds for the measured losses. It is off by default.
 
-Every `interval` seconds, a research sweep runs in scout mode (`prompts/research_scout.md`). It states the open
-problems of the campaign from the evidence, and searches X, GitHub and arXiv for outside techniques that address
-them. It files at most `seeds` of them as seeds, signed `scout#<worker id>`, and puts the rest in the technique
-library (the `techniques` table). It never files a defined idea. The search tool limits what one sweep spends on
-xAI (`scripts/xai_search_mcp.py --max-usd`). Scout sweeps stop with all other launches under `[spend]`.
+Every `interval` seconds, a scout sweep states the open problems of the campaign from the evidence, and searches
+X, GitHub and arXiv for outside techniques that address them. It files at most `seeds` of them as seeds, signed
+`scout#<worker id>`, and puts the rest in the technique library (the `techniques` table). It never files a
+defined idea. The search tool limits what one sweep spends on xAI (`scripts/xai_search_mcp.py --max-usd`).
 
-Experimental: scout mode.
+Experimental: the scout.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `interval` | number | required | The number of seconds between two scout sweeps, counted from the start of the last one. The first sweep counts from the registration of the project. |
+| `timeout` | number | `900` | The number of seconds one sweep may run before it is stopped. |
+| `writes` | list\[string\] | `["seeds via idea seed (at most the count under Context)", "techniques (the library), by INSERT", "one comments(finding) on the project"]` | What a scout sweep may write, as its brief states it. |
+| `triggers` | list\[[Trigger](#trigger)\] | `[{"kind": "cron"}]` | The timer: a scout sweep every `interval` seconds. |
+| `interval` | number | `0` | The number of seconds between two scout sweeps, counted from the start of the last one. The first sweep counts from the registration of the project. 0 (the default) turns the scout off. |
 | `seeds` | integer | `3` | The maximum number of seeds one scout sweep may file. The other techniques it finds go to the library. |
 
 ## McpServer
@@ -250,8 +269,9 @@ daemon's environment to the agent, and the harness puts their values into the he
 The daemon checks the conditions on every tick, before it requests anything. When one holds, the project is
 `stopped` (`projects.status`, `stopped_reason`). Running workers are told to commit and stop, and are ended
 10 minutes later. What they committed is scored. Pending requests and queued runs are dropped
-(`campaign stopped`). One last watchdog sweep is requested, and the triggers request nothing more. An agent that
-you request with `piloop launch` after the stop still starts.
+(`campaign stopped`). The `stopped` triggers fire once, which by default requests the watchdog's closing
+review, and the triggers request nothing more. An agent that you request with `piloop launch` after the stop
+still starts.
 
 `piloop init` resumes a stopped project when this table changed.
 
@@ -328,12 +348,11 @@ seed filed in that moment waits for the next sweep.
 
 The backlog of runnable ideas is shorter than its target, and there is a reason to sweep now.
 
-The target is one idea per worker slot plus `[roles.research] buffer`. So ideas
-exist before slots free up, and a free slot does not wait a whole sweep for an idea. The ideas that sweeps in
-flight can insert already count as backlog. Nothing is requested while every research slot is busy. Runnable
-ideas count. Ideas blocked only by prerequisites in flight also count, because they run when those finish. An idea
-blocked by a prerequisite that is not running does not count. Below the target, a sweep fires for one of these
-reasons:
+The target is one idea per run slot plus `buffer`. So ideas exist before slots free up, and a free slot does not
+wait a whole sweep for an idea. The ideas that the role's sweeps in flight can insert already count as backlog.
+Nothing is requested while every slot of the role is busy. Runnable ideas count. Ideas blocked only by
+prerequisites in flight also count, because they run when those finish. An idea blocked by a prerequisite that is
+not running does not count. Below the target, a sweep fires for one of these reasons:
 
 - The project has no sweep yet, so there is nothing to wait for.
 - The last batch was killed. Lost prompts, timeouts or a daemon stop say nothing about the backlog, so the batch
@@ -343,28 +362,29 @@ reasons:
   nothing new to read reads the same history and proposes nothing. So each consecutive sweep that defined no idea
   doubles the number of finished runs the next sweep waits for. A sweep that defines an idea resets this. The
   wait is never longer than what can still come: with no run in flight, the finished runs are all there is.
-- The backlog is low. Research keeps sweeping while the backlog is short, not only when results come in or a slot
-  is idle. A sweep that defined an idea is followed at once. After empty sweeps, research rests 2**n − 1 times as
+- The backlog is low. The role keeps sweeping while the backlog is short, not only when results come in or a slot
+  is idle. A sweep that defined an idea is followed at once. After empty sweeps, the role rests 2**n − 1 times as
   long as its latest ended sweep took. n is the number of consecutive ended sweeps, killed ones included, that
-  defined no idea. An empty queue never deadlocks, and research that keeps finding nothing uses at most 1/2**n of
+  defined no idea. An empty queue never deadlocks, and a role that keeps finding nothing uses at most 1/2**n of
   the wall-clock time.
 
-It requests enough sweeps to fill the shortfall at `max_ideas` each, within the role's free slots.
+It requests enough sweeps to fill the shortfall at the role's `max_ideas` each, within the role's free slots.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `kind` | string | `"low_water"` |  |
+| `buffer` | integer | `2` | The number of ready ideas to keep in addition to one for each run slot (the `max_concurrent` of every role that does runs). With this backlog, a free slot finds an idea at once and does not wait for a sweep. A larger value makes workers wait less for the role, but the ideas they run are older. |
 
-## ScoutTrigger
+## StoppedTrigger
 
-`[roles.research.scout] interval` passed since the last scout sweep started.
+The campaign stopped (`[stop]`). It fires once, on the tick that stops the campaign.
 
-It requests a scout sweep, a research row in scout mode (`piloop.agents.scout`). It does nothing while the
-`[roles.research.scout]` table is not there.
+The daemon checks it after it dropped what was pending, so its row starts. The watchdog's closing review is this
+trigger. The reason is `campaign stopped: <the condition>`.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | `"scout"` |  |
+| `kind` | string | `"stopped"` |  |
 
 ## SqlTrigger
 
@@ -452,3 +472,30 @@ A package adds a backend with an entry point in the `piloop.stores` group: see [
 | `storage_class` | `STANDARD` \| `NEARLINE` \| `COLDLINE` \| `ARCHIVE` | `"STANDARD"` | The storage class of every blob. |
 | `project` | string \| null | `null` | The Google Cloud project to bill. Unset: the project of the credentials. |
 | `credentials_file` | string \| null | `null` | A service account key file (JSON) to use instead of Application Default Credentials. A path, never the key. |
+
+### `[runtimes.<name>]`
+
+The settings of a runtime, which the runtime reads and checks. An environment variable wins over the file. The `herdr` runtime reads `[runtimes.herdr]`, and `PILOOP_HERDR_<KEY>` overrides a key:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `session` | string | `"piloop"` | The name of the Herdr session that piloop owns. It has one workspace for each project, and every agent that piloop starts runs there, never in the session you use for other work. `piloop attach` attaches a terminal to it. piloop starts its server when it first needs it. |
+| `server_start_seconds` | number | `10` | The number of seconds to wait for the Herdr server of the piloop session to answer after piloop starts it. |
+| `start_timeout_seconds` | number | `60` | The number of seconds Herdr may take to detect an agent that just started. |
+| `cli_timeout_seconds` | number | `30` | The timeout in seconds of one `herdr` CLI call, in addition to any wait that the call itself does. |
+| `unavailable_seconds` | number | `300` | The number of seconds to keep retrying a read of the Herdr server that does not answer (`server_unavailable`, or a `herdr` call that times out) before the read fails. A loaded host can stall the server for a while, and a failed read of a working agent ends it. Calls that change something (a prompt, keys, a new tab) are never retried, because the server may have applied them. |
+| `prompt_pickup_seconds` | number | `5` | The number of seconds to wait for an idle agent to start working again after piloop prompts it to resume, and for Herdr to report the session id of a started agent. The first prompt has `startup_grace_seconds`. |
+| `startup_grace_seconds` | number | `60` | The number of seconds an agent has to start its first turn after its brief is submitted. Within it, an agent whose state has not changed yet is still starting, not a lost prompt, and a quiet idle screen is not a finished turn: under load a TUI can take many seconds to show that it took the brief. After it, a brief that was never picked up is lost, and an agent that never worked counts as failed to start. |
+| `shell_ready_seconds` | number | `10` | The number of seconds to retry `agent start` while the shell of a new tab is still starting. |
+| `wait_chunk_seconds` | number | `10` | The longest `agent wait` call, in seconds. piloop notices a worker whose tab was closed within this time. |
+
+## Deprecated keys
+
+These keys still work. Each one shows a `PiloopDeprecationWarning` that names the file, the key, its replacement and the release that removes it. The changelog lists them too.
+
+- `[roles.research.scout]` is `[roles.scout]`, a role of its own. The keys of `[roles.research]` that the scout used (`runtime`, `harnesses`, `model`, `timeout`, `mcp`, `addendum` and `workdir`) are copied into it, unless `[roles.scout]` sets them.
+- The `scout` trigger of `[roles.research] triggers` is gone: the scout is a role with its own `cron`.
+- `[roles.research] buffer` is the `buffer` of research's `low_water` trigger. Without `triggers` in the table, research gets its default triggers with that `buffer`.
+- `[roles.research] context` is the top-level `context`: every sweep's research pack lists the files.
+- `{claude_config_dir}` and `{codex_home}` in `[harness.<name>.usage] file` are `{env:…}` placeholders. `{claude_config_dir}` is `{env:CLAUDE_CONFIG_DIR:~/.claude}`, and `{codex_home}` is `{env:CODEX_HOME:~/.codex}`.
+- In `config.toml`, `herdr_<key> = …` is `<key> = …` in its `[runtimes.herdr]` table. The Herdr settings are the Herdr runtime's own. Their environment variables (`PILOOP_HERDR_<KEY>`) do not change.

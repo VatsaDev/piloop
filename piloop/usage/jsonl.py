@@ -18,7 +18,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
 
-from piloop.settings import settings
+from piloop.settings import expand_env
 from piloop.usage import Usage, UsageError, UsageSpec, reader
 
 type Record = dict[str, object]
@@ -201,9 +201,8 @@ class JsonlReader:
     def pattern(self, session_id: str, folder: str = '*') -> str:
         """The glob of the session file: ``file`` with its placeholders filled in."""
         return (
-            self.file.replace('{home}', str(Path.home()))
-            .replace('{claude_config_dir}', str(settings.claude_config_dir))
-            .replace('{codex_home}', str(settings.codex_home))
+            expand_env(self.file)
+            .replace('{home}', str(Path.home()))
             .replace('{cwd}', folder)
             .replace('{session_id}', glob.escape(session_id))
         )

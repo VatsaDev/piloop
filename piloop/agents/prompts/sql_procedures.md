@@ -275,7 +275,7 @@ The daemon never overwrites a verdict that is not its own.
 - When a `[stop]` condition in `piloop.toml` holds, the daemon:
   - sets `projects.status='stopped'` (`stopped_reason` says which condition);
   - drops the requests and queued runs pending at that moment (their ideas go back to `ready`);
-  - requests one closing watchdog sweep;
+  - checks the `stopped` triggers: by default, they request one closing watchdog sweep;
   - starts nothing more.
 - To continue, raise or change the conditions in `piloop.toml` and run `piloop init <path>`.
 - Or by hand: `UPDATE projects SET status='active', stopped_reason=NULL WHERE id=<p>`. With the conditions unchanged, it
@@ -286,7 +286,7 @@ The daemon never overwrites a verdict that is not its own.
 - `workers.usage` holds the tokens an agent spent. It is written when the agent ends:
   `{"input", "output", "cache_read", "cache_write", "total", "turns", "source"}`.
   - `total` is the harness's own count of the session's tokens.
-  - The cache fields follow the harness: Anthropic's `input` excludes cached tokens, Codex's includes them.
+  - `input` is the uncached input for every harness; `cache_read` and `cache_write` are the cached input.
   - `turns` is the number of model responses.
   - `source` is the session file that was read.
 - It is NULL while the agent runs, or when no file was found.

@@ -33,8 +33,6 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.reports import overview as overview_module
 from piloop.reports.overview import AnomalyKind, anomalies, overview
-from piloop.settings import Settings
-from piloop.usage import jsonl
 from tests.runtime.test_herdr import Response, calls, scripted
 
 T = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
@@ -222,9 +220,9 @@ demo · head score 3 (candidate#2, +2 vs baseline) · 2 kept / 3 candidates · 4
   - run#3 idea#3 "build on longer lines" (script): running 1h, worker#3 ended 1h ago
 - Ideas: 0 runnable, 1 blocked (idea#4 on idea#2 (rejected)); 0 seed, 0 proposed, 1 scheduled, 1 done, 0 parked, 1 rejected.
 - Agents live: none
-- Agents so far: 3 worker (1 killed), 0 watchdog, 1 research; 0 of 1 ended research sweeps defined no idea.
+- Agents so far: 3 worker (1 killed), 0 watchdog, 1 research, 0 scout; 0 of 1 ended research sweeps defined no idea.
 - Ideas by source: research 4 ideas, 3 ran → 1 keep, 0 interesting.
-- Tokens: 4k (worker 3k, watchdog 0, research 500); 500 by agents that ended in the last hour.
+- Tokens: 4k (worker 3k, watchdog 0, research 500, scout 0); 500 by agents that ended in the last hour.
 - Evaluations: 3 (0 crashed); median 3.0 min, first 5 3.0 min, latest 5 3.0 min; 6.0 min in all; 0 candidates waiting for a verdict.
 ### Recent candidates (3 of 3; score, vs parent)
 - candidate#1 keep 1 (—), no run, 0s ago: baseline
@@ -234,7 +232,7 @@ demo · head score 3 (candidate#2, +2 vs baseline) · 2 kept / 3 candidates · 4
 - [incident] run#2 failed, 1h ago: failed on script (idea#2): boom
 - [incident] worker#2 dead at startup, 1h ago: worker on script failed to start (5.0s): dialog
 - candidate#3 scored exactly its parent, 1h ago: scored what candidate#2 did on score and on 1 of 1 other metrics; 3.0 min of evaluation
-### Inbox (1 unacknowledged), decisions, escalations and watchdog findings
+### Inbox (1 unacknowledged), decisions and escalations
 - comment#2 decision on project#1 by pi, 1h ago: keep going
 - comment#1 escalation (p1, unacknowledged) on run#2 by watchdog#9, 1h ago: run#2 died in a dialog
 ### Recent events
@@ -277,7 +275,7 @@ def test_a_fresh_project_has_little_to_say(db: Database, project: Project) -> No
     assert '- project#1 idle, 2h ago: 1 free worker slots and no runnable idea; no research sweep pending' in text, (
         'not tagged: an idle queue is a cost for the progress review, not an incident'
     )
-    assert '### Inbox (0 unacknowledged), decisions, escalations and watchdog findings\n- None.\n' in text
+    assert '### Inbox (0 unacknowledged), decisions and escalations\n- None.\n' in text
 
 
 def test_no_anomaly_reads_none(db: Database, project: Project) -> None:
@@ -578,9 +576,9 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, projec
   - idea#4 p2 "after the crash" by research#4, 0s ago; after idea#2; superseded by idea#6
 - Agents live: 1; requested: watchdog#6
   - research#5 script/m 5m, on low_water: 2 ready < 10: ran evaluate.py: METRIC score=3
-- Agents so far: 3 worker (1 killed), 1 watchdog, 2 research; 0 of 1 ended research sweeps defined no idea.
+- Agents so far: 3 worker (1 killed), 1 watchdog, 2 research, 0 scout; 0 of 1 ended research sweeps defined no idea.
 - Ideas by source: research 6 ideas, 3 ran → 1 keep, 0 interesting.
-- Tokens: 4k (worker 3k, watchdog 0, research 500); 500 by agents that ended in the last hour.
+- Tokens: 4k (worker 3k, watchdog 0, research 500, scout 0); 500 by agents that ended in the last hour.
 - Evaluations: 3 (0 crashed); median 3.0 min, first 5 3.0 min, latest 5 3.0 min; 6.0 min in all; 0 candidates waiting for a verdict.
 ### Recent candidates (3 of 3; score, vs parent)
 - candidate#1 keep 1 (—), no run, 0s ago: baseline
@@ -588,7 +586,7 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, projec
 - candidate#3 discard 3 (+0), run#1, 0s ago: score 3
 """)
     assert text[text.index('### Inbox') :].split('### Tools')[0] == snapshot("""\
-### Inbox (1 unacknowledged), decisions, escalations and watchdog findings
+### Inbox (1 unacknowledged), decisions and escalations
 - comment#2 decision on project#1 by pi, 1h ago: keep going
 - comment#1 escalation (p1, unacknowledged) on run#2 by watchdog#9, 1h ago: run#2 died in a dialog
 ### Recent events
@@ -637,7 +635,7 @@ def test_live_agents_say_their_last_words_from_the_session_file_else_the_screen_
     db: Database, project: Project, tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv('HOME', str(tmp_path))
-    monkeypatch.setattr(jsonl, 'settings', Settings(claude_config_dir=tmp_path / '.claude'))
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path / '.claude'))
     session = tmp_path / '.claude' / 'projects' / '-somewhere' / f'{SESSION_ID}.jsonl'
     session.parent.mkdir(parents=True)
     session.write_text((Path(__file__).parent.parent / 'fixtures' / 'said' / 'claude.jsonl').read_text())

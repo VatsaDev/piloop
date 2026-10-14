@@ -6,8 +6,6 @@ from piloop.db.models import Event, TargetKind
 
 ANOMALY_EVENT = 'anomaly.reported'
 """An event on an agent's row, one for each anomaly it was requested for, with ``{key, anomaly}`` as payload."""
-SCOUT_EVENT = 'scout.requested'
-"""The event that makes a research row a scout sweep (``piloop.agents.scout``). It is emitted when the row is requested."""
 
 
 def emit(

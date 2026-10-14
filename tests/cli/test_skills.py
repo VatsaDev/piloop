@@ -14,9 +14,8 @@ from piloop.settings import Settings
 
 @pytest.fixture
 def harness_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
-    settings = Settings(
-        home=tmp_path / 'piloop', claude_config_dir=tmp_path / 'claude', agent_skills_dir=tmp_path / 'agents/skills'
-    )
+    settings = Settings(home=tmp_path / 'piloop', agent_skills_dir=tmp_path / 'agents/skills')
+    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path / 'claude'))
     monkeypatch.setattr(common, 'settings', settings)
     monkeypatch.setattr(common, 'console', Console(record=True, width=300, force_terminal=False))
     monkeypatch.setenv('PATH', str(tmp_path / 'bin'))
@@ -85,7 +84,7 @@ def test_install_skills_copies_into_each_harness_dir_once_and_replaces_only_pilo
     assert printed().strip() == 'skills: none of claude, codex, pi, gemini, cursor-agent is on PATH, nothing installed'
     on_path('claude', 'codex', 'pi', 'gemini', 'cursor-agent')
     agents = harness_home.agent_skills_dir
-    claude = harness_home.claude_config_dir / 'skills'
+    claude = Path(os.environ['CLAUDE_CONFIG_DIR']) / 'skills'
     assert skills.drift(agents) == ['piloop-operate missing', 'piloop-review missing', 'piloop-setup missing']
     (agents / 'piloop-old').mkdir(parents=True)
     (agents / 'theirs').mkdir()

@@ -10,6 +10,7 @@ evaluate_timeout = 600                    # seconds; a slower evaluation is stop
 runtime = "subprocess"                    # subprocess: a background process per agent · herdr: a pane per agent · or a package's runtime
 harnesses = ["pi", "claude", "codex"]     # not the default, which is ["pi"]; runs use these in turn, unless an idea names one
 link = []                                 # gitignored paths to symlink into every worktree, for example "data" or ".venv"
+context = []                              # analysis files that every sweep reads first, for example ["docs/error-analysis.md"]
 confidence = 0.95                         # a keep needs the primary metric's gain to be above zero at this confidence
 
 [model]                                   # required; the model for each harness, in that harness's own naming
@@ -21,8 +22,9 @@ codex = "gpt-6.1-sol"
 
 # [harness.<name>]                        # overrides a built-in harness (pi, claude, codex), or defines a new one
 # executable = "my-agent"                 # keys: executable, interactive, headless, resume, startup_dialogs,
-# headless = ["--model", "{model}", "{prompt}"]  # entire_agent, session_id_pattern, mcp, and [harness.<name>.usage]
-#                                         # with reader, file, cwd and tally; see the reference
+# headless = ["--model", "{model}", "{prompt}"]  # entire_agent, session_id_pattern, mcp, busy_screens,
+#                                         # failed_turn_screens, queue_key (with key and pending), and
+#                                         # [harness.<name>.usage] with reader, file, cwd and tally; see the reference
 
 # [mcp.exa]                               # an MCP server that a role can list in its `mcp` key; see the MCP servers guide
 # url = "https://mcp.exa.ai/mcp"          # a streamable HTTP server (keys: url, headers_env, bearer_token_env)
@@ -57,14 +59,17 @@ recovery_requeues = 2                     # times an idea is requeued from work 
 # writes = ["comments(finding)"]          # what the brief says the role may write; default: what piloop expects of it
 # files = "seeds"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role: its triggers start it and nothing it commits is scored
-triggers = [{ kind = "anomaly" }, { kind = "cron" }]  # an anomaly, and the timer below; checked in this order
+triggers = [{ kind = "anomaly" }, { kind = "cron" }, { kind = "stopped" }]  # an anomaly, the timer below, the stop
 # workdir = "project"                     # head (the default): a worktree at the head · project: the project checkout
 wake_budget = 0                           # the lessons overview is off: the closing review reads the lessons itself
 interval = 1800                           # seconds between two progress reviews of the cron trigger; 0 turns it off
+# incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies; default: watchdog_incident.md
+# routine_prompt = "briefs/review.md"     # follows the prompt in every other sweep; default: watchdog_progress.md
+max_ideas = 1                             # new ideas per sweep for a low_water trigger; the watchdog files only seeds
 timeout = 600
 max_concurrent = 1
 
-[roles.research]                          # research keeps one runnable idea per worker slot, plus `buffer` more
+[roles.research]                          # research keeps one runnable idea per run slot, plus the `buffer` of low_water
 # harnesses = ["pi", "claude", "codex"]   # if not set: the project's harnesses
 # model = { pi = "..." }                  # merged over [model]
 # addendum = "briefs/research.md"         # a file appended to brief.md in this role's briefs only
@@ -74,19 +79,36 @@ max_concurrent = 1
 # writes = ["ideas via idea add"]         # what the brief says the role may write; default: what piloop expects of it
 # files = "ideas"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role
-triggers = [{ kind = "low_water" }, { kind = "seed" }, { kind = "scout" }]  # a short backlog, a new seed, the scout
+triggers = [{ kind = "low_water", buffer = 2 }, { kind = "seed" }]  # a short backlog (buffer: ideas beyond one per run slot), a new seed
 # workdir = "project"                     # head (the default): a worktree at the head · project: the project checkout
 # interval = 0                            # seconds between two sweeps of a cron trigger, if you add one
 # wake_budget = 400                       # tokens of the lessons overview that opens the brief; if not set: [memory]'s
-max_ideas = 1                             # new ideas per sweep, after the seeds; 0 = seeds only
-context = []                              # files research reads first, for example ["docs/error-analysis.md"]
-buffer = 2                                # ideas to keep ready beyond one per worker slot
+# incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies, if you add that trigger
+# routine_prompt = "briefs/routine.md"    # follows the prompt in every other sweep; none by default
+max_ideas = 1                             # new ideas per sweep, after the seeds; 0 turns low_water off
 timeout = 900
 max_concurrent = 1                        # sweeps at the same time; more than one duplicate each other's work
 
-# [roles.research.scout]                  # experimental: research sweeps that search for outside techniques; off by default
-# interval = 86400                        # required in this table; seconds between two scout sweeps
-# seeds = 3                               # the most seeds one scout sweep may file
+[roles.scout]                             # experimental: sweeps that search X, GitHub and arXiv for outside techniques
+# harnesses = ["pi", "claude", "codex"]   # if not set: the project's harnesses
+# model = { pi = "..." }                  # merged over [model]
+# addendum = "briefs/scout.md"            # a file appended to brief.md in this role's briefs only
+# mcp = ["xai"]                           # its search tools: an X search server, for example; none by default
+# prompt = "briefs/my-scout.md"           # a file that replaces the built-in start of this role's brief
+# runtime = "herdr"                       # if not set: the project's runtime
+# writes = ["seeds via idea seed"]        # what the brief says the role may write; default: what piloop expects of it
+# files = "seeds"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
+runs = false                              # a sweeping role
+triggers = [{ kind = "cron" }]            # the timer below
+# workdir = "project"                     # head (the default): a worktree at the head · project: the project checkout
+interval = 0                              # seconds between two scout sweeps; 0 (the default) turns the scout off
+# incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies, if you add that trigger
+# routine_prompt = "briefs/routine.md"    # follows the prompt in every other sweep; none by default
+seeds = 3                                 # the most seeds one scout sweep may file
+# wake_budget = 400                       # tokens of the lessons overview that opens the brief; if not set: [memory]'s
+max_ideas = 1                             # new ideas per sweep for a low_water trigger; the scout files only seeds
+timeout = 900
+max_concurrent = 1
 
 # [roles.reviewer]                        # a role of your own: any new name; it needs a prompt and triggers
 # prompt = "briefs/reviewer.md"           # the file that starts its brief

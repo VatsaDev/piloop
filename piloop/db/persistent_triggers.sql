@@ -48,9 +48,9 @@ BEGIN
   SELECT RAISE(ABORT, 'idea_links: idea_id and target_id must be ideas of the same project');
 END;
 CREATE TRIGGER workers_kind BEFORE INSERT ON workers
-WHEN NEW.kind NOT IN ('worker', 'watchdog', 'research') AND (SELECT json_type(config, '$.roles.' || json_quote(NEW.kind)) FROM projects WHERE id = NEW.project_id) IS NULL
+WHEN NEW.kind NOT IN ('worker', 'watchdog', 'research', 'scout') AND (SELECT json_type(config, '$.roles.' || json_quote(NEW.kind)) FROM projects WHERE id = NEW.project_id) IS NULL
 BEGIN
-  SELECT RAISE(ABORT, 'workers.kind must be a role of the project: worker, watchdog, research or a [roles.<name>] table of its piloop.toml');
+  SELECT RAISE(ABORT, 'workers.kind must be a role of the project: worker, watchdog, research, scout or a [roles.<name>] table of its piloop.toml');
 END;
 CREATE TRIGGER journal_no_replace BEFORE INSERT ON journal
 WHEN EXISTS (SELECT 1 FROM journal WHERE id = NEW.id)

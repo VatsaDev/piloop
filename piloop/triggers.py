@@ -2,7 +2,8 @@
 
 A trigger is a pydantic model. Its fields are its parameters, from its entry in ``[roles.<name>] triggers``. On each
 tick, for each project and each sweeping role without a pending request, the scheduler calls ``Trigger.fire`` of each
-trigger of the role, in the order of the list. A package adds a trigger with an entry point in ``TRIGGER_GROUP``.
+trigger of the role, in the order of the list. On the tick that stops the campaign, it calls only the triggers with
+``ON_STOP``, and while the campaign runs, only the others. A package adds a trigger with an entry point in ``TRIGGER_GROUP``.
 """
 
 import sqlite3
@@ -13,11 +14,11 @@ from functools import cache
 from importlib.metadata import entry_points
 from typing import Annotated, ClassVar, Literal, NamedTuple, Protocol
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, SerializeAsAny, field_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, SerializeAsAny, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop.db.events import ANOMALY_EVENT, SCOUT_EVENT
+from piloop.db.events import ANOMALY_EVENT
 from piloop.db.models import (
     OPEN_RUNS,
     Idea,
@@ -25,7 +26,6 @@ from piloop.db.models import (
     Project,
     Run,
     Worker,
-    WorkerKind,
     WorkerState,
     count,
     project_runs,
@@ -69,13 +69,13 @@ class Backlog:
     tracks: tuple[TrackBacklog, ...]
     """One entry per track, in config order. A track below its share is short, whatever the other tracks have."""
     target: int
-    """One idea per worker slot plus ``[roles.research] buffer``, but never more than ``[stop] max_runs`` allows."""
+    """One idea per run slot plus the ``buffer`` of ``low_water``, but never more than ``[stop] max_runs`` allows."""
     free: int
     """The runs that the project can start now."""
     sweeps: int
-    """The research sweeps in flight."""
+    """The role's sweeps in flight."""
     per_sweep: int
-    """The ideas that one sweep may insert: ``[roles.research] max_ideas``."""
+    """The ideas that one sweep may insert: the role's ``max_ideas``."""
 
     @property
     def pending(self) -> int:
@@ -129,7 +129,7 @@ class Tick(Protocol):
     """What a trigger reads to decide. The scheduler makes one for each sweeping role of each project on each tick.
 
     A trigger reads with ``s`` and writes nothing. "The role's rows" are the ``workers`` rows of the role in the
-    project. A scout sweep is a research row in scout mode (``piloop.agents.scout``).
+    project.
     """
 
     @property
@@ -149,7 +149,7 @@ class Tick(Protocol):
 
     @property
     def last(self) -> Worker | None:
-        """The role's latest row that is not a scout sweep. None before the first."""
+        """The role's latest row. None before the first."""
         ...
 
     @property
@@ -162,13 +162,8 @@ class Tick(Protocol):
         """The role's ``interval``: seconds between two routine sweeps of the ``cron`` trigger. 0 turns it off."""
         ...
 
-    @property
-    def scout_interval(self) -> float | None:
-        """``[roles.research.scout] interval`` for the research role. None for other roles, or when scout mode is off."""
-        ...
-
-    def backlog(self) -> Backlog:
-        """The project's backlog of ideas."""
+    def backlog(self, buffer: int, /) -> Backlog:
+        """The project's backlog of ideas, with ``buffer`` ideas beyond one per run slot, as the role's sweeps fill it."""
         ...
 
     def incidents(self) -> list[Incident]:
@@ -176,22 +171,18 @@ class Tick(Protocol):
         ...
 
     def live(self) -> int:
-        """The number of the role's rows that are starting or running, scout sweeps left out."""
+        """The number of the role's rows that are starting or running."""
         ...
 
     def killed_streak(self) -> int:
-        """The number of the role's latest rows, newest first and scout sweeps left out, that were killed in a row."""
+        """The number of the role's latest rows, newest first, that were killed in a row."""
         ...
 
     def empty_sweeps(self, states: tuple[WorkerState, ...]) -> list[Worker]:
-        """The role's latest rows in ``states``, newest first and scout sweeps left out, until one that defined an idea.
+        """The role's latest rows in ``states``, newest first, until one that defined an idea.
 
         A row defined an idea if it inserted one or developed a seed into one (``piloop.campaign.ideas.defined_by``).
         """
-        ...
-
-    def latest_scout(self) -> Worker | None:
-        """The role's latest scout sweep."""
         ...
 
     def routine(self) -> Worker | None:
@@ -213,7 +204,7 @@ class Fire:
     count: int = 1
     """The number of rows to request. When several triggers fire together, the largest count wins."""
     alone: bool = False
-    """The row is for this trigger alone, because it changes what the agent does: an incident sweep, a scout sweep.
+    """The row is for this trigger alone, because it changes what the agent does: an incident sweep.
 
     Such a fire is requested alone when it is the first fire of the tick. After another fire, it waits for a later
     tick.
@@ -230,8 +221,8 @@ class Trigger(BaseModel, ABC):
 
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
 
-    ROLE: ClassVar[str | None] = None
-    """The only role that may use the trigger, or None for any sweeping role."""
+    ON_STOP: ClassVar[bool] = False
+    """The daemon checks the trigger once, on the tick that stops the campaign, instead of on every tick while it runs."""
     INVESTIGATES: ClassVar[bool] = False
     """The agent that the trigger requests gets incidents to investigate. An agent of a role with such a trigger that
     dies at startup is then no incident: the agent that it would request could die the same way, and so on."""
@@ -312,12 +303,11 @@ class SeedTrigger(Trigger):
 class LowWaterTrigger(Trigger):
     """The backlog of runnable ideas is shorter than its target, and there is a reason to sweep now.
 
-    The target is one idea per worker slot plus ``[roles.research] buffer``. So ideas
-    exist before slots free up, and a free slot does not wait a whole sweep for an idea. The ideas that sweeps in
-    flight can insert already count as backlog. Nothing is requested while every research slot is busy. Runnable
-    ideas count. Ideas blocked only by prerequisites in flight also count, because they run when those finish. An idea
-    blocked by a prerequisite that is not running does not count. Below the target, a sweep fires for one of these
-    reasons:
+    The target is one idea per run slot plus ``buffer``. So ideas exist before slots free up, and a free slot does not
+    wait a whole sweep for an idea. The ideas that the role's sweeps in flight can insert already count as backlog.
+    Nothing is requested while every slot of the role is busy. Runnable ideas count. Ideas blocked only by
+    prerequisites in flight also count, because they run when those finish. An idea blocked by a prerequisite that is
+    not running does not count. Below the target, a sweep fires for one of these reasons:
 
     - The project has no sweep yet, so there is nothing to wait for.
     - The last batch was killed. Lost prompts, timeouts or a daemon stop say nothing about the backlog, so the batch
@@ -327,20 +317,23 @@ class LowWaterTrigger(Trigger):
       nothing new to read reads the same history and proposes nothing. So each consecutive sweep that defined no idea
       doubles the number of finished runs the next sweep waits for. A sweep that defines an idea resets this. The
       wait is never longer than what can still come: with no run in flight, the finished runs are all there is.
-    - The backlog is low. Research keeps sweeping while the backlog is short, not only when results come in or a slot
-      is idle. A sweep that defined an idea is followed at once. After empty sweeps, research rests 2**n − 1 times as
+    - The backlog is low. The role keeps sweeping while the backlog is short, not only when results come in or a slot
+      is idle. A sweep that defined an idea is followed at once. After empty sweeps, the role rests 2**n − 1 times as
       long as its latest ended sweep took. n is the number of consecutive ended sweeps, killed ones included, that
-      defined no idea. An empty queue never deadlocks, and research that keeps finding nothing uses at most 1/2**n of
+      defined no idea. An empty queue never deadlocks, and a role that keeps finding nothing uses at most 1/2**n of
       the wall-clock time.
 
-    It requests enough sweeps to fill the shortfall at ``max_ideas`` each, within the role's free slots.
+    It requests enough sweeps to fill the shortfall at the role's ``max_ideas`` each, within the role's free slots.
     """
 
-    ROLE: ClassVar[str | None] = WorkerKind.RESEARCH.value
     kind: Literal['low_water'] = 'low_water'
+    buffer: int = Field(default=2, ge=0)
+    """The number of ready ideas to keep in addition to one for each run slot (the ``max_concurrent`` of every role
+    that does runs). With this backlog, a free slot finds an idea at once and does not wait for a sweep. A larger value
+    makes workers wait less for the role, but the ideas they run are older."""
 
     def fire(self, tick: Tick) -> Fire | None:
-        backlog = tick.backlog()
+        backlog = tick.backlog(self.buffer)
         if backlog.per_sweep == 0 or backlog.short <= 0 or backlog.sweeps >= tick.max_concurrent:
             return None
         batch = min(-(-backlog.short // backlog.per_sweep), tick.max_concurrent - backlog.sweeps)
@@ -371,24 +364,18 @@ class LowWaterTrigger(Trigger):
         return f'{backlog}; rested {rest.total_seconds():.0f}s after {len(empty)} sweeps that defined no idea'
 
 
-class ScoutTrigger(Trigger):
-    """``[roles.research.scout] interval`` passed since the last scout sweep started.
+class StoppedTrigger(Trigger):
+    """The campaign stopped (``[stop]``). It fires once, on the tick that stops the campaign.
 
-    It requests a scout sweep, a research row in scout mode (``piloop.agents.scout``). It does nothing while the
-    ``[roles.research.scout]`` table is not there.
+    The daemon checks it after it dropped what was pending, so its row starts. The watchdog's closing review is this
+    trigger. The reason is ``campaign stopped: <the condition>``.
     """
 
-    ROLE: ClassVar[str | None] = WorkerKind.RESEARCH.value
-    kind: Literal['scout'] = 'scout'
+    ON_STOP: ClassVar[bool] = True
+    kind: Literal['stopped'] = 'stopped'
 
     def fire(self, tick: Tick) -> Fire | None:
-        if tick.scout_interval is None:
-            return None
-        last = tick.latest_scout()
-        start = last.started_at if last is not None else tick.project.created_at
-        if utcnow() - start < timedelta(seconds=tick.scout_interval):
-            return None
-        return Fire(f'scout: every {tick.scout_interval:g}s', alone=True, events=((SCOUT_EVENT, {}),))
+        return Fire(f'campaign stopped: {tick.project.stopped_reason}')
 
 
 SQL_PARAMETERS = ('project', 'since')
@@ -452,7 +439,7 @@ BUILTIN_TRIGGERS: dict[str, type[Trigger]] = {
     'cron': CronTrigger,
     'seed': SeedTrigger,
     'low_water': LowWaterTrigger,
-    'scout': ScoutTrigger,
+    'stopped': StoppedTrigger,
     'sql': SqlTrigger,
 }
 

@@ -107,7 +107,7 @@ def test_brief_is_role_prompt_project_brief_procedures_then_context(project: Pro
 - Sign what you write as 'watchdog#7' (comments.author, ideas.created_by).
 - Trigger: timer
 - SQL tool: `{SQL_HINT} "<sql>"`
-- Sweeping roles (`workers.kind` of a request): watchdog, research.
+- Sweeping roles (`workers.kind` of a request): watchdog, research, scout.
 - File a seed: `{PILOOP_HINT} idea seed demo "<hunch, one line>" --from "<pointers: ids, paths, numbers>"` (`--base\
  <candidate>` when it is about that tree): research checks it against the existing work and develops it into an idea,\
  or rejects it with the reason.

@@ -74,10 +74,11 @@ def test_skills_missing_or_stale_for_a_harness_on_path_fail_with_the_install_com
 ) -> None:
     assert by_name(cfg)['skills'].fix is None, 'no harness, nothing to check'
     on_path(tmp_path, 'claude')
-    skills.install(cfg.claude_config_dir / 'skills')
-    (cfg.claude_config_dir / 'skills' / 'piloop-review' / 'SKILL.md').write_text('an older review')
+    claude = tmp_path / 'claude-config'  # CLAUDE_CONFIG_DIR of every test (conftest.no_real_skill_dirs)
+    skills.install(claude / 'skills')
+    (claude / 'skills' / 'piloop-review' / 'SKILL.md').write_text('an older review')
     assert by_name(cfg)['skills (claude)'] == Check(
-        'skills (claude)', f'{cfg.claude_config_dir}/skills: piloop-review out of date', '`piloop install-skills`'
+        'skills (claude)', f'{claude}/skills: piloop-review out of date', '`piloop install-skills`'
     )
 
 

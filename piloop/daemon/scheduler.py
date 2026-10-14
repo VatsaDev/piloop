@@ -35,8 +35,7 @@ from piloop import git
 from piloop.agents import scout
 from piloop.agents.launcher import STARTUP_ANOMALY, STOPPED_ERROR, rotate
 from piloop.agents.refill import usage_of
-from piloop.agents.roles import SCOUT, WatchdogMode, compose_brief, role_of
-from piloop.agents.scout import scouting
+from piloop.agents.roles import compose_brief, role_of
 from piloop.campaign import spend
 from piloop.campaign.ideas import defined_by, runnable, supersede, waiting
 from piloop.campaign.memory import sync_documents
@@ -52,7 +51,18 @@ from piloop.campaign.stop import (
     stall,
     stop_reason,
 )
-from piloop.config import SCOUT_SEEDS, ProjectConfig, Spend, SweepRole, Workdir, WorkerRole, config_of, ideas_taken
+from piloop.config import (
+    Files,
+    ProjectConfig,
+    ResearchRole,
+    ScoutRole,
+    Spend,
+    SweepRole,
+    Workdir,
+    WorkerRole,
+    config_of,
+    ideas_taken,
+)
 from piloop.daemon.archiver import Archiver, Archiving
 from piloop.daemon.runner import RunExecutor
 from piloop.db.events import ANOMALY_EVENT, emit
@@ -72,7 +82,6 @@ from piloop.db.models import (
     TargetKind,
     Verdict,
     Worker,
-    WorkerKind,
     WorkerState,
     count,
     project_runs,
@@ -87,7 +96,7 @@ from piloop.reports.wake import lessons_overview
 from piloop.runtime import Outcome
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
 from piloop.scoring.ledger import bar_of, checkout_candidate, head, score, unmeasured
-from piloop.triggers import Backlog, Fire, Incident, TrackBacklog
+from piloop.triggers import Backlog, Fire, Incident, LowWaterTrigger, TrackBacklog
 from piloop.usage import Usage
 
 NO_RUN_ERROR = 'a worker needs a run; the scheduler requests them from ready ideas'
@@ -416,7 +425,7 @@ class Scheduler:
         """Tell each worker of a stopped project to commit and stop (``WRAP_UP``), and end it after the grace period.
 
         The grace period is ``STOP_GRACE_SECONDS``. The runs then close as usual and their commits are scored. Sweeps
-        are not changed, because their timeouts limit them and the closing watchdog is one of them.
+        are not changed, because their timeouts limit them and the closing review is one of them.
         """
         with self._db.session() as s:
             workers = s.scalars(
@@ -458,11 +467,12 @@ class Scheduler:
     def _triggers(self, s: Session, project: Project, cfg: ProjectConfig) -> None:
         """Stop the campaign if a ``[stop]`` condition holds. Otherwise queue runs and check every role's triggers.
 
-        A stopped project gets one closing watchdog sweep and nothing more from the triggers. Triggers requested
-        everything that is pending at that moment, so it is all cancelled. Requested rows are closed and queued runs
-        fail with ``CAMPAIGN_STOPPED_ERROR``. Their ideas go back to ``ready``. Rows that a human inserts after the stop
-        still launch. Workers in flight are told to stop (``_wind_down``), and their commits are scored. The ``[memory]``
-        documents are synced first, so that the closing sweep can search the campaign's reports.
+        Triggers requested everything that is pending when the campaign stops, so it is all cancelled. Requested rows
+        are closed and queued runs fail with ``CAMPAIGN_STOPPED_ERROR``. Their ideas go back to ``ready``. The
+        ``[memory]`` documents are synced, so that the closing sweep can search the campaign's reports. Then the
+        ``stopped`` triggers fire once (``Trigger.ON_STOP``): by default, the watchdog's closing review. A stopped
+        project gets nothing more from the triggers. Rows that a human inserts after the stop still launch. Workers in
+        flight are told to stop (``_wind_down``), and their commits are scored.
         """
         reason = stop_reason(s, project, cfg)
         if reason is None:
@@ -480,7 +490,8 @@ class Scheduler:
             self._tracer.event('documents.sync_failed', project=project.name, error=f'{type(e).__name__}: {e}')
         else:
             self._tracer.event('documents.synced', project=project.name, result=synced.line())
-        s.add(Worker(kind=WorkerKind.WATCHDOG, project_id=project.id, reason=f'campaign stopped: {reason}'))
+        for name, role in cfg.roles.sweeping().items():
+            self._request(s, project, cfg, name, role, stopping=True)
 
     def _drain(self, s: Session, project: Project) -> None:
         mine = Idea.project_id == project.id
@@ -491,10 +502,13 @@ class Scheduler:
         ):
             self._close(s, worker, CAMPAIGN_STOPPED_ERROR)
 
-    def _request(self, s: Session, project: Project, cfg: ProjectConfig, name: str, role: SweepRole) -> None:
+    def _request(
+        self, s: Session, project: Project, cfg: ProjectConfig, name: str, role: SweepRole, *, stopping: bool = False
+    ) -> None:
         """Insert requested rows when the role's triggers fire. One batch per call, however many triggers fire.
 
-        The triggers fire in the order of the role's list (``piloop.triggers``). A fire that needs a row of its
+        The triggers fire in the order of the role's list (``piloop.triggers``): those with ``ON_STOP`` when the
+        campaign is ``stopping``, else the others. A fire that needs a row of its
         own (``Fire.alone``) is requested alone when it comes first, and otherwise waits for a later tick. The others
         share one batch: the largest count of rows, with every reason. The first row gets the events of the fires. A
         trigger that raises is traced and does not fire.
@@ -509,7 +523,7 @@ class Scheduler:
             return  # One pending request per role is enough.
         tick = self._tick(s, project, cfg, name, role)
         fires: list[Fire] = []
-        for trigger in role.triggers:
+        for trigger in (t for t in role.triggers if t.ON_STOP is stopping):
             try:
                 fire = trigger.fire(tick)
             except Exception as e:  # A trigger of a package, or a query that the schema no longer runs.
@@ -536,11 +550,10 @@ class Scheduler:
         """Return what the triggers of role ``name`` read in this tick."""
         last = s.scalars(
             select(Worker)
-            .where(Worker.project_id == project.id, Worker.kind == name, ~scouting())
+            .where(Worker.project_id == project.id, Worker.kind == name)
             .order_by(Worker.id.desc())
             .limit(1)
         ).first()
-        scout_mode = cfg.roles.research.scout if name == WorkerKind.RESEARCH else None
         return RoleTick(
             s=s,
             project=project,
@@ -548,8 +561,7 @@ class Scheduler:
             last=last,
             max_concurrent=role.max_concurrent,
             interval=role.interval,
-            scout_interval=scout_mode.interval if scout_mode is not None else None,
-            backlog=partial(self._backlog, s, project, cfg),
+            backlog=partial(self._backlog, s, project, cfg, name),
             incidents=partial(self._incidents, s, project, cfg),
         )
 
@@ -572,17 +584,17 @@ class Scheduler:
             self._tracer.event('worker.jobs_failed', worker=worker.id, error=str(e))
             return []
 
-    def _backlog(self, s: Session, project: Project, cfg: ProjectConfig) -> Backlog:
-        target = cfg.run_slots + cfg.roles.research.buffer
+    def _backlog(self, s: Session, project: Project, cfg: ProjectConfig, name: str, buffer: int) -> Backlog:
+        """Return the project's backlog as role ``name`` fills it: ``buffer`` beyond the run slots, its own sweeps."""
+        target = cfg.run_slots + buffer
         if cfg.stop.max_runs is not None:
             target = min(target, cfg.stop.max_runs - runs(s, project))
         sweeps = count(
             s,
             select(Worker).where(
                 Worker.project_id == project.id,
-                Worker.kind == WorkerKind.RESEARCH,
+                Worker.kind == name,
                 Worker.state.in_(LIVE),
-                ~scouting(),
             ),
         )
         ready, blocked = (
@@ -603,7 +615,7 @@ class Scheduler:
             target=target,
             free=self._free_slots(s, project, cfg, cfg.roles.doing_runs()),
             sweeps=sweeps,
-            per_sweep=cfg.roles.research.max_ideas,
+            per_sweep=cfg.roles.sweeping()[name].max_ideas,
         )
 
     def _free_slots(self, s: Session, project: Project, cfg: ProjectConfig, roles: dict[str, WorkerRole]) -> int:
@@ -928,15 +940,17 @@ class Scheduler:
         """Run a sweep, an agent without a run, in its role's ``workdir``, with a brief made from its row.
 
         Every sweep gets the project overview (``piloop.reports.overview``) in its context. A sweep that got anomalies
-        investigates them: the anomalies come first and the research pack is left out (``piloop history`` prints it).
-        For the watchdog, that is an incident sweep, and every other watchdog sweep reviews progress. The other sweeps
-        read the research pack (``piloop.reports.pack``).
+        is an incident sweep: the anomalies come first, the research pack is left out (``piloop history`` prints it),
+        and the brief adds the role's incident prompt. Every other sweep reads the research pack
+        (``piloop.reports.pack``), and its brief adds the role's routine prompt. The watchdog's are its incident sweep
+        and its progress review.
 
-        Research also gets the number of waiting seeds, its share of the backlog's shortfall, the runs since the
-        last keep against the stall mark (``piloop.campaign.stop.stall``), and the time the pack was read. With that
-        time, it can query for ideas that parallel sweeps inserted later. A scout sweep gets its seed cap, its search
-        window, the watch list and the technique library instead (``piloop.agents.scout``). Nothing that a sweep
-        commits is scored. In a worktree at the head, the commits are removed with the worktree when the agent ends.
+        A built-in role's sweep also gets the context of its role (``_context``). Research gets the number of waiting
+        seeds, its share of the backlog's shortfall, the runs since the last keep against the stall mark
+        (``piloop.campaign.stop.stall``), and the time the pack was read. With that time, it can query for ideas that
+        parallel sweeps inserted later. The scout gets its seed cap, its search window, the watch list and the
+        technique library (``piloop.agents.scout``). Nothing that a sweep commits is scored. In a worktree at the
+        head, the commits are removed with the worktree when the agent ends.
         """
         with self._db.session() as s:
             worker = s.get_one(Worker, worker_id)
@@ -963,13 +977,8 @@ class Scheduler:
                 ' of a done idea are archived, and removed from it after some days or when the disk is short; `piloop'
                 f' restore {project.name} <idea id>|<workspace path>` writes them back.',
             ]
-            contexts = {SCOUT.name: self._scout_context, WorkerKind.RESEARCH.value: self._research_context}
-            if (context := contexts.get(role.name)) is not None:
-                lines += context(s, project, cfg, worker_id, now)
+            lines += self._context(s, project, cfg, worker, now)
             incidents = assigned(s, worker_id)
-            mode = None
-            if role.kind == WorkerKind.WATCHDOG:
-                mode = WatchdogMode.INCIDENT if incidents else WatchdogMode.PROGRESS
             sections = [*lines, '']
             if incidents:
                 sections += ['## Incidents to investigate', *incidents, '']
@@ -982,7 +991,7 @@ class Scheduler:
                 worker_id,
                 reason=worker.reason or 'requested',
                 context='\n'.join(sections),
-                mode=mode,
+                incident=bool(incidents),
                 wake=lessons_overview(s, project, cfg.wake_budget(role.kind)),
             )
             project_path, project_id, base_sha = Path(project.path), project.id, base.commit_sha
@@ -1002,12 +1011,32 @@ class Scheduler:
 
         _in_worktree(repo, wt_path, start)
 
+    def _context(self, s: Session, project: Project, cfg: ProjectConfig, worker: Worker, now: datetime) -> list[str]:
+        """Return the context lines of a sweep: a built-in role's own, by the class of its table.
+
+        Another role that defines ideas (``files = "ideas"``) is told its ``max_ideas``, which ``low_water`` counts on.
+        Research's context says it with the backlog.
+        """
+        match cfg.roles.sweeping()[worker.kind]:
+            case ResearchRole() as research:
+                return self._research_context(s, project, cfg, worker.kind, research, now)
+            case ScoutRole(seeds=seeds):
+                return scout.context(s, project.id, worker.kind, worker.id, seeds, now)
+            case SweepRole(files=Files.IDEAS, max_ideas=most):
+                return [f'- New ideas of your own in this sweep: at most {most} (`max_ideas`).']
+            case _:
+                return []
+
     def _research_context(
-        self, s: Session, project: Project, cfg: ProjectConfig, _worker_id: int, now: datetime
+        self, s: Session, project: Project, cfg: ProjectConfig, name: str, role: ResearchRole, now: datetime
     ) -> list[str]:
-        """Return the context lines of a research sweep: the seeds, its share of the backlog, the stall mark."""
-        backlog = self._backlog(s, project, cfg)
-        most = cfg.roles.research.max_ideas
+        """Return the context lines of a research sweep: the seeds, its share of the backlog, the stall mark.
+
+        The backlog's target has the ``buffer`` of the role's first ``low_water`` trigger, or none without one.
+        """
+        buffer = next((t.buffer for t in role.triggers if isinstance(t, LowWaterTrigger)), 0)
+        backlog = self._backlog(s, project, cfg, name, buffer)
+        most = role.max_ideas
         own = max(min(backlog.short + most, most), 0)  # This sweep's share of the shortfall.
         seeds = count(s, select(Idea).where(Idea.project_id == project.id, Idea.status == IdeaStatus.SEED))
         without, (mark, why) = runs_without_keep(s, project), stall(cfg)
@@ -1031,13 +1060,6 @@ class Scheduler:
             f'- Finished runs since the last keep: {without}, of the {mark} that mark a stall ({why}){stalled}.',
             f'- Sweep started at: {now.strftime("%Y-%m-%d %H:%M:%S")} (UTC; the research pack below is as of then).',
         ]
-
-    def _scout_context(
-        self, s: Session, project: Project, cfg: ProjectConfig, worker_id: int, now: datetime
-    ) -> list[str]:
-        """Return the context lines of a scout sweep (``piloop.agents.scout``)."""
-        seeds = cfg.roles.research.scout.seeds if cfg.roles.research.scout is not None else SCOUT_SEEDS
-        return scout.context(s, project.id, worker_id, seeds, now)
 
     def _in_project(self, s: Session, worker: Worker) -> Path | None:
         """Return the project checkout if a sweep works in it (``workdir = "project"``), else None."""
@@ -1139,20 +1161,17 @@ class RoleTick:
     last: Worker | None
     max_concurrent: int
     interval: float
-    scout_interval: float | None
-    backlog: Callable[[], Backlog]
+    backlog: Callable[[int], Backlog]
     incidents: Callable[[], list[Incident]]
 
     def _mine(self) -> Select[Worker]:
         return select(Worker).where(Worker.project_id == self.project.id, Worker.kind == self.role)
 
     def live(self) -> int:
-        return count(self.s, self._mine().where(Worker.state.in_(LIVE), ~scouting()))
+        return count(self.s, self._mine().where(Worker.state.in_(LIVE)))
 
     def killed_streak(self) -> int:
-        states = self.s.scalars(
-            self._mine().where(~scouting()).with_only_columns(Worker.state).order_by(Worker.id.desc())
-        )
+        states = self.s.scalars(self._mine().with_only_columns(Worker.state).order_by(Worker.id.desc()))
         return len(list(itertools.takewhile(lambda state: state is WorkerState.KILLED, states)))
 
     def empty_sweeps(self, states: tuple[WorkerState, ...]) -> list[Worker]:
@@ -1163,11 +1182,8 @@ class RoleTick:
         that dies every time would be launched again on every tick.
         """
         signed = defined_by(self.s, self.project.id)
-        ended = self.s.scalars(self._mine().where(Worker.state.in_(states), ~scouting()).order_by(Worker.id.desc()))
+        ended = self.s.scalars(self._mine().where(Worker.state.in_(states)).order_by(Worker.id.desc()))
         return list(itertools.takewhile(lambda worker: f'{self.role}#{worker.id}' not in signed, ended))
-
-    def latest_scout(self) -> Worker | None:
-        return self.s.scalars(self._mine().where(scouting()).order_by(Worker.id.desc()).limit(1)).first()
 
     def routine(self) -> Worker | None:
         given = exists().where(

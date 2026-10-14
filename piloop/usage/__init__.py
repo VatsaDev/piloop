@@ -10,9 +10,9 @@ under ``piloop/usage/tallies/`` that register themselves.
 So the usage of a new harness is a spec in ``piloop.toml``. A new file format is one tally module. A new kind of
 source (a stdout log, an API) is one reader.
 
-The result always has the same shape, so one ``json_extract`` reads it in SQL. ``total`` is what the harness itself
-counts as the session's tokens. The cache fields follow the convention of the harness, and each tally's docstring
-says which convention that is.
+The result always has the same shape and the same meaning for every harness, so one ``json_extract`` reads it in SQL
+and the harnesses compare. ``input`` is the uncached input, ``cache_read`` and ``cache_write`` are the input read
+from and written to the prompt cache. ``total`` is what the harness itself counts as the session's tokens.
 """
 
 from collections.abc import Callable
@@ -33,10 +33,14 @@ class Usage:
     """The token usage of one session. ``as_json`` gives the value that ``workers.usage`` stores."""
 
     input: int
+    """The input tokens that the prompt cache did not serve."""
     output: int
     cache_read: int
+    """The input tokens that the prompt cache served."""
     cache_write: int
+    """The input tokens written to the prompt cache."""
     total: int
+    """What the harness counts as the session's tokens."""
     turns: int
     """The number of model responses (API calls) in the session."""
     source: str
@@ -74,10 +78,11 @@ class UsageSpec(BaseModel):
     reader: str = 'jsonl'
     """The reader to use. ``jsonl`` reads a JSONL session file, which the keys below describe."""
     file: str | None = None
-    """For ``jsonl``: a glob of the session file. piloop substitutes ``{home}``, ``{claude_config_dir}`` (Claude
-    Code's ``CLAUDE_CONFIG_DIR``, by default ``~/.claude``), ``{codex_home}`` (Codex's ``CODEX_HOME``, by default
-    ``~/.codex``), ``{cwd}`` (the agent's cwd, encoded as ``cwd`` says) and ``{session_id}``. Example:
-    ``{home}/.pi/agent/sessions/{cwd}/*_{session_id}.jsonl``. When the glob matches nothing, piloop tries again with
+    """For ``jsonl``: a glob of the session file. piloop substitutes ``{home}``, ``{env:NAME:default}`` (the
+    environment variable ``NAME``, or ``default`` when it is unset; a default may start with ``~``), ``{cwd}`` (the
+    agent's cwd, encoded as ``cwd`` says) and ``{session_id}``. Examples:
+    ``{home}/.pi/agent/sessions/{cwd}/*_{session_id}.jsonl``, ``{env:CLAUDE_CONFIG_DIR:~/.claude}/projects/{cwd}/*.jsonl``.
+    The service unit of the daemon (``piloop service-unit``) carries every variable that a placeholder names. When the glob matches nothing, piloop tries again with
     ``*`` for ``{cwd}``. This searches one level of folders, not deeper, and the session id makes the match unique.
     When several files match, piloop takes the newest one."""
     cwd: str = 'none'

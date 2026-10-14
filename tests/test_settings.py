@@ -3,7 +3,9 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from piloop.settings import RemoteTable, Settings, StorageSettings
+from piloop.deprecated import PiloopDeprecationWarning
+from piloop.runtime.herdr import HerdrSettings
+from piloop.settings import RemoteTable, Settings, StorageSettings, env_names, expand_env
 
 
 def test_storage_is_read_from_config_toml_under_the_home_and_the_environment_wins(
@@ -32,3 +34,38 @@ def test_eviction_needs_a_remote_and_a_remote_needs_a_kind() -> None:
         StorageSettings.model_validate({'remote': {'url': 's3://bucket'}})
     with pytest.raises(ValidationError, match='Extra inputs are not permitted'):
         StorageSettings.model_validate({'storage_class': 'STANDARD'}), 'a backend key belongs in [storage.remote]'
+
+
+def test_an_env_placeholder_is_the_variable_or_its_default_in_the_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('A_DIR', '/a')
+    monkeypatch.setenv('EMPTY', '')
+    monkeypatch.delenv('UNSET', raising=False)
+    glob = '{env:A_DIR:~/.a}/x {env:UNSET:~/.b}/y {env:EMPTY:/c} {env:UNSET}z {cwd}'
+    assert expand_env(glob) == f'/a/x {Path.home()}/.b/y /c z {{cwd}}', 'an empty variable is unset; other braces stay'
+    assert env_names(glob + ' {env:A_DIR:other}') == ['A_DIR', 'UNSET', 'EMPTY']
+
+
+def test_herdr_keys_of_config_toml_still_load_and_are_the_herdr_runtime_s(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``config.toml`` held the Herdr settings as top-level keys while they were core settings."""
+    (tmp_path / 'config.toml').write_text('tick_seconds = 1\nherdr_session = "mine"\nherdr_cli_timeout_seconds = 5\n')
+    monkeypatch.setenv('PILOOP_HOME', str(tmp_path))
+    with pytest.warns(PiloopDeprecationWarning, match=r'herdr_\w+ in config.toml is deprecated'):
+        core, herdr = Settings(), HerdrSettings()
+    assert core.tick_seconds == 1
+    assert (herdr.session, herdr.cli_timeout_seconds) == ('mine', 5)
+    (tmp_path / 'config.toml').write_text('[runtimes.herdr]\nsession = "theirs"\n')
+    monkeypatch.setenv('PILOOP_HERDR_CLI_TIMEOUT_SECONDS', '7')
+    assert (HerdrSettings().session, HerdrSettings().cli_timeout_seconds) == ('theirs', 7), 'the environment wins'
+
+
+def test_a_runtimes_value_that_is_no_table_of_tables_is_refused_and_gives_the_runtime_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv('PILOOP_HOME', str(tmp_path))
+    for text in ('runtimes = 3\nherdr_session = "mine"\n', '[runtimes]\nherdr = 3\n'):
+        (tmp_path / 'config.toml').write_text(text)
+        with pytest.raises(ValidationError, match='runtimes'):
+            Settings()
+        assert HerdrSettings().session == 'piloop', text

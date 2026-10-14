@@ -60,7 +60,6 @@ def _new_binary(*args: str, check: bool = True) -> subprocess.CompletedProcess[s
     homes = {
         'PILOOP_HOME': common.settings.home,
         'UV_TOOL_DIR': common.settings.uv_tool_dir,
-        'CLAUDE_CONFIG_DIR': common.settings.claude_config_dir,
         'PILOOP_AGENT_SKILLS_DIR': common.settings.agent_skills_dir,
     }
     try:

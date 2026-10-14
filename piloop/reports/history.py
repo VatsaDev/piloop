@@ -7,9 +7,9 @@ The history has four parts:
   session that made it, and the tokens that session used. An agent can run ``git show`` and
   ``entire checkpoint explain`` on these.
 - The starting points: imported references that a pinned idea can start from.
-- The latest research findings.
+- The latest findings on the project, of every role.
 
-The size is bounded. 60 idea rows of about 560 characters and 10 research findings of about 850 characters come to
+The size is bounded. 60 idea rows of about 560 characters and 10 findings of about 850 characters come to
 about 42 KB (about 11k tokens). Each kept candidate adds one line of about 230 characters.
 """
 
@@ -52,13 +52,14 @@ def history(s: Session, project: Project, cfg: ProjectConfig) -> str:
 def renderables(
     s: Session, project: Project, cfg: ProjectConfig, *, table_box: box.Box, heading: str = ''
 ) -> list[RenderableType]:
-    """Build the ideas table, the kept lineage, the starting points and the last research findings.
+    """Build the ideas table, the kept lineage, the starting points and the last findings on the project.
 
     The agent brief (``history``, with ``heading='## '``) and ``piloop history`` use the same renderables.
 
-    A research finding keeps up to ``FINDING_CHARS`` of its body. The lines after the first list the directions that
-    the sweep rejected, and the next sweep must read them. Watchdog findings on the project are not shown. Watchdog
-    findings on ideas show in the table. The ``links`` column shows what blocks an idea and which idea replaces
+    The findings are those on the project of every agent, whatever its role (an author ``<role>#<id>``). Each keeps up
+    to ``FINDING_CHARS`` of its body. The lines after the first of a research finding list the directions that the
+    sweep rejected, and the next sweep must read them. The findings of the orchestrator and the human are in the pack's
+    digests. The findings on ideas show in the table. The ``links`` column shows what blocks an idea and which idea replaces
     which. This stops a sweep from proposing a superseded idea again or waiting on an idea that will never run.
     """
     tracks = cfg.all_tracks
@@ -70,10 +71,10 @@ def renderables(
     newer = superseded_by(s, [i.id for i in ideas])
     evaluator_id = project.evaluator_id or 0
     kept = s.scalars(keeps(project).order_by(Candidate.id)).all()
-    research = s.scalars(
+    project_findings = s.scalars(
         select(Comment)
         .where(Comment.target_kind == TargetKind.PROJECT, Comment.target_id == project.id)
-        .where(Comment.kind == CommentKind.FINDING, Comment.author.like('research#%') | Comment.author.like('scout#%'))
+        .where(Comment.kind == CommentKind.FINDING, Comment.author.like('%#%'))
         .order_by(Comment.id.desc())
         .limit(FINDINGS_IN_HISTORY)
     ).all()[::-1]
@@ -142,8 +143,8 @@ def renderables(
             human(tokens) if tokens is not None else NONE,
             cell(c.summary or NONE),
         )
-    title = Text(f'{heading}History: research findings (last {FINDINGS_IN_HISTORY})', style='bold')
-    bodies = [Text(f'- {c.author}: {block(c.body).replace(chr(10), chr(10) + "  ")}') for c in research]
+    title = Text(f'{heading}History: findings on the project (last {FINDINGS_IN_HISTORY})', style='bold')
+    bodies = [Text(f'- {c.author}: {block(c.body).replace(chr(10), chr(10) + "  ")}') for c in project_findings]
     starts = _starting_points(s, project, cfg, table_box, heading)
     return [ideas_table, Text(), lineage, Text(), *starts, title, *bodies]
 
