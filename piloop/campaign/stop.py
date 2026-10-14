@@ -44,7 +44,7 @@ def attempt() -> ColumnElement[bool]:
 
 
 def counted() -> ColumnElement[bool]:
-    """Select the runs that ``max_runs`` and ``plateau`` count.
+    """Select the runs that ``max_runs`` counts.
 
     These are attempts that are still open, or that have a candidate that is measured or waiting for a verdict. A run
     that stopped with no commit, or with only ``Piloop-Eval: skip`` commits, does not count. Its cost is limited by
@@ -105,12 +105,16 @@ def hours(s: Session, project: Project, now: datetime) -> float | None:
 
 
 def runs_without_keep(s: Session, project: Project) -> int:
-    """Count the runs (see ``counted``) that finished after the run of the latest keep. ``plateau`` uses this number."""
+    """Count the attempts (see ``attempt``) that finished after the run of the latest keep. ``plateau`` uses this.
+
+    Unlike ``max_runs``, it counts a run with no commit or with only unmeasured commits: a stream of such runs is a
+    plateau too, and counting only measured runs let one go on until another limit ended the campaign.
+    """
     last_keep = s.scalar(
         keeps(project).join(Run, Candidate.run_id == Run.id).with_only_columns(func.max(Run.finished_at))
     )
     since = (Run.finished_at > last_keep,) if last_keep is not None else ()
-    return _over_runs(s, project, func.count(Run.id), Run.status.in_(FINISHED_RUNS), counted(), *since) or 0
+    return _over_runs(s, project, func.count(Run.id), Run.status.in_(FINISHED_RUNS), attempt(), *since) or 0
 
 
 def stall(cfg: ProjectConfig) -> tuple[int, str]:

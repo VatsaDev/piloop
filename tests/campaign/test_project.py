@@ -3,6 +3,7 @@ import re
 from pathlib import Path
 from typing import get_args, get_origin
 
+import pytest
 from git import Repo
 from pydantic import BaseModel
 from pytest_mock import MockerFixture
@@ -10,7 +11,7 @@ from pytest_mock import MockerFixture
 from piloop.agents.capture import ENTIRE_DIR
 from piloop.campaign import project as project_module
 from piloop.campaign.project import BLANK, TEMPLATES, create_project_repo, register, registered, stub_untouched
-from piloop.config import ProjectConfig, load_project_config
+from piloop.config import ConfigError, ProjectConfig, load_project_config
 from piloop.db.session import Database
 from tests.conftest import HARNESS_APPEND, write_toml
 
@@ -204,3 +205,63 @@ def test_the_baseline_is_scored_without_locking_the_database(db: Database, proje
     assert (
         projects_dir / str(project.id) / 'baseline' / 'eval.stdout'
     ).read_text() == 'METRIC score=1\nMETRIC size=5\n'
+
+
+def test_init_commits_only_the_files_it_owns_never_another_agents_work(tmp_path: Path) -> None:
+    """A finding on the campaign build: in a shared checkout, init committed another agent's uncommitted evaluator
+    work as "piloop init: …". It commits only the template's files and the ones it wrote; the rest stays as it was."""
+    dest = tmp_path / 'shared'
+    create_project_repo(dest, BLANK, {})
+    repo = Repo(dest)
+    (dest / 'tools').mkdir()
+    (dest / 'tools' / 'score.py').write_text('print(1)\n')
+    (dest / 'staged.py').write_text('a = 1\n')
+    repo.git.add('-A')
+    repo.git.commit('-qm', 'tools')
+    (dest / 'tools' / 'score.py').write_text('print(2)  # another agent, mid-edit\n')
+    (dest / 'staged.py').write_text('a = 2\n')
+    repo.git.add('staged.py')
+    (dest / 'evaluate.py').write_text('print("METRIC score=3")\n')
+    assert create_project_repo(dest, BLANK, {}) == []
+    assert repo.head.commit.summary == 'piloop init: evaluate.py'
+    assert repo.git.show('--name-only', '--format=', 'HEAD').splitlines() == ['evaluate.py']
+    assert repo.git.diff('--name-only').splitlines() == ['tools/score.py'], 'still dirty, not committed'
+    assert repo.git.diff('--cached', '--name-only').splitlines() == ['staged.py'], 'still staged, not committed'
+
+
+def test_init_leaves_out_an_owned_file_that_the_repos_ignore_file_ignores(tmp_path: Path) -> None:
+    dest = tmp_path / 'ignoring'
+    dest.mkdir()
+    (dest / '.gitignore').write_text('.entire/\n')
+    (dest / 'main.py').write_text('x\n')
+    repo = Repo.init(dest, initial_branch='main')
+    repo.git.add('-A')
+    repo.git.commit('-qm', 'first')
+    assert create_project_repo(dest, BLANK, {}) == [*ENTIRE_FILES, 'brief.md', 'evaluate.py', 'piloop.toml']
+    assert repo.head.commit.summary == 'piloop init: brief.md, evaluate.py, piloop.toml', 'git refuses to add them'
+
+
+def test_init_commits_no_config_that_is_not_valid(tmp_path: Path) -> None:
+    """A finding on the campaign build: init committed piloop.toml, then said it was not a valid config."""
+    dest = tmp_path / 'invalid'
+    create_project_repo(dest, BLANK, {})
+    repo = Repo(dest)
+    before = repo.head.commit.hexsha
+    toml = dest / 'piloop.toml'
+    toml.write_text(toml.read_text() + '\nnot_a_key = 1\n')
+    with pytest.raises(ConfigError, match='not a valid piloop config'):
+        create_project_repo(dest, BLANK, {})
+    assert repo.head.commit.hexsha == before and repo.git.diff('--name-only').splitlines() == ['piloop.toml']
+
+
+def test_init_takes_a_staged_rename_between_owned_files(tmp_path: Path) -> None:
+    """``git status`` would report ``R  brief.md -> evaluate.py``: init reads paths, not rename records."""
+    dest = tmp_path / 'renamed'
+    create_project_repo(dest, BLANK, {})
+    repo = Repo(dest)
+    repo.git.rm('-q', 'evaluate.py')
+    repo.git.commit('-qm', 'no evaluate yet')
+    repo.git.mv('brief.md', 'evaluate.py')
+    assert create_project_repo(dest, BLANK, {}) == []
+    assert repo.head.commit.summary == 'piloop init: brief.md, evaluate.py'
+    assert not repo.is_dirty()

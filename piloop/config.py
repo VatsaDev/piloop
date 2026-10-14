@@ -412,8 +412,9 @@ class Stop(BaseModel):
     """Stop when all the agents of the project together spent this many tokens (the ``total`` of ``workers.usage``),
     summed over the agents that ended."""
     plateau: int | None = Field(default=None, ge=1)
-    """Stop after this many finished runs in a row without a new ``keep`` candidate. Only the runs that ``max_runs``
-    counts are counted."""
+    """Stop after this many finished runs in a row without a new ``keep`` candidate. Every finished run counts, also
+    one with no commit or only ``Piloop-Eval: skip`` commits: such runs make no progress either. A run that a daemon
+    stop, a daemon crash or a campaign stop ended does not count."""
 
 
 class Spend(BaseModel):

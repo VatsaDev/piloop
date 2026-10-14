@@ -130,9 +130,9 @@ A campaign needs three files in your repo and a registration:
     ```
 
     In a repo without `piloop.toml`, `piloop init` writes `piloop.toml`, `brief.md` and an `evaluate.py` stub. It
-    keeps every file that exists already. It runs `git init` when necessary. Then it commits every uncommitted change
-    in the repo (`git add -A`), not only the files that it wrote, so commit or stash your own work first. Then it
-    stops, because `evaluate.py` is still the stub.
+    keeps every file that exists already. It runs `git init` when necessary. Then it commits its own files: the ones
+    it wrote, and its template's files that you changed. It never commits other changes in the repo, which may be
+    another agent's work in progress. Then it stops, because `evaluate.py` is still the stub.
 
     <Warning>
       If your repo already has an `evaluate.py`, `piloop init` keeps it and does not stop. It goes on to measure the

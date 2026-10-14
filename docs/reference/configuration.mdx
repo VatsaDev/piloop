@@ -258,7 +258,7 @@ you request with `piloop launch` after the stop still starts.
 | `max_runs` | integer \| null | `null` | Stop after this many worker runs. A run counts while it runs, and when it ends with a candidate that is measured or waits for its measurement. A run that stopped at its own first check, with no commit or only `Piloop-Eval: skip` commits, does not count. A run that a daemon stop, a daemon crash or a campaign stop ended does not count either. `[spend]` and `max_tokens` limit what those runs cost. |
 | `max_hours` | number \| null | `null` | Stop after this many hours of wall-clock time since the first run of the project started. |
 | `max_tokens` | integer \| null | `null` | Stop when all the agents of the project together spent this many tokens (the `total` of `workers.usage`), summed over the agents that ended. |
-| `plateau` | integer \| null | `null` | Stop after this many finished runs in a row without a new `keep` candidate. Only the runs that `max_runs` counts are counted. |
+| `plateau` | integer \| null | `null` | Stop after this many finished runs in a row without a new `keep` candidate. Every finished run counts, also one with no commit or only `Piloop-Eval: skip` commits: such runs make no progress either. A run that a daemon stop, a daemon crash or a campaign stop ended does not count. |
 
 ## Spend
 

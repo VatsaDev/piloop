@@ -263,26 +263,36 @@ def test_plateau_counts_finished_runs_since_the_last_keep(db: Database, project:
     assert reason(db, project) == 'plateau: 2 runs without a keep', 'an imported reference resets nothing'
 
 
-def test_only_runs_that_produced_a_measured_candidate_count_toward_max_runs_and_plateau(
-    db: Database, project: Project
-) -> None:
-    """A run with no commit, or with only ``Piloop-Eval: skip`` commits, does not count.
+def test_only_runs_that_produced_a_measured_candidate_count_toward_max_runs(db: Database, project: Project) -> None:
+    """A run with no commit, or with only ``Piloop-Eval: skip`` commits, does not count toward ``max_runs``.
 
     A run in flight counts, so the queue never starts more runs than ``max_runs`` allows. A run whose candidate waits
-    for its measurement also counts.
+    for its measurement also counts. ``plateau`` counts every finished attempt.
     """
-    configure(db, project, max_runs=3, plateau=2)
+    configure(db, project, max_runs=3)
     add_run(db, project, status=RunStatus.FAILED, error='worker produced no commits', measured=False)
     add_candidate(db, project, add_run(db, project, measured=False), Verdict.UNMEASURED, SKIPPED)
     with db.session() as s:
         row = s.get_one(Project, project.id)
-        assert (runs(s, row), runs_without_keep(s, row)) == (0, 0)
+        assert (runs(s, row), runs_without_keep(s, row)) == (0, 2)
     add_run(db, project)
     assert reason(db, project) is None, 'one measured run'
     add_candidate(db, project, add_run(db, project, measured=False), Verdict.PENDING)
-    assert reason(db, project) == 'plateau: 2 runs without a keep'
+    assert reason(db, project) is None, 'two'
     add_run(db, project, status=RunStatus.RUNNING)
     assert reason(db, project) == 'max_runs: 3 runs'
+
+
+def test_a_keep_followed_by_plateau_unmeasured_runs_stops_the_campaign(db: Database, project: Project) -> None:
+    """Finding comment#12200: ten tools-only stops after the last keep, 77M worker tokens, read "1/15 runs without a
+    keep". Every finished attempt without a keep counts toward ``plateau``, measured or not."""
+    configure(db, project, plateau=3)
+    add_run(db, project, keep_score=5.0)
+    add_run(db, project, status=RunStatus.FAILED, error='worker produced no commits', measured=False)
+    add_candidate(db, project, add_run(db, project, measured=False), Verdict.UNMEASURED, SKIPPED)
+    assert reason(db, project) is None
+    add_run(db, project, status=RunStatus.SUCCEEDED, measured=False)
+    assert reason(db, project) == 'plateau: 3 runs without a keep'
 
 
 def test_the_stall_mark_is_half_the_plateau_else_two_rounds_of_the_worker_slots() -> None:

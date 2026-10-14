@@ -67,6 +67,9 @@ def create_project_repo(dest: Path, template: Path, data: dict[str, str], *, ign
 
     Returns:
         The repo-relative paths that this call wrote.
+
+    Raises:
+        ConfigError: ``piloop.toml`` is not a valid config. Nothing is committed then: fix it and run init again.
     """
     dest.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
@@ -100,14 +103,39 @@ def create_project_repo(dest: Path, template: Path, data: dict[str, str], *, ign
     if (template / 'pyproject.toml').is_file():
         # A new project has no lockfile yet, so an inherited UV_FROZEN (as in CI) must not apply.
         subprocess.run(['uv', 'sync', '--quiet'], cwd=dest, check=True, env=child_env('UV_FROZEN'))
+    # Only a valid config is committed: it raises ConfigError, and the repo stays as it was, piloop.toml uncommitted.
+    if (dest / CONFIG_FILE).is_file():
+        load_project_config(dest)
     repo = Repo.init(dest, initial_branch='main') if not (dest / '.git').exists() else Repo(dest)
-    repo.git.add('-A')
     if not repo.head.is_valid():
+        repo.git.add('-A')
         repo.git.commit('-qm', f'{template.name}: baseline')
-    elif repo.is_dirty(index=True):
-        staged = repo.git.diff('--cached', '--name-only').splitlines()
-        repo.git.commit('-qm', f'piloop init: {", ".join(staged)}')
+        return sorted(written)
+    # Only init's own files: in a shared checkout, other dirty or staged files are someone else's work in progress.
+    owned = sorted(
+        {*written, '.gitignore', *_template_files(template), *_template_files(BLANK / ENTIRE_DIR, ENTIRE_DIR)}
+    )
+    # git status leaves out what the repo's ignore file ignores, which git add would refuse to take by name
+    # and --no-renames reports a rename as its two paths, not as one "old -> new" record
+    status = repo.git.status('--porcelain', '-z', '--no-renames', '--untracked-files=all', '--', *owned)
+    entries = [entry for entry in status.split('\0') if entry]
+    changed = sorted(entry[3:] for entry in entries)
+    # only what the work tree changed: git add refuses a path whose deletion is staged already
+    if unstaged := sorted(entry[3:] for entry in entries if entry[1] != ' '):
+        repo.git.add('-A', '--', *unstaged)
+    if changed:
+        repo.git.commit('-qm', f'piloop init: {", ".join(changed)}', '--', *changed)
     return sorted(written)
+
+
+def _template_files(template: Path, prefix: str = '') -> list[str]:
+    """The repo-relative paths of the files that ``template`` provides, as ``create_project_repo`` copies them."""
+    skipped = {'data', '.git', '.venv', '__pycache__'}
+    return [
+        str(Path(prefix) / path.relative_to(template))
+        for path in template.rglob('*')
+        if path.is_file() and not skipped & set(path.relative_to(template).parts)
+    ]
 
 
 def _slug(dest: Path) -> str:

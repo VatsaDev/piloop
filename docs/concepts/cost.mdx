@@ -38,9 +38,9 @@ The `[stop]` table ends the campaign when one of its conditions holds:
 | `max_tokens` | the agents of the project have used this many tokens. |
 | `plateau` | this many finished runs in a row produced no new keep. |
 
-`max_runs` and `plateau` skip a run that ended without a scored candidate: a run with no commit, or with only
-`Piloop-Eval: skip` commits. They also skip a run that a daemon stop or a campaign stop ended. Such a run still costs
-tokens, and `max_tokens` bounds that.
+`max_runs` skips a run that ended without a scored candidate: a run with no commit, or with only `Piloop-Eval: skip`
+commits. Such a run still costs tokens, and `max_tokens` bounds that. `plateau` counts it: it made no progress. Both
+skip a run that a daemon stop or a campaign stop ended.
 
 When a condition holds, the project becomes `stopped`. The daemon tells the running workers to commit and stop, and
 ends them 10 minutes later. It scores what they committed. It drops the queued runs and the requested agents, and

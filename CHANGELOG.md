@@ -57,6 +57,14 @@ A deprecated configuration key shows a warning for at least one minor release be
 - A message to an agent under the `subprocess` runtime is no longer refused. It waits for the agent's turn to end,
   then piloop continues the agent's session with it (`[harness.<name>] resume`, set for pi, Claude Code and Codex):
   the same queue-for-the-next-turn as under Herdr.
+- `[stop] plateau` counts every finished run without a keep, also one with no commit or only unmeasured commits.
+  Ten tools-only runs after the last keep (77M worker tokens) read "1/15 runs without a keep", so only the other
+  limits could end the campaign. The status line's count follows it. `max_runs` still skips such runs.
+- `piloop init` in an existing repo commits only its own files: the ones it wrote and its template's files. It
+  committed every dirty file (`git add -A`), and in a shared checkout it swept another agent's uncommitted work into
+  a "piloop init" commit.
+- `piloop init` validates `piloop.toml` before it commits it. It committed an invalid config, then reported it
+  invalid; now the commit waits until the config is valid.
 
 ## [0.1.0] - 2026-10-13
 
