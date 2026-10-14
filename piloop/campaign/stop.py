@@ -36,11 +36,21 @@ NOT_ATTEMPTS = (STOPPED_ERROR, STALE_ERROR, CAMPAIGN_STOPPED_ERROR, ROLE_REMOVED
 The causes are a daemon stop or restart (``piloop upgrade``), a daemon crash, a campaign stop while the run was
 queued, or a ``piloop init`` that removed the role of a queued run. Such a run is not counted as an attempt at its
 idea. It does not count toward ``max_runs`` or ``plateau``, and it is not an anomaly."""
+BLOCKED = 'blocked on escalation'
+"""How the error of a run starts when its worker stopped while its own escalation waited for an answer.
+
+The run is an attempt that failed, but not an anomaly: the escalation is in the inbox already. Its idea is parked
+until someone answers the escalation and sets the idea ``ready``."""
 
 
 def attempt() -> ColumnElement[bool]:
     """Select the runs that were an attempt at their idea: all runs except those with a ``NOT_ATTEMPTS`` error."""
     return Run.error.is_(None) | Run.error.not_in(NOT_ATTEMPTS)
+
+
+def blocked() -> ColumnElement[bool]:
+    """Select the runs that ended blocked on their worker's escalation (``BLOCKED``)."""
+    return Run.error.is_not(None) & Run.error.startswith(BLOCKED, autoescape=True)
 
 
 def scored() -> ColumnElement[bool]:

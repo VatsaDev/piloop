@@ -28,7 +28,7 @@ from piloop.agents.launcher import STARTUP_ANOMALY, TRANSCRIPT
 from piloop.campaign import inbox, spend
 from piloop.campaign.ideas import defined_by, links, runnable, superseded_by, yields
 from piloop.campaign.inbox import project_of
-from piloop.campaign.stop import attempt, hours, runs, runs_without_keep
+from piloop.campaign.stop import attempt, blocked, hours, runs, runs_without_keep
 from piloop.config import Direction, Files, Metric, ProjectConfig, Track, harness_of
 from piloop.db.events import ANOMALY_EVENT
 from piloop.db.models import (
@@ -775,7 +775,7 @@ def _failed_runs(s: Session, project: Project) -> list[Anomaly]:
             run.finished_at or run.created_at,
             f'{run.status} on {run.harness} (idea#{run.idea_id}): {cell(run.error or "no error recorded", DETAIL_CHARS)}',
         )
-        for run in s.scalars(project_runs(project.id).where(Run.status.in_(FAILED_RUNS), attempt()))
+        for run in s.scalars(project_runs(project.id).where(Run.status.in_(FAILED_RUNS), attempt(), ~blocked()))
     ]
 
 

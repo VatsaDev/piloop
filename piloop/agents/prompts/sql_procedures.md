@@ -68,14 +68,21 @@ Timestamps are UTC ISO-8601 strings.
 
 ### Link ideas
 
-- `INSERT INTO idea_links (idea_id, target_id, kind) VALUES (<new>, <n>, 'after')` makes idea `new` wait until idea n
-  is `done`.
-  - Insert one row per prerequisite. All of them must be done.
+- Link a new idea when you write it: `--after <n>` and `--supersedes <n>` on `piloop idea add` or `piloop idea
+  develop`. The idea and its links are written together.
+  - Never add a `ready` idea and then insert its `after` link: the daemon can start the idea in between.
+- `after` makes idea `new` wait until idea n is `done`.
+  - Give one `--after` per prerequisite. All of them must be done.
   - Then `new` starts from the head like any other run. A prerequisite's branch keep is reached only by a pin.
   - Meanwhile, `new` stays `ready`, and `piloop status` shows it as `blocked by idea#n (<status>)`.
   - A prerequisite that ends `rejected` or `parked` blocks until someone parks the dependent idea or deletes the link:
     `DELETE FROM idea_links WHERE idea_id = <new> AND target_id = <n> AND kind = 'after'`.
-- `kind = 'supersedes'` says that `new` is a sharper version of n.
+- To link an idea that exists already, take it out of the queue first:
+  1. `UPDATE ideas SET status = 'proposed' WHERE id = <new> AND status = 'ready'`. If no row changed, the daemon
+     took the idea already.
+  2. `INSERT INTO idea_links (idea_id, target_id, kind) VALUES (<new>, <n>, 'after')`.
+  3. `UPDATE ideas SET status = 'ready' WHERE id = <new>`.
+- `supersedes` says that `new` is a sharper version of n.
   - On its next tick, the daemon sets n to `rejected` if it never ran (no run yet, and still `seed`, `proposed` or
     `ready`), with a `note` on n that names `new`.
   - If n ran, the daemon leaves it alone.

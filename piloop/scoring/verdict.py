@@ -106,20 +106,28 @@ def decide(
     6. A guardrail whose worst case is beyond its margin is ``interesting``.
     7. Anything else is ``keep``.
 
-    The track's guardrails are the project's guardrails, then the primary of every other track.
+    The track's guardrails are the project's guardrails, then the primary of every other track. Whatever the rule
+    that decides, the reason names every guardrail past its floor or beyond its margin. A keep's reason names every
+    guardrail.
     """
     primary = track.primary
     if primary.name not in mine:
         return Verdict.CRASH, 'no successful measurement'
-    floors = [
-        f'{m.name} {metric(mine[m.name])} past its floor {metric(m.floor)}'
+    floors = {
+        m.name: f'{m.name} {metric(mine[m.name])} past its floor {metric(m.floor)}'
         for m in track.guardrails
         if m.floor is not None and m.name in mine and m.better(m.floor, mine[m.name])
-    ]
-    if floors:
-        return Verdict.DISCARD, 'floor: ' + '; '.join(floors)
+    }
+    floored = 'floor: ' + '; '.join(floors.values())
     if primary.name not in theirs:
+        if floors:
+            return Verdict.DISCARD, floored
         return Verdict.KEEP, f'{bar} has no score under the current evaluator'
+    guards = _guardrails(track, confidence, mine, theirs, mine_units, theirs_units)
+    beyond = [text for m, text, held in guards if held and m.name in mine and m.name in theirs and m.name not in floors]
+    past = f'; guardrails past their margin: {"; ".join(beyond)}' if beyond else ''
+    if floors:
+        return Verdict.DISCARD, floored + past
     p = compare(
         primary,
         mine[primary.name],
@@ -130,24 +138,38 @@ def decide(
     )
     reason = f'against {bar}: {p.text(confidence)}'
     if p.gain <= 0:
-        return Verdict.DISCARD, reason
+        return Verdict.DISCARD, reason + past
     if p.worst <= 0:
-        return Verdict.INTERESTING, f'{reason}: the gain is not significant'
-    guards: list[str] = []
-    breached = False
+        return Verdict.INTERESTING, f'{reason}: the gain is not significant{past}'
+    if guards:
+        reason += '; guardrails: ' + '; '.join(text for _, text, _ in guards)
+    return (Verdict.INTERESTING if any(breached for _, _, breached in guards) else Verdict.KEEP), reason
+
+
+def _guardrails(
+    track: Track,
+    confidence: float,
+    mine: dict[str, float],
+    theirs: dict[str, float],
+    mine_units: Units,
+    theirs_units: Units,
+) -> list[tuple[Metric, str, bool]]:
+    """Compare each guardrail with the bar. Return it, the text of the comparison, and whether it holds the keep back.
+
+    A guardrail holds the keep back when its worst case is beyond its margin, or when one side did not measure it.
+    """
+    found: list[tuple[Metric, str, bool]] = []
     for m in track.guardrails:
         if m.name not in mine or m.name not in theirs:
-            guards.append(f'{m.name} unmeasured')
-            breached = True
+            found.append((m, f'{m.name} unmeasured', True))
             continue
         g = compare(m, mine[m.name], theirs[m.name], mine_units.get(m.name), theirs_units.get(m.name), confidence)
         margin = m.margin or 0
-        beyond = g.worst < -margin
-        breached |= beyond
-        guards.append(f'{g.text(confidence)} {"beyond" if beyond else "within"} its margin {metric(margin)}')
-    if guards:
-        reason += '; guardrails: ' + '; '.join(guards)
-    return (Verdict.INTERESTING if breached else Verdict.KEEP), reason
+        breached = g.worst < -margin
+        found.append(
+            (m, f'{g.text(confidence)} {"beyond" if breached else "within"} its margin {metric(margin)}', breached)
+        )
+    return found
 
 
 def same(track: Track, mine: dict[str, float], theirs: dict[str, float]) -> bool:

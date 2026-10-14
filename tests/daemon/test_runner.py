@@ -46,6 +46,7 @@ from piloop.db.models import (
     Worker,
     WorkerKind,
     WorkerState,
+    utcnow,
 )
 from piloop.db.session import Database
 from piloop.git import pin as git_pin
@@ -59,6 +60,8 @@ from piloop.scoring.ledger import (
     current_evaluator,
     head,
     import_reference,
+    request_remeasure,
+    requested,
     resolve,
     save_units,
     units,
@@ -81,6 +84,7 @@ from tests.conftest import (
     events,
     factory,
     span_named,
+    write_script,
     write_toml,
 )
 from tests.fixtures.fake_entire import CHECKPOINT
@@ -542,6 +546,88 @@ def test_evaluate_failure_is_a_crash_verdict(
     )
 
 
+def test_a_crash_from_a_fault_of_the_host_is_measured_again_on_request_and_judged(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """A crash that the host caused (a full disk) says nothing about the code, and its tree cannot be committed again.
+
+    ``piloop candidate remeasure`` asks the daemon to measure the candidate again with the current evaluator. A crash
+    that the daemon judged is then judged as its run would have judged it: here it keeps against its own bar after the
+    head moved on, so it is rebased onto the head, and the merge is judged there.
+    """
+    fault = tmp_path / 'disk-full'
+    measure = (
+        f'test -e {fault} && exit 28; echo METRIC score=$(cat solve.txt other.txt 2>/dev/null | wc -l);'
+        ' echo METRIC size=$(wc -c < solve.txt)'
+    )
+    write_toml(Path(project.path), HARNESS_APPEND, evaluate=['sh', '-c', measure])
+    reload_project(db, project)
+    ex = executor(db, runtime, tmp_path)
+    ex.remeasure(baseline(db, project.id).id)  # the new evaluator measures the head first, as the daemon does
+    run_id = make_run(db, project)
+    fault.touch()
+    execute(ex, db, run_id)
+    [crashed] = candidates(db, run_id)
+    assert crashed.verdict is Verdict.CRASH
+    with db.session() as s:
+        request_remeasure(s, s.get_one(Candidate, crashed.id), 'orchestrator')
+        s.commit()
+    ex.remeasure(crashed.id)
+    with db.session() as s:
+        c = s.get_one(Candidate, crashed.id)
+        assert (c.verdict, len(c.measurements)) == (Verdict.CRASH, 2), 'the fault is still there: a crash again'
+    fault.unlink()
+    write_script(
+        Path(project.path).parent / 'harness.sh',
+        '#!/bin/sh\necho x > other.txt\ngit add other.txt\ngit commit -qm other\n',
+    )
+    execute(ex, db, make_run(db, project, title='elsewhere'))
+    with db.session() as s:
+        p = s.get_one(Project, project.id)
+        moved = head(s, p)
+        assert moved is not None and moved.summary == 'other', 'the head moved on meanwhile'
+        assert requested(s, p) == [], 'nobody asked'
+        request_remeasure(s, s.get_one(Candidate, crashed.id), 'orchestrator')
+        s.commit()
+        assert [c.id for c in requested(s, p)] == [crashed.id]
+
+    ex.remeasure(crashed.id)
+    with db.session() as s:
+        c = s.get_one(Candidate, crashed.id)
+        assert (c.verdict, c.verdict_by) == (Verdict.INTERESTING, DAEMON)
+        assert c.verdict_reason is not None and c.verdict_reason.startswith(
+            f'keeps against its own bar, but the head moved on to candidate#{moved.id}: against candidate#1: score 2 vs 1'
+        )
+        assert [m.error is None for m in c.measurements] == [False, False, True]
+        p = s.get_one(Project, project.id)
+        assert requested(s, p) == [], 'measured since the request'
+        merged = head(s, p)
+        assert merged is not None and (merged.parent_id, merged.run_id, merged.verdict) == (
+            moved.id,
+            run_id,
+            Verdict.KEEP,
+        )
+
+        request_remeasure(s, merged, 'orchestrator')
+        s.commit()
+        merged_id = merged.id
+    ex.remeasure(merged_id)
+    with db.session() as s:
+        c = s.get_one(Candidate, merged_id)
+        assert (len(c.measurements), c.verdict) == (2, Verdict.KEEP), 'a repeat of a judged candidate keeps its verdict'
+
+
+def test_a_remeasure_that_a_stop_cancels_records_and_judges_nothing(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    ex = executor(db, runtime, tmp_path)
+    ex.launcher.cancel()
+    ex.remeasure(baseline(db, project.id).id)
+    with db.session() as s:
+        c = s.get_one(Candidate, baseline(db, project.id).id)
+        assert (len(c.measurements), c.verdict) == (1, Verdict.KEEP), 'the stop owns the rows'
+
+
 def test_brief_carries_history_and_comments(
     db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
@@ -578,6 +664,8 @@ def test_brief_carries_history_and_comments(
     assert '| 1 ' in brief and 'first idea' in brief, 'the same history block the research agent reads'
     assert 'Tried so far' not in brief
     assert '-m piloop sql' in brief and "'worker#2', 'finding'" in brief
+    assert "VALUES ('idea', 2, 'worker#2', 'escalation', 1, '...')" in brief, 'a request is an escalation, never a note'
+    assert 'Never wait with `pgrep -f "<pattern>"`' in brief, 'a waiter that finds itself keeps the run open'
     assert '- A hunch worth a run of its own goes in your finding' in brief and 'idea seed demo' not in brief
 
 
@@ -888,6 +976,78 @@ def test_a_finding_without_a_commit_is_a_result(
     assert (run.status, run.error) == (RunStatus.SUCCEEDED, None)
     with db.session() as s:
         assert s.get_one(Idea, idea_id).status is IdeaStatus.DONE, 'not retried'
+
+
+def test_a_worker_that_stops_on_its_open_escalation_is_blocked_and_its_idea_waits_for_the_answer(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """A worker that asks for a decision and stops before it comes did not succeed, and its idea is not done.
+
+    The run fails as blocked, which no incident sweep investigates, and the idea is parked with a note that names the
+    escalation. A retry would stop on the same question, and ``done`` would release the ideas that wait for it.
+    """
+    run_id = make_run(db, project, max_runs=2)
+    with db.session() as s:
+        idea_id, worker_id = run_row(db, run_id).idea_id, s.scalars(select(Worker.id)).one()
+    ask = (
+        'INSERT INTO comments (target_kind, target_id, author, kind, priority, body) VALUES'
+        f" ('idea', {idea_id}, 'worker#{worker_id}', 'escalation', 1, 'run the audit that I cannot run')"
+    )
+    report = (
+        'INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES'
+        f" ('idea', {idea_id}, 'worker#{worker_id}', 'finding', 'blocked on the audit')"
+    )
+    write_toml(
+        Path(project.path),
+        (f'#!/bin/sh\n{SQL_HINT} "{ask}"\n{SQL_HINT} "{report}"\necho line >> solve.txt\ngit commit -qam "a line"\n'),
+    )
+    reload_project(db, project)
+    execute(executor(db, runtime, tmp_path), db, run_id)
+    with db.session() as s:
+        escalation = s.scalars(select(Comment.id).where(Comment.kind == 'escalation')).one()
+        run = s.get_one(Run, run_id)
+        assert (run.status, run.error) == (RunStatus.FAILED, f'{stop.BLOCKED} comment#{escalation}')
+        assert s.get_one(Idea, idea_id).status is IdeaStatus.PARKED
+        note = s.scalars(select(Comment).where(Comment.author == 'daemon', Comment.target_id == idea_id)).one()
+        assert f'escalation comment#{escalation}' in note.body and 'set the idea ready' in note.body
+        assert [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == run_id))] == [Verdict.KEEP], (
+            'its commits are scored as any run'
+        )
+
+
+def test_an_escalation_answered_before_the_worker_stops_does_not_block_its_run(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    run_id = make_run(db, project, max_runs=2)
+    with db.session() as s:
+        idea_id, worker_id = run_row(db, run_id).idea_id, s.scalars(select(Worker.id)).one()
+        s.add(
+            Comment(
+                target_kind=TargetKind.RUN,
+                target_id=run_id,
+                author=f'worker#{worker_id}',
+                kind='escalation',
+                priority=1,
+                body='may I use the cache?',
+                acked_at=utcnow(),
+                acked_by='orchestrator',
+            )
+        )
+        s.add(
+            Comment(
+                target_kind=TargetKind.IDEA,
+                target_id=idea_id,
+                author='watchdog#9',
+                kind='escalation',
+                priority=1,
+                body='not the worker',
+            )
+        )
+        s.commit()
+    execute(executor(db, runtime, tmp_path), db, run_id)
+    assert (run_row(db, run_id).status, run_row(db, run_id).error) == (RunStatus.SUCCEEDED, None)
+    with db.session() as s:
+        assert s.get_one(Idea, idea_id).status is IdeaStatus.DONE
 
 
 def test_uncommitted_changes_without_a_finding_are_scored_but_not_an_attempt_that_finished(

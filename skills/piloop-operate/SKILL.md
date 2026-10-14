@@ -114,7 +114,8 @@ PILOOP_ACTOR=orchestrator piloop idea add <name> "<title>" --hypothesis "…" --
   --from "<what prompted it: comment#…, a digest, a loss table>" --priority 1
 ```
 
-- `--base <candidate>` sets the start. `--after` and `--supersedes` link it to other ideas.
+- `--base <candidate>` sets the start. `--after` and `--supersedes` link it to other ideas, in the same write as the
+  idea. Never add a `ready` idea and then insert its `after` link: the daemon can start it in between.
 - Priority is 0 (urgent) to 4 (someday).
 - Add `--proposed` when the human should look at it first.
 - Your ideas carry context that research does not have: the digests, the loss analysis, the human's direction.
@@ -182,6 +183,10 @@ The research pack of every sweep then lists it under the analysis artifacts, new
   characters) and a query for the full text, so put the instruction in the first line.
 - `comment.delivered` on the worker confirms that the comment arrived.
 - `piloop prompt <worker> "<text>"` sends text directly, when no comment is worth keeping. It needs `runtime = "herdr"`.
+- A comment on the project reaches no worker. When a decision changes the work of a running worker, write it on its
+  run, not on the project.
+- A worker asks for what it cannot do itself with an escalation. When its run ends before the answer, the run fails as
+  `blocked on escalation` and its idea is parked. Answer with a `decision` on the idea, then set it `ready`.
 
 ### Start from a tree outside the lineage
 
@@ -386,7 +391,9 @@ UPDATE candidates SET verdict = 'interesting', verdict_by = 'orchestrator', verd
 ```
 
 - The daemon never overwrites a verdict that it did not set.
-- A suspicious jump: add a measurement with another seed and look at the mean.
+- A suspicious jump: `piloop candidate remeasure <c>` adds one more measurement, and the score is the mean.
+- A `crash` that the host caused (a full disk, a lost GPU): `piloop candidate remeasure <c>`. The daemon measures it
+  again and judges the crash again. Never queue an idea with a no-op change to get a new tree measured.
 
 Rules:
 

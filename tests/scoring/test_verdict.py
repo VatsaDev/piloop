@@ -256,3 +256,48 @@ def test_every_other_track_primary_is_a_guardrail_with_its_margin_and_floor() ->
     assert decide(accuracy, 0.95, {**pricier, 'cost': 10.5}, theirs, {}, {}, bar=BAR)[0] is Verdict.KEEP
     assert same(serving, {**theirs, 'eval_seconds': 3.0}, theirs)
     assert not same(serving, {**theirs, 'acc': 96.0}, theirs), "another track's primary decides too"
+
+
+def test_every_guardrail_past_its_margin_is_in_the_reason_whatever_the_primary_did() -> None:
+    """A flat primary, a gain that is not significant or a floor discard still names each guardrail past its margin.
+
+    Otherwise the reason of a discard or an ``interesting`` hides a large regression of another metric.
+    """
+    cfg = config(COVERAGE, ERRORS)
+    theirs = {'accuracy': 80.0, 'coverage': 1020.0, 'errors': 300.0}
+    flat = {'accuracy': 80.0, 'coverage': 1005.0, 'errors': 420.0}
+    assert decide(*rule(cfg), flat, theirs, {}, {}, bar=BAR) == snapshot(
+        (
+            Verdict.DISCARD,
+            'against candidate#73: accuracy 80 vs 80 (+0; aggregate: no per-unit results); guardrails past their margin: coverage 1005 vs 1020 (-15; aggregate: no per-unit results) beyond its margin 10; errors 420 vs 300 (+120; aggregate: no per-unit results) beyond its margin 50',
+        )
+    )
+    mine_accuracy, theirs_accuracy = records(CONCENTRATED)
+    noisy = decide(
+        *rule(cfg),
+        {'accuracy': 93.0, 'coverage': 1020.0, 'errors': 420.0},
+        {'accuracy': 69.0, 'coverage': 1020.0, 'errors': 300.0},
+        {'accuracy': mine_accuracy},
+        {'accuracy': theirs_accuracy},
+        bar=BAR,
+    )
+    assert noisy == snapshot(
+        (
+            Verdict.INTERESTING,
+            'against candidate#73: accuracy 93 vs 69 (+24; 95% worst case -1 over 69 units): the gain is not significant; guardrails past their margin: errors 420 vs 300 (+120; aggregate: no per-unit results) beyond its margin 50',
+        )
+    )
+    floored = {'accuracy': 90.0, 'coverage': 990.0, 'errors': 420.0}
+    assert decide(*rule(cfg), floored, theirs, {}, {}, bar=BAR) == snapshot(
+        (
+            Verdict.DISCARD,
+            'floor: coverage 990 past its floor 1000; guardrails past their margin: errors 420 vs 300 (+120; aggregate: no per-unit results) beyond its margin 50',
+        )
+    )
+    assert decide(*rule(cfg), floored, {}, {}, {}, bar=BAR) == snapshot(
+        (Verdict.DISCARD, 'floor: coverage 990 past its floor 1000')
+    ), 'an unscored bar has no margins to compare'
+    within = {'accuracy': 80.0, 'coverage': 1015.0, 'errors': 320.0}
+    assert decide(*rule(cfg), within, theirs, {}, {}, bar=BAR)[1] == snapshot(
+        'against candidate#73: accuracy 80 vs 80 (+0; aggregate: no per-unit results)'
+    ), 'a guardrail within its margin adds nothing to a discard'

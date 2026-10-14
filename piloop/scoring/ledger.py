@@ -13,7 +13,7 @@ from statistics import fmean
 
 from git import Repo
 from git.exc import BadName
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from piloop import git
@@ -22,6 +22,7 @@ from piloop.db.events import emit
 from piloop.db.models import (
     Candidate,
     Evaluator,
+    Event,
     Idea,
     IdeaStatus,
     Project,
@@ -144,6 +145,54 @@ def head_unmeasured(s: Session, project: Project) -> bool:
     """Whether the head has no measurement from the current evaluator: the queue then holds the unpinned ideas."""
     trunk = head(s, project)
     return trunk is not None and not measured(trunk, project.evaluator_id or 0)
+
+
+REMEASURE_REQUESTED = 'candidate.remeasure_requested'
+"""The event on a candidate that someone asked the daemon to measure again (``request_remeasure``)."""
+
+
+class RemeasureRefused(Exception):
+    """``request_remeasure`` cannot ask for the candidate. The message says why."""
+
+
+def request_remeasure(s: Session, candidate: Candidate, actor: str) -> None:
+    """Ask the daemon to measure ``candidate`` again with the current evaluator. The caller commits.
+
+    Use it for a measurement that a fault of the host spoiled (a full disk, a lost GPU), or for one more repeat. The
+    request is the ``REMEASURE_REQUESTED`` event, and ``requested`` lists it until a newer measurement exists. The
+    daemon judges a ``crash`` again (``RunExecutor.remeasure``). Any other verdict stays.
+
+    Raises:
+        RemeasureRefused: the daemon never measures the candidate (``pending``, ``unmeasured`` or ``recovered``).
+    """
+    if candidate.verdict in (Verdict.PENDING, Verdict.UNMEASURED, Verdict.RECOVERED):
+        raise RemeasureRefused(f'candidate#{candidate.id} is {candidate.verdict}: the daemon never measures it again')
+    emit(s, REMEASURE_REQUESTED, TargetKind.CANDIDATE, candidate.id, actor=actor)
+
+
+def requested(s: Session, project: Project) -> list[Candidate]:
+    """Return the candidates that someone asked to measure again, with no measurement since, oldest request first.
+
+    Only a measurement with the current evaluator answers a request.
+    """
+    evaluator_id = project.evaluator_id or 0
+    asks = s.execute(
+        select(Event.target_id, func.max(Event.at))
+        .join(Candidate, Candidate.id == Event.target_id)
+        .where(
+            Event.kind == REMEASURE_REQUESTED,
+            Event.target_kind == TargetKind.CANDIDATE,
+            Candidate.project_id == project.id,
+        )
+        .group_by(Event.target_id)
+        .order_by(func.max(Event.id))
+    ).all()
+    found: list[Candidate] = []
+    for candidate_id, asked in asks:
+        candidate = s.get_one(Candidate, candidate_id)
+        if all(m.created_at < asked for m in candidate.measurements if m.evaluator_id == evaluator_id):
+            found.append(candidate)
+    return found
 
 
 def references(s: Session, project: Project) -> list[Candidate]:

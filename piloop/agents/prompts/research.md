@@ -163,7 +163,7 @@ A UNIQUE error on the title means someone proposed it first. Extend their idea w
 Propose fewer ideas only when what is left duplicates work already queued. Name that work in your finding.
 When the evidence is incomplete, make the missing measurement the idea's first check.
 
-More options for `idea add`:
+More options for `idea add` (`--after` and `--supersedes` also work on `idea develop`):
 
 - `--priority`: 0 urgent … 4 someday.
 - `--after <idea>`: when it only makes sense once that idea is done. It then starts from the head, which has what that

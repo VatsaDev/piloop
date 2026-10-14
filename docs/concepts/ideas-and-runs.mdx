@@ -92,8 +92,16 @@ the idea did not work, and says so in the message. What it leaves uncommitted, p
 `recovered` candidate: never measured, never kept. When the run did not succeed (the worker died, was killed or timed
 out), the idea goes back to the queue with that candidate as its base, so a new worker finishes the work.
 
+The run ends when the worker stops with nothing left running. A job that the worker started keeps the run open. Under
+the `herdr` runtime, a worker that left its finding and went idle while such a job still runs is told once which
+jobs keep its run open, so that it can kill the ones that it forgot.
+
 After the worker ends, the daemon scores each new commit. The idea becomes `done`. If the run failed or timed out and
 the idea has attempts left, the idea goes back to `ready` instead. An idea has two attempts by default.
+
+A worker asks for what it cannot do or decide itself with an `escalation`, never a `note`: a note goes to no inbox. A
+run whose worker stops while its escalation waits for an answer is blocked. It fails, and its idea is `parked`. Answer
+the escalation with a `decision` on the idea, which the next run reads in its brief, then set the idea `ready`.
 
 A run whose agent could not be launched, or that ended within two minutes without a token, a commit or a comment, is not
 an attempt. The daemon starts the same run again with a new worker, up to two times. If the third start fails too,
@@ -113,6 +121,8 @@ A worker can end a commit message with a trailer:
   seconds, the daemon queues the first line of the comment (up to 200 characters) for the worker, with a query for
   the full text. Put the instruction in the first line.
 - `piloop prompt <worker-id> "<text>"` sends text to a worker directly.
+- A comment on the project reaches no worker. When a decision changes the work of a running worker, write it on its
+  run.
 
 A message never cuts the worker's current turn short. It waits for the turn to end. An idle worker takes it at once.
 The [runtime](/concepts/runtimes#built-in-runtimes) of the worker defines how the message reaches it, and when it

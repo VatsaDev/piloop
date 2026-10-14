@@ -42,7 +42,8 @@ def serve(
 def stop(*, timeout: Annotated[float, cyclopts.Parameter(help='Seconds to wait for the daemon to exit.')] = 30) -> None:
     """Stop the running daemon with SIGTERM, and wait for it to exit.
 
-    The daemon kills the agents that are running, and their runs fail.
+    The daemon kills the agents that are running, and their runs fail. A run whose worker already left its finding is
+    finished instead: the next daemon scores its commits.
     """
     pid = running_pid(common.settings)
     if pid is None:

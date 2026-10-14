@@ -19,6 +19,8 @@ PRIORITY_HELP = 'From 0 (urgent) to 4 (someday).'
 FAMILY_HELP = 'The mechanism family. Ideas that try the same mechanism share it.'
 BASE_HELP = 'The candidate id to start from instead of the head. This makes a branch.'
 TRACK_HELP = 'The track it works on. Required when piloop.toml has more than one track.'
+AFTER_HELP = 'An idea id to wait for. Repeatable. The idea runs from the head when all are done.'
+SUPERSEDES_HELP = 'An idea id that this idea refines. Repeatable. The daemon rejects each one that never ran.'
 
 
 @app.command(name='add')
@@ -45,21 +47,14 @@ def idea_add(
         bool, cyclopts.Parameter(help='Wait for a review before the daemon schedules the idea.')
     ] = False,
     track: Annotated[str | None, cyclopts.Parameter(help=TRACK_HELP)] = None,
-    after: Annotated[
-        tuple[int, ...],
-        cyclopts.Parameter(help='An idea id to wait for. Repeatable. The idea runs from the head when all are done.'),
-    ] = (),
-    supersedes: Annotated[
-        tuple[int, ...],
-        cyclopts.Parameter(
-            help='An idea id that this idea refines. Repeatable. The daemon rejects each one that never ran.'
-        ),
-    ] = (),
+    after: Annotated[tuple[int, ...], cyclopts.Parameter(help=AFTER_HELP)] = (),
+    supersedes: Annotated[tuple[int, ...], cyclopts.Parameter(help=SUPERSEDES_HELP)] = (),
 ) -> None:
     """Add a defined idea, which the daemon schedules in priority order once it is ready.
 
     The `files` key of a role says whether its agents may add ideas, only file seeds (`piloop idea seed`), or
-    neither. The orchestrator and humans may add ideas. The idea is signed as PILOOP_ACTOR.
+    neither. The orchestrator and humans may add ideas. The idea is signed as PILOOP_ACTOR. The idea and its links
+    are written together, so the daemon never sees the idea without them.
     """
     with common.session() as s:
         project = common.project(s, ref)
@@ -82,10 +77,7 @@ def idea_add(
             base_candidate_id=base,
             status=IdeaStatus.PROPOSED if proposed else IdeaStatus.READY,
             created_by=common.settings.actor,
-            links=[
-                *(IdeaLink(target_id=t, kind=LinkKind.AFTER) for t in after),
-                *(IdeaLink(target_id=t, kind=LinkKind.SUPERSEDES) for t in supersedes),
-            ],
+            links=links_to(after, supersedes),
         )
         s.add(idea)
         s.flush()
@@ -166,12 +158,15 @@ def idea_develop(
     proposed: Annotated[
         bool, cyclopts.Parameter(help='Wait for a human review before the daemon schedules the idea.')
     ] = False,
+    after: Annotated[tuple[int, ...], cyclopts.Parameter(help=AFTER_HELP)] = (),
+    supersedes: Annotated[tuple[int, ...], cyclopts.Parameter(help=SUPERSEDES_HELP)] = (),
 ) -> None:
     """Develop a seed into a defined idea that the daemon can schedule.
 
     The hypothesis, the evidence, the check, the metric and the effect are all required, because the worker needs
     each one. Reject a seed that does not hold up instead, with a note that names the earlier work (see
-    `piloop schema`). The idea is signed as PILOOP_ACTOR.
+    `piloop schema`). The idea is signed as PILOOP_ACTOR. The idea and its links are written together, so the daemon
+    never sees the ready idea without them.
     """
     with common.session() as s:
         idea = s.get(Idea, idea_id)
@@ -185,8 +180,20 @@ def idea_develop(
             develop(idea, definition, title=title, family=family, base=base, priority=priority, proposed=proposed)
         except (NotASeed, ValueError) as e:
             raise SystemExit(str(e)) from e
+        idea.links.extend(links_to(after, supersedes))
         s.commit()
         common.console.print(f'idea#{idea.id} {idea.status} p{idea.priority}: {idea.title}', markup=False)
+
+
+def links_to(after: tuple[int, ...], supersedes: tuple[int, ...]) -> list[IdeaLink]:
+    """Return the links of a new or developed idea, which the caller writes in the transaction of the idea.
+
+    An ``after`` link inserted once the idea is ``ready`` can come too late: the daemon may queue a run in between.
+    """
+    return [
+        *(IdeaLink(target_id=t, kind=LinkKind.AFTER) for t in after),
+        *(IdeaLink(target_id=t, kind=LinkKind.SUPERSEDES) for t in supersedes),
+    ]
 
 
 def filing(project: Project) -> Files | None:

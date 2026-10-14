@@ -68,6 +68,13 @@ A deprecated configuration key shows a warning for at least one minor release be
   runtimes, triggers, harnesses and role defaults, the `Runtime` methods, the `[stop]` keys and the environment
   variables are generated from the code, so they no longer drift. The extension points page gives each extension
   point its contract, a generated table of the built-ins, and how to add your own, or says that you cannot yet.
+- `piloop candidate remeasure <id>` asks the daemon to measure a candidate again with the current evaluator, for a
+  measurement that a fault of the host spoiled or for one more repeat. A `crash` that the daemon judged is judged
+  again with the new measurement. Before, the only way was an idea with a no-op change, to get a new tree.
+- `piloop idea develop` takes `--after` and `--supersedes`, like `piloop idea add`. The links are written in the same
+  transaction as the idea.
+- Under the Herdr runtime, a worker that left its finding and went idle while jobs that it started still run is told
+  once which jobs keep its run open.
 
 ### Changed
 
@@ -99,6 +106,17 @@ A deprecated configuration key shows a warning for at least one minor release be
 - A commit marked `Piloop-Eval: skip` gets the new verdict `unmeasured` instead of `discard`, so scaffolding no longer
   counts as a dead end in the history, the research pack or agents' queries. Migration `0003` converts the daemon's
   existing skip discards.
+- The reason of every verdict names each guardrail past its floor or beyond its margin. A `discard` on the primary
+  metric, a gain that is not significant and a floor discard named none of them, so a large regression of another
+  metric was hidden.
+- A run whose worker stops while its own escalation waits for an answer fails with `blocked on escalation
+  comment#<id>`, and its idea is `parked` with a note, instead of `succeeded` and `done`. It is not an anomaly: the
+  escalation is in the inbox already.
+- The worker brief says to ask for what a worker cannot do itself with an escalation, never a note; to wait for a job
+  by its process id, never with `pgrep -f`, which finds the waiter itself; and that only the comments on its run or
+  its idea are for it.
+- The SQL procedures and the operate skill link an idea when it is written (`--after`, `--supersedes`), not with an
+  `INSERT` after a `ready` add.
 
 ### Deprecated
 
@@ -117,6 +135,9 @@ A deprecated configuration key shows a warning for at least one minor release be
 
 - An agent whose start failed after its process was spawned is now stopped and waited for. Before, the process
   ran on with nothing that watched it, and was never reaped.
+- A daemon stop no longer sets the idea of a run whose worker had left its finding back to `ready`, which started the
+  same work again. The stop closes the run as finished, and the next daemon scores its pinned commits and settles the
+  idea.
 - A Herdr server that does not answer for a moment (`server_unavailable`, or a `herdr` call that times out) no longer
   ends the agents the daemon watches: reads are retried for `herdr_unavailable_seconds` (300) before they fail.
 - A Herdr agent is no longer closed during its first turn. Its brief has a startup grace

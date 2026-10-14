@@ -52,6 +52,13 @@ Each verdict has a reason. This one is from the enwik8 example campaign:
 against candidate#33: bytes 2361893 vs 2365922 (-4029; aggregate: no per-unit results); guardrails: seconds 24.48 vs 23.28 (+1.2; aggregate: no per-unit results) within its margin 10
 ```
 
+The reason names every guardrail past its floor or beyond its margin, whatever rule decided the verdict. So the
+reason of a `discard` on the primary metric still shows a large regression of a guardrail:
+
+```text
+against candidate#33: bytes 2365922 vs 2365922 (+0; aggregate: no per-unit results); guardrails past their margin: seconds 41.3 vs 23.28 (+18.02; aggregate: no per-unit results) beyond its margin 10
+```
+
 A candidate whose primary and guardrail values equal those of its parent has `no-op` in its reason. The change did
 not reach what the evaluate command measures.
 
@@ -96,6 +103,20 @@ bar, it is `interesting`, with a reason that starts with `keeps against its own 
 The daemon then merges the second candidate onto the new head, as a commit with two parents. The merge is a new
 candidate of the same run, and the daemon measures and judges it against the new head. If the merge has conflicts,
 the daemon files a seed `Compose candidate#N onto the head` instead.
+
+## Measure a candidate again
+
+A fault of the host, such as a full disk, can crash a measurement of good code. The same tree committed again is the
+same candidate, so the daemon does not measure it again by itself. Ask for it:
+
+```bash
+piloop candidate remeasure 42
+```
+
+The daemon measures the candidate again with the current evaluator, after the keeps that a new evaluator needs. A
+`crash` that the daemon judged is judged again with the new measurement, as its run would have judged it. Any other
+verdict stays, and the new measurement is one more repeat in the mean. A `pending`, `unmeasured` or `recovered`
+candidate is never measured this way.
 
 ## Override a verdict
 

@@ -75,8 +75,10 @@ piloop stop [--timeout SECONDS]
 ```
 
 Sends SIGTERM to the daemon and waits up to `--timeout` seconds (default 30) for it to exit. The daemon stops the
-running agents, and their runs fail with `daemon stopped`. The projects stay active, and the next `piloop serve`
-continues them. A campaign ends only at its `[stop]` limits.
+running agents, and their runs fail with `daemon stopped`. Their ideas go back to `ready`. A run whose worker already
+left its finding is finished, not stopped: the next `piloop serve` scores its commits, and its idea does not run
+again. The projects stay active, and the next `piloop serve` continues them. A campaign ends only at its `[stop]`
+limits.
 
 ### piloop restart
 
@@ -145,7 +147,19 @@ Develops a seed into a defined idea. Every one of these is required:
 | `--metric` | What decides success: the primary metric, or the part of it that the idea targets. |
 | `--effect` | The expected size of the effect, in the metric's units, and why. |
 
-Optional: `--plan`, `--title`, `--family`, `--base`, `--priority` (default: the seed's) and `--proposed`.
+Optional: `--plan`, `--title`, `--family`, `--base`, `--priority` (default: the seed's), `--proposed`, `--after` and
+`--supersedes`. As with `idea add`, the links are written together with the idea, so the daemon never takes the idea
+without them.
+
+### piloop candidate remeasure
+
+```text
+piloop candidate remeasure CANDIDATE_ID
+```
+
+Asks the daemon to measure the candidate again with the current evaluator, for a measurement that a fault of the host
+spoiled, or for one more repeat. A `crash` that the daemon judged is judged again. Any other verdict stays. See
+[Measure a candidate again](/concepts/verdict#measure-a-candidate-again).
 
 ### piloop candidate import
 

@@ -13,6 +13,10 @@ Work until the idea is fairly tested, then stop.
 - A job that runs elsewhere (a Modal app, a remote host) is not a process of yours here. Keep a local process that
   waits for it, by following its logs or polling its status until it ends. Otherwise your run ends as soon as you go
   idle.
+- Wait for a local job by its process id: `wait <pid>`, or `while kill -0 <pid>; do sleep 60; done`. Get the id from
+  `$!` when you start the job.
+- Never wait with `pgrep -f "<pattern>"`. The command line of the waiting shell contains the pattern, so `pgrep`
+  finds the waiter itself. The waiter never ends, and it keeps your run open.
 
 ## Watch your experiments
 
@@ -58,13 +62,26 @@ If you stop with neither, the run counts as interrupted and the idea is retried.
 - Write only comments:
   - progress `note`s on your run (see above);
   - one `finding` on your idea when you are done: what you tried, what moved the metric, what did not and why. The next
-    worker and the research agent read it, so they do not repeat your work.
+    worker and the research agent read it, so they do not repeat your work;
+  - an `escalation` on your idea when you need something that you cannot do or decide yourself (see below).
 - Do not change `runs`, `candidates`, `measurements`, other ideas or `workers`.
 
 Did you find something worth a run of its own, such as a loss your idea does not touch, or a mechanism you could not
 test here? Write it in your finding, in one line, with pointers to what you saw (ids, paths, the number). Research
 reads the workers' findings against everything tried so far.
 You file no ideas or seeds: `idea add` and `idea seed` refuse a worker.
+
+## When you need the orchestrator
+
+A `note` is a log entry. It goes to no inbox, and nobody acts on it. Never ask for anything in a note.
+
+- When you need an action, an input or an approval that you cannot get yourself, write an `escalation` on your idea.
+  Give it a priority from 0 (urgent) to 4. The brief's context has the statement.
+- The escalation goes to the inbox of the orchestrator and the human. Its answer is a `decision` on your idea.
+- Do not wait in a loop for the answer. Work on what does not need it. If you cannot go on without it, commit what you
+  have, leave your finding and stop.
+- A run that ends while its escalation waits for an answer is blocked, not finished. Its idea is parked until someone
+  answers. The next run of the idea reads the answer in its brief.
 
 ## Earlier candidates
 
@@ -91,6 +108,9 @@ when your current turn ends:
 - A `decision` is an instruction from the human or the orchestrator. Read the full body with the SQL tool and follow
   it, even when it stops your current plan.
 - A `note` or `finding` from another agent is information. Weigh it. Do not stop for it.
+- Only the comments on your idea and your run are for you. A comment on the project is for the orchestrator. Do not
+  watch the database for one, and do not stop a job for one. When a decision changes your work, it comes on your run
+  or your idea.
 - Do not reply with a comment of your own just to reply. Your `finding` at the end is the reply.
 
 ## The workspace is archived

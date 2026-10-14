@@ -42,6 +42,7 @@ from piloop.campaign.memory import sync_documents
 from piloop.campaign.project import WORKSPACE, project_dir, workspace_dir, worktree_links
 from piloop.campaign.spend import SpendError
 from piloop.campaign.stop import (
+    BLOCKED,
     CAMPAIGN_STOPPED_ERROR,
     ROLE_REMOVED,
     STALE_ERROR,
@@ -64,7 +65,7 @@ from piloop.config import (
     ideas_taken,
 )
 from piloop.daemon.archiver import Archiver, Archiving
-from piloop.daemon.runner import RunExecutor
+from piloop.daemon.runner import RunExecutor, left_finding, open_escalation
 from piloop.db.events import ANOMALY_EVENT, emit
 from piloop.db.models import (
     LIVE,
@@ -92,9 +93,10 @@ from piloop.otel import Tracer
 from piloop.reports.overview import anomalies, assigned, overview, reported
 from piloop.reports.pack import pack
 from piloop.reports.wake import lessons_overview
-from piloop.runtime import Outcome
+from piloop.runtime import Outcome, WorkerStatus
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
-from piloop.scoring.ledger import bar_of, checkout_candidate, head, head_unmeasured, score, unmeasured
+from piloop.scoring.ledger import bar_of, checkout_candidate, head, head_unmeasured, requested, score, unmeasured
+from piloop.text import cell
 from piloop.triggers import Backlog, Fire, Incident, LowWaterTrigger, TrackBacklog
 from piloop.usage import Usage
 
@@ -115,6 +117,17 @@ WRAP_UP_PROMPT = (
     '[piloop] The campaign stopped ({reason}). Commit what you have now, with a message that says where it stands.'
     ' Leave your finding and stop. This session ends in {minutes:g} minutes.'
 )
+JOBS_LEFT = 'worker.jobs_left'
+"""Event on a worker that left its finding and went idle while jobs that it started still ran.
+
+The daemon told it which jobs keep its run open (``JOBS_LEFT_PROMPT``). The payload has ``jobs``, and ``error`` when the
+prompt failed. It is sent once per worker."""
+JOBS_LEFT_PROMPT = (
+    '[piloop] You left your finding, but your run stays open while these jobs that you started still run: {jobs}.'
+    ' Kill the ones that you no longer need: your run ends when you stop with nothing left running.'
+)
+JOBS_LEFT_SHOWN = 5
+"""How many of the jobs the prompt names. Each is ``<pid> <command line>``, cut to ``STEER_LINE_CHARS``."""
 STARTUP_BREAKER = 3
 """The number of a project's agents that can fail at startup within ``STARTUP_WINDOW`` before its launches pause.
 
@@ -230,14 +243,34 @@ class Scheduler:
         """Fail ``run`` and return its idea to the queue, unless a human parked or rejected it meanwhile.
 
         A run that the daemon stopped (``stop.NOT_ATTEMPTS``) is not an attempt, so its idea always goes back to
-        ``ready``.
+        ``ready``. A running run whose worker left its finding is not failed: it is handed off (``_hand_off``).
         """
+        worker = s.scalars(select(Worker).where(Worker.run_id == run.id).order_by(Worker.id.desc()).limit(1)).first()
+        if run.status is RunStatus.RUNNING and worker is not None and left_finding(s, run, worker):
+            self._hand_off(s, run)
+            return
         run.status, run.error, run.finished_at = RunStatus.FAILED, error, utcnow()
         emit(s, 'run.finished', TargetKind.RUN, run.id, payload={'status': run.status, 'error': error})
         idea = run.idea
         if idea.status is IdeaStatus.SCHEDULED:
             idea.status = IdeaStatus.READY if attempts(idea) < idea.max_runs else IdeaStatus.DONE
         self._tracer.event('run.aborted', run=run.id, error=error)
+
+    def _hand_off(self, s: Session, run: Run) -> None:
+        """Close a run whose worker left its finding as finished, and leave its commits to be scored on the next start.
+
+        The worker reported that it is done. A job of its own may still keep the run open, but the run is not cut: its
+        idea stays ``scheduled``, so no second run redoes the work. The run thread pins the commits
+        (``RunExecutor._keep_cut_work``), and ``reap`` scores them and settles the idea (``runs.scoring``). Its status is
+        what the run's end would give: succeeded, or failed as blocked while its worker's escalation waits.
+        """
+        asked = open_escalation(s, run)
+        status, error = (
+            (RunStatus.SUCCEEDED, None) if asked is None else (RunStatus.FAILED, f'{BLOCKED} comment#{asked}')
+        )
+        run.status, run.error, run.finished_at, run.scoring = status, error, utcnow(), True
+        emit(s, 'run.finished', TargetKind.RUN, run.id, payload={'status': status, 'error': error})
+        self._tracer.event('run.handed_off', run=run.id, status=status)
 
     def _close(self, s: Session, worker: Worker, error: str) -> None:
         """Close a worker row that the launcher does not close (after a stop or a reap), and read its usage.
@@ -282,6 +315,7 @@ class Scheduler:
         """
         self._collect()
         self._push_comments()
+        self._report_jobs()
         self._wind_down()
         self._read_spend()
         if self._archiver is not None:
@@ -340,10 +374,11 @@ class Scheduler:
 
         After an evaluator change, no candidate has a score from the new evaluator. The head is measured first, then the
         other keeps, newest first, because every bar is a keep. Then the references that a run can pin are measured
-        (``unmeasured``). Runs that are not pinned wait until the head has a score (``_queue``).
+        (``unmeasured``). Runs that are not pinned wait until the head has a score (``_queue``). Then the candidates that
+        someone asked to measure again (``requested``).
         """
         key = (TargetKind.PROJECT, project.id)
-        if key in self._scoring or not (todo := unmeasured(s, project)):
+        if key in self._scoring or not (todo := unmeasured(s, project) or requested(s, project)):
             return
         self._tracer.event('candidate.remeasure', project=project.name, candidate=todo[0].id, left=len(todo))
         self._scoring[key] = self._pool.submit(self._executor.remeasure, todo[0].id)
@@ -419,6 +454,37 @@ class Scheduler:
         for comment in comments:
             emit(s, 'comment.delivered', TargetKind.WORKER, worker.id, payload={'comment': comment.id})
             self._tracer.event('comment.delivered', comment=comment.id, worker=worker.id)
+
+    def _report_jobs(self) -> None:
+        """Tell each idle worker that left its finding which of its jobs still keep its run open. Once per worker.
+
+        An idle agent is finished only when nothing that it started still runs (``Runtime.wait``). That keeps a run
+        open while its training job works. But a worker that left its finding believes that it is done, and it cannot
+        see what the runtime sees: a job that it forgot, or a waiter that never ends, such as a ``pgrep -f`` loop that
+        finds its own command line. ``JOBS_LEFT`` on the worker records the prompt, also when it failed. A runtime that
+        reports no jobs (the subprocess runtime) never gets this prompt.
+        """
+        with self._db.session() as s:
+            for worker in self._running_workers(s):
+                told = select(Event.id).where(
+                    Event.target_kind == TargetKind.WORKER, Event.target_id == worker.id, Event.kind == JOBS_LEFT
+                )
+                if s.scalar(told) is not None or not left_finding(s, s.get_one(Run, worker.run_id), worker):
+                    continue
+                if not (jobs := self._jobs(s, worker)):
+                    continue
+                runtime, handle = runtime_for(s, worker, self._runs_dir, self._runtime_factory), handle_for(worker)
+                if runtime.status(handle) is not WorkerStatus.IDLE:  # it may still stop them in this turn
+                    continue
+                payload: dict[str, object] = {'jobs': jobs}
+                named = '; '.join(cell(job, STEER_LINE_CHARS) for job in jobs[:JOBS_LEFT_SHOWN])
+                try:
+                    runtime.prompt(handle, JOBS_LEFT_PROMPT.format(jobs=named))
+                except Exception as e:  # NotSteerable, a blocked agent or a closed pane. The daemon goes on.
+                    payload['error'] = str(e)
+                emit(s, JOBS_LEFT, TargetKind.WORKER, worker.id, payload=payload)
+                self._tracer.event(JOBS_LEFT, worker=worker.id, jobs=len(jobs))
+            s.commit()
 
     def _wind_down(self) -> None:
         """Tell each worker of a stopped project to commit and stop (``WRAP_UP``), and end it after the grace period.

@@ -1,4 +1,4 @@
-"""The ``piloop candidate`` commands: import a starting point, or note a regressed result as a lead."""
+"""The ``piloop candidate`` commands: import a starting point, measure a candidate again, or note a regressed result."""
 
 from pathlib import Path
 from typing import Annotated
@@ -11,9 +11,21 @@ from piloop.cli.common import ProjectRef
 from piloop.cli.idea import filing, track_for
 from piloop.config import config_of
 from piloop.db.models import Candidate, Project
-from piloop.scoring.ledger import ImportRefused, NoteRefused, follow_up, import_reference, note, track_of
+from piloop.scoring.ledger import (
+    ImportRefused,
+    NoteRefused,
+    RemeasureRefused,
+    follow_up,
+    import_reference,
+    note,
+    request_remeasure,
+    track_of,
+)
 
-app = cyclopts.App(name='candidate', help='Import a starting point, or keep a regressed result in view as a lead.')
+app = cyclopts.App(
+    name='candidate',
+    help='Import a starting point, measure a candidate again, or keep a regressed result in view as a lead.',
+)
 
 
 @app.command(name='import')
@@ -45,6 +57,33 @@ def candidate_import(
         common.console.print(
             f'candidate#{candidate.id} reference: {candidate.summary}; the daemon measures it; start an idea from it'
             f' with `piloop idea add {project.name} "<title>" --base {candidate.id}`',
+            markup=False,
+        )
+
+
+@app.command(name='remeasure')
+def candidate_remeasure(
+    candidate_id: Annotated[int, cyclopts.Parameter(help='The candidate to measure again.')],
+    /,
+) -> None:
+    """Ask the daemon to measure a candidate again with the current evaluator.
+
+    Use it when a fault of the host spoiled a measurement (a full disk, a lost GPU), or for one more repeat. The daemon
+    measures it soon, after the keeps that a new evaluator needs. A `crash` that the daemon judged is judged again with
+    the new measurement. Any other verdict stays. A pending, unmeasured or recovered candidate is never measured.
+    """
+    with common.session() as s:
+        candidate = s.get(Candidate, candidate_id)
+        if candidate is None:
+            raise SystemExit(f'no candidate#{candidate_id}')
+        try:
+            request_remeasure(s, candidate, common.settings.actor)
+        except RemeasureRefused as e:
+            raise SystemExit(str(e)) from e
+        s.commit()
+        common.console.print(
+            f'candidate#{candidate.id} {candidate.verdict}: the daemon measures it again with the current evaluator;'
+            ' a crash is judged again',
             markup=False,
         )
 

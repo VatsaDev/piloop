@@ -9,6 +9,7 @@ from inline_snapshot import snapshot
 from sqlalchemy.orm import Session
 
 from piloop.agents.launcher import STARTUP_ANOMALY, STOPPED_ERROR
+from piloop.campaign.stop import BLOCKED
 from piloop.config import ProjectConfig, load_project_config
 from piloop.db.models import (
     Candidate,
@@ -315,6 +316,16 @@ def test_a_run_that_the_daemon_stopped_is_not_a_failed_run(db: Database, project
     with db.session() as s:
         run = s.get_one(Run, 3)
         run.status, run.error, run.finished_at = RunStatus.FAILED, STOPPED_ERROR, at(70)
+        s.commit()
+        assert f'run#{run.id}' not in {a.ref for a in found(s, project) if a.kind is AnomalyKind.RUN_FAILED}
+
+
+def test_a_run_blocked_on_its_workers_escalation_is_not_a_failed_run(db: Database, project: Project) -> None:
+    """The escalation is in the inbox already: an incident sweep would only find it again."""
+    campaign(db, project)
+    with db.session() as s:
+        run = s.get_one(Run, 3)
+        run.status, run.error, run.finished_at = RunStatus.FAILED, f'{BLOCKED} comment#9', at(70)
         s.commit()
         assert f'run#{run.id}' not in {a.ref for a in found(s, project) if a.kind is AnomalyKind.RUN_FAILED}
 

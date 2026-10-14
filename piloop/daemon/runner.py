@@ -21,7 +21,7 @@ from piloop import git
 from piloop.agents.launcher import TRANSCRIPT, Launcher
 from piloop.agents.roles import compose_brief, role
 from piloop.campaign.project import WORKSPACE, project_dir, worktree_links
-from piloop.campaign.stop import attempts
+from piloop.campaign.stop import BLOCKED, attempts
 from piloop.config import ProjectConfig, Track, config_of
 from piloop.db.events import emit
 from piloop.db.models import (
@@ -205,15 +205,20 @@ class RunExecutor:
             if outcome.startup_failed and self._relaunch(span, run_id, worker_id, log_dir):
                 return
             if self.launcher.cancelled.is_set():
-                self._keep_cut_work(run_id, cfg.name, repo, wt, base_sha, git.linked(wt_path, links))
+                cut = not self._left_finding(run_id, idea_id, worker_id)  # else the stop closed it as handed off
+                self._keep_cut_work(run_id, cfg.name, repo, wt, base_sha, git.linked(wt_path, links), noted=cut)
                 span.set(status='cancelled')
                 return
             shas = self._commits(wt, base_sha, git.linked(wt_path, links), run_id)
             finding = self._left_finding(run_id, idea_id, worker_id)
+            with self._db.session() as s:
+                asked = open_escalation(s, s.get_one(Run, run_id))
             if outcome.status is WorkerStatus.TIMED_OUT:
                 status, error = RunStatus.TIMED_OUT, outcome.error
             elif outcome.error is not None:
                 status, error = RunStatus.FAILED, outcome.error
+            elif asked is not None:  # Its question is in the inbox. A finding or a commit does not make this a success.
+                status, error = RunStatus.FAILED, f'{BLOCKED} comment#{asked}'
             elif not shas:  # A reported negative result is a result. No commit and no finding is a failure.
                 status, error = (RunStatus.SUCCEEDED, None) if finding else (RunStatus.FAILED, NO_CHANGES)
             elif not finding and all(wt.commit(sha).summary == UNCOMMITTED_SUMMARY for sha in shas):
@@ -265,11 +270,15 @@ class RunExecutor:
         span.set(status='relaunched')
         return True
 
-    def _keep_cut_work(self, run_id: int, name: str, repo: Repo, wt: Repo, base_sha: str, ignore: list[str]) -> None:
+    def _keep_cut_work(
+        self, run_id: int, name: str, repo: Repo, wt: Repo, base_sha: str, ignore: list[str], *, noted: bool
+    ) -> None:
         """Pin the work of a run that a daemon stop interrupted, uncommitted work included, and add a note on the run.
 
-        The work is not scored, because the stop owns the rows and the run is not an attempt (``stop.NOT_ATTEMPTS``).
-        The note goes into the brief of the idea's next run, which can start from those commits.
+        The stop owns the rows. A run that the stop cut is not an attempt (``stop.NOT_ATTEMPTS``): its work is not
+        scored, and the note (``noted``) goes into the brief of the idea's next run, which can start from those
+        commits. A run whose worker had left its finding was handed off: the stop closed it as finished, and the next
+        daemon scores the pinned commits (``resume``), so no note sends a new run to them.
         """
         shas = self._commits(wt, base_sha, ignore, run_id)
         if not shas:
@@ -277,6 +286,8 @@ class RunExecutor:
         prefix = f'refs/piloop/{name}/r{run_id}/'
         for i, sha in enumerate(shas):
             git.pin(repo, f'{prefix}{i}', sha)
+        if not noted:
+            return
         with self._db.session() as s:
             s.add(
                 Comment(
@@ -291,17 +302,9 @@ class RunExecutor:
             s.commit()
 
     def _left_finding(self, run_id: int, idea_id: int, worker_id: int) -> bool:
-        """Return True if the agent signed a ``finding`` on its idea or its run, as ``<role>#<id>`` or ``run#<id>``."""
-        on_idea = (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == idea_id)
-        on_run = (Comment.target_kind == TargetKind.RUN) & (Comment.target_id == run_id)
+        """Return True if the agent signed a ``finding`` on its idea or its run (``left_finding``)."""
         with self._db.session() as s:
-            signed = (f'{s.get_one(Worker, worker_id).kind}#{worker_id}', f'run#{run_id}')
-            found = s.scalar(
-                select(Comment.id)
-                .where(on_idea | on_run, Comment.kind == CommentKind.FINDING, Comment.author.in_(signed))
-                .limit(1)
-            )
-        return found is not None
+            return left_finding(s, s.get_one(Run, run_id), s.get_one(Worker, worker_id))
 
     def _commits(self, wt: Repo, base_sha: str, ignore: list[str], run_id: int) -> list[str]:
         """Return the new commits in the worktree, oldest first. Uncommitted work is committed first, on its own.
@@ -337,10 +340,12 @@ class RunExecutor:
             self._settle(span, run_id, idea_id, status, startup_failed=False, recovered=recovered)
 
     def remeasure(self, candidate_id: int) -> None:
-        """Measure a candidate with the project's current evaluator. Its verdict does not change.
+        """Measure a candidate with the project's current evaluator. Its verdict does not change, unless it is a crash.
 
         Never raises. If the evaluation cannot start, for example because the commit is gone, a crashed measurement is
-        recorded. It is a result like any other, so the candidate is not tried again with this evaluator.
+        recorded. It is a result like any other, so the candidate is not tried again with this evaluator unless someone
+        asks (``ledger.request_remeasure``). A ``crash`` that the daemon judged, from a fault of the host for example,
+        is judged again with the new measurement (``_rejudge``).
         """
         with self._db.session() as s:
             candidate = s.get_one(Candidate, candidate_id)
@@ -352,9 +357,45 @@ class RunExecutor:
         eval_dir = project_dir(self._home, project_id) / 'measure' / f'{candidate_id}-e{evaluator_id}'
         try:
             repo = git.open_repo(project_path)
-            self._measure(None, project_id, cfg, repo, sha, candidate_id, evaluator_id, eval_dir)
+            if not self._measure(None, project_id, cfg, repo, sha, candidate_id, evaluator_id, eval_dir):
+                return  # a stop killed the evaluator: there is nothing new to judge
         except Exception as e:
             self._record(None, candidate_id, evaluator_id, EvalResult({}, 0.0, f'{type(e).__name__}: {e}'))
+            return
+        self._rejudge(candidate_id, repo, eval_dir)
+
+    def _rejudge(self, candidate_id: int, repo: Repo, log_dir: Path) -> None:
+        """Judge again a ``crash`` of a run that the daemon judged, now that it has a new measurement.
+
+        It is judged as its run would have judged it (``_judge``): against the bar of its parent, a keep moves the head
+        only while that bar is the head, and else it is rebased onto the head (``_follow``). A crash that crashes again
+        stays a crash.
+        """
+        with self._db.session() as s:
+            candidate = s.get_one(Candidate, candidate_id)
+            run = candidate.run
+            if candidate.verdict is not Verdict.CRASH or candidate.verdict_by != DAEMON or run is None:
+                return
+            assert candidate.parent is not None  # a run's candidate descends from the run's base
+            cfg = config_of(run.idea.project)
+            scope = Scope(
+                run.id,
+                candidate.project_id,
+                cfg,
+                cfg.track(run.idea.track),
+                repo,
+                current_evaluator(s, run.idea.project, cfg).id,
+                run.branch,
+            )
+            s.commit()
+            bar_id, sha = bar_of(candidate.parent).id, candidate.commit_sha
+        with self._tracer.span('piloop.candidate', run=scope.run_id, commit=sha, candidate=candidate_id) as span:
+            notes = git.trailers(repo, sha, 'Piloop-Note')
+            judged = self._judge(
+                scope, candidate_id, bar_id, span, judge_now=True, skip=False, recovered=False, notes=notes
+            )
+        if judged.merged is not None:
+            self._follow(scope, judged.merged, log_dir)
 
     def _score(self, run_id: int, project_id: int, repo: Repo, shas: list[str], log_dir: Path) -> int | None:
         """Turn each new commit into a candidate, or find its existing candidate, then measure and judge it.
@@ -674,6 +715,9 @@ class RunExecutor:
         up to ``recovery_requeues`` times of the run's role (``RECOVERY_REQUEUED`` events): the idea's base becomes the
         recovered candidate, so a new worker starts from it and finishes it, and that run is judged as any other. A
         note on the idea says so.
+
+        A run whose worker's escalation still waits for an answer (``open_escalation``) parks its idea first, whatever
+        its status. A new run would stop on the same question, and ``done`` would start the ideas that wait for it.
         """
         with self.launcher.lock:
             if self.launcher.cancelled.is_set():  # stop() returns the idea to the queue.
@@ -685,7 +729,20 @@ class RunExecutor:
                 # a role that piloop init removed while the run ran requeues nothing
                 role = config_of(idea.project).roles.doing_runs().get(run.role)
                 if idea.status is IdeaStatus.SCHEDULED:  # A human may have parked or rejected it meanwhile.
-                    if (
+                    if (asked := open_escalation(s, run)) is not None:
+                        idea.status = IdeaStatus.PARKED
+                        s.add(
+                            Comment(
+                                target_kind=TargetKind.IDEA,
+                                target_id=idea.id,
+                                author=DAEMON_ACTOR,
+                                kind=CommentKind.NOTE,
+                                body=f'parked: run#{run_id} ended while its escalation comment#{asked} waits for an'
+                                ' answer. Answer it with a decision on this idea, which the next run reads in its'
+                                ' brief, then set the idea ready',
+                            )
+                        )
+                    elif (
                         recovered is not None
                         and status is not RunStatus.SUCCEEDED
                         and role is not None
@@ -768,6 +825,9 @@ class RunExecutor:
             f' `piloop restore {idea.project.name} <idea id>|<workspace path>`.',
             f'- Leave a finding on your idea when you are done: INSERT INTO comments (target_kind, target_id, author,'
             f" kind, body) VALUES ('idea', {idea.id}, '{author}', 'finding', '...').",
+            '- Ask for what you cannot do or decide yourself with an escalation, never a note: INSERT INTO comments'
+            f" (target_kind, target_id, author, kind, priority, body) VALUES ('idea', {idea.id}, '{author}',"
+            " 'escalation', 1, '...').",
             '- The history below is what was tried in this project: do not repeat it; combine or go elsewhere.',
         ]
         lines += ['', f'## Your idea (idea#{idea.id}): {idea.title}', idea.hypothesis.rstrip()]
@@ -807,6 +867,45 @@ class Judged:
 def _comment_line(c: Comment) -> str:
     where = f' on run#{c.target_id}' if c.target_kind is TargetKind.RUN else ''
     return f'- {c.author} ({c.kind}{where}): {c.body}'
+
+
+def left_finding(s: Session, run: Run, worker: Worker) -> bool:
+    """Return True if ``worker`` signed a ``finding`` on its run's idea or on the run, as ``<role>#<id>`` or ``run#<id>``.
+
+    A finding is the worker's report that it is done. Only the worker's own finding counts: a relaunched run's dead
+    worker did not finish it.
+    """
+    on_idea = (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == run.idea_id)
+    on_run = (Comment.target_kind == TargetKind.RUN) & (Comment.target_id == run.id)
+    signed = (f'{worker.kind}#{worker.id}', f'run#{run.id}')
+    found = s.scalar(
+        select(Comment.id)
+        .where(on_idea | on_run, Comment.kind == CommentKind.FINDING, Comment.author.in_(signed))
+        .limit(1)
+    )
+    return found is not None
+
+
+def open_escalation(s: Session, run: Run) -> int | None:
+    """Return the id of the first escalation that a worker of ``run`` wrote on its run or idea and nobody acknowledged.
+
+    The worker asked for something that it cannot do itself, and the answer has not come. A worker signs as
+    ``<role>#<id>`` or ``run#<id>``. Escalations of other agents on the same idea do not block the run.
+    """
+    signed = [f'{w.kind}#{w.id}' for w in s.scalars(select(Worker).where(Worker.run_id == run.id))]
+    on_idea = (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == run.idea_id)
+    on_run = (Comment.target_kind == TargetKind.RUN) & (Comment.target_id == run.id)
+    return s.scalar(
+        select(Comment.id)
+        .where(
+            on_idea | on_run,
+            Comment.kind == CommentKind.ESCALATION,
+            Comment.acked_at.is_(None),
+            Comment.author.in_([*signed, f'run#{run.id}']),
+        )
+        .order_by(Comment.id)
+        .limit(1)
+    )
 
 
 def _requeues(s: Session, idea: Idea) -> int:

@@ -17,9 +17,9 @@ from sqlalchemy import func, select
 
 from piloop import git, proc
 from piloop.agents.launcher import STARTUP_ANOMALY
-from piloop.agents.roles import compose_brief
+from piloop.agents.roles import SQL_HINT, compose_brief
 from piloop.campaign.project import sync
-from piloop.campaign.stop import STALE_ERROR
+from piloop.campaign.stop import BLOCKED, STALE_ERROR
 from piloop.config import ProjectConfig, load_project_config
 from piloop.daemon.runner import UNCOMMITTED_SUMMARY, RunExecutor
 from piloop.daemon.scheduler import STARTUP_BREAKER, STARTUP_WINDOW, STOPPED_ERROR, Scheduler
@@ -49,8 +49,8 @@ from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Tracer
 from piloop.reports.overview import SILENT_SECONDS
-from piloop.runtime import Handle
-from piloop.scoring.ledger import current_evaluator, head, import_reference, unmeasured
+from piloop.runtime import Handle, NotSteerable, WorkerStatus
+from piloop.scoring.ledger import current_evaluator, head, import_reference, request_remeasure, unmeasured
 from piloop.triggers import LowWaterTrigger
 from tests.conftest import (
     HARNESS_APPEND,
@@ -801,6 +801,60 @@ def test_stop_keeps_the_work_of_the_runs_it_cuts_pinned_and_noted_for_the_next_a
         assert (note.author, note.kind) == (DAEMON_ACTOR, CommentKind.NOTE)
         assert f'its 2 commits are pinned, unscored, at refs/piloop/demo/r1/<n> (head {head})' in note.body
         assert s.scalars(select(Candidate).where(Candidate.run_id == 1)).all() == [], 'pinned, not scored'
+
+
+@pytest.mark.parametrize('escalated', [False, True])
+def test_a_stop_after_the_worker_left_its_finding_scores_its_run_on_the_next_start_and_never_requeues_its_idea(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, escalated: bool
+) -> None:
+    """A worker that left its finding has handed its run off, even when a job of its own keeps the run open.
+
+    A stop then closes the run as succeeded instead of returning the idea to ``ready``, which would start a second run
+    of the same work. The commits are pinned and the next daemon scores them and settles the idea, as for any run whose
+    scoring a stop cut.
+    """
+    finding = (
+        "INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES ('idea', 1, 'worker#1', 'finding',"
+        " 'the handoff is in workspace/HANDOFF.md')"
+    )
+    ask = (
+        'INSERT INTO comments (target_kind, target_id, author, kind, priority, body) VALUES'
+        " ('idea', 1, 'worker#1', 'escalation', 1, 'run the audit')"
+    )
+    harness = (
+        f'#!/bin/sh\necho step >> solve.txt\ngit commit -qam "step"\n{SQL_HINT} "{finding}"\n'
+        + (f'{SQL_HINT} "{ask}"\n' if escalated else '')
+        + 'sleep 30 &\necho $! > ../child.pid\nwait\n'
+    )
+    write_toml(Path(project.path), harness, worker_timeout=60)
+    set_config(db, project)
+    (idea,) = add_ideas(db, project, 'long')
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    assert scheduler.tick() == [1]
+    pid_file = tmp_path / 'runs' / '1' / 'child.pid'
+    deadline = time.monotonic() + 10
+    while not pid_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    scheduler.stop(timeout=10)
+
+    with db.session() as s:
+        run = s.get_one(Run, 1)
+        ended = (RunStatus.FAILED, f'{BLOCKED} comment#2') if escalated else (RunStatus.SUCCEEDED, None)
+        assert (run.status, run.error, run.scoring) == (*ended, True)
+        assert s.get_one(Idea, idea).status is IdeaStatus.SCHEDULED, 'not ready: a second run would redo the work'
+        notes = s.scalars(select(Comment).where(Comment.author == DAEMON_ACTOR)).all()
+        assert notes == [], 'its commits are scored, so no note sends the next run to them'
+    [step] = git.pinned(Repo(project.path), 'refs/piloop/demo/r1/')
+    assert Repo(project.path).commit(step).summary == 'step'
+
+    restarted = make_scheduler(db, runtime, tmp_path)
+    restarted.reap()
+    restarted.wait(30)
+    with db.session() as s:
+        [candidate] = s.scalars(select(Candidate).where(Candidate.run_id == 1)).all()
+        assert (candidate.summary, candidate.verdict) == ('step', Verdict.KEEP)
+        assert s.get_one(Idea, idea).status is (IdeaStatus.PARKED if escalated else IdeaStatus.DONE)
+        assert s.get_one(Run, 1).scoring is False
 
 
 def test_stop_closes_herdr_tabs(
@@ -1824,3 +1878,85 @@ def test_low_water_counts_each_track_short_of_its_share_whatever_the_others_hold
         assert scheduler._backlog(s, p, cfg, WorkerKind.RESEARCH, 0).short == -3, (
             'no track short: the surplus, as with one track'
         )
+
+
+class WaitingRuntime(PromptingRuntime):
+    """A worker whose agent is idle or working, with one job left that never ends: a waiter that finds itself."""
+
+    def __init__(self, *, refuse: bool = False) -> None:
+        super().__init__()
+        self.state = WorkerStatus.WORKING
+        self.refuse = refuse
+
+    def jobs(self, handle: Handle) -> list[str]:
+        return ['4243 zsh -c until ! pgrep -f "train.py --plan"; do sleep 5; done']
+
+    def status(self, handle: Handle) -> WorkerStatus:
+        return self.state
+
+    def prompt(self, handle: Handle, text: str) -> None:
+        if self.refuse:
+            raise NotSteerable('agent worker-1 is blocked on an approval or question')
+        super().prompt(handle, text)
+
+
+def test_an_idle_worker_that_left_its_finding_is_told_once_which_of_its_jobs_keep_its_run_open(
+    db: Database, project: Project, tmp_path: Path, tracer: Tracer, spans: InMemorySpanExporter
+) -> None:
+    """An idle agent with a job in flight is not finished, so its run stays open, as it should for a training job.
+
+    A worker that left its finding thinks it is done, but cannot see what keeps its run open: a forgotten job, or a
+    waiter whose own command line matches its pattern. The daemon tells it once, when it is idle.
+    """
+    runtime = WaitingRuntime()
+    idea = running_worker(db, project, 'build')
+    scheduler = make_scheduler(db, runtime, tmp_path, tracer)
+    scheduler.tick()
+    assert runtime.prompts == [], 'no finding yet: the job is part of the work'
+    comment(db, 'finding', 'idea', idea, 'done; the handoff is written', author='worker#1')
+    scheduler.tick()
+    assert runtime.prompts == [], 'its turn is not over: it may still stop the job itself'
+    runtime.state = WorkerStatus.IDLE
+    scheduler.tick()
+    scheduler.tick()
+    assert runtime.prompts == [
+        (
+            'worker-1',
+            '[piloop] You left your finding, but your run stays open while these jobs that you started still run:'
+            ' 4243 zsh -c until ! pgrep -f "train.py --plan"; do sleep 5; done. Kill the ones that you no longer'
+            ' need: your run ends when you stop with nothing left running.',
+        )
+    ], 'once'
+    jobs = ['4243 zsh -c until ! pgrep -f "train.py --plan"; do sleep 5; done']
+    assert settled(db, 'worker.jobs_left') == [(1, {'jobs': jobs})]
+    assert dict(span_named(spans, 'worker.jobs_left').attributes or {}) == {'worker': 1, 'jobs': 1}
+
+
+def test_a_worker_that_cannot_take_the_list_of_its_jobs_is_not_asked_again(
+    db: Database, project: Project, tmp_path: Path
+) -> None:
+    runtime = WaitingRuntime(refuse=True)
+    runtime.state = WorkerStatus.IDLE
+    idea = running_worker(db, project, 'build')
+    comment(db, 'finding', 'run', 1, 'done', author=f'run#{idea}')
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    scheduler.tick()
+    scheduler.tick()
+    jobs = ['4243 zsh -c until ! pgrep -f "train.py --plan"; do sleep 5; done']
+    assert settled(db, 'worker.jobs_left') == [
+        (1, {'jobs': jobs, 'error': 'agent worker-1 is blocked on an approval or question'})
+    ]
+
+
+def test_the_daemon_measures_a_candidate_again_when_someone_asks(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """A requested re-measure goes through the queue of re-measures, after the keeps that a new evaluator needs."""
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    measured = mocker.patch.object(scheduler._executor, 'remeasure')
+    with db.session() as s:
+        request_remeasure(s, s.get_one(Candidate, 1), 'orchestrator')
+        s.commit()
+    scheduler.tick()
+    scheduler.wait(5)
+    measured.assert_called_once_with(1)

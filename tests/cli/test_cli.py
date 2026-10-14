@@ -19,7 +19,7 @@ from rich.console import Console
 from sqlalchemy import select
 
 from piloop.campaign import inbox, project as project_module
-from piloop.campaign.ideas import defined_by
+from piloop.campaign.ideas import defined_by, runnable
 from piloop.cli import common, inbox as inbox_cli, main as cli, project as project_cli
 from piloop.cli.version import installed
 from piloop.config import ConfigError
@@ -30,7 +30,9 @@ from piloop.db.models import (
     Candidate,
     Event,
     Idea,
+    IdeaLink,
     IdeaStatus,
+    LinkKind,
     Measurement,
     Project,
     ProjectStatus,
@@ -46,6 +48,7 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.runtime import herdr
 from piloop.runtime.herdr import HerdrSettings
+from piloop.scoring.ledger import REMEASURE_REQUESTED
 from piloop.settings import Settings
 from tests.conftest import hold_lock
 from tests.daemon.test_serve import alive, wait_until
@@ -198,6 +201,30 @@ def test_every_role_but_the_worker_files_a_seed_and_only_research_the_orchestrat
     db.close()
     with pytest.raises(SystemExit, match='no candidate#99 in project demo'):
         as_('human', 'idea', 'add', 'demo', 'from nowhere', '--base', '99')
+
+
+def test_a_seed_developed_with_its_links_is_never_runnable_without_them(
+    project_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``develop --after`` writes the idea and its links in one transaction, as ``add --after`` does.
+
+    A link inserted after the idea is ``ready`` comes too late when the daemon takes the idea in between.
+    """
+    run_cli(['init', str(project_path)])
+    monkeypatch.setattr(
+        common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', actor='research#8')
+    )
+    run_cli(['idea', 'add', 'demo', 'the prerequisite'])
+    run_cli(['idea', 'add', 'demo', 'a blunt version'])
+    run_cli(['idea', 'seed', 'demo', 'refit after it', '--from', 'run#2'])
+    define = ['--hypothesis', 'h', '--evidence', 'e', '--check', 'c', '--metric', 'score', '--effect', '+1']
+    run_cli(['idea', 'develop', '3', *define, '--after', '1', '--supersedes', '2'])
+    db = Database(common.settings.database_url, actor='test')
+    with db.session() as s:
+        links = s.execute(select(IdeaLink.idea_id, IdeaLink.target_id, IdeaLink.kind).order_by(IdeaLink.kind)).all()
+        assert [tuple(r) for r in links] == [(3, 1, LinkKind.AFTER), (3, 2, LinkKind.SUPERSEDES)]
+        assert s.scalars(select(Idea.id).where(runnable()).order_by(Idea.id)).all() == [1, 2]
+    db.close()
 
 
 def test_status_shows_why_a_campaign_stopped_and_init_resumes_it_when_the_stop_table_changes(
@@ -609,6 +636,27 @@ def test_candidate_import_registers_a_reference_shown_apart_and_refuses_a_bad_re
         run_cli(['candidate', 'import', 'demo', 'main'])
     with pytest.raises(SystemExit, match=r"'nope' names no commit in .*: Ref 'nope' did not resolve"):
         run_cli(['candidate', 'import', 'demo', 'nope'])
+
+
+def test_candidate_remeasure_asks_the_daemon_to_measure_a_candidate_again_and_refuses_what_is_never_measured(
+    project_path: Path, out
+) -> None:
+    run_cli(['init', str(project_path)])
+    out()
+    run_cli(['candidate', 'remeasure', '1'])
+    assert (
+        out().strip()
+        == 'candidate#1 keep: the daemon measures it again with the current evaluator; a crash is judged again'
+    )
+    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
+        [event] = s.scalars(select(Event).where(Event.kind == REMEASURE_REQUESTED)).all()
+        assert (event.actor, event.target_kind, event.target_id) == ('human', TargetKind.CANDIDATE, 1)
+        s.add(Candidate(project_id=1, commit_sha='0' * 40, tree_sha='1' * 40, verdict=Verdict.UNMEASURED))
+        s.commit()
+    with pytest.raises(SystemExit, match=r'candidate#2 is unmeasured: the daemon never measures it'):
+        run_cli(['candidate', 'remeasure', '2'])
+    with pytest.raises(SystemExit, match='no candidate#99'):
+        run_cli(['candidate', 'remeasure', '99'])
 
 
 def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_to_it(
