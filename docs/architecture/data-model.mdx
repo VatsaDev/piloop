@@ -40,6 +40,7 @@ erDiagram
         double spend_usd
         varchar spend_error
         datetime spend_at
+        varchar repo
         datetime created_at
         datetime updated_at
         varchar updated_by
@@ -141,6 +142,25 @@ erDiagram
         varchar created_by
         datetime created_at
     }
+    documents {
+        integer id PK
+        integer project_id FK
+        varchar path
+        varchar hash
+        varchar title
+        varchar body
+        varchar commit_sha
+        varchar created_by
+        datetime created_at
+        datetime updated_at
+        varchar updated_by
+    }
+    journal {
+        integer id PK
+        varchar author
+        varchar line
+        datetime created_at
+    }
     workers {
         integer id PK
         varchar kind
@@ -182,10 +202,11 @@ erDiagram
     candidates ||--o{ measurements : "candidate_id"
     evaluators ||--o{ measurements : "evaluator_id"
     projects ||--o{ techniques : "project_id"
+    projects ||--o{ documents : "project_id"
     projects |o--o{ workers : "project_id"
     runs |o--o{ workers : "run_id"
 ```
 
-The full-text indexes are not in the diagram: `ideas_fts` (`title`, `hypothesis`, `plan`), `comments_fts` (`body`).
+The full-text indexes are not in the diagram: `ideas_fts` (`title`, `hypothesis`, `plan`), `comments_fts` (`body`), `documents_fts` (`title`, `body`).
 
 {/* End of the generated part. */}

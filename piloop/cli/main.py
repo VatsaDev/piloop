@@ -6,7 +6,7 @@ This module only assembles the commands. Each group of commands is its own modul
 import cyclopts
 
 from piloop import deprecated
-from piloop.cli import agents, candidate, common, daemon, database, idea, inbox, install, project
+from piloop.cli import agents, candidate, common, daemon, database, idea, inbox, install, memory, project
 from piloop.cli.version import installed
 from piloop.config import ConfigError
 
@@ -20,6 +20,8 @@ app.command(project.watch_cmd, name='watch')
 app.command(agents.launch)
 app.command(agents.prompt)
 app.command(agents.attach)
+app.command(memory.journal)
+app.command(memory.wake)
 app.command(daemon.serve)
 app.command(daemon.stop)
 app.command(daemon.restart)

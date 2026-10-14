@@ -30,8 +30,10 @@ CREATE TABLE comments (
 	CONSTRAINT escalation_needs_priority CHECK (kind != 'escalation' OR priority IS NOT NULL),
 	CONSTRAINT "comments.author must be a text value" CHECK (typeof(author) IN ('text')),
 	CONSTRAINT "comments.body must be a text value" CHECK (typeof(body) IN ('text')),
+	CONSTRAINT "a lesson is on its project" CHECK (kind != 'lesson' OR target_kind = 'project'),
+	CONSTRAINT "a lesson starts family: <family> | status: dead|promising|untested | best: <+N metric> (<evaluator/eval>)" CHECK (kind != 'lesson' OR (substr(body, 1, instr(body || char(10), char(10)) - 1) GLOB 'family: ?* | status: dead | best: ?*' OR substr(body, 1, instr(body || char(10), char(10)) - 1) GLOB 'family: ?* | status: promising | best: ?*' OR substr(body, 1, instr(body || char(10), char(10)) - 1) GLOB 'family: ?* | status: untested | best: ?*')),
 	CONSTRAINT targetkind CHECK (target_kind IN ('project', 'idea', 'run', 'candidate', 'measurement', 'worker', 'comment')),
-	CONSTRAINT commentkind CHECK (kind IN ('note', 'finding', 'decision', 'escalation'))
+	CONSTRAINT commentkind CHECK (kind IN ('note', 'finding', 'decision', 'escalation', 'lesson'))
 );
 CREATE INDEX ix_comments_inbox ON comments (priority, id) WHERE priority IS NOT NULL AND acked_at IS NULL;
 CREATE INDEX ix_comments_target ON comments (target_kind, target_id);
@@ -47,6 +49,15 @@ CREATE TABLE events (
 	CONSTRAINT targetkind CHECK (target_kind IN ('project', 'idea', 'run', 'candidate', 'measurement', 'worker', 'comment'))
 );
 CREATE INDEX ix_events_target ON events (target_kind, target_id, id);
+CREATE TABLE journal (
+	id INTEGER NOT NULL,
+	author VARCHAR NOT NULL,
+	line VARCHAR NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	PRIMARY KEY (id),
+	CONSTRAINT "journal.line is text of 1 to 280 bytes" CHECK (typeof(line) IN ('text') AND length(CAST(line AS BLOB)) BETWEEN 1 AND 280),
+	CONSTRAINT "journal.author must be a text value" CHECK (typeof(author) IN ('text'))
+);
 CREATE TABLE projects (
 	id INTEGER NOT NULL,
 	name VARCHAR NOT NULL,
@@ -58,12 +69,35 @@ CREATE TABLE projects (
 	spend_usd DOUBLE,
 	spend_error VARCHAR,
 	spend_at DATETIME,
+	repo VARCHAR,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
 	updated_by VARCHAR,
 	PRIMARY KEY (id),
 	UNIQUE (name),
 	CONSTRAINT projectstatus CHECK (status IN ('active', 'stopped'))
+);
+CREATE TABLE documents (
+	id INTEGER NOT NULL,
+	project_id INTEGER NOT NULL,
+	path VARCHAR NOT NULL,
+	hash VARCHAR NOT NULL,
+	title VARCHAR NOT NULL,
+	body VARCHAR NOT NULL,
+	commit_sha VARCHAR,
+	created_by VARCHAR NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	updated_by VARCHAR,
+	PRIMARY KEY (id),
+	UNIQUE (project_id, path, hash),
+	CONSTRAINT "documents.hash is the blake3 hex digest of body" CHECK (length(hash) = 64 AND hash NOT GLOB '*[^0-9a-f]*'),
+	CONSTRAINT "documents.path must be a text value" CHECK (typeof(path) IN ('text')),
+	CONSTRAINT "documents.title must be a text value" CHECK (typeof(title) IN ('text')),
+	CONSTRAINT "documents.body must be a text value" CHECK (typeof(body) IN ('text')),
+	CONSTRAINT "documents.created_by must be a text value" CHECK (typeof(created_by) IN ('text')),
+	CONSTRAINT "documents.commit_sha must be a text value" CHECK (typeof(commit_sha) IN ('text', 'null')),
+	FOREIGN KEY(project_id) REFERENCES projects (id) ON DELETE CASCADE
 );
 CREATE TABLE evaluators (
 	id INTEGER NOT NULL,
@@ -231,4 +265,5 @@ CREATE TABLE measurements (
 CREATE INDEX ix_measurements_candidate_evaluator ON measurements (candidate_id, evaluator_id);
 CREATE VIRTUAL TABLE ideas_fts USING fts5(title, hypothesis, plan, content='ideas', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2');
 CREATE VIRTUAL TABLE comments_fts USING fts5(body, content='comments', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2');
+CREATE VIRTUAL TABLE documents_fts USING fts5(title, body, content='documents', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2');
 ```

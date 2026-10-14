@@ -1,5 +1,6 @@
 """Git operations on the project repo and its worktrees."""
 
+import re
 import shutil
 import threading
 from datetime import datetime
@@ -178,3 +179,23 @@ def moved(path: Path) -> bool:
         return len(Repo(path).head.log()) > 1
     except NoSuchPathError, InvalidGitRepositoryError:
         return False
+
+
+def identity(path: Path) -> str:
+    """The repository that ``path`` is, the same for every clone of it: ``projects.repo``.
+
+    It is the URL of the ``origin`` remote (or else of the first remote by name) as ``host/owner/name``, so
+    ``git@github.com:o/r.git`` and ``https://github.com/o/r`` are the same repository. Without a remote, it is the
+    absolute path.
+    """
+    try:
+        remotes = {remote.name: remote for remote in Repo(path).remotes}
+    except InvalidGitRepositoryError, NoSuchPathError:
+        return str(path.resolve())
+    name = 'origin' if 'origin' in remotes else min(remotes, default=None)
+    if name is None:
+        return str(path.resolve())
+    url = remotes[name].url.strip().rstrip('/').removesuffix('.git')
+    url = re.sub(r'^[a-z+]+://', '', url)  # the scheme
+    url = re.sub(r'^[^@/]+@', '', url)  # the user
+    return re.sub(r'^([^/:]+):(?!\d+/)', r'\1/', url)  # scp-like host:owner/name; a host:port/ stays

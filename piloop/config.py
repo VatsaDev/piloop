@@ -229,6 +229,9 @@ class RoleConfig(BaseModel):
     files: Files = Files.SEEDS
     """What the agents of this role may file with ``piloop idea``: ``nothing``, ``seeds`` or ``ideas``. The CLI
     refuses the rest."""
+    wake_budget: int | None = Field(default=None, ge=0)
+    """The size in tokens of the lessons overview that opens this role's briefs. When unset, ``[memory]
+    wake_budget``. 0 turns it off for this role."""
 
 
 class WorkerRole(RoleConfig):
@@ -312,8 +315,15 @@ class WatchdogRole(SweepRole):
     interval: float = Field(default=1800, ge=0)
     """The number of seconds between two progress reviews, counted from the last review. A sweep that investigates an
     anomaly is not a review. 0 turns the reviews off."""
-    writes: list[str] = ['comments(escalation, finding, note)', 'seeds via idea seed']
+    writes: list[str] = [
+        'comments(escalation, finding, note)',
+        'comments(lesson) on the project once it stopped',
+        'seeds via idea seed',
+    ]
     """What a watchdog may write, as its brief states it."""
+    wake_budget: int | None = Field(default=0, ge=0)
+    """The size in tokens of the lessons overview that opens a watchdog's brief. Off by default: the closing review
+    reads the lessons itself before it writes its own."""
 
 
 SCOUT_SEEDS = 3
@@ -440,6 +450,26 @@ class Spend(BaseModel):
         if above := [n for n in self.notices if n >= self.limit]:
             raise ValueError(f'notices {above} are not below the limit {self.limit:g}')
         return self
+
+
+class Memory(BaseModel):
+    """``[memory]``: what past campaigns leave for the next ones. See the research memory page."""
+
+    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    documents: list[str] = []
+    """Repo-relative globs of text documents, for example ``["docs/evidence/**/*.md"]``: campaign reports, orchestrator
+    logs, design notes. ``piloop init`` and the stop of the campaign copy them into the ``documents`` table, where
+    every agent of every project can search them. Never name a document that is derived from validation or test
+    data."""
+    wake_budget: int = Field(default=400, ge=0)
+    """The size in tokens (about 4 characters each) of the overview that opens the briefs of workers and research
+    sweeps: the current lesson of each mechanism family on the same repo, from the newest campaign that tried it, one
+    line each. Lessons in the project's own metrics come first (the word after the number after ``best:``), then
+    lessons in related metrics, then the rest. Within those, dead or promising come before untested, then the larger
+    effects of each metric, then newer campaigns: effects in different metrics are never compared by size. The brief
+    then says how to read more. A role can change it with ``[roles.<kind>] wake_budget``. 0
+    turns it off."""
 
 
 def _role(table: object) -> object:
@@ -579,6 +609,8 @@ class ProjectConfig(BaseModel):
     """``[stop]``: conditions that end the campaign. None by default."""
     spend: Spend | None = None
     """``[spend]``: a hard budget on what the campaign spends outside piloop. None by default."""
+    memory: Memory = Memory()
+    """``[memory]``: documents to search and the lessons overview in briefs."""
 
     @model_validator(mode='after')
     def _check(self) -> Self:
@@ -664,6 +696,11 @@ class ProjectConfig(BaseModel):
             KeyError: ``piloop.toml`` has no such role.
         """
         return self.roles.all()[kind]
+
+    def wake_budget(self, kind: str) -> int:
+        """The tokens of the lessons overview in a brief of this role: its own ``wake_budget``, or else ``[memory]``'s."""
+        own = self.role(kind).wake_budget
+        return self.memory.wake_budget if own is None else own
 
     def role_harnesses(self, kind: str) -> list[str]:
         """The rotation a role uses: its own list, or else the project's."""
