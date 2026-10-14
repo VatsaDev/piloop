@@ -205,6 +205,110 @@ without an `invocation` is an error that names the entry point.
 `piloop attach`, the Herdr checks of `piloop doctor` and the tab column of `piloop watch` work with the `herdr`
 runtime only, because they call Herdr.
 
+## Storage backends
+
+The artifact store keeps its blobs in `$PILOOP_HOME/store` and can mirror them to a remote. `[storage.remote]` in
+`$PILOOP_HOME/config.toml` picks the remote's backend by `kind`. `s3` and `gcs` are built in. The backend owns every
+other key of that table. The keys of `[storage]` itself, such as `evict_after_days` and `min_free_gb`, are shared by
+every backend. The [configuration reference](/reference/configuration) shows the same store with each backend.
+
+### The contract
+
+A remote stores whole objects by key. The store never lists, deletes or changes an object. A remote has:
+
+- `url`: one spelling of where it puts objects, without a trailing `/`. The store records it at its first upload, and
+  it refuses to open later with another `url`.
+- `upload(key, path)`: store the file at `path` under `key`, streaming it. Uploading a key again is harmless.
+- `download(key, path) -> bool`: write the object under `key` to `path`, streaming it. Return `False`, and write no
+  file, when there is no such object. Raise on any other failure.
+- `has(key) -> bool`: whether an object is stored under `key`.
+
+### Write a backend
+
+A backend is two classes. A settings model subclasses `piloop.store.RemoteConfig`. Its `kind` is a literal, its
+other fields are the keys of `[storage.remote]`, and its `open()` returns the remote. This backend mirrors the store
+to a directory, for example a network share:
+
+```python
+import shutil
+from pathlib import Path
+from typing import Literal
+
+from piloop.store import Remote, RemoteConfig
+
+
+class ShareConfig(RemoteConfig):
+    """``[storage.remote]`` with ``kind = "share"``: a mounted directory."""
+
+    kind: Literal['share'] = 'share'
+    root: Path
+    """The directory that the objects go under."""
+
+    def open(self) -> Remote:
+        return Share(self.root)
+
+
+class Share:
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.url = f'file://{root}'.rstrip('/')
+
+    def upload(self, key: str, path: Path) -> None:
+        target = self.root / key
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+
+    def download(self, key: str, path: Path) -> bool:
+        if not (self.root / key).is_file():
+            return False
+        shutil.copyfile(self.root / key, path)
+        return True
+
+    def has(self, key: str) -> bool:
+        return (self.root / key).is_file()
+```
+
+Register the settings model with an entry point in the `piloop.stores` group. The name of the entry point is the
+`kind`:
+
+```text
+[project.entry-points."piloop.stores"]
+share = "my_package:ShareConfig"
+```
+
+Install the package in the environment of `piloop`, then select the backend in `config.toml`:
+
+```text
+[storage.remote]
+kind = "share"
+root = "/mnt/archive/piloop"
+```
+
+piloop checks the table against `ShareConfig` when it opens the store: `piloop serve`, `piloop restore` and
+`piloop store` fail on a key that the model does not have. A name that a built-in backend has already, or an entry
+point that does not name a `RemoteConfig` subclass, is an error that names the entry point.
+
+### Test a backend
+
+`piloop.store.contract.check_remote` runs the contract against a remote: missing keys, an upload and a download, and
+a store that mirrors to the remote and keeps nothing local. It raises `ContractBroken` with the rule that failed.
+piloop's own tests run it against `s3` and `gcs`. Run it in the tests of your package, against a scratch location:
+
+```python
+from pathlib import Path
+
+from piloop.store.contract import check_remote
+
+from my_package import ShareConfig
+
+
+def test_the_share_keeps_the_contract(tmp_path: Path) -> None:
+    check_remote(ShareConfig(root=tmp_path / 'share').open(), tmp_path / 'scratch')
+```
+
+It writes under `piloop-contract/<random>/`, and the contract has no delete, so point it at a bucket or a folder that
+you can empty.
+
 ## Harnesses
 
 A harness is a coding agent CLI. A `[harness.<name>]` table in `piloop.toml` says how to start it: the executable, the

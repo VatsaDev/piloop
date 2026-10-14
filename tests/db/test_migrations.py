@@ -38,6 +38,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
         tables = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]
         assert tables == [
             'alembic_version',
+            'archives',
             'candidates',
             'comments',
             'comments_fts',
@@ -362,3 +363,24 @@ def test_0007_turns_each_lesson_comment_into_a_row_of_lessons_and_downgrades(tmp
         ], 'the old bodies as they were; a new lesson gets the first line that 0006 requires'
         gone = "SELECT name FROM sqlite_master WHERE name LIKE 'lessons%' OR name = 'journal_no_replace'"
         assert con.execute(gone).fetchall() == []
+
+
+def test_0009_marks_every_archiving_made_before_it_as_pruned_when_made_and_complete(tmp_path: Path) -> None:
+    """Before 0009 an archiving removed its local copies at once; from 0009 on the daemon prunes later."""
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0008')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+        con.execute("INSERT INTO archives (project_id, idea_id, created_at) VALUES (1, 3, '2026-10-01 12:00:00')")
+    command.upgrade(cfg, '0009')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT created_at, pruned_at, complete FROM archives').fetchall() == [
+            ('2026-10-01 12:00:00', '2026-10-01 12:00:00', 1)
+        ], 'the older code pruned when it archived, and took every row for a finished job'
+        con.execute('INSERT INTO archives (project_id) VALUES (1)')
+        assert con.execute('SELECT pruned_at FROM archives WHERE id = 2').fetchone() == (None,)
+    command.downgrade(cfg, '0008')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        columns = [c for (_, c, *_) in con.execute('PRAGMA table_info(archives)')]
+        assert 'pruned_at' not in columns and 'complete' not in columns

@@ -5,7 +5,8 @@ description: The subpackages of piloop, what each one does, and how they import 
 
 The `piloop` package has one subpackage for each concern. Imports only point down this list:
 
-1. `db/`: storage, the SQL gate for agents, the events feed.
+1. `db/`: storage, the SQL gate for agents, the events feed. `store/`: the artifact store, its blobs, manifests
+   and remote backends.
 2. `mcp/`, `usage/`, and `config.py` with `harnesses.py`: MCP servers, token usage, the project configuration.
 3. `runtime/`: where the agent processes run (a background process, or a Herdr pane).
 4. `scoring/`: the evaluate command, the ledger, the verdict.
@@ -37,12 +38,14 @@ flowchart TB
     reports["reports/"]
     runtime["runtime/"]
     scoring["scoring/"]
+    store["store/"]
     triggers["triggers.py"]
     usage["usage/"]
     watch["watch/"]
     agents --> config
     campaign --> agents
     campaign --> scoring
+    campaign --> store
     cli --> daemon
     cli --> watch
     config --> runtime
@@ -63,10 +66,10 @@ The graph leaves out the shared modules `deprecated.py`, `git.py`, `otel.py`, `p
 | Subpackage or module | Imports directly |
 |---|---|
 | `agents/` | `config.py`, `db/`, `git.py`, `harnesses.py`, `mcp/`, `otel.py`, `proc.py`, `runtime/`, `settings.py`, `text.py`, `usage/` |
-| `campaign/` | `agents/`, `config.py`, `db/`, `git.py`, `proc.py`, `scoring/`, `settings.py`, `text.py`, `usage/` |
-| `cli/` | `agents/`, `campaign/`, `config.py`, `daemon/`, `db/`, `deprecated.py`, `git.py`, `mcp/`, `proc.py`, `reports/`, `runtime/`, `scoring/`, `settings.py`, `text.py`, `watch/` |
+| `campaign/` | `agents/`, `config.py`, `db/`, `git.py`, `proc.py`, `scoring/`, `settings.py`, `store/`, `text.py`, `usage/` |
+| `cli/` | `agents/`, `campaign/`, `config.py`, `daemon/`, `db/`, `deprecated.py`, `git.py`, `mcp/`, `proc.py`, `reports/`, `runtime/`, `scoring/`, `settings.py`, `store/`, `text.py`, `watch/` |
 | `config.py` | `db/`, `deprecated.py`, `harnesses.py`, `mcp/`, `runtime/`, `triggers.py` |
-| `daemon/` | `agents/`, `campaign/`, `config.py`, `db/`, `git.py`, `otel.py`, `proc.py`, `reports/`, `runtime/`, `scoring/`, `settings.py`, `triggers.py`, `usage/` |
+| `daemon/` | `agents/`, `campaign/`, `config.py`, `db/`, `git.py`, `otel.py`, `proc.py`, `reports/`, `runtime/`, `scoring/`, `settings.py`, `store/`, `triggers.py`, `usage/` |
 | `db/` | `git.py`, `proc.py` |
 | `deprecated.py` | nothing |
 | `git.py` | nothing |
@@ -78,6 +81,7 @@ The graph leaves out the shared modules `deprecated.py`, `git.py`, `otel.py`, `p
 | `runtime/` | `db/`, `harnesses.py`, `proc.py`, `settings.py` |
 | `scoring/` | `config.py`, `db/`, `git.py`, `proc.py`, `text.py` |
 | `settings.py` | nothing |
+| `store/` | `settings.py` |
 | `text.py` | nothing |
 | `triggers.py` | `db/` |
 | `usage/` | `db/`, `settings.py` |

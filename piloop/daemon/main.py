@@ -6,6 +6,7 @@ import sys
 from types import FrameType
 
 from piloop.agents.capture import MIN_ENTIRE, AttachError, entire_version, usable
+from piloop.daemon.archiver import ArchivePolicy, Archiving
 from piloop.daemon.runner import RunExecutor
 from piloop.daemon.scheduler import Scheduler
 from piloop.daemon.serve import RESTART_SIGNAL, SECRETS_COMMAND_ENV, SERVE_ARGV, SecretsError, acquire, secrets
@@ -14,6 +15,7 @@ from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Span, tracer
 from piloop.proc import Inherited
 from piloop.settings import Settings, settings
+from piloop.store.config import open_store
 
 ACTOR = DAEMON_ACTOR
 """The actor that the daemon's connections record in ``updated_by``. The change-log triggers use this name."""
@@ -31,10 +33,23 @@ class Daemon:
         except SchemaAhead:
             self.db.close()
             raise
+        self._cfg = cfg
+        try:
+            # Before the remote opens: its credentials can come from the secrets. And before the lock, because
+            # `serve --detach` reports a start when the child holds it, so a failing secrets command must fail first.
+            self._supplied = self._load_secrets()
+        except SystemExit:
+            self.db.close()
+            raise
         self.tracer = tracer()
         self.executor = RunExecutor(self.db, self.tracer, cfg.home)
-        self.scheduler = Scheduler(self.db, self.executor, self.tracer, cfg.home)
-        self._cfg = cfg
+        self.scheduler = Scheduler(
+            self.db,
+            self.executor,
+            self.tracer,
+            cfg.home,
+            archiving=Archiving(open_store(cfg), ArchivePolicy.of(cfg.storage)),
+        )
         self._restart = False
 
     def serve(self) -> None:
@@ -45,9 +60,6 @@ class Daemon:
         code under whatever started the daemon: systemd, launchd or a terminal.
         """
         try:
-            # Load secrets before the lock. `serve --detach` reports a start when the child holds the lock, so a
-            # failing secrets command must fail before that.
-            supplied = self._load_secrets()
             # Lock before the main try block: shutdown() must never fail the runs of another daemon.
             lock = acquire(self._cfg)
         except SystemExit:
@@ -56,7 +68,7 @@ class Daemon:
         previous = signal.signal(signal.SIGTERM, self._on_sigterm)
         previous_restart = signal.signal(RESTART_SIGNAL, self._on_restart)
         try:
-            with self.tracer.span('piloop.start', db=self._cfg.database_url, secrets=supplied) as span:
+            with self.tracer.span('piloop.start', db=self._cfg.database_url, secrets=self._supplied) as span:
                 self._check_entire(span)
                 self.scheduler.reap()
                 span.set(inherited_reaped=self._inherited.reap())

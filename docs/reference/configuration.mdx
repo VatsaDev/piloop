@@ -379,3 +379,76 @@ one statement that only reads.
 |---|---|---|---|
 | `kind` | string | `"sql"` |  |
 | `when` | string | required | The query, for example `SELECT 1 FROM candidates WHERE project_id = :project AND verdict = 'keep' AND created_at > :since`. |
+
+## Global settings: `config.toml`
+
+`$PILOOP_HOME/config.toml` holds the settings that every project of one `PILOOP_HOME` shares. To override a key, set `PILOOP_<TABLE>__<KEY>`, for example `PILOOP_STORAGE__MIN_FREE_GB`.
+
+### `[storage]`
+
+`[storage]`: the artifact store every project of this PILOOP_HOME archives its workspace into.
+
+The keys here hold for every backend. Blobs live in `<PILOOP_HOME>/store`, and in the remote too when
+`[storage.remote]` is set. The artifact store page of the docs describes the modes.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `evict_after_days` | number \| null | `null` | Drop the local copy of a blob the remote holds once it is this old (since it was stored or fetched); 0 drops it as soon as it is uploaded, so the local directory is only a staging area and every read fetches. Unset: by age never. |
+| `local_max_gb` | number \| null | `null` | Drop the local copies of the oldest blobs the remote holds until the local store is at most this size. |
+| `min_free_gb` | number | `20` | Free space, in GB, that archiving keeps on the disk of the local store. Storing a file writes its compressed copy first, so the daemon removes the workspace copies of archived files, oldest archive first, while the disk has less than this free, and it archives in batches that fit above it. |
+
+`[storage.remote]` picks the backend that mirrors the store by its `kind`, and the backend owns the other keys of the table. The keys of `[storage]` stay the same whatever the backend. The same store, mirrored to S3 or to Google Cloud Storage:
+
+<CodeGroup>
+
+```toml S3
+[storage]
+evict_after_days = 30
+min_free_gb = 50
+
+[storage.remote]
+kind = "s3"
+url = "s3://my-bucket/piloop"
+storage_class = "GLACIER_IR"
+```
+
+```toml GCS
+[storage]
+evict_after_days = 30
+min_free_gb = 50
+
+[storage.remote]
+kind = "gcs"
+bucket = "my-bucket"
+prefix = "piloop"
+storage_class = "COLDLINE"
+credentials_file = "/etc/piloop/gcs-key.json"
+```
+
+</CodeGroup>
+
+A package adds a backend with an entry point in the `piloop.stores` group: see [storage backends](/architecture/extension-points#storage-backends). The built-in ones:
+
+### `[storage.remote]` with `kind = "s3"`
+
+`[storage.remote]` with `kind = "s3"`: a bucket and prefix, and the storage class of each blob.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `"s3"` | The S3 backend. |
+| `url` | string | required | `s3://<bucket>[/<prefix>]`: every blob is uploaded there as it is stored. |
+| `storage_class` | string | `"GLACIER_IR"` | The S3 storage class of a blob of at least `standard_below` compressed bytes. |
+| `standard_below` | integer | `131072` | Compressed size under which a blob is stored as `STANDARD`: Glacier IR bills every object as at least 128 KB. |
+
+### `[storage.remote]` with `kind = "gcs"`
+
+`[storage.remote]` with `kind = "gcs"`: a bucket, a prefix in it, and the storage class of each blob.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `"gcs"` | The Google Cloud Storage backend. |
+| `bucket` | string | required | The bucket name, without `gs://`. |
+| `prefix` | string | `""` | The folder in the bucket that the store's objects go under. Empty: the bucket's root. |
+| `storage_class` | `STANDARD` \| `NEARLINE` \| `COLDLINE` \| `ARCHIVE` | `"STANDARD"` | The storage class of every blob. |
+| `project` | string \| null | `null` | The Google Cloud project to bill. Unset: the project of the credentials. |
+| `credentials_file` | string \| null | `null` | A service account key file (JSON) to use instead of Application Default Credentials. A path, never the key. |

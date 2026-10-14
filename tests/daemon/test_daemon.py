@@ -159,14 +159,13 @@ def test_serve_merges_what_the_secrets_command_prints_into_its_environment_befor
     assert 'exa-secret' not in err and 'xai-secret' not in err
 
 
-def test_a_failing_secrets_command_fails_the_start_naming_the_command(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_a_failing_secrets_command_fails_the_start_naming_the_command(tmp_path: Path) -> None:
+    """The secrets load before the store opens (a remote's credentials can come from them) and before the lock."""
     cfg = Settings(home=tmp_path / 'home', secrets_command="printf 'EXA_API_KEY=a b'")
-    daemon = Daemon(cfg)
-    tick = mocker.patch.object(daemon.scheduler, 'tick')
     failed = "PILOOP_SECRETS_COMMAND (printf 'EXA_API_KEY=a b') failed: EXA_API_KEY contains whitespace"
     with pytest.raises(SystemExit, match=f'^{re.escape(failed)}$'):
-        daemon.serve()
-    assert not tick.called and not cfg.pid_file.exists(), 'nothing ran, the lock is released'
+        Daemon(cfg)
+    assert not cfg.pid_file.exists(), 'nothing ran, no lock was taken'
 
 
 def test_serve_stops_on_sigterm_and_restores_the_handler(tmp_path: Path, mocker: MockerFixture) -> None:

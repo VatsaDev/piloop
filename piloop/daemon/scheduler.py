@@ -53,6 +53,7 @@ from piloop.campaign.stop import (
     stop_reason,
 )
 from piloop.config import SCOUT_SEEDS, ProjectConfig, Spend, SweepRole, Workdir, WorkerRole, config_of, ideas_taken
+from piloop.daemon.archiver import Archiver, Archiving
 from piloop.daemon.runner import RunExecutor
 from piloop.db.events import ANOMALY_EVENT, emit
 from piloop.db.models import (
@@ -127,6 +128,7 @@ class Scheduler:
         tracer: Tracer,
         home: Path,
         runtime_factory: RuntimeFactory = make_runtime,
+        archiving: Archiving | None = None,
     ) -> None:
         self._db = db
         self._executor = executor
@@ -140,6 +142,13 @@ class Scheduler:
         self._scoring: dict[tuple[TargetKind, int], Future[None]] = {}
         """Scoring outside a worker: a run's resumed scoring by run id, or a project's re-measure by project id."""
         self._stop = threading.Event()
+        self._archiver = (
+            Archiver(db, archiving.store, home, archiving.policy, tracer, self._pool, self._stop)
+            if archiving is not None
+            else None
+        )
+        """Archives the workspaces in the background. The daemon always passes ``archiving``; a test that does not
+        archives nothing."""
 
     def reap(self) -> None:
         """Re-attach the agents that a previous daemon process left. Fail everything else it left in flight.
@@ -261,12 +270,15 @@ class Scheduler:
 
         Returns the ids of the launched workers. Before the triggers, the tick rejects the ideas that a newer idea
         superseded (``piloop.campaign.ideas.supersede``). This also happens for a stopped project, which requests
-        nothing. A project that the spend guard holds (``_read_spend``) gets only this step.
+        nothing. A project that the spend guard holds (``_read_spend``) gets only this step. The archiver starts the next
+        archiving of a workspace that is due, or its upkeep, on a background thread (``piloop.daemon.archiver``).
         """
         self._collect()
         self._push_comments()
         self._wind_down()
         self._read_spend()
+        if self._archiver is not None:
+            self._archiver.tick()
         launched: list[tuple[int, int | None]] = []
         with self._db.session() as s:
             for project in s.scalars(select(Project)).all():
@@ -948,7 +960,9 @@ class Scheduler:
             )
             lines = [
                 cwd,
-                f'- Shared workspace for notes and artifacts to other agents: `./{WORKSPACE}/` (not committed).',
+                f'- Shared workspace for notes and artifacts to other agents: `./{WORKSPACE}/` (not committed). The files'
+                ' of a done idea are archived, and removed from it after some days or when the disk is short; `piloop'
+                f' restore {project.name} <idea id>|<workspace path>` writes them back.',
             ]
             contexts = {SCOUT.name: self._scout_context, WorkerKind.RESEARCH.value: self._research_context}
             if (context := contexts.get(role.name)) is not None:
@@ -1094,8 +1108,12 @@ class Scheduler:
         self._executor.hand_over()
         watching = set(self._executor.launcher.watching)
         rest = [future for worker_id, future in self._futures.items() if worker_id not in watching]
-        wait([*rest, *self._scoring.values()], timeout=timeout)
+        wait([*rest, *self._scoring.values(), *self._archiving()], timeout=timeout)
         self._pool.shutdown(wait=False, cancel_futures=True)
+
+    def _archiving(self) -> list[Future[None]]:
+        """The archiver's job in flight: it prunes and evicts, so the next daemon must not start under it."""
+        return self._archiver.running() if self._archiver is not None else []
 
     def stop(self, timeout: float) -> None:
         """Stop ticking, kill the workers in flight, fail their runs and release the thread pool.
@@ -1108,6 +1126,7 @@ class Scheduler:
         self._executor.cancel()
         self._fail_open(STOPPED_ERROR, remove_worktrees=False)
         self.wait(timeout)
+        wait(self._archiving(), timeout=timeout)
         self._pool.shutdown(wait=False, cancel_futures=True)
 
 

@@ -307,3 +307,35 @@ including `DELETE`, is allowed. The output stops at 500 rows. See the [database 
 
 Prints what `piloop sql` accepts, the conventions for writing to the database, and every table. Agents read it before
 they write.
+
+## The workspace archive
+
+### piloop restore
+
+```text
+piloop restore REF [IDEA | PATH]
+```
+
+Writes archived workspace files back into the project's workspace. `IDEA` (`12` or `idea#12`) restores the files of
+that idea. `PATH` restores one workspace-relative file or everything under a directory. With neither, it restores
+every archived file. A file that is already there with other content is kept and listed, never overwritten. See
+[The artifact store](/concepts/artifact-store).
+
+### piloop store status
+
+Prints what the store holds (blobs, their local size, how many are on the remote), how much of each project was
+archived, and how many done ideas and stopped projects are still due.
+
+### piloop store evict
+
+Uploads the blobs that the remote does not have yet, then drops local copies as `[storage]` says. The daemon does this
+every hour.
+
+### piloop store verify
+
+```text
+piloop store verify [REF]
+```
+
+Checks that the store holds every blob of every archive: local copies are hashed again, evicted ones are looked up on
+the remote. Exits non-zero when one is missing or corrupt.
