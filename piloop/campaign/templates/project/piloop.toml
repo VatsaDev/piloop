@@ -20,9 +20,9 @@ codex = "gpt-6.1-sol"
 [max_concurrent]                          # the most agents of one harness at the same time, all roles together; e.g. claude = 2
 
 # [harness.<name>]                        # overrides a built-in harness (pi, claude, codex), or defines a new one
-# executable = "my-agent"                 # keys: executable, interactive, headless, startup_dialogs, entire_agent,
-# headless = ["--model", "{model}", "{prompt}"]  # session_id_pattern, mcp, and [harness.<name>.usage] with reader, file,
-#                                         # cwd and tally; see the reference
+# executable = "my-agent"                 # keys: executable, interactive, headless, resume, startup_dialogs,
+# headless = ["--model", "{model}", "{prompt}"]  # entire_agent, session_id_pattern, mcp, and [harness.<name>.usage]
+#                                         # with reader, file, cwd and tally; see the reference
 
 # [mcp.exa]                               # an MCP server that a role can list in its `mcp` key; see the MCP servers guide
 # url = "https://mcp.exa.ai/mcp"          # a streamable HTTP server (keys: url, headers_env, bearer_token_env)
