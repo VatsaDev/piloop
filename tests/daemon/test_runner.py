@@ -12,7 +12,7 @@ from inline_snapshot import snapshot
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
 from pytest_mock import MockerFixture
-from sqlalchemy import func, select
+from sqlalchemy import func, insert, select
 
 from piloop.agents.capture import ENTIRE_DIR
 from piloop.agents.launcher import STARTUP_ANOMALY
@@ -30,6 +30,7 @@ from piloop.daemon.runner import (
 from piloop.db.models import (
     Candidate,
     Comment,
+    Evaluator,
     Event,
     Idea,
     IdeaStatus,
@@ -675,6 +676,12 @@ def test_the_head_is_the_latest_trunk_keep_whatever_it_scores(db: Database, proj
         s.add(unscored)
         s.flush()
         assert [c.tree_sha for c in unmeasured(s, proj)] == ['u'], 'what the evaluator never saw'
+        proj.evaluator_id = s.scalar(
+            insert(Evaluator).values(project_id=project.id, key='next', definition={}).returning(Evaluator.id)
+        )
+        assert [c.tree_sha for c in unmeasured(s, proj)][:3] == ['b', 'd', 'a'], (
+            'under a new evaluator the head comes first, before a newer branch keep: unpinned runs wait only for it'
+        )
 
 
 def test_transcript_failure_is_only_an_event(

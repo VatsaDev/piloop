@@ -61,9 +61,15 @@ def spec(tmp_path: Path) -> WorkerSpec:
 def as_harness(worker: WorkerSpec, name: str, **changes: object) -> WorkerSpec:
     """``worker`` as an agent of the built-in harness ``name``: its executable, its screens and its queue key."""
     h = DEFAULT_HARNESSES[name]
-    busy, failed, queue = h.screens
+    busy, failed, queue, composer = h.screens
     return replace(
-        worker, executable=h.executable, busy_screens=busy, failed_turn_screens=failed, queue_key=queue, **changes
+        worker,
+        executable=h.executable,
+        busy_screens=busy,
+        failed_turn_screens=failed,
+        queue_key=queue,
+        composer=composer,
+        **changes,
     )
 
 
@@ -91,6 +97,7 @@ def test_start_creates_workspace_tab_agent_and_prompts(tmp_path: Path, herdr_log
             'busy_screens': [],
             'failed_turn_screens': [],
             'queue_key': None,
+            'composer': None,
             'prompted_at': IsFloat(approx=time.time(), delta=60),
         },
     )
@@ -179,7 +186,9 @@ def test_a_brief_is_submitted_once_and_picked_up_by_a_state_change(
     monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(startup_grace_seconds=0.05))
     scripted(monkeypatch, agent_get=[seq(5)], pane_read=[{'text': 'Welcome to pi\n> do the thing\n'}])
     with pytest.raises(
-        StartFailed, match='^HerdrError: prompt_lost: w1 did not start working after its brief was submitted$'
+        StartFailed,
+        match='^HerdrError: prompt_lost: w1 did not start working after its brief was submitted;'
+        ' the composer does not hold it$',
     ):
         HerdrRuntime('demo', tmp_path).start(spec(tmp_path))
     assert [c[:2] for c in calls(herdr_log)].count(['agent', 'prompt']) == 1
@@ -1018,7 +1027,7 @@ def test_a_claude_turn_that_stopped_on_a_quota_503_is_resumed(
 CODEX_FIRST_TURN_SCREEN: Response = {
     'text': '  >_ OpenAI Codex (v0.162.1)\n     ~/.piloop-new/runs/1506/worktree\n  permissions: YOLO mode\n\n'
     '  Tip: Use /rename to rename your threads for easier thread resuming.\n\n\n'
-    '› Your brief is in /home/thomas/.piloop-new/runs/1506/brief.md. Read all of it, in parts if a\n'
+    '› Your brief is in /srv/piloop/runs/7/brief.md. Read all of it, in parts if a\n'
     '  read comes back cut short, then follow it.\n\n\n\n'
     '› Ask Codex to do anything\n\n  GPT-6.1-Sol high · ~/.piloop-new/runs/1506/worktree                ⚠ 1 warning\n'
 }
@@ -1085,7 +1094,7 @@ def test_a_brief_picked_up_late_on_a_loaded_host_is_not_lost(
     handle = HerdrRuntime('demo', tmp_path, sleep=sleep).start(as_harness(spec(tmp_path), 'codex'))
     verbs = [c[:2] for c in calls(herdr_log)]
     assert (verbs.count(['agent', 'prompt']), ['tab', 'close'] in verbs) == (1, False)
-    assert clock[0] == 3 and herdr.PROMPTED_AT in handle.data, 'picked up 3 s in: past the old window, in the grace'
+    assert clock[0] == 2 and herdr.PROMPTED_AT in handle.data, 'picked up 2 s in: past the old window, in the grace'
 
     herdr_log.write_text('')
     clock[0] = 0
@@ -1228,3 +1237,70 @@ def test_the_screens_and_the_queue_key_come_from_the_handle_or_for_an_older_hand
     older = Handle('herdr', {k: v for k, v in handle.data.items() if k not in herdr.Screens.model_fields})
     assert herdr.Screens.of(older) == herdr.Screens.of(handle), 'the built-in harness of its executable'
     assert herdr.Screens.of(Handle('herdr', {'kind': 'mine'})) == herdr.Screens(), 'none for another executable'
+
+
+BRIEF_POINTER = (
+    'Your brief is in /srv/piloop/workers/7/brief.md. Read all of it, in parts if a read comes back'
+    ' cut short, then follow it.'
+)
+CLAUDE_DRAFT_SCREEN: Response = {
+    'text': ' ▐▛███▜▌   Claude Code\n\n' + '\n' * 18 + '─' * 94 + '\n'
+    '❯ Your brief is in /srv/piloop/workers/7/brief.md. Read all of it, in parts\n'
+    '  if a read comes back cut short, then follow it.\n' + '─' * 94 + '\n'
+    '  Opus 5.5 · /srv/piloop/workers/7/worktree ⎇ f26bd3a2 · ⧗ 9s · 06:53\n'
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle)\n'
+}
+"""What a Claude pane showed when piloop closed it 60 s after its brief was pasted: the brief still in the
+composer under ``❯``, no turn started, nothing above it but the welcome screen."""
+
+
+def test_a_brief_left_in_the_composer_is_submitted_with_enter_never_pasted_again(
+    tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A paste whose submit key was lost leaves the exact brief in the composer and starts no turn. After a pickup
+    window, Enter alone submits it; the brief is never pasted twice."""
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(prompt_pickup_seconds=1, startup_grace_seconds=60))
+    clock = [0.0]
+    monkeypatch.setattr(herdr.time, 'monotonic', lambda: clock[0])
+
+    def sleep(seconds: float) -> None:
+        clock[0] += 1
+
+    claude = replace(as_harness(spec(tmp_path), 'claude'), prompt=BRIEF_POINTER)
+    scripted(monkeypatch, agent_get=[seq(5), seq(5), seq(5), seq(6, 'working')], pane_read=[CLAUDE_DRAFT_SCREEN])
+    HerdrRuntime('demo', tmp_path, sleep=sleep).start(claude)
+    sent = [c for c in calls(herdr_log) if c[:2] in (['agent', 'prompt'], ['agent', 'send-keys'], ['tab', 'close'])]
+    assert sent == [['agent', 'prompt', 'w1', BRIEF_POINTER], ['agent', 'send-keys', 'w1', 'enter']]
+
+    herdr_log.write_text('')
+    clock[0] = 0
+    scripted(monkeypatch, agent_get=[seq(5)], pane_read=[CLAUDE_DRAFT_SCREEN])
+    with pytest.raises(StartFailed, match='its brief is still in the composer after 2 presses of enter'):
+        HerdrRuntime('demo', tmp_path, sleep=sleep).start(claude)
+    verbs = [c[:2] for c in calls(herdr_log)]
+    assert (verbs.count(['agent', 'prompt']), verbs.count(['agent', 'send-keys'])) == (1, herdr.DRAFT_SUBMITS)
+
+    herdr_log.write_text('')
+    clock[0] = 0
+    scripted(monkeypatch, agent_get=[seq(5)], pane_read=[CODEX_FIRST_TURN_SCREEN])
+    with pytest.raises(StartFailed, match='the composer does not hold it'):
+        HerdrRuntime('demo', tmp_path, sleep=sleep).start(
+            replace(as_harness(spec(tmp_path), 'codex'), prompt=BRIEF_POINTER)
+        )
+    assert ['agent', 'send-keys'] not in [c[:2] for c in calls(herdr_log)], 'a brief above an empty composer was taken'
+
+
+@pytest.mark.parametrize(
+    ('kind', 'screen', 'holds'),
+    [
+        ('claude', '❯ Your brief is in /srv/piloop/workers/7/brief.md. Read all of it', True),
+        ('claude', 'Welcome to Claude Code\n', False),
+        ('pi', '> Your brief is in /srv/piloop/workers/7/brief.md. Read all of it', False),
+    ],
+    ids=['composer-to-the-last-line', 'no-composer-drawn-yet', 'kind-without-a-known-composer'],
+)
+def test_holds_draft_reads_only_a_known_composer(
+    kind: str, screen: str, holds: bool, tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scripted(monkeypatch, pane_read=[{'text': screen}])
+    assert HerdrRuntime('demo', tmp_path)._holds_draft(claude_handle(kind), BRIEF_POINTER) is holds

@@ -127,6 +127,11 @@ class Harness(BaseModel):
     """For an interactive runtime: how to queue a message for the end of the agent's turn, for a harness that ends its
     turn to take a message submitted while it works. When unset, the queue key of the built-in harness with the same
     ``executable``, if it has one; else the message is submitted, and the agent queues it by itself."""
+    composer: str | None = None
+    """For an interactive runtime: the marker at the start of the agent's input line. The runtime reads the text after
+    the last one to tell a first prompt that the TUI left typed but not submitted, and submits it with Enter. When
+    unset, the marker of the built-in harness with the same ``executable``; without one, a prompt is never submitted
+    again."""
     entire_agent: str | None = None
     """Entire's name for this agent, as ``entire agent list`` shows it. When it is set and ``entire`` is installed,
     the agent's session is attached to Entire as a checkpoint when the agent ends. When unset, the session is not
@@ -155,15 +160,20 @@ class Harness(BaseModel):
         return RENDERERS[self.mcp].refuses(argv)
 
     @property
-    def screens(self) -> tuple[tuple[str, ...], tuple[str, ...], QueueKey | None]:
-        """The ``busy_screens``, ``failed_turn_screens`` and ``queue_key`` in use.
+    def screens(self) -> tuple[tuple[str, ...], tuple[str, ...], QueueKey | None, str | None]:
+        """The ``busy_screens``, ``failed_turn_screens``, ``queue_key`` and ``composer`` in use.
 
         Each one that this definition leaves unset comes from the built-in harness with the same ``executable``.
         """
         built_in = next((h for h in DEFAULT_HARNESSES.values() if h.executable == self.executable), self)
         busy = self.busy_screens if self.busy_screens is not None else built_in.busy_screens
         failed = self.failed_turn_screens if self.failed_turn_screens is not None else built_in.failed_turn_screens
-        return tuple(busy or ()), tuple(failed or ()), self.queue_key or built_in.queue_key
+        return (
+            tuple(busy or ()),
+            tuple(failed or ()),
+            self.queue_key or built_in.queue_key,
+            self.composer or built_in.composer,
+        )
 
     @property
     def captures_session(self) -> bool:
@@ -286,6 +296,7 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
         # TODO: remove a busy screen once Herdr detects that state for Claude Code.
         busy_screens=['Press up to edit queued messages', 'Waiting for API response', 'Retrying in', '… (thinking'],
         failed_turn_screens=['API Error', 'included_quota_unknown'],
+        composer='❯',
         entire_agent='claude-code',
         usage=UsageSpec(
             file='{env:CLAUDE_CONFIG_DIR:~/.claude}/projects/{cwd}/{session_id}.jsonl',
@@ -368,6 +379,7 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
         # ``composer.queue`` key, Tab, queues the message as a follow-up that Codex submits when the turn ends, and
         # sends it at once when Codex is idle (verified with codex-cli 0.162.1 under Herdr 0.8.2).
         queue_key=QueueKey(key='tab', pending='tab to queue message'),
+        composer='›',
         entire_agent='codex',
         session_id_pattern=r'"thread_id":"([0-9a-f-]{36})"',
         # codex files its sessions by date, not by cwd; the thread id in the file name finds the file

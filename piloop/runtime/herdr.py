@@ -191,6 +191,7 @@ class Screens(BaseModel):
     busy_screens: tuple[str, ...] = ()
     failed_turn_screens: tuple[str, ...] = ()
     queue_key: QueueKey | None = None
+    composer: str | None = None
 
     @classmethod
     def of(cls, handle: Handle) -> Self:
@@ -202,8 +203,8 @@ class Screens(BaseModel):
         """
         if 'busy_screens' in handle.data:
             return cls.model_validate(handle.data)
-        busy, failed, queue = Harness(executable=str(handle.data.get('kind')), headless=['{prompt}']).screens
-        return cls(busy_screens=busy, failed_turn_screens=failed, queue_key=queue)
+        busy, failed, queue, composer = Harness(executable=str(handle.data.get('kind')), headless=['{prompt}']).screens
+        return cls(busy_screens=busy, failed_turn_screens=failed, queue_key=queue, composer=composer)
 
 
 QUEUE_ECHO_SECONDS = 5
@@ -221,6 +222,11 @@ RESUME_MARK = RESUME_PROMPT[:46]
 """The part of ``RESUME_PROMPT`` that fits on one screen line. An error banner above it was already resumed."""
 RESUME_BACKOFF_SECONDS = (60, 120, 240)
 """The wait before each resume of a turn that ended on an API error. Capacity errors usually clear within minutes."""
+DRAFT_SUBMITS = 2
+"""How many times a first prompt still sitting in the composer is submitted with Enter alone (``_deliver``). A paste
+whose submit key the TUI lost leaves the exact brief there and starts no turn; it is never pasted again."""
+DRAFT_ECHO_CHARS = 40
+"""How much of the start of the prompt, whitespace ignored, the composer must hold to count as holding the draft."""
 TURN_FAILED_ERROR = 'the agent stopped on an API error and did not recover'
 PROMPTED_AT = 'prompted_at'
 """The handle key that holds when the first prompt was submitted (``time.time()``), for the startup grace.
@@ -303,6 +309,7 @@ class HerdrRuntime:
                     busy_screens=spec.busy_screens,
                     failed_turn_screens=spec.failed_turn_screens,
                     queue_key=spec.queue_key,
+                    composer=spec.composer,
                 ).model_dump(mode='json'),
             },
         )
@@ -324,9 +331,15 @@ class HerdrRuntime:
         seconds after the agent started its turn: Codex records ``task_started`` a fraction of a second after the
         prompt while Herdr still sees no change 5 s later. So pickup has the whole startup grace, not a short window.
         An agent whose first-run dialogs were answered in a background tab already reports ``done``, and a wait for
-        ``working`` or ``done`` would take that for a finished turn. Without a state change, a ``busy_screens`` or ``failed_turn_screens`` text at the bottom of the
-        screen shows that the agent took the prompt while it starts up or retries the API. ``wait`` judges what
-        follows. The prompt is never pasted again, because the composer or a queued turn may already hold it.
+        ``working`` or ``done`` would take that for a finished turn. Without a state change, a ``busy_screens`` or
+        ``failed_turn_screens`` text at the bottom of the screen shows that the agent took the prompt while it starts up
+        or retries the API. ``wait`` judges what follows. The prompt is never pasted again, because the composer or a
+        queued turn may already hold it.
+
+        A paste whose submit key the TUI lost leaves the exact prompt in the composer and starts no turn. After each
+        pickup window (``prompt_pickup_seconds``) without a state change, a composer that holds the prompt
+        (``_holds_draft``) gets Enter alone, up to ``DRAFT_SUBMITS`` times. The ``prompt_lost`` error says whether the
+        composer still held it, and ``start`` keeps the screen.
 
         A prompt is usually lost because the host is too loaded to draw the TUI, or because the Herdr integration is
         missing. The screen that ``start`` keeps shows which.
@@ -335,13 +348,48 @@ class HerdrRuntime:
         before = self._state_seq(agent)
         _call('agent', 'prompt', agent, prompt)
         handle.data[PROMPTED_AT] = time.time()
-        if self._state_changed(agent, before, herdr_settings.startup_grace_seconds):
-            return
+        grace = time.monotonic() + herdr_settings.startup_grace_seconds
+        submits = 0
+        while True:
+            window = max(0.0, min(herdr_settings.prompt_pickup_seconds, grace - time.monotonic()))
+            if self._state_changed(agent, before, window):
+                return
+            if time.monotonic() >= grace:
+                break
+            if submits < DRAFT_SUBMITS and self._holds_draft(handle, prompt):
+                _call('agent', 'send-keys', agent, 'enter')
+                submits += 1
         tail = _tail(self._visible(handle))
         screens = Screens.of(handle)
         if any(text in tail for text in (*screens.busy_screens, *screens.failed_turn_screens)):
             return
-        raise HerdrError('prompt_lost', f'{agent} did not start working after its brief was submitted')
+        held = (
+            f'its brief is still in the composer after {submits} presses of enter'
+            if self._holds_draft(handle, prompt)
+            else 'the composer does not hold it'
+        )
+        raise HerdrError('prompt_lost', f'{agent} did not start working after its brief was submitted; {held}')
+
+    def _holds_draft(self, handle: Handle, prompt: str) -> bool:
+        """Whether the agent's composer still holds ``prompt``, typed but not submitted, rather than an accepted turn.
+
+        The composer is the text after the last ``composer`` marker of the agent's harness at the bottom of the screen,
+        up to a rule line. A brief that the agent took sits above it, in the history, with an empty composer below.
+        """
+        marker = Screens.of(handle).composer
+        if marker is None:
+            return False
+        lines = self._visible(handle).splitlines()
+        start = next((i for i in range(len(lines) - 1, -1, -1) if lines[i].lstrip().startswith(marker)), None)
+        if start is None:
+            return False
+        held: list[str] = []
+        for line in lines[start:]:
+            if held and (not line.strip() or set(line.strip()) <= set('─')):
+                break
+            held.append(line.lstrip().removeprefix(marker) if not held else line)
+        draft = ''.join(prompt.split())[:DRAFT_ECHO_CHARS]
+        return ''.join(''.join(held).split()).startswith(draft)
 
     def _state_seq(self, agent: str) -> int:
         return int(_call('agent', 'get', agent)['agent']['state_change_seq'])

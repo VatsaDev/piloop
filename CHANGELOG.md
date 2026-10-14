@@ -163,6 +163,14 @@ A deprecated configuration key shows a warning for at least one minor release be
   showed `run 9/10`. A finished run also counts while its commits are scored, so no extra run is queued meanwhile.
   The new `runs.scoring` column (migration `0010`) records that; a run keeps its place even when its idea is parked
   or rejected meanwhile, and a restarted daemon resumes the scoring of every such run.
+- A Herdr agent whose first prompt stays typed in its composer, with no turn started (a submit key the TUI lost), is
+  sent Enter, at most twice; the prompt is never pasted again. Before, it was closed as `prompt_lost` after the
+  60 s startup grace. A `prompt_lost` error now says whether the composer still held the brief.
+  `[harness.<name>] composer` names the marker of the agent's input line; the built-in `claude` and `codex` harnesses
+  have one.
+- After an evaluator change, unpinned runs wait only until the head has a score from the new evaluator, and the
+  head is measured first. They waited for every keep, measured one at a time: 4 worker slots sat idle for 70
+  minutes. Research does not sweep while the queue holds its runnable ideas for that score.
 
 ## [0.1.0] - 2026-10-13
 

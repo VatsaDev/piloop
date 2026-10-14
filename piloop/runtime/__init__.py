@@ -52,6 +52,8 @@ class WorkerSpec:
     """Texts at the bottom of the screen that show that a turn failed on an API error (``Harness.failed_turn_screens``)."""
     queue_key: QueueKey | None = None
     """How to queue a message for the end of the agent's turn (``Harness.queue_key``)."""
+    composer: str | None = None
+    """The marker at the start of the agent's input line (``Harness.composer``)."""
     session_id_pattern: str | None = None
     """The regex that finds the harness's session id in its stdout (``Harness.session_id_pattern``)."""
     resume_args: list[str] = field(default_factory=list)

@@ -284,7 +284,7 @@ class Launcher:
             fill(a, model=model, log_dir=str(log_dir), session_id=session_id or SESSION_ID, cwd=str(cwd))
             for a in (definition.resume if invocation is Invocation.HEADLESS else [])
         ]
-        busy, failed, queue = definition.screens
+        busy, failed, queue, composer = definition.screens
         spec = WorkerSpec(
             name=f'{kind}-{worker_id}',
             label=label,
@@ -298,6 +298,7 @@ class Launcher:
             busy_screens=busy,
             failed_turn_screens=failed,
             queue_key=queue,
+            composer=composer,
             session_id_pattern=definition.session_id_pattern,
             resume_args=expand(resume, mcp),
         )

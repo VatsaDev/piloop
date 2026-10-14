@@ -50,7 +50,7 @@ from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Tracer
 from piloop.reports.overview import SILENT_SECONDS
 from piloop.runtime import Handle
-from piloop.scoring.ledger import current_evaluator, head, import_reference
+from piloop.scoring.ledger import current_evaluator, head, import_reference, unmeasured
 from piloop.triggers import LowWaterTrigger
 from tests.conftest import (
     HARNESS_APPEND,
@@ -1056,10 +1056,10 @@ def measured_by(db: Database, candidate_id: int) -> list[tuple[int, float | None
         return [(m.evaluator_id, m.metrics.get('score'), m.error) for m in rows]
 
 
-def test_a_new_evaluator_measures_every_keep_again_newest_first_and_runs_wait_for_every_score(
+def test_a_new_evaluator_measures_every_keep_again_head_first_and_runs_wait_for_the_head(
     db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    """A new evaluator measures every keep again, the baseline too, newest first, and runs wait for every score.
+    """A new evaluator measures every keep again, the head first, the baseline too; unpinned runs wait for the head.
 
     Without these scores, the head is empty and new runs cannot be compared with the kept lineage.
     """
@@ -1089,15 +1089,47 @@ def test_a_new_evaluator_measures_every_keep_again_newest_first_and_runs_wait_fo
     assert measured_by(db, kept.id) == [(old, 2.0, None), (new, 4.0, None)], 'the newest keep first'
     assert measured_by(db, 1) == [(old, 1.0, None)], 'one at a time'
 
-    assert sched.tick() == [], 'the baseline is not measured yet: the run still waits'
+    assert sched.tick() == [2], 'the head has a score: the run starts from it while the baseline is measured'
     sched.wait(30)
     assert measured_by(db, 1) == [(old, 1.0, None), (new, 2.0, None)]
-    assert sched.tick() == [2], 'every keep has a score: the run starts from the best'
-    sched.wait(30)
     with db.session() as s:
         assert s.get_one(Run, 2).base_candidate_id == kept.id
         assert s.get_one(Candidate, kept.id).verdict is Verdict.KEEP, 'measuring again judges nothing again'
     assert measured_by(db, 1) == [(old, 1.0, None), (new, 2.0, None)], 'every keep measured once: nothing more'
+
+
+def test_after_a_new_evaluator_runs_start_from_the_head_once_the_head_alone_is_measured(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """Worker slots sat idle while old keeps, neither base nor bar of any idea, were measured again one at a
+    time. An unpinned run starts from the head and is judged against it."""
+    write_toml(Path(project.path), HARNESS_APPEND, max_workers=2)
+    set_config(db, project)
+    sched = make_scheduler(db, runtime, tmp_path)
+    add_ideas(db, project, 'first line')
+    sched.tick()
+    sched.wait(30)
+    add_ideas(db, project, 'second line')
+    sched.tick()
+    sched.wait(30)
+    with db.session() as s:
+        older, newer = (s.scalars(select(Candidate).where(Candidate.run_id == r)).one().id for r in (1, 2))
+    doubled = ['sh', '-c', 'echo METRIC score=$(( 2 * $(wc -l < solve.txt) )); echo METRIC size=1']
+    write_toml(Path(project.path), HARNESS_APPEND, max_workers=2, evaluate=doubled)
+    with db.session() as s:
+        proj = s.get_one(Project, project.id)
+        sync(s, proj)
+        new = proj.evaluator_id
+        assert new is not None
+        s.add(Measurement(candidate_id=newer, evaluator_id=new, metrics={'score': 6.0, 'size': 1.0}))
+        s.commit()
+        assert [c.id for c in unmeasured(s, proj)] == [older, 1], 'the older keeps, newest first'
+    (free,) = add_ideas(db, project, 'free')
+    assert sched.tick() == [3], 'the head has a score: the baseline and the older keep are measured meanwhile'
+    with db.session() as s:
+        assert (s.get_one(Run, 3).idea_id, s.get_one(Run, 3).base_candidate_id) == (free, newer)
+    sched.wait(30)
+    sched.stop(timeout=5)
 
 
 def test_after_a_new_evaluator_no_run_starts_from_the_best_until_every_keep_is_measured(

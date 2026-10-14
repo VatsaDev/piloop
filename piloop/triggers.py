@@ -76,6 +76,9 @@ class Backlog:
     """The role's sweeps in flight."""
     per_sweep: int
     """The ideas that one sweep may insert: the role's ``max_ideas``."""
+    on_hold: bool = False
+    """The queue holds the unpinned ideas until the head has a score from the current evaluator
+    (``ledger.head_unmeasured``)."""
 
     @property
     def pending(self) -> int:
@@ -324,6 +327,8 @@ class LowWaterTrigger(Trigger):
       the wall-clock time.
 
     It requests enough sweeps to fill the shortfall at the role's ``max_ideas`` each, within the role's free slots.
+    Nothing is requested while the queue holds runnable ideas for the head to be measured again (``Backlog.on_hold``):
+    no idea that a sweep adds could run sooner.
     """
 
     kind: Literal['low_water'] = 'low_water'
@@ -335,6 +340,8 @@ class LowWaterTrigger(Trigger):
     def fire(self, tick: Tick) -> Fire | None:
         backlog = tick.backlog(self.buffer)
         if backlog.per_sweep == 0 or backlog.short <= 0 or backlog.sweeps >= tick.max_concurrent:
+            return None
+        if backlog.on_hold and backlog.runnable:
             return None
         batch = min(-(-backlog.short // backlog.per_sweep), tick.max_concurrent - backlog.sweeps)
         reason = self._reason(tick, backlog)

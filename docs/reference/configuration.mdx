@@ -94,6 +94,7 @@ read the tokens the agent spent.
 | `busy_screens` | list\[string\] \| null | `null` | For an interactive runtime: texts at the bottom of a still screen that show that the agent works while the runtime reads it as idle, for example a prompt that the agent holds in its queue, or a retry of the API. When unset, those of the built-in harness with the same `executable`, so an override of `claude` keeps them. |
 | `failed_turn_screens` | list\[string\] \| null | `null` | For an interactive runtime: texts at the bottom of the screen that show that the turn ended on an API error, not because the agent was done. The agent is then resumed. When unset, those of the built-in harness with the same `executable`. |
 | `queue_key` | [QueueKey](#queuekey) \| null | `null` | For an interactive runtime: how to queue a message for the end of the agent's turn, for a harness that ends its turn to take a message submitted while it works. When unset, the queue key of the built-in harness with the same `executable`, if it has one; else the message is submitted, and the agent queues it by itself. |
+| `composer` | string \| null | `null` | For an interactive runtime: the marker at the start of the agent's input line. The runtime reads the text after the last one to tell a first prompt that the TUI left typed but not submitted, and submits it with Enter. When unset, the marker of the built-in harness with the same `executable`; without one, a prompt is never submitted again. |
 | `entire_agent` | string \| null | `null` | Entire's name for this agent, as `entire agent list` shows it. When it is set and `entire` is installed, the agent's session is attached to Entire as a checkpoint when the agent ends. When unset, the session is not captured. |
 | `session_id_pattern` | string \| null | `null` | A regex with one group that finds the session id in the first lines of the process's stdout. Use it in a `headless` runtime for a harness that cannot take its id as an argument (`{session_id}`). For example, Codex `exec --json` prints `{"type":"thread.started","thread_id":"<uuid>"}` first. |
 | `usage` | [UsageSpec](#usagespec) \| null | `null` | `[harness.<name>.usage]`: how to read the tokens an agent spent, when it ends, into `workers.usage`. When unset, token usage is not recorded. |
@@ -369,6 +370,8 @@ not running does not count. Below the target, a sweep fires for one of these rea
   the wall-clock time.
 
 It requests enough sweeps to fill the shortfall at the role's `max_ideas` each, within the role's free slots.
+Nothing is requested while the queue holds runnable ideas for the head to be measured again (`Backlog.on_hold`):
+no idea that a sweep adds could run sooner.
 
 | Key | Type | Default | Description |
 |---|---|---|---|

@@ -80,7 +80,6 @@ from piloop.db.models import (
     Run,
     RunStatus,
     TargetKind,
-    Verdict,
     Worker,
     WorkerState,
     count,
@@ -95,7 +94,7 @@ from piloop.reports.pack import pack
 from piloop.reports.wake import lessons_overview
 from piloop.runtime import Outcome
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
-from piloop.scoring.ledger import bar_of, checkout_candidate, head, score, unmeasured
+from piloop.scoring.ledger import bar_of, checkout_candidate, head, head_unmeasured, score, unmeasured
 from piloop.triggers import Backlog, Fire, Incident, LowWaterTrigger, TrackBacklog
 from piloop.usage import Usage
 
@@ -339,9 +338,9 @@ class Scheduler:
     def _remeasure(self, s: Session, project: Project) -> None:
         """Measure the candidates that the current evaluator has not measured, one at a time per project.
 
-        After an evaluator change, no candidate has a score from the new evaluator. The keeps are measured again first,
-        newest first, because the head and every bar are keeps. Then the references that a run can pin are measured
-        (``unmeasured``). Runs that are not pinned wait until every keep has a score (``_queue``).
+        After an evaluator change, no candidate has a score from the new evaluator. The head is measured first, then the
+        other keeps, newest first, because every bar is a keep. Then the references that a run can pin are measured
+        (``unmeasured``). Runs that are not pinned wait until the head has a score (``_queue``).
         """
         key = (TargetKind.PROJECT, project.id)
         if key in self._scoring or not (todo := unmeasured(s, project)):
@@ -616,6 +615,7 @@ class Scheduler:
             free=self._free_slots(s, project, cfg, cfg.roles.doing_runs()),
             sweeps=sweeps,
             per_sweep=cfg.roles.sweeping()[name].max_ideas,
+            on_hold=head_unmeasured(s, project),
         )
 
     def _free_slots(self, s: Session, project: Project, cfg: ProjectConfig, roles: dict[str, WorkerRole]) -> int:
@@ -642,8 +642,9 @@ class Scheduler:
         A ``ready`` idea with an ``after`` link to an idea that is not ``done`` is skipped and not changed. It stays
         ``ready`` and is taken when every prerequisite has finished. A runnable idea whose track is not in
         ``piloop.toml`` is parked with a note that says why (``_park_strays``). An idea on a track with a share of 0
-        waits. While a new evaluator has not measured every keep (``_remeasure``), only a pinned idea has a base. The
-        other ideas wait. Otherwise they could start from an old head while a better keep waits for its measurement.
+        waits. While a new evaluator has not measured the head (``_remeasure`` measures it first), only a pinned idea
+        has a base: an unpinned run starts from the head and is judged against it. The older keeps are measured
+        meanwhile; they are no unpinned run's base or bar.
         When an exploration run is due (``_explore``), the slot goes first to an idea pinned to an alternative base.
         Otherwise it goes to the most urgent idea of the track furthest below its share (``_pick``). An idea pinned to
         a harness at its cap (``_full``) waits. When every harness of a role's rotation is at its cap, the role queues
@@ -652,7 +653,7 @@ class Scheduler:
         self._park_strays(s, project, cfg)
         live = [t.name for t in cfg.all_tracks if t.share > 0]
         query = select(Idea).where(Idea.project_id == project.id, runnable(), Idea.track.in_(live))
-        if any(c.verdict is Verdict.KEEP for c in unmeasured(s, project)):
+        if head_unmeasured(s, project):
             query = query.where(Idea.base_candidate_id.is_not(None))
         for name, role in cfg.roles.doing_runs().items():
             takes = query

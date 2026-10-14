@@ -125,16 +125,25 @@ def fallback_track(cfg: ProjectConfig, name: str | None) -> Track:
 def unmeasured(s: Session, project: Project) -> list[Candidate]:
     """Return the keeps, the baseline included, then the references, that the current evaluator did not measure.
 
-    Each group is newest first. A new evaluator has measured none of them, and an imported reference starts
-    unmeasured too. The daemon measures these, so the head, every bar and every starting point a run can pin have
-    numbers under the current evaluator. Their verdicts do not change.
+    The head comes first: an unpinned run starts from it and is judged against it, so the queue waits only for it
+    (``head_unmeasured``). The other keeps and the references follow, each group newest first. A new evaluator has
+    measured none of them, and an imported reference starts unmeasured too. The daemon measures these, so the head,
+    every bar and every starting point a run can pin have numbers under the current evaluator. Their verdicts do not
+    change.
     """
     rows = select(Candidate).where(
         Candidate.project_id == project.id, Candidate.verdict.in_((Verdict.KEEP, Verdict.REFERENCE))
     )
     evaluator_id = project.evaluator_id or 0
     found = [c for c in s.scalars(rows.order_by(Candidate.id.desc())) if not measured(c, evaluator_id)]
-    return sorted(found, key=lambda c: c.verdict is Verdict.REFERENCE)
+    trunk = head(s, project)
+    return sorted(found, key=lambda c: (trunk is None or c.id != trunk.id, c.verdict is Verdict.REFERENCE))
+
+
+def head_unmeasured(s: Session, project: Project) -> bool:
+    """Whether the head has no measurement from the current evaluator: the queue then holds the unpinned ideas."""
+    trunk = head(s, project)
+    return trunk is not None and not measured(trunk, project.evaluator_id or 0)
 
 
 def references(s: Session, project: Project) -> list[Candidate]:

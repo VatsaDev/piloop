@@ -16,6 +16,7 @@ from piloop.daemon.scheduler import NO_RUN_ERROR, Scheduler
 from piloop.db import sql
 from piloop.db.models import (
     Candidate,
+    Evaluator,
     Event,
     Idea,
     IdeaLink,
@@ -717,3 +718,32 @@ def test_requests_go_through_the_agent_sql_path(db: Database, project: Project, 
     assert row == [('research', 'requested', None, None)]
     with closing(sql.connect(tmp_path / 'piloop.db', actor='human')) as con, pytest.raises(sqlite3.IntegrityError):
         sql.run(con, "INSERT INTO workers (kind, project_id, state) VALUES ('janitor', 1, 'requested')")
+
+
+def test_no_research_sweep_while_the_queue_holds_its_runnable_ideas_for_the_head_to_be_measured(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """Sweeps that ran while every runnable idea waited for a remeasure spent tokens on ideas that could not run.
+
+    Nothing a sweep adds could run sooner. ``low_water`` waits until the head has a score from the current evaluator.
+    """
+    configure(db, project, research={'max_ideas': 1, 'triggers': low_water(2)})
+    sched = scheduler(db, runtime, tmp_path)
+    occupy(db, project)
+    add_ideas(db, project, 1)
+    with db.session() as s:
+        evaluator = Evaluator(project_id=project.id, key='new', definition={})
+        s.add(evaluator)
+        s.flush()
+        s.get_one(Project, project.id).evaluator_id = evaluator.id
+        s.commit()
+        new = evaluator.id
+    assert sched.tick() == [], 'the head has no score from the new evaluator: the runnable idea is held'
+    sched.wait(10)
+    with db.session() as s:
+        if not s.scalars(select(Measurement).where(Measurement.evaluator_id == new)).first():
+            s.add(Measurement(candidate_id=1, evaluator_id=new, metrics={'score': 1.0}))
+            s.commit()
+    assert sched.tick() == [1], 'the head is measured: below the target, research sweeps again'
+    sched.wait(10)
+    sched.stop(timeout=5)

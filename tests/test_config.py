@@ -436,6 +436,9 @@ def test_an_override_of_a_built_in_harness_keeps_the_screens_and_queue_key_of_it
         tuple(built_in.busy_screens or ()),
         tuple(built_in.failed_turn_screens or ()),
         built_in.queue_key,
+        built_in.composer,
     ), 'an override that sets none of them'
-    assert cfg.harness_for('mine').screens == (('Thinking',), (), built_in.queue_key), 'what it sets wins, [] included'
-    assert DEFAULT_HARNESSES['pi'].screens == ((), (), None), 'an executable without any'
+    assert cfg.harness_for('mine').screens == (('Thinking',), (), built_in.queue_key, built_in.composer), (
+        'what it sets wins, [] included'
+    )
+    assert DEFAULT_HARNESSES['pi'].screens == ((), (), None, None), 'an executable without any'
