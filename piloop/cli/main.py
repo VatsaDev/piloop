@@ -69,7 +69,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database, SchemaAhead, migrate, revision
-from piloop.proc import child_env
+from piloop.proc import Inherited, child_env
 from piloop.reports.overview import age, item_lines, overview
 from piloop.reports.pack import renderables as pack_renderables
 from piloop.runtime import NotSteerable
@@ -800,8 +800,9 @@ def serve(
         pid = spawn_detached(settings)
         console.print(f'daemon started: pid {pid}, log {settings.log_file}')
         return
+    inherited = Inherited.now()  # before the daemon starts a child of its own
     try:
-        daemon = Daemon(settings)
+        daemon = Daemon(settings, inherited)
     except SchemaAhead as e:
         raise SystemExit(str(e)) from e
     daemon.serve()

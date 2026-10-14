@@ -760,7 +760,7 @@ def test_launch_requests_a_worker(project_path: Path, out) -> None:
 def test_serve_builds_a_daemon(mocker: MockerFixture) -> None:
     daemon = mocker.patch('piloop.cli.main.Daemon')
     run_cli(['serve'])
-    assert daemon.call_args.args == (cli.settings,) and daemon.return_value.serve.called
+    assert daemon.call_args.args[0] is cli.settings and daemon.return_value.serve.called
 
 
 def test_serve_detach_status_stop(out, monkeypatch: pytest.MonkeyPatch) -> None:

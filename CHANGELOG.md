@@ -37,6 +37,12 @@ A deprecated configuration key shows a warning for at least one minor release be
   (`PILOOP_HERDR_STARTUP_GRACE_SECONDS`, 60 s) to be picked up instead of 5 s, and a quiet screen within the grace is
   not a finished turn: on a loaded host a Codex that had started its turn was closed as `prompt_lost` or as idle after
   3 s. A session id that Herdr had not reported yet is asked for again before the pane closes.
+- The daemon no longer collects zombie processes. An in-place restart (`piloop restart`, `piloop upgrade`) execs the
+  daemon while its threads still wait on `herdr` and `git` subprocesses; the new program had no handle on them, so
+  each became a zombie when it exited (26 on one daemon after two restarts). The daemon now reaps the children it
+  inherits on every tick.
+- The subprocess runtime no longer fails the start of an agent that exits at once on macOS: it asked the system for
+  the process group of an exited child (ESRCH); the group is the child's own pid.
 
 ## [0.1.0] - 2026-10-13
 

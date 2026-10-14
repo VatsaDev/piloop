@@ -145,3 +145,16 @@ def test_kill_tolerates_a_vanished_group(tmp_path: Path, monkeypatch: pytest.Mon
 def test_started_is_the_start_time_of_a_live_pid_and_none_for_a_gone_one() -> None:
     assert started(os.getpid()) == IsPositive()
     assert started(2**22 + 12345) is None
+
+
+def test_an_agent_that_exits_at_once_still_starts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """macOS answers ``getpgid`` with ESRCH for a child that already exited; the start must not ask it."""
+
+    def gone(pid: int) -> int:
+        raise ProcessLookupError(3, 'No such process')
+
+    monkeypatch.setattr(os, 'getpgid', gone)
+    rt = SubprocessRuntime()
+    handle = rt.start(spec(tmp_path, script(tmp_path, 'exit 0')))
+    assert handle.data['pgid'] == handle.data['pid']
+    assert rt.wait(handle, timeout=10).status is WorkerStatus.EXITED

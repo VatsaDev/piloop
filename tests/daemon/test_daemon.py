@@ -26,7 +26,7 @@ from piloop.db.models import (
     WorkerKind,
     WorkerState,
 )
-from piloop.proc import alive, started
+from piloop.proc import Inherited, alive, started
 from piloop.settings import Settings
 from tests.conftest import HARNESS_NOOP, ScriptRuntime, factory, register, write_toml
 
@@ -87,6 +87,27 @@ def test_serve_runs_until_interrupted(tmp_path: Path, mocker: MockerFixture) -> 
     daemon.serve()
     assert ticks['n'] == 3
     assert not (tmp_path / 'home' / 'serve.pid').exists()
+
+
+def test_serve_reaps_the_children_an_in_place_restart_handed_over_on_every_tick(
+    tmp_path: Path, mocker: MockerFixture
+) -> None:
+    early = os.posix_spawn('/bin/sh', ['sh', '-c', 'exit 0'], os.environ)
+    late = os.posix_spawn('/bin/sh', ['sh', '-c', 'sleep 0.8'], os.environ)
+    daemon = Daemon(Settings(home=tmp_path / 'home', tick_seconds=0.05), Inherited({early, late}))
+    ticks = {'n': 0}
+
+    def tick() -> list[int]:
+        ticks['n'] += 1
+        if ticks['n'] == 30:
+            raise KeyboardInterrupt
+        return []
+
+    mocker.patch.object(daemon.scheduler, 'tick', side_effect=tick)
+    daemon.serve()
+    for pid in (early, late):
+        with pytest.raises(ChildProcessError):
+            os.waitpid(pid, os.WNOHANG)  # already reaped by the daemon
 
 
 def test_serve_checks_entire_once_and_the_launcher_learns_the_version(

@@ -52,7 +52,9 @@ class SubprocessRuntime:
             self.kind,
             {
                 'pid': proc.pid,
-                'pgid': os.getpgid(proc.pid),
+                # start_new_session makes the child its group's leader. os.getpgid would ask the system, and macOS
+                # refuses (ESRCH) for a child that already exited, which failed the start of a quick agent.
+                'pgid': proc.pid,
                 'start_time': started(proc.pid),
                 'started_at': time.time(),
                 'log_dir': str(spec.log_dir),

@@ -12,6 +12,7 @@ from piloop.daemon.serve import RESTART_SIGNAL, SECRETS_COMMAND_ENV, SERVE_ARGV,
 from piloop.db.session import Database, SchemaAhead, migrate
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Span, tracer
+from piloop.proc import Inherited
 from piloop.settings import Settings, settings
 
 ACTOR = DAEMON_ACTOR
@@ -21,7 +22,9 @@ ACTOR = DAEMON_ACTOR
 class Daemon:
     """Everything that a ``piloop serve`` process owns."""
 
-    def __init__(self, cfg: Settings = settings) -> None:
+    def __init__(self, cfg: Settings = settings, inherited: Inherited | None = None) -> None:
+        self._inherited = inherited or Inherited(set())
+        """The children an in-place restart handed over (``piloop.proc.Inherited``): reaped on every tick."""
         self.db = Database(cfg.database_url, actor=ACTOR)
         try:
             migrate(self.db.engine)
@@ -56,7 +59,8 @@ class Daemon:
             with self.tracer.span('piloop.start', db=self._cfg.database_url, secrets=supplied) as span:
                 self._check_entire(span)
                 self.scheduler.reap()
-            self.scheduler.serve_forever(self._cfg.tick_seconds)
+                span.set(inherited_reaped=self._inherited.reap())
+            self.scheduler.serve_forever(self._cfg.tick_seconds, also=self._inherited.reap)
         except KeyboardInterrupt:
             pass
         finally:

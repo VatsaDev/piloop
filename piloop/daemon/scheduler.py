@@ -1050,10 +1050,11 @@ class Scheduler:
         self._collect()
         return sorted(self._futures)
 
-    def serve_forever(self, tick_seconds: float) -> None:
-        """Tick until ``stop`` or ``interrupt`` is called."""
+    def serve_forever(self, tick_seconds: float, *, also: Callable[[], object] = lambda: None) -> None:
+        """Tick, and call ``also`` after each tick, until ``stop`` or ``interrupt`` is called."""
         while not self._stop.is_set():
             self.tick()
+            also()
             self._stop.wait(tick_seconds)
 
     def interrupt(self) -> None:

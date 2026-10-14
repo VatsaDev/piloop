@@ -1,5 +1,6 @@
 """The daemon as a real process: SIGTERM, `serve --detach`, `stop`, the pid file, service unit text."""
 
+import contextlib
 import os
 import plistlib
 import signal
@@ -7,7 +8,7 @@ import stat
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,35 @@ def wait_until(predicate: Callable[[], bool], *, timeout: float = 15) -> None:
     while not predicate():
         assert time.monotonic() < deadline, 'condition not met in time'
         time.sleep(0.05)
+
+
+@pytest.fixture(autouse=True)
+def reap_daemons(tmp_path: Path) -> Iterator[None]:
+    """Kill every process still running with this test's ``PILOOP_HOME`` once the test ends, pass or fail.
+
+    The tests start real daemons (``serve --detach`` makes them session leaders that outlive the test) and stop them in
+    their last lines. A test that fails before those lines, as timing assertions do on a loaded host, left its daemon
+    running for hours.
+    """
+    yield
+    reap(tmp_path / 'home')
+
+
+def reap(home: Path) -> None:
+    """SIGKILL every live process whose environment has ``PILOOP_HOME=<home>``."""
+    for pid, _, _ in proc.tagged(f'PILOOP_HOME={home}'):
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
+
+
+def test_a_daemon_that_a_failed_test_leaves_is_reaped(tmp_path: Path) -> None:
+    """``reap_daemons`` finds a daemon by its home: a detached one, in a session of its own, is gone afterwards."""
+    cfg = Settings(home=tmp_path / 'home')
+    assert piloop(cfg.home, 'serve', '--detach').returncode == 0
+    pid = int(cfg.pid_file.read_text())
+    assert pid in [p for p, _, _ in proc.tagged(f'PILOOP_HOME={cfg.home}')], 'with its children, if any'
+    reap(cfg.home)
+    wait_until(lambda: not alive(pid))
 
 
 def test_sigterm_kills_workers_and_exits(project_path: Path, tmp_path: Path) -> None:
