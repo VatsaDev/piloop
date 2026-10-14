@@ -1,0 +1,9 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the fields of `Stop` in `piloop/config.py` if you want to change anything here. */}
+
+| Key | Meaning |
+|---|---|
+| `target` | Stop when the primary metric at the head (the latest keep on the trunk) reaches this value, in its direction. Only for a project with one track. |
+| `max_runs` | Stop after this many worker runs, once none of them is queued, running or being scored. A run counts while it is queued, running or being scored, so piloop never starts more runs than this. A finished run counts when it has a candidate that is measured or waits for its measurement. A run with no commit or only `Piloop-Eval: skip` commits does not count, and piloop starts another run in its place. A run that a daemon stop, a daemon crash or a campaign stop ended does not count either. `[spend]` and `max_tokens` limit what those runs cost. |
+| `max_hours` | Stop after this many hours of wall-clock time since the first run of the project started. |
+| `max_tokens` | Stop when all the agents of the project together spent this many tokens (the `total` of `workers.usage`), summed over the agents that ended. |
+| `plateau` | Stop after this many finished runs in a row without a new `keep` candidate. Every finished run counts, also one with no commit or only `Piloop-Eval: skip` commits: such runs make no progress either. A run that a daemon stop, a daemon crash or a campaign stop ended does not count. |

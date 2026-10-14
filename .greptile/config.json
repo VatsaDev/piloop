@@ -13,7 +13,7 @@
   "excludeAuthors": [
     "dependabot[bot]"
   ],
-  "ignorePatterns": "uv.lock\ndocs/reference/configuration.mdx\ndocs/reference/schema.mdx\npiloop/db/actor_triggers.sql\npiloop/db/persistent_triggers.sql\ndocs/images/**\ntests/fixtures/**",
+  "ignorePatterns": "uv.lock\ndocs/reference/configuration.mdx\ndocs/reference/schema.mdx\ndocs/snippets/generated/**\npiloop/db/actor_triggers.sql\npiloop/db/persistent_triggers.sql\ndocs/images/**\ntests/fixtures/**",
   "instructions": "piloop is a daemon that manages a queue of ideas: coding agents try each idea in a git worktree, the evaluate command scores the commit, and the verdict keeps it only if it beats the head. Review for correctness first: the scheduler, the verdict statistics, the database triggers and the run lifecycle. CI already enforces ruff, ty, 100% branch coverage and generated-docs drift, so do not comment on formatting, import order or coverage numbers. Flag a change that makes the design less simple: a second way to do something that already exists, a compensating loop or retry for a design flaw, a flag or knob with no clear user.",
   "rules": [
     {
@@ -79,7 +79,7 @@
     },
     {
       "id": "generated-files",
-      "rule": "docs/reference/configuration.mdx, docs/reference/schema.mdx, the generated blocks in docs/architecture/*.mdx and piloop/db/*_triggers.sql come from scripts/gen_docs.py. A change to them must come with the change to the code or docstring they are generated from.",
+      "rule": "docs/reference/configuration.mdx, docs/reference/schema.mdx, docs/snippets/generated/** and piloop/db/*_triggers.sql come from scripts/generate/ (run `uv run -m scripts.generate_all`). A change to them must come with the change to the code or docstring they are generated from.",
       "scope": [
         "docs/**",
         "piloop/db/**",

@@ -43,20 +43,33 @@ with the enwik8 example.
 
 ## Generated files
 
-`make docs` writes these files from the code. Never edit them by hand:
+`make docs` runs `uv run -m scripts.generate_all`, which writes these files from the code. Never edit them by hand:
 
 - `docs/reference/configuration.mdx`, from the models that `piloop.config.ProjectConfig` reaches (in
   `piloop/config.py`, `piloop/harnesses.py`, `piloop/mcp/` and `piloop/usage/`), from `piloop/deprecated.py`, and from
-  the header in `scripts/gen_docs.py`.
+  the header in `scripts/generate/configuration.py`.
 - `docs/reference/schema.mdx`, from `piloop/db/models.py`.
 - `piloop/db/actor_triggers.sql` and `piloop/db/persistent_triggers.sql`, from `piloop/db/triggers/`.
-- The parts between the markers in other pages: the diagram of the tables, the values of the state enums and the
-  graph of the imports (`docs/architecture/`), the tables of the built-in runtimes, triggers, harnesses, role
-  keys and defaults, `Runtime` methods and `[stop]` keys, the environment variables of the settings classes, and how
-  each harness takes a message under Herdr. They come from the docstrings and the built-in registries,
-  so write those docstrings for the reader of the page. A missing docstring stops `make docs`.
+- `docs/snippets/generated/`: the generated parts of other pages. These are the diagram of the tables, the values of
+  the state enums and the graph of the imports, and the tables of the built-in runtimes, triggers, harnesses, role
+  keys and defaults, `Runtime` methods and `[stop]` keys. They also include the environment variables of the settings
+  classes, and how each harness takes a message under Herdr. They come from the docstrings and the built-in
+  registries, so write those docstrings for the reader of the page. A missing docstring stops `make docs`.
 
-`make docs-check` fails when one of them is stale. The pre-commit hook runs it.
+Each file starts with a comment that names the command and the source to change. A page shows a generated part as a
+[Mintlify snippet](https://www.mintlify.com/docs/create/reusable-snippets): it imports the file, then uses it as a component.
+
+```text
+import Runtimes from '/snippets/generated/runtimes.mdx';
+
+<Runtimes />
+```
+
+One module of `scripts/generate/` makes each file: its `generate()` returns the full content, and `PATH` is the file.
+To add a generated file, add a module and list it in `scripts/generate_all.py`.
+
+`make docs-check` (`--mode check`) fails on the first stale file and shows its diff. The pre-commit hook runs it.
+`--mode dry-run` prints every file and writes nothing.
 
 ## Documentation
 

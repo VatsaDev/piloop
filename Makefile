@@ -29,12 +29,12 @@ testcov:  ## Run tests with coverage; fails under 100%
 	uv run coverage report
 
 .PHONY: docs
-docs:  ## Regenerate the configuration and schema reference pages and the trigger SQL from code
-	uv run python scripts/gen_docs.py
+docs:  ## Regenerate the generated docs and the trigger SQL from code
+	uv run -m scripts.generate_all
 
 .PHONY: docs-check
 docs-check:  ## Fail if a generated file is stale
-	uv run python scripts/gen_docs.py --check
+	uv run -m scripts.generate_all --mode check
 
 .PHONY: all
 all: format lint typecheck testcov docs

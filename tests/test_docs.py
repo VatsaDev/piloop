@@ -1,5 +1,7 @@
 """Every code block in the docs, the README, AGENTS.md, CONTRIBUTING.md and the skills is checked against the code.
 
+The docs include the generated snippets in ``docs/snippets/generated/``, and every snippet that a page imports exists.
+
 Placeholders: ``<anything>`` (a letter after the ``<``) and ``…`` become ``1`` before a shell or SQL block is checked.
 ``1`` is a valid project name, id, number and text, so an example with placeholders parses like a real one.
 """
@@ -35,6 +37,7 @@ SOURCES = [
     ROOT / 'CONTRIBUTING.md',
     *sorted((ROOT / 'skills').rglob('SKILL.md')),
 ]
+SNIPPET = re.compile(r"^import (?P<name>\w+) from '(?P<path>/snippets/[^']+)';$", re.MULTILINE)
 FENCE = re.compile(r'^(?P<indent>\s*)(?P<fence>`{3,}|~{3,})(?P<info>.*)$')
 PLACEHOLDER = re.compile(r'<[A-Za-z][^<>\n]*>|…')
 ASSIGNMENT = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')
@@ -236,3 +239,17 @@ def test_code_block(block: Block, db: Path) -> None:
     except Exception as e:
         e.add_note(f'the code block at {block.at()} starts with: {block.code.splitlines()[0]}')
         raise
+
+
+def test_snippets_are_imported_and_exist() -> None:
+    """Every snippet that a page imports exists and is used, and every generated snippet has a page."""
+    imported: set[Path] = set()
+    for page in (ROOT / 'docs').rglob('*.mdx'):
+        for m in SNIPPET.finditer(text := page.read_text()):
+            path = ROOT / 'docs' / m['path'].lstrip('/')
+            assert path.is_file(), f'{page.relative_to(ROOT)} imports {m["path"]}, which does not exist'
+            assert f'<{m["name"]} />' in text, f'{page.relative_to(ROOT)} imports {m["name"]} and never uses it'
+            imported.add(path)
+    generated = set((ROOT / 'docs' / 'snippets' / 'generated').glob('*.mdx'))
+    assert generated, 'no generated snippets: run `make docs`'
+    assert generated <= imported, f'no page imports {sorted(p.name for p in generated - imported)}'

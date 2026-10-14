@@ -1,0 +1,208 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the models in `piloop/db/models.py` if you want to change anything here. */}
+
+```mermaid
+erDiagram
+    projects {
+        integer id PK
+        varchar name UK
+        varchar path
+        json config
+        integer evaluator_id
+        ProjectStatus status
+        varchar stopped_reason
+        double spend_usd
+        varchar spend_error
+        datetime spend_at
+        varchar repo
+        datetime created_at
+        datetime updated_at
+        varchar updated_by
+    }
+    evaluators {
+        integer id PK
+        integer project_id FK
+        varchar key
+        json definition
+        datetime created_at
+    }
+    ideas {
+        integer id PK
+        integer project_id FK
+        varchar title
+        varchar hypothesis
+        varchar track
+        varchar plan
+        IdeaStatus status
+        integer priority
+        varchar harness
+        integer base_candidate_id
+        integer max_runs
+        varchar created_by
+        varchar provenance
+        varchar family
+        datetime created_at
+        datetime updated_at
+        varchar updated_by
+    }
+    idea_links {
+        integer idea_id PK,FK
+        integer target_id PK,FK
+        LinkKind kind PK
+    }
+    runs {
+        integer id PK
+        integer idea_id FK
+        varchar role
+        integer attempt
+        integer base_candidate_id
+        boolean branch
+        varchar harness
+        varchar model
+        RunStatus status
+        boolean scoring
+        varchar brief
+        datetime started_at
+        datetime finished_at
+        varchar error
+        varchar log_dir
+        datetime created_at
+        datetime updated_at
+        varchar updated_by
+    }
+    candidates {
+        integer id PK
+        integer project_id FK
+        integer run_id FK
+        integer parent_id FK
+        varchar tree_sha
+        varchar commit_sha
+        varchar summary
+        Verdict verdict
+        varchar verdict_by
+        varchar verdict_reason
+        datetime created_at
+        datetime updated_at
+        varchar updated_by
+    }
+    measurements {
+        integer id PK
+        integer candidate_id FK
+        integer evaluator_id FK
+        json metrics
+        varchar error
+        double seconds
+        datetime created_at
+    }
+    comments {
+        integer id PK
+        TargetKind target_kind
+        integer target_id
+        varchar author
+        CommentKind kind
+        varchar body
+        integer priority
+        datetime acked_at
+        varchar acked_by
+        datetime created_at
+        datetime updated_at
+        varchar updated_by
+    }
+    techniques {
+        integer id PK
+        integer project_id FK
+        varchar title
+        varchar mechanism
+        varchar url
+        varchar created_by
+        datetime created_at
+    }
+    lessons {
+        integer id PK
+        integer project_id FK
+        varchar family
+        LessonStatus status
+        double effect
+        varchar metric
+        varchar body
+        varchar created_by
+        datetime created_at
+    }
+    documents {
+        integer id PK
+        integer project_id FK
+        varchar path
+        varchar hash
+        varchar title
+        varchar body
+        varchar commit_sha
+        varchar created_by
+        datetime created_at
+        datetime updated_at
+        varchar updated_by
+    }
+    journal {
+        integer id PK
+        varchar author
+        varchar line
+        datetime created_at
+    }
+    archives {
+        integer id PK
+        integer project_id FK
+        integer idea_id
+        varchar manifest
+        integer files
+        integer bytes
+        datetime created_at
+        datetime pruned_at
+        boolean complete
+    }
+    workers {
+        integer id PK
+        varchar kind
+        integer project_id FK
+        integer run_id FK
+        varchar harness
+        varchar model
+        varchar runtime
+        json handle
+        WorkerState state
+        varchar reason
+        varchar log_dir
+        datetime started_at
+        datetime ended_at
+        varchar error
+        varchar session_id
+        varchar checkpoint_id
+        json usage
+        datetime updated_at
+        varchar updated_by
+    }
+    events {
+        integer id PK
+        datetime at
+        varchar kind
+        varchar actor
+        TargetKind target_kind
+        integer target_id
+        json payload
+    }
+    projects ||--o{ evaluators : "project_id"
+    projects ||--o{ ideas : "project_id"
+    ideas ||--o{ idea_links : "idea_id"
+    ideas ||--o{ idea_links : "target_id"
+    ideas ||--o{ runs : "idea_id"
+    projects ||--o{ candidates : "project_id"
+    runs |o--o{ candidates : "run_id"
+    candidates |o--o{ candidates : "parent_id"
+    candidates ||--o{ measurements : "candidate_id"
+    evaluators ||--o{ measurements : "evaluator_id"
+    projects ||--o{ techniques : "project_id"
+    projects ||--o{ lessons : "project_id"
+    projects ||--o{ documents : "project_id"
+    projects ||--o{ archives : "project_id"
+    projects |o--o{ workers : "project_id"
+    runs |o--o{ workers : "run_id"
+```
+
+The full-text indexes are not in the diagram: `ideas_fts` (`title`, `hypothesis`, `plan`), `comments_fts` (`body`), `documents_fts` (`title`, `body`).

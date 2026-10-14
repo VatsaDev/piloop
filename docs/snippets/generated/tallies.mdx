@@ -1,0 +1,7 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the docstrings of the modules of `TALLIES`, `piloop/usage/` if you want to change anything here. */}
+
+| Tally | What it does |
+|---|---|
+| `claude` | Claude Code's session file: `message.usage` on `assistant` lines, one API response for each `message.id`. |
+| `codex` | Codex's rollout file: a `token_count` event with running totals after every response. The last one is the total. |
+| `pi` | pi's session file: `message.usage` on every assistant message, one for each model response. |
