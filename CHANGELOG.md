@@ -37,20 +37,20 @@ A deprecated configuration key shows a warning for at least one minor release be
   prints a bounded overview for a new orchestrator session: the latest journal lines, the open inbox, the active
   projects' heads and the current lessons.
 - The artifact store. The daemon archives the shared workspace in the background, one job at a time: the entries of
-  a done idea (`workspace/idea<id>…`, and `w<n>…`/`worker<n>…` of the workers that ran it) once its last run is judged,
-  and what a stopped campaign left. `NOTES.md` and `research/` are never archived. Files go into one
-  content-addressed store per `PILOOP_HOME` (`$PILOOP_HOME/store`: BLAKE3 hashes of whole files, zstd at rest). Each
-  manifest is recorded in the new `archives` table, and the local copies are removed only once the store holds every
-  blob. `piloop restore <project> [<idea>|<path>]` writes files back. `piloop store status|evict|verify` show the
-  store and the backlog, and check it. `[storage]` in the new global settings file `$PILOOP_HOME/config.toml`
-  mirrors the store to S3 (Glacier Instant Retrieval, STANDARD under 128 KB), with eviction of local copies by age
-  and size, or remote only (`evict_after_days = 0`). The worker brief asks for output under `workspace/idea<id>/`, no
-  copies of the code tree, and evaluator output left in the project's cache. The research pack lists workspace files
-  from a bounded walk instead of the whole workspace. The first daemon start after the upgrade archives every done
-  idea and stopped campaign that is already there. Archiving leaves `[storage] min_free_gb` (20 GB) free on the
-  store's disk: it stores a workspace in batches that fit above it, and when not one more file fits it leaves the
-  rest, writes an `anomaly.disk` event on the project and waits. Each failed or deferred archiving in a row doubles
-  the wait, from 10 minutes up to 6 hours.
+  a done idea (`workspace/idea<id>…`) once its last run is judged, and what a stopped campaign left. `NOTES.md` and
+  `research/` are never archived. Files go into one content-addressed store per `PILOOP_HOME` (`$PILOOP_HOME/store`:
+  BLAKE3 hashes of whole files, zstd at rest), and each manifest is recorded in the new `archives` table. The local
+  copies stay: the daemon removes them 7 days after their archiving, or sooner, oldest archiving first, while the
+  store's disk has less than `[storage] min_free_gb` (20 GB) free. It removes only a file that still holds what was
+  stored. `piloop restore <project> [<idea>|<path>]` writes files back. `piloop store status|evict|verify` show the
+  store and the backlog, and check it. The new global settings file `$PILOOP_HOME/config.toml` holds `[storage]`:
+  `[storage.remote]` picks a backend by `kind` (`s3` is built in: Glacier Instant Retrieval, STANDARD under 128 KB;
+  packages add backends through the `piloop.stores` entry point group), with eviction of the store's local copies by
+  age and size, or remote only (`evict_after_days = 0`). The worker brief asks for output under `workspace/idea<id>/`,
+  no copies of the code tree, and evaluator output left in the project's cache. The research pack lists workspace
+  files from a bounded walk instead of the whole workspace. The first daemon start after the upgrade archives every
+  done idea and stopped campaign that is already there. When not one more file fits above the reserve, archiving
+  leaves the rest, writes an `anomaly.disk` event on the project and waits 10 minutes.
 
 ### Changed
 

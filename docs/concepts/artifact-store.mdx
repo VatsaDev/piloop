@@ -7,32 +7,41 @@ Every project has one shared workspace, `$PILOOP_HOME/projects/<id>/workspace`. 
 worktree as `./workspace/`. Agents leave notes, logs, evaluation outputs and analysis arrays there. On a long campaign
 it grows to hundreds of gigabytes, much of it copies.
 
-piloop moves workspace files into a content-addressed **artifact store** once nothing needs them any more. It removes
-the local copies, and `piloop restore` brings them back.
+piloop stores workspace files in a content-addressed **artifact store** once nothing needs them any more. It removes
+the local copies later, and `piloop restore` brings them back.
 
 ## What is archived, and when
 
 The daemon archives in the background, one job at a time. Its scheduling loop never waits for an archiving.
 
 - **When an idea is done** (its last run is judged), the entries that belong to it are archived:
-  `workspace/idea<id>…` (`idea12/`, `idea12-canary.log`), and `w<n>…`, `worker<n>…` or `worker-<n>…` when `<n>`
-  is a worker that ran the idea.
+  `workspace/idea<id>…` (`idea12/`, `idea12-canary.log`). Workers are told to put their output there.
 - **When a campaign stops** and none of its agents is alive any more, everything left in its workspace is archived.
 - **Never archived**: `NOTES.md` and `research/` at the top of the workspace. These small knowledge files stay where
   research sweeps read them.
 
 An archiving stores every file and symlink, stores a manifest that lists them, and checks that the store holds all of
-it. Only then does it record the archiving in the `archives` table and remove the local copies. It removes only the
-files that did not change while they were read. A file that an agent writes meanwhile stays.
+it. Only then does it record the archiving in the `archives` table. It removes nothing: the local copies stay, so an
+agent or a human that still reads a file, for example to answer an escalation, finds it.
 
-Storing a file writes its compressed copy before the original goes, so archiving needs room on the disk of the
-store. It always leaves `min_free_gb` (`[storage]`, 20 GB by default) free there. A workspace larger than the free
-space above that is stored in batches: each batch is stored, recorded and removed from the workspace before the free
-space is measured again for the next one. When not one more file fits, the rest stays in the workspace and the daemon
-writes an `anomaly.disk` event on the project, with the bytes needed, the bytes free and the reserve. An idea with no
-batch stored stays due. Of an idea with some batches stored, the rest is archived when its campaign stops. After a
-failed or deferred archiving the daemon waits 10 minutes before the next one, twice as long after each one in a row,
-up to 6 hours.
+## When local copies go
+
+The daemon removes the workspace copies of an archiving later, and records when in `archives.pruned_at`:
+
+- **By age**: 7 days after the archiving.
+- **Under disk pressure**: while the disk of the store has less than `min_free_gb` (`[storage]`, 20 GB by default)
+  free, the oldest archivings first.
+
+It removes only a file that still holds what was stored (same size and hash), and a symlink that still points where
+it did. A file that an agent wrote since stays, and so does its directory. It checks age and pressure every hour
+while no archiving is due, and checks pressure again before it stores anything.
+
+Storing a file writes its compressed copy first, so archiving needs room on the disk of the store. A workspace larger
+than the free space above `min_free_gb` is stored in batches: before each batch, the daemon removes older local
+copies while the disk is short, then measures the free space again. When not one more file fits, the rest is not
+stored, and the daemon writes an `anomaly.disk` event on the project, with the bytes needed, the bytes free and the
+reserve. An idea with no batch stored stays due. Of an idea with some batches stored, the rest is archived when its
+campaign stops. After a failed or deferred archiving the daemon waits 10 minutes before the next one.
 
 Which archivings are due is computed from the database. A daemon that stops in the middle of a backlog picks it up
 where it was when it starts again. Content that was already stored is found by its hash and is not stored twice. The
@@ -68,22 +77,30 @@ One store serves every project of a `PILOOP_HOME`, in `$PILOOP_HOME/store`.
 
 Nothing is ever deleted from the store. There is no garbage collection.
 
-## A remote on S3
+## A remote
 
-Set `[storage]` in `$PILOOP_HOME/config.toml` to mirror the store to S3. The
-[configuration reference](/reference/configuration) lists every key.
+Set `[storage.remote]` in `$PILOOP_HOME/config.toml` to mirror the store. Its `kind` picks the backend, and the
+backend owns the other keys of the table. `s3` is built in. A package can add a backend with an entry point in the
+`piloop.stores` group, which names a `piloop.store.RemoteConfig` subclass. The keys of `[storage]` itself hold for
+every backend. The [configuration reference](/reference/configuration) lists every key.
 
 ```toml
 [storage]
-remote = "s3://my-bucket/piloop"
-storage_class = "GLACIER_IR"   # the default
-standard_below = 131072        # compressed bytes; the default (128 KB)
 evict_after_days = 30
 local_max_gb = 200
+
+[storage.remote]
+kind = "s3"
+url = "s3://my-bucket/piloop"
+storage_class = "GLACIER_IR"   # the default
+standard_below = 131072        # compressed bytes; the default (128 KB)
 ```
 
-- **Mirror.** With a `remote`, every blob is uploaded as it is stored. boto3 finds the credentials (environment,
-  profile or instance role).
+piloop checks `[storage.remote]` against its backend when it opens the store: `piloop serve`, `piloop restore` and
+`piloop store` fail on a key the backend does not know.
+
+- **Mirror.** With a remote, every blob is uploaded as it is stored. For S3, boto3 finds the credentials
+  (environment, profile or instance role).
 - **Storage class.** Each object gets Glacier Instant Retrieval (millisecond reads at a fraction of the price of
   STANDARD), except objects under `standard_below`: Glacier IR bills each object as at least 128 KB, so small ones
   are cheaper as STANDARD.

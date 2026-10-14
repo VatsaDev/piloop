@@ -1,6 +1,7 @@
 """Generate the reference pages of the docs site and the trigger SQL. ``--check`` fails when a file is stale.
 
-- ``docs/reference/configuration.mdx`` from ``piloop.config.ProjectConfig`` and ``piloop.settings.StorageSettings``.
+- ``docs/reference/configuration.mdx`` from ``piloop.config.ProjectConfig``, ``piloop.settings.StorageSettings`` and
+  the settings of each built-in store backend.
 - ``docs/reference/schema.mdx`` from the models in ``piloop/db/models.py``.
 - ``piloop/db/actor_triggers.sql`` from ``piloop.db.triggers.TEMP``. Every connection loads it.
 - ``piloop/db/persistent_triggers.sql`` from ``PERSISTENT``: a snapshot of what the migrations install, so that a
@@ -29,8 +30,9 @@ from piloop.db.sql import schema_ddl
 from piloop.db.triggers import persistent_sql, temp_sql
 from piloop.db.triggers.fts import FTS_COLUMNS
 from piloop.deprecated import BRIDGES
-from piloop.triggers import BUILTIN_TRIGGERS
 from piloop.settings import StorageSettings
+from piloop.store.config import BUILTIN_REMOTES
+from piloop.triggers import BUILTIN_TRIGGERS
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = ROOT / 'piloop'
@@ -201,14 +203,22 @@ def config_page() -> str:
 
 
 def global_section() -> str:
-    """Return the tables of the global settings file, ``$PILOOP_HOME/config.toml``."""
-    schema = _schema(StorageSettings)
-    return (
+    """Return the tables of the global settings file, ``$PILOOP_HOME/config.toml``: ``[storage]`` and each backend."""
+    storage = _schema(StorageSettings)
+    out = (
         '\n## Global settings: `config.toml`\n\n`$PILOOP_HOME/config.toml` holds the settings that every project of'
         ' one `PILOOP_HOME` shares. To override a key, set `PILOOP_<TABLE>__<KEY>`, for example'
-        ' `PILOOP_STORAGE__REMOTE`.\n\n### `[storage]`\n\n'
-        f'{mdx(schema.get("description", ""))}\n\n{_table(schema, {})}'
+        ' `PILOOP_STORAGE__MIN_FREE_GB`.\n\n### `[storage]`\n\n'
+        f'{mdx(storage.get("description", ""))}\n\n{_table(storage, {}, set(storage["properties"]) - {"remote"})}'
+        '\n`[storage.remote]` picks the backend that mirrors the store by its `kind`, and the backend owns the other'
+        ' keys of the table. A package adds a backend with an entry point in the `piloop.stores` group. The built-in'
+        ' ones:\n'
     )
+    for kind, backend in BUILTIN_REMOTES.items():
+        schema = _schema(backend)
+        out += f'\n### `[storage.remote]` with `kind = "{kind}"`\n\n{mdx(schema.get("description", ""))}\n\n'
+        out += _table(schema, schema.get('$defs', {}))
+    return out
 
 
 def deprecated_section() -> str:

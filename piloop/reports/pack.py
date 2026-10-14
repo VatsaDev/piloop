@@ -18,7 +18,6 @@ pointers, not inlined content. On top of the history, the pack adds at most abou
 import heapq
 import io
 import os
-import re
 from collections import defaultdict
 from contextlib import suppress
 from datetime import UTC, datetime

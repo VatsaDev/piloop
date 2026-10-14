@@ -1,10 +1,11 @@
-"""The daemon archives a done idea's workspace files once its run is judged."""
+"""The daemon archives a done idea's workspace files once its run is judged, and keeps the local copies."""
 
 from pathlib import Path
 
 from sqlalchemy import select
 
-from piloop.campaign.archive import workspace_of
+from piloop.campaign.project import workspace_dir
+from piloop.daemon.archiver import ArchivePolicy, Archiving
 from piloop.daemon.runner import RunExecutor
 from piloop.daemon.scheduler import Scheduler
 from piloop.db.models import Archive, Project
@@ -22,18 +23,23 @@ HARNESS_LEAVES_AN_ARRAY = (
 )
 
 
-def test_the_tick_archives_an_idea_once_its_run_is_judged(
+def test_the_tick_archives_an_idea_once_its_run_is_judged_and_leaves_its_files_for_later(
     db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, project_path: Path
 ) -> None:
     write_toml(project_path, HARNESS_LEAVES_AN_ARRAY)
     tracer = Tracer(None)
     store = Store(tmp_path / 'store')
     scheduler = Scheduler(
-        db, RunExecutor(db, tracer, tmp_path, factory(runtime)), tracer, tmp_path, factory(runtime), store=store
+        db,
+        RunExecutor(db, tracer, tmp_path, factory(runtime)),
+        tracer,
+        tmp_path,
+        factory(runtime),
+        archiving=Archiving(store, ArchivePolicy(reserve=0)),
     )
     (idea,) = add_ideas(db, project, 'leaves an array')
     assert idea == 1
-    workspace = workspace_of(tmp_path, project.id)
+    workspace = workspace_dir(tmp_path, project.id)
     assert scheduler.tick() == [1]
     scheduler.wait(timeout=30)
     assert files(workspace) == {'idea1/x.npy': b'array\n'}
@@ -44,8 +50,8 @@ def test_the_tick_archives_an_idea_once_its_run_is_judged(
             return s.scalars(select(Archive)).first() is not None
 
     wait_until(archived)
-    wait_until(lambda: not (workspace / 'idea1').exists())
     scheduler.stop(timeout=1)
+    assert files(workspace) == {'idea1/x.npy': b'array\n'}, 'pruned by age or disk pressure, not now'
     with db.session() as s:
         row = s.scalars(select(Archive)).one()
         assert (row.idea_id, row.files, row.bytes) == (1, 1, 6)

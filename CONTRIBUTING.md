@@ -106,7 +106,8 @@ how. The old key then keeps working, with a warning, for at least one minor rele
 
 The package has one subpackage for each concern. Imports only point down this list:
 
-1. `db/`: storage, the SQL gate for agents, the events feed.
+1. `db/`: storage, the SQL gate for agents, the events feed. `store/`: the artifact store, its blobs, manifests
+   and remote backends.
 2. `mcp/`, `usage/`, and `config.py` with `harnesses.py`: MCP servers, token usage, the project configuration.
 3. `runtime/`: where the agent processes run (a background process, or a Herdr pane).
 4. `scoring/`: the evaluate command, the ledger, the verdict.

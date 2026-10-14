@@ -1,38 +1,29 @@
 """Archiving the shared workspace into the artifact store, and restoring it: the campaign side of ``piloop.store``.
 
 Agents write to ``<PILOOP_HOME>/projects/<id>/workspace`` and nothing used to delete it: on one machine it grew to
-hundreds of gigabytes in millions of files, most of them copies. The daemon now moves it into the store in two moments (``due``):
+hundreds of gigabytes in millions of files, most of them copies. What the store owes (``due``):
 
-- an idea is done (its last run judged): every top-level entry that belongs to it (``owner``) goes;
+- an idea is done (its last run judged): every top-level entry named ``idea<id>…`` goes into the store;
 - a project stopped and nothing of it runs any more: everything left in its workspace goes.
 
-``NOTES.md`` and ``research/`` are never archived (``LIVE``). Each archiving stores the files, stores their manifest,
-checks that the store holds every blob, records an ``archives`` row, and only then removes the local files that are
-unchanged since they were read (``tree.prune``). ``restore`` writes an idea's files, a path or everything back. A top-level entry belongs to an idea when it is named
-``idea<id>…`` or after a worker of one of its runs (``w<worker id>…``, ``worker<worker id>…``, ``worker-<worker id>…``),
-by the conventions agents use; anything else waits for the campaign to stop.
-
-Storing writes a compressed copy before the original goes, so an archiving keeps ``[storage] min_free_gb`` free on the
-store's disk: it goes in batches that fit above it (``archive``), and the daemon waits longer after each failed or
-short job in a row (``Archiver``).
+``archive`` stores a job's files, stores their manifest, checks that the store holds every blob, and records an
+``archives`` row. It removes nothing: the local copies stay, so an agent or a human that still reads them finds them.
+``prune`` removes them later, file by file where the file still holds what was stored: by age, or under disk pressure
+(``make_room``). ``restore`` writes an idea's files, a path or everything back. The daemon decides when
+(``piloop.daemon.archiver``).
 """
 
-import math
 import re
 import threading
-import time
-from collections.abc import Iterable, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy import Select, exists, func, select
 from sqlalchemy.orm import Session
 
-from piloop import settings as settings_module
-from piloop.campaign.project import WORKSPACE
-from piloop.db.events import emit
+from piloop.campaign.project import workspace_dir
 from piloop.db.models import (
     ENDED,
     OPEN_RUNS,
@@ -42,80 +33,27 @@ from piloop.db.models import (
     Project,
     ProjectStatus,
     Run,
-    TargetKind,
     Worker,
-    WorkerKind,
     count,
+    utcnow,
 )
 from piloop.db.session import Database
-from piloop.otel import Tracer
-from piloop.settings import GB, Settings
 from piloop.store import Entry, Manifest, Store
-from piloop.store.tree import Cancelled, Materialised, Walk, materialise, prune, put_walk, walk
+from piloop.store.tree import Materialised, Walk, materialise, put_walk, remove, walk
 
-RETRY_SECONDS = 600
-"""After a failed archiving the daemon archives nothing for this long: a full disk or an unreachable remote is not
-retried every tick. Each failure in a row doubles it, up to ``MAX_RETRY_SECONDS``."""
-MAX_RETRY_SECONDS = 6 * 3600
-DISK_ANOMALY = 'anomaly.disk'
-"""An event on a project: an archiving left files in its workspace because the store's disk was too full."""
-EVICT_SECONDS = 3600
-"""How often the daemon applies ``[storage]``'s eviction, while no archiving is due: it scans the whole store."""
-LIVE = frozenset({'NOTES.md', 'research'})
-"""Top-level workspace entries never archived: the small knowledge files agents and research sweeps read
-(``NOTES.md``, the loss tables in ``research/``) stay where they are; only bulk data goes to the store."""
 IDEA_NAME = re.compile(r'idea(\d+)(?!\d)')
-WORKER_NAME = re.compile(r'(?:w|worker-?)(\d+)(?!\d)')
+"""A top-level workspace entry of an idea: ``idea12/``, ``idea12-canary.log``. Workers are told to use it."""
 
 
 class NotArchived(RuntimeError):
-    """The store lacks blobs of a manifest just stored: nothing is removed."""
-
-
-def open_store(cfg: Settings) -> Store:
-    """The store of this PILOOP_HOME as ``[storage]`` configures it."""
-    storage = cfg.storage
-    remote = None
-    if storage.remote is not None:
-        from piloop.store.s3 import S3  # here: boto3 is imported only when a remote is configured
-
-        remote = S3(storage.remote, storage_class=storage.storage_class, standard_below=storage.standard_below)
-    return Store(
-        cfg.store_dir,
-        remote,
-        evict_after=timedelta(days=storage.evict_after_days) if storage.evict_after_days is not None else None,
-        max_local_bytes=int(storage.local_max_gb * GB) if storage.local_max_gb is not None else None,
-    )
-
-
-def workspace_of(home: Path, project_id: int) -> Path:
-    """The project's shared workspace, symlinked into every agent's worktree as ``./workspace``."""
-    return home / 'projects' / str(project_id) / WORKSPACE
+    """The store lacks blobs of a manifest just stored: no row is recorded."""
 
 
 def owners(s: Session, project_id: int, names: Iterable[str]) -> dict[str, int]:
     """The idea each of ``names`` (top-level workspace entries) belongs to; names that belong to none are left out."""
-    ideas: dict[str, int] = {}
-    workers: dict[str, int] = {}
-    for name in names:
-        if m := IDEA_NAME.match(name):
-            ideas[name] = int(m[1])
-        elif m := WORKER_NAME.match(name):
-            workers[name] = int(m[1])
-    known = set(s.scalars(select(Idea.id).where(Idea.project_id == project_id, Idea.id.in_(set(ideas.values())))).all())
-    run_of: Mapping[int, int] = dict(
-        s.execute(
-            select(Worker.id, Run.idea_id)
-            .join(Run, Worker.run_id == Run.id)
-            .where(
-                Worker.project_id == project_id,
-                Worker.kind == WorkerKind.WORKER,
-                Worker.id.in_(set(workers.values())),
-            )
-        ).all()
-    )
-    found = {name: idea for name, idea in ideas.items() if idea in known}
-    return found | {name: run_of[w] for name, w in workers.items() if w in run_of}
+    ideas = {name: int(m[1]) for name in names if (m := IDEA_NAME.match(name))}
+    known = set(s.scalars(select(Idea.id).where(Idea.project_id == project_id, Idea.id.in_(set(ideas.values())))))
+    return {name: idea for name, idea in ideas.items() if idea in known}
 
 
 @dataclass(frozen=True)
@@ -188,6 +126,51 @@ def backlog(s: Session) -> Backlog:
     return Backlog(count(s, _due_ideas()), count(s, _due_projects()))
 
 
+def _unpruned() -> Select[Archive]:
+    """The archivings whose local copies may still be in the workspace, oldest first."""
+    return select(Archive).where(Archive.pruned_at.is_(None)).order_by(Archive.id)
+
+
+def prune(db: Database, store: Store, home: Path, archive_id: int) -> int:
+    """Remove the workspace copies of what an archiving stored, where they still hold what was stored.
+
+    The row records when (``pruned_at``), so an archiving is pruned once. Returns the paths removed.
+    """
+    with db.session() as s:
+        row = s.get_one(Archive, archive_id)
+        removed = 0
+        if row.manifest is not None:
+            removed = remove(workspace_dir(home, row.project_id), store.manifest(row.manifest))
+        row.pruned_at = utcnow()
+        s.commit()
+    return removed
+
+
+def prune_older(db: Database, store: Store, home: Path, than: datetime) -> int:
+    """``prune`` every archiving made before ``than``. Returns the archivings pruned."""
+    with db.session() as s:
+        ids = s.scalars(_unpruned().where(Archive.created_at < than).with_only_columns(Archive.id)).all()
+    for archive_id in ids:
+        prune(db, store, home, archive_id)
+    return len(ids)
+
+
+def make_room(db: Database, store: Store, home: Path, reserve: int) -> int:
+    """While the store's disk has less than ``reserve`` bytes free, ``prune`` the oldest archiving left.
+
+    The workspaces and the store share the disk of ``PILOOP_HOME``. Returns the archivings pruned.
+    """
+    pruned = 0
+    while store.free() < reserve:
+        with db.session() as s:
+            oldest = s.scalar(_unpruned().with_only_columns(Archive.id).limit(1))
+        if oldest is None:
+            break
+        prune(db, store, home, oldest)
+        pruned += 1
+    return pruned
+
+
 @dataclass(frozen=True)
 class Short:
     """The disk was too full to store what was left of a job: its bytes, the bytes free and the reserve."""
@@ -199,47 +182,56 @@ class Short:
 
 @dataclass(frozen=True)
 class Archived:
-    """What ``archive`` did: one row per batch, and ``short`` when some files did not fit and stayed."""
+    """What ``archive`` did: one row per batch, and ``short`` when some files did not fit and were not stored."""
 
     rows: list[Archive]
     short: Short | None = None
 
 
 def archive(
-    db: Database, store: Store, home: Path, job: Job, stop: threading.Event | None = None, *, reserve: int = 0
+    db: Database,
+    store: Store,
+    home: Path,
+    job: Job,
+    *,
+    live: Collection[str],
+    reserve: int,
+    stop: threading.Event | None = None,
 ) -> Archived:
-    """Archive ``job``'s entries of the workspace, in batches that leave ``reserve`` bytes free on the store's disk.
+    """Store ``job``'s entries of the workspace, except the top-level ``live`` ones, keeping ``reserve`` bytes free.
 
-    Storing writes each file's compressed copy before the original goes, so the disk needs room for it. Each batch
-    holds the files whose sizes (what their compressed copies take at most) fit in the free space minus ``reserve``,
-    measured again before each batch. A batch is stored, gets its manifest and the store check, its ``archives`` row,
-    and only then loses its local copies. A workspace that fits is one batch and one row, as it always was.
+    Storing writes each file's compressed copy, so the disk needs room for it. Before each batch, ``make_room`` prunes
+    older archivings, oldest first, until the disk has room for the rest of the job above ``reserve``, or there is
+    nothing left to prune. A batch holds the files whose sizes (what their compressed copies take at most) fit in the
+    free space minus ``reserve``. It is stored, gets its manifest and the store check, and its ``archives`` row. A
+    workspace that fits is one batch and one row.
 
-    When not one more file fits, the rest stays where it is, and ``short`` says so. With no batch done, the job has no
-    row and stays due. With some done, the idea is archived as far as it went, and the rest of its files go when the
-    campaign stops (the project's own job takes everything left).
+    When not one more file fits, the rest is not stored, and ``short`` says so. With no batch done, the job has no row
+    and stays due. With some done, the idea is archived as far as it went, and the rest goes when the campaign stops
+    (the project's own job takes everything left).
     """
-    workspace = workspace_of(home, job.project_id)
-    names = [entry.name for entry in workspace.iterdir() if entry.name not in LIVE] if workspace.is_dir() else []
+    workspace = workspace_dir(home, job.project_id)
+    names = [entry.name for entry in workspace.iterdir() if entry.name not in live] if workspace.is_dir() else []
     if job.idea_id is not None:
         with db.session() as s:
             names = [name for name, idea in owners(s, job.project_id, names).items() if idea == job.idea_id]
     left = walk(workspace, names)
     rows: list[Archive] = []
     while True:
+        make_room(db, store, home, reserve + left.size)
         free = store.free()
         batch, left = left.take(free - reserve)
         if left.files and not batch.files:
             return Archived(rows, Short(left.size, free, reserve))
-        rows.append(_archive_batch(db, store, workspace, job, batch, stop))
+        rows.append(_store_batch(db, store, workspace, job, batch, stop))
         if not left.files:
             return Archived(rows)
 
 
-def _archive_batch(
+def _store_batch(
     db: Database, store: Store, workspace: Path, job: Job, batch: Walk, stop: threading.Event | None
 ) -> Archive:
-    """Store one batch, record its row, then remove the local copies."""
+    """Store one batch and record its row."""
     stored = put_walk(store, workspace, batch, stop)
     row = Archive(project_id=job.project_id, idea_id=job.idea_id, files=len(stored.manifest.entries), bytes=stored.size)
     if stored.manifest.entries:
@@ -250,7 +242,6 @@ def _archive_batch(
     with db.session() as s:
         s.add(row)
         s.commit()
-    prune(workspace, stored)
     return row
 
 
@@ -268,13 +259,15 @@ def restore(s: Session, store: Store, home: Path, project: Project, target: int 
     A path is workspace-relative: the file itself or everything under it. When several archivings hold a path, the
     latest wins. A file already there with other content is kept, and listed.
     """
-    rows = s.scalars(
-        select(Archive).where(Archive.project_id == project.id, Archive.manifest.is_not(None)).order_by(Archive.id)
+    manifests = s.scalars(
+        select(Archive.manifest)
+        .where(Archive.project_id == project.id, Archive.manifest.is_not(None))
+        .order_by(Archive.id)
     ).all()
     latest: dict[str, Entry] = {}
-    for row in rows:
-        assert row.manifest is not None
-        latest |= {e.path: e for e in store.manifest(row.manifest).entries}
+    for manifest in manifests:
+        if manifest is not None:
+            latest |= {e.path: e for e in store.manifest(manifest).entries}
     entries = list(latest.values())
     if isinstance(target, int):
         idea_of = owners(s, project.id, {e.path.split('/', 1)[0] for e in entries})
@@ -282,98 +275,5 @@ def restore(s: Session, store: Store, home: Path, project: Project, target: int 
     elif target is not None:
         prefix = target.strip('/')
         entries = [e for e in entries if e.path == prefix or e.path.startswith(f'{prefix}/')]
-    done = materialise(store, Manifest(tuple(entries)), workspace_of(home, project.id))
-    return Restored(len(rows), done)
-
-
-class Archiver:
-    """The daemon's side: at most one archiving (or eviction) at a time, on the daemon's pool, never blocking a tick.
-
-    It keeps ``[storage] min_free_gb`` free on the store's disk (``archive``'s ``reserve``). A failed job, or one that
-    the disk was too full for, makes it wait ``RETRY_SECONDS``, twice as long after each one in a row up to
-    ``MAX_RETRY_SECONDS``: a full disk is not filled again every few minutes. A job that the disk was too full for also
-    writes an ``anomaly.disk`` event on its project, so at most one per wait.
-    """
-
-    def __init__(
-        self, db: Database, store: Store, home: Path, tracer: Tracer, pool: ThreadPoolExecutor, stop: threading.Event
-    ) -> None:
-        self._db, self._store, self._home, self._tracer = db, store, home, tracer
-        self._pool, self._stop = pool, stop
-        self._job: Future[None] | None = None
-        self._failed_at = -math.inf
-        self._failures = 0
-        """Failed or short jobs in a row: the wait after the last one is ``retry_seconds``."""
-        self._evicted_at = -math.inf
-
-    @property
-    def retry_seconds(self) -> float:
-        """How long the archiver waits after its last failed or short job."""
-        if not self._failures:
-            return 0
-        return min(RETRY_SECONDS * 2 ** (self._failures - 1), MAX_RETRY_SECONDS)
-
-    def tick(self) -> None:
-        """Start the next due archiving once the previous one ended; with nothing due, the eviction when it is time."""
-        if self._stop.is_set() or (self._job is not None and not self._job.done()):
-            return
-        now = time.monotonic()
-        if now - self._failed_at < self.retry_seconds:
-            return
-        with self._db.session() as s:
-            job = due(s)
-        if job is not None:
-            self._job = self._pool.submit(self._archive, job)
-        elif self._store.remote is not None and now - self._evicted_at >= EVICT_SECONDS:
-            self._evicted_at = now
-            self._job = self._pool.submit(self._evict)
-
-    def _failed(self) -> None:
-        self._failures += 1
-        self._failed_at = time.monotonic()
-
-    def _archive(self, job: Job) -> None:
-        with self._tracer.span('piloop.archive', project=job.project_id, idea=job.idea_id) as span:
-            reserve = int(settings_module.settings.storage.min_free_gb * GB)
-            try:
-                done = archive(self._db, self._store, self._home, job, self._stop, reserve=reserve)
-            except Cancelled:
-                span.set(cancelled=True)
-                return
-            except Exception as e:  # the next tick must not retry at once; the span says what failed
-                self._failed()
-                span.error(e)
-                return
-            rows = done.rows
-            span.set(
-                archives=len(rows),
-                files=sum(r.files for r in rows),
-                bytes=sum(r.bytes for r in rows),
-                manifest=rows[-1].manifest if rows else None,
-            )
-            if done.short is None:
-                self._failures = 0
-                return
-            self._failed()
-            short = {
-                'needed': done.short.needed,
-                'free': done.short.free,
-                'reserve': done.short.reserve,
-                'idea': job.idea_id,
-                'retry_seconds': self.retry_seconds,
-            }
-            span.event(DISK_ANOMALY, **short)
-            with self._db.session() as s:
-                emit(s, DISK_ANOMALY, TargetKind.PROJECT, job.project_id, payload=dict(short))
-                s.commit()
-
-    def _evict(self) -> None:
-        with self._tracer.span('piloop.store.evict') as span:
-            try:
-                done = self._store.evict()
-            except Exception as e:  # as in _archive
-                self._failed()
-                span.error(e)
-                return
-            self._failures = 0
-            span.set(uploaded=done.uploaded, evicted=done.evicted, freed=done.freed)
+    done = materialise(store, Manifest(tuple(entries)), workspace_dir(home, project.id))
+    return Restored(len(manifests), done)

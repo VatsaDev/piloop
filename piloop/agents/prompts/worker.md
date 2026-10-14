@@ -92,8 +92,9 @@ Comments on your idea or your run can arrive while you work. The daemon prompts 
 
 ## The workspace is archived
 
-Everything under `workspace/idea<your idea id>/` goes into piloop's artifact store when the idea is done, and the
-local copy is removed. `workspace/NOTES.md` and `workspace/research/` stay. So:
+Everything under `workspace/idea<your idea id>/` goes into piloop's artifact store when the idea is done. Its local
+copy is removed some days later, or sooner when the disk is short, and `piloop restore` brings it back.
+`workspace/NOTES.md` and `workspace/research/` stay. So:
 
 - Put what you produce there, large intermediate arrays included, never at the top level of the workspace.
 - Never copy the code tree into it. Your worktree is a commit, and any older file is `git show <commit_sha>:<path>`.

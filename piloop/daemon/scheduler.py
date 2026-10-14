@@ -38,7 +38,6 @@ from piloop.agents.refill import usage_of
 from piloop.agents.roles import SCOUT, WatchdogMode, compose_brief, role_of
 from piloop.agents.scout import scouting
 from piloop.campaign import spend
-from piloop.campaign.archive import Archiver
 from piloop.campaign.ideas import defined_by, runnable, supersede, waiting
 from piloop.campaign.memory import sync_documents
 from piloop.campaign.project import WORKSPACE, project_dir, workspace_dir, worktree_links
@@ -54,6 +53,7 @@ from piloop.campaign.stop import (
     stop_reason,
 )
 from piloop.config import SCOUT_SEEDS, ProjectConfig, Spend, SweepRole, Workdir, WorkerRole, config_of, ideas_taken
+from piloop.daemon.archiver import Archiver, Archiving
 from piloop.daemon.runner import RunExecutor
 from piloop.db.events import ANOMALY_EVENT, emit
 from piloop.db.models import (
@@ -88,7 +88,6 @@ from piloop.runtime import Outcome
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
 from piloop.scoring.ledger import bar_of, checkout_candidate, head, score, unmeasured
 from piloop.triggers import Backlog, Fire, Incident, TrackBacklog
-from piloop.store import Store
 from piloop.usage import Usage
 
 NO_RUN_ERROR = 'a worker needs a run; the scheduler requests them from ready ideas'
@@ -129,7 +128,7 @@ class Scheduler:
         tracer: Tracer,
         home: Path,
         runtime_factory: RuntimeFactory = make_runtime,
-        store: Store | None = None,
+        archiving: Archiving | None = None,
     ) -> None:
         self._db = db
         self._executor = executor
@@ -143,9 +142,13 @@ class Scheduler:
         self._scoring: dict[tuple[TargetKind, int], Future[None]] = {}
         """Scoring outside a worker: a run's resumed scoring by run id, or a project's re-measure by project id."""
         self._stop = threading.Event()
-        self._archiver = Archiver(db, store, home, tracer, self._pool, self._stop) if store is not None else None
-        """Archives the workspaces into ``store`` in the background. The daemon always passes a store; a test that does
-        not archives nothing."""
+        self._archiver = (
+            Archiver(db, archiving.store, home, archiving.policy, tracer, self._pool, self._stop)
+            if archiving is not None
+            else None
+        )
+        """Archives the workspaces in the background. The daemon always passes ``archiving``; a test that does not
+        archives nothing."""
 
     def reap(self) -> None:
         """Re-attach the agents that a previous daemon process left. Fail everything else it left in flight.
@@ -268,7 +271,7 @@ class Scheduler:
         Returns the ids of the launched workers. Before the triggers, the tick rejects the ideas that a newer idea
         superseded (``piloop.campaign.ideas.supersede``). This also happens for a stopped project, which requests
         nothing. A project that the spend guard holds (``_read_spend``) gets only this step. The archiver starts the next
-        archiving of a workspace that is due, on a background thread (``piloop.campaign.archive``).
+        archiving of a workspace that is due, or its upkeep, on a background thread (``piloop.daemon.archiver``).
         """
         self._collect()
         self._push_comments()
@@ -958,8 +961,8 @@ class Scheduler:
             lines = [
                 cwd,
                 f'- Shared workspace for notes and artifacts to other agents: `./{WORKSPACE}/` (not committed). The files'
-                ' of a done idea are archived and removed from it; `piloop restore'
-                f' {project.name} <idea id>|<workspace path>` writes them back.',
+                ' of a done idea are archived, and removed from it after some days or when the disk is short; `piloop'
+                f' restore {project.name} <idea id>|<workspace path>` writes them back.',
             ]
             contexts = {SCOUT.name: self._scout_context, WorkerKind.RESEARCH.value: self._research_context}
             if (context := contexts.get(role.name)) is not None:

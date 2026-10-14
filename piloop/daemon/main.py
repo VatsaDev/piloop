@@ -6,7 +6,7 @@ import sys
 from types import FrameType
 
 from piloop.agents.capture import MIN_ENTIRE, AttachError, entire_version, usable
-from piloop.campaign.archive import open_store
+from piloop.daemon.archiver import ArchivePolicy, Archiving
 from piloop.daemon.runner import RunExecutor
 from piloop.daemon.scheduler import Scheduler
 from piloop.daemon.serve import RESTART_SIGNAL, SECRETS_COMMAND_ENV, SERVE_ARGV, SecretsError, acquire, secrets
@@ -15,6 +15,7 @@ from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Span, tracer
 from piloop.proc import Inherited
 from piloop.settings import Settings, settings
+from piloop.store.config import open_store
 
 ACTOR = DAEMON_ACTOR
 """The actor that the daemon's connections record in ``updated_by``. The change-log triggers use this name."""
@@ -34,7 +35,13 @@ class Daemon:
             raise
         self.tracer = tracer()
         self.executor = RunExecutor(self.db, self.tracer, cfg.home)
-        self.scheduler = Scheduler(self.db, self.executor, self.tracer, cfg.home, store=open_store(cfg))
+        self.scheduler = Scheduler(
+            self.db,
+            self.executor,
+            self.tracer,
+            cfg.home,
+            archiving=Archiving(open_store(cfg), ArchivePolicy.of(cfg.storage)),
+        )
         self._cfg = cfg
         self._restart = False
 

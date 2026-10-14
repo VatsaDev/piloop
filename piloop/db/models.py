@@ -696,8 +696,9 @@ class Archive(Base):
     """A part of a project's shared workspace the daemon moved into the artifact store (``piloop.campaign.archive``).
 
     One row per archiving: a done idea's subtree (``idea_id`` set) once its last run is judged, and whatever is left
-    when the campaign stops (``idea_id`` NULL). ``manifest`` names the stored tree; the local files go once its every
-    blob is in the store. ``piloop restore`` writes them back. Written by the daemon only; rows are never updated.
+    when the campaign stops (``idea_id`` NULL). ``manifest`` names the stored tree, once its every blob is in the
+    store. The local copies stay until the daemon prunes them, by age or when the disk is short (``pruned_at``).
+    ``piloop restore`` writes pruned files back. Written by the daemon only.
     """
 
     __tablename__ = 'archives'
@@ -716,6 +717,8 @@ class Archive(Base):
     bytes: Mapped[int] = mapped_column(default=0, server_default=text('0'))
     """Their total size, uncompressed."""
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
+    pruned_at: Mapped[datetime | None]
+    """When the daemon removed the workspace copies that still held what was stored. NULL while they may be there."""
 
 
 class Worker(Tracked, Base):

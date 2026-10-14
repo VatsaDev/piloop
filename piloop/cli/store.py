@@ -10,9 +10,11 @@ from rich.table import Table
 from sqlalchemy import func, select
 
 from piloop.campaign import archive
+from piloop.campaign.project import workspace_dir
 from piloop.cli import common
 from piloop.cli.common import ProjectRef
 from piloop.db.models import Archive, Project
+from piloop.store.config import open_store
 
 app = cyclopts.App(
     name='store', help='The artifact store that archived workspace files live in: what it holds, eviction, checks.'
@@ -40,12 +42,12 @@ def restore(
     parsed: int | str | None = int(idea) if idea is not None and idea.isdigit() else target
     with common.session() as s:
         project = common.project(s, ref)
-        restored = archive.restore(s, archive.open_store(common.settings), common.settings.home, project, parsed)
+        restored = archive.restore(s, open_store(common.settings), common.settings.home, project, parsed)
     done = restored.done
     if done.written + done.same + len(done.kept) == 0:
         what = f'idea#{parsed}' if isinstance(parsed, int) else parsed or 'anything'
         raise SystemExit(f'nothing archived matches {what} in {restored.archives} archive(s) of {project.name}')
-    workspace = archive.workspace_of(common.settings.home, project.id)
+    workspace = workspace_dir(common.settings.home, project.id)
     common.console.print(
         f'restored {done.written} file(s), {decimal(done.bytes)}, into {workspace}; {done.same} already there',
         markup=False,
@@ -58,9 +60,9 @@ def restore(
 @app.command(name='status')
 def store_status() -> None:
     """What the store holds, where, and how much of each project's workspace was archived into it."""
-    store = archive.open_store(common.settings)
+    store = open_store(common.settings)
     usage = store.usage()
-    remote = f'{usage.remote} on {store.remote.url}' if store.remote is not None else 'no remote ([storage] remote)'
+    remote = f'{usage.remote} on {store.remote.url}' if store.remote is not None else 'no remote ([storage.remote])'
     common.console.print(
         f'{store.root}: {usage.blobs} blob(s), {usage.local} local ({decimal(usage.local_bytes)}), {remote}',
         markup=False,
@@ -89,7 +91,7 @@ def store_status() -> None:
 @app.command(name='evict')
 def store_evict() -> None:
     """Upload what the remote lacks, then drop local copies as `[storage]` says; the daemon does it hourly too."""
-    done = archive.open_store(common.settings).evict()
+    done = open_store(common.settings).evict()
     common.console.print(f'uploaded {done.uploaded} blob(s), evicted {done.evicted} ({decimal(done.freed)})')
 
 
@@ -99,7 +101,7 @@ def store_verify(ref: ProjectRef | None = None, /) -> None:
 
     Exits non-zero when one is missing or corrupt.
     """
-    store = archive.open_store(common.settings)
+    store = open_store(common.settings)
     with common.session() as s:
         query = select(Archive.manifest).where(Archive.manifest.is_not(None))
         if ref is not None:

@@ -32,6 +32,7 @@ import shutil
 import tempfile
 import threading
 import time
+from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable, Iterator
 from compression.zstd import ZstdCompressor, ZstdError, ZstdFile
 from contextlib import contextmanager, suppress
@@ -41,6 +42,7 @@ from pathlib import Path
 from typing import Protocol
 
 from blake3 import blake3
+from pydantic import BaseModel, ConfigDict
 
 CHUNK = 1 << 20
 """Bytes read, hashed and compressed at a time."""
@@ -82,7 +84,7 @@ class Writer(Protocol):
 
 
 class Remote(Protocol):
-    """Where blobs are mirrored: whole compressed objects by key. ``piloop.store.s3.S3`` is the one there is."""
+    """Where blobs are mirrored: whole compressed objects by key. ``RemoteConfig.open`` makes one."""
 
     url: str
 
@@ -97,6 +99,23 @@ class Remote(Protocol):
     def has(self, key: str) -> bool:
         """Whether an object is stored under ``key``."""
         ...
+
+
+class RemoteConfig(BaseModel, ABC):
+    """The settings of a remote backend, ``[storage.remote]``: each backend subclasses it with its own keys.
+
+    ``kind`` names the backend (``piloop.store.config.remotes``). ``open`` makes the ``Remote`` that the settings
+    describe. ``piloop.store.s3.S3Config`` is the built-in one.
+    """
+
+    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    kind: str
+    """The backend: the name it is registered under."""
+
+    @abstractmethod
+    def open(self) -> Remote:
+        """The remote these settings describe."""
 
 
 @dataclass(frozen=True)

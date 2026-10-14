@@ -1,4 +1,4 @@
-"""Directory trees in and out of the artifact store: put a tree, remove what was put, materialise a manifest.
+"""Directory trees in and out of the artifact store: put a tree, remove what a manifest holds, materialise a manifest.
 
 Generic, like ``piloop.store``: paths and files only. Regular files and symlinks are stored; empty directories and
 special files (sockets, fifos) are not, and the latter stay where they are.
@@ -26,12 +26,9 @@ class Cancelled(RuntimeError):
 
 @dataclass
 class Stored:
-    """What ``put_tree`` stored: the manifest, and what each path looked like when it was read."""
+    """What ``put_tree`` stored: the manifest, and the paths it left out."""
 
     manifest: Manifest
-    seen: dict[str, tuple[int, int]] = field(default_factory=dict)
-    """Relative path → ``(st_size, st_mtime_ns)`` as stored: ``prune`` removes a path only if it still matches."""
-    dirs: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     """Paths left out, and left in place: special files, files that cannot be read, files that changed while they were
     stored."""
@@ -41,20 +38,15 @@ class Stored:
         return sum(e.size for e in self.manifest.entries)
 
 
-def _signature(st: os.stat_result) -> tuple[int, int]:
-    return st.st_size, st.st_mtime_ns
-
-
 @dataclass
 class Walk:
-    """What ``walk`` found under some names: the files to store, and what stores at no cost (symlinks, directories).
+    """What ``walk`` found under some names: the files to store, and what stores at no cost (symlinks).
 
     ``take`` splits it into the part that fits a byte budget and the files left over.
     """
 
     files: list[tuple[str, os.stat_result]] = field(default_factory=list)
-    links: list[tuple[Entry, os.stat_result]] = field(default_factory=list)
-    dirs: list[str] = field(default_factory=list)
+    links: list[Entry] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
 
     @property
@@ -65,12 +57,10 @@ class Walk:
     def take(self, budget: int) -> tuple[Walk, Walk]:
         """Split off what fits in ``budget`` bytes; return it and a walk of the files left over.
 
-        The part taken has the links, directories and skipped paths, and the files that fit, in order, skipping each
-        that does not. What is left has the directories again, so that the ``prune`` of a later part removes those it
-        empties.
+        The part taken has the links and skipped paths, and the files that fit, in order, skipping each that does not.
         """
-        taken = Walk(links=self.links, dirs=self.dirs, skipped=self.skipped)
-        left = Walk(dirs=self.dirs)
+        taken = Walk(links=self.links, skipped=self.skipped)
+        left = Walk()
         for rel, st in self.files:
             fits = st.st_size <= budget
             (taken if fits else left).files.append((rel, st))
@@ -86,7 +76,7 @@ def walk(root: Path, names: Iterable[str]) -> Walk:
         path = root / rel
         st = path.lstat()
         if stat.S_ISLNK(st.st_mode):
-            found.links.append((Entry(rel, stat.S_IMODE(st.st_mode), link=os.readlink(path)), st))
+            found.links.append(Entry(rel, stat.S_IMODE(st.st_mode), link=os.readlink(path)))
         elif stat.S_ISREG(st.st_mode):
             found.files.append((rel, st))
         elif stat.S_ISDIR(st.st_mode):
@@ -95,7 +85,6 @@ def walk(root: Path, names: Iterable[str]) -> Walk:
             except PermissionError:
                 found.skipped.append(rel)
                 return
-            found.dirs.append(rel)
             for child in children:
                 visit(f'{rel}/{child}')
         else:
@@ -121,9 +110,8 @@ def put_walk(
     Files are put ``workers`` at a time: on a remote, each blob is its own upload, and one at a time spent most of a
     measured archiving waiting on S3. Raises ``Cancelled`` once ``stop`` is set, before the next file starts.
     """
-    stored = Stored(Manifest(()), dirs=list(found.dirs), skipped=list(found.skipped))
-    entries = [entry for entry, _ in found.links]
-    stored.seen = {entry.path: _signature(st) for entry, st in found.links}
+    stored = Stored(Manifest(()), skipped=list(found.skipped))
+    entries = list(found.links)
 
     def put(rel: str, st: os.stat_result) -> Entry | None:
         if stop is not None and stop.is_set():
@@ -137,40 +125,53 @@ def put_walk(
     files = found.files
     pool = ThreadPoolExecutor(workers, thread_name_prefix='put-tree')
     try:
-        for (rel, st), entry in zip(
+        for (rel, _), entry in zip(
             files, pool.map(put, [rel for rel, _ in files], [st for _, st in files]), strict=True
         ):
             if entry is None:
                 stored.skipped.append(rel)
                 continue
             entries.append(entry)
-            stored.seen[rel] = _signature(st)
     finally:
         pool.shutdown(cancel_futures=True)
     stored.manifest = Manifest(tuple(entries))
     return stored
 
 
-def prune(root: Path, stored: Stored) -> int:
-    """Remove what ``stored`` holds, path by path, where it is unchanged since; then the directories left empty.
+def remove(root: Path, manifest: Manifest) -> int:
+    """Remove the paths of ``manifest`` under ``root`` that still hold what it stored; then the directories left empty.
 
-    A path written meanwhile stays, and so does its directory. Returns the paths removed.
+    A file whose content changed since (its size or its hash differs) or that cannot be read, or a symlink that points
+    elsewhere, stays, and so does its directory. Returns the paths removed.
     """
     removed = 0
-    for rel, signature in stored.seen.items():
-        path = root / rel
+    for entry in manifest.entries:
+        path = root / entry.path
         try:
-            unchanged = _signature(path.lstat()) == signature
+            st = path.lstat()
         except FileNotFoundError:
             continue
-        if unchanged:
+        if entry.link is not None:
+            same = stat.S_ISLNK(st.st_mode) and os.readlink(path) == entry.link
+        else:
+            same = stat.S_ISREG(st.st_mode) and st.st_size == entry.size and _hash(path) == entry.hash
+        if same:
             path.unlink()
             removed += 1
-    for rel in sorted(stored.dirs, key=lambda d: d.count('/'), reverse=True):
+    parents = {parent for e in manifest.entries for parent in Path(e.path).parents if parent != Path()}
+    for rel in sorted(parents, key=lambda d: len(d.parts), reverse=True):
         path = root / rel
-        if path.is_dir() and not any(path.iterdir()):
+        if path.is_dir() and not path.is_symlink() and not any(path.iterdir()):
             path.rmdir()
     return removed
+
+
+def _hash(path: Path) -> str | None:
+    """The blob address of a file, or None when it cannot be read now: then it is not removed."""
+    try:
+        return hash_file(path).hash
+    except OSError:
+        return None
 
 
 @dataclass

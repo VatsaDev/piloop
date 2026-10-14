@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from piloop.store import Blob, Changed, Store
-from piloop.store.tree import Cancelled, materialise, prune, put_tree
+from piloop.store.tree import Cancelled, materialise, put_tree, remove
 from tests.store.test_store import DirRemote
 
 
@@ -38,7 +38,7 @@ def workspace(tmp_path: Path) -> Path:
     return root
 
 
-def test_a_tree_is_stored_pruned_and_materialised_back_byte_for_byte(tmp_path: Path, workspace: Path) -> None:
+def test_a_tree_is_stored_removed_and_materialised_back_byte_for_byte(tmp_path: Path, workspace: Path) -> None:
     store = Store(tmp_path / 'store')
     before = tree(workspace)
     stored = put_tree(store, workspace, ['idea7', 'idea7.log'])
@@ -51,8 +51,9 @@ def test_a_tree_is_stored_pruned_and_materialised_back_byte_for_byte(tmp_path: P
     ]
     assert len(stored.manifest.blobs) == 3, 'the two arrays are one blob'
     assert stored.size == 2 * 1006 + 10 + 5 and stored.skipped == []
-    assert prune(workspace, stored) == 5
-    assert tree(workspace) == {'NOTES.md': b'# Notes\n'} and not (workspace / 'idea7').exists()
+    assert remove(workspace, stored.manifest) == 5
+    assert tree(workspace) == {'NOTES.md': b'# Notes\n'}
+    assert [p.name for p in (workspace / 'idea7').iterdir()] == ['empty'], 'a directory that it emptied goes'
     done = materialise(store, store.manifest(store.put_manifest(stored.manifest).hash), workspace)
     assert (done.written, done.bytes, done.same, done.kept) == (5, 2 * 1006 + 10 + 5, 0, [])
     assert tree(workspace) == before
@@ -64,7 +65,9 @@ def test_a_tree_is_stored_pruned_and_materialised_back_byte_for_byte(tmp_path: P
 def test_materialise_keeps_what_differs_and_writes_only_what_is_wanted(tmp_path: Path, workspace: Path) -> None:
     store = Store(tmp_path / 'store')
     stored = put_tree(store, workspace, ['idea7'])
-    prune(workspace, stored)
+    remove(workspace, stored.manifest)
+    (workspace / 'idea7' / 'empty').rmdir()
+    (workspace / 'idea7').rmdir()
     (workspace / 'idea7').mkdir()
     (workspace / 'idea7' / 'run.sh').write_text('changed\n')
     (workspace / 'idea7' / 'latest').symlink_to('elsewhere')
@@ -75,13 +78,22 @@ def test_materialise_keeps_what_differs_and_writes_only_what_is_wanted(tmp_path:
     assert (workspace / 'idea7' / 'run.sh').read_text() == 'changed\n'
 
 
-def test_prune_leaves_what_changed_after_it_was_read(tmp_path: Path, workspace: Path) -> None:
+def test_remove_leaves_what_changed_since_it_was_stored(tmp_path: Path, workspace: Path) -> None:
+    """Days can pass between the archiving and the removal: the content decides, not a timestamp."""
     stored = put_tree(Store(tmp_path / 'store'), workspace, ['idea7'])
     (workspace / 'idea7' / 'run.sh').write_text('#!/bin/sh\necho more\n')
     (workspace / 'idea7' / 'arrays' / 'new.npy').write_bytes(b'new')
     (workspace / 'idea7' / 'copy.npy').unlink()
-    assert prune(workspace, stored) == 2
-    assert tree(workspace / 'idea7') == {'arrays/new.npy': b'new', 'run.sh': b'#!/bin/sh\necho more\n'}
+    (workspace / 'idea7' / 'latest').unlink()
+    (workspace / 'idea7' / 'latest').symlink_to('elsewhere')
+    same_size = workspace / 'idea7.log'
+    same_size.write_text('dome\n')
+    assert remove(workspace, stored.manifest) == 1, 'only arrays/x.npy still holds what was stored'
+    assert tree(workspace / 'idea7') == {
+        'arrays/new.npy': b'new',
+        'latest': 'elsewhere',
+        'run.sh': b'#!/bin/sh\necho more\n',
+    }
 
 
 def test_special_files_and_files_changing_under_the_store_are_skipped(
@@ -98,8 +110,8 @@ def test_special_files_and_files_changing_under_the_store_are_skipped(
     monkeypatch.setattr(Store, 'put_path', flaky)
     stored = put_tree(Store(tmp_path / 'store'), workspace, ['idea7'])
     assert sorted(stored.skipped) == ['idea7/pipe', 'idea7/run.sh']
-    prune(workspace, stored)
-    assert sorted(p.name for p in (workspace / 'idea7').iterdir()) == ['pipe', 'run.sh']
+    remove(workspace, stored.manifest)
+    assert sorted(p.name for p in (workspace / 'idea7').iterdir()) == ['empty', 'pipe', 'run.sh']
 
 
 def test_put_tree_stops_between_two_files_when_asked(tmp_path: Path, workspace: Path) -> None:
@@ -117,8 +129,8 @@ def test_what_cannot_be_read_is_skipped_and_left_in_place(tmp_path: Path, worksp
     try:
         stored = put_tree(Store(tmp_path / 'store'), workspace, ['idea7'])
         assert stored.skipped == ['idea7/arrays', 'idea7/run.sh']
-        prune(workspace, stored)
-        assert sorted(p.name for p in (workspace / 'idea7').iterdir()) == ['arrays', 'run.sh']
+        remove(workspace, stored.manifest)
+        assert sorted(p.name for p in (workspace / 'idea7').iterdir()) == ['arrays', 'empty', 'run.sh']
     finally:
         secret.chmod(0o644)
         locked.chmod(0o755)
@@ -137,3 +149,13 @@ def test_threads_putting_one_content_to_a_staging_remote_upload_it_once(tmp_path
     remote = Slow(tmp_path / 'remote')
     stored = put_tree(Store(tmp_path / 'store', remote, evict_after=timedelta(0)), root, os.listdir(root))
     assert len(stored.manifest.entries) == 8 and len(remote.uploads) == 1
+
+
+def test_remove_leaves_a_file_it_cannot_read(tmp_path: Path, workspace: Path) -> None:
+    stored = put_tree(Store(tmp_path / 'store'), workspace, ['idea7'])
+    (workspace / 'idea7' / 'run.sh').chmod(0)
+    try:
+        assert remove(workspace, stored.manifest) == 3
+        assert (workspace / 'idea7' / 'run.sh').exists()
+    finally:
+        (workspace / 'idea7' / 'run.sh').chmod(0o644)

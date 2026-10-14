@@ -1,7 +1,7 @@
 """Process-wide settings. Every environment variable piloop reads is declared here.
 
 Also read from ``<PILOOP_HOME>/config.toml``, the global settings file (``[storage]``, say); an environment variable
-wins over the file, and a nested key is ``PILOOP_<TABLE>__<KEY>`` (``PILOOP_STORAGE__REMOTE``).
+wins over the file, and a nested key is ``PILOOP_<TABLE>__<KEY>`` (``PILOOP_STORAGE__MIN_FREE_GB``).
 """
 
 import os
@@ -20,26 +20,34 @@ from pydantic_settings import (
 DEFAULT_HOME = Path.home() / '.piloop'
 CONFIG_FILE = 'config.toml'
 STORE_DIR = 'store'
-KB = 1024
 GB = 1024**3
+
+
+class RemoteTable(BaseModel):
+    """``[storage.remote]``: the backend that mirrors the store, by ``kind``, and that backend's own keys.
+
+    Only ``kind`` is read here. The backend's settings model checks the other keys when the store opens
+    (``piloop.store.config``): ``s3`` is built in, and packages add backends with a ``piloop.stores`` entry point.
+    """
+
+    model_config = ConfigDict(extra='allow', frozen=True)
+
+    kind: str
+    """The backend, for example ``s3``."""
 
 
 class StorageSettings(BaseModel):
     """``[storage]``: the artifact store every project of this PILOOP_HOME archives its workspace into.
 
-    Blobs live in ``<PILOOP_HOME>/store``, and in ``remote`` too when it is set. The artifact store page of the docs
-    describes the modes.
+    The keys here hold for every backend. Blobs live in ``<PILOOP_HOME>/store``, and in the remote too when
+    ``[storage.remote]`` is set. The artifact store page of the docs describes the modes.
     """
 
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
 
-    remote: str | None = None
-    """``s3://<bucket>[/<prefix>]``: every blob is uploaded there as it is stored, with boto3's credentials. Unset,
-    the store is the local directory alone and nothing is ever evicted."""
-    storage_class: str = 'GLACIER_IR'
-    """The S3 storage class of a blob of at least ``standard_below`` compressed bytes."""
-    standard_below: int = Field(default=128 * KB, ge=0)
-    """Compressed size under which a blob is stored as ``STANDARD``: Glacier IR bills every object as at least 128 KB."""
+    remote: RemoteTable | None = None
+    """``[storage.remote]``: every blob is uploaded there as it is stored. Unset, the store is the local directory alone
+    and no blob is ever evicted."""
     evict_after_days: float | None = Field(default=None, ge=0)
     """Drop the local copy of a blob the remote holds once it is this old (since it was stored or fetched); 0 drops it
     as soon as it is uploaded, so the local directory is only a staging area and every read fetches. Unset: by age
@@ -47,16 +55,14 @@ class StorageSettings(BaseModel):
     local_max_gb: float | None = Field(default=None, ge=0)
     """Drop the local copies of the oldest blobs the remote holds until the local store is at most this size."""
     min_free_gb: float = Field(default=20, ge=0)
-    """Free space, in GB, that archiving always leaves on the disk of the local store. Storing a file writes its
-    compressed copy before the original goes, so the daemon archives in batches that fit above this, and waits when
-    not one more file fits."""
+    """Free space, in GB, that archiving keeps on the disk of the local store. Storing a file writes its compressed
+    copy first, so the daemon removes the workspace copies of archived files, oldest archive first, while the disk has
+    less than this free, and it archives in batches that fit above it."""
 
     @model_validator(mode='after')
     def _check(self) -> Self:
         if self.remote is None and (self.evict_after_days is not None or self.local_max_gb is not None):
             raise ValueError('evict_after_days and local_max_gb need a remote: the local copy is the only one')
-        if self.remote is not None and not self.remote.startswith('s3://'):
-            raise ValueError(f'remote {self.remote!r}: only s3:// is supported')
         return self
 
 
