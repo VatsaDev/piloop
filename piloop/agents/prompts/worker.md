@@ -90,6 +90,16 @@ Comments on your idea or your run can arrive while you work. The daemon prompts 
 - A `note` or `finding` from another agent is information. Weigh it. Do not stop for it.
 - Do not reply with a comment of your own just to reply. Your `finding` at the end is the reply.
 
+## The workspace is archived
+
+Everything under `workspace/idea<your idea id>/` goes into piloop's artifact store when the idea is done, and the
+local copy is removed. `workspace/NOTES.md` and `workspace/research/` stay. So:
+
+- Put what you produce there, large intermediate arrays included, never at the top level of the workspace.
+- Never copy the code tree into it. Your worktree is a commit, and any older file is `git show <commit_sha>:<path>`.
+- When you run the evaluator yourself, leave its output where the project's evaluate writes it (its own cache, keyed
+  by tree and shared by every run). Never redirect it into the workspace.
+
 ## Do not touch
 
 - the project checkout;

@@ -1,6 +1,6 @@
 """Generate the reference pages of the docs site and the trigger SQL. ``--check`` fails when a file is stale.
 
-- ``docs/reference/configuration.mdx`` from ``piloop.config.ProjectConfig``.
+- ``docs/reference/configuration.mdx`` from ``piloop.config.ProjectConfig`` and ``piloop.settings.StorageSettings``.
 - ``docs/reference/schema.mdx`` from the models in ``piloop/db/models.py``.
 - ``piloop/db/actor_triggers.sql`` from ``piloop.db.triggers.TEMP``. Every connection loads it.
 - ``piloop/db/persistent_triggers.sql`` from ``PERSISTENT``: a snapshot of what the migrations install, so that a
@@ -30,6 +30,7 @@ from piloop.db.triggers import persistent_sql, temp_sql
 from piloop.db.triggers.fts import FTS_COLUMNS
 from piloop.deprecated import BRIDGES
 from piloop.triggers import BUILTIN_TRIGGERS
+from piloop.settings import StorageSettings
 
 ROOT = Path(__file__).resolve().parent.parent
 PACKAGE = ROOT / 'piloop'
@@ -196,7 +197,18 @@ def config_page() -> str:
 
     for model in [*_nested(ProjectConfig, []), *BUILTIN_TRIGGERS.values()]:
         out += show(model)
-    return out + deprecated_section()
+    return out + global_section() + deprecated_section()
+
+
+def global_section() -> str:
+    """Return the tables of the global settings file, ``$PILOOP_HOME/config.toml``."""
+    schema = _schema(StorageSettings)
+    return (
+        '\n## Global settings: `config.toml`\n\n`$PILOOP_HOME/config.toml` holds the settings that every project of'
+        ' one `PILOOP_HOME` shares. To override a key, set `PILOOP_<TABLE>__<KEY>`, for example'
+        ' `PILOOP_STORAGE__REMOTE`.\n\n### `[storage]`\n\n'
+        f'{mdx(schema.get("description", ""))}\n\n{_table(schema, {})}'
+    )
 
 
 def deprecated_section() -> str:

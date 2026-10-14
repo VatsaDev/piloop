@@ -690,7 +690,9 @@ class RunExecutor:
                 f' better) with confidence and hold {guards}.'
             )
         lines += [
-            f'- Shared workspace for artifacts and notes to future workers: `./{WORKSPACE}/` (not committed).',
+            f'- Shared workspace for artifacts and notes to future workers: `./{WORKSPACE}/` (not committed). Put what'
+            f' your idea produces there under `./{WORKSPACE}/idea{idea.id}/`: it is archived when the idea is done.'
+            f' The files of a done idea come back with `piloop restore {idea.project.name} <idea id>|<workspace path>`.',
             f'- Leave a finding on your idea when you are done: INSERT INTO comments (target_kind, target_id, author,'
             f" kind, body) VALUES ('idea', {idea.id}, '{author}', 'finding', '...').",
             '- The history below is what was tried in this project: do not repeat it; combine or go elsewhere.',

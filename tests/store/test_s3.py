@@ -1,0 +1,67 @@
+import io
+import os
+from collections.abc import Iterator
+from pathlib import Path
+
+import boto3
+import pytest
+from botocore.exceptions import ClientError
+from moto import mock_aws
+from mypy_boto3_s3 import S3Client
+
+from piloop.store import Store, key
+from piloop.store.s3 import S3
+
+BUCKET = 'piloop-test'
+
+
+@pytest.fixture
+def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[S3Client]:
+    for name in ('AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY'):
+        monkeypatch.setenv(name, 'testing')
+    monkeypatch.setenv('AWS_DEFAULT_REGION', 'us-east-1')
+    with mock_aws():
+        s3 = boto3.client('s3')
+        s3.create_bucket(Bucket=BUCKET)
+        yield s3
+
+
+def test_blobs_go_to_glacier_ir_unless_small_enough_that_standard_is_cheaper(client: S3Client, tmp_path: Path) -> None:
+    remote = S3(f's3://{BUCKET}/piloop/store/', storage_class='GLACIER_IR', standard_below=1024, client=client)
+    assert (remote.bucket, remote.prefix, remote.url) == (BUCKET, 'piloop/store/', f's3://{BUCKET}/piloop/store/')
+    store = Store(tmp_path / 'store', remote)
+    small = store.put(io.BytesIO(b'{"a": 1}'))
+    big = store.put(io.BytesIO(os.urandom(4096)))  # incompressible: above 1 KiB compressed
+    for blob, expected in ((small, 'STANDARD'), (big, 'GLACIER_IR')):
+        head = client.head_object(Bucket=BUCKET, Key=f'piloop/store/{key(blob.hash)}')
+        assert head.get('StorageClass', 'STANDARD') == expected
+    assert remote.has(key(small.hash)) and not remote.has(key('nothing'))
+    target = tmp_path / 'fetched'
+    assert remote.download(key(big.hash), target) and target.stat().st_size > 1024
+    assert not remote.download(key('nothing'), tmp_path / 'never')
+    client.delete_object(Bucket=BUCKET, Key=f'piloop/store/{key(small.hash)}')
+    assert not remote.has(key(small.hash))
+
+
+def test_a_bucket_root_has_no_prefix_and_other_errors_are_raised(client: S3Client, tmp_path: Path) -> None:
+    remote = S3(f's3://{BUCKET}', storage_class='GLACIER_IR', standard_below=0, client=client)
+    assert remote.prefix == ''
+    path = tmp_path / 'x'
+    path.write_bytes(b'x')
+    remote.upload('blake3/x/bytes.zst', path)
+    assert client.list_objects_v2(Bucket=BUCKET)['Contents'][0]['Key'] == 'blake3/x/bytes.zst'
+    elsewhere = S3('s3://no-such-bucket/p', storage_class='GLACIER_IR', standard_below=0, client=client)
+    with pytest.raises(ClientError):
+        elsewhere.has('k')
+    with pytest.raises(ClientError):
+        elsewhere.download('k', tmp_path / 'y')
+
+
+def test_only_s3_urls(client: S3Client) -> None:
+    for url in ('gs://bucket/x', 's3:///x'):
+        with pytest.raises(ValueError, match='is no s3://'):
+            S3(url, storage_class='GLACIER_IR', standard_below=0, client=client)
+
+
+def test_the_client_defaults_to_boto3s_own_chain(client: S3Client) -> None:
+    assert S3(f's3://{BUCKET}', storage_class='STANDARD', standard_below=0).client.meta.region_name == 'us-east-1'

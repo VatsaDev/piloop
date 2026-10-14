@@ -25,7 +25,8 @@
           "concepts/tracks",
           "concepts/research-memory",
           "concepts/session-capture",
-          "concepts/cost"
+          "concepts/cost",
+          "concepts/artifact-store"
         ]
       },
       {

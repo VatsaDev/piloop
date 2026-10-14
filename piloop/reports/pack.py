@@ -15,8 +15,12 @@ The size is bounded. Each list keeps its latest rows, each body keeps a fixed nu
 pointers, not inlined content. On top of the history, the pack adds at most about 45 KB (about 11k tokens).
 """
 
+import heapq
 import io
+import os
+import re
 from collections import defaultdict
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -38,6 +42,8 @@ from piloop.text import HEADING, NONE, cell, metric
 
 ARTIFACTS_SHOWN = 12
 WORKSPACE_SHOWN = 10
+WALK_ENTRIES = 20_000
+"""How much of the workspace the pack lists files from: a sweep's brief never waits for a walk of all of it."""
 OUTLINE_CHARS = 600
 """The maximum length of an artifact outline: its markdown headings down to level 3, on one line."""
 OUTLINE_LEVELS = 3
@@ -165,18 +171,54 @@ def _artifacts(project: Project, cfg: ProjectConfig, workspace: Path | None, hea
     title = f'{heading}Research pack: analysis artifacts (read before proposing; newest first)'
     sections: list[RenderableType] = [Text(title, style='bold'), *lines, Text()]
     if workspace is not None and workspace.is_dir():
-        files = {f'./workspace/{p.relative_to(workspace)}': p for p in workspace.rglob('*') if p.is_file()}
+        files, cut = _recent(workspace, WALK_ENTRIES)
         title = f'{heading}Research pack: shared workspace (what agents left in ./workspace/; newest first)'
-        sections += [Text(title, style='bold'), *(_file_lines(files, WORKSPACE_SHOWN) or [Text('- Empty.')]), Text()]
+        lines = _file_lines({f'./workspace/{p.relative_to(workspace)}': p for p in files}, WORKSPACE_SHOWN)
+        if cut:
+            lines.append(Text(f'- (listed from the {WALK_ENTRIES:,} entries of the most recently changed directories)'))
+        sections += [Text(title, style='bold'), *(lines or [Text('- Empty.')]), Text()]
     return sections
+
+
+def _recent(root: Path, budget: int) -> tuple[list[Path], bool]:
+    """Files from a bounded walk under ``root``, and whether it stopped short of the end.
+
+    The walk opens the most recently changed directory next and stops after ``budget`` entries. A new file changes its
+    own directory's modification time (not its parents'), so recent files are mostly found early, and a workspace of a
+    million files costs a sweep's brief ``budget`` entries. A directory that goes meanwhile (the archiver prunes) is
+    skipped.
+    """
+    queue = [(-root.stat().st_mtime, str(root))]
+    files: list[Path] = []
+    seen = 0
+    while queue:
+        _, directory = heapq.heappop(queue)
+        try:
+            entries = list(os.scandir(directory))
+        except FileNotFoundError:
+            continue
+        for entry in entries:
+            if seen == budget:
+                return files, True
+            seen += 1
+            if entry.is_dir(follow_symlinks=False):
+                with suppress(FileNotFoundError):
+                    heapq.heappush(queue, (-entry.stat(follow_symlinks=False).st_mtime, entry.path))
+            elif entry.is_file():
+                files.append(Path(entry.path))
+    return files, False
 
 
 def _file_lines(files: dict[str, Path], shown: int) -> list[RenderableType]:
     """Make one line per file, newest first, with its size, its modification time and its markdown outline."""
-    newest = sorted(files.items(), key=lambda kv: kv[1].stat().st_mtime, reverse=True)
+    stats = {}
+    for name, path in files.items():
+        with suppress(FileNotFoundError):  # archived meanwhile
+            stats[name] = path.stat()
+    newest = sorted(stats.items(), key=lambda kv: kv[1].st_mtime, reverse=True)
     lines: list[RenderableType] = []
-    for name, path in newest[:shown]:
-        stat = path.stat()
+    for name, stat in newest[:shown]:
+        path = files[name]
         modified = datetime.fromtimestamp(stat.st_mtime, UTC).strftime('%Y-%m-%d %H:%M')
         outline = _outline(path)
         size = f'{len(path.read_text(errors="replace").splitlines())} lines' if outline else f'{stat.st_size} bytes'
