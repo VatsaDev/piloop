@@ -38,7 +38,7 @@ A deprecated configuration key shows a warning for at least one minor release be
   not a finished turn: on a loaded host a Codex that had started its turn was closed as `prompt_lost` or as idle after
   3 s. A session id that Herdr had not reported yet is asked for again before the pane closes.
 
-- What a worker leaves uncommitted is a `recovered` candidate (new verdict, migration `0004`): committed on its own
+- What a worker leaves uncommitted is a `recovered` candidate (new verdict, migration `0005`): committed on its own
   with a `Piloop-Recovered: run#<id>` trailer, never amended into the worker's commit, never measured, never kept.
   Before, it was scored and could become the head, though the worker never declared it ready. When the run did not
   succeed, the idea goes back to the queue with the recovered candidate as its base, up to `[roles.worker]
