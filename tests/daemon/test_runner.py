@@ -24,7 +24,6 @@ from piloop.daemon.runner import (
     INTERRUPTED,
     NO_CHANGES,
     RECOVERED_REASON,
-    RECOVERY_REQUEUES,
     UNCOMMITTED_SUMMARY,
     RunExecutor,
 )
@@ -371,12 +370,15 @@ def test_dirt_after_a_commit_is_recovered_on_its_own_and_the_commit_is_scored_as
 def test_an_idea_whose_workers_keep_dying_is_requeued_from_its_recovered_work_only_so_often(
     db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    write_toml(Path(project.path), HARNESS_FORGETS_COMMIT)
+    """``[roles.worker] recovery_requeues`` caps the requeues, counted in events: workers that leave the same two trees
+    in turn reuse two candidates, and counting candidates would requeue them forever."""
+    toggles = '#!/bin/sh\nif grep -q A solve.txt; then echo B > solve.txt; else echo A > solve.txt; fi\n'
+    write_toml(Path(project.path), toggles)
     reload_project(db, project)
     run_id = make_run(db, project, max_runs=1)
     ex = executor(db, runtime, tmp_path)
     execute(ex, db, run_id)
-    for attempt in range(2, RECOVERY_REQUEUES + 3):
+    for attempt in range(2, 10):
         with db.session() as s:
             idea = s.get_one(Idea, run_row(db, run_id).idea_id)
             if idea.status is not IdeaStatus.READY:
@@ -401,7 +403,26 @@ def test_an_idea_whose_workers_keep_dying_is_requeued_from_its_recovered_work_on
         execute(ex, db, run_id)
     with db.session() as s:
         idea = s.get_one(Idea, run_row(db, run_id).idea_id)
-        assert (idea.status, len(idea.runs)) == (IdeaStatus.DONE, RECOVERY_REQUEUES + 1)
+        recovered = s.scalars(select(Candidate).where(Candidate.verdict == Verdict.RECOVERED)).all()
+        assert (idea.status, len(idea.runs), len(recovered)) == (IdeaStatus.DONE, 3, 2), (
+            'two requeues (the default), three runs, two recovered trees'
+        )
+
+
+def test_recovery_requeues_0_leaves_recovered_work_to_the_orchestrator(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    write_toml(Path(project.path), HARNESS_FORGETS_COMMIT)
+    with db.session() as s:
+        s.get_one(Project, project.id).config = load_project_config(
+            Path(project.path), roles={'worker': {'recovery_requeues': 0}}
+        ).model_dump(mode='json')
+        s.commit()
+    run_id = make_run(db, project, max_runs=1)
+    execute(executor(db, runtime, tmp_path), db, run_id)
+    with db.session() as s:
+        idea = s.get_one(Idea, run_row(db, run_id).idea_id)
+        assert (idea.status, idea.base_candidate_id) == (IdeaStatus.DONE, None)
 
 
 def test_no_changes_fails_the_run_and_retries_the_idea(

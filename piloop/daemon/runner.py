@@ -28,6 +28,7 @@ from piloop.db.models import (
     Candidate,
     Comment,
     CommentKind,
+    Event,
     Idea,
     IdeaStatus,
     Measurement,
@@ -72,9 +73,10 @@ NO_CHANGES = 'worker produced no commits'
 INTERRUPTED = (
     'worker stopped without a commit or a finding of its own; its uncommitted changes are a recovered candidate'
 )
-RECOVERY_REQUEUES = 2
-"""How many runs of one idea may end unfinished with recovered work and requeue the idea from it. After that, the idea
-settles as after any failed run: an idea whose workers keep dying is not run forever."""
+RECOVERY_REQUEUED = 'idea.recovery_requeued'
+"""The event on an idea that ``_settle`` requeued from recovered work, with ``{run, candidate}``. Counting these events
+caps the requeues (``[roles.worker] recovery_requeues``): candidates cannot, because two runs that leave the same tree
+share one candidate."""
 STARTUP_RELAUNCHES = 2
 """How many times a run is queued again with a new worker after its worker failed to start. Then the run fails.
 
@@ -666,8 +668,9 @@ class RunExecutor:
         the ideas that wait for it start without its result.
 
         A run that did not succeed and left ``recovered`` work requeues its idea from that work, attempts left or not,
-        up to ``RECOVERY_REQUEUES`` times: the idea's base becomes the recovered candidate, so a new worker starts from
-        it and finishes it, and that run is judged as any other. A note on the idea says so.
+        up to ``[roles.worker] recovery_requeues`` times (``RECOVERY_REQUEUED`` events): the idea's base becomes the
+        recovered candidate, so a new worker starts from it and finishes it, and that run is judged as any other. A
+        note on the idea says so.
         """
         with self.launcher.lock:
             if self.launcher.cancelled.is_set():  # stop() returns the idea to the queue.
@@ -679,9 +682,11 @@ class RunExecutor:
                     if (
                         recovered is not None
                         and status is not RunStatus.SUCCEEDED
-                        and _recoveries(s, idea) <= RECOVERY_REQUEUES
+                        and _requeues(s, idea) < config_of(idea.project).roles.worker.recovery_requeues
                     ):
                         idea.status, idea.base_candidate_id = IdeaStatus.READY, recovered
+                        payload: dict[str, object] = {'run': run_id, 'candidate': recovered}
+                        emit(s, RECOVERY_REQUEUED, TargetKind.IDEA, idea.id, payload=payload)
                         s.add(
                             Comment(
                                 target_kind=TargetKind.IDEA,
@@ -794,8 +799,9 @@ def _comment_line(c: Comment) -> str:
     return f'- {c.author} ({c.kind}{where}): {c.body}'
 
 
-def _recoveries(s: Session, idea: Idea) -> int:
-    """How many of the idea's runs left work that the daemon recovered (its ``recovered`` candidates)."""
-    runs = select(Run.id).where(Run.idea_id == idea.id)
-    query = select(func.count()).where(Candidate.run_id.in_(runs), Candidate.verdict == Verdict.RECOVERED)
+def _requeues(s: Session, idea: Idea) -> int:
+    """How many times ``_settle`` requeued the idea from recovered work (its ``RECOVERY_REQUEUED`` events)."""
+    query = select(func.count()).where(
+        Event.target_kind == TargetKind.IDEA, Event.target_id == idea.id, Event.kind == RECOVERY_REQUEUED
+    )
     return s.scalar(query) or 0
