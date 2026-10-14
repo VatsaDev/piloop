@@ -28,6 +28,7 @@ from piloop.db.models import (
     Candidate,
     Comment,
     CommentKind,
+    Event,
     Idea,
     IdeaStatus,
     Measurement,
@@ -65,8 +66,17 @@ from piloop.scoring.ledger import (
 )
 
 UNCOMMITTED_SUMMARY = 'piloop: uncommitted worker changes'
+RECOVERED_TRAILER = 'Piloop-Recovered'
+"""The trailer of the commit the daemon makes of what a worker left uncommitted: ``Piloop-Recovered: run#<id>``."""
+RECOVERED_REASON = 'recovered: what the worker of run#{run} left uncommitted, never declared ready; not measured'
 NO_CHANGES = 'worker produced no commits'
-INTERRUPTED = 'worker stopped without a commit or a finding of its own; its uncommitted changes were scored'
+INTERRUPTED = (
+    'worker stopped without a commit or a finding of its own; its uncommitted changes are a recovered candidate'
+)
+RECOVERY_REQUEUED = 'idea.recovery_requeued'
+"""The event on an idea that ``_settle`` requeued from recovered work, with ``{run, candidate}``. Counting these events
+caps the requeues (``[roles.worker] recovery_requeues``): candidates cannot, because two runs that leave the same tree
+share one candidate."""
 STARTUP_RELAUNCHES = 2
 """How many times a run is queued again with a new worker after its worker failed to start. Then the run fails.
 
@@ -125,7 +135,7 @@ class RunExecutor:
                 with self._db.session() as s:
                     idea_id = s.get_one(Run, run_id).idea_id
                 self._close(span, run_id, RunStatus.FAILED, f'{type(e).__name__}: {e}')
-                self._settle(span, run_id, idea_id, RunStatus.FAILED, startup_failed=False)
+                self._settle(span, run_id, idea_id, RunStatus.FAILED, startup_failed=False, recovered=None)
 
     def _execute(self, run_id: int, worker_id: int, span: Span) -> None:
         with self.launcher.lock:
@@ -196,7 +206,7 @@ class RunExecutor:
                 self._keep_cut_work(run_id, cfg.name, repo, wt, base_sha, git.linked(wt_path, links))
                 span.set(status='cancelled')
                 return
-            shas = self._commits(wt, base_sha, git.linked(wt_path, links))
+            shas = self._commits(wt, base_sha, git.linked(wt_path, links), run_id)
             finding = self._left_finding(run_id, idea_id, worker_id)
             if outcome.status is WorkerStatus.TIMED_OUT:
                 status, error = RunStatus.TIMED_OUT, outcome.error
@@ -209,9 +219,9 @@ class RunExecutor:
             else:
                 status, error = RunStatus.SUCCEEDED, None
             self._close(span, run_id, status, error)
-            if shas:  # Score all commits, even if the worker then timed out or crashed.
-                self._score(run_id, project_id, repo, shas, log_dir)
-        self._settle(span, run_id, idea_id, status, startup_failed=outcome.startup_failed)
+            # Score all commits, even if the worker then timed out or crashed.
+            recovered = self._score(run_id, project_id, repo, shas, log_dir) if shas else None
+        self._settle(span, run_id, idea_id, status, startup_failed=outcome.startup_failed, recovered=recovered)
 
     def _relaunch(self, span: Span, run_id: int, worker_id: int, log_dir: Path) -> bool:
         """Queue the run again with a new worker, up to ``STARTUP_RELAUNCHES`` times, after its worker failed to start.
@@ -259,7 +269,7 @@ class RunExecutor:
         The work is not scored, because the stop owns the rows and the run is not an attempt (``stop.NOT_ATTEMPTS``).
         The note goes into the brief of the idea's next run, which can start from those commits.
         """
-        shas = self._commits(wt, base_sha, ignore)
+        shas = self._commits(wt, base_sha, ignore, run_id)
         if not shas:
             return
         prefix = f'refs/piloop/{name}/r{run_id}/'
@@ -291,16 +301,14 @@ class RunExecutor:
             )
         return found is not None
 
-    def _commits(self, wt: Repo, base_sha: str, ignore: list[str]) -> list[str]:
-        """Return the new commits in the worktree, oldest first. Uncommitted work is committed or amended first.
+    def _commits(self, wt: Repo, base_sha: str, ignore: list[str], run_id: int) -> list[str]:
+        """Return the new commits in the worktree, oldest first. Uncommitted work is committed first, on its own.
 
-        Work is never amended into a commit marked ``Piloop-Eval: skip``, because then the new work would not be
-        evaluated.
+        It is never amended into the worker's last commit, which is scored as the worker made it. Its commit has the
+        ``RECOVERED_TRAILER``, so its candidate is ``recovered`` (``_score``).
         """
         if git.is_dirty(wt, ignore):
-            head = wt.head.commit.hexsha
-            amend = head != base_sha and not git.eval_skipped(wt, head)
-            git.commit_all(wt, UNCOMMITTED_SUMMARY, ignore, amend=amend)
+            git.commit_all(wt, f'{UNCOMMITTED_SUMMARY}\n\n{RECOVERED_TRAILER}: run#{run_id}', ignore)
         return [c.hexsha for c in wt.iter_commits(f'{base_sha}..HEAD')][::-1]
 
     def resume(self, run_id: int) -> None:
@@ -315,15 +323,16 @@ class RunExecutor:
                 project = run.idea.project
                 status, idea_id, project_id = run.status, run.idea_id, project.id
                 name, project_path = config_of(project).name, Path(project.path)
+            recovered = None
             try:
                 repo = git.open_repo(project_path)
                 shas = git.pinned(repo, f'refs/piloop/{name}/r{run_id}/')
                 span.set(commits=len(shas))
-                self._score(run_id, project_id, repo, shas, self._runs_dir / str(run_id))
+                recovered = self._score(run_id, project_id, repo, shas, self._runs_dir / str(run_id))
             except Exception as e:
                 span.error(e)
                 status = RunStatus.FAILED
-            self._settle(span, run_id, idea_id, status, startup_failed=False)
+            self._settle(span, run_id, idea_id, status, startup_failed=False, recovered=recovered)
 
     def remeasure(self, candidate_id: int) -> None:
         """Measure a candidate with the project's current evaluator. Its verdict does not change.
@@ -345,8 +354,11 @@ class RunExecutor:
         except Exception as e:
             self._record(None, candidate_id, evaluator_id, EvalResult({}, 0.0, f'{type(e).__name__}: {e}'))
 
-    def _score(self, run_id: int, project_id: int, repo: Repo, shas: list[str], log_dir: Path) -> None:
+    def _score(self, run_id: int, project_id: int, repo: Repo, shas: list[str], log_dir: Path) -> int | None:
         """Turn each new commit into a candidate, or find its existing candidate, then measure and judge it.
+
+        Return the id of the candidate of the run's recovery commit (``RECOVERED_TRAILER``), if it has one and scoring
+        was not cancelled. A tree that is already a candidate keeps that candidate and its verdict.
 
         The daemon scores with the project's current config, not the config at launch. A run that outlives a config
         change must not move the project back to the old evaluator. All commits are pinned first, so after a stop,
@@ -363,7 +375,9 @@ class RunExecutor:
         A commit with ``Piloop-Eval: skip`` is not measured. A new candidate gets the daemon's ``unmeasured``
         verdict, which moves no bar. So a later commit without the trailer that has the same tree is measured and
         judged like a new one. ``Piloop-Note`` trailers are applied when the commit is judged
-        (``_judge``).
+        (``_judge``). The commit the daemon made of the worker's uncommitted work (``RECOVERED_TRAILER``) is not
+        measured either: it gets the daemon's ``recovered`` verdict, which moves no bar, and the same tree committed
+        later is measured and judged like a new one.
         """
         with self._db.session() as s:
             run = s.get_one(Run, run_id)
@@ -381,18 +395,21 @@ class RunExecutor:
             parent_id, bar_id = run.base_candidate_id, bar_of(run.base).id
         for i, sha in enumerate(shas):
             git.pin(repo, f'refs/piloop/{cfg.name}/r{run_id}/{i}', sha)
+        recovered_id: int | None = None
         for i, sha in enumerate(shas):
             skip = git.eval_skipped(repo, sha)
+            recovered = bool(git.trailers(repo, sha, RECOVERED_TRAILER))
             with self._db.session() as s:
                 parent = s.get_one(Candidate, parent_id)
                 candidate, created = resolve(s, project_id, repo, sha, parent=parent, run_id=run_id)
                 s.commit()
                 candidate_id = candidate.id
-                judge_now = created or candidate.verdict is Verdict.PENDING or (not skip and skipped(candidate))
-                needs_measurement = not skip and (created or not measured(candidate, scope.evaluator_id))
+                unmeasured = skip or recovered
+                judge_now = created or candidate.verdict is Verdict.PENDING or (not unmeasured and skipped(candidate))
+                needs_measurement = not unmeasured and (created or not measured(candidate, scope.evaluator_id))
             with self._tracer.span('piloop.candidate', run=run_id, commit=sha, candidate=candidate_id) as span:
-                if skip:
-                    span.set(status='skipped')
+                if unmeasured:
+                    span.set(status='recovered' if recovered else 'skipped')
                 elif not needs_measurement:
                     span.set(status='known')
                     self._tracer.event('candidate.known', run=run_id, commit=sha, candidate=candidate_id)
@@ -400,7 +417,7 @@ class RunExecutor:
                     run_id, project_id, cfg, repo, sha, candidate_id, scope.evaluator_id, log_dir / f'eval-{i}'
                 ):
                     span.set(status='cancelled')
-                    return
+                    return None
                 judged = self._judge(
                     scope,
                     candidate_id,
@@ -408,10 +425,13 @@ class RunExecutor:
                     span,
                     judge_now=judge_now,
                     skip=skip,
+                    recovered=recovered,
                     notes=git.trailers(repo, sha, 'Piloop-Note'),
                 )
+            if recovered:  # by its trailer: the tree may be a known candidate, which keeps its verdict
+                recovered_id = candidate_id
             if judged.merged is not None and not self._follow(scope, judged.merged, log_dir):
-                return
+                return None
             parent_id = candidate_id
             if judged.advanced:
                 bar_id = candidate_id
@@ -420,7 +440,8 @@ class RunExecutor:
             left = s.scalars(select(Candidate.id).where(*mine).order_by(Candidate.id)).all()
         for candidate_id in left:  # Rebased candidates that a daemon stop left unjudged.
             if not self._follow(scope, candidate_id, log_dir):
-                return
+                return None
+        return recovered_id
 
     def _follow(self, scope: Scope, candidate_id: int, log_dir: Path) -> bool:
         """Measure a rebased candidate and judge it against its parent, the head it was merged onto.
@@ -450,7 +471,9 @@ class RunExecutor:
                 ):
                     span.set(status='cancelled')
                     return False
-                judged = self._judge(scope, current, parent_id, span, judge_now=judge_now, skip=False, notes=[])
+                judged = self._judge(
+                    scope, current, parent_id, span, judge_now=judge_now, skip=False, recovered=False, notes=[]
+                )
             current = judged.merged
         return True
 
@@ -518,12 +541,22 @@ class RunExecutor:
             return measurement.id
 
     def _judge(
-        self, scope: Scope, candidate_id: int, bar_id: int, span: Span, *, judge_now: bool, skip: bool, notes: list[str]
+        self,
+        scope: Scope,
+        candidate_id: int,
+        bar_id: int,
+        span: Span,
+        *,
+        judge_now: bool,
+        skip: bool,
+        recovered: bool,
+        notes: list[str],
     ) -> Judged:
         """Set the daemon's verdict on a new candidate, unless someone already judged it. Return the result.
 
         A known candidate keeps its verdict, because the same tree again (a revert) says nothing new about it. With
-        ``skip``, the verdict is ``unmeasured`` (``SKIPPED``) instead of the rule's verdict.
+        ``skip``, the verdict is ``unmeasured`` (``SKIPPED``) instead of the rule's verdict, and when ``recovered``, it
+        is ``recovered`` (``RECOVERED_REASON``).
 
         A keep against a bar that is no longer the head stays off the trunk, unless the run is a branch run. The head
         moved while the run worked or while the daemon measured. The candidate becomes ``interesting`` (``MOVED``) and
@@ -539,7 +572,10 @@ class RunExecutor:
         with self._db.session() as s:
             candidate = s.get_one(Candidate, candidate_id)
             if judge_now and candidate.verdict_by in (None, DAEMON):
-                if skip:
+                if recovered:
+                    candidate.verdict = Verdict.RECOVERED
+                    candidate.verdict_reason = RECOVERED_REASON.format(run=scope.run_id)
+                elif skip:
                     candidate.verdict, candidate.verdict_reason = Verdict.UNMEASURED, SKIPPED
                 else:
                     verdict, reason, onto = self._verdict(s, scope, candidate, bar_id)
@@ -560,7 +596,7 @@ class RunExecutor:
                         'reason': candidate.verdict_reason,
                     },
                 )
-                if not skip:
+                if not (skip or recovered):
                     why = '; '.join(notes)
                     if why and not moved and candidate.verdict in (Verdict.DISCARD, Verdict.INTERESTING):
                         note(candidate, why, f'run#{candidate.run_id}')
@@ -624,11 +660,18 @@ class RunExecutor:
                 s.commit()
         span.set(status=status, error=error)
 
-    def _settle(self, span: Span, run_id: int, idea_id: int, status: RunStatus, *, startup_failed: bool) -> None:
+    def _settle(
+        self, span: Span, run_id: int, idea_id: int, status: RunStatus, *, startup_failed: bool, recovered: int | None
+    ) -> None:
         """After the run's commits are judged, set the idea to ``ready`` if it has attempts left, else to ``done``.
 
         If the last attempt failed to start, the idea is ``parked`` instead. It was never tried, and ``done`` would let
         the ideas that wait for it start without its result.
+
+        A run that did not succeed and left ``recovered`` work requeues its idea from that work, attempts left or not,
+        up to ``[roles.worker] recovery_requeues`` times (``RECOVERY_REQUEUED`` events): the idea's base becomes the
+        recovered candidate, so a new worker starts from it and finishes it, and that run is judged as any other. A
+        note on the idea says so.
         """
         with self.launcher.lock:
             if self.launcher.cancelled.is_set():  # stop() returns the idea to the queue.
@@ -637,7 +680,26 @@ class RunExecutor:
             with self._db.session() as s:
                 idea = s.get_one(Idea, idea_id)
                 if idea.status is IdeaStatus.SCHEDULED:  # A human may have parked or rejected it meanwhile.
-                    if status is not RunStatus.SUCCEEDED and attempts(idea) < idea.max_runs:
+                    if (
+                        recovered is not None
+                        and status is not RunStatus.SUCCEEDED
+                        and _requeues(s, idea) < config_of(idea.project).roles.worker.recovery_requeues
+                    ):
+                        idea.status, idea.base_candidate_id = IdeaStatus.READY, recovered
+                        payload: dict[str, object] = {'run': run_id, 'candidate': recovered}
+                        emit(s, RECOVERY_REQUEUED, TargetKind.IDEA, idea.id, payload=payload)
+                        s.add(
+                            Comment(
+                                target_kind=TargetKind.IDEA,
+                                target_id=idea.id,
+                                author=DAEMON_ACTOR,
+                                kind=CommentKind.NOTE,
+                                body=f'requeued from candidate#{recovered}: run#{run_id} ended {status} with work its'
+                                f' worker never committed, recovered as candidate#{recovered}; the next run starts'
+                                ' from it to finish it',
+                            )
+                        )
+                    elif status is not RunStatus.SUCCEEDED and attempts(idea) < idea.max_runs:
                         idea.status = IdeaStatus.READY
                     elif startup_failed:
                         idea.status = IdeaStatus.PARKED
@@ -672,6 +734,12 @@ class RunExecutor:
         comments = s.scalars(select(Comment).where(on_idea | on_its_runs).order_by(Comment.id)).all()
         at_base = ', '.join(f'{t.primary.name}={score(base, evaluator_id, t.primary)}' for t in cfg.all_tracks)
         lines = [f'- Starting from candidate#{base.id}: {at_base} — {base.summary}']
+        if base.verdict is Verdict.RECOVERED:
+            lines.append(
+                f'- candidate#{base.id} is work that an earlier run of this idea left uncommitted when its worker'
+                ' stopped. It was never measured. Read its diff against its parent, finish it, and commit what you'
+                ' would ship.'
+            )
         if (bar := bar_of(base)) is not base:
             at_bar = ', '.join(f'{t.primary.name}={score(bar, evaluator_id, t.primary)}' for t in cfg.all_tracks)
             lines.append(
@@ -730,3 +798,11 @@ class Judged:
 def _comment_line(c: Comment) -> str:
     where = f' on run#{c.target_id}' if c.target_kind is TargetKind.RUN else ''
     return f'- {c.author} ({c.kind}{where}): {c.body}'
+
+
+def _requeues(s: Session, idea: Idea) -> int:
+    """How many times ``_settle`` requeued the idea from recovered work (its ``RECOVERY_REQUEUED`` events)."""
+    query = select(func.count()).where(
+        Event.target_kind == TargetKind.IDEA, Event.target_id == idea.id, Event.kind == RECOVERY_REQUEUED
+    )
+    return s.scalar(query) or 0

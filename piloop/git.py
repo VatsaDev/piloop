@@ -127,18 +127,15 @@ def is_dirty(wt: Repo, ignore: list[str]) -> bool:
     return bool(wt.git.status('--porcelain', '--', '.', *(f':(exclude){p}' for p in ignore)))
 
 
-def commit_all(wt: Repo, message: str, ignore: list[str], *, amend: bool = False) -> None:
-    """Stage everything except ``ignore`` and commit it, or add it to the previous commit when ``amend`` is true.
+def commit_all(wt: Repo, message: str, ignore: list[str]) -> None:
+    """Stage everything except ``ignore`` and commit it.
 
     ``git add`` refuses ``:(exclude)`` pathspecs that name ignored files, so the paths in ``ignore`` are unstaged
     after the ``add``.
     """
     wt.git.add('-A', '--', '.')
     wt.git.rm('-rq', '--cached', '--ignore-unmatch', '--', *ignore)
-    if amend:
-        wt.git.commit('-q', '--amend', '--no-edit')
-    else:
-        wt.git.commit('-qm', message)
+    wt.git.commit('-qm', message)
 
 
 def tree_sha(repo: Repo, sha: str) -> str:

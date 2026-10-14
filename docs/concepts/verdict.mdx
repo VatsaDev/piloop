@@ -34,6 +34,7 @@ The daemon gives each measured candidate one verdict:
 | `crash` | The candidate has no successful measurement: the evaluate command failed or timed out, wrote a bad per-unit results file, or did not print every metric in `piloop.toml`. |
 | `reference` | A starting point imported with `piloop candidate import`. It is never judged. |
 | `unmeasured` | A commit marked `Piloop-Eval: skip`. It is never measured or judged, and says nothing about its idea. |
+| `recovered` | What a worker left uncommitted when it stopped, committed by the daemon (`Piloop-Recovered: run#<id>`). The worker never declared it ready, so it is never measured, judged or kept. If its run did not succeed, the idea goes back to the queue with it as the base, so a new worker finishes it, up to `[roles.worker] recovery_requeues` times per idea (2). |
 
 The rule, in order:
 

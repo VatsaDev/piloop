@@ -210,3 +210,30 @@ def test_0003_turns_the_daemons_skip_discards_into_unmeasured_and_downgrades(tmp
         assert con.execute(verdicts).fetchall() == [(1, 'discard'), (2, 'discard'), (3, 'discard')]
         with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: verdict'):
             con.execute("UPDATE candidates SET verdict = 'unmeasured' WHERE id = 1")
+
+
+def test_0005_admits_the_recovered_verdict_and_downgrades_it_to_unmeasured(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0004')
+    candidate = 'INSERT INTO candidates (project_id, tree_sha, commit_sha, verdict, verdict_by) VALUES'
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+        con.execute(f"{candidate} (1, 'a', 'a', 'keep', 'daemon')")
+        with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: verdict'):
+            con.execute(f"{candidate} (1, 'b', 'b', 'recovered', 'daemon')")
+    command.upgrade(cfg, '0005')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute(f"{candidate} (1, 'b', 'b', 'recovered', 'daemon')")
+        assert con.execute('SELECT id, verdict FROM candidates ORDER BY id').fetchall() == [
+            (1, 'keep'),
+            (2, 'recovered'),
+        ]
+        triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
+        assert triggers == sorted(t.name for t in PERSISTENT), 'the rebuilt candidates table has its triggers back'
+    command.downgrade(cfg, '0004')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT id, verdict FROM candidates ORDER BY id').fetchall() == [
+            (1, 'keep'),
+            (2, 'unmeasured'),
+        ]

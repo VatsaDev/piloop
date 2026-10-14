@@ -69,10 +69,12 @@ sequenceDiagram
 4. **Work.** The agent reads its brief, implements the idea and commits. It reads and writes the database with
    `piloop sql`. On each tick, the scheduler sends new comments on the run or the idea to the agent.
 5. **Close.** When the agent ends or times out, the launcher closes the worker row and reads its token usage. The
-   executor commits what is left uncommitted and closes the run. The worker slot is now free for the next run.
+   executor commits what is left uncommitted, on its own, as a `recovered` commit, and closes the run. The worker
+   slot is now free for the next run.
 6. **Score.** Each new commit becomes a candidate. Commits with the same git tree are the same candidate. The daemon
    runs the evaluate command in a clean worktree of the commit, stores a measurement, and judges the candidate against
-   the run's bar. A keep becomes the bar for the run's next commit.
+   the run's bar. A keep becomes the bar for the run's next commit. A `recovered` commit is not measured; if the run
+   did not succeed, the idea goes back to the queue with it as its base, so a new worker finishes it.
 7. **Rebase.** When a keep's bar is no longer the head, because another run kept meanwhile, the keep is marked
    `interesting`. The daemon merges it onto the head, measures the merge and judges it there. A merge that conflicts
    files a seed.

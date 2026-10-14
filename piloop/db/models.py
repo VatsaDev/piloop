@@ -103,7 +103,9 @@ class Verdict(StrEnum):
     a bar, and nothing that counts keeps counts it (the status, the sparkline, ``[stop]``). An ``interesting`` verdict
     whose reason starts with ``note:`` is an agent's note (``piloop candidate note``, the ``Piloop-Note`` trailer): the
     result got worse, but the tree is worth starting from. ``unmeasured`` is not a judgement either: the commit asked not
-    to be evaluated (``Piloop-Eval: skip``), so nothing was measured and it says nothing about the idea.
+    to be evaluated (``Piloop-Eval: skip``), so nothing was measured and it says nothing about the idea. ``recovered``
+    is not a judgement either: the daemon committed what a worker left uncommitted when it stopped, a tree the worker
+    never declared ready. It is not measured, and a new run of the idea starts from it to finish it.
     """
 
     PENDING = 'pending'
@@ -113,6 +115,7 @@ class Verdict(StrEnum):
     CRASH = 'crash'
     REFERENCE = 'reference'
     UNMEASURED = 'unmeasured'
+    RECOVERED = 'recovered'
 
 
 class TargetKind(StrEnum):

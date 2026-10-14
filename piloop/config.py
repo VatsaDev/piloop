@@ -256,6 +256,11 @@ class WorkerRole(RoleConfig):
     """What a worker may write, as its brief states it."""
     files: Files = Files.NOTHING
     """A worker files no ideas and no seeds. Its hunches go in its finding, which research reads."""
+    recovery_requeues: int = Field(default=2, ge=0)
+    """How many times one idea goes back to the queue from the work its worker left uncommitted, when the run did not
+    succeed (``recovered``): a new worker then starts from that work to finish it. After that, the idea settles as
+    after any failed run, so an idea whose workers keep dying is not run forever. 0 never requeues: the recovered
+    candidate waits for you or the orchestrator."""
     explore_every: int = Field(default=4, ge=0)
     """At least one run of this role in this many starts from an alternative starting point. When none of the role's
     last ``explore_every - 1`` runs did, the next slot goes to the most urgent ready idea that is pinned to a base

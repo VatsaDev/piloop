@@ -43,6 +43,12 @@ A deprecated configuration key shows a warning for at least one minor release be
   inherits on every tick.
 - The subprocess runtime no longer fails the start of an agent that exits at once on macOS: it asked the system for
   the process group of an exited child (ESRCH); the group is the child's own pid.
+- What a worker leaves uncommitted is a `recovered` candidate (new verdict, migration `0005`): committed on its own
+  with a `Piloop-Recovered: run#<id>` trailer, never amended into the worker's commit, never measured, never kept.
+  Before, it was scored and could become the head, though the worker never declared it ready. When the run did not
+  succeed, the idea goes back to the queue with the recovered candidate as its base, up to `[roles.worker]
+  recovery_requeues` times (2), so a new worker finishes the work, and that run is judged as any other.
+- The worker brief no longer says that commits are scored while the worker works. They are scored after the run ends.
 
 ## [0.1.0] - 2026-10-13
 
