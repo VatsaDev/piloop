@@ -21,7 +21,8 @@ from sqlalchemy import select
 from piloop.agents.scout import is_scout
 from piloop.campaign import inbox, project as project_module
 from piloop.campaign.ideas import defined_by
-from piloop.cli import main as cli
+from piloop.cli import common, inbox as inbox_cli, main as cli, project as project_cli
+from piloop.cli.version import installed
 from piloop.config import ConfigError
 from piloop.daemon.main import Daemon
 from piloop.daemon.serve import running_pid
@@ -61,13 +62,13 @@ def run_cli(tokens: list[str]) -> None:
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Console:
     monkeypatch.setattr(
-        cli,
+        common,
         'settings',
         Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools'),
     )
-    monkeypatch.setattr(project_module, 'settings', cli.settings)
+    monkeypatch.setattr(project_module, 'settings', common.settings)
     console = Console(record=True, width=200, force_terminal=False)
-    monkeypatch.setattr(cli, 'console', console)
+    monkeypatch.setattr(common, 'console', console)
     return console
 
 
@@ -120,7 +121,7 @@ def test_every_role_but_the_worker_files_a_seed_and_only_research_the_orchestrat
     run_cli(['init', str(project_path)])
 
     def as_(actor: str, *argv: str) -> None:
-        monkeypatch.setattr(cli, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', actor=actor))
+        monkeypatch.setattr(common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', actor=actor))
         run_cli(list(argv))
 
     out()
@@ -171,7 +172,7 @@ def test_every_role_but_the_worker_files_a_seed_and_only_research_the_orchestrat
     with pytest.raises(SystemExit, match='idea#1 is ready, not a seed: someone took it already'):
         as_('research#9', 'idea', 'develop', '1', *define)
 
-    db = Database(cli.settings.database_url, actor='test')
+    db = Database(common.settings.database_url, actor='test')
     with db.session() as s:
         rows = [(i.created_by, i.provenance, i.family, i.base_candidate_id) for i in s.scalars(select(Idea))]
         assert rows == [
@@ -202,7 +203,7 @@ def test_status_shows_why_a_campaign_stopped_and_init_resumes_it_when_the_stop_t
     project_path: Path, out
 ) -> None:
     run_cli(['init', str(project_path)])
-    db = Database(cli.settings.database_url, actor=cli.settings.actor)
+    db = Database(common.settings.database_url, actor=common.settings.actor)
 
     def stop(reason: str) -> None:
         with db.session() as s:
@@ -277,7 +278,7 @@ def test_outside_every_project_the_only_active_one_is_meant_else_all_of_them(
     run_cli(['init', str(project_path)])
     out()
     monkeypatch.chdir(tmp_path)
-    db = Database(cli.settings.database_url, actor=cli.settings.actor)
+    db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
         project = s.get_one(Project, 1)
         s.add(Project(name='other', path='/other', config=project.config, status=ProjectStatus.STOPPED))
@@ -341,8 +342,8 @@ def test_init_example(tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch) -> N
         'name = "demo"\nevaluate = ["sh", "-c", "echo METRIC score=3"]\nmodel = { pi = "m" }\n'
         '[[metrics]]\nname = "score"\ndirection = "higher"\nrole = "primary"\n'
     )
-    monkeypatch.setattr(cli, 'TEMPLATES', tmp_path / 'templates')
-    monkeypatch.setattr(cli, 'EXAMPLE_DATA', {'demo': {}})
+    monkeypatch.setattr(project_cli, 'TEMPLATES', tmp_path / 'templates')
+    monkeypatch.setattr(project_cli, 'EXAMPLE_DATA', {'demo': {}})
     with pytest.raises(SystemExit, match='no example'):
         run_cli(['init', '--example', 'missing', str(tmp_path / 'x')])
     toml = template / 'piloop.toml'
@@ -414,7 +415,7 @@ def test_inbox_lists_what_waits_shows_one_with_its_thread_and_acknowledges(
     toml.write_text(re.sub(r'(?m)^name = .*$', 'name = "other"', toml.read_text(), count=1))
     run_cli(['init', str(other)])
     now = datetime(2026, 10, 7, 12, tzinfo=UTC)
-    monkeypatch.setattr(cli, 'utcnow', lambda: now)  # what the ages count from
+    monkeypatch.setattr(inbox_cli, 'utcnow', lambda: now)  # what the ages count from
     monkeypatch.setattr(inbox, 'utcnow', lambda: now)  # when an item is acknowledged
     insert = 'INSERT INTO comments (target_kind, target_id, author, kind, body, priority, created_at) VALUES '
     at = f"'{now:%Y-%m-%d %H:%M:%S}'"
@@ -484,7 +485,7 @@ def test_inbox_wait_blocks_until_an_item_lands_and_hands_over_a_cursor_that_miss
 ) -> None:
     run_cli(['init', str(project_path)])
     out()
-    monkeypatch.setattr(cli, 'WAIT_POLL_SECONDS', 0.01)
+    monkeypatch.setattr(inbox_cli, 'WAIT_POLL_SECONDS', 0.01)
     run_cli(['inbox', 'wait', '--timeout', '0'])
     quiet, again = out().splitlines()
     assert quiet == 'nothing new in 0:00:00' and re.fullmatch(r'next: piloop inbox wait --after \d+', again)
@@ -505,7 +506,7 @@ def test_cli_writes_as_the_actor_from_the_environment(
 ) -> None:
     run_cli(['init', str(project_path)])
     monkeypatch.setenv('PILOOP_ACTOR', 'watchdog#4')
-    monkeypatch.setattr(cli, 'settings', Settings(home=tmp_path))
+    monkeypatch.setattr(common, 'settings', Settings(home=tmp_path))
     run_cli(['sql', "UPDATE projects SET name='renamed'"])
     out()
     run_cli(['sql', 'SELECT updated_by FROM projects'])
@@ -534,7 +535,7 @@ def test_candidate_import_registers_a_reference_shown_apart_and_refuses_a_bad_re
         'candidate#2 reference: from another campaign; the daemon measures it; start an idea from it with'
         ' `piloop idea add demo "<title>" --base 2`'
     )
-    with closing(Database(cli.settings.database_url, actor='test')) as db, db.session() as s:
+    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
         c = s.get_one(Candidate, 2)
         assert (c.verdict, c.verdict_by, c.verdict_reason) == (
             Verdict.REFERENCE,
@@ -574,7 +575,7 @@ def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_
     run_cli(['init', str(project_path)])
     run_cli(['idea', 'add', 'demo', 'try again'])
     out()
-    with closing(Database(cli.settings.database_url, actor='test')) as db, db.session() as s:
+    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
         for tree, verdict in (('worse', Verdict.DISCARD), ('waiting', Verdict.PENDING)):
             c = Candidate(
                 project_id=1, tree_sha=tree, commit_sha=tree, summary=tree, verdict=verdict, verdict_by='daemon'
@@ -591,7 +592,7 @@ def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_
         'idea#2 seed, pinned to candidate#2: try again (from candidate#2)',
         'idea#3 seed, pinned to candidate#2: cache it',
     ]
-    with closing(Database(cli.settings.database_url, actor='test')) as db, db.session() as s:
+    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
         assert s.get_one(Candidate, 2).verdict_by == 'human'
         idea = s.get_one(Idea, 3)
         assert (idea.status, idea.base_candidate_id, idea.created_by, idea.hypothesis) == (
@@ -613,7 +614,7 @@ def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_
         run_cli(['candidate', 'note', '2', ' '])
     with pytest.raises(SystemExit, match='no candidate#99'):
         run_cli(['candidate', 'note', '99', 'why'])
-    monkeypatch.setattr(cli, 'settings', cli.settings.model_copy(update={'actor': 'worker#3'}))
+    monkeypatch.setattr(common, 'settings', common.settings.model_copy(update={'actor': 'worker#3'}))
     with pytest.raises(SystemExit, match='worker#3 files no ideas or seeds'):
         run_cli(['candidate', 'note', '2', 'worth a look', '--follow-up', 'a hunch'])
 
@@ -639,7 +640,7 @@ def test_attach_focuses_a_worker_tab(
     project_path: Path, out, herdr_log: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_cli(['init', str(project_path)])
-    db = Database(cli.settings.database_url, actor=cli.settings.actor)
+    db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
         for runtime, handle in (
             ('herdr', {'workspace_id': 'w7', 'tab_id': 'w7:t3', 'pane_id': 'w7:p3', 'agent': 'worker-1'}),
@@ -660,21 +661,21 @@ def test_attach_focuses_a_worker_tab(
         s.commit()
     db.close()
     out()
-    execvp = mocker.patch('piloop.cli.main.os.execvp')
-    mocker.patch('piloop.cli.main.sys.stdout').isatty.return_value = True
+    execvp = mocker.patch('piloop.cli.agents.os.execvp')
+    mocker.patch('piloop.cli.agents.sys.stdout').isatty.return_value = True
     run_cli(['attach', '1'])
     assert herdr_calls(herdr_log) == [
         ['--session', 'piloop', 'tab', 'focus', 'w7:t3'],
         ['--session', 'piloop', 'session', 'list', '--json'],
     ]
     assert execvp.call_args.args == ('herdr', ['herdr', '--session', 'piloop'])
-    tty = mocker.patch('piloop.cli.main.sys.stdout')
+    tty = mocker.patch('piloop.cli.agents.sys.stdout')
     tty.isatty.return_value = False
     run_cli(['attach', '1'])
     assert out().strip() == 'not a terminal; would attach to Herdr session piloop with tab w7:t3 focused'
     tty.isatty.return_value = True
     monkeypatch.setenv('HERDR_SOCKET_PATH', SOCKET)
-    monkeypatch.setattr(cli, 'settings', Settings(home=cli.settings.home))
+    monkeypatch.setattr(common, 'settings', Settings(home=common.settings.home))
     run_cli(['attach', '1'])
     assert out().strip() == 'focused tab w7:t3' and execvp.call_count == 1, 'already inside the piloop session'
     run_cli(['attach', '2'])
@@ -691,7 +692,7 @@ def test_attach_focuses_a_worker_tab(
 
 def test_prompt(project_path: Path, out, herdr_log: Path) -> None:
     run_cli(['init', str(project_path)])
-    db = Database(cli.settings.database_url, actor=cli.settings.actor)
+    db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
         idea = Idea(track='score', project_id=1, title='x', hypothesis='x', created_by='t', status=IdeaStatus.SCHEDULED)
         s.add(idea)
@@ -731,7 +732,7 @@ def test_launch_requests_a_worker(project_path: Path, out) -> None:
         'worker#1 research requested for demo: requested from the CLI',
         'worker#2 watchdog requested for demo: eyeball it',
     ]
-    db = Database(cli.settings.database_url, actor=cli.settings.actor)
+    db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
         rows = [(w.kind, w.state, w.harness, w.model, w.reason) for w in s.scalars(select(Worker).order_by(Worker.id))]
     db.close()
@@ -749,7 +750,7 @@ def test_launch_requests_a_worker(project_path: Path, out) -> None:
         run_cli(['launch', 'demo', 'worker'])
     run_cli(['launch', 'demo', 'research', '--scout', '--reason', 'look outside'])
     assert out().strip() == 'worker#3 research (scout) requested for demo: look outside'
-    db = Database(cli.settings.database_url, actor=cli.settings.actor)
+    db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
         assert [is_scout(s, w) for w in (1, 2, 3)] == [False, False, True]
     db.close()
@@ -758,9 +759,9 @@ def test_launch_requests_a_worker(project_path: Path, out) -> None:
 
 
 def test_serve_builds_a_daemon(mocker: MockerFixture) -> None:
-    daemon = mocker.patch('piloop.cli.main.Daemon')
+    daemon = mocker.patch('piloop.cli.daemon.Daemon')
     run_cli(['serve'])
-    assert daemon.call_args.args[0] is cli.settings and daemon.return_value.serve.called
+    assert daemon.call_args.args[0] is common.settings and daemon.return_value.serve.called
 
 
 def test_serve_detach_status_stop(out, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -769,15 +770,15 @@ def test_serve_detach_status_stop(out, monkeypatch: pytest.MonkeyPatch) -> None:
     assert out().strip() == 'daemon: not running'
     run_cli(['serve', '--detach'])
     text = out().strip()
-    match = re.fullmatch(rf'daemon started: pid (\d+), log {re.escape(str(cli.settings.log_file))}', text)
+    match = re.fullmatch(rf'daemon started: pid (\d+), log {re.escape(str(common.settings.log_file))}', text)
     assert match is not None, text
     pid = int(match.group(1))
-    wait_until(cli.settings.pid_file.is_file)
-    assert int(cli.settings.pid_file.read_text()) == pid
+    wait_until(common.settings.pid_file.is_file)
+    assert int(common.settings.pid_file.read_text()) == pid
     with pytest.raises(SystemExit, match=f'already running \\(pid {pid}'):
         run_cli(['serve', '--detach'])
     with pytest.raises(SystemExit, match=f'already running \\(pid {pid}'):
-        Daemon(cli.settings).serve()
+        Daemon(common.settings).serve()
     run_cli(['status'])
     assert out().startswith(f'daemon: pid {pid}, up 0:00:0')
 
@@ -786,20 +787,22 @@ def test_serve_detach_status_stop(out, monkeypatch: pytest.MonkeyPatch) -> None:
     run_cli(['stop'])
     reaper.join()
     assert out().strip() == f'daemon pid {pid} stopped'
-    assert not alive(pid) and not cli.settings.pid_file.exists()
+    assert not alive(pid) and not common.settings.pid_file.exists()
     with pytest.raises(SystemExit, match='no daemon is running'):
         run_cli(['stop'])
 
 
 def test_serve_detach_reports_a_child_that_dies_before_claiming(out) -> None:
-    (cli.settings.home / 'piloop.db').mkdir()
-    with pytest.raises(SystemExit, match=f'exited with 1 before taking {re.escape(str(cli.settings.pid_file))}'):
+    (common.settings.home / 'piloop.db').mkdir()
+    with pytest.raises(SystemExit, match=f'exited with 1 before taking {re.escape(str(common.settings.pid_file))}'):
         run_cli(['serve', '--detach'])
-    assert not cli.settings.pid_file.exists() and 'unable to open database file' in cli.settings.log_file.read_text()
+    assert (
+        not common.settings.pid_file.exists() and 'unable to open database file' in common.settings.log_file.read_text()
+    )
 
 
 def test_stop_reports_a_daemon_that_will_not_die(out) -> None:
-    for stubborn in hold_lock(cli.settings.pid_file, 'stubborn'):
+    for stubborn in hold_lock(common.settings.pid_file, 'stubborn'):
         with pytest.raises(SystemExit, match=f'daemon pid {stubborn.pid} did not exit within 0.3s'):
             run_cli(['stop', '--timeout', '0.3'])
 
@@ -807,15 +810,15 @@ def test_stop_reports_a_daemon_that_will_not_die(out) -> None:
 def test_restart_reports_a_daemon_that_does_not_come_back_and_needs_one(out) -> None:
     with pytest.raises(SystemExit, match='no daemon is running'):
         run_cli(['restart'])
-    for stubborn in hold_lock(cli.settings.pid_file, 'stubborn'):
+    for stubborn in hold_lock(common.settings.pid_file, 'stubborn'):
         with pytest.raises(SystemExit, match=f'daemon pid {stubborn.pid} did not restart within 0.3s'):
             run_cli(['restart', '--timeout', '0.3'])
 
 
 def test_stop_and_status_do_not_mistake_a_reused_pid_for_the_daemon(out) -> None:
     sleeper = subprocess.Popen(['sleep', '60'])
-    cli.settings.pid_file.parent.mkdir(parents=True, exist_ok=True)
-    cli.settings.pid_file.write_text(str(sleeper.pid))
+    common.settings.pid_file.parent.mkdir(parents=True, exist_ok=True)
+    common.settings.pid_file.write_text(str(sleeper.pid))
     try:
         run_cli(['status'])
         assert out().startswith('daemon: not running')
@@ -833,7 +836,7 @@ def test_service_unit_prints_a_systemd_unit_on_linux(tmp_path: Path, out) -> Non
     text = out()
     assert text.startswith('[Unit]\n') and text.endswith('WantedBy=default.target\n')
     assert (
-        f'ExecStart={sys.executable} -m piloop serve\nRestart=on-failure\nEnvironment="PILOOP_HOME={cli.settings.home}"\n'
+        f'ExecStart={sys.executable} -m piloop serve\nRestart=on-failure\nEnvironment="PILOOP_HOME={common.settings.home}"\n'
         in text
     )
     assert f'Environment="CLAUDE_CONFIG_DIR={tmp_path / "claude-config"}"\n' in text, (
@@ -843,7 +846,7 @@ def test_service_unit_prints_a_systemd_unit_on_linux(tmp_path: Path, out) -> Non
 
 def test_status_without_results_and_prompt_not_steerable(project_path: Path, out, mocker: MockerFixture) -> None:
     run_cli(['init', str(project_path)])
-    db = Database(cli.settings.database_url, actor=cli.settings.actor)
+    db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
         for c in s.scalars(select(Candidate)):
             c.verdict = Verdict.DISCARD
@@ -896,7 +899,7 @@ entrypoints = [{ name = "piloop", install-path = "/home/me/.local/bin/piloop", f
 
 
 def write_receipt(text: str) -> None:
-    receipt = cli.settings.uv_tool_dir / 'piloop' / 'uv-receipt.toml'
+    receipt = common.settings.uv_tool_dir / 'piloop' / 'uv-receipt.toml'
     receipt.parent.mkdir(parents=True)
     receipt.write_text(text)
 
@@ -960,14 +963,14 @@ def test_migrate_reports_the_schema_change_and_a_newer_database_is_refused(out) 
     assert out().strip() == f'schema: none → {HEAD}', 'a new database, brought to head'
     run_cli(['migrate'])
     assert out().strip() == f'schema: {HEAD}, current'
-    with closing(sqlite3.connect(cli.settings.home / 'piloop.db')) as con:
+    with closing(sqlite3.connect(common.settings.home / 'piloop.db')) as con:
         con.execute("UPDATE alembic_version SET version_num = '9999_from_the_future'")
         con.commit()
     with pytest.raises(SystemExit, match='revision 9999_from_the_future.*Run `piloop upgrade`'):
         run_cli(['status'])
     with pytest.raises(SystemExit, match='revision 9999_from_the_future.*Run `piloop upgrade`'):
         run_cli(['serve'])
-    assert running_pid(cli.settings) is None, 'the daemon refused before taking the pid file'
+    assert running_pid(common.settings) is None, 'the daemon refused before taking the pid file'
 
 
 def test_upgrade_refuses_a_checkout_that_is_not_a_uv_tool(fake_bins) -> None:
@@ -976,7 +979,7 @@ def test_upgrade_refuses_a_checkout_that_is_not_a_uv_tool(fake_bins) -> None:
         SystemExit, match='piloop is not installed as a uv tool \\(no .*uv-receipt.toml\\); upgrade the checkout'
     ):
         run_cli(['upgrade'])
-    assert calls() == [] and not cli.settings.home.joinpath('piloop.db').exists(), 'nothing was touched'
+    assert calls() == [] and not common.settings.home.joinpath('piloop.db').exists(), 'nothing was touched'
 
 
 def test_upgrade_reinstalls_migrates_and_restarts_the_daemon(
@@ -986,26 +989,26 @@ def test_upgrade_reinstalls_migrates_and_restarts_the_daemon(
     write_receipt(GIT_RECEIPT)
     calls = fake_bins('uv', 'pi')
     run_cli(['serve', '--detach'])
-    pid = int(cli.settings.pid_file.read_text())
+    pid = int(common.settings.pid_file.read_text())
     out()
-    version = cli.installed().removeprefix('piloop ')
+    version = installed().removeprefix('piloop ')
 
     run_cli(['upgrade'])
 
     text = out()
-    assert int(cli.settings.pid_file.read_text()) == pid and alive(pid), 'restarted in place'
+    assert int(common.settings.pid_file.read_text()) == pid and alive(pid), 'restarted in place'
     assert text.splitlines() == [
         f'CLI: {version}, installed by uv from https://github.com/hiloopai/piloop',
         '$ uv tool upgrade --reinstall-package piloop piloop',
         f'CLI: {version} → {version}',
-        f'skills: piloop-operate, piloop-review, piloop-setup → {cli.settings.agent_skills_dir} (pi)',
+        f'skills: piloop-operate, piloop-review, piloop-setup → {common.settings.agent_skills_dir} (pi)',
         f'daemon: restarting pid {pid}; its running agents keep going and the new code re-attaches',
         f'daemon: pid {pid} runs the new code',
         f'schema: {HEAD}, current',
-        f'ok    daemon: pid {pid} runs the installed {cli.installed()}',
-        f'ok    database: {cli.settings.home}/piloop.db at schema {HEAD}, current',
+        f'ok    daemon: pid {pid} runs the installed {installed()}',
+        f'ok    database: {common.settings.home}/piloop.db at schema {HEAD}, current',
         f'ok    secrets: from the environment of the daemon (pid {pid}) only (PILOOP_SECRETS_COMMAND unset)',
-        f'ok    skills (pi): current in {cli.settings.agent_skills_dir}',
+        f'ok    skills (pi): current in {common.settings.agent_skills_dir}',
         'ok    harnesses: on PATH: none configured',
     ], 'the new code checks the install last'
     assert calls() == [['uv', 'tool', 'upgrade', '--reinstall-package', 'piloop', 'piloop']]
@@ -1027,17 +1030,17 @@ def test_upgrade_of_a_checkout_install_without_a_daemon_creates_the_schema(fake_
         f'schema: none → {HEAD}',
         'daemon: not running, left stopped',
         'ok    daemon: not running',
-        f'ok    database: {cli.settings.home}/piloop.db at schema {HEAD}, current',
+        f'ok    database: {common.settings.home}/piloop.db at schema {HEAD}, current',
         'ok    secrets: from the environment of this shell only (PILOOP_SECRETS_COMMAND unset)',
         'ok    skills: none of claude, codex, pi, gemini, cursor-agent is on PATH: nothing to check',
         'ok    harnesses: on PATH: none configured',
     ]
     assert (
         calls() == [['uv', 'tool', 'upgrade', '--reinstall-package', 'piloop', 'piloop']]
-        and cli.settings.home.joinpath('piloop.db').is_file()
+        and common.settings.home.joinpath('piloop.db').is_file()
     )
 
-    with closing(sqlite3.connect(cli.settings.home / 'piloop.db')) as con:
+    with closing(sqlite3.connect(common.settings.home / 'piloop.db')) as con:
         con.execute("UPDATE alembic_version SET version_num = '9999_from_the_future'")
         con.commit()
     with pytest.raises(
@@ -1063,8 +1066,8 @@ def test_doctor_exits_non_zero_on_a_failed_check_and_writes_nothing(fake_bins, o
     with pytest.raises(SystemExit) as exited:
         run_cli(['doctor'])
     assert exited.value.code == 1
-    assert out().splitlines()[1] == f'FAIL  database: none at {cli.settings.home}/piloop.db'
-    assert not cli.settings.home.joinpath('piloop.db').exists(), 'no database appears'
+    assert out().splitlines()[1] == f'FAIL  database: none at {common.settings.home}/piloop.db'
+    assert not common.settings.home.joinpath('piloop.db').exists(), 'no database appears'
     run_cli(['migrate'])
     out()
     run_cli(['doctor'])
@@ -1083,11 +1086,11 @@ def test_upgrade_stops_when_uv_fails_or_is_missing_or_the_daemon_does_not_come_b
         'pi is not touched after a failed CLI upgrade'
     )
     monkeypatch.setenv('FAKE_BIN_FAIL', 'none')
-    for stubborn in hold_lock(cli.settings.pid_file, 'stubborn'):
+    for stubborn in hold_lock(common.settings.pid_file, 'stubborn'):
         with pytest.raises(SystemExit, match=f'daemon pid {stubborn.pid} did not restart within 0.3s'):
             run_cli(['upgrade', '--timeout', '0.3'])
-    assert not cli.settings.home.joinpath('piloop.db').exists(), 'no migration while the daemon is not back'
-    monkeypatch.setenv('PATH', str(cli.settings.home))
+    assert not common.settings.home.joinpath('piloop.db').exists(), 'no migration while the daemon is not back'
+    monkeypatch.setenv('PATH', str(common.settings.home))
     with pytest.raises(SystemExit, match='uv is not on PATH'):
         run_cli(['upgrade'])
 
@@ -1111,7 +1114,7 @@ def test_main_turns_a_bad_config_and_any_unexpected_error_into_one_message(
         "piloop: KeyError: 'body'\nrun with PILOOP_DEBUG=1 for the traceback; `piloop doctor` checks the install"
     )
     assert isinstance(exited.value.__cause__, KeyError), 'the traceback stays attached'
-    monkeypatch.setattr(cli, 'settings', Settings(debug=True))
+    monkeypatch.setattr(common, 'settings', Settings(debug=True))
     with pytest.raises(KeyError, match='body'):
         cli.main()
 
@@ -1123,11 +1126,11 @@ def test_watch_needs_a_terminal_and_runs_the_app_as_the_actor(project_path: Path
         SystemExit, match='piloop watch reads keys from a terminal; `piloop status` prints the same once'
     ):
         run_cli(['watch'])
-    mocker.patch('piloop.cli.main.sys.stdin').isatty.return_value = True
+    mocker.patch('piloop.cli.project.sys.stdin').isatty.return_value = True
     ran: list[tuple[str | None, str, Path]] = []
-    mocker.patch.object(cli.Watch, 'run', lambda app: ran.append((app.ref, app.actor, app.db_file)))
+    mocker.patch.object(project_cli.Watch, 'run', lambda app: ran.append((app.ref, app.actor, app.db_file)))
     run_cli(['watch', 'demo'])
-    assert ran == [('demo', 'human', cli.settings.home / 'piloop.db')]
+    assert ran == [('demo', 'human', common.settings.home / 'piloop.db')]
 
 
 def test_schema_prints_the_procedures_and_tables_pi_puts_in_its_sql_tool(out) -> None:
@@ -1151,13 +1154,13 @@ def test_with_several_tracks_every_idea_and_seed_names_its_track(project_path: P
         run_cli(['idea', 'seed', 'demo', 'faster', '--from', 'x', '--track', 'speed'])
     run_cli(['idea', 'add', 'demo', 'shorter lines', '--track', 'size'])
     run_cli(['idea', 'seed', 'demo', 'more lines', '--from', 'run#1', '--track', 'score'])
-    with closing(Database(cli.settings.database_url, actor='test')) as db, db.session() as s:
+    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
         worse = Candidate(project_id=1, tree_sha='w', commit_sha='w', summary='w', verdict=Verdict.DISCARD)
         s.add(worse)
         s.commit()
     run_cli(['candidate', 'note', '2', 'cheaper', '--follow-up', 'trim it', '--track', 'size'])
     run_cli(['candidate', 'note', '2', 'and', '--follow-up', 'pad it'])
-    with closing(Database(cli.settings.database_url, actor='test')) as db, db.session() as s:
+    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
         rows = [(i.title, i.track) for i in s.scalars(select(Idea).order_by(Idea.id))]
     assert rows == [('shorter lines', 'size'), ('more lines', 'score'), ('trim it', 'size'), ('pad it', 'score')], (
         'a follow-up of a candidate no run made is on the first track unless it says otherwise'

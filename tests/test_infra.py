@@ -19,7 +19,6 @@ from piloop.settings import Settings
 def test_settings_derived(tmp_path: Path) -> None:
     s = Settings(home=tmp_path)
     assert s.database_url == f'sqlite:///{tmp_path / "piloop.db"}'
-    assert s.projects_dir == tmp_path / 'projects'
 
 
 def test_settings_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -142,7 +142,7 @@ def register(s: Session, path: Path) -> tuple[Project, Measurement]:
         raise ProjectError(f'project name {cfg.name!r} is already used by {other.path}; change `name` in piloop.toml')
     repo = git.open_repo(path)
     sha = repo.head.commit.hexsha
-    staging = settings.projects_dir / f'.registering-{uuid4().hex}'
+    staging = projects_dir(settings.home) / f'.registering-{uuid4().hex}'
     log_dir = staging / 'baseline'
     log_dir.mkdir(parents=True)
     wt = log_dir / 'worktree'
@@ -164,7 +164,7 @@ def register(s: Session, path: Path) -> tuple[Project, Measurement]:
     project = Project(name=cfg.name, path=str(path.resolve()), config=cfg.model_dump(mode='json'))
     s.add(project)
     s.flush()
-    shutil.copytree(staging, settings.projects_dir / str(project.id), symlinks=True, dirs_exist_ok=True)
+    shutil.copytree(staging, project_dir(settings.home, project.id), symlinks=True, dirs_exist_ok=True)
     shutil.rmtree(staging)
     baseline, _ = resolve(s, project.id, repo, sha, parent=None, run_id=None)
     baseline.verdict, baseline.verdict_by = Verdict.KEEP, DAEMON
@@ -224,6 +224,21 @@ def sync(s: Session, project: Project) -> ProjectConfig:
     project.config = config
     current_evaluator(s, project, cfg)
     return cfg
+
+
+def projects_dir(home: Path) -> Path:
+    """The parent of the directory of each project under the piloop home ``home``."""
+    return home / 'projects'
+
+
+def project_dir(home: Path, project_id: int) -> Path:
+    """The directory of a project: its shared workspace, its baseline and the evaluations of its candidates."""
+    return projects_dir(home) / str(project_id)
+
+
+def workspace_dir(home: Path, project_id: int) -> Path:
+    """The shared workspace of a project, where its agents leave notes and artifacts for each other."""
+    return project_dir(home, project_id) / WORKSPACE
 
 
 def worktree_links(cfg: ProjectConfig, project_path: Path, project_dir: Path) -> dict[str, Path]:
