@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from piloop.harnesses import Invocation, fill
-from piloop.proc import alive, child_env, started
+from piloop.proc import alive, child_env, kill_group, started
 from piloop.runtime import Check, Handle, NotAttachable, NotSteerable, Outcome, WorkerSpec, WorkerStatus
 
 STDOUT = 'worker.stdout'
@@ -63,23 +63,31 @@ class SubprocessRuntime:
         """Start the process in its own session, with stdout and stderr written under ``spec.log_dir``."""
         spec.log_dir.mkdir(parents=True, exist_ok=True)
         proc = _spawn(spec, spec.args, 'w')
+        try:
+            if spec.resume_args:
+                (spec.log_dir / RESUMER).touch()
+            handle = Handle(
+                self.kind,
+                {
+                    'pid': proc.pid,
+                    # start_new_session makes the child its group's leader. os.getpgid would ask the system, and
+                    # macOS refuses (ESRCH) for a child that already exited, which failed the start of a quick agent.
+                    'pgid': proc.pid,
+                    'start_time': started(proc.pid),
+                    'started_at': time.time(),
+                    'log_dir': str(spec.log_dir),
+                    'session_id_pattern': spec.session_id_pattern,
+                },
+            )
+        except BaseException:
+            # No handle reaches the caller, so nothing would wait for this process: end it here.
+            kill_group(proc)
+            proc.wait()
+            raise
         self._procs[proc.pid] = proc
         if spec.resume_args:
             self._specs[proc.pid] = spec
-            (spec.log_dir / RESUMER).touch()
-        return Handle(
-            self.kind,
-            {
-                'pid': proc.pid,
-                # start_new_session makes the child its group's leader. os.getpgid would ask the system, and macOS
-                # refuses (ESRCH) for a child that already exited, which failed the start of a quick agent.
-                'pgid': proc.pid,
-                'start_time': started(proc.pid),
-                'started_at': time.time(),
-                'log_dir': str(spec.log_dir),
-                'session_id_pattern': spec.session_id_pattern,
-            },
-        )
+        return handle
 
     def wait(self, handle: Handle, timeout: float) -> Outcome:
         """Poll until the agent is gone, resuming it while messages wait for it. On timeout, kill its process group.

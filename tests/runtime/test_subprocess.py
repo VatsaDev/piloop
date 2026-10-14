@@ -1,5 +1,6 @@
 import os
 import stat
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -285,3 +286,28 @@ def test_queueing_and_draining_hold_one_lock_so_no_message_falls_between_them(tm
     draining.join()
     assert not queue.exists()
     rt.wait(handle, timeout=10)
+
+
+def test_a_start_that_fails_after_the_spawn_kills_and_waits_for_the_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """macOS answered a call after the spawn with ESRCH for a quick agent, and the start failed with its ``Popen``
+    never waited for. Python then warned ``subprocess N is still running`` in whatever test collected it."""
+
+    def gone(pid: int) -> float:
+        raise ProcessLookupError(3, 'No such process')
+
+    monkeypatch.setattr(subprocess_runtime, 'started', gone)
+    spawned: list[subprocess.Popen[bytes]] = []
+    real = subprocess_runtime._spawn
+
+    def spawn(spec: WorkerSpec, args: list[str], mode: str) -> subprocess.Popen[bytes]:
+        spawned.append(proc := real(spec, args, mode))
+        return proc
+
+    monkeypatch.setattr(subprocess_runtime, '_spawn', spawn)
+    rt = SubprocessRuntime()
+    with pytest.raises(ProcessLookupError):
+        rt.start(spec(tmp_path, script(tmp_path, 'sleep 30')))
+    assert rt._procs == {}, 'not kept: nothing would ever wait for it'
+    assert spawned[0].returncode is not None, 'killed and waited for'

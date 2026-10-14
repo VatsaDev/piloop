@@ -169,10 +169,15 @@ class Launcher:
                 span.error(e)
                 error = self._start_error(e, log_dir)
                 return Outcome(WorkerStatus.EXITED, time.monotonic() - started, error=error, startup_failed=True)
-            with self.db.session() as s:
-                w = s.get_one(Worker, worker_id)
-                w.handle, w.state = handle.data, WorkerState.RUNNING
-                s.commit()
+            try:
+                with self.db.session() as s:
+                    w = s.get_one(Worker, worker_id)
+                    w.handle, w.state = handle.data, WorkerState.RUNNING
+                    s.commit()
+            except BaseException:
+                # Not recorded, so nothing would ever watch the agent or wait for its process: end it here.
+                prepared.runtime.kill(handle)
+                raise
             self.watching.add(worker_id)
         unreported = prepared.captures_session and prepared.session_id is None
         return self._watch(worker_id, span, prepared.runtime, handle, prepared.timeout, log_dir, unreported=unreported)

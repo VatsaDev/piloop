@@ -765,3 +765,24 @@ def test_a_subprocess_agent_gets_the_arguments_that_resume_its_session(
     launch(db, runtime, tmp_path, request(db, project), tracer)
     [spec] = [c.args[0] for c in start.call_args_list]
     assert spec.resume_args == ['resume', '{session_id}', '--model', 'watchdog-model', '{prompt}']
+
+
+def test_an_agent_whose_start_cannot_be_recorded_is_killed_and_waited_for(
+    project: Project, db: Database, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """When the write of the handle failed after the start, the agent ran on with nothing that watched it, and nothing
+    waited for its process. Python then warned ``subprocess N is still running`` when it collected the ``Popen``."""
+    use_harness(db, project, '#!/bin/sh\nsleep 30\n')
+    worker_id = request(db, project)
+    real, calls = db.session, [0]
+
+    def session() -> object:
+        calls[0] += 1
+        if calls[0] == 3:  # _prepare, the runtime, then the write of the handle
+            raise RuntimeError('database closed')
+        return real()
+
+    mocker.patch.object(db, 'session', side_effect=session)
+    launch(db, runtime, tmp_path, worker_id, Tracer(None))
+    [proc] = runtime._procs.values()
+    assert proc.returncode is not None, 'killed and waited for, not left running unwatched'

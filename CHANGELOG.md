@@ -115,6 +115,8 @@ A deprecated configuration key shows a warning for at least one minor release be
 
 ### Fixed
 
+- An agent whose start failed after its process was spawned is now stopped and waited for. Before, the process
+  ran on with nothing that watched it, and was never reaped.
 - A Herdr server that does not answer for a moment (`server_unavailable`, or a `herdr` call that times out) no longer
   ends the agents the daemon watches: reads are retried for `herdr_unavailable_seconds` (300) before they fail.
 - A Herdr agent is no longer closed during its first turn. Its brief has a startup grace
