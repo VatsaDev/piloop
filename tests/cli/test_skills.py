@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-from piloop.cli import main as cli, skills
+from piloop.cli import common, install, main as cli, skills
 from piloop.settings import Settings
 
 
@@ -17,8 +17,8 @@ def harness_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     settings = Settings(
         home=tmp_path / 'piloop', claude_config_dir=tmp_path / 'claude', agent_skills_dir=tmp_path / 'agents/skills'
     )
-    monkeypatch.setattr(cli, 'settings', settings)
-    monkeypatch.setattr(cli, 'console', Console(record=True, width=300, force_terminal=False))
+    monkeypatch.setattr(common, 'settings', settings)
+    monkeypatch.setattr(common, 'console', Console(record=True, width=300, force_terminal=False))
     monkeypatch.setenv('PATH', str(tmp_path / 'bin'))
     (tmp_path / 'bin').mkdir()
     return settings
@@ -32,7 +32,7 @@ def on_path(*names: str) -> None:
 
 
 def printed() -> str:
-    return cli.console.export_text(clear=True)
+    return common.console.export_text(clear=True)
 
 
 ROOT = Path(__file__).parent.parent.parent
@@ -81,7 +81,7 @@ def test_a_wheel_ships_the_skills_inside_the_package(tmp_path: Path) -> None:
 def test_install_skills_copies_into_each_harness_dir_once_and_replaces_only_piloops_own(
     harness_home: Settings, tmp_path: Path
 ) -> None:
-    cli.install_skills()
+    install.install_skills()
     assert printed().strip() == 'skills: none of claude, codex, pi, gemini, cursor-agent is on PATH, nothing installed'
     on_path('claude', 'codex', 'pi', 'gemini', 'cursor-agent')
     agents = harness_home.agent_skills_dir
@@ -94,7 +94,7 @@ def test_install_skills_copies_into_each_harness_dir_once_and_replaces_only_pilo
     (claude / 'piloop-operate' / 'SKILL.md').write_text('an older operate')
     assert skills.drift(claude) == ['piloop-operate out of date', 'piloop-review missing', 'piloop-setup missing']
     assert skills.drift(agents)[-1] == 'piloop-old no longer shipped'
-    cli.install_skills()
+    install.install_skills()
     assert printed().splitlines() == [
         f'skills: piloop-operate, piloop-review, piloop-setup → {claude} (claude)',
         f'skills: piloop-operate, piloop-review, piloop-setup → {agents} (codex, pi, gemini, cursor-agent)',

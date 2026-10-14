@@ -39,7 +39,7 @@ from piloop.agents.roles import SCOUT, WatchdogMode, compose_brief, role_of
 from piloop.agents.scout import scouting
 from piloop.campaign import spend
 from piloop.campaign.ideas import defined_by, runnable, supersede, waiting
-from piloop.campaign.project import WORKSPACE, worktree_links
+from piloop.campaign.project import WORKSPACE, project_dir, workspace_dir, worktree_links
 from piloop.campaign.spend import SpendError
 from piloop.campaign.stop import (
     CAMPAIGN_STOPPED_ERROR,
@@ -952,7 +952,7 @@ class Scheduler:
                 sections += ['## Incidents to investigate', *incidents, '']
             sections.append(overview(s, project, cfg, now, partial(self._jobs, s)))
             if not incidents:
-                sections.append(pack(s, project, cfg, workspace=self._home / 'projects' / str(project.id) / WORKSPACE))
+                sections.append(pack(s, project, cfg, workspace=workspace_dir(self._home, project.id)))
             brief = compose_brief(
                 role, project, worker_id, reason=worker.reason or 'requested', context='\n'.join(sections), mode=mode
             )
@@ -965,7 +965,7 @@ class Scheduler:
             return
         repo = git.open_repo(project_path)
         wt_path = log_dir / 'worktree'
-        links = worktree_links(cfg, project_path, self._home / 'projects' / str(project_id))
+        links = worktree_links(cfg, project_path, project_dir(self._home, project_id))
 
         def start() -> Outcome:
             git.add_worktree(repo, wt_path, base_sha, links)

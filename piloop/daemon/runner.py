@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from piloop import git
 from piloop.agents.launcher import TRANSCRIPT, Launcher
 from piloop.agents.roles import compose_brief, role
-from piloop.campaign.project import WORKSPACE, worktree_links
+from piloop.campaign.project import WORKSPACE, project_dir, worktree_links
 from piloop.campaign.stop import attempts
 from piloop.config import ProjectConfig, Track, config_of
 from piloop.db.events import emit
@@ -83,7 +83,7 @@ class RunExecutor:
         self._db = db
         self._tracer = tracer
         self._runs_dir = home / 'runs'
-        self._projects_dir = home / 'projects'
+        self._home = home
         self._units_dir = home / 'units'
         self.launcher = Launcher(db, tracer, home, runtime_factory)
         self._evaluating: dict[int, subprocess.Popen[bytes]] = {}
@@ -176,7 +176,7 @@ class RunExecutor:
         log_dir = self._runs_dir / str(run_id)
         repo = git.open_repo(project_path)
         wt_path = log_dir / 'worktree'
-        links = worktree_links(cfg, project_path, self._projects_dir / str(project_id))
+        links = worktree_links(cfg, project_path, project_dir(self._home, project_id))
         span.set(idea=idea_id, worker=worker_id, harness=harness, model=model)
         with ExitStack() as cleanup:
             cleanup.callback(git.remove_worktree, repo, wt_path)
@@ -338,7 +338,7 @@ class RunExecutor:
             evaluator_id = current_evaluator(s, project, cfg).id
             s.commit()
             project_id, project_path, sha = project.id, Path(project.path), candidate.commit_sha
-        eval_dir = self._projects_dir / str(project_id) / 'measure' / f'{candidate_id}-e{evaluator_id}'
+        eval_dir = project_dir(self._home, project_id) / 'measure' / f'{candidate_id}-e{evaluator_id}'
         try:
             repo = git.open_repo(project_path)
             self._measure(None, project_id, cfg, repo, sha, candidate_id, evaluator_id, eval_dir)
@@ -466,7 +466,7 @@ class RunExecutor:
         eval_dir: Path,
     ) -> bool:
         """Run the evaluate command on ``sha`` in a clean worktree and record the measurement. False if cancelled."""
-        links = worktree_links(cfg, Path(repo.working_dir), self._projects_dir / str(project_id))
+        links = worktree_links(cfg, Path(repo.working_dir), project_dir(self._home, project_id))
         eval_dir.mkdir(parents=True, exist_ok=True)
         eval_wt = eval_dir / 'worktree'
         self._units_dir.mkdir(parents=True, exist_ok=True)

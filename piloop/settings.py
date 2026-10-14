@@ -103,11 +103,6 @@ class Settings(BaseSettings):
         return f'sqlite:///{self.home / "piloop.db"}'
 
     @property
-    def projects_dir(self) -> Path:
-        """The parent of the directory of each project (its shared workspace)."""
-        return self.home / 'projects'
-
-    @property
     def units_dir(self) -> Path:
         """The per-unit results of the daemon's measurements (``piloop.scoring.ledger.units_file``).
 

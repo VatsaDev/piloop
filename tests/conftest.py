@@ -301,7 +301,7 @@ def factory(rt: Runtime) -> RuntimeFactory:
 
 @pytest.fixture(autouse=True)
 def isolated_projects_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``register`` measures the baseline under the global ``settings.projects_dir``: keep it out of ``~/.piloop``."""
+    """``register`` measures the baseline under the global ``settings.home``: keep it out of ``~/.piloop``."""
     monkeypatch.setattr(project_module, 'settings', Settings(home=tmp_path / 'home'))
 
 

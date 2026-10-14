@@ -199,7 +199,7 @@ def test_the_baseline_is_scored_without_locking_the_database(db: Database, proje
         assert registered(s, project_path) is None, 'the CLI reads first, in the same session'
         project, measurement = register(s, project_path)
         assert measurement.metrics == {'score': 1.0, 'size': 5.0}, 'another client could write meanwhile'
-    projects_dir = project_module.settings.projects_dir
+    projects_dir = project_module.projects_dir(project_module.settings.home)
     assert [p.name for p in projects_dir.iterdir()] == [str(project.id)], 'the staging directory became the project'
     assert (
         projects_dir / str(project.id) / 'baseline' / 'eval.stdout'

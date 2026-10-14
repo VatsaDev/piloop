@@ -18,7 +18,8 @@ from pathlib import Path
 import pytest
 from cyclopts import CycloptsError
 
-from piloop.cli.main import app, sql_cmd
+from piloop.cli.database import sql_cmd
+from piloop.cli.main import app
 from piloop.config import ProjectConfig
 from piloop.db import sql
 from piloop.db.session import Database, migrate
