@@ -9,6 +9,7 @@ from piloop.mcp import MCP, RENDERERS
 from piloop.usage import UsageSpec
 
 SESSION_ID = '{session_id}'
+PROMPT = '{prompt}'
 CLAUDE_SETTINGS = (
     '{"autoMemoryEnabled":false,"env":{"BASH_DEFAULT_TIMEOUT_MS":"300000","BASH_MAX_TIMEOUT_MS":"600000"}}'
 )
@@ -90,6 +91,11 @@ class Harness(BaseModel):
     headless: list[str]
     """The arguments for a run without a terminal, for a runtime whose ``invocation`` is ``headless`` (subprocess).
     Must include ``{prompt}``."""
+    resume: list[str] = []
+    """The arguments that continue the session of a run without a terminal with a new prompt, for a ``headless``
+    runtime (subprocess). When the agent's turn ends with messages queued for it (comments, ``piloop prompt``), the
+    runtime runs the harness again with these, ``{prompt}`` being the messages and ``{session_id}`` the session's id.
+    Must include both. When empty, the agent takes no message while it runs."""
     startup_dialogs: list[tuple[str, list[str]]] = []
     """The dialogs the agent shows when it first starts in a new directory, in the order they appear. Each entry is
     the text to look for on the screen and the keys that accept the dialog."""
@@ -122,7 +128,9 @@ class Harness(BaseModel):
     def _check(self) -> Self:
         if self.mcp is not None and self.mcp not in RENDERERS:
             raise ValueError(f'unknown mcp renderer {self.mcp!r}; known: {sorted(RENDERERS)}')
-        if self.mcp is None and MCP in [*self.interactive, *self.headless]:
+        if self.resume and not all(any(p in a for a in self.resume) for p in (SESSION_ID, PROMPT)):
+            raise ValueError(f'resume must include {SESSION_ID} and {PROMPT}')
+        if self.mcp is None and MCP in [*self.interactive, *self.headless, *self.resume]:
             raise ValueError(f'{MCP} in the argv needs mcp set to a renderer: {sorted(RENDERERS)}')
         if self.captures_session and self.session_id_pattern is None and not takes_session_id(self.headless):
             raise ValueError(
@@ -139,6 +147,24 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
         interactive=['--session-id', SESSION_ID, '--model', '{model}', '--thinking', 'high', MCP],
         # no --session-dir: entire finds the session only in pi's own store (~/.pi/agent/sessions/<cwd>)
         headless=[
+            '-p',
+            '--mode',
+            'json',
+            '--no-extensions',
+            '--no-skills',
+            '--no-context-files',
+            '--approve',
+            '--session-id',
+            SESSION_ID,
+            '--model',
+            '{model}',
+            '--thinking',
+            'high',
+            MCP,
+            '{prompt}',
+        ],
+        # --session-id continues the session when it exists (verified with pi 0.99.2)
+        resume=[
             '-p',
             '--mode',
             'json',
@@ -191,6 +217,22 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
             CLAUDE_SETTINGS,
             '{prompt}',
         ],
+        resume=[
+            '-p',
+            '--output-format',
+            'json',
+            '--resume',
+            SESSION_ID,
+            '--model',
+            '{model}',
+            '--effort',
+            'high',
+            '--dangerously-skip-permissions',
+            MCP,
+            '--settings',
+            CLAUDE_SETTINGS,
+            '{prompt}',
+        ],
         startup_dialogs=[('trust this folder', ['down', 'enter'])],
         entire_agent='claude-code',
         usage=UsageSpec(
@@ -232,6 +274,24 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
             *CODEX_TRUST,
             *CODEX_TOOL_ENV,
             MCP,
+            '{prompt}',
+        ],
+        resume=[
+            'exec',
+            'resume',
+            '--json',
+            '--dangerously-bypass-approvals-and-sandbox',
+            '--skip-git-repo-check',
+            '--model',
+            '{model}',
+            '-c',
+            'model_reasoning_effort="high"',
+            '-c',
+            NO_CODEX_MEMORY,
+            *CODEX_TRUST,
+            *CODEX_TOOL_ENV,
+            MCP,
+            SESSION_ID,
             '{prompt}',
         ],
         # the hooks review has two forms: a table with a key legend when the directory is already trusted, and a

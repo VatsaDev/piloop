@@ -108,9 +108,19 @@ A worker can end a commit message with a trailer:
 ## Steer a running worker
 
 - A `note`, `finding` or `decision` comment on a running run, or on its idea, reaches the worker. Within a few
-  seconds, the daemon types the first line of the comment (up to 200 characters) into the worker's pane, with a query
-  for the full text. Put the instruction in the first line.
+  seconds, the daemon queues the first line of the comment (up to 200 characters) for the worker, with a query for
+  the full text. Put the instruction in the first line.
 - `piloop prompt <worker-id> "<text>"` sends text to a worker directly.
 
-Both need `runtime = "herdr"`. With the default `subprocess` runtime, a worker is a background process and cannot
-receive text. The next run of the idea reads the comment in its brief.
+A message never cuts the worker's current turn short. It waits for the turn to end. An idle worker takes it at once.
+
+- With `runtime = "herdr"`, piloop types the message into the worker's pane. Claude Code and pi queue text that
+  arrives while they work. Codex would end its turn to take the text, so piloop queues it with Codex's queue key
+  (Tab).
+- With the default `subprocess` runtime, a worker is a background process with no input. piloop keeps the message in
+  a queue. When the turn ends, piloop runs the harness again with `[harness.<name>] resume`. This continues the same
+  session, with the queued messages as the prompt.
+- A harness without `resume` takes no message.
+- After `piloop restart`, a subprocess worker that the new daemon re-attached to takes no message.
+
+A message that cannot reach the worker stays in the comments: the next run of the idea reads it in its brief.

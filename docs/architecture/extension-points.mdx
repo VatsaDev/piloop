@@ -152,7 +152,7 @@ A runtime is where an agent process runs. The daemon depends only on the `Runtim
 | `status(handle)` | Returns the current state without waiting. |
 | `session_id(handle)` | Returns the harness's session id, when the runtime can learn it. |
 | `jobs(handle)` | Lists the jobs that the agent started and that still run. |
-| `prompt(handle, text)` | Sends a message to the running agent, or raises `NotSteerable`. |
+| `prompt(handle, text)` | Queues a message for the agent's next turn, never into the turn in progress, or raises `NotSteerable`. |
 | `read(handle, lines)` | Returns the recent output as plain text. |
 | `kill(handle)` | Stops the agent and what it left running. |
 

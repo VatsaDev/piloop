@@ -15,7 +15,7 @@ from inline_snapshot import snapshot
 
 from piloop import settings as settings_module
 from piloop.harnesses import DEFAULT_HARNESSES
-from piloop.runtime import Handle, StartFailed, WorkerSpec, WorkerStatus, herdr
+from piloop.runtime import Handle, NotSteerable, StartFailed, WorkerSpec, WorkerStatus, herdr
 from piloop.runtime.factory import make_runtime
 from piloop.runtime.herdr import HerdrError, HerdrRuntime
 from piloop.runtime.subprocess import SubprocessRuntime
@@ -1086,3 +1086,127 @@ def test_a_brief_picked_up_late_on_a_loaded_host_is_not_lost(
     with pytest.raises(StartFailed, match='prompt_lost'):
         HerdrRuntime('demo', tmp_path, sleep=sleep).start(replace(spec(tmp_path), executable='codex'))
     assert clock[0] == 5 and [c[:2] for c in calls(herdr_log)].count(['agent', 'prompt']) == 1
+
+
+CODEX_INTERRUPTED_TEXT = """\
+• The fixed rule fails the twin gate. Pro D gains 66 correct words at budget 121, with a
+  paired well interval of +25 to +125, but the twin loses 15 at its own budget, exceeding the
+  allowed 10. I’m recording the negative result and committing the experiment tools with
+  evaluation skipped; the decoder will remain unchanged.
+
+
+› [piloop] note on idea#1513 by research#3003: Kill bar for any demotion rule: at B121 on
+  lawful TRAIN half0 each wrong removed above the threshold buys about 2.6 correct values, so
+  a rule that demotes 3+ correct per wrong loses. — full text: SELECT body FROM comments
+  WHERE id=10922
+
+
+■ {"type":"error","status":400,"error":{"message":"unsupported websocket request type:
+response.interrupt","type":"invalid_request_error"}}
+
+
+› Ask Codex to do anything
+
+  GPT-6.1-Sol high · ~/.piloop-new/runs/1483/worktree                ⚠ 1 warning · f2 to view
+"""
+"""The end of a Codex worker's screen after a steering prompt was submitted mid-turn (run#1483): Codex sent
+``response.interrupt``, its backend refused it, and the turn ended with the work half done."""
+
+
+def test_a_codex_turn_cut_by_a_refused_interrupt_is_a_failed_turn_not_the_end(
+    tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The 400 that Codex shows when its backend refuses ``response.interrupt`` ends a turn, not the run: it is resumed."""
+    sleeps: list[float] = []
+    monkeypatch.setattr(HerdrRuntime, '_state_changed', lambda self, agent, before, timeout: False)
+    cut: Response = {'text': CODEX_INTERRUPTED_TEXT}
+    resumed: Response = {'text': f'{CODEX_INTERRUPTED_TEXT}› {herdr.RESUME_PROMPT}\n• Committed the tools.\n›\n'}
+    rt = HerdrRuntime('demo', tmp_path, sleep=sleeps.append)
+    scripted(monkeypatch, pane_read=[cut, cut])
+    assert rt._idle_screen(claude_handle('codex'), 10)[0] is herdr.Screen.FAILED_TURN
+    herdr_log.write_text('')
+    scripted(monkeypatch, pane_read=[cut, cut, resumed])
+    outcome = rt.wait(claude_handle('codex'), timeout=1000)
+    assert (outcome.status, outcome.error) == (WorkerStatus.IDLE, None)
+    assert [c for c in calls(herdr_log) if c[:2] == ['agent', 'prompt']] == [
+        ['agent', 'prompt', 'w1', herdr.RESUME_PROMPT]
+    ]
+
+
+STEER = '[piloop] note on idea#1 by research#2: stop after the next commit\n[piloop] decision on run#3 by human: no GPU'
+STEER_LINE = ' '.join(STEER.split())
+CODEX_TYPED: Response = {
+    'text': '• Working (17s • esc to interrupt)\n› [piloop] note on idea#1 by research#2: stop after\n  the next'
+    ' commit [piloop] decision on run#3 by human: no GPU\n  tab to queue message          100% context left\n'
+}
+CODEX_QUEUED: Response = {
+    'text': '• Working (18s • esc to interrupt)\n• Queued follow-up inputs\n  ↳ [piloop] note on idea#1 by research#2\n'
+    '    shift+← edit last queued message\n› Ask Codex to do anything\n'
+}
+
+
+def test_a_message_for_codex_is_queued_for_the_end_of_its_turn_never_submitted_into_it(
+    tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex ends its turn to take text submitted with Enter, so a message is typed on one line and queued with Tab.
+
+    Tab waits until the text is drawn: Codex reads the typed burst as a paste and swallows a key inside it. A Tab that
+    was swallowed anyway is pressed again. Seen live with codex-cli 0.162.1: the first Tab right after the text was lost.
+    """
+    sleeps: list[float] = []
+    rt = HerdrRuntime('demo', tmp_path, sleep=sleeps.append)
+    scripted(monkeypatch, agent_get=[seq(9, 'working')], pane_read=[{'text': '• Working'}, CODEX_TYPED, CODEX_QUEUED])
+    rt.prompt(claude_handle('codex'), STEER)
+    assert [c for c in calls(herdr_log) if c[:2] != ['pane', 'read']] == [
+        ['agent', 'get', 'w1'],
+        ['pane', 'send-text', 'w7:p2', STEER_LINE],
+        ['agent', 'send-keys', 'w1', 'tab'],
+    ], 'one line: a newline would submit it into the turn'
+    assert sleeps == [herdr.PICKUP_POLL_SECONDS, herdr.QUEUE_KEY_DELAY_SECONDS, herdr.QUEUE_KEY_DELAY_SECONDS]
+
+    herdr_log.write_text('')
+    scripted(monkeypatch, agent_get=[seq(9, 'working')], pane_read=[CODEX_TYPED, CODEX_TYPED, CODEX_QUEUED])
+    rt.prompt(claude_handle('codex'), STEER)
+    assert [c for c in calls(herdr_log) if c[:2] == ['agent', 'send-keys']] == [['agent', 'send-keys', 'w1', 'tab']] * 2
+
+
+def test_an_idle_codex_takes_a_message_when_its_turn_starts_and_a_swallowed_tab_is_pressed_again(
+    tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tab sends at once to an idle Codex. Its taking the text is a new turn (a state change), not a screen hint."""
+    monkeypatch.setattr(settings_module, 'settings', Settings(herdr_prompt_pickup_seconds=0))
+    scripted(monkeypatch, agent_get=[seq(9, 'idle'), seq(9, 'idle'), seq(10, 'working')], pane_read=[CODEX_TYPED])
+    HerdrRuntime('demo', tmp_path, sleep=lambda _: None).prompt(claude_handle('codex'), STEER)
+    assert [c[:2] for c in calls(herdr_log)].count(['agent', 'send-keys']) == 2, 'the first Tab was swallowed'
+
+
+def test_a_message_codex_will_not_queue_or_a_blocked_codex_is_an_error_and_types_nothing_into_a_dialog(
+    tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rt = HerdrRuntime('demo', tmp_path, sleep=lambda _: None)
+    monkeypatch.setattr(settings_module, 'settings', Settings(herdr_prompt_pickup_seconds=0))
+    scripted(monkeypatch, agent_get=[seq(9, 'working')], pane_read=[CODEX_TYPED])
+    monkeypatch.setattr(herdr, 'QUEUE_ECHO_SECONDS', 0)
+    with pytest.raises(HerdrError, match='prompt_not_queued'):
+        rt.prompt(claude_handle('codex'), STEER)
+    assert [c[:2] for c in calls(herdr_log)].count(['agent', 'send-keys']) == herdr.QUEUE_KEY_PRESSES
+
+    herdr_log.write_text('')
+    scripted(monkeypatch, agent_get=[seq(9, 'idle')], pane_read=[CODEX_TYPED])
+    with pytest.raises(HerdrError, match='prompt_not_queued'):
+        rt.prompt(claude_handle('codex'), STEER)
+    assert [c[:2] for c in calls(herdr_log)].count(['agent', 'send-keys']) == herdr.QUEUE_KEY_PRESSES, (
+        'an idle Codex that starts no turn did not take the message, whatever its screen says'
+    )
+
+    herdr_log.write_text('')
+    scripted(monkeypatch, agent_get=[seq(9, 'blocked')])
+    with pytest.raises(NotSteerable, match='w1 is blocked on an approval or question'):
+        rt.prompt(claude_handle('codex'), STEER)
+    assert calls(herdr_log) == [['agent', 'get', 'w1']], 'a dialog would take the text as its answer'
+
+
+def test_a_message_for_claude_is_still_a_plain_prompt(tmp_path: Path, herdr_log: Path) -> None:
+    """Claude Code queues a prompt typed mid-turn by itself."""
+    HerdrRuntime('demo', tmp_path).prompt(claude_handle('claude'), STEER)
+    assert calls(herdr_log) == [['agent', 'prompt', 'w1', STEER]]

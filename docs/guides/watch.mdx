@@ -60,8 +60,8 @@ other.
 - **Reply** asks for the text and a priority (default 2). It writes a `decision` comment that replies to the first
   item of the thread. The orchestrator's next wait returns with it, and the orchestrator acknowledges it after it
   applies it.
-- **Steer** types text into the agent's pane, as `piloop prompt` does. It needs the Herdr runtime. Herdr refuses while
-  the agent waits on a dialog. Press `enter` to go to the agent's tab and answer the dialog.
+- **Steer** queues text for the agent's next turn, as `piloop prompt` does. Herdr refuses while the agent waits on a
+  dialog. Press `enter` to go to the agent's tab and answer the dialog.
 - **Approve, park and reject** ask why. Each one writes the status change and a `note` on the idea with the reason.
   A seed cannot be approved: research develops it into an idea first (`piloop idea develop`).
 

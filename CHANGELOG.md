@@ -49,6 +49,14 @@ A deprecated configuration key shows a warning for at least one minor release be
   succeed, the idea goes back to the queue with the recovered candidate as its base, up to `[roles.worker]
   recovery_requeues` times (2), so a new worker finishes the work, and that run is judged as any other.
 - The worker brief no longer says that commits are scored while the worker works. They are scored after the run ends.
+- A message to a Codex agent (a pushed comment, `piloop prompt`, the wrap-up) no longer ends its turn. Submitted with
+  Enter mid-turn, it made Codex send `response.interrupt`, which its websocket backend refuses with `400 unsupported
+  websocket request type`, and the turn was lost. The message is now typed on one line and queued with Codex's queue
+  key (Tab): Codex runs it when the turn ends, or at once when idle. The 400 banner also counts as a failed turn, which
+  is resumed, instead of the end of the run.
+- A message to an agent under the `subprocess` runtime is no longer refused. It waits for the agent's turn to end,
+  then piloop continues the agent's session with it (`[harness.<name>] resume`, set for pi, Claude Code and Codex):
+  the same queue-for-the-next-turn as under Herdr.
 
 ## [0.1.0] - 2026-10-13
 

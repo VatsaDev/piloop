@@ -48,6 +48,10 @@ class WorkerSpec:
     """First-launch dialogs to answer in order before the agent is ready: the text to find and the keys to send."""
     session_id_pattern: str | None = None
     """The regex that finds the harness's session id in its stdout (``Harness.session_id_pattern``)."""
+    resume_args: list[str] = field(default_factory=list)
+    """Arguments after the executable that continue the agent's session with a new prompt (``Harness.resume``), for
+    the subprocess runtime. ``{prompt}`` is still in them, and ``{session_id}`` when the harness reports its id. Empty
+    when the harness cannot continue a session: the agent then takes no message while it runs."""
 
 
 @dataclass(frozen=True)
@@ -126,7 +130,11 @@ class Runtime(Protocol):
         ...
 
     def prompt(self, handle: Handle, text: str) -> None:
-        """Deliver a steering message. Raise ``NotSteerable`` when the runtime cannot (a one-shot process, a dialog)."""
+        """Queue a message for the agent's next turn. It never cuts the turn in progress short.
+
+        An idle agent takes it at once. Raise ``NotSteerable`` when the runtime cannot deliver it (a harness that cannot
+        continue its session, an ended agent, a dialog).
+        """
         ...
 
     def read(self, handle: Handle, lines: int = 80) -> str:

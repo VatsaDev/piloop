@@ -751,3 +751,16 @@ def test_servers_that_cannot_be_rendered_fail_the_launch_on_the_row(
     w = worker(db, worker_id)
     assert w.state is WorkerState.KILLED and w.error is not None and w.error.startswith('McpError: ')
     assert 'printed no server list' in w.error, 'the stand-in is no codex: `mcp list --json` printed nothing'
+
+
+def test_a_subprocess_agent_gets_the_arguments_that_resume_its_session(
+    project: Project, db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer, mocker: MockerFixture
+) -> None:
+    """``{prompt}`` stays for the queued messages; ``{session_id}`` stays when the harness reports its own id."""
+    use_harness(
+        db, project, HARNESS_PROMPT_TO_FILE, resume=['resume', '{session_id}', '--model', '{model}', '{prompt}']
+    )
+    start = mocker.spy(runtime, 'start')
+    launch(db, runtime, tmp_path, request(db, project), tracer)
+    [spec] = [c.args[0] for c in start.call_args_list]
+    assert spec.resume_args == ['resume', '{session_id}', '--model', 'watchdog-model', '{prompt}']

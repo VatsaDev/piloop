@@ -127,7 +127,12 @@ TODO: remove an entry once Herdr detects that state for its kind.
 """
 FAILED_TURN_SCREENS: dict[str, tuple[str, ...]] = {
     'claude': ('API Error', 'included_quota_unknown'),
-    'codex': ('Selected model is at capacity', 'exceeded retry limit', 'stream disconnected before completion'),
+    'codex': (
+        'Selected model is at capacity',
+        'exceeded retry limit',
+        'stream disconnected before completion',
+        'unsupported websocket request type',
+    ),
 }
 """For each Herdr agent kind, text at the bottom of the screen that shows the turn ended on an API error, not because
 the agent was done.
@@ -136,6 +141,39 @@ The agent is resumed with ``RESUME_PROMPT`` after each wait in ``RESUME_BACKOFF_
 fails. A ``503 included_quota_unknown`` is transient: while Claude Code counts down a retry, it is a ``BUSY_SCREENS``
 text, and when the retries stop, it is a failed turn.
 """
+
+
+@dataclass(frozen=True)
+class QueueKey:
+    """The key that queues a typed message for the end of the agent's turn, and how the screen shows it was not taken.
+
+    The message is typed into the composer (``pane send-text``), then the key is pressed. A harness that reads a burst
+    of input as a paste swallows a key that arrives inside the burst, so the key waits until the text is drawn, and is
+    pressed again while ``pending`` is still at the bottom of the screen.
+    """
+
+    key: str
+    pending: str
+    """Text at the bottom of the screen while the composer still holds the typed message."""
+
+
+QUEUE_KEYS = {'codex': QueueKey('tab', 'tab to queue message')}
+"""For each Herdr agent kind that ends its turn to take a message submitted mid-turn, how to queue it instead.
+
+Codex ends its turn to take a message submitted with Enter mid-turn: it sends ``response.interrupt``, which its
+websocket backend refuses with ``400 unsupported websocket request type``, and the turn is lost. Its ``composer.queue``
+key, Tab, queues the message as a follow-up that Codex submits when the turn ends, and sends it at once when Codex is
+idle (verified with codex-cli 0.162.1 under Herdr 0.8.2)."""
+QUEUE_ECHO_SECONDS = 5
+"""How long to wait for the typed message to be drawn before the queue key is pressed anyway."""
+QUEUE_KEY_DELAY_SECONDS = 0.5
+"""The pause before each press of the queue key, and before the screen is read to see whether it was taken."""
+QUEUE_KEY_PRESSES = 3
+QUEUE_ECHO_CHARS = 40
+"""How much of the start of the message must be on screen (whitespace ignored: the composer wraps it) to count as
+drawn."""
+
+
 RESUME_PROMPT = '[piloop] Your last turn ended on an API error. Carry on with your idea from where you stopped.'
 RESUME_MARK = RESUME_PROMPT[:46]
 """The part of ``RESUME_PROMPT`` that fits on one screen line. An error banner above it was already resumed."""
@@ -543,15 +581,53 @@ class HerdrRuntime:
             self._sleep(PICKUP_POLL_SECONDS)
 
     def prompt(self, handle: Handle, text: str) -> None:
-        """Submit a steering message. Herdr refuses it while the agent is blocked on a dialog."""
+        """Submit a steering message. Herdr refuses it while the agent is blocked on a dialog.
+
+        An agent of a kind in ``QUEUE_KEYS`` gets it queued for the end of its turn (``_queue``), not submitted into
+        the turn: it would end the turn to take it.
+        """
+        queue = QUEUE_KEYS.get(str(handle.data.get('kind')))
         try:
-            _call('agent', 'prompt', _agent(handle), text)
+            if queue is None:
+                _call('agent', 'prompt', _agent(handle), text)
+            else:
+                self._queue(handle, text, queue)
         except HerdrError as e:
             if e.code == 'agent_blocked':
                 raise NotSteerable(
                     f'{_agent(handle)} is blocked on an approval or question; read it and answer with herdr agent send-keys'
                 ) from e
             raise
+
+    def _queue(self, handle: Handle, text: str, queue: QueueKey) -> None:
+        """Type ``text`` into the agent's composer as one line and press ``queue.key`` until the agent takes it.
+
+        A newline would submit the text into the running turn, so lines are joined with spaces. A dialog would take the
+        typed text as its answer, so a blocked agent gets nothing (``agent_blocked``, as ``agent prompt`` refuses it).
+        A working agent took the text when ``queue.pending`` leaves the screen; an idle one starts a turn with it, which
+        Herdr's ``state_change_seq`` shows.
+        """
+        agent, pane = _agent(handle), str(handle.data['pane_id'])
+        info = _call('agent', 'get', agent)['agent']
+        if info['agent_status'] == 'blocked':
+            raise HerdrError('agent_blocked', f'agent {agent} is blocked')
+        working, seq = info['agent_status'] == 'working', int(info['state_change_seq'])
+        line = ' '.join(text.split())
+        _call('pane', 'send-text', pane, line)
+        echo = ''.join(line[:QUEUE_ECHO_CHARS].split())
+        deadline = time.monotonic() + QUEUE_ECHO_SECONDS
+        while echo not in ''.join(self._visible(handle).split()) and time.monotonic() < deadline:
+            self._sleep(PICKUP_POLL_SECONDS)
+        for _ in range(QUEUE_KEY_PRESSES):
+            self._sleep(QUEUE_KEY_DELAY_SECONDS)
+            _call('agent', 'send-keys', agent, queue.key)
+            if working:
+                self._sleep(QUEUE_KEY_DELAY_SECONDS)
+                if queue.pending not in _tail(self._visible(handle)):
+                    return
+            elif self._state_changed(agent, seq, settings_module.settings.herdr_prompt_pickup_seconds):
+                return
+        raise HerdrError('prompt_not_queued', f'{agent} still holds the message in its composer after {queue.key}')
 
     def read(self, handle: Handle, lines: int = 80) -> str:
         """Return the recent terminal output, unwrapped and without ANSI codes."""
