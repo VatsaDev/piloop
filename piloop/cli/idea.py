@@ -58,8 +58,8 @@ def idea_add(
 ) -> None:
     """Add a defined idea, which the daemon schedules in priority order once it is ready.
 
-    Research, the orchestrator and humans add ideas. A watchdog files a seed instead (`piloop idea seed`). A worker
-    files neither. The idea is signed as PILOOP_ACTOR.
+    The `files` key of a role says whether its agents may add ideas, only file seeds (`piloop idea seed`), or
+    neither. The orchestrator and humans may add ideas. The idea is signed as PILOOP_ACTOR.
     """
     with common.session() as s:
         project = common.project(s, ref)
@@ -114,7 +114,7 @@ def idea_seed(
 ) -> None:
     """File a seed: a hunch with pointers, for research to develop into a defined idea or to reject.
 
-    Every role except the worker can file a seed. Research reads the earlier work and checks for duplicates and
+    An agent may file a seed when the `files` key of its role allows it. Research reads the earlier work and checks for duplicates and
     negative results. Then it defines the seed (`piloop idea develop`) or rejects it with the reason. The seed is
     signed as PILOOP_ACTOR.
     """

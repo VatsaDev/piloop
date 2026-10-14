@@ -281,7 +281,8 @@ Only the daemon starts workers, because a worker needs a run.
 piloop attach WORKER_ID
 ```
 
-Focuses the agent's tab in the `piloop` Herdr session and attaches this terminal to it. This needs the Herdr runtime.
+Shows a running agent in this terminal. The [runtime](/concepts/runtimes) of the agent defines how. When the runtime
+cannot, the command says so and tells you where to look instead.
 
 ### piloop prompt
 
@@ -289,7 +290,9 @@ Focuses the agent's tab in the `piloop` Herdr session and attaches this terminal
 piloop prompt WORKER_ID TEXT
 ```
 
-Types `TEXT` into a running agent of any role. This needs the Herdr runtime. The worker ids are in `piloop status`.
+Queues `TEXT` for the next turn of a running agent of any role. The [runtime](/concepts/runtimes) of the agent
+defines how the message reaches it. When the runtime cannot deliver it, the command says why. The worker ids are in
+`piloop status`.
 
 ## The database
 

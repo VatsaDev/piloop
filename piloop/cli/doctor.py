@@ -2,17 +2,16 @@
 
 The checks find what can break after an upgrade: a daemon that still runs the old code, a database behind the code, a
 secrets command that fails, a ``piloop.toml`` that the new code refuses, an MCP server that cannot start, skills that
-are missing or out of date, and a missing harness, Herdr or Herdr hook. Nothing here writes: the database is opened
-read-only, and the Herdr server is never started. ``piloop upgrade`` runs the checks last.
+are missing or out of date, a missing harness, and what each runtime in use checks itself (``Runtime.checks``).
+Nothing here writes: the database is opened read-only, and no runtime starts anything. ``piloop upgrade`` runs the
+checks last.
 """
 
 import json
 import shutil
 import sqlite3
-import subprocess
 from collections.abc import Iterator
 from contextlib import closing
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -29,18 +28,9 @@ from piloop.db.models import utcnow
 from piloop.db.session import MIGRATIONS
 from piloop.proc import child_env, environment
 from piloop.reports.overview import age
-from piloop.runtime.herdr import HERDR, HerdrError, HerdrRuntime, integrations, server_running
+from piloop.runtime import Check
+from piloop.runtime.factory import runtimes
 from piloop.settings import Settings
-
-
-@dataclass(frozen=True)
-class Check:
-    """One line of the report: what was checked, what was found and, for a failure, the fix."""
-
-    name: str
-    found: str
-    fix: str | None = None
-    """None when the check passed."""
 
 
 def checks(cfg: Settings) -> list[Check]:
@@ -58,7 +48,7 @@ def checks(cfg: Settings) -> list[Check]:
         *(_mcp(name, c, env) for name, _, c in projects if isinstance(c, ProjectConfig) and c.mcp),
         *_skills(cfg),
         _harnesses(stored),
-        *(_herdr(herdr) if (herdr := [c for c in stored if HerdrRuntime.kind in c.runtimes]) else []),
+        *_runtimes(stored),
     ]
 
 
@@ -198,38 +188,14 @@ def _harnesses(configs: list[ProjectConfig]) -> Check:
     return Check('harnesses', f'on PATH: {", ".join(sorted(executables.values())) or "none configured"}')
 
 
-def _herdr(configs: list[ProjectConfig]) -> list[Check]:
-    """Check Herdr for projects that run agents in it: the binary, the piloop session's server, and Herdr's hooks."""
-    if shutil.which(HERDR) is None:
-        return [Check('herdr', 'a project uses the herdr runtime and herdr is not on PATH', 'install herdr')]
-    try:
-        running = server_running()
-    except (HerdrError, subprocess.TimeoutExpired, OSError) as e:
-        server = Check('herdr', f'the piloop session does not answer: {e}', '`herdr server stop`, then retry')
-    else:
-        server = Check('herdr', 'the piloop session answers' if running else 'server not running; started on first use')
-    return [server, _herdr_hooks(configs)]
-
-
-def _herdr_hooks(configs: list[ProjectConfig]) -> Check:
-    """Check that Herdr's hooks are installed and current for each harness that a Herdr project launches.
-
-    Without the hooks, Herdr reports no session for the agent. Then piloop cannot read its tokens, and a fast agent
-    that committed can look dead at startup.
-    """
-    kinds = {c.harness_for(h).executable for c in configs for kind in c.roles.all() for h in c.role_harnesses(kind)}
-    try:
-        states = integrations()
-    except (subprocess.SubprocessError, OSError) as e:
-        return Check('herdr hooks', f'`herdr integration status` failed: {e}', 'upgrade herdr')
-    known = sorted(kinds & states.keys())
-    if stale := [k for k in known if not states[k].startswith('current')]:
-        return Check(
-            'herdr hooks',
-            ', '.join(f'{k}: {states[k]}' for k in stale),
-            ', '.join(f'`herdr integration install {k}`' for k in stale),
-        )
-    return Check('herdr hooks', f'current for {", ".join(known) or "no harness Herdr has hooks for"}')
+def _runtimes(configs: list[ProjectConfig]) -> list[Check]:
+    """Run the checks of each runtime that a project uses, with the harness executables of the projects that use it."""
+    executables: dict[str, set[str]] = {}
+    for c in configs:
+        programs = {c.harness_for(h).executable for kind in c.roles.all() for h in c.role_harnesses(kind)}
+        for kind in c.runtimes:
+            executables.setdefault(kind, set()).update(programs)
+    return [check for kind, found in sorted(executables.items()) for check in runtimes()[kind].checks(found)]
 
 
 def _revision(path: Path) -> str | None:

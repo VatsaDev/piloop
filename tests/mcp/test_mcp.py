@@ -304,20 +304,28 @@ def test_every_harness_a_role_with_servers_may_run_must_carry_them() -> None:
     plain = {'executable': 'x', 'headless': ['{prompt}']}
     custom = config(harnesses=['claude', 'plain'], model={'claude': 'c', 'plain': 'p'}, harness={'plain': plain})
     assert ProjectConfig.model_validate(custom).harnesses == ['claude', 'plain'], 'no role lists a server: any will do'
-    with pytest.raises(ValidationError, match="harness 'plain' takes no MCP servers in its subprocess argv"):
+    with pytest.raises(
+        ValidationError,
+        match=re.escape(
+            "harness 'plain' under the subprocess runtime (headless): it takes no MCP servers in its headless argv"
+        ),
+    ):
         ProjectConfig.model_validate(custom | {'roles': {'watchdog': {'mcp': ['exa']}}})
     without = {'executable': 'x', 'headless': ['{prompt}'], 'mcp': 'claude'}
-    with pytest.raises(ValidationError, match="harness 'plain' takes no MCP servers"):
+    with pytest.raises(ValidationError, match="harness 'plain' under the subprocess runtime"):
         ProjectConfig.model_validate(custom | {'harness': {'plain': without}, 'roles': {'watchdog': {'mcp': ['exa']}}})
     herdr = config(runtime='herdr', roles={'research': {'mcp': ['exa']}})
-    with pytest.raises(ValidationError, match="harness 'pi' under the herdr runtime: pi takes MCP servers only with"):
+    with pytest.raises(
+        ValidationError,
+        match=re.escape("harness 'pi' under the herdr runtime (interactive): pi takes MCP servers only with"),
+    ):
         ProjectConfig.model_validate(herdr)
     ProjectConfig.model_validate(herdr | {'roles': {'research': {'mcp': ['exa'], 'harnesses': ['claude', 'codex']}}})
 
 
 def test_a_harness_names_a_known_renderer_and_mcp_only_with_one() -> None:
     with pytest.raises(
-        ValidationError, match=re.escape("unknown mcp renderer 'opencode'; known: ['claude', 'codex', 'pi']")
+        ValidationError, match=re.escape(f"unknown mcp renderer 'opencode'; known: {sorted(RENDERERS)}")
     ):
         Harness(executable='x', headless=['{prompt}'], mcp='opencode')
     with pytest.raises(ValidationError, match=re.escape('{mcp} in the argv needs mcp set to a renderer')):

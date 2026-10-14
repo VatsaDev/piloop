@@ -35,7 +35,7 @@ from sqlalchemy.orm import Session
 from piloop import deprecated
 from piloop.db.models import Project, Worker, WorkerKind
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
-from piloop.mcp import MCP, RENDERERS, McpServer, ServerName
+from piloop.mcp import McpServer, ServerName
 from piloop.runtime.factory import runtimes
 from piloop.triggers import (
     AnomalyTrigger,
@@ -222,8 +222,7 @@ class RoleConfig(BaseModel):
     that only this role needs, for example how the research agent searches."""
     mcp: list[str] = []
     """The MCP servers that the agents of this role get, by the name of their ``[mcp.<name>]`` table. Every harness in
-    the role's rotation must be able to take them (``[harness.<name>] mcp``). The built-in ``claude``, ``codex`` and
-    ``pi`` harnesses can."""
+    the role's rotation must be able to take them in the invocation of the role's runtime (``[harness.<name>] mcp``)."""
     writes: list[str] = []
     """What the agents of this role may write, as their brief states it. Only ``files`` is enforced."""
     files: Files = Files.SEEDS
@@ -294,8 +293,7 @@ class SweepRole(RoleConfig):
     """The agents of this role do no runs. Set ``runs = true`` in a new table to define a role that does runs."""
     triggers: list[TriggerEntry]
     """When the daemon requests an agent of this role: a list of ``{ kind = "<trigger>", ... }`` entries, checked in
-    order on each tick. The built-in triggers are ``anomaly``, ``cron``, ``seed``, ``low_water`` (research only),
-    ``scout`` (research only) and ``sql``. An empty list means that agents start only on request
+    order on each tick. A package can add triggers. An empty list means that agents start only on request
     (``piloop launch``)."""
     workdir: Workdir = Workdir.HEAD
     """Where the agent works: ``head``, a detached worktree at the head, or ``project``, the project checkout."""
@@ -412,10 +410,11 @@ class Stop(BaseModel):
     """Stop when the primary metric at the head (the latest keep on the trunk) reaches this value, in its direction.
     Only for a project with one track."""
     max_runs: int | None = Field(default=None, ge=1)
-    """Stop after this many worker runs. A run counts while it runs, and when it ends with a candidate that is
-    measured or waits for its measurement. A run that stopped at its own first check, with no commit or only
-    ``Piloop-Eval: skip`` commits, does not count. A run that a daemon stop, a daemon crash or a campaign stop ended
-    does not count either. ``[spend]`` and ``max_tokens`` limit what those runs cost."""
+    """Stop after this many worker runs, once none of them is queued, running or being scored. A run counts while it is
+    queued, running or being scored, so piloop never starts more runs than this. A finished run counts when it has a candidate
+    that is measured or waits for its measurement. A run with no commit or only ``Piloop-Eval: skip`` commits does not
+    count, and piloop starts another run in its place. A run that a daemon stop, a daemon crash or a campaign stop
+    ended does not count either. ``[spend]`` and ``max_tokens`` limit what those runs cost."""
     max_hours: float | None = Field(default=None, gt=0)
     """Stop after this many hours of wall-clock time since the first run of the project started."""
     max_tokens: int | None = Field(default=None, ge=1)
@@ -594,10 +593,8 @@ class ProjectConfig(BaseModel):
     """The command (argv) that scores a commit. It runs in a clean worktree of the commit and must print
     ``METRIC <name>=<value>`` lines."""
     runtime: RuntimeName = 'subprocess'
-    """Where agents run. With ``subprocess`` (the default), every agent is a background process; ``piloop watch``
-    shows what it printed. With ``herdr`` (optional, needs Herdr), every agent gets a terminal pane that you and the
-    orchestrator can read, type into and steer with ``piloop prompt``. A package can add a runtime with a
-    ``piloop.runtimes`` entry point. A role can override it (``[roles.<name>] runtime``)."""
+    """Where the agents run: the name of a runtime, which starts, watches, steers, shows and stops them. A package can
+    add a runtime with a ``piloop.runtimes`` entry point. A role can override it (``[roles.<name>] runtime``)."""
     harnesses: list[str] = Field(default=['pi'], min_length=1)
     """The enabled harnesses. Runs use them in turn, unless an idea pins one."""
     model: dict[str, str]
@@ -690,15 +687,11 @@ class ProjectConfig(BaseModel):
         runtime = self.role_runtime(kind)
         invocation = runtimes()[runtime].invocation
         for name in self.role_harnesses(kind):
-            harness = self.harness_for(name)
-            argv = harness.argv(invocation)
-            if harness.mcp is None or MCP not in argv:
+            if why := self.harness_for(name).refuses_servers(invocation):
                 raise ValueError(
-                    f'roles.{kind}.mcp: harness {name!r} takes no MCP servers in its {runtime} argv; give it'
-                    f' mcp = "<renderer>" and a {MCP} element ({sorted(RENDERERS)}), or take it out of the rotation'
+                    f'roles.{kind}.mcp: harness {name!r} under the {runtime} runtime ({invocation}): {why}; or take it'
+                    ' out of the rotation'
                 )
-            if why := RENDERERS[harness.mcp].refuses(argv):
-                raise ValueError(f'roles.{kind}.mcp: harness {name!r} under the {runtime} runtime: {why}')
 
     def role_servers(self, kind: str) -> dict[str, McpServer]:
         """The MCP servers that the agents of a role get, by name."""

@@ -227,7 +227,7 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
                 'comment#2 escalation p1 on project#1 (demo) by watchdog#1: SSO',
                 'seed idea#1 (demo) by worker#3: hunch 0 — run#1',
                 'seed idea#3 (other) by watchdog#1: hunch 2 — run#1',
-                'anomaly, watchdog worker#1 requested: run#3 failed: boom',
+                'anomaly, watchdog#1 requested: run#3 failed: boom',
                 'candidate#1 keep: score +1 over candidate#1',
                 'project demo stopped: max_tokens 100 reached',
             ]

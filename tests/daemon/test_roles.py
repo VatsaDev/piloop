@@ -1,6 +1,7 @@
 """Roles as data: a sweeping role and a role that does runs that piloop.toml defines, new triggers for a built-in role,
 and the roles, triggers and runtimes that packages add through entry points."""
 
+import re
 import time
 from collections.abc import Iterator
 from importlib.metadata import EntryPoint
@@ -34,7 +35,7 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.runtime import Runtime, factory as factory_module
-from piloop.runtime.factory import RUNTIME_GROUP, RuntimeFactory, make_runtime
+from piloop.runtime.factory import RUNTIME_GROUP, RuntimeFactory, make_runtime, runtimes
 from piloop.triggers import TRIGGER_GROUP
 from tests.conftest import HARNESS_APPEND, HARNESS_PROMPT_TO_FILE, ScriptRuntime, write_toml
 from tests.daemon.test_scheduler import add_ideas
@@ -455,7 +456,8 @@ def test_a_package_adds_a_runtime_and_its_agents_start_the_argv_of_its_invocatio
 
 def test_a_runtime_that_is_not_registered_fails_with_the_registered_ones(project_path: Path, plugins: None) -> None:
     with pytest.raises(
-        ConfigError, match=r"runtime = 'tmux': unknown runtime 'tmux'; registered runtimes: herdr, subprocess, typed"
+        ConfigError,
+        match=re.escape(f"runtime = 'tmux': unknown runtime 'tmux'; registered runtimes: {', '.join(runtimes())}"),
     ):
         load_project_config(project_path, runtime='tmux')
     with pytest.raises(ConfigError, match=r"roles.research.runtime = 'tmux': unknown runtime 'tmux'"):

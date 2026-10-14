@@ -114,7 +114,7 @@ def news(s: Session, after: int, *, project_id: int | None = None, me: str) -> t
         elif e.kind == ANOMALY_EVENT:
             worker = s.get(Worker, e.target_id)
             if worker is not None and project_id in (None, worker.project_id):
-                lines.append(f'anomaly, watchdog worker#{worker.id} requested: {e.payload.get("anomaly")}')
+                lines.append(f'anomaly, {worker.kind}#{worker.id} requested: {e.payload.get("anomaly")}')
         elif e.kind == 'idea.created' and e.actor != me:
             idea = s.get(Idea, e.target_id)
             if idea is not None and idea.status is IdeaStatus.SEED and project_id in (None, idea.project_id):

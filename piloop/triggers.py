@@ -232,10 +232,12 @@ class Trigger(BaseModel, ABC):
 
     ROLE: ClassVar[str | None] = None
     """The only role that may use the trigger, or None for any sweeping role."""
+    INVESTIGATES: ClassVar[bool] = False
+    """The agent that the trigger requests gets incidents to investigate. An agent of a role with such a trigger that
+    dies at startup is then no incident: the agent that it would request could die the same way, and so on."""
 
     kind: str
-    """The name of the trigger: ``anomaly``, ``cron``, ``seed``, ``low_water``, ``scout``, ``sql``, or one that a
-    package adds."""
+    """The name of the trigger. A package can add triggers."""
 
     @abstractmethod
     def fire(self, tick: Tick) -> Fire | None:
@@ -243,12 +245,13 @@ class Trigger(BaseModel, ABC):
 
 
 class AnomalyTrigger(Trigger):
-    """``anomaly``: an incident-class anomaly (``piloop.reports.overview``) that no agent of the project got yet.
+    """The daemon detected an incident that no agent of the project got yet. The agent gets it to investigate.
 
-    The row gets the new anomalies, one ``anomaly.reported`` event each. For the watchdog, that makes it an incident
+    Incidents are the incident-class anomalies of ``piloop.reports.overview``. The row gets the new anomalies, one ``anomaly.reported`` event each. For the watchdog, that makes it an incident
     sweep.
     """
 
+    INVESTIGATES: ClassVar[bool] = True
     kind: Literal['anomaly'] = 'anomaly'
 
     def fire(self, tick: Tick) -> Fire | None:
@@ -261,7 +264,7 @@ class AnomalyTrigger(Trigger):
 
 
 class CronTrigger(Trigger):
-    """``cron``: the role's ``interval`` seconds since the start of its last routine row, one that got no anomaly.
+    """The role's ``interval`` passed since the start of its last routine agent, one that got no anomaly.
 
     The first one counts from the registration of the project. An ``interval`` of 0 turns it off.
     """
@@ -279,7 +282,7 @@ class CronTrigger(Trigger):
 
 
 class SeedTrigger(Trigger):
-    """``seed``: a seed filed after the role's latest row started, while a slot of the role is free.
+    """A seed was filed after the role's latest agent started, and a slot of the role is free.
 
     It fires however full the backlog is. If the latest row got the seed but was killed, the seed is retried, once per
     batch, as ``low_water`` retries. A seed that a sweep read and did not develop is in the next sweep's brief,
@@ -307,9 +310,9 @@ class SeedTrigger(Trigger):
 
 
 class LowWaterTrigger(Trigger):
-    """``low_water``: the backlog has fewer ideas than its target, and there is a reason to sweep now.
+    """The backlog of runnable ideas is shorter than its target, and there is a reason to sweep now.
 
-    Only the research role uses it. The target is one idea per worker slot plus ``[roles.research] buffer``. So ideas
+    The target is one idea per worker slot plus ``[roles.research] buffer``. So ideas
     exist before slots free up, and a free slot does not wait a whole sweep for an idea. The ideas that sweeps in
     flight can insert already count as backlog. Nothing is requested while every research slot is busy. Runnable
     ideas count. Ideas blocked only by prerequisites in flight also count, because they run when those finish. An idea
@@ -369,7 +372,7 @@ class LowWaterTrigger(Trigger):
 
 
 class ScoutTrigger(Trigger):
-    """``scout``: ``[roles.research.scout] interval`` seconds since the last scout sweep started. Research only.
+    """``[roles.research.scout] interval`` passed since the last scout sweep started.
 
     It requests a scout sweep, a research row in scout mode (``piloop.agents.scout``). It does nothing while the
     ``[roles.research.scout]`` table is not there.
@@ -392,7 +395,7 @@ SQL_PARAMETERS = ('project', 'since')
 
 
 class SqlTrigger(Trigger):
-    """``sql``: a query on the piloop database that returns at least one row.
+    """A query on the piloop database returns at least one row.
 
     The query may use two parameters: ``:project``, the project's id, and ``:since``, when the role's latest row
     started (or when the project was registered), as UTC text (``2026-01-31 12:00:00.000000``). Compare ``:since`` with

@@ -334,23 +334,28 @@ def test_a_short_life_without_the_launcher_event_is_not_a_startup_death(db: Data
         assert [a.key for a in found(s, project) if a.kind is AnomalyKind.DEAD_AT_STARTUP] == []
 
 
-def test_a_watchdog_dead_at_startup_requests_no_watchdog(db: Database, project: Project) -> None:
-    """A watchdog that died at startup is reported, but it is not an incident and does not request a watchdog.
+def test_an_agent_that_investigates_incidents_dead_at_startup_is_no_incident(db: Database, project: Project) -> None:
+    """An agent of a role with the ``anomaly`` trigger that died at startup is reported, but it requests no agent.
 
-    Otherwise each watchdog that dies at startup requests a new watchdog, which can die the same way.
+    Otherwise each such agent that dies at startup requests a new one, which can die the same way. The watchdog has the
+    trigger by default; research has not, so a research agent that died at startup is an incident.
     """
     with db.session() as s:
-        dead = agent(s, s.get_one(Project, project.id), WorkerKind.WATCHDOG, 0, 35, state=WorkerState.KILLED)
-        payload = {'kind': 'watchdog', 'harness': 'script', 'run': None, 'seconds': 35.0, 'error': 'prompt_lost'}
-        s.add(
-            Event(
-                kind=STARTUP_ANOMALY, actor='daemon', target_kind=TargetKind.WORKER, target_id=dead.id, payload=payload
+        for kind in (WorkerKind.WATCHDOG, WorkerKind.RESEARCH):
+            dead = agent(s, s.get_one(Project, project.id), kind, 0, 35, state=WorkerState.KILLED)
+            payload = {'kind': kind.value, 'harness': 'script', 'run': None, 'seconds': 35.0, 'error': 'prompt_lost'}
+            s.add(
+                Event(
+                    kind=STARTUP_ANOMALY,
+                    actor='daemon',
+                    target_kind=TargetKind.WORKER,
+                    target_id=dead.id,
+                    payload=payload,
+                )
             )
-        )
         s.commit()
-        [anomaly] = [a for a in found(s, project) if a.ref == f'worker#{dead.id}']
-        assert (anomaly.kind, anomaly.incident) == (AnomalyKind.WATCHDOG_DEAD_AT_STARTUP, False)
-        assert anomaly.key == f'worker#{dead.id} dead at startup, a watchdog'
+        dead_at_startup = {a.key: a.incident for a in found(s, project) if a.kind is AnomalyKind.DEAD_AT_STARTUP}
+        assert dead_at_startup == {'worker#1 dead at startup': False, 'worker#2 dead at startup': True}
 
 
 def test_a_crashed_measurement_or_an_unmeasured_parent_is_not_same_as_parent(db: Database, project: Project) -> None:

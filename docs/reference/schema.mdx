@@ -211,6 +211,7 @@ CREATE TABLE runs (
 	harness VARCHAR NOT NULL,
 	model VARCHAR NOT NULL,
 	status VARCHAR(16) DEFAULT 'queued' NOT NULL,
+	scoring BOOLEAN DEFAULT 0 NOT NULL,
 	brief VARCHAR,
 	started_at DATETIME,
 	finished_at DATETIME,
@@ -221,6 +222,7 @@ CREATE TABLE runs (
 	updated_by VARCHAR,
 	PRIMARY KEY (id),
 	UNIQUE (idea_id, attempt),
+	CONSTRAINT "runs.scoring needs a finished status" CHECK (scoring = 0 OR status IN ('succeeded', 'failed', 'timed_out')),
 	FOREIGN KEY(idea_id) REFERENCES ideas (id) ON DELETE CASCADE,
 	CONSTRAINT runstatus CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'timed_out'))
 );

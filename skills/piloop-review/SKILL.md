@@ -37,7 +37,7 @@ Rules for the whole review:
 | Daemon log | `<PILOOP_HOME>/serve.log` (OTEL spans on stderr) |
 | Briefs the agents got | `<PILOOP_HOME>/runs/<run>/brief.md`, `<PILOOP_HOME>/workers/<worker>/brief.md` |
 | Agent screen | `<PILOOP_HOME>/workers/<worker>/transcript.txt`; `runs.log_dir` |
-| Agent session file | `workers.usage->>'$.source'` names it. Claude Code: `$CLAUDE_CONFIG_DIR/projects/-<home>--piloop-{runs,workers}-<id>-worktree/*.jsonl` (default `~/.claude`). Codex: `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` (default `~/.codex`; match `session_id`). pi: `~/.pi/agent/sessions/--<cwd>--/*.jsonl` |
+| Agent session file | `workers.usage->>'$.source'` names it |
 | Orchestrator | the harness that ran `piloop-operate`; its writes are signed `orchestrator`. pi: `~/.pi/agent/sessions/--<cwd>--/`, subagents in `~/.pi/agent/pi-subagents/` and `run-history.jsonl`. Claude Code: `$CLAUDE_CONFIG_DIR/projects/<cwd, non-alphanumerics as ->/*.jsonl`, subagents under `<session>/subagents/`. Codex: `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` |
 | What agents left in `./workspace/` | `<PILOOP_HOME>/projects/<id>/workspace` while an idea runs. A done idea's files, and what a stopped campaign left (except `NOTES.md` and `research/`), are archived (`archives`) and removed from the workspace later (`archives.pruned_at`): `piloop restore <project> [<idea>\|<path>]` writes them back |
 | Candidates | the project repo: `refs/piloop/<project>/r<run>/<n>`, `git show <commit_sha>`; `entire checkpoint explain <workers.checkpoint_id>` when Entire is on |

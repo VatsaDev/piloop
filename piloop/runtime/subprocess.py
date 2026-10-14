@@ -14,7 +14,7 @@ from typing import ClassVar
 
 from piloop.harnesses import Invocation, fill
 from piloop.proc import alive, child_env, started
-from piloop.runtime import Handle, NotSteerable, Outcome, WorkerSpec, WorkerStatus
+from piloop.runtime import Check, Handle, NotAttachable, NotSteerable, Outcome, WorkerSpec, WorkerStatus
 
 STDOUT = 'worker.stdout'
 STDERR = 'worker.stderr'
@@ -35,7 +35,9 @@ turn replaced the first process. Every instance reads it, so ``kill`` and ``stat
 
 
 class SubprocessRuntime:
-    """One-shot harness processes, one per turn. The first prompt is in ``spec.args``.
+    """Each agent as a background process without a terminal, one process per turn of the agent.
+
+    The first prompt is in ``spec.args``.
 
     A message (``prompt``) waits in a queue until the turn ends: when the process exits, ``wait`` starts the harness
     again with ``spec.resume_args``, which continue the same session with the queued messages as the prompt. Nothing
@@ -131,11 +133,17 @@ class SubprocessRuntime:
         return []
 
     def prompt(self, handle: Handle, text: str) -> None:
-        """Queue ``text`` for the agent's next turn (``QUEUE``). The process of this turn has no input channel.
+        """Keeps the message in a queue, and continues the agent's session with it when the turn ends.
 
-        Raise ``NotSteerable`` when nothing would take the message: the harness cannot continue its session, the
-        daemon that could resume it was restarted (``RESUMER``), or the agent has ended. The append holds the queue's
-        lock, so a turn that starts meanwhile takes the message or leaves it for the next one.
+        piloop runs the harness again with ``[harness.<name>] resume``, with the queued messages as the prompt. A
+        harness without ``resume`` takes no message. Neither does an agent that the daemon re-attached to after
+        ``piloop restart``.
+
+        Note:
+            The queue is ``QUEUE``: the process of this turn has no input channel. Raise ``NotSteerable`` when nothing
+            would take the message: the harness cannot continue its session, the daemon that could resume it was
+            restarted (``RESUMER``), or the agent has ended. The append holds the queue's lock, so a turn that starts
+            meanwhile takes the message or leaves it for the next one.
         """
         log_dir = handle.data.get('log_dir')  # a handle that names none has no queue either
         if log_dir is None or not (Path(str(log_dir)) / RESUMER).is_file():
@@ -147,6 +155,24 @@ class SubprocessRuntime:
             raise NotSteerable(f'subprocess worker pid {_pid(handle)} has ended')
         with _locked(_log_dir(handle)), (_log_dir(handle) / QUEUE).open('a') as queue:
             queue.write(json.dumps(text) + '\n')
+
+    def focus(self, handle: Handle) -> str:
+        """Cannot: the agent is a background process without a terminal. Its output is in ``worker.stdout`` instead."""
+        raise NotAttachable(_elsewhere(handle))
+
+    def attach(self, handle: Handle) -> str:
+        """Cannot: the agent is a background process without a terminal. Its output is in ``worker.stdout`` instead."""
+        raise NotAttachable(_elsewhere(handle))
+
+    @classmethod
+    def view(cls, handle: Handle) -> str | None:
+        """None: a background process has no place to see it."""
+        return None
+
+    @classmethod
+    def checks(cls, executables: set[str]) -> list[Check]:
+        """None: a background process needs nothing more than its harness, which ``piloop doctor`` checks already."""
+        return []
 
     def _resume(self, handle: Handle) -> bool:
         """Start the agent's next turn with the queued messages. False when there is none to start.
@@ -237,6 +263,11 @@ def _spawn(spec: WorkerSpec, args: list[str], mode: str) -> subprocess.Popen[byt
             env=child_env() | spec.env,
             start_new_session=True,
         )
+
+
+def _elsewhere(handle: Handle) -> str:
+    """Say where the output of a background process is."""
+    return f'a background process has no terminal to show: read {_log_dir(handle) / STDOUT}'
 
 
 def _log_dir(handle: Handle) -> Path:

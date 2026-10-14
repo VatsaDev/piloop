@@ -43,18 +43,28 @@ def attempt() -> ColumnElement[bool]:
     return Run.error.is_(None) | Run.error.not_in(NOT_ATTEMPTS)
 
 
-def counted() -> ColumnElement[bool]:
-    """Select the runs that ``max_runs`` counts.
-
-    These are attempts that are still open, or that have a candidate that is measured or waiting for a verdict. A run
-    that stopped with no commit, or with only ``Piloop-Eval: skip`` commits, does not count. Its cost is limited by
-    ``[spend]`` and ``max_tokens`` instead. Many runs end this way, so counting them would use up ``max_runs`` fast.
-    """
-    scored = exists().where(
+def scored() -> ColumnElement[bool]:
+    """Select the runs that have a candidate that is measured or waiting for a verdict."""
+    return exists().where(
         Candidate.run_id == Run.id,
         (Candidate.verdict == Verdict.PENDING) | exists().where(Measurement.candidate_id == Candidate.id),
     )
-    return attempt() & (Run.status.in_(OPEN_RUNS) | scored)
+
+
+def unsettled() -> ColumnElement[bool]:
+    """Select the runs whose outcome can still change: the open runs, and the runs that are scored now (``scoring``)."""
+    return Run.status.in_(OPEN_RUNS) | Run.scoring
+
+
+def counted() -> ColumnElement[bool]:
+    """Select the runs that ``max_runs`` counts.
+
+    These are attempts that are unsettled (see ``unsettled``), or that have a candidate that is measured or waiting for a
+    verdict. A run that stopped with no commit, or with only ``Piloop-Eval: skip`` commits, does not count. Its cost is
+    limited by ``[spend]`` and ``max_tokens`` instead. Many runs end this way, so counting them would use up
+    ``max_runs`` fast.
+    """
+    return attempt() & (unsettled() | scored())
 
 
 def attempts(idea: Idea) -> int:
@@ -130,8 +140,15 @@ def stall(cfg: ProjectConfig) -> tuple[int, str]:
 
 
 def _max_runs(s: Session, project: Project, limit: int) -> str | None:
+    """Stop when ``limit`` runs count and none of them is unsettled.
+
+    An unsettled run counts, so the queue starts no more than ``limit`` runs. It can still end without a scored
+    candidate, and then it does not count. A stop at that moment would end the run early, and the count would drop
+    below ``limit``.
+    """
     count = runs(s, project)
-    return f'max_runs: {count} runs' if count >= limit else None
+    unsettled_runs = _over_runs(s, project, func.count(Run.id), attempt(), unsettled())
+    return f'max_runs: {count} runs' if count >= limit and not unsettled_runs else None
 
 
 def _max_hours(s: Session, project: Project, limit: float) -> str | None:

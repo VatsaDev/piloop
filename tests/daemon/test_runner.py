@@ -48,7 +48,7 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.git import pin as git_pin
-from piloop.otel import Tracer
+from piloop.otel import Span, Tracer
 from piloop.runtime import Handle, Outcome, StartFailed
 from piloop.scoring.ledger import (
     DAEMON,
@@ -277,6 +277,38 @@ def test_every_commit_is_scored_and_lineage_follows_keeps(
     )
 
 
+@pytest.mark.parametrize('moved_to', [None, IdeaStatus.PARKED, IdeaStatus.REJECTED])
+def test_a_run_counts_toward_max_runs_from_its_close_to_its_verdict(
+    db: Database,
+    project: Project,
+    runtime: ScriptRuntime,
+    tmp_path: Path,
+    mocker: MockerFixture,
+    moved_to: IdeaStatus | None,
+) -> None:
+    """A run keeps its place under ``max_runs`` from its close until its commits are scored, before its candidates
+    exist, and also when a human parks or rejects its idea meanwhile (``piloop watch`` allows it)."""
+    ex = executor(db, runtime, tmp_path)
+    close = ex._close
+    counted: list[tuple[int, bool]] = []
+
+    def close_and_count(span: Span, run_id: int, status: RunStatus, error: str | None) -> None:
+        close(span, run_id, status, error)
+        with db.session() as s:
+            if moved_to is not None:
+                s.get_one(Run, run_id).idea.status = moved_to
+                s.commit()
+            project_row = s.get_one(Project, project.id)
+            counted.append((stop.runs(s, project_row), bool(s.scalar(select(Run.id).where(stop.unsettled())))))
+
+    mocker.patch.object(ex, '_close', side_effect=close_and_count)
+    run_id = make_run(db, project)
+    execute(ex, db, run_id)
+    assert counted == [(1, True)], 'counted and unsettled while it is scored'
+    with db.session() as s:
+        assert s.scalar(select(Run.id).where(stop.unsettled())) is None, f'run#{run_id} settled'
+
+
 def test_worse_commit_is_discarded(db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path) -> None:
     write_toml(Path(project.path), HARNESS_WORSE)
     reload_project(db, project)
@@ -425,6 +457,29 @@ def test_recovery_requeues_0_leaves_recovered_work_to_the_orchestrator(
     with db.session() as s:
         idea = s.get_one(Idea, run_row(db, run_id).idea_id)
         assert (idea.status, idea.base_candidate_id) == (IdeaStatus.DONE, None)
+
+
+def test_the_role_of_the_run_caps_its_recovery_requeues(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """A role that does runs has its own ``recovery_requeues``: the worker's value does not apply to its runs."""
+    write_toml(Path(project.path), HARNESS_FORGETS_COMMIT)
+    roles = {'worker': {'recovery_requeues': 0}, 'quick': {'runs': True, 'recovery_requeues': 1}}
+    with db.session() as s:
+        s.get_one(Project, project.id).config = load_project_config(Path(project.path), roles=roles).model_dump(
+            mode='json'
+        )
+        s.commit()
+    run_id = make_run(db, project, max_runs=1)
+    with db.session() as s:
+        s.get_one(Run, run_id).role = 'quick'
+        s.commit()
+    execute(executor(db, runtime, tmp_path), db, run_id)
+    with db.session() as s:
+        idea = s.get_one(Idea, run_row(db, run_id).idea_id)
+        assert idea.status is IdeaStatus.READY and idea.base_candidate_id is not None, (
+            'requeued from its recovered work'
+        )
 
 
 def test_no_changes_fails_the_run_and_retries_the_idea(
@@ -655,7 +710,9 @@ def test_worker_env_points_at_the_daemon_home(
 ) -> None:
     """The worker sees the daemon's home and PATH, and not the child marker of a Claude Code session.
 
-    A daemon started from a Claude Code session inherits that marker. A Claude agent that has it saves no transcript.
+    A daemon started from a Claude Code session inherits that marker, and a Claude agent that has it saves no
+    transcript. The marker is cleared for every agent, whatever its harness definition: ``[harness.claude]`` replaces
+    the built-in one, and a custom harness can run the same CLI. This one is the ``script`` harness of the fixture.
     """
     monkeypatch.setenv('CLAUDE_CODE_CHILD_SESSION', '1')
     write_toml(
@@ -708,7 +765,7 @@ def test_a_worker_that_never_got_going_is_relaunched_on_its_run_then_the_run_fai
             rows = s.scalars(select(Worker).where(Worker.run_id == run_id).order_by(Worker.id)).all()
             assert [w.state for w in rows] == [*[WorkerState.KILLED] * launches, WorkerState.REQUESTED]
             assert (rows[-1].harness, rows[-1].model) == ('script', 'test-model')
-            assert rows[-1].reason == f'run#{run_id} relaunched: worker#{rows[-2].id} failed to start'
+            assert rows[-1].reason == f'run#{run_id} relaunched: worker#{rows[-2].id} failed to start', 'its role'
             assert stop.runs(s, run.idea.project) == 1
         assert (tmp_path / 'runs' / str(run_id) / f'transcript-worker{rows[-2].id}.txt').read_text() == 'Welcome\n'
     execute(ex, db, run_id)

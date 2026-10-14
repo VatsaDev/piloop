@@ -174,6 +174,7 @@ def compose_brief(
                 f"- Sign what you write as '{author}' (comments.author, ideas.created_by).",
                 f'- Trigger: {reason}',
                 f'- SQL tool: `{SQL_HINT} "<sql>"`',
+                f'- Sweeping roles (`workers.kind` of a request): {", ".join(cfg.roles.sweeping())}.',
                 *([tracks_line(cfg, track)] if cfg.multitrack else []),
                 role.ideas.format(piloop=PILOOP_HINT, project=project.name),
                 *([f'- You may write: {", ".join(sorted(role.writes))}.'] if role.writes else []),

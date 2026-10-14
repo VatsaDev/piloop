@@ -1009,22 +1009,43 @@ def test_a_restart_during_an_evaluation_scores_the_run_on_start_and_never_runs_i
     second.stop(timeout=5)
 
 
+@pytest.mark.parametrize(('before', 'after'), [(IdeaStatus.SCHEDULED, IdeaStatus.READY), (IdeaStatus.PARKED, None)])
 def test_a_run_whose_scoring_cannot_resume_returns_its_idea_to_the_queue(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer, spans: InMemorySpanExporter
+    db: Database,
+    project: Project,
+    runtime: ScriptRuntime,
+    tmp_path: Path,
+    tracer: Tracer,
+    spans: InMemorySpanExporter,
+    before: IdeaStatus,
+    after: IdeaStatus | None,
 ) -> None:
+    """``reap`` resumes every run that a stopped daemon was scoring, whatever its idea's status, and the run settles.
+
+    A human may have parked the idea meanwhile: it stays parked, and the run gives back its place under ``max_runs``.
+    """
     (idea,) = add_ideas(db, project, 'orphan')
     with db.session() as s:
         s.add(
-            Run(idea_id=idea, attempt=1, base_candidate_id=1, harness='script', model='m', status=RunStatus.SUCCEEDED)
+            Run(
+                idea_id=idea,
+                attempt=1,
+                base_candidate_id=1,
+                harness='script',
+                model='m',
+                status=RunStatus.SUCCEEDED,
+                scoring=True,
+            )
         )
-        s.get_one(Idea, idea).status = IdeaStatus.SCHEDULED
+        s.get_one(Idea, idea).status = before
         s.get_one(Project, project.id).path = str(tmp_path / 'gone')
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path, tracer)
     sched.reap()
     sched.wait(10)
     with db.session() as s:
-        assert s.get_one(Idea, idea).status is IdeaStatus.READY, 'attempts remain'
+        assert s.get_one(Idea, idea).status is (after or before), 'attempts remain; a parked idea stays parked'
+        assert s.scalar(select(Run.scoring)) is False
     assert span_named(spans, 'piloop.resume').status.status_code is StatusCode.ERROR
 
 

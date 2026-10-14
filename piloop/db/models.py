@@ -58,8 +58,9 @@ class ProjectStatus(StrEnum):
 class IdeaStatus(StrEnum):
     """The lifecycle of an idea. The scheduler picks up ``ready`` ideas in priority order.
 
-    A ``seed`` is a rough idea with pointers. Any role except the worker can file one (``piloop idea seed``). Research
-    develops it into a defined idea (``piloop idea develop``, which makes it ``ready`` or ``proposed``), or rejects it.
+    A ``seed`` is a rough idea with pointers. An agent whose role's ``files`` allows it files one (``piloop idea
+    seed``). Research develops it into a defined idea (``piloop idea develop``, which makes it ``ready`` or
+    ``proposed``), or rejects it.
     A ``proposed`` idea is defined and waits for a human to approve it.
     """
 
@@ -429,6 +430,10 @@ class Run(Tracked, Base):
         UniqueConstraint('idea_id', 'attempt'),
         # what is running or queued: reap, drain and the agents' "what is running" query select by status only
         Index('ix_runs_status', 'status'),
+        CheckConstraint(
+            f'scoring = 0 OR status IN ({", ".join(repr(s.value) for s in FINISHED_RUNS)})',
+            name='runs.scoring needs a finished status',
+        ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -447,6 +452,10 @@ class Run(Tracked, Base):
     harness: Mapped[str]
     model: Mapped[str]
     status: Mapped[RunStatus] = mapped_column(default=RunStatus.QUEUED, server_default=RunStatus.QUEUED.value)
+    scoring: Mapped[bool] = mapped_column(default=False, server_default=text('0'))
+    """Whether the daemon scores the run's commits now. It is set when the worker ends and the run gets its final
+    ``status``, and cleared when the commits are judged and the idea moved on, whatever the idea's status. While it is
+    set, the run keeps its place under ``[stop] max_runs``, and a restarted daemon resumes the scoring."""
     brief: Mapped[str | None]
     """The exact prompt that the worker got."""
     started_at: Mapped[datetime | None]
@@ -745,8 +754,8 @@ class Worker(Tracked, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     kind: Mapped[str]
-    """The agent's role: ``worker``, ``watchdog``, ``research``, or a ``[roles.<name>]`` table of its project. A trigger
-    refuses other names."""
+    """The agent's role: a role of its project, a built-in one or a ``[roles.<name>]`` table. A trigger refuses other
+    names."""
     project_id: Mapped[int | None] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'))
     """The project the agent works for. piloop always sets it, but readers must accept NULL."""
     run_id: Mapped[int | None] = mapped_column(ForeignKey('runs.id', ondelete='SET NULL'))
@@ -754,9 +763,9 @@ class Worker(Tracked, Base):
     harness: Mapped[str | None]
     model: Mapped[str | None]
     runtime: Mapped[str | None]
-    """``herdr`` or ``subprocess``: how to reach the process."""
+    """The runtime of the agent (``runtime`` in ``piloop.toml``): how to reach the process."""
     handle: Mapped[dict[str, object]] = mapped_column(default=dict, server_default=EMPTY_JSON)
-    """The address of the process in its runtime: the pid and pgid, or the Herdr workspace, pane and agent name."""
+    """The address of the process in its runtime. Each runtime defines its keys, for example a pid or a pane."""
     state: Mapped[WorkerState] = mapped_column(
         default=WorkerState.REQUESTED, server_default=WorkerState.REQUESTED.value
     )
@@ -768,8 +777,8 @@ class Worker(Tracked, Base):
     ended_at: Mapped[datetime | None]
     error: Mapped[str | None]
     session_id: Mapped[str | None]
-    """The harness's own session id. piloop creates it at launch (``--session-id`` for pi and claude), or the runtime
-    reports it after the agent starts. ``entire session attach`` takes it."""
+    """The harness's own session id. piloop creates it at launch when the harness takes it as an argument
+    (``{session_id}``), or the runtime reports it after the agent starts. ``entire session attach`` takes it."""
     checkpoint_id: Mapped[str | None]
     """The Entire checkpoint of this session (``refs/entire/checkpoints/``). ``entire session attach`` writes it when
     the session ends. NULL when Entire is not installed or the attach failed."""

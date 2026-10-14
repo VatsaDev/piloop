@@ -5,6 +5,7 @@ from typing import ClassVar, Literal
 
 from piloop.config import SweepRole, WorkerRole
 from piloop.harnesses import Invocation
+from piloop.runtime import Check, Handle
 from piloop.runtime.subprocess import SubprocessRuntime
 from piloop.triggers import Fire, Tick, Trigger
 
@@ -33,6 +34,27 @@ class Typed(SubprocessRuntime):
 
     kind: ClassVar[str] = 'typed'
     invocation: ClassVar[Invocation] = Invocation.INTERACTIVE
+
+
+class Shown(SubprocessRuntime):
+    """``shown``: a background process, like ``subprocess``, with a pane of its own to focus, attach to and check."""
+
+    kind: ClassVar[str] = 'shown'
+    invocation: ClassVar[Invocation] = Invocation.HEADLESS
+
+    def focus(self, handle: Handle) -> str:
+        return f'focused pane {handle.data["pid"]}'
+
+    def attach(self, handle: Handle) -> str:
+        return f'attached to pane {handle.data["pid"]}'
+
+    @classmethod
+    def view(cls, handle: Handle) -> str | None:
+        return f'pane {handle.data["pid"]}'
+
+    @classmethod
+    def checks(cls, executables: set[str]) -> list[Check]:
+        return [Check('shown', f'ready for {", ".join(sorted(executables))}')]
 
 
 class Unsure:

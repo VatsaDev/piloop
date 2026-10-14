@@ -50,8 +50,10 @@ with the enwik8 example.
   the header in `scripts/gen_docs.py`.
 - `docs/reference/schema.mdx`, from `piloop/db/models.py`.
 - `piloop/db/actor_triggers.sql` and `piloop/db/persistent_triggers.sql`, from `piloop/db/triggers/`.
-- The part between the markers of `docs/architecture/data-model.mdx`, `state-machines.mdx` and `code-layout.mdx`:
-  the diagram of the tables, the values of the state enums, and the graph of the imports between the subpackages.
+- The parts between the markers in other pages: the diagram of the tables, the values of the state enums and the
+  graph of the imports (`docs/architecture/`), and the tables of the built-in runtimes, triggers, harnesses, role
+  keys and defaults, `Runtime` methods and `[stop]` keys. They come from the docstrings and the built-in registries,
+  so write those docstrings for the reader of the page. A missing docstring stops `make docs`.
 
 `make docs-check` fails when one of them is stale. The pre-commit hook runs it.
 

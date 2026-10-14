@@ -1,7 +1,7 @@
-"""Where agent processes run and how the daemon talks to them.
+"""Where agent processes run and how piloop talks to them.
 
-The daemon depends only on the ``Runtime`` protocol. ``herdr`` and ``subprocess`` implement it. To add a runtime (tmux,
-a remote host), implement the protocol in a class and register the class with an entry point in
+The daemon and the CLI depend only on the ``Runtime`` protocol, and never on the name of a runtime. To add a runtime
+(tmux, a remote host), implement the protocol in a class and register the class with an entry point in
 ``factory.RUNTIME_GROUP``.
 """
 
@@ -78,6 +78,20 @@ class Outcome:
     finishes its run in its worktree. Only the launcher sets it."""
 
 
+@dataclass(frozen=True)
+class Check:
+    """One line of the report of ``piloop doctor``: what was checked, what was found and, for a failure, the fix."""
+
+    name: str
+    found: str
+    fix: str | None = None
+    """None when the check passed."""
+
+
+class RuntimeFailure(RuntimeError):
+    """A runtime could not do what it was asked. The message says what failed. The CLI shows it."""
+
+
 class StartFailed(RuntimeError):
     """``Runtime.start`` failed. ``screen`` is what the worker's terminal showed, read before the terminal closed."""
 
@@ -87,11 +101,15 @@ class StartFailed(RuntimeError):
 
 
 class NotSteerable(RuntimeError):
-    """The runtime cannot deliver a message to a running worker, for example a one-shot subprocess."""
+    """The runtime cannot deliver a message to this agent now. The message says why."""
+
+
+class NotAttachable(RuntimeError):
+    """The runtime cannot show this agent. The message says where to look instead, for example a file of its output."""
 
 
 class Runtime(Protocol):
-    """Start, observe, steer and stop workers.
+    """Start, watch, steer, show and stop workers.
 
     The registry (``factory.runtimes``) holds the classes. The class attributes say what the runtime is before it is
     constructed: config validation reads them, and a constructor can fail when the runtime is not installed.
@@ -103,18 +121,18 @@ class Runtime(Protocol):
     """Which argument list of a harness the runtime starts: ``interactive`` or ``headless``."""
 
     def __init__(self, project: str, project_path: Path) -> None:
-        """Make the runtime of one project. Herdr names its workspace after the project."""
+        """Make the runtime of one project. A runtime can name what it makes after the project."""
         ...
 
     def start(self, spec: WorkerSpec) -> Handle:
-        """Start the worker and return once it runs. For Herdr, this is when the agent is detected and has its brief.
+        """Start the agent from a ``WorkerSpec`` (argv, first prompt, working directory) and return once it runs.
 
         A failure leaves nothing running. A runtime that can show what the worker was stuck on raises ``StartFailed``.
         """
         ...
 
     def wait(self, handle: Handle, timeout: float) -> Outcome:
-        """Block until the worker is finished or gone. After ``timeout`` seconds, kill it and return ``TIMED_OUT``."""
+        """Block until the agent is finished or gone. After ``timeout`` seconds, kill it and return ``timed_out``."""
         ...
 
     def status(self, handle: Handle) -> WorkerStatus:
@@ -126,7 +144,7 @@ class Runtime(Protocol):
         ...
 
     def jobs(self, handle: Handle) -> list[str]:
-        """Return ``<pid> <command line>`` for each job the worker started that still runs. Empty when unknown."""
+        """Return ``<pid> <command line>`` for each job the agent started that still runs. Empty when unknown."""
         ...
 
     def prompt(self, handle: Handle, text: str) -> None:
@@ -142,5 +160,37 @@ class Runtime(Protocol):
         ...
 
     def kill(self, handle: Handle) -> None:
-        """Stop the worker and what it left running, and release its resources."""
+        """Stop the agent and what it left running, and release its resources."""
+        ...
+
+    def focus(self, handle: Handle) -> str:
+        """Bring the agent to the front of the runtime's own view, and return what was done.
+
+        ``enter`` in ``piloop watch`` calls it. Raise ``NotAttachable`` when the runtime has no view of its own, and ``RuntimeFailure`` when it fails.
+        """
+        ...
+
+    def attach(self, handle: Handle) -> str:
+        """Show the agent in this terminal, and return what was done. ``piloop attach`` calls it.
+
+        It may replace this process, for example with the client of a terminal multiplexer. Raise ``NotAttachable``
+        when the runtime cannot show the agent, and ``RuntimeFailure`` when it fails.
+        """
+        ...
+
+    @classmethod
+    def view(cls, handle: Handle) -> str | None:
+        """Return where you can see the agent, in a few words (``tab w7:t3``), or None when there is no such place.
+
+        ``piloop status`` and ``piloop watch`` show it. It reads only the handle, so it runs nothing.
+        """
+        ...
+
+    @classmethod
+    def checks(cls, executables: set[str]) -> list[Check]:
+        """Check that the runtime can run agents on this machine. ``piloop doctor`` shows the result.
+
+        ``executables`` are the programs of the harnesses that the projects of this runtime launch. Read only: start
+        nothing.
+        """
         ...

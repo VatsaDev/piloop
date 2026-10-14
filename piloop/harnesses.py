@@ -70,13 +70,13 @@ class Harness(BaseModel):
     piloop substitutes these placeholders in both argument lists: ``{model}``, ``{session_id}``, ``{cwd}`` (the
     agent's working directory), ``{log_dir}`` (the directory of the agent's brief and logs) and ``{prompt}`` (the first
     prompt, which names the file that holds the brief). An element that is exactly ``{mcp}`` expands to the role's MCP
-    servers, in the form that ``mcp`` names. The three built-in harnesses run without permission prompts: workers run
+    servers, in the form that ``mcp`` names. The built-in harnesses run without permission prompts: workers run
     in worktrees that the daemon owns and throws away, and a sandbox that cannot reach the repo's ``.git`` cannot
     commit. The built-in Claude harness passes ``--settings`` that move a foreground Bash command to the background
     after 5 minutes.
 
     When the argument list in use contains ``{session_id}``, piloop creates the session id. Otherwise the runtime
-    reports it: Herdr detects it for every harness it knows, and the subprocess runtime needs ``session_id_pattern``.
+    reports it, or reads it with ``session_id_pattern``.
     When the agent ends, ``entire session attach`` takes this id, and ``usage`` uses it to find the session file and
     read the tokens the agent spent.
     """
@@ -84,40 +84,47 @@ class Harness(BaseModel):
     model_config = ConfigDict(extra='forbid', use_attribute_docstrings=True)
 
     executable: str
-    """The program to run. Herdr also uses it as ``--kind`` to detect the agent."""
+    """The program to run. A runtime can also use it to recognise the agent."""
     interactive: list[str] = []
-    """The arguments for an interactive session, for a runtime whose ``invocation`` is ``interactive`` (Herdr). The
-    runtime types the first prompt, which names the file that holds the brief, after the agent starts."""
+    """The arguments for an interactive session, for a runtime whose ``invocation`` is ``interactive``. The runtime
+    types the first prompt, which names the file that holds the brief, after the agent starts."""
     headless: list[str]
-    """The arguments for a run without a terminal, for a runtime whose ``invocation`` is ``headless`` (subprocess).
-    Must include ``{prompt}``."""
+    """The arguments for a run without a terminal, for a runtime whose ``invocation`` is ``headless``. Must include
+    ``{prompt}``."""
     resume: list[str] = []
     """The arguments that continue the session of a run without a terminal with a new prompt, for a ``headless``
-    runtime (subprocess). When the agent's turn ends with messages queued for it (comments, ``piloop prompt``), the
-    runtime runs the harness again with these, ``{prompt}`` being the messages and ``{session_id}`` the session's id.
+    runtime. When the agent's turn ends with messages queued for it (comments, ``piloop prompt``), the runtime runs the
+    harness again with these, ``{prompt}`` being the messages and ``{session_id}`` the session's id.
     Must include both. When empty, the agent takes no message while it runs."""
     startup_dialogs: list[tuple[str, list[str]]] = []
     """The dialogs the agent shows when it first starts in a new directory, in the order they appear. Each entry is
     the text to look for on the screen and the keys that accept the dialog."""
     entire_agent: str | None = None
-    """Entire's name for this agent: ``pi``, ``claude-code`` or ``codex`` (``entire agent list`` shows them). When it is
-    set and ``entire`` is installed, the agent's session is attached to Entire as a checkpoint when the agent ends.
-    When unset, the session is not captured."""
+    """Entire's name for this agent, as ``entire agent list`` shows it. When it is set and ``entire`` is installed,
+    the agent's session is attached to Entire as a checkpoint when the agent ends. When unset, the session is not
+    captured."""
     session_id_pattern: str | None = None
-    """A regex with one group that finds the session id in the first lines of the process's stdout. Use it under the
-    subprocess runtime for a harness that cannot take its id as an argument (``{session_id}``). For example, Codex
+    """A regex with one group that finds the session id in the first lines of the process's stdout. Use it in a
+    ``headless`` runtime for a harness that cannot take its id as an argument (``{session_id}``). For example, Codex
     ``exec --json`` prints ``{"type":"thread.started","thread_id":"<uuid>"}`` first."""
     usage: UsageSpec | None = None
     """``[harness.<name>.usage]``: how to read the tokens an agent spent, when it ends, into ``workers.usage``. When
     unset, token usage is not recorded."""
     mcp: str | None = None
-    """The renderer that expands the ``{mcp}`` element of the argv into the role's ``[mcp.<name>]`` servers:
-    ``claude``, ``codex`` or ``pi``. Each renderer also keeps the user's own servers out, where its harness allows it.
+    """The renderer that expands the ``{mcp}`` element of the argv into the role's ``[mcp.<name>]`` servers. Each
+    renderer also keeps the user's own servers out, where its harness allows it.
     When unset, the harness takes no servers, and a role that lists servers cannot use it."""
 
     def argv(self, invocation: Invocation) -> list[str]:
         """The argument list that a runtime of ``invocation`` starts."""
         return {Invocation.INTERACTIVE: self.interactive, Invocation.HEADLESS: self.headless}[invocation]
+
+    def refuses_servers(self, invocation: Invocation) -> str | None:
+        """Return why the argument list of ``invocation`` cannot take MCP servers, or None when it can."""
+        argv = self.argv(invocation)
+        if self.mcp is None or MCP not in argv:
+            return f'it takes no MCP servers in its {invocation} argv; give it mcp = "<renderer>" and a {MCP} element'
+        return RENDERERS[self.mcp].refuses(argv)
 
     @property
     def captures_session(self) -> bool:

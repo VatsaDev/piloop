@@ -73,6 +73,15 @@ def handle_for(worker: Worker) -> Handle:
     return Handle(worker.runtime, worker.handle)
 
 
+def view_of(worker: Worker) -> str | None:
+    """Return where you can see a launched agent (``Runtime.view``), or None.
+
+    None also for a row not launched yet, and for a runtime that is no longer installed: this only labels the agent.
+    """
+    runtime = runtimes().get(worker.runtime) if worker.runtime is not None else None
+    return None if runtime is None else runtime.view(handle_for(worker))
+
+
 def runtime_for(s: Session, worker: Worker, fallback_path: Path, factory: RuntimeFactory = make_runtime) -> Runtime:
     """Return the runtime that owns a launched worker row. Its project names the Herdr workspace."""
     project = s.get(Project, worker.project_id) if worker.project_id else None

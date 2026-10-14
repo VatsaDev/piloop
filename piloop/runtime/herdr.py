@@ -40,7 +40,7 @@ from uuid import uuid4
 from piloop import settings as settings_module
 from piloop.harnesses import Invocation
 from piloop.proc import tagged
-from piloop.runtime import Handle, NotSteerable, Outcome, StartFailed, WorkerSpec, WorkerStatus
+from piloop.runtime import Check, Handle, NotSteerable, Outcome, RuntimeFailure, StartFailed, WorkerSpec, WorkerStatus
 
 HERDR = 'herdr'
 STATUS_MAP = {
@@ -203,7 +203,7 @@ class Block:
     screen: str
 
 
-class HerdrError(RuntimeError):
+class HerdrError(RuntimeFailure):
     """A ``herdr`` command failed. ``code`` is Herdr's machine-readable error code."""
 
     def __init__(self, code: str, message: str) -> None:
@@ -213,7 +213,10 @@ class HerdrError(RuntimeError):
 
 
 class HerdrRuntime:
-    """Runs the ``herdr`` CLI against the piloop session, and starts its server when needed."""
+    """Each agent in a tab of its own in the piloop Herdr session, where you can read it and type into it.
+
+    It runs the ``herdr`` CLI against that session, and starts its server when needed.
+    """
 
     kind: ClassVar[str] = 'herdr'
     invocation: ClassVar[Invocation] = Invocation.INTERACTIVE
@@ -581,10 +584,14 @@ class HerdrRuntime:
             self._sleep(PICKUP_POLL_SECONDS)
 
     def prompt(self, handle: Handle, text: str) -> None:
-        """Submit a steering message. Herdr refuses it while the agent is blocked on a dialog.
+        """Types the message into the agent's pane, where the agent keeps it until its turn ends.
 
-        An agent of a kind in ``QUEUE_KEYS`` gets it queued for the end of its turn (``_queue``), not submitted into
-        the turn: it would end the turn to take it.
+        Claude Code and pi queue text that arrives while they work. Codex would end its turn to take it, so piloop
+        queues it with Codex's queue key (Tab). While the agent waits on a dialog, the message is refused: answer the
+        dialog in the agent's tab.
+
+        Note:
+            An agent of a kind in ``QUEUE_KEYS`` gets the message through ``_queue``.
         """
         queue = QUEUE_KEYS.get(str(handle.data.get('kind')))
         try:
@@ -647,6 +654,51 @@ class HerdrRuntime:
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 continue
+
+    def focus(self, handle: Handle) -> str:
+        """Brings the agent's tab, and its workspace, to the front of the piloop Herdr session."""
+        tab = str(handle.data['tab_id'])
+        _call('tab', 'focus', tab)
+        return f'focused tab {tab}'
+
+    def attach(self, handle: Handle) -> str:
+        """Focuses the agent's tab, then opens the piloop Herdr session in this terminal.
+
+        In that session already, it only focuses the tab. You can then go to the other agents of the session.
+
+        Note:
+            The Herdr client replaces this process. Without a terminal on stdout, nothing replaces it.
+        """
+        focused = self.focus(handle)
+        session = settings_module.settings.herdr_session
+        if not sys.stdout.isatty():
+            return f'{focused}; not a terminal, so it does not attach to Herdr session {session}'
+        if settings_module.settings.herdr_socket_path == session_socket():
+            return focused
+        os.execvp(HERDR, [HERDR, '--session', session])
+
+    @classmethod
+    def view(cls, handle: Handle) -> str | None:
+        """The agent's tab in the piloop Herdr session. None while the agent starts: its tab is not known yet."""
+        tab = handle.data.get('tab_id')
+        return None if tab is None else f'tab {tab}'
+
+    @classmethod
+    def checks(cls, executables: set[str]) -> list[Check]:
+        """Check that Herdr is on PATH, its piloop session answers, and its hooks are current for ``executables``.
+
+        Never start the server: a server that is not running starts on first use.
+        """
+        if shutil.which(HERDR) is None:
+            return [Check('herdr', 'a project uses the herdr runtime and herdr is not on PATH', 'install herdr')]
+        try:
+            running = server_running()
+        except (HerdrError, subprocess.TimeoutExpired, OSError) as e:
+            server = Check('herdr', f'the piloop session does not answer: {e}', '`herdr server stop`, then retry')
+        else:
+            answers = 'the piloop session answers' if running else 'server not running; started on first use'
+            server = Check('herdr', answers)
+        return [server, _hooks(executables)]
 
     def _split_watch(self, pane_id: str) -> None:
         """Run ``piloop watch`` on this project in a new pane to the right of ``pane_id``.
@@ -715,11 +767,6 @@ def _close_tab(tab_id: str) -> None:
             raise
 
 
-def focus_tab(tab_id: str) -> None:
-    """Bring a tab of the piloop session, and its workspace, to the front."""
-    _call('tab', 'focus', tab_id)
-
-
 def session_socket() -> str | None:
     """Return the socket path of the piloop session, or None when Herdr does not know that session name."""
     sessions = _as_dict(json.loads(_run('session', 'list', '--json')))['sessions']
@@ -759,6 +806,26 @@ def integrations() -> dict[str, str]:
     ).stdout
     lines = (line.partition(': ') for line in out.splitlines())
     return {kind: state.rsplit(' (', 1)[0] for kind, sep, state in lines if sep}
+
+
+def _hooks(executables: set[str]) -> Check:
+    """Check that Herdr's hooks are installed and current for each harness in ``executables`` that Herdr knows.
+
+    Without the hooks, Herdr reports no session for the agent. Then piloop cannot read its tokens, and a fast agent
+    that committed can look dead at startup.
+    """
+    try:
+        states = integrations()
+    except (subprocess.SubprocessError, OSError) as e:
+        return Check('herdr hooks', f'`herdr integration status` failed: {e}', 'upgrade herdr')
+    known = sorted(executables & states.keys())
+    if stale := [k for k in known if not states[k].startswith('current')]:
+        return Check(
+            'herdr hooks',
+            ', '.join(f'{k}: {states[k]}' for k in stale),
+            ', '.join(f'`herdr integration install {k}`' for k in stale),
+        )
+    return Check('herdr hooks', f'current for {", ".join(known) or "no harness Herdr has hooks for"}')
 
 
 def _call(*args: str, cli_timeout: float | None = None) -> dict[str, Any]:

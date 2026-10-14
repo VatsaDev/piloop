@@ -24,8 +24,8 @@ section.
 | `tracks` | dict\[string, [TrackConfig](#trackconfig)\] | `{}` | `[tracks.<name>]`: the share and addendum of each track. Needed only with several primaries. |
 | `confidence` | number | `0.95` | The confidence level of the paired bootstrap behind the verdict. For a `keep`, the lower bound of the primary's gain must be above zero at this level. A guardrail's margin is tested on the bound at this level too. |
 | `evaluate` | list\[string\] | required | The command (argv) that scores a commit. It runs in a clean worktree of the commit and must print `METRIC <name>=<value>` lines. |
-| `runtime` | string | `"subprocess"` | Where agents run. With `subprocess` (the default), every agent is a background process; `piloop watch` shows what it printed. With `herdr` (optional, needs Herdr), every agent gets a terminal pane that you and the orchestrator can read, type into and steer with `piloop prompt`. A package can add a runtime with a `piloop.runtimes` entry point. A role can override it (`[roles.<name>] runtime`). |
-| `harnesses` | list\[string\] | `["pi"]` | The enabled harnesses. Runs use them in turn, unless an idea pins one. |
+| `runtime` | string | `"subprocess"` | Where the agents run: the name of a runtime, which starts, watches, steers, shows and stops them. A package can add a runtime with a `piloop.runtimes` entry point. A role can override it (`[roles.<name>] runtime`). Built in: `herdr`, `subprocess`. |
+| `harnesses` | list\[string\] | `["pi"]` | The enabled harnesses. Runs use them in turn, unless an idea pins one. Built in: `claude`, `codex`, `pi`. |
 | `model` | dict\[string, string\] | required | The model id for each harness, for example `{pi = "anthropic/claude-opus-5-5", claude = "claude-opus-5-5", codex = "gpt-6.1-sol"}`. |
 | `harness` | dict\[string, [Harness](#harness)\] | `{}` | Harness definitions by name: overrides of the built-in harnesses, or new ones. |
 | `max_concurrent` | dict\[string, integer\] | `{}` | The maximum number of agents of one harness, across all roles of the project, that are started or queued to start. Example: `{claude = 2}` when the provider of its model limits the request rate. When it is the turn of a harness at its limit, the slot goes to the next harness of the rotation. An idea or request that pins that harness waits. When unset, only the limits of the roles apply. |
@@ -73,27 +73,27 @@ Experimental: projects with more than one track.
 piloop substitutes these placeholders in both argument lists: `{model}`, `{session_id}`, `{cwd}` (the
 agent's working directory), `{log_dir}` (the directory of the agent's brief and logs) and `{prompt}` (the first
 prompt, which names the file that holds the brief). An element that is exactly `{mcp}` expands to the role's MCP
-servers, in the form that `mcp` names. The three built-in harnesses run without permission prompts: workers run
+servers, in the form that `mcp` names. The built-in harnesses run without permission prompts: workers run
 in worktrees that the daemon owns and throws away, and a sandbox that cannot reach the repo's `.git` cannot
 commit. The built-in Claude harness passes `--settings` that move a foreground Bash command to the background
 after 5 minutes.
 
 When the argument list in use contains `{session_id}`, piloop creates the session id. Otherwise the runtime
-reports it: Herdr detects it for every harness it knows, and the subprocess runtime needs `session_id_pattern`.
+reports it, or reads it with `session_id_pattern`.
 When the agent ends, `entire session attach` takes this id, and `usage` uses it to find the session file and
 read the tokens the agent spent.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `executable` | string | required | The program to run. Herdr also uses it as `--kind` to detect the agent. |
-| `interactive` | list\[string\] | `[]` | The arguments for an interactive session, for a runtime whose `invocation` is `interactive` (Herdr). The runtime types the first prompt, which names the file that holds the brief, after the agent starts. |
-| `headless` | list\[string\] | required | The arguments for a run without a terminal, for a runtime whose `invocation` is `headless` (subprocess). Must include `{prompt}`. |
-| `resume` | list\[string\] | `[]` | The arguments that continue the session of a run without a terminal with a new prompt, for a `headless` runtime (subprocess). When the agent's turn ends with messages queued for it (comments, `piloop prompt`), the runtime runs the harness again with these, `{prompt}` being the messages and `{session_id}` the session's id. Must include both. When empty, the agent takes no message while it runs. |
+| `executable` | string | required | The program to run. A runtime can also use it to recognise the agent. |
+| `interactive` | list\[string\] | `[]` | The arguments for an interactive session, for a runtime whose `invocation` is `interactive`. The runtime types the first prompt, which names the file that holds the brief, after the agent starts. |
+| `headless` | list\[string\] | required | The arguments for a run without a terminal, for a runtime whose `invocation` is `headless`. Must include `{prompt}`. |
+| `resume` | list\[string\] | `[]` | The arguments that continue the session of a run without a terminal with a new prompt, for a `headless` runtime. When the agent's turn ends with messages queued for it (comments, `piloop prompt`), the runtime runs the harness again with these, `{prompt}` being the messages and `{session_id}` the session's id. Must include both. When empty, the agent takes no message while it runs. |
 | `startup_dialogs` | list\[tuple\[string, list\[string\]\]\] | `[]` | The dialogs the agent shows when it first starts in a new directory, in the order they appear. Each entry is the text to look for on the screen and the keys that accept the dialog. |
-| `entire_agent` | string \| null | `null` | Entire's name for this agent: `pi`, `claude-code` or `codex` (`entire agent list` shows them). When it is set and `entire` is installed, the agent's session is attached to Entire as a checkpoint when the agent ends. When unset, the session is not captured. |
-| `session_id_pattern` | string \| null | `null` | A regex with one group that finds the session id in the first lines of the process's stdout. Use it under the subprocess runtime for a harness that cannot take its id as an argument (`{session_id}`). For example, Codex `exec --json` prints `{"type":"thread.started","thread_id":"<uuid>"}` first. |
+| `entire_agent` | string \| null | `null` | Entire's name for this agent, as `entire agent list` shows it. When it is set and `entire` is installed, the agent's session is attached to Entire as a checkpoint when the agent ends. When unset, the session is not captured. |
+| `session_id_pattern` | string \| null | `null` | A regex with one group that finds the session id in the first lines of the process's stdout. Use it in a `headless` runtime for a harness that cannot take its id as an argument (`{session_id}`). For example, Codex `exec --json` prints `{"type":"thread.started","thread_id":"<uuid>"}` first. |
 | `usage` | [UsageSpec](#usagespec) \| null | `null` | `[harness.<name>.usage]`: how to read the tokens an agent spent, when it ends, into `workers.usage`. When unset, token usage is not recorded. |
-| `mcp` | string \| null | `null` | The renderer that expands the `{mcp}` element of the argv into the role's `[mcp.<name>]` servers: `claude`, `codex` or `pi`. Each renderer also keeps the user's own servers out, where its harness allows it. When unset, the harness takes no servers, and a role that lists servers cannot use it. |
+| `mcp` | string \| null | `null` | The renderer that expands the `{mcp}` element of the argv into the role's `[mcp.<name>]` servers. Each renderer also keeps the user's own servers out, where its harness allows it. When unset, the harness takes no servers, and a role that lists servers cannot use it. Built in: `claude`, `codex`, `pi`. |
 
 ## UsageSpec
 
@@ -105,10 +105,10 @@ names when the config loads.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `reader` | string | `"jsonl"` | The reader to use. `jsonl` reads a JSONL session file, which the keys below describe. It is the only built-in reader. |
+| `reader` | string | `"jsonl"` | The reader to use. `jsonl` reads a JSONL session file, which the keys below describe. Built in: `jsonl`. |
 | `file` | string \| null | `null` | For `jsonl`: a glob of the session file. piloop substitutes `{home}`, `{claude_config_dir}` (Claude Code's `CLAUDE_CONFIG_DIR`, by default `~/.claude`), `{codex_home}` (Codex's `CODEX_HOME`, by default `~/.codex`), `{cwd}` (the agent's cwd, encoded as `cwd` says) and `{session_id}`. Example: `{home}/.pi/agent/sessions/{cwd}/*_{session_id}.jsonl`. When the glob matches nothing, piloop tries again with `*` for `{cwd}`. This searches one level of folders, not deeper, and the session id makes the match unique. When several files match, piloop takes the newest one. |
 | `cwd` | string | `"none"` | For `jsonl`: how the harness names the folder of the agent's cwd. `dash_separators_wrapped` turns `/home/me/repo` into `--home-me-repo--`. `dash_non_alnum` turns it into `-home-me-repo`. `none` means that the folders are not named after the cwd, and matches any folder (`*`). |
-| `tally` | string \| null | `null` | For `jsonl`: the file format, which says which records have token counts, how they add up, and which records hold the agent's own text. One of `pi`, `claude` or `codex`. |
+| `tally` | string \| null | `null` | For `jsonl`: the file format, which says which records have token counts, how they add up, and which records hold the agent's own text. Built in: `claude`, `codex`, `pi`. |
 
 ## Roles
 
@@ -131,13 +131,13 @@ The keys that every `[roles.<name>]` table accepts. Each role's table below adds
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `prompt` | string \| null | `null` | The file that starts the brief of this role: a path relative to the repo root, or an absolute path. When unset, a built-in role uses its built-in prompt. A new role needs it. |
-| `runtime` | string \| null | `null` | Where the agents of this role run. When unset, the role uses the project's `runtime`. |
+| `runtime` | string \| null | `null` | Where the agents of this role run. When unset, the role uses the project's `runtime`. Built in: `herdr`, `subprocess`. |
 | `harnesses` | list\[string\] \| null | `null` | The harness rotation of this role. When unset, the role uses the project's `harnesses`. |
 | `model` | dict\[string, string\] \| null | `null` | The model for each harness in this role. It is merged over the project's `model`. |
 | `timeout` | number | `600` | The number of seconds one agent may run before it is stopped. |
 | `max_concurrent` | integer | `1` | The maximum number of agents of this role that run at the same time. More requests stay `requested` until a slot is free. |
 | `addendum` | string \| null | `null` | A repo-relative file that is appended to `brief.md` in the briefs of this role only. Use it for instructions that only this role needs, for example how the research agent searches. |
-| `mcp` | list\[string\] | `[]` | The MCP servers that the agents of this role get, by the name of their `[mcp.<name>]` table. Every harness in the role's rotation must be able to take them (`[harness.<name>] mcp`). The built-in `claude`, `codex` and `pi` harnesses can. |
+| `mcp` | list\[string\] | `[]` | The MCP servers that the agents of this role get, by the name of their `[mcp.<name>]` table. Every harness in the role's rotation must be able to take them in the invocation of the role's runtime (`[harness.<name>] mcp`). |
 | `writes` | list\[string\] | `[]` | What the agents of this role may write, as their brief states it. Only `files` is enforced. |
 | `files` | `nothing` \| `seeds` \| `ideas` | `"seeds"` | What the agents of this role may file with `piloop idea`: `nothing`, `seeds` or `ideas`. The CLI refuses the rest. |
 | `wake_budget` | integer \| null | `null` | The size in tokens of the lessons overview that opens this role's briefs. When unset, `[memory] wake_budget`. 0 turns it off for this role. |
@@ -170,7 +170,7 @@ name defines a new role, and needs `prompt` and `triggers`.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `runs` | boolean | `false` | The agents of this role do no runs. Set `runs = true` in a new table to define a role that does runs. |
-| `triggers` | list\[[Trigger](#trigger)\] | required | When the daemon requests an agent of this role: a list of `{ kind = "<trigger>", ... }` entries, checked in order on each tick. The built-in triggers are `anomaly`, `cron`, `seed`, `low_water` (research only), `scout` (research only) and `sql`. An empty list means that agents start only on request (`piloop launch`). |
+| `triggers` | list\[[Trigger](#trigger)\] | required | When the daemon requests an agent of this role: a list of `{ kind = "<trigger>", ... }` entries, checked in order on each tick. A package can add triggers. An empty list means that agents start only on request (`piloop launch`). Built in: `anomaly`, `cron`, `low_water`, `scout`, `seed`, `sql`. |
 | `workdir` | `head` \| `project` | `"head"` | Where the agent works: `head`, a detached worktree at the head, or `project`, the project checkout. |
 | `interval` | number | `0` | The number of seconds between two routine sweeps of the `cron` trigger, counted from the start of the last one. A sweep that investigates an anomaly is not a routine sweep. 0 turns the timer off. |
 
@@ -193,7 +193,7 @@ The daemon checks the entries in the order of the list.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | required | The name of the trigger: `anomaly`, `cron`, `seed`, `low_water`, `scout`, `sql`, or one that a package adds. |
+| `kind` | string | required | The name of the trigger. A package can add triggers. Built in: `anomaly`, `cron`, `low_water`, `scout`, `seed`, `sql`. |
 
 ## ResearchRole
 
@@ -258,7 +258,7 @@ you request with `piloop launch` after the stop still starts.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `target` | number \| null | `null` | Stop when the primary metric at the head (the latest keep on the trunk) reaches this value, in its direction. Only for a project with one track. |
-| `max_runs` | integer \| null | `null` | Stop after this many worker runs. A run counts while it runs, and when it ends with a candidate that is measured or waits for its measurement. A run that stopped at its own first check, with no commit or only `Piloop-Eval: skip` commits, does not count. A run that a daemon stop, a daemon crash or a campaign stop ended does not count either. `[spend]` and `max_tokens` limit what those runs cost. |
+| `max_runs` | integer \| null | `null` | Stop after this many worker runs, once none of them is queued, running or being scored. A run counts while it is queued, running or being scored, so piloop never starts more runs than this. A finished run counts when it has a candidate that is measured or waits for its measurement. A run with no commit or only `Piloop-Eval: skip` commits does not count, and piloop starts another run in its place. A run that a daemon stop, a daemon crash or a campaign stop ended does not count either. `[spend]` and `max_tokens` limit what those runs cost. |
 | `max_hours` | number \| null | `null` | Stop after this many hours of wall-clock time since the first run of the project started. |
 | `max_tokens` | integer \| null | `null` | Stop when all the agents of the project together spent this many tokens (the `total` of `workers.usage`), summed over the agents that ended. |
 | `plateau` | integer \| null | `null` | Stop after this many finished runs in a row without a new `keep` candidate. Every finished run counts, also one with no commit or only `Piloop-Eval: skip` commits: such runs make no progress either. A run that a daemon stop, a daemon crash or a campaign stop ended does not count. |
@@ -292,9 +292,9 @@ read as $0. To resume, raise `limit` and run `piloop init`.
 
 ## AnomalyTrigger
 
-`anomaly`: an incident-class anomaly (`piloop.reports.overview`) that no agent of the project got yet.
+The daemon detected an incident that no agent of the project got yet. The agent gets it to investigate.
 
-The row gets the new anomalies, one `anomaly.reported` event each. For the watchdog, that makes it an incident
+Incidents are the incident-class anomalies of `piloop.reports.overview`. The row gets the new anomalies, one `anomaly.reported` event each. For the watchdog, that makes it an incident
 sweep.
 
 | Key | Type | Default | Description |
@@ -303,7 +303,7 @@ sweep.
 
 ## CronTrigger
 
-`cron`: the role's `interval` seconds since the start of its last routine row, one that got no anomaly.
+The role's `interval` passed since the start of its last routine agent, one that got no anomaly.
 
 The first one counts from the registration of the project. An `interval` of 0 turns it off.
 
@@ -313,7 +313,7 @@ The first one counts from the registration of the project. An `interval` of 0 tu
 
 ## SeedTrigger
 
-`seed`: a seed filed after the role's latest row started, while a slot of the role is free.
+A seed was filed after the role's latest agent started, and a slot of the role is free.
 
 It fires however full the backlog is. If the latest row got the seed but was killed, the seed is retried, once per
 batch, as `low_water` retries. A seed that a sweep read and did not develop is in the next sweep's brief,
@@ -326,9 +326,9 @@ seed filed in that moment waits for the next sweep.
 
 ## LowWaterTrigger
 
-`low_water`: the backlog has fewer ideas than its target, and there is a reason to sweep now.
+The backlog of runnable ideas is shorter than its target, and there is a reason to sweep now.
 
-Only the research role uses it. The target is one idea per worker slot plus `[roles.research] buffer`. So ideas
+The target is one idea per worker slot plus `[roles.research] buffer`. So ideas
 exist before slots free up, and a free slot does not wait a whole sweep for an idea. The ideas that sweeps in
 flight can insert already count as backlog. Nothing is requested while every research slot is busy. Runnable
 ideas count. Ideas blocked only by prerequisites in flight also count, because they run when those finish. An idea
@@ -357,7 +357,7 @@ It requests enough sweeps to fill the shortfall at `max_ideas` each, within the 
 
 ## ScoutTrigger
 
-`scout`: `[roles.research.scout] interval` seconds since the last scout sweep started. Research only.
+`[roles.research.scout] interval` passed since the last scout sweep started.
 
 It requests a scout sweep, a research row in scout mode (`piloop.agents.scout`). It does nothing while the
 `[roles.research.scout]` table is not there.
@@ -368,7 +368,7 @@ It requests a scout sweep, a research row in scout mode (`piloop.agents.scout`).
 
 ## SqlTrigger
 
-`sql`: a query on the piloop database that returns at least one row.
+A query on the piloop database returns at least one row.
 
 The query may use two parameters: `:project`, the project's id, and `:since`, when the role's latest row
 started (or when the project was registered), as UTC text (`2026-01-31 12:00:00.000000`). Compare `:since` with

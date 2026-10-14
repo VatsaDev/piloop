@@ -30,6 +30,7 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.otel import Tracer
+from piloop.reports.overview import progress
 from piloop.scoring.ledger import SKIPPED
 from tests.conftest import HARNESS_NOOP, HARNESS_WORSE, ScriptRuntime, span_named, write_toml
 from tests.daemon.test_scheduler import add_ideas, make_scheduler
@@ -123,6 +124,12 @@ def reason(db: Database, project: Project) -> str | None:
         return stop_reason(s, row, ProjectConfig.model_validate(row.config))
 
 
+def progress_line(db: Database, project: Project, cfg: ProjectConfig) -> str:
+    """Return the first part of the progress line: the runs against ``max_runs``."""
+    with db.session() as s:
+        return progress(s, s.get_one(Project, project.id), cfg, utcnow()).split(' · ')[0]
+
+
 def project_state(db: Database, project: Project) -> tuple[ProjectStatus, str | None]:
     with db.session() as s:
         row = s.get_one(Project, project.id)
@@ -178,12 +185,45 @@ def test_target_lower_is_better(db: Database, project: Project) -> None:
     assert reason(db, project) == 'target: size 5 ≤ 5', "the baseline's solve.txt is five bytes"
 
 
-def test_max_runs_counts_every_run_created(db: Database, project: Project) -> None:
-    configure(db, project, max_runs=2)
+def test_a_project_that_max_runs_stopped_shows_all_its_runs_in_the_progress_line(
+    db: Database, project: Project
+) -> None:
+    """The progress line counts the runs as ``max_runs`` does, and a stop never ends a run that ``max_runs`` counts."""
+    cfg = configure(db, project, max_runs=2)
     add_run(db, project)
-    assert reason(db, project) is None
-    add_run(db, project, status=RunStatus.RUNNING)
-    assert reason(db, project) == 'max_runs: 2 runs', 'in flight or finished, a run is a run'
+    in_flight = add_run(db, project, status=RunStatus.RUNNING)
+    assert (reason(db, project), progress_line(db, project, cfg)) == (None, 'run 2/2'), (
+        'the run in flight counts, but it can still end without a scored candidate, so the campaign goes on'
+    )
+    with db.session() as s:
+        run = s.get_one(Run, in_flight)
+        run.status, run.error, run.finished_at = RunStatus.FAILED, 'worker produced no commits', utcnow()
+        s.commit()
+    assert (reason(db, project), progress_line(db, project, cfg)) == (None, 'run 1/2'), 'a run without a commit'
+    add_run(db, project)
+    assert (reason(db, project), progress_line(db, project, cfg)) == ('max_runs: 2 runs', 'run 2/2')
+
+
+def test_max_runs_waits_for_a_finished_run_whose_commits_are_scored(db: Database, project: Project) -> None:
+    """While the commits of a finished run are scored (``runs.scoring``), the run counts but cannot stop the campaign.
+
+    Its idea's status does not matter: a human may park or reject it meanwhile.
+    """
+    configure(db, project, max_runs=1)
+    run_id = add_run(db, project, measured=False)
+
+    def scoring(on: bool, idea: IdeaStatus) -> tuple[str | None, int]:
+        with db.session() as s:
+            run = s.get_one(Run, run_id)
+            run.scoring, run.idea.status = on, idea
+            s.commit()
+            return reason(db, project), runs(s, s.get_one(Project, project.id))
+
+    assert scoring(True, IdeaStatus.SCHEDULED) == (None, 1), 'its candidates do not exist yet, but it keeps its place'
+    assert scoring(True, IdeaStatus.PARKED) == (None, 1), 'parked meanwhile: it still keeps its place'
+    add_candidate(db, project, run_id, Verdict.UNMEASURED, SKIPPED)
+    assert scoring(False, IdeaStatus.DONE) == (None, 0), 'only skip commits: it does not count, and another run starts'
+    assert scoring(False, IdeaStatus.SCHEDULED) == (None, 0), 'scored: the status of its idea does not matter'
 
 
 def test_max_runs_caps_the_runs_queued_in_one_tick(
@@ -283,7 +323,8 @@ def test_only_runs_that_produced_a_measured_candidate_count_toward_max_runs(db: 
     add_candidate(db, project, add_run(db, project, measured=False), Verdict.PENDING)
     assert reason(db, project) is None, 'two'
     add_run(db, project, status=RunStatus.RUNNING)
-    assert reason(db, project) == 'max_runs: 3 runs'
+    with db.session() as s:
+        assert runs(s, s.get_one(Project, project.id)) == 3, 'a run in flight counts toward max_runs'
 
 
 def test_a_keep_followed_by_plateau_unmeasured_runs_stops_the_campaign(db: Database, project: Project) -> None:
@@ -322,7 +363,7 @@ def test_runs_that_the_daemon_stopped_count_toward_no_budget(db: Database, proje
     assert reason(db, project) is None, 'a stop, a crash or a campaign stop is not an attempt'
     add_run(db, project, status=RunStatus.FAILED, error='evaluate timed out')
     assert reason(db, project) == 'plateau: 1 runs without a keep'
-    add_run(db, project, status=RunStatus.RUNNING)
+    add_run(db, project)
     assert reason(db, project) == 'max_runs: 2 runs'
 
 
@@ -345,7 +386,7 @@ def test_plateau_ignores_runs_that_finished_before_a_later_keep(db: Database, pr
 def test_stopping_drains_the_requests_and_queued_runs_pending_at_that_moment(
     db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    configure(db, project, max_runs=1)
+    configure(db, project, plateau=1)
     add_run(db, project)
     (idea,) = add_ideas(db, project, 'queued before the stop')
     with db.session() as s:

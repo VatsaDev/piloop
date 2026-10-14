@@ -18,6 +18,7 @@ from pytest_mock import MockerFixture
 from rich.console import Console
 from sqlalchemy import select
 
+from piloop import settings as settings_module
 from piloop.agents.scout import is_scout
 from piloop.campaign import inbox, project as project_module
 from piloop.campaign.ideas import defined_by
@@ -702,26 +703,29 @@ def test_attach_focuses_a_worker_tab(
         s.commit()
     db.close()
     out()
-    execvp = mocker.patch('piloop.cli.agents.os.execvp')
-    mocker.patch('piloop.cli.agents.sys.stdout').isatty.return_value = True
+    execvp = mocker.patch('piloop.runtime.herdr.os.execvp')
+    mocker.patch('piloop.runtime.herdr.sys.stdout').isatty.return_value = True
     run_cli(['attach', '1'])
     assert herdr_calls(herdr_log) == [
         ['--session', 'piloop', 'tab', 'focus', 'w7:t3'],
         ['--session', 'piloop', 'session', 'list', '--json'],
     ]
     assert execvp.call_args.args == ('herdr', ['herdr', '--session', 'piloop'])
-    tty = mocker.patch('piloop.cli.agents.sys.stdout')
+    tty = mocker.patch('piloop.runtime.herdr.sys.stdout')
     tty.isatty.return_value = False
+    out()
     run_cli(['attach', '1'])
-    assert out().strip() == 'not a terminal; would attach to Herdr session piloop with tab w7:t3 focused'
+    assert out().strip() == 'focused tab w7:t3; not a terminal, so it does not attach to Herdr session piloop'
     tty.isatty.return_value = True
     monkeypatch.setenv('HERDR_SOCKET_PATH', SOCKET)
-    monkeypatch.setattr(common, 'settings', Settings(home=common.settings.home))
+    monkeypatch.setattr(settings_module, 'settings', Settings(home=common.settings.home))
     run_cli(['attach', '1'])
     assert out().strip() == 'focused tab w7:t3' and execvp.call_count == 1, 'already inside the piloop session'
-    run_cli(['attach', '2'])
-    assert out().strip() == (
-        'worker#2 is headless (subprocess runtime): /tmp/x/worker.stdout while it runs, transcript.txt once it ends'
+    with pytest.raises(SystemExit) as headless:
+        run_cli(['attach', '2'])
+    assert str(headless.value) == (
+        'worker#2: a background process has no terminal to show: read /tmp/x/worker.stdout; once it ends, its'
+        ' transcript is /tmp/x/transcript.txt'
     )
     with pytest.raises(SystemExit, match='worker#3 is not running'):
         run_cli(['attach', '3'])

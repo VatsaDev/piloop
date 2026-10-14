@@ -424,10 +424,10 @@ def test_the_agents_panel_shows_the_selected_agents_output_and_its_state(
  demo · head score 4 (candidate#4, +3 vs baseline) · 3 kept / 4 candidates · 1.2M tok
  run 2/50 · 2.0h/12h · 1.2M/5.0M tok · 0/10 runs without a keep · target ≥ 10 (head 4)
 ╭─ [1] Inbox 2 ────────────────────────────────────────────────────────────────────────╮╭─ [0] agents ─────────────────────────────────────────────────────────╮
-│ p1  escalation  watchdog#3  30m  Codex cannot start: trust dialog. Environment or har││ worker-1 · pi/m · running 3m · tab w7:t2                             │
+│ p1  escalation  watchdog#3  30m  Codex cannot start: trust dialog. Environment or har││ worker-1 · pi/m · running 3m · herdr tab w7:t2                       │
 │ p2  decision    pi          20m  Keep #2: the floor holds.                           ││ on: idea#2 longer lines                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯│ blocked on a dialog: steering is refused until it is answered; enter │
-╭─ [2] Agents 2 · 1 blocked ───────────────────────────────────────────────────────────╮│ focuses its tab                                                      │
+╭─ [2] Agents 2 · 1 blocked ───────────────────────────────────────────────────────────╮│ brings it to the front                                               │
 │ ◐ #1  worker    blocked  pi/m         3m   idea#2 longer lines                       ││                                                                      │
 │ · #2  research  —        claude/opus  40s  low_water: 1 ready < 10                   ││ the last 1 lines it wrote                                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯│ hello from the agent                                                 │
@@ -464,7 +464,7 @@ def test_the_agents_panel_shows_the_selected_agents_output_and_its_state(
 │                                                                                      ││                                                                      │
 │                                                                                      ││                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────╯
- ⏎ focus tab  s steer  / filter  esc projects  q quit  ? keys
+ ⏎ focus  s steer  / filter  esc projects  q quit  ? keys
 """)
     assert 'proposing idea B' in shots[1], "a headless agent's saved transcript"
 
@@ -496,16 +496,23 @@ def test_agents_keys_focus_the_tab_and_steer(
         await note('up', 'enter')
         await note('s', *'go', 'enter')
         await note('s', *'go', 'enter')
+        with db.session() as s:
+            headless = s.get_one(Worker, 2)
+            headless.state, headless.runtime = WorkerState.RUNNING, 'subprocess'
+            headless.handle = {'pid': 1, 'start_time': 0, 'log_dir': '/x'}
+            s.commit()
+        await note('down', 'enter')
 
     drive(db, 'demo', scenario)
     assert notes == [
-        'focused worker#1 (tab w7:t2)',
+        'worker#1: focused tab w7:t2',
         'steered worker#1',
-        'worker#2 has no Herdr tab (runtime = "subprocess"): nothing to focus',
+        'worker#2 is starting, not running: nothing to focus',
         'worker#2 is starting, not running: nothing to steer',
         'could not focus worker#1: tab_not_found: w7:t2 is gone',
         'not steered: worker-1 is blocked on an approval or question; read it and answer with herdr agent send-keys',
         'could not steer worker#1: agent_not_found: gone',
+        'worker#2: a background process has no terminal to show: read /x/worker.stdout',
     ]
     assert [c for c in calls(herdr_log) if c[:2] in (['tab', 'focus'], ['agent', 'prompt'])][:2] == [
         ['tab', 'focus', 'w7:t2'],

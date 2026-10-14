@@ -384,3 +384,31 @@ def test_0009_marks_every_archiving_made_before_it_as_pruned_when_made_and_compl
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         columns = [c for (_, c, *_) in con.execute('PRAGMA table_info(archives)')]
         assert 'pruned_at' not in columns and 'complete' not in columns
+
+
+def test_0010_marks_the_runs_that_a_stopped_daemon_was_scoring_and_checks_the_flag(tmp_path: Path) -> None:
+    """A finished run whose idea is ``scheduled`` with no later run was being scored: the old rule, kept as data."""
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0009')
+    idea = (
+        "INSERT INTO ideas (track, project_id, title, hypothesis, created_by, status) VALUES ('t', 1, ?, 'h', 'c', ?)"
+    )
+    run = "INSERT INTO runs (idea_id, attempt, base_candidate_id, harness, model, status) VALUES (?, ?, 1, 'h', 'm', ?)"
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+        for title, status in (('scored now', 'scheduled'), ('queued again', 'scheduled'), ('settled', 'done')):
+            con.execute(idea, (title, status))
+        for idea_id, attempt, status in ((1, 1, 'succeeded'), (2, 1, 'failed'), (2, 2, 'queued'), (3, 1, 'succeeded')):
+            con.execute(run, (idea_id, attempt, status))
+    command.upgrade(cfg, '0010')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT id, scoring FROM runs ORDER BY id').fetchall() == [(1, 1), (2, 0), (3, 0), (4, 0)]
+        with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: runs.scoring needs a finished'):
+            con.execute('UPDATE runs SET scoring = 1 WHERE id = 3')
+        triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
+        assert triggers == sorted(t.name for t in PERSISTENT), 'the rebuilt runs table has its triggers back'
+    command.downgrade(cfg, '0009')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert 'scoring' not in [c for (_, c, *_) in con.execute('PRAGMA table_info(runs)')]
+        assert con.execute('SELECT count(*) FROM runs').fetchone() == (4,)

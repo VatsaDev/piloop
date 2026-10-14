@@ -81,14 +81,12 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def test_the_registries_hold_the_shipped_pieces_and_nothing_names_a_harness_outside_the_leaves() -> None:
+def test_the_registries_hold_the_shipped_pieces() -> None:
+    """``tests/test_registry_names.py`` checks that no module outside the leaves names one."""
     assert set(READERS) == {'jsonl'}
     assert set(CWD_ENCODERS) == {'none', 'dash_separators_wrapped', 'dash_non_alnum'}
     assert set(TALLIES) == {'pi', 'claude', 'codex'}
     assert set(SAID) == {'pi', 'claude', 'codex'}
-    generic = (Path('piloop/usage/__init__.py').read_text() + Path('piloop/usage/jsonl.py').read_text()).lower()
-    for name in ('pi', 'claude', 'codex'):
-        assert f"'{name}'" not in generic, f'{name} belongs in piloop/usage/tallies/{name}.py and the harness spec'
     assert {name: h.usage for name, h in DEFAULT_HARNESSES.items()} == snapshot(
         {
             'pi': UsageSpec(
@@ -231,17 +229,19 @@ def test_a_project_spells_a_spec_in_toml_for_an_override_or_a_custom_harness(hom
     assert cfg.harness_for('script').usage is None, 'no spec: no capture'
     toml.write_text(toml.read_text().replace('tally = "claude"', 'tally = "gpt"'))
     with pytest.raises(
-        ConfigError, match=r"harness.claude.usage: unknown usage tally 'gpt'; known: \['claude', 'codex', 'pi'\]"
+        ConfigError, match=re.escape(f"harness.claude.usage: unknown usage tally 'gpt'; known: {sorted(TALLIES)}")
     ):
         load_project_config(project_path)
 
 
 def test_spec_names_are_checked_against_the_registries() -> None:
-    with pytest.raises(ValidationError, match=r"unknown usage reader 'csv'; known: \['jsonl'\]"):
+    with pytest.raises(ValidationError, match=re.escape(f"unknown usage reader 'csv'; known: {sorted(READERS)}")):
         UsageSpec(reader='csv', file='x')
     with pytest.raises(ValidationError, match='the jsonl usage reader needs `file`'):
         UsageSpec(tally='pi')
-    with pytest.raises(ValidationError, match=r"unknown usage cwd encoder 'hex'; known: \['dash_non_alnum'"):
+    with pytest.raises(
+        ValidationError, match=re.escape(f"unknown usage cwd encoder 'hex'; known: {sorted(CWD_ENCODERS)}")
+    ):
         UsageSpec(file='x', cwd='hex', tally='pi')
     with pytest.raises(ValidationError, match='unknown usage tally None'):
         UsageSpec(file='x')

@@ -72,8 +72,7 @@ class UsageSpec(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
 
     reader: str = 'jsonl'
-    """The reader to use. ``jsonl`` reads a JSONL session file, which the keys below describe. It is the only
-    built-in reader."""
+    """The reader to use. ``jsonl`` reads a JSONL session file, which the keys below describe."""
     file: str | None = None
     """For ``jsonl``: a glob of the session file. piloop substitutes ``{home}``, ``{claude_config_dir}`` (Claude
     Code's ``CLAUDE_CONFIG_DIR``, by default ``~/.claude``), ``{codex_home}`` (Codex's ``CODEX_HOME``, by default
@@ -87,7 +86,7 @@ class UsageSpec(BaseModel):
     that the folders are not named after the cwd, and matches any folder (``*``)."""
     tally: str | None = None
     """For ``jsonl``: the file format, which says which records have token counts, how they add up, and which
-    records hold the agent's own text. One of ``pi``, ``claude`` or ``codex``."""
+    records hold the agent's own text."""
 
     @model_validator(mode='after')
     def _check(self) -> Self:

@@ -34,10 +34,8 @@ from piloop.campaign.project import find
 from piloop.config import config_of
 from piloop.db.models import Idea, IdeaStatus, Worker, WorkerState, utcnow
 from piloop.db.session import Database
-from piloop.reports.overview import tab_of
-from piloop.runtime import NotSteerable
+from piloop.runtime import Handle, NotAttachable, NotSteerable, Runtime, RuntimeFailure
 from piloop.runtime.factory import handle_for, runtime_for
-from piloop.runtime.herdr import HerdrError, focus_tab
 from piloop.watch.panels import PANELS, PROJECT_COLUMNS, Cell, Context, Item, Panel, header, projects
 
 POLL_SECONDS = 0.5
@@ -199,27 +197,16 @@ class InboxTable(PanelTable):
 
 
 class AgentsTable(PanelTable):
-    """Panel 2. ``enter`` focuses the agent's Herdr tab, and ``s`` steers it with a prompt typed into its pane."""
+    """Panel 2. ``enter`` brings the agent to the front of its runtime's view, and ``s`` steers it with a message."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding('enter', 'focus_tab', 'focus tab'),
+        Binding('enter', 'focus', 'focus'),
         Binding('s', 'steer', 'steer'),
     ]
 
-    def action_focus_tab(self) -> None:
-        if (key := self.key()) is None:
-            return
-        with self.campaign.db.session() as s:
-            tab = tab_of(s.get_one(Worker, key))
-        if tab is None:
-            self.campaign.say(f'worker#{key} has no Herdr tab (runtime = "subprocess"): nothing to focus')
-            return
-        try:
-            focus_tab(tab)
-        except HerdrError as e:
-            self.campaign.say(f'could not focus worker#{key}: {e}')
-            return
-        self.campaign.say(f'focused worker#{key} (tab {tab})')
+    def action_focus(self) -> None:
+        if (key := self.key()) is not None:
+            self.campaign.say(focus(self.campaign.db, key, self.campaign.home))
 
     def action_steer(self) -> None:
         if (key := self.key()) is None:
@@ -229,23 +216,52 @@ class AgentsTable(PanelTable):
             if text is not None:
                 self.campaign.say(steer(self.campaign.db, key, text, self.campaign.home))
 
-        self.app.push_screen(Ask(f'steer worker#{key}: typed into its pane as a prompt'), send)
+        self.app.push_screen(Ask(f'steer worker#{key}: a message for its next turn'), send)
+
+
+def focus(db: Database, worker_id: int, home: Path) -> str:
+    """Bring a running agent to the front of its runtime's view, and return a note that says what happened."""
+    try:
+        runtime, handle = _running(db, worker_id, home, 'focus')
+        return f'worker#{worker_id}: {runtime.focus(handle)}'
+    except NotRunning as e:
+        return str(e)
+    except NotAttachable as e:
+        return f'worker#{worker_id}: {e}'
+    except RuntimeFailure as e:
+        return f'could not focus worker#{worker_id}: {e}'
 
 
 def steer(db: Database, worker_id: int, text: str, home: Path) -> str:
     """Prompt a running agent as ``piloop prompt`` does, and return a note that says what happened."""
+    try:
+        runtime, handle = _running(db, worker_id, home, 'steer')
+        runtime.prompt(handle, text)
+    except NotRunning as e:
+        return str(e)
+    except NotSteerable as e:
+        return f'not steered: {e}'
+    except RuntimeFailure as e:
+        return f'could not steer worker#{worker_id}: {e}'
+    return f'steered worker#{worker_id}'
+
+
+class NotRunning(Exception):
+    """The agent is not running, so there is nothing to act on. The message says so."""
+
+
+def _running(db: Database, worker_id: int, home: Path, verb: str) -> tuple[Runtime, Handle]:
+    """Return the runtime and the handle of a running agent.
+
+    Raises:
+        NotRunning: the agent is not running.
+        RuntimeFailure: the runtime cannot be made, for example because it is not installed.
+    """
     with db.session() as s:
         worker = s.get_one(Worker, worker_id)
         if worker.state is not WorkerState.RUNNING:
-            return f'worker#{worker_id} is {worker.state}, not running: nothing to steer'
-        handle, runtime = handle_for(worker), runtime_for(s, worker, home)
-    try:
-        runtime.prompt(handle, text)
-    except NotSteerable as e:
-        return f'not steered: {e}'
-    except HerdrError as e:
-        return f'could not steer worker#{worker_id}: {e}'
-    return f'steered worker#{worker_id}'
+            raise NotRunning(f'worker#{worker_id} is {worker.state}, not running: nothing to {verb}')
+        return runtime_for(s, worker, home), handle_for(worker)
 
 
 class IdeasTable(PanelTable):

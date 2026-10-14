@@ -156,8 +156,9 @@ class Scheduler:
         The daemon watches a ``running`` agent whose worktree still exists until it ends, even if it ended already. Then
         it finishes the run as if no daemon had stopped (``RunExecutor.reattach``, or ``_reattach_sweep`` for a sweep).
         Both an in-place restart (``hand_over``) and a crash leave agents for this. A closed run whose commits were not
-        all scored is scored now (``RunExecutor.resume``). Its idea stayed ``scheduled``, so it does not run again and
-        no dependent idea takes it before its keeps are known. The worktrees of failed runs and sweeps are removed.
+        all scored (``runs.scoring``) is scored now (``RunExecutor.resume``), whatever its idea's status. An idea that
+        stayed ``scheduled`` does not run again, and no dependent idea takes it before its keeps are known. The
+        worktrees of failed runs and sweeps are removed.
         """
         with self._tracer.span('piloop.reap'):
             left = self._left_running()
@@ -171,9 +172,7 @@ class Scheduler:
                 )
                 self._futures[worker_id] = self._pool.submit(body)
             with self._db.session() as s:
-                open_run = exists().where(Run.idea_id == Idea.id, Run.status.in_(OPEN_RUNS))
-                ideas = s.scalars(select(Idea).where(Idea.status == IdeaStatus.SCHEDULED, ~open_run)).all()
-                unscored = [idea.runs[-1].id for idea in ideas]
+                unscored = s.scalars(select(Run.id).where(Run.scoring).order_by(Run.id)).all()
             for run_id in unscored:
                 self._tracer.event('run.unscored', run=run_id)
                 self._scoring[TargetKind.RUN, run_id] = self._pool.submit(self._executor.resume, run_id)

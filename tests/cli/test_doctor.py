@@ -13,11 +13,12 @@ from alembic import command
 from alembic.script import ScriptDirectory
 
 from piloop.cli import skills
-from piloop.cli.doctor import Check, checks, report
+from piloop.cli.doctor import checks, report
 from piloop.cli.version import installed
 from piloop.config import ProjectConfig
 from piloop.db.models import Project
 from piloop.db.session import Database
+from piloop.runtime import Check
 from piloop.settings import Settings
 from tests.conftest import FAKE_HERDR, hold_lock
 from tests.db.test_migrations import alembic

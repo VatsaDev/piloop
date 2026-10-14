@@ -43,13 +43,15 @@ Longer than the default ``herdr_startup_grace_seconds``: a Herdr agent that neve
 for the whole grace, and must still count as a failed start, not as a run that worked and left nothing."""
 STARTUP_ANOMALY = 'anomaly.startup'
 """The event on a worker that did not start to work (``Outcome.startup_failed``): an environment fault, not bad work."""
-CLEARED_ENV = ('CLAUDE_CODE_CHILD_SESSION',)
-"""Variables to clear in an agent's environment.
+PARENT_SESSION_ENV = ('CLAUDE_CODE_CHILD_SESSION',)
+"""Variables that an agent CLI sets for the processes of its session, cleared in the environment of every agent.
 
-A Claude Code session sets ``CLAUDE_CODE_CHILD_SESSION`` for every process it runs, so a daemon or Herdr server started
-from one passes it on. A Claude Code agent that inherits it saves no transcript, so it has no token usage and no
-Entire checkpoint. The value is set to empty, which Claude Code reads as unset, because a Herdr pane can only override
-what its server inherited.
+piloop itself may run inside an agent session: a daemon or a Herdr server started from one inherits these markers.
+An agent that inherits one acts as a child of that session. Claude Code then saves no transcript, so the agent has
+no token usage and no Entire checkpoint. This is a fact about the environment piloop runs in, not about one harness
+definition, so the launcher clears them for every agent: ``[harness.<name>]`` replaces a built-in definition, and a
+custom harness can run the same CLI. The value is set to empty, which Claude Code reads as unset, because a Herdr pane
+can only override what its server inherited.
 """
 PROMPT = 'Your brief is in {path}. Read all of it, in parts if a read comes back cut short, then follow it.'
 """An agent's first prompt, on its argv or Herdr's (``agent prompt``).
@@ -259,7 +261,7 @@ class Launcher:
             'PILOOP_HOME': str(self.home),
             'PILOOP_ACTOR': actor,
             'PATH': child_env()['PATH'],
-            **dict.fromkeys(CLEARED_ENV, ''),
+            **dict.fromkeys(PARENT_SESSION_ENV, ''),
             **forwarded_env(servers, child_env()),
         }
         argv = [

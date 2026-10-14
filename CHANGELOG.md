@@ -52,9 +52,20 @@ A deprecated configuration key shows a warning for at least one minor release be
   files from a bounded walk instead of the whole workspace. The first daemon start after the upgrade archives every
   done idea and stopped campaign that is already there. When not one more file fits above the reserve, archiving
   leaves the rest, writes an `anomaly.disk` event on the project and waits 10 minutes.
+- The `Runtime` protocol has four new methods: `focus` and `attach` show an agent, `view` names where you can see it,
+  and `checks` reports to `piloop doctor`. `NotAttachable` says that a runtime cannot show an agent, and where to look
+  instead. `RuntimeFailure` is the base of the errors that a runtime reports. **Breaking** for a runtime that a
+  package adds: it must implement the four methods.
+- The docs have a [Runtimes](https://piloop.autoresearch.inc/concepts/runtimes) page. The tables of the built-in
+  runtimes, triggers, harnesses and role defaults, the `Runtime` methods and the `[stop]` keys are generated from the
+  code, so they no longer drift.
 
 ### Changed
 
+- `piloop attach`, `piloop prompt`, `enter` in `piloop watch`, the place of an agent in `piloop status` and `piloop
+  watch`, and the runtime checks of `piloop doctor` ask the runtime of the agent. No command checks the name of a
+  runtime, so a runtime that a package adds works with all of them. `piloop attach` on an agent that its runtime
+  cannot show exits with an error that names its output file and its transcript.
 - `workers.kind` holds any role name of the project. A trigger refuses a name that is not a role of the project.
 - A commit marked `Piloop-Eval: skip` gets the new verdict `unmeasured` instead of `discard`, so scaffolding no longer
   counts as a dead end in the history, the research pack or agents' queries. Migration `0003` converts the daemon's
@@ -96,6 +107,18 @@ A deprecated configuration key shows a warning for at least one minor release be
   a "piloop init" commit.
 - `piloop init` validates `piloop.toml` before it commits it. It committed an invalid config, then reported it
   invalid; now the commit waits until the config is valid.
+- A run of a role that you define with `runs = true` is requeued from its recovered work up to that role's
+  `recovery_requeues`. It used the worker's value.
+- The inbox line of an anomaly names the agent that it requested by its signature (`<role>#<id>`). It said
+  `watchdog worker#<id>` for every role.
+- An agent that died at startup is no incident when its role has the `anomaly` trigger, whatever the role's name: the
+  agent it would request could die the same way. Only a watchdog was treated so, and its anomaly had a key of its
+  own (`dead at startup, a watchdog`).
+- `[stop] max_runs` stops the campaign only when no run that it counts runs or is being scored. It stopped the
+  campaign as soon as its last run was queued, then ended that run early. A project stopped with `max_runs: 10 runs`
+  showed `run 9/10`. A finished run also counts while its commits are scored, so no extra run is queued meanwhile.
+  The new `runs.scoring` column (migration `0010`) records that; a run keeps its place even when its idea is parked
+  or rejected meanwhile, and a restarted daemon resumes the scoring of every such run.
 
 ## [0.1.0] - 2026-10-13
 

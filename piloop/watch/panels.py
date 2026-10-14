@@ -44,11 +44,10 @@ from piloop.reports.overview import (
     scored,
     stopped,
     summary,
-    tab_of,
     tracks_lines,
 )
 from piloop.runtime import WorkerStatus
-from piloop.runtime.factory import handle_for, runtime_for
+from piloop.runtime.factory import handle_for, runtime_for, view_of
 from piloop.scoring.ledger import metrics, references, score, track_of, trunk_keeps
 from piloop.text import NONE, cell, metric
 from piloop.usage import human, project_tokens
@@ -217,14 +216,15 @@ class AgentsPanel:
         w = s.get_one(Worker, key)
         path = Path(ctx.project.path)
         state = state_of(s, w, path)
+        where = ' '.join(p for p in (w.runtime, view_of(w)) if p) or NONE
         facts = [
-            f'{w.kind}-{w.id} · {w.harness}/{w.model} · {w.state} {age(w.started_at, ctx.now)} · tab {tab_of(w) or NONE}',
+            f'{w.kind}-{w.id} · {w.harness}/{w.model} · {w.state} {age(w.started_at, ctx.now)} · {where}',
             f'on: {on(s, w)}',
         ]
         if w.reason:
             facts.append(f'why: {cell(w.reason)}')
         if state is WorkerStatus.BLOCKED:
-            facts.append(f'{BLOCKED}: steering is refused until it is answered; enter focuses its tab')
+            facts.append(f'{BLOCKED}: steering is refused until it is answered; enter brings it to the front')
         output = agent_output(s, w, path, AGENT_LINES)
         return Group(
             Text(facts[0], style='bold'),
@@ -236,10 +236,10 @@ class AgentsPanel:
 
 
 def state_of(s: Session, w: Worker, project_path: Path) -> WorkerStatus | None:
-    """Return what the runtime says the agent does now. None when it cannot say (not launched, herdr missing)."""
+    """Return what the runtime says the agent does now. None when it cannot say (not launched, runtime missing)."""
     try:
         return runtime_for(s, w, project_path).status(handle_for(w))
-    except Exception:  # not launched yet, or herdr is missing: the row shows · and the rest of the screen draws
+    except Exception:  # not launched yet, or the runtime is missing: the row shows · and the rest of the screen draws
         return None
 
 

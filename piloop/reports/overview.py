@@ -59,8 +59,7 @@ from piloop.db.models import (
     project_runs,
 )
 from piloop.reports.history import IDEAS_IN_HISTORY, block
-from piloop.runtime.factory import handle_for, runtime_for
-from piloop.runtime.herdr import HerdrRuntime
+from piloop.runtime.factory import handle_for, runtime_for, view_of
 from piloop.scoring.ledger import (
     NOTE,
     baseline,
@@ -111,7 +110,6 @@ class AnomalyKind(StrEnum):
 
     RUN_FAILED = 'failed'
     DEAD_AT_STARTUP = 'dead at startup'
-    WATCHDOG_DEAD_AT_STARTUP = 'dead at startup, a watchdog'
     SAME_AS_PARENT = 'scored exactly its parent'
     IDLE_QUEUE = 'idle'
     SILENT = 'silent while its jobs run'
@@ -126,8 +124,7 @@ INCIDENTS = frozenset(
 )
 """Kinds that request an incident sweep. The progress review weighs the other kinds, which are costs, not failures.
 
-A watchdog that died at startup is not an incident: the watchdog that it requests can die the same way, and so on.
-The startup breaker of the scheduler escalates that fault instead.
+An anomaly of an agent that investigates incidents is not an incident (``Anomaly.investigator``).
 """
 
 type JobsProbe = Callable[[Worker], list[str]]
@@ -144,6 +141,10 @@ class Anomaly:
     at: datetime
     """When the anomaly began, for example the end of a failed run or the exit of an agent."""
     detail: str
+    investigator: bool = False
+    """The anomaly is about an agent of a role that investigates incidents (``Trigger.INVESTIGATES``). It is no
+    incident: the agent that it would request could fail the same way, and so on. The startup breaker of the scheduler
+    escalates that fault instead."""
 
     @property
     def key(self) -> str:
@@ -152,7 +153,7 @@ class Anomaly:
 
     @property
     def incident(self) -> bool:
-        return self.kind in INCIDENTS
+        return self.kind in INCIDENTS and not self.investigator
 
     def line(self, now: datetime) -> str:
         tag = '[incident] ' if self.incident else ''
@@ -301,12 +302,6 @@ def live_workers(s: Session, project: Project) -> Sequence[Worker]:
     ).all()
 
 
-def tab_of(w: Worker) -> str | None:
-    """Return the Herdr tab id of a launched agent, or None for a headless agent or one not launched yet."""
-    tab = w.handle.get('tab_id') if w.runtime == HerdrRuntime.kind else None
-    return None if tab is None else str(tab)
-
-
 def on(s: Session, w: Worker) -> str:
     """Describe what the agent works on: the idea of its run, or else the reason for its request."""
     if w.run_id is not None:
@@ -335,7 +330,7 @@ def agent_output(s: Session, w: Worker, project_path: Path, lines: int) -> list[
 def _live_output(s: Session, w: Worker, project_path: Path, lines: int) -> str:
     try:
         return runtime_for(s, w, project_path).read(handle_for(w), lines=lines)
-    except Exception:  # Not launched yet, herdr missing or the pane closed: the transcript is the fallback.
+    except Exception:  # Not launched yet, runtime missing or agent gone: the transcript is the fallback.
         return ''
 
 
@@ -396,7 +391,7 @@ def anomalies(s: Session, project: Project, cfg: ProjectConfig, now: datetime, j
     """Return every anomaly of ``project``, newest first. ``jobs`` is called only for silent workers."""
     found = [
         *_failed_runs(s, project),
-        *_dead_at_startup(s, project),
+        *_dead_at_startup(s, project, cfg),
         *_same_as_parent(s, project, cfg),
         *_idle_queue(s, project, cfg),
         *_silent(s, project, now, jobs),
@@ -622,7 +617,7 @@ def _agents(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> 
     path = Path(project.path)
     live = [
         f'  - {w.kind}#{w.id} {w.harness or NONE}/{w.model or NONE} {age(w.started_at, now)}'
-        f'{f", tab {tab}" if (tab := tab_of(w)) else ""}, on {on(s, w)}: '
+        f'{f", {view}" if (view := view_of(w)) else ""}, on {on(s, w)}: '
         + (cell(output[-1]) if (output := agent_output(s, w, path, 1)) else NONE)
         for w in rows
         if w.state in LIVE
@@ -789,8 +784,9 @@ def _failed_runs(s: Session, project: Project) -> list[Anomaly]:
     ]
 
 
-def _dead_at_startup(s: Session, project: Project) -> list[Anomaly]:
+def _dead_at_startup(s: Session, project: Project, cfg: ProjectConfig) -> list[Anomaly]:
     """Find agents of any role that the launcher found dead at startup (``launcher.STARTUP_ANOMALY``)."""
+    investigators = {name for name, role in cfg.roles.sweeping().items() if any(t.INVESTIGATES for t in role.triggers)}
     events = select(Event).where(
         Event.kind == STARTUP_ANOMALY,
         Event.target_kind == TargetKind.WORKER,
@@ -801,12 +797,8 @@ def _dead_at_startup(s: Session, project: Project) -> list[Anomaly]:
         p = e.payload
         error = cell(str(p.get('error') or 'no error recorded'), DETAIL_CHARS)
         detail = f'{p.get("kind")} on {p.get("harness")} failed to start ({p.get("seconds")}s): {error}'
-        kind = (
-            AnomalyKind.WATCHDOG_DEAD_AT_STARTUP
-            if p.get('kind') == WorkerKind.WATCHDOG
-            else AnomalyKind.DEAD_AT_STARTUP
-        )
-        found.append(Anomaly(kind, f'worker#{e.target_id}', e.at, detail))
+        investigator = p.get('kind') in investigators
+        found.append(Anomaly(AnomalyKind.DEAD_AT_STARTUP, f'worker#{e.target_id}', e.at, detail, investigator))
     return found
 
 

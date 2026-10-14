@@ -34,8 +34,8 @@ prints the commit, for example `piloop 0.1.0 (a1b2c3d)`.
   set. The check does not start the servers.
 - Every harness on your `PATH` has the skills of this CLI.
 - The harnesses that your projects use are on your `PATH`.
-- For a project with `runtime = "herdr"`: Herdr is installed, the piloop session answers, and Herdr's hooks are
-  current for the harnesses of that project.
+- Each runtime that a project uses runs its own checks. For example, for `runtime = "herdr"`: Herdr is installed, the
+  piloop session answers, and Herdr's hooks are current for the harnesses of that project.
 
 Each failure says how to fix it, often with the command to run.
 

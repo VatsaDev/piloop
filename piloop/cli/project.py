@@ -131,7 +131,7 @@ def _jobs(s: Session, worker: Worker) -> list[str]:
     """What a running worker has in flight, for the ``silent`` anomaly. Empty when its runtime cannot say."""
     try:
         return runtime_for(s, worker, common.settings.home).jobs(handle_for(worker))
-    except Exception:  # herdr is missing or the pane is gone: status still prints, without this anomaly
+    except Exception:  # the runtime is not installed or the agent is gone: status still prints, without this anomaly
         return []
 
 

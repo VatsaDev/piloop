@@ -72,7 +72,7 @@ flowchart LR
         executor["Run executor"]
         launcher["Launcher"]
     end
-    runtime{{"Runtime<br/>subprocess or herdr"}}
+    runtime{{"Runtime<br/>subprocess, herdr or a package's"}}
     subgraph agents["Agents: a harness in a git worktree"]
         worker["worker"]
         research["research"]
@@ -104,8 +104,8 @@ flowchart LR
 - **The daemon** (`piloop serve`) is one process for each piloop home. On each tick, the **scheduler** checks the
   triggers of every project, queues runs of ready ideas and launches the requested agents. The **run executor** runs
   one run: the worktree, the agent, the scores, the verdict. The **launcher** starts, watches and closes every agent.
-- **The runtime** is where an agent process runs: a background process by default, or a [Herdr](https://herdr.dev)
-  pane that you can watch and steer.
+- **The [runtime](/concepts/runtimes)** is where an agent process runs: a background process by default, or a
+  [Herdr](https://herdr.dev) pane that you can watch and steer. A package can add others.
 - **The harness** is the coding agent CLI: Claude Code, Codex or pi. A `[harness.<name>]` table says how to start it.
 - **The agents** each work in their own git worktree. A worker tries one idea. Research, the watchdog and the roles that
   you define are [sweeps](/concepts/roles) that read the state of the campaign and write ideas, seeds and comments.

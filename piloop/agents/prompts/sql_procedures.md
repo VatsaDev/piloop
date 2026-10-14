@@ -48,7 +48,7 @@ Timestamps are UTC ISO-8601 strings.
 ### Propose work
 
 - A hunch is a *seed*. A defined experiment is an *idea*.
-- Any role except the worker files a seed with
+- File a seed, when your brief says that you may, with
   `piloop idea seed <project> "<hunch, one line>" --from "<pointers: ids, paths, numbers>"`.
   Add `--base <candidate>` when it is about that tree.
 - A seed starts with status `seed`, and research develops it first. Research reads the existing work and checks for
@@ -56,8 +56,7 @@ Timestamps are UTC ISO-8601 strings.
   work that settled it.
 - To define a seed: `piloop idea develop <id> --hypothesis … --evidence … --check … --metric … --effect …`. This makes
   it `ready`.
-- A watchdog files seeds only. A worker files neither seeds nor ideas, and writes a hunch in its finding.
-- Research, the orchestrator and humans can also add defined ideas directly:
+- An agent whose brief says so, the orchestrator and humans can also add defined ideas directly:
   `piloop idea add <project> "<title>" --hypothesis … --plan … --family <mechanism> --from "<the evidence, with ids>"`.
   The idea is `ready` ("schedule me"), or `proposed` with `--proposed` ("a human's approval first").
 - Both commands sign `created_by` with your actor and store `--from` in `provenance`. The full commands are under
@@ -196,7 +195,8 @@ ORDER BY bm25(documents_fts) LIMIT 10;
 
 - `INSERT INTO workers (kind, project_id, state) VALUES ('research', <p>, 'requested')`. The daemon starts it on its
   next tick.
-- Kinds: `watchdog` and `research`. A `worker` needs a run, so leave workers to the scheduler.
+- Kinds: the sweeping roles that the Context lists. A role that does runs needs a run, so leave its agents to the
+  scheduler.
 - Optional: `harness` and `model` pin the choice. `reason` says why.
 
 ### Judge results
