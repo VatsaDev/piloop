@@ -206,10 +206,13 @@ def test_a_message_waits_for_the_turn_to_end_then_resumes_the_session_with_it(tm
 
 def test_a_resumed_turn_is_the_one_kill_and_status_reach_from_any_instance(tmp_path: Path) -> None:
     rt = SubprocessRuntime()
-    exe = script(tmp_path, 'if [ "$1" = resume ]; then sleep 30; fi')
+    go = tmp_path / 'go'
+    os.mkfifo(go)
+    exe = script(tmp_path, f'if [ "$1" = resume ]; then sleep 30; else read line < {go}; fi')
     handle = rt.start(spec(tmp_path, exe, 'brief', resume=['resume', 'a-minted-id', '{prompt}']))
     rt.prompt(handle, 'more')
     assert not rt._resume(handle), 'the first turn still runs'
+    go.write_text('\n')  # the first turn ends only now, so the message cannot find the agent ended
     while rt._alive(handle):
         time.sleep(0.05)
     assert rt._resume(handle), 'the launcher filled in the minted session id'
