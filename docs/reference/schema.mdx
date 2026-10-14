@@ -30,10 +30,8 @@ CREATE TABLE comments (
 	CONSTRAINT escalation_needs_priority CHECK (kind != 'escalation' OR priority IS NOT NULL),
 	CONSTRAINT "comments.author must be a text value" CHECK (typeof(author) IN ('text')),
 	CONSTRAINT "comments.body must be a text value" CHECK (typeof(body) IN ('text')),
-	CONSTRAINT "a lesson is on its project" CHECK (kind != 'lesson' OR target_kind = 'project'),
-	CONSTRAINT "a lesson starts family: <family> | status: dead|promising|untested | best: <+N metric> (<evaluator/eval>)" CHECK (kind != 'lesson' OR (substr(body, 1, instr(body || char(10), char(10)) - 1) GLOB 'family: ?* | status: dead | best: ?*' OR substr(body, 1, instr(body || char(10), char(10)) - 1) GLOB 'family: ?* | status: promising | best: ?*' OR substr(body, 1, instr(body || char(10), char(10)) - 1) GLOB 'family: ?* | status: untested | best: ?*')),
 	CONSTRAINT targetkind CHECK (target_kind IN ('project', 'idea', 'run', 'candidate', 'measurement', 'worker', 'comment')),
-	CONSTRAINT commentkind CHECK (kind IN ('note', 'finding', 'decision', 'escalation', 'lesson'))
+	CONSTRAINT commentkind CHECK (kind IN ('note', 'finding', 'decision', 'escalation'))
 );
 CREATE INDEX ix_comments_inbox ON comments (priority, id) WHERE priority IS NOT NULL AND acked_at IS NULL;
 CREATE INDEX ix_comments_target ON comments (target_kind, target_id);
@@ -141,6 +139,27 @@ CREATE TABLE ideas (
 	CONSTRAINT ideastatus CHECK (status IN ('seed', 'proposed', 'ready', 'scheduled', 'done', 'parked', 'rejected'))
 );
 CREATE INDEX ix_ideas_project_status_priority ON ideas (project_id, status, priority);
+CREATE TABLE lessons (
+	id INTEGER NOT NULL,
+	project_id INTEGER NOT NULL,
+	family VARCHAR NOT NULL,
+	status VARCHAR(16) NOT NULL,
+	effect DOUBLE,
+	metric VARCHAR,
+	body VARCHAR NOT NULL,
+	created_by VARCHAR NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	PRIMARY KEY (id),
+	CONSTRAINT "lessons.effect and lessons.metric go together" CHECK ((effect IS NULL) = (metric IS NULL)),
+	CONSTRAINT "lessons.effect must be a number" CHECK (typeof(effect) IN ('integer', 'real', 'null')),
+	CONSTRAINT "lessons.family must be a text value" CHECK (typeof(family) IN ('text')),
+	CONSTRAINT "lessons.body must be a text value" CHECK (typeof(body) IN ('text')),
+	CONSTRAINT "lessons.created_by must be a text value" CHECK (typeof(created_by) IN ('text')),
+	CONSTRAINT "lessons.metric must be a text value" CHECK (typeof(metric) IN ('text', 'null')),
+	FOREIGN KEY(project_id) REFERENCES projects (id) ON DELETE CASCADE,
+	CONSTRAINT lessonstatus CHECK (status IN ('dead', 'promising', 'untested'))
+);
+CREATE INDEX ix_lessons_project_family ON lessons (project_id, family);
 CREATE TABLE techniques (
 	id INTEGER NOT NULL,
 	project_id INTEGER NOT NULL,

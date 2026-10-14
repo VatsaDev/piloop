@@ -5,7 +5,6 @@ next to the ideas, comments and lessons of every project. A sync inserts the tex
 content (``UNIQUE (project_id, path, hash)``), so running it again does nothing, and an edited file is a new version.
 """
 
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,14 +16,12 @@ from sqlalchemy.orm import Session
 from piloop.config import ProjectConfig
 from piloop.db.models import Document, Project
 from piloop.db.sql import digest
-
-HEADING = re.compile(r'^#{1,6}\s+(.+?)\s*#*\s*$', re.MULTILINE)
+from piloop.text import HEADING
 
 
 def title_of(text: str, path: str) -> str:
     """The first markdown heading, or else the file name without its suffix."""
-    match = HEADING.search(text)
-    return match.group(1) if match else Path(path).stem
+    return next((m[2] for line in text.splitlines() if (m := HEADING.match(line))), Path(path).stem)
 
 
 @dataclass

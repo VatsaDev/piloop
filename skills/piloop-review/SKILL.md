@@ -156,7 +156,7 @@ FROM comments e LEFT JOIN comments d ON d.id = (SELECT MIN(id) FROM comments WHE
 WHERE e.kind = 'escalation' AND e.created_at BETWEEN '<start>' AND '<end>';
 
 -- Lessons that the closing watchdog left, and what past campaigns on the same code tried (projects.repo)
-SELECT c.id, c.created_at, c.body FROM comments c WHERE c.kind = 'lesson' AND c.target_id = <p> ORDER BY c.id;
+SELECT id, created_at, family, status, effect, metric, body FROM lessons WHERE project_id = <p> ORDER BY id;
 SELECT p.name, i.id, i.status, i.title FROM ideas_fts JOIN ideas i ON i.id = ideas_fts.rowid
 JOIN projects p ON p.id = i.project_id
 WHERE ideas_fts MATCH '<mechanism>' AND p.repo = (SELECT repo FROM projects WHERE id = <p>) ORDER BY bm25(ideas_fts);

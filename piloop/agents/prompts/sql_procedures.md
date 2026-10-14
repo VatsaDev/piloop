@@ -144,17 +144,23 @@ ORDER BY bm25(ideas_fts) LIMIT 20;
   (`projects.path`), summarises the session. `<log_dir>/transcript.txt` is its screen. An archived workspace can be
   restored with `piloop restore`, once your piloop has it.
 
-Lessons: a `lesson` is the standing conclusion about one mechanism family, written when a campaign stops. The newest
-for each (project, family) is the current one. What is dead or promising on this repo:
+Lessons: a row of `lessons` is the standing conclusion about one mechanism family, written when a campaign stops.
+The newest for each (project, family) is the current one. What is dead or promising on this repo:
 
 ```sql
-SELECT p.name AS project, c.id, substr(c.body, 1, instr(c.body || char(10), char(10)) - 1) AS lesson
-FROM comments c JOIN projects p ON p.id = c.target_id
-WHERE c.kind = 'lesson' AND p.repo = (SELECT repo FROM projects WHERE id = 1)
-  AND c.id = (SELECT MAX(n.id) FROM comments n WHERE n.kind = 'lesson' AND n.target_id = c.target_id
-              AND substr(n.body, 1, instr(n.body, ' | ')) = substr(c.body, 1, instr(c.body, ' | ')))
-ORDER BY lesson;
+SELECT p.name AS project, l.id, l.family, l.status, l.effect, l.metric
+FROM lessons l JOIN projects p ON p.id = l.project_id
+WHERE p.repo = (SELECT repo FROM projects WHERE id = 1)
+  AND l.id = (SELECT MAX(n.id) FROM lessons n WHERE n.project_id = l.project_id AND lower(n.family) = lower(l.family))
+ORDER BY l.status, l.family;
 ```
+
+- `SELECT body FROM lessons WHERE id = <n>` reads why, with the ids it cites.
+- To write one: `INSERT INTO lessons (project_id, family, status, effect, metric, body, created_by) VALUES (<p>,
+  '<family>', 'dead', 0.002, '<metric>', '<what was tried, the evaluator that measured it, why it stopped, with ids>',
+  '<you>')`. `status` is `dead`, `promising` or `untested`. `effect` is the best effect measured, in the units of
+  `metric` and with its sign. Leave both NULL when none was measured. A lesson is never changed: a new conclusion is a
+  new row.
 
 Documents: campaign reports, logs and design notes (`[memory] documents` in `piloop.toml`, or inserted by an agent):
 
@@ -237,9 +243,7 @@ The daemon never overwrites a verdict that is not its own.
 
 - `INSERT INTO comments (target_kind, target_id, author, kind, body)`.
 - Refer to other rows in the body as `idea#12`, `run#7`, `candidate#30`.
-- Kinds: `note`, `finding`, `decision`, `escalation`, and `lesson`: on the project, with the first line
-  `family: <family> | status: dead|promising|untested | best: <+N metric> (<evaluator/eval>)`, then why, citing ids.
-  A CHECK refuses a lesson of another shape.
+- Kinds: `note`, `finding`, `decision`, `escalation`. A lesson is a row of `lessons` ("Remember past campaigns").
 - Every comment also inserts a `comment.<kind>` event (a trigger).
 - `comment.escalation` reaches the human through the orchestrator. Use `escalation` only when a human decision is
   needed.

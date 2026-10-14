@@ -22,10 +22,9 @@ A deprecated configuration key shows a warning for at least one minor release be
 - Runtimes are a registry. Packages can add runtimes through the `piloop.runtimes` entry point group. A runtime class
   states which argument list of a harness it starts (`invocation`: `interactive` or `headless`).
 - Research memory: past research can be found by SQL from every agent, across every project on the same code.
-  - A `lesson` comment is the standing conclusion about one mechanism family. The newest for a project and family is
-    the current one. CHECKs keep it on its project, with the first line `family: <family> | status:
-    dead|promising|untested | best: <+N metric> (<evaluator/eval>)`. The closing watchdog writes one for each family
-    that the campaign tried.
+  - The `lessons` table: the standing conclusion about one mechanism family, with its status (`dead`, `promising` or
+    `untested`), the best effect and its metric. The newest for a project and family is the current one: a lesson is
+    never changed, a new conclusion is a new row. The closing watchdog writes one for each family that the campaign tried.
   - The `documents` table holds reports, logs and design notes. `[memory] documents` globs are copied in on `piloop
     init` and when a campaign stops. Agents search them with `documents_fts`, and add their own with `hash =
     blake3(body)`.

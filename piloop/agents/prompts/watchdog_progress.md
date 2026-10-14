@@ -24,7 +24,8 @@ When the trigger says that the campaign stopped, this is the closing review. Cov
 worked, what did not, and whether the result can be trusted. Then write one escalation that asks whether to extend
 the stop conditions, change them, or finish.
 
-Then leave the next campaign its lessons: one `lesson` on the project for each mechanism family that this campaign
-tried. Say what was tried, the best effect and on which evaluator, why it stopped, and whether it is dead, promising
-or untested. A few lines each, and cite idea or candidate ids for every claim. First read the lessons already on this
-repo (the procedures show how), and write one only where yours says something new.
+Then leave the next campaign its lessons: one row of `lessons` on the project for each mechanism family that this
+campaign tried, with its status (dead, promising or untested) and the best effect measured with its metric. In the
+body, say what was tried, on which evaluator, and why it stopped. A few lines each, and cite idea or candidate ids for
+every claim. First read the lessons already on this repo (the procedures show how), and write one only where yours
+says something new.

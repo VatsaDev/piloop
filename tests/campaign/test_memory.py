@@ -10,7 +10,7 @@ from git import Repo
 from sqlalchemy import select
 
 from piloop.campaign.memory import sync_documents, title_of
-from piloop.config import load_project_config
+from piloop.config import ConfigError, load_project_config
 from piloop.db import sql
 from piloop.db.models import Document, Project
 from piloop.db.session import Database
@@ -134,6 +134,14 @@ def test_an_agent_inserts_a_document_with_the_blake3_function_and_searches_it(db
 def test_a_title_is_the_first_heading_else_the_file_name() -> None:
     assert title_of('intro\n## Clock recovery ##\n# Later\n', 'a/b.md') == 'Clock recovery'
     assert title_of('no heading\n#hashtag\n', 'a/onset-notes.md') == 'onset-notes'
+    assert title_of('# C# tuning\n', 'a/b.md') == 'C# tuning', 'a closing # needs a space before it'
+
+
+@pytest.mark.parametrize('glob', ['/etc/*.md', '', '.', '../other/*.md', 'docs/../../x.md'])
+def test_a_document_glob_outside_the_repo_is_refused_when_the_config_loads(project: Project, glob: str) -> None:
+    """Greptile on hiloopai/piloop#7: an absolute glob passed validation, then `Path.glob` raised at the stop."""
+    with pytest.raises(ConfigError, match='is not a glob inside the repo'):
+        load_project_config(Path(project.path), memory={'documents': ['docs/*.md', glob]})
 
 
 @pytest.mark.parametrize(

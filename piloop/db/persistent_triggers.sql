@@ -52,6 +52,16 @@ WHEN NEW.kind NOT IN ('worker', 'watchdog', 'research') AND (SELECT json_type(co
 BEGIN
   SELECT RAISE(ABORT, 'workers.kind must be a role of the project: worker, watchdog, research or a [roles.<name>] table of its piloop.toml');
 END;
+CREATE TRIGGER journal_no_replace BEFORE INSERT ON journal
+WHEN EXISTS (SELECT 1 FROM journal WHERE id = NEW.id)
+BEGIN
+  SELECT RAISE(ABORT, 'journal rows are never replaced: insert a new row');
+END;
+CREATE TRIGGER lessons_no_replace BEFORE INSERT ON lessons
+WHEN EXISTS (SELECT 1 FROM lessons WHERE id = NEW.id)
+BEGIN
+  SELECT RAISE(ABORT, 'lessons rows are never replaced: insert a new row');
+END;
 CREATE TRIGGER ideas_fts_insert AFTER INSERT ON ideas
 BEGIN
   INSERT INTO ideas_fts (rowid, title, hypothesis, plan) VALUES (NEW.id, NEW.title, NEW.hypothesis, NEW.plan);

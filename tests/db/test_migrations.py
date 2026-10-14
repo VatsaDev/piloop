@@ -61,6 +61,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
             'ideas_fts_docsize',
             'ideas_fts_idx',
             'journal',
+            'lessons',
             'measurements',
             'projects',
             'runs',
@@ -250,8 +251,10 @@ def test_0006_admits_lessons_names_each_projects_repo_adds_documents_and_the_jou
         with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: a lesson starts family'):
             con.execute(comment, ('lesson', 'voting is dead'))
         assert [r for (r,) in con.execute("SELECT rowid FROM comments_fts WHERE comments_fts MATCH 'voting'")] == [1, 2]
-        triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
-        assert triggers == sorted(t.name for t in PERSISTENT), 'the rebuilt comments table has its triggers back'
+        triggers = "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'comments'"
+        assert {t for (t,) in con.execute(triggers)} == {t.name for t in PERSISTENT if t.table == 'comments'}, (
+            'the rebuilt comments table has its triggers back'
+        )
         con.execute(
             "INSERT INTO documents (project_id, path, hash, title, body, created_by) VALUES (1, 'r.md', ?, 'R', 'clock', 'me')",
             ('0' * 64,),
@@ -272,3 +275,55 @@ def test_0006_admits_lessons_names_each_projects_repo_adds_documents_and_the_jou
             {'name': 'p', 'roles': {'worker': {}}},
             {},
         ], "0001's code refuses the memory and wake_budget keys"
+
+
+def test_0007_turns_each_lesson_comment_into_a_row_of_lessons_and_downgrades(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0006')
+    comment = "INSERT INTO comments (target_kind, target_id, author, kind, body, created_at) VALUES ('project', 1, ?, ?, ?, ?)"
+    bodies = [
+        'family: Voting | status: dead | best: +0.002 acc (evaluator#1)\nidea#1',
+        'family: speed | status: promising | best: -53% to -63% ms per block (worker-measured)\ncandidate#4',
+        'family: x | status: untested | best: none measured (evaluator#2)\nnever ran',
+        'family: y | status: dead | best: +3\nno metric word',
+    ]
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+        con.execute(comment, ('research#2', 'finding', 'voting gained nothing', '2026-10-01 00:00:00'))
+        for i, body in enumerate(bodies):
+            con.execute(comment, (f'watchdog#{i}', 'lesson', body, f'2026-10-0{i + 2} 00:00:00'))
+    command.upgrade(cfg, '0007')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute(
+            'SELECT project_id, family, status, effect, metric, body, created_by, created_at FROM lessons ORDER BY id'
+        ).fetchall() == [
+            (1, 'Voting', 'dead', 0.002, 'acc', bodies[0], 'watchdog#0', '2026-10-02 00:00:00'),
+            (1, 'speed', 'promising', -53.0, 'ms', bodies[1], 'watchdog#1', '2026-10-03 00:00:00'),
+            (1, 'x', 'untested', None, None, bodies[2], 'watchdog#2', '2026-10-04 00:00:00'),
+            (1, 'y', 'dead', None, None, bodies[3], 'watchdog#3', '2026-10-05 00:00:00'),
+        ], 'in id order, read as the briefs ranked them, the body as it was'
+        assert con.execute('SELECT id, kind FROM comments').fetchall() == [(1, 'finding')]
+        assert con.execute("SELECT rowid FROM comments_fts WHERE comments_fts MATCH 'voting'").fetchall() == [(1,)], (
+            'the index forgot the lesson comments'
+        )
+        with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: commentkind'):
+            con.execute(comment, ('w', 'lesson', bodies[0], '2026-10-06 00:00:00'))
+        triggers = (
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name IN ('comments', 'journal', 'lessons')"
+        )
+        assert {t for (t,) in con.execute(triggers)} == {
+            t.name for t in PERSISTENT if t.table in ('comments', 'journal', 'lessons')
+        }
+        con.execute(
+            'INSERT INTO lessons (project_id, family, status, effect, metric, body, created_by) VALUES'
+            " (1, 'pruning', 'promising', 12.5, 'score', 'idea#9 on evaluator#3', 'orchestrator')"
+        )
+    command.downgrade(cfg, '0006')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute("SELECT author, body FROM comments WHERE kind = 'lesson' ORDER BY id").fetchall() == [
+            *((f'watchdog#{i}', body) for i, body in enumerate(bodies)),
+            ('orchestrator', 'family: pruning | status: promising | best: +12.5 score\nidea#9 on evaluator#3'),
+        ], 'the old bodies as they were; a new lesson gets the first line that 0006 requires'
+        gone = "SELECT name FROM sqlite_master WHERE name LIKE 'lessons%' OR name = 'journal_no_replace'"
+        assert con.execute(gone).fetchall() == []

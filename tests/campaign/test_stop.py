@@ -3,6 +3,8 @@
 from datetime import timedelta
 from pathlib import Path
 
+import pytest
+from git.exc import GitCommandError
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from sqlalchemy import func, select
 
@@ -434,5 +436,39 @@ def test_a_stop_syncs_the_memory_documents_before_the_closing_watchdog_whose_bri
         'result': 'documents: 1 added, 0 unchanged',
     }
     brief = (tmp_path / 'workers' / str(watchdog) / 'brief.md').read_text()
-    assert 'one `lesson` on the project for each mechanism family that this campaign' in brief
-    assert 'family: <family> | status: dead|promising|untested' in brief, 'the format, from the procedures'
+    assert 'one row of `lessons` on the project for each mechanism family that this' in brief
+    assert 'INSERT INTO lessons (project_id, family, status, effect, metric, body, created_by)' in brief, (
+        'the INSERT, from the procedures'
+    )
+
+
+def test_a_stop_whose_document_sync_fails_still_stops_and_launches_the_closing_watchdog(
+    db: Database,
+    project: Project,
+    runtime: ScriptRuntime,
+    tmp_path: Path,
+    tracer: Tracer,
+    spans: InMemorySpanExporter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Greptile on hiloopai/piloop#7: a sync that raised rolled the stop back and ended the daemon."""
+    write_toml(Path(project.path), HARNESS_NOOP)
+    with db.session() as s:
+        cfg = load_project_config(Path(project.path), stop={'max_runs': 1}, memory={'documents': ['docs/*.md']})
+        s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
+        s.commit()
+    add_run(db, project)
+
+    def broken(*_args: object) -> None:
+        raise GitCommandError(['git', 'log'], 128, b'fatal: bad object')
+
+    monkeypatch.setattr('piloop.daemon.scheduler.sync_documents', broken)
+    sched = make_scheduler(db, runtime, tmp_path, tracer)
+    [watchdog] = sched.tick()
+    sched.wait(10)
+    sched.stop(timeout=5)
+    with db.session() as s:
+        assert s.get_one(Project, project.id).status is ProjectStatus.STOPPED
+        assert s.get_one(Worker, watchdog).reason == 'campaign stopped: max_runs: 1 runs'
+    error = dict(span_named(spans, 'documents.sync_failed').attributes or {})['error']
+    assert isinstance(error, str) and error.startswith('GitCommandError: Cmd')

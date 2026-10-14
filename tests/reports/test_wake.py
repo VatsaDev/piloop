@@ -3,27 +3,42 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from piloop.config import load_project_config
-from piloop.db.models import Comment, CommentKind, Journal, Project, ProjectStatus, TargetKind
+from piloop.db.models import Comment, CommentKind, Journal, Lesson, LessonStatus, Project, ProjectStatus, TargetKind
 from piloop.db.session import Database
-from piloop.reports.wake import Lesson, Relevance, Tier, fit, lessons_overview, orchestrator_overview, parse
+from piloop.reports.wake import (
+    LESSONS_MORE,
+    Relevance,
+    Tier,
+    cost,
+    fit,
+    fitted,
+    lessons_overview,
+    orchestrator_overview,
+)
 
 NOW = datetime(2026, 10, 12, 21, 0, tzinfo=UTC)
 
 
-def lesson(s: Session, project: int, family: str, status: str, best: str = '+1 score') -> int:
-    comment = Comment(
-        target_kind=TargetKind.PROJECT,
-        target_id=project,
-        author='watchdog#1',
-        kind=CommentKind.LESSON,
-        body=f'family: {family} | status: {status} | best: {best} (evaluator#1)\nwhy, with ids',
+def lesson(
+    s: Session, project: int, family: str, status: str, effect: float | None = 1, metric: str | None = 'score'
+) -> int:
+    row = Lesson(
+        project_id=project,
+        family=family,
+        status=LessonStatus(status),
+        effect=effect,
+        metric=metric if effect is not None else None,
+        body='why, with ids (evaluator#1)',
+        created_by='watchdog#1',
     )
-    s.add(comment)
+    s.add(row)
     s.flush()
-    return comment.id
+    return row.id
 
 
 def clones(s: Session, project: Project) -> tuple[Project, Project]:
@@ -44,19 +59,20 @@ def test_a_brief_opens_with_one_line_per_family_on_the_repo_from_the_newest_camp
         sibling, other = clones(s, project)
         lesson(s, sibling.id, 'voting', 'dead')
         newer = lesson(s, sibling.id, 'Voting', 'promising')
-        lesson(s, project.id, 'voting', 'promising', '+9 score')
-        lesson(s, other.id, 'calibration', 'promising', '+50 score')
+        lesson(s, project.id, 'voting', 'promising', 9)
+        lesson(s, other.id, 'calibration', 'promising', 50)
         mine = lesson(s, project.id, 'calibration', 'dead')
         s.commit()
         text = lessons_overview(s, s.get_one(Project, project.id), 400)
         assert text.splitlines()[4:] == [
-            f'- [sibling] family: Voting | status: promising | best: +1 score (evaluator#1) (comment#{newer})',
-            f'- [demo] family: calibration | status: dead | best: +1 score (evaluator#1) (comment#{mine})',
+            f'- [sibling] Voting | promising | +1 score (lesson#{newer})',
+            f'- [demo] calibration | dead | +1 score (lesson#{mine})',
         ], 'the newest lesson of the newest campaign per family, whatever the case; never another repo'
         assert text.startswith('# What past campaigns on this repo concluded')
         assert lessons_overview(s, s.get_one(Project, project.id), 0) == '', '0 turns it off'
-        short = lessons_overview(s, s.get_one(Project, project.id), 130).splitlines()
-        assert short[-1] == '… 1 more: the lessons query under "Remember past campaigns" in the procedures'
+        whole = lessons_overview(s, s.get_one(Project, project.id), 400)
+        short = lessons_overview(s, s.get_one(Project, project.id), cost(whole.splitlines()) - 1).splitlines()
+        assert short[-1] == f'… 2 more: {LESSONS_MORE}', 'the notice takes the place of the line it cannot fit beside'
 
 
 def test_lessons_rank_dead_or_promising_first_then_the_larger_effect_then_the_newer_campaign(
@@ -64,21 +80,21 @@ def test_lessons_rank_dead_or_promising_first_then_the_larger_effect_then_the_ne
 ) -> None:
     with db.session() as s:
         sibling, _ = clones(s, project)
-        lesson(s, sibling.id, 'big but untested', 'untested', '+900 score')
-        lesson(s, project.id, 'unmeasured', 'dead', 'none measured')
-        lesson(s, project.id, 'small', 'promising', '+2 score')
-        lesson(s, project.id, 'faster', 'promising', '-40.5 seconds')
-        lesson(s, project.id, 'tied, older campaign', 'dead', '+2 score')
-        lesson(s, sibling.id, 'tied, newer campaign', 'dead', '+2 score')
+        lesson(s, sibling.id, 'big but untested', 'untested', 900)
+        lesson(s, project.id, 'unmeasured', 'dead', None)
+        lesson(s, project.id, 'small', 'promising', 2)
+        lesson(s, project.id, 'faster', 'promising', -40.5, 'seconds')
+        lesson(s, project.id, 'tied, older campaign', 'dead', 2)
+        lesson(s, sibling.id, 'tied, newer campaign', 'dead', 2)
         s.commit()
         lines = lessons_overview(s, s.get_one(Project, project.id), 1000).splitlines()[4:]
     assert [line.split(' | ')[0] for line in lines] == [
-        '- [sibling] family: tied, newer campaign',
-        '- [demo] family: tied, older campaign',
-        '- [demo] family: small',
-        '- [sibling] family: big but untested',
-        '- [demo] family: unmeasured',
-        '- [demo] family: faster',
+        '- [sibling] tied, newer campaign',
+        '- [demo] tied, older campaign',
+        '- [demo] small',
+        '- [sibling] big but untested',
+        '- [demo] unmeasured',
+        '- [demo] faster',
     ], "the project's metric first; in one campaign, the newer lesson first; seconds are not its metric"
 
 
@@ -93,19 +109,19 @@ def test_lessons_in_the_projects_metrics_outrank_larger_effects_in_other_units(d
         p = s.get_one(Project, project.id)
         p.config = load_project_config(Path(project.path), metrics=metrics).model_dump(mode='json')
         sibling, _ = clones(s, project)
-        lesson(s, sibling.id, 'cross-tree-replay', 'promising', '-1182.8 postproc_seconds')
-        lesson(s, sibling.id, 'stack-composition', 'promising', '-1071.1 full_eval_seconds')
-        lesson(s, sibling.id, 'exact-compute-cuts', 'promising', '-1054.6 full_eval_seconds')
-        lesson(s, sibling.id, 'disagreement withholding', 'promising', '+723 unseen_score')
-        lesson(s, sibling.id, 'calibration', 'promising', '+716 rep_correct_at_b')
-        lesson(s, sibling.id, 'causal acquisition', 'promising', '+658 unseen_correct_at_500')
-        lesson(s, sibling.id, 'plausibility', 'dead', '+12 val_correct_at_b')
-        lesson(s, sibling.id, 'ece trim', 'dead', '-0.004 val_ece')
-        lesson(s, sibling.id, 'never scored', 'dead', 'none measured')
-        lesson(s, sibling.id, 'binning', 'dead', '-0.01 test_ece_bins')
+        lesson(s, sibling.id, 'cross-tree-replay', 'promising', -1182.8, 'postproc_seconds')
+        lesson(s, sibling.id, 'stack-composition', 'promising', -1071.1, 'full_eval_seconds')
+        lesson(s, sibling.id, 'exact-compute-cuts', 'promising', -1054.6, 'full_eval_seconds')
+        lesson(s, sibling.id, 'disagreement withholding', 'promising', 723, 'unseen_score')
+        lesson(s, sibling.id, 'calibration', 'promising', 716, 'Rep_Correct_at_B')
+        lesson(s, sibling.id, 'causal acquisition', 'promising', 658, 'unseen_correct_at_500')
+        lesson(s, sibling.id, 'plausibility', 'dead', 12, 'val_correct_at_b')
+        lesson(s, sibling.id, 'ece trim', 'dead', -0.004, 'val_ece')
+        lesson(s, sibling.id, 'never scored', 'dead', None)
+        lesson(s, sibling.id, 'binning', 'dead', -0.01, 'test_ece_bins')
         s.commit()
         lines = lessons_overview(s, s.get_one(Project, project.id), 1000).splitlines()[4:]
-    assert [line.split(' | ')[0].removeprefix('- [sibling] family: ') for line in lines] == [
+    assert [line.split(' | ')[0].removeprefix('- [sibling] ') for line in lines] == [
         'plausibility',
         'ece trim',
         'calibration',
@@ -118,7 +134,7 @@ def test_lessons_in_the_projects_metrics_outrank_larger_effects_in_other_units(d
         'exact-compute-cuts',
     ], (
         'primary, then guardrails, then a metric sharing a word with the primary, then no metric, then the rest:'
-        ' there, the best of each metric before the second of any'
+        ' there, the best of each metric before the second of any; metric names compare in any case'
     )
 
 
@@ -136,17 +152,16 @@ def test_relevance_tiers_a_metric_by_its_name_against_the_projects_metrics(proje
     )
 
 
-def test_parse_reads_the_family_the_status_and_the_size_of_the_first_number_after_best() -> None:
-    assert parse('family: A  b | status: dead | best: -53% to -63% ms') == Lesson('a b', False, 53.0, 'ms')
-    assert parse('family: a | status: dead | best: +716 Rep_Correct_at_B (evaluator#15)').metric == 'rep_correct_at_b'
-    assert parse('family: a | status: dead | best: +3') == Lesson('a', False, 3.0, None)
-    assert parse('family: a | status: untested | best: none measured (evaluator#2)') == Lesson('a', True, None)
-    assert parse('not a lesson') == Lesson('not a lesson', True, None), 'another shape ranks last'
-
-
 def test_fit_keeps_the_lines_that_fit_in_the_budget() -> None:
     assert fit(['a' * 7, 'b' * 7, 'c'], 4) == (['a' * 7, 'b' * 7], 1), 'each line costs len // 4 + 1 tokens'
     assert fit([], 0) == ([], 0)
+
+
+def test_fitted_makes_room_for_its_notice_inside_the_budget() -> None:
+    lines = ['a' * 7] * 5
+    assert fitted(lines, 10, 'm') == lines, 'all fit: no notice'
+    assert fitted(lines, 9, 'm') == ['a' * 7] * 3 + ['… 2 more: m'], 'a line costs 2 and the notice 3: it takes two'
+    assert fitted(lines, 2, 'm') == [], 'not even the notice fits'
 
 
 def test_wake_prints_the_journal_newest_lines_in_order_the_inbox_the_active_heads_and_the_lessons(
@@ -169,7 +184,7 @@ def test_wake_prints_the_journal_newest_lines_in_order_the_inbox_the_active_head
         ]
         sibling, _ = clones(s, project)
         s.get_one(Project, sibling.id).status = ProjectStatus.STOPPED
-        lesson(s, sibling.id, 'voting', 'dead')
+        voting = lesson(s, sibling.id, 'voting', 'dead')
         for i in range(40):
             s.add(Journal(author='orchestrator', line=f'step {i:02d}: ' + 'x' * 60, created_at=NOW))
         s.add(
@@ -188,15 +203,60 @@ def test_wake_prints_the_journal_newest_lines_in_order_the_inbox_the_active_head
     journal = lines[
         lines.index('## Journal, oldest to newest (40 lines in all)') + 1 : lines.index('## Inbox (1 open)') - 1
     ]
-    assert journal[0] == '… 25 older: SELECT created_at, author, line FROM journal ORDER BY id DESC'
+    assert journal[0].endswith(' older: SELECT created_at, author, line FROM journal ORDER BY id DESC')
+    older = int(journal[0].split()[1])
     assert [line[:31] for line in journal[1:3]] == [
         '- 2026-10-12 21:00 orchestrator',
         '- 2026-10-12 21:00 orchestrator',
     ]
-    assert journal[1].split(': ', 1)[1].startswith('step 25') and journal[-1].split(': ', 1)[1].startswith('step 39')
-    assert '- p1 comment#2 escalation on project#1 by w (demo): Raise the floor?' in lines
+    assert journal[1].split(': ', 1)[1].startswith(f'step {older:02d}'), 'the newest lines, oldest first'
+    assert journal[-1].split(': ', 1)[1].startswith('step 39')
+    assert '- p1 comment#1 escalation on project#1 by w (demo): Raise the floor?' in lines
     active = lines[lines.index('## Active projects (2)') + 1 : lines.index('## Current lessons on their repos (1)') - 1]
     assert [line.split(' · ')[0] for line in active] == ['- demo', '- other'], 'the stopped sibling is not active'
-    assert lines[-1] == '- [sibling] family: voting | status: dead | best: +1 score (evaluator#1) (comment#1)', (
+    assert lines[-1] == f'- [sibling] voting | dead | +1 score (lesson#{voting})', (
         "a stopped project's lessons count when it shares a repo with an active one"
     )
+
+
+@pytest.mark.parametrize('budget', [*range(0, 120, 7), 200, 500, 1000])
+def test_wake_and_a_brief_print_no_more_than_their_budget_headings_and_notices_included(
+    db: Database, project: Project, budget: int
+) -> None:
+    """Greptile on hiloopai/piloop#7: `piloop wake --budget 1` printed 54 to 97 tokens."""
+    with db.session() as s:
+        s.get_one(Project, project.id).repo = 'github.com/o/r'
+        for i in range(30):
+            lesson(s, project.id, f'family {i}', 'dead', i)
+            s.add(Journal(author='orchestrator', line=f'step {i}: ' + 'x' * 60, created_at=NOW))
+            s.add(
+                Comment(
+                    target_kind=TargetKind.PROJECT,
+                    target_id=project.id,
+                    author='w',
+                    body='Raise the floor?',
+                    kind=CommentKind.ESCALATION,
+                    priority=1,
+                )
+            )
+        s.commit()
+        wake = orchestrator_overview(s, budget, NOW).splitlines()
+        brief = lessons_overview(s, s.get_one(Project, project.id), budget).splitlines()
+    assert cost(wake) <= budget and cost(brief) <= budget
+    if budget >= 200:
+        assert len(wake) > 10 and len(brief) > 5, 'a usual budget prints every section'
+    if budget == 0:
+        assert wake == brief == []
+
+
+def test_wake_reads_only_the_journal_lines_that_can_fit(db: Database, project: Project) -> None:
+    """Greptile on hiloopai/piloop#7: wake loaded and formatted every journal row to keep a few."""
+    with db.session() as s:
+        s.add_all(Journal(author='orchestrator', line=f'step {i}', created_at=NOW) for i in range(5000))
+        s.commit()
+        loaded: list[object] = []
+        event.listen(s, 'loaded_as_persistent', lambda _s, obj: loaded.append(obj))
+        lines = orchestrator_overview(s, 100, NOW).splitlines()
+    journal = [o for o in loaded if isinstance(o, Journal)]
+    assert 0 < len(journal) <= 100 * 0.4, 'no more rows than tokens in the journal share'
+    assert lines[2] == '## Journal, oldest to newest (5000 lines in all)', 'the total is a count, not a load'

@@ -16,11 +16,9 @@ from sqlalchemy.exc import OperationalError
 
 from piloop.daemon.main import ACTOR
 from piloop.db import sql
-from piloop.db.models import JOURNAL_LINE_BYTES, LESSON_FORMAT, Base, CommentKind, Project
+from piloop.db.models import JOURNAL_LINE_BYTES, Base, CommentKind, Project
 from piloop.db.session import Database
 from tests.conftest import WRITER
-
-LESSON = 'family: voting | status: dead | best: +0.002 accuracy (evaluator#1)\nthe trees agree on every row: idea#3'
 
 
 @pytest.fixture
@@ -79,6 +77,7 @@ def test_schema_ddl_lists_every_table_with_its_indexes_and_runs(tmp_path: Path) 
             'idea_links',
             'ideas',
             'journal',
+            'lessons',
             'measurements',
             'projects',
             'runs',
@@ -351,11 +350,10 @@ def test_deletes_leave_tombstones_and_cascades_too(con: sqlite3.Connection) -> N
 
 def test_every_comment_kind_is_an_event_shaped_like_the_escalation_one(con: sqlite3.Connection) -> None:
     for kind in CommentKind:
-        target, body = ('project', LESSON) if kind is CommentKind.LESSON else ('run', 'x')
         sql.run(
             con,
             'INSERT INTO comments (target_kind, target_id, author, kind, body, priority)'
-            f" VALUES ('{target}', 7, 'pi', '{kind}', '{body}', 2)",
+            f" VALUES ('run', 7, 'pi', '{kind}', 'x', 2)",
         )
     assert events(con) == snapshot(
         [
@@ -363,47 +361,76 @@ def test_every_comment_kind_is_an_event_shaped_like_the_escalation_one(con: sqli
             ('comment.finding', 'pi', 'comment', 2, '{"target_kind":"run","target_id":7}'),
             ('comment.decision', 'pi', 'comment', 3, '{"target_kind":"run","target_id":7}'),
             ('comment.escalation', 'pi', 'comment', 4, '{"target_kind":"run","target_id":7}'),
-            ('comment.lesson', 'pi', 'comment', 5, '{"target_kind":"project","target_id":7}'),
         ]
     ), 'one event per comment: the persistent escalation trigger and the per-connection one never both fire'
 
 
-def test_a_lesson_is_on_its_project_and_opens_with_its_family_status_and_best(con: sqlite3.Connection) -> None:
-    """Agents write lessons with raw SQL; the queries that find the current one of a family read the first line."""
-    insert = (
-        "INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES ('{}', 1, 'watchdog#2', 'lesson', ?)"
-    )
-    for status in ('dead', 'promising', 'untested'):
-        con.execute(insert.format('project'), (LESSON.replace('dead', status, 1),))
-    con.execute(insert.format('project'), ('family: voting | status: untested | best: none',))
-    with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: a lesson is on its project'):
-        con.execute(insert.format('idea'), (LESSON,))
-    refused = (
-        'voting is dead',
-        'family: voting | status: maybe | best: +0.1 accuracy (evaluator#1)',
-        'family:  | status: dead | best: none',
-        'family: voting | status: dead | best: ',
-        'why first\nfamily: voting | status: dead | best: +0.1 accuracy (evaluator#1)',
-    )
-    for body in refused:
-        with pytest.raises(
-            sqlite3.IntegrityError, match=re.escape(f'CHECK constraint failed: a lesson starts {LESSON_FORMAT}')
-        ):
-            con.execute(insert.format('project'), (body,))
-    con.execute(
-        "INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES ('idea', 1, 'a', 'note', 'x')"
-    )
+def test_a_lesson_has_a_status_and_an_effect_only_with_its_metric(con: sqlite3.Connection) -> None:
+    """Agents write lessons with raw SQL: a malformed one fails at insert, and the error names the rule."""
+    sql.run(con, "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+    insert = 'INSERT INTO lessons (project_id, family, status, effect, metric, body, created_by) VALUES (1, {})'
+    for values in (
+        "'voting', 'dead', 0.002, 'accuracy', 'the trees agree on every row: idea#3', 'watchdog#2'",
+        "'voting', 'promising', -40, 'seconds', 'faster: candidate#9', 'watchdog#2'",
+        "'pruning', 'untested', NULL, NULL, 'never ran: idea#4', 'orchestrator'",
+    ):
+        sql.run(con, insert.format(values))
+    refused = {
+        "'voting', 'maybe', NULL, NULL, 'b', 'w'": 'CHECK constraint failed: lessonstatus',
+        "'voting', 'dead', 0.1, NULL, 'b', 'w'": 'lessons.effect and lessons.metric go together',
+        "'voting', 'dead', NULL, 'accuracy', 'b', 'w'": 'lessons.effect and lessons.metric go together',
+        "'voting', 'dead', 'big', 'accuracy', 'b', 'w'": 'lessons.effect must be a number',
+        "'voting', 'dead', NULL, NULL, x'00', 'w'": 'lessons.body must be a text value',
+    }
+    for values, error in refused.items():
+        with pytest.raises(sqlite3.IntegrityError, match=re.escape(error)):
+            sql.run(con, insert.format(values))
+    with pytest.raises(sqlite3.IntegrityError, match='FOREIGN KEY'):
+        sql.run(con, insert.format("'voting', 'dead', NULL, NULL, 'b', 'w'").replace('(1, ', '(9, '))
 
 
-def test_the_journal_takes_short_lines_and_agents_only_append(con: sqlite3.Connection) -> None:
+@pytest.mark.parametrize(
+    ('table', 'insert'),
+    [
+        ('journal', "INSERT INTO journal (author, line) VALUES ('orchestrator', 'parked idea#4: dup of #2')"),
+        (
+            'lessons',
+            'INSERT INTO lessons (project_id, family, status, body, created_by)'
+            " VALUES (1, 'voting', 'dead', 'idea#3', 'watchdog#2')",
+        ),
+    ],
+)
+def test_agents_never_rewrite_a_journal_line_or_a_lesson(con: sqlite3.Connection, table: str, insert: str) -> None:
+    """An UPDATE is denied, and an INSERT OR REPLACE of a row is refused: the authorizer does not see it."""
+    sql.run(con, "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+    sql.run(con, insert)
+    before = sql.run(con, f'SELECT * FROM {table}').rows
+    with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
+        sql.run(con, f'UPDATE {table} SET id = 2')
+    for replace in ('INSERT OR REPLACE INTO', 'REPLACE INTO'):
+        with pytest.raises(sqlite3.IntegrityError, match=f'{table} rows are never replaced: insert a new row'):
+            sql.run(con, f'{replace} {table} SELECT * FROM {table}')
+    assert sql.run(con, f'SELECT * FROM {table}').rows == before
+    sql.run(con, insert)
+    assert len(sql.run(con, f'SELECT id FROM {table}').rows) == 2, 'a new row is an append'
+
+
+def test_a_journal_line_is_never_deleted_but_a_lesson_goes_with_its_project(con: sqlite3.Connection) -> None:
+    sql.run(con, "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+    sql.run(con, "INSERT INTO journal (author, line) VALUES ('orchestrator', 'parked idea#4')")
+    sql.run(con, "INSERT INTO lessons (project_id, family, status, body, created_by) VALUES (1, 'v', 'dead', 'b', 'w')")
+    with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
+        sql.run(con, 'DELETE FROM journal')
+    sql.run(con, 'DELETE FROM projects')
+    assert sql.run(con, 'SELECT count(*) FROM lessons').rows == [(0,)]
+
+
+def test_the_journal_takes_short_lines(con: sqlite3.Connection) -> None:
     sql.run(con, "INSERT INTO journal (author, line) VALUES ('orchestrator', 'parked idea#4: dup of #2')")
     with pytest.raises(sqlite3.IntegrityError, match=f'journal.line is text of 1 to {JOURNAL_LINE_BYTES} bytes'):
         sql.run(con, f"INSERT INTO journal (author, line) VALUES ('orchestrator', '{'é' * 141}')")
     with pytest.raises(sqlite3.IntegrityError, match='journal.line is text of 1'):
         sql.run(con, "INSERT INTO journal (author, line) VALUES ('orchestrator', '')")
-    for statement in ("UPDATE journal SET line = 'rewritten'", 'DELETE FROM journal'):
-        with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
-            sql.run(con, statement)
     assert sql.run(con, 'SELECT author, line FROM journal').rows == [('orchestrator', 'parked idea#4: dup of #2')]
 
 

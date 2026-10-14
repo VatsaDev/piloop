@@ -24,10 +24,11 @@ from piloop.daemon.runner import INTERRUPTED, NO_CHANGES, UNCOMMITTED_SUMMARY, R
 from piloop.db.models import (
     Candidate,
     Comment,
-    CommentKind,
     Event,
     Idea,
     IdeaStatus,
+    Lesson,
+    LessonStatus,
     Measurement,
     Project,
     ProjectStatus,
@@ -403,19 +404,21 @@ def test_a_worker_brief_opens_with_the_current_lessons_of_the_repo_within_its_bu
             mode='json'
         )
         s.add(
-            Comment(
-                target_kind=TargetKind.PROJECT,
-                target_id=project.id,
-                author='watchdog#9',
-                kind=CommentKind.LESSON,
-                body='family: voting | status: dead | best: +0 score (evaluator#1)\nidea#1',
+            Lesson(
+                project_id=project.id,
+                family='voting',
+                status=LessonStatus.DEAD,
+                effect=0,
+                metric='score',
+                body='idea#1 on evaluator#1',
+                created_by='watchdog#9',
             )
         )
         s.commit()
     run_id = make_run(db, project)
     execute(executor(db, runtime, tmp_path), db, run_id)
     brief = run_row(db, run_id).brief or ''
-    line = '- [demo] family: voting | status: dead | best: +0 score (evaluator#1) (comment#1)'
+    line = '- [demo] voting | dead | +0 score (lesson#1)'
     if budget:
         assert brief.index('# Worker') < brief.index(line) < brief.index('# Demo'), 'after the role, before the project'
     else:

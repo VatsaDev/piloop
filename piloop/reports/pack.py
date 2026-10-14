@@ -16,7 +16,6 @@ pointers, not inlined content. On top of the history, the pack adds at most abou
 """
 
 import io
-import re
 from collections import defaultdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,13 +34,13 @@ from piloop.db.models import Candidate, Comment, CommentKind, Idea, IdeaStatus, 
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.reports.history import BRIEF_WIDTH, block, renderables as history, text_row, titled_table
 from piloop.scoring.ledger import head, metrics
-from piloop.text import NONE, cell, metric
+from piloop.text import HEADING, NONE, cell, metric
 
 ARTIFACTS_SHOWN = 12
 WORKSPACE_SHOWN = 10
 OUTLINE_CHARS = 600
 """The maximum length of an artifact outline: its markdown headings down to level 3, on one line."""
-HEADING = re.compile(r'#{1,3} ')
+OUTLINE_LEVELS = 3
 SEEDS_SHOWN = 20
 POINTERS_CHARS = 400
 FINDINGS_SHOWN = 8
@@ -200,7 +199,7 @@ def _outline(path: Path) -> str:
     for line in path.read_text(errors='replace').splitlines():
         if line.startswith('```'):
             fenced = not fenced
-        elif not fenced and HEADING.match(line):
+        elif not fenced and (m := HEADING.match(line)) and len(m[1]) <= OUTLINE_LEVELS:
             headings.append(line.strip())
     joined = ' · '.join(headings) or '(no headings)'
     return joined if len(joined) <= OUTLINE_CHARS else joined[: OUTLINE_CHARS - 1] + '…'

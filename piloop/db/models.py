@@ -128,38 +128,20 @@ class TargetKind(StrEnum):
 
 
 class CommentKind(StrEnum):
-    """Why a comment was written. An ``escalation`` asks for a decision and is always in the human's inbox.
-
-    A ``lesson`` is the standing conclusion about one mechanism family (``ideas.family``) of a project. The closing
-    watchdog writes one for each family that a campaign tried. It replaces the findings on that family, and the newest
-    lesson for a (project, family) is the current one. It is on its project, and its first line is ``LESSON_FORMAT``
-    (CHECKs).
-    """
+    """Why a comment was written. An ``escalation`` asks for a decision and is always in the human's inbox."""
 
     NOTE = 'note'
     FINDING = 'finding'
     DECISION = 'decision'
     ESCALATION = 'escalation'
-    LESSON = 'lesson'
 
 
-LESSON_FORMAT = 'family: <family> | status: dead|promising|untested | best: <+N metric> (<evaluator/eval>)'
-"""The first line of a lesson. The lines below it say why, and cite idea and candidate ids."""
-LESSON_STATUSES = ('dead', 'promising', 'untested')
+class LessonStatus(StrEnum):
+    """What a lesson concludes about its mechanism family."""
 
-
-def lesson_checks() -> tuple[CheckConstraint, ...]:
-    """A lesson is on a project, and the first line of its body is ``LESSON_FORMAT``.
-
-    Agents write lessons with raw SQL, and the queries that find the current lesson of a family read that line. The
-    name of each CHECK says what it requires, so the error that an agent gets says it too.
-    """
-    first = 'substr(body, 1, instr(body || char(10), char(10)) - 1)'
-    line = ' OR '.join(f"{first} GLOB 'family: ?* | status: {status} | best: ?*'" for status in LESSON_STATUSES)
-    return (
-        CheckConstraint("kind != 'lesson' OR target_kind = 'project'", name='a lesson is on its project'),
-        CheckConstraint(f"kind != 'lesson' OR ({line})", name=f'a lesson starts {LESSON_FORMAT}'),
-    )
+    DEAD = 'dead'
+    PROMISING = 'promising'
+    UNTESTED = 'untested'
 
 
 class WorkerKind(StrEnum):
@@ -240,6 +222,7 @@ class Base(DeclarativeBase):
         Verdict: _values(Verdict),
         TargetKind: _values(TargetKind),
         CommentKind: _values(CommentKind),
+        LessonStatus: _values(LessonStatus),
         WorkerState: _values(WorkerState),
     }
 
@@ -568,7 +551,6 @@ class Comment(Tracked, Base):
         Index('ix_comments_inbox', 'priority', 'id', sqlite_where=text('priority IS NOT NULL AND acked_at IS NULL')),
         CheckConstraint("kind != 'escalation' OR priority IS NOT NULL", name='escalation_needs_priority'),
         *text_checks('comments', 'author', 'body'),
-        *lesson_checks(),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -611,6 +593,39 @@ class Technique(Base):
     """The primary source: a post, repo or paper. Unique in a project, so the same link is never filed twice."""
     created_by: Mapped[str]
     """Who filed it: the scout (``scout#<worker id>``) or someone else."""
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
+
+
+class Lesson(Base):
+    """The standing conclusion about one mechanism family (``ideas.family``) of a project, for the next campaigns.
+
+    The closing watchdog writes one for each family that a campaign tried, and the orchestrator may write more. The
+    newest lesson for a (project, family) is the current one: a new conclusion is a new row, and rows are never
+    updated. Briefs open with the current lessons of the repo (``piloop.reports.wake``).
+    """
+
+    __tablename__ = 'lessons'
+    __table_args__ = (
+        Index('ix_lessons_project_family', 'project_id', 'family'),
+        CheckConstraint('(effect IS NULL) = (metric IS NULL)', name='lessons.effect and lessons.metric go together'),
+        CheckConstraint("typeof(effect) IN ('integer', 'real', 'null')", name='lessons.effect must be a number'),
+        *text_checks('lessons', 'family', 'body', 'created_by', nullable=('metric',)),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'))
+    family: Mapped[str]
+    """The mechanism family, as ``ideas.family`` names it. Case and spacing do not matter when lessons are matched."""
+    status: Mapped[LessonStatus]
+    effect: Mapped[float | None]
+    """The best effect that the campaign measured in the family, in the units of ``metric``, with the sign it had: a
+    gain can be a lower time. NULL when none was measured."""
+    metric: Mapped[str | None]
+    """The metric of ``effect``, as the project names it. NULL when no effect was measured."""
+    body: Mapped[str]
+    """Why: what was tried, the evaluator that measured the effect, why it stopped. It cites idea and candidate ids."""
+    created_by: Mapped[str]
+    """Who wrote it: the closing watchdog (``watchdog#<worker id>``), the orchestrator or a human."""
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
 

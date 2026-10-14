@@ -26,7 +26,7 @@ from functools import partial
 from pathlib import Path
 
 from git import Repo
-from git.exc import InvalidGitRepositoryError, NoSuchPathError
+from git.exc import GitError, InvalidGitRepositoryError, NoSuchPathError
 from pydantic import ValidationError
 from sqlalchemy import Boolean, ColumnElement, Select, exists, func, or_, select
 from sqlalchemy.orm import Session
@@ -462,8 +462,13 @@ class Scheduler:
         project.status, project.stopped_reason = ProjectStatus.STOPPED, reason
         self._tracer.event('project.stopped', project=project.name, reason=reason)
         self._drain(s, project)
-        synced = sync_documents(s, project, cfg, DAEMON_ACTOR)
-        self._tracer.event('documents.synced', project=project.name, result=synced.line())
+        try:
+            with s.begin_nested():
+                synced = sync_documents(s, project, cfg, DAEMON_ACTOR)
+        except (OSError, GitError) as e:  # the repo could not be read: the stop and the closing review still happen
+            self._tracer.event('documents.sync_failed', project=project.name, error=f'{type(e).__name__}: {e}')
+        else:
+            self._tracer.event('documents.synced', project=project.name, result=synced.line())
         s.add(Worker(kind=WorkerKind.WATCHDOG, project_id=project.id, reason=f'campaign stopped: {reason}'))
 
     def _drain(self, s: Session, project: Project) -> None:

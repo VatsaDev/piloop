@@ -178,7 +178,7 @@ name defines a new role, and needs `prompt` and `triggers`.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `writes` | list\[string\] | `["comments(escalation, finding, note)", "comments(lesson) on the project once it stopped", "seeds via idea seed"]` | What a watchdog may write, as its brief states it. |
+| `writes` | list\[string\] | `["comments(escalation, finding, note)", "lessons on the project once it stopped", "seeds via idea seed"]` | What a watchdog may write, as its brief states it. |
 | `wake_budget` | integer \| null | `0` | The size in tokens of the lessons overview that opens a watchdog's brief. Off by default: the closing review reads the lessons itself before it writes its own. |
 | `triggers` | list\[[Trigger](#trigger)\] | `[{"kind": "anomaly"}, {"kind": "cron"}]` | An anomaly requests an incident sweep, and the timer requests a progress review. |
 | `interval` | number | `1800` | The number of seconds between two progress reviews, counted from the last review. A sweep that investigates an anomaly is not a review. 0 turns the reviews off. |
@@ -286,7 +286,7 @@ read as $0. To resume, raise `limit` and run `piloop init`.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `documents` | list\[string\] | `[]` | Repo-relative globs of text documents, for example `["docs/evidence/**/*.md"]`: campaign reports, orchestrator logs, design notes. `piloop init` and the stop of the campaign copy them into the `documents` table, where every agent of every project can search them. Never name a document that is derived from validation or test data. |
-| `wake_budget` | integer | `400` | The size in tokens (about 4 characters each) of the overview that opens the briefs of workers and research sweeps: the current lesson of each mechanism family on the same repo, from the newest campaign that tried it, one line each. Lessons in the project's own metrics come first (the word after the number after `best:`), then lessons in related metrics, then the rest. Within those, dead or promising come before untested, then the larger effects of each metric, then newer campaigns: effects in different metrics are never compared by size. The brief then says how to read more. A role can change it with `[roles.<kind>] wake_budget`. 0 turns it off. |
+| `wake_budget` | integer | `400` | The size in tokens (about 4 characters each) of the overview that opens the briefs of workers and research sweeps: the current lesson of each mechanism family on the same repo, from the newest campaign that tried it, one line each. Lessons in the project's own metrics come first (`lessons.metric`), then lessons in related metrics, then the rest. Within those, dead or promising come before untested, then the larger effects of each metric, then newer campaigns: effects in different metrics are never compared by size. The brief then says how to read more. A role can change it with `[roles.<kind>] wake_budget`. 0 turns it off. |
 
 ## AnomalyTrigger
 

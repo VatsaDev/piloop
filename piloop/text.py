@@ -1,7 +1,11 @@
-"""Short text: one line of free text that fits in a table cell, a tab title or an inbox line."""
+"""Short text: one line of free text that fits in a table cell, a tab title or an inbox line, and markdown headings."""
+
+import re
 
 CELL_CHARS = 100
 NONE = '—'
+HEADING = re.compile(r'(#{1,6})[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$')
+"""A markdown ATX heading line: its ``#`` marks (the level) and its text, without closing ``#`` marks."""
 
 
 def cell(text: str, chars: int = CELL_CHARS) -> str:

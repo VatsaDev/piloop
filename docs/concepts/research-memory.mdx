@@ -8,17 +8,19 @@ does not pay again for what an old one learned. Agents find it with SQL: there i
 
 ## Lessons
 
-A **lesson** is the standing conclusion about one mechanism family (`ideas.family`) of a project. It replaces the
-findings on that family. The newest lesson for a project and family is the current one. Its first line has a fixed
-shape, and the lines below it say why, citing idea and candidate ids:
+A **lesson** is the standing conclusion about one mechanism family (`ideas.family`) of a project: a row of the
+`lessons` table. It replaces the findings on that family. The newest lesson for a project and family is the current
+one, so a new conclusion is a new row: a lesson is never changed.
 
-```text
-family: confidence calibration | status: dead | best: +0.002 accuracy (evaluator#3)
-Three attempts (idea#41, #57, #63) calibrated well on the panel and moved nothing: the trees already agree...
+```sql
+INSERT INTO lessons (project_id, family, status, effect, metric, body, created_by)
+VALUES (3, 'confidence calibration', 'dead', 0.002, 'accuracy',
+        'Three attempts (idea#41, #57, #63) on evaluator#3 calibrated well on the panel and moved nothing.', 'orchestrator');
 ```
 
-The status is `dead`, `promising` or `untested`. The database refuses a lesson of another shape, and a lesson that is
-not on its project.
+The status is `dead`, `promising` or `untested`. `effect` is the best effect measured, in the units of `metric`, with
+its sign: a gain can be a lower time. Both are NULL when nothing was measured. The body says why, citing idea and
+candidate ids.
 
 When a `[stop]` condition ends a campaign, the closing watchdog writes one lesson for each family that the campaign
 tried: what was tried, the best effect and on which evaluator, why it stopped, and its status. The orchestrator can
@@ -48,9 +50,9 @@ agent of every project can read it.
 ## What agents read
 
 - The briefs of workers and research sweeps open with the current lessons of the repo, one line per mechanism family
-  from the newest campaign that tried it. Lessons in the project's own metrics come first (the metric is the word after
-  the number after `best:`): its primary, then its other metrics, then metrics that share a word with them
-  (`rep_correct_at_b` with `val_correct_at_b`), then lessons with no number, then the rest. Within each, dead or
+  from the newest campaign that tried it. Lessons in the project's own metrics come first (`lessons.metric`): its
+  primary, then its other metrics, then metrics that share a word with them (`rep_correct_at_b` with
+  `val_correct_at_b`), then lessons with no effect, then the rest. Within each, dead or
   promising before untested, then the larger effect (whatever its sign) among the lessons in the same metric, so
   seconds never outrank words, then the newer campaign. The overview is `[memory] wake_budget` tokens (default 400).
   `[roles.<kind>] wake_budget` changes it for one role, and 0 turns it off. Watchdogs do not get it by default.
@@ -69,9 +71,9 @@ An orchestrator session can lose its context: a crash, or a full context window.
 pick up the work.
 
 - `piloop journal "<line>"` adds one line, at most 280 bytes: a decision, a plan or a result, with its ids. The
-  journal is append-only.
-- `piloop wake` prints, in a fixed budget (`--budget`, default 2000 tokens), the latest journal lines, the open inbox,
-  the head of each active project and the current lessons on their repos. Each section says how to read what did not
-  fit.
+  journal is append-only: no agent can change, delete or replace a line.
+- `piloop wake` prints, in a fixed budget (`--budget`, default 2000 tokens, headings included), the latest journal
+  lines, the open inbox, the head of each active project and the current lessons on their repos. Each section says
+  how to read what did not fit.
 
 The `piloop-operate` skill runs `piloop wake` first and journals as it goes.

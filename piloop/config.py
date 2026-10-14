@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from functools import cache
 from importlib.metadata import entry_points
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, ClassVar, Literal, Self, cast
 
 from pydantic import (
@@ -317,7 +317,7 @@ class WatchdogRole(SweepRole):
     anomaly is not a review. 0 turns the reviews off."""
     writes: list[str] = [
         'comments(escalation, finding, note)',
-        'comments(lesson) on the project once it stopped',
+        'lessons on the project once it stopped',
         'seeds via idea seed',
     ]
     """What a watchdog may write, as its brief states it."""
@@ -465,11 +465,20 @@ class Memory(BaseModel):
     wake_budget: int = Field(default=400, ge=0)
     """The size in tokens (about 4 characters each) of the overview that opens the briefs of workers and research
     sweeps: the current lesson of each mechanism family on the same repo, from the newest campaign that tried it, one
-    line each. Lessons in the project's own metrics come first (the word after the number after ``best:``), then
+    line each. Lessons in the project's own metrics come first (``lessons.metric``), then
     lessons in related metrics, then the rest. Within those, dead or promising come before untested, then the larger
     effects of each metric, then newer campaigns: effects in different metrics are never compared by size. The brief
     then says how to read more. A role can change it with ``[roles.<kind>] wake_budget``. 0
     turns it off."""
+
+    @field_validator('documents')
+    @classmethod
+    def _inside_the_repo(cls, globs: list[str]) -> list[str]:
+        for pattern in globs:
+            parts = PurePosixPath(pattern).parts
+            if not parts or parts[0] == '/' or '..' in parts:
+                raise ValueError(f'{pattern!r} is not a glob inside the repo: name files relative to its root, no ..')
+        return globs
 
 
 def _role(table: object) -> object:

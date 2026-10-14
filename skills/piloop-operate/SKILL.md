@@ -351,8 +351,8 @@ session that worked a past idea.
   id = <p>) ORDER BY bm25(ideas_fts) LIMIT 20`.
 - Lessons: the standing conclusion about each mechanism family, written by the closing watchdog when a campaign stops.
   The newest for each project and family is the current one, and `piloop wake` lists them. You may write one too: a
-  comment of kind `lesson` on the project, with the first line `family: <family> | status: dead|promising|untested |
-  best: <+N metric> (<evaluator/eval>)`, then why, citing ids.
+  row of `lessons` with the family, the status (`dead`, `promising` or `untested`), the best effect and its metric
+  (both NULL when none was measured), and a body that says why, citing ids. The procedures show the INSERT.
 - Documents: the reports and logs that `[memory] documents` in `piloop.toml` names, copied in on `piloop init` and
   when the campaign stops. Search them with `documents_fts MATCH '<words>'`. Point the globs at reports, never at
   anything derived from validation or test data.

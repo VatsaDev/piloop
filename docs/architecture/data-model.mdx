@@ -142,6 +142,17 @@ erDiagram
         varchar created_by
         datetime created_at
     }
+    lessons {
+        integer id PK
+        integer project_id FK
+        varchar family
+        LessonStatus status
+        double effect
+        varchar metric
+        varchar body
+        varchar created_by
+        datetime created_at
+    }
     documents {
         integer id PK
         integer project_id FK
@@ -202,6 +213,7 @@ erDiagram
     candidates ||--o{ measurements : "candidate_id"
     evaluators ||--o{ measurements : "evaluator_id"
     projects ||--o{ techniques : "project_id"
+    projects ||--o{ lessons : "project_id"
     projects ||--o{ documents : "project_id"
     projects |o--o{ workers : "project_id"
     runs |o--o{ workers : "run_id"

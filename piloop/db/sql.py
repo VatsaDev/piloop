@@ -19,8 +19,9 @@ Every connection, here and in the daemon's engine, has an actor. ``install_actor
 is denied. From then on, every UPDATE sets ``updated_by``, and the tracked changes, deletes and comments go into
 ``events``. The authorizer does not protect ``events``, so the INSERTs of the trigger bodies pass.
 
-The orchestrator's ``journal`` is append-only: an agent's UPDATE or DELETE of it is denied. Every connection also has
-the SQL function ``blake3(text)`` (``install_functions``).
+Rows of the orchestrator's ``journal`` and of ``lessons`` never change: an agent's UPDATE of them is denied, and so is
+a DELETE of the journal. A trigger refuses an ``INSERT OR REPLACE`` of a row (``piloop.db.triggers.immutable``). Every connection also has the
+SQL function ``blake3(text)`` (``install_functions``).
 """
 
 import os
@@ -35,6 +36,7 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 
 from piloop.db.models import Base
 from piloop.db.triggers.fts import FTS_COLUMNS, FTS_TABLES, FTS_TRIGGER_NAMES, fts_table
+from piloop.db.triggers.immutable import IMMUTABLE, UNDELETABLE
 from piloop.proc import command_line
 
 DENIED = {
@@ -76,8 +78,6 @@ READ_ONLY_PRAGMAS = {
 MIGRATION_TABLE = 'alembic_version'
 ACTOR_TABLE = 'session_actor'
 PROTECTED_TABLES = {MIGRATION_TABLE, ACTOR_TABLE}
-JOURNAL = 'journal'
-"""Append-only for agents: ``piloop journal`` and INSERTs add lines, nothing changes or deletes one."""
 ACTOR_TRIGGERS = (Path(__file__).parent / 'actor_triggers.sql').read_text()
 WRITES = {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}
 BUSY_TIMEOUT_MS = 5000
@@ -120,7 +120,9 @@ def _authorize(action: int, arg1: str | None, arg2: str | None, _db: str | None,
         return sqlite3.SQLITE_DENY
     if action in WRITES and arg1 in FTS_TABLES and source not in FTS_TRIGGER_NAMES:
         return sqlite3.SQLITE_DENY
-    if action in (sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE) and arg1 == JOURNAL:
+    if (action == sqlite3.SQLITE_UPDATE and arg1 in IMMUTABLE) or (
+        action == sqlite3.SQLITE_DELETE and arg1 in UNDELETABLE
+    ):
         return sqlite3.SQLITE_DENY
     return sqlite3.SQLITE_OK
 
