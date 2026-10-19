@@ -144,10 +144,27 @@ someone asks (`piloop candidate remeasure`).
 Any agent or human can change a verdict and say why:
 
 ```bash
-piloop sql "UPDATE candidates SET verdict = 'interesting', verdict_by = 'human', verdict_reason = 'lucky seed' WHERE id = 42"
+piloop candidate verdict 42 interesting --reason "lucky seed"
 ```
 
-The daemon never overwrites a verdict that it did not set.
+The daemon never overwrites a verdict that it did not set. The `candidate.verdict` event records the change with the
+reason. Only a judgement (`keep`, `interesting`, `discard`, `crash`) is overridden, and a keep must build on the head
+unless its run is a branch run: the head is the newest trunk keep, so a keep from an older bar would drop what the head
+kept since.
+
+## Add a measurement by hand
+
+When you ran the evaluation yourself, for example after the daemon's evaluation timed out, record it:
+
+```bash
+piloop measurement add 42 --report report.json
+```
+
+`report.json` is `{"metrics": {"accuracy": 0.853}, "seconds": 600}`, with the metrics of `piloop.toml`. The
+measurement counts under the current evaluator. When the verdict is the daemon's `crash`, `discard` or `interesting`,
+the daemon judges the candidate again with all its measurements, as its run would have judged it. A keep stays: runs
+started from it as their bar, and they must now beat its new mean. A pending candidate is refused until the daemon
+has judged it.
 
 ## Notes
 

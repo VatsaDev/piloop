@@ -1,4 +1,4 @@
-"""The ``piloop candidate`` commands: import a starting point, measure a candidate again, or note a regressed result."""
+"""The ``piloop candidate`` commands: import, measure again, note a regressed result, or override a verdict."""
 
 from pathlib import Path
 from typing import Annotated
@@ -6,11 +6,12 @@ from typing import Annotated
 import cyclopts
 
 from piloop import git
+from piloop.campaign import ops
 from piloop.cli import common
 from piloop.cli.common import ProjectRef
 from piloop.cli.idea import filing, track_for
 from piloop.config import config_of
-from piloop.db.models import Candidate, Project
+from piloop.db.models import Candidate, Project, Verdict
 from piloop.scoring.ledger import (
     ImportRefused,
     NoteRefused,
@@ -24,7 +25,7 @@ from piloop.scoring.ledger import (
 
 app = cyclopts.App(
     name='candidate',
-    help='Import a starting point, measure a candidate again, or keep a regressed result in view as a lead.',
+    help='Import a starting point, measure a candidate again, keep a regressed result in view, or override a verdict.',
 )
 
 
@@ -133,3 +134,24 @@ def candidate_note(
         common.console.print(f'candidate#{candidate.id} interesting: {candidate.verdict_reason}', markup=False)
         for idea in ideas:
             common.console.print(f'idea#{idea.id} seed, pinned to candidate#{candidate.id}: {idea.title}', markup=False)
+
+
+@app.command(name='verdict')
+def candidate_verdict(
+    candidate_id: Annotated[int, cyclopts.Parameter(help='The candidate.')],
+    verdict: Annotated[Verdict, cyclopts.Parameter(help='keep, interesting, discard or crash.')],
+    /,
+    *,
+    reason: Annotated[str, cyclopts.Parameter(help='Why, with ids: what the number does not say.')],
+) -> None:
+    """Override a candidate's judgement, with the reason.
+
+    The verdict is then yours, signed as PILOOP_ACTOR, so the daemon never changes it. The `candidate.verdict` event
+    records the old and new verdict with the reason. Only a judgement is overridden: pending, reference, unmeasured and
+    recovered candidates are refused. A keep of a trunk run must build on the head, or it would drop what the head
+    kept.
+    """
+    with common.refused(), common.session() as s:
+        old = ops.set_verdict(s, candidate_id, verdict, reason=reason, actor=common.settings.actor)
+        s.commit()
+        common.console.print(f'candidate#{candidate_id} {old} → {verdict}: {reason.strip()}', markup=False)

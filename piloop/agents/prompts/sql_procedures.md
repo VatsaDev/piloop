@@ -230,7 +230,8 @@ Special reasons:
 Roles, tracks, margins and floors are in `projects.config`.
 
 Override verdicts freely, and record why. A candidate can be `interesting` without winning:
-`UPDATE candidates SET verdict='interesting', verdict_by='<you>', verdict_reason='...' WHERE id=…`.
+`piloop candidate verdict <c> interesting --reason "<why>"`. It signs the verdict with your actor. A keep must build
+on the head, unless its run is a branch run.
 The daemon never overwrites a verdict that is not its own.
 
 ### Note a lead
@@ -245,9 +246,10 @@ The daemon never overwrites a verdict that is not its own.
 ### Measure again
 
 - A candidate's score is the mean of its successful measurements under the current evaluator.
-- To estimate noise, ask a worker, or run the evaluate command yourself, and
-  `INSERT INTO measurements (candidate_id, evaluator_id, metrics)`.
-- `projects.evaluator_id` is the current evaluator.
+- To estimate noise, ask a worker, or run the evaluate command yourself, and record it:
+  `piloop measurement add <c> --report <file>`, with `{"metrics": {"<name>": <value>}, "seconds": <s>}` in the file.
+  It counts under the current evaluator (`projects.evaluator_id`), with the metric names of `piloop.toml`. A `crash`,
+  `discard` or `interesting` that the daemon judged is judged again with every measurement. Never insert into `measurements` by hand: nothing judges it.
 
 ### Talk
 

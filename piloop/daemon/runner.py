@@ -57,6 +57,7 @@ from piloop.scoring.evaluate import EvalResult, run_evaluate
 from piloop.scoring.ledger import (
     DAEMON,
     MOVED,
+    REJUDGE_FAILED,
     SKIPPED,
     bar_of,
     current_evaluator,
@@ -67,6 +68,7 @@ from piloop.scoring.ledger import (
     note,
     raises_bar,
     rebase,
+    rejudgeable,
     resolve,
     save_units,
     score,
@@ -437,8 +439,29 @@ class RunExecutor:
             return
         self._rejudge(candidate_id, repo, eval_dir)
 
-    def _rejudge(self, candidate_id: int, repo: Repo, log_dir: Path) -> None:
-        """Judge again a ``crash`` of a run that the daemon judged, now that it has a new measurement.
+    def rejudge(self, candidate_id: int) -> None:
+        """Judge again a candidate that someone measured by hand (``ledger.rejudges``), with all its measurements.
+
+        Never raises. When the judgement fails, for example because the repo is gone, a ``REJUDGE_FAILED`` event with
+        the error answers the request, so it is not tried on every tick.
+        """
+        with self._db.session() as s:
+            candidate = s.get_one(Candidate, candidate_id)
+            project_id, project_path = candidate.project_id, Path(s.get_one(Project, candidate.project_id).path)
+        try:
+            eval_dir = project_dir(self._home, project_id) / 'measure' / f'{candidate_id}-rejudge'
+            self._rejudge(candidate_id, git.open_repo(project_path), eval_dir, rejudgeable)
+        except Exception as e:
+            with self._db.session() as s:
+                payload: dict[str, object] = {'error': f'{type(e).__name__}: {e}'}
+                emit(s, REJUDGE_FAILED, TargetKind.CANDIDATE, candidate_id, payload=payload)
+                s.commit()
+            self._tracer.event(REJUDGE_FAILED, candidate=candidate_id, error=str(e))
+
+    def _rejudge(
+        self, candidate_id: int, repo: Repo, log_dir: Path, again: Callable[[Candidate], bool] = judged_again
+    ) -> None:
+        """Judge again a run's candidate that ``again`` selects, now that it has a new measurement.
 
         It is judged as its run would have judged it (``_judge``): against the bar of its parent, a keep moves the head
         only while that bar is the head, and else it is rebased onto the head (``_follow``). A crash that crashes again
@@ -447,7 +470,7 @@ class RunExecutor:
         with self._db.session() as s:
             candidate = s.get_one(Candidate, candidate_id)
             run = candidate.run
-            if run is None or not judged_again(candidate):
+            if run is None or not again(candidate):
                 return
             assert candidate.parent is not None  # a run's candidate descends from the run's base
             cfg = config_of(run.idea.project)

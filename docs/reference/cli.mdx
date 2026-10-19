@@ -226,6 +226,33 @@ Keeps a measured `discard` or `interesting` candidate in view as a starting poin
 and its reason becomes `note: <REASON>`, followed by the earlier reason. Each `--follow-up` files a seed pinned to the
 candidate. See [Notes](/concepts/verdict#notes).
 
+### piloop candidate verdict
+
+```text
+piloop candidate verdict CANDIDATE_ID keep|interesting|discard|crash --reason TEXT
+```
+
+Overrides the judgement of a candidate. The verdict is then yours, so the daemon never changes it. The
+`candidate.verdict` event records the old and new verdict, with the reason. Only a judgement is overridden: a
+`pending` candidate (the daemon is judging it), a `reference`, and an `unmeasured` or `recovered` one are refused. A
+keep of a trunk run must build on the head (the head is among its ancestors), because the head is the newest trunk
+keep: a keep without the head's changes would drop them. A keep of a branch run never moves the head.
+
+### piloop measurement add
+
+```text
+piloop measurement add CANDIDATE_ID --report FILE
+```
+
+Records a measurement that you made yourself, for example by running the evaluate command on the candidate's commit,
+under the project's current evaluator. `FILE` is JSON: `{"metrics": {"<name>": <value>}, "seconds": <s>, "error":
+"<why>"}`. Every metric name must be one of `piloop.toml`, and every metric is needed unless `error` says why the
+evaluation failed. A `pending` candidate is refused: add the measurement once the daemon has judged it. When the
+candidate's verdict is the daemon's `crash`, `discard` or `interesting`, the daemon judges it again with every
+measurement under the current evaluator, the next time it measures the project: not while the project is stopped,
+paused with `--evals`, or held by the spend guard. Any other verdict stays, and a keep's mean, which the runs that
+start from it must beat, includes the new measurement. The command says which of these happens.
+
 ## Status and the inbox
 
 ### piloop status

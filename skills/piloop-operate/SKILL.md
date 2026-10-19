@@ -404,11 +404,18 @@ The bar:
 
 Override the verdict when the number is not the full story:
 
-```sql
-UPDATE candidates SET verdict = 'interesting', verdict_by = 'orchestrator', verdict_reason = '…' WHERE id = …
+```bash
+PILOOP_ACTOR=orchestrator piloop candidate verdict <c> interesting --reason "…"
 ```
 
 - The daemon never overwrites a verdict that it did not set.
+- `keep|interesting|discard|crash`, and only over a judgement: a pending, reference, unmeasured or recovered
+  candidate is refused. A keep must build on the head (unless its run is a branch run): a keep from an older bar
+  would drop what the head kept. To land such a result, add an idea that merges it onto the head.
+- You measured it yourself (the daemon's evaluation timed out, say): `piloop measurement add <c> --report <file>`,
+  with `{"metrics": {"<name>": <value>}, "seconds": <s>}` in the file. The daemon judges its `crash`, `discard` or
+  `interesting` again with every measurement; the output says when. Never `INSERT INTO measurements`: nothing judges
+  it.
 - A suspicious jump: `piloop candidate remeasure <c>` adds one more measurement, and the score is the mean.
 - A `crash` that the host caused (a full disk, a lost GPU, a load that hit `evaluate_timeout`): `piloop candidate
   remeasure <c>`, after you raise the timeout and run `piloop init`. The daemon measures it again and judges the crash
@@ -433,4 +440,5 @@ SELECT at, actor, kind, payload FROM events WHERE target_kind = '<k>' AND target
 
 - Changes to an idea's status, priority or track, a candidate's verdict and a project's status or pause carry
   `{old, new}` and the actor (`human`, `orchestrator`, `daemon`, `watchdog#7` …).
+- `measurement.recorded` has the metrics of a measurement, with the actor that added it.
 - Deletes of ideas, comments and candidates leave `*.deleted` tombstones.

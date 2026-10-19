@@ -98,7 +98,7 @@ from piloop.reports.pack import pack
 from piloop.reports.wake import lessons_overview
 from piloop.runtime import Outcome, WorkerStatus
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
-from piloop.scoring.ledger import bar_of, checkout_candidate, due, head, head_unmeasured, score
+from piloop.scoring.ledger import bar_of, checkout_candidate, due, head, head_unmeasured, rejudges, score
 from piloop.text import cell
 from piloop.triggers import Backlog, Fire, Incident, LowWaterTrigger, TrackBacklog
 from piloop.usage import Usage
@@ -388,10 +388,17 @@ class Scheduler:
 
         After an evaluator change, no candidate has a score from the new evaluator. The head is measured first, and runs
         that are not pinned wait until it has a score (``_queue``). Then the bars that runs need, and the candidates
-        that someone asked to measure again. Older keeps are measured again only when someone asks.
+        that someone asked to measure again. Older keeps are measured again only when someone asks. A candidate that
+        someone measured by hand is judged again first (``rejudges``), in the same slot: a rebase can measure its merge.
         """
         key = (TargetKind.PROJECT, project.id)
-        if key in self._scoring or not (todo := due(s, project)):
+        if key in self._scoring:
+            return
+        if again := rejudges(s, project):
+            self._tracer.event('candidate.rejudge', project=project.name, candidate=again[0].id, left=len(again))
+            self._scoring[key] = self._pool.submit(self._executor.rejudge, again[0].id)
+            return
+        if not (todo := due(s, project)):
             return
         self._tracer.event('candidate.remeasure', project=project.name, candidate=todo[0].id, left=len(todo))
         self._scoring[key] = self._pool.submit(self._executor.remeasure, todo[0].id)

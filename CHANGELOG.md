@@ -83,6 +83,9 @@ A deprecated configuration key shows a warning for at least one minor release be
   `proposed`. Paused time does not count toward `[stop] max_hours`. The pause is `projects.paused`, logged as
   `project.paused` events. Before, a campaign was paused with a `[spend]` command that read a file, which escalated
   each time it held and stopped every measurement.
+- `piloop candidate verdict <id> keep|interesting|discard|crash --reason "…"` overrides a verdict, and `piloop
+  measurement add <id> --report <file>` records a measurement made by hand. The daemon then judges again a `crash`,
+  `discard` or `interesting` that it set. Before, both were raw SQL, and nothing judged a measurement inserted by hand.
 
 ### Changed
 

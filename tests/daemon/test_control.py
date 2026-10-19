@@ -1,16 +1,20 @@
-"""The daemon's side of the control operations: a pause holds the tick."""
+"""The daemon's side of the control operations: a pause holds the tick, and a measurement by hand is judged again."""
 
 from pathlib import Path
 
+import pytest
 from git import Repo
+from pytest_mock import MockerFixture
 from sqlalchemy import select
 
 from piloop.campaign import ops
 from piloop.config import load_project_config
-from piloop.db.models import Comment, IdeaStatus, Project, Worker, WorkerState
+from piloop.daemon.runner import RunExecutor
+from piloop.db.models import Candidate, Comment, Event, IdeaStatus, Project, TargetKind, Verdict, Worker, WorkerState
 from piloop.db.session import Database
-from piloop.scoring.ledger import import_reference
-from tests.conftest import ScriptRuntime
+from piloop.scoring.ledger import DAEMON, REJUDGE_FAILED, head, import_reference, rejudges
+from tests.conftest import HARNESS_WORSE, Gate, ScriptRuntime, write_script
+from tests.daemon.test_runner import candidates, execute, executor, make_run
 from tests.daemon.test_scheduler import add_ideas, make_scheduler, measured_by, request_watchdog, statuses
 
 
@@ -64,3 +68,65 @@ def test_a_pause_still_measures_what_the_evaluator_needs_unless_it_holds_the_eva
     sched.wait(30)
     assert measured_by(db, reference) == [(1, 3.0, None)], 'a pause of the launches only still measures'
     sched.stop(timeout=5)
+
+
+def test_the_daemon_judges_a_discard_again_with_a_measurement_by_hand(
+    db: Database,
+    project: Project,
+    runtime: ScriptRuntime,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mocker: MockerFixture,
+) -> None:
+    write_script(Path(project.path).parent / 'harness.sh', HARNESS_WORSE)
+    run_id = make_run(db, project)
+    execute(executor(db, runtime, tmp_path), db, run_id)
+    [worse] = candidates(db, run_id)
+    assert worse.verdict is Verdict.DISCARD
+    with db.session() as s:
+        again = ops.add_measurement(
+            s, worse.id, ops.Report(metrics={'score': 5.0, 'size': 1.0}), actor='orchestrator'
+        ).rejudged
+        s.commit()
+    assert again
+    sched = make_scheduler(db, runtime, tmp_path)
+    gate, asked = Gate(), mocker.spy(RunExecutor, 'rejudge')
+    monkeypatch.setattr(sched._executor, 'rejudge', gate.wrap(sched._executor.rejudge))
+    sched.tick()
+    assert gate.entered.wait(10)
+    sched.tick()
+    gate.release.set()
+    sched.wait(30)
+    assert asked.call_count == 1, 'one judgement at a time in the project slot'
+    with db.session() as s:
+        c = s.get_one(Candidate, worse.id)
+        assert (c.verdict, c.verdict_by) == (Verdict.KEEP, DAEMON), 'a mean of 2.5 against the 1 of the baseline'
+        p = s.get_one(Project, project.id)
+        trunk = head(s, p)
+        assert trunk is not None and trunk.id == worse.id
+        assert rejudges(s, p) == [], 'judged since the request'
+    sched.stop(timeout=5)
+
+
+def test_a_judgement_again_that_fails_answers_the_request_with_the_error(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    write_script(Path(project.path).parent / 'harness.sh', HARNESS_WORSE)
+    run_id = make_run(db, project)
+    ex = executor(db, runtime, tmp_path)
+    execute(ex, db, run_id)
+    [worse] = candidates(db, run_id)
+    with db.session() as s:
+        ops.add_measurement(s, worse.id, ops.Report(metrics={'score': 5.0, 'size': 1.0}), actor='orchestrator')
+        s.commit()
+    mocker.patch('piloop.daemon.runner.git.open_repo', side_effect=OSError('the repo is gone'))
+    ex.rejudge(worse.id)
+    with db.session() as s:
+        [failed] = s.scalars(select(Event).where(Event.kind == REJUDGE_FAILED)).all()
+        assert (failed.target_kind, failed.target_id, failed.payload) == (
+            TargetKind.CANDIDATE,
+            worse.id,
+            {'error': 'OSError: the repo is gone'},
+        )
+        assert s.get_one(Candidate, worse.id).verdict is Verdict.DISCARD
+        assert rejudges(s, s.get_one(Project, project.id)) == [], 'not tried on every tick'

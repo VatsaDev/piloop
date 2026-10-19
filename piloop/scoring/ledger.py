@@ -226,6 +226,53 @@ def requested(s: Session, project: Project) -> list[Candidate]:
     return found
 
 
+REJUDGE_REQUESTED = 'candidate.rejudge_requested'
+"""The event on a candidate that someone measured by hand (``piloop measurement add``): the daemon judges it again."""
+REJUDGE_FAILED = 'candidate.rejudge_failed'
+"""The daemon's event on a candidate that it could not judge again, with the error. It answers the request."""
+REJUDGED = (Verdict.CRASH, Verdict.DISCARD, Verdict.INTERESTING)
+"""The daemon's verdicts that a measurement by hand has judged again. A keep stays: runs started from it as a bar."""
+
+
+def rejudgeable(candidate: Candidate) -> bool:
+    """Return whether the daemon judges the candidate again after a measurement by hand.
+
+    Only a candidate of a run, whose verdict is the daemon's and one of ``REJUDGED``. Anyone else's verdict stays.
+    """
+    return candidate.run_id is not None and candidate.verdict_by == DAEMON and candidate.verdict in REJUDGED
+
+
+def rejudges(s: Session, project: Project) -> list[Candidate]:
+    """Return the candidates to judge again: still ``rejudgeable``, asked after their last judgement, oldest first.
+
+    A request is answered by a later ``candidate.judged`` event, or by a ``REJUDGE_FAILED`` one.
+    """
+    asks = s.execute(
+        select(Event.target_id, func.max(Event.id))
+        .join(Candidate, Candidate.id == Event.target_id)
+        .where(
+            Event.kind == REJUDGE_REQUESTED,
+            Event.target_kind == TargetKind.CANDIDATE,
+            Candidate.project_id == project.id,
+        )
+        .group_by(Event.target_id)
+        .order_by(func.max(Event.id))
+    ).all()
+    found: list[Candidate] = []
+    for candidate_id, asked in asks:
+        answered = s.scalar(
+            select(func.max(Event.id)).where(
+                Event.kind.in_(('candidate.judged', REJUDGE_FAILED)),
+                Event.target_kind == TargetKind.CANDIDATE,
+                Event.target_id == candidate_id,
+            )
+        )
+        candidate = s.get_one(Candidate, candidate_id)
+        if (answered is None or answered < asked) and rejudgeable(candidate):
+            found.append(candidate)
+    return found
+
+
 def references(s: Session, project: Project) -> list[Candidate]:
     """Return the project's imported starting points (``piloop candidate import``), oldest first."""
     query = select(Candidate).where(Candidate.project_id == project.id, Candidate.verdict == Verdict.REFERENCE)
