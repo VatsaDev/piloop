@@ -119,6 +119,26 @@ The daemon measures the candidate again with the current evaluator, after the he
 verdict stays, and the new measurement is one more repeat in the mean. A `pending`, `unmeasured` or `recovered`
 candidate is never measured this way.
 
+## The evaluation queue
+
+The daemon runs at most `max_evaluations` evaluate commands at the same time, across all projects (2 by default, in
+`config.toml` or `PILOOP_MAX_EVALUATIONS`). The others wait in the evaluation queue. A free slot goes to the project
+with the fewest running evaluations, and in that project to its head first (the runs that start from the head wait
+for its score), then to the oldest request. So a busy project never holds back another one. The order in which a run
+measures its own commits does not change.
+
+A tree is evaluated once: a second request for a candidate that waits or runs waits for that evaluation.
+
+```bash
+piloop eval queue
+piloop eval cancel 42
+```
+
+`piloop eval cancel` cancels the evaluation of one candidate: a waiting evaluation never starts, and a running one is
+stopped. The candidate gets a crashed measurement that names who cancelled it at once, so a candidate of a run is
+judged a `crash`, and a daemon restart does not evaluate it again. Like any crash, it is measured again only when
+someone asks (`piloop candidate remeasure`).
+
 ## Override a verdict
 
 Any agent or human can change a verdict and say why:

@@ -397,6 +397,9 @@ UPDATE candidates SET verdict = 'interesting', verdict_by = 'orchestrator', verd
   again. Never queue an idea with a no-op change to get a new tree measured.
 - After a new evaluator, the daemon measures only the head and the bars that runs need. An older keep keeps its old
   score until you ask for it with `piloop candidate remeasure <c>`.
+- Evaluations wait for one of the daemon's `max_evaluations` slots: `piloop eval queue` lists them. `piloop eval cancel
+  <c>` cancels one that is no longer worth its slot; the candidate becomes a `crash` that names you. Never kill an
+  evaluator process by hand.
 
 Rules:
 

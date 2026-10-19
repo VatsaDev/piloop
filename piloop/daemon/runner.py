@@ -11,11 +11,12 @@ import uuid
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
+from enum import Enum, auto
 from functools import partial
 from pathlib import Path
 
 from git import Repo
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from piloop import git
@@ -29,6 +30,7 @@ from piloop.db.models import (
     Candidate,
     Comment,
     CommentKind,
+    Evaluation,
     Event,
     Idea,
     IdeaStatus,
@@ -50,6 +52,7 @@ from piloop.reports.history import history
 from piloop.reports.wake import lessons_overview
 from piloop.runtime import WorkerStatus
 from piloop.runtime.factory import RuntimeFactory, make_runtime
+from piloop.scoring import queue
 from piloop.scoring.evaluate import EvalResult, run_evaluate
 from piloop.scoring.ledger import (
     DAEMON,
@@ -69,6 +72,7 @@ from piloop.scoring.ledger import (
     score,
     skipped,
 )
+from piloop.settings import MAX_EVALUATIONS
 
 UNCOMMITTED_SUMMARY = 'piloop: uncommitted worker changes'
 RECOVERED_TRAILER = 'Piloop-Recovered'
@@ -94,11 +98,32 @@ A failure at startup is a fault of the host or the harness, not an attempt at th
 attempt or toward ``max_runs``."""
 
 
+QUEUE_POLL_SECONDS = 1.0
+"""How often a waiting evaluation looks at the queue again for a change that another process made: a cancel."""
+
+
+class Turn(Enum):
+    """How a wait in the evaluation queue ended (``RunExecutor._wait``)."""
+
+    STARTED = auto()
+    """This request got a slot: it runs the evaluation."""
+    JOINED = auto()
+    """The evaluation left the queue: another request recorded its measurement, or a cancel recorded a crash."""
+    STOPPED = auto()
+    """The daemon stops."""
+
+
 class RunExecutor:
     """Run one ``Run`` to completion on the calling thread. ``Launcher.launch`` runs the agent."""
 
     def __init__(
-        self, db: Database, tracer: Tracer, home: Path, runtime_factory: RuntimeFactory = make_runtime
+        self,
+        db: Database,
+        tracer: Tracer,
+        home: Path,
+        runtime_factory: RuntimeFactory = make_runtime,
+        *,
+        max_evaluations: int = MAX_EVALUATIONS,
     ) -> None:
         self._db = db
         self._tracer = tracer
@@ -107,7 +132,11 @@ class RunExecutor:
         self._units_dir = home / 'units'
         self.launcher = Launcher(db, tracer, home, runtime_factory)
         self._evaluating: dict[int, subprocess.Popen[bytes]] = {}
-        """The evaluator child of each thread that measures now, by thread id. Runs and re-measures run in parallel."""
+        """The evaluator child of each running evaluation, by its id in the evaluation queue."""
+        self._max_evaluations = max_evaluations
+        """The slots of the evaluation queue (``Settings.max_evaluations``)."""
+        self._queue_changed = threading.Condition()
+        """Notified when an evaluation leaves the queue or the daemon stops, so the waiting ones look again."""
 
     def cancel(self) -> None:
         """Cancel the launcher and kill the evaluators. After this, every child is dead or dies when it is spawned.
@@ -117,6 +146,22 @@ class RunExecutor:
         with self.launcher.lock:
             self.launcher.cancelled.set()
             for proc in self._evaluating.values():
+                kill_group(proc)
+        with self._queue_changed:
+            self._queue_changed.notify_all()
+
+    def stop_cancelled(self) -> None:
+        """Stop the evaluator of each running evaluation that someone cancelled (``piloop eval cancel``)."""
+        with self._db.session() as s:
+            ids = set(
+                s.scalars(
+                    select(Evaluation.id).where(
+                        Evaluation.started_at.is_not(None), Evaluation.cancelled_by.is_not(None)
+                    )
+                )
+            )
+        with self.launcher.lock:
+            for proc in [proc for evaluation_id, proc in self._evaluating.items() if evaluation_id in ids]:
                 kill_group(proc)
 
     def hand_over(self) -> None:
@@ -561,34 +606,96 @@ class RunExecutor:
         evaluator_id: int,
         eval_dir: Path,
     ) -> bool:
-        """Run the evaluate command on ``sha`` in a clean worktree and record the measurement. False if cancelled."""
+        """Measure ``sha`` when the evaluation queue gives it a slot, and record the measurement. False if cancelled.
+
+        A request for a candidate that already waits or runs under the evaluator waits for that evaluation and records
+        nothing of its own (``queue.request``). An evaluation that cannot start, because the commit cannot be checked
+        out say, is a crash like one that fails, so every request ends with a measurement. A cancelled evaluation
+        records nothing here: ``queue.cancel`` recorded its crash.
+        """
+        with self._queue_changed, self._db.session() as s:  # two requests for one tree must not both insert it
+            evaluation, mine = queue.request(s, candidate_id, evaluator_id)
+            s.commit()
+            evaluation_id = evaluation.id
+        with self._tracer.span('piloop.measure', run=run_id, commit=sha, candidate=candidate_id) as span:
+            span.set(evaluation=evaluation_id)
+            try:
+                turn = self._wait(evaluation_id, mine=mine)
+                if turn is Turn.STOPPED:
+                    span.set(status='cancelled')
+                    return False
+                if turn is Turn.JOINED:
+                    span.set(status='joined')
+                    return True
+                try:
+                    result = self._evaluate(evaluation_id, project_id, cfg, repo, sha, eval_dir)
+                except Exception as e:
+                    span.error(e)
+                    result = EvalResult({}, 0.0, f'{type(e).__name__}: {e}')
+                if self.launcher.cancelled.is_set():  # The evaluator was killed, so there is nothing to record.
+                    span.set(status='cancelled')
+                    return False
+                with self._db.session() as s:
+                    cancelled_by = s.get_one(Evaluation, evaluation_id).cancelled_by
+                if cancelled_by is not None:
+                    span.set(status='cancelled', cancelled_by=cancelled_by)
+                    return True
+                span.set(
+                    measurement=self._record(run_id, candidate_id, evaluator_id, result),
+                    error=result.error,
+                    **{f'metric.{k}': v for k, v in result.metrics.items()},
+                )
+            finally:
+                if mine:
+                    self._leave(evaluation_id)
+        return True
+
+    def _wait(self, evaluation_id: int, *, mine: bool) -> Turn:
+        """Wait in the evaluation queue until the evaluation starts, or until it leaves the queue (``Turn``).
+
+        Only the request that queued the evaluation (``mine``) starts it. Every other one waits until it leaves.
+        """
+        with self._queue_changed:
+            while not self.launcher.cancelled.is_set():
+                with self._db.session() as s:
+                    evaluation = s.get(Evaluation, evaluation_id)
+                    if evaluation is None:
+                        return Turn.JOINED
+                    if mine and queue.start(s, evaluation, self._max_evaluations):
+                        s.commit()
+                        return Turn.STARTED
+                self._queue_changed.wait(QUEUE_POLL_SECONDS)
+        return Turn.STOPPED
+
+    def _evaluate(
+        self, evaluation_id: int, project_id: int, cfg: ProjectConfig, repo: Repo, sha: str, eval_dir: Path
+    ) -> EvalResult:
+        """Run the evaluate command on ``sha`` in a clean worktree. Every evaluation of the daemon runs here."""
         links = worktree_links(cfg, Path(repo.working_dir), project_dir(self._home, project_id))
         eval_dir.mkdir(parents=True, exist_ok=True)
         eval_wt = eval_dir / 'worktree'
         self._units_dir.mkdir(parents=True, exist_ok=True)
-        with self._tracer.span('piloop.measure', run=run_id, commit=sha, candidate=candidate_id) as span:
-            try:
-                git.add_worktree(repo, eval_wt, sha, links)
-                result = run_evaluate(
-                    cfg.evaluate,
-                    cwd=eval_wt,
-                    log_dir=eval_dir,
-                    timeout=cfg.evaluate_timeout,
-                    required={m.name for m in cfg.metrics},
-                    track=self._track_evaluation,
-                    units_file=self._units_dir / f'{uuid.uuid4().hex}.pending',
-                )
-            finally:
-                git.remove_worktree(repo, eval_wt)
-            if self.launcher.cancelled.is_set():  # The evaluator was killed, so there is nothing to record.
-                span.set(status='cancelled')
-                return False
-            span.set(
-                measurement=self._record(run_id, candidate_id, evaluator_id, result),
-                error=result.error,
-                **{f'metric.{k}': v for k, v in result.metrics.items()},
+        try:
+            git.add_worktree(repo, eval_wt, sha, links)
+            return run_evaluate(
+                cfg.evaluate,
+                cwd=eval_wt,
+                log_dir=eval_dir,
+                timeout=cfg.evaluate_timeout,
+                required={m.name for m in cfg.metrics},
+                track=partial(self._track_evaluation, evaluation_id),
+                units_file=self._units_dir / f'{uuid.uuid4().hex}.pending',
             )
-        return True
+        finally:
+            git.remove_worktree(repo, eval_wt)
+
+    def _leave(self, evaluation_id: int) -> None:
+        """Remove the evaluation from the queue, which frees its slot, and wake the requests that wait."""
+        with self._queue_changed:
+            with self._db.session() as s:
+                s.execute(delete(Evaluation).where(Evaluation.id == evaluation_id))
+                s.commit()
+            self._queue_changed.notify_all()
 
     def _record(self, run_id: int | None, candidate_id: int, evaluator_id: int, result: EvalResult) -> int:
         """Store one evaluation as a measurement, with its per-unit results, and return its id."""
@@ -710,13 +817,16 @@ class RunExecutor:
             return verdict, f'the head candidate#{trunk.id} is in its history: {reason}', None
         return Verdict.INTERESTING, MOVED.format(head=trunk.id) + reason, trunk
 
-    def _track_evaluation(self, proc: subprocess.Popen[bytes] | None) -> None:
-        """Remember this thread's evaluator child so that ``cancel`` can kill it. A later child is killed at once."""
+    def _track_evaluation(self, evaluation_id: int, proc: subprocess.Popen[bytes] | None) -> None:
+        """Remember an evaluation's evaluator child, so that ``cancel`` and ``stop_cancelled`` can kill it.
+
+        A child that starts after ``cancel`` is killed at once.
+        """
         with self.launcher.lock:
             if proc is None:
-                self._evaluating.pop(threading.get_ident(), None)
+                self._evaluating.pop(evaluation_id, None)
                 return
-            self._evaluating[threading.get_ident()] = proc
+            self._evaluating[evaluation_id] = proc
             if self.launcher.cancelled.is_set():
                 kill_group(proc)
 

@@ -6,12 +6,25 @@ This module only assembles the commands. Each group of commands is its own modul
 import cyclopts
 
 from piloop import deprecated
-from piloop.cli import agents, candidate, common, daemon, database, idea, inbox, install, memory, project, store
+from piloop.cli import (
+    agents,
+    candidate,
+    common,
+    daemon,
+    database,
+    evaluation,
+    idea,
+    inbox,
+    install,
+    memory,
+    project,
+    store,
+)
 from piloop.cli.version import installed
 from piloop.config import ConfigError
 
 app = cyclopts.App(name='piloop', help='Run autoresearch campaigns with coding agents.', version=installed)
-for group in (idea.app, candidate.app, inbox.app, store.app):
+for group in (idea.app, candidate.app, evaluation.app, inbox.app, store.app):
     app.command(group)
 app.command(project.init)
 app.command(project.history)

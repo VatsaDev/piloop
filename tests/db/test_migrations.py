@@ -55,6 +55,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
             'documents_fts_data',
             'documents_fts_docsize',
             'documents_fts_idx',
+            'evaluations',
             'evaluators',
             'events',
             'idea_links',
@@ -69,6 +70,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
             'measurements',
             'projects',
             'runs',
+            'sqlite_sequence',
             'techniques',
             'workers',
         ], 'an external-content FTS5 index has no _content shadow: the text stays in the base table only'
@@ -89,7 +91,9 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
     command.downgrade(cfg, 'base')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert (
-            con.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name != 'alembic_version'").fetchall()
+            con.execute(  # SQLite keeps sqlite_sequence, which AUTOINCREMENT made, and never drops it
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT IN ('alembic_version', 'sqlite_sequence')"
+            ).fetchall()
             == []
         )
 

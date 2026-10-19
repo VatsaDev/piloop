@@ -643,7 +643,12 @@ def test_imported_references_are_listed_apart_as_starting_points(
     with db.session() as s:
         s.add(
             Candidate(
-                project_id=campaign.id, tree_sha='r1', commit_sha='r', summary='paper repro', verdict=Verdict.REFERENCE
+                project_id=campaign.id,
+                tree_sha='r1',
+                commit_sha='r',
+                summary='paper repro',
+                verdict=Verdict.REFERENCE,
+                created_at=utcnow() - timedelta(hours=2),  # a fixed age: "0s" became "1s" on a slow machine
             )
         )
         s.commit()
@@ -661,7 +666,7 @@ def test_imported_references_are_listed_apart_as_starting_points(
             ' #3  discard    2  -1  run#1  1h  [wip] step 3',
             ' #2  keep       3  +2  run#1  1h  [wip] step 2',
             ' #1  keep       1  —   —      3h  baseline',
-            ' #6  reference  —  —   —      0s  paper repro',
+            ' #6  reference  —  —   —      2h  paper repro',
         ]
     )
 

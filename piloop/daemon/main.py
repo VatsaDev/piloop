@@ -42,7 +42,7 @@ class Daemon:
             self.db.close()
             raise
         self.tracer = tracer()
-        self.executor = RunExecutor(self.db, self.tracer, cfg.home)
+        self.executor = RunExecutor(self.db, self.tracer, cfg.home, max_evaluations=cfg.max_evaluations)
         self.scheduler = Scheduler(
             self.db,
             self.executor,

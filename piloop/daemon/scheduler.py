@@ -15,6 +15,7 @@ retried.
 import itertools
 import math
 import os
+import sys
 import threading
 from collections import Counter
 from collections.abc import Callable, Collection, Sequence
@@ -28,7 +29,7 @@ from pathlib import Path
 from git import Repo
 from git.exc import GitError, InvalidGitRepositoryError, NoSuchPathError
 from pydantic import ValidationError
-from sqlalchemy import Boolean, ColumnElement, Select, exists, func, or_, select
+from sqlalchemy import Boolean, ColumnElement, Select, delete, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from piloop import git
@@ -73,6 +74,7 @@ from piloop.db.models import (
     Candidate,
     Comment,
     CommentKind,
+    Evaluation,
     Event,
     Idea,
     IdeaStatus,
@@ -158,7 +160,9 @@ class Scheduler:
         self._runs_dir = home / 'runs'
         self._workers_dir = home / 'workers'
         self._runtime_factory = runtime_factory
-        self._pool = ThreadPoolExecutor(thread_name_prefix='agent')
+        # No bound: a run's thread waits in the evaluation queue while it scores, and a bound would let those waits
+        # hold back agent launches. The roles' max_concurrent and max_evaluations bound the work itself.
+        self._pool = ThreadPoolExecutor(max_workers=sys.maxsize, thread_name_prefix='agent')
         self._futures: dict[int, Future[None]] = {}
         self._scoring: dict[tuple[TargetKind, int], Future[None]] = {}
         """Scoring outside a worker: a run's resumed scoring by run id, or a project's re-measure by project id."""
@@ -179,9 +183,13 @@ class Scheduler:
         Both an in-place restart (``hand_over``) and a crash leave agents for this. A closed run whose commits were not
         all scored (``runs.scoring``) is scored now (``RunExecutor.resume``), whatever its idea's status. An idea that
         stayed ``scheduled`` does not run again, and no dependent idea takes it before its keeps are known. The
-        worktrees of failed runs and sweeps are removed.
+        worktrees of failed runs and sweeps are removed. The evaluation queue starts empty: what still needs a
+        measurement asks for it again.
         """
         with self._tracer.span('piloop.reap'):
+            with self._db.session() as s:  # their evaluators died with the daemon that ran them
+                s.execute(delete(Evaluation))
+                s.commit()
             left = self._left_running()
             self._fail_open(STALE_ERROR, remove_worktrees=True, sparing=[worker_id for worker_id, _ in left])
             for worker_id, run_id in left:
@@ -314,6 +322,7 @@ class Scheduler:
         archiving of a workspace that is due, or its upkeep, on a background thread (``piloop.daemon.archiver``).
         """
         self._collect()
+        self._executor.stop_cancelled()
         self._push_comments()
         self._report_jobs()
         self._wind_down()

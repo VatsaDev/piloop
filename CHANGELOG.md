@@ -9,6 +9,8 @@ A deprecated configuration key shows a warning for at least one minor release be
 
 ### Added
 
+- `piloop eval queue` lists the evaluations that run or wait for a slot. `piloop eval cancel <candidate>` cancels one:
+  the candidate gets a crashed measurement that names who cancelled it, at once, so a daemon restart does not run it.
 - Roles are configuration. A `[roles.<name>]` table with a new name defines a role: its prompt, its triggers, its
   runtime, its working copy (`workdir`), its harnesses and limits, and what it may file (`files`). The worker, the
   watchdog, research and the scout are the same tables with defaults, and each built-in role accepts every key.
@@ -78,6 +80,12 @@ A deprecated configuration key shows a warning for at least one minor release be
 
 ### Changed
 
+- The daemon runs at most `max_evaluations` evaluate commands at the same time, across all projects (2 by default,
+  in `config.toml` or `PILOOP_MAX_EVALUATIONS`). The others wait in the evaluation queue, the `evaluations` table. A
+  free slot goes to the project with the fewest running evaluations, and in that project to its head first, then to
+  the oldest request, so no project waits behind another. A request for a candidate whose evaluation waits or runs
+  waits for that evaluation, so two runs that reach one tree no longer evaluate it twice, and a crash is not evaluated
+  again.
 - `piloop attach`, `piloop prompt`, `enter` in `piloop watch`, the place of an agent in `piloop status` and `piloop
   watch`, and the runtime checks of `piloop doctor` ask the runtime of the agent. No command checks the name of a
   runtime, so a runtime that a package adds works with all of them. `piloop attach` on an agent that its runtime

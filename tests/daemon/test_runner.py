@@ -223,6 +223,7 @@ def test_successful_run_scores_the_commit(
             'run': 1,
             'commit': IsStr(),
             'candidate': 2,
+            'evaluation': 1,
             'measurement': 2,
             'metric.score': 2.0,
             'metric.size': IsPositive(),
@@ -1390,7 +1391,7 @@ def test_an_evaluator_spawned_after_cancel_is_killed_at_once(
     ex = executor(db, runtime, tmp_path)
     ex.cancel()
     proc = subprocess.Popen(['sleep', '30'], start_new_session=True)
-    ex._track_evaluation(proc)  # what run_evaluate calls right after Popen: cancel() may have won meanwhile
+    ex._track_evaluation(1, proc)  # what run_evaluate calls right after Popen: cancel() may have won meanwhile
     assert proc.wait(timeout=2) == -9
 
 
@@ -1948,8 +1949,8 @@ def test_a_keep_that_lost_the_race_to_the_head_is_merged_onto_it_and_judged_ther
     ended: list[None] = []
     track = ex._track_evaluation
 
-    def h3_kept_while_the_merge_is_measured(proc: subprocess.Popen[bytes] | None) -> None:
-        track(proc)
+    def h3_kept_while_the_merge_is_measured(evaluation_id: int, proc: subprocess.Popen[bytes] | None) -> None:
+        track(evaluation_id, proc)
         if proc is None:
             ended.append(None)
             if len(ended) == 2:
@@ -2108,9 +2109,9 @@ def test_a_tree_two_runs_reach_is_never_judged_against_itself(
         s.commit()
     track = ex._track_evaluation
 
-    def kept_meanwhile(proc: subprocess.Popen[bytes] | None) -> None:
+    def kept_meanwhile(evaluation_id: int, proc: subprocess.Popen[bytes] | None) -> None:
         """Land the first run's measurement and keep while the second run evaluates the same tree."""
-        track(proc)
+        track(evaluation_id, proc)
         if proc is None:
             with db.session() as s:
                 s.add(Measurement(candidate_id=kept.id, evaluator_id=evaluator_id, metrics=kept.metrics))

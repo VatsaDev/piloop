@@ -285,6 +285,18 @@ CREATE TABLE workers (
 );
 CREATE INDEX ix_workers_project_kind_state ON workers (project_id, kind, state);
 CREATE INDEX ix_workers_run ON workers (run_id);
+CREATE TABLE evaluations (
+	id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+	candidate_id INTEGER NOT NULL,
+	evaluator_id INTEGER NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	started_at DATETIME,
+	cancelled_by VARCHAR,
+	UNIQUE (candidate_id, evaluator_id),
+	CONSTRAINT "evaluations.cancelled_by must be a text value" CHECK (typeof(cancelled_by) IN ('text', 'null')),
+	FOREIGN KEY(candidate_id) REFERENCES candidates (id) ON DELETE CASCADE,
+	FOREIGN KEY(evaluator_id) REFERENCES evaluators (id)
+);
 CREATE TABLE measurements (
 	id INTEGER NOT NULL,
 	candidate_id INTEGER NOT NULL,

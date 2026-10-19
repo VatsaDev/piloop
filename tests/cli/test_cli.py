@@ -28,6 +28,7 @@ from piloop.daemon.serve import running_pid
 from piloop.db import sql
 from piloop.db.models import (
     Candidate,
+    Evaluation,
     Event,
     Idea,
     IdeaLink,
@@ -706,6 +707,44 @@ def test_candidate_remeasure_asks_the_daemon_to_measure_a_candidate_again_and_re
         run_cli(['candidate', 'remeasure', '2'])
     with pytest.raises(SystemExit, match='no candidate#99'):
         run_cli(['candidate', 'remeasure', '99'])
+
+
+def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_cancel_cancels_one(
+    project_path: Path, out
+) -> None:
+    run_cli(['init', str(project_path)])
+    out()
+    run_cli(['eval', 'queue'])
+    assert out().strip() == '0 running, 0 waiting; 2 slot(s) (max_evaluations); `piloop eval cancel <candidate>`'
+    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
+        s.add(Candidate(project_id=1, tree_sha='t', commit_sha='c', summary='a newer commit'))
+        s.add(Candidate(project_id=1, tree_sha='u', commit_sha='d', summary='an older commit'))
+        s.add(Candidate(project_id=1, tree_sha='v', commit_sha='e', summary='a merge'))
+        s.flush()
+        s.add(Evaluation(candidate_id=4, evaluator_id=1, started_at=utcnow()))
+        s.add(Evaluation(candidate_id=2, evaluator_id=1))
+        s.add(Evaluation(candidate_id=3, evaluator_id=1))
+        s.add(Evaluation(candidate_id=1, evaluator_id=1, started_at=utcnow()))
+        s.commit()
+    run_cli(['eval', 'cancel', '2'])
+    run_cli(['eval', 'cancel', '1'])
+    assert out().splitlines() == [
+        'candidate#2: its evaluation is cancelled',
+        'candidate#1: its evaluation is cancelled',
+    ]
+    run_cli(['eval', 'queue'])
+    *table, summary = out().splitlines()
+    assert [line.split()[:5] for line in table] == [
+        ['candidate', 'project', 'state', 'summary'],
+        ['candidate#4', 'demo', 'running', '0s', 'a'],
+        ['candidate#1', 'demo', 'cancelled', 'by', 'human'],
+        ['candidate#3', 'demo', 'waiting', '0s', 'an'],
+    ]
+    assert summary == '2 running, 1 waiting; 2 slot(s) (max_evaluations); `piloop eval cancel <candidate>`'
+    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
+        assert [m.error for m in s.get_one(Candidate, 2).measurements] == ['evaluation cancelled by human']
+    with pytest.raises(SystemExit, match=r'candidate#2 has no evaluation that waits or runs'):
+        run_cli(['eval', 'cancel', '2'])
 
 
 def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_to_it(

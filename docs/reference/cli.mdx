@@ -161,6 +161,24 @@ Asks the daemon to measure the candidate again with the current evaluator, for a
 spoiled, or for one more repeat. A `crash` that the daemon judged is judged again. Any other verdict stays. See
 [Measure a candidate again](/concepts/verdict#measure-a-candidate-again).
 
+### piloop eval queue
+
+```text
+piloop eval queue
+```
+
+Lists the running evaluations, then the waiting ones in the order in which they get a slot. See
+[The evaluation queue](/concepts/verdict#the-evaluation-queue).
+
+### piloop eval cancel
+
+```text
+piloop eval cancel CANDIDATE_ID
+```
+
+Cancels the evaluation of a candidate. A waiting one never starts, and the daemon stops a running one. The candidate
+gets a crashed measurement that names you.
+
 ### piloop candidate import
 
 ```text

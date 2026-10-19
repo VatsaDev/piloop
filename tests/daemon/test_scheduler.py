@@ -28,6 +28,7 @@ from piloop.db.models import (
     Candidate,
     Comment,
     CommentKind,
+    Evaluation,
     Event,
     Idea,
     IdeaLink,
@@ -589,6 +590,9 @@ def test_reap(
         )
         s.get_one(Idea, idea).status = IdeaStatus.SCHEDULED
         s.get_one(Idea, idea).max_runs = 1
+        evaluator = s.get_one(Project, project.id).evaluator_id
+        assert evaluator is not None
+        s.add(Evaluation(candidate_id=1, evaluator_id=evaluator, started_at=utcnow()))
         s.commit()
         s.add(
             Worker(
@@ -637,6 +641,9 @@ def test_reap(
         )
         gone = s.get_one(Worker, 3)
         assert (gone.state, gone.usage) == (WorkerState.KILLED, None), 'a session file not found leaves usage NULL'
+        assert s.scalars(select(Evaluation)).all() == [], (
+            'its evaluator died with the daemon: its measurement is asked again'
+        )
     assert not wt.exists() and not sweep_wt.exists(), "the run's and the sweep's worktrees are both removed"
     assert len(runtime.killed) == 3, 'the stale worker processes were asked to stop'
 

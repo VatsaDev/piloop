@@ -93,6 +93,14 @@ erDiagram
         double seconds
         datetime created_at
     }
+    evaluations {
+        integer id PK
+        integer candidate_id FK
+        integer evaluator_id FK
+        datetime created_at
+        datetime started_at
+        varchar cancelled_by
+    }
     comments {
         integer id PK
         TargetKind target_kind
@@ -197,6 +205,8 @@ erDiagram
     candidates |o--o{ candidates : "parent_id"
     candidates ||--o{ measurements : "candidate_id"
     evaluators ||--o{ measurements : "evaluator_id"
+    candidates ||--o{ evaluations : "candidate_id"
+    evaluators ||--o{ evaluations : "evaluator_id"
     projects ||--o{ techniques : "project_id"
     projects ||--o{ lessons : "project_id"
     projects ||--o{ documents : "project_id"

@@ -548,6 +548,36 @@ class Measurement(Base):
     evaluator: Mapped[Evaluator] = relationship()
 
 
+class Evaluation(Base):
+    """An evaluation that the daemon needs: it waits for a slot (``max_evaluations``) or runs. The evaluation queue.
+
+    The daemon inserts a row when it needs a measurement, and deletes it when the measurement is recorded, so the table
+    holds only what waits or runs. A free slot goes to the project with the fewest running rows, and in it to its head
+    first, then to the lowest id (``piloop.scoring.queue``). The requests for one candidate under one evaluator share
+    one row: a tree is evaluated once. An id is never reused, so a request that waits for a row never mistakes a later
+    one for it. A daemon that starts deletes the rows that the previous one left, and asks again for what it still
+    needs. ``piloop eval queue`` lists the rows, and ``piloop eval cancel`` cancels one.
+    """
+
+    __tablename__ = 'evaluations'
+    __table_args__ = (
+        UniqueConstraint('candidate_id', 'evaluator_id'),
+        *text_checks('evaluations', nullable=('cancelled_by',)),
+        {'sqlite_autoincrement': True},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    candidate_id: Mapped[int] = mapped_column(ForeignKey('candidates.id', ondelete='CASCADE'))
+    evaluator_id: Mapped[int] = mapped_column(ForeignKey('evaluators.id'))
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
+    started_at: Mapped[datetime | None]
+    """When it got a slot. NULL while it waits."""
+    cancelled_by: Mapped[str | None]
+    """Who cancelled it while it ran. Their crashed measurement is recorded; the daemon stops the evaluator."""
+
+    candidate: Mapped[Candidate] = relationship()
+
+
 class Comment(Tracked, Base):
     """The forum and the human's inbox. Anything with an id can get a comment: ``idea#12``, ``run#7``, ``candidate#30``.
 

@@ -21,6 +21,8 @@ DEFAULT_HOME = Path.home() / '.piloop'
 CONFIG_FILE = 'config.toml'
 STORE_DIR = 'store'
 GB = 1024**3
+MAX_EVALUATIONS = 2
+"""The default of ``Settings.max_evaluations``."""
 
 
 class RemoteTable(BaseModel):
@@ -84,6 +86,11 @@ class Settings(BaseSettings):
     tick_seconds: float = 2
     """The number of seconds between two ticks. On each tick, the daemon checks the triggers of every project and
     launches the requested workers."""
+
+    max_evaluations: int = Field(default=MAX_EVALUATIONS, ge=1)
+    """The number of evaluate commands that the daemon runs at the same time, across all projects. The others wait in
+    the evaluation queue (``piloop eval queue``). A free slot goes to the project with the fewest running evaluations,
+    and in it to its head first, then to the oldest request."""
 
     secrets_command: str | None = None
     """A shell command that prints ``NAME=value`` lines: the API keys that the ``[mcp.<name>]`` servers name, from
