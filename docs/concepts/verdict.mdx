@@ -20,7 +20,8 @@ point.
 Each run is judged against its **bar**. The bar starts at the base of the run. When the base is not a keep or a
 reference (a pinned `interesting` candidate, for example), the bar starts at the nearest kept ancestor of the base. The
 bar moves to each keep that the run makes. A run that starts from the head has the head as its bar. Each keep on the
-trunk beats the head before it, so the trunk is a chain of improvements.
+trunk beats the head before it, so the trunk is a chain of improvements. A branch keep that a trunk run merges is not
+its bar: the merge must still beat the head.
 
 ## The verdict
 

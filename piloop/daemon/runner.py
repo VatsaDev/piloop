@@ -60,6 +60,7 @@ from piloop.scoring.ledger import (
     judged_again,
     measured,
     note,
+    raises_bar,
     rebase,
     resolve,
     save_units,
@@ -657,13 +658,13 @@ class RunExecutor:
                     if why and not moved and candidate.verdict in (Verdict.DISCARD, Verdict.INTERESTING):
                         note(candidate, why, f'run#{candidate.run_id}')
                 s.commit()
-            verdict = candidate.verdict
+            verdict, advanced = candidate.verdict, raises_bar(candidate, branch=scope.branch) or moved
             span.set(
                 verdict=verdict,
                 summary=candidate.summary,
                 score=score(candidate, scope.evaluator_id, scope.track.primary),
             )
-        return Judged(verdict, advanced=verdict is Verdict.KEEP or moved, merged=merged)
+        return Judged(verdict, advanced=advanced, merged=merged)
 
     def _verdict(
         self, s: Session, scope: Scope, candidate: Candidate, bar_id: int

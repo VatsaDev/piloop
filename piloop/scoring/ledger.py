@@ -111,6 +111,16 @@ def bar_of(candidate: Candidate) -> Candidate:
     return candidate
 
 
+def raises_bar(candidate: Candidate, *, branch: bool) -> bool:
+    """Whether a run's commit that is ``candidate`` becomes the run's bar for its next commits.
+
+    A keep does, and a known keep that the run reached again too. On a trunk run, a branch keep does not: a trunk run
+    that merges a branch keep onto the head must beat the head, so a branch's numbers are never a trunk run's bar.
+    """
+    trunk = candidate.run is None or not candidate.run.branch
+    return candidate.verdict is Verdict.KEEP and (branch or trunk)
+
+
 def track_of(cfg: ProjectConfig, candidate: Candidate) -> Track:
     """Return the track of the candidate's run (its idea's track). A renderer shows the candidate's score on it.
 

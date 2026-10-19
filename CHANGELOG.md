@@ -206,6 +206,8 @@ A deprecated configuration key shows a warning for at least one minor release be
 - `Piloop-Eval` and `Piloop-Note` trailers count on any line after the subject, not only in the last paragraph of
   the commit message. A harness puts its own trailers (`Co-Authored-By`) in a paragraph after the worker's, so git
   read none of the worker's: skipped commits were evaluated, and notes were lost.
+- A trunk run that merges a branch keep onto the head is judged against the head. The branch keep became the run's
+  bar, so a merge that beat the head but not the branch keep was discarded.
 - A worker of a stopped campaign that the daemon ends after the grace period, before it left its finding, closes its
   run as `campaign stopped`, with a `worker.stop_ended` event on the worker. A worker in the middle of a turn, such as
   Codex, reads the wrap-up prompt only when the turn ends, so it often never read it. The run closed as `worker

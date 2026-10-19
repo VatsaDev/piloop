@@ -1694,12 +1694,13 @@ def keep_elsewhere(
     *,
     on: int = 1,
     verdict: Verdict = Verdict.KEEP,
+    run_id: int | None = None,
 ) -> int:
     """Add a trunk keep made outside any run.
 
     The keep writes ``files`` on a commit off candidate ``on`` and is measured as ``metrics``. To a run that started
     before it, it looks like another run's keep: the head moved on. With another ``verdict``, it is a candidate that
-    the orchestrator judged.
+    the orchestrator judged. With ``run_id``, it is that run's candidate.
     """
     repo = Repo(project.path)
     with db.session() as s:
@@ -1712,13 +1713,55 @@ def keep_elsewhere(
         sha = repo.head.commit.hexsha
         repo.git.checkout('-q', 'main')
         git_pin(repo, f'refs/piloop/demo/elsewhere/{summary.replace(" ", "-")}', sha)
-        candidate, _ = resolve(s, project.id, repo, sha, parent=parent, run_id=None)
+        candidate, _ = resolve(s, project.id, repo, sha, parent=parent, run_id=run_id)
         candidate.verdict, candidate.verdict_by = verdict, 'orchestrator'
         evaluator_id = s.get_one(Project, project.id).evaluator_id
         assert evaluator_id is not None
         s.add(Measurement(candidate_id=candidate.id, evaluator_id=evaluator_id, metrics=metrics))
         s.commit()
         return candidate.id
+
+
+def test_a_trunk_run_that_merges_a_branch_keep_is_judged_against_the_head_not_the_branch(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """hiloopai/piloop-dev#35: a trunk run that merges a branch keep onto the head must beat the head.
+
+    The branch keep is one of the run's commits, a known keep, but a branch's numbers are never a trunk run's bar.
+    Judged against the branch keep, the merge was a no-op discard, though it beats the head.
+    """
+    with db.session() as s:
+        idea = Idea(track='score', project_id=project.id, title='a branch', hypothesis='h', created_by='t')
+        s.add(idea)
+        s.flush()
+        branch_run = Run(idea_id=idea.id, attempt=1, base_candidate_id=1, harness='h', model='m', branch=True)
+        s.add(branch_run)
+        s.commit()
+        branch_run_id = branch_run.id
+    kept = keep_elsewhere(
+        db, project, 'branch keep', {'solve.txt': 'base\nb\nc\n'}, {'score': 3.0, 'size': 9.0}, run_id=branch_run_id
+    )
+    trunk = keep_elsewhere(db, project, 'trunk keep', {'other.txt': 'x\n'}, {'score': 1.0, 'size': 5.0})
+    with db.session() as s:
+        kept_sha = s.get_one(Candidate, kept).commit_sha
+    write_toml(Path(project.path), f'#!/bin/sh\ngit merge -q --no-edit {kept_sha}\n')
+    reload_project(db, project)
+    run_id = make_run(db, project)
+    with db.session() as s:
+        s.get_one(Run, run_id).base_candidate_id = trunk
+        s.commit()
+    execute(executor(db, runtime, tmp_path), db, run_id)
+    [(_, verdict, reason, _, parent)] = scored(db, run_id)
+    assert (verdict, reason, parent) == (
+        Verdict.KEEP,
+        f'no-op: score identical to parent candidate#{kept};'
+        f' against candidate#{trunk}: score 3 vs 1 (+2; aggregate: no per-unit results)',
+        kept,
+    ), 'judged against the head it merged onto; level with the branch keep it merged'
+    with db.session() as s:
+        new_head = head(s, s.get_one(Project, project.id))
+        assert new_head is not None and new_head.run_id == run_id, 'the merge is the new head'
+        assert s.get_one(Candidate, kept).verdict is Verdict.KEEP, 'the branch keep keeps its verdict'
 
 
 def test_a_run_pinned_to_a_non_keep_is_judged_against_its_nearest_keep_on_every_metric(
