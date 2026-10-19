@@ -237,7 +237,7 @@ demo · head score 3 (candidate#2, +2 vs baseline) · 2 kept / 3 candidates · 4
 - comment#2 decision on project#1 by pi, 1h ago: keep going
 - comment#1 escalation (p1, unacknowledged) on run#2 by watchdog#9, 1h ago: run#2 died in a dialog
 ### Recent events
-- comment.note comment#3 0s ago · comment.decision comment#2 0s ago · comment.escalation comment#1 0s ago · anomaly.startup worker#2 1h ago
+- comment.note comment#3 0s ago · comment.decision comment#2 0s ago · comment.escalation comment#1 0s ago · idea.linked idea#4 0s ago · idea.linked idea#3 0s ago
 """)
     assert tools.startswith('- `piloop sql "<one statement>"`')
     assert '  - workers(id, kind, project_id, run_id,' in tools, (
@@ -601,7 +601,7 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, projec
 - comment#2 decision on project#1 by pi, 1h ago: keep going
 - comment#1 escalation (p1, unacknowledged) on run#2 by watchdog#9, 1h ago: run#2 died in a dialog
 ### Recent events
-- idea.created idea#6 10m ago · idea.status idea#2 0s ago · comment.note comment#3 0s ago · comment.decision comment#2 0s ago · comment.escalation comment#1 0s ago
+- idea.linked idea#6 0s ago · idea.created idea#6 10m ago · idea.status idea#2 0s ago · comment.note comment#3 0s ago · comment.decision comment#2 0s ago
 """)
 
 

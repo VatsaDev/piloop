@@ -855,8 +855,9 @@ class Event(Base):
     environment such as ``anomaly.startup``. Triggers write what any connection does to the rows. The persistent
     trigger writes ``comment.escalation``. The TEMP triggers of each connection (``piloop/db/actor_triggers.sql``,
     generated from ``piloop.db.triggers.TEMP``) write the change log, signed by the connection's actor:
-    ``idea.status``, ``idea.priority``, ``idea.track``, ``candidate.verdict``, ``run.brief`` and ``project.status`` as
-    ``{old, new}``, ``<kind>.deleted`` for deleted rows, and ``comment.<kind>``.
+    ``idea.status``, ``idea.priority``, ``idea.track``, ``idea.base_candidate_id``, ``candidate.verdict``, ``run.brief``,
+    ``project.status`` and ``project.paused`` as ``{old, new}``, ``idea.linked`` and ``idea.unlinked`` with the target
+    and the kind of an ``idea_links`` row, ``<kind>.deleted`` for deleted rows, and ``comment.<kind>``.
     """
 
     __tablename__ = 'events'

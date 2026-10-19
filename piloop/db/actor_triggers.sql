@@ -64,6 +64,22 @@ BEGIN
   INSERT INTO events (kind, actor, target_kind, target_id, payload)
   VALUES ('idea.track', (SELECT actor FROM temp.session_actor), 'idea', NEW.id, json_object('old', OLD.track, 'new', NEW.track));
 END;
+CREATE TEMP TRIGGER ideas_base_candidate_id_event AFTER UPDATE OF base_candidate_id ON ideas
+WHEN OLD.base_candidate_id IS NOT NEW.base_candidate_id
+BEGIN
+  INSERT INTO events (kind, actor, target_kind, target_id, payload)
+  VALUES ('idea.base_candidate_id', (SELECT actor FROM temp.session_actor), 'idea', NEW.id, json_object('old', OLD.base_candidate_id, 'new', NEW.base_candidate_id));
+END;
+CREATE TEMP TRIGGER idea_links_linked_event AFTER INSERT ON idea_links
+BEGIN
+  INSERT INTO events (kind, actor, target_kind, target_id, payload)
+  VALUES ('idea.linked', (SELECT actor FROM temp.session_actor), 'idea', NEW.idea_id, json_object('target', NEW.target_id, 'kind', NEW.kind));
+END;
+CREATE TEMP TRIGGER idea_links_unlinked_event AFTER DELETE ON idea_links
+BEGIN
+  INSERT INTO events (kind, actor, target_kind, target_id, payload)
+  VALUES ('idea.unlinked', (SELECT actor FROM temp.session_actor), 'idea', OLD.idea_id, json_object('target', OLD.target_id, 'kind', OLD.kind));
+END;
 CREATE TEMP TRIGGER candidates_verdict_event AFTER UPDATE OF verdict ON candidates
 WHEN OLD.verdict IS NOT NEW.verdict
 BEGIN

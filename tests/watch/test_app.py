@@ -559,6 +559,25 @@ def test_ideas_keys_approve_park_reject_with_a_reason_and_move_the_priority(
         assert {e.actor for e in s.scalars(select(Event).where(Event.kind == 'idea.status'))} == {'human'}
 
 
+def test_a_review_that_another_client_made_meanwhile_is_refused_with_why(
+    db: Database, campaign: Project, herdr_log: Path
+) -> None:
+    notes: list[str] = []
+
+    async def scenario(pilot: Pilot[None], app: Watch) -> None:
+        await pilot.press('3', 'y')
+        await pilot.pause()
+        with db.session() as s:
+            ops.set_idea_status(s, 4, IdeaStatus.READY, reason='approved from the CLI', actor='orchestrator')
+            s.commit()
+        await pilot.press(*'worth a run', 'enter')
+        await pilot.pause()
+        notes.append(campaign_screen(app).note)
+
+    drive(db, 'demo', scenario)
+    assert notes == ['idea#4 is ready already']
+
+
 def test_a_paused_project_says_so_in_its_row_and_its_header(db: Database, campaign: Project, herdr_log: Path) -> None:
     with db.session() as s:
         ops.pause(s, campaign.id, evals=False, reason='evaluator v2')
@@ -605,7 +624,7 @@ def test_a_seed_heads_the_ideas_panel_and_is_developed_by_research_not_approved_
 
     drive(db, 'demo', scenario)
     assert notes == [
-        f'idea#{seed_id} is a seed: research defines it first (piloop idea develop {seed_id} …)',
+        f'idea#{seed_id} is a seed: research defines it first (piloop idea develop {seed_id} …), or park or reject it',
         f'idea#{seed_id} seed → rejected',
     ]
 

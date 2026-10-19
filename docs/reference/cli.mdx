@@ -178,6 +178,53 @@ Optional: `--plan`, `--title`, `--family`, `--base`, `--priority` (default: the 
 `--supersedes`. As with `idea add`, the links are written together with the idea, so the daemon never takes the idea
 without them.
 
+### piloop idea status
+
+```text
+piloop idea status IDEA_ID STATUS --reason TEXT
+```
+
+Sets the status of an idea to `proposed`, `ready`, `parked`, `rejected` or `done`, with a note on the idea that says
+why. `done` settles an idea without a run, so the ideas after it can start. A seed is developed first, and an idea
+whose run is open (queued, running or being scored) can only be parked or rejected: `ready` would queue a second run,
+and `done` would start the ideas after it before its run is judged. A parked or rejected idea's open run finishes and
+is scored.
+
+### piloop idea link
+
+```text
+piloop idea link IDEA_ID after|supersedes TARGET_ID --reason TEXT
+```
+
+Links an idea that exists to another idea of the same project: it waits until the target is `done` (`after`), or it
+refines it (`supersedes`). The link is written in one transaction, so the daemon never takes the idea without it. An
+idea whose run is open takes no `after` link, and a link that closes a cycle of its kind is refused. The `--after` and
+`--supersedes` of `idea add` and `idea develop` are checked the same way.
+`piloop idea unlink IDEA_ID after|supersedes TARGET_ID --reason TEXT` deletes a link, for example to a prerequisite
+that was rejected and blocks the idea.
+
+### piloop idea base
+
+```text
+piloop idea base IDEA_ID CANDIDATE_ID|head --reason TEXT
+```
+
+Pins the candidate that the idea's runs start from, or clears the pin with `head`: an unpinned run starts from the
+head at the time it starts. A run that is open keeps its base, and the next attempt takes the new one.
+
+### piloop idea track
+
+```text
+piloop idea track IDEA_ID TRACK --reason TEXT
+```
+
+Moves an idea to another track of `piloop.toml`, with a note on the idea that says why. An idea whose run is open
+keeps its track, because the run's commits are judged on it.
+
+Each of these commands writes its reason in a note on the idea. The change log records the change, signed with
+`PILOOP_ACTOR`, whether a command or raw SQL made it: `idea.status`, `idea.track` and `idea.base_candidate_id` with
+the old and new value, and `idea.linked` and `idea.unlinked` with the target and the kind.
+
 ### piloop candidate remeasure
 
 ```text

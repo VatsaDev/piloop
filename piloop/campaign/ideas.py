@@ -5,7 +5,7 @@ their SQL and their text. The scheduler uses it to find the ``ready`` ideas that
 ideas. The status and history renderers use it to show the links in one cell. Add the rule for a new kind of link
 here.
 
-``review`` and ``reprioritise`` do to an idea what ``prompts/sql_procedures.md`` tells an agent to do by SQL.
+``reprioritise`` changes an idea's priority. ``piloop.campaign.ops`` holds the other changes to an idea.
 ``yields`` measures each source by its keeps, not by the number of ideas it inserted. The overview and the research
 pack show it.
 
@@ -163,23 +163,6 @@ def superseded_by(s: Session, idea_ids: list[int]) -> dict[int, list[int]]:
 
 PRIORITIES = range(5)
 """From 0 (urgent) to 4 (someday)."""
-
-
-def review(s: Session, idea_id: int, status: IdeaStatus, reason: str, *, author: str) -> Idea:
-    """Approve (``ready``), park or reject the idea, and add a ``note`` that says why. Commits once."""
-    idea = s.get_one(Idea, idea_id)
-    s.add(
-        Comment(
-            target_kind=TargetKind.IDEA,
-            target_id=idea_id,
-            author=author,
-            kind=CommentKind.NOTE,
-            body=f'{idea.status} → {status}: {reason.strip()}',
-        )
-    )
-    idea.status = status
-    s.commit()
-    return idea
 
 
 def reprioritise(s: Session, idea_id: int, by: int) -> Idea:

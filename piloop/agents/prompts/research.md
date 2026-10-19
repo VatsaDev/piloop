@@ -97,8 +97,8 @@ is no longer a seed.
    Do its cheap part yourself, and fold the result into an idea that can move the metric, or reject it.
    A seed that needs a human's approval (a cost, a data source, a rule of the brief): develop it with `--proposed`, and
    put the question in an escalation.
-5. **Reject** what does not hold up: `UPDATE ideas SET status = 'rejected'`, and add a `note` on it that says why. Name
-   the ideas, runs, candidates or comments that settled it. The seed's filer reads that note.
+5. **Reject** what does not hold up: `piloop idea status <id> rejected --reason "<why>"`, which adds a `note` with the
+   reason. Name the ideas, runs, candidates or comments that settled it. The seed's filer reads that note.
 
 ## 3. Ideas of your own
 

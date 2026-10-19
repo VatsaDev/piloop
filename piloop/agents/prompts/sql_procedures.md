@@ -76,12 +76,10 @@ Timestamps are UTC ISO-8601 strings.
   - Then `new` starts from the head like any other run. A prerequisite's branch keep is reached only by a pin.
   - Meanwhile, `new` stays `ready`, and `piloop status` shows it as `blocked by idea#n (<status>)`.
   - A prerequisite that ends `rejected` or `parked` blocks until someone parks the dependent idea or deletes the link:
-    `DELETE FROM idea_links WHERE idea_id = <new> AND target_id = <n> AND kind = 'after'`.
-- To link an idea that exists already, take it out of the queue first:
-  1. `UPDATE ideas SET status = 'proposed' WHERE id = <new> AND status = 'ready'`. If no row changed, the daemon
-     took the idea already.
-  2. `INSERT INTO idea_links (idea_id, target_id, kind) VALUES (<new>, <n>, 'after')`.
-  3. `UPDATE ideas SET status = 'ready' WHERE id = <new>`.
+    `piloop idea unlink <new> after <n> --reason "<why>"`.
+- To link an idea that exists already: `piloop idea link <new> after <n> --reason "<why>"`. The link is written in one
+  transaction, so the daemon never takes the idea without it. It is refused while the idea's run is open (the daemon
+  took it already), and when it would close a cycle.
 - `supersedes` says that `new` is a sharper version of n.
   - On its next tick, the daemon sets n to `rejected` if it never ran (no run yet, and still `seed`, `proposed` or
     `ready`), with a `note` on n that names `new`.
@@ -274,10 +272,17 @@ The daemon never overwrites a verdict that is not its own.
   `SELECT id, priority, kind, author, target_kind, target_id, body FROM comments WHERE priority IS NOT NULL AND
   acked_at IS NULL ORDER BY priority, id`.
 
-### Park or reject
+### Change an idea
 
-- `UPDATE ideas SET status='parked'` (for now) or `'rejected'` (for good).
-- Say why in a comment on the idea.
+Each command takes `--reason "<why>"`, signs the change with your actor and records it in `events`.
+
+- Park (for now) or reject (for good): `piloop idea status <id> parked` or `rejected`. Also `ready`, `proposed`, and
+  `done`, which settles an idea without a run so that the ideas after it start. The reason becomes a `note` on the
+  idea.
+- Start it from another candidate: `piloop idea base <id> <candidate>`, or `piloop idea base <id> head` to start from
+  the head when it runs.
+- Move it to another track: `piloop idea track <id> <track>`. The track must be in `piloop.toml`.
+- Link it: `piloop idea link` and `piloop idea unlink` ("Link ideas" above).
 
 ### Pause a campaign
 
@@ -326,8 +331,10 @@ The daemon never overwrites a verdict that is not its own.
 - Never set them by hand. Read them to see who changed a row and when. `updated_by IS NULL` means the row is unchanged
   since its insert.
 - The same triggers keep a change log in `events`, signed by the same actor, each with `{old, new}` in the payload:
-  `idea.status`, `idea.priority`, `idea.track`, `candidate.verdict` (with `verdict_by` and `verdict_reason`),
-  `run.brief` (lengths only), `project.status` (with `stopped_reason`), `project.paused` (with `paused_reason`).
+  `idea.status`, `idea.priority`, `idea.track`, `idea.base_candidate_id`, `candidate.verdict` (with `verdict_by` and
+  `verdict_reason`), `run.brief` (lengths only), `project.status` (with `stopped_reason`), `project.paused` (with
+  `paused_reason`). An inserted or deleted `idea_links` row is `idea.linked` or `idea.unlinked` on its idea, with the
+  target and the kind.
 - A DELETE of an idea, comment or candidate leaves a `<kind>.deleted` event with the row's key columns.
 - So `SELECT at, actor, kind, payload FROM events WHERE target_kind = 'idea' AND target_id = 12 ORDER BY id` is the full
   history of an idea.

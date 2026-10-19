@@ -9,18 +9,13 @@ from piloop import git
 from piloop.campaign import ops
 from piloop.cli import common
 from piloop.cli.common import ProjectRef
-from piloop.cli.idea import filing, track_for
 from piloop.config import config_of
-from piloop.db.models import Candidate, Project, Verdict
+from piloop.db.models import Candidate, Verdict
 from piloop.scoring.ledger import (
     ImportRefused,
-    NoteRefused,
     RemeasureRefused,
-    follow_up,
     import_reference,
-    note,
     request_remeasure,
-    track_of,
 )
 
 app = cyclopts.App(
@@ -117,19 +112,10 @@ def candidate_note(
     candidate. A worker files no follow-ups. When its candidate does not exist yet, a worker ends its commit message
     with a `Piloop-Note: <reason>` trailer instead, and the daemon applies the note when it judges the commit.
     """
-    with common.session() as s:
-        candidate = s.get(Candidate, candidate_id)
-        if candidate is None:
-            raise SystemExit(f'no candidate#{candidate_id}')
-        if follow_ups:
-            filing(s.get_one(Project, candidate.project_id))
-        try:
-            note(candidate, reason, common.settings.actor)
-        except NoteRefused as e:
-            raise SystemExit(str(e)) from e
-        project = s.get_one(Project, candidate.project_id)
-        on = track_for(project, track) if track is not None else track_of(config_of(project), candidate).name
-        ideas = follow_up(s, candidate, follow_ups, reason, common.settings.actor, track=on)
+    with common.refused(), common.session() as s:
+        candidate, ideas = ops.note_candidate(
+            s, candidate_id, reason, actor=common.settings.actor, follow_ups=follow_ups, track=track
+        )
         s.commit()
         common.console.print(f'candidate#{candidate.id} interesting: {candidate.verdict_reason}', markup=False)
         for idea in ideas:

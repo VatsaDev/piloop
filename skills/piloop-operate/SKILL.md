@@ -59,7 +59,9 @@ Steps:
 4. **Decide and record.** See "The inbox" below: escalations, every decision, the surfacing policy.
 5. **Acknowledge** what you answered: `PILOOP_ACTOR=orchestrator piloop inbox ack <id>`. Leave unacknowledged what
    only the human can decide.
-6. **Act.** Apply the decision: ideas, priorities, sweeps, `piloop.toml` followed by `piloop init .`.
+6. **Act.** Apply the decision with a piloop command: `piloop idea status|link|base|track`, `piloop candidate
+   verdict`, `piloop pause`, sweeps, or `piloop.toml` followed by `piloop init .`. Use `piloop sql` for a write only
+   when no command does it.
    Never raise `[spend] limit` yourself. A `Spend limit reached` escalation belongs to the human.
 7. **Journal** each decision, plan and result as you go, one line with its ids:
    `PILOOP_ACTOR=orchestrator piloop journal "sync-r1: parked idea#412 (dup of #398); next: compose c#486+c#501"`.
@@ -168,12 +170,21 @@ When you or a worker write an analysis of where the head loses (against the refe
 
 The research pack of every sweep then lists it under the analysis artifacts, newest first, before the history.
 
-### Reprioritize, park, reject
+### Change an idea
 
-- Reprioritize: `UPDATE ideas SET priority = 0 WHERE id = …`.
-- Park (for now): `UPDATE ideas SET status = 'parked' WHERE id = …`.
-- Reject (never): `UPDATE ideas SET status = 'rejected' WHERE id = …`.
-- Always say why in a `note` comment on the idea.
+Use these commands, not SQL. Each one validates, takes `--reason "<why, with ids>"`, signs the change as
+`orchestrator` and records an event, so your decision's `Revert:` line is one more command.
+
+- Park (for now), reject (never), approve, or settle without a run:
+  `piloop idea status <id> parked|rejected|ready|proposed|done --reason "…"`. The reason becomes a `note` on the idea.
+  An idea whose run is open (queued, running or being scored) can only be parked or rejected: its run finishes. Set
+  it ready again after the run, never during it: that would queue a second run.
+- Link an idea that exists: `piloop idea link <id> after|supersedes <target> --reason "…"`. It refuses a link that
+  closes a cycle, and an `after` link to an idea that the daemon took already. `piloop idea unlink` deletes one, for
+  example a prerequisite that was rejected and blocks.
+- Start it from another candidate: `piloop idea base <id> <candidate> --reason "…"`, or `head` to unpin it.
+- Move it to another track: `piloop idea track <id> <track> --reason "…"`.
+- Reprioritize: `UPDATE ideas SET priority = 0 WHERE id = …`, with a `note` that says why.
 
 ### Pause a campaign
 
@@ -440,5 +451,6 @@ SELECT at, actor, kind, payload FROM events WHERE target_kind = '<k>' AND target
 
 - Changes to an idea's status, priority or track, a candidate's verdict and a project's status or pause carry
   `{old, new}` and the actor (`human`, `orchestrator`, `daemon`, `watchdog#7` …).
-- `measurement.recorded` has the metrics of a measurement, with the actor that added it.
+- `idea.base_candidate_id` carries `{old, new}` too, and `idea.linked` and `idea.unlinked` the target and the kind.
+  The commands put their reason in a note on the idea. `measurement.recorded` has the metrics.
 - Deletes of ideas, comments and candidates leave `*.deleted` tombstones.

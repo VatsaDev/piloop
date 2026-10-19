@@ -5,7 +5,9 @@ for a change, ``<singular>.deleted`` for a tombstone and ``comment.<kind>`` for 
 table's singular, which is also a ``TargetKind`` value. Payloads have the old and new values, never a large body.
 """
 
-from piloop.db.triggers.ddl import Trigger
+from typing import Literal
+
+from piloop.db.triggers.ddl import Event, Trigger
 from piloop.db.triggers.provenance import DAEMON_ACTOR, SESSION_ACTOR
 
 
@@ -102,10 +104,36 @@ RUN_BRIEF = Trigger(
     temp=True,
 )
 
+
+def link_event(kind: str, row: Literal['NEW', 'OLD']) -> Trigger:
+    """TEMP: log an inserted (``idea.linked``) or a deleted (``idea.unlinked``) ``idea_links`` row on its idea.
+
+    The rows have no id, so the event is on the idea that links, with the target and the kind in the payload. A cascade
+    (deleting an idea) fires it for each link that goes with the idea.
+    """
+    event: Event = 'AFTER INSERT' if row == 'NEW' else 'AFTER DELETE'
+    return Trigger(
+        f'idea_links_{kind}_event',
+        'idea_links',
+        event,
+        body=event_insert(
+            f"'idea.{kind}'",
+            SESSION_ACTOR,
+            "'idea'",
+            f'{row}.idea_id',
+            f"json_object('target', {row}.target_id, 'kind', {row}.kind)",
+        ),
+        temp=True,
+    )
+
+
 CHANGES = (
     changed('ideas', 'status'),
     changed('ideas', 'priority'),
     changed('ideas', 'track'),
+    changed('ideas', 'base_candidate_id'),
+    link_event('linked', 'NEW'),
+    link_event('unlinked', 'OLD'),
     changed('candidates', 'verdict', 'verdict_by', 'verdict_reason'),
     RUN_BRIEF,
     # stopped_reason is set in the same statement as the status, so a stop says why and a resume says null

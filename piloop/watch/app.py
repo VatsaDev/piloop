@@ -5,7 +5,7 @@ there. A project screen has a header (head, spend, progress against ``[stop]``),
 (inbox, agents, ideas, candidates), and on the right the detail of the selected row of the focused panel. Each panel
 has its own keys, which the key bar and ``?`` show. ``/`` filters the focused panel.
 
-A key that writes calls the same functions as the CLI (``inbox.ack``, ``inbox.reply``, ``ideas.review``,
+A key that writes calls the same functions as the CLI (``inbox.ack``, ``inbox.reply``, ``ops.set_idea_status``,
 ``ideas.reprioritise``, the runtime's ``prompt``). Each write is one short session signed by the watcher's actor, so
 the triggers stamp it and the events feed carries it like the write of any other client.
 
@@ -28,8 +28,8 @@ from textual.markup import escape
 from textual.screen import ModalScreen, Screen
 from textual.widgets import DataTable, Footer, HelpPanel, Input, Label, Select, Static
 
-from piloop.campaign import inbox
-from piloop.campaign.ideas import reprioritise, review
+from piloop.campaign import inbox, ops
+from piloop.campaign.ideas import reprioritise
 from piloop.campaign.project import find
 from piloop.config import config_of
 from piloop.db.models import Idea, IdeaStatus, Worker, WorkerState, utcnow
@@ -283,21 +283,25 @@ class IdeasTable(PanelTable):
             return
         to = IdeaStatus(status)
         with self.campaign.db.session() as s:
-            now = s.get_one(Idea, key).status
-        if now is to:
-            self.campaign.say(f'idea#{key} is {to} already')
-            return
-        if now is IdeaStatus.SEED and to is IdeaStatus.READY:
-            self.campaign.say(f'idea#{key} is a seed: research defines it first (piloop idea develop {key} …)')
-            return
+            idea = s.get_one(Idea, key)
+            now = idea.status
+            try:
+                ops.check_status(idea, to)
+            except ops.Refused as e:
+                self.campaign.say(str(e))
+                return
 
         def send(reason: str | None) -> None:
             if reason is None:
                 self.campaign.say(f'idea#{key} left {now}: no reason given')
                 return
-            self.campaign.act(
-                lambda s: f'idea#{key} {now} → {review(s, key, to, reason, author=self.campaign.actor).status}'
-            )
+
+            def write(s: Session) -> str:
+                old = ops.set_idea_status(s, key, to, reason=reason, actor=self.campaign.actor)
+                s.commit()
+                return f'idea#{key} {old} → {to}'
+
+            self.campaign.act(write)
 
         self.app.push_screen(Ask(f'idea#{key} {now} → {to}: why? (a note on the idea)'), send)
 
@@ -474,9 +478,12 @@ class CampaignScreen(Screen[None]):
             self.refresh_detail()
 
     def act(self, write: Callable[[Session], str]) -> None:
-        """Run one write in its own session, say what it did, and read the screen again."""
+        """Run one write in its own session, say what it did or why it was refused, and read the screen again."""
         with self.db.session() as s:
-            note = write(s)
+            try:
+                note = write(s)
+            except ops.Refused as e:  # the row changed since the key was pressed
+                note = str(e)
         self.say(note)
         self.reload()
 

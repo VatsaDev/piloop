@@ -7,22 +7,27 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from piloop.campaign import ops
+from piloop.config import load_project_config
 from piloop.db.events import emit
 from piloop.db.models import (
     Candidate,
     Comment,
+    CommentKind,
     Event,
     Idea,
+    IdeaLink,
     IdeaStatus,
+    LinkKind,
     Measurement,
     Pause,
     Project,
     ProjectStatus,
     Run,
+    RunStatus,
     TargetKind,
     Verdict,
 )
@@ -54,6 +59,15 @@ def add_idea(db: Database, project_id: int, title: str, status: IdeaStatus = Ide
         s.add(idea)
         s.commit()
         return idea.id
+
+
+def run_idea(db: Database, status: IdeaStatus, run: RunStatus, *, scoring: bool = False) -> int:
+    """An idea in ``status`` with one run in ``run``: a status set by hand while the run is open, or scored."""
+    idea_id = add_idea(db, 1, f'{status} with a {run} run {scoring}', status)
+    with db.session() as s:
+        s.add(Run(idea_id=idea_id, attempt=1, base_candidate_id=1, harness='h', model='m', status=run, scoring=scoring))
+        s.commit()
+    return idea_id
 
 
 def run_candidate(
@@ -131,11 +145,14 @@ def test_a_raw_pause_needs_a_reason_and_a_known_scope(me: Database, tmp_path: Pa
 def test_only_a_sweeping_agent_files_its_ideas_for_review_while_the_project_is_paused(me: Database) -> None:
     with me.session() as s:
         project = s.get_one(Project, 1)
-        assert not ops.holds_ideas(project, 'research#4'), 'not paused'
+        assert ops.review_first(project, 'research#4', new=False) is None, 'not paused'
+        assert ops.review_first(project, 'research#4', new=True) == '[roles.research] max_ideas = 0', 'the test file'
         ops.pause(s, 1, evals=False, reason='why')
-        assert ops.holds_ideas(project, 'research#4') and ops.holds_ideas(project, 'watchdog#5')
-        assert not ops.holds_ideas(project, ACTOR) and not ops.holds_ideas(project, 'human')
-        assert not ops.holds_ideas(project, 'worker#6'), 'a worker files no ideas anyway'
+        assert ops.review_first(project, 'watchdog#5', new=False) == 'project demo is paused'
+        assert (
+            ops.review_first(project, ACTOR, new=True) is None and ops.review_first(project, 'human', new=True) is None
+        )
+        assert ops.review_first(project, 'worker#6', new=True) is None, 'a worker files no ideas anyway'
 
 
 def test_a_verdict_override_is_the_actors_with_the_reason_in_its_event(me: Database, project: Project) -> None:
@@ -287,3 +304,171 @@ def test_a_measurement_by_hand_says_when_the_daemon_judges_again_and_waits_for_a
         assert ops.add_measurement(s, crashed, report, actor=ACTOR).effect.endswith(
             'once the spend guard lets it (spend not read yet)'
         )
+
+
+def test_an_idea_status_takes_a_reason_in_a_note_and_refuses_what_is_not_set_by_hand(
+    me: Database, project: Project
+) -> None:
+    idea = add_idea(me, 1, 'an idea')
+    seed = add_idea(me, 1, 'a hunch', IdeaStatus.SEED)
+    running = add_idea(me, 1, 'running', IdeaStatus.SCHEDULED)
+    with me.session() as s:
+        assert ops.set_idea_status(s, idea, IdeaStatus.PARKED, reason='after the v2 evaluator', actor=ACTOR) is (
+            IdeaStatus.READY
+        )
+        ops.set_idea_status(s, seed, IdeaStatus.REJECTED, reason='dup of idea#1', actor=ACTOR)
+        ops.set_idea_status(s, running, IdeaStatus.PARKED, reason='redundant', actor=ACTOR)
+        s.commit()
+        notes = s.scalars(select(Comment).order_by(Comment.id)).all()
+        assert [(n.target_id, n.author, n.kind, n.body) for n in notes] == [
+            (idea, ACTOR, CommentKind.NOTE, 'ready → parked: after the v2 evaluator'),
+            (seed, ACTOR, CommentKind.NOTE, 'seed → rejected: dup of idea#1'),
+            (running, ACTOR, CommentKind.NOTE, 'scheduled → parked: redundant'),
+        ]
+    assert [e[:2] for e in kinds(me, TargetKind.IDEA, idea)] == [('idea.status', ACTOR)], 'the trigger, once'
+    other = add_idea(me, 1, 'other', IdeaStatus.SEED)
+    busy = add_idea(me, 1, 'busy', IdeaStatus.SCHEDULED)
+    parked = run_idea(me, IdeaStatus.PARKED, RunStatus.RUNNING)
+    scoring = run_idea(me, IdeaStatus.PARKED, RunStatus.SUCCEEDED, scoring=True)
+    with me.session() as s:
+        for target, status, error in [
+            (parked, IdeaStatus.READY, f'idea#{parked} has an open run: run#\\d+ is running; park or reject it'),
+            (parked, IdeaStatus.DONE, f'idea#{parked} has an open run'),
+            (scoring, IdeaStatus.READY, f'idea#{scoring} has an open run: run#\\d+ is being scored'),
+            (idea, IdeaStatus.PARKED, f'idea#{idea} is parked already'),
+            (idea, IdeaStatus.SCHEDULED, 'scheduled is not set by hand: give proposed, ready, parked, rejected, done'),
+            (idea, IdeaStatus.SEED, 'seed is not set by hand'),
+            (other, IdeaStatus.READY, f'idea#{other} is a seed: research defines it first'),
+            (busy, IdeaStatus.DONE, f'idea#{busy} is scheduled: its run is open; park or reject it'),
+            (99, IdeaStatus.DONE, 'no idea#99'),
+        ]:
+            with pytest.raises(ops.Refused, match=error):
+                ops.set_idea_status(s, target, status, reason='why', actor=ACTOR)
+        with pytest.raises(ops.Refused, match='a reason is required'):
+            ops.set_idea_status(s, idea, IdeaStatus.READY, reason=' ', actor=ACTOR)
+
+
+def test_links_are_validated_kept_acyclic_and_leave_events(me: Database, project: Project, db: Database) -> None:
+    a, b, c = (add_idea(me, 1, t) for t in 'abc')
+    running = add_idea(me, 1, 'running', IdeaStatus.SCHEDULED)
+    with me.session() as s:
+        ops.link(s, a, LinkKind.AFTER, b, reason='b lands the parser', actor=ACTOR)
+        ops.link(s, b, LinkKind.AFTER, c, reason='c first', actor=ACTOR)
+        ops.link(s, running, LinkKind.SUPERSEDES, c, reason='sharper', actor=ACTOR)
+        s.commit()
+        links = s.scalars(select(IdeaLink).order_by(IdeaLink.idea_id)).all()
+        assert [(lk.idea_id, lk.kind, lk.target_id) for lk in links] == [
+            (a, LinkKind.AFTER, b),
+            (b, LinkKind.AFTER, c),
+            (running, LinkKind.SUPERSEDES, c),
+        ]
+    assert kinds(me, TargetKind.IDEA, a) == [('idea.linked', ACTOR, {'target': b, 'kind': 'after'})], 'a trigger'
+    with me.session() as s:
+        assert [c.body for c in s.scalars(select(Comment).where(Comment.target_id == a))] == [
+            f'after idea#{b}: b lands the parser'
+        ]
+    with db.session() as s:
+        s.add(Project(name='other', path='/other', config=s.get_one(Project, 1).config))
+        s.commit()
+    elsewhere = add_idea(me, 2, 'elsewhere')
+    with me.session() as s:
+        for idea, kind, target, error in [
+            (c, LinkKind.AFTER, a, f'a cycle: idea#{a} already links after idea#{c}'),
+            (c, LinkKind.AFTER, c, f'idea#{c} cannot link to itself'),
+            (a, LinkKind.AFTER, b, f'idea#{a} links after idea#{b} already'),
+            (a, LinkKind.AFTER, elsewhere, f'idea#{elsewhere} is in another project'),
+            (running, LinkKind.AFTER, a, f'idea#{running} is scheduled: its run is open: it started without idea#{a}'),
+            (a, LinkKind.AFTER, 99, 'no idea#99'),
+        ]:
+            with pytest.raises(ops.Refused, match=error):
+                ops.link(s, idea, kind, target, reason='why', actor=ACTOR)
+        ops.link(s, c, LinkKind.SUPERSEDES, a, reason='another kind closes no cycle', actor=ACTOR)
+        with pytest.raises(ops.Refused, match='a reason is required'):
+            ops.link(s, b, LinkKind.SUPERSEDES, a, reason='', actor=ACTOR)
+
+        ops.unlink(s, a, LinkKind.AFTER, b, reason='b was rejected', actor=ACTOR)
+        s.commit()
+        assert s.get_one(Idea, a).links == []
+        with pytest.raises(ops.Refused, match=f'idea#{a} has no after link to idea#{b}'):
+            ops.unlink(s, a, LinkKind.AFTER, b, reason='again', actor=ACTOR)
+        with pytest.raises(ops.Refused, match='a reason is required'):
+            ops.unlink(s, b, LinkKind.AFTER, c, reason='', actor=ACTOR)
+    assert kinds(me, TargetKind.IDEA, a)[-1] == ('idea.unlinked', ACTOR, {'target': b, 'kind': 'after'})
+
+
+def test_a_raw_sql_link_or_base_change_is_logged_like_the_commands(me: Database, project: Project) -> None:
+    a, b = add_idea(me, 1, 'a'), add_idea(me, 1, 'b')
+    with me.session() as s:
+        s.execute(text(f"INSERT INTO idea_links (idea_id, target_id, kind) VALUES ({a}, {b}, 'after')"))
+        s.execute(text(f'DELETE FROM idea_links WHERE idea_id = {a}'))
+        s.execute(text(f'UPDATE ideas SET base_candidate_id = 1 WHERE id = {a}'))
+        s.commit()
+    assert kinds(me, TargetKind.IDEA, a) == [
+        ('idea.linked', ACTOR, {'target': b, 'kind': 'after'}),
+        ('idea.unlinked', ACTOR, {'target': b, 'kind': 'after'}),
+        ('idea.base_candidate_id', ACTOR, {'old': None, 'new': 1}),
+    ]
+
+
+def test_a_base_pins_a_candidate_of_the_project_or_clears_the_pin(me: Database, project: Project) -> None:
+    idea = add_idea(me, 1, 'pinned')
+    with me.session() as s:
+        assert ops.set_base(s, idea, 1, reason='from the baseline', actor=ACTOR) is None
+        s.commit()
+        assert ops.set_base(s, idea, None, reason='follow the head', actor=ACTOR) == 1
+        s.commit()
+        assert s.get_one(Idea, idea).base_candidate_id is None
+        with pytest.raises(ops.Refused, match=f'idea#{idea} starts from the head already'):
+            ops.set_base(s, idea, None, reason='again', actor=ACTOR)
+        ops.set_base(s, idea, 1, reason='pin', actor=ACTOR)
+        with pytest.raises(ops.Refused, match=f'idea#{idea} starts from candidate#1 already'):
+            ops.set_base(s, idea, 1, reason='again', actor=ACTOR)
+        with pytest.raises(ops.Refused, match='no candidate#99 in project demo'):
+            ops.set_base(s, idea, 99, reason='why', actor=ACTOR)
+        with pytest.raises(ops.Refused, match='a reason is required'):
+            ops.set_base(s, idea, None, reason='', actor=ACTOR)
+    assert kinds(me, TargetKind.IDEA, idea) == [
+        ('idea.base_candidate_id', ACTOR, {'old': None, 'new': 1}),
+        ('idea.base_candidate_id', ACTOR, {'old': 1, 'new': None}),
+    ]
+    with me.session() as s:
+        assert [c.body for c in s.scalars(select(Comment).order_by(Comment.id))][:2] == [
+            'base the head → candidate#1: from the baseline',
+            'base candidate#1 → the head: follow the head',
+        ]
+
+
+def test_a_track_must_be_in_the_config_and_its_move_says_why(me: Database, project: Project) -> None:
+    with me.session() as s:
+        two = load_project_config(
+            Path(project.path),
+            metrics=[
+                {'name': 'score', 'direction': 'higher', 'role': 'primary', 'margin': 1},
+                {'name': 'size', 'direction': 'lower', 'role': 'primary', 'margin': 1},
+            ],
+            tracks={'score': {'share': 0.5}, 'size': {'share': 0.5}},
+        )
+        s.get_one(Project, 1).config = two.model_dump(mode='json')
+        s.commit()
+    idea = add_idea(me, 1, 'smaller')
+    running = add_idea(me, 1, 'running', IdeaStatus.SCHEDULED)
+    with me.session() as s:
+        assert ops.set_track(s, idea, 'size', reason='it shrinks the output', actor=ACTOR) == 'score'
+        s.commit()
+        [note] = s.scalars(select(Comment)).all()
+        assert note.body == 'track score → size: it shrinks the output'
+        for target, track, error in [
+            (idea, 'size', f'idea#{idea} is on track size already'),
+            (idea, 'speed', "demo has tracks score, size: there is no track 'speed'"),
+            (running, 'size', f'idea#{running} is scheduled: its run is open: its commits are judged on track score'),
+            (99, 'size', 'no idea#99'),
+        ]:
+            with pytest.raises(ops.Refused, match=error):
+                ops.set_track(s, target, track, reason='why', actor=ACTOR)
+        with pytest.raises(ops.Refused, match='a reason is required'):
+            ops.set_track(s, idea, 'score', reason='', actor=ACTOR)
+        with pytest.raises(ops.Refused, match='demo has tracks score, size: name one with --track'):
+            ops.track_for(s.get_one(Project, 1), None)
+    assert [(k, a, p) for k, a, p in kinds(me, TargetKind.IDEA, idea) if k == 'idea.track'] == [
+        ('idea.track', ACTOR, {'old': 'score', 'new': 'size'})
+    ]

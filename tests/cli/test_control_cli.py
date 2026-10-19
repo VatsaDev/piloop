@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from piloop.campaign import project as project_module
 from piloop.cli import common
-from piloop.db.models import Candidate, Event, Measurement, Run, Verdict
+from piloop.db.models import Candidate, Event, Idea, IdeaLink, IdeaStatus, Measurement, Run, Verdict
 from piloop.db.session import Database
 from piloop.scoring.ledger import REJUDGE_REQUESTED
 from piloop.settings import Settings
@@ -152,3 +152,73 @@ def test_measurement_add_records_a_report_and_asks_for_a_judgement_again_unless_
     report.write_text('{"metrics": {"score": 1}}')
     with pytest.raises(SystemExit, match='the report has no size'):
         run_cli(['measurement', 'add', str(c), '--report', str(report)])
+
+
+def test_idea_status_link_unlink_base_and_track_change_an_idea_and_say_what_they_did(project_path: Path, out) -> None:
+    run_cli(['init', str(project_path)])
+    run_cli(['idea', 'add', 'demo', 'first'])
+    run_cli(['idea', 'add', 'demo', 'second'])
+    out()
+    run_cli(['idea', 'link', '2', 'after', '1', '--reason', 'first lands the parser'])
+    run_cli(['idea', 'status', '1', 'parked', '--reason', 'wait for evaluator v2'])
+    run_cli(['idea', 'unlink', '2', 'after', '1', '--reason', 'idea#1 parked'])
+    run_cli(['idea', 'base', '2', '1', '--reason', 'from the baseline'])
+    run_cli(['idea', 'base', '2', 'head', '--reason', 'follow the head'])
+    assert out().splitlines() == [
+        'idea#2 after idea#1',
+        'idea#1 ready → parked: wait for evaluator v2',
+        'idea#2 no longer after idea#1',
+        'idea#2 starts from candidate#1',
+        'idea#2 starts from the head',
+    ]
+    with database() as db, db.session() as s:
+        assert s.get_one(Idea, 1).status is IdeaStatus.PARKED
+        assert s.scalars(select(IdeaLink)).all() == []
+        assert s.get_one(Idea, 2).base_candidate_id is None
+        kinds = [e.kind for e in s.scalars(select(Event).where(Event.target_id == 2).order_by(Event.id))]
+        assert [k for k in kinds if k.startswith('idea.')] == [
+            'idea.created',
+            'idea.linked',
+            'idea.unlinked',
+            'idea.base_candidate_id',
+            'idea.base_candidate_id',
+        ]
+    with pytest.raises(SystemExit, match='idea#2 is on track score already'):
+        run_cli(['idea', 'track', '2', 'score', '--reason', 'no-op'])
+    with pytest.raises(SystemExit, match="there is no track 'speed'"):
+        run_cli(['idea', 'track', '2', 'speed', '--reason', 'faster'])
+    run_cli(['idea', 'link', '2', 'after', '1', '--reason', 'first lands the parser'])
+    with pytest.raises(SystemExit, match='a cycle: idea#2 already links after idea#1'):
+        run_cli(['idea', 'link', '1', 'after', '2', '--reason', 'the other way round'])
+    with pytest.raises(SystemExit, match="there is no track 'speed'"):
+        run_cli(['idea', 'add', 'demo', 'faster', '--track', 'speed'])
+    with pytest.raises(SystemExit, match='no candidate#9 in project demo'):
+        run_cli(['idea', 'seed', 'demo', 'a hunch', '--from', 'run#1', '--base', '9'])
+    with pytest.raises(SystemExit, match='scheduled is not set by hand'):
+        run_cli(['idea', 'status', '2', 'scheduled', '--reason', 'why'])
+
+
+def test_idea_track_moves_an_idea_to_another_track(project_path: Path, out) -> None:
+    toml = project_path / 'piloop.toml'
+    text = toml.read_text().replace('role = "primary"\n', 'role = "primary"\nmargin = 1\n')
+    text = text.replace('direction = "lower"\n', 'direction = "lower"\nrole = "primary"\nmargin = 1\n')
+    toml.write_text(text + '\n[tracks.score]\nshare = 0.5\n\n[tracks.size]\nshare = 0.5\n')
+    run_cli(['init', str(project_path)])
+    run_cli(['idea', 'add', 'demo', 'smaller', '--track', 'score'])
+    out()
+    run_cli(['idea', 'track', '1', 'size', '--reason', 'it shrinks the output'])
+    assert out().strip() == 'idea#1 track score → size'
+
+
+def test_a_seed_developed_with_a_link_that_closes_a_cycle_is_refused_whole(project_path: Path, out) -> None:
+    """Every way to link ideas is validated: here a seed that an idea runs after would also run after that idea."""
+    run_cli(['init', str(project_path)])
+    run_cli(['idea', 'seed', 'demo', 'a hunch', '--from', 'run#1'])
+    run_cli(['idea', 'add', 'demo', 'after the seed', '--after', '1'])
+    define = ['--hypothesis', 'h', '--evidence', 'e', '--check', 'c', '--metric', 'score', '--effect', '+1']
+    with pytest.raises(SystemExit, match='a cycle: idea#2 already links after idea#1'):
+        run_cli(['idea', 'develop', '1', *define, '--after', '2'])
+    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
+        assert s.get_one(Idea, 1).status is IdeaStatus.SEED, 'nothing was written'
+    with pytest.raises(SystemExit, match='no idea#9'):
+        run_cli(['idea', 'add', 'demo', 'after nothing', '--after', '9'])

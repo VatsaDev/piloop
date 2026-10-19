@@ -94,6 +94,9 @@ def test_every_trigger_is_one_statement_named_table_what_and_references_real_col
             'ideas_status_event',
             'ideas_priority_event',
             'ideas_track_event',
+            'ideas_base_candidate_id_event',
+            'idea_links_linked_event',
+            'idea_links_unlinked_event',
             'candidates_verdict_event',
             'runs_brief_event',
             'projects_status_event',
@@ -115,6 +118,9 @@ def test_the_change_log_is_the_event_kinds_the_feed_documents() -> None:
             "'idea.status'",
             "'idea.priority'",
             "'idea.track'",
+            "'idea.base_candidate_id'",
+            "'idea.linked'",
+            "'idea.unlinked'",
             "'candidate.verdict'",
             "'run.brief'",
             "'project.status'",
@@ -127,8 +133,9 @@ def test_the_change_log_is_the_event_kinds_the_feed_documents() -> None:
             "'comment.escalation'",
         ]
     )
-    assert {changelog.singular(t.table) for t in events} <= {k.value for k in TargetKind}, (
-        'the event target_kind is the table singular, so it must pass the CHECK constraint'
+    targets = {m[1] for t in events if (m := re.search(r"VALUES \(.+?, .+?, '(\w+)', ", t.body))}
+    assert len(targets) > 1 and targets <= {k.value for k in TargetKind}, (
+        'the event target_kind (the table singular, or the idea of a link) must pass the CHECK constraint'
     )
     assert changelog.RUN_BRIEF in changelog.CHANGES and f"= '{provenance.DAEMON_ACTOR}'" in (
         changelog.RUN_BRIEF.when or ''

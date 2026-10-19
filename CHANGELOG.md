@@ -86,6 +86,11 @@ A deprecated configuration key shows a warning for at least one minor release be
 - `piloop candidate verdict <id> keep|interesting|discard|crash --reason "…"` overrides a verdict, and `piloop
   measurement add <id> --report <file>` records a measurement made by hand. The daemon then judges again a `crash`,
   `discard` or `interesting` that it set. Before, both were raw SQL, and nothing judged a measurement inserted by hand.
+- `piloop idea status`, `piloop idea link`, `piloop idea unlink`, `piloop idea base` and `piloop idea track` change an
+  idea with a reason in a note. A link that closes a cycle (also from `idea add` and `idea develop`), a status other
+  than parked or rejected for an idea whose run is open, an `after` link or a track change for such an idea, and a
+  track that `piloop.toml` does not have are refused. The change log now records `idea.base_candidate_id`,
+  `idea.linked` and `idea.unlinked`, from a command or from raw SQL. Before, these were raw SQL and unlogged.
 
 ### Changed
 
