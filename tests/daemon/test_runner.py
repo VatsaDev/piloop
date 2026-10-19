@@ -282,6 +282,40 @@ def test_every_commit_is_scored_and_lineage_follows_keeps(
     )
 
 
+def test_every_commit_of_a_run_is_a_candidate_before_the_first_is_measured(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """hiloopai/piloop-dev#62: a commit became a candidate only when the evaluations of the commits before it were
+    done, 33 minutes after its run, so it looked lost. Each commit is a pending candidate when its run closes."""
+    write_toml(Path(project.path), HARNESS_TWO_COMMITS)
+    reload_project(db, project)
+    run_id = make_run(db, project)
+    ex = executor(db, runtime, tmp_path)
+    measure = ex._measure
+    seen: list[list[tuple[str | None, Verdict, int | None]]] = []
+
+    def watched(
+        run: int | None,
+        project_id: int,
+        cfg: ProjectConfig,
+        repo: Repo,
+        sha: str,
+        candidate_id: int,
+        evaluator_id: int,
+        eval_dir: Path,
+    ) -> bool:
+        with db.session() as s:
+            rows = s.scalars(select(Candidate).where(Candidate.run_id == run_id).order_by(Candidate.id)).all()
+            seen.append([(c.summary, c.verdict, c.parent_id) for c in rows])
+        return measure(run, project_id, cfg, repo, sha, candidate_id, evaluator_id, eval_dir)
+
+    monkeypatch.setattr(ex, '_measure', watched)
+    execute(ex, db, run_id)
+    first, second = candidates(db, run_id)
+    assert seen[0] == [('first', Verdict.PENDING, 1), ('second', Verdict.PENDING, first.id)], 'all at once, in order'
+    assert (first.verdict, second.verdict, second.metrics['score']) == (Verdict.KEEP, Verdict.KEEP, 3.0)
+
+
 @pytest.mark.parametrize('moved_to', [None, IdeaStatus.PARKED, IdeaStatus.REJECTED])
 def test_a_run_counts_toward_max_runs_from_its_close_to_its_verdict(
     db: Database,

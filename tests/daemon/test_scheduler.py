@@ -1011,10 +1011,11 @@ def test_stop_kills_the_evaluator_and_scores_nothing_more(
             'its run finished and only its scoring was cut: the next daemon scores it, the idea is not run again'
         )
         assert s.get_one(Worker, 1).state is WorkerState.EXITED, 'the worker had finished; only scoring was cut'
-        [first] = s.scalars(select(Candidate).where(Candidate.run_id == 1)).all()
-        assert (first.verdict, first.measurements) == (Verdict.PENDING, []), (
-            'the tree exists as a candidate; its measurement was killed and nothing judged it'
-        )
+        made = s.scalars(select(Candidate).where(Candidate.run_id == 1).order_by(Candidate.id)).all()
+        assert [(c.summary, c.verdict, c.measurements) for c in made] == [
+            ('first', Verdict.PENDING, []),
+            ('second', Verdict.PENDING, []),
+        ], 'both trees are candidates; the measurement of the first was killed and nothing judged them'
     measured = [sp for sp in spans.get_finished_spans() if sp.name == 'piloop.measure']
     assert len(measured) == 1, 'the second commit is never measured'
     assert dict(measured[0].attributes or {})['status'] == 'cancelled'
@@ -1044,7 +1045,7 @@ def test_a_restart_during_an_evaluation_scores_the_run_on_start_and_never_runs_i
     first.stop(timeout=10)
     with db.session() as s:
         assert s.get_one(Idea, 1).status is IdeaStatus.SCHEDULED
-        assert [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == 1))] == [Verdict.PENDING]
+        assert [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == 1))] == [Verdict.PENDING] * 2
 
     hold.unlink()
     second = make_scheduler(db, runtime, tmp_path)

@@ -208,6 +208,9 @@ A deprecated configuration key shows a warning for at least one minor release be
   read none of the worker's: skipped commits were evaluated, and notes were lost.
 - A trunk run that merges a branch keep onto the head is judged against the head. The branch keep became the run's
   bar, so a merge that beat the head but not the branch keep was discarded.
+- Every commit of a run is a `pending` candidate as soon as the run ends. A commit became a candidate only when the
+  commits before it were measured, so on a busy evaluator the last commit of a run had no candidate for 33 minutes
+  and looked lost.
 - A worker of a stopped campaign that the daemon ends after the grace period, before it left its finding, closes its
   run as `campaign stopped`, with a `worker.stop_ended` event on the worker. A worker in the middle of a turn, such as
   Codex, reads the wrap-up prompt only when the turn ends, so it often never read it. The run closed as `worker

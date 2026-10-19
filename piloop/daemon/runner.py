@@ -418,8 +418,9 @@ class RunExecutor:
         was not cancelled. A tree that is already a candidate keeps that candidate and its verdict.
 
         The daemon scores with the project's current config, not the config at launch. A run that outlives a config
-        change must not move the project back to the old evaluator. All commits are pinned first, so after a stop,
-        ``resume`` finds all of them. It judges the candidates that the stop left pending, including rebased ones
+        change must not move the project back to the old evaluator. All commits are candidates and pinned first, so a
+        commit that waits for the evaluations before it is a ``pending`` candidate, and after a stop, ``resume`` finds
+        all of them. It judges the candidates that the stop left pending, including rebased ones
         (``_follow``).
 
         Each candidate is judged on the run's track (``ledger.judge``) against a bar. The bar starts at the run's base,
@@ -448,22 +449,24 @@ class RunExecutor:
                 current_evaluator(s, run.idea.project, cfg).id,
                 run.branch,
             )
+            bar_id = bar_of(run.base).id
+            candidate = run.base
+            ids: list[int] = []
+            for sha in shas:
+                candidate, _ = resolve(s, project_id, repo, sha, parent=candidate, run_id=run_id)
+                ids.append(candidate.id)
             s.commit()
-            parent_id, bar_id = run.base_candidate_id, bar_of(run.base).id
         for i, sha in enumerate(shas):
             git.pin(repo, f'refs/piloop/{cfg.name}/r{run_id}/{i}', sha)
         recovered_id: int | None = None
-        for i, sha in enumerate(shas):
+        for i, (sha, candidate_id) in enumerate(zip(shas, ids, strict=True)):
             skip = git.eval_skipped(repo, sha)
             recovered = bool(git.trailers(repo, sha, RECOVERED_TRAILER))
             with self._db.session() as s:
-                parent = s.get_one(Candidate, parent_id)
-                candidate, created = resolve(s, project_id, repo, sha, parent=parent, run_id=run_id)
-                s.commit()
-                candidate_id = candidate.id
+                candidate = s.get_one(Candidate, candidate_id)
                 unmeasured = skip or recovered
-                judge_now = created or candidate.verdict is Verdict.PENDING or (not unmeasured and skipped(candidate))
-                needs_measurement = not unmeasured and (created or not measured(candidate, scope.evaluator_id))
+                judge_now = candidate.verdict is Verdict.PENDING or (not unmeasured and skipped(candidate))
+                needs_measurement = not unmeasured and not measured(candidate, scope.evaluator_id)
             with self._tracer.span('piloop.candidate', run=run_id, commit=sha, candidate=candidate_id) as span:
                 if unmeasured:
                     span.set(status='recovered' if recovered else 'skipped')
@@ -489,7 +492,6 @@ class RunExecutor:
                 recovered_id = candidate_id
             if judged.merged is not None and not self._follow(scope, judged.merged, log_dir):
                 return None
-            parent_id = candidate_id
             if judged.advanced:
                 bar_id = candidate_id
         with self._db.session() as s:

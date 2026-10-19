@@ -96,7 +96,8 @@ The run ends when the worker stops with nothing left running. A job that the wor
 the `herdr` runtime, a worker that left its finding and went idle while such a job still runs is told once which
 jobs keep its run open, so that it can kill the ones that it forgot.
 
-After the worker ends, the daemon scores each new commit. The idea becomes `done`. If the run failed or timed out and
+After the worker ends, each new commit becomes a `pending` candidate at once. Then the daemon measures and judges
+them, oldest first. The idea becomes `done`. If the run failed or timed out and
 the idea has attempts left, the idea goes back to `ready` instead. An idea has two attempts by default.
 
 A worker asks for what it cannot do or decide itself with an `escalation`, never a `note`: a note goes to no inbox. A
