@@ -133,6 +133,16 @@ A deprecated configuration key shows a warning for at least one minor release be
 
 ### Fixed
 
+- A worker whose worktree could not be made (a full disk, `Could not write new index file`) no longer stays
+  `starting` and holds a slot forever. The failure is a failed start, like one that the runtime reports: the row is closed with
+  the error, the run is relaunched, and the `anomaly.startup` event counts toward the launch pause. Any other fault
+  before an agent starts closes its row too.
+- A run whose every agent failed to start no longer counts as an attempt at its idea. Its error is `no agent of the run
+  started to work`, and its idea is `parked`, attempts left or not, instead of being retried or set `done`.
+- A worker that ends within two minutes without a commit, an uncommitted change or a comment did not start to work,
+  even when it spent tokens, and whatever its harness: a harness whose tools fail at launch still reads its brief and
+  replies that it is blocked. Before, such a run counted as an attempt (`worker produced no commits`) and could set its
+  idea `done`.
 - An agent whose start failed after its process was spawned is now stopped and waited for. Before, the process
   ran on with nothing that watched it, and was never reaped.
 - A daemon stop no longer sets the idea of a run whose worker had left its finding back to `ready`, which started the

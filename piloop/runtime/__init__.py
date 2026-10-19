@@ -79,8 +79,8 @@ class Outcome:
     exit_code: int | None = None
     error: str | None = None
     startup_failed: bool = False
-    """The agent did not start to work: its start failed, or it ended within ``launcher.STARTUP_SECONDS`` without
-    spending a token. Only the launcher sets it."""
+    """The agent did not start to work: its start failed, or it ended within ``launcher.STARTUP_SECONDS`` and left
+    nothing (``Launcher._never_worked``). Only the launcher sets it."""
     handed_over: bool = False
     """The daemon restarted in place before it closed this agent's row. The next daemon re-attaches to the agent and
     finishes its run in its worktree. Only the launcher sets it."""

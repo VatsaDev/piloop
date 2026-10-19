@@ -1075,12 +1075,13 @@ class Scheduler:
         repo = git.open_repo(project_path)
         wt_path = log_dir / 'worktree'
         links = worktree_links(cfg, project_path, project_dir(self._home, project_id))
-
-        def start() -> Outcome:
-            git.add_worktree(repo, wt_path, base_sha, links)
-            return self._executor.launcher.launch(worker_id, brief=brief, cwd=wt_path, log_dir=log_dir)
-
-        _in_worktree(repo, wt_path, start)
+        make_cwd = partial(git.add_worktree, repo, wt_path, base_sha, links)
+        launch = self._executor.launcher.launch
+        _in_worktree(
+            repo,
+            wt_path,
+            partial(launch, worker_id, brief=brief, cwd=wt_path, log_dir=log_dir, make_cwd=make_cwd, links=links),
+        )
 
     def _context(self, s: Session, project: Project, cfg: ProjectConfig, worker: Worker, now: datetime) -> list[str]:
         """Return the context lines of a sweep: a built-in role's own, by the class of its table.

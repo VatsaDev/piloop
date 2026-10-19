@@ -31,7 +31,10 @@ from piloop.settings import Settings
 from tests.conftest import HARNESS_NOOP, ScriptRuntime, factory, register, write_toml
 
 
-def test_daemon_end_to_end(project_path: Path, tmp_path: Path, mocker: MockerFixture) -> None:
+def test_daemon_end_to_end(
+    project_path: Path, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr('piloop.agents.launcher.STARTUP_SECONDS', 0)  # the failing worker worked, then left nothing
     home = tmp_path / 'home'
     runtime = ScriptRuntime()
     daemon = Daemon(Settings(home=home, tick_seconds=0.05))

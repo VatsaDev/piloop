@@ -33,12 +33,16 @@ from piloop.usage import project_tokens
 STALE_ERROR = 'daemon exited while the run was in progress'
 CAMPAIGN_STOPPED_ERROR = 'campaign stopped'
 ROLE_REMOVED = 'its role is no longer in piloop.toml'
-NOT_ATTEMPTS = (STOPPED_ERROR, STALE_ERROR, CAMPAIGN_STOPPED_ERROR, ROLE_REMOVED)
-"""Run errors that mean the daemon stopped the run, not that the idea was tried.
+NOT_STARTED = 'no agent of the run started to work'
+"""The error of a run whose every agent failed to start (``launcher.STARTUP_ANOMALY`` on each): a fault of the host or
+the harness. The errors of its workers say what failed."""
+NOT_ATTEMPTS = (STOPPED_ERROR, STALE_ERROR, CAMPAIGN_STOPPED_ERROR, ROLE_REMOVED, NOT_STARTED)
+"""Run errors that mean the daemon stopped the run, or that no agent started to work on it, not that the idea was tried.
 
 The causes are a daemon stop or restart (``piloop upgrade``), a daemon crash, a campaign stop while the run was
-queued, or a ``piloop init`` that removed the role of a queued run. Such a run is not counted as an attempt at its
-idea. It does not count toward ``max_runs`` or ``plateau``, and it is not an anomaly."""
+queued, a ``piloop init`` that removed the role of a queued run, or agents that failed to start. Such a run is not
+counted as an attempt at its idea. It does not count toward ``max_runs`` or ``plateau``, and it is not an anomaly: the
+failed starts are."""
 BLOCKED = 'blocked on escalation'
 """How the error of a run starts when its worker stopped while its own escalation waited for an answer.
 

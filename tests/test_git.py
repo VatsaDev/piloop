@@ -73,3 +73,23 @@ def test_a_line_that_mentions_a_trailer_or_the_subject_is_not_one(project_path: 
     sha = repo.head.commit.hexsha
     assert not git.eval_skipped(repo, sha)
     assert git.trailers(repo, sha, 'Piloop-Eval') == []
+
+
+def test_a_checkout_changed_by_an_edit_a_new_file_or_a_commit_not_by_what_was_linked_into_it(
+    project_path: Path, tmp_path: Path
+) -> None:
+    """``changed`` tells an agent that worked from one that left its checkout as it got it."""
+    repo = Repo(project_path)
+    wt_path = tmp_path / 'wt'
+    target = tmp_path / 'shared'
+    target.mkdir()
+    links = {'shared': target}
+    wt = git.add_worktree(repo, wt_path, repo.head.commit.hexsha, links)
+    ignore = git.linked(wt_path, links)
+    assert not git.changed(wt_path, ignore), 'a link that .gitignore does not name is no change of the agent'
+    assert git.changed(wt_path, []), 'without the links, it is an untracked file'
+    (wt_path / 'new.txt').write_text('x')
+    assert git.changed(wt_path, ignore)
+    git.commit_all(wt, 'add a file', ignore)
+    assert git.changed(wt_path, ignore) and not git.is_dirty(wt, ignore), 'HEAD moved'
+    assert not git.changed(tmp_path / 'gone', []), 'no checkout'

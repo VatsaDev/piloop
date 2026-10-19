@@ -184,13 +184,15 @@ def head_time(path: Path) -> datetime | None:
         return None
 
 
-def moved(path: Path) -> bool:
-    """Whether HEAD of the checkout at ``path`` moved after the checkout, for example by a commit or a reset.
+def changed(path: Path, ignore: list[str]) -> bool:
+    """Whether the checkout at ``path`` changed: it has uncommitted changes outside ``ignore``, or its HEAD moved.
 
-    The reflog then has more than one entry. False when there is no checkout there.
+    HEAD moved after the checkout, for example by a commit or a reset, when the reflog has more than one entry. False
+    when there is no checkout there.
     """
     try:
-        return len(Repo(path).head.log()) > 1
+        wt = Repo(path)
+        return len(wt.head.log()) > 1 or is_dirty(wt, ignore)
     except NoSuchPathError, InvalidGitRepositoryError:
         return False
 

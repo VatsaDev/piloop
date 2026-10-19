@@ -342,6 +342,29 @@ def test_an_agent_that_never_got_going_is_an_anomaly(
     assert len(anomalies(db)) == 2
 
 
+def test_a_cwd_that_cannot_be_made_is_a_failed_start(
+    project: Project, db: Database, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """The caller's ``make_cwd`` (a worktree) is part of the start: when it fails, the agent did not start to work."""
+    start = mocker.spy(runtime, 'start')
+    worker_id = request(db, project)
+    brief = compose_brief(role_in(project), project, worker_id, reason='test', context='')
+
+    def no_space() -> None:
+        raise OSError(28, 'No space left on device')
+
+    outcome = launcher(db, runtime, tmp_path).launch(
+        worker_id, brief=brief, cwd=tmp_path / 'wt', log_dir=tmp_path / 'w', make_cwd=no_space
+    )
+    w = worker(db, worker_id)
+    assert (outcome.startup_failed, w.state, w.error) == (
+        True,
+        WorkerState.KILLED,
+        'OSError: [Errno 28] No space left on device',
+    )
+    assert [target for target, _ in anomalies(db)] == [worker_id] and not start.called
+
+
 def test_nothing_starts_after_cancel(project: Project, db: Database, runtime: ScriptRuntime, tmp_path: Path) -> None:
     worker_id = request(db, project)
     lc = launcher(db, runtime, tmp_path)

@@ -82,4 +82,4 @@ sequenceDiagram
    idea stays `scheduled` until every commit is judged, so an idea that waits for it starts from its keeps.
 
 An agent that does not start to work is not an attempt. The executor queues the run again with a new worker row, up
-to two times. [The verdict](/concepts/verdict) explains the bar, the head and the statistics.
+to two times. A run whose every agent failed to start parks its idea. [The verdict](/concepts/verdict) explains the bar, the head and the statistics.

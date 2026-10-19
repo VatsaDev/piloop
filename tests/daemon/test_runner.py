@@ -7,7 +7,7 @@ from unittest.mock import DEFAULT
 
 import pytest
 from dirty_equals import IsPositive, IsStr
-from git import Repo
+from git import GitCommandError, Repo
 from inline_snapshot import snapshot
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
@@ -19,6 +19,7 @@ from piloop.agents.launcher import STARTUP_ANOMALY
 from piloop.agents.roles import SQL_HINT
 from piloop.campaign import stop
 from piloop.campaign.project import sync
+from piloop.campaign.stop import NOT_STARTED
 from piloop.config import ProjectConfig, load_project_config
 from piloop.daemon.runner import (
     INTERRUPTED,
@@ -67,6 +68,7 @@ from piloop.scoring.ledger import (
     save_units,
     units,
 )
+from piloop.usage.jsonl import CWD_ENCODERS
 from tests.conftest import (
     HARNESS_APPEND,
     HARNESS_COMMITS_AND_LEAVES_DIRT,
@@ -88,7 +90,7 @@ from tests.conftest import (
     write_toml,
 )
 from tests.fixtures.fake_entire import CHECKPOINT
-from tests.usage.test_usage import PI_SPEC
+from tests.usage.test_usage import PI_SPEC, SESSIONS
 
 HARNESS_READS_ENTIRE = '#!/bin/sh\ncat .entire/settings.json > seen.json\n'
 HARNESS_COMMITS_ENTIRE = (
@@ -145,10 +147,13 @@ def make_run(
 
 
 def execute(ex: RunExecutor, db: Database, run_id: int) -> None:
-    """Run ``run_id`` through its requested worker row, the way the scheduler does."""
+    """Run ``run_id`` through its requested worker row, the way the scheduler does: it takes the row, then executes."""
     with db.session() as s:
-        requested = select(Worker.id).where(Worker.run_id == run_id, Worker.state == WorkerState.REQUESTED)
-        worker_id = s.scalars(requested).one()
+        requested = select(Worker).where(Worker.run_id == run_id, Worker.state == WorkerState.REQUESTED)
+        worker = s.scalars(requested).one()
+        worker.state = WorkerState.STARTING
+        s.commit()
+        worker_id = worker.id
     ex.execute(run_id, worker_id)
 
 
@@ -522,8 +527,9 @@ def test_the_role_of_the_run_caps_its_recovery_requeues(
 
 
 def test_no_changes_fails_the_run_and_retries_the_idea(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr('piloop.agents.launcher.STARTUP_SECONDS', 0)  # a worker that worked, then left nothing
     write_toml(Path(project.path), HARNESS_NOOP)
     reload_project(db, project)
     run_id = make_run(db, project, max_runs=2)
@@ -535,8 +541,9 @@ def test_no_changes_fails_the_run_and_retries_the_idea(
 
 
 def test_worker_failure_after_max_runs_finishes_the_idea(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr('piloop.agents.launcher.STARTUP_SECONDS', 0)  # a worker that worked, then left nothing
     write_toml(Path(project.path), HARNESS_FAILS)
     reload_project(db, project)
     run_id = make_run(db, project, max_runs=1)
@@ -990,8 +997,8 @@ def test_a_worker_that_never_got_going_is_relaunched_on_its_run_then_the_run_fai
 ) -> None:
     """A worker that dies at startup is not an attempt: the same run is queued again for a new worker.
 
-    The dead worker's transcript is kept aside. Only a run whose every launch died fails, and only then does it count
-    toward ``max_runs``.
+    The dead worker's transcript is kept aside. A run whose every launch died fails, but it is still no attempt: its
+    idea is parked, whatever attempts it has left, so that a broken host or harness does not burn them.
     """
     mocker.patch.object(runtime, 'start', side_effect=StartFailed('HerdrError: prompt_lost: no pickup', 'Welcome\n'))
     run_id = make_run(db, project, max_runs=1)
@@ -1012,24 +1019,100 @@ def test_a_worker_that_never_got_going_is_relaunched_on_its_run_then_the_run_fai
         relaunched = s.scalars(select(Event).where(Event.kind == 'run.relaunched')).all()
         assert [e.payload['launches'] for e in relaunched] == [1, 2]
         idea = s.get_one(Idea, run_row(db, run_id).idea_id)
-        assert idea.status is IdeaStatus.PARKED, 'its last attempt failed to start'
+        assert idea.status is IdeaStatus.PARKED, 'no agent of its run started to work'
         [note] = s.scalars(select(Comment).where(Comment.target_id == idea.id)).all()
         assert (note.target_kind, note.author, note.kind, note.body) == (
             TargetKind.IDEA,
             'daemon',
             'note',
-            f'parked: its last attempt (run#{run_id}) failed to start; fix what stopped the agent (the run error, the'
-            ' anomaly.startup event), then set it ready',
+            f'parked: no agent of run#{run_id} started to work; fix what stopped them (the errors of its workers, their'
+            ' anomaly.startup events), then set it ready',
         )
     run = run_row(db, run_id)
-    assert run.status is RunStatus.FAILED and (run.error or '').startswith('HerdrError: prompt_lost')
+    assert (run.status, run.error) == (RunStatus.FAILED, NOT_STARTED)
+    with db.session() as s:
+        errors = s.scalars(select(Worker.error).where(Worker.run_id == run_id)).all()
+        assert all((e or '').startswith('HerdrError: prompt_lost') for e in errors), 'each start says why it failed'
+        assert stop.attempts(s.get_one(Idea, run_row(db, run_id).idea_id)) == 0
 
     mocker.patch.object(runtime, 'start', side_effect=RuntimeError('no server'))
     retried = make_run(db, project, title='retried', max_runs=2)
     for _ in range(3):
         execute(ex, db, retried)
     with db.session() as s:
-        assert s.get_one(Idea, run_row(db, retried).idea_id).status is IdeaStatus.READY, 'one attempt left'
+        assert s.get_one(Idea, run_row(db, retried).idea_id).status is IdeaStatus.PARKED, (
+            'attempts left, but a new run would fail to start the same way'
+        )
+
+
+def test_a_worktree_that_cannot_be_made_is_a_failed_start_that_frees_the_slot(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """A run whose worktree cannot be made closes its worker as a failed start, so the worker holds no slot."""
+    full = GitCommandError(['git', 'worktree', 'add'], 128, b'fatal: Could not write new index file')
+    mocker.patch('piloop.git.add_worktree', side_effect=full)
+    run_id = make_run(db, project, max_runs=1)
+    ex = executor(db, runtime, tmp_path)
+    for _ in range(3):
+        execute(ex, db, run_id)
+    with db.session() as s:
+        rows = s.scalars(select(Worker).where(Worker.run_id == run_id).order_by(Worker.id)).all()
+        assert [w.state for w in rows] == [WorkerState.KILLED] * 3
+        assert all('Could not write new index file' in (w.error or '') for w in rows)
+        assert s.scalars(select(Event.target_id).where(Event.kind == STARTUP_ANOMALY)).all() == [w.id for w in rows]
+        run = s.get_one(Run, run_id)
+        assert (run.status, run.error, run.idea.status) == (RunStatus.FAILED, NOT_STARTED, IdeaStatus.PARKED)
+
+
+def test_a_run_that_fails_before_its_agent_starts_closes_its_worker(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """A fault of the daemon before the launch fails the run and closes its worker, which then holds no slot."""
+    mocker.patch('piloop.git.open_repo', side_effect=RuntimeError('repo gone'))
+    run_id = make_run(db, project)
+    execute(executor(db, runtime, tmp_path), db, run_id)
+    with db.session() as s:
+        [w] = s.scalars(select(Worker).where(Worker.run_id == run_id)).all()
+        assert (w.state, w.error, w.ended_at is not None) == (WorkerState.KILLED, 'RuntimeError: repo gone', True)
+    assert (run_row(db, run_id).status, run_row(db, run_id).error) == (RunStatus.FAILED, 'RuntimeError: repo gone')
+
+
+def test_a_worker_that_spends_tokens_but_ends_at_once_with_nothing_did_not_start_to_work(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker whose tools fail at launch still reads its brief and says it is blocked, which costs tokens.
+
+    A run's work is a commit or a comment, so a worker that ends within the startup window without either did not
+    start to work, whatever it spent. Its run is queued again, not counted as an attempt.
+    """
+    home = tmp_path / 'home'
+    monkeypatch.setenv('HOME', str(home))
+    run_id = make_run(db, project, max_runs=1)
+    folder = (
+        home
+        / '.pi'
+        / 'agent'
+        / 'sessions'
+        / CWD_ENCODERS['dash_separators_wrapped'](tmp_path / 'runs' / str(run_id) / 'worktree')
+    )
+    blocked = f'#!/bin/sh\nmkdir -p {folder}\ncp {SESSIONS / "pi.jsonl"} "{folder}/2026-09-09T05-48-14-300Z_$2.jsonl"\n'
+    write_toml(Path(project.path), blocked)
+    script = load_project_config(Path(project.path)).harness['script'].model_dump(mode='json')
+    counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], 'usage': PI_SPEC}
+    set_config(db, project, harness={'script': {**script, **counted}})
+    execute(executor(db, runtime, tmp_path), db, run_id)
+    with db.session() as s:
+        dead, relaunched = s.scalars(select(Worker).where(Worker.run_id == run_id).order_by(Worker.id)).all()
+        assert (dead.state, (dead.usage or {}).get('total'), relaunched.state) == (
+            WorkerState.EXITED,
+            16478,
+            WorkerState.REQUESTED,
+        )
+        assert s.scalars(select(Event.target_id).where(Event.kind == STARTUP_ANOMALY)).all() == [dead.id]
+        run = s.get_one(Run, run_id)
+        assert (run.status, run.error, run.idea.status) == (RunStatus.QUEUED, None, IdeaStatus.SCHEDULED), (
+            'the same run'
+        )
 
 
 def test_a_relaunched_worker_signs_as_itself_and_its_finding_without_a_commit_is_a_result(
@@ -1082,6 +1165,29 @@ def test_a_fast_worker_whose_tokens_are_unknown_is_no_startup_death_when_it_comm
     with db.session() as s:
         assert s.scalar(select(func.count()).select_from(Worker).where(Worker.run_id == run_id)) == 1, 'no relaunch'
         assert not s.scalars(select(Event).where(Event.kind.in_(['run.relaunched', STARTUP_ANOMALY]))).all()
+
+
+@pytest.mark.parametrize('edit', ['echo line >> solve.txt', 'echo note > new.txt'])
+def test_a_fast_worker_that_left_uncommitted_work_started_and_its_work_is_recovered(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, edit: str
+) -> None:
+    """A worker that changed its worktree worked, however fast it ended without a commit or a comment.
+
+    Its change is recovered as for any other worker. A relaunch would remove the worktree, and the change with it.
+    """
+    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+    write_toml(Path(project.path), f'#!/bin/sh\n{edit}\n')
+    script = load_project_config(Path(project.path)).harness['script'].model_dump(mode='json')
+    counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], 'usage': PI_SPEC}
+    set_config(db, project, harness={'script': {**script, **counted}})
+    run_id = make_run(db, project, max_runs=1)
+    execute(executor(db, runtime, tmp_path), db, run_id)
+    assert (run_row(db, run_id).status, run_row(db, run_id).error) == (RunStatus.FAILED, INTERRUPTED)
+    [(summary, verdict, *_)] = scored(db, run_id)
+    assert (summary, verdict) == (UNCOMMITTED_SUMMARY, Verdict.RECOVERED)
+    with db.session() as s:
+        assert s.scalar(select(func.count()).select_from(Worker).where(Worker.run_id == run_id)) == 1, 'no relaunch'
+        assert not s.scalars(select(Event).where(Event.kind == STARTUP_ANOMALY)).all()
 
 
 def test_a_startup_death_during_a_stop_leaves_the_run_to_the_stop(

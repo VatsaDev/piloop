@@ -11,17 +11,18 @@ import uuid
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 from git import Repo
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from piloop import git
 from piloop.agents.launcher import TRANSCRIPT, Launcher
 from piloop.agents.roles import compose_brief, role
 from piloop.campaign.project import WORKSPACE, project_dir, worktree_links
-from piloop.campaign.stop import BLOCKED, CAMPAIGN_STOPPED_ERROR, attempts
+from piloop.campaign.stop import BLOCKED, CAMPAIGN_STOPPED_ERROR, NOT_STARTED, attempts
 from piloop.config import ProjectConfig, Track, config_of
 from piloop.db.events import emit
 from piloop.db.models import (
@@ -38,6 +39,7 @@ from piloop.db.models import (
     TargetKind,
     Verdict,
     Worker,
+    WorkerState,
     utcnow,
 )
 from piloop.db.session import Database
@@ -124,7 +126,7 @@ class RunExecutor:
 
     def execute(self, run_id: int, worker_id: int) -> None:
         """Make the worktree, run the worker, evaluate and record. Never raises: failures are recorded on the run."""
-        self._guarded(run_id, lambda span: self._execute(run_id, worker_id, span))
+        self._guarded(run_id, worker_id, lambda span: self._execute(run_id, worker_id, span))
 
     def reattach(self, run_id: int, worker_id: int) -> None:
         """Finish a run whose agent a previous daemon process started (``Launcher.reattach``). Never raises.
@@ -132,17 +134,24 @@ class RunExecutor:
         The daemon watches the agent in the run's worktree until it ends. Then it scores and settles the run as
         ``execute`` does.
         """
-        self._guarded(run_id, lambda span: self._finish(run_id, worker_id, None, span))
+        self._guarded(run_id, worker_id, lambda span: self._finish(run_id, worker_id, None, span))
 
-    def _guarded(self, run_id: int, body: Callable[[Span], None]) -> None:
+    def _guarded(self, run_id: int, worker_id: int, body: Callable[[Span], None]) -> None:
+        """Run ``body``. A failure fails the run, and closes its worker if the failure came before the launch."""
         with self._tracer.span('piloop.run', run=run_id) as span:
             try:
                 body(span)
             except Exception as e:
                 span.error(e)
+                error = f'{type(e).__name__}: {e}'
                 with self._db.session() as s:
                     idea_id = s.get_one(Run, run_id).idea_id
-                self._close(span, run_id, RunStatus.FAILED, f'{type(e).__name__}: {e}')
+                    unstarted = (Worker.id == worker_id) & (Worker.state == WorkerState.STARTING)
+                    s.execute(
+                        update(Worker).where(unstarted).values(state=WorkerState.KILLED, ended_at=utcnow(), error=error)
+                    )
+                    s.commit()
+                self._close(span, run_id, RunStatus.FAILED, error)
                 self._settle(span, run_id, idea_id, RunStatus.FAILED, startup_failed=False, recovered=None)
 
     def _execute(self, run_id: int, worker_id: int, span: Span) -> None:
@@ -200,17 +209,22 @@ class RunExecutor:
         with ExitStack() as cleanup:
             cleanup.callback(git.remove_worktree, repo, wt_path)
             if brief is None:
-                wt = Repo(wt_path)
-                outcome = self.launcher.reattach(worker_id, cwd=wt_path, log_dir=log_dir)
+                outcome = self.launcher.reattach(worker_id, cwd=wt_path, log_dir=log_dir, links=links)
             else:
-                wt = git.add_worktree(repo, wt_path, base_sha, links)
-                outcome = self.launcher.launch(worker_id, brief=brief, cwd=wt_path, log_dir=log_dir)
+                make_cwd = partial(git.add_worktree, repo, wt_path, base_sha, links)
+                outcome = self.launcher.launch(
+                    worker_id, brief=brief, cwd=wt_path, log_dir=log_dir, make_cwd=make_cwd, links=links
+                )
             if outcome.handed_over:  # The next daemon re-attaches to the agent in the worktree.
                 cleanup.pop_all()
                 span.set(status='handed_over')
                 return
-            if outcome.startup_failed and self._relaunch(span, run_id, worker_id, log_dir):
+            if outcome.startup_failed:
+                if not self._relaunch(span, run_id, worker_id, log_dir):
+                    self._close(span, run_id, RunStatus.FAILED, NOT_STARTED)
+                    self._settle(span, run_id, idea_id, RunStatus.FAILED, startup_failed=True, recovered=None)
                 return
+            wt = Repo(wt_path)
             if self.launcher.cancelled.is_set():
                 cut = not self._left_finding(run_id, idea_id, worker_id)  # else the stop closed it as handed off
                 self._keep_cut_work(run_id, cfg.name, repo, wt, base_sha, git.linked(wt_path, links), noted=cut)
@@ -242,7 +256,7 @@ class RunExecutor:
             self._close(span, run_id, status, error)
             # Score all commits, even if the worker then timed out or crashed.
             recovered = self._score(run_id, project_id, repo, shas, log_dir) if shas else None
-        self._settle(span, run_id, idea_id, status, startup_failed=outcome.startup_failed, recovered=recovered)
+        self._settle(span, run_id, idea_id, status, startup_failed=False, recovered=recovered)
 
     def _relaunch(self, span: Span, run_id: int, worker_id: int, log_dir: Path) -> bool:
         """Queue the run again with a new worker, up to ``STARTUP_RELAUNCHES`` times, after its worker failed to start.
@@ -724,8 +738,9 @@ class RunExecutor:
     ) -> None:
         """After the run's commits are judged, set the idea to ``ready`` if it has attempts left, else to ``done``.
 
-        The run's ``scoring`` ends here, whatever the idea's status. If the last attempt failed to start, the idea is ``parked`` instead. It was never tried, and ``done`` would let
-        the ideas that wait for it start without its result.
+        The run's ``scoring`` ends here, whatever the idea's status. If no agent of the run started to work
+        (``startup_failed``), the idea is ``parked`` instead, attempts left or not. It was never tried, a new run would
+        fail the same way, and ``done`` would let the ideas that wait for it start without its result.
 
         A run that did not succeed and left ``recovered`` work requeues its idea from that work, attempts left or not,
         up to ``recovery_requeues`` times of the run's role (``RECOVERY_REQUEUED`` events): the idea's base becomes the
@@ -778,8 +793,6 @@ class RunExecutor:
                                 ' from it to finish it',
                             )
                         )
-                    elif status is not RunStatus.SUCCEEDED and attempts(idea) < idea.max_runs:
-                        idea.status = IdeaStatus.READY
                     elif startup_failed:
                         idea.status = IdeaStatus.PARKED
                         s.add(
@@ -788,10 +801,12 @@ class RunExecutor:
                                 target_id=idea.id,
                                 author=DAEMON_ACTOR,
                                 kind=CommentKind.NOTE,
-                                body=f'parked: its last attempt (run#{run_id}) failed to start; fix what'
-                                ' stopped the agent (the run error, the anomaly.startup event), then set it ready',
+                                body=f'parked: no agent of run#{run_id} started to work; fix what stopped them (the'
+                                ' errors of its workers, their anomaly.startup events), then set it ready',
                             )
                         )
+                    elif status is not RunStatus.SUCCEEDED and attempts(idea) < idea.max_runs:
+                        idea.status = IdeaStatus.READY
                     else:
                         idea.status = IdeaStatus.DONE
                 s.commit()

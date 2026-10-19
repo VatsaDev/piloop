@@ -36,7 +36,7 @@ START_SCREEN_LINES = 12
 """How many non-blank lines from the end of a failed start's screen go into the row's error."""
 STOPPED_ERROR = 'daemon stopped'
 STARTUP_SECONDS = 120
-"""An agent that ends sooner than this without spending a token did not start to work: a dialog, a crash.
+"""An agent that ends sooner than this and leaves nothing did not start to work: a dialog, a crash, broken tools.
 
 Longer than the default Herdr ``startup_grace_seconds``: a Herdr agent that never starts its first turn is watched for
 the whole grace, and must still count as a failed start, not as a run that worked and left nothing."""
@@ -117,24 +117,43 @@ class Launcher:
         with self.lock:
             self.cancelled.set()
 
-    def launch(self, worker_id: int, *, brief: str, cwd: Path, log_dir: Path) -> Outcome:
+    def launch(
+        self,
+        worker_id: int,
+        *,
+        brief: str,
+        cwd: Path,
+        log_dir: Path,
+        make_cwd: Callable[[], object] = lambda: None,
+        links: dict[str, Path] | None = None,
+    ) -> Outcome:
         """Run worker row ``worker_id`` to the end and close it.
 
-        The steps are: pick the harness and model, start, wait, save the transcript, read the usage, attach the
-        session, close the row and emit the events. The caller owns ``cwd`` (a worktree) and removes it after this
-        returns, unless the agent was handed over (``Outcome.handed_over``). The usage is read and the session is
-        attached before that, from inside ``cwd``.
+        The steps are: make the cwd, pick the harness and model, start, wait, save the transcript, read the usage,
+        attach the session, close the row and emit the events. The caller owns ``cwd`` (a worktree) and removes it after
+        this returns, unless the agent was handed over (``Outcome.handed_over``). The usage is read and the session is
+        attached before that, from inside ``cwd``. ``make_cwd`` creates ``cwd`` when the caller has not. It is part of
+        the start, so its failure is a failed start. ``links`` are the paths that the caller linked into ``cwd``
+        (``git.linked``): they are no change of the agent's.
         """
-        return self._run(worker_id, cwd, log_dir, lambda span: self._launch(worker_id, span, brief, cwd, log_dir))
+        return self._run(
+            worker_id,
+            cwd,
+            log_dir,
+            links or {},
+            lambda span: self._launch(worker_id, span, brief, cwd, log_dir, make_cwd),
+        )
 
-    def reattach(self, worker_id: int, *, cwd: Path, log_dir: Path) -> Outcome:
+    def reattach(self, worker_id: int, *, cwd: Path, log_dir: Path, links: dict[str, Path] | None = None) -> Outcome:
         """Like ``launch``, for an agent that an earlier daemon process started: watch it to its end and close it.
 
         The agent can still run, or it can have ended while no daemon watched. Its role's timeout counts from its start.
         """
-        return self._run(worker_id, cwd, log_dir, lambda span: self._reattach(worker_id, span, log_dir))
+        return self._run(worker_id, cwd, log_dir, links or {}, lambda span: self._reattach(worker_id, span, log_dir))
 
-    def _run(self, worker_id: int, cwd: Path, log_dir: Path, agent: Callable[[Span], Outcome]) -> Outcome:
+    def _run(
+        self, worker_id: int, cwd: Path, log_dir: Path, links: dict[str, Path], agent: Callable[[Span], Outcome]
+    ) -> Outcome:
         """Run the agent phase (``agent``), then read the usage, check the startup, attach the session and close."""
         started = time.monotonic()
         with self.tracer.span('piloop.agent', worker=worker_id) as span:
@@ -148,7 +167,11 @@ class Launcher:
                     killed = True
                 cancelled = self.cancelled.is_set()
                 usage = None if cancelled else self._usage(worker_id, cwd, log_dir, span)
-                if not cancelled and not outcome.startup_failed and self._never_worked(worker_id, outcome, usage, cwd):
+                if (
+                    not cancelled
+                    and not outcome.startup_failed
+                    and self._never_worked(worker_id, outcome, usage, cwd, links)
+                ):
                     outcome = replace(outcome, startup_failed=True)
                 checkpoint = None if cancelled else self._attach(worker_id, cwd, span)
                 if self._close(worker_id, outcome, killed, span, checkpoint, usage):
@@ -157,7 +180,16 @@ class Launcher:
                 self.watching.discard(worker_id)
         return outcome
 
-    def _launch(self, worker_id: int, span: Span, brief: str, cwd: Path, log_dir: Path) -> Outcome:
+    def _launch(
+        self, worker_id: int, span: Span, brief: str, cwd: Path, log_dir: Path, make_cwd: Callable[[], object]
+    ) -> Outcome:
+        started = time.monotonic()
+        try:
+            make_cwd()
+        except Exception as e:  # a full disk, a locked index: a fault of the host, not of the agent
+            span.error(e)
+            error = f'{type(e).__name__}: {e}'
+            return Outcome(WorkerStatus.EXITED, time.monotonic() - started, error=error, startup_failed=True)
         with self.lock:
             if self.cancelled.is_set():
                 return Outcome(WorkerStatus.EXITED, 0, error=STOPPED_ERROR)
@@ -359,23 +391,31 @@ class Launcher:
         span.set(tokens=found.total)
         return found.as_json()
 
-    def _never_worked(self, worker_id: int, outcome: Outcome, usage: UsageJson | None, cwd: Path) -> bool:
-        """Return whether a started agent ended within ``STARTUP_SECONDS`` without a token and left nothing behind.
+    def _never_worked(
+        self, worker_id: int, outcome: Outcome, usage: UsageJson | None, cwd: Path, links: dict[str, Path]
+    ) -> bool:
+        """Return whether a started agent ended within ``STARTUP_SECONDS`` and left nothing behind.
 
-        Nothing behind means no commit (its checkout's HEAD did not move) and no comment signed by it. Herdr reports
-        some first-launch dialogs as idle, so such an agent looks finished. Only a harness whose usage is read can tell
-        "spent nothing" from "unknown". The tokens can be unknown for an agent that worked too: Herdr reports no
-        session for a harness without Herdr hooks. So what the agent left decides.
+        Nothing behind means no change to its checkout (``git.changed``: no commit, no uncommitted change outside the
+        ``links``) and no comment signed by it. Herdr reports some first-launch dialogs as idle, so such an agent looks
+        finished.
+
+        A run's work is a change to its worktree or a comment, so that decides for an agent with a run, whatever its
+        harness and its tokens: an agent whose tools fail at launch still reads its brief and says that it is blocked.
+        A sweep's work can be rows that no comment signs, so a sweep that spent tokens worked, and only a sweep whose
+        harness's usage is read is judged. The tokens can be unknown for a sweep that worked too: Herdr reports no
+        session for a harness without Herdr hooks.
         """
         if outcome.status is WorkerStatus.TIMED_OUT or outcome.seconds >= STARTUP_SECONDS:
             return False
-        if (usage is not None and usage['total'] > 0) or git.moved(cwd):
+        if git.changed(cwd, git.linked(cwd, links)):
             return False
         with self.db.session() as s:
             w = s.get_one(Worker, worker_id)
-            definition = harness_of(s, w)
-            if definition is None or definition.usage is None:
-                return False
+            if w.run_id is None:
+                definition = harness_of(s, w)
+                if definition is None or definition.usage is None or (usage is not None and usage['total'] > 0):
+                    return False
             signed = select(Comment.id).where(Comment.author == f'{w.kind}#{worker_id}').limit(1)
             return s.scalar(signed) is None
 
