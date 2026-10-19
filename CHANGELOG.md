@@ -198,6 +198,9 @@ A deprecated configuration key shows a warning for at least one minor release be
 - A project set `active` again after a stop (`piloop init`, or an UPDATE of `projects.status`) starts a fresh
   `[stop] plateau` window: the count starts at the later of the last keep and the reactivation. A campaign that
   stopped on `plateau` stopped again on the next tick after it was reactivated.
+- `Piloop-Eval` and `Piloop-Note` trailers count on any line after the subject, not only in the last paragraph of
+  the commit message. A harness puts its own trailers (`Co-Authored-By`) in a paragraph after the worker's, so git
+  read none of the worker's: skipped commits were evaluated, and notes were lost.
 - A worker of a stopped campaign that the daemon ends after the grace period, before it left its finding, closes its
   run as `campaign stopped`, with a `worker.stop_ended` event on the worker. A worker in the middle of a turn, such as
   Codex, reads the wrap-up prompt only when the turn ends, so it often never read it. The run closed as `worker

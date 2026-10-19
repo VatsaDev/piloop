@@ -43,3 +43,33 @@ def test_worktree_changes_hold_the_process_lock(
     git.remove_worktree(repo, wt)
     assert held == [('prune', True), ('add', True), ('list', True), ('remove', True), ('prune', True)]
     assert not git.WORKTREE_LOCK.locked()
+
+
+@pytest.mark.parametrize(
+    'message',
+    [
+        'work\n\nWhy.\n\nPiloop-Eval: skip\nPiloop-Note: a lead\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n',
+        'work\n\nPiloop-Eval: skip\nPiloop-Note: a lead\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)'
+        '\n\nCo-Authored-By: Claude <noreply@anthropic.com>\n',
+        'work\n\nWhy, with no blank line before the trailers.\npiloop-eval : SKIP\nPiloop-Note:  a\n  lead\n',
+    ],
+    ids=['before-co-authored-by', 'before-generated-with', 'in-the-body'],
+)
+def test_piloop_trailers_count_on_any_line_after_the_subject(project_path: Path, message: str) -> None:
+    """hiloopai/piloop-dev#33: a harness puts its own trailers in a paragraph after the worker's, and git reads only
+    the last paragraph. A line that only mentions a trailer is not one."""
+    repo = Repo(project_path)
+    repo.git.commit('-q', '--allow-empty', '-m', message)
+    sha = repo.head.commit.hexsha
+    assert git.eval_skipped(repo, sha)
+    assert git.trailers(repo, sha, 'Piloop-Note') == ['a lead']
+
+
+def test_a_line_that_mentions_a_trailer_or_the_subject_is_not_one(project_path: Path) -> None:
+    repo = Repo(project_path)
+    repo.git.commit(
+        '-q', '--allow-empty', '-m', 'Piloop-Eval: skip\n\nThe trailer Piloop-Eval: skip is for scaffolding.'
+    )
+    sha = repo.head.commit.hexsha
+    assert not git.eval_skipped(repo, sha)
+    assert git.trailers(repo, sha, 'Piloop-Eval') == []

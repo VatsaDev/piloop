@@ -155,8 +155,25 @@ def eval_skipped(repo: Repo, sha: str) -> bool:
 
 
 def trailers(repo: Repo, sha: str, key: str) -> list[str]:
-    """The values of the commit's own ``key`` trailers, in order. Keys are not case-sensitive, as in git."""
-    return [value.strip() for k, value in repo.commit(sha).trailers_list if k.lower() == key.lower() and value.strip()]
+    """The values of the commit's own ``key`` trailers, in order. Keys are not case-sensitive, as in git.
+
+    A trailer is a ``key: value`` line anywhere after the subject. Git reads trailers only in the last paragraph, but
+    a harness adds its own (``Co-Authored-By``, a "Generated with" line) in paragraphs after the worker's. A line that
+    starts with whitespace continues the value of the trailer above it, as in git.
+    """
+    line = re.compile(rf'{re.escape(key)}[ \t]*:(.*)', re.IGNORECASE)
+    found: list[list[str]] = []
+    folding = False
+    for text in repo.git.show('-s', '--format=%B', sha).splitlines()[1:]:
+        if folding and text[:1].isspace() and text.strip():
+            found[-1].append(text.strip())
+        elif match := line.fullmatch(text):
+            found.append([match[1].strip()])
+            folding = True
+        else:
+            folding = False
+    values = (' '.join(part for part in parts if part) for parts in found)
+    return [value for value in values if value]
 
 
 def head_time(path: Path) -> datetime | None:
