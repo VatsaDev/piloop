@@ -81,10 +81,17 @@ baseline that `piloop init` measures. It is never set when an agent runs the eva
 
 piloop records which evaluator produced each score. An **evaluator** is the evaluate command, the names and
 directions of the metrics, and `link`. When you change one of these and run `piloop init`, piloop makes a new
-evaluator. piloop never compares scores from two evaluators: the daemon measures every kept candidate again under the
-new evaluator. It measures the head first, then the other keeps, newest first. Until the head has a score, it starts
-only runs of ideas that are pinned to a candidate. While it holds runnable ideas, `low_water` requests no research
-sweep. Then runs start from the head again, while the older keeps are measured.
+evaluator. piloop never compares scores from two evaluators, so the daemon measures again what the next verdicts need:
+the head first, then the bar of each open run and of each `ready` idea that is pinned to a candidate. Until the head has
+a score, it starts only runs of ideas that are pinned to a candidate. While it holds runnable ideas, `low_water`
+requests no research sweep. Then runs start from the head again.
+
+The other keeps keep the scores of the old evaluator. The daemon measures one of them again only when you ask, for
+example to compare the whole trajectory under the new evaluator:
+
+```bash
+piloop candidate remeasure 42
+```
 
 A change to a metric's role, margin or floor, or to `confidence`, does not make a new evaluator. It changes how the
 next candidates are judged.

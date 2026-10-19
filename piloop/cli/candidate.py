@@ -69,7 +69,7 @@ def candidate_remeasure(
     """Ask the daemon to measure a candidate again with the current evaluator.
 
     Use it when a fault of the host spoiled a measurement (a full disk, a lost GPU), or for one more repeat. The daemon
-    measures it soon, after the keeps that a new evaluator needs. A `crash` that the daemon judged is judged again with
+    measures it soon, after the head and the bars that runs need. A `crash` that the daemon judged is judged again with
     the new measurement. Any other verdict stays. A pending, unmeasured or recovered candidate is never measured.
     """
     with common.session() as s:

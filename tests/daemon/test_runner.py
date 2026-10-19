@@ -58,6 +58,7 @@ from piloop.scoring.ledger import (
     SKIPPED,
     branches,
     current_evaluator,
+    due,
     head,
     import_reference,
     request_remeasure,
@@ -65,7 +66,6 @@ from piloop.scoring.ledger import (
     resolve,
     save_units,
     units,
-    unmeasured,
 )
 from tests.conftest import (
     HARNESS_APPEND,
@@ -617,6 +617,42 @@ def test_a_crash_from_a_fault_of_the_host_is_measured_again_on_request_and_judge
         assert (len(c.measurements), c.verdict) == (2, Verdict.KEEP), 'a repeat of a judged candidate keeps its verdict'
 
 
+def test_a_crash_on_the_evaluate_timeout_is_measured_again_on_request_once_the_timeout_is_raised(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """A load that slows the evaluator past ``evaluate_timeout`` crashes good code, and its tree cannot be committed
+    again. The timeout is no part of the evaluator, so once it is raised, ``piloop candidate remeasure`` measures the
+    candidate again under the same evaluator, with the new timeout, and judges it again."""
+    measure = 'test $(wc -l < solve.txt) -gt 1 && sleep 1; echo METRIC score=$(wc -l < solve.txt); echo METRIC size=1'
+    write_toml(Path(project.path), HARNESS_APPEND, evaluate=['sh', '-c', measure])
+    toml = Path(project.path) / 'piloop.toml'
+    toml.write_text(toml.read_text().replace('evaluate_timeout = 30', 'evaluate_timeout = 0.2'))
+    reload_project(db, project)
+    ex = executor(db, runtime, tmp_path)
+    ex.remeasure(baseline(db, project.id).id)
+    run_id = make_run(db, project)
+    execute(ex, db, run_id)
+    [crashed] = candidates(db, run_id)
+    assert (crashed.verdict, crashed.error) == (Verdict.CRASH, 'evaluate timeout after 0.2s')
+    with db.session() as s:
+        evaluator_id = s.get_one(Project, project.id).evaluator_id
+    toml.write_text(toml.read_text().replace('evaluate_timeout = 0.2', 'evaluate_timeout = 30'))
+    reload_project(db, project)
+    with db.session() as s:
+        request_remeasure(s, s.get_one(Candidate, crashed.id), 'orchestrator')
+        s.commit()
+    ex.remeasure(crashed.id)
+    with db.session() as s:
+        c = s.get_one(Candidate, crashed.id)
+        assert [m.evaluator_id == evaluator_id for m in c.measurements] == [True, True], 'the same evaluator'
+        assert (c.verdict, c.verdict_by, c.verdict_reason) == (
+            Verdict.KEEP,
+            DAEMON,
+            'against candidate#1: score 2 vs 1 (+1; aggregate: no per-unit results)',
+        )
+        assert head(s, s.get_one(Project, project.id)) == c
+
+
 def test_a_remeasure_that_a_stop_cancels_records_and_judges_nothing(
     db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
@@ -737,6 +773,7 @@ def test_the_head_is_the_latest_trunk_keep_whatever_it_scores(db: Database, proj
         s.add(idea)
         s.flush()
         branch = Run(idea_id=idea.id, attempt=1, base_candidate_id=1, harness='h', model='m', branch=True)
+        branch.status = RunStatus.SUCCEEDED
         s.add(branch)
         s.flush()
         rows = {}
@@ -763,13 +800,86 @@ def test_the_head_is_the_latest_trunk_keep_whatever_it_scores(db: Database, proj
         unscored = Candidate(project_id=project.id, tree_sha='u', commit_sha='u', verdict=Verdict.REFERENCE)
         s.add(unscored)
         s.flush()
-        assert [c.tree_sha for c in unmeasured(s, proj)] == ['u'], 'what the evaluator never saw'
+        assert [c.tree_sha for c in due(s, proj)] == ['u'], 'a reference that no evaluator measured'
         proj.evaluator_id = s.scalar(
             insert(Evaluator).values(project_id=project.id, key='next', definition={}).returning(Evaluator.id)
         )
-        assert [c.tree_sha for c in unmeasured(s, proj)][:3] == ['b', 'd', 'a'], (
-            'under a new evaluator the head comes first, before a newer branch keep: unpinned runs wait only for it'
+        assert [c.tree_sha for c in due(s, proj)] == ['b', 'u'], (
+            'under a new evaluator the head, not the older keeps, the branch keep or the measured reference'
         )
+
+
+def test_a_new_evaluator_measures_what_a_verdict_needs_then_what_someone_asked_for(
+    db: Database, project: Project
+) -> None:
+    """After an evaluator change, the daemon measures the head, the bars of open runs, the asks and the bars of pinned
+    ideas, in that order. A requested crash that the daemon judges again comes after the bar it is judged against.
+
+    Every other keep keeps its old scores until someone asks: measuring the whole history again held every evaluation
+    for hours after each change of the evaluator.
+    """
+    with db.session() as s:
+        proj = s.get_one(Project, project.id)
+        old = proj.evaluator_id
+        assert old is not None
+        idea = Idea(track='score', project_id=project.id, title='t', hypothesis='h', created_by='t')
+        s.add(idea)
+        s.flush()
+        rows: dict[str, Candidate] = {}
+
+        def add(tree: str, verdict: Verdict, parent: str | None = None, run: Run | None = None) -> Candidate:
+            rows[tree] = c = Candidate(
+                project_id=project.id,
+                tree_sha=tree,
+                commit_sha=tree,
+                verdict=verdict,
+                verdict_by=DAEMON,
+                parent_id=rows[parent].id if parent else None,
+                run_id=run.id if run else None,
+            )
+            s.add(c)
+            s.flush()
+            s.add(Measurement(candidate_id=c.id, evaluator_id=old, metrics={'score': 1.0}))
+            return c
+
+        for tree in ('k1', 'k2', 'k3', 'k4', 'k5'):
+            add(tree, Verdict.KEEP, parent='k1' if tree != 'k1' else None)
+        add('lead', Verdict.INTERESTING, parent='k1')
+        add('ref', Verdict.REFERENCE)
+        done = Run(idea_id=idea.id, attempt=1, base_candidate_id=rows['k2'].id, harness='h', model='m')
+        done.status = RunStatus.SUCCEEDED
+        s.add_all([done, Run(idea_id=idea.id, attempt=2, base_candidate_id=rows['lead'].id, harness='h', model='m')])
+        s.flush()
+        add('crash', Verdict.CRASH, parent='k2', run=done)
+        add('repeat', Verdict.DISCARD, parent='k3', run=done)
+        add('head', Verdict.KEEP, parent='k5')
+        fresh = Candidate(project_id=project.id, tree_sha='fresh', commit_sha='fresh', verdict=Verdict.REFERENCE)
+        s.add(fresh)
+        s.add(
+            Idea(
+                track='score',
+                project_id=project.id,
+                title='pinned',
+                hypothesis='h',
+                created_by='t',
+                base_candidate_id=rows['k4'].id,
+            )
+        )
+        for asked in ('crash', 'repeat'):
+            request_remeasure(s, rows[asked], 'orchestrator')
+        proj.evaluator_id = new = s.scalar(
+            insert(Evaluator).values(project_id=project.id, key='next', definition={}).returning(Evaluator.id)
+        )
+        s.flush()
+        assert [c.tree_sha for c in due(s, proj)] == ['head', 'k1', 'k2', 'crash', 'repeat', 'k4', 'fresh'], (
+            'the head; the bar of the open run (its base is a lead of k1); the bar of the asked crash, then the crash;'
+            ' the asked repeat alone; the bar of the pinned idea; the new reference. Not k3, k5, the baseline or ref'
+        )
+        for tree in ('head', 'k1', 'k2'):
+            s.add(Measurement(candidate_id=rows[tree].id, evaluator_id=new, metrics={'score': 1.0}))
+        s.flush()
+        s.expire_all()
+        assert [c.tree_sha for c in due(s, proj)] == ['crash', 'repeat', 'k4', 'fresh'], 'measured: no longer due'
 
 
 def test_transcript_failure_is_only_an_event(

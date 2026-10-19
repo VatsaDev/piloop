@@ -195,6 +195,11 @@ A deprecated configuration key shows a warning for at least one minor release be
 - After an evaluator change, unpinned runs wait only until the head has a score from the new evaluator, and the
   head is measured first. They waited for every keep, measured one at a time: 4 worker slots sat idle for 70
   minutes. Research does not sweep while the queue holds its runnable ideas for that score.
+- After an evaluator change, the daemon measures again only the head, the bar of each open run, the candidates that
+  someone asked for (`piloop candidate remeasure`) and the bar of each `ready` pinned idea. An older keep is measured
+  again only on request. Before, every keep and reference was measured again, one at a time, and an asked re-measure,
+  such as a crash on `evaluate_timeout` after the timeout was raised, waited behind them for hours. A requested crash
+  is measured after the bar that it is judged against again.
 - A project set `active` again after a stop (`piloop init`, or an UPDATE of `projects.status`) starts a fresh
   `[stop] plateau` window: the count starts at the later of the last keep and the reactivation. A campaign that
   stopped on `plateau` stopped again on the next tick after it was reactivated.

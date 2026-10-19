@@ -95,7 +95,7 @@ from piloop.reports.pack import pack
 from piloop.reports.wake import lessons_overview
 from piloop.runtime import Outcome, WorkerStatus
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
-from piloop.scoring.ledger import bar_of, checkout_candidate, head, head_unmeasured, requested, score, unmeasured
+from piloop.scoring.ledger import bar_of, checkout_candidate, due, head, head_unmeasured, score
 from piloop.text import cell
 from piloop.triggers import Backlog, Fire, Incident, LowWaterTrigger, TrackBacklog
 from piloop.usage import Usage
@@ -370,15 +370,14 @@ class Scheduler:
             self._tracer.event('spend.read', project=project_id, reading=str(reading))
 
     def _remeasure(self, s: Session, project: Project) -> None:
-        """Measure the candidates that the current evaluator has not measured, one at a time per project.
+        """Measure what the current evaluator must measure (``ledger.due``), one candidate at a time per project.
 
-        After an evaluator change, no candidate has a score from the new evaluator. The head is measured first, then the
-        other keeps, newest first, because every bar is a keep. Then the references that a run can pin are measured
-        (``unmeasured``). Runs that are not pinned wait until the head has a score (``_queue``). Then the candidates that
-        someone asked to measure again (``requested``).
+        After an evaluator change, no candidate has a score from the new evaluator. The head is measured first, and runs
+        that are not pinned wait until it has a score (``_queue``). Then the bars that runs need, and the candidates
+        that someone asked to measure again. Older keeps are measured again only when someone asks.
         """
         key = (TargetKind.PROJECT, project.id)
-        if key in self._scoring or not (todo := unmeasured(s, project) or requested(s, project)):
+        if key in self._scoring or not (todo := due(s, project)):
             return
         self._tracer.event('candidate.remeasure', project=project.name, candidate=todo[0].id, left=len(todo))
         self._scoring[key] = self._pool.submit(self._executor.remeasure, todo[0].id)
@@ -715,8 +714,7 @@ class Scheduler:
         ``ready`` and is taken when every prerequisite has finished. A runnable idea whose track is not in
         ``piloop.toml`` is parked with a note that says why (``_park_strays``). An idea on a track with a share of 0
         waits. While a new evaluator has not measured the head (``_remeasure`` measures it first), only a pinned idea
-        has a base: an unpinned run starts from the head and is judged against it. The older keeps are measured
-        meanwhile; they are no unpinned run's base or bar.
+        has a base: an unpinned run starts from the head and is judged against it.
         When an exploration run is due (``_explore``), the slot goes first to an idea pinned to an alternative base.
         Otherwise it goes to the most urgent idea of the track furthest below its share (``_pick``). An idea pinned to
         a harness at its cap (``_full``) waits. When every harness of a role's rotation is at its cap, the role queues

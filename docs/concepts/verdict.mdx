@@ -113,7 +113,7 @@ same candidate, so the daemon does not measure it again by itself. Ask for it:
 piloop candidate remeasure 42
 ```
 
-The daemon measures the candidate again with the current evaluator, after the keeps that a new evaluator needs. A
+The daemon measures the candidate again with the current evaluator, after the head and the bars that runs need. A
 `crash` that the daemon judged is judged again with the new measurement, as its run would have judged it. Any other
 verdict stays, and the new measurement is one more repeat in the mean. A `pending`, `unmeasured` or `recovered`
 candidate is never measured this way.

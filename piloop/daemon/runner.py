@@ -57,6 +57,7 @@ from piloop.scoring.ledger import (
     current_evaluator,
     head,
     judge,
+    judged_again,
     measured,
     note,
     rebase,
@@ -386,7 +387,7 @@ class RunExecutor:
         with self._db.session() as s:
             candidate = s.get_one(Candidate, candidate_id)
             run = candidate.run
-            if candidate.verdict is not Verdict.CRASH or candidate.verdict_by != DAEMON or run is None:
+            if run is None or not judged_again(candidate):
                 return
             assert candidate.parent is not None  # a run's candidate descends from the run's base
             cfg = config_of(run.idea.project)

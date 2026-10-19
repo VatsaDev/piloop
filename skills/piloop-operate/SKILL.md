@@ -392,8 +392,11 @@ UPDATE candidates SET verdict = 'interesting', verdict_by = 'orchestrator', verd
 
 - The daemon never overwrites a verdict that it did not set.
 - A suspicious jump: `piloop candidate remeasure <c>` adds one more measurement, and the score is the mean.
-- A `crash` that the host caused (a full disk, a lost GPU): `piloop candidate remeasure <c>`. The daemon measures it
-  again and judges the crash again. Never queue an idea with a no-op change to get a new tree measured.
+- A `crash` that the host caused (a full disk, a lost GPU, a load that hit `evaluate_timeout`): `piloop candidate
+  remeasure <c>`, after you raise the timeout and run `piloop init`. The daemon measures it again and judges the crash
+  again. Never queue an idea with a no-op change to get a new tree measured.
+- After a new evaluator, the daemon measures only the head and the bars that runs need. An older keep keeps its old
+  score until you ask for it with `piloop candidate remeasure <c>`.
 
 Rules:
 

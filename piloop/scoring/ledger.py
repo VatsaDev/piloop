@@ -20,6 +20,7 @@ from piloop import git
 from piloop.config import Metric, ProjectConfig, Track
 from piloop.db.events import emit
 from piloop.db.models import (
+    OPEN_RUNS,
     Candidate,
     Evaluator,
     Event,
@@ -123,22 +124,42 @@ def fallback_track(cfg: ProjectConfig, name: str | None) -> Track:
     return next((t for t in cfg.all_tracks if t.name == name), cfg.all_tracks[0])
 
 
-def unmeasured(s: Session, project: Project) -> list[Candidate]:
-    """Return the keeps, the baseline included, then the references, that the current evaluator did not measure.
+def due(s: Session, project: Project) -> list[Candidate]:
+    """Return what the daemon measures with the current evaluator, most urgent first, each once.
 
-    The head comes first: an unpinned run starts from it and is judged against it, so the queue waits only for it
-    (``head_unmeasured``). The other keeps and the references follow, each group newest first. A new evaluator has
-    measured none of them, and an imported reference starts unmeasured too. The daemon measures these, so the head,
-    every bar and every starting point a run can pin have numbers under the current evaluator. Their verdicts do not
-    change.
+    1. The head: an unpinned run starts from it and is judged against it, so the queue waits only for it
+       (``head_unmeasured``).
+    2. The bar of each open run (``bar_of`` its base), oldest run first: the run is judged against it.
+    3. Each candidate that someone asked to measure again (``requested``), oldest request first. A crash that the daemon
+       judges again (``judged_again``) comes after the bar of its parent.
+    4. The bar of each ``ready`` idea pinned to a base.
+    5. Each reference that no evaluator measured: a new import.
+
+    The head and the bars come only while the current evaluator has not measured them. Nothing else is measured again
+    unasked: after an evaluator change, an older keep or a reference that no run needs keeps the scores of the old
+    evaluator until someone asks (``request_remeasure``). A measurement never changes a keep's verdict.
     """
-    rows = select(Candidate).where(
-        Candidate.project_id == project.id, Candidate.verdict.in_((Verdict.KEEP, Verdict.REFERENCE))
+    open_runs = select(Run).join(Idea).where(Idea.project_id == project.id, Run.status.in_(OPEN_RUNS))
+    pins = select(Candidate).join(Idea, Idea.base_candidate_id == Candidate.id)
+    new_references = select(Candidate).where(
+        Candidate.project_id == project.id, Candidate.verdict == Verdict.REFERENCE, ~Candidate.measurements.any()
     )
+    asked = requested(s, project)
+    found = [head(s, project), *(bar_of(run.base) for run in s.scalars(open_runs.order_by(Run.id)))]
+    for candidate in asked:
+        if judged_again(candidate) and candidate.parent is not None:
+            found.append(bar_of(candidate.parent))
+        found.append(candidate)
+    ready = (Idea.project_id == project.id, Idea.status == IdeaStatus.READY)
+    found += [bar_of(c) for c in s.scalars(pins.where(*ready).order_by(Idea.id))]
+    found += s.scalars(new_references.order_by(Candidate.id))
     evaluator_id = project.evaluator_id or 0
-    found = [c for c in s.scalars(rows.order_by(Candidate.id.desc())) if not measured(c, evaluator_id)]
-    trunk = head(s, project)
-    return sorted(found, key=lambda c: (trunk is None or c.id != trunk.id, c.verdict is Verdict.REFERENCE))
+    return [c for c in dict.fromkeys(found) if c is not None and (c in asked or not measured(c, evaluator_id))]
+
+
+def judged_again(candidate: Candidate) -> bool:
+    """Whether a new measurement of ``candidate`` judges it again: a ``crash`` of a run that the daemon judged."""
+    return candidate.verdict is Verdict.CRASH and candidate.verdict_by == DAEMON and candidate.run_id is not None
 
 
 def head_unmeasured(s: Session, project: Project) -> bool:

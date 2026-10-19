@@ -183,8 +183,9 @@ daemon uses the copy of the file that the last `piloop init` stored, so an edit 
 current values as the first options.
 
 A change to the evaluate command, to a metric's name or direction, or to `link` makes a new evaluator. piloop never
-compares scores from two evaluators: the daemon measures every kept candidate again under the new evaluator. A change to
-a role, a margin, a floor or `confidence` changes how the next candidates are judged, and keeps the scores.
+compares scores from two evaluators: the daemon measures the head again under the new evaluator, and the older keeps
+that a run needs. It measures other keeps again only when you ask (`piloop candidate remeasure`). A change to a role, a
+margin, a floor or `confidence` changes how the next candidates are judged, and keeps the scores.
 
 ## Next steps
 

@@ -50,7 +50,7 @@ from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Tracer
 from piloop.reports.overview import SILENT_SECONDS
 from piloop.runtime import Handle, NotSteerable, WorkerStatus
-from piloop.scoring.ledger import current_evaluator, head, import_reference, request_remeasure, unmeasured
+from piloop.scoring.ledger import current_evaluator, due, head, import_reference, request_remeasure
 from piloop.triggers import LowWaterTrigger
 from tests.conftest import (
     HARNESS_APPEND,
@@ -1110,12 +1110,13 @@ def measured_by(db: Database, candidate_id: int) -> list[tuple[int, float | None
         return [(m.evaluator_id, m.metrics.get('score'), m.error) for m in rows]
 
 
-def test_a_new_evaluator_measures_every_keep_again_head_first_and_runs_wait_for_the_head(
+def test_a_new_evaluator_measures_the_head_runs_wait_for_it_and_older_keeps_only_on_request(
     db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    """A new evaluator measures every keep again, the head first, the baseline too; unpinned runs wait for the head.
+    """A new evaluator measures the head again and unpinned runs wait for it. An older keep waits for someone to ask.
 
-    Without these scores, the head is empty and new runs cannot be compared with the kept lineage.
+    Without the head's score, new runs cannot be compared with the kept lineage. Every older keep measured again
+    unasked held the evaluations for hours after each change of the evaluator.
     """
     write_toml(Path(project.path), HARNESS_APPEND)
     set_config(db, project)
@@ -1140,16 +1141,22 @@ def test_a_new_evaluator_measures_every_keep_again_head_first_and_runs_wait_for_
     assert sched.tick() == [], 'no keep has a score under the new evaluator: the run waits instead of being parked'
     assert statuses(db) == [IdeaStatus.DONE, IdeaStatus.READY]
     sched.wait(30)
-    assert measured_by(db, kept.id) == [(old, 2.0, None), (new, 4.0, None)], 'the newest keep first'
+    assert measured_by(db, kept.id) == [(old, 2.0, None), (new, 4.0, None)], 'the head first'
     assert measured_by(db, 1) == [(old, 1.0, None)], 'one at a time'
 
-    assert sched.tick() == [2], 'the head has a score: the run starts from it while the baseline is measured'
+    assert sched.tick() == [2], 'the head has a score: the run starts from it'
     sched.wait(30)
-    assert measured_by(db, 1) == [(old, 1.0, None), (new, 2.0, None)]
+    assert measured_by(db, 1) == [(old, 1.0, None)], 'the baseline is no base or bar of any run: nobody asked'
     with db.session() as s:
         assert s.get_one(Run, 2).base_candidate_id == kept.id
         assert s.get_one(Candidate, kept.id).verdict is Verdict.KEEP, 'measuring again judges nothing again'
-    assert measured_by(db, 1) == [(old, 1.0, None), (new, 2.0, None)], 'every keep measured once: nothing more'
+        request_remeasure(s, s.get_one(Candidate, 1), 'human')
+        s.commit()
+    sched.tick()
+    sched.wait(30)
+    assert measured_by(db, 1) == [(old, 1.0, None), (new, 2.0, None)], 'measured when asked'
+    with db.session() as s:
+        assert s.get_one(Candidate, 1).verdict is Verdict.KEEP
 
 
 def test_after_a_new_evaluator_runs_start_from_the_head_once_the_head_alone_is_measured(
@@ -1177,9 +1184,9 @@ def test_after_a_new_evaluator_runs_start_from_the_head_once_the_head_alone_is_m
         assert new is not None
         s.add(Measurement(candidate_id=newer, evaluator_id=new, metrics={'score': 6.0, 'size': 1.0}))
         s.commit()
-        assert [c.id for c in unmeasured(s, proj)] == [older, 1], 'the older keeps, newest first'
+        assert due(s, proj) == [], 'the head has a score: the older keeps wait for an ask'
     (free,) = add_ideas(db, project, 'free')
-    assert sched.tick() == [3], 'the head has a score: the baseline and the older keep are measured meanwhile'
+    assert sched.tick() == [3], 'the head has a score'
     with db.session() as s:
         assert (s.get_one(Run, 3).idea_id, s.get_one(Run, 3).base_candidate_id) == (free, newer)
     sched.wait(30)
@@ -1991,7 +1998,7 @@ def test_a_worker_that_cannot_take_the_list_of_its_jobs_is_not_asked_again(
 def test_the_daemon_measures_a_candidate_again_when_someone_asks(
     db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
-    """A requested re-measure goes through the queue of re-measures, after the keeps that a new evaluator needs."""
+    """A requested re-measure goes through the queue of re-measures, after the head and the bars that runs need."""
     scheduler = make_scheduler(db, runtime, tmp_path)
     measured = mocker.patch.object(scheduler._executor, 'remeasure')
     with db.session() as s:
