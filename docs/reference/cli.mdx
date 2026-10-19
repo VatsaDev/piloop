@@ -95,6 +95,33 @@ long to wait for the daemon to come back.
 Prints a systemd user unit (Linux) or a launchd agent (macOS) that keeps `piloop serve` running. It installs nothing.
 See [Running for days](/guides/running-for-days#under-a-service-manager).
 
+## Pause a campaign
+
+### piloop pause
+
+```text
+piloop pause REF --reason TEXT [--evals]
+```
+
+Pauses one project. The daemon queues no run, requests no role and launches no requested agent, so research files no
+ideas. A sweep that is running already files its new and developed ideas as `proposed`, for a review. Running work
+goes on, and its commits are scored. Nothing is escalated. The daemon still measures what a new evaluator or
+`piloop candidate remeasure` needs, so the pause can end on a measured head. `--evals` holds those measurements too.
+The pause is a state of the project in the database (`projects.paused`), not a file, so it holds wherever you run the
+command. `piloop status` shows it with the reason. The paused time does not count toward `[stop] max_hours`, and no
+`[stop]` condition is checked while paused.
+
+A pause launches no agent at all, so no watchdog sweep starts for an anomaly of the running work either: the anomaly
+shows in `piloop status`, and the watchdog gets it after `piloop resume`. The running agents keep their timeouts.
+
+### piloop resume
+
+```text
+piloop resume REF
+```
+
+Ends the pause. The daemon queues runs and requests roles again on its next tick.
+
 ## Ideas and candidates
 
 ### piloop idea add

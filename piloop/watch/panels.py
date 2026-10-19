@@ -39,6 +39,7 @@ from piloop.reports.overview import (
     latest_events,
     live_workers,
     on,
+    paused,
     progress,
     queued_ideas,
     scored,
@@ -135,6 +136,8 @@ def projects(s: Session, now: datetime, me: str) -> list[Item]:
                     p.name,
                     cell(f'stopped: {p.stopped_reason}', STATUS_CHARS)
                     if p.status is ProjectStatus.STOPPED
+                    else cell(paused(p), STATUS_CHARS)
+                    if p.paused is not None
                     else str(p.status),
                     ', '.join(f'{_four(value)} {track.primary.name}' for track, value, _ in values) or NONE,
                     ', '.join(NONE if delta is None else metric(delta, signed=True) for _, _, delta in values) or NONE,

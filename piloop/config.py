@@ -445,7 +445,8 @@ class Stop(BaseModel):
     counts while it is queued, running or being scored, so piloop never starts more runs than this. A finished run that
     does not count frees its place, and piloop starts another run in it."""
     max_hours: float | None = Field(default=None, gt=0)
-    """Stop after this many hours of wall-clock time since the first run of the project started."""
+    """Stop after this many hours of wall-clock time since the first run of the project started. The time that the
+    project was paused (``piloop pause``) does not count."""
     max_tokens: int | None = Field(default=None, ge=1)
     """Stop when all the agents of the project together spent this many tokens (the ``total`` of ``workers.usage``),
     summed over the agents that ended."""

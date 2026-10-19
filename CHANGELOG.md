@@ -77,6 +77,12 @@ A deprecated configuration key shows a warning for at least one minor release be
   transaction as the idea.
 - Under the Herdr runtime, a worker that left its finding and went idle while jobs that it started still run is told
   once which jobs keep its run open.
+- `piloop pause <project> --reason "…"` and `piloop resume <project>`: nothing launches, no run is queued and no role
+  is requested, while running work finishes and is scored. A pause raises no escalation. The daemon still measures
+  what a new evaluator needs, unless `--evals` holds that too. A sweep that runs during a pause files its ideas as
+  `proposed`. Paused time does not count toward `[stop] max_hours`. The pause is `projects.paused`, logged as
+  `project.paused` events. Before, a campaign was paused with a `[spend]` command that read a file, which escalated
+  each time it held and stopped every measurement.
 
 ### Changed
 

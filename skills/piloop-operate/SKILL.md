@@ -175,6 +175,24 @@ The research pack of every sweep then lists it under the analysis artifacts, new
 - Reject (never): `UPDATE ideas SET status = 'rejected' WHERE id = …`.
 - Always say why in a `note` comment on the idea.
 
+### Pause a campaign
+
+```bash
+PILOOP_ACTOR=orchestrator piloop pause <name> --reason "<what the pause waits for>"
+PILOOP_ACTOR=orchestrator piloop resume <name>
+```
+
+- Nothing launches: no run, no sweep, no requested agent. Research files no ideas, and a sweep that runs already files
+  its ideas as `proposed`. Running work finishes and is scored.
+- A pause raises no escalation. `piloop status` shows it with the reason.
+- No agent launches, the incident watchdog included: an anomaly of the running work waits in `piloop status` until the
+  resume. Watch the running work yourself during a long pause. Paused time does not count toward `[stop] max_hours`.
+- The daemon still measures what a new evaluator or `piloop candidate remeasure` needs, so the pause ends on a measured
+  head. `--evals` holds those measurements too.
+- Never pause with a `[spend]` command that reads a file, nor with a gate idea and `after` links: the spend guard
+  escalates p0 each time it holds and stops every measurement, and research files ideas without the link.
+- Pausing a campaign is a scope decision for the human: record it (see "Every decision you take for the human").
+
 ### Steer an idea
 
 - A comment on the idea goes into its next brief.
@@ -413,6 +431,6 @@ Find who changed what:
 SELECT at, actor, kind, payload FROM events WHERE target_kind = '<k>' AND target_id = <t> ORDER BY id
 ```
 
-- Changes to an idea's status, priority or track, a candidate's verdict and a project's status carry `{old, new}`
-  and the actor (`human`, `orchestrator`, `daemon`, `watchdog#7` …).
+- Changes to an idea's status, priority or track, a candidate's verdict and a project's status or pause carry
+  `{old, new}` and the actor (`human`, `orchestrator`, `daemon`, `watchdog#7` …).
 - Deletes of ideas, comments and candidates leave `*.deleted` tombstones.

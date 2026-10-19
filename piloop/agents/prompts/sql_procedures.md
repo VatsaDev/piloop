@@ -277,6 +277,17 @@ The daemon never overwrites a verdict that is not its own.
 - `UPDATE ideas SET status='parked'` (for now) or `'rejected'` (for good).
 - Say why in a comment on the idea.
 
+### Pause a campaign
+
+- `piloop pause <project> --reason "<why>"` launches nothing more: no run, no sweep, no requested agent. Running work
+  finishes and is scored. It raises no escalation. A sweep that runs already files its ideas as `proposed`.
+- The daemon still measures what a new evaluator or a request needs. `--evals` holds that too.
+- No watchdog starts for an anomaly while paused; it gets the anomaly after the resume. Paused time does not count
+  toward `[stop] max_hours`.
+- `piloop resume <project>` ends it. `projects.paused` and `paused_reason` show it, and `project.paused` events log it.
+- Never pause with a `[spend]` command that reads a file: the spend guard escalates each time it holds, and it stops
+  every measurement.
+
 ### Resume a stopped campaign
 
 - When a `[stop]` condition in `piloop.toml` holds, the daemon:
@@ -313,8 +324,8 @@ The daemon never overwrites a verdict that is not its own.
 - Never set them by hand. Read them to see who changed a row and when. `updated_by IS NULL` means the row is unchanged
   since its insert.
 - The same triggers keep a change log in `events`, signed by the same actor, each with `{old, new}` in the payload:
-  `idea.status`, `idea.priority`, `candidate.verdict` (with `verdict_by` and `verdict_reason`), `run.brief` (lengths
-  only), `project.status` (with `stopped_reason`).
+  `idea.status`, `idea.priority`, `idea.track`, `candidate.verdict` (with `verdict_by` and `verdict_reason`),
+  `run.brief` (lengths only), `project.status` (with `stopped_reason`), `project.paused` (with `paused_reason`).
 - A DELETE of an idea, comment or candidate leaves a `<kind>.deleted` event with the row's key columns.
 - So `SELECT at, actor, kind, payload FROM events WHERE target_kind = 'idea' AND target_id = 12 ORDER BY id` is the full
   history of an idea.

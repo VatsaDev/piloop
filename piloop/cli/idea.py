@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.agents.roles import files_of
+from piloop.campaign import ops
 from piloop.campaign.ideas import Definition, NotASeed, develop
 from piloop.cli import common
 from piloop.cli.common import HARNESS_HELP, ProjectRef
@@ -69,6 +70,7 @@ def idea_add(
         name = common.settings.actor.partition('#')[0]
         role = config_of(project).roles.sweeping().get(name)
         paused = role is not None and role.max_ideas == 0
+        held = ops.holds_ideas(project, common.settings.actor)
         idea = Idea(
             project_id=project.id,
             track=track_for(project, track),
@@ -80,7 +82,7 @@ def idea_add(
             priority=priority,
             harness=harness,
             base_candidate_id=base,
-            status=IdeaStatus.PROPOSED if proposed or paused else IdeaStatus.READY,
+            status=IdeaStatus.PROPOSED if proposed or paused or held else IdeaStatus.READY,
             created_by=common.settings.actor,
             links=links_to(after, supersedes),
         )
@@ -89,6 +91,7 @@ def idea_add(
         emit(s, 'idea.created', TargetKind.IDEA, idea.id, actor=common.settings.actor)
         s.commit()
         why = f' ([roles.{name}] max_ideas = 0: it waits for a review)' if paused else ''
+        why = f' (project {project.name} is paused: it waits for a review)' if held else why
         common.console.print(f'idea#{idea.id} {idea.status} p{priority}: {title}{why}', markup=False)
 
 
@@ -181,14 +184,18 @@ def idea_develop(
         if filing(idea.project) is Files.SEEDS:
             raise SystemExit(f'{common.settings.actor} files seeds; research develops them')
         check_base(s, idea.project, base)
+        held = ops.holds_ideas(idea.project, common.settings.actor)
         definition = Definition(hypothesis, evidence, check, metric, effect, plan)
         try:
-            develop(idea, definition, title=title, family=family, base=base, priority=priority, proposed=proposed)
+            develop(
+                idea, definition, title=title, family=family, base=base, priority=priority, proposed=proposed or held
+            )
         except (NotASeed, ValueError) as e:
             raise SystemExit(str(e)) from e
         idea.links.extend(links_to(after, supersedes))
         s.commit()
-        common.console.print(f'idea#{idea.id} {idea.status} p{idea.priority}: {idea.title}', markup=False)
+        why = f' (project {idea.project.name} is paused: it waits for a review)' if held else ''
+        common.console.print(f'idea#{idea.id} {idea.status} p{idea.priority}: {idea.title}{why}', markup=False)
 
 
 def links_to(after: tuple[int, ...], supersedes: tuple[int, ...]) -> list[IdeaLink]:

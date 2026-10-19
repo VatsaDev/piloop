@@ -1,4 +1,4 @@
-"""The commands about projects: ``init``, ``status``, ``history`` and ``watch``."""
+"""The commands about projects: ``init``, ``status``, ``history``, ``watch``, ``pause`` and ``resume``."""
 
 import sys
 from functools import partial
@@ -10,6 +10,7 @@ from rich import box
 from rich.console import Group
 from sqlalchemy.orm import Session
 
+from piloop.campaign import ops
 from piloop.campaign.memory import sync_documents
 from piloop.campaign.project import (
     BLANK,
@@ -31,7 +32,7 @@ from piloop.cli.daemon import daemon_line
 from piloop.config import config_of
 from piloop.db.models import ProjectStatus, Worker, utcnow
 from piloop.db.session import Database
-from piloop.reports.overview import overview
+from piloop.reports.overview import overview, paused
 from piloop.reports.pack import renderables as pack_renderables
 from piloop.runtime.factory import handle_for, runtime_for
 from piloop.watch.app import Watch
@@ -133,6 +134,41 @@ def _jobs(s: Session, worker: Worker) -> list[str]:
         return runtime_for(s, worker, common.settings.home).jobs(handle_for(worker))
     except Exception:  # the runtime is not installed or the agent is gone: status still prints, without this anomaly
         return []
+
+
+def pause(
+    ref: ProjectRef,
+    /,
+    *,
+    reason: Annotated[str, cyclopts.Parameter(help='Why, with ids: what the pause waits for.')],
+    evals: Annotated[
+        bool,
+        cyclopts.Parameter(help='Hold the measurements that the daemon starts too: after a new evaluator, or asked.'),
+    ] = False,
+) -> None:
+    """Pause a project: nothing new launches, and nothing is escalated. `piloop resume` ends the pause.
+
+    The daemon queues no run, requests no role and launches no requested row, so research files no ideas. A sweep that
+    runs already files its ideas as proposed. Running work goes on, and its commits are scored. The daemon still
+    measures again what a new evaluator or `piloop candidate remeasure` needs, so the pause can end on a measured head.
+    `--evals` holds those measurements too. The pause is in the database: it holds wherever you run the command.
+    """
+    with common.refused(), common.session() as s:
+        project = ops.pause(s, common.project(s, ref).id, evals=evals, reason=reason)
+        s.commit()
+        common.console.print(
+            f'project {project.name} {paused(project)}; running work goes on; `piloop resume {project.name}` ends it',
+            markup=False,
+        )
+
+
+def resume(ref: ProjectRef, /) -> None:
+    """Resume a paused project. The daemon queues runs and requests roles again on its next tick."""
+    with common.refused(), common.session() as s:
+        project = common.project(s, ref)
+        held = ops.resume(s, project.id)
+        s.commit()
+        common.console.print(f'project {project.name} resumed; it held {held}', markup=False)
 
 
 def watch_cmd(ref: ProjectRef | None = None, /) -> None:

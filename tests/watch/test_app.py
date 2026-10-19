@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from textual.pilot import Pilot
 from textual.widgets import HelpPanel
 
-from piloop.campaign import inbox
+from piloop.campaign import inbox, ops
 from piloop.config import ProjectConfig
 from piloop.db.models import (
     Candidate,
@@ -559,6 +559,23 @@ def test_ideas_keys_approve_park_reject_with_a_reason_and_move_the_priority(
         assert {e.actor for e in s.scalars(select(Event).where(Event.kind == 'idea.status'))} == {'human'}
 
 
+def test_a_paused_project_says_so_in_its_row_and_its_header(db: Database, campaign: Project, herdr_log: Path) -> None:
+    with db.session() as s:
+        ops.pause(s, campaign.id, evals=False, reason='evaluator v2')
+        s.commit()
+    shots: list[str] = []
+
+    async def scenario(pilot: Pilot[None], app: Watch) -> None:
+        shots.append(screen_text(app))
+        await pilot.press('enter')
+        await pilot.pause()
+        shots.append(screen_text(app))
+
+    drive(db, None, scenario)
+    assert shots[0].splitlines()[3].startswith(' demo     paused (launches): evaluator v2  ')
+    assert shots[1].splitlines()[0].endswith(' · paused (launches): evaluator v2')
+
+
 def test_a_seed_heads_the_ideas_panel_and_is_developed_by_research_not_approved_by_a_key(
     db: Database, campaign: Project, herdr_log: Path
 ) -> None:
@@ -845,3 +862,30 @@ def test_the_sparkline_is_the_head_after_each_trunk_keep_so_a_branch_keep_leaves
         s.commit()
         p = s.get_one(Project, campaign.id)
         assert kept_scores(s, p, ProjectConfig.model_validate(p.config)) == {'score': [1.0, 3.0, 4.0]}
+
+
+def test_a_screen_that_is_not_mounted_yet_is_not_read_again(db: Database, campaign: Project, herdr_log: Path) -> None:
+    """The poll timer can fire between a push and the mount of the new screen, whose widgets do not exist yet."""
+
+    async def scenario(pilot: Pilot[None], app: Watch) -> None:
+        app.push_screen(CampaignScreen('demo'))
+        app._stamp = None
+        app.poll()
+        await pilot.pause()
+        assert isinstance(app.screen, CampaignScreen) and app.screen.is_mounted
+
+    drive(db, None, scenario)
+
+
+def test_a_screen_that_the_exit_is_tearing_down_is_not_read_again(
+    db: Database, campaign: Project, herdr_log: Path
+) -> None:
+    """The poll timer can also fire while the exit prunes the widgets of the screen, which is still mounted."""
+
+    async def scenario(pilot: Pilot[None], app: Watch) -> None:
+        app.exit()
+        await campaign_screen(app).query_one('#header').remove()
+        app._stamp = None
+        app.poll()
+
+    drive(db, 'demo', scenario)

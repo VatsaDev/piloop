@@ -513,3 +513,25 @@ def test_0012_leaves_the_cached_input_out_of_the_input_of_codex_rows_and_downgra
     command.downgrade(cfg, '0011')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert [i for i, _ in con.execute(inputs)] == [100, 100, 100, 100, 100, 100, None]
+
+
+def test_0014_adds_the_pause_of_a_project_which_needs_its_reason_and_downgrades(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0013')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+    command.upgrade(cfg, '0014')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT paused, paused_reason FROM projects').fetchall() == [(None, None)]
+        with pytest.raises(sqlite3.IntegrityError, match='projects.paused and projects.paused_reason go together'):
+            con.execute("UPDATE projects SET paused = 'all'")
+        with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: pause'):
+            con.execute("UPDATE projects SET paused = 'forever', paused_reason = 'r'")
+        con.execute("UPDATE projects SET paused = 'launches', paused_reason = 'evaluator v2'")
+        assert con.execute("SELECT count(*) FROM sqlite_master WHERE name = 'workers_kind'").fetchone() == (1,)
+    command.downgrade(cfg, '0013')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        columns = [c for _, c, *_ in con.execute('PRAGMA table_info(projects)')]
+        assert 'paused' not in columns and 'paused_reason' not in columns
+        assert con.execute('SELECT name FROM projects').fetchall() == [('p',)]

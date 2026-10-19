@@ -4,6 +4,6 @@
 |---|---|
 | `target` | Stop when the primary metric at the head (the latest keep on the trunk) reaches this value, in its direction. Only for a project with one track. |
 | `max_runs` | Stop after this many runs that count (see above), once none is queued, running or being scored. A run also counts while it is queued, running or being scored, so piloop never starts more runs than this. A finished run that does not count frees its place, and piloop starts another run in it. |
-| `max_hours` | Stop after this many hours of wall-clock time since the first run of the project started. |
+| `max_hours` | Stop after this many hours of wall-clock time since the first run of the project started. The time that the project was paused (`piloop pause`) does not count. |
 | `max_tokens` | Stop when all the agents of the project together spent this many tokens (the `total` of `workers.usage`), summed over the agents that ended. |
 | `plateau` | Stop after this many finished runs that count (see above) without a new `keep` candidate. The count starts again at each keep, and when the project is set `active` after a stop (`piloop init`, or an UPDATE of `projects.status`), so a reactivated campaign gets this many runs again. A new evaluator alone does not reset it. |

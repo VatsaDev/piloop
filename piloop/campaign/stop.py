@@ -130,9 +130,32 @@ def runs(s: Session, project: Project) -> int:
 
 
 def hours(s: Session, project: Project, now: datetime) -> float | None:
-    """Return the hours from the start of the project's first run to ``now``, or None if no run started."""
+    """Return the hours from the start of the project's first run to ``now``, or None if no run started.
+
+    The time that the project was paused (``piloop pause``) does not count, so a pause does not use up ``max_hours``.
+    The pauses are the ``project.paused`` events of the change log.
+    """
     first = _over_runs(s, project, func.min(Run.started_at))
-    return None if first is None else (now - first) / timedelta(hours=1)
+    return None if first is None else (now - first - paused_for(s, project, first, now)) / timedelta(hours=1)
+
+
+def paused_for(s: Session, project: Project, since: datetime, now: datetime) -> timedelta:
+    """Return how long the project was paused between ``since`` and ``now``."""
+    changes = s.execute(
+        select(Event.at, Event.payload['new'].as_string())
+        .where(Event.kind == 'project.paused', Event.target_kind == TargetKind.PROJECT, Event.target_id == project.id)
+        .order_by(Event.id)
+    ).all()
+    total, start = timedelta(), None
+    for at, new in changes:
+        if new is not None and start is None:
+            start = at
+        elif new is None and start is not None:
+            total += max(at - max(start, since), timedelta())
+            start = None
+    if start is not None:
+        total += max(now - max(start, since), timedelta())
+    return total
 
 
 def runs_without_keep(s: Session, project: Project) -> int:

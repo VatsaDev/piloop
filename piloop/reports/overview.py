@@ -45,6 +45,7 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Measurement,
+    Pause,
     Project,
     ProjectStatus,
     Run,
@@ -259,8 +260,15 @@ def head_scores(
 
 
 def stopped(project: Project) -> str:
-    """Return `` · stopped: <reason>`` if the project stopped, else an empty string."""
-    return f' · stopped: {project.stopped_reason}' if project.status is ProjectStatus.STOPPED else ''
+    """Return `` · stopped: <reason>`` if the project stopped, then `` · paused (<what>): <reason>`` if it is paused."""
+    stop = f' · stopped: {project.stopped_reason}' if project.status is ProjectStatus.STOPPED else ''
+    return stop + (f' · {paused(project)}' if project.paused is not None else '')
+
+
+def paused(project: Project) -> str:
+    """Return ``paused (<what it holds>): <reason>``. The project must be paused."""
+    holds = 'launches and evaluations' if project.paused is Pause.ALL else 'launches'
+    return f'paused ({holds}): {project.paused_reason}'
 
 
 def progress(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> str:
@@ -424,6 +432,8 @@ def _goal(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> li
     others = ', '.join(f'{m.name} ({m.direction}, {m.role})' for m in cfg.metrics if m.name not in primaries)
     also = f'; also measured: {others}' if others else ''
     state = f'stopped — {project.stopped_reason}' if project.status is ProjectStatus.STOPPED else 'active'
+    if project.paused is not None:
+        state += f', {paused(project)}'
     stop = cfg.stop
     limits = (stop.target, stop.max_runs, stop.max_hours, stop.max_tokens, stop.plateau)
     open_ended = '' if any(v is not None for v in limits) else ' (no [stop] condition: open-ended)'
@@ -823,8 +833,8 @@ def _same_as_parent(s: Session, project: Project, cfg: ProjectConfig) -> list[An
 
 
 def _idle_queue(s: Session, project: Project, cfg: ProjectConfig) -> list[Anomaly]:
-    """Find an active project with a free worker slot and no runnable idea, since the last run started or ended."""
-    if project.status is not ProjectStatus.ACTIVE:
+    """Find an active project, not paused, with a free worker slot and no runnable idea, since the last run moved."""
+    if project.status is not ProjectStatus.ACTIVE or project.paused is not None:
         return []
     open_runs = project_runs(project.id).where(Run.status.in_(OPEN_RUNS))
     free = cfg.run_slots - count(s, open_runs)

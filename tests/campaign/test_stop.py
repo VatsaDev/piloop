@@ -9,7 +9,15 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from sqlalchemy import func, select
 
 from piloop.agents.launcher import STOPPED_ERROR
-from piloop.campaign.stop import CAMPAIGN_STOPPED_ERROR, STALE_ERROR, runs, runs_without_keep, stall, stop_reason
+from piloop.campaign.stop import (
+    CAMPAIGN_STOPPED_ERROR,
+    STALE_ERROR,
+    hours,
+    runs,
+    runs_without_keep,
+    stall,
+    stop_reason,
+)
 from piloop.config import ProjectConfig, load_project_config
 from piloop.db.models import (
     Candidate,
@@ -22,6 +30,7 @@ from piloop.db.models import (
     ProjectStatus,
     Run,
     RunStatus,
+    TargetKind,
     Verdict,
     Worker,
     WorkerKind,
@@ -266,6 +275,43 @@ def test_max_hours_since_the_first_run_started(db: Database, project: Project) -
     assert reason(db, project) is None
     add_run(db, project, started_at=timedelta(hours=12, minutes=30))
     assert reason(db, project) == 'max_hours: 12.5h since the first run'
+
+
+def test_the_time_a_project_was_paused_does_not_count_toward_max_hours(db: Database, project: Project) -> None:
+    configure(db, project, max_hours=12)
+    add_run(db, project, started_at=timedelta(hours=12, minutes=30))
+    assert reason(db, project) == 'max_hours: 12.5h since the first run'
+    now = utcnow()
+
+    def paused(hours_ago: float, new: str | None) -> None:
+        with db.session() as s:
+            payload: dict[str, object] = {'old': None, 'new': new, 'paused_reason': None}
+            s.add(
+                Event(
+                    kind='project.paused',
+                    actor='t',
+                    target_kind=TargetKind.PROJECT,
+                    target_id=project.id,
+                    payload=payload,
+                    at=now - timedelta(hours=hours_ago),
+                )
+            )
+            s.commit()
+
+    paused(14, 'launches')  # before the first run: only its last half hour counts
+    paused(12, None)
+    paused(9, 'all')
+    paused(8.9, 'launches')  # a change of what it holds goes on with the same pause
+    paused(8.75, None)
+
+    def elapsed() -> float | None:
+        with db.session() as s:
+            value = hours(s, s.get_one(Project, project.id), now)
+            return None if value is None else round(value, 2)
+
+    assert (elapsed(), reason(db, project)) == (11.75, None), '12.5h less half an hour and a quarter paused'
+    paused(1, 'launches')  # still paused: up to now
+    assert elapsed() == 10.75
 
 
 def test_max_tokens_sums_the_usage_of_every_ended_agent_of_the_project(db: Database, project: Project) -> None:

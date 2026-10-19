@@ -55,6 +55,17 @@ class ProjectStatus(StrEnum):
     STOPPED = 'stopped'
 
 
+class Pause(StrEnum):
+    """What a paused project holds (``piloop pause``). Running work goes on either way, and nothing is escalated.
+
+    ``launches``: nothing launches, no run is queued and no role is requested. The daemon still measures again what a
+    new evaluator or a request needs. ``all``: those measurements wait too.
+    """
+
+    LAUNCHES = 'launches'
+    ALL = 'all'
+
+
 class IdeaStatus(StrEnum):
     """The lifecycle of an idea. The scheduler picks up ``ready`` ideas in priority order.
 
@@ -221,6 +232,7 @@ class Base(DeclarativeBase):
         dict[str, object]: JSON,
         UsageJson: JSON,
         ProjectStatus: _values(ProjectStatus),
+        Pause: _values(Pause),
         IdeaStatus: _values(IdeaStatus),
         LinkKind: _values(LinkKind),
         RunStatus: _values(RunStatus),
@@ -249,10 +261,17 @@ class Tracked:
     NULL until the first UPDATE of the row."""
 
 
+PAUSE_CHECK = 'projects.paused and projects.paused_reason go together'
+
+
 class Project(Tracked, Base):
     """A git repository that piloop optimizes. ``piloop init`` creates it."""
 
     __tablename__ = 'projects'
+    __table_args__ = (
+        CheckConstraint('(paused IS NULL) = (paused_reason IS NULL)', name=PAUSE_CHECK),
+        *text_checks('projects', nullable=('paused_reason',)),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(unique=True)
@@ -271,6 +290,11 @@ class Project(Tracked, Base):
     changed."""
     stopped_reason: Mapped[str | None]
     """The condition that ended the campaign, for example ``target: accuracy 0.8531 ≥ 0.85``."""
+    paused: Mapped[Pause | None]
+    """What ``piloop pause`` holds, NULL while the project is not paused. ``piloop resume`` clears it. Each change is a
+    ``project.paused`` event with ``paused_reason``."""
+    paused_reason: Mapped[str | None]
+    """Why the project is paused, as ``piloop pause --reason`` said it. NULL while it is not paused."""
     spend_usd: Mapped[float | None]
     """What ``[spend] command`` printed last: the campaign's outside spend so far in USD. None until it first runs."""
     spend_error: Mapped[str | None]

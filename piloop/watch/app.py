@@ -534,13 +534,18 @@ class Watch(App[None]):
         self.set_interval(POLL_SECONDS, self.poll)
 
     def poll(self) -> None:
-        """Read the top screen again when the database changed or ``REFRESH_SECONDS`` passed. Not under a dialog."""
+        """Read the top screen again when the database changed or ``REFRESH_SECONDS`` passed. Not under a dialog.
+
+        A screen that was pushed but is not mounted yet has no widgets to fill: it reads the database when it mounts.
+        Nor has a screen that the exit is tearing down, which is detached from the app once the exit starts.
+        """
         now = stamp(self.db_file)
         if now == self._stamp and monotonic() - self._read < REFRESH_SECONDS:
             return
         self._stamp, self._read = now, monotonic()
-        if isinstance(self.screen, ProjectsScreen | CampaignScreen):
-            self.screen.reload()
+        screen = self.screen
+        if isinstance(screen, ProjectsScreen | CampaignScreen) and screen.is_mounted and screen.is_attached:
+            screen.reload()
 
     def action_keys(self) -> None:
         """Show or hide the keys of the focused panel beside the screen (``?``)."""

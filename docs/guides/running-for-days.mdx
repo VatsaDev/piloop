@@ -40,6 +40,12 @@ finishes its run without interruption. The timeout of each agent still counts fr
 
 A daemon that starts after a crash does the same: it connects again to the agents that are still running.
 
+## Pause one project
+
+`piloop pause <project> --reason "…"` holds one project and leaves the daemon and the other projects running. Nothing
+new launches, and running work finishes and is scored. A pause raises no escalation. `piloop resume <project>` ends it.
+See [the CLI](/reference/cli#piloop-pause).
+
 ## Under a service manager
 
 `piloop service-unit` prints a unit file for your service manager. It installs nothing.

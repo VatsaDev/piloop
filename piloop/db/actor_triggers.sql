@@ -82,6 +82,12 @@ BEGIN
   INSERT INTO events (kind, actor, target_kind, target_id, payload)
   VALUES ('project.status', (SELECT actor FROM temp.session_actor), 'project', NEW.id, json_object('old', OLD.status, 'new', NEW.status, 'stopped_reason', NEW.stopped_reason));
 END;
+CREATE TEMP TRIGGER projects_paused_event AFTER UPDATE OF paused ON projects
+WHEN OLD.paused IS NOT NEW.paused
+BEGIN
+  INSERT INTO events (kind, actor, target_kind, target_id, payload)
+  VALUES ('project.paused', (SELECT actor FROM temp.session_actor), 'project', NEW.id, json_object('old', OLD.paused, 'new', NEW.paused, 'paused_reason', NEW.paused_reason));
+END;
 CREATE TEMP TRIGGER comments_acked_at_event AFTER UPDATE OF acked_at ON comments
 WHEN OLD.acked_at IS NOT NEW.acked_at
 BEGIN

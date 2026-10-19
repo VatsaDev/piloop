@@ -128,6 +128,9 @@ piloop stop
 The projects stay active, and the next `piloop serve --detach` continues them. Every candidate commit stays in the
 repo under `refs/piloop/`, so `git show` and `git cherry-pick` work on any of them.
 
+To pause one campaign, let its running work finish and launch nothing new:
+`piloop pause <project> --reason "<why>"`, then `piloop resume <project>`.
+
 ## Try it on an example
 
 To see a campaign before you use your own repo, ask your agent:

@@ -64,6 +64,8 @@ CREATE TABLE projects (
 	evaluator_id INTEGER,
 	status VARCHAR(16) DEFAULT 'active' NOT NULL,
 	stopped_reason VARCHAR,
+	paused VARCHAR(16),
+	paused_reason VARCHAR,
 	spend_usd DOUBLE,
 	spend_error VARCHAR,
 	spend_at DATETIME,
@@ -72,8 +74,11 @@ CREATE TABLE projects (
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
 	updated_by VARCHAR,
 	PRIMARY KEY (id),
+	CONSTRAINT "projects.paused and projects.paused_reason go together" CHECK ((paused IS NULL) = (paused_reason IS NULL)),
+	CONSTRAINT "projects.paused_reason must be a text value" CHECK (typeof(paused_reason) IN ('text', 'null')),
 	UNIQUE (name),
-	CONSTRAINT projectstatus CHECK (status IN ('active', 'stopped'))
+	CONSTRAINT projectstatus CHECK (status IN ('active', 'stopped')),
+	CONSTRAINT pause CHECK (paused IN ('launches', 'all'))
 );
 CREATE TABLE archives (
 	id INTEGER NOT NULL,

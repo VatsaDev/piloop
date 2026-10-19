@@ -110,6 +110,8 @@ CHANGES = (
     RUN_BRIEF,
     # stopped_reason is set in the same statement as the status, so a stop says why and a resume says null
     changed('projects', 'status', 'stopped_reason'),
+    # piloop pause and piloop resume: the reason is set with the pause and cleared with it
+    changed('projects', 'paused', 'paused_reason'),
     # an inbox item was acknowledged: the actor of the event is who did it, whatever acked_by says
     changed('comments', 'acked_at', 'acked_by'),
 )

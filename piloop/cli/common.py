@@ -14,6 +14,7 @@ from rich.console import Console
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from piloop.campaign.ops import Refused
 from piloop.campaign.project import checked_out, find
 from piloop.db.models import Project, ProjectStatus
 from piloop.db.session import Database, SchemaAhead, migrate as migrate_schema
@@ -61,4 +62,13 @@ def migrate(db: Database) -> None:
         migrate_schema(db.engine)
     except SchemaAhead as e:
         db.close()
+        raise SystemExit(str(e)) from e
+
+
+@contextmanager
+def refused() -> Generator[None]:
+    """Exit with the message of an operation that refused its input (``piloop.campaign.ops.Refused``)."""
+    try:
+        yield
+    except Refused as e:
         raise SystemExit(str(e)) from e
