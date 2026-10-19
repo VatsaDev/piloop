@@ -19,7 +19,7 @@ from piloop import git, proc
 from piloop.agents.launcher import STARTUP_ANOMALY
 from piloop.agents.roles import SQL_HINT, compose_brief
 from piloop.campaign.project import sync
-from piloop.campaign.stop import BLOCKED, STALE_ERROR
+from piloop.campaign.stop import BLOCKED, CAMPAIGN_STOPPED_ERROR, STALE_ERROR, runs
 from piloop.config import ProjectConfig, load_project_config
 from piloop.daemon.runner import UNCOMMITTED_SUMMARY, RunExecutor
 from piloop.daemon.scheduler import STARTUP_BREAKER, STARTUP_WINDOW, STOPPED_ERROR, Scheduler
@@ -1584,6 +1584,46 @@ def test_a_headless_worker_of_a_stopped_project_cannot_be_told_and_is_just_ended
     ]
     scheduler.tick()
     assert [h.data['agent'] for h in runtime.killed] == ['worker-1']
+
+
+def test_a_worker_that_the_stop_ends_mid_turn_closes_its_run_as_cut_by_the_campaign_stop(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker in the middle of a turn takes a message only when the turn ends, so the wrap-up prompt
+    may never reach it before the grace period ends. The run then closed as "worker produced no commits" or with the
+    kill's exit status, and nothing named the stop.
+
+    The run closes with ``campaign stopped``: not an attempt at its idea, and not counted toward a run limit. What
+    the worker committed, and what it left uncommitted, is still scored.
+    """
+    harness = '#!/bin/sh\necho step >> solve.txt\ngit commit -qam "step"\necho draft >> solve.txt\nexec sleep 30\n'
+    write_toml(Path(project.path), harness, worker_timeout=60)
+    set_config(db, project)
+    (idea,) = add_ideas(db, project, 'long')
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    assert scheduler.tick() == [1]
+    wait_for_worker_handle(db)
+    deadline = time.monotonic() + 10
+    while 'draft' not in (tmp_path / 'runs' / '1' / 'worktree' / 'solve.txt').read_text():
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+
+    stop_project(db, project, 'plateau: 5 runs without a keep')
+    scheduler.tick()
+    assert [kind for kind, _ in settled(db, 'worker.wrap_up')] == [1], 'told, but the turn goes on'
+    monkeypatch.setattr('piloop.daemon.scheduler.STOP_GRACE_SECONDS', 0)
+    scheduler.tick()
+    scheduler.wait(20)
+    scheduler.stop(timeout=5)
+    with db.session() as s:
+        run = s.get_one(Run, 1)
+        assert (run.status, run.error) == (RunStatus.FAILED, CAMPAIGN_STOPPED_ERROR)
+        [ended] = s.scalars(select(Event).where(Event.kind == 'worker.stop_ended')).all()
+        assert (ended.target_id, ended.payload) == (1, {'reason': 'plateau: 5 runs without a keep'})
+        verdicts = [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == 1).order_by(Candidate.id))]
+        assert verdicts == [Verdict.KEEP, Verdict.RECOVERED], 'its commit is scored, its draft recovered'
+        assert s.get_one(Idea, idea).status is IdeaStatus.READY, 'requeued from the recovered draft'
+        assert runs(s, s.get_one(Project, project.id)) == 0, 'cut by the stop: no run limit counts it'
 
 
 class BusyRuntime(ScriptRuntime):

@@ -65,7 +65,7 @@ from piloop.config import (
     ideas_taken,
 )
 from piloop.daemon.archiver import Archiver, Archiving
-from piloop.daemon.runner import RunExecutor, left_finding, open_escalation
+from piloop.daemon.runner import STOP_ENDED, RunExecutor, left_finding, open_escalation
 from piloop.db.events import ANOMALY_EVENT, emit
 from piloop.db.models import (
     LIVE,
@@ -489,8 +489,11 @@ class Scheduler:
     def _wind_down(self) -> None:
         """Tell each worker of a stopped project to commit and stop (``WRAP_UP``), and end it after the grace period.
 
-        The grace period is ``STOP_GRACE_SECONDS``. The runs then close as usual and their commits are scored. Sweeps
-        are not changed, because their timeouts limit them and the closing review is one of them.
+        The grace period is ``STOP_GRACE_SECONDS``. The runs then close and their commits are scored. A worker in the
+        middle of a turn takes the prompt only when the turn ends, which can be after the grace period. A worker that
+        the daemon ends then (``STOP_ENDED``) without its finding closes its run as cut by the stop
+        (``CAMPAIGN_STOPPED_ERROR``), not as a failed attempt. Sweeps are not changed, because their timeouts limit them
+        and the closing review is one of them.
         """
         with self._db.session() as s:
             workers = s.scalars(
@@ -512,6 +515,9 @@ class Scheduler:
                 if told is None:
                     self._wrap_up(s, worker)
                 elif utcnow() - told >= timedelta(seconds=STOP_GRACE_SECONDS):
+                    reason = s.get_one(Project, worker.project_id).stopped_reason or CAMPAIGN_STOPPED_ERROR
+                    emit(s, STOP_ENDED, TargetKind.WORKER, worker.id, payload={'reason': reason})
+                    s.commit()  # before the kill: the run that the kill ends reads it when it closes
                     self._tracer.event('worker.ended', worker=worker.id, reason=CAMPAIGN_STOPPED_ERROR)
                     self._kill_stale(s, worker)
             s.commit()
@@ -1124,7 +1130,7 @@ class Scheduler:
             ' developed seeds do not count against it). Fewer only when what is left duplicates queued work;'
             ' name that work in your finding.',
             *(short if cfg.multitrack else []),
-            f'- Finished runs since the last keep: {without}, of the {mark} that mark a stall ({why}){stalled}.',
+            f'- Measured runs since the last keep: {without}, of the {mark} that mark a stall ({why}){stalled}.',
             f'- Sweep started at: {now.strftime("%Y-%m-%d %H:%M:%S")} (UTC; the research pack below is as of then).',
         ]
 

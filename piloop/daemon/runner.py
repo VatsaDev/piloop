@@ -21,7 +21,7 @@ from piloop import git
 from piloop.agents.launcher import TRANSCRIPT, Launcher
 from piloop.agents.roles import compose_brief, role
 from piloop.campaign.project import WORKSPACE, project_dir, worktree_links
-from piloop.campaign.stop import BLOCKED, attempts
+from piloop.campaign.stop import BLOCKED, CAMPAIGN_STOPPED_ERROR, attempts
 from piloop.config import ProjectConfig, Track, config_of
 from piloop.db.events import emit
 from piloop.db.models import (
@@ -78,6 +78,11 @@ RECOVERY_REQUEUED = 'idea.recovery_requeued'
 """The event on an idea that ``_settle`` requeued from recovered work, with ``{run, candidate}``. Counting these events
 caps the requeues (the ``recovery_requeues`` of the run's role): candidates cannot, because two runs that leave the
 same tree share one candidate."""
+STOP_ENDED = 'worker.stop_ended'
+"""Event on a worker of a stopped project that the daemon ended when the grace period after its wrap-up prompt was
+over, with the stop's ``reason``. A worker in the middle of a turn takes a message only when the turn ends, so it may
+never have read the prompt. The scheduler commits the event before the kill, and the run closes as cut by the stop
+(``CAMPAIGN_STOPPED_ERROR``) unless its worker left its finding."""
 STARTUP_RELAUNCHES = 2
 """How many times a run is queued again with a new worker after its worker failed to start. Then the run fails.
 
@@ -213,7 +218,14 @@ class RunExecutor:
             finding = self._left_finding(run_id, idea_id, worker_id)
             with self._db.session() as s:
                 asked = open_escalation(s, s.get_one(Run, run_id))
-            if outcome.status is WorkerStatus.TIMED_OUT:
+                stop_ended = s.scalar(
+                    select(Event.id).where(
+                        Event.target_kind == TargetKind.WORKER, Event.target_id == worker_id, Event.kind == STOP_ENDED
+                    )
+                )
+            if stop_ended is not None and not finding:  # the stop cut it, whatever the kill left in the outcome
+                status, error = RunStatus.FAILED, CAMPAIGN_STOPPED_ERROR
+            elif outcome.status is WorkerStatus.TIMED_OUT:
                 status, error = RunStatus.TIMED_OUT, outcome.error
             elif outcome.error is not None:
                 status, error = RunStatus.FAILED, outcome.error

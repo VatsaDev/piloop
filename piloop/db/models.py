@@ -796,12 +796,12 @@ class Event(Base):
     """The append-only feed of what happened. The daemon pushes comments to workers from it, reading from a cursor.
 
     It has two writers. The daemon writes what only it knows: ``run.started``, ``measurement.recorded``,
-    ``candidate.judged`` with the score, ``comment.delivered``, ``comment.undelivered`` and ``worker.wrap_up`` on a
-    worker, ``<role>.started`` and ``<role>.finished``, and ``anomaly.*`` for faults in the environment such as
-    ``anomaly.startup``. Triggers write what any connection does to the rows. The persistent trigger writes
-    ``comment.escalation``. The TEMP triggers of each connection (``piloop/db/actor_triggers.sql``, generated from
-    ``piloop.db.triggers.TEMP``) write the change log, signed by the connection's actor: ``idea.status``,
-    ``idea.priority``, ``idea.track``, ``candidate.verdict``, ``run.brief`` and ``project.status`` as
+    ``candidate.judged`` with the score, ``comment.delivered``, ``comment.undelivered``, ``worker.wrap_up`` and
+    ``worker.stop_ended`` on a worker, ``<role>.started`` and ``<role>.finished``, and ``anomaly.*`` for faults in the
+    environment such as ``anomaly.startup``. Triggers write what any connection does to the rows. The persistent
+    trigger writes ``comment.escalation``. The TEMP triggers of each connection (``piloop/db/actor_triggers.sql``,
+    generated from ``piloop.db.triggers.TEMP``) write the change log, signed by the connection's actor:
+    ``idea.status``, ``idea.priority``, ``idea.track``, ``candidate.verdict``, ``run.brief`` and ``project.status`` as
     ``{old, new}``, ``<kind>.deleted`` for deleted rows, and ``comment.<kind>``.
     """
 

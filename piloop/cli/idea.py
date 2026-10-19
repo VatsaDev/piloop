@@ -53,8 +53,9 @@ def idea_add(
     """Add a defined idea, which the daemon schedules in priority order once it is ready.
 
     The `files` key of a role says whether its agents may add ideas, only file seeds (`piloop idea seed`), or
-    neither. The orchestrator and humans may add ideas. The idea is signed as PILOOP_ACTOR. The idea and its links
-    are written together, so the daemon never sees the idea without them.
+    neither. The orchestrator and humans may add ideas. While the `max_ideas` of the actor's role is 0, the idea is
+    proposed: it waits for a review. The idea is signed as PILOOP_ACTOR. The idea and its links are written together,
+    so the daemon never sees the idea without them.
     """
     with common.session() as s:
         project = common.project(s, ref)
@@ -64,6 +65,10 @@ def idea_add(
                 ' Research develops each seed with the whole campaign in view.'
             )
         check_base(s, project, base)
+        # A sweep reads its max_ideas once, in its brief; the operator may have set it to 0 since, to pause the role.
+        name = common.settings.actor.partition('#')[0]
+        role = config_of(project).roles.sweeping().get(name)
+        paused = role is not None and role.max_ideas == 0
         idea = Idea(
             project_id=project.id,
             track=track_for(project, track),
@@ -75,7 +80,7 @@ def idea_add(
             priority=priority,
             harness=harness,
             base_candidate_id=base,
-            status=IdeaStatus.PROPOSED if proposed else IdeaStatus.READY,
+            status=IdeaStatus.PROPOSED if proposed or paused else IdeaStatus.READY,
             created_by=common.settings.actor,
             links=links_to(after, supersedes),
         )
@@ -83,7 +88,8 @@ def idea_add(
         s.flush()
         emit(s, 'idea.created', TargetKind.IDEA, idea.id, actor=common.settings.actor)
         s.commit()
-        common.console.print(f'idea#{idea.id} {idea.status} p{priority}: {title}', markup=False)
+        why = f' ([roles.{name}] max_ideas = 0: it waits for a review)' if paused else ''
+        common.console.print(f'idea#{idea.id} {idea.status} p{priority}: {title}{why}', markup=False)
 
 
 @app.command(name='seed')

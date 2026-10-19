@@ -6,7 +6,7 @@ the trigger of the closing watchdog.
 
 from datetime import datetime, timedelta
 
-from sqlalchemy import ColumnElement, exists, func
+from sqlalchemy import ColumnElement, exists, func, select
 from sqlalchemy.orm import Session
 
 from piloop.agents.launcher import STOPPED_ERROR
@@ -15,10 +15,13 @@ from piloop.db.models import (
     FINISHED_RUNS,
     OPEN_RUNS,
     Candidate,
+    Event,
     Idea,
     Measurement,
     Project,
+    ProjectStatus,
     Run,
+    TargetKind,
     Verdict,
     project_runs,
     utcnow,
@@ -67,14 +70,14 @@ def unsettled() -> ColumnElement[bool]:
 
 
 def counted() -> ColumnElement[bool]:
-    """Select the runs that ``max_runs`` counts.
+    """Select the runs that count toward the run limits, ``max_runs`` and ``plateau``: those that reached the evaluator.
 
-    These are attempts that are unsettled (see ``unsettled``), or that have a candidate that is measured or waiting for a
-    verdict. A run that stopped with no commit, or with only ``Piloop-Eval: skip`` commits, does not count. Its cost is
-    limited by ``[spend]`` and ``max_tokens`` instead. Many runs end this way, so counting them would use up
-    ``max_runs`` fast.
+    Such a run has a candidate that is measured or waiting for its verdict (``scored``). A run that stopped with no
+    commit, or with only ``Piloop-Eval: skip`` commits, does not count: it stopped at a cheap check, or a harness or
+    host fault ended it before it committed. It says nothing about the idea's effect on the metric. ``[spend]``,
+    ``max_tokens`` and ``max_hours`` limit what such runs cost. This is the one rule for both limits.
     """
-    return attempt() & (unsettled() | scored())
+    return attempt() & scored()
 
 
 def attempts(idea: Idea) -> int:
@@ -114,8 +117,12 @@ def _over_runs[T](s: Session, project: Project, aggregate: ColumnElement[T], *wh
 
 
 def runs(s: Session, project: Project) -> int:
-    """Count the project's runs, of every role, that count toward ``max_runs`` (see ``counted``)."""
-    return _over_runs(s, project, func.count(Run.id), counted()) or 0
+    """Count the project's runs, of every role, that hold a place under ``max_runs``.
+
+    These are the runs that count (``counted``) and the unsettled attempts, which may still count. So the queue never
+    starts more runs than ``max_runs``.
+    """
+    return _over_runs(s, project, func.count(Run.id), counted() | (attempt() & unsettled())) or 0
 
 
 def hours(s: Session, project: Project, now: datetime) -> float | None:
@@ -125,16 +132,26 @@ def hours(s: Session, project: Project, now: datetime) -> float | None:
 
 
 def runs_without_keep(s: Session, project: Project) -> int:
-    """Count the attempts (see ``attempt``) that finished after the run of the latest keep. ``plateau`` uses this.
+    """Count the finished runs that count (``counted``) since the latest keep or reactivation. ``plateau`` uses this.
 
-    Unlike ``max_runs``, it counts a run with no commit or with only unmeasured commits: a stream of such runs is a
-    plateau too, and counting only measured runs let one go on until another limit ended the campaign.
+    The window starts when the run of the latest keep finished, or when the project was last set ``active`` again
+    after a stop (``piloop init``, or an UPDATE), whichever is later. A reactivated campaign gets a fresh window, so
+    a ``plateau`` stop does not fire again on the next tick. An evaluator change alone does not reset the window.
     """
     last_keep = s.scalar(
         keeps(project).join(Run, Candidate.run_id == Run.id).with_only_columns(func.max(Run.finished_at))
     )
-    since = (Run.finished_at > last_keep,) if last_keep is not None else ()
-    return _over_runs(s, project, func.count(Run.id), Run.status.in_(FINISHED_RUNS), attempt(), *since) or 0
+    reactivated = s.scalar(
+        select(func.max(Event.at)).where(
+            Event.kind == 'project.status',
+            Event.target_kind == TargetKind.PROJECT,
+            Event.target_id == project.id,
+            Event.payload['new'].as_string() == ProjectStatus.ACTIVE.value,
+        )
+    )
+    since = max((t for t in (last_keep, reactivated) if t is not None), default=None)
+    after = (Run.finished_at > since,) if since is not None else ()
+    return _over_runs(s, project, func.count(Run.id), Run.status.in_(FINISHED_RUNS), counted(), *after) or 0
 
 
 def stall(cfg: ProjectConfig) -> tuple[int, str]:
@@ -150,7 +167,7 @@ def stall(cfg: ProjectConfig) -> tuple[int, str]:
 
 
 def _max_runs(s: Session, project: Project, limit: int) -> str | None:
-    """Stop when ``limit`` runs count and none of them is unsettled.
+    """Stop when ``limit`` runs count (``runs``) and none of them is unsettled.
 
     An unsettled run counts, so the queue starts no more than ``limit`` runs. It can still end without a scored
     candidate, and then it does not count. A stop at that moment would end the run early, and the count would drop

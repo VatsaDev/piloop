@@ -310,8 +310,9 @@ class SweepRole(RoleConfig):
     one. A sweep that investigates an anomaly is not a routine sweep. 0 turns the timer off."""
     max_ideas: int = Field(default=1, ge=0)
     """The maximum number of new ideas one sweep may insert, as its brief states it. The seeds it develops do not
-    count. ``low_water`` requests enough sweeps to fill the backlog at this many ideas each. 0 turns ``low_water``
-    off."""
+    count. ``low_water`` requests enough sweeps to fill the backlog at this many ideas each. 0 pauses the role's new
+    ideas: ``low_water`` is off, and an idea that a sweep of the role adds (``piloop idea add``) is ``proposed``, so it
+    waits for a review, also from a sweep that started before the change."""
     incident_prompt: str | None = None
     """A file that follows ``prompt`` in the brief of an incident sweep, a sweep that got anomalies (the ``anomaly``
     trigger): a path relative to the repo root, or an absolute path. When unset, a built-in role uses its built-in
@@ -418,12 +419,20 @@ class Stop(BaseModel):
 
     The daemon checks the conditions on every tick, before it requests anything. When one holds, the project is
     ``stopped`` (``projects.status``, ``stopped_reason``). Running workers are told to commit and stop, and are ended
-    10 minutes later. What they committed is scored. Pending requests and queued runs are dropped
+    10 minutes later. What they committed is scored. A worker in the middle of a turn reads the message only when the
+    turn ends: one that is ended before it left its finding closes its run as ``campaign stopped``, which does not
+    count toward ``max_runs`` or ``plateau``. Pending requests and queued runs are dropped
     (``campaign stopped``). The ``stopped`` triggers fire once, which by default requests the watchdog's closing
     review, and the triggers request nothing more. An agent that you request with ``piloop launch`` after the stop
     still starts.
 
     ``piloop init`` resumes a stopped project when this table changed.
+
+    ``max_runs`` and ``plateau`` count the same runs: those that reached the evaluator, with a candidate that is
+    measured or waits for its measurement. A run that ended at a cheap check with no commit, with only
+    ``Piloop-Eval: skip`` commits, or before it committed because of a harness or host fault, says nothing about the
+    metric, so it counts toward neither. A run that a daemon stop, a daemon crash or a campaign stop ended does not
+    count either. ``[spend]``, ``max_tokens`` and ``max_hours`` stay hard limits on what all runs cost.
     """
 
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
@@ -432,20 +441,19 @@ class Stop(BaseModel):
     """Stop when the primary metric at the head (the latest keep on the trunk) reaches this value, in its direction.
     Only for a project with one track."""
     max_runs: int | None = Field(default=None, ge=1)
-    """Stop after this many worker runs, once none of them is queued, running or being scored. A run counts while it is
-    queued, running or being scored, so piloop never starts more runs than this. A finished run counts when it has a candidate
-    that is measured or waits for its measurement. A run with no commit or only ``Piloop-Eval: skip`` commits does not
-    count, and piloop starts another run in its place. A run that a daemon stop, a daemon crash or a campaign stop
-    ended does not count either. ``[spend]`` and ``max_tokens`` limit what those runs cost."""
+    """Stop after this many runs that count (see above), once none is queued, running or being scored. A run also
+    counts while it is queued, running or being scored, so piloop never starts more runs than this. A finished run that
+    does not count frees its place, and piloop starts another run in it."""
     max_hours: float | None = Field(default=None, gt=0)
     """Stop after this many hours of wall-clock time since the first run of the project started."""
     max_tokens: int | None = Field(default=None, ge=1)
     """Stop when all the agents of the project together spent this many tokens (the ``total`` of ``workers.usage``),
     summed over the agents that ended."""
     plateau: int | None = Field(default=None, ge=1)
-    """Stop after this many finished runs in a row without a new ``keep`` candidate. Every finished run counts, also
-    one with no commit or only ``Piloop-Eval: skip`` commits: such runs make no progress either. A run that a daemon
-    stop, a daemon crash or a campaign stop ended does not count."""
+    """Stop after this many finished runs that count (see above) without a new ``keep`` candidate. The count starts
+    again at each keep, and when the project is set ``active`` after a stop (``piloop init``, or an UPDATE of
+    ``projects.status``), so a reactivated campaign gets this many runs again. A new evaluator alone does not reset
+    it."""
 
 
 class Spend(BaseModel):

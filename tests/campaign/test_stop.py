@@ -33,7 +33,7 @@ from piloop.otel import Tracer
 from piloop.reports.overview import progress
 from piloop.scoring.ledger import SKIPPED
 from tests.conftest import HARNESS_NOOP, HARNESS_WORSE, ScriptRuntime, span_named, write_toml
-from tests.daemon.test_scheduler import add_ideas, make_scheduler
+from tests.daemon.test_scheduler import add_ideas, make_scheduler, stop_project
 
 LOWER_PRIMARY = [{'name': 'score', 'direction': 'higher'}, {'name': 'size', 'direction': 'lower', 'role': 'primary'}]
 
@@ -312,17 +312,18 @@ def test_plateau_counts_finished_runs_since_the_last_keep(db: Database, project:
 
 
 def test_only_runs_that_produced_a_measured_candidate_count_toward_max_runs(db: Database, project: Project) -> None:
-    """A run with no commit, or with only ``Piloop-Eval: skip`` commits, does not count toward ``max_runs``.
+    """A run with no commit, or with only ``Piloop-Eval: skip`` commits, counts toward neither ``max_runs`` nor
+    ``plateau``.
 
-    A run in flight counts, so the queue never starts more runs than ``max_runs`` allows. A run whose candidate waits
-    for its measurement also counts. ``plateau`` counts every finished attempt.
+    A run in flight counts toward ``max_runs``, so the queue never starts more runs than ``max_runs`` allows. A run
+    whose candidate waits for its measurement also counts.
     """
     configure(db, project, max_runs=3)
     add_run(db, project, status=RunStatus.FAILED, error='worker produced no commits', measured=False)
     add_candidate(db, project, add_run(db, project, measured=False), Verdict.UNMEASURED, SKIPPED)
     with db.session() as s:
         row = s.get_one(Project, project.id)
-        assert (runs(s, row), runs_without_keep(s, row)) == (0, 2)
+        assert (runs(s, row), runs_without_keep(s, row)) == (0, 0)
     add_run(db, project)
     assert reason(db, project) is None, 'one measured run'
     add_candidate(db, project, add_run(db, project, measured=False), Verdict.PENDING)
@@ -332,16 +333,48 @@ def test_only_runs_that_produced_a_measured_candidate_count_toward_max_runs(db: 
         assert runs(s, s.get_one(Project, project.id)) == 3, 'a run in flight counts toward max_runs'
 
 
-def test_a_keep_followed_by_plateau_unmeasured_runs_stops_the_campaign(db: Database, project: Project) -> None:
-    """Finding comment#12200: ten tools-only stops after the last keep, 77M worker tokens, read "1/15 runs without a
-    keep". Every finished attempt without a keep counts toward ``plateau``, measured or not."""
-    configure(db, project, plateau=3)
+def test_plateau_counts_the_runs_that_max_runs_counts(db: Database, project: Project) -> None:
+    """Only a run that reached the evaluator counts toward a run limit, ``plateau`` as ``max_runs``.
+
+    A run that stopped at a cheap check with no commit, or with only ``Piloop-Eval: skip`` commits, or that a harness
+    fault ended before it committed, says nothing about the metric. ``[spend]``, ``max_tokens`` and ``max_hours``
+    limit what such runs cost.
+    """
+    configure(db, project, plateau=2)
     add_run(db, project, keep_score=5.0)
     add_run(db, project, status=RunStatus.FAILED, error='worker produced no commits', measured=False)
     add_candidate(db, project, add_run(db, project, measured=False), Verdict.UNMEASURED, SKIPPED)
-    assert reason(db, project) is None
     add_run(db, project, status=RunStatus.SUCCEEDED, measured=False)
-    assert reason(db, project) == 'plateau: 3 runs without a keep'
+    add_run(db, project, status=RunStatus.FAILED, error='worker exit 1', measured=False)
+    assert reason(db, project) is None, 'four runs without a keep, none of them measured'
+    add_candidate(db, project, add_run(db, project, measured=False), Verdict.PENDING)
+    assert reason(db, project) is None, 'one waits for its measurement'
+    add_run(db, project, status=RunStatus.FAILED, error='worker exit 1')
+    assert reason(db, project) == 'plateau: 2 runs without a keep', 'a failed run whose commit was measured counts'
+
+
+def test_reactivating_a_stopped_project_starts_a_fresh_plateau_window(db: Database, project: Project) -> None:
+    """A project reactivated after a plateau stop must not stop again on the next tick.
+
+    ``plateau`` counts the runs that finished after the later of the last keep and the last reactivation (a
+    ``project.status`` event to ``active``, by ``piloop init`` or by SQL). An evaluator change alone resets nothing:
+    the campaign still has made no progress.
+    """
+    configure(db, project, plateau=2)
+    add_run(db, project, keep_score=5.0, finished_at=timedelta(minutes=11))
+    add_run(db, project, finished_at=timedelta(minutes=10))
+    add_run(db, project, finished_at=timedelta(minutes=9))
+    assert reason(db, project) == 'plateau: 2 runs without a keep'
+    stop_project(db, project, 'plateau: 2 runs without a keep')
+    with db.session() as s:
+        row = s.get_one(Project, project.id)
+        row.status, row.stopped_reason = ProjectStatus.ACTIVE, None
+        s.commit()
+    assert reason(db, project) is None, 'the runs before the reactivation are not counted'
+    add_run(db, project)
+    assert reason(db, project) is None
+    add_run(db, project)
+    assert reason(db, project) == 'plateau: 2 runs without a keep'
 
 
 def test_the_stall_mark_is_half_the_plateau_else_two_rounds_of_the_worker_slots() -> None:

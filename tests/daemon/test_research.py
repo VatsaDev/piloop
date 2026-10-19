@@ -81,7 +81,7 @@ def test_research_sweep_inserts_ideas_signed_with_its_worker_id(
     assert '- Ideas of your own after the seeds: propose 2 (the backlog holds 0 of ' in brief
     assert 'Fewer only when what is left duplicates queued work; name that work in your finding.' in brief
     assert re.search(
-        r'^- Finished runs since the last keep: 0, of the \d+ that mark a stall \(two rounds of', brief, re.M
+        r'^- Measured runs since the last keep: 0, of the \d+ that mark a stall \(two rounds of', brief, re.M
     )
     assert 'stalled, so one of your own ideas pivots' not in brief
     assert (workspace / 'head.txt').read_text().strip() == Repo(project.path).head.commit.hexsha, (
@@ -166,7 +166,7 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
     assert '- Seeds to develop first: 2, listed in the research pack oldest first.' in brief
     assert '- Ideas of your own after the seeds: propose 0 (the backlog holds 1 of 1 runnable ideas' in brief
     assert (
-        '- Finished runs since the last keep: 2, of the 2 that mark a stall (two rounds of [roles.worker]'
+        '- Measured runs since the last keep: 2, of the 2 that mark a stall (two rounds of [roles.worker]'
         ' max_concurrent = 1): stalled, so one of your own ideas pivots (section 3).' in brief
     )
     assert '- idea#1 by orchestrator: deeper trees — pointers: run#3' in brief

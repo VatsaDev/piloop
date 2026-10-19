@@ -251,8 +251,8 @@ def test_stop_conditions_say_how_far_each_one_is(db: Database, project: Project)
     cfg = load_project_config(Path(project.path), stop=stop)
     [line] = [x for x in render(db, project, cfg).splitlines() if x.startswith('- Campaign:')]
     assert line == snapshot(
-        '- Campaign: active. Progress: run 2/10 · 1.9h/4h · 4k/1.0M tok · 1/3 runs without a keep · target ≥ 5 (head 3).'
-    )
+        '- Campaign: active. Progress: run 2/10 · 1.9h/4h · 4k/1.0M tok · 0/3 runs without a keep · target ≥ 5 (head 3).'
+    ), 'run#2 failed before it committed: it counts toward neither limit'
     with db.session() as s:
         s.get_one(Project, project.id).status = ProjectStatus.STOPPED
         s.get_one(Project, project.id).stopped_reason = 'plateau: 3 runs without a keep'

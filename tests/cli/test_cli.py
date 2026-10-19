@@ -122,6 +122,7 @@ def test_project_and_idea_lifecycle(project_path: Path, out) -> None:
 def test_every_role_but_the_worker_files_a_seed_and_only_research_the_orchestrator_and_humans_add_ideas(
     project_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    research_files(project_path, 1)
     run_cli(['init', str(project_path)])
 
     def as_(actor: str, *argv: str) -> None:
@@ -210,6 +211,7 @@ def test_a_seed_developed_with_its_links_is_never_runnable_without_them(
 
     A link inserted after the idea is ``ready`` comes too late when the daemon takes the idea in between.
     """
+    research_files(project_path, 1)
     run_cli(['init', str(project_path)])
     monkeypatch.setattr(
         common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', actor='research#8')
@@ -224,6 +226,53 @@ def test_a_seed_developed_with_its_links_is_never_runnable_without_them(
         links = s.execute(select(IdeaLink.idea_id, IdeaLink.target_id, IdeaLink.kind).order_by(IdeaLink.kind)).all()
         assert [tuple(r) for r in links] == [(3, 1, LinkKind.AFTER), (3, 2, LinkKind.SUPERSEDES)]
         assert s.scalars(select(Idea.id).where(runnable()).order_by(Idea.id)).all() == [1, 2]
+    db.close()
+
+
+def research_files(project_path: Path, most: int) -> None:
+    """Set ``[roles.research] max_ideas`` in the project's ``piloop.toml`` (the test file sets 0)."""
+    toml = project_path / 'piloop.toml'
+    toml.write_text(re.sub(r'max_ideas = \d+', f'max_ideas = {most}', toml.read_text()))
+
+
+def test_a_sweep_files_its_new_ideas_as_proposed_while_its_role_may_file_none(
+    project_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An operator pauses research with ``max_ideas = 0``, and a sweep that started before goes on filing ideas.
+
+    From then on, what a sweep of the role adds waits for a review (``proposed``). A seed that it develops is not a new
+    idea: ``max_ideas`` never counted seeds, so it still becomes ``ready``. Other actors are not limited.
+    """
+    research_files(project_path, 1)
+    run_cli(['init', str(project_path)])
+
+    def as_(actor: str, *argv: str) -> None:
+        monkeypatch.setattr(common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', actor=actor))
+        run_cli(list(argv))
+
+    as_('research#8', 'idea', 'add', 'demo', 'before the pause')
+    research_files(project_path, 0)
+    run_cli(['init', str(project_path)])
+    out()
+    as_('research#8', 'idea', 'add', 'demo', 'after the pause')
+    as_('orchestrator', 'idea', 'add', 'demo', 'the orchestrator is not paused')
+    as_('orchestrator', 'idea', 'seed', 'demo', 'a hunch', '--from', 'run#2')
+    define = ['--hypothesis', 'h', '--evidence', 'e', '--check', 'c', '--metric', 'score', '--effect', '+1']
+    as_('research#8', 'idea', 'develop', '4', *define)
+    assert out().splitlines() == [
+        'idea#2 proposed p2: after the pause ([roles.research] max_ideas = 0: it waits for a review)',
+        'idea#3 ready p2: the orchestrator is not paused',
+        'idea#4 seed: a hunch; research develops it next',
+        'idea#4 ready p2: a hunch',
+    ]
+    db = Database(common.settings.database_url, actor='test')
+    with db.session() as s:
+        assert [i.status for i in s.scalars(select(Idea).order_by(Idea.id))] == [
+            IdeaStatus.READY,
+            IdeaStatus.PROPOSED,
+            IdeaStatus.READY,
+            IdeaStatus.READY,
+        ]
     db.close()
 
 

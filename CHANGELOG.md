@@ -164,9 +164,12 @@ A deprecated configuration key shows a warning for at least one minor release be
 - A message to an agent under the `subprocess` runtime is no longer refused. It waits for the agent's turn to end,
   then piloop continues the agent's session with it (`[harness.<name>] resume`, set for pi, Claude Code and Codex):
   the same queue-for-the-next-turn as under Herdr.
-- `[stop] plateau` counts every finished run without a keep, also one with no commit or only unmeasured commits.
-  Ten tools-only runs after the last keep (77M worker tokens) read "1/15 runs without a keep", so only the other
-  limits could end the campaign. The status line's count follows it. `max_runs` still skips such runs.
+- `[stop] max_runs` and `[stop] plateau` count the same runs, by one rule: a run counts when it reached the
+  evaluator, with a candidate that is measured or waits for its measurement. A run that ended at a cheap check with no
+  commit or only `Piloop-Eval: skip` commits, or that a harness or host fault ended before it committed, counts toward
+  neither: it says nothing about the metric. `[spend]`, `max_tokens` and `max_hours` stay hard limits on what such runs
+  cost. `plateau` counted every finished run, so a stream of failed launches could stop a campaign. The status line
+  and research's stall mark count the same way.
 - `piloop init` in an existing repo commits only its own files: the ones it wrote and its template's files. It
   committed every dirty file (`git add -A`), and in a shared checkout it swept another agent's uncommitted work into
   a "piloop init" commit.
@@ -192,6 +195,16 @@ A deprecated configuration key shows a warning for at least one minor release be
 - After an evaluator change, unpinned runs wait only until the head has a score from the new evaluator, and the
   head is measured first. They waited for every keep, measured one at a time: 4 worker slots sat idle for 70
   minutes. Research does not sweep while the queue holds its runnable ideas for that score.
+- A project set `active` again after a stop (`piloop init`, or an UPDATE of `projects.status`) starts a fresh
+  `[stop] plateau` window: the count starts at the later of the last keep and the reactivation. A campaign that
+  stopped on `plateau` stopped again on the next tick after it was reactivated.
+- A worker of a stopped campaign that the daemon ends after the grace period, before it left its finding, closes its
+  run as `campaign stopped`, with a `worker.stop_ended` event on the worker. A worker in the middle of a turn, such as
+  Codex, reads the wrap-up prompt only when the turn ends, so it often never read it. The run closed as `worker
+  produced no commits`, or with the exit status of the kill, and counted as an attempt at its idea. Its commits, and
+  what it left uncommitted, are still scored.
+- An idea that a sweep adds while its role's `max_ideas` is 0 is `proposed`, not `ready`. A sweep that started
+  before an operator set `max_ideas = 0` to pause the role kept filing ready ideas.
 
 ## [0.1.0] - 2026-10-13
 

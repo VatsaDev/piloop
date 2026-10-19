@@ -85,7 +85,7 @@ triggers = [{ kind = "low_water", buffer = 2 }, { kind = "seed" }]  # a short ba
 # wake_budget = 400                       # tokens of the lessons overview that opens the brief; if not set: [memory]'s
 # incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies, if you add that trigger
 # routine_prompt = "briefs/routine.md"    # follows the prompt in every other sweep; none by default
-max_ideas = 1                             # new ideas per sweep, after the seeds; 0 turns low_water off
+max_ideas = 1                             # new ideas per sweep, after the seeds; 0 pauses them (proposed)
 timeout = 900
 max_concurrent = 1                        # sweeps at the same time; more than one duplicate each other's work
 
@@ -123,10 +123,10 @@ max_concurrent = 1
 
 # [stop]                                  # any one of these ends the campaign; leave the table out to run with no end
 # target = 0.85                           # the primary metric at the head reaches this value (one track only)
-# max_runs = 200                          # runs of every role; a run without a scored commit, or that a stop ended, does not count
+# max_runs = 200                          # runs of every role that reached the evaluator (a scored commit)
 # max_hours = 12                          # hours since the project's first run started
 # max_tokens = 50000000                   # tokens that all the agents of the project spent together
-# plateau = 50                            # counted runs in a row without a new keep
+# plateau = 50                            # runs counted as for max_runs, since the last keep or reactivation
 
 # [memory]                                # what past campaigns leave for the next ones; see the research memory page
 # documents = ["docs/evidence/**/*.md"]   # repo files that `piloop init` and the stop copy into `documents`; default none
