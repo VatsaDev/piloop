@@ -190,6 +190,9 @@ Write docs, skills and agent prompts in Simplified Technical English: one idea p
 fewer, active voice, present tense, and the imperative for instructions. Use piloop's own terms with one meaning each.
 Write no history: no "used to", no PR numbers, no dates.
 
+The docs describe what piloop does now. A design proposal is not a page: it is discussed in an issue, and the change
+that builds it documents it here.
+
 In `.mdx` files, `{`, `}`, `<` and `>` in text are syntax. Put them in code spans, or escape them.
 
 `tests/test_docs.py` checks every code block in `docs/`, `README.md`, `AGENTS.md`, this file and the skills. A TOML

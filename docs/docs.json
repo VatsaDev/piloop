@@ -38,9 +38,7 @@
           "architecture/data-model",
           "architecture/state-machines",
           "architecture/code-layout",
-          "architecture/extension-points",
-          "architecture/plugin-composition",
-          "architecture/distributed-and-hosted"
+          "architecture/extension-points"
         ]
       },
       {
