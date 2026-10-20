@@ -11,6 +11,9 @@ A deprecated configuration key shows a warning for at least one minor release be
 
 - `piloop eval queue` lists the evaluations that run or wait for a slot. `piloop eval cancel <candidate>` cancels one:
   the candidate gets a crashed measurement that names who cancelled it, at once, so a daemon restart does not run it.
+- Architecture proposal for shared plugin composition, public research operations, campaign types, measurements by
+  evaluator, benchmark and artifact, and an incremental migration that keeps today's workflow as the optimization
+  campaign type. The proposal does not change runtime behavior.
 - Roles are configuration. A `[roles.<name>]` table with a new name defines a role: its prompt, its triggers, its
   runtime, its working copy (`workdir`), its harnesses and limits, and what it may file (`files`). The worker, the
   watchdog, research and the scout are the same tables with defaults, and each built-in role accepts every key.
