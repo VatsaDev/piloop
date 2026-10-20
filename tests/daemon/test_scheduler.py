@@ -771,7 +771,9 @@ def test_stop_kills_in_flight_workers_and_fails_their_runs(
     scheduler = make_scheduler(db, runtime, tmp_path, tracer)
     assert scheduler.tick() == [1]
     handle = wait_for_worker_handle(db)
-    child_pid = int((tmp_path / 'runs' / '1' / 'child.pid').read_text())
+    pid_file = tmp_path / 'runs' / '1' / 'child.pid'
+    wait_until(lambda: pid_file.is_file() and pid_file.read_text().strip())  # the agent writes it after it starts
+    child_pid = int(pid_file.read_text())
 
     started = time.monotonic()
     scheduler.stop(timeout=10)
