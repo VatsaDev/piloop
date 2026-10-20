@@ -75,6 +75,7 @@ dev = [
     "pytest-mock>=3.14",
     "pytest-pretty>=1.3",
     "pytest-xdist>=3.8.0",
+    "tomli-w>=1.2.0",
 ]
 lint = [
     "pre-commit>=4.2",
@@ -118,7 +119,13 @@ exclude = ["piloop/db/migrations/versions", "piloop/campaign/templates"]  # temp
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["herdr: needs a live Herdr server"]
+# The e2e tests run real agents and cost money: only `make e2e` (`-m e2e`, which overrides this) selects them.
+addopts = ["-m", "not e2e"]
+markers = [
+    "herdr: needs a live Herdr server",
+    "e2e: a real campaign with real agents (make e2e)",
+    "needs(*tests): skip unless these earlier tests of the module passed (tests/e2e)",
+]
 xfail_strict = true
 filterwarnings = [
     "error",

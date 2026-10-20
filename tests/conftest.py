@@ -116,6 +116,13 @@ def write_toml(
     )
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """The options of tests/e2e. They are here because pytest reads options only from the root conftest."""
+    group = parser.getgroup('e2e', 'the end-to-end campaign (make e2e)')
+    group.addoption('--e2e-harness', default='claude', help='the harness of every agent (default: claude)')
+    group.addoption('--e2e-model', help="the harness's model (default: its cheapest, claude-haiku-4-5 for claude)")
+
+
 @pytest.fixture(autouse=True)
 def no_real_skill_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Every Settings built in a test, and every piloop it starts, installs and checks skills under tmp_path only."""

@@ -110,39 +110,53 @@ Keep the suite fast:
 The tests marked `herdr` need a local [Herdr](https://herdr.dev). They are skipped when `herdr` is not on your
 `PATH`.
 
-Other targets: `make format`, `make lint`, `make typecheck`, `make test` (no coverage), `make testcov`, `make docs`
-and `make docs-check`. CI runs the pre-commit hooks, `make testcov` on Linux, and `install.sh` with the enwik8
-example. In `hiloopai/piloop`, not in a fork, CI also runs `make test` on macOS.
+Other targets: `make format`, `make lint`, `make typecheck`, `make test` (no coverage), `make testcov`, `make docs`,
+`make docs-check` and `make e2e` (see below). CI runs the pre-commit hooks, `make testcov` on Linux, and `install.sh`
+with the enwik8 example. In `hiloopai/piloop`, not in a fork, CI also runs `make test` on macOS.
 
-## The smoke campaign
+## The end-to-end tests
 
-The tests use fake harnesses. The smoke campaign runs a tiny real campaign, with real agents, on the bundled enwik8
-example. Run it after you merge a change to the daemon, the runner, the scheduler, a runtime or the schema:
+The tests use fake harnesses. The tests in `tests/e2e/` run small real campaigns with real agents, on the bundled
+examples. Run them after a change to the daemon, the runner, the scheduler, a runtime or the schema:
 
 ```bash
-uv run -m scripts.smoke_campaign
+make e2e
 ```
 
-It needs `claude` on the `PATH`, logged in, and network access. It installs piloop from your checkout into a new
-temporary directory, with its own `PILOOP_HOME` and skills directories, so it never touches `~/.piloop`, a running
-daemon or your skills. It pauses the project, adds three ideas, resumes, cancels the first run, lets the second
-finish and be judged, then stops the campaign while the third runs. Each check prints one `pass` or `FAIL` line: the
-runs, the verdicts, `piloop eval queue`, `piloop pause` and `resume`, `piloop events --after … --json` read page by
-page, `piloop status --json`, `piloop run cancel`, `piloop candidate remeasure`, `piloop project stop`,
-`piloop candidate verdict`, `piloop measurement add`, no `anomaly.*` event, no process left behind, and
-`piloop doctor`. The exit code is 1 when a check fails.
+These tests carry the `e2e` marker. The pytest configuration leaves this marker out (`-m "not e2e"`), so `make`,
+`make test` and CI never run them. They need `claude` on the `PATH`, logged in, and network access. The lifecycle
+scenario (`tests/e2e/test_lifecycle.py`) takes about 3 minutes on `claude-haiku-4-5-20251001`. Its three agents use
+about 1.5 million tokens, most of them cache reads. That is about 0.45 USD at API prices. To pick another harness or
+model:
 
-One run takes about 3 minutes on `claude-haiku-4-5-20251001`, and its three agents spend about 0.50 USD at API
-prices, about 1.8 million tokens, most of them cache reads. `--model` picks another model, and `--harness` another
-harness.
+```bash
+uv run pytest -m e2e tests/e2e -rA --e2e-harness claude --e2e-model <model>
+```
 
-The report is `report.md` in the temporary directory (`--report <path>` writes a copy). It has one row per check,
-with its time and the evidence of a failure, then one row per agent, with its run, how it ended, its tokens and its
-cost. Next to it are the daemon's log (`home/serve.log`) and each agent's output (`home/runs/<run>`). The directory
-stays for these logs: remove it when you are done. Before you report a failure as a bug, check that the agent did what
-its idea asked: a failed check can be an agent that did not commit.
+The tests install piloop from your checkout once per session, into a new temporary directory. Each campaign there has
+its own `PILOOP_HOME` and skills directories, so the tests never touch `~/.piloop`, a running daemon or your skills.
+A campaign is configured as a user configures one: its keys are in the project's `piloop.toml`, and the daemon's
+settings are in the `config.toml` of its home. On every exit, also on Ctrl-C and SIGTERM, the fixture stops each
+daemon. Then it kills every process that carries the campaign's home or the token of an agent.
 
-To add a check, add a function and its entry to `CHECKS` in `scripts/smoke_campaign.py`.
+At the end, pytest prints the log of each daemon (`home/serve.log`). It also prints one row for each agent: its run,
+how it ended, its tokens and its cost. The output of each agent is in `home/runs/<run>`. The temporary directory stays
+for these logs. Remove it when you are done. A failed test can be an agent that did not do what its idea asked. Read
+the output of the agent before you report a bug.
+
+### Add an e2e scenario
+
+A scenario is one test module in `tests/e2e/`, with `pytestmark = pytest.mark.e2e`:
+
+1. Write a module-scoped `campaign` fixture that calls `make_campaign`. Give it `config`, the keys of `piloop.toml`
+   that the scenario changes, and `home_config`, the keys of `config.toml`. `template` names a bundled example; the
+   default is `enwik8`.
+2. Write each step as a test, in the order of the campaign. A test reads the state that earlier tests leave on the
+   `Campaign` (`tests/e2e/campaign.py`).
+3. Mark a test with `@needs(...)` to name the earlier tests that it reads. When one of them did not pass, pytest skips
+   the test and gives the reason.
+
+To add a check to a scenario, add a test at the step where its state exists.
 
 ## Generated files
 
