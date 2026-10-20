@@ -56,7 +56,13 @@
       },
       {
         "group": "Reference",
-        "pages": ["reference/cli", "reference/configuration", "reference/schema", "reference/environment"]
+        "pages": [
+          "reference/cli",
+          "reference/event-feed",
+          "reference/configuration",
+          "reference/schema",
+          "reference/environment"
+        ]
       }
     ]
   },

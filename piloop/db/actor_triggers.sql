@@ -138,3 +138,19 @@ BEGIN
   INSERT INTO events (kind, actor, target_kind, target_id, payload)
   VALUES ('comment.' || NEW.kind, NEW.author, 'comment', NEW.id, json_object('target_kind', NEW.target_kind, 'target_id', NEW.target_id));
 END;
+
+-- The feed is append-only: an event takes the next id, because a reader's cursor is an event id. Its columns have the
+-- types that a reader reads. The authorizer of `piloop sql` denies an UPDATE or a DELETE of events.
+CREATE TEMP TRIGGER events_checked BEFORE INSERT ON events
+BEGIN
+  SELECT RAISE(ABORT, 'events take the next id: leave id out') WHERE NEW.id != -1;
+  SELECT RAISE(ABORT, 'events.kind and events.actor are text') WHERE typeof(NEW.kind) != 'text' OR typeof(NEW.actor) != 'text';
+  SELECT RAISE(ABORT, 'events.target_id is an integer') WHERE typeof(NEW.target_id) != 'integer';
+  SELECT RAISE(ABORT, 'events.at is a time in text, like 2026-10-20 08:00:00') WHERE typeof(NEW.at) != 'text' OR julianday(NEW.at) IS NULL;
+  SELECT RAISE(ABORT, 'events.payload is JSON text, not a blob') WHERE typeof(NEW.payload) = 'blob';
+END;
+CREATE TEMP TRIGGER events_next_id AFTER INSERT ON events
+WHEN NEW.id < 1
+BEGIN
+  SELECT RAISE(ABORT, 'events take the next id: leave id out');
+END;

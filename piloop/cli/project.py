@@ -28,11 +28,13 @@ from piloop.campaign.project import (
 )
 from piloop.campaign.stop import request_stop
 from piloop.cli import common
-from piloop.cli.common import ProjectRef
+from piloop.cli.common import JsonFlag, ProjectRef
 from piloop.cli.daemon import daemon_line
 from piloop.config import config_of
+from piloop.daemon.serve import running_pid
 from piloop.db.models import ProjectStatus, Worker, utcnow
 from piloop.db.session import Database
+from piloop.reports import feed
 from piloop.reports.overview import overview, paused
 from piloop.reports.pack import renderables as pack_renderables
 from piloop.runtime.factory import handle_for, runtime_for
@@ -115,14 +117,22 @@ def history(ref: ProjectRef | None = None, /) -> None:
             )
 
 
-def status(ref: ProjectRef | None = None, /) -> None:
+def status(ref: ProjectRef | None = None, /, *, json_: JsonFlag = False) -> None:
     """Print the state of the daemon, then an overview of each project.
 
     The overview is what a sweep reads in its brief, without the tool guide. It shows the head, the tracks, the
     trajectory, the progress against [stop], the open runs, the queue, the live agents with their last line, the
     recent candidates, the anomalies, the inbox, the latest decisions and the recent events. Without a project, it
     uses the project that the current directory is in, else the only active project, else every project.
+
+    With --json, it prints the daemon's pid and the main facts of each project, read at one cursor: follow them with
+    `piloop events --after <cursor>`.
     """
+    if json_:
+        with common.session() as s, feed.snapshot(s) as cursor:
+            states = feed.status_view(s, common.projects(s, ref))
+        common.print_json({'cursor': cursor, 'daemon': {'pid': running_pid(common.settings)}, 'projects': states})
+        return
     common.console.print(daemon_line())
     with common.session() as s:
         for project in common.projects(s, ref):

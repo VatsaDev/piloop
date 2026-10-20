@@ -9,6 +9,11 @@ A deprecated configuration key shows a warning for at least one minor release be
 
 ### Added
 
+- A program can read a campaign and follow it without missing an event. `piloop status --json` and
+  `piloop inbox --json` print one JSON document with the cursor they were read at, and `piloop events --after
+  <cursor> [--project] [--kind] [--limit] [--follow] --json` prints the events after it, in a versioned envelope that
+  every stored event fits, unknown kinds included. See the event feed page of the docs.
+
 - `piloop eval queue` lists the evaluations that run or wait for a slot. `piloop eval cancel <candidate>` cancels one:
   the candidate gets a crashed measurement that names who cancelled it, at once, so a daemon restart does not run it.
 - Architecture proposal for shared plugin composition, public research operations, campaign types, measurements by
@@ -108,6 +113,9 @@ A deprecated configuration key shows a warning for at least one minor release be
 
 ### Changed
 
+- Events are append-only for every piloop connection, `piloop sql` included: an UPDATE or a DELETE of `events` is
+  refused, and so is an insert that sets its own id, or whose kind, actor, target id, time or payload is not of its
+  type. An event id is a reader's cursor, and SQLite reuses the ids of deleted newest rows.
 - The daemon runs at most `max_evaluations` evaluate commands at the same time, across all projects (2 by default,
   in `config.toml` or `PILOOP_MAX_EVALUATIONS`). The others wait in the evaluation queue, the `evaluations` table. A
   free slot goes to the project with the fewest running evaluations, and in that project to its head first, then to

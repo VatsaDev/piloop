@@ -4,7 +4,8 @@ Command modules read ``common.console`` and ``common.settings`` through this mod
 one place.
 """
 
-from collections.abc import Generator
+import json
+from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Annotated
@@ -18,12 +19,34 @@ from piloop.campaign.ops import Refused
 from piloop.campaign.project import checked_out, find
 from piloop.db.models import Project, ProjectStatus
 from piloop.db.session import Database, SchemaAhead, migrate as migrate_schema
+from piloop.reports.feed import PROTOCOL
 from piloop.settings import settings
 
 console = Console()
 
 ProjectRef = Annotated[str, cyclopts.Parameter(help='The project name, or a path inside its repo.')]
 HARNESS_HELP = 'Use this harness instead of the rotation.'
+JsonFlag = Annotated[
+    bool,
+    cyclopts.Parameter(
+        name='--json', negative=(), help='Print one JSON document on stdout, for a program. Messages go to stderr.'
+    ),
+]
+
+
+def print_json(document: Mapping[str, object]) -> None:
+    """Print ``document`` on one line of stdout, with the protocol version first. Rich neither wraps nor colors it.
+
+    Raises:
+        ValueError: A float in it is not finite, which JSON cannot say. The reader keeps them out of its documents.
+    """
+    console.out(json.dumps({'protocol': PROTOCOL, **document}, allow_nan=False), highlight=False)
+
+
+def json_error(code: str, message: str) -> SystemExit:
+    """Print an error document on stdout, and return the exit that also says ``message`` on stderr."""
+    print_json({'error': {'code': code, 'message': message}})
+    return SystemExit(message)
 
 
 @contextmanager

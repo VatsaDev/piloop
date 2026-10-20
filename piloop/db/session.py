@@ -128,6 +128,28 @@ def revision(engine: Engine) -> str | None:
         plain.dispose()
 
 
+@contextmanager
+def read_transaction(s: Session) -> Generator[None]:
+    """Hold one read transaction on ``s``: every read inside it sees the same committed state of the database.
+
+    pysqlite opens no transaction for a SELECT, so each statement of a session otherwise sees the latest commit, and
+    two reads of one view can disagree. A deferred ``BEGIN`` takes its WAL snapshot at the first read. The rollback at
+    the end releases the snapshot at once: a reader that stays open blocks checkpoints. The session must have nothing
+    to flush, and no open transaction (``BEGIN`` inside one fails).
+
+    Raises:
+        RuntimeError: The session has changes that are not flushed. They would be lost.
+    """
+    if s.new or s.dirty or s.deleted:
+        raise RuntimeError('a read transaction on a session with uncommitted changes: commit or roll back first')
+    s.expire_all()  # an object loaded before this transaction must be read again inside it
+    s.connection().exec_driver_sql('BEGIN')
+    try:
+        yield
+    finally:
+        s.rollback()
+
+
 class Database:
     """One engine and a session factory. Modules get the database only through this class.
 

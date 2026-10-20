@@ -317,13 +317,28 @@ start from it must beat, includes the new measurement. The command says which of
 ### piloop status
 
 ```text
-piloop status [REF]
+piloop status [REF] [--json]
 ```
 
 Prints the daemon's state, then for each project: the head, the tracks, the trajectory, the progress against
 `[stop]`, the open runs, the queue, the running agents with their last line, the recent candidates, the anomalies,
 the inbox, the latest decisions and the recent events. The watchdog and research agents get the same overview in
 their brief.
+
+`--json` prints one JSON document instead: the daemon's pid and the main facts of each project, read at one cursor of
+the [event feed](/reference/event-feed).
+
+### piloop events
+
+```text
+piloop events [--after CURSOR] [--project REF] [--kind KIND]... [--limit N] [--follow] [--timeout SECONDS] [--json]
+```
+
+Prints the events after `CURSOR` (default 0, the start of the feed), oldest first, at most `--limit` (default 100,
+at most 1000), then the cursor to read after next. `--project` keeps the events about rows of one project, and
+`--kind` the events of a kind; repeat it for several. The next cursor passes every event that the read examined,
+also those that the filters left out. `--follow` waits, up to `--timeout` seconds (default 1800), until an event
+arrives. `--json` prints one JSON document. See [Event feed](/reference/event-feed).
 
 ### piloop watch
 
@@ -346,13 +361,13 @@ sweep reads it before it proposes ideas.
 ### piloop inbox
 
 ```text
-piloop inbox [REF] [--kind KIND]... [--all]
+piloop inbox [REF] [--kind KIND]... [--all] [--json]
 ```
 
 Lists the unacknowledged items addressed to you, most urgent first, then the seeds that wait for research. `--kind`
 keeps only items of the given kind: `note`, `finding`, `decision` or `escalation`. Repeat it to keep several kinds.
-`--all` includes acknowledged items. See
-[The orchestrator and the inbox](/concepts/orchestrator).
+`--all` includes acknowledged items. `--json` prints them as one JSON document, read at one cursor of the
+[event feed](/reference/event-feed). See [The orchestrator and the inbox](/concepts/orchestrator).
 
 ### piloop inbox show
 

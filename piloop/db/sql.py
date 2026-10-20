@@ -17,10 +17,12 @@ connection without these limits.
 Every connection, here and in the daemon's engine, has an actor. ``install_actor`` creates the TEMP objects of
 ``piloop/db/actor_triggers.sql`` before the authorizer is turned on, because after that ``SQLITE_CREATE_TEMP_TRIGGER``
 is denied. From then on, every UPDATE sets ``updated_by``, and the tracked changes, deletes and comments go into
-``events``. The authorizer does not protect ``events``, so the INSERTs of the trigger bodies pass.
+``events``. The authorizer lets inserts into ``events`` pass, so the INSERTs of the trigger bodies do.
 
 Rows of the orchestrator's ``journal`` and of ``lessons`` never change: an agent's UPDATE of them is denied, and so is
-a DELETE of the journal. A trigger refuses an ``INSERT OR REPLACE`` of a row (``piloop.db.triggers.immutable``). Every connection also has the
+a DELETE of the journal. ``events`` is append-only: an UPDATE or a DELETE of it is denied, and TEMP triggers refuse an
+insert that does not take the next id. A trigger refuses an ``INSERT OR REPLACE`` of a row
+(``piloop.db.triggers.immutable``). Every connection also has the
 SQL function ``blake3(text)`` (``install_functions``).
 """
 
@@ -36,7 +38,7 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 
 from piloop.db.models import Base
 from piloop.db.triggers.fts import FTS_COLUMNS, FTS_TABLES, FTS_TRIGGER_NAMES, fts_table
-from piloop.db.triggers.immutable import IMMUTABLE, UNDELETABLE
+from piloop.db.triggers.immutable import APPEND_ONLY, IMMUTABLE, UNDELETABLE
 from piloop.proc import command_line
 
 DENIED = {
@@ -120,8 +122,8 @@ def _authorize(action: int, arg1: str | None, arg2: str | None, _db: str | None,
         return sqlite3.SQLITE_DENY
     if action in WRITES and arg1 in FTS_TABLES and source not in FTS_TRIGGER_NAMES:
         return sqlite3.SQLITE_DENY
-    if (action == sqlite3.SQLITE_UPDATE and arg1 in IMMUTABLE) or (
-        action == sqlite3.SQLITE_DELETE and arg1 in UNDELETABLE
+    if (action == sqlite3.SQLITE_UPDATE and (arg1 in IMMUTABLE or arg1 in APPEND_ONLY)) or (
+        action == sqlite3.SQLITE_DELETE and (arg1 in UNDELETABLE or arg1 in APPEND_ONLY)
     ):
         return sqlite3.SQLITE_DENY
     return sqlite3.SQLITE_OK

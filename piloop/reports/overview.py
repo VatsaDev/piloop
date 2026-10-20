@@ -217,7 +217,7 @@ def summary(s: Session, project: Project, cfg: ProjectConfig) -> str:
     agent is known: it is the total for all roles so far.
     """
     at = head_scores(s, project, cfg)
-    total = count(s, _produced(project))
+    total = count(s, produced(project))
     kept = count(s, keeps(project))
     imported = len(references(s, project))
     if at is None:
@@ -296,7 +296,7 @@ def progress(s: Session, project: Project, cfg: ProjectConfig, now: datetime) ->
     return ' · '.join(parts)
 
 
-def _produced(project: Project) -> Select[Candidate]:
+def produced(project: Project) -> Select[Candidate]:
     """Select the candidates of the project: the baseline and the commits of its runs, not imported references."""
     return select(Candidate).where(Candidate.project_id == project.id, Candidate.verdict != Verdict.REFERENCE)
 
@@ -681,8 +681,8 @@ def _evaluations(s: Session, project: Project) -> str:
 
 def _candidates(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> list[str]:
     """List the last ``CANDIDATES_SHOWN`` candidates of the project, oldest first, scored against their parent."""
-    total = count(s, _produced(project))
-    recent = s.scalars(_produced(project).order_by(Candidate.id.desc()).limit(CANDIDATES_SHOWN)).all()[::-1]
+    total = count(s, produced(project))
+    recent = s.scalars(produced(project).order_by(Candidate.id.desc()).limit(CANDIDATES_SHOWN)).all()[::-1]
     on = "each on its track's primary" if cfg.multitrack else cfg.all_tracks[0].primary.name
     lines = [f'### Recent candidates ({len(recent)} of {total}; {on}, vs parent)']
     for c in recent:

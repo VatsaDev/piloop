@@ -427,6 +427,60 @@ def test_a_journal_line_is_never_deleted_but_a_lesson_goes_with_its_project(con:
     assert sql.run(con, 'SELECT count(*) FROM lessons').rows == [(0,)]
 
 
+EVENT = "INSERT INTO events (kind, actor, target_kind, target_id{cols}) VALUES ('x.y', 'a', 'project', 1{vals})"
+
+
+def event(con: sqlite3.Connection, cols: str = '', vals: str = '', verb: str = 'INSERT') -> None:
+    sql.run(con, EVENT.format(cols=cols, vals=vals).replace('INSERT', verb, 1))
+
+
+def test_events_are_append_only_so_an_id_is_never_reused_nor_moved(con: sqlite3.Connection) -> None:
+    for _ in range(3):
+        event(con)
+    for statement in (
+        'DELETE FROM events',
+        'UPDATE events SET id = -1 WHERE id = (SELECT max(id) FROM events)',
+        "UPDATE events SET payload = '{}'",
+    ):
+        with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
+            sql.run(con, statement)
+    for cols, vals, verb in (
+        (', id', ', 2', 'INSERT OR REPLACE'),
+        (', id', ', 3', 'REPLACE'),
+        (', id', ', 1000', 'INSERT'),
+        (', id', ', 0', 'INSERT'),
+        (', id', ', -1', 'INSERT'),
+        (', id', ', -1', 'INSERT OR REPLACE'),
+    ):
+        with pytest.raises(sqlite3.IntegrityError, match='events take the next id: leave id out'):
+            event(con, cols, vals, verb)
+    assert sql.run(con, 'SELECT id FROM events ORDER BY id').rows == [(1,), (2,), (3,)]
+    event(con)
+    assert sql.run(con, 'SELECT max(id) FROM events').rows == [(4,)], 'without an id, an event takes the next one'
+
+
+def test_an_event_that_piloop_could_not_read_is_refused(con: sqlite3.Connection) -> None:
+    for cols, vals, message in (
+        ('', '', None),
+        (', at', ", '2026-10-20T08:00:00+02:00'", None),
+        (', at', ", 'not a date'", 'events.at is a time'),
+        (', at', ', 2460000', 'events.at is a time'),
+        (', payload', ", x'7b7d'", 'events.payload is JSON text, not a blob'),
+    ):
+        if message is None:
+            event(con, cols, vals)
+        else:
+            with pytest.raises(sqlite3.IntegrityError, match=message):
+                event(con, cols, vals)
+    for statement, message in (
+        ("INSERT INTO events (kind, actor, target_kind, target_id) VALUES (x'6b', 'a', 'project', 1)", 'kind'),
+        ("INSERT INTO events (kind, actor, target_kind, target_id) VALUES ('k', x'61', 'project', 1)", 'actor'),
+        ("INSERT INTO events (kind, actor, target_kind, target_id) VALUES ('k', 'a', 'project', 'one')", 'target_id'),
+    ):
+        with pytest.raises(sqlite3.IntegrityError, match=message):
+            sql.run(con, statement)
+
+
 def test_the_journal_takes_short_lines(con: sqlite3.Connection) -> None:
     sql.run(con, "INSERT INTO journal (author, line) VALUES ('orchestrator', 'parked idea#4: dup of #2')")
     with pytest.raises(sqlite3.IntegrityError, match=f'journal.line is text of 1 to {JOURNAL_LINE_BYTES} bytes'):

@@ -18,6 +18,7 @@ row and log each change in `events`.
 - A **candidate** is a distinct state of the code. Its git tree identifies it, and `parent_id` is its lineage. A
   **measurement** is one run of an evaluator on a candidate.
 - A **comment** or an **event** points at any row through `(target_kind, target_id)`, so it has no foreign key.
+  A program reads the events after a cursor with `piloop events`: see the [event feed](/reference/event-feed).
 - A **technique** is an outside technique that a [scout](/concepts/roles#scout) sweep found.
 
 Three columns hold a candidate id or an evaluator id without a foreign key: `projects.evaluator_id`,

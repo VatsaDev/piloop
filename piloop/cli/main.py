@@ -13,6 +13,7 @@ from piloop.cli import (
     daemon,
     database,
     evaluation,
+    events,
     idea,
     inbox,
     install,
@@ -40,6 +41,7 @@ for group in (
 app.command(project.init)
 app.command(project.history)
 app.command(project.status)
+app.command(events.events)
 app.command(project.watch_cmd, name='watch')
 app.command(project.pause)
 app.command(project.resume)

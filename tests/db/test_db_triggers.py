@@ -106,6 +106,8 @@ def test_every_trigger_is_one_statement_named_table_what_and_references_real_col
             'comments_deleted_event',
             'candidates_deleted_event',
             'comments_inserted_event',
+            'events_checked',
+            'events_next_id',
         ]
     )
 

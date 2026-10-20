@@ -12,8 +12,9 @@ from sqlalchemy import func, select
 
 from piloop.campaign import inbox
 from piloop.cli import common
-from piloop.cli.common import ProjectRef
+from piloop.cli.common import JsonFlag, ProjectRef
 from piloop.db.models import Comment, CommentKind, Event, utcnow
+from piloop.reports import feed
 from piloop.reports.overview import age, item_lines
 from piloop.text import cell
 
@@ -36,11 +37,19 @@ def inbox_list(
     *,
     kind: KindFilter = (),
     all_: Annotated[bool, cyclopts.Parameter(name='--all', help='Show acknowledged items too.')] = False,
+    json_: JsonFlag = False,
 ) -> None:
     """List the unacknowledged inbox items, most urgent first, then the seeds that wait for research.
 
-    Priority 0 is urgent and 4 is someday. Without a project, it lists the items of every project.
+    Priority 0 is urgent and 4 is someday. Without a project, it lists the items of every project. With --json, it
+    prints them read at one cursor: follow them with `piloop events --after <cursor>`.
     """
+    if json_:
+        with common.session() as s, feed.snapshot(s) as cursor:
+            project_id = common.project(s, ref).id if ref else None
+            view = feed.inbox_view(s, project_id=project_id, kinds=kind, acked=all_)
+        common.print_json({'cursor': cursor, **view})
+        return
     with common.session() as s:
         project_id = common.project(s, ref).id if ref else None
         rows = inbox.items(s, project_id=project_id, kinds=kind, acked=all_)

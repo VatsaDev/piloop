@@ -49,7 +49,13 @@ PERSISTENT: tuple[Trigger, ...] = (
     *fts.SYNC,
 )
 """The triggers in ``sqlite_master`` after ``migrate()``. ``tests/db/test_migrations.py`` checks that the two agree."""
-TEMP: tuple[Trigger, ...] = (*provenance.UPDATED_BY, *changelog.CHANGES, *changelog.TOMBSTONES, *changelog.COMMENTS)
+TEMP: tuple[Trigger, ...] = (
+    *provenance.UPDATED_BY,
+    *changelog.CHANGES,
+    *changelog.TOMBSTONES,
+    *changelog.COMMENTS,
+    *immutable.EVENTS,
+)
 """The triggers in ``sqlite_temp_master`` of every connection, in the order that ``actor_triggers.sql`` creates them."""
 
 
@@ -83,6 +89,10 @@ COMMENTS = """
 -- stays persistent, because `comment.escalation` must be logged whatever connection wrote the comment. The rest of
 -- the forum (`comment.note`, `comment.finding`, `comment.decision`) is what the daemon pushes to a running worker."""
 
+APPEND_ONLY = """
+-- The feed is append-only: an event takes the next id, because a reader's cursor is an event id. Its columns have the
+-- types that a reader reads. The authorizer of `piloop sql` denies an UPDATE or a DELETE of events."""
+
 
 def persistent_sql() -> str:
     """The text of ``piloop/db/persistent_triggers.sql``."""
@@ -94,11 +104,12 @@ def persistent_sql() -> str:
 
 
 def temp_sql() -> str:
-    """The text of ``piloop/db/actor_triggers.sql``: actor table, ``updated_by``, change log, tombstones, comments."""
+    """The text of ``piloop/db/actor_triggers.sql``: actor, ``updated_by``, change log, tombstones, comments, feed."""
     sections = (
         (provenance.SESSION_ACTOR_TABLE, provenance.UPDATED_BY),
         (CHANGE_LOG, changelog.CHANGES),
         (TOMBSTONES, changelog.TOMBSTONES),
         (COMMENTS, changelog.COMMENTS),
+        (APPEND_ONLY, immutable.EVENTS),
     )
     return GENERATED + '\n'.join('\n'.join([lead, *(t.sql() for t in triggers)]) for lead, triggers in sections) + '\n'
