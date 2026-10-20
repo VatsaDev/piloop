@@ -14,6 +14,7 @@ from piloop.db.models import Worker, WorkerKind, WorkerState
 from piloop.otel import Tracer
 from piloop.runtime.factory import handle_for
 from piloop.settings import Settings
+from tests.conftest import console_lines
 
 
 def test_settings_derived(tmp_path: Path) -> None:
@@ -36,9 +37,8 @@ def test_tracer_console_lines(capsys: pytest.CaptureFixture[str], spans: InMemor
         span.error(ValueError('bad'))
     tracer.event('alone', k='v')
     tracer.shutdown()
-    lines = [line.split(' ', 1)[1] for line in capsys.readouterr().err.splitlines()]
-    assert lines == snapshot(
-        ['happened n=2', 'also on=current span', 'x 0.0s a=1 c=v error=ValueError: bad', 'alone 0.0s k=v']
+    assert console_lines(capsys.readouterr().err) == snapshot(
+        ['happened n=2', 'also on=current span', 'x Ns a=1 c=v error=ValueError: bad', 'alone Ns k=v']
     )
     x, alone = spans.get_finished_spans()
     assert [e.name for e in x.events] == ['happened', 'also', 'exception']

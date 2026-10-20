@@ -37,7 +37,14 @@ from piloop.otel import Tracer
 from piloop.runtime import Runtime, factory as factory_module
 from piloop.runtime.factory import RUNTIME_GROUP, RuntimeFactory, make_runtime, runtimes
 from piloop.triggers import TRIGGER_GROUP
-from tests.conftest import HARNESS_APPEND, HARNESS_PROMPT_TO_FILE, ScriptRuntime, wait_until, write_toml
+from tests.conftest import (
+    HARNESS_APPEND,
+    HARNESS_PROMPT_TO_FILE,
+    ScriptRuntime,
+    console_lines,
+    wait_until,
+    write_toml,
+)
 from tests.daemon.test_scheduler import add_ideas
 from tests.daemon.test_triggers import BLOCKING, fail_a_run, reported_events, wait_for, workers
 
@@ -409,9 +416,8 @@ def test_a_package_adds_a_role_and_triggers_through_entry_points(
     assert workers(db, 'auditor') == [(1, WorkerState.EXITED, 'every tick for auditor')]
     brief = (tmp_path / 'workers' / '1' / 'brief.md').read_text()
     assert brief.startswith('# Audit\n')
-    assert (
-        'trigger.failed 0.0s project=demo role=auditor trigger=broken error=the probe is down'
-        in capsys.readouterr().err
+    assert 'trigger.failed Ns project=demo role=auditor trigger=broken error=the probe is down' in console_lines(
+        capsys.readouterr().err
     )
 
 

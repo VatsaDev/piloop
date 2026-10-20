@@ -28,7 +28,7 @@ from piloop.db.models import (
 )
 from piloop.proc import Inherited, alive, started
 from piloop.settings import Settings
-from tests.conftest import HARNESS_NOOP, ScriptRuntime, factory, register, write_toml
+from tests.conftest import HARNESS_NOOP, ScriptRuntime, console_lines, factory, register, write_toml
 
 
 def test_daemon_end_to_end(
@@ -335,6 +335,6 @@ def test_shutdown_fails_open_runs(tmp_path: Path, capsys: pytest.CaptureFixture[
         [request] = s.scalars(select(Worker)).all()
         assert request.state is WorkerState.REQUESTED, 'a request survives a restart'
     daemon.db.close()
-    assert [line.split(' ', 1)[1] for line in capsys.readouterr().err.splitlines()] == snapshot(
-        ['run.aborted run=1 error=daemon stopped', 'piloop.shutdown 0.0s']
+    assert console_lines(capsys.readouterr().err) == snapshot(
+        ['run.aborted run=1 error=daemon stopped', 'piloop.shutdown Ns']
     )

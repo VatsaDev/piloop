@@ -197,22 +197,28 @@ def test_a_sweep_checks_out_the_head(db: Database, project: Project, runtime: Sc
         in (tmp_path / 'workers' / str(worker_id) / 'brief.md').read_text()
     )
     assert git.worktrees_under(Repo(project.path), tmp_path / 'workers') == [], 'removed with the sweep'
+    hold = tmp_path / 'hold'
+    hold.touch()  # The tick measures the head again under the new evaluator: held until the sweep has its brief.
+    evaluate = f'while [ -f {hold} ]; do sleep 0.05; done; echo METRIC score=9; echo METRIC size=9'
     with db.session() as s:
-        cfg = load_project_config(Path(project.path), evaluate=['sh', '-c', 'echo METRIC score=9; echo METRIC size=9'])
+        cfg = load_project_config(Path(project.path), evaluate=['sh', '-c', evaluate])
         s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
         current_evaluator(s, s.get_one(Project, project.id), cfg)
         s.commit()
     again = request_watchdog(db, project)
     assert scheduler.tick() == [again]
+    brief = tmp_path / 'workers' / str(again) / 'brief.md'
+    wait_until(brief.exists)
+    hold.unlink()
     scheduler.wait(timeout=30)
     scheduler.stop(timeout=1)
     assert head.read_text().strip() == best_sha, (
         'a new evaluator: nothing is measured under it yet, and the head stays the latest trunk keep'
     )
-    assert (
-        'detached checkout of candidate#2, the head (score=unmeasured)'
-        in (tmp_path / 'workers' / str(again) / 'brief.md').read_text()
-    )
+    assert 'detached checkout of candidate#2, the head (score=unmeasured)' in brief.read_text()
+    with db.session() as s:
+        measured = s.scalars(select(Measurement).where(Measurement.candidate_id == 2).order_by(Measurement.id))
+        assert [m.metrics['score'] for m in measured] == [2.0, 9.0], 'then the head is measured under the new evaluator'
 
 
 def test_harness_rotation_and_pinning(db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path) -> None:

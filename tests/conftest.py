@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -210,6 +211,14 @@ def baseline(db: Database, project_id: int) -> Candidate:
         return s.scalars(
             select(Candidate).where(Candidate.project_id == project_id).order_by(Candidate.id).limit(1)
         ).one()
+
+
+def console_lines(err: str) -> list[str]:
+    """The tracer's console lines (``piloop.otel``) without the clock: no time of day, and each span's duration as ``Ns``.
+
+    A duration is wall-clock time, so a loaded machine changes it: ``0.0s`` on a quiet one is ``0.1s`` on a busy one.
+    """
+    return [re.sub(r'^(\S+) \d+\.\ds\b', r'\1 Ns', line.partition(' ')[2]) for line in err.splitlines()]
 
 
 class ScriptRuntime(SubprocessRuntime):

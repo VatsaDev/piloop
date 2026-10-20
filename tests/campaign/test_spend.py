@@ -17,7 +17,7 @@ from piloop.config import ProjectConfig, Spend
 from piloop.db.models import Comment, Idea, IdeaStatus, Project, Run, RunStatus
 from piloop.db.session import Database
 from piloop.reports.overview import progress
-from tests.conftest import ScriptRuntime
+from tests.conftest import ScriptRuntime, write_toml
 from tests.daemon.test_scheduler import add_ideas, make_scheduler, request_watchdog, set_config
 
 
@@ -69,7 +69,12 @@ def bill(db: Database, project: Project, file: Path, usd: str) -> None:
 def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised(
     db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    file = tmp_path / 'bill'
+    file, hold = tmp_path / 'bill', tmp_path / 'hold'
+    hold.touch()  # The first agent works until the limit is reached, so its run is in progress then.
+    write_toml(
+        Path(project.path),
+        f'#!/bin/sh\nwhile [ -f {hold} ]; do sleep 0.05; done\necho line >> solve.txt\ngit commit -qam "add a line"\n',
+    )
     budget = {'command': ['cat', str(file)], 'limit': 300, 'notices': [100, 200]}
     set_config(db, project, spend=budget)
     first, second = add_ideas(db, project, 'first', 'second')
@@ -83,7 +88,7 @@ def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised
     assert scheduler.tick() == [] and len(daemon_comments(db)) == 1, 'the interval is not up: no new reading'
 
     bill(db, project, file, '160')
-    scheduler.tick()
+    assert scheduler.tick() == [], 'below the limit, but the first run still holds the one slot'
     assert len(daemon_comments(db)) == 1, 'each notice once'
 
     bill(db, project, file, '1012')
@@ -98,6 +103,7 @@ def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised
             ' progress finish and are scored. To resume, raise [spend] limit in piloop.toml and run `piloop init`.',
         ),
     ]
+    hold.unlink()
     scheduler.wait(30)
     with db.session() as s:
         assert [(r.idea_id, r.status) for r in s.scalars(select(Run))] == [(first, RunStatus.SUCCEEDED)], (

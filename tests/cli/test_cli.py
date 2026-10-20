@@ -628,12 +628,16 @@ def test_inbox_wait_blocks_until_an_item_lands_and_hands_over_a_cursor_that_miss
     assert quiet == 'nothing new in 0:00:00' and re.fullmatch(r'next: piloop inbox wait --after \d+', again)
     cursor = again.split()[-1]
     escalate = "INSERT INTO comments (target_kind, target_id, author, kind, priority, body) VALUES ('project', 1, 'watchdog#2', 'escalation', 1, 'SSO expired')"
-    threading.Timer(0.3, run_cli, [['sql', escalate]]).start()
+    writer = threading.Timer(0.3, run_cli, [['sql', escalate]])
+    writer.start()
     run_cli(['inbox', 'wait', 'demo', '--timeout', '30'])
+    writer.join(10)
     lines = out().splitlines()
-    assert lines[0] == '1 row(s) changed, last insert id 1', 'the writer, from the other thread'
-    assert lines[1] == 'comment#1 escalation p1 on project#1 (demo) by watchdog#2: SSO expired'
-    assert re.fullmatch(r'next: piloop inbox wait demo --after \d+', lines[-1]) and lines[-1].split()[-1] != cursor
+    wrote = '1 row(s) changed, last insert id 1'
+    assert wrote in lines, 'the writer, from the other thread: it prints after its commit, so before or after the item'
+    item, after = [line for line in lines if line != wrote]
+    assert item == 'comment#1 escalation p1 on project#1 (demo) by watchdog#2: SSO expired'
+    assert re.fullmatch(r'next: piloop inbox wait demo --after \d+', after) and after.split()[-1] != cursor
     run_cli(['inbox', 'wait', '--after', cursor, '--timeout', '30'])
     assert out().splitlines()[0].startswith('comment#1 escalation'), 'from an old cursor: what landed in between'
 
