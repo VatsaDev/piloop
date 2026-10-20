@@ -41,6 +41,36 @@ Other targets: `make format`, `make lint`, `make typecheck`, `make test` (no cov
 and `make docs-check`. CI runs the pre-commit hooks, `make testcov` on Linux, `make test` on macOS, and `install.sh`
 with the enwik8 example.
 
+## The smoke campaign
+
+The tests use fake harnesses. The smoke campaign runs a tiny real campaign, with real agents, on the bundled enwik8
+example. Run it after you merge a change to the daemon, the runner, the scheduler, a runtime or the schema:
+
+```bash
+uv run -m scripts.smoke_campaign
+```
+
+It needs `claude` on the `PATH`, logged in, and network access. It installs piloop from your checkout into a new
+temporary directory, with its own `PILOOP_HOME` and skills directories, so it never touches `~/.piloop`, a running
+daemon or your skills. It pauses the project, adds three ideas, resumes, cancels the first run, lets the second
+finish and be judged, then stops the campaign while the third runs. Each check prints one `pass` or `FAIL` line: the
+runs, the verdicts, `piloop eval queue`, `piloop pause` and `resume`, `piloop events --after … --json` read page by
+page, `piloop status --json`, `piloop run cancel`, `piloop candidate remeasure`, `piloop project stop`,
+`piloop candidate verdict`, `piloop measurement add`, no `anomaly.*` event, no process left behind, and
+`piloop doctor`. The exit code is 1 when a check fails.
+
+One run takes about 3 minutes on `claude-haiku-4-5-20251001`, and its three agents spend about 0.50 USD at API
+prices, about 1.8 million tokens, most of them cache reads. `--model` picks another model, and `--harness` another
+harness.
+
+The report is `report.md` in the temporary directory (`--report <path>` writes a copy). It has one row per check,
+with its time and the evidence of a failure, then one row per agent, with its run, how it ended, its tokens and its
+cost. Next to it are the daemon's log (`home/serve.log`) and each agent's output (`home/runs/<run>`). The directory
+stays for these logs: remove it when you are done. Before you report a failure as a bug, check that the agent did what
+its idea asked: a failed check can be an agent that did not commit.
+
+To add a check, add a function and its entry to `CHECKS` in `scripts/smoke_campaign.py`.
+
 ## Generated files
 
 `make docs` runs `uv run -m scripts.generate_all`, which writes these files from the code. Never edit them by hand:
