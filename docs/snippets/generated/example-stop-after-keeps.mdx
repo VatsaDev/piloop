@@ -1,0 +1,50 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the example plugin in `examples/plugins/stop-after-keeps/` if you want to change anything here. */}
+
+```text pyproject.toml
+[project.entry-points."piloop.stop_rules"]
+after_keeps = "piloop_stop_after_keeps:AFTER_KEEPS"
+```
+
+```python piloop_stop_after_keeps/__init__.py
+"""``after_keeps``: stop the campaign after ``keeps`` keeps, or at ``max_hours`` or ``max_tokens``. No state, no I/O.
+
+Use it for a campaign that wants a few good changes and no more, for example "make the build pass on the new
+compiler". It stops when enough candidates are kept. ``max_hours`` and ``max_tokens`` still limit the cost.
+"""
+
+import json
+from dataclasses import dataclass
+
+from piloop.plugins.contracts.stop import Fact, Limits, StopCase
+
+
+@dataclass(frozen=True)
+class Parameters:
+    """``[plugins.stop_rule]``: ``keeps``, the number of keeps that ends the campaign."""
+
+    keeps: int
+
+
+class AfterKeeps:
+    """The campaign ends after ``keeps`` keeps, or when it spent ``max_hours`` or ``max_tokens``."""
+
+    Parameters = Parameters
+
+    def reads(self, limits: Limits, parameters: str) -> list[Fact]:
+        return [Fact.KEEPS, *([Fact.HOURS] if limits.max_hours else []), *([Fact.TOKENS] if limits.max_tokens else [])]
+
+    def check(self, case: StopCase) -> str | None:
+        wanted = Parameters(**json.loads(case.parameters)).keeps
+        limits, progress = case.limits, case.progress
+        if progress.keeps is not None and progress.keeps >= wanted:
+            return f'after_keeps: {progress.keeps} keeps'
+        if limits.max_hours and progress.hours is not None and progress.hours >= limits.max_hours:
+            return f'max_hours: {progress.hours:.1f}h since the first run'
+        if limits.max_tokens and progress.tokens is not None and progress.tokens >= limits.max_tokens:
+            return f'max_tokens: {progress.tokens} tokens spent'
+        return None
+
+
+AFTER_KEEPS = AfterKeeps()
+"""The provider: an instance, as the entry point of a pure provider names."""
+```

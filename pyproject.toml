@@ -69,6 +69,9 @@ sql = "piloop.triggers:SqlTrigger"
 [project.entry-points."piloop.verdict_rules"]
 bootstrap = "piloop.plugins.builtin.verdict:BOOTSTRAP"
 
+[project.entry-points."piloop.stop_rules"]
+limits = "piloop.plugins.builtin.stop:LIMITS"
+
 [project.entry-points."piloop.roles"]
 worker = "piloop.plugins.builtin.roles:WORKER"
 watchdog = "piloop.plugins.builtin.roles:WATCHDOG"
@@ -140,7 +143,7 @@ quote-style = "single"
 
 [tool.ty.environment]
 python-version = "3.14"
-extra-paths = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain"]
+extra-paths = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps"]
 
 [tool.ty.src]
 include = ["piloop", "tests", "scripts", "examples"]
@@ -149,7 +152,7 @@ exclude = ["piloop/db/migrations/versions", "piloop/campaign/templates"]  # temp
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The example plugins import as packages; their entry points register only where a test installs them.
-pythonpath = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain"]
+pythonpath = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps"]
 # The e2e tests run real agents and cost money: only `make e2e` (`-m e2e`, which overrides this) selects them.
 addopts = ["-m", "not e2e"]
 markers = [

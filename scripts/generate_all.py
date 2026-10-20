@@ -18,6 +18,7 @@ from scripts.generate import (
     example_dir_store,
     example_min_gain,
     example_nice_runtime,
+    example_stop_after_keeps,
     harnesses,
     herdr_settings,
     imports,
@@ -71,6 +72,7 @@ GENERATORS = (
     example_nice_runtime,
     example_dir_store,
     example_min_gain,
+    example_stop_after_keeps,
 )
 
 

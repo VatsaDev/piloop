@@ -35,9 +35,9 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.triggers import DAEMON_ACTOR
-from piloop.plugins.contracts.verdict import Direction
+from piloop.plugins.contracts import stop as stop_contract
+from piloop.plugins.contracts.stop import STOP_RULES, Fact, Limits, Progress, StopCase
 from piloop.scoring.ledger import head, keeps, score
-from piloop.text import metric
 from piloop.usage import project_tokens
 
 STALE_ERROR = 'daemon exited while the run was in progress'
@@ -186,33 +186,38 @@ def park_cancelled(s: Session, run: Run) -> None:
 
 
 def stop_reason(s: Session, project: Project, cfg: ProjectConfig) -> str | None:
-    """Return why ``project`` stops now, or None: a stop request (``requested_stop``), else the first condition."""
+    """Return why ``project`` stops now, or None: a stop request (``requested_stop``), else its stop rule.
+
+    The rule is ``[plugins.stop_rule]``, else ``limits``. Only the facts that it reads are counted
+    (``StopRule.reads``). ``head`` is the first track's primary at the head: config validation rejects ``target`` for
+    a project with more than one track.
+    """
     if (request := requested_stop(s, project)) is not None:
         why = request.payload.get('reason')
         return f'stopped by {request.actor}: {why}' if why else f'stopped by {request.actor}'
-    stop = cfg.stop
-    checks = (
-        _target(s, project, cfg, stop.target) if stop.target is not None else None,
-        _max_runs(s, project, stop.max_runs) if stop.max_runs is not None else None,
-        _max_hours(s, project, stop.max_hours) if stop.max_hours is not None else None,
-        _max_tokens(s, project, stop.max_tokens) if stop.max_tokens is not None else None,
-        _plateau(s, project, stop.plateau) if stop.plateau is not None else None,
+    table = cfg.plugins.get('stop_rule')
+    rule = STOP_RULES.get(table.provider if table is not None else stop_contract.DEFAULT)
+    parameters = table.parameters if table is not None else '{}'
+    primary, stop = cfg.all_tracks[0].primary, cfg.stop
+    limits = Limits(stop.target, stop.max_runs, stop.max_hours, stop.max_tokens, stop.plateau)
+    reads = set(rule.reads(limits, parameters))
+    trunk = head(s, project) if Fact.HEAD in reads else None
+    counting = Fact.RUNS in reads
+    progress = Progress(
+        head=score(trunk, project.evaluator_id or 0, primary) if trunk is not None else None,
+        runs=runs(s, project) if counting else None,
+        unsettled=(_over_runs(s, project, func.count(Run.id), attempt(), unsettled()) or 0) if counting else None,
+        hours=hours(s, project, utcnow()) if Fact.HOURS in reads else None,
+        tokens=project_tokens(s, project.id) if Fact.TOKENS in reads else None,
+        without_keep=runs_without_keep(s, project) if Fact.WITHOUT_KEEP in reads else None,
+        keeps=kept(s, project) if Fact.KEEPS in reads else None,
     )
-    return next((reason for reason in checks if reason is not None), None)
+    return rule.check(StopCase(primary.name, primary.direction, limits, progress, parameters))
 
 
-def _target(s: Session, project: Project, cfg: ProjectConfig, target: float) -> str | None:
-    """Stop when the head reaches ``target`` on the primary metric.
-
-    Config validation rejects ``target`` for a project with more than one track.
-    """
-    primary = cfg.all_tracks[0].primary
-    trunk = head(s, project)
-    value = score(trunk, project.evaluator_id or 0, primary) if trunk is not None else None
-    if value is None or (value != target and not primary.better(value, target)):
-        return None
-    sign = '≥' if primary.direction is Direction.HIGHER else '≤'
-    return f'target: {primary.name} {metric(value)} {sign} {metric(target)}'
+def kept(s: Session, project: Project) -> int:
+    """Count the project's candidates of runs that are kept, on the trunk or on a branch. The baseline is not one."""
+    return s.scalar(keeps(project).where(Candidate.run_id.is_not(None)).with_only_columns(func.count())) or 0
 
 
 def _over_runs[T](s: Session, project: Project, aggregate: ColumnElement[T], *where: ColumnElement[bool]) -> T | None:
@@ -290,33 +295,3 @@ def stall(cfg: ProjectConfig) -> tuple[int, str]:
         return -(-cfg.stop.plateau // 2), f'half of [stop] plateau = {cfg.stop.plateau}'
     slots = ' + '.join(f'[roles.{name}] max_concurrent' for name in cfg.roles.doing_runs())
     return 2 * cfg.run_slots, f'two rounds of {slots} = {cfg.run_slots}'
-
-
-def _max_runs(s: Session, project: Project, limit: int) -> str | None:
-    """Stop when ``limit`` runs count (``runs``) and none of them is unsettled.
-
-    An unsettled run counts, so the queue starts no more than ``limit`` runs. It can still end without a scored
-    candidate, and then it does not count. A stop at that moment would end the run early, and the count would drop
-    below ``limit``.
-    """
-    count = runs(s, project)
-    unsettled_runs = _over_runs(s, project, func.count(Run.id), attempt(), unsettled())
-    return f'max_runs: {count} runs' if count >= limit and not unsettled_runs else None
-
-
-def _max_hours(s: Session, project: Project, limit: float) -> str | None:
-    elapsed = hours(s, project, utcnow())
-    if elapsed is None or elapsed < limit:
-        return None
-    return f'max_hours: {elapsed:.1f}h since the first run'
-
-
-def _max_tokens(s: Session, project: Project, limit: int) -> str | None:
-    """Count the tokens of all agents, as recorded when they ended. An agent without a session file counts 0."""
-    total = project_tokens(s, project.id)
-    return f'max_tokens: {total} tokens spent' if total >= limit else None
-
-
-def _plateau(s: Session, project: Project, limit: int) -> str | None:
-    count = runs_without_keep(s, project)
-    return f'plateau: {count} runs without a keep' if count >= limit else None

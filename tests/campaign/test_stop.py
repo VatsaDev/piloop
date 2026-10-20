@@ -1,11 +1,17 @@
 """Each ``[stop]`` condition ends the campaign exactly as the configuration reference says. A stopped project requests nothing."""
 
+import ast
+import json
+import re
+import sys
 from datetime import timedelta
 from pathlib import Path
 
+import piloop_stop_after_keeps
 import pytest
 from git.exc import GitCommandError
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from piloop_stop_after_keeps import AFTER_KEEPS
 from sqlalchemy import func, select
 
 from piloop.agents.launcher import STOPPED_ERROR
@@ -20,7 +26,7 @@ from piloop.campaign.stop import (
     stall,
     stop_reason,
 )
-from piloop.config import ProjectConfig, load_project_config
+from piloop.config import ConfigError, ProjectConfig, load_project_config
 from piloop.db.models import (
     Candidate,
     Document,
@@ -41,9 +47,14 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.otel import Tracer
+from piloop.plugins import host
+from piloop.plugins.builtin import stop as limits_module
+from piloop.plugins.contracts.stop import STOP_RULES, Fact, Limits, Progress, StopCase, StopRule
+from piloop.plugins.contracts.verdict import Direction
+from piloop.plugins.host import data_errors
 from piloop.reports.overview import progress
 from piloop.scoring.ledger import SKIPPED
-from tests.conftest import HARNESS_NOOP, HARNESS_WORSE, ScriptRuntime, span_named, write_toml
+from tests.conftest import HARNESS_APPEND, HARNESS_NOOP, HARNESS_WORSE, ScriptRuntime, example, span_named, write_toml
 from tests.daemon.test_scheduler import add_ideas, make_scheduler, stop_project
 
 LOWER_PRIMARY = [{'name': 'score', 'direction': 'higher'}, {'name': 'size', 'direction': 'lower', 'role': 'primary'}]
@@ -668,3 +679,73 @@ def test_a_stop_whose_document_sync_fails_still_stops_and_launches_the_closing_w
         assert s.get_one(Worker, watchdog).reason == 'campaign stopped: max_runs: 1 runs'
     error = dict(span_named(spans, 'documents.sync_failed').attributes or {})['error']
     assert isinstance(error, str) and error.startswith('GitCommandError: Cmd')
+
+
+def test_the_contract_of_a_stop_rule_is_data_in_data_out() -> None:
+    """A rule can move out of process or to a Wasm component: nothing live crosses its contract."""
+    assert data_errors(StopRule) == []
+
+
+def imports_outside_the_standard_library(module: object) -> set[str]:
+    tree = ast.parse(Path(str(getattr(module, '__file__', ''))).read_text())
+    imported = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module is not None}
+    return {m for m in imported if m.split('.')[0] not in sys.stdlib_module_names}
+
+
+def test_a_stop_rule_imports_only_the_standard_library_and_its_contract() -> None:
+    """``limits`` and the example plugin are pure providers: they read nothing of piloop's state."""
+    contracts = {'piloop.plugins.contracts.stop', 'piloop.plugins.contracts.verdict'}
+    assert imports_outside_the_standard_library(limits_module) == contracts
+    assert imports_outside_the_standard_library(piloop_stop_after_keeps) == {'piloop.plugins.contracts.stop'}
+
+
+def test_the_example_stop_rule_ends_after_its_keeps_or_at_its_cost_limits() -> None:
+    """``examples/plugins/stop-after-keeps``: it reads only the facts that it needs."""
+    capped = Limits(max_hours=12, max_tokens=1000, plateau=5)
+    assert AFTER_KEEPS.reads(Limits(plateau=5), '{"keeps": 3}') == [Fact.KEEPS]
+    assert AFTER_KEEPS.reads(capped, '{"keeps": 3}') == [Fact.KEEPS, Fact.HOURS, Fact.TOKENS]
+
+    def check(progress: Progress) -> str | None:
+        return AFTER_KEEPS.check(StopCase('score', Direction.HIGHER, capped, progress, json.dumps({'keeps': 3})))
+
+    assert check(Progress(keeps=2, hours=1, tokens=10)) is None
+    assert check(Progress(keeps=3, hours=1, tokens=10)) == 'after_keeps: 3 keeps'
+    assert check(Progress(keeps=0, hours=12.5, tokens=10)) == 'max_hours: 12.5h since the first run'
+    assert check(Progress(keeps=0, hours=1, tokens=1000)) == 'max_tokens: 1000 tokens spent'
+
+
+def test_a_stop_rule_from_a_plugin_replaces_the_built_in_one_through_piloop_toml(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The example plugin ``examples/plugins/stop-after-keeps``, installed, is selected by ``[plugins.stop_rule]``.
+
+    Without ``[stop]``, ``limits`` never ends the campaign; ``after_keeps`` ends it once its first run keeps.
+    """
+    example(tmp_path / 'site', 'stop-after-keeps')
+    monkeypatch.syspath_prepend(tmp_path / 'site')
+    host.close()
+    try:
+        write_toml(Path(project.path), HARNESS_APPEND)
+        for table, error in [
+            ({'provider': 'never'}, "[plugins.stop_rule] provider = 'never': unknown stop rule 'never'"),
+            ({'provider': 'after_keeps'}, 'keeps: Field required'),
+            ({'provider': 'limits', 'keeps': 1}, "stop rule 'limits' takes no parameters: keeps"),
+        ]:
+            with pytest.raises(ConfigError, match=re.escape(error)):
+                load_project_config(Path(project.path), plugins={'stop_rule': table})
+        with db.session() as s:
+            cfg = load_project_config(
+                Path(project.path), plugins={'stop_rule': {'provider': 'after_keeps', 'keeps': 1}}
+            )
+            s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
+            s.commit()
+        add_ideas(db, project, 'a', 'b')
+        sched = make_scheduler(db, runtime, tmp_path)
+        assert sched.tick() == [1]
+        sched.wait(10)
+        sched.tick()
+        assert project_state(db, project) == (ProjectStatus.STOPPED, 'after_keeps: 1 keeps')
+        sched.stop(timeout=5)
+        assert STOP_RULES.sources()['after_keeps'].release == 'piloop-stop-after-keeps 0.1.0'
+    finally:
+        host.close()

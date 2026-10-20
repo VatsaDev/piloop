@@ -45,6 +45,10 @@ triggers request nothing more, but an agent that you request with `piloop launch
 
 To resume a stopped project, change its `[stop]` table and run `piloop init`.
 
+These limits are the built-in stop rule, `limits`. A plugin can add another stop rule. You select it with
+`[plugins.stop_rule]` in `piloop.toml`. [Stop conditions](/architecture/extension-points#stop-conditions) has an
+example.
+
 ## Spend outside piloop
 
 `[spend]` is a hard limit in US dollars on what the campaign costs outside piloop. piloop knows no vendor, so you give

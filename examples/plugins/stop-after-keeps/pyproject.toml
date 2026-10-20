@@ -1,0 +1,13 @@
+[project]
+name = "piloop-stop-after-keeps"
+version = "0.1.0"
+description = "A piloop stop rule that ends a campaign after a number of keeps, or at the first limit of [stop]"
+requires-python = ">=3.14"
+dependencies = ["piloop"]
+
+[project.entry-points."piloop.stop_rules"]
+after_keeps = "piloop_stop_after_keeps:AFTER_KEEPS"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

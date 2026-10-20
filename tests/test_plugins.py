@@ -181,7 +181,7 @@ def test_a_broken_package_of_a_capability_that_nothing_binds_is_a_warning(
     found = next(c for c in doctor.checks(home) if c.name == 'plugins')
     assert found.fix is None
     assert found.found == (
-        '4 roles, 2 runtimes, 6 triggers, 1 verdict rule; all built in; warning: nothing selects a remote backend, and they do not load:'
+        '4 roles, 2 runtimes, 1 stop rule, 6 triggers, 1 verdict rule; all built in; warning: nothing selects a remote backend, and they do not load:'
         ' entry point gone = tests.fixtures.no_such_module:Gone in piloop.stores does not load: ModuleNotFoundError:'
         " No module named 'tests.fixtures.no_such_module'"
     )
@@ -313,7 +313,7 @@ def test_a_pure_plugin_is_installed_selected_by_config_and_answers_with_data(
         ({'verdict_rule': {'provider': 'min_gain'}}, 'min_gain: Field required'),
         (
             {'planner': {'provider': 'min_gain'}},
-            '[plugins.planner]: no capability has that name; there is verdict_rule',
+            '[plugins.planner]: no capability has that name; there is stop_rule, verdict_rule',
         ),
         ({'verdict_rule': {'provider': 'bootstrap', 'min_gain': 2}}, "verdict rule 'bootstrap' takes no parameters"),
     ]:

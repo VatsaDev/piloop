@@ -6,6 +6,7 @@ description: Each place where you can change what piloop does, with an example f
 import ExampleNiceRuntime from '/snippets/generated/example-nice-runtime.mdx';
 import ExampleDirStore from '/snippets/generated/example-dir-store.mdx';
 import ExampleMinGain from '/snippets/generated/example-min-gain.mdx';
+import ExampleStopAfterKeeps from '/snippets/generated/example-stop-after-keeps.mdx';
 import Roles from '/snippets/generated/roles.mdx';
 import Triggers from '/snippets/generated/triggers.mdx';
 import RuntimeProtocol from '/snippets/generated/runtime-protocol.mdx';
@@ -47,7 +48,7 @@ one and select it in the configuration.
 | [MCP servers](#mcp-servers) | `[roles.<name>] mcp` | configuration: `[mcp.<name>]` |
 | [The evaluate command](#the-evaluate-command) | `evaluate` | your command |
 | [Usage readers and MCP renderers](#usage-readers-and-mcp-renderers) | `[harness.<name>]` | built-in ones only |
-| [Stop conditions](#stop-conditions) | `[stop]` | built-in ones only |
+| [Stop conditions](#stop-conditions) | `[stop]`, `[plugins.stop_rule] provider` | a plugin: `piloop.stop_rules` |
 
 ## Runtimes
 
@@ -138,8 +139,8 @@ piloop: piloop gives it all that it needs as arguments. A pure provider imports 
 the **contract** of its capability, the module that defines the types that the provider gets and returns. Because of
 this, piloop can later run the same provider in another process, or as a WebAssembly component.
 
-The [verdict rules](#verdict-rules) are a pure capability, and the example there is a pure plugin. You select the
-provider of a pure capability with a table in `piloop.toml`. `provider` is its name. The other keys of the table are
+The [verdict rules](#verdict-rules) and the [stop rules](#stop-conditions) are pure capabilities, and their examples
+are pure plugins. You select the provider of a pure capability with a table in `piloop.toml`. `provider` is its name. The other keys of the table are
 the provider's **parameters**. piloop checks them against the provider's `Parameters` type when it loads
 `piloop.toml`:
 
@@ -478,14 +479,63 @@ today.
 
 ## Stop conditions
 
+On each tick (every 2 seconds by default), the daemon asks the stop rule whether the campaign ends. piloop gives the
+rule a `StopCase`: the limits of `[stop]`, the progress of the campaign, and the rule's parameters. The rule returns
+a reason to stop, or nothing. When it returns a reason, piloop stops the campaign.
+[Cost and spend limits](/concepts/cost#stop-conditions) says what a stop does.
+
+The built-in rule is `limits`. It stops the campaign at the first limit of `[stop]` that the campaign reaches.
+
+### Example: end the campaign after a number of keeps
+
+This rule stops the campaign after `keeps` candidates are kept. `max_hours` and `max_tokens` of `[stop]` still apply:
+
+<ExampleStopAfterKeeps />
+
+Install it next to piloop, then select it in `piloop.toml` and run `piloop init .`:
+
+```bash
+uv tool install piloop --with ./examples/plugins/stop-after-keeps
+piloop plugins
+```
+
+```text
+[plugins.stop_rule]
+provider = "after_keeps"
+keeps = 3
+```
+
+### The contract
+
+A stop rule is a [pure](#pure-plugins) provider with two methods. The types are in `piloop.plugins.contracts.stop`.
+
+- `reads(limits, parameters) -> list[Fact]`: the facts of the progress that the rule needs. Each fact costs database
+  queries on every tick, so piloop counts only these.
+- `check(case: StopCase) -> str | None`: the reason to stop, or `None` to go on.
+
+The facts are:
+
+- `head`: the primary metric of the head.
+- `runs`: the runs that count toward `max_runs`, and the runs that can still count.
+- `hours`: the hours since the first run started, without the time that the campaign was paused.
+- `tokens`: the tokens that the agents spent.
+- `without_keep`: the runs since the last keep.
+- `keeps`: the candidates of runs that are kept.
+
+A `StopCase` has the name and direction of the primary metric, the limits of `[stop]`, the facts that the rule reads,
+and the rule's parameters as JSON text. A stop that a person requests (`piloop project stop`) comes first, whatever
+the rule.
+
+### Built in
+
+`limits` is the rule of a project without `[plugins.stop_rule]`. It stops the campaign at the first limit of `[stop]`
+that the campaign reaches:
+
 ```toml
 [stop]
 max_hours = 24
 plateau = 30
 ```
-
-`[stop]` ends the campaign when one of its conditions holds; the daemon checks them on every tick, before it requests
-anything. [Cost and spend limits](/concepts/cost#stop-conditions) says what happens then. You cannot add one today.
 
 <Stop />
 
