@@ -24,13 +24,15 @@ import piloop
 from piloop import mcp
 from piloop.cli import skills, upgrade
 from piloop.config import ConfigError, ProjectConfig, explain, load_project_config
+from piloop.daemon.main import preflight, unbound_failures
 from piloop.daemon.serve import SECRETS_COMMAND_ENV, SecretsError, running_pid, secrets
 from piloop.db.models import utcnow
 from piloop.db.session import MIGRATIONS, SchemaAhead, ahead
+from piloop.plugins.contracts.runtime import RUNTIMES
+from piloop.plugins.host import PluginError, declared
 from piloop.proc import child_env, environment
 from piloop.reports.overview import age
 from piloop.runtime import Check
-from piloop.runtime.factory import runtimes
 from piloop.settings import Settings
 from piloop.version import direct_url, installed
 
@@ -38,23 +40,28 @@ CHANGELOG = 'https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md'
 
 
 def checks(cfg: Settings) -> list[Check]:
-    """Run every check, in the best order to debug a broken upgrade: daemon, database, configs, skills, tools."""
-    projects = _projects(cfg.home / 'piloop.db')
-    stored = [c for _, _, c in projects if isinstance(c, ProjectConfig)]
+    """Run every check, in the best order to debug a broken upgrade: daemon, database, plugins, configs, skills, tools.
+
+    When the plugins do not compose, the checks of the projects, harnesses and runtimes, which use them, do not run.
+    """
+    composed = _plugins(cfg)
     whose, names, command = _daemon_env(cfg)
     found_secrets, supplied = _secrets(whose, command)
-    env = whose, names | supplied
-    found = [
-        _cli(cfg),
-        _daemon(cfg),
-        _database(cfg.home / 'piloop.db'),
-        found_secrets,
-        *(_project(name, path, c) for name, path, c in projects),
-        *(_mcp(name, c, env) for name, _, c in projects if isinstance(c, ProjectConfig) and c.mcp),
-        *_skills(cfg),
-        _harnesses(stored),
-        *_runtimes(stored),
-    ]
+    first = [_cli(cfg), _daemon(cfg), _database(cfg.home / 'piloop.db'), composed, found_secrets]
+    if composed.fix is not None:
+        found = [*first, *_skills(cfg)]
+    else:
+        projects = stored_projects(cfg.home / 'piloop.db')
+        stored = [c for _, _, c in projects if isinstance(c, ProjectConfig)]
+        env = whose, names | supplied
+        found = [
+            *first,
+            *(_project(name, path, c) for name, path, c in projects),
+            *(_mcp(name, c, env) for name, _, c in projects if isinstance(c, ProjectConfig) and c.mcp),
+            *_skills(cfg),
+            _harnesses(stored),
+            *_runtimes(stored),
+        ]
     # the commands that the lines name are this install's, which a second install (piloop-canary) runs under its name
     return [replace(c, found=_named(c.found, cfg), fix=c.fix and _named(c.fix, cfg)) for c in found]
 
@@ -95,6 +102,21 @@ def _daemon(cfg: Settings) -> Check:
             '`piloop restart` restarts it on the installed code',
         )
     return Check('daemon', f'pid {pid} runs the installed {installed()}')
+
+
+def _plugins(cfg: Settings) -> Check:
+    """Check the plugins as the daemon does before it starts, and warn on a broken package that nothing selects."""
+    try:
+        preflight(cfg)
+    except PluginError as e:
+        return Check('plugins', str(e), 'fix or uninstall the package of that entry point, then `piloop plugins`')
+    unbound = unbound_failures(cfg)
+    loaded = [c for c in declared() if c not in unbound]
+    counts = ', '.join(f'{len(c.sources())} {c.noun}s' for c in loaded)
+    added = sorted({s.release for c in loaded for s in c.sources().values() if not s.built_in})
+    found = f'{counts}; {"from " + ", ".join(added) if added else "all built in"}'
+    warnings = ''.join(f'; warning: nothing selects a {c.noun}, and they do not load: {e}' for c, e in unbound.items())
+    return Check('plugins', found + warnings)
 
 
 def _database(path: Path) -> Check:
@@ -233,7 +255,7 @@ def _runtimes(configs: list[ProjectConfig]) -> list[Check]:
         programs = {c.harness_for(h).executable for kind in c.roles.all() for h in c.role_harnesses(kind)}
         for kind in c.runtimes:
             executables.setdefault(kind, set()).update(programs)
-    return [check for kind, found in sorted(executables.items()) for check in runtimes()[kind].checks(found)]
+    return [check for kind, found in sorted(executables.items()) for check in RUNTIMES.get(kind).checks(found)]
 
 
 def _revision(path: Path) -> str | None:
@@ -245,7 +267,7 @@ def _revision(path: Path) -> str | None:
     return row[0] if row else None
 
 
-def _projects(path: Path) -> list[tuple[str, str, ProjectConfig | ValidationError]]:
+def stored_projects(path: Path) -> list[tuple[str, str, ProjectConfig | ValidationError]]:
     """Return the name, repo path and stored config of each registered project, or why the config does not validate."""
     if not path.is_file():
         return []

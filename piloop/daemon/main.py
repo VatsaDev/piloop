@@ -13,18 +13,67 @@ from piloop.daemon.serve import RESTART_SIGNAL, SECRETS_COMMAND_ENV, SERVE_ARGV,
 from piloop.db.session import Database, SchemaAhead, migrate
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Span, tracer
+from piloop.plugins import host as plugins
 from piloop.proc import Inherited
-from piloop.settings import Settings, settings
+from piloop.settings import CONFIG_FILE, Settings, settings
 from piloop.store.config import open_store
 
 ACTOR = DAEMON_ACTOR
 """The actor that the daemon's connections record in ``updated_by``. The change-log triggers use this name."""
 
 
+def bound(cfg: Settings) -> list[plugins.Activatable]:
+    """The capabilities that the daemon uses: every one, but one that ``config.toml`` selects only when it does.
+
+    A broken package of a capability that nothing selects does not stop the daemon (``unbound_failures``).
+    """
+    home = cfg.model_dump(mode='json')
+    return [
+        c
+        for c in plugins.declared()
+        if c.selection is None or c.selection.scope == 'project' or plugins.lookup(home, c.selection.key) is not None
+    ]
+
+
+def unbound_failures(cfg: Settings) -> dict[plugins.Activatable, str]:
+    """The capabilities that the daemon does not use and that do not load, with why. ``piloop doctor`` warns."""
+    failed: dict[plugins.Activatable, str] = {}
+    for capability in plugins.declared():
+        if capability not in bound(cfg):
+            try:
+                plugins.compose(capability)
+            except plugins.PluginError as e:
+                failed[capability] = str(e)
+    return failed
+
+
+def preflight(cfg: Settings) -> None:
+    """Compose the capabilities that the daemon uses (``bound``), then check what ``config.toml`` selects.
+
+    ``piloop serve --check`` runs this, and ``piloop restart`` and ``piloop upgrade`` run it before they restart the
+    daemon. ``piloop.toml`` is checked when it loads (``piloop init``).
+
+    Raises:
+        PluginError: A provider does not compose, or ``config.toml`` selects a provider that there is not, or one
+            that refuses its parameters.
+    """
+    plugins.compose(*bound(cfg))
+    home = cfg.model_dump(mode='json')
+    for capability in bound(cfg):
+        try:
+            plugins.check_selection(capability, home, 'home')
+        except ValueError as e:
+            raise plugins.PluginError(f'{cfg.home / CONFIG_FILE}: {e}') from e
+
+
 class Daemon:
     """Everything that a ``piloop serve`` process owns."""
 
     def __init__(self, cfg: Settings = settings, inherited: Inherited | None = None) -> None:
+        try:
+            preflight(cfg)
+        except plugins.PluginError as e:
+            raise SystemExit(f'the daemon does not start: {e}') from e
         self._inherited = inherited or Inherited(set())
         """The children an in-place restart handed over (``piloop.proc.Inherited``): reaped on every tick."""
         self.db = Database(cfg.database_url, actor=ACTOR)
@@ -135,3 +184,4 @@ class Daemon:
             (self.scheduler.hand_over if self._restart else self.scheduler.stop)(timeout)
         self.tracer.shutdown()
         self.db.close()
+        plugins.close()

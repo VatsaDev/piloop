@@ -7,7 +7,9 @@ import subprocess
 import sys
 import threading
 import time
+import tomllib
 from collections.abc import Callable, Iterator
+from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
 
 import pytest
@@ -114,6 +116,34 @@ def write_toml(
             script=script,
         )
     )
+
+
+def package(root: Path, name: str, version: str, entry_points: str) -> None:
+    """Install a distribution called ``name`` at ``version`` under ``root``, with only ``entry_points`` in it.
+
+    Put ``root`` on ``sys.path`` and ``importlib.metadata`` finds its entry points, as those of an installed package.
+    """
+    info = root / f'{name.replace("-", "_")}-{version}.dist-info'
+    info.mkdir(parents=True)
+    (info / 'METADATA').write_text(f'Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n')
+    (info / 'entry_points.txt').write_text(entry_points)
+
+
+EXAMPLES = Path(__file__).parent.parent / 'examples' / 'plugins'
+"""The example plugin packages. Their modules import (``pythonpath`` in pyproject.toml); ``example`` installs one."""
+
+
+def piloop_entry_points(group: str) -> list[EntryPoint]:
+    """piloop's own entry points of ``group``: its built-in providers, which every test that fakes the others keeps."""
+    return [ep for ep in entry_points(group=group) if ep.dist is not None and ep.dist.name == 'piloop']
+
+
+def example(root: Path, name: str) -> None:
+    """Install the example plugin ``examples/plugins/<name>`` under ``root``, with the entry points of its pyproject."""
+    project = tomllib.loads((EXAMPLES / name / 'pyproject.toml').read_text())['project']
+    groups = project['entry-points']
+    entries = ''.join(f'[{g}]\n' + ''.join(f'{n} = {v}\n' for n, v in eps.items()) for g, eps in groups.items())
+    package(root, project['name'], project['version'], entries)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

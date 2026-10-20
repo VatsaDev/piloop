@@ -25,9 +25,10 @@ from piloop.cli.database import sql_cmd
 from piloop.cli.main import app
 from piloop.config import ProjectConfig
 from piloop.db import sql
+from piloop.plugins import host
 from piloop.settings import StorageSettings
 from piloop.store.config import remote_config
-from tests.conftest import at_head
+from tests.conftest import at_head, example
 
 ROOT = Path(__file__).parent.parent
 SOURCES = [
@@ -226,8 +227,21 @@ def db(tmp_path_factory: pytest.TempPathFactory, schema: Path) -> Path:
     return at_head(schema, tmp_path_factory.mktemp('docs') / 'piloop.db')
 
 
+@pytest.fixture(scope='module')
+def examples(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """The example plugins installed, so that a page that selects one (``runtime = "nice"``) validates."""
+    site = tmp_path_factory.mktemp('site')
+    for name in ('nice-runtime', 'dir-store', 'pick-by-priority'):
+        example(site, name)
+    with pytest.MonkeyPatch.context() as patch:
+        patch.syspath_prepend(str(site))
+        host.close()
+        yield
+    host.close()
+
+
 @pytest.mark.parametrize('block', [pytest.param(b, id=b.at()) for b in ALL])
-def test_code_block(block: Block, db: Path) -> None:
+def test_code_block(block: Block, db: Path, examples: None) -> None:
     check = CHECKS.get(block.language)
     assert check is not None, f'no check for the language {block.language!r}: add one to CHECKS'
     try:

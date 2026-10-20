@@ -264,6 +264,15 @@ The package has one subpackage for each concern. Imports only point down this li
 The top-level modules `settings`, `otel`, `git`, `proc`, `text`, `version` and `deprecated` are leaves that every
 subpackage may use.
 
+`plugins/` is everything about plugins. `plugins/host.py` loads, checks and shows them, and imports nothing else of
+piloop, so every layer may use it. `plugins/contracts/` has one module for each capability: its contract, its entry
+point group and where the configuration selects it. A host contract may import the types that it passes; a pure one
+imports only the standard library. `plugins/builtin/` has the providers of piloop that live nowhere else. piloop's own
+providers are entry points in `pyproject.toml`, in the same groups that a plugin uses. To add a capability: a contract
+module, a builtin module, and an entry point line. The triggers and the roles declare their capability where they are
+defined (`triggers.py`, `config.py`): their contract module would import them, and they import their capability.
+Run `uv sync` after you change an entry point: piloop finds its own providers in its installed metadata.
+
 ## Send a change
 
 - Open an issue first for a large change, so that we can agree on the approach.

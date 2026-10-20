@@ -15,7 +15,10 @@ The command prints each step as it runs it:
 2. It runs `piloop install-skills` from the new code, so the skills of every harness on your `PATH` match the new CLI.
    A running harness reads them at its next session.
 3. It restarts a running daemon in place, as `piloop restart` does. The running agents continue. The new code
-   migrates the database as it starts, and connects to the agents again. When no daemon runs, the upgrade migrates the
+   migrates the database as it starts, and connects to the agents again. First it runs `piloop serve --check` from
+   the new code: when the new daemon would not start, for example on a `config.toml` that names a runtime that is no
+   longer installed, the upgrade stops with the reason and the old daemon keeps running. Fix it, then run
+   `piloop restart`. When no daemon runs, the upgrade migrates the
    database itself, and the daemon stays stopped.
 4. It runs `piloop doctor`. When a check fails, the upgrade exits with a non-zero status.
 
@@ -40,6 +43,8 @@ catches up with an upgrade that you already made.
   tell, it says why.
 - The daemon runs the installed code.
 - The database has the current schema.
+- The runtimes, remote backends, triggers and roles that packages add load, and none of them reuses a name. When
+  they do not, the checks after this one do not run.
 - `PILOOP_SECRETS_COMMAND`, when it is set, runs and prints `NAME=value` lines. The check shows the names only.
 - The `piloop.toml` of every project loads.
 - The commands of each project's stdio MCP servers are on your `PATH`, and the variables that its servers need are

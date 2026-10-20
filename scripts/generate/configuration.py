@@ -7,10 +7,10 @@ from pydantic import BaseModel
 
 from piloop.config import ProjectConfig
 from piloop.deprecated import BRIDGES, CONFIG_BRIDGES
+from piloop.plugins.contracts.store import REMOTES
 from piloop.runtime.herdr import HerdrSettings
 from piloop.settings import StorageSettings
-from piloop.store.config import BUILTIN_REMOTES
-from piloop.triggers import BUILTIN_TRIGGERS
+from piloop.triggers import TRIGGERS
 from scripts.generate import ROOT, header
 from scripts.generate.markdown import JsonSchema, json_schema, mdx, table
 
@@ -89,7 +89,7 @@ def generate() -> str:
             return _section(model, defs)
         return show(base) + _section(model, defs, _own_keys(model, base))
 
-    for model in [*_nested(ProjectConfig, []), *BUILTIN_TRIGGERS.values()]:
+    for model in [*_nested(ProjectConfig, []), *TRIGGERS.builtins().values()]:
         out += show(model)
     return out + global_section() + deprecated_section()
 
@@ -112,7 +112,7 @@ def global_section() -> str:
         'A package adds a backend with an entry point in the `piloop.stores` group: see'
         ' [storage backends](/architecture/extension-points#storage-backends). The built-in ones:\n'
     )
-    for kind, backend in BUILTIN_REMOTES.items():
+    for kind, backend in REMOTES.builtins().items():
         schema = json_schema(backend)
         out += f'\n### `[storage.remote]` with `kind = "{kind}"`\n\n{mdx(schema.get("description", ""))}\n\n'
         out += table(schema, schema.get('$defs', {}))

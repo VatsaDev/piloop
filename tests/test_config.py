@@ -20,7 +20,7 @@ from piloop.config import (
 )
 from piloop.db.models import WorkerKind
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
-from piloop.triggers import triggers
+from piloop.triggers import TRIGGERS
 
 
 def test_load_precedence(project_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -364,8 +364,9 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
         '  roles.reviewer.triggers: Field required. Fix: add the key; https://piloop.autoresearch.inc/reference/configuration says what it takes'
     )
     assert "roles.reviewer.prompt = 'missing.md': no such file" in fails(reviewer(prompt='missing.md'))
-    assert f"roles.reviewer.triggers[0]: unknown trigger kind 'nope'; known: {', '.join(triggers())}" in fails(
-        reviewer(triggers=[{'kind': 'nope'}])
+    assert (
+        f"roles.reviewer.triggers[0]: unknown trigger 'nope'; registered triggers: {', '.join(TRIGGERS.providers())}"
+        in fails(reviewer(triggers=[{'kind': 'nope'}]))
     )
     assert 'roles.reviewer.triggers[0].every = 3: Extra inputs are not permitted' in fails(
         reviewer(triggers=[{'kind': 'cron', 'every': 3}])

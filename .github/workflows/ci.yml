@@ -50,6 +50,22 @@ jobs:
           piloop init --example enwik8 /tmp/enwik8 | tee /tmp/init.txt
           grep -q "registered; baseline candidate#1" /tmp/init.txt
           piloop status enwik8
+      - name: the example plugins install next to piloop and are selected through the configuration
+        env:
+          PILOOP_HOME: /tmp/plugins-home
+          PILOOP_PROJECT_RUNTIME: nice
+          COLUMNS: 200
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          uv tool install --force --from . piloop $(printf -- '--with ./%s ' examples/plugins/*/)
+          mkdir -p "$PILOOP_HOME" && printf '[storage.remote]\nkind = "dir"\nroot = "/tmp/plugins-store"\n' > "$PILOOP_HOME/config.toml"
+          piloop serve --check
+          piloop init --example enwik8 /tmp/enwik8-nice
+          piloop plugins | tee /tmp/plugins.txt
+          grep -q "nice        piloop-nice 0.1.0, entry point nice = piloop_nice:NiceRuntime" /tmp/plugins.txt
+          grep -q "enwik8 worker: runtime nice, from piloop-nice 0.1.0" /tmp/plugins.txt
+          grep -q "remote backend dir, from piloop-dir-store 0.1.0" /tmp/plugins.txt
+          "$(uv tool dir)/piloop/bin/python" -c "import piloop_pick_by_priority; print(piloop_pick_by_priority.BY_PRIORITY)"
       - name: the wheel carries the skills (a stand-in codex on PATH)
         run: |
           export PATH="$HOME/.local/bin:$PATH"

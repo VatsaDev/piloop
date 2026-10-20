@@ -121,6 +121,9 @@ max_concurrent = 1
 # timeout = 300
 # max_concurrent = 2
 
+# [plugins.<name>]                        # the provider of a capability that a plugin package adds, by its name
+# provider = "<name>"                     # the other keys of the table are its parameters; `piloop plugins` lists them
+
 # [stop]                                  # any one of these ends the campaign; leave the table out to run with no end
 # target = 0.85                           # the primary metric at the head reaches this value (one track only)
 # max_runs = 200                          # runs of every role that reached the evaluator (a scored commit)

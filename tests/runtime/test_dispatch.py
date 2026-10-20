@@ -10,14 +10,15 @@ from piloop.cli import agents, common, doctor
 from piloop.config import config_of
 from piloop.db.models import Project, Worker, WorkerKind, WorkerState, utcnow
 from piloop.db.session import Database
+from piloop.plugins.contracts.runtime import RUNTIMES
 from piloop.reports.overview import overview
 from piloop.runtime import Check
-from piloop.runtime.factory import RUNTIME_GROUP, view_of
+from piloop.runtime.factory import view_of
 from piloop.settings import Settings
 from piloop.watch.app import focus
 from tests.daemon.test_roles import PLUGIN, forget_loaded, installed
 
-SHOWN = [EntryPoint('shown', f'{PLUGIN}:Shown', RUNTIME_GROUP)]
+SHOWN = [EntryPoint('shown', f'{PLUGIN}:Shown', RUNTIMES.group)]
 
 
 @pytest.fixture

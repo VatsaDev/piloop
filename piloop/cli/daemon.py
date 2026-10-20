@@ -9,11 +9,12 @@ from sqlalchemy import select
 
 from piloop.cli import common
 from piloop.config import config_of
-from piloop.daemon.main import Daemon
+from piloop.daemon.main import Daemon, preflight
 from piloop.daemon.serve import restart as restart_in_place, running_pid, service_unit, spawn_detached, terminate
 from piloop.db.models import Project
 from piloop.db.session import SchemaAhead
 from piloop.harnesses import DEFAULT_HARNESSES
+from piloop.plugins.host import PluginError
 from piloop.proc import Inherited
 
 
@@ -22,11 +23,21 @@ def serve(
     detach: Annotated[
         bool, cyclopts.Parameter(help='Start the daemon in the background. Its output goes to serve.log.')
     ] = False,
+    check: Annotated[
+        bool,
+        cyclopts.Parameter(
+            help='Check that the daemon can start (its plugins, and what config.toml binds), and start nothing.'
+        ),
+    ] = False,
 ) -> None:
     """Run the daemon, which fires the triggers, launches the agents and reaps the agents that end.
 
     Only one daemon runs per PILOOP_HOME. The file serve.pid holds its lock.
     """
+    if check:
+        can_start()
+        common.console.print('the daemon can start')
+        return
     if detach:
         pid = spawn_detached(common.settings)
         common.console.print(f'daemon started: pid {pid}, log {common.settings.log_file}')
@@ -66,7 +77,19 @@ def restart(
     pid = running_pid(common.settings)
     if pid is None:
         raise SystemExit('no daemon is running')
+    try:
+        can_start()
+    except SystemExit as e:
+        raise SystemExit(f'daemon pid {pid} not restarted, and it keeps running: {e}') from e
     common.console.print(f'daemon pid {restarted(pid, timeout)} restarted')
+
+
+def can_start() -> None:
+    """Exit with why the daemon would not start on this code, before anything signals the running one."""
+    try:
+        preflight(common.settings)
+    except PluginError as e:
+        raise SystemExit(f'the daemon cannot start: {e}') from e
 
 
 def restarted(pid: int, timeout: float) -> int:

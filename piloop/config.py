@@ -14,8 +14,6 @@ import re
 import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
-from functools import cache
-from importlib.metadata import entry_points
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, ClassVar, Literal, Self, cast
 
@@ -36,7 +34,8 @@ from piloop import deprecated
 from piloop.db.models import Project, Worker, WorkerKind
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.mcp import McpServer, ServerName
-from piloop.runtime.factory import runtimes
+from piloop.plugins.contracts.runtime import RUNTIMES
+from piloop.plugins.host import Capability, check_selection, declared
 from piloop.triggers import (
     AnomalyTrigger,
     CronTrigger,
@@ -59,13 +58,12 @@ class Direction(StrEnum):
 
 
 def _registered_runtime(name: str) -> str:
-    if name not in runtimes():
-        raise ValueError(f'unknown runtime {name!r}; registered runtimes: {", ".join(runtimes())}')
+    RUNTIMES.get(name)
     return name
 
 
 RuntimeName = Annotated[str, AfterValidator(_registered_runtime)]
-"""The name of a registered runtime (``piloop.runtime.factory.runtimes``): ``subprocess``, ``herdr``, or one that a
+"""The name of a registered runtime (``piloop.runtime.factory.RUNTIMES``): ``subprocess``, ``herdr``, or one that a
 package adds."""
 
 
@@ -170,9 +168,6 @@ ROLE_NAME = r'[a-z][a-z0-9_-]{0,19}'
 """The form of a role name: the agents' signature, ``workers.kind``, and the start of their Herdr agent name."""
 RESERVED_NAMES = frozenset({'run', 'orchestrator', 'human', 'daemon'})
 """Names that already sign writes: a run, and the actors that are not roles."""
-ROLE_GROUP = 'piloop.roles'
-"""The entry point group of the roles that packages add. Each entry point names a ``SweepRole`` or a ``WorkerRole``
-with its defaults."""
 
 
 class Workdir(StrEnum):
@@ -587,25 +582,28 @@ class Roles(BaseModel):
         }
 
 
-@cache
-def registered_roles() -> dict[str, SweepRole | WorkerRole]:
-    """Return the roles that packages add (``ROLE_GROUP``), by the name of their entry point.
+def _check_role(name: str, loaded: object) -> SweepRole | WorkerRole:
+    if isinstance(loaded, SweepRole | WorkerRole):
+        return loaded
+    raise TypeError('is not a piloop SweepRole or WorkerRole')
 
-    Raises:
-        TypeError: An entry point does not name a ``SweepRole`` or a ``WorkerRole``.
-        ValueError: An entry point reuses the name of a built-in role.
+
+ROLES = Capability('role', group='piloop.roles', check=_check_role)
+"""Every role by name, with its defaults: the built-in ones, then the ones that packages add. Each entry point of the
+group names a ``SweepRole`` or a ``WorkerRole``. A role whose runtime or triggers are checked when it is defined
+looks them up, which activates the runtimes or the triggers first."""
+
+
+class PluginTable(BaseModel):
+    """``[plugins.<capability>]``: which provider of a capability the project uses, and its parameters.
+
+    The capability declares the table (``piloop.plugins.host.Selection``), and the provider checks the parameters.
     """
-    found: dict[str, SweepRole | WorkerRole] = {}
-    for ep in entry_points(group=ROLE_GROUP):
-        loaded = ep.load()
-        if not isinstance(loaded, SweepRole | WorkerRole):
-            raise TypeError(
-                f'entry point {ep.name} = {ep.value} in {ROLE_GROUP} is not a piloop SweepRole or WorkerRole'
-            )
-        if ep.name in Roles.model_fields:
-            raise ValueError(f'entry point {ep.name} = {ep.value} in {ROLE_GROUP}: {ep.name!r} is a built-in role')
-        found[ep.name] = loaded
-    return found
+
+    model_config = ConfigDict(extra='allow', frozen=True, use_attribute_docstrings=True)
+
+    provider: str
+    """The name of the provider: the name of its entry point. The other keys of the table are its parameters."""
 
 
 class ProjectConfig(BaseModel):
@@ -661,10 +659,14 @@ class ProjectConfig(BaseModel):
     """``[spend]``: a hard budget on what the campaign spends outside piloop. None by default."""
     memory: Memory = Memory()
     """``[memory]``: documents to search and the lessons overview in briefs."""
+    plugins: dict[str, PluginTable] = {}
+    """``[plugins.<capability>]``: the provider of each capability that a plugin package can provide and that has no
+    key of its own, and its parameters."""
 
     @model_validator(mode='after')
     def _check(self) -> Self:
         self._check_tracks()
+        self._check_plugins()
         self._check_harnesses(self.harnesses, self.model, 'project')
         if unknown := [h for h in self.max_concurrent if h not in DEFAULT_HARNESSES and h not in self.harness]:
             raise ValueError(f'max_concurrent: unknown harnesses {unknown}; built-ins are {sorted(DEFAULT_HARNESSES)}')
@@ -679,6 +681,18 @@ class ProjectConfig(BaseModel):
             if Path(rel).is_absolute() or '..' in Path(rel).parts:
                 raise ValueError(f'{rel!r} must be a relative path inside the repo')
         return self
+
+    def _check_plugins(self) -> None:
+        """Each ``[plugins.<name>]`` names a capability, one of its providers, and the parameters that it takes."""
+        tables = {c.selection.key: c for c in declared() if c.selection is not None and c.selection.scope == 'project'}
+        for name, table in self.plugins.items():
+            capability = tables.get(f'plugins.{name}.provider')
+            if capability is None:
+                known = sorted(k.split('.')[1] for k in tables if k.startswith('plugins.'))
+                raise ValueError(
+                    f'[plugins.{name}]: no capability has that name; there is {", ".join(known) or "none"}'
+                )
+            check_selection(capability, {'plugins': {name: table.model_dump()}}, 'project')
 
     def _check_tracks(self) -> None:
         """Check that each track has one primary.
@@ -723,7 +737,7 @@ class ProjectConfig(BaseModel):
         if not self.role(kind).mcp:
             return
         runtime = self.role_runtime(kind)
-        invocation = runtimes()[runtime].invocation
+        invocation = RUNTIMES.get(runtime).invocation
         for name in self.role_harnesses(kind):
             if why := self.harness_for(name).refuses_servers(invocation):
                 raise ValueError(
@@ -868,12 +882,13 @@ def explain(where: object, error: ValidationError) -> str:
 
 
 def with_registered_roles(raw: dict[str, object]) -> None:
-    """Add each role that a package adds (``registered_roles``) to a parsed ``piloop.toml``, its table over its defaults.
+    """Add each role that a package adds (``ROLES``) to a parsed ``piloop.toml``, its table over its defaults.
 
     A value that is not a table is left for the validation to refuse.
     """
     tables = raw.get('roles', {})
-    if not (added := registered_roles()) or not isinstance(tables, dict):
+    added = {name: p.value for name, p in ROLES.providers().items() if not p.source.built_in}
+    if not added or not isinstance(tables, dict):
         return
     merged = dict(tables)
     for name, role in added.items():

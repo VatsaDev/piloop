@@ -65,6 +65,8 @@ class Unsure:
 
 AUDITOR = SweepRole(prompt=str(Path(__file__).parent / 'auditor.md'), triggers=[EveryTick(label='audit')], timeout=5)
 QUICK = WorkerRole(takes='priority >= 3', timeout=60, max_concurrent=1)
+FAST = WorkerRole.model_construct(takes='priority >= 9', runtime='nice')
+"""A role whose default runtime is ``nice``. Built unvalidated: ``nice`` is a runtime only once a test installs it."""
 NOT_A_TRIGGER = 'every_tick'
 NOT_A_ROLE = 'auditor'
 NOT_A_RUNTIME = 'typed'

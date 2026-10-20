@@ -1,8 +1,11 @@
 ---
 title: Extension points
-description: The contract of each extension point, its built-in implementations, and how to add your own.
+description: Each place where you can change what piloop does, with an example first, then its contract and what is built in.
 ---
 
+import ExampleNiceRuntime from '/snippets/generated/example-nice-runtime.mdx';
+import ExampleDirStore from '/snippets/generated/example-dir-store.mdx';
+import ExamplePickByPriority from '/snippets/generated/example-pick-by-priority.mdx';
 import Roles from '/snippets/generated/roles.mdx';
 import Triggers from '/snippets/generated/triggers.mdx';
 import RuntimeProtocol from '/snippets/generated/runtime-protocol.mdx';
@@ -17,42 +20,155 @@ import CwdEncoders from '/snippets/generated/cwd-encoders.mdx';
 import Renderers from '/snippets/generated/renderers.mdx';
 import Stop from '/snippets/generated/stop.mdx';
 
-Each extension point below has a contract, a table of what piloop has built in, and how to add your own: with
-configuration in `piloop.toml`, or with a Python package and an entry point. The tables come from the code.
+You can change what piloop does in two ways: with configuration, or with a plugin.
 
-| Extension point | Your own, by configuration | Your own, from a package |
+These words have one meaning on this page:
+
+- A **plugin** is a Python package that you install next to piloop.
+- A **capability** is a part of piloop that a plugin can replace or add to, for example the runtime that starts the
+  agents.
+- A **provider** is one implementation of a capability. It has a name, for example the runtime `subprocess`.
+- A **built-in** provider is one that piloop includes. Each capability has at least one.
+- The configuration selects a provider by its name. A plugin adds providers.
+
+Each example plugin on this page is a package in
+[`examples/plugins/`](https://github.com/hiloopai/piloop/tree/main/examples/plugins). piloop's tests install each
+one and select it in the configuration.
+
+| Extension point | Select it in | Add your own |
 |---|---|---|
-| [Roles](#roles) | `[roles.<name>]` | `piloop.roles` |
-| [Triggers](#triggers) | a `sql` trigger | `piloop.triggers` |
-| [Runtimes](#runtimes) | no | `piloop.runtimes` |
-| [Storage backends](#storage-backends) | no | `piloop.stores` |
-| [Harnesses](#harnesses) | `[harness.<name>]` | no |
-| [MCP servers](#mcp-servers) | `[mcp.<name>]` | no |
-| [The evaluate command](#the-evaluate-command) | `evaluate` | no |
-| [Usage readers and MCP renderers](#usage-readers-and-mcp-renderers) | no | no |
-| [Stop conditions](#stop-conditions) | no | no |
+| [Runtimes](#runtimes) | `runtime`, `[roles.<name>] runtime` | a plugin: `piloop.runtimes` |
+| [Storage backends](#storage-backends) | `[storage.remote] kind` in `config.toml` | a plugin: `piloop.stores` |
+| [Pure plugins](#pure-plugins) | `[plugins.<capability>] provider` | a plugin: data in, data out |
+| [Roles](#roles) | `[roles.<name>]` | configuration, or a plugin: `piloop.roles` |
+| [Triggers](#triggers) | `[roles.<name>] triggers` | a `sql` trigger, or a plugin: `piloop.triggers` |
+| [Harnesses](#harnesses) | `harnesses` | configuration: `[harness.<name>]` |
+| [MCP servers](#mcp-servers) | `[roles.<name>] mcp` | configuration: `[mcp.<name>]` |
+| [The evaluate command](#the-evaluate-command) | `evaluate` | your command |
+| [Usage readers and MCP renderers](#usage-readers-and-mcp-renderers) | `[harness.<name>]` | built-in ones only |
+| [Stop conditions](#stop-conditions) | `[stop]` | built-in ones only |
 
-A package entry point goes in the package's `pyproject.toml`. Install the package in the environment of `piloop`.
-piloop loads each group once per process. A name that a built-in has already is an error that names the entry point.
+## Runtimes
 
-## Roles
+piloop starts each agent through a runtime. The runtime starts the agent's process. piloop then asks the runtime if
+the agent still works, sends messages to the agent through it, and stops the agent through it.
+
+### Example: run the agents under `nice`
+
+This runtime starts each agent as the built-in runtime `subprocess` does, but with a lower CPU priority:
+
+<ExampleNiceRuntime />
+
+Install it next to piloop, then select it in `piloop.toml` and run `piloop init .`:
+
+```bash
+uv tool install piloop --with ./examples/plugins/nice-runtime
+piloop plugins
+```
+
+```toml
+runtime = "nice"
+```
+
+A role can select its own: `[roles.research] runtime = "herdr"`. `[runtimes.nice]` in `config.toml` holds the
+runtime's settings.
 
 ### The contract
 
-A role is a table in `piloop.toml`: what the agent is told (its prompt), when it starts (the run queue, or its
-triggers), where it works (its runtime and working copy), how it works (harnesses, models, MCP servers, timeout,
-concurrency) and what it may file. A role either does runs or sweeps. A role that does runs (`runs = true`) takes ideas
-from the run queue, works in a new worktree at the base of its run, and its commits are scored and judged. A sweeping
-role starts on its triggers, works at the head or in the project checkout, and nothing it commits is scored.
-[Roles](/concepts/roles) describes each key.
+A runtime is a class with the methods of the `Runtime` protocol, and two class attributes: `kind`, its name (the name
+of its entry point), and `invocation`, which argument list of a harness it starts (`headless` with the first prompt
+in it, or `interactive`, a terminal session that the runtime types the prompt into). Its constructor takes the
+project's name and path. It reports a failure as a `RuntimeFailure`. `piloop attach`, `prompt`, `doctor` and `watch`
+call its methods, so a new runtime gets them at once. [Runtimes](/concepts/runtimes) says what a runtime does for
+you.
+
+<RuntimeProtocol />
 
 ### Built in
 
-The built-in roles are the same tables with defaults, so a project can change any key of them:
+<Runtimes />
 
-<Roles />
+## Storage backends
 
-### Define a role
+piloop keeps the files of its artifact store in `$PILOOP_HOME/store`. If you select a storage backend, piloop also
+copies each file to a remote place. The backend uploads a file, downloads a file, and says if a file is there.
+
+### Example: mirror the store to a directory
+
+This backend copies the files to a directory, for example a network share that is mounted on the machine:
+
+<ExampleDirStore />
+
+Install it, then select it in `$PILOOP_HOME/config.toml` and restart the daemon (`piloop restart`):
+
+```toml
+[storage.remote]
+kind = "dir"
+root = "/mnt/archive/piloop"
+```
+
+### The contract
+
+The artifact store keeps its blobs in `$PILOOP_HOME/store` and can mirror them to a remote. A backend is a settings
+model, a subclass of `piloop.store.RemoteConfig`: its `kind` is the name of its entry point, its fields are the other
+keys of `[storage.remote]`, and its `open()` returns the remote. A remote stores whole objects by key, and the store
+never lists, deletes or changes one:
+
+- `url`: where it puts objects, without a trailing `/`. The store records it at its first upload, and refuses to open
+  later with another one.
+- `upload(key, path)`: store the file, streaming it. Uploading a key again is harmless.
+- `download(key, path) -> bool`: write the object to `path`; `False`, and no file, when there is none.
+- `has(key) -> bool`: whether an object is stored under `key`.
+
+`piloop.store.contract.check_remote(remote, scratch)` runs the contract against a remote, as piloop's tests do with
+the example. It writes under `piloop-contract/<random>/` and never deletes, so point it at a folder that you can
+empty.
+
+### Built in
+
+<Remotes />
+
+The [configuration reference](/reference/configuration) shows the store with each backend.
+
+## Pure plugins
+
+### Example: pick the next idea by priority
+
+<ExamplePickByPriority />
+
+A **pure** capability gets data and returns data. Its provider does not read the database, files or other parts of
+piloop: piloop gives it all that it needs as arguments. A pure provider imports only the Python standard library and
+the **contract** of its capability, the module that defines the types that the provider gets and returns. Because of
+this, piloop can later run the same provider in another process, or as a WebAssembly component.
+
+piloop has no pure capability yet: its tests declare one for this example. You select the provider of a pure
+capability with a table in `piloop.toml`. `provider` is its name. The other keys of the table are the provider's
+**parameters**, and piloop checks them against the provider's `Parameters` type when it loads `piloop.toml`:
+
+```text
+[plugins.idea_picker]
+provider = "by_priority"
+```
+
+### The contract
+
+The contract of a pure capability is a Python protocol that has only methods. The arguments and the return value of
+each method are data:
+
+- Data is `str`, `int`, `float`, `bool`, `bytes`, an enum, a dataclass or a pydantic model of data, `list`, `tuple`,
+  `dict`, and unions of these.
+- A database session, a file, a function or another class is not data.
+- No part of a type can be of any type: no `Any`, no `object`, no model that allows extra fields.
+- No type can contain itself.
+
+These are the rules of WIT, the interface language of WebAssembly components. A provider returns an error as a
+value, a case of a union of records. It does not raise an exception. The entry point of a pure provider names an
+instance, not a class. piloop checks that the instance has the methods of the contract, with the same argument
+names.
+
+## Roles
+
+### Example: a role in configuration
 
 Add a table with a new name, a prompt file and at least one trigger. This role reads each new escalation in the inbox
 and writes a plan for it, one agent at a time, in the project checkout:
@@ -81,7 +197,7 @@ piloop init .
 The daemon now checks the query on each tick. When it returns a row, the daemon requests a `planner` agent, and
 `piloop status` lists it as `planner#<worker id>`. The agent signs its comments `planner#<worker id>`.
 
-### Define a role that does runs
+### Example: a role that does runs
 
 Add a table with a new name and `runs = true`. The role takes the worker's defaults, so every other key is optional.
 This role runs the ideas of the `speed` track with Claude, two at a time, and stops each agent after 10 minutes:
@@ -115,18 +231,10 @@ The daemon queues each `speed` idea for a `sprinter` run. The run's agent signs 
 the idea and the starting point as a worker's has, and its commits are scored and judged like a worker's.
 [Roles](/concepts/roles#define-a-role-that-does-runs) lists which rules apply to each role and which apply to every run.
 
-### Define your own in a package
+### Example: a role and a trigger from a plugin
 
-A Python package adds roles and triggers through two entry point groups:
-
-- `piloop.triggers`: each entry point names a subclass of `piloop.triggers.Trigger`. Its name is the `kind`. Its
-  fields are its parameters. Its `fire(tick)` method returns a `Fire` (the reason, and how many agents) or None. `tick`
-  gives it the session, the project, the role and the queries that the built-in triggers use (`piloop.triggers.Tick`).
-- `piloop.roles`: each entry point names a `piloop.config.SweepRole` or a `piloop.config.WorkerRole` (a role that does
-  runs), the defaults of the role. Its name is the name of the role. `piloop init` stores the role in the project's
-  config, with the project's `[roles.<name>]` table over the defaults.
-
-piloop loads each group once per process. A name that a built-in trigger or role has already is an error.
+A plugin can add roles and triggers. This plugin adds a trigger, `no_keep`, that starts an agent when no candidate
+was kept for some hours. It also adds a role, `auditor`, that uses this trigger:
 
 ```python
 from datetime import timedelta
@@ -160,8 +268,6 @@ class NoKeep(Trigger):
 AUDITOR = SweepRole(prompt=str(Path(__file__).parent / 'auditor.md'), triggers=[NoKeep()], timeout=1800)
 ```
 
-Register both in the package's `pyproject.toml`, and install the package in the environment of `piloop`:
-
 ```text
 [project.entry-points."piloop.triggers"]
 no_keep = "my_package:NoKeep"
@@ -170,187 +276,46 @@ no_keep = "my_package:NoKeep"
 auditor = "my_package:AUDITOR"
 ```
 
-Any project can then use `{ kind = "no_keep", hours = 12 }` in the triggers of a role, and gets the `auditor` role at
-its next `piloop init`.
-
-## Triggers
+Any project can then use `{ kind = "no_keep", hours = 12 }` in the triggers of a role, and gets the `auditor` role,
+with its table in `piloop.toml` over the package's defaults, at its next `piloop init`.
 
 ### The contract
 
-A trigger is an entry of `[roles.<name>] triggers`: `{ kind = "<trigger>", <parameter> = <value> }`. On each tick,
-for each sweeping role without a pending request, the daemon calls `fire(tick)` of each trigger of the role, in the
-order of the list. It returns a `Fire` (the reason, how many agents, the events of the first one) or None. A trigger
-reads with `tick` and writes nothing. A trigger with `ON_STOP` fires only on the tick that stops the campaign.
+A role is a table in `piloop.toml`: its prompt, when it starts (the run queue, or its triggers), where it works, how
+(harnesses, models, MCP servers, timeout, concurrency) and what it may file. A role that does runs (`runs = true`)
+takes ideas from the run queue, and its commits are scored and judged. A sweeping role starts on its triggers, and
+nothing it commits is scored. A plugin's role is a `piloop.config.SweepRole` or `piloop.config.WorkerRole` with the
+defaults. [Roles](/concepts/roles) describes each key.
+
+### Built in
+
+The built-in roles are the same tables with defaults, so a project can change any key of them:
+
+<Roles />
+
+## Triggers
+
+### Example
+
+A `sql` trigger needs no code: its query fires the role when it returns a row, as the planner above. A trigger with
+code of its own comes from a plugin: see `no_keep` above.
+
+### The contract
+
+A trigger is an entry of `[roles.<name>] triggers`: `{ kind = "<trigger>", <parameter> = <value> }`. A plugin's
+trigger is a subclass of `piloop.triggers.Trigger`: its fields are its parameters. On each tick, for each sweeping role
+without a pending request, the daemon calls `fire(tick)` of each trigger of the role in order. It returns a `Fire`
+(the reason, how many agents) or None, and reads with `tick` (`piloop.triggers.Tick`: the session, the project, the
+role and the queries of the built-in triggers). A trigger with `ON_STOP` fires only on the tick that stops the
+campaign.
 
 ### Built in
 
 <Triggers />
 
-### Define your own
-
-A `sql` trigger needs no code: its query fires the role when it returns a row ([Define a role](#define-a-role)). A
-trigger with code of its own comes from a package, in the `piloop.triggers` group: see the `no_keep` trigger
-[above](#define-your-own-in-a-package).
-
-## Runtimes
-
-### The contract
-
-A runtime is where an agent runs. [Runtimes](/concepts/runtimes) explains what a runtime does for the user. The daemon
-and the CLI depend only on the `Runtime` protocol in `piloop/runtime/__init__.py`:
-
-<RuntimeProtocol />
-
-A runtime class also has two class attributes, which piloop reads before it constructs the runtime:
-
-- `kind`: the name of the runtime. It is the name of its entry point, the value of `runtime` in `piloop.toml` and the
-  value of `workers.runtime`.
-- `invocation`: the argument list of a harness that the runtime starts. `headless` is the argv for a process without a
-  terminal, with the first prompt in it. `interactive` is the argv for a session in a terminal, and the runtime types
-  the first prompt after the start.
-
-The constructor takes the project's name and path. A failure that the runtime reports is a `RuntimeFailure`, and the
-CLI shows its message. No caller checks the name of a runtime: a new runtime gets `piloop attach`, `piloop prompt`,
-`piloop doctor` and `piloop watch` from its methods.
-
-### Built in
-
-<Runtimes />
-
-### Define your own
-
-A package adds a runtime with an entry point in the `piloop.runtimes` group. [Add a runtime](/concepts/runtimes#add-a-runtime)
-has an example: a runtime that starts each agent as `subprocess` does, at a lower CPU priority. A project then sets
-`runtime = "<kind>"`, or a role sets it in its own table.
-
-## Storage backends
-
-### The contract
-
-The artifact store keeps its blobs in `$PILOOP_HOME/store` and can mirror them to a remote. `[storage.remote]` in
-`$PILOOP_HOME/config.toml` picks the remote's backend by `kind`, and the backend owns every other key of that table.
-The keys of `[storage]` itself, such as `evict_after_days` and `min_free_gb`, are shared by every backend.
-A remote stores whole objects by key. The store never lists, deletes or changes an object. A remote has:
-
-- `url`: one spelling of where it puts objects, without a trailing `/`. The store records it at its first upload, and
-  it refuses to open later with another `url`.
-- `upload(key, path)`: store the file at `path` under `key`, streaming it. Uploading a key again is harmless.
-- `download(key, path) -> bool`: write the object under `key` to `path`, streaming it. Return `False`, and write no
-  file, when there is no such object. Raise on any other failure.
-- `has(key) -> bool`: whether an object is stored under `key`.
-
-### Built in
-
-<Remotes />
-
-The [configuration reference](/reference/configuration) shows the same store with each backend.
-
-### Define your own
-
-A backend is two classes. A settings model subclasses `piloop.store.RemoteConfig`. Its `kind` is a literal, its
-other fields are the keys of `[storage.remote]`, and its `open()` returns the remote. This backend mirrors the store
-to a directory, for example a network share:
-
-```python
-import shutil
-from pathlib import Path
-from typing import Literal
-
-from piloop.store import Remote, RemoteConfig
-
-
-class ShareConfig(RemoteConfig):
-    """``[storage.remote]`` with ``kind = "share"``: a mounted directory."""
-
-    kind: Literal['share'] = 'share'
-    root: Path
-    """The directory that the objects go under."""
-
-    def open(self) -> Remote:
-        return Share(self.root)
-
-
-class Share:
-    def __init__(self, root: Path) -> None:
-        self.root = root
-        self.url = f'file://{root}'.rstrip('/')
-
-    def upload(self, key: str, path: Path) -> None:
-        target = self.root / key
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(path, target)
-
-    def download(self, key: str, path: Path) -> bool:
-        if not (self.root / key).is_file():
-            return False
-        shutil.copyfile(self.root / key, path)
-        return True
-
-    def has(self, key: str) -> bool:
-        return (self.root / key).is_file()
-```
-
-Register the settings model with an entry point in the `piloop.stores` group. The name of the entry point is the
-`kind`:
-
-```text
-[project.entry-points."piloop.stores"]
-share = "my_package:ShareConfig"
-```
-
-Install the package in the environment of `piloop`, then select the backend in `config.toml`:
-
-```text
-[storage.remote]
-kind = "share"
-root = "/mnt/archive/piloop"
-```
-
-piloop checks the table against `ShareConfig` when it opens the store: `piloop serve`, `piloop restore` and
-`piloop store` fail on a key that the model does not have. A name that a built-in backend has already, or an entry
-point that does not name a `RemoteConfig` subclass, is an error that names the entry point.
-
-#### Test a backend
-
-`piloop.store.contract.check_remote` runs the contract against a remote: missing keys, an upload and a download, and
-a store that mirrors to the remote and keeps nothing local. It raises `ContractBroken` with the rule that failed.
-piloop's own tests run it against `s3` and `gcs`. Run it in the tests of your package, against a scratch location:
-
-```python
-from pathlib import Path
-
-from piloop.store.contract import check_remote
-
-from my_package import ShareConfig
-
-
-def test_the_share_keeps_the_contract(tmp_path: Path) -> None:
-    check_remote(ShareConfig(root=tmp_path / 'share').open(), tmp_path / 'scratch')
-```
-
-It writes under `piloop-contract/<random>/`, and the contract has no delete, so point it at a bucket or a folder that
-you can empty.
-
 ## Harnesses
 
-### The contract
-
-A harness is a coding agent CLI. A `[harness.<name>]` table in `piloop.toml` says how to start it: the executable, the
-argv for a session in a terminal (`interactive`) and for a process without one (`headless`), and the startup dialogs to
-accept. A runtime starts one of the two argument lists: its invocation. piloop fills in placeholders such as `{model}`,
-`{session_id}`, `{cwd}` and `{prompt}`. The [configuration reference](/reference/configuration#harness) has every key.
-
-### Built in
-
-The built-in harnesses are definitions of the same kind, so a project can override any key of them. An override that
-leaves out `busy_screens`, `failed_turn_screens` or `queue_key` keeps those of the built-in harness with the same
-`executable`.
-
-<Harnesses />
-
-### Define your own
-
-Add a table with a new name, and put the name in `harnesses` or in a role's `harnesses`:
+### Example
 
 ```toml
 harnesses = ["claude", "mycli"]
@@ -361,25 +326,24 @@ executable = "mycli"
 headless = ["--model", "{model}", "{prompt}"]
 ```
 
-To record its tokens and to give it MCP servers, it names a usage reader and an MCP renderer of the
-[built-in ones](#usage-readers-and-mcp-renderers). A package cannot add a harness: a harness is configuration.
-
-## MCP servers
-
 ### The contract
 
-An `[mcp.<name>]` table defines an MCP server once, and `[roles.<name>] mcp` gives it to the agents of a role. piloop
-writes it in the format of each harness, and passes API keys only as environment variables. A server is either
-streamable HTTP (`url`) or stdio (`command`):
-
-<McpKeys />
+A harness is a coding agent CLI, and a `[harness.<name>]` table says how to start it: the executable, the argv with
+a terminal (`interactive`) and without one (`headless`), and the startup dialogs to accept. piloop fills in
+`{model}`, `{session_id}`, `{cwd}` and `{prompt}`. To record its tokens and give it MCP servers, it names one of the
+[built-in readers and renderers](#usage-readers-and-mcp-renderers). The
+[configuration reference](/reference/configuration#harness) has every key.
 
 ### Built in
 
-piloop has no built-in MCP server. Its repo has one that you can run: `scripts/xai_search_mcp.py`, an X search for the
-scout.
+A project can override any key of a built-in harness. An override without `busy_screens`, `failed_turn_screens` or
+`queue_key` keeps those of the built-in harness with the same `executable`.
 
-### Define your own
+<Harnesses />
+
+## MCP servers
+
+### Example
 
 ```toml
 [mcp.exa]
@@ -390,32 +354,21 @@ headers_env = { "x-api-key" = "EXA_API_KEY" }
 mcp = ["exa"]
 ```
 
-[MCP servers](/guides/mcp-servers) has the details, and what each harness gets.
-
-## The evaluate command
-
 ### The contract
 
-The evaluate command is the contract between piloop and your project. The daemon runs it in a clean worktree of each
-commit. The command must:
+An `[mcp.<name>]` table defines a server once, and `[roles.<name>] mcp` gives it to the agents of a role. piloop
+writes it in the format of each harness, and passes API keys only as environment variables. A server is streamable
+HTTP (`url`) or stdio (`command`). [MCP servers](/guides/mcp-servers) has the details.
 
-- print one line `METRIC <name>=<value>` on stdout for each metric in `piloop.toml`;
-- exit with status 0, within `evaluate_timeout` seconds. Otherwise the candidate is a `crash`.
-
-When the daemon sets `PILOOP_UNITS_FILE`, the command can also write the result of each unit (each example, record or
-file) to that path, so that the verdict can use a paired bootstrap. See
-[The evaluate command](/concepts/projects#the-evaluate-command) and [per-unit results](/concepts/projects#per-unit-results).
+<McpKeys />
 
 ### Built in
 
-piloop has no evaluate command of its own: each project has its own. `piloop init` writes a stub `evaluate.py` to edit,
-and `piloop init --example <name>` writes a bundled example project with a working one:
+None. The repo has one that you can run: `scripts/xai_search_mcp.py`, an X search for the scout.
 
-<EvaluateExamples />
+## The evaluate command
 
-### Define your own
-
-Set `evaluate` to the argv of your command:
+### Example
 
 ```toml
 evaluate = ["uv", "run", "python", "evaluate.py"]
@@ -429,16 +382,26 @@ lines = subprocess.run(["python", "solve.py", "--check"], capture_output=True, t
 print(f"METRIC score={lines.count('ok')}")
 ```
 
-## Usage readers and MCP renderers
-
 ### The contract
 
-Two parts of a harness name code that piloop has built in. `[harness.<name>.usage] reader` names the reader that
-reads the tokens from the harness's session files when an agent ends, with its `tally` (the file format) and its `cwd`
-(how the harness names the folder of the agent's working directory). `[harness.<name>] mcp` names the renderer that
-writes a role's MCP servers in the harness's own flags.
+The daemon runs the command in a clean worktree of each commit. It prints one line `METRIC <name>=<value>` for each
+metric in `piloop.toml` and exits with 0 within `evaluate_timeout` seconds; otherwise the candidate is a `crash`. With
+`PILOOP_UNITS_FILE` set, it can also write the result of each unit, for a paired bootstrap. See
+[The evaluate command](/concepts/projects#the-evaluate-command).
 
 ### Built in
+
+Each project has its own. `piloop init` writes a stub `evaluate.py`, and `piloop init --example <name>` a bundled
+example project with a working one:
+
+<EvaluateExamples />
+
+## Usage readers and MCP renderers
+
+A harness names them: `[harness.<name>.usage] reader` reads the tokens from the harness's session files when an agent
+ends, with its `tally` (the file format) and its `cwd` (how the harness names the agent's working directory), and
+`[harness.<name>] mcp` names the renderer that writes a role's MCP servers in the harness's flags. You cannot add one
+today.
 
 <Readers />
 
@@ -448,27 +411,40 @@ writes a role's MCP servers in the harness's own flags.
 
 <Renderers />
 
-### Define your own
-
-You cannot add a usage reader, a tally or an MCP renderer today: a harness picks one of the built-in ones by name.
-
 ## Stop conditions
-
-### The contract
-
-`[stop]` ends the campaign when one of its conditions holds. The daemon checks them on every tick, before it requests
-anything. [Cost and spend limits](/concepts/cost#stop-conditions) says what happens then.
-
-### Built in
-
-<Stop />
-
-### Define your own
-
-You cannot add a stop condition today. Combine the built-in ones in `[stop]`:
 
 ```toml
 [stop]
 max_hours = 24
 plateau = 30
 ```
+
+`[stop]` ends the campaign when one of its conditions holds; the daemon checks them on every tick, before it requests
+anything. [Cost and spend limits](/concepts/cost#stop-conditions) says what happens then. You cannot add one today.
+
+<Stop />
+
+## How piloop loads plugins
+
+The **plugin host** is the part of piloop that finds, checks and loads plugins (`piloop.plugins.host`).
+
+- **Entry points.** A plugin adds a provider with an entry point in the group of a capability, for example
+  `piloop.runtimes`. The name of the entry point is the name of the provider. piloop's own providers are entry points
+  of the `piloop` package, in the same groups, so piloop loads them as it loads a plugin's.
+- **All or nothing.** piloop loads every provider of a capability and checks each one. Then it registers all of them,
+  or none.
+- **Before the daemon starts.** The daemon loads each capability that it uses before it opens the database. It does
+  not start when an entry point does not import, names an object of the wrong type, or uses a name that another
+  provider has. It also does not start when `config.toml` selects a provider that does not exist.
+- **The same checks elsewhere.** `piloop serve --check`, `piloop doctor` and `piloop plugins` do the same checks.
+  `piloop restart` and `piloop upgrade` do them first, and keep the daemon running if it would not start again.
+  A broken storage backend that nothing selects is only a warning.
+- **Selection.** Each capability says where the configuration selects its provider. The runtime and the storage
+  backend have their own keys. A new capability uses a table in `piloop.toml`: `provider` is the name of the provider,
+  and the other keys are its parameters. If no provider has that name, the error names the key and lists the names
+  that exist.
+- **Versions.** An entry point group is one version of a contract. An incompatible change to a contract gets a new
+  group.
+- **Two kinds of contract.** A provider of the runtimes, the storage backends, the triggers or the roles can get live
+  objects of piloop: processes, files, a database session. A provider of a pure capability gets data only. piloop
+  loads, selects, lists and unloads both kinds in the same way.

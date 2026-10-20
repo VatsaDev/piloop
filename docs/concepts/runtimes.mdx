@@ -3,6 +3,7 @@ title: Runtimes
 description: Where an agent runs, and how piloop starts, watches, steers, shows and stops it.
 ---
 
+import ExampleNiceRuntime from '/snippets/generated/example-nice-runtime.mdx';
 import Runtimes from '/snippets/generated/runtimes.mdx';
 
 A **runtime** is where an agent runs. It starts the agent, watches it until it ends, steers it with messages, shows
@@ -62,37 +63,15 @@ meanwhile is stopped first, so none of its children is left.
 
 ## Add a runtime
 
-A Python package adds a runtime with an entry point in the `piloop.runtimes` group. The class implements the
-[`Runtime` protocol](/architecture/extension-points#runtimes). This runtime starts each agent as the `subprocess`
-runtime does, at a lower CPU priority:
+A plugin adds a runtime: a Python package with an entry point in the `piloop.runtimes` group, whose class implements
+the [`Runtime` protocol](/architecture/extension-points#runtimes). The example in
+[`examples/plugins/nice-runtime`](https://github.com/hiloopai/piloop/tree/main/examples/plugins/nice-runtime) starts
+each agent as `subprocess` does, at a lower CPU priority:
 
-```python
-from dataclasses import replace
-from typing import ClassVar
+<ExampleNiceRuntime />
 
-from piloop.harnesses import Invocation
-from piloop.runtime import Handle, WorkerSpec
-from piloop.runtime.subprocess import SubprocessRuntime
-
-
-class NiceRuntime(SubprocessRuntime):
-    """``nice``: background processes, like ``subprocess``, at a lower CPU priority."""
-
-    kind: ClassVar[str] = 'nice'
-    invocation: ClassVar[Invocation] = Invocation.HEADLESS
-
-    def start(self, spec: WorkerSpec) -> Handle:
-        return super().start(replace(spec, executable='nice', args=['-n', '10', spec.executable, *spec.args]))
-```
-
-```text
-[project.entry-points."piloop.runtimes"]
-nice = "my_package:NiceRuntime"
-```
-
-Install the package in the environment of `piloop`. A project then sets `runtime = "nice"`, or a role sets it in its
-own table. `piloop init` refuses a name that no runtime has. A name that a built-in runtime has already, a `kind` that
-is not the name of the entry point, or a class without an `invocation` is an error that names the entry point.
+Install the package next to piloop. A project then sets `runtime = "nice"`, or a role sets it in its own table, and
+`piloop plugins` lists it with its package and version. `piloop init` refuses a name that no runtime has.
 
 `piloop attach`, `piloop prompt`, `piloop doctor` and `piloop watch` call the methods of the runtime, so they work with
 the new runtime at once.

@@ -43,6 +43,13 @@ only piloop's own skills. The installer and `piloop upgrade` run it.
 Checks the install, without changing anything. Each failure says how to fix it, often with the command to run. See
 [Upgrading](/guides/upgrading#check-the-install).
 
+### piloop plugins
+
+Lists each capability (runtimes, remote backends, triggers, roles, and any that a plugin adds) with every provider,
+the package and version that it comes from, and its entry point. Then it lists what the configuration selects: each
+provider with where the choice comes from. It checks them as the daemon does when it starts, and fails as the daemon
+would. See [How piloop loads plugins](/architecture/extension-points#how-piloop-loads-plugins).
+
 ### piloop upgrade
 
 ```text
@@ -62,11 +69,13 @@ writes projects do this silently when they start. `piloop doctor` and `piloop sq
 ### piloop serve
 
 ```text
-piloop serve [--detach]
+piloop serve [--detach] [--check]
 ```
 
 Runs the daemon in the foreground. `--detach` starts it in the background, with its output in
-`$PILOOP_HOME/serve.log`. Only one daemon runs for each `PILOOP_HOME`.
+`$PILOOP_HOME/serve.log`. Only one daemon runs for each `PILOOP_HOME`. `--check` starts nothing: it checks what the
+daemon checks when it starts, its plugins and what `config.toml` binds, and fails with the reason when it would not
+start. See [How piloop loads plugins](/architecture/extension-points#how-piloop-loads-plugins).
 
 ### piloop stop
 
@@ -100,7 +109,8 @@ piloop restart [--timeout SECONDS]
 
 Restarts the running daemon in place on the installed code. The process keeps its pid, its environment and its
 service manager. The running agents continue, and the new code connects to them again. `--timeout` (default 30) is how
-long to wait for the daemon to come back.
+long to wait for the daemon to come back. It first checks, as `piloop serve --check` does, that the daemon can start
+again; when it cannot, it says why and leaves the daemon running.
 
 ### piloop service-unit
 

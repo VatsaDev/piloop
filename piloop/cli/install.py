@@ -38,6 +38,14 @@ def upgrade(
     common.console.print(_new_binary('install-skills').stdout.rstrip(), markup=False, highlight=False, soft_wrap=True)
     pid = running_pid(common.settings)
     if pid is not None:
+        # The restart execs the new code in the daemon's process: a new code that cannot start would leave its agents
+        # without a daemon, so check it first and keep the old daemon running.
+        can_start = _new_binary('serve', '--check', check=False)
+        if can_start.returncode:
+            raise SystemExit(
+                f'daemon: pid {pid} not restarted, and it keeps running the old code: {can_start.stderr.strip()}.'
+                ' Fix it, then `piloop restart`'
+            )
         common.console.print(
             f'daemon: restarting pid {pid}; its running agents keep going and the new code re-attaches'
         )

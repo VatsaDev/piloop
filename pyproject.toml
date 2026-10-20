@@ -49,6 +49,29 @@ Issues = "https://github.com/hiloopai/piloop/issues"
 [project.scripts]
 piloop = "piloop.cli.main:main"
 
+# The providers of piloop itself, in the groups that a plugin package uses (piloop.plugins.host).
+[project.entry-points."piloop.runtimes"]
+herdr = "piloop.runtime.herdr:HerdrRuntime"
+subprocess = "piloop.runtime.subprocess:SubprocessRuntime"
+
+[project.entry-points."piloop.stores"]
+s3 = "piloop.store.s3:S3Config"
+gcs = "piloop.store.gcs:GcsConfig"
+
+[project.entry-points."piloop.triggers"]
+anomaly = "piloop.triggers:AnomalyTrigger"
+cron = "piloop.triggers:CronTrigger"
+seed = "piloop.triggers:SeedTrigger"
+low_water = "piloop.triggers:LowWaterTrigger"
+stopped = "piloop.triggers:StoppedTrigger"
+sql = "piloop.triggers:SqlTrigger"
+
+[project.entry-points."piloop.roles"]
+worker = "piloop.plugins.builtin.roles:WORKER"
+watchdog = "piloop.plugins.builtin.roles:WATCHDOG"
+research = "piloop.plugins.builtin.roles:RESEARCH"
+scout = "piloop.plugins.builtin.roles:SCOUT"
+
 [tool.hatch.build.targets.wheel]
 packages = ["piloop"]
 
@@ -89,7 +112,7 @@ release = ["git-cliff>=2.14.2"]
 [tool.ruff]
 line-length = 120
 target-version = "py314"
-include = ["piloop/**/*.py", "tests/**/*.py", "scripts/**/*.py"]
+include = ["piloop/**/*.py", "tests/**/*.py", "scripts/**/*.py", "examples/**/*.py"]
 
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F"]
@@ -114,13 +137,16 @@ quote-style = "single"
 
 [tool.ty.environment]
 python-version = "3.14"
+extra-paths = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/pick-by-priority"]
 
 [tool.ty.src]
-include = ["piloop", "tests", "scripts"]
+include = ["piloop", "tests", "scripts", "examples"]
 exclude = ["piloop/db/migrations/versions", "piloop/campaign/templates"]  # templates are projects with their own deps
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The example plugins import as packages; their entry points register only where a test installs them.
+pythonpath = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/pick-by-priority"]
 # The e2e tests run real agents and cost money: only `make e2e` (`-m e2e`, which overrides this) selects them.
 addopts = ["-m", "not e2e"]
 markers = [

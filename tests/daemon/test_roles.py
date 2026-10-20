@@ -1,6 +1,7 @@
 """Roles as data: a sweeping role and a role that does runs that piloop.toml defines, new triggers for a built-in role,
 and the roles, triggers and runtimes that packages add through entry points."""
 
+import os
 import re
 import time
 from collections.abc import Iterator
@@ -8,11 +9,14 @@ from importlib.metadata import EntryPoint
 from pathlib import Path
 
 import pytest
+from piloop_dir_store import Dir
 from sqlalchemy import select
 
-from piloop import config as config_module, triggers as triggers_module
 from piloop.campaign.stop import ROLE_REMOVED
-from piloop.config import ROLE_GROUP, ConfigError, ProjectConfig, load_project_config
+from piloop.cli import common, main as cli
+from piloop.cli.plugins import selections
+from piloop.config import ROLES, ConfigError, ProjectConfig, load_project_config
+from piloop.daemon.main import Daemon
 from piloop.daemon.runner import RunExecutor
 from piloop.daemon.scheduler import Scheduler
 from piloop.db.models import (
@@ -34,14 +38,21 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.otel import Tracer
-from piloop.runtime import Runtime, factory as factory_module
-from piloop.runtime.factory import RUNTIME_GROUP, RuntimeFactory, make_runtime, runtimes
-from piloop.triggers import TRIGGER_GROUP
+from piloop.plugins import host as plugins_module
+from piloop.plugins.contracts.runtime import RUNTIMES
+from piloop.plugins.host import PluginError, compose
+from piloop.runtime import Runtime
+from piloop.runtime.factory import RuntimeFactory
+from piloop.settings import Settings
+from piloop.store.config import open_store
+from piloop.triggers import TRIGGERS
 from tests.conftest import (
     HARNESS_APPEND,
-    HARNESS_PROMPT_TO_FILE,
     ScriptRuntime,
     console_lines,
+    example,
+    package,
+    piloop_entry_points,
     wait_until,
     write_toml,
 )
@@ -50,6 +61,7 @@ from tests.daemon.test_triggers import BLOCKING, fail_a_run, reported_events, wa
 
 REVIEW = "SELECT id FROM comments WHERE kind = 'decision' AND created_at > :since"
 PLUGIN = 'tests.fixtures.plugin'
+TRIGGER_GROUP, ROLE_GROUP, RUNTIME_GROUP = TRIGGERS.group, ROLES.group, RUNTIMES.group
 
 
 def recording(runtime: ScriptRuntime, kinds: list[str]) -> RuntimeFactory:
@@ -366,20 +378,16 @@ ENTRY_POINTS = [
 
 
 def forget_loaded() -> None:
-    triggers_module.triggers.cache_clear()
-    config_module.registered_roles.cache_clear()
-    factory_module.runtimes.cache_clear()
+    plugins_module.close()
 
 
 def installed(monkeypatch: pytest.MonkeyPatch, entries: list[EntryPoint]) -> None:
-    """Make ``entries`` the installed entry points, and forget the ones that were loaded."""
+    """Make piloop's own entry points and ``entries`` the installed ones, and forget the ones that were loaded."""
 
     def entry_points(*, group: str) -> list[EntryPoint]:
-        return [ep for ep in entries if ep.group == group]
+        return [*piloop_entry_points(group), *(ep for ep in entries if ep.group == group)]
 
-    monkeypatch.setattr(triggers_module, 'entry_points', entry_points)
-    monkeypatch.setattr(config_module, 'entry_points', entry_points)
-    monkeypatch.setattr(factory_module, 'entry_points', entry_points)
+    monkeypatch.setattr(plugins_module, 'entry_points', entry_points)
     forget_loaded()
 
 
@@ -451,10 +459,10 @@ def test_a_package_role_takes_its_defaults_and_a_roles_value_that_is_not_a_table
 @pytest.mark.parametrize(
     ('entry', 'error'),
     [
-        (EntryPoint('every_tick', f'{PLUGIN}:NOT_A_TRIGGER', TRIGGER_GROUP), 'is not a piloop Trigger class'),
-        (EntryPoint('cron', f'{PLUGIN}:EveryTick', TRIGGER_GROUP), "'cron' is a trigger already"),
+        (EntryPoint('not_a_trigger', f'{PLUGIN}:NOT_A_TRIGGER', TRIGGER_GROUP), 'is not a piloop Trigger class'),
+        (EntryPoint('cron', f'{PLUGIN}:EveryTick', TRIGGER_GROUP), "'cron' is a trigger already, from piloop "),
         (EntryPoint('auditor', f'{PLUGIN}:NOT_A_ROLE', ROLE_GROUP), 'is not a piloop SweepRole'),
-        (EntryPoint('research', f'{PLUGIN}:AUDITOR', ROLE_GROUP), "'research' is a built-in role"),
+        (EntryPoint('research', f'{PLUGIN}:AUDITOR', ROLE_GROUP), "'research' is a role already, from piloop "),
         (EntryPoint('typed', f'{PLUGIN}:NOT_A_RUNTIME', RUNTIME_GROUP), 'is not a piloop runtime class'),
         (EntryPoint('other', f'{PLUGIN}:Typed', RUNTIME_GROUP), "it needs kind = 'other'"),
         (EntryPoint('unsure', f'{PLUGIN}:Unsure', RUNTIME_GROUP), 'and an invocation'),
@@ -464,12 +472,12 @@ def test_a_package_role_takes_its_defaults_and_a_roles_value_that_is_not_a_table
 def test_an_entry_point_of_the_wrong_kind_fails_with_its_name(
     monkeypatch: pytest.MonkeyPatch, entry: EntryPoint, error: str
 ) -> None:
+    """The daemon's composition fails before it starts anything, and registers nothing."""
     installed(monkeypatch, [EntryPoint('every_tick', f'{PLUGIN}:EveryTick', TRIGGER_GROUP), entry])
     try:
-        with pytest.raises((TypeError, ValueError), match=error):
-            triggers_module.triggers()
-            config_module.registered_roles()
-            factory_module.runtimes()
+        with pytest.raises(PluginError, match=f'entry point {entry.name} = {entry.value} in {entry.group}.*{error}'):
+            compose(*plugins_module.declared())
+        assert not any(c.active for c in plugins_module.declared())
     finally:
         forget_loaded()
 
@@ -481,40 +489,92 @@ def test_a_package_adds_a_role_that_does_runs(project_path: Path, plugins: None)
     assert (quick.takes, quick.timeout, quick.max_concurrent) == ('priority >= 3', 60, 1)
 
 
-@pytest.fixture
-def typed(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    """Install only the ``typed`` runtime, so that no package role or trigger requests an agent."""
-    installed(monkeypatch, [EntryPoint('typed', f'{PLUGIN}:Typed', RUNTIME_GROUP)])
-    yield
-    forget_loaded()
+HARNESS_NICENESS = '#!/bin/sh\nps -o nice= -p $$ | tr -d " " > niceness.txt\n'
+"""A harness that writes its own niceness, so a test sees which runtime started it."""
 
 
-def test_a_package_adds_a_runtime_and_its_agents_start_the_argv_of_its_invocation(
-    db: Database, project: Project, tmp_path: Path, typed: None
+def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_the_configuration(
+    db: Database, project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``typed`` takes the interactive argv of the harness. Every lookup by name, after the start too, finds it."""
-    write_toml(Path(project.path), HARNESS_PROMPT_TO_FILE)
-    script = {'executable': str(tmp_path / 'harness.sh'), 'headless': ['{prompt}'], 'interactive': ['interactive']}
-    watchdog = {'runtime': 'typed', 'workdir': 'project', 'triggers': []}
+    """The example plugins ``piloop-nice`` and ``piloop-dir-store`` are installed, with a package role ``fast``.
+
+    ``runtime = "nice"`` in piloop.toml and ``[storage.remote] kind = "dir"`` in config.toml bind them in place of
+    ``subprocess`` and of no remote. The daemon composes them before it starts, its agents start through ``nice`` at
+    the niceness of ``[runtimes.nice]``, and ``piloop plugins`` shows each binding with its package, its version and
+    where the choice comes from.
+    """
+    example(tmp_path / 'site', 'nice-runtime')
+    example(tmp_path / 'site', 'dir-store')
+    package(tmp_path / 'site', 'piloop-fast-role', '1.0', f'[piloop.roles]\nfast = {PLUGIN}:FAST\n')
+    monkeypatch.syspath_prepend(tmp_path / 'site')
+    monkeypatch.setenv('PILOOP_HOME', str(tmp_path))  # where the runtime reads its [runtimes.nice] settings
+    forget_loaded()
+    write_toml(Path(project.path), HARNESS_NICENESS)
     with db.session() as s:
-        cfg = load_project_config(Path(project.path), harness={'script': script}, roles={'watchdog': watchdog})
+        cfg = load_project_config(
+            Path(project.path), runtime='nice', roles={'watchdog': {'runtime': 'nice', 'workdir': 'project'}}
+        )
         s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
         s.add(Worker(kind=WorkerKind.WATCHDOG, project_id=project.id, reason='by hand'))
         s.commit()
-    sched = scheduler(db, make_runtime, tmp_path)
-    assert sched.tick() == [1]
-    sched.wait(30)
-    sched.stop(timeout=5)
+    remote = f'[storage.remote]\nkind = "dir"\nroot = "{tmp_path / "remote"}"\n'
+    (tmp_path / 'config.toml').write_text(f'{remote}[runtimes.nice]\nniceness = 5\n')
+    home = Settings(home=tmp_path, tick_seconds=0.05)
+    assert isinstance(open_store(home).remote, Dir)
+    daemon = Daemon(home)
+    try:
+        assert daemon.scheduler.tick() == [1]
+        daemon.scheduler.wait(30)
+    finally:
+        daemon.shutdown(timeout=5)
     with db.session() as s:
         worker = s.get_one(Worker, 1)
-        assert (worker.state, worker.runtime) == (WorkerState.EXITED, 'typed')
-    assert (Path(project.path) / 'prompt.txt').read_text() == 'interactive'
+        assert (worker.state, worker.runtime) == (WorkerState.EXITED, 'nice')
+    assert (Path(project.path) / 'niceness.txt').read_text().strip() == str(min(os.nice(0) + 5, 19))
+    monkeypatch.setattr(common, 'settings', home)
+    printed: list[str] = []
+    monkeypatch.setattr(common.console, 'print', lambda text, **_: printed.append(text))
+    cli.app(['plugins'], result_action='return_value', exit_on_error=False)
+    lines = printed[0].splitlines()
+    assert [line for line in lines if not line.startswith(' ')] == [
+        *(f'{c.noun}s ({c.tier} tier, {c.group}):' for c in plugins_module.declared()),
+        'selected:',
+    ]
+    assert '  nice        piloop-nice 0.1.0, entry point nice = piloop_nice:NiceRuntime' in lines
+    toml, config = Path(project.path) / 'piloop.toml', tmp_path / 'config.toml'
+    store = f'remote backend dir, from piloop-dir-store 0.1.0 ([storage.remote] kind in {config})'
+    stored = f'in the config of demo that the last `piloop init` stored from {toml}'
+    settings = f'; its settings: [runtimes.nice] in {config}'
+    keys = {
+        'worker': 'runtime',
+        'watchdog': '[roles.watchdog] runtime',
+        'research': 'runtime',
+        'scout': 'runtime',
+        'fast': 'the default of the fast role from piloop-fast-role 1.0',
+    }
+    assert lines[lines.index('selected:') + 1 :] == [
+        *(f'  demo {k}: runtime nice, from piloop-nice 0.1.0 ({key}, {stored}{settings})' for k, key in keys.items()),
+        f'  {store}',
+    ]
+    with db.session() as s:
+        row = s.get_one(Project, project.id)
+        row.config = {**row.config, 'runtime': 'subprocess'}
+        s.commit()
+    built_in = RUNTIMES.sources()['subprocess'].release
+    assert selections(home)[0] == f'demo worker: runtime subprocess, from {built_in} (runtime, its default, {stored})'
+    with db.session() as s:
+        s.get_one(Project, project.id).config = {}
+        s.commit()
+    assert selections(home) == [store], 'a stored config that does not load binds nothing; piloop doctor says why'
+    forget_loaded()
 
 
 def test_a_runtime_that_is_not_registered_fails_with_the_registered_ones(project_path: Path, plugins: None) -> None:
     with pytest.raises(
         ConfigError,
-        match=re.escape(f"runtime = 'tmux': unknown runtime 'tmux'; registered runtimes: {', '.join(runtimes())}"),
+        match=re.escape(
+            f"runtime = 'tmux': unknown runtime 'tmux'; registered runtimes: {', '.join(RUNTIMES.providers())}"
+        ),
     ):
         load_project_config(project_path, runtime='tmux')
     with pytest.raises(ConfigError, match=r"roles.research.runtime = 'tmux': unknown runtime 'tmux'"):

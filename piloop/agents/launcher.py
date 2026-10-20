@@ -26,9 +26,10 @@ from piloop.db.session import Database
 from piloop.harnesses import SESSION_ID, Invocation, fill, takes_session_id
 from piloop.mcp import RENDERERS, Launch, Rendered, expand, forwarded_env
 from piloop.otel import Span, Tracer
+from piloop.plugins.contracts.runtime import RUNTIMES
 from piloop.proc import PILOOP_ARGV, child_env
 from piloop.runtime import Handle, Outcome, Runtime, StartFailed, WorkerSpec, WorkerStatus
-from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for, runtimes
+from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
 from piloop.text import cell
 from piloop.usage import UsageError
 
@@ -306,7 +307,7 @@ class Launcher:
             model = w.model or cfg.role_models(w.kind)[harness]
             definition = cfg.harness_for(harness)
             runtime_kind = cfg.role_runtime(w.kind)
-            invocation = runtimes()[runtime_kind].invocation
+            invocation = RUNTIMES.get(runtime_kind).invocation
             template = definition.argv(invocation)
             session_id = str(uuid4()) if definition.captures_session and takes_session_id(template) else None
             w.harness, w.model, w.runtime, w.log_dir = harness, model, runtime_kind, str(log_dir)

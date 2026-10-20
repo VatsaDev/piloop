@@ -19,6 +19,7 @@ from piloop.cli import (
     install,
     measurement,
     memory,
+    plugins,
     project,
     store,
 )
@@ -60,6 +61,7 @@ app.command(database.schema)
 app.command(database.migrate_cmd, name='migrate')
 app.command(install.upgrade)
 app.command(install.doctor_cmd, name='doctor')
+app.command(plugins.plugins_cmd, name='plugins')
 app.command(install.install_skills, name='install-skills')
 
 

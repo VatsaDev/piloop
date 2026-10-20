@@ -37,6 +37,7 @@ section.
 | `stop` | [Stop](#stop) | `{}` | `[stop]`: conditions that end the campaign. None by default. |
 | `spend` | [Spend](#spend) \| null | `null` | `[spend]`: a hard budget on what the campaign spends outside piloop. None by default. |
 | `memory` | [Memory](#memory) | `{}` | `[memory]`: documents to search and the lessons overview in briefs. |
+| `plugins` | dict\[string, [PluginTable](#plugintable)\] | `{}` | `[plugins.<capability>]`: the provider of each capability that a plugin package can provide and that has no key of its own, and its parameters. |
 
 ## Metric
 
@@ -320,6 +321,16 @@ read as $0. To resume, raise `limit` and run `piloop init`.
 | `documents` | list\[string\] | `[]` | Repo-relative globs of text documents, for example `["docs/evidence/**/*.md"]`: campaign reports, orchestrator logs, design notes. `piloop init` and the stop of the campaign copy them into the `documents` table, where every agent of every project can search them. Never name a document that is derived from validation or test data. |
 | `wake_budget` | integer | `400` | The size in tokens (about 4 characters each) of the overview that opens the briefs of workers and research sweeps: the current lesson of each mechanism family on the same repo, from the newest campaign that tried it, one line each. Lessons in the project's own metrics come first (`lessons.metric`), then lessons in related metrics, then the rest. Within those, dead or promising come before untested, then the larger effects of each metric, then newer campaigns: effects in different metrics are never compared by size. The brief then says how to read more. A role can change it with `[roles.<kind>] wake_budget`. 0 turns it off. |
 
+## PluginTable
+
+`[plugins.<capability>]`: which provider of a capability the project uses, and its parameters.
+
+The capability declares the table (`piloop.plugins.host.Selection`), and the provider checks the parameters.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `provider` | string | required | The name of the provider: the name of its entry point. The other keys of the table are its parameters. |
+
 ## AnomalyTrigger
 
 The daemon detected an incident that no agent of the project got yet. The agent gets it to investigate.
@@ -340,19 +351,6 @@ The first one counts from the registration of the project. An `interval` of 0 tu
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `kind` | string | `"cron"` |  |
-
-## SeedTrigger
-
-A seed was filed after the role's latest agent started, and a slot of the role is free.
-
-It fires however full the backlog is. If the latest row got the seed but was killed, the seed is retried, once per
-batch, as `low_water` retries. A seed that a sweep read and did not develop is in the next sweep's brief,
-whatever trigger fires it. Gotcha: a sweep's brief is read a moment before its row's `started_at` is set, so a
-seed filed in that moment waits for the next sweep.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `kind` | string | `"seed"` |  |
 
 ## LowWaterTrigger
 
@@ -387,16 +385,18 @@ no idea that a sweep adds could run sooner.
 | `kind` | string | `"low_water"` |  |
 | `buffer` | integer | `2` | The number of ready ideas to keep in addition to one for each run slot (the `max_concurrent` of every role that does runs). With this backlog, a free slot finds an idea at once and does not wait for a sweep. A larger value makes workers wait less for the role, but the ideas they run are older. |
 
-## StoppedTrigger
+## SeedTrigger
 
-The campaign stopped (`[stop]`). It fires once, on the tick that stops the campaign.
+A seed was filed after the role's latest agent started, and a slot of the role is free.
 
-The daemon checks it after it dropped what was pending, so its row starts. The watchdog's closing review is this
-trigger. The reason is `campaign stopped: <the condition>`.
+It fires however full the backlog is. If the latest row got the seed but was killed, the seed is retried, once per
+batch, as `low_water` retries. A seed that a sweep read and did not develop is in the next sweep's brief,
+whatever trigger fires it. Gotcha: a sweep's brief is read a moment before its row's `started_at` is set, so a
+seed filed in that moment waits for the next sweep.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | `"stopped"` |  |
+| `kind` | string | `"seed"` |  |
 
 ## SqlTrigger
 
@@ -411,6 +411,17 @@ one statement that only reads.
 |---|---|---|---|
 | `kind` | string | `"sql"` |  |
 | `when` | string | required | The query, for example `SELECT 1 FROM candidates WHERE project_id = :project AND verdict = 'keep' AND created_at > :since`. |
+
+## StoppedTrigger
+
+The campaign stopped (`[stop]`). It fires once, on the tick that stops the campaign.
+
+The daemon checks it after it dropped what was pending, so its row starts. The watchdog's closing review is this
+trigger. The reason is `campaign stopped: <the condition>`.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `"stopped"` |  |
 
 ## Global settings: `config.toml`
 
@@ -461,17 +472,6 @@ credentials_file = "/etc/piloop/gcs-key.json"
 
 A package adds a backend with an entry point in the `piloop.stores` group: see [storage backends](/architecture/extension-points#storage-backends). The built-in ones:
 
-### `[storage.remote]` with `kind = "s3"`
-
-`[storage.remote]` with `kind = "s3"`: a bucket and prefix, and the storage class of each blob.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `kind` | string | `"s3"` | The S3 backend. |
-| `url` | string | required | `s3://<bucket>[/<prefix>]`: every blob is uploaded there as it is stored. |
-| `storage_class` | string | `"GLACIER_IR"` | The S3 storage class of a blob of at least `standard_below` compressed bytes. |
-| `standard_below` | integer | `131072` | Compressed size under which a blob is stored as `STANDARD`: Glacier IR bills every object as at least 128 KB. |
-
 ### `[storage.remote]` with `kind = "gcs"`
 
 `[storage.remote]` with `kind = "gcs"`: a bucket, a prefix in it, and the storage class of each blob.
@@ -484,6 +484,17 @@ A package adds a backend with an entry point in the `piloop.stores` group: see [
 | `storage_class` | `STANDARD` \| `NEARLINE` \| `COLDLINE` \| `ARCHIVE` | `"STANDARD"` | The storage class of every blob. |
 | `project` | string \| null | `null` | The Google Cloud project to bill. Unset: the project of the credentials. |
 | `credentials_file` | string \| null | `null` | A service account key file (JSON) to use instead of Application Default Credentials. A path, never the key. |
+
+### `[storage.remote]` with `kind = "s3"`
+
+`[storage.remote]` with `kind = "s3"`: a bucket and prefix, and the storage class of each blob.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `"s3"` | The S3 backend. |
+| `url` | string | required | `s3://<bucket>[/<prefix>]`: every blob is uploaded there as it is stored. |
+| `storage_class` | string | `"GLACIER_IR"` | The S3 storage class of a blob of at least `standard_below` compressed bytes. |
+| `standard_below` | integer | `131072` | Compressed size under which a blob is stored as `STANDARD`: Glacier IR bills every object as at least 128 KB. |
 
 ### `[runtimes.<name>]`
 

@@ -1290,6 +1290,7 @@ def test_upgrade_reinstalls_migrates_and_restarts_the_daemon(
         cli_check(),
         f'ok    daemon: pid {pid} runs the installed {installed()}',
         f'ok    database: {common.settings.home}/piloop.db at schema {HEAD}, current',
+        'ok    plugins: 4 roles, 2 runtimes, 2 remote backends, 6 triggers; all built in',
         f'ok    secrets: from the environment of the daemon (pid {pid}) only (PILOOP_SECRETS_COMMAND unset)',
         f'ok    skills (pi): current in {common.settings.agent_skills_dir}',
         'ok    harnesses: on PATH: none configured',
@@ -1316,6 +1317,7 @@ def test_upgrade_of_a_checkout_install_without_a_daemon_creates_the_schema(fake_
         cli_check(),
         'ok    daemon: not running',
         f'ok    database: {common.settings.home}/piloop.db at schema {HEAD}, current',
+        'ok    plugins: 4 roles, 2 runtimes, 2 remote backends, 6 triggers; all built in',
         'ok    secrets: from the environment of this shell only (PILOOP_SECRETS_COMMAND unset)',
         'ok    skills: none of claude, codex, pi, gemini, cursor-agent is on PATH: nothing to check',
         'ok    harnesses: on PATH: none configured',
@@ -1455,3 +1457,38 @@ def test_with_several_tracks_every_idea_and_seed_names_its_track(project_path: P
     assert rows == [('shorter lines', 'size'), ('more lines', 'score'), ('trim it', 'size'), ('pad it', 'score')], (
         'a follow-up of a candidate no run made is on the first track unless it says otherwise'
     )
+
+
+def test_restart_and_upgrade_keep_the_daemon_running_when_the_code_would_not_start_again(
+    fake_bins, out, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An in-place restart execs `piloop serve`: one that would exit at once would leave the agents without a daemon."""
+    monkeypatch.setenv('PILOOP_TICK_SECONDS', '0.05')
+    write_receipt(GIT_RECEIPT)
+    fake_bins('uv')
+    run_cli(['serve', '--check'])
+    assert out().strip() == 'the daemon can start'
+    run_cli(['serve', '--detach'])
+    pid = int(common.settings.pid_file.read_text())
+    started = common.settings.pid_file.stat().st_mtime_ns
+    (common.settings.home / 'config.toml').write_text('[runtimes.gone]\nx = 1\n')
+    # each command reads config.toml when it starts
+    monkeypatch.setattr(
+        common, 'settings', Settings(home=common.settings.home, uv_tool_dir=common.settings.uv_tool_dir)
+    )
+    cause = f'the daemon cannot start: {common.settings.home}/config.toml: \\[runtimes.gone\\]: no runtime has that'
+    with pytest.raises(SystemExit, match=f'^{cause}'):
+        run_cli(['serve', '--check'])
+    with pytest.raises(SystemExit, match=f'^daemon pid {pid} not restarted, and it keeps running: {cause}'):
+        run_cli(['restart'])
+    with pytest.raises(
+        SystemExit,
+        match=f'^daemon: pid {pid} not restarted, and it keeps running the old code: {cause}.*`piloop restart`$',
+    ):
+        run_cli(['upgrade'])
+    assert alive(pid) and common.settings.pid_file.stat().st_mtime_ns == started, 'never signalled'
+    (common.settings.home / 'config.toml').unlink()
+    reaper = threading.Thread(target=os.waitpid, args=(pid, 0))
+    reaper.start()
+    run_cli(['stop'])
+    reaper.join()

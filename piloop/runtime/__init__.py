@@ -2,7 +2,7 @@
 
 The daemon and the CLI depend only on the ``Runtime`` protocol, and never on the name of a runtime. To add a runtime
 (tmux, a remote host), implement the protocol in a class and register the class with an entry point in
-``factory.RUNTIME_GROUP``.
+the group of ``factory.RUNTIMES``.
 """
 
 from dataclasses import dataclass, field
@@ -119,7 +119,7 @@ class NotAttachable(RuntimeError):
 class Runtime(Protocol):
     """Start, watch, steer, show and stop workers.
 
-    The registry (``factory.runtimes``) holds the classes. The class attributes say what the runtime is before it is
+    The registry (``factory.RUNTIMES``) holds the classes. The class attributes say what the runtime is before it is
     constructed: config validation reads them, and a constructor can fail when the runtime is not installed.
     """
 

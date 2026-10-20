@@ -17,17 +17,17 @@ from pydantic_settings import BaseSettings
 
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.mcp import RENDERERS
-from piloop.runtime.factory import BUILTIN_RUNTIMES
-from piloop.triggers import BUILTIN_TRIGGERS
+from piloop.plugins.contracts.runtime import RUNTIMES
+from piloop.triggers import TRIGGERS
 from piloop.usage import READERS
 from piloop.usage.jsonl import TALLIES
 
 BUILT_IN: dict[tuple[str, str], Iterable[str]] = {
-    ('ProjectConfig', 'runtime'): BUILTIN_RUNTIMES,
-    ('RoleConfig', 'runtime'): BUILTIN_RUNTIMES,
+    ('ProjectConfig', 'runtime'): RUNTIMES.builtins(),
+    ('RoleConfig', 'runtime'): RUNTIMES.builtins(),
     ('ProjectConfig', 'harnesses'): DEFAULT_HARNESSES,
-    ('SweepRole', 'triggers'): BUILTIN_TRIGGERS,
-    ('Trigger', 'kind'): BUILTIN_TRIGGERS,
+    ('SweepRole', 'triggers'): TRIGGERS.builtins(),
+    ('Trigger', 'kind'): TRIGGERS.builtins(),
     ('Harness', 'mcp'): RENDERERS,
     ('UsageSpec', 'reader'): READERS,
     ('UsageSpec', 'tally'): TALLIES,

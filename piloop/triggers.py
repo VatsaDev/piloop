@@ -3,7 +3,7 @@
 A trigger is a pydantic model. Its fields are its parameters, from its entry in ``[roles.<name>] triggers``. On each
 tick, for each project and each sweeping role without a pending request, the scheduler calls ``Trigger.fire`` of each
 trigger of the role, in the order of the list. On the tick that stops the campaign, it calls only the triggers with
-``ON_STOP``, and while the campaign runs, only the others. A package adds a trigger with an entry point in ``TRIGGER_GROUP``.
+``ON_STOP``, and while the campaign runs, only the others. A package adds a trigger with an entry point in the group of ``TRIGGERS``.
 """
 
 import sqlite3
@@ -11,7 +11,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import cache
-from importlib.metadata import entry_points
 from typing import Annotated, ClassVar, Literal, NamedTuple, Protocol
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, SerializeAsAny, field_validator
@@ -32,9 +31,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.sql import schema_ddl
-
-TRIGGER_GROUP = 'piloop.triggers'
-"""The entry point group of the triggers that packages add. Each entry point names a ``Trigger`` subclass."""
+from piloop.plugins.host import Capability
 
 
 class Incident(NamedTuple):
@@ -441,44 +438,22 @@ def sql_error(statement: str, parameters: tuple[str, ...] = ()) -> str | None:
     return None
 
 
-BUILTIN_TRIGGERS: dict[str, type[Trigger]] = {
-    'anomaly': AnomalyTrigger,
-    'cron': CronTrigger,
-    'seed': SeedTrigger,
-    'low_water': LowWaterTrigger,
-    'stopped': StoppedTrigger,
-    'sql': SqlTrigger,
-}
+def _check(name: str, loaded: object) -> type[Trigger]:
+    if isinstance(loaded, type) and issubclass(loaded, Trigger):
+        return loaded
+    raise TypeError('is not a piloop Trigger class')
 
 
-@cache
-def triggers() -> dict[str, type[Trigger]]:
-    """Return every trigger by name: the built-in ones, then the ones that packages add (``TRIGGER_GROUP``).
-
-    Raises:
-        TypeError: An entry point does not name a ``Trigger`` subclass.
-        ValueError: An entry point reuses the name of a built-in trigger.
-    """
-    found = dict(BUILTIN_TRIGGERS)
-    for ep in entry_points(group=TRIGGER_GROUP):
-        loaded = ep.load()
-        if not (isinstance(loaded, type) and issubclass(loaded, Trigger)):
-            raise TypeError(f'entry point {ep.name} = {ep.value} in {TRIGGER_GROUP} is not a piloop Trigger class')
-        if ep.name in found:
-            raise ValueError(f'entry point {ep.name} = {ep.value} in {TRIGGER_GROUP}: {ep.name!r} is a trigger already')
-        found[ep.name] = loaded
-    return found
+TRIGGERS = Capability('trigger', group='piloop.triggers', check=_check)
+"""Every trigger by kind. Each entry point of the group names a ``Trigger`` subclass, and its name is the ``kind``.
+The roles name triggers by kind, so no single key selects one."""
 
 
 def _parse(entry: object) -> object:
     """Validate a ``triggers`` entry as the trigger that its ``kind`` names."""
     if not isinstance(entry, dict):
         return entry
-    kind = entry.get('kind')
-    known = triggers()
-    if not isinstance(kind, str) or kind not in known:
-        raise ValueError(f'unknown trigger kind {kind!r}; known: {", ".join(known)}')
-    return known[kind].model_validate(entry)
+    return TRIGGERS.get(str(entry.get('kind'))).model_validate(entry)
 
 
 TriggerEntry = Annotated[SerializeAsAny[Trigger], BeforeValidator(_parse)]

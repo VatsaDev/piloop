@@ -1,5 +1,7 @@
 """No module outside the leaves names an entry of a registry: a built-in harness, runtime, role, trigger or reader.
 
+And every capability of the plugin host states its tier, and the contract of a pure one is data in, data out.
+
 A module that needs a property of an entry asks the registry for it, so that an entry that a package or a project adds
 gets the same treatment. Only the module that defines an entry, and the files listed here with their reason, may name it.
 """
@@ -10,17 +12,18 @@ from pathlib import Path
 from piloop.config import Roles
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.mcp import RENDERERS
-from piloop.runtime.factory import BUILTIN_RUNTIMES
-from piloop.triggers import BUILTIN_TRIGGERS
+from piloop.plugins.contracts.runtime import RUNTIMES
+from piloop.plugins.host import PureCapability, Tier, data_errors, declared
+from piloop.triggers import TRIGGERS
 from piloop.usage import READERS
 from piloop.usage.jsonl import TALLIES
 
 PACKAGE = Path(__file__).parent.parent / 'piloop'
 NAMES = {
     *DEFAULT_HARNESSES,
-    *BUILTIN_RUNTIMES,
+    *RUNTIMES.builtins(),
     *Roles.model_fields,
-    *BUILTIN_TRIGGERS,
+    *TRIGGERS.builtins(),
     *READERS,
     *TALLIES,
     *RENDERERS,
@@ -97,3 +100,23 @@ def test_every_leaf_entry_is_still_needed() -> None:
         if names is not None:
             used = set().union(*(named(p) for p in paths))
             assert names <= used, f'{pattern} no longer names {sorted(names - used)}'
+
+
+HOST_CONTRACTS = {
+    'runtime': 'starts, watches, steers and stops agent processes',
+    'remote backend': 'reads files and writes to a bucket or a directory',
+    'trigger': 'fire(tick) reads the database through the session of a Tick',
+    'role': 'a role holds trigger objects and names a runtime',
+}
+"""The capabilities whose contract passes live objects of the host, and why. Every other one is pure."""
+
+
+def test_every_capability_has_a_tier_and_every_pure_contract_is_data_in_data_out() -> None:
+    """A pure contract can be served out of process or by a Wasm component later only if nothing live crosses it."""
+    for capability in declared():
+        if isinstance(capability, PureCapability):
+            assert capability.tier is Tier.PURE
+            assert data_errors(capability.contract) == [], capability.noun
+        else:
+            assert capability.tier is Tier.HOST
+    assert {c.noun for c in declared() if c.tier is Tier.HOST} == set(HOST_CONTRACTS)

@@ -1,0 +1,13 @@
+[project]
+name = "piloop-nice"
+version = "0.1.0"
+description = "A piloop runtime that runs each agent as a background process at a lower CPU priority"
+requires-python = ">=3.14"
+dependencies = ["piloop"]
+
+[project.entry-points."piloop.runtimes"]
+nice = "piloop_nice:NiceRuntime"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

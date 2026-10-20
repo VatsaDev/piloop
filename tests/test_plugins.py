@@ -1,0 +1,448 @@
+"""The plugin host: an installed package mounts providers through it, and a composition that fails registers nothing."""
+
+import ast
+import re
+import sys
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack
+from dataclasses import dataclass, field
+from importlib.metadata import EntryPoint
+from pathlib import Path
+from typing import IO, Any, Protocol
+
+import piloop_pick_by_priority
+import pytest
+from piloop_nice import NiceRuntime
+from piloop_pick_by_priority.contract import Idea, Pick, Picker, Wait
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy.orm import Session
+
+from piloop.cli import common, doctor
+from piloop.cli.main import app
+from piloop.cli.plugins import selections
+from piloop.config import ROLES, ConfigError, load_project_config
+from piloop.daemon.main import Daemon
+from piloop.db.models import Project
+from piloop.db.session import Database
+from piloop.plugins import host as plugins
+from piloop.plugins.contracts.runtime import RUNTIMES
+from piloop.plugins.contracts.store import REMOTES
+from piloop.plugins.host import (
+    MissingProvider,
+    PluginError,
+    PureCapability,
+    PythonSource,
+    Selection,
+    Source,
+    Tier,
+    compose,
+    data_errors,
+)
+from piloop.runtime.factory import make_runtime
+from piloop.settings import Settings
+from piloop.triggers import TRIGGERS
+from tests.conftest import example, package
+from tests.daemon.test_roles import PLUGIN, installed
+from tests.fixtures.plugin import Typed
+
+
+@pytest.fixture(autouse=True)
+def unloaded() -> Iterator[None]:
+    """Start and end each test with nothing loaded, so that the entry points of the test are the ones loaded."""
+    plugins.close()
+    yield
+    plugins.close()
+
+
+def test_an_installed_package_mounts_its_runtime_and_shows_where_it_comes_from(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    example(tmp_path, 'nice-runtime')
+    monkeypatch.syspath_prepend(tmp_path)
+    assert RUNTIMES.get('nice') is NiceRuntime
+    assert isinstance(make_runtime('nice', project='p', project_path=tmp_path), NiceRuntime)
+    assert RUNTIMES.sources()['nice'] == PythonSource('piloop-nice', '0.1.0', 'nice = piloop_nice:NiceRuntime')
+    built_in: Source = RUNTIMES.sources()['subprocess']
+    assert (built_in.release.split()[0], built_in.built_in) == ('piloop', True)
+    assert next(c for c in doctor.checks(Settings(home=tmp_path)) if c.name == 'plugins').found.endswith(
+        '; from piloop-nice 0.1.0'
+    )
+    monkeypatch.setattr(common, 'settings', Settings(home=tmp_path))
+    printed: list[str] = []
+    monkeypatch.setattr(common.console, 'print', lambda text, **_: printed.append(text))
+    app(['plugins'], result_action='return_value', exit_on_error=False)
+    lines = printed[0].splitlines()
+    runtimes = lines.index('runtimes (host tier, piloop.runtimes):')
+    assert lines[runtimes : runtimes + 4] == [
+        'runtimes (host tier, piloop.runtimes):',
+        f'  herdr       {built_in}',
+        f'  subprocess  {built_in}',
+        '  nice        piloop-nice 0.1.0, entry point nice = piloop_nice:NiceRuntime',
+    ]
+    assert lines[-1] == 'selected:', 'no project and no remote: nothing is selected'
+
+
+def test_two_packages_with_the_same_name_fail_before_the_daemon_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package(tmp_path / 'a', 'piloop-a', '1.0', f'[piloop.runtimes]\nshown = {PLUGIN}:Shown\n')
+    package(tmp_path / 'b', 'piloop-b', '2.0', f'[piloop.runtimes]\nshown = {PLUGIN}:Shown\n')
+    monkeypatch.syspath_prepend(tmp_path / 'b')
+    monkeypatch.syspath_prepend(tmp_path / 'a')
+    with pytest.raises(
+        SystemExit,
+        match=f"^the daemon does not start: entry point shown = {PLUGIN}:Shown in piloop.runtimes: 'shown'"
+        f' is a runtime already, from piloop-a 1.0, entry point shown = {PLUGIN}:Shown$',
+    ):
+        Daemon(Settings(home=tmp_path / 'home'))
+    assert not (tmp_path / 'home').exists(), 'it failed before it opened anything'
+    assert not any(c.active for c in plugins.declared())
+    found = doctor.checks(Settings(home=tmp_path / 'home'))
+    names = [c.name.split(' ')[0] for c in found]
+    assert names[:5] == ['cli', 'daemon', 'database', 'plugins', 'secrets'] and set(names[5:]) <= {'skills'}, (
+        'the checks of projects, harnesses and runtimes, which use the plugins, do not run'
+    )
+    found = [c for c in found if c.name == 'plugins']
+    assert found[-1].fix is not None and "'shown' is a runtime already" in found[-1].found
+    monkeypatch.setattr(common, 'settings', Settings(home=tmp_path / 'home'))
+    with pytest.raises(SystemExit, match="'shown' is a runtime already"):
+        app(['plugins'], result_action='return_value', exit_on_error=False)
+
+
+@pytest.mark.parametrize(
+    ('config', 'error'),
+    [
+        (
+            '[runtimes.tmux]\nx = 1\n',
+            r'config.toml: \[runtimes.tmux\]: no runtime has that name; registered runtimes:',
+        ),
+        (
+            '[storage.remote]\nkind = "azure"\n',
+            r"config.toml: \[storage.remote\] kind = 'azure': unknown remote backend 'azure'; registered remote",
+        ),
+        ('[storage.remote]\nkind = "s3"\n', r'config.toml: 1 validation error for S3Config\nurl\n  Field required'),
+    ],
+)
+def test_config_toml_that_binds_a_provider_that_there_is_not_fails_before_the_daemon_starts(
+    tmp_path: Path, config: str, error: str
+) -> None:
+    (tmp_path / 'config.toml').write_text(config)
+    with pytest.raises(SystemExit, match=f'^the daemon does not start: .*{error}'):
+        Daemon(Settings(home=tmp_path))
+    assert not (tmp_path / 'piloop.db').exists()
+    assert next(c for c in doctor.checks(Settings(home=tmp_path)) if c.name == 'plugins').fix is not None
+
+
+def test_an_entry_point_that_does_not_load_fails_with_its_name_and_the_cause(monkeypatch: pytest.MonkeyPatch) -> None:
+    installed(monkeypatch, [EntryPoint('gone', 'tests.fixtures.no_such_module:Gone', RUNTIMES.group)])
+    with pytest.raises(
+        PluginError,
+        match=r'^entry point gone = tests.fixtures.no_such_module:Gone in piloop.runtimes does not load:'
+        r" ModuleNotFoundError: No module named 'tests.fixtures.no_such_module'$",
+    ) as failed:
+        RUNTIMES.providers()
+    assert isinstance(failed.value.__cause__, ModuleNotFoundError)
+
+
+def test_a_failed_composition_unregisters_what_it_activated_and_keeps_what_was_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A broken role unwinds the runtimes and the triggers of the same call, and leaves the remotes, active before."""
+    typed = EntryPoint('typed', f'{PLUGIN}:Typed', RUNTIMES.group)
+    installed(monkeypatch, [typed, EntryPoint('auditor', f'{PLUGIN}:NOT_A_ROLE', ROLES.group)])
+    REMOTES.providers()
+    with pytest.raises(PluginError, match='is not a piloop SweepRole or WorkerRole'):
+        compose(RUNTIMES, TRIGGERS, ROLES)
+    assert [c.active for c in (RUNTIMES, TRIGGERS, ROLES, REMOTES)] == [False, False, False, True]
+    installed(monkeypatch, [typed])
+    compose(RUNTIMES, TRIGGERS, ROLES)
+    assert [c.active for c in (RUNTIMES, TRIGGERS, ROLES)] == [True, True, True]
+    assert RUNTIMES.get('typed') is Typed
+    plugins.close()
+    plugins.close()
+    assert not any(c.active for c in plugins.declared()), 'closing twice is harmless'
+    assert 'typed' in RUNTIMES.providers(), 'the next use activates again'
+
+
+def test_a_broken_package_of_a_capability_that_nothing_binds_is_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With no ``[storage.remote]``, the daemon starts without the remote backends: one that does not load warns."""
+    installed(monkeypatch, [EntryPoint('gone', 'tests.fixtures.no_such_module:Gone', REMOTES.group)])
+    home = Settings(home=tmp_path)
+    Daemon(home).shutdown(timeout=5)
+    found = next(c for c in doctor.checks(home) if c.name == 'plugins')
+    assert found.fix is None
+    assert found.found == (
+        '4 roles, 2 runtimes, 6 triggers; all built in; warning: nothing selects a remote backend, and they do not load:'
+        ' entry point gone = tests.fixtures.no_such_module:Gone in piloop.stores does not load: ModuleNotFoundError:'
+        " No module named 'tests.fixtures.no_such_module'"
+    )
+    monkeypatch.setattr(common, 'settings', home)
+    printed: list[str] = []
+    monkeypatch.setattr(common.console, 'print', lambda text, **_: printed.append(text))
+    app(['plugins'], result_action='return_value', exit_on_error=False)
+    lines = printed[0].splitlines()
+    shown = lines.index('remote backends (host tier, piloop.stores):') + 1
+    assert lines[shown].startswith('  not loaded, and nothing selects a remote backend: entry point gone = ')
+    (tmp_path / 'config.toml').write_text('[storage.remote]\nkind = "s3"\nurl = "s3://b/p"\n')
+    with pytest.raises(SystemExit, match='the daemon does not start: entry point gone = '):
+        Daemon(Settings(home=tmp_path))
+
+
+def test_a_name_that_no_provider_has_lists_the_ones_there_are() -> None:
+    with pytest.raises(MissingProvider, match="^unknown runtime 'tmux'; registered runtimes: herdr, subprocess$"):
+        RUNTIMES.get('tmux')
+
+
+class Reentrant(EntryPoint):
+    """An entry point whose import needs the triggers that it is one of."""
+
+    def load(self) -> object:
+        return TRIGGERS.providers()
+
+
+def test_an_entry_point_that_needs_its_own_capability_while_it_loads_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    installed(monkeypatch, [Reentrant('loop', f'{PLUGIN}:EveryTick', TRIGGERS.group)])
+    with pytest.raises(
+        PluginError,
+        match=r'^the triggers are needed while they load: an entry point of piloop.triggers uses its own capability,'
+        r' or one that uses it, when it is imported$',
+    ):
+        TRIGGERS.providers()
+    assert not any(c.active for c in plugins.declared())
+
+
+@dataclass
+class Fake:
+    """A capability that records when it activates and when its registration is undone."""
+
+    noun: str
+    log: list[str]
+    tier: Tier = Tier.HOST
+    fails: bool = False
+    group: str = 'piloop.fakes'
+    selection: Selection | None = None
+    active: bool = False
+    activating: bool = False
+    seen: dict[str, Source] = field(default_factory=dict)
+
+    def activate(self, stack: ExitStack) -> None:
+        if self.fails:
+            raise PluginError(f'{self.noun} fails')
+        self.active = True
+        self.log.append(f'+{self.noun}')
+        stack.callback(self._undo)
+
+    def _undo(self) -> None:
+        self.active = False
+        self.log.append(f'-{self.noun}')
+
+    def sources(self) -> dict[str, Source]:
+        return self.seen
+
+    def get(self, name: str) -> object:
+        return self.seen[name]
+
+
+def test_activation_goes_in_order_teardown_newest_first_and_a_failure_undoes_only_its_own_call() -> None:
+    log: list[str] = []
+    store, runtime, planner = Fake('store', log), Fake('runtime', log), Fake('planner', log)
+    compose(store, runtime, planner)
+    plugins.close()
+    assert log == ['+store', '+runtime', '+planner', '-planner', '-runtime', '-store']
+    log.clear()
+    compose(store)
+    with pytest.raises(PluginError, match='broken fails'):
+        compose(runtime, Fake('broken', log, fails=True))
+    assert log == ['+store', '+runtime', '-runtime'], 'only what the failed call activated is undone'
+    plugins.close()
+    assert log[-1] == '-store'
+
+
+IDEAS = [Idea(1, 3, 'speed', 0), Idea(2, 5, 'speed', 2), Idea(3, 5, 'size', 0)]
+
+
+@pytest.fixture
+def pickers() -> Iterator[PureCapability[Picker]]:
+    """A pure capability as piloop will declare one, selected by ``[plugins.idea_picker]``. Its contract and its
+    plugin are the example in ``examples/plugins/pick-by-priority``. It is declared only for the test."""
+    capability = PureCapability(
+        'idea picker',
+        group='piloop.example.pickers',
+        contract=Picker,
+        selection=Selection('project', 'plugins.idea_picker.provider'),
+    )
+    yield capability
+    plugins._declared.remove(capability)
+
+
+def test_a_pure_plugin_is_installed_selected_by_config_and_answers_with_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pickers: PureCapability[Picker], db: Database, project: Project
+) -> None:
+    project_path = Path(project.path)
+    example(tmp_path / 'site', 'pick-by-priority')
+    monkeypatch.syspath_prepend(tmp_path / 'site')
+    assert pickers.tier is Tier.PURE and data_errors(Picker) == []
+    cfg = load_project_config(project_path, plugins={'idea_picker': {'provider': 'by_priority'}})
+    picker = pickers.get(cfg.plugins['idea_picker'].provider)
+    assert picker is piloop_pick_by_priority.BY_PRIORITY
+    assert picker.pick(IDEAS, 1) == Pick(3, 'priority 5, 0 attempt(s)')
+    assert picker.pick(IDEAS, 0) == Wait('no free slot'), 'an error is a value'
+    assert pickers.sources()['by_priority'].release == 'piloop-pick-by-priority 0.1.0'
+    home = Settings(home=tmp_path)
+    assert not any(line.startswith('demo: idea picker') for line in selections(home)), 'demo selects none yet'
+    with db.session() as s:
+        s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
+        s.commit()
+    assert (
+        'demo: idea picker by_priority, from piloop-pick-by-priority 0.1.0 ([plugins.idea_picker] provider, in the'
+        f' config of demo that the last `piloop init` stored from {project_path}/piloop.toml)'
+    ) in selections(home)
+    installed(monkeypatch, [EntryPoint('capped', f'{__name__}:CAPPED', pickers.group)])
+    load_project_config(project_path, plugins={'idea_picker': {'provider': 'capped', 'most': 2}})
+    for table, error in [
+        ({'idea_picker': {'provider': 'nope'}}, "[plugins.idea_picker] provider = 'nope': unknown idea picker 'nope'"),
+        ({'idea_picker': {'provider': 'capped', 'most': 'x'}}, "most = 'x': Input should be a valid integer"),
+        ({'idea_picker': {'provider': 'odd', 'most': 2}}, "unknown idea picker 'odd'"),
+        ({'planner': {'provider': 'capped'}}, '[plugins.planner]: no capability has that name; there is idea_picker'),
+    ]:
+        with pytest.raises(ConfigError, match=re.escape(error)):
+            load_project_config(project_path, plugins=table)
+    installed(monkeypatch, [EntryPoint('plain', 'piloop_pick_by_priority:BY_PRIORITY', pickers.group)])
+    with pytest.raises(ConfigError, match=re.escape("idea picker 'plain' takes no parameters: most")):
+        load_project_config(project_path, plugins={'idea_picker': {'provider': 'plain', 'most': 2}})
+
+
+@dataclass(frozen=True)
+class Cap:
+    """The parameters of ``capped``."""
+
+    most: int
+
+
+class Capped:
+    """A provider with parameters: ``[plugins.idea_picker] most`` checks against ``Parameters``."""
+
+    Parameters = Cap
+
+    def pick(self, ideas: list[Idea], free_slots: int) -> Pick | Wait:
+        return Wait('never called')
+
+
+CAPPED = Capped()
+
+
+@pytest.mark.parametrize(
+    ('value', 'error'),
+    [
+        (
+            'piloop_pick_by_priority:ByPriority',
+            'names the class ByPriority: the entry point of a pure provider names an',
+        ),
+        (f'{PLUGIN}:NOT_A_ROLE', 'does not implement Picker: it needs pick$'),
+        (
+            f'{__name__}:MISNAMED',
+            r'does not implement Picker: pick does not take the arguments of Picker.pick \(ideas, free_slots\):'
+            r" missing a required argument: 'choices'$",
+        ),
+    ],
+)
+def test_a_pure_provider_is_an_instance_with_the_methods_and_arguments_of_its_contract(
+    monkeypatch: pytest.MonkeyPatch, value: str, error: str, pickers: PureCapability[Picker]
+) -> None:
+    installed(monkeypatch, [EntryPoint('odd', value, pickers.group)])
+    with pytest.raises(PluginError, match=f'^entry point odd = {value} in piloop.example.pickers {error}'):
+        pickers.providers()
+
+
+class Misnamed:
+    """Has the method of the contract, with arguments of other names: the host calls it with the contract's."""
+
+    def pick(self, choices: list[Idea], free_slots: int) -> Pick | Wait:
+        return Wait('never called')
+
+
+MISNAMED = Misnamed()
+
+
+@dataclass(frozen=True)
+class Loop:
+    next: Loop | None
+
+
+class Open(BaseModel):
+    """A record that takes any extra field, of any type."""
+
+    model_config = ConfigDict(extra='allow')
+    x: int
+
+
+class Plain:
+    """A class that is not a record."""
+
+
+class Leaky(Protocol):
+    """A contract that passes live objects, and so cannot be served out of process."""
+
+    db: Session
+
+    @property
+    def session(self) -> Session: ...
+
+    @staticmethod
+    def helper(s: Session) -> None: ...
+
+    @classmethod
+    def build(cls, s: Session) -> None: ...
+
+    def run(
+        self, thing: object, anything: list[Any], then: Callable[[int], int], log: IO[str], plain: Plain
+    ) -> None: ...
+
+    def nested(self, open: Open) -> Loop: ...
+
+    def loose(self, x, *args: int) -> int: ...
+
+    def untyped(self, x: int): ...
+
+
+def test_a_pure_contract_takes_and_returns_data_only() -> None:
+    anything = 'has a part of any type (Any, object, or a model that allows extra fields)'
+    no_schema = 'is not data: Unable to generate pydantic-core schema for'
+    assert data_errors(Leaky) == [
+        'db is not a method: a pure contract has methods only, as a WIT interface',
+        'session is not a method: a pure contract has methods only, as a WIT interface',
+        f"build(s): <class 'sqlalchemy.orm.session.Session'> {no_schema} <class 'sqlalchemy.orm.session.Session'>."
+        ' Set `arbitrary_types_allowed=True` in the model_config to ignore this error or implement'
+        ' `__get_pydantic_core_schema__` on your type to fully support it.',
+        f"helper(s): <class 'sqlalchemy.orm.session.Session'> {no_schema} <class 'sqlalchemy.orm.session.Session'>."
+        ' Set `arbitrary_types_allowed=True` in the model_config to ignore this error or implement'
+        ' `__get_pydantic_core_schema__` on your type to fully support it.',
+        'loose(x) has no type',
+        'loose(args) takes any number of arguments',
+        f'nested(open): {Open!r} {anything}',
+        f'nested returns {Loop!r} contains itself (Loop → Loop), and WIT types are not recursive',
+        f"run(thing): <class 'object'> {anything}",
+        f'run(anything): list[typing.Any] {anything}',
+        'run(then): collections.abc.Callable[[int], int] is not data: Cannot generate a JsonSchema for'
+        ' core_schema.CallableSchema',
+        f'run(log): typing.IO[str] {no_schema} typing.IO[str]. Set `arbitrary_types_allowed=True` in the model_config'
+        ' to ignore this error or implement `__get_pydantic_core_schema__` on your type to fully support it.',
+        f'run(plain): {Plain!r} {no_schema} {Plain!r}. Set'
+        ' `arbitrary_types_allowed=True` in the model_config to ignore this error or implement'
+        ' `__get_pydantic_core_schema__` on your type to fully support it.',
+        'untyped has no return type',
+    ]
+    with pytest.raises(TypeError, match=r'^Leaky is not a pure contract: db is not a method'):
+        PureCapability('leak', group='piloop.example.leaks', contract=Leaky)
+
+
+def test_a_pure_plugin_imports_only_the_standard_library_and_its_contract() -> None:
+    tree = ast.parse(Path(piloop_pick_by_priority.__file__).read_text())
+    imported = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names} | {
+        n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module is not None
+    }
+    assert {m for m in imported if m.split('.')[0] not in sys.stdlib_module_names} == {
+        'piloop_pick_by_priority.contract'
+    }
