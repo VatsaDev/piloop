@@ -37,7 +37,6 @@ from piloop.db.models import (
     Measurement,
     Pause,
     Project,
-    ProjectStatus,
     Run,
     TargetKind,
     Verdict,
@@ -268,7 +267,7 @@ def add_measurement(s: Session, candidate_id: int, report: Report, *, actor: str
 
     The daemon judges the candidate again when its verdict is the daemon's ``crash``, ``discard`` or ``interesting`` on
     a run (``ledger.rejudgeable``), with every measurement under the current evaluator. It does that when it measures
-    the project again: not while the project is stopped, paused with its evaluations, or held by the spend guard. Any
+    the project again: not while the project is paused with its evaluations, or held by the spend guard. Any
     other verdict stays, and a keep's mean, which later runs from it must beat, includes the new measurement. Emits
     ``measurement.recorded``, shaped like the daemon's, and the request (``REJUDGE_REQUESTED``).
 
@@ -308,8 +307,7 @@ def add_measurement(s: Session, candidate_id: int, report: Report, *, actor: str
     if not rejudgeable(candidate):
         return Added(measurement, False, _stays(candidate))
     emit(s, REJUDGE_REQUESTED, TargetKind.CANDIDATE, candidate.id, actor=actor, payload={'measurement': measurement.id})
-    hold = _measuring_held(project, cfg)
-    later = f' once {hold}' if hold is not None else ''
+    later = measuring_held(project, cfg)
     return Added(measurement, True, f'the daemon judges it again with all its measurements{later}')
 
 
@@ -319,15 +317,16 @@ def _stays(candidate: Candidate) -> str:
     return f'its verdict stays: {candidate.verdict}, set by {candidate.verdict_by or "nobody"}'
 
 
-def _measuring_held(project: Project, cfg: ProjectConfig) -> str | None:
-    """Return when the daemon measures the project again if it does not now, as the scheduler's tick decides."""
-    if project.status is ProjectStatus.STOPPED:
-        return f'project {project.name} is active again (it stopped: {project.stopped_reason})'
+def measuring_held(project: Project, cfg: ProjectConfig) -> str:
+    """Return `` once …``: when the daemon measures the project, as the scheduler's tick decides, or '' for now.
+
+    A stopped project is measured too, but only what someone asked for (``ledger.due``).
+    """
     if project.paused is Pause.ALL:
-        return f'project {project.name} is resumed (its evaluations are paused)'
+        return f' once project {project.name} is resumed (its evaluations are paused)'
     if (why := spend.held(project, cfg)) is not None:
-        return f'the spend guard lets it ({why})'
-    return None
+        return f' once the spend guard lets it ({why})'
+    return ''
 
 
 def files(project: Project, actor: str) -> Files | None:

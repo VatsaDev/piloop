@@ -182,6 +182,11 @@ A deprecated configuration key shows a warning for at least one minor release be
 - An agent that `piloop run cancel`, `piloop agent cancel` or `piloop project stop` ends, or tells to wrap up, in its
   first two minutes, before it commits or comments, is no longer a failed start. Before, it emitted `anomaly.startup`,
   three of them paused the project's launches with an escalation, and its row was `exited` instead of `killed`.
+- `piloop candidate remeasure` and the judgement again after `piloop measurement add` work on a stopped project. Before,
+  the command said that the daemon measures the candidate, but the daemon measured only active projects, so the request
+  waited for ever. A stopped project is measured only on request: a new evaluator measures neither its head nor its
+  bars. `piloop candidate remeasure` now says when the daemon measures, as `piloop measurement add` does: once a pause
+  with `--evals` or the spend guard lets it.
 - A worker whose worktree could not be made (a full disk, `Could not write new index file`) no longer stays
   `starting` and holds a slot forever. The failure is a failed start, like one that the runtime reports: the row is closed with
   the error, the run is relaunched, and the `anomaly.startup` event counts toward the launch pause. Any other fault

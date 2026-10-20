@@ -10,7 +10,7 @@ from piloop.campaign import ops
 from piloop.cli import common
 from piloop.cli.common import ProjectRef
 from piloop.config import config_of
-from piloop.db.models import Candidate, Verdict
+from piloop.db.models import Candidate, Project, Verdict
 from piloop.scoring.ledger import (
     ImportRefused,
     RemeasureRefused,
@@ -65,8 +65,9 @@ def candidate_remeasure(
     """Ask the daemon to measure a candidate again with the current evaluator.
 
     Use it when a fault of the host spoiled a measurement (a full disk, a lost GPU), or for one more repeat. The daemon
-    measures it soon, after the head and the bars that runs need. A `crash` that the daemon judged is judged again with
-    the new measurement. Any other verdict stays. A pending, unmeasured or recovered candidate is never measured.
+    measures it soon, after the head and the bars that runs need, also when the project is stopped: not while it is
+    paused with `--evals`, or held by the spend guard. A `crash` that the daemon judged is judged again with the new
+    measurement. Any other verdict stays. A pending, unmeasured or recovered candidate is never measured.
     """
     with common.session() as s:
         candidate = s.get(Candidate, candidate_id)
@@ -77,9 +78,11 @@ def candidate_remeasure(
         except RemeasureRefused as e:
             raise SystemExit(str(e)) from e
         s.commit()
+        project = s.get_one(Project, candidate.project_id)
+        later = ops.measuring_held(project, config_of(project))
         common.console.print(
-            f'candidate#{candidate.id} {candidate.verdict}: the daemon measures it again with the current evaluator;'
-            ' a crash is judged again',
+            f'candidate#{candidate.id} {candidate.verdict}: the daemon measures it again with the current evaluator'
+            f'{later}; a crash is judged again',
             markup=False,
         )
 

@@ -293,9 +293,8 @@ def test_a_measurement_by_hand_says_when_the_daemon_judges_again_and_waits_for_a
         p = s.get_one(Project, 1)
         p.status, p.stopped_reason = ProjectStatus.STOPPED, 'max_runs: 3 runs'
         assert ops.add_measurement(s, crashed, report, actor=ACTOR).effect == (
-            'the daemon judges it again with all its measurements once project demo is active again'
-            ' (it stopped: max_runs: 3 runs)'
-        )
+            'the daemon judges it again with all its measurements'
+        ), 'a stopped project is still measured and judged on request'
         p.status, p.stopped_reason = ProjectStatus.ACTIVE, None
         ops.pause(s, 1, evals=True, reason='why')
         assert ops.add_measurement(s, crashed, report, actor=ACTOR).effect.endswith(

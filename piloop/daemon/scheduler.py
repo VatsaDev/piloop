@@ -322,8 +322,9 @@ class Scheduler:
 
         Returns the ids of the launched workers. Before the triggers, the tick rejects the ideas that a newer idea
         superseded (``piloop.campaign.ideas.supersede``). This also happens for a stopped project, which requests
-        nothing. A project that the spend guard holds (``_read_spend``) gets only this step. A paused project
-        (``piloop pause``) gets no triggers and launches nothing, and with ``all`` it is not measured again either. The
+        nothing and is measured again only on request (``ledger.due``). A project that the spend guard holds
+        (``_read_spend``) gets only this step. A paused project (``piloop pause``) gets no triggers and launches
+        nothing, and with ``all`` it is not measured again either. The
         archiver starts the next archiving of a workspace that is due, or its upkeep, on a background thread
         (``piloop.daemon.archiver``).
         """
@@ -346,10 +347,10 @@ class Scheduler:
                 for idea_id, by in supersede(s, project.id).items():
                     self._tracer.event('idea.superseded', project=project.name, idea=idea_id, by=by)
                 held = spend.held(project, cfg)
-                if project.status is ProjectStatus.ACTIVE and held is None:
+                if held is None:
                     if project.paused is not Pause.ALL:
                         self._remeasure(s, project)
-                    if project.paused is None:
+                    if project.status is ProjectStatus.ACTIVE and project.paused is None:
                         self._triggers(s, project, cfg)
                 s.flush()
                 if held is None and project.paused is None:

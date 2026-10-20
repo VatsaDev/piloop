@@ -2166,6 +2166,30 @@ def test_a_worker_that_cannot_take_the_list_of_its_jobs_is_not_asked_again(
     ]
 
 
+def test_a_stopped_project_is_measured_again_only_on_request(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """Measuring a suspicious result again is part of the review after a campaign stops. The head and the bars that
+    runs need are moot then: a new evaluator measures nothing unasked."""
+    doubled = ['sh', '-c', 'echo METRIC score=$(( 2 * $(wc -l < solve.txt) )); echo METRIC size=1']
+    write_toml(Path(project.path), HARNESS_APPEND, evaluate=doubled)
+    with db.session() as s:
+        sync(s, s.get_one(Project, project.id))
+        s.commit()
+    stop_project(db, project, 'plateau: 5 runs without a keep')
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    measured = mocker.patch.object(scheduler._executor, 'remeasure')
+    scheduler.tick()
+    scheduler.wait(5)
+    measured.assert_not_called()
+    with db.session() as s:
+        request_remeasure(s, s.get_one(Candidate, 1), 'human')
+        s.commit()
+    scheduler.tick()
+    scheduler.wait(5)
+    measured.assert_called_once_with(1)
+
+
 def test_the_daemon_measures_a_candidate_again_when_someone_asks(
     db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:

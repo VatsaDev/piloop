@@ -710,6 +710,13 @@ def test_candidate_remeasure_asks_the_daemon_to_measure_a_candidate_again_and_re
         assert (event.actor, event.target_kind, event.target_id) == ('human', TargetKind.CANDIDATE, 1)
         s.add(Candidate(project_id=1, commit_sha='0' * 40, tree_sha='1' * 40, verdict=Verdict.UNMEASURED))
         s.commit()
+    run_cli(['pause', 'demo', '--evals', '--reason', 'review'])
+    out()
+    run_cli(['candidate', 'remeasure', '1'])
+    assert out().strip() == (
+        'candidate#1 keep: the daemon measures it again with the current evaluator once project demo is resumed'
+        ' (its evaluations are paused); a crash is judged again'
+    )
     with pytest.raises(SystemExit, match=r'candidate#2 is unmeasured: the daemon never measures it'):
         run_cli(['candidate', 'remeasure', '2'])
     with pytest.raises(SystemExit, match='no candidate#99'):

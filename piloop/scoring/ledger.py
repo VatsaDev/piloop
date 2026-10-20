@@ -148,7 +148,8 @@ def due(s: Session, project: Project) -> list[Candidate]:
 
     The head and the bars come only while the current evaluator has not measured them. Nothing else is measured again
     unasked: after an evaluator change, an older keep or a reference that no run needs keeps the scores of the old
-    evaluator until someone asks (``request_remeasure``). A measurement never changes a keep's verdict.
+    evaluator until someone asks (``request_remeasure``). A measurement never changes a keep's verdict. A stopped
+    project gets only 3: what someone asked for, to review the campaign. The rest is for runs, and none starts.
     """
     open_runs = select(Run).join(Idea).where(Idea.project_id == project.id, Run.status.in_(OPEN_RUNS))
     pins = select(Candidate).join(Idea, Idea.base_candidate_id == Candidate.id)
@@ -156,14 +157,16 @@ def due(s: Session, project: Project) -> list[Candidate]:
         Candidate.project_id == project.id, Candidate.verdict == Verdict.REFERENCE, ~Candidate.measurements.any()
     )
     asked = requested(s, project)
-    found = [head(s, project), *(bar_of(run.base) for run in s.scalars(open_runs.order_by(Run.id)))]
+    active = project.status is ProjectStatus.ACTIVE
+    found = [head(s, project), *(bar_of(run.base) for run in s.scalars(open_runs.order_by(Run.id)))] if active else []
     for candidate in asked:
         if judged_again(candidate) and candidate.parent is not None:
             found.append(bar_of(candidate.parent))
         found.append(candidate)
-    ready = (Idea.project_id == project.id, Idea.status == IdeaStatus.READY)
-    found += [bar_of(c) for c in s.scalars(pins.where(*ready).order_by(Idea.id))]
-    found += s.scalars(new_references.order_by(Candidate.id))
+    if active:
+        ready = (Idea.project_id == project.id, Idea.status == IdeaStatus.READY)
+        found += [bar_of(c) for c in s.scalars(pins.where(*ready).order_by(Idea.id))]
+        found += s.scalars(new_references.order_by(Candidate.id))
     evaluator_id = project.evaluator_id or 0
     return [c for c in dict.fromkeys(found) if c is not None and (c in asked or not measured(c, evaluator_id))]
 
