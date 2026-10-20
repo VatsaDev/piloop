@@ -11,6 +11,7 @@ import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
+import psutil
 import pytest
 from sqlalchemy import select
 
@@ -30,7 +31,7 @@ from piloop.daemon.serve import (
 from piloop.db.models import Idea, Run, RunStatus, Worker, WorkerState
 from piloop.db.session import Database, migrate
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
-from piloop.proc import child_env
+from piloop.proc import TOKEN_ENV, child_env
 from piloop.settings import Settings
 from piloop.usage import UsageSpec
 from tests.conftest import HARNESS_SLEEPS, hold_lock, register, wait_for_worker_handle, write_toml
@@ -123,13 +124,16 @@ def test_sigterm_kills_workers_and_exits(project_path: Path, tmp_path: Path) -> 
 
 
 def test_detach_survives_the_cli_and_stop_ends_it(tmp_path: Path) -> None:
+    """An agent's shell runs it here: the daemon must neither sign as the agent nor die when the agent is killed."""
     cfg = Settings(home=tmp_path / 'home')
-    started = piloop(cfg.home, 'serve', '--detach')
+    agent = env_for(cfg.home) | {TOKEN_ENV: 'w-1', 'PILOOP_ACTOR': 'worker#1'}
+    started = subprocess.run([*PILOOP, 'serve', '--detach'], capture_output=True, text=True, env=agent, timeout=60)
     assert started.returncode == 0 and started.stdout.rstrip().endswith(f'log {cfg.log_file}')
     wait_until(cfg.pid_file.is_file)
     pid = int(cfg.pid_file.read_text())
     assert started.stdout.startswith(f'daemon started: pid {pid},') and alive(pid)
     assert os.getsid(pid) == pid, 'its own session: closing the terminal cannot reach it'
+    assert not {TOKEN_ENV, 'PILOOP_ACTOR'} & set(psutil.Process(pid).environ()), "not the agent's token or signature"
 
     again = piloop(cfg.home, 'serve', '--detach')
     foreground = piloop(cfg.home, 'serve')

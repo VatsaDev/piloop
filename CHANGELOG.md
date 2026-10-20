@@ -165,6 +165,13 @@ A deprecated configuration key shows a warning for at least one minor release be
   even when it spent tokens, and whatever its harness: a harness whose tools fail at launch still reads its brief and
   replies that it is blocked. Before, such a run counted as an attempt (`worker produced no commits`) and could set its
   idea `done`.
+- Ending an agent under the subprocess runtime (its timeout, a stop, the end of its run) now also ends what it
+  started in sessions of its own, such as Claude Code's Bash calls and the builds they run. Before, only its process
+  group was killed, and those processes ran on for hours. Every agent now has `PILOOP_WORKER_TOKEN`, as under Herdr.
+  Under both runtimes, the processes are stopped before they are killed, so a build that forks meanwhile leaves no
+  children. A shared server that an agent starts (sccache, Gradle, Bazel) ends with it.
+- What piloop starts from an agent's shell no longer carries the agent's `PILOOP_WORKER_TOKEN` or `PILOOP_ACTOR`: a
+  daemon started with `piloop serve --detach` from an agent signed as that agent and died with it.
 - An agent whose start failed after its process was spawned is now stopped and waited for. Before, the process
   ran on with nothing that watched it, and was never reaped.
 - A daemon stop no longer sets the idea of a run whose worker had left its finding back to `ready`, which started the

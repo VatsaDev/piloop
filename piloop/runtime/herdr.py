@@ -25,7 +25,6 @@ import json
 import os
 import shlex
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -42,7 +41,7 @@ from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSett
 
 from piloop import settings as settings_module
 from piloop.harnesses import Harness, Invocation, QueueKey
-from piloop.proc import tagged
+from piloop.proc import TOKEN_ENV, kill_tagged, tagged
 from piloop.runtime import Check, Handle, NotSteerable, Outcome, RuntimeFailure, StartFailed, WorkerSpec, WorkerStatus
 from piloop.settings import runtime_settings
 
@@ -89,8 +88,6 @@ ROOT_TOKEN = 'root'
 """The workspace metadata token that holds the project path, so two directories with the same name get two
 workspaces."""
 METADATA_SOURCE = 'piloop'
-TOKEN_ENV = 'PILOOP_WORKER_TOKEN'
-"""Set in the worker's pane to a value unique to the worker. Every process the agent starts inherits it."""
 JOBS_POLL_SECONDS = 5
 """How often to check the running jobs of an idle agent until they end."""
 BLOCKED_GRACE_SECONDS = 600
@@ -739,11 +736,7 @@ class HerdrRuntime:
         token = handle.data.get('token')
         if token is None:
             return
-        for pid, _, _ in tagged(f'{TOKEN_ENV}={token}'):
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                continue
+        kill_tagged(f'{TOKEN_ENV}={token}')
 
     def focus(self, handle: Handle) -> str:
         """Brings the agent's tab, and its workspace, to the front of the piloop Herdr session."""

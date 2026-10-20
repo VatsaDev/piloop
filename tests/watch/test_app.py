@@ -908,3 +908,16 @@ def test_a_screen_that_the_exit_is_tearing_down_is_not_read_again(
         app.poll()
 
     drive(db, 'demo', scenario)
+
+
+def test_a_poll_after_the_app_stopped_running_reads_nothing(db: Database, campaign: Project, herdr_log: Path) -> None:
+    """The shutdown prunes the screens after the app stops running, and the poll timer can fire meanwhile: the screen is
+    still mounted and attached (no ``exit`` ran), but its widgets are going."""
+
+    async def scenario(pilot: Pilot[None], app: Watch) -> None:
+        await pilot.pause()
+
+    app = drive(db, 'demo', scenario)
+    assert not app.is_running
+    app._stamp = None
+    app.poll()

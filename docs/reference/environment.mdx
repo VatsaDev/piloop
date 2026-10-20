@@ -37,5 +37,5 @@ the harnesses name.
 | `PILOOP_ACTOR` | every agent | The agent's signature, `<role>#<worker-id>`, for example `worker#12` or `scout#7`. |
 | `PILOOP_HOME` | every agent | The same directory as the daemon's, so that the agent's `piloop` commands use the same database. |
 | `PILOOP_UNITS_FILE` | the evaluate command, in piloop's own measurements only: the daemon's, and the baseline that `piloop init` measures. Never in an agent's environment. | The path where the evaluate command may write its [per-unit results](/concepts/projects#per-unit-results). |
-| `PILOOP_WORKER_TOKEN` | every agent, with the Herdr runtime | A token that lets piloop find the background jobs that an agent started. |
+| `PILOOP_WORKER_TOKEN` | every agent | A token that lets piloop find the processes that an agent started, also those in sessions of their own, and end them with the agent. |
 | `CLAUDE_CODE_CHILD_SESSION` | every agent, set to empty | Claude Code sets it for every process that it runs. A Claude Code agent that inherits it saves no transcript, so piloop clears it. |

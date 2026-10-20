@@ -544,8 +544,11 @@ class Watch(App[None]):
         """Read the top screen again when the database changed or ``REFRESH_SECONDS`` passed. Not under a dialog.
 
         A screen that was pushed but is not mounted yet has no widgets to fill: it reads the database when it mounts.
-        Nor has a screen that the exit is tearing down, which is detached from the app once the exit starts.
+        Nor has a screen that the exit is tearing down, which is detached from the app once the exit starts, or one that
+        the shutdown prunes after the app stopped running.
         """
+        if not self.is_running:
+            return
         now = stamp(self.db_file)
         if now == self._stamp and monotonic() - self._read < REFRESH_SECONDS:
             return

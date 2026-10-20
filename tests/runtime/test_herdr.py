@@ -669,14 +669,6 @@ def test_jobs_are_tagged_processes_outside_the_agents_session(
         rt.jobs(handle)
 
 
-def test_kill_tolerates_a_tagged_process_that_ends_first(
-    tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(herdr, 'tagged', lambda marker: [(2**22 + 1, 1, 'gone already')])
-    HerdrRuntime('demo', tmp_path).kill(jobs_handle())
-    assert calls(herdr_log) == [['tab', 'close', 'w7:t2']]
-
-
 def test_wait_is_chunked_so_a_tab_closed_from_outside_is_noticed(
     tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -15,7 +15,6 @@ from collections.abc import Iterable
 
 from piloop.harnesses import Harness
 from piloop.proc import child_env, kill_group
-from piloop.runtime.herdr import TOKEN_ENV
 from piloop.settings import Settings, env_names
 
 SERVE_ARGV = [sys.executable, '-m', 'piloop', 'serve']
@@ -29,9 +28,6 @@ SECRETS_COMMAND_ENV = 'PILOOP_SECRETS_COMMAND'
 """The environment variable for ``Settings.secrets_command``. ``piloop doctor`` reads it from the daemon."""
 CARRIED_ENV = ('OTEL_EXPORTER_OTLP_ENDPOINT',)
 """The variables other than ``PILOOP_*`` that a service unit always carries: where traces go."""
-AGENT_ENV = ('PILOOP_ACTOR', TOKEN_ENV)
-"""The ``PILOOP_*`` variables that a service unit does not carry. piloop sets them for one agent. A daemon with them
-would sign its writes as that agent, and piloop would take the daemon for one of the agent's background jobs."""
 SECRETS_TIMEOUT_SECONDS = 60
 """The seconds that the secrets command can take before the daemon refuses to start."""
 SECRET_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
@@ -246,7 +242,7 @@ def service_unit(cfg: Settings, harnesses: Iterable[Harness], platform: str = sy
     carried = carried_env(harnesses)
     env = {'PILOOP_HOME': str(cfg.home), 'PATH': shell['PATH']}
     for key, value in sorted(shell.items()):
-        if (key.startswith('PILOOP_') or key in carried) and key not in env and key not in AGENT_ENV:
+        if (key.startswith('PILOOP_') or key in carried) and key not in env:
             env[key] = value
     if platform == 'darwin':
         plist = {

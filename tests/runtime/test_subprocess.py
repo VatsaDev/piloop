@@ -1,15 +1,16 @@
 import os
+import signal
 import stat
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 
 import pytest
-from dirty_equals import IsPositive
-from inline_snapshot import snapshot
+from dirty_equals import IsPositive, IsStr
 
-from piloop.proc import started
+from piloop.proc import alive, started
 from piloop.runtime import Handle, NotSteerable, WorkerSpec, WorkerStatus, subprocess as subprocess_runtime
 from piloop.runtime.subprocess import SubprocessRuntime
 
@@ -45,7 +46,7 @@ def spec(
 
 def test_runs_to_completion_and_captures_output(tmp_path: Path) -> None:
     rt = SubprocessRuntime()
-    exe = script(tmp_path, 'echo "prompt=$1 var=$PILOOP_TEST"; echo oops >&2; exit 3')
+    exe = script(tmp_path, 'echo "prompt=$1 var=$PILOOP_TEST token=$PILOOP_WORKER_TOKEN"; echo oops >&2; exit 3')
     handle = rt.start(spec(tmp_path, exe, 'the brief', env={'PILOOP_TEST': 'yes'}))
     assert handle.runtime == 'subprocess'
     assert handle.data == {
@@ -55,12 +56,13 @@ def test_runs_to_completion_and_captures_output(tmp_path: Path) -> None:
         'started_at': IsPositive(),
         'log_dir': str(tmp_path / 'logs'),
         'session_id_pattern': None,
+        'token': IsStr(regex='[0-9a-f]{32}'),
     }
     outcome = rt.wait(handle, timeout=10)
     assert (outcome.status, outcome.exit_code, outcome.error) == (WorkerStatus.EXITED, 3, 'worker exit 3')
     assert outcome.seconds == IsPositive()
     assert rt.status(handle) is WorkerStatus.EXITED
-    assert rt.read(handle) == snapshot('prompt=the brief var=yes')
+    assert rt.read(handle) == f'prompt=the brief var=yes token={handle.data["token"]}'
     assert (tmp_path / 'logs' / 'worker.stderr').read_text() == 'oops\n'
 
 
@@ -78,6 +80,60 @@ def test_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
     child = int((tmp_path / 'child.pid').read_text())
     time.sleep(0.2)
     assert started(child) is None, 'the sleeping grandchild must die with the group'
+
+
+ESCAPE = f"""
+{sys.executable} -c 'import os, time; os.setsid(); open("escaped.pid", "w").write(str(os.getpid())); time.sleep(60)' &
+while [ ! -s escaped.pid ]; do sleep 0.05; done
+"""
+
+
+def escaped(tmp_path: Path) -> tuple[int, float]:
+    """The pid and start time of the child that left the agent's session, as Claude Code's Bash calls do."""
+    path, deadline = tmp_path / 'escaped.pid', time.monotonic() + 10
+    while not (path.is_file() and path.read_text()) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    pid = int(path.read_text())
+    start = started(pid)
+    assert start is not None
+    return pid, start
+
+
+def gone(pid: int, start: float) -> bool:
+    deadline = time.monotonic() + 5
+    while alive(pid, start) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return not alive(pid, start)
+
+
+def test_a_timeout_kills_what_the_agent_started_in_a_session_of_its_own(tmp_path: Path) -> None:
+    """A Claude Code Bash call runs in its own session, outside the agent's group: the builds it ran outlived the
+    worker by an hour. Every process of the agent carries its token, and the kill ends the tagged ones."""
+    rt = SubprocessRuntime()
+    handle = rt.start(spec(tmp_path, script(tmp_path, f'{ESCAPE}sleep 30')))
+    pid, start = escaped(tmp_path)
+    try:
+        assert os.getsid(pid) != handle.data['pid'], 'the child left the group that killpg reaches'
+        assert rt.wait(handle, timeout=0.5).status is WorkerStatus.TIMED_OUT
+        assert gone(pid, start), 'the escaped child dies with the agent'
+    finally:
+        if alive(pid, start):
+            os.kill(pid, signal.SIGKILL)
+
+
+def test_kill_ends_an_escaped_child_after_the_agent_itself_exited(tmp_path: Path) -> None:
+    """The launcher kills every agent once its wait returns. An agent that exited first leaves its jobs behind."""
+    rt = SubprocessRuntime()
+    handle = rt.start(spec(tmp_path, script(tmp_path, ESCAPE)))
+    pid, start = escaped(tmp_path)
+    try:
+        assert rt.wait(handle, timeout=10).status is WorkerStatus.EXITED
+        assert alive(pid, start), 'the agent exited, its job did not'
+        SubprocessRuntime().kill(Handle(handle.runtime, dict(handle.data)))
+        assert gone(pid, start), 'any instance, from the handle in the database'
+    finally:
+        if alive(pid, start):
+            os.kill(pid, signal.SIGKILL)
 
 
 def test_session_id_is_read_from_stdout_while_the_process_still_runs(tmp_path: Path) -> None:
@@ -120,7 +176,7 @@ def test_rehydrated_handle_is_observable_without_an_exit_code(tmp_path: Path) ->
     starter = SubprocessRuntime()
     handle = starter.start(spec(tmp_path, script(tmp_path, 'sleep 5')))
     other = SubprocessRuntime()  # another process would rebuild the handle from the database
-    rehydrated = Handle(handle.runtime, dict(handle.data))
+    rehydrated = Handle(handle.runtime, {k: v for k, v in handle.data.items() if k != 'token'})  # a row from before it
     assert other.status(rehydrated) is WorkerStatus.WORKING
     other.kill(rehydrated)
     starter.wait(handle, timeout=5)
@@ -304,8 +360,8 @@ def test_a_start_that_fails_after_the_spawn_kills_and_waits_for_the_process(
     spawned: list[subprocess.Popen[bytes]] = []
     real = subprocess_runtime._spawn
 
-    def spawn(spec: WorkerSpec, args: list[str], mode: str) -> subprocess.Popen[bytes]:
-        spawned.append(proc := real(spec, args, mode))
+    def spawn(spec: WorkerSpec, args: list[str], mode: str, token: str) -> subprocess.Popen[bytes]:
+        spawned.append(proc := real(spec, args, mode, token))
         return proc
 
     monkeypatch.setattr(subprocess_runtime, '_spawn', spawn)

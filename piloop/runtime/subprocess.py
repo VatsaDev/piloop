@@ -8,12 +8,13 @@ import signal
 import subprocess
 import time
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import ClassVar
+from uuid import uuid4
 
 from piloop.harnesses import Invocation, fill
-from piloop.proc import alive, child_env, kill_group, started
+from piloop.proc import TOKEN_ENV, alive, child_env, kill_group, kill_tagged, started
 from piloop.runtime import Check, Handle, NotAttachable, NotSteerable, Outcome, WorkerSpec, WorkerStatus
 
 STDOUT = 'worker.stdout'
@@ -60,9 +61,13 @@ class SubprocessRuntime:
         """The spec of each agent this instance started with resume arguments, by the handle's pid."""
 
     def start(self, spec: WorkerSpec) -> Handle:
-        """Start the process in its own session, with stdout and stderr written under ``spec.log_dir``."""
+        """Start the process in its own session, with stdout and stderr written under ``spec.log_dir``.
+
+        Its environment has ``TOKEN_ENV``, which every process it starts inherits, so ``kill`` finds them all.
+        """
         spec.log_dir.mkdir(parents=True, exist_ok=True)
-        proc = _spawn(spec, spec.args, 'w')
+        token = uuid4().hex
+        proc = _spawn(spec, spec.args, 'w', token)
         try:
             if spec.resume_args:
                 (spec.log_dir / RESUMER).touch()
@@ -77,6 +82,7 @@ class SubprocessRuntime:
                     'started_at': time.time(),
                     'log_dir': str(spec.log_dir),
                     'session_id_pattern': spec.session_id_pattern,
+                    'token': token,
                 },
             )
         except BaseException:
@@ -137,7 +143,7 @@ class SubprocessRuntime:
             time.sleep(POLL_SECONDS)
 
     def jobs(self, handle: Handle) -> list[str]:
-        """Return no jobs: a one-shot process ends with its work, and what it leaves running is not tracked."""
+        """Return no jobs: a one-shot process ends with its work. ``kill`` still ends what it left running."""
         return []
 
     def prompt(self, handle: Handle, text: str) -> None:
@@ -203,7 +209,8 @@ class SubprocessRuntime:
                 return False
             queue.unlink()
         prompt = '\n'.join(messages)
-        proc = _spawn(spec, [fill(a, prompt=prompt, session_id=session) for a in spec.resume_args], 'a')
+        args = [fill(a, prompt=prompt, session_id=session) for a in spec.resume_args]
+        proc = _spawn(spec, args, 'a', str(handle.data['token']))
         self._procs[_pid(handle)] = proc
         # replaced in one step: another instance may read it at any moment (status, kill, prompt)
         current = log_dir / f'{CURRENT}.tmp'
@@ -216,15 +223,19 @@ class SubprocessRuntime:
         return '\n'.join(_stdout(handle).splitlines()[-lines:])
 
     def kill(self, handle: Handle) -> None:
-        """Send SIGKILL to the process group. A group that is already gone is not an error."""
-        if not self._alive(handle):
-            return
-        try:
-            os.killpg(_current(handle)[0], signal.SIGKILL)  # each process leads its own group: pgid = pid
-        except ProcessLookupError:
-            return
-        while self._alive(handle):
-            time.sleep(POLL_SECONDS)
+        """Send SIGKILL to the process group, then to every process that carries the agent's token.
+
+        Harnesses run tool commands in sessions of their own (Claude Code's Bash calls), outside the group, and those
+        outlive the agent. A group or a process that is already gone is not an error. A handle from before the token
+        reaches only the group.
+        """
+        if self._alive(handle):
+            with suppress(ProcessLookupError):
+                os.killpg(_current(handle)[0], signal.SIGKILL)  # each process leads its own group: pgid = pid
+                while self._alive(handle):
+                    time.sleep(POLL_SECONDS)
+        if (token := handle.data.get('token')) is not None:
+            kill_tagged(f'{TOKEN_ENV}={token}')
 
     def _alive(self, handle: Handle) -> bool:
         proc = self._procs.get(_pid(handle))
@@ -259,7 +270,7 @@ def _locked(log_dir: Path) -> Generator[None]:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def _spawn(spec: WorkerSpec, args: list[str], mode: str) -> subprocess.Popen[bytes]:
+def _spawn(spec: WorkerSpec, args: list[str], mode: str, token: str) -> subprocess.Popen[bytes]:
     """Start one turn of the agent in a session of its own, writing (``w``) or appending (``a``) its output files."""
     with (spec.log_dir / STDOUT).open(mode) as out, (spec.log_dir / STDERR).open(mode) as err:
         return subprocess.Popen(
@@ -268,7 +279,7 @@ def _spawn(spec: WorkerSpec, args: list[str], mode: str) -> subprocess.Popen[byt
             stdout=out,
             stderr=err,
             stdin=subprocess.DEVNULL,
-            env=child_env() | spec.env,
+            env=child_env() | spec.env | {TOKEN_ENV: token},
             start_new_session=True,
         )
 

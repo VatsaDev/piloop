@@ -47,6 +47,19 @@ prompt after the start. Some features of a harness depend on the invocation. For
 
 You can mix them: for example, `runtime = "subprocess"` for the project and `runtime = "herdr"` for research only.
 
+## When an agent ends
+
+Both runtimes give each agent a `PILOOP_WORKER_TOKEN` of its own, and every process that the agent starts inherits
+it, also a command that runs in a session of its own, as Claude Code's Bash calls do. When the agent ends (its run is
+over, it times out, a stop or a cancel ends it), piloop ends every process that carries its token. A build that forks
+meanwhile is stopped first, so none of its children is left.
+
+- A shared server that an agent starts, such as an sccache, Gradle or Bazel daemon, carries the agent's token too, and
+  ends with the agent. The next agent that needs it starts it again. Start it outside piloop to keep it running.
+- What piloop itself starts is never tagged: the daemon, also one that an agent starts with `piloop serve --detach`,
+  and the evaluations.
+- A process that clears its environment (`env -i`) loses the token, and piloop cannot find it.
+
 ## Add a runtime
 
 A Python package adds a runtime with an entry point in the `piloop.runtimes` group. The class implements the
