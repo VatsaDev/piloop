@@ -1,8 +1,6 @@
 """The plugin host: an installed package mounts providers through it, and a composition that fails registers nothing."""
 
-import ast
 import re
-import sys
 from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass, field
@@ -10,10 +8,9 @@ from importlib.metadata import EntryPoint
 from pathlib import Path
 from typing import IO, Any, Protocol
 
-import piloop_pick_by_priority
+import piloop_min_gain
 import pytest
 from piloop_nice import NiceRuntime
-from piloop_pick_by_priority.contract import Idea, Pick, Picker, Wait
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
@@ -27,6 +24,16 @@ from piloop.db.session import Database
 from piloop.plugins import host as plugins
 from piloop.plugins.contracts.runtime import RUNTIMES
 from piloop.plugins.contracts.store import REMOTES
+from piloop.plugins.contracts.verdict import (
+    VERDICT_RULES,
+    Case,
+    Criterion,
+    Direction,
+    Judgement,
+    Outcome,
+    Side,
+    VerdictRule,
+)
 from piloop.plugins.host import (
     MissingProvider,
     PluginError,
@@ -174,7 +181,7 @@ def test_a_broken_package_of_a_capability_that_nothing_binds_is_a_warning(
     found = next(c for c in doctor.checks(home) if c.name == 'plugins')
     assert found.fix is None
     assert found.found == (
-        '4 roles, 2 runtimes, 6 triggers; all built in; warning: nothing selects a remote backend, and they do not load:'
+        '4 roles, 2 runtimes, 6 triggers, 1 verdict rule; all built in; warning: nothing selects a remote backend, and they do not load:'
         ' entry point gone = tests.fixtures.no_such_module:Gone in piloop.stores does not load: ModuleNotFoundError:'
         " No module named 'tests.fixtures.no_such_module'"
     )
@@ -260,107 +267,85 @@ def test_activation_goes_in_order_teardown_newest_first_and_a_failure_undoes_onl
     assert log[-1] == '-store'
 
 
-IDEAS = [Idea(1, 3, 'speed', 0), Idea(2, 5, 'speed', 2), Idea(3, 5, 'size', 0)]
-
-
-@pytest.fixture
-def pickers() -> Iterator[PureCapability[Picker]]:
-    """A pure capability as piloop will declare one, selected by ``[plugins.idea_picker]``. Its contract and its
-    plugin are the example in ``examples/plugins/pick-by-priority``. It is declared only for the test."""
-    capability = PureCapability(
-        'idea picker',
-        group='piloop.example.pickers',
-        contract=Picker,
-        selection=Selection('project', 'plugins.idea_picker.provider'),
-    )
-    yield capability
-    plugins._declared.remove(capability)
+CASE = Case(
+    Criterion('score', Direction.HIGHER),
+    (),
+    0.95,
+    Side('candidate#2', {'score': 13.0}, {}),
+    Side('candidate#1', {'score': 10.0}, {}),
+    '{"min_gain": 2}',
+)
+"""A case of the verdict rules, the pure capability that these tests install a provider of."""
 
 
 def test_a_pure_plugin_is_installed_selected_by_config_and_answers_with_data(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pickers: PureCapability[Picker], db: Database, project: Project
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db: Database, project: Project
 ) -> None:
+    """The example ``examples/plugins/min-gain`` provides a verdict rule, and ``[plugins.verdict_rule]`` selects it."""
     project_path = Path(project.path)
-    example(tmp_path / 'site', 'pick-by-priority')
+    example(tmp_path / 'site', 'min-gain')
     monkeypatch.syspath_prepend(tmp_path / 'site')
-    assert pickers.tier is Tier.PURE and data_errors(Picker) == []
-    cfg = load_project_config(project_path, plugins={'idea_picker': {'provider': 'by_priority'}})
-    picker = pickers.get(cfg.plugins['idea_picker'].provider)
-    assert picker is piloop_pick_by_priority.BY_PRIORITY
-    assert picker.pick(IDEAS, 1) == Pick(3, 'priority 5, 0 attempt(s)')
-    assert picker.pick(IDEAS, 0) == Wait('no free slot'), 'an error is a value'
-    assert pickers.sources()['by_priority'].release == 'piloop-pick-by-priority 0.1.0'
+    assert VERDICT_RULES.tier is Tier.PURE and data_errors(VerdictRule) == []
+    cfg = load_project_config(project_path, plugins={'verdict_rule': {'provider': 'min_gain', 'min_gain': 2}})
+    table = cfg.plugins['verdict_rule']
+    rule = VERDICT_RULES.get(table.provider)
+    assert rule is piloop_min_gain.MIN_GAIN
+    assert table.parameters == '{"min_gain": 2}'
+    assert rule.decide(CASE) == Judgement(Outcome.KEEP, 'against candidate#1: score gains +3, keeps at 2')
+    assert VERDICT_RULES.sources()['min_gain'].release == 'piloop-min-gain 0.1.0'
     home = Settings(home=tmp_path)
-    assert not any(line.startswith('demo: idea picker') for line in selections(home)), 'demo selects none yet'
+    assert not any(line.startswith('demo: verdict rule') for line in selections(home)), 'demo selects none yet'
     with db.session() as s:
         s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
         s.commit()
     assert (
-        'demo: idea picker by_priority, from piloop-pick-by-priority 0.1.0 ([plugins.idea_picker] provider, in the'
+        'demo: verdict rule min_gain, from piloop-min-gain 0.1.0 ([plugins.verdict_rule] provider, in the'
         f' config of demo that the last `piloop init` stored from {project_path}/piloop.toml)'
     ) in selections(home)
-    installed(monkeypatch, [EntryPoint('capped', f'{__name__}:CAPPED', pickers.group)])
-    load_project_config(project_path, plugins={'idea_picker': {'provider': 'capped', 'most': 2}})
-    for table, error in [
-        ({'idea_picker': {'provider': 'nope'}}, "[plugins.idea_picker] provider = 'nope': unknown idea picker 'nope'"),
-        ({'idea_picker': {'provider': 'capped', 'most': 'x'}}, "most = 'x': Input should be a valid integer"),
-        ({'idea_picker': {'provider': 'odd', 'most': 2}}, "unknown idea picker 'odd'"),
-        ({'planner': {'provider': 'capped'}}, '[plugins.planner]: no capability has that name; there is idea_picker'),
+    plain = load_project_config(project_path, plugins={'verdict_rule': {'provider': 'bootstrap'}})
+    assert plain.plugins['verdict_rule'].parameters == '{}', 'a rule without Parameters, given none'
+    for tables, error in [
+        (
+            {'verdict_rule': {'provider': 'nope'}},
+            "[plugins.verdict_rule] provider = 'nope': unknown verdict rule 'nope'",
+        ),
+        ({'verdict_rule': {'provider': 'min_gain', 'min_gain': 'x'}}, "min_gain = 'x': Input should be a valid number"),
+        ({'verdict_rule': {'provider': 'min_gain'}}, 'min_gain: Field required'),
+        (
+            {'planner': {'provider': 'min_gain'}},
+            '[plugins.planner]: no capability has that name; there is verdict_rule',
+        ),
+        ({'verdict_rule': {'provider': 'bootstrap', 'min_gain': 2}}, "verdict rule 'bootstrap' takes no parameters"),
     ]:
         with pytest.raises(ConfigError, match=re.escape(error)):
-            load_project_config(project_path, plugins=table)
-    installed(monkeypatch, [EntryPoint('plain', 'piloop_pick_by_priority:BY_PRIORITY', pickers.group)])
-    with pytest.raises(ConfigError, match=re.escape("idea picker 'plain' takes no parameters: most")):
-        load_project_config(project_path, plugins={'idea_picker': {'provider': 'plain', 'most': 2}})
-
-
-@dataclass(frozen=True)
-class Cap:
-    """The parameters of ``capped``."""
-
-    most: int
-
-
-class Capped:
-    """A provider with parameters: ``[plugins.idea_picker] most`` checks against ``Parameters``."""
-
-    Parameters = Cap
-
-    def pick(self, ideas: list[Idea], free_slots: int) -> Pick | Wait:
-        return Wait('never called')
-
-
-CAPPED = Capped()
+            load_project_config(project_path, plugins=tables)
 
 
 @pytest.mark.parametrize(
     ('value', 'error'),
     [
-        (
-            'piloop_pick_by_priority:ByPriority',
-            'names the class ByPriority: the entry point of a pure provider names an',
-        ),
-        (f'{PLUGIN}:NOT_A_ROLE', 'does not implement Picker: it needs pick$'),
+        ('piloop_min_gain:MinGain', 'names the class MinGain: the entry point of a pure provider names an'),
+        (f'{PLUGIN}:NOT_A_ROLE', 'does not implement VerdictRule: it needs decide$'),
         (
             f'{__name__}:MISNAMED',
-            r'does not implement Picker: pick does not take the arguments of Picker.pick \(ideas, free_slots\):'
-            r" missing a required argument: 'choices'$",
+            r'does not implement VerdictRule: decide does not take the arguments of VerdictRule.decide \(case\):'
+            r" missing a required argument: 'judged'$",
         ),
     ],
 )
 def test_a_pure_provider_is_an_instance_with_the_methods_and_arguments_of_its_contract(
-    monkeypatch: pytest.MonkeyPatch, value: str, error: str, pickers: PureCapability[Picker]
+    monkeypatch: pytest.MonkeyPatch, value: str, error: str
 ) -> None:
-    installed(monkeypatch, [EntryPoint('odd', value, pickers.group)])
-    with pytest.raises(PluginError, match=f'^entry point odd = {value} in piloop.example.pickers {error}'):
-        pickers.providers()
+    installed(monkeypatch, [EntryPoint('odd', value, VERDICT_RULES.group)])
+    with pytest.raises(PluginError, match=f'^entry point odd = {value} in piloop.verdict_rules {error}'):
+        VERDICT_RULES.providers()
 
 
 class Misnamed:
-    """Has the method of the contract, with arguments of other names: the host calls it with the contract's."""
+    """Has the method of the contract, with an argument of another name: the host calls it with the contract's."""
 
-    def pick(self, choices: list[Idea], free_slots: int) -> Pick | Wait:
-        return Wait('never called')
+    def decide(self, judged: Case) -> Judgement:
+        return Judgement(Outcome.CRASH, 'never called')
 
 
 MISNAMED = Misnamed()
@@ -436,13 +421,3 @@ def test_a_pure_contract_takes_and_returns_data_only() -> None:
     ]
     with pytest.raises(TypeError, match=r'^Leaky is not a pure contract: db is not a method'):
         PureCapability('leak', group='piloop.example.leaks', contract=Leaky)
-
-
-def test_a_pure_plugin_imports_only_the_standard_library_and_its_contract() -> None:
-    tree = ast.parse(Path(piloop_pick_by_priority.__file__).read_text())
-    imported = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names} | {
-        n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module is not None
-    }
-    assert {m for m in imported if m.split('.')[0] not in sys.stdlib_module_names} == {
-        'piloop_pick_by_priority.contract'
-    }

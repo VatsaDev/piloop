@@ -35,6 +35,7 @@ from piloop.db.models import Project, Worker, WorkerKind
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.mcp import McpServer, ServerName
 from piloop.plugins.contracts.runtime import RUNTIMES
+from piloop.plugins.contracts.verdict import Direction
 from piloop.plugins.host import Capability, check_selection, declared
 from piloop.triggers import (
     AnomalyTrigger,
@@ -48,13 +49,6 @@ from piloop.triggers import (
 
 CONFIG_FILE = 'piloop.toml'
 BRIEF_FILE = 'brief.md'
-
-
-class Direction(StrEnum):
-    """Whether a larger or a smaller value of a metric is better."""
-
-    HIGHER = 'higher'
-    LOWER = 'lower'
 
 
 def _registered_runtime(name: str) -> str:
@@ -121,11 +115,11 @@ class Metric(BaseModel):
 
     def better(self, a: float, b: float) -> bool:
         """Whether ``a`` is better than ``b`` for this metric."""
-        return a > b if self.direction is Direction.HIGHER else a < b
+        return self.direction.better(a, b)
 
     def gain(self, a: float, b: float) -> float:
         """How much better ``a`` is than ``b``, in the metric's units. Positive when ``a`` is better."""
-        return a - b if self.direction is Direction.HIGHER else b - a
+        return self.direction.gain(a, b)
 
 
 class TrackConfig(BaseModel):
@@ -604,6 +598,11 @@ class PluginTable(BaseModel):
 
     provider: str
     """The name of the provider: the name of its entry point. The other keys of the table are its parameters."""
+
+    @property
+    def parameters(self) -> str:
+        """The other keys of the table, the provider's parameters, as a JSON object: what a pure provider gets."""
+        return json.dumps(self.model_extra or {}, sort_keys=True)
 
 
 class ProjectConfig(BaseModel):

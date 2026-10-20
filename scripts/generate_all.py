@@ -16,8 +16,8 @@ from scripts.generate import (
     emit,
     evaluate_examples,
     example_dir_store,
+    example_min_gain,
     example_nice_runtime,
-    example_pick_by_priority,
     harnesses,
     herdr_settings,
     imports,
@@ -70,7 +70,7 @@ GENERATORS = (
     herdr_settings,
     example_nice_runtime,
     example_dir_store,
-    example_pick_by_priority,
+    example_min_gain,
 )
 
 

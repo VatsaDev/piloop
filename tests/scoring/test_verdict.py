@@ -1,13 +1,45 @@
-"""The verdict rule on numbers alone: primary superiority by paired cluster bootstrap, guardrail non-inferiority."""
+"""The verdict rule on numbers alone: primary superiority by paired cluster bootstrap, guardrail non-inferiority.
 
+Each verdict goes through the host's side of the contract (``ledger.decide``): the track and the confidence of the
+config become a ``Case`` of plain data, and the built-in rule's ``Judgement`` becomes the verdict of the database.
+"""
+
+import ast
+import json
+import sys
+from pathlib import Path
+
+import piloop_min_gain
 from inline_snapshot import snapshot
+from piloop_min_gain import MIN_GAIN
 
-from piloop.config import Direction, Metric, MetricRole, ProjectConfig, Track, TrackConfig
+from piloop.config import Metric, MetricRole, ProjectConfig, Track, TrackConfig
 from piloop.db.models import Verdict
+from piloop.plugins.builtin import verdict as verdict_module
+from piloop.plugins.builtin.verdict import BOOTSTRAP, compare, lower_bound
+from piloop.plugins.contracts.verdict import Direction, Outcome, Side, VerdictRule
+from piloop.plugins.host import data_errors
+from piloop.scoring import ledger
 from piloop.scoring.evaluate import Units
-from piloop.scoring.verdict import compare, decide, lower_bound, same
+from piloop.scoring.ledger import criterion, same
 
 BAR = 'candidate#73'
+
+
+def decide(
+    track: Track,
+    confidence: float,
+    mine: dict[str, float],
+    theirs: dict[str, float],
+    mine_units: Units,
+    theirs_units: Units,
+    *,
+    bar: str,
+) -> tuple[Verdict, str]:
+    """The built-in rule's verdict on a candidate of ``track`` against ``bar``, as the daemon asks for it."""
+    return ledger.decide(
+        BOOTSTRAP, track, confidence, Side('candidate#74', mine, mine_units), Side(bar, theirs, theirs_units)
+    )
 
 
 def config(*guardrails: Metric, confidence: float = 0.95) -> ProjectConfig:
@@ -191,14 +223,17 @@ def test_a_lower_is_better_primary_reads_in_its_own_direction() -> None:
     assert decide(*rule(cfg), {'loss': 15}, {'loss': 30}, {'loss': mine}, {'loss': theirs}, bar=BAR) == snapshot(
         (Verdict.KEEP, 'against candidate#73: loss 15 vs 30 (-15; 95% worst case -15 over 30 units)')
     )
-    assert compare(cfg.all_tracks[0].primary, 15, 30, mine, theirs, 0.95).gain == 15
+    assert compare(criterion(cfg.all_tracks[0].primary), 15, 30, mine, theirs, 0.95).gain == 15
 
 
 def test_a_lower_is_better_metric_that_did_not_move_reads_plus_zero() -> None:
     loss = Metric(name='loss', direction=Direction.LOWER, role=MetricRole.GUARDRAIL, margin=1)
     same_units = {f'u{i}': 1.0 for i in range(3)}
-    assert compare(loss, 3, 3, None, None, 0.95).text(0.95) == 'loss 3 vs 3 (+0; aggregate: no per-unit results)'
-    assert compare(loss, 3, 3, same_units, same_units, 0.95).text(0.95) == (
+    assert (
+        compare(criterion(loss), 3, 3, None, None, 0.95).text(0.95)
+        == 'loss 3 vs 3 (+0; aggregate: no per-unit results)'
+    )
+    assert compare(criterion(loss), 3, 3, same_units, same_units, 0.95).text(0.95) == (
         'loss 3 vs 3 (+0; 95% worst case +0 over 3 units)'
     )
 
@@ -301,3 +336,46 @@ def test_every_guardrail_past_its_margin_is_in_the_reason_whatever_the_primary_d
     assert decide(*rule(cfg), within, theirs, {}, {}, bar=BAR)[1] == snapshot(
         'against candidate#73: accuracy 80 vs 80 (+0; aggregate: no per-unit results)'
     ), 'a guardrail within its margin adds nothing to a discard'
+
+
+def test_the_contract_of_a_rule_is_data_in_data_out_and_its_verdicts_are_verdicts() -> None:
+    """A rule can move out of process or to a Wasm component: nothing live crosses its contract."""
+    assert data_errors(VerdictRule) == []
+    assert {Verdict(o) for o in Outcome} == {Verdict.KEEP, Verdict.INTERESTING, Verdict.DISCARD, Verdict.CRASH}, (
+        'a rule judges; pending, reference, unmeasured and recovered are not judgements'
+    )
+
+
+def test_the_built_in_rule_imports_only_the_standard_library_and_its_contract() -> None:
+    """``bootstrap`` is a pure provider like a plugin's: it reads nothing of piloop's state."""
+    tree = ast.parse(Path(verdict_module.__file__).read_text())
+    imported = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names} | {
+        n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module is not None
+    }
+    outside = {m for m in imported if m.split('.')[0] not in sys.stdlib_module_names}
+    assert outside == {'piloop.plugins.contracts.verdict'}
+
+
+def test_the_example_rule_min_gain_keeps_only_a_gain_of_its_size() -> None:
+    """``examples/plugins/min-gain``: the rule of a plugin, called through the host's side of the contract."""
+    track = rule(config(COVERAGE))[0]
+    least = json.dumps({'min_gain': 2})
+
+    def judged(mine: dict[str, float], theirs: dict[str, float]) -> tuple[Verdict, str]:
+        return ledger.decide(MIN_GAIN, track, 0.95, Side('candidate#74', mine, {}), Side(BAR, theirs, {}), least)
+
+    bar = {'accuracy': 10.0, 'coverage': 1000.0}
+    assert judged({'accuracy': 12.0, 'coverage': 1000.0}, bar) == (
+        Verdict.KEEP,
+        'against candidate#73: accuracy gains +2, keeps at 2',
+    )
+    assert judged({'accuracy': 11.0, 'coverage': 1000.0}, bar)[0] is Verdict.INTERESTING
+    assert judged({'accuracy': 9.0, 'coverage': 1000.0}, bar)[0] is Verdict.DISCARD
+    assert judged({'accuracy': 99.0, 'coverage': 990.0}, bar) == (Verdict.DISCARD, 'past its floor: coverage')
+    assert judged({'accuracy': 1.0}, {}) == (Verdict.KEEP, 'candidate#73 has no score')
+    assert judged({}, bar) == (Verdict.CRASH, 'no successful measurement')
+    tree = ast.parse(Path(piloop_min_gain.__file__ or '').read_text())
+    imported = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module is not None}
+    assert {m for m in imported if m.split('.')[0] not in sys.stdlib_module_names} == {
+        'piloop.plugins.contracts.verdict'
+    }, 'a plugin imports only the standard library and its contract'

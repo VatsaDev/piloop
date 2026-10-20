@@ -112,7 +112,8 @@ def _plugins(cfg: Settings) -> Check:
         return Check('plugins', str(e), 'fix or uninstall the package of that entry point, then `piloop plugins`')
     unbound = unbound_failures(cfg)
     loaded = [c for c in declared() if c not in unbound]
-    counts = ', '.join(f'{len(c.sources())} {c.noun}s' for c in loaded)
+    sizes = [(len(c.sources()), c.noun) for c in loaded]
+    counts = ', '.join(f'{n} {noun}{"s" if n != 1 else ""}' for n, noun in sizes)
     added = sorted({s.release for c in loaded for s in c.sources().values() if not s.built_in})
     found = f'{counts}; {"from " + ", ".join(added) if added else "all built in"}'
     warnings = ''.join(f'; warning: nothing selects a {c.noun}, and they do not load: {e}' for c, e in unbound.items())

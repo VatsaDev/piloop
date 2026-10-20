@@ -29,7 +29,7 @@ from piloop.campaign import inbox, spend
 from piloop.campaign.ideas import defined_by, links, runnable, superseded_by, yields
 from piloop.campaign.inbox import project_of
 from piloop.campaign.stop import attempt, blocked, hours, runs, runs_without_keep
-from piloop.config import Direction, Files, Metric, ProjectConfig, Track, harness_of
+from piloop.config import Files, Metric, ProjectConfig, Track, harness_of
 from piloop.db.events import ANOMALY_EVENT
 from piloop.db.models import (
     ENDED,
@@ -57,6 +57,7 @@ from piloop.db.models import (
     latest_worker,
     project_runs,
 )
+from piloop.plugins.contracts.verdict import Direction
 from piloop.reports.history import IDEAS_IN_HISTORY, block
 from piloop.runtime.factory import handle_for, runtime_for, view_of
 from piloop.scoring.ledger import (

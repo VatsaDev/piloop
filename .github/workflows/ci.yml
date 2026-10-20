@@ -54,6 +54,8 @@ jobs:
         env:
           PILOOP_HOME: /tmp/plugins-home
           PILOOP_PROJECT_RUNTIME: nice
+          PILOOP_PROJECT_PLUGINS__VERDICT_RULE__PROVIDER: min_gain
+          PILOOP_PROJECT_PLUGINS__VERDICT_RULE__MIN_GAIN: "100"
           COLUMNS: 200
         run: |
           export PATH="$HOME/.local/bin:$PATH"
@@ -65,7 +67,7 @@ jobs:
           grep -q "nice        piloop-nice 0.1.0, entry point nice = piloop_nice:NiceRuntime" /tmp/plugins.txt
           grep -q "enwik8 worker: runtime nice, from piloop-nice 0.1.0" /tmp/plugins.txt
           grep -q "remote backend dir, from piloop-dir-store 0.1.0" /tmp/plugins.txt
-          "$(uv tool dir)/piloop/bin/python" -c "import piloop_pick_by_priority; print(piloop_pick_by_priority.BY_PRIORITY)"
+          grep -q "enwik8: verdict rule min_gain, from piloop-min-gain 0.1.0" /tmp/plugins.txt
       - name: the wheel carries the skills (a stand-in codex on PATH)
         run: |
           export PATH="$HOME/.local/bin:$PATH"

@@ -96,6 +96,23 @@ Without per-unit results, or when the two sides report different units, the verd
 Any gain then counts, and the reason says `aggregate`. This is right for a deterministic metric, such as a compressed
 size. For a noisy metric, write per-unit results.
 
+## Replace the rule
+
+The rule on this page is the built-in verdict rule, `bootstrap`. A plugin can add another verdict rule, and you
+select it in `piloop.toml`. For example, the example plugin `examples/plugins/min-gain` adds the rule `min_gain`. It
+keeps a candidate only when the candidate beats its bar by at least `min_gain`:
+
+```text
+[plugins.verdict_rule]
+provider = "min_gain"
+min_gain = 100
+```
+
+piloop gives the rule the metrics that decide, `confidence`, the measurements of the candidate and of its bar, and
+the rule's parameters. The rule returns `keep`, `interesting`, `discard` or `crash`, and a reason. The rest of this
+page stays the same with any rule: the bar, the head, the merge when the head moves, and the `no-op` note.
+[Verdict rules](/architecture/extension-points#verdict-rules) has the details.
+
 ## When the head moves during a run
 
 Two runs can start from the same head. When the first one keeps, the head moves. If the second one then beats its own

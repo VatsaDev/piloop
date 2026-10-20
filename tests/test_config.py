@@ -6,7 +6,6 @@ from inline_snapshot import snapshot
 
 from piloop.config import (
     ConfigError,
-    Direction,
     Files,
     Metric,
     MetricRole,
@@ -20,6 +19,7 @@ from piloop.config import (
 )
 from piloop.db.models import WorkerKind
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
+from piloop.plugins.contracts.verdict import Direction
 from piloop.triggers import TRIGGERS
 
 

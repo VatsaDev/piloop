@@ -34,8 +34,9 @@ from piloop.db.models import (
     Worker,
     latest_worker,
 )
+from piloop.plugins.contracts import verdict as rules
+from piloop.plugins.contracts.verdict import VERDICT_RULES, Case, Criterion, Side, VerdictRule
 from piloop.scoring.evaluate import UNITS, Units
-from piloop.scoring.verdict import decide, same
 from piloop.text import metric
 
 DAEMON = 'daemon'
@@ -353,22 +354,24 @@ def judge(
     A branch run (``runs.branch``: its idea pinned another starting point) keeps what beats ``own``: a branch keep.
     Its reason also says whether it is above ``head`` on the track's primary.
 
-    When the deciding metrics equal the parent's (``piloop.scoring.verdict.same``), the reason says so first: the
-    change did not affect what the evaluation measures, whatever the verdict against the bar.
+    The project's verdict rule gives the verdict (``decide``): ``[plugins.verdict_rule]``, else ``bootstrap``. When
+    the deciding metrics equal the parent's (``same``), the reason says so first: the change did not affect what the
+    evaluation measures, whatever the verdict against the bar.
     """
     mine = metrics(candidate, evaluator_id)
+    table = cfg.plugins.get('verdict_rule')
     verdict, reason = decide(
+        VERDICT_RULES.get(table.provider if table is not None else rules.DEFAULT),
         track,
         cfg.confidence,
-        mine,
-        metrics(own, evaluator_id),
-        units(candidate, evaluator_id, units_dir),
-        units(own, evaluator_id, units_dir),
-        bar=f'candidate#{own.id}',
+        Side(f'candidate#{candidate.id}', mine, units(candidate, evaluator_id, units_dir)),
+        Side(f'candidate#{own.id}', metrics(own, evaluator_id), units(own, evaluator_id, units_dir)),
+        table.parameters if table is not None else '{}',
     )
     primary = track.primary
     leader = metrics(head, evaluator_id).get(primary.name) if head is not None else None
-    if branch and verdict is Verdict.KEEP and head is not None and leader is not None:
+    # a rule from a plugin may keep a candidate that has no primary value
+    if branch and verdict is Verdict.KEEP and head is not None and leader is not None and primary.name in mine:
         where = 'above' if primary.better(mine[primary.name], leader) else 'not above'
         reason += f'; a branch keep, {where} the head candidate#{head.id} ({primary.name} {metric(leader)})'
     parent = candidate.parent
@@ -376,6 +379,34 @@ def judge(
         which = 'primary and guardrails' if track.guardrails else primary.name
         reason = f'no-op: {which} identical to parent candidate#{parent.id}; {reason}'
     return verdict, reason
+
+
+def criterion(m: Metric) -> Criterion:
+    """Return what a verdict rule reads of a metric of ``piloop.toml``."""
+    return Criterion(m.name, m.direction, m.margin, m.floor)
+
+
+def decide(
+    rule: VerdictRule, track: Track, confidence: float, candidate: Side, bar: Side, parameters: str = '{}'
+) -> tuple[Verdict, str]:
+    """Return ``rule``'s verdict on ``candidate``, a candidate of ``track``, against ``bar``, and the reason.
+
+    The rule gets the case as data (``piloop.plugins.contracts.verdict.Case``): the track's primary and guardrails,
+    the confidence, both sides' results and its own parameters. Its outcome is the ``Verdict`` of the same value.
+    """
+    guardrails = tuple(map(criterion, track.guardrails))
+    judged = rule.decide(Case(criterion(track.primary), guardrails, confidence, candidate, bar, parameters))
+    return Verdict(judged.verdict), judged.reason
+
+
+def same(track: Track, mine: dict[str, float], theirs: dict[str, float]) -> bool:
+    """Return whether ``mine`` has a primary value and equals ``theirs`` on the primary and every guardrail.
+
+    Watch metrics are left out. A timing metric (``eval_seconds``) differs on every evaluation, and a metric that does
+    not decide a verdict cannot make a change matter.
+    """
+    deciding = [track.primary, *track.guardrails]
+    return track.primary.name in mine and all(mine.get(m.name) == theirs.get(m.name) for m in deciding)
 
 
 REBASED = 'candidate.rebased'

@@ -1,7 +1,6 @@
 """Pin the public behaviour of piloop 0.1.0: the verdict's bootstrap and the evaluate command's output protocol.
 
-Other tools and ports reproduce these values. Change a test here only in a commit whose subject says what changed:
-the release notes come from it.
+Other tools and ports reproduce these values. Change a test here only together with a CHANGELOG entry.
 """
 
 import json
@@ -10,9 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from piloop.config import Direction, Metric, MetricRole
+from piloop.plugins.builtin.verdict import RESAMPLES, SEED, compare, lower_bound
+from piloop.plugins.contracts.verdict import Criterion, Direction
 from piloop.scoring.evaluate import UNITS_SUM_TOLERANCE, parse_metrics, read_units, run_evaluate
-from piloop.scoring.verdict import RESAMPLES, SEED, compare, lower_bound
 
 DIFFS = [0.137, -0.052, 0.311, 0.009, -0.274, 0.198, 0.066, -0.013, 0.245, 0.102, -0.087, 0.029]
 
@@ -26,7 +25,7 @@ def test_the_bootstrap_draws_from_cpython_mersenne_twister_with_seed_0() -> None
 
 
 def test_the_bootstrap_pairs_units_by_sorted_name_and_measures_gain_in_the_metric_direction() -> None:
-    errors = Metric(name='errors', direction=Direction.LOWER, role=MetricRole.PRIMARY)
+    errors = Criterion('errors', Direction.LOWER)
     mine = {'b': 3.0, 'a': 5.0, 'd': 7.0, 'c': 0.0}
     theirs = {'a': 6.0, 'b': 2.0, 'c': 1.0, 'd': 9.0}
     c = compare(errors, 15.0, 18.0, mine, theirs, 0.95)

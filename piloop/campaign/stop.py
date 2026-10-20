@@ -11,7 +11,7 @@ from sqlalchemy import ColumnElement, exists, func, select
 from sqlalchemy.orm import Session
 
 from piloop.agents.launcher import STOPPED_ERROR
-from piloop.config import Direction, ProjectConfig
+from piloop.config import ProjectConfig
 from piloop.db.events import emit
 from piloop.db.models import (
     FINISHED_RUNS,
@@ -35,6 +35,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.triggers import DAEMON_ACTOR
+from piloop.plugins.contracts.verdict import Direction
 from piloop.scoring.ledger import head, keeps, score
 from piloop.text import metric
 from piloop.usage import project_tokens

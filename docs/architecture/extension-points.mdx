@@ -5,7 +5,7 @@ description: Each place where you can change what piloop does, with an example f
 
 import ExampleNiceRuntime from '/snippets/generated/example-nice-runtime.mdx';
 import ExampleDirStore from '/snippets/generated/example-dir-store.mdx';
-import ExamplePickByPriority from '/snippets/generated/example-pick-by-priority.mdx';
+import ExampleMinGain from '/snippets/generated/example-min-gain.mdx';
 import Roles from '/snippets/generated/roles.mdx';
 import Triggers from '/snippets/generated/triggers.mdx';
 import RuntimeProtocol from '/snippets/generated/runtime-protocol.mdx';
@@ -40,6 +40,7 @@ one and select it in the configuration.
 | [Runtimes](#runtimes) | `runtime`, `[roles.<name>] runtime` | a plugin: `piloop.runtimes` |
 | [Storage backends](#storage-backends) | `[storage.remote] kind` in `config.toml` | a plugin: `piloop.stores` |
 | [Pure plugins](#pure-plugins) | `[plugins.<capability>] provider` | a plugin: data in, data out |
+| [Verdict rules](#verdict-rules) | `[plugins.verdict_rule] provider` | a plugin: `piloop.verdict_rules` |
 | [Roles](#roles) | `[roles.<name>]` | configuration, or a plugin: `piloop.roles` |
 | [Triggers](#triggers) | `[roles.<name>] triggers` | a `sql` trigger, or a plugin: `piloop.triggers` |
 | [Harnesses](#harnesses) | `harnesses` | configuration: `[harness.<name>]` |
@@ -132,22 +133,20 @@ The [configuration reference](/reference/configuration) shows the store with eac
 
 ## Pure plugins
 
-### Example: pick the next idea by priority
-
-<ExamplePickByPriority />
-
 A **pure** capability gets data and returns data. Its provider does not read the database, files or other parts of
 piloop: piloop gives it all that it needs as arguments. A pure provider imports only the Python standard library and
 the **contract** of its capability, the module that defines the types that the provider gets and returns. Because of
 this, piloop can later run the same provider in another process, or as a WebAssembly component.
 
-piloop has no pure capability yet: its tests declare one for this example. You select the provider of a pure
-capability with a table in `piloop.toml`. `provider` is its name. The other keys of the table are the provider's
-**parameters**, and piloop checks them against the provider's `Parameters` type when it loads `piloop.toml`:
+The [verdict rules](#verdict-rules) are a pure capability, and the example there is a pure plugin. You select the
+provider of a pure capability with a table in `piloop.toml`. `provider` is its name. The other keys of the table are
+the provider's **parameters**. piloop checks them against the provider's `Parameters` type when it loads
+`piloop.toml`:
 
 ```text
-[plugins.idea_picker]
-provider = "by_priority"
+[plugins.verdict_rule]
+provider = "min_gain"
+min_gain = 100
 ```
 
 ### The contract
@@ -165,6 +164,72 @@ These are the rules of WIT, the interface language of WebAssembly components. A 
 value, a case of a union of records. It does not raise an exception. The entry point of a pure provider names an
 instance, not a class. piloop checks that the instance has the methods of the contract, with the same argument
 names.
+
+## Verdict rules
+
+After piloop measures a candidate, it asks the verdict rule whether to keep the candidate. piloop gives the rule a
+`Case`: the measurements of the candidate, the measurements of its bar, and the metrics that decide. The bar is the
+candidate that this one must beat. The rule returns a `Judgement`: `keep`, `interesting`, `discard` or `crash`, and
+a reason. piloop stores the verdict and the reason on the candidate.
+
+The built-in rule is `bootstrap`. It keeps a candidate when the primary metric beats the bar with confidence and no
+guardrail metric gets too much worse.
+
+### Example: keep only a gain of a fixed size
+
+This rule keeps a candidate only when it beats its bar by at least `min_gain`, in the units of the primary metric. A
+smaller gain is `interesting`:
+
+<ExampleMinGain />
+
+Install it next to piloop, then select it in `piloop.toml` and run `piloop init .`:
+
+```bash
+uv tool install piloop --with ./examples/plugins/min-gain
+piloop plugins
+```
+
+```text
+[plugins.verdict_rule]
+provider = "min_gain"
+min_gain = 100
+```
+
+`min_gain` is a parameter of the rule. piloop checks it against the rule's `Parameters` when it loads
+`piloop.toml`. piloop then gives it to the rule in each `Case`, as JSON text.
+
+### The contract
+
+A verdict rule is a [pure](#pure-plugins) provider with one method: `decide(case: Case) -> Judgement`. The types are
+in `piloop.plugins.contracts.verdict`.
+
+- `Case.primary`: the primary metric of the candidate's track, as a `Criterion` (name, direction, margin, floor).
+- `Case.guardrails`: the guardrail metrics, each a `Criterion`.
+- `Case.confidence`: `confidence` in `piloop.toml`.
+- `Case.candidate` and `Case.bar`: each a `Side`. A `Side` has a name for the reason (`candidate#73`), the mean of
+  each metric, and the per-unit results of the metrics that have them.
+- `Case.parameters`: the rule's parameters, as JSON text.
+- `Judgement.verdict`: `keep`, `interesting`, `discard` or `crash`.
+- `Judgement.reason`: the text that piloop stores and shows with the verdict.
+
+A rule has no error case: it returns a verdict for every case.
+
+The rule decides only the verdict. piloop does the rest, whatever the rule:
+
+- It chooses the bar.
+- It moves the head to a keep.
+- It merges a keep onto the head when the head moved during the run.
+- It adds `no-op` to the reason when the metrics equal those of the parent.
+- It applies the `Piloop-Note` of a commit.
+
+### Built in
+
+`bootstrap` is the rule of a project without `[plugins.verdict_rule]`. [The verdict](/concepts/verdict#the-verdict)
+describes it:
+
+- The primary metric must beat the bar at the `confidence` level of a paired bootstrap.
+- Each guardrail metric can get worse by at most its margin.
+- No guardrail metric can pass its floor.
 
 ## Roles
 

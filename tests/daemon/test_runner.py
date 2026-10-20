@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import threading
 from pathlib import Path
@@ -20,7 +21,8 @@ from piloop.agents.roles import SQL_HINT
 from piloop.campaign import stop
 from piloop.campaign.project import sync
 from piloop.campaign.stop import NOT_STARTED
-from piloop.config import ProjectConfig, load_project_config
+from piloop.cli.plugins import selections
+from piloop.config import ConfigError, ProjectConfig, load_project_config
 from piloop.daemon.runner import (
     INTERRUPTED,
     NO_CHANGES,
@@ -52,6 +54,8 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.git import pin as git_pin
 from piloop.otel import Span, Tracer
+from piloop.plugins import host
+from piloop.plugins.contracts.verdict import VERDICT_RULES
 from piloop.runtime import Handle, Outcome, StartFailed
 from piloop.scoring.ledger import (
     DAEMON,
@@ -68,6 +72,7 @@ from piloop.scoring.ledger import (
     save_units,
     units,
 )
+from piloop.settings import Settings
 from piloop.usage.jsonl import CWD_ENCODERS
 from tests.conftest import (
     HARNESS_APPEND,
@@ -84,6 +89,7 @@ from tests.conftest import (
     ScriptRuntime,
     baseline,
     events,
+    example,
     factory,
     span_named,
     write_script,
@@ -362,6 +368,47 @@ def test_worse_commit_is_discarded(db: Database, project: Project, runtime: Scri
     [e] = candidates(db, run_id)
     assert (e.verdict, e.verdict_by) == (Verdict.DISCARD, DAEMON)
     assert run_row(db, run_id).status is RunStatus.SUCCEEDED
+
+
+def test_a_verdict_rule_from_a_plugin_replaces_the_built_in_one_through_piloop_toml(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The example plugin ``examples/plugins/min-gain``, installed, is selected by ``[plugins.verdict_rule]``.
+
+    The daemon judges the run's commit with it: ``bootstrap`` would keep a gain of 1, ``min_gain = 2`` does not.
+    """
+    example(tmp_path / 'site', 'min-gain')
+    monkeypatch.syspath_prepend(tmp_path / 'site')
+    host.close()
+    try:
+        for table, error in [
+            ({'provider': 'strict'}, "[plugins.verdict_rule] provider = 'strict': unknown verdict rule 'strict'"),
+            ({'provider': 'min_gain', 'min_gain': 'x'}, "min_gain = 'x': Input should be a valid number"),
+            ({'provider': 'bootstrap', 'min_gain': 2}, "verdict rule 'bootstrap' takes no parameters: min_gain"),
+        ]:
+            with pytest.raises(ConfigError, match=re.escape(error)):
+                load_project_config(Path(project.path), plugins={'verdict_rule': table})
+        with db.session() as s:
+            cfg = load_project_config(
+                Path(project.path), plugins={'verdict_rule': {'provider': 'min_gain', 'min_gain': 2}}
+            )
+            s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
+            s.commit()
+        run_id = make_run(db, project)
+        execute(executor(db, runtime, tmp_path), db, run_id)
+        [e] = candidates(db, run_id)
+        with db.session() as s:
+            reason = s.get_one(Candidate, e.id).verdict_reason
+        assert (e.verdict, e.verdict_by, e.metrics['score']) == (Verdict.INTERESTING, DAEMON, 2.0)
+        assert reason == snapshot('against candidate#1: score gains +1, keeps at 2')
+        assert VERDICT_RULES.sources()['min_gain'].release == 'piloop-min-gain 0.1.0'
+        stored = f'in the config of demo that the last `piloop init` stored from {project.path}/piloop.toml'
+        selected = (
+            f'demo: verdict rule min_gain, from piloop-min-gain 0.1.0 ([plugins.verdict_rule] provider, {stored})'
+        )
+        assert selected in selections(Settings(home=tmp_path))
+    finally:
+        host.close()
 
 
 def test_work_a_stopped_worker_left_uncommitted_is_recovered_and_a_new_run_finishes_it(
