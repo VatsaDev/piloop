@@ -27,12 +27,27 @@ make
 ```
 
 `make` formats the code, runs the linter (ruff), runs the type checker (ty), runs the tests with coverage, and
-regenerates the generated files. Coverage must be 100%. The full test suite takes several minutes. While you work,
-run only the tests that you need:
+regenerates the generated files. Coverage must be 100%. The tests run in parallel, one process for each logical CPU
+([pytest-xdist](https://pytest-xdist.readthedocs.io)). While you work, skip coverage with `make test`, or run only the
+tests that you need:
 
 ```bash
+make test
+COLUMNS=150 uv run pytest -n logical tests/daemon
 COLUMNS=150 uv run pytest tests/scoring
 ```
+
+On a machine that other jobs share, set `PYTEST_XDIST_AUTO_NUM_WORKERS` (for example to 4) to start fewer processes.
+
+inline-snapshot cannot fix a snapshot in a parallel run: run that test without `-n` and with `--inline-snapshot=fix`.
+
+Keep the suite fast:
+
+- Take a database from the `db` fixture, or copy one with `at_head` from `tests/conftest.py`. Both copy a database
+  that is migrated once per session. Migrating from scratch costs about a second.
+- Wait for a condition with `wait_until`, never with a fixed sleep or a loop that goes on after its deadline.
+- To test a timeout of the code, give it a fake clock that a sleep advances, as `FakeClock` in
+  `tests/runtime/test_herdr.py` does, rather than a short real timeout: that one is slow alone and flaky under load.
 
 The tests marked `herdr` need a local [Herdr](https://herdr.dev). They are skipped when `herdr` is not on your
 `PATH`.

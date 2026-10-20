@@ -3,12 +3,13 @@
 import contextlib
 import os
 import plistlib
+import re
 import signal
 import stat
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from pathlib import Path
 
 import psutil
@@ -29,12 +30,12 @@ from piloop.daemon.serve import (
     service_unit,
 )
 from piloop.db.models import Idea, Run, RunStatus, Worker, WorkerState
-from piloop.db.session import Database, migrate
+from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.proc import TOKEN_ENV, child_env
 from piloop.settings import Settings
 from piloop.usage import UsageSpec
-from tests.conftest import HARNESS_SLEEPS, hold_lock, register, wait_for_worker_handle, write_toml
+from tests.conftest import HARNESS_SLEEPS, at_head, hold_lock, register, wait_for_worker_handle, wait_until, write_toml
 
 PILOOP = [sys.executable, '-m', 'piloop']
 
@@ -53,13 +54,6 @@ def alive(pid: int) -> bool:
     except ProcessLookupError:
         return False
     return True
-
-
-def wait_until(predicate: Callable[[], bool], *, timeout: float = 15) -> None:
-    deadline = time.monotonic() + timeout
-    while not predicate():
-        assert time.monotonic() < deadline, 'condition not met in time'
-        time.sleep(0.05)
 
 
 @pytest.fixture(autouse=True)
@@ -91,11 +85,11 @@ def test_a_daemon_that_a_failed_test_leaves_is_reaped(tmp_path: Path) -> None:
     wait_until(lambda: not alive(pid))
 
 
-def test_sigterm_kills_workers_and_exits(project_path: Path, tmp_path: Path) -> None:
+def test_sigterm_kills_workers_and_exits(project_path: Path, tmp_path: Path, schema: Path) -> None:
     cfg = Settings(home=tmp_path / 'home')
     write_toml(project_path, HARNESS_SLEEPS, worker_timeout=60)
+    at_head(schema, cfg.home / 'piloop.db')
     db = Database(cfg.database_url, actor=cfg.actor)
-    migrate(db.engine)
     project = register(db, project_path)
     with db.session() as s:
         s.add(Idea(track='score', project_id=project.id, title='long', hypothesis='long', created_by='t'))
@@ -139,7 +133,9 @@ def test_detach_survives_the_cli_and_stop_ends_it(tmp_path: Path) -> None:
     foreground = piloop(cfg.home, 'serve')
     assert again.returncode == foreground.returncode == 1
     assert f'already running (pid {pid}' in again.stderr and f'already running (pid {pid}' in foreground.stderr
-    assert piloop(cfg.home, 'status').stdout.startswith(f'daemon: pid {pid}, up 0:00:0')
+    assert re.match(rf'daemon: pid {pid}, up 0:0\d:\d\d', piloop(cfg.home, 'status').stdout), (
+        'just started: under ten minutes, as a CLI start can take seconds on a loaded host'
+    )
 
     stopped = piloop(cfg.home, 'stop')
     assert (stopped.returncode, stopped.stdout.strip()) == (0, f'daemon pid {pid} stopped')

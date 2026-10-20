@@ -41,6 +41,22 @@ def calls(log: Path) -> list[list[str]]:
     return [argv[2:] for argv in argvs]
 
 
+class FakeClock:
+    """Stands in for the ``time`` module of ``piloop.runtime.herdr`` alone: a sleep moves the clock, nothing waits.
+
+    Patching ``time.sleep`` itself would also move this clock for every other thread of the process.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
 def scripted(monkeypatch: pytest.MonkeyPatch, **responses: list[Response]) -> None:
     monkeypatch.setenv('FAKE_HERDR_SCRIPT', json.dumps({k.replace('_', ' '): v for k, v in responses.items()}))
 
@@ -591,13 +607,15 @@ def test_a_server_that_does_not_answer_for_a_moment_does_not_end_the_agent(
 def test_a_server_that_stays_unavailable_fails_the_read_after_the_window(
     herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(herdr, 'UNAVAILABLE_BACKOFF_SECONDS', 0.01)
-    monkeypatch.setattr(herdr, 'UNAVAILABLE_MAX_BACKOFF_SECONDS', 0.02)
-    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(unavailable_seconds=0.2))
+    clock = FakeClock()
+    monkeypatch.setattr(herdr, 'time', clock)
+    monkeypatch.setattr(herdr, 'UNAVAILABLE_BACKOFF_SECONDS', 1)
+    monkeypatch.setattr(herdr, 'UNAVAILABLE_MAX_BACKOFF_SECONDS', 2)
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(unavailable_seconds=5))
     scripted(monkeypatch, agent_get=[UNAVAILABLE])
     with pytest.raises(HerdrError, match='server_unavailable'):
         herdr._call('agent', 'get', 'w1')
-    assert len(calls(herdr_log)) > 2, 'retried until the window ran out'
+    assert (len(calls(herdr_log)), clock.now) == (4, 5), 'retried after 1, 2 and 2 s, until the window ran out'
 
 
 def test_a_call_that_changes_something_is_never_sent_twice(herdr_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -684,9 +702,11 @@ def test_wait_is_chunked_so_a_tab_closed_from_outside_is_noticed(
 def test_session_id_is_what_herdr_detected_once_the_harness_started(
     tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr('piloop.runtime.herdr.PICKUP_POLL_SECONDS', 0.01)
-    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(prompt_pickup_seconds=0.5))
-    rt = HerdrRuntime('demo', tmp_path)
+    clock = FakeClock()
+    monkeypatch.setattr(herdr, 'time', clock)
+    monkeypatch.setattr('piloop.runtime.herdr.PICKUP_POLL_SECONDS', 1)
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(prompt_pickup_seconds=5))
+    rt = HerdrRuntime('demo', tmp_path, sleep=clock.sleep)
     handle = Handle('herdr', {'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': 'w1'})
     assert rt.session_id(handle) == SESSION_ID
     assert calls(herdr_log) == [['agent', 'get', 'w1']]
@@ -696,8 +716,10 @@ def test_session_id_is_what_herdr_detected_once_the_harness_started(
     assert len(calls(herdr_log)) == 4, (
         'the fake indexes its script by every agent get so far: two without, then one with'
     )
+    herdr_log.write_text('')
     scripted(monkeypatch, agent_get=[seq(5)])
     assert rt.session_id(handle) is None, 'never detected within the wait'
+    assert len(calls(herdr_log)) == 6, 'polled each second for the 5 s of the wait'
     scripted(monkeypatch, agent_get=[{'error': {'code': 'agent_not_found', 'message': 'gone'}}])
     assert rt.session_id(handle) is None, 'already exited'
     scripted(monkeypatch, agent_get=[{'error': {'code': 'io', 'message': 'boom'}}])
@@ -1251,7 +1273,7 @@ def test_a_brief_left_in_the_composer_is_submitted_with_enter_never_pasted_again
 ) -> None:
     """A paste whose submit key was lost leaves the exact brief in the composer and starts no turn. After a pickup
     window, Enter alone submits it; the brief is never pasted twice."""
-    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(prompt_pickup_seconds=1, startup_grace_seconds=60))
+    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(prompt_pickup_seconds=1, startup_grace_seconds=5))
     clock = [0.0]
     monkeypatch.setattr(herdr.time, 'monotonic', lambda: clock[0])
 

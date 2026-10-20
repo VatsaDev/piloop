@@ -35,7 +35,7 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.reports.overview import ANOMALY_EVENT, anomalies
-from tests.conftest import HARNESS_NOOP, HARNESS_PROMPT_TO_FILE, ScriptRuntime, factory, write_toml
+from tests.conftest import HARNESS_NOOP, HARNESS_PROMPT_TO_FILE, ScriptRuntime, factory, wait_until, write_toml
 
 BLOCKING = '#!/bin/sh\nwhile [ ! -f {release} ]; do sleep 0.05; done\n'
 
@@ -413,9 +413,7 @@ def test_a_killed_sweep_s_seeds_are_retried_once_and_a_new_seed_waits_for_a_free
     configure(db, project, BLOCKING.format(release=release), research={'max_ideas': 0, 'max_concurrent': 1})
     add_ideas(db, project, 1, by='watchdog#10', status=IdeaStatus.SEED)
     assert sched.tick() == [3], 'a seed filed after the latest sweep started is new'
-    deadline = time.monotonic() + 10
-    while workers(db, WorkerKind.RESEARCH)[-1][1] is not WorkerState.RUNNING and time.monotonic() < deadline:
-        time.sleep(0.02)
+    wait_until(lambda: workers(db, WorkerKind.RESEARCH)[-1][1] is WorkerState.RUNNING)
     add_ideas(db, project, 1, by='watchdog#11', status=IdeaStatus.SEED)
     assert sched.tick() == [], 'a new seed, but the only research slot is busy'
     release.touch()

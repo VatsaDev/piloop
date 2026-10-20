@@ -20,12 +20,12 @@ typecheck:  ## Static type check
 	uv run ty check
 
 .PHONY: test
-test:  ## Run tests (no coverage)
-	COLUMNS=150 uv run pytest --durations=10
+test:  ## Run tests in parallel (no coverage)
+	COLUMNS=150 uv run pytest -n logical --durations=10
 
 .PHONY: testcov
-testcov:  ## Run tests with coverage; fails under 100%
-	COLUMNS=150 uv run coverage run -m pytest --durations=10
+testcov:  ## Run tests in parallel with coverage; fails under 100%
+	COLUMNS=150 uv run pytest -n logical --durations=10 --cov --cov-report=
 	uv run coverage report
 
 .PHONY: docs

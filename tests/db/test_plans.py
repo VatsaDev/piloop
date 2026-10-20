@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from piloop.db.models import Base
-from piloop.db.session import Database, migrate
+from piloop.db.session import Database
 from scripts.db_volume import (
     HOT_INDEXES,
     SMALL,
@@ -25,6 +25,7 @@ from scripts.db_volume import (
     populate,
     scans,
 )
+from tests.conftest import at_head
 
 HOT_PATHS = {
     'scheduler.tick',
@@ -46,11 +47,10 @@ def allowed(st: Statement, table: str) -> bool:
 
 
 @pytest.fixture(scope='module')
-def populated(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, list[Statement]]:
+def populated(tmp_path_factory: pytest.TempPathFactory, schema: Path) -> tuple[Path, list[Statement]]:
     home = tmp_path_factory.mktemp('plans')
-    path = home / 'piloop.db'
+    path = at_head(schema, home / 'piloop.db')
     db = Database(f'sqlite:///{path}', actor='daemon')
-    migrate(db.engine)
     populate(path, SMALL)
     try:
         return path, hot_statements(db, home)

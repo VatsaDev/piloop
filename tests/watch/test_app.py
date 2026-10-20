@@ -44,7 +44,7 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.watch.app import CampaignScreen, CandidatesTable, ProjectsScreen, Watch
 from piloop.watch.panels import PANELS, Context, kept_scores
-from tests.daemon.test_serve import wait_until
+from tests.conftest import wait_until
 from tests.reports.test_history import idea
 from tests.runtime.test_herdr import Response, calls, scripted
 
@@ -160,7 +160,7 @@ def campaign(db: Database, project: Project, tmp_path: Path) -> Project:
                     state=WorkerState.STARTING,
                     reason='low_water: 1 ready < 10',
                     log_dir=str(log_dir),
-                    started_at=ago(seconds=40),
+                    started_at=ago(minutes=10, seconds=30),  # "10m" for 30 s: "40s" became "41s" on a loaded host
                 ),
                 Worker(
                     kind=WorkerKind.WATCHDOG,
@@ -271,7 +271,7 @@ def test_the_projects_screen_opens_a_project_and_esc_comes_back(
 ╰──────────────────────────────────────────────────────────────────────────────────────╯│                                                                      │
 ╭─ [2] Agents 2 ───────────────────────────────────────────────────────────────────────╮│ Codex cannot start: trust dialog. Environment or harness?            │
 │ ● #1  worker    working  pi/m         3m   idea#2 longer lines                       ││ Second line.                                                         │
-│ · #2  research  —        claude/opus  40s  low_water: 1 ready < 10                   ││                                                                      │
+│ · #2  research  —        claude/opus  10m  low_water: 1 ready < 10                   ││                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯│                                                                      │
 ╭─ [3] Ideas 1 proposed · 1 ready · 1 scheduled ───────────────────────────────────────╮│                                                                      │
 │ P2  proposed   #4  soft voting    —                                                  ││                                                                      │
@@ -429,7 +429,7 @@ def test_the_agents_panel_shows_the_selected_agents_output_and_its_state(
 ╰──────────────────────────────────────────────────────────────────────────────────────╯│ blocked on a dialog: steering is refused until it is answered; enter │
 ╭─ [2] Agents 2 · 1 blocked ───────────────────────────────────────────────────────────╮│ brings it to the front                                               │
 │ ◐ #1  worker    blocked  pi/m         3m   idea#2 longer lines                       ││                                                                      │
-│ · #2  research  —        claude/opus  40s  low_water: 1 ready < 10                   ││ the last 1 lines it wrote                                            │
+│ · #2  research  —        claude/opus  10m  low_water: 1 ready < 10                   ││ the last 1 lines it wrote                                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯│ hello from the agent                                                 │
 ╭─ [3] Ideas 1 proposed · 1 ready · 1 scheduled ───────────────────────────────────────╮│                                                                      │
 │ P2  proposed   #4  soft voting    —                                                  ││                                                                      │

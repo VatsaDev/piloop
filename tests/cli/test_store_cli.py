@@ -16,10 +16,12 @@ from piloop.store import key
 from piloop.store.config import open_store
 from tests.campaign.test_archive import add_idea, add_run, files, write
 from tests.cli.test_cli import run_cli
+from tests.conftest import at_head
 
 
 @pytest.fixture(autouse=True)
-def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Console:
+def isolated_home(tmp_path: Path, schema: Path, monkeypatch: pytest.MonkeyPatch) -> Console:
+    at_head(schema, tmp_path / 'piloop.db')
     monkeypatch.setattr(common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools'))
     monkeypatch.setattr(project_module, 'settings', common.settings)
     console = Console(record=True, width=200, force_terminal=False)

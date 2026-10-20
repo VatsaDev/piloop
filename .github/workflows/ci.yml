@@ -48,6 +48,8 @@ jobs:
         include:
           - os: ubuntu-latest
             make: testcov
+            # Two vCPUs; the tests wait on subprocesses, so four pytest workers finish sooner than two.
+            workers: 4
           # Coverage is measured on Linux: a few paths (the lock holder from /proc/locks) exist only there.
           - os: macos-latest
             make: test
@@ -62,6 +64,8 @@ jobs:
           cache-suffix: test
       - run: uv sync
       - run: make ${{ matrix.make }}
+        env:
+          PYTEST_XDIST_AUTO_NUM_WORKERS: ${{ matrix.workers }}
 
   install:
     name: install.sh quickstart

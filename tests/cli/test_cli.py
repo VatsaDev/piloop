@@ -51,8 +51,8 @@ from piloop.runtime import herdr
 from piloop.runtime.herdr import HerdrSettings
 from piloop.scoring.ledger import REMEASURE_REQUESTED
 from piloop.settings import Settings
-from tests.conftest import hold_lock
-from tests.daemon.test_serve import alive, wait_until
+from tests.conftest import at_head, hold_lock, wait_until
+from tests.daemon.test_serve import alive
 from tests.db.test_migrations import alembic
 from tests.fixtures.fake_herdr import SOCKET
 
@@ -65,7 +65,8 @@ def run_cli(tokens: list[str]) -> None:
 
 
 @pytest.fixture(autouse=True)
-def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Console:
+def isolated_home(tmp_path: Path, schema: Path, monkeypatch: pytest.MonkeyPatch) -> Console:
+    at_head(schema, tmp_path / 'piloop.db')
     monkeypatch.setattr(
         common,
         'settings',
@@ -75,6 +76,12 @@ def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Console:
     console = Console(record=True, width=200, force_terminal=False)
     monkeypatch.setattr(common, 'console', console)
     return console
+
+
+@pytest.fixture
+def no_database(isolated_home: Console) -> None:
+    """A home that no client has opened yet: ``isolated_home`` starts at head, and these tests watch the schema appear."""
+    (common.settings.home / 'piloop.db').unlink()
 
 
 @pytest.fixture
@@ -1018,6 +1025,7 @@ def test_serve_detach_status_stop(out, monkeypatch: pytest.MonkeyPatch) -> None:
         run_cli(['stop'])
 
 
+@pytest.mark.usefixtures('no_database')
 def test_serve_detach_reports_a_child_that_dies_before_claiming(out) -> None:
     (common.settings.home / 'piloop.db').mkdir()
     with pytest.raises(SystemExit, match=f'exited with 1 before taking {re.escape(str(common.settings.pid_file))}'):
@@ -1202,6 +1210,7 @@ def add_candidate_with_worker(
         return candidate.id
 
 
+@pytest.mark.usefixtures('no_database')
 def test_migrate_reports_the_schema_change_and_a_newer_database_is_refused(out) -> None:
     run_cli(['migrate'])
     assert out().strip() == f'schema: none → {HEAD}', 'a new database, brought to head'
@@ -1217,6 +1226,7 @@ def test_migrate_reports_the_schema_change_and_a_newer_database_is_refused(out) 
     assert running_pid(common.settings) is None, 'the daemon refused before taking the pid file'
 
 
+@pytest.mark.usefixtures('no_database')
 def test_upgrade_refuses_a_checkout_that_is_not_a_uv_tool(fake_bins) -> None:
     calls = fake_bins('uv', 'pi')
     with pytest.raises(
@@ -1264,6 +1274,7 @@ def test_upgrade_reinstalls_migrates_and_restarts_the_daemon(
     reaper.join()
 
 
+@pytest.mark.usefixtures('no_database')
 def test_upgrade_of_a_checkout_install_without_a_daemon_creates_the_schema(fake_bins, out, tmp_path: Path) -> None:
     write_receipt(f'[tool]\nrequirements = [{{ name = "piloop", directory = "{tmp_path}/src" }}]\n')
     calls = fake_bins('uv')
@@ -1305,6 +1316,7 @@ def test_upgrade_fails_on_what_doctor_finds_after_it(fake_bins, out, project_pat
     assert f'FAIL  project demo: no piloop.toml in {project_path}' in out()
 
 
+@pytest.mark.usefixtures('no_database')
 def test_doctor_exits_non_zero_on_a_failed_check_and_writes_nothing(fake_bins, out) -> None:
     fake_bins()  # no pi on PATH
     with pytest.raises(SystemExit) as exited:
@@ -1318,6 +1330,7 @@ def test_doctor_exits_non_zero_on_a_failed_check_and_writes_nothing(fake_bins, o
     assert 'FAIL' not in out()
 
 
+@pytest.mark.usefixtures('no_database')
 def test_upgrade_stops_when_uv_fails_or_is_missing_or_the_daemon_does_not_come_back(
     fake_bins, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:

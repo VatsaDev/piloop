@@ -18,9 +18,8 @@ from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.store import Store
 from tests.campaign.test_archive import files
-from tests.conftest import ScriptRuntime, factory, write_toml
+from tests.conftest import ScriptRuntime, factory, wait_until, write_toml
 from tests.daemon.test_scheduler import add_ideas
-from tests.daemon.test_serve import wait_until
 
 HARNESS_LEAVES_AN_ARRAY = (
     '#!/bin/sh\nmkdir -p workspace/idea1\necho array > workspace/idea1/x.npy\n'

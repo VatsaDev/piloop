@@ -37,7 +37,7 @@ from piloop.otel import Tracer
 from piloop.runtime import Runtime, factory as factory_module
 from piloop.runtime.factory import RUNTIME_GROUP, RuntimeFactory, make_runtime, runtimes
 from piloop.triggers import TRIGGER_GROUP
-from tests.conftest import HARNESS_APPEND, HARNESS_PROMPT_TO_FILE, ScriptRuntime, write_toml
+from tests.conftest import HARNESS_APPEND, HARNESS_PROMPT_TO_FILE, ScriptRuntime, wait_until, write_toml
 from tests.daemon.test_scheduler import add_ideas
 from tests.daemon.test_triggers import BLOCKING, fail_a_run, reported_events, wait_for, workers
 
@@ -335,9 +335,7 @@ def test_a_hand_over_leaves_a_sweep_in_the_project_checkout_running_and_the_next
         s.commit()
     first = scheduler(db, recording(runtime, []), tmp_path)
     assert first.tick() == [1]
-    deadline = time.monotonic() + 10
-    while not (tmp_path / 'agent.pid').exists() and time.monotonic() < deadline:
-        time.sleep(0.05)
+    wait_until((tmp_path / 'agent.pid').exists)
     first.hand_over(timeout=5)
     second = scheduler(db, recording(ScriptRuntime(), []), tmp_path)
     second.reap()

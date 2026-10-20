@@ -25,9 +25,9 @@ from piloop.cli.database import sql_cmd
 from piloop.cli.main import app
 from piloop.config import ProjectConfig
 from piloop.db import sql
-from piloop.db.session import Database, migrate
 from piloop.settings import StorageSettings
 from piloop.store.config import remote_config
+from tests.conftest import at_head
 
 ROOT = Path(__file__).parent.parent
 SOURCES = [
@@ -222,12 +222,8 @@ CHECKS: dict[str, Callable[[Block, Path], None]] = {
 
 
 @pytest.fixture(scope='module')
-def db(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    path = tmp_path_factory.mktemp('docs') / 'piloop.db'
-    database = Database(f'sqlite:///{path}', actor='human')
-    migrate(database.engine)
-    database.close()
-    return path
+def db(tmp_path_factory: pytest.TempPathFactory, schema: Path) -> Path:
+    return at_head(schema, tmp_path_factory.mktemp('docs') / 'piloop.db')
 
 
 @pytest.mark.parametrize('block', [pytest.param(b, id=b.at()) for b in ALL])

@@ -71,6 +71,7 @@ from tests.conftest import (
     factory,
     span_named,
     wait_for_worker_handle,
+    wait_until,
     write_toml,
 )
 from tests.daemon.test_triggers import low_water
@@ -799,9 +800,7 @@ def test_stop_keeps_the_work_of_the_runs_it_cuts_pinned_and_noted_for_the_next_a
     scheduler = make_scheduler(db, runtime, tmp_path)
     assert scheduler.tick() == [1]
     pid_file = tmp_path / 'runs' / '1' / 'child.pid'
-    deadline = time.monotonic() + 10
-    while not pid_file.exists() and time.monotonic() < deadline:
-        time.sleep(0.05)
+    wait_until(pid_file.exists)
     scheduler.stop(timeout=10)
 
     repo = Repo(project.path)
@@ -847,9 +846,7 @@ def test_a_stop_after_the_worker_left_its_finding_scores_its_run_on_the_next_sta
     scheduler = make_scheduler(db, runtime, tmp_path)
     assert scheduler.tick() == [1]
     pid_file = tmp_path / 'runs' / '1' / 'child.pid'
-    deadline = time.monotonic() + 10
-    while not pid_file.exists() and time.monotonic() < deadline:
-        time.sleep(0.05)
+    wait_until(pid_file.exists)
     scheduler.stop(timeout=10)
 
     with db.session() as s:
@@ -910,9 +907,7 @@ def test_a_hand_over_leaves_a_sweep_running_and_the_next_scheduler_re_attaches_t
     first = make_scheduler(db, runtime, tmp_path)
     assert worker_id in first.tick()
     sweep_dir = tmp_path / 'workers' / str(worker_id)
-    deadline = time.monotonic() + 10
-    while not (sweep_dir / 'agent.pid').exists() and time.monotonic() < deadline:
-        time.sleep(0.05)
+    wait_until((sweep_dir / 'agent.pid').exists)
     first.hand_over(timeout=5)
     with db.session() as s:
         assert s.get_one(Worker, worker_id).state is WorkerState.RUNNING
@@ -1009,9 +1004,7 @@ def test_stop_kills_the_evaluator_and_scores_nothing_more(
     scheduler = make_scheduler(db, runtime, tmp_path, tracer)
     add_ideas(db, project, 'two commits')
     scheduler.tick()
-    deadline = time.monotonic() + 10
-    while not pid_file.exists() and time.monotonic() < deadline:
-        time.sleep(0.05)
+    wait_until(pid_file.exists)
     pid = int(pid_file.read_text())
 
     started = time.monotonic()
@@ -1054,9 +1047,7 @@ def test_a_restart_during_an_evaluation_scores_the_run_on_start_and_never_runs_i
     first = make_scheduler(db, runtime, tmp_path)
     add_ideas(db, project, 'two commits')
     first.tick()
-    deadline = time.monotonic() + 10
-    while not (tmp_path / 'runs' / '1' / 'eval-0' / 'eval.stdout').exists() and time.monotonic() < deadline:
-        time.sleep(0.05)
+    wait_until((tmp_path / 'runs' / '1' / 'eval-0' / 'eval.stdout').exists)
     first.stop(timeout=10)
     with db.session() as s:
         assert s.get_one(Idea, 1).status is IdeaStatus.SCHEDULED
@@ -1524,10 +1515,8 @@ def test_a_run_frees_its_slot_when_its_worker_ends_and_its_idea_settles_once_sco
         s.commit()
     scheduler = make_scheduler(db, runtime, tmp_path)
     assert scheduler.tick() == [1]
-    deadline = time.monotonic() + 10
     # the run closes, then its commit becomes a candidate: wait for both, the evaluation is gated
-    while not candidate_rows(db, 1) and time.monotonic() < deadline:
-        time.sleep(0.05)
+    wait_until(lambda: candidate_rows(db, 1))
     with db.session() as s:
         run = s.get_one(Run, 1)
         assert (run.status, run.finished_at is not None) == (RunStatus.SUCCEEDED, True), 'closed: its worker ended'

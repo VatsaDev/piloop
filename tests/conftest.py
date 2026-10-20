@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -138,10 +139,31 @@ def project_path(tmp_path: Path) -> Path:
     return path
 
 
-@pytest.fixture
-def db(tmp_path: Path) -> Iterator[Database]:
-    database = Database(f'sqlite:///{tmp_path / "piloop.db"}', actor=ACTOR)
+@pytest.fixture(scope='session')
+def schema(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """A database that ``migrate`` brought to head, once per session: a copy of it starts at head for free.
+
+    Migrating from scratch costs about a second (each DDL statement of every revision commits on its own), and most
+    tests need a database. ``tests/db/test_migrations.py`` still migrates from scratch.
+    """
+    path = tmp_path_factory.mktemp('schema') / 'piloop.db'
+    database = Database(f'sqlite:///{path}', actor=ACTOR)
     migrate(database.engine)
+    database.close()
+    return path
+
+
+def at_head(schema: Path, path: Path) -> Path:
+    """Put a copy of the ``schema`` database at ``path``; returns ``path``."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(schema, path)
+    return path
+
+
+@pytest.fixture
+def db(tmp_path: Path, schema: Path) -> Iterator[Database]:
+    database = Database(f'sqlite:///{at_head(schema, tmp_path / "piloop.db")}', actor=ACTOR)
+    migrate(database.engine)  # a no-op at head, as when a client opens a database the daemon created
     yield database
     database.close()
 
@@ -258,6 +280,18 @@ def writer(db: Database, tmp_path: Path) -> Iterator[subprocess.Popen[str]]:
         assert proc.stdout is not None and proc.stdout.readline() == 'held\n'
         yield proc
         proc.kill()
+
+
+def wait_until(predicate: Callable[[], object], *, timeout: float = 30) -> None:
+    """Poll ``predicate`` until it is true; fail the test once ``timeout`` passes.
+
+    The timeout only bounds a test that would fail anyway, so it is generous: the suite runs in parallel, often on a
+    loaded host, where a step that takes a second alone can take ten.
+    """
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        assert time.monotonic() < deadline, 'condition not met in time'
+        time.sleep(0.05)
 
 
 def wait_for_worker_handle(db: Database) -> dict[str, object]:
