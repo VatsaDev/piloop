@@ -8,11 +8,14 @@ from typing import Annotated
 import cyclopts
 from rich.table import Table
 from rich.text import Text
+from sqlalchemy import create_engine
 
 from piloop.agents.roles import PROCEDURES, PROMPTS
 from piloop.cli import common, doctor
+from piloop.daemon.serve import OlderDaemon, refuse_older_daemon
 from piloop.db import sql
-from piloop.db.session import Database, revision
+from piloop.db.session import Database, behind, head, revision
+from piloop.version import installed
 
 
 def sql_cmd(statement: Annotated[str, cyclopts.Parameter(help='One SQL statement.')], /) -> None:
@@ -24,12 +27,26 @@ def sql_cmd(statement: Annotated[str, cyclopts.Parameter(help='One SQL statement
     database = common.settings.home / 'piloop.db'
     if (newer := doctor.schema_ahead(database)) is not None:
         raise SystemExit(str(newer))
+    plain = create_engine(f'sqlite:///{database}')
+    try:
+        refuse_older_daemon(common.settings, plain)
+        at = behind(plain)
+    except OlderDaemon as e:
+        raise SystemExit(str(e)) from e
+    finally:
+        plain.dispose()
+    if at is not None:  # it does not migrate: its statements and the actor triggers expect this piloop's schema
+        raise SystemExit(
+            f'the database is at schema revision {at}, and this {installed()} reads revision {head()}:'
+            ' run `piloop migrate` first'
+        )
     with closing(sql.connect(database, actor=common.settings.actor)) as con:
         try:
             result = sql.run(con, statement)
         except sqlite3.Error as e:
             holder = sql.lock_holder(e, database)
-            raise SystemExit(f'sql error: {e}' if holder is None else f'sql error: {e} ({holder})') from e
+            error = sql.with_renamed(str(e))
+            raise SystemExit(f'sql error: {error}' if holder is None else f'sql error: {error} ({holder})') from e
     if result.columns:
         table = Table(*result.columns, show_lines=False)
         for row in result.rows:
@@ -55,7 +72,7 @@ def _cell(value: object) -> str:
 def migrate_cmd() -> None:
     """Migrate the database to the schema of this piloop, and print what changed.
 
-    The daemon and the commands that read or change projects also migrate, without a message, when they start.
+    The daemon and the commands that read or change campaigns also migrate, without a message, when they start.
     `piloop sql` and `piloop doctor` do not migrate.
     """
     db = Database(common.settings.database_url, actor=common.settings.actor)

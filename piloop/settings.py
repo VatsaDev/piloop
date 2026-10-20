@@ -39,7 +39,7 @@ class RemoteTable(BaseModel):
 
 
 class StorageSettings(BaseModel):
-    """``[storage]``: the artifact store every project of this PILOOP_HOME archives its workspace into.
+    """``[storage]``: the artifact store every campaign of this PILOOP_HOME archives its workspace into.
 
     The keys here hold for every backend. Blobs live in ``<PILOOP_HOME>/store``, and in the remote too when
     ``[storage.remote]`` is set. The artifact store page of the docs describes the modes.
@@ -84,12 +84,12 @@ class Settings(BaseSettings):
     with ``<role>#<worker_id>``, for example ``worker#12`` or ``scout#7``."""
 
     tick_seconds: float = 2
-    """The number of seconds between two ticks. On each tick, the daemon checks the triggers of every project and
+    """The number of seconds between two ticks. On each tick, the daemon checks the triggers of every campaign and
     launches the requested workers."""
 
     max_evaluations: int = Field(default=MAX_EVALUATIONS, ge=1)
-    """The number of evaluate commands that the daemon runs at the same time, across all projects. The others wait in
-    the evaluation queue (``piloop eval queue``). A free slot goes to the project with the fewest running evaluations,
+    """The number of evaluate commands that the daemon runs at the same time, across all campaigns. The others wait in
+    the evaluation queue (``piloop eval queue``). A free slot goes to the campaign with the fewest running evaluations,
     and in it to its head first, then to the oldest request."""
 
     secrets_command: str | None = None
@@ -156,7 +156,7 @@ class Settings(BaseSettings):
 
     @property
     def store_dir(self) -> Path:
-        """The artifact store's local directory, shared by every project (``piloop.store``)."""
+        """The artifact store's local directory, shared by every campaign (``piloop.store``)."""
         return self.home / STORE_DIR
 
     @property

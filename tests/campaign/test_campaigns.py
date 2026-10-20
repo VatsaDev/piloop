@@ -9,26 +9,26 @@ from pydantic import BaseModel
 from pytest_mock import MockerFixture
 
 from piloop.agents.capture import ENTIRE_DIR
-from piloop.campaign import project as project_module
-from piloop.campaign.project import BLANK, TEMPLATES, create_project_repo, register, registered, stub_untouched
-from piloop.config import ConfigError, ProjectConfig, load_project_config
+from piloop.campaign import campaigns as campaign_module
+from piloop.campaign.campaigns import BLANK, TEMPLATES, create_campaign_repo, register, registered, stub_untouched
+from piloop.config import CampaignConfig, ConfigError, load_campaign_config
 from piloop.db.session import Database
 from tests.conftest import HARNESS_APPEND, write_toml
 
 ENTIRE_FILES = ['.entire/.gitignore', '.entire/settings.json']
 
 
-def test_create_project_repo(tmp_path: Path, mocker: MockerFixture) -> None:
+def test_create_campaign_repo(tmp_path: Path, mocker: MockerFixture) -> None:
     template = tmp_path / 'template'
     template.mkdir()
     (template / 'solve.py').write_text('print(1)\n')
     (template / 'pyproject.toml').write_text('[project]\nname = "t"\nversion = "0"\nrequires-python = ">=3.14"\n')
     (template / 'data').mkdir()
     (template / 'data' / 'ignored.csv').write_text('x')
-    get = mocker.patch('piloop.campaign.project.httpx.get')
+    get = mocker.patch('piloop.campaign.campaigns.httpx.get')
     get.return_value.raise_for_status.return_value.content = b'a,b\n'
     dest = tmp_path / 'dest'
-    written = create_project_repo(dest, template, {'data/train.csv': 'http://example/train.csv'})
+    written = create_campaign_repo(dest, template, {'data/train.csv': 'http://example/train.csv'})
     assert written == [*ENTIRE_FILES, '.gitignore', 'pyproject.toml', 'solve.py']
     assert (dest / 'data' / 'train.csv').read_bytes() == b'a,b\n' and not (dest / 'data' / 'ignored.csv').exists()
     repo = Repo(dest)
@@ -39,14 +39,14 @@ def test_create_project_repo(tmp_path: Path, mocker: MockerFixture) -> None:
     plain = tmp_path / 'plain'
     plain.mkdir()
     (plain / 'x.txt').write_text('x')
-    create_project_repo(tmp_path / 'plain-dest', plain, {})
+    create_campaign_repo(tmp_path / 'plain-dest', plain, {})
     assert Repo(tmp_path / 'plain-dest').head.commit.summary == 'plain: baseline'
     # A second run downloads and overwrites nothing. The user's edit is committed with its own message.
     (dest / 'solve.py').write_text('print(2)\n')
-    assert create_project_repo(dest, template, {'data/train.csv': 'http://example/train.csv'}) == []
+    assert create_campaign_repo(dest, template, {'data/train.csv': 'http://example/train.csv'}) == []
     assert get.call_count == 1 and (dest / 'solve.py').read_text() == 'print(2)\n'
     assert Repo(dest).head.commit.summary == 'piloop init: solve.py'
-    assert create_project_repo(dest, template, {}) == [] and Repo(dest).head.commit.summary == 'piloop init: solve.py'
+    assert create_campaign_repo(dest, template, {}) == [] and Repo(dest).head.commit.summary == 'piloop init: solve.py'
 
 
 def test_blank_template_into_an_existing_repo(tmp_path: Path) -> None:
@@ -57,9 +57,9 @@ def test_blank_template_into_an_existing_repo(tmp_path: Path) -> None:
     repo = Repo.init(dest, initial_branch='main')
     repo.git.add('-A')
     repo.git.commit('-qm', 'first')
-    assert create_project_repo(dest, BLANK, {}) == [*ENTIRE_FILES, 'brief.md', 'evaluate.py', 'piloop.toml']
+    assert create_campaign_repo(dest, BLANK, {}) == [*ENTIRE_FILES, 'brief.md', 'evaluate.py', 'piloop.toml']
     assert (dest / '.gitignore').read_text() == '*.log\n', 'an existing ignore file is kept'
-    assert load_project_config(dest).name == 'my-repo', 'the directory name, made ref-safe'
+    assert load_campaign_config(dest).name == 'my-repo', 'the directory name, made ref-safe'
     assert (
         repo.head.commit.summary
         == 'piloop init: .entire/.gitignore, .entire/settings.json, brief.md, evaluate.py, piloop.toml'
@@ -74,21 +74,21 @@ def test_blank_template_into_an_existing_repo(tmp_path: Path) -> None:
     assert not stub_untouched(dest)
 
 
-def test_a_project_that_predates_session_capture_gets_the_entire_files_and_nothing_else(tmp_path: Path) -> None:
+def test_a_campaign_that_predates_session_capture_gets_the_entire_files_and_nothing_else(tmp_path: Path) -> None:
     dest = tmp_path / 'older'
-    create_project_repo(dest, BLANK, {})
+    create_campaign_repo(dest, BLANK, {})
     for rel in ENTIRE_FILES:
         (dest / rel).unlink()
     (dest / ENTIRE_DIR).rmdir()
     Repo(dest).git.commit('-qam', 'before session capture')
-    assert create_project_repo(dest, BLANK, {}) == ENTIRE_FILES, 'a project (it has piloop.toml) is not re-templated'
+    assert create_campaign_repo(dest, BLANK, {}) == ENTIRE_FILES, 'a campaign (it has piloop.toml) is not re-templated'
     assert Repo(dest).head.commit.summary == 'piloop init: .entire/.gitignore, .entire/settings.json'
-    assert create_project_repo(dest, BLANK, {}) == [], 'idempotent'
+    assert create_campaign_repo(dest, BLANK, {}) == [], 'idempotent'
 
 
-def test_example_templates_are_projects_with_entire_settings() -> None:
+def test_example_templates_are_campaigns_with_entire_settings() -> None:
     for template in TEMPLATES.iterdir():
-        cfg = load_project_config(template)
+        cfg = load_campaign_config(template)
         assert cfg.name == template.name or template == BLANK, template
         for rel in ENTIRE_FILES:
             assert (template / rel).read_bytes() == (BLANK / rel).read_bytes(), (template, rel)
@@ -120,7 +120,7 @@ def model_in(annotation: object) -> tuple[type[BaseModel], bool] | None:
 
 
 def unnamed_keys(template: str) -> list[str]:
-    """The keys of ``ProjectConfig``, at every depth, that a ``piloop.toml`` text does not name.
+    """The keys of ``CampaignConfig``, at every depth, that a ``piloop.toml`` text does not name.
 
     A key is named by an assignment (``key =`` or ``# key =``) in its table, or by a header (``[table]``,
     ``# [table]``) at its path. A table that lists its keys in a ``keys:`` comment may name a key there instead. A
@@ -152,12 +152,12 @@ def unnamed_keys(template: str) -> list[str]:
                 missing += walk(nested[0], table, where + ('.<name>' if nested[1] else ''), own or text)
         return missing
 
-    return walk(ProjectConfig, '', '', sections.get('', ''))
+    return walk(CampaignConfig, '', '', sections.get('', ''))
 
 
-def test_the_project_template_names_every_key_of_the_config() -> None:
+def test_the_campaign_template_names_every_key_of_the_config() -> None:
     template = (BLANK / 'piloop.toml').read_text()
-    assert template.startswith('# piloop project config. This file lists every key.')
+    assert template.startswith('# piloop campaign config. This file lists every key.')
     assert unnamed_keys(template) == [], 'the template says that it lists every key; add the missing ones to it'
     gaps = {'explore_every = 4': 'every = 4', 'plateau': 'p', 'bearer_token_env': 'x', ' tally;': ';'}
     without = template
@@ -171,22 +171,22 @@ def test_the_project_template_names_every_key_of_the_config() -> None:
     ], 'the check finds a key missing from a table, from a keys: comment, and from a nested table without a header'
 
 
-def test_the_baseline_keeps_its_per_unit_results_under_the_daemon_home(db: Database, project_path: Path) -> None:
-    script = project_path.parent / 'evaluate.sh'
+def test_the_baseline_keeps_its_per_unit_results_under_the_daemon_home(db: Database, campaign_path: Path) -> None:
+    script = campaign_path.parent / 'evaluate.sh'
     script.write_text(
         'echo METRIC score=1\necho METRIC size=5\nprintf \'{"score": {"only": 1}}\' > "$PILOOP_UNITS_FILE"\n'
     )
-    write_toml(project_path, HARNESS_APPEND, evaluate=['sh', str(script)])
+    write_toml(campaign_path, HARNESS_APPEND, evaluate=['sh', str(script)])
     with db.session() as s:
-        _, measurement = register(s, project_path)
-    units_dir = project_module.settings.units_dir
-    assert units_dir == project_module.settings.home / 'units'
+        _, measurement = register(s, campaign_path)
+    units_dir = campaign_module.settings.units_dir
+    assert units_dir == campaign_module.settings.home / 'units'
     assert [p.name for p in units_dir.iterdir()] == [f'{measurement.id}.json']
     assert json.loads((units_dir / f'{measurement.id}.json').read_text()) == {'score': {'only': 1}}
 
 
-def test_the_baseline_is_scored_without_locking_the_database(db: Database, project_path: Path, tmp_path: Path) -> None:
-    script = project_path.parent / 'evaluate.py'
+def test_the_baseline_is_scored_without_locking_the_database(db: Database, campaign_path: Path, tmp_path: Path) -> None:
+    script = campaign_path.parent / 'evaluate.py'
     script.write_text(
         'import sqlite3\n'
         f'con = sqlite3.connect({str(tmp_path / "piloop.db")!r}, timeout=0)\n'
@@ -195,15 +195,15 @@ def test_the_baseline_is_scored_without_locking_the_database(db: Database, proje
         "print('METRIC score=1')\n"
         "print('METRIC size=5')\n"
     )
-    write_toml(project_path, HARNESS_APPEND, evaluate=['python3', str(script)])
+    write_toml(campaign_path, HARNESS_APPEND, evaluate=['python3', str(script)])
     with db.session() as s:
-        assert registered(s, project_path) is None, 'the CLI reads first, in the same session'
-        project, measurement = register(s, project_path)
+        assert registered(s, campaign_path) is None, 'the CLI reads first, in the same session'
+        campaign, measurement = register(s, campaign_path)
         assert measurement.metrics == {'score': 1.0, 'size': 5.0}, 'another client could write meanwhile'
-    projects_dir = project_module.projects_dir(project_module.settings.home)
-    assert [p.name for p in projects_dir.iterdir()] == [str(project.id)], 'the staging directory became the project'
+    campaigns_dir = campaign_module.campaigns_dir(campaign_module.settings.home)
+    assert [p.name for p in campaigns_dir.iterdir()] == [str(campaign.id)], 'the staging directory became the campaign'
     assert (
-        projects_dir / str(project.id) / 'baseline' / 'eval.stdout'
+        campaigns_dir / str(campaign.id) / 'baseline' / 'eval.stdout'
     ).read_text() == 'METRIC score=1\nMETRIC size=5\n'
 
 
@@ -211,7 +211,7 @@ def test_init_commits_only_the_files_it_owns_never_another_agents_work(tmp_path:
     """A finding on the campaign build: in a shared checkout, init committed another agent's uncommitted evaluator
     work as "piloop init: …". It commits only the template's files and the ones it wrote; the rest stays as it was."""
     dest = tmp_path / 'shared'
-    create_project_repo(dest, BLANK, {})
+    create_campaign_repo(dest, BLANK, {})
     repo = Repo(dest)
     (dest / 'tools').mkdir()
     (dest / 'tools' / 'score.py').write_text('print(1)\n')
@@ -222,7 +222,7 @@ def test_init_commits_only_the_files_it_owns_never_another_agents_work(tmp_path:
     (dest / 'staged.py').write_text('a = 2\n')
     repo.git.add('staged.py')
     (dest / 'evaluate.py').write_text('print("METRIC score=3")\n')
-    assert create_project_repo(dest, BLANK, {}) == []
+    assert create_campaign_repo(dest, BLANK, {}) == []
     assert repo.head.commit.summary == 'piloop init: evaluate.py'
     assert repo.git.show('--name-only', '--format=', 'HEAD').splitlines() == ['evaluate.py']
     assert repo.git.diff('--name-only').splitlines() == ['tools/score.py'], 'still dirty, not committed'
@@ -237,31 +237,31 @@ def test_init_leaves_out_an_owned_file_that_the_repos_ignore_file_ignores(tmp_pa
     repo = Repo.init(dest, initial_branch='main')
     repo.git.add('-A')
     repo.git.commit('-qm', 'first')
-    assert create_project_repo(dest, BLANK, {}) == [*ENTIRE_FILES, 'brief.md', 'evaluate.py', 'piloop.toml']
+    assert create_campaign_repo(dest, BLANK, {}) == [*ENTIRE_FILES, 'brief.md', 'evaluate.py', 'piloop.toml']
     assert repo.head.commit.summary == 'piloop init: brief.md, evaluate.py, piloop.toml', 'git refuses to add them'
 
 
 def test_init_commits_no_config_that_is_not_valid(tmp_path: Path) -> None:
     """A finding on the campaign build: init committed piloop.toml, then said it was not a valid config."""
     dest = tmp_path / 'invalid'
-    create_project_repo(dest, BLANK, {})
+    create_campaign_repo(dest, BLANK, {})
     repo = Repo(dest)
     before = repo.head.commit.hexsha
     toml = dest / 'piloop.toml'
     toml.write_text(toml.read_text() + '\nnot_a_key = 1\n')
     with pytest.raises(ConfigError, match='not a valid piloop config'):
-        create_project_repo(dest, BLANK, {})
+        create_campaign_repo(dest, BLANK, {})
     assert repo.head.commit.hexsha == before and repo.git.diff('--name-only').splitlines() == ['piloop.toml']
 
 
 def test_init_takes_a_staged_rename_between_owned_files(tmp_path: Path) -> None:
     """``git status`` would report ``R  brief.md -> evaluate.py``: init reads paths, not rename records."""
     dest = tmp_path / 'renamed'
-    create_project_repo(dest, BLANK, {})
+    create_campaign_repo(dest, BLANK, {})
     repo = Repo(dest)
     repo.git.rm('-q', 'evaluate.py')
     repo.git.commit('-qm', 'no evaluate yet')
     repo.git.mv('brief.md', 'evaluate.py')
-    assert create_project_repo(dest, BLANK, {}) == []
+    assert create_campaign_repo(dest, BLANK, {}) == []
     assert repo.head.commit.summary == 'piloop init: brief.md, evaluate.py'
     assert not repo.is_dirty()

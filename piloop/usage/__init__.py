@@ -69,7 +69,7 @@ class UsageSpec(BaseModel):
     """``[harness.<name>.usage]``: how to read the tokens that an agent of this harness spent, after it ended.
 
     ``reader`` names the code that reads them, and the other keys are its parameters. The built-in harnesses set
-    their specs as data. A project can override any key, or give a custom harness a complete spec. piloop checks the
+    their specs as data. A campaign can override any key, or give a custom harness a complete spec. piloop checks the
     names when the config loads.
     """
 
@@ -164,9 +164,9 @@ def read_usage(spec: UsageSpec | None, session_id: str | None, cwd: Path | None,
     return spec.resolved.read(session_id, cwd, log_dir)
 
 
-def project_tokens(s: Session, project_id: int) -> int:
-    """The tokens that all agents of the project spent: ``SUM(json_extract(usage, '$.total'))`` over its workers."""
-    total = s.scalar(select(func.sum(Worker.usage['total'].as_integer())).where(Worker.project_id == project_id))
+def campaign_tokens(s: Session, campaign_id: int) -> int:
+    """The tokens that all agents of the campaign spent: ``SUM(json_extract(usage, '$.total'))`` over its workers."""
+    total = s.scalar(select(func.sum(Worker.usage['total'].as_integer())).where(Worker.campaign_id == campaign_id))
     return int(total or 0)
 
 

@@ -5,17 +5,17 @@ import pytest
 from inline_snapshot import snapshot
 
 from piloop.config import (
+    CampaignConfig,
     ConfigError,
     Files,
     Metric,
     MetricRole,
-    ProjectConfig,
     ResearchRole,
     Roles,
     Stop,
     WatchdogRole,
     WorkerRole,
-    load_project_config,
+    load_campaign_config,
 )
 from piloop.db.models import WorkerKind
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
@@ -23,8 +23,8 @@ from piloop.plugins.contracts.verdict import Direction
 from piloop.triggers import TRIGGERS
 
 
-def test_load_precedence(project_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = load_project_config(project_path)
+def test_load_precedence(campaign_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = load_campaign_config(campaign_path)
     assert (cfg.name, cfg.runtime, cfg.harnesses, cfg.model) == (
         'demo',
         'subprocess',
@@ -35,19 +35,19 @@ def test_load_precedence(project_path: Path, monkeypatch: pytest.MonkeyPatch) ->
     assert (cfg.harness_for('script').headless, cfg.harness_for('script').startup_dialogs) == (['{prompt}'], [])
     assert cfg.harness_for('pi') is DEFAULT_HARNESSES['pi']
     override = {'executable': 'x', 'headless': ['{prompt}'], 'startup_dialogs': [['trust', ['down', 'enter']]]}
-    assert load_project_config(project_path, harness={'script': override}).harness_for('script').startup_dialogs == [
+    assert load_campaign_config(campaign_path, harness={'script': override}).harness_for('script').startup_dialogs == [
         ('trust', ['down', 'enter'])
     ]
 
-    monkeypatch.setenv('PILOOP_PROJECT_ROLES__WORKER__MAX_CONCURRENT', '3')
-    monkeypatch.setenv('PILOOP_PROJECT_RUNTIME', 'herdr')
-    cfg = load_project_config(project_path)
+    monkeypatch.setenv('PILOOP_CAMPAIGN_ROLES__WORKER__MAX_CONCURRENT', '3')
+    monkeypatch.setenv('PILOOP_CAMPAIGN_RUNTIME', 'herdr')
+    cfg = load_campaign_config(campaign_path)
     assert (cfg.roles.worker.max_concurrent, cfg.runtime) == (3, 'herdr')
-    assert load_project_config(project_path, runtime=None).runtime == 'herdr'
+    assert load_campaign_config(campaign_path, runtime=None).runtime == 'herdr'
 
 
-def test_roles_are_typed_per_kind(project_path: Path) -> None:
-    cfg = load_project_config(project_path)
+def test_roles_are_typed_per_kind(campaign_path: Path) -> None:
+    cfg = load_campaign_config(campaign_path)
     assert cfg.roles == snapshot(
         Roles(
             worker=WorkerRole(timeout=20.0, max_concurrent=1),
@@ -57,19 +57,19 @@ def test_roles_are_typed_per_kind(project_path: Path) -> None:
     )
     assert cfg.role(WorkerKind.RESEARCH) is cfg.roles.research
     assert set(Roles.model_fields) == {k.value for k in WorkerKind}, 'every kind has its table'
-    assert cfg.role_harnesses(WorkerKind.RESEARCH) == ['script'], 'unset: the project rotation'
-    assert cfg.role_models(WorkerKind.WATCHDOG) == {'script': 'watchdog-model'}, 'role map over the project map'
-    assert ProjectConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the project row'
-    defaults = ProjectConfig(
+    assert cfg.role_harnesses(WorkerKind.RESEARCH) == ['script'], 'unset: the campaign rotation'
+    assert cfg.role_models(WorkerKind.WATCHDOG) == {'script': 'watchdog-model'}, 'role map over the campaign map'
+    assert CampaignConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the campaign row'
+    defaults = CampaignConfig(
         name='bare',
         metrics=[Metric(name='a', direction=Direction.HIGHER, role=MetricRole.PRIMARY)],
         evaluate=['true'],
         model={'pi': 'm'},
     )
-    assert defaults.context == [], 'no analysis artifacts unless the project names them'
+    assert defaults.context == [], 'no analysis artifacts unless the campaign names them'
     defaults = defaults.roles
     assert (defaults.worker.timeout, defaults.worker.max_concurrent) == (1800, 4)
-    assert (defaults.watchdog.harnesses, defaults.watchdog.model) == (None, None), 'the project rotation and models'
+    assert (defaults.watchdog.harnesses, defaults.watchdog.model) == (None, None), 'the campaign rotation and models'
     assert (defaults.watchdog.timeout, defaults.watchdog.interval) == (600, 1800)
     assert (defaults.research.timeout, defaults.research.max_ideas) == (900, 1)
     assert [t.model_dump() for t in defaults.research.triggers] == [
@@ -81,72 +81,72 @@ def test_roles_are_typed_per_kind(project_path: Path) -> None:
 
 def test_missing_file(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
-        load_project_config(tmp_path)
+        load_campaign_config(tmp_path)
 
 
-def test_validators(project_path: Path) -> None:
+def test_validators(campaign_path: Path) -> None:
     with pytest.raises(ValueError, match='unknown harnesses'):
-        load_project_config(project_path, harnesses=['nope'])
+        load_campaign_config(campaign_path, harnesses=['nope'])
     with pytest.raises(ValueError, match='no model configured'):
-        load_project_config(project_path, harnesses=['script', 'pi'])
+        load_campaign_config(campaign_path, harnesses=['script', 'pi'])
     with pytest.raises(ValueError, match='relative path'):
-        load_project_config(project_path, link=['/etc'])
+        load_campaign_config(campaign_path, link=['/etc'])
     with pytest.raises(ValueError, match='relative path'):
-        load_project_config(project_path, roles={'research': {'addendum': '../elsewhere.md'}})
+        load_campaign_config(campaign_path, roles={'research': {'addendum': '../elsewhere.md'}})
     with pytest.raises(ValueError, match='at least one metric'):
-        load_project_config(project_path, metrics=[{'name': 'a', 'direction': 'higher'}])
+        load_campaign_config(campaign_path, metrics=[{'name': 'a', 'direction': 'higher'}])
     with pytest.raises(ValueError, match='roles.janitor'):
-        load_project_config(project_path, roles={'janitor': {}})
+        load_campaign_config(campaign_path, roles={'janitor': {}})
     with pytest.raises(ValueError, match='roles.worker.max_ideas'):
-        load_project_config(project_path, roles={'worker': {'max_ideas': 3}})
+        load_campaign_config(campaign_path, roles={'worker': {'max_ideas': 3}})
     with pytest.raises(ValueError, match='roles.research.min_ready'):
-        load_project_config(project_path, roles={'research': {'min_ready': 3}})
+        load_campaign_config(campaign_path, roles={'research': {'min_ready': 3}})
     with pytest.raises(ValueError, match='roles.research: unknown harnesses'):
-        load_project_config(project_path, roles={'research': {'harnesses': ['nope']}})
+        load_campaign_config(campaign_path, roles={'research': {'harnesses': ['nope']}})
     with pytest.raises(ValueError, match='roles.research: no model configured'):
-        load_project_config(project_path, roles={'research': {'harnesses': ['pi']}})
+        load_campaign_config(campaign_path, roles={'research': {'harnesses': ['pi']}})
     with pytest.raises(ValueError, match='max_concurrent: unknown harnesses'):
-        load_project_config(project_path, max_concurrent={'nope': 1})
+        load_campaign_config(campaign_path, max_concurrent={'nope': 1})
     with pytest.raises(ValueError, match='greater than or equal to 1'):
-        load_project_config(project_path, max_concurrent={'claude': 0})
+        load_campaign_config(campaign_path, max_concurrent={'claude': 0})
 
 
-def test_an_unknown_harness_key_in_the_file_fails_loudly(project_path: Path) -> None:
+def test_an_unknown_harness_key_in_the_file_fails_loudly(campaign_path: Path) -> None:
     """A misspelt key such as ``startup_dialog`` fails: dropping it silently would leave the dialogs unanswered."""
-    toml = project_path / 'piloop.toml'
+    toml = campaign_path / 'piloop.toml'
     toml.write_text(
         toml.read_text()
         + '\n[harness.codex]\nexecutable = "codex"\nheadless = ["{prompt}"]\nstartup_dialog = ["trust", ["enter"]]\n'
     )
     with pytest.raises(ValueError, match='harness.codex.startup_dialog'):
-        load_project_config(project_path)
+        load_campaign_config(campaign_path)
 
 
-def test_stop_conditions_are_optional_and_validated(project_path: Path) -> None:
-    assert load_project_config(project_path).stop == Stop(), 'no [stop] table: open-ended'
-    cfg = load_project_config(project_path, stop={'target': 0.85, 'max_runs': 200, 'max_hours': 12, 'plateau': 25})
+def test_stop_conditions_are_optional_and_validated(campaign_path: Path) -> None:
+    assert load_campaign_config(campaign_path).stop == Stop(), 'no [stop] table: open-ended'
+    cfg = load_campaign_config(campaign_path, stop={'target': 0.85, 'max_runs': 200, 'max_hours': 12, 'plateau': 25})
     assert cfg.stop == snapshot(Stop(target=0.85, max_runs=200, max_hours=12.0, plateau=25))
-    assert ProjectConfig.model_validate(cfg.model_dump(mode='json')).stop == cfg.stop
+    assert CampaignConfig.model_validate(cfg.model_dump(mode='json')).stop == cfg.stop
     with pytest.raises(ValueError, match='stop.target'):
-        load_project_config(project_path, stop={'target': 'high'})
+        load_campaign_config(campaign_path, stop={'target': 'high'})
     with pytest.raises(ValueError, match='stop.max_runs'):
-        load_project_config(project_path, stop={'max_runs': 0})
+        load_campaign_config(campaign_path, stop={'max_runs': 0})
     with pytest.raises(ValueError, match='stop.plateau'):
-        load_project_config(project_path, stop={'plateau': 0})
+        load_campaign_config(campaign_path, stop={'plateau': 0})
     with pytest.raises(ValueError, match='stop.max_hours'):
-        load_project_config(project_path, stop={'max_hours': 0})
+        load_campaign_config(campaign_path, stop={'max_hours': 0})
     with pytest.raises(ValueError, match='stop.budget'):
-        load_project_config(project_path, stop={'budget': 3})
+        load_campaign_config(campaign_path, stop={'budget': 3})
 
 
-def test_an_invalid_piloop_toml_names_the_file_each_key_its_value_and_the_fix(project_path: Path) -> None:
-    toml = project_path / 'piloop.toml'
+def test_an_invalid_piloop_toml_names_the_file_each_key_its_value_and_the_fix(campaign_path: Path) -> None:
+    toml = campaign_path / 'piloop.toml'
     text = toml.read_text()
     toml.write_text(
         text.replace('name = "demo"', 'colour = "blue"').replace('direction = "higher"', 'direction = "up"')
     )
     with pytest.raises(ConfigError) as caught:
-        load_project_config(project_path)
+        load_campaign_config(campaign_path)
     assert str(caught.value) == (
         f'{toml} is not a valid piloop config (3 problem(s)):\n'
         '  name: Field required. Fix: add the key; https://piloop.autoresearch.inc/reference/configuration says what it takes\n'
@@ -157,10 +157,10 @@ def test_an_invalid_piloop_toml_names_the_file_each_key_its_value_and_the_fix(pr
     )
     toml.write_text(text.replace('role = "primary"', ''))
     with pytest.raises(ConfigError, match=r'\(the file\): at least one metric must be primary\. Fix:'):
-        load_project_config(project_path)
+        load_campaign_config(campaign_path)
     toml.write_text('name = ')
     with pytest.raises(ConfigError, match=f'{toml} is not valid TOML: '):
-        load_project_config(project_path)
+        load_campaign_config(campaign_path)
 
 
 def test_metric_direction() -> None:
@@ -225,10 +225,10 @@ def test_default_harnesses_raise_the_thinking_level() -> None:
     )
 
 
-def test_metric_roles_are_validated(project_path: Path) -> None:
+def test_metric_roles_are_validated(campaign_path: Path) -> None:
     primary = {'name': 'score', 'direction': 'higher', 'role': 'primary'}
     guard = {'name': 'size', 'direction': 'lower', 'role': 'guardrail', 'margin': 3, 'floor': 10}
-    cfg = load_project_config(project_path, metrics=[primary, guard])
+    cfg = load_campaign_config(campaign_path, metrics=[primary, guard])
     [track] = cfg.all_tracks
     assert (track.name, track.primary.name, track.share, track.addendum) == ('score', 'score', 1, None), (
         'one primary is one track named after it, with nothing to configure'
@@ -243,21 +243,21 @@ def test_metric_roles_are_validated(project_path: Path) -> None:
     with pytest.raises(KeyError, match="no track 'speed' in piloop.toml; tracks: score"):
         cfg.track('speed')
     with pytest.raises(ValueError, match="guardrail 'size' needs a margin"):
-        load_project_config(project_path, metrics=[primary, {**guard, 'margin': None}])
+        load_campaign_config(campaign_path, metrics=[primary, {**guard, 'margin': None}])
     with pytest.raises(ValueError, match="'size': margin and floor apply to guardrails and primaries only"):
-        load_project_config(project_path, metrics=[primary, {**guard, 'role': 'watch'}])
+        load_campaign_config(campaign_path, metrics=[primary, {**guard, 'role': 'watch'}])
     with pytest.raises(ValueError, match="'score': margin and floor on a primary apply only with several tracks"):
-        load_project_config(project_path, metrics=[{**primary, 'floor': 1}])
+        load_campaign_config(campaign_path, metrics=[{**primary, 'floor': 1}])
     with pytest.raises(ValueError, match="'size': track applies to primaries only"):
-        load_project_config(project_path, metrics=[primary, {**guard, 'track': 'x'}])
+        load_campaign_config(campaign_path, metrics=[primary, {**guard, 'track': 'x'}])
     with pytest.raises(ValueError, match=r'metrics\[1\]\.margin = -1'):
-        load_project_config(project_path, metrics=[primary, {**guard, 'margin': -1}])
+        load_campaign_config(campaign_path, metrics=[primary, {**guard, 'margin': -1}])
     with pytest.raises(
         ValueError, match=r'metrics\[0\]\.primary = True: Extra inputs are not permitted\. Fix: delete the key'
     ):
-        load_project_config(project_path, metrics=[{'name': 'score', 'direction': 'higher', 'primary': True}])
+        load_campaign_config(campaign_path, metrics=[{'name': 'score', 'direction': 'higher', 'primary': True}])
     with pytest.raises(ValueError, match='confidence'):
-        load_project_config(project_path, confidence=1)
+        load_campaign_config(campaign_path, confidence=1)
 
 
 ACCURACY = {'name': 'score', 'direction': 'higher', 'role': 'primary', 'track': 'accuracy', 'margin': 1, 'floor': 2}
@@ -265,14 +265,14 @@ COST = {'name': 'size', 'direction': 'lower', 'role': 'primary', 'track': 'servi
 SHARES = {'accuracy': {'share': 0.75, 'addendum': 'briefs/accuracy.md'}, 'serving': {'share': 0.25}}
 
 
-def test_tracks_are_primaries_each_with_a_margin_a_table_and_a_share(project_path: Path) -> None:
-    cfg = load_project_config(project_path, metrics=[ACCURACY, COST], tracks=SHARES)
+def test_tracks_are_primaries_each_with_a_margin_a_table_and_a_share(campaign_path: Path) -> None:
+    cfg = load_campaign_config(campaign_path, metrics=[ACCURACY, COST], tracks=SHARES)
     assert cfg.multitrack
     assert [(t.name, t.primary.name, t.share, t.addendum, [m.name for m in t.guardrails]) for t in cfg.all_tracks] == [
         ('accuracy', 'score', 0.75, 'briefs/accuracy.md', ['size']),
         ('serving', 'size', 0.25, None, ['score']),
     ]
-    assert ProjectConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the project row'
+    assert CampaignConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the campaign row'
     tracks = {'metrics': [ACCURACY, COST], 'tracks': SHARES}
     refusals = {
         r"tracks \['accuracy'\] have more than one primary": {'metrics': [ACCURACY, {**COST, 'track': 'accuracy'}]},
@@ -284,7 +284,7 @@ def test_tracks_are_primaries_each_with_a_margin_a_table_and_a_share(project_pat
         },
         'track shares sum to 0.9, not 1': {**tracks, 'tracks': {**SHARES, 'serving': {'share': 0.15}}},
         r'track shares sum to 0.5, not 1': {'tracks': {'score': {'share': 0.5}}},
-        r'\[stop\] target needs a project of one track': {**tracks, 'stop': {'target': 3}},
+        r'\[stop\] target needs a campaign of one track': {**tracks, 'stop': {'target': 3}},
         "'briefs/../x' must be a relative path inside the repo": {
             **tracks,
             'tracks': {**SHARES, 'serving': {'share': 0.25, 'addendum': 'briefs/../x'}},
@@ -292,22 +292,22 @@ def test_tracks_are_primaries_each_with_a_margin_a_table_and_a_share(project_pat
     }
     for message, overrides in refusals.items():
         with pytest.raises(ValueError, match=message):
-            load_project_config(project_path, **overrides)
-    one = load_project_config(project_path, tracks={'score': {'addendum': 'briefs/score.md'}})
+            load_campaign_config(campaign_path, **overrides)
+    one = load_campaign_config(campaign_path, tracks={'score': {'addendum': 'briefs/score.md'}})
     assert one.all_tracks[0].addendum == 'briefs/score.md', 'one track may still have its addendum'
-    assert load_project_config(project_path, metrics=[ACCURACY, COST], tracks=SHARES).evaluator_key == (
-        load_project_config(project_path).evaluator_key
+    assert load_campaign_config(campaign_path, metrics=[ACCURACY, COST], tracks=SHARES).evaluator_key == (
+        load_campaign_config(campaign_path).evaluator_key
     ), 'tracks, margins and floors are verdict policy: they re-measure nothing'
 
 
-def test_the_evaluator_is_what_scores_not_how_the_verdict_reads_it(project_path: Path) -> None:
-    cfg = load_project_config(project_path)
+def test_the_evaluator_is_what_scores_not_how_the_verdict_reads_it(campaign_path: Path) -> None:
+    cfg = load_campaign_config(campaign_path)
     assert cfg.evaluator_definition['metrics'] == [
         {'name': 'score', 'direction': 'higher'},
         {'name': 'size', 'direction': 'lower'},
     ]
-    guarded = load_project_config(
-        project_path,
+    guarded = load_campaign_config(
+        campaign_path,
         confidence=0.9,
         metrics=[
             {'name': 'score', 'direction': 'higher', 'role': 'primary'},
@@ -315,12 +315,12 @@ def test_the_evaluator_is_what_scores_not_how_the_verdict_reads_it(project_path:
         ],
     )
     assert guarded.evaluator_key == cfg.evaluator_key, 'a new margin re-measures nothing'
-    flipped = load_project_config(project_path, metrics=[{'name': 'score', 'direction': 'lower', 'role': 'primary'}])
+    flipped = load_campaign_config(campaign_path, metrics=[{'name': 'score', 'direction': 'lower', 'role': 'primary'}])
     assert flipped.evaluator_key != cfg.evaluator_key
 
 
 def test_default_harnesses_keep_agents_out_of_the_harness_memory() -> None:
-    """A memory the harness keys by repo would carry one agent's notes into every later agent of the project."""
+    """A memory the harness keys by repo would carry one agent's notes into every later agent of the campaign."""
     off = {'claude': ['"autoMemoryEnabled":false'], 'codex': ['-c', 'features.memories=false']}
     for name, flags in off.items():
         h = DEFAULT_HARNESSES[name]
@@ -335,22 +335,22 @@ def test_default_claude_moves_a_long_bash_command_to_the_background() -> None:
         assert settings['env'] == {'BASH_DEFAULT_TIMEOUT_MS': '300000', 'BASH_MAX_TIMEOUT_MS': '600000'}
 
 
-def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_triggers(project_path: Path) -> None:
-    (project_path / 'reviewer.md').write_text('# Review\n')
-    when = 'SELECT 1 FROM ideas WHERE project_id = :project AND created_at > :since'
+def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_triggers(campaign_path: Path) -> None:
+    (campaign_path / 'reviewer.md').write_text('# Review\n')
+    when = 'SELECT 1 FROM ideas WHERE campaign_id = :campaign AND created_at > :since'
     good = {'prompt': 'reviewer.md', 'triggers': [{'kind': 'sql', 'when': when}], 'runtime': 'herdr'}
-    cfg = load_project_config(project_path, roles={'reviewer': good})
+    cfg = load_campaign_config(campaign_path, roles={'reviewer': good})
     assert list(cfg.roles.all()) == ['worker', 'watchdog', 'research', 'scout', 'reviewer']
     assert list(cfg.roles.sweeping()) == ['watchdog', 'research', 'scout', 'reviewer'], (
         'the worker does runs, not sweeps'
     )
     assert (cfg.role_runtime('reviewer'), cfg.role_runtime('research')) == ('herdr', 'subprocess')
     assert cfg.runtimes == {'herdr', 'subprocess'}
-    assert ProjectConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the project row'
+    assert CampaignConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the campaign row'
 
     def fails(roles: dict[str, object]) -> str:
         with pytest.raises(ConfigError) as e:
-            load_project_config(project_path, roles=roles)
+            load_campaign_config(campaign_path, roles=roles)
         return str(e.value).split('\n', 1)[1]
 
     def reviewer(**keys: object) -> dict[str, object]:
@@ -371,17 +371,19 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
     assert 'roles.reviewer.triggers[0].every = 3: Extra inputs are not permitted' in fails(
         reviewer(triggers=[{'kind': 'cron', 'every': 3}])
     )
-    filler = load_project_config(
-        project_path, roles=reviewer(triggers=[{'kind': 'low_water', 'buffer': 1}], files='ideas')
+    filler = load_campaign_config(
+        campaign_path, roles=reviewer(triggers=[{'kind': 'low_water', 'buffer': 1}], files='ideas')
     )
     assert cfg.roles.sweeping()['reviewer'].max_ideas == 1, 'any sweeping role can fill the backlog'
     assert [t.model_dump() for t in filler.roles.sweeping()['reviewer'].triggers] == [
         {'kind': 'low_water', 'buffer': 1}
     ]
-    assert "Input should be 'head' or 'project'" in fails(reviewer(workdir='base'))
+    assert "Input should be 'head' or 'repo'" in fails(reviewer(workdir='base'))
     for query, error in {
         'DELETE FROM ideas': 'not authorized',
         'SELECT nope FROM ideas': 'no such column: nope',
+        'SELECT 1 FROM projects': 'no such table: projects: `projects` is `campaigns` since piloop 0.2.0; see https://',
+        'SELECT i.PROJECT_ID FROM ideas i': 'no such column: i.PROJECT_ID: `project_id` is `campaign_id`',
         'SELECT 1 FROM ideas WHERE id = :idea': 'You did not supply a value for binding parameter :idea',
         'SELECT 1; SELECT 2': 'You can only execute one statement at a time',
     }.items():
@@ -392,28 +394,32 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
         assert f'{name!r} is not a role name: use lowercase letters, digits, _ and -' in fails({name: good})
 
 
-def test_a_table_with_runs_defines_a_role_that_does_runs_with_the_worker_defaults(project_path: Path) -> None:
+def test_a_table_with_runs_defines_a_role_that_does_runs_with_the_worker_defaults(campaign_path: Path) -> None:
     quick = {'runs': True, 'takes': "priority >= 3 OR track = 'speed'", 'timeout': 60, 'max_concurrent': 1}
-    cfg = load_project_config(project_path, roles={'quick': quick})
+    cfg = load_campaign_config(campaign_path, roles={'quick': quick})
     assert list(cfg.roles.all()) == ['worker', 'watchdog', 'research', 'scout', 'quick']
     assert list(cfg.roles.doing_runs()) == ['quick', 'worker'], 'the roles of the file fill their slots first'
     assert list(cfg.roles.sweeping()) == ['watchdog', 'research', 'scout']
     role = cfg.roles.doing_runs()['quick']
     assert (role.prompt, role.PROMPT, role.files, role.explore_every) == (None, 'worker.md', Files.NOTHING, 4)
     assert cfg.run_slots == 1 + cfg.roles.worker.max_concurrent
-    assert ProjectConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the project row'
+    assert CampaignConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the campaign row'
 
     def fails(roles: dict[str, object]) -> str:
         with pytest.raises(ConfigError) as e:
-            load_project_config(project_path, roles=roles)
+            load_campaign_config(campaign_path, roles=roles)
         return str(e.value).split('\n', 1)[1]
 
     assert "roles.quick.takes = 'priority >>= 3': the condition does not run on the ideas table" in fails(
         {'quick': {'runs': True, 'takes': 'priority >>= 3'}}
     )
     assert 'no such column: nope' in fails({'quick': {'runs': True, 'takes': 'nope = 1'}})
-    assert 'You did not supply a value for binding parameter :project' in fails(
-        {'quick': {'runs': True, 'takes': 'project_id = :project'}}
+    assert (
+        '`project_id` is `campaign_id` since piloop 0.2.0; see https://piloop.autoresearch.inc/guides/upgrading'
+        in fails({'quick': {'runs': True, 'takes': 'project_id = 1'}})
+    )
+    assert 'You did not supply a value for binding parameter :campaign' in fails(
+        {'quick': {'runs': True, 'takes': 'campaign_id = :campaign'}}
     )
     assert 'roles.quick.triggers: Extra inputs are not permitted' in fails({'quick': {'runs': True, 'triggers': []}})
     assert "roles.quick.takes = 'priority > 1': Extra inputs are not permitted" in fails(
@@ -424,12 +430,12 @@ def test_a_table_with_runs_defines_a_role_that_does_runs_with_the_worker_default
 
 
 def test_an_override_of_a_built_in_harness_keeps_the_screens_and_queue_key_of_its_executable(
-    project_path: Path,
+    campaign_path: Path,
 ) -> None:
     """A ``[harness.<name>]`` table replaces the built-in definition; what it leaves out of these keys is inherited."""
     codex = {'executable': 'codex', 'headless': ['exec', '{prompt}']}
-    cfg = load_project_config(
-        project_path,
+    cfg = load_campaign_config(
+        campaign_path,
         harness={'codex': codex, 'mine': codex | {'busy_screens': ['Thinking'], 'failed_turn_screens': []}},
     )
     built_in = DEFAULT_HARNESSES['codex']

@@ -10,7 +10,7 @@ import RoleDefaults from '/snippets/generated/role-defaults.mdx';
 import Triggers from '/snippets/generated/triggers.mdx';
 
 Every agent that piloop starts has a **role**. Every agent is a coding agent CLI (a **harness**: Claude Code, Codex or
-pi) that runs in a git worktree of the project, with a brief, and reads and writes the piloop database. piloop has
+pi) that runs in a git worktree of the campaign, with a brief, and reads and writes the piloop database. piloop has
 four built-in roles. You can [define more](#define-a-role) in `piloop.toml`.
 
 | Role | What it does | When the daemon starts one | Its worktree |
@@ -27,7 +27,7 @@ times out, saves the screen transcript, reads the tokens that the agent used, at
 The worker **does runs**: the run queue starts it, it works at the starting point of its run, and its commits are
 scored and judged when it ends. A role that you define can do runs too ([Define a role that does
 runs](#define-a-role-that-does-runs)). Every other role is a **sweeping** role. Its triggers start it, it works at the
-head or in the project checkout, and nothing is scored when it ends.
+head or in the campaign checkout, and nothing is scored when it ends.
 
 The [orchestrator](/concepts/orchestrator) is not a role. The daemon never starts it.
 
@@ -55,7 +55,7 @@ the rotation.
 
 ## Triggers
 
-A trigger is a condition that the daemon checks on each tick, for each project. When a trigger of a sweeping role
+A trigger is a condition that the daemon checks on each tick, for each campaign. When a trigger of a sweeping role
 fires, the daemon requests one more agent of that role. The agent's brief shows the reason. Each entry of `triggers` is
 a table with the trigger's `kind` and its parameters:
 
@@ -67,7 +67,7 @@ so it gets an agent of its own: it fires alone when it is the first trigger to f
 tick. While the campaign runs, the daemon checks every trigger except `stopped`. On the tick that stops the campaign,
 it checks only `stopped`.
 
-A `sql` query can use two parameters: `:project`, the project's id, and `:since`, when the role's last agent started.
+A `sql` query can use two parameters: `:campaign`, the campaign's id, and `:since`, when the role's last agent started.
 Compare `:since` with a `created_at` column to fire only on what is new. `piloop init` checks the query on an empty
 copy of the database: it must be one statement that only reads.
 
@@ -93,7 +93,7 @@ This reviewer reads each new keep and files a seed when it finds a problem:
 [roles.reviewer]
 prompt = "briefs/reviewer.md"   # relative to the repo root
 triggers = [
-  { kind = "sql", when = "SELECT id FROM candidates WHERE project_id = :project AND verdict = 'keep' AND created_at > :since" },
+  { kind = "sql", when = "SELECT id FROM candidates WHERE campaign_id = :campaign AND verdict = 'keep' AND created_at > :since" },
 ]
 workdir = "head"
 runtime = "subprocess"
@@ -104,11 +104,11 @@ writes = ["comments(finding) on a candidate", "seeds via idea seed"]
 ```
 
 The brief of a reviewer is your prompt, then `brief.md`, the database procedures and its context: its signature
-(`reviewer#<worker id>`), the reason it started, the project overview and the research pack. A sweep that got
+(`reviewer#<worker id>`), the reason it started, the campaign overview and the research pack. A sweep that got
 anomalies has the incidents instead of the research pack. `incident_prompt` and `routine_prompt` add a file after
 your prompt for each kind of sweep, as the watchdog does. With `files = "ideas"`, the context also says how many ideas
 the sweep may add (`max_ideas`), which `low_water` counts on. Run `piloop init` after
-you change the table. `piloop launch <project> reviewer` asks for one more reviewer by hand.
+you change the table. `piloop launch <campaign> reviewer` asks for one more reviewer by hand.
 
 A role name has at most 20 characters: lowercase letters, digits, `_` and `-`, and a letter first. `run`,
 `orchestrator`, `human` and `daemon` are taken.
@@ -137,7 +137,7 @@ file, then the worker. So the worker takes every idea that the other roles leave
 for a free slot of a full role. To keep the worker away from the cheap ideas, give it a condition too, for example
 `[roles.worker] takes = "priority < 3"`.
 
-Some rules apply to each role that does runs, and some to every run of the project:
+Some rules apply to each role that does runs, and some to every run of the campaign:
 
 - Each role: its own `max_concurrent`, its `takes`, its harness rotation, its prompt and timeout, its `explore_every`
   (counted over its own runs), and the track shares (of its own slots).
@@ -172,12 +172,12 @@ the orchestrator, and seeds for research. It runs in one of two modes:
 The research agent keeps the workers supplied with ideas. A sweep:
 
 1. Reads the **research pack** that the daemon builds: the metrics, what each source of ideas produced, the analysis
-   files listed in the project's `context`, what was tried for each mechanism, the latest 60 ideas with their
-   outcomes (and the total count), the kept lineage, and the findings of every role on the project. `piloop history`
+   files listed in the campaign's `context`, what was tried for each mechanism, the latest 60 ideas with their
+   outcomes (and the total count), the kept lineage, and the findings of every role on the campaign. `piloop history`
    prints the same pack.
 2. Develops each waiting seed into an idea, or rejects it with the reason.
 3. Adds ideas of its own, up to `max_ideas`, where the head loses the most.
-4. Writes one `finding` on the project.
+4. Writes one `finding` on the campaign.
 
 The daemon starts a research sweep when:
 
@@ -185,7 +185,7 @@ The daemon starts a research sweep when:
 - The backlog is short (`low_water`): fewer ready ideas than one per run slot plus the trigger's `buffer`. When a sweep
   adds no idea, research waits longer before the next one.
 
-Ask for a sweep at any time with `piloop launch <project> research`.
+Ask for a sweep at any time with `piloop launch <campaign> research`.
 
 ## Scout
 
@@ -199,7 +199,7 @@ A **scout** sweep searches outside the repo for techniques that could reduce a m
 3. It ranks the results by substance: a number against a baseline, code, a method, an ablation.
 4. It files at most `seeds` of them as seeds, signed `scout#<worker id>`. The others go to the technique library, the
    `techniques` table. Research develops the seeds or rejects them.
-5. It writes one `finding` on the project, at priority 3, so that it reaches your inbox.
+5. It writes one `finding` on the campaign, at priority 3, so that it reaches your inbox.
 
 The scout is off until you set its `interval`:
 
@@ -209,19 +209,19 @@ interval = 86400   # seconds between scout sweeps
 seeds = 3          # seeds that one scout sweep may file
 ```
 
-Ask for one scout sweep with `piloop launch <project> scout`. A search tool for X needs an MCP server in the scout's
+Ask for one scout sweep with `piloop launch <campaign> scout`. A search tool for X needs an MCP server in the scout's
 `mcp`; see [MCP servers](/guides/mcp-servers).
 
 ## Ask for one more agent
 
-`piloop launch <project> research` (or `watchdog`, `scout`, or a role that you defined) asks the daemon for one more
+`piloop launch <campaign> research` (or `watchdog`, `scout`, or a role that you defined) asks the daemon for one more
 agent of that role. The daemon starts it on its next tick, within `max_concurrent`. Use `--harness` and `--model` to choose the agent's harness and model,
 and `--reason` to add a line to its brief.
 
 An agent can do the same with SQL. The `workers` table is the launch queue:
 
 ```sql
-INSERT INTO workers (kind, project_id, state, reason) VALUES ('research', 1, 'requested', 'second opinion on idea#40')
+INSERT INTO workers (kind, campaign_id, state, reason) VALUES ('research', 1, 'requested', 'second opinion on idea#40')
 ```
 
 ## Look at an agent

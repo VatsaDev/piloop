@@ -14,12 +14,12 @@ from piloop.db.session import Database
 from piloop.db.triggers import PERSISTENT, fts, recreate
 
 IDEAS = (
-    "INSERT INTO ideas (project_id, title, hypothesis, plan, created_by, track) VALUES (1, 'Soft voting ensemble', "
+    "INSERT INTO ideas (campaign_id, title, hypothesis, plan, created_by, track) VALUES (1, 'Soft voting ensemble', "
     "'Averaging the probabilities of the trees and a logistic regression beats either alone', NULL, 'research#1', 'a')",
-    "INSERT INTO ideas (project_id, title, hypothesis, plan, created_by, track) VALUES (1, 'Target encoding of cabin', "
+    "INSERT INTO ideas (campaign_id, title, hypothesis, plan, created_by, track) VALUES (1, 'Target encoding of cabin', "
     "'The cabin deck carries survival signal the one-hot loses', "
     "'Encode the deck letter; naïve mean target encoding with smoothing', 'research#1', 'a')",
-    "INSERT INTO ideas (project_id, title, hypothesis, plan, created_by, track) VALUES (1, 'Weighted vote by validation', "
+    "INSERT INTO ideas (campaign_id, title, hypothesis, plan, created_by, track) VALUES (1, 'Weighted vote by validation', "
     "'Weighting each model by its fold accuracy before voting sharpens the ensemble vote', NULL, 'research#2', 'a')",
 )
 COMMENT = (
@@ -47,7 +47,7 @@ def test_the_index_follows_every_write_through_the_agent_connection(db: Database
     """The sync triggers fire under the authorizer (their bodies are authorized too) and under DEFENSIVE mode."""
     path = tmp_path / 'piloop.db'
     with closing(sql.connect(path, actor='research#1')) as con:
-        sql.run(con, "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+        sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
         for statement in IDEAS:
             sql.run(con, statement)
         assert hits(con, 'ideas', 'votes') == [3, 1], (
@@ -74,9 +74,9 @@ def test_the_index_follows_every_write_through_the_agent_connection(db: Database
 
 
 def test_the_documented_search_queries_rank_and_mark_the_hits(db: Database, tmp_path: Path) -> None:
-    """The two examples in sql_procedures.md, verbatim but for the project id."""
+    """The two examples in sql_procedures.md, verbatim but for the campaign id."""
     with closing(sql.connect(tmp_path / 'piloop.db', actor='human')) as con:
-        sql.run(con, "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+        sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
         for statement in IDEAS:
             sql.run(con, statement)
         sql.run(con, COMMENT)
@@ -84,7 +84,7 @@ def test_the_documented_search_queries_rank_and_mark_the_hits(db: Database, tmp_
             con,
             "SELECT i.id, i.status, snippet(ideas_fts, -1, '[', ']', '…', 8) AS hit, bm25(ideas_fts) AS score "
             'FROM ideas_fts JOIN ideas i ON i.id = ideas_fts.rowid '
-            "WHERE ideas_fts MATCH 'voting OR ensemble' AND i.project_id = 1 ORDER BY score LIMIT 10",
+            "WHERE ideas_fts MATCH 'voting OR ensemble' AND i.campaign_id = 1 ORDER BY score LIMIT 10",
         )
         assert [(r[0], r[1], r[2]) for r in ideas.rows] == [
             (3, 'ready', '…fold accuracy before [voting] sharpens the [ensemble] [vote]'),

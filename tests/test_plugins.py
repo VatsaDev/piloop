@@ -17,9 +17,9 @@ from sqlalchemy.orm import Session
 from piloop.cli import common, doctor
 from piloop.cli.main import app
 from piloop.cli.plugins import selections
-from piloop.config import ROLES, ConfigError, load_project_config
+from piloop.config import ROLES, ConfigError, load_campaign_config
 from piloop.daemon.main import Daemon
-from piloop.db.models import Project
+from piloop.db.models import Campaign
 from piloop.db.session import Database
 from piloop.plugins import host as plugins
 from piloop.plugins.contracts.runtime import RUNTIMES
@@ -67,7 +67,7 @@ def test_an_installed_package_mounts_its_runtime_and_shows_where_it_comes_from(
     example(tmp_path, 'nice-runtime')
     monkeypatch.syspath_prepend(tmp_path)
     assert RUNTIMES.get('nice') is NiceRuntime
-    assert isinstance(make_runtime('nice', project='p', project_path=tmp_path), NiceRuntime)
+    assert isinstance(make_runtime('nice', campaign='p', campaign_path=tmp_path), NiceRuntime)
     assert RUNTIMES.sources()['nice'] == PythonSource('piloop-nice', '0.1.0', 'nice = piloop_nice:NiceRuntime')
     built_in: Source = RUNTIMES.sources()['subprocess']
     assert (built_in.release.split()[0], built_in.built_in) == ('piloop', True)
@@ -86,7 +86,7 @@ def test_an_installed_package_mounts_its_runtime_and_shows_where_it_comes_from(
         f'  subprocess  {built_in}',
         '  nice        piloop-nice 0.1.0, entry point nice = piloop_nice:NiceRuntime',
     ]
-    assert lines[-1] == 'selected:', 'no project and no remote: nothing is selected'
+    assert lines[-1] == 'selected:', 'no campaign and no remote: nothing is selected'
 
 
 def test_two_packages_with_the_same_name_fail_before_the_daemon_starts(
@@ -107,7 +107,7 @@ def test_two_packages_with_the_same_name_fail_before_the_daemon_starts(
     found = doctor.checks(Settings(home=tmp_path / 'home'))
     names = [c.name.split(' ')[0] for c in found]
     assert names[:5] == ['cli', 'daemon', 'database', 'plugins', 'secrets'] and set(names[5:]) <= {'skills'}, (
-        'the checks of projects, harnesses and runtimes, which use the plugins, do not run'
+        'the checks of campaigns, harnesses and runtimes, which use the plugins, do not run'
     )
     found = [c for c in found if c.name == 'plugins']
     assert found[-1].fix is not None and "'shown' is a runtime already" in found[-1].found
@@ -279,14 +279,14 @@ CASE = Case(
 
 
 def test_a_pure_plugin_is_installed_selected_by_config_and_answers_with_data(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db: Database, project: Project
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, db: Database, campaign: Campaign
 ) -> None:
     """The example ``examples/plugins/min-gain`` provides a verdict rule, and ``[plugins.verdict_rule]`` selects it."""
-    project_path = Path(project.path)
+    campaign_path = Path(campaign.path)
     example(tmp_path / 'site', 'min-gain')
     monkeypatch.syspath_prepend(tmp_path / 'site')
     assert VERDICT_RULES.tier is Tier.PURE and data_errors(VerdictRule) == []
-    cfg = load_project_config(project_path, plugins={'verdict_rule': {'provider': 'min_gain', 'min_gain': 2}})
+    cfg = load_campaign_config(campaign_path, plugins={'verdict_rule': {'provider': 'min_gain', 'min_gain': 2}})
     table = cfg.plugins['verdict_rule']
     rule = VERDICT_RULES.get(table.provider)
     assert rule is piloop_min_gain.MIN_GAIN
@@ -298,13 +298,13 @@ def test_a_pure_plugin_is_installed_selected_by_config_and_answers_with_data(
     home = Settings(home=tmp_path)
     assert not any(line.startswith('demo: verdict rule') for line in selections(home)), 'demo selects none yet'
     with db.session() as s:
-        s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
         s.commit()
     assert (
         'demo: verdict rule min_gain, from piloop-min-gain 0.1.0 ([plugins.verdict_rule] provider, in the'
-        f' config of demo that the last `piloop init` stored from {project_path}/piloop.toml)'
+        f' config of demo that the last `piloop init` stored from {campaign_path}/piloop.toml)'
     ) in selections(home)
-    plain = load_project_config(project_path, plugins={'verdict_rule': {'provider': 'bootstrap'}})
+    plain = load_campaign_config(campaign_path, plugins={'verdict_rule': {'provider': 'bootstrap'}})
     assert plain.plugins['verdict_rule'].parameters == '{}', 'a rule without Parameters, given none'
     for tables, error in [
         (
@@ -320,7 +320,7 @@ def test_a_pure_plugin_is_installed_selected_by_config_and_answers_with_data(
         ({'verdict_rule': {'provider': 'bootstrap', 'min_gain': 2}}, "verdict rule 'bootstrap' takes no parameters"),
     ]:
         with pytest.raises(ConfigError, match=re.escape(error)):
-            load_project_config(project_path, plugins=tables)
+            load_campaign_config(campaign_path, plugins=tables)
 
 
 @pytest.mark.parametrize(
@@ -426,11 +426,11 @@ def test_a_pure_contract_takes_and_returns_data_only() -> None:
 
 
 def test_a_plugin_declares_a_capability_calls_its_providers_and_another_package_provides_one(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, project: Project
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, campaign: Campaign
 ) -> None:
     """``examples/plugins/verdict-checks`` declares ``verdict check`` and calls its providers from its verdict rule;
     ``examples/plugins/no-unit-regression`` provides one. piloop lists, loads and checks it as one of its own."""
-    project_path = Path(project.path)
+    campaign_path = Path(campaign.path)
     example(tmp_path / 'site', 'verdict-checks')
     example(tmp_path / 'site', 'no-unit-regression')
     monkeypatch.syspath_prepend(tmp_path / 'site')
@@ -440,9 +440,9 @@ def test_a_plugin_declares_a_capability_calls_its_providers_and_another_package_
     with pytest.raises(
         ConfigError, match=re.escape("unknown verdict check 'none'; registered verdict checks: no_unit")
     ):
-        load_project_config(project_path, plugins={'verdict_rule': {'provider': 'checked', 'checks': ['none']}})
+        load_campaign_config(campaign_path, plugins={'verdict_rule': {'provider': 'checked', 'checks': ['none']}})
     table = {'provider': 'checked', 'checks': ['no_unit_regression']}
-    cfg = load_project_config(project_path, plugins={'verdict_rule': table})
+    cfg = load_campaign_config(campaign_path, plugins={'verdict_rule': table})
     rule = VERDICT_RULES.get(cfg.plugins['verdict_rule'].provider)
     units = {f'u{i}': 1.0 for i in range(30)}
     better = {**units, **{f'u{i}': 2.0 for i in range(1, 30)}}

@@ -77,7 +77,7 @@ class Case:
 
     primary: Criterion
     guardrails: tuple[Criterion, ...]
-    """The project's guardrails, then the primary of every other track."""
+    """The campaign's guardrails, then the primary of every other track."""
     confidence: float
     """``confidence`` in ``piloop.toml``: the confidence level that a gain must reach, between 0.5 and 1."""
     candidate: Side
@@ -120,9 +120,9 @@ VERDICT_RULES = PureCapability(
     'verdict rule',
     group='piloop.verdict_rules',
     contract=VerdictRule,
-    selection=Selection('project', 'plugins.verdict_rule.provider'),
+    selection=Selection('campaign', 'plugins.verdict_rule.provider'),
 )
 """The verdict rule capability: every verdict rule by name. The built-in rule is ``bootstrap``
 (``piloop.plugins.builtin.verdict``)."""
 DEFAULT = 'bootstrap'
-"""The rule of a project without ``[plugins.verdict_rule]``."""
+"""The rule of a campaign without ``[plugins.verdict_rule]``."""

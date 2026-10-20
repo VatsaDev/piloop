@@ -14,10 +14,12 @@ A new persistent trigger also needs a migration that calls ``recreate(op, table)
 table when Alembic's batch mode rebuilds it, so a batch migration also ends with ``recreate(op, table)``.
 """
 
+from collections.abc import Iterable
+
 from alembic.operations import Operations
 from sqlalchemy import text
 
-from piloop.db.triggers import changelog, fts, immutable, links, projects, provenance, roles
+from piloop.db.triggers import campaigns, changelog, fts, immutable, legacy, links, provenance, roles
 from piloop.db.triggers.ddl import Event, Trigger
 from piloop.db.triggers.provenance import DAEMON_ACTOR, TRACKED_TABLES
 
@@ -28,6 +30,7 @@ __all__ = [
     'TRACKED_TABLES',
     'Event',
     'Trigger',
+    'install',
     'recreate',
     'temp_sql',
 ]
@@ -40,9 +43,9 @@ GENERATED = (
 PERSISTENT: tuple[Trigger, ...] = (
     *provenance.UPDATED_AT,
     changelog.escalation(),
-    links.same_project(),
+    links.same_campaign(),
     roles.known_role(),
-    *projects.acyclic(),
+    *campaigns.acyclic(),
     *immutable.NO_REPLACE,
     *fts.SYNC,
 )
@@ -61,11 +64,23 @@ def recreate(op: Operations, table: str) -> None:
     """Create the persistent triggers of ``table`` again, for example after a batch rebuild.
 
     A trigger that ``requires`` a table is created only when that table exists at this point of the migration chain,
-    so a batch migration does not need to know which indexes exist yet.
+    so a batch migration does not need to know which indexes exist yet. Before revision 0016, a trigger has the names
+    of that schema (``legacy``).
     """
+    old = legacy.before_renames(op)
     for trigger in PERSISTENT:
-        if trigger.table == table and (trigger.requires is None or _exists(op, trigger.requires)):
-            op.execute(trigger.sql())
+        _, on, requires, sql = legacy.rendered(trigger, old=old)
+        if on == table and (requires is None or _exists(op, requires)):
+            op.execute(sql)
+
+
+def install(op: Operations, names: Iterable[str]) -> None:
+    """Create the persistent triggers that ``names`` lists, in the names of the schema at hand (``legacy``)."""
+    wanted, old = set(names), legacy.before_renames(op)
+    for trigger in PERSISTENT:
+        name, _, _, sql = legacy.rendered(trigger, old=old)
+        if name in wanted:
+            op.execute(sql)
 
 
 def _exists(op: Operations, table: str) -> bool:
@@ -81,7 +96,7 @@ CHANGE_LOG = """
 -- Event kinds are `<table singular>.<column>`. Payloads have the old and new value, never a large body."""
 TOMBSTONES = """
 -- Tombstones: the key columns of a deleted row, so the feed can still say what was there. A cascade (DELETE FROM
--- projects) fires them for every child row that it deletes."""
+-- campaigns) fires them for every child row that it deletes."""
 COMMENTS = """
 -- Every comment is an event, with the same shape as the event of the persistent escalation trigger. That trigger
 -- stays persistent, because `comment.escalation` must be logged whatever connection wrote the comment. The rest of

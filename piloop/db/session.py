@@ -92,15 +92,30 @@ def migrate(engine: Engine) -> None:
         raise ahead(path, revision(engine)) from e
 
 
+def head() -> str | None:
+    """The newest schema revision that this piloop knows."""
+    return ScriptDirectory(str(MIGRATIONS)).get_current_head()
+
+
+def behind(engine: Engine) -> str | None:
+    """Return the revision of a database that this piloop would migrate, or None when it is at head or ahead of it.
+
+    A database that was never migrated is at revision ``none``.
+    """
+    at, script = revision(engine), ScriptDirectory(str(MIGRATIONS))
+    if at == script.get_current_head() or (at is not None and at not in {r.revision for r in script.walk_revisions()}):
+        return None
+    return at or 'none'
+
+
 def ahead(database: Path, at: str | None) -> SchemaAhead:
     """Return the error for ``database`` at revision ``at``, which a newer piloop wrote and this one does not know.
 
     Only the newer piloop has the script of ``at``, so this one cannot name the version: it names its own and the
     newest revision it knows.
     """
-    head = ScriptDirectory(str(MIGRATIONS)).get_current_head()
     return SchemaAhead(
-        f'{database} is at schema revision {at}, which this {installed()} does not know (it knows up to {head}): '
+        f'{database} is at schema revision {at}, which this {installed()} does not know (it knows up to {head()}): '
         'a newer piloop migrated it. Install a newer piloop (`piloop upgrade`), or set PILOOP_HOME to another directory.'
     )
 

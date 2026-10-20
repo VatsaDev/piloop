@@ -13,7 +13,7 @@ import piloop_min_gain
 from inline_snapshot import snapshot
 from piloop_min_gain import MIN_GAIN
 
-from piloop.config import Metric, MetricRole, ProjectConfig, Track, TrackConfig
+from piloop.config import CampaignConfig, Metric, MetricRole, Track, TrackConfig
 from piloop.db.models import Verdict
 from piloop.plugins.builtin import verdict as verdict_module
 from piloop.plugins.builtin.verdict import BOOTSTRAP, compare, lower_bound
@@ -42,8 +42,8 @@ def decide(
     )
 
 
-def config(*guardrails: Metric, confidence: float = 0.95) -> ProjectConfig:
-    return ProjectConfig(
+def config(*guardrails: Metric, confidence: float = 0.95) -> CampaignConfig:
+    return CampaignConfig(
         name='v',
         metrics=[Metric(name='accuracy', direction=Direction.HIGHER, role=MetricRole.PRIMARY), *guardrails],
         evaluate=['true'],
@@ -52,7 +52,7 @@ def config(*guardrails: Metric, confidence: float = 0.95) -> ProjectConfig:
     )
 
 
-def rule(cfg: ProjectConfig) -> tuple[Track, float]:
+def rule(cfg: CampaignConfig) -> tuple[Track, float]:
     """What ``decide`` takes of a one-track config: its track and the confidence."""
     return cfg.all_tracks[0], cfg.confidence
 
@@ -212,7 +212,7 @@ def test_a_guardrail_neither_side_measured_holds_the_keep_back() -> None:
 
 
 def test_a_lower_is_better_primary_reads_in_its_own_direction() -> None:
-    cfg = ProjectConfig(
+    cfg = CampaignConfig(
         name='v',
         metrics=[Metric(name='loss', direction=Direction.LOWER, role=MetricRole.PRIMARY)],
         evaluate=['true'],
@@ -254,7 +254,7 @@ def test_same_means_every_deciding_metric_equal_and_ignores_watch_metrics() -> N
 
 def test_every_other_track_primary_is_a_guardrail_with_its_margin_and_floor() -> None:
     """A serving candidate must hold accuracy within its margin and above its floor; accuracy must hold cost too."""
-    cfg = ProjectConfig(
+    cfg = CampaignConfig(
         name='v',
         metrics=[
             Metric(
@@ -271,7 +271,7 @@ def test_every_other_track_primary_is_a_guardrail_with_its_margin_and_floor() ->
     assert ([m.name for m in serving.guardrails], [m.name for m in accuracy.guardrails]) == (
         ['errors', 'acc'],
         ['errors', 'cost'],
-    ), 'the project guardrails first, then the other tracks primaries'
+    ), 'the campaign guardrails first, then the other tracks primaries'
     theirs = {'acc': 95.0, 'cost': 10.0, 'errors': 300.0}
     neutral = {'acc': 94.0, 'cost': 8.0, 'errors': 300.0}
     assert decide(serving, 0.95, neutral, theirs, {}, {}, bar=BAR) == snapshot(

@@ -3,17 +3,17 @@ title: Watching a campaign
 description: piloop watch shows the campaign on one screen, with keys to act on it.
 ---
 
-`piloop watch` is a terminal app over the database. It shows every project, or one project with
-`piloop watch <project>`. It reads the database again whenever the daemon or an agent writes to it.
+`piloop watch` is a terminal app over the database. It shows every campaign, or one campaign with
+`piloop watch <campaign>`. It reads the database again whenever the daemon or an agent writes to it.
 
 ## The screens
 
-The first screen lists every project, the active ones first. Press `enter` to open one, and `esc` to come back.
+The first screen lists every campaign, the active ones first. Press `enter` to open one, and `esc` to come back.
 
-It shows one row per project: its status, the head and its gain over the baseline, the live agents, the ready ideas, the
+It shows one row per campaign: its status, the head and its gain over the baseline, the live agents, the ready ideas, the
 inbox, the tokens and the last event.
 
-A project has a header, four panels on the left, and the main pane on the right, which shows the selected row in
+A campaign has a header, four panels on the left, and the main pane on the right, which shows the selected row in
 full:
 
 ![A campaign in piloop watch: the inbox, agents, ideas and candidates on the left, the selected row on the right](/images/watch-campaign.svg)
@@ -27,13 +27,13 @@ The Ideas panel, with an idea that research wrote from the losses it measured:
 ![The ideas panel and research's hypothesis and plan for an idea](/images/watch-ideas.svg)
 
 The header shows the head, the number of keeps and the tokens. The second line shows the progress against `[stop]`,
-and the spend against `[spend]` when the project has a budget. Its run count (`run 7/10`) counts the runs as
+and the spend against `[spend]` when the campaign has a budget. Its run count (`run 7/10`) counts the runs as
 `max_runs` does. With several [tracks](/concepts/tracks), one more line
 shows each track.
 
 ## Panels and keys
 
-These keys work on the screen of a project. `?` and `q` also work on the list of projects.
+These keys work on the screen of a campaign. `?` and `q` also work on the list of campaigns.
 
 | Key | Action |
 |---|---|
@@ -42,7 +42,7 @@ These keys work on the screen of a project. `?` and `q` also work on the list of
 | `↑` `↓`, `j` `k` | Select a row. |
 | `/` | Filter the panel. `enter` applies the filter, `esc` clears it. |
 | `?` | List the keys of the panel. |
-| `esc` | Go back to the list of projects. |
+| `esc` | Go back to the list of campaigns. |
 | `q` | Quit. |
 
 | Panel | Rows | Main pane | Keys |
@@ -72,11 +72,11 @@ other.
 
 By default, the agents run as background processes. To see every agent in a terminal pane, install
 [Herdr](https://herdr.dev) and set `runtime = "herdr"` in `piloop.toml`. Then piloop has its own Herdr session,
-`piloop`, with one workspace for each project. The first tab of a workspace is `home`: a shell on the left and
-`piloop watch <project>` on the right. Each agent gets its own tab, named after its role, its id and its idea:
+`piloop`, with one workspace for each campaign. The first tab of a workspace is `home`: a shell on the left and
+`piloop watch <campaign>` on the right. Each agent gets its own tab, named after its role, its id and its idea:
 
 ```text
-my-project
+my-campaign
   home                                shell │ piloop watch
   worker-12 idea#5 Stacking with a meta-learner…
   research-7

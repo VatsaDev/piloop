@@ -1,4 +1,4 @@
-"""The daemon loop: check each role's triggers for each project, launch requested workers and reap stale state.
+"""The daemon loop: check each role's triggers for each campaign, launch requested workers and reap stale state.
 
 A tick has two phases. First, the triggers (https://piloop.autoresearch.inc/concepts/roles) insert ``workers`` rows in state ``requested``. Then the
 requested rows launch in id order, as far as the role's ``max_concurrent`` allows. Anyone can insert a requested row
@@ -38,9 +38,9 @@ from piloop.agents.launcher import STARTUP_ANOMALY, STOP_ENDED, STOPPED_ERROR, W
 from piloop.agents.refill import usage_of
 from piloop.agents.roles import compose_brief, role_of
 from piloop.campaign import spend
+from piloop.campaign.campaigns import WORKSPACE, campaign_dir, workspace_dir, worktree_links
 from piloop.campaign.ideas import defined_by, runnable, supersede, waiting
 from piloop.campaign.memory import sync_documents
-from piloop.campaign.project import WORKSPACE, project_dir, workspace_dir, worktree_links
 from piloop.campaign.spend import SpendError
 from piloop.campaign.stop import (
     BLOCKED,
@@ -59,8 +59,8 @@ from piloop.campaign.stop import (
     stop_reason,
 )
 from piloop.config import (
+    CampaignConfig,
     Files,
-    ProjectConfig,
     ResearchRole,
     ScoutRole,
     Spend,
@@ -71,11 +71,13 @@ from piloop.config import (
     ideas_taken,
 )
 from piloop.daemon.archiver import Archiver, Archiving
-from piloop.daemon.runner import RunExecutor, left_finding, open_escalation
+from piloop.daemon.run_executor import RunExecutor, left_finding, open_escalation
 from piloop.db.events import ANOMALY_EVENT, emit
 from piloop.db.models import (
     LIVE,
     OPEN_RUNS,
+    Campaign,
+    CampaignStatus,
     Candidate,
     Comment,
     CommentKind,
@@ -84,15 +86,13 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Pause,
-    Project,
-    ProjectStatus,
     Run,
     RunStatus,
     TargetKind,
     Worker,
     WorkerState,
+    campaign_runs,
     count,
-    project_runs,
     utcnow,
 )
 from piloop.db.session import Database
@@ -133,14 +133,14 @@ JOBS_LEFT_PROMPT = (
 JOBS_LEFT_SHOWN = 5
 """How many of the jobs the prompt names. Each is ``<pid> <command line>``, cut to ``STEER_LINE_CHARS``."""
 STARTUP_BREAKER = 3
-"""The number of a project's agents that can fail at startup within ``STARTUP_WINDOW`` before its launches pause.
+"""The number of a campaign's agents that can fail at startup within ``STARTUP_WINDOW`` before its launches pause.
 
 A host that is too loaded to start agents makes every new agent fail, and each failure costs a start window."""
 STARTUP_WINDOW = timedelta(minutes=10)
 LAUNCH_PAUSED = 'launch.paused'
-"""Event on a project whose launches the startup breaker paused. ``comment`` in the payload is the escalation."""
+"""Event on a campaign whose launches the startup breaker paused. ``comment`` in the payload is the escalation."""
 LAUNCH_RESUMED = 'launch.resumed'
-"""Event on a project whose paused launches resumed. It ends the pause that ``LAUNCH_PAUSED`` started."""
+"""Event on a campaign whose paused launches resumed. It ends the pause that ``LAUNCH_PAUSED`` started."""
 
 
 class Scheduler:
@@ -167,7 +167,7 @@ class Scheduler:
         self._pool = ThreadPoolExecutor(max_workers=sys.maxsize, thread_name_prefix='agent')
         self._futures: dict[int, Future[None]] = {}
         self._scoring: dict[tuple[TargetKind, int], Future[None]] = {}
-        """Scoring outside a worker: a run's resumed scoring by run id, or a project's re-measure by project id."""
+        """Scoring outside a worker: a run's resumed scoring by run id, or a campaign's re-measure by campaign id."""
         self._stop = threading.Event()
         self._archiver = (
             Archiver(db, archiving.store, home, archiving.policy, tracer, self._pool, self._stop)
@@ -216,7 +216,7 @@ class Scheduler:
 
     def _reattachable(self, s: Session, worker: Worker) -> bool:
         if worker.run_id is None:
-            checkout = self._in_project(s, worker)
+            checkout = self._in_campaign(s, worker)
             return (checkout or self._workers_dir / str(worker.id) / 'worktree').is_dir()
         wt = self._runs_dir / str(worker.run_id) / 'worktree'
         return wt.is_dir() and s.get_one(Run, worker.run_id).status is RunStatus.RUNNING
@@ -238,14 +238,14 @@ class Scheduler:
             for run in s.scalars(select(Run).where(in_flight | Run.id.in_(launched))).all():
                 self._fail_run(s, run, error)
                 if remove_worktrees:
-                    self._remove_worktrees(self._runs_dir / str(run.id), Path(run.idea.project.path))
+                    self._remove_worktrees(self._runs_dir / str(run.id), Path(run.idea.campaign.path))
             for worker in s.scalars(select(Worker).where(Worker.state.in_(LIVE), ~spared)):
                 # A ``starting`` row that stop() reached before its start window has no process.
                 if worker.runtime is not None:
                     self._kill_stale(s, worker)
-                if remove_worktrees and worker.run_id is None and worker.project_id is not None:
-                    project_path = Path(s.get_one(Project, worker.project_id).path)
-                    self._remove_worktrees(self._workers_dir / str(worker.id), project_path)
+                if remove_worktrees and worker.run_id is None and worker.campaign_id is not None:
+                    campaign_path = Path(s.get_one(Campaign, worker.campaign_id).path)
+                    self._remove_worktrees(self._workers_dir / str(worker.id), campaign_path)
                 self._close(s, worker, error)
             s.commit()
 
@@ -300,12 +300,12 @@ class Scheduler:
         elif found is not None:
             self._tracer.event('worker.usage_unknown', worker=worker.id, error=str(found))
 
-    def _remove_worktrees(self, agent_dir: Path, project_path: Path) -> None:
-        """Remove the worktrees under a run's or a sweep's directory. If the project is gone, record an event."""
+    def _remove_worktrees(self, agent_dir: Path, campaign_path: Path) -> None:
+        """Remove the worktrees under a run's or a sweep's directory. If the campaign is gone, record an event."""
         try:
-            repo = git.open_repo(project_path)
+            repo = git.open_repo(campaign_path)
         except NoSuchPathError, InvalidGitRepositoryError:
-            self._tracer.event('worktrees.orphaned', agent_dir=str(agent_dir), project_path=str(project_path))
+            self._tracer.event('worktrees.orphaned', agent_dir=str(agent_dir), campaign_path=str(campaign_path))
             return
         for wt in git.worktrees_under(repo, agent_dir):
             git.remove_worktree(repo, wt)
@@ -318,12 +318,12 @@ class Scheduler:
             self._tracer.event('worker.kill_failed', worker=worker.id, error=str(e))
 
     def tick(self) -> list[int]:
-        """Send new comments to running workers, run every project's triggers and launch requested workers.
+        """Send new comments to running workers, run every campaign's triggers and launch requested workers.
 
         Returns the ids of the launched workers. Before the triggers, the tick rejects the ideas that a newer idea
-        superseded (``piloop.campaign.ideas.supersede``). This also happens for a stopped project, which requests
-        nothing and is measured again only on request (``ledger.due``). A project that the spend guard holds
-        (``_read_spend``) gets only this step. A paused project (``piloop pause``) gets no triggers and launches
+        superseded (``piloop.campaign.ideas.supersede``). This also happens for a stopped campaign, which requests
+        nothing and is measured again only on request (``ledger.due``). A campaign that the spend guard holds
+        (``_read_spend``) gets only this step. A paused campaign (``piloop pause``) gets no triggers and launches
         nothing, and with ``all`` it is not measured again either. The
         archiver starts the next archiving of a workspace that is due, or its upkeep, on a background thread
         (``piloop.daemon.archiver``).
@@ -338,23 +338,23 @@ class Scheduler:
             self._archiver.tick()
         launched: list[tuple[int, int | None]] = []
         with self._db.session() as s:
-            for project in s.scalars(select(Project)).all():
+            for campaign in s.scalars(select(Campaign)).all():
                 try:
-                    cfg = config_of(project)
+                    cfg = config_of(campaign)
                 except ValidationError as e:
-                    self._tracer.event('project.invalid_config', project=project.name, error=str(e))
+                    self._tracer.event('campaign.invalid_config', campaign=campaign.name, error=str(e))
                     continue
-                for idea_id, by in supersede(s, project.id).items():
-                    self._tracer.event('idea.superseded', project=project.name, idea=idea_id, by=by)
-                held = spend.held(project, cfg)
+                for idea_id, by in supersede(s, campaign.id).items():
+                    self._tracer.event('idea.superseded', campaign=campaign.name, idea=idea_id, by=by)
+                held = spend.held(campaign, cfg)
                 if held is None:
-                    if project.paused is not Pause.ALL:
-                        self._remeasure(s, project)
-                    if project.status is ProjectStatus.ACTIVE and project.paused is None:
-                        self._triggers(s, project, cfg)
+                    if campaign.paused is not Pause.ALL:
+                        self._remeasure(s, campaign)
+                    if campaign.status is CampaignStatus.ACTIVE and campaign.paused is None:
+                        self._triggers(s, campaign, cfg)
                 s.flush()
-                if held is None and project.paused is None:
-                    launched += self._take(s, project, cfg)
+                if held is None and campaign.paused is None:
+                    launched += self._take(s, campaign, cfg)
             s.commit()
         for worker_id, run_id in launched:
             body = partial(self._executor.execute, run_id, worker_id) if run_id else partial(self._sweep, worker_id)
@@ -362,49 +362,49 @@ class Scheduler:
         return [worker_id for worker_id, _ in launched]
 
     def _read_spend(self) -> None:
-        """Run the ``[spend] command`` of each active project whose ``interval`` is up, and record the result.
+        """Run the ``[spend] command`` of each active campaign whose ``interval`` is up, and record the result.
 
         This runs outside any transaction, because the command can take up to ``spend.TIMEOUT``. A write lock held for
         that long locks all other clients out. While ``spend.held`` returns a reason, the tick does not request,
-        re-measure or launch for the project. Work in progress continues.
+        re-measure or launch for the campaign. Work in progress continues.
         """
         with self._db.session() as s:
             todo: list[tuple[int, Path, Spend]] = []
-            for project in s.scalars(select(Project).where(Project.status == ProjectStatus.ACTIVE)):
+            for campaign in s.scalars(select(Campaign).where(Campaign.status == CampaignStatus.ACTIVE)):
                 try:
-                    cfg = config_of(project)
+                    cfg = config_of(campaign)
                 except ValidationError:
-                    continue  # The tick records this error for each project.
-                if cfg.spend is not None and spend.due(project, cfg.spend):
-                    todo.append((project.id, Path(project.path), cfg.spend))
-        for project_id, path, budget in todo:
+                    continue  # The tick records this error for each campaign.
+                if cfg.spend is not None and spend.due(campaign, cfg.spend):
+                    todo.append((campaign.id, Path(campaign.path), cfg.spend))
+        for campaign_id, path, budget in todo:
             try:
                 reading: float | SpendError = spend.read(budget.command, path)
             except SpendError as e:
                 reading = e
             with self._db.session() as s:
-                spend.record(s, s.get_one(Project, project_id), budget, reading)
+                spend.record(s, s.get_one(Campaign, campaign_id), budget, reading)
                 s.commit()
-            self._tracer.event('spend.read', project=project_id, reading=str(reading))
+            self._tracer.event('spend.read', campaign=campaign_id, reading=str(reading))
 
-    def _remeasure(self, s: Session, project: Project) -> None:
-        """Measure what the current evaluator must measure (``ledger.due``), one candidate at a time per project.
+    def _remeasure(self, s: Session, campaign: Campaign) -> None:
+        """Measure what the current evaluator must measure (``ledger.due``), one candidate at a time per campaign.
 
         After an evaluator change, no candidate has a score from the new evaluator. The head is measured first, and runs
         that are not pinned wait until it has a score (``_queue``). Then the bars that runs need, and the candidates
         that someone asked to measure again. Older keeps are measured again only when someone asks. A candidate that
         someone measured by hand is judged again first (``rejudges``), in the same slot: a rebase can measure its merge.
         """
-        key = (TargetKind.PROJECT, project.id)
+        key = (TargetKind.CAMPAIGN, campaign.id)
         if key in self._scoring:
             return
-        if again := rejudges(s, project):
-            self._tracer.event('candidate.rejudge', project=project.name, candidate=again[0].id, left=len(again))
+        if again := rejudges(s, campaign):
+            self._tracer.event('candidate.rejudge', campaign=campaign.name, candidate=again[0].id, left=len(again))
             self._scoring[key] = self._pool.submit(self._executor.rejudge, again[0].id)
             return
-        if not (todo := due(s, project)):
+        if not (todo := due(s, campaign)):
             return
-        self._tracer.event('candidate.remeasure', project=project.name, candidate=todo[0].id, left=len(todo))
+        self._tracer.event('candidate.remeasure', campaign=campaign.name, candidate=todo[0].id, left=len(todo))
         self._scoring[key] = self._pool.submit(self._executor.remeasure, todo[0].id)
 
     def _push_comments(self) -> None:
@@ -511,13 +511,13 @@ class Scheduler:
             s.commit()
 
     def _wind_down(self) -> None:
-        """Wind down the workers of stopped projects and the agents that someone cancelled (``CANCEL_REQUESTED``).
+        """Wind down the workers of stopped campaigns and the agents that someone cancelled (``CANCEL_REQUESTED``).
 
-        A worker of a stopped project is told to commit and stop (``WRAP_UP``), and ended after the grace period
+        A worker of a stopped campaign is told to commit and stop (``WRAP_UP``), and ended after the grace period
         (``STOP_GRACE_SECONDS``), or at once when the stop request asked to ``kill``. The runs then close and their
         commits are scored. A worker in the middle of a turn takes the prompt only when the turn ends, which can be
         after the grace period. A worker that the daemon ends (``STOP_ENDED``) without its finding closes its run as
-        cut by the stop (``CAMPAIGN_STOPPED_ERROR``), not as a failed attempt. Sweeps of a stopped project are not
+        cut by the stop (``CAMPAIGN_STOPPED_ERROR``), not as a failed attempt. Sweeps of a stopped campaign are not
         changed, because their timeouts limit them and the closing review is one of them.
 
         A cancelled run or agent of any role (``agent_cancel``) is ended at once, or after the wrap-up prompt and the
@@ -535,9 +535,9 @@ class Scheduler:
             )
             stopping = (
                 select(Worker.id)
-                .join(Project, Worker.project_id == Project.id)
+                .join(Campaign, Worker.campaign_id == Campaign.id)
                 .where(Worker.run_id.is_not(None), Worker.state == WorkerState.RUNNING)
-                .where(Project.status == ProjectStatus.STOPPED)
+                .where(Campaign.status == CampaignStatus.STOPPED)
             )
             workers = s.scalars(select(Worker).where(cancelled | Worker.id.in_(stopping)).order_by(Worker.id)).all()
             for worker in workers:
@@ -546,9 +546,9 @@ class Scheduler:
                     what = 'Your run was cancelled' if worker.run_id is not None else 'This sweep was cancelled'
                     cause, wrap_up = f'by {cancel.actor}', bool(cancel.payload.get('wrap_up'))
                 else:
-                    project = s.get_one(Project, worker.project_id)
-                    reason, error = project.stopped_reason or CAMPAIGN_STOPPED_ERROR, CAMPAIGN_STOPPED_ERROR
-                    what, cause, request = 'The campaign stopped', reason, requested_stop(s, project)
+                    campaign = s.get_one(Campaign, worker.campaign_id)
+                    reason, error = campaign.stopped_reason or CAMPAIGN_STOPPED_ERROR, CAMPAIGN_STOPPED_ERROR
+                    what, cause, request = 'The campaign stopped', reason, requested_stop(s, campaign)
                     wrap_up = request is None or not request.payload.get('kill')
                 if worker.state is WorkerState.REQUESTED:
                     self._close(s, worker, error)
@@ -590,46 +590,46 @@ class Scheduler:
             self._tracer.event('worker.ended', worker=worker.id, reason=reason)
         self._kill_stale(s, worker)
 
-    def _triggers(self, s: Session, project: Project, cfg: ProjectConfig) -> None:
+    def _triggers(self, s: Session, campaign: Campaign, cfg: CampaignConfig) -> None:
         """Stop the campaign if a ``[stop]`` condition holds. Otherwise queue runs and check every role's triggers.
 
         Triggers requested everything that is pending when the campaign stops, so it is all cancelled. Requested rows
         are closed and queued runs fail with ``CAMPAIGN_STOPPED_ERROR``. Their ideas go back to ``ready``. The
         ``[memory]`` documents are synced, so that the closing sweep can search the campaign's reports. Then the
         ``stopped`` triggers fire once (``Trigger.ON_STOP``): by default, the watchdog's closing review. A stopped
-        project gets nothing more from the triggers. Rows that a human inserts after the stop still launch. Workers in
+        campaign gets nothing more from the triggers. Rows that a human inserts after the stop still launch. Workers in
         flight are told to stop (``_wind_down``), and their commits are scored.
         """
-        reason = stop_reason(s, project, cfg)
+        reason = stop_reason(s, campaign, cfg)
         if reason is None:
-            self._queue(s, project, cfg)
+            self._queue(s, campaign, cfg)
             for name, role in cfg.roles.sweeping().items():
-                self._request(s, project, cfg, name, role)
+                self._request(s, campaign, cfg, name, role)
             return
-        project.status, project.stopped_reason = ProjectStatus.STOPPED, reason
-        self._tracer.event('project.stopped', project=project.name, reason=reason)
-        self._drain(s, project)
+        campaign.status, campaign.stopped_reason = CampaignStatus.STOPPED, reason
+        self._tracer.event('campaign.stopped', campaign=campaign.name, reason=reason)
+        self._drain(s, campaign)
         try:
             with s.begin_nested():
-                synced = sync_documents(s, project, cfg, DAEMON_ACTOR)
+                synced = sync_documents(s, campaign, cfg, DAEMON_ACTOR)
         except (OSError, GitError) as e:  # the repo could not be read: the stop and the closing review still happen
-            self._tracer.event('documents.sync_failed', project=project.name, error=f'{type(e).__name__}: {e}')
+            self._tracer.event('documents.sync_failed', campaign=campaign.name, error=f'{type(e).__name__}: {e}')
         else:
-            self._tracer.event('documents.synced', project=project.name, result=synced.line())
+            self._tracer.event('documents.synced', campaign=campaign.name, result=synced.line())
         for name, role in cfg.roles.sweeping().items():
-            self._request(s, project, cfg, name, role, stopping=True)
+            self._request(s, campaign, cfg, name, role, stopping=True)
 
-    def _drain(self, s: Session, project: Project) -> None:
-        mine = Idea.project_id == project.id
+    def _drain(self, s: Session, campaign: Campaign) -> None:
+        mine = Idea.campaign_id == campaign.id
         for run in s.scalars(select(Run).join(Idea).where(mine, Run.status == RunStatus.QUEUED)):
             self._fail_run(s, run, CAMPAIGN_STOPPED_ERROR)
         for worker in s.scalars(
-            select(Worker).where(Worker.project_id == project.id, Worker.state == WorkerState.REQUESTED)
+            select(Worker).where(Worker.campaign_id == campaign.id, Worker.state == WorkerState.REQUESTED)
         ):
             self._close(s, worker, CAMPAIGN_STOPPED_ERROR)
 
     def _request(
-        self, s: Session, project: Project, cfg: ProjectConfig, name: str, role: SweepRole, *, stopping: bool = False
+        self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: str, role: SweepRole, *, stopping: bool = False
     ) -> None:
         """Insert requested rows when the role's triggers fire. One batch per call, however many triggers fire.
 
@@ -641,20 +641,20 @@ class Scheduler:
         """
         latest = s.scalars(
             select(Worker)
-            .where(Worker.project_id == project.id, Worker.kind == name)
+            .where(Worker.campaign_id == campaign.id, Worker.kind == name)
             .order_by(Worker.id.desc())
             .limit(1)
         ).first()
         if latest is not None and latest.state is WorkerState.REQUESTED:
             return  # One pending request per role is enough.
-        tick = self._tick(s, project, cfg, name, role)
+        tick = self._tick(s, campaign, cfg, name, role)
         fires: list[Fire] = []
         for trigger in (t for t in role.triggers if t.ON_STOP is stopping):
             try:
                 fire = trigger.fire(tick)
             except Exception as e:  # A trigger of a package, or a query that the schema no longer runs.
                 self._tracer.event(
-                    'trigger.failed', project=project.name, role=name, trigger=trigger.kind, error=str(e)
+                    'trigger.failed', campaign=campaign.name, role=name, trigger=trigger.kind, error=str(e)
                 )
                 continue
             if fire is not None:
@@ -664,40 +664,40 @@ class Scheduler:
         fires = fires[:1] if fires[0].alone else [f for f in fires if not f.alone]
         count = max(f.count for f in fires)
         reason = '; '.join(f.reason for f in fires)
-        rows = [Worker(kind=name, project_id=project.id, reason=reason) for _ in range(count)]
+        rows = [Worker(kind=name, campaign_id=campaign.id, reason=reason) for _ in range(count)]
         s.add_all(rows)
         s.flush()
         for fire in fires:
             for kind, payload in fire.events:
                 emit(s, kind, TargetKind.WORKER, rows[0].id, payload=payload)
-        self._tracer.event('worker.requested', project=project.name, kind=name, reason=reason, count=count)
+        self._tracer.event('worker.requested', campaign=campaign.name, kind=name, reason=reason, count=count)
 
-    def _tick(self, s: Session, project: Project, cfg: ProjectConfig, name: str, role: SweepRole) -> RoleTick:
+    def _tick(self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: str, role: SweepRole) -> RoleTick:
         """Return what the triggers of role ``name`` read in this tick."""
         last = s.scalars(
             select(Worker)
-            .where(Worker.project_id == project.id, Worker.kind == name)
+            .where(Worker.campaign_id == campaign.id, Worker.kind == name)
             .order_by(Worker.id.desc())
             .limit(1)
         ).first()
         return RoleTick(
             s=s,
-            project=project,
+            campaign=campaign,
             role=name,
             last=last,
             max_concurrent=role.max_concurrent,
             interval=role.interval,
-            backlog=partial(self._backlog, s, project, cfg, name),
-            incidents=partial(self._incidents, s, project, cfg),
+            backlog=partial(self._backlog, s, campaign, cfg, name),
+            incidents=partial(self._incidents, s, campaign, cfg),
         )
 
-    def _incidents(self, s: Session, project: Project, cfg: ProjectConfig) -> list[Incident]:
-        """Return the project's incident anomalies that no agent has received yet, oldest first."""
-        given = reported(s, project.id)
+    def _incidents(self, s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Incident]:
+        """Return the campaign's incident anomalies that no agent has received yet, oldest first."""
+        given = reported(s, campaign.id)
         now = utcnow()
         found = [
             Incident(a.key, a.line(now))
-            for a in anomalies(s, project, cfg, now, partial(self._jobs, s))
+            for a in anomalies(s, campaign, cfg, now, partial(self._jobs, s))
             if a.incident and a.key not in given
         ]
         return found[::-1]
@@ -710,21 +710,21 @@ class Scheduler:
             self._tracer.event('worker.jobs_failed', worker=worker.id, error=str(e))
             return []
 
-    def _backlog(self, s: Session, project: Project, cfg: ProjectConfig, name: str, buffer: int) -> Backlog:
-        """Return the project's backlog as role ``name`` fills it: ``buffer`` beyond the run slots, its own sweeps."""
+    def _backlog(self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: str, buffer: int) -> Backlog:
+        """Return the campaign's backlog as role ``name`` fills it: ``buffer`` beyond the run slots, its own sweeps."""
         target = cfg.run_slots + buffer
         if cfg.stop.max_runs is not None:
-            target = min(target, cfg.stop.max_runs - runs(s, project))
+            target = min(target, cfg.stop.max_runs - runs(s, campaign))
         sweeps = count(
             s,
             select(Worker).where(
-                Worker.project_id == project.id,
+                Worker.campaign_id == campaign.id,
                 Worker.kind == name,
                 Worker.state.in_(LIVE),
             ),
         )
         ready, blocked = (
-            Counter(s.scalars(select(Idea.track).where(Idea.project_id == project.id, which())))
+            Counter(s.scalars(select(Idea.track).where(Idea.campaign_id == campaign.id, which())))
             for which in (runnable, waiting)
         )
         tracks = tuple(
@@ -739,27 +739,27 @@ class Scheduler:
         return Backlog(
             tracks=tracks,
             target=target,
-            free=self._free_slots(s, project, cfg, cfg.roles.doing_runs()),
+            free=self._free_slots(s, campaign, cfg, cfg.roles.doing_runs()),
             sweeps=sweeps,
             per_sweep=cfg.roles.sweeping()[name].max_ideas,
-            on_hold=head_unmeasured(s, project),
+            on_hold=head_unmeasured(s, campaign),
         )
 
-    def _free_slots(self, s: Session, project: Project, cfg: ProjectConfig, roles: dict[str, WorkerRole]) -> int:
+    def _free_slots(self, s: Session, campaign: Campaign, cfg: CampaignConfig, roles: dict[str, WorkerRole]) -> int:
         """Return the runs that ``roles`` can start now.
 
         For each role, this is its ``max_concurrent`` minus its open runs. The sum is never more than ``max_runs``
         allows.
         """
-        open_runs = project_runs(project.id).where(Run.status.in_(OPEN_RUNS))
+        open_runs = campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS))
         free = sum(
             max(role.max_concurrent - count(s, open_runs.where(done_by(name))), 0) for name, role in roles.items()
         )
         if cfg.stop.max_runs is not None:
-            free = min(free, cfg.stop.max_runs - runs(s, project))
+            free = min(free, cfg.stop.max_runs - runs(s, campaign))
         return max(free, 0)
 
-    def _queue(self, s: Session, project: Project, cfg: ProjectConfig) -> None:
+    def _queue(self, s: Session, campaign: Campaign, cfg: CampaignConfig) -> None:
         """Queue a run, and request its agent, for each free slot with a runnable idea, within ``[stop] max_runs``.
 
         Each role that does runs fills its own slots with the ideas that it takes (``takes``), in the order of
@@ -776,34 +776,34 @@ class Scheduler:
         a harness at its cap (``_full``) waits. When every harness of a role's rotation is at its cap, the role queues
         nothing more in this tick.
         """
-        self._park_strays(s, project, cfg)
+        self._park_strays(s, campaign, cfg)
         live = [t.name for t in cfg.all_tracks if t.share > 0]
-        query = select(Idea).where(Idea.project_id == project.id, runnable(), Idea.track.in_(live))
-        if head_unmeasured(s, project):
+        query = select(Idea).where(Idea.campaign_id == campaign.id, runnable(), Idea.track.in_(live))
+        if head_unmeasured(s, campaign):
             query = query.where(Idea.base_candidate_id.is_not(None))
         for name, role in cfg.roles.doing_runs().items():
             takes = query
             if role.takes is not None:
                 taken = s.connection().exec_driver_sql(ideas_taken(role.takes)).scalars().all()
                 takes = query.where(Idea.id.in_(taken))
-            for _ in range(self._free_slots(s, project, cfg, {name: role})):
-                full = self._full(s, project, cfg)
+            for _ in range(self._free_slots(s, campaign, cfg, {name: role})):
+                full = self._full(s, campaign, cfg)
                 fits = takes.where(or_(Idea.harness.is_(None), Idea.harness.not_in(full)))
-                explored = self._explore(s, project, name, role, fits)
+                explored = self._explore(s, campaign, name, role, fits)
                 if explored is not None:
                     idea, by_priority = explored, explored
                 else:
-                    idea, by_priority = self._pick(s, project, cfg, name, role, fits)
-                if idea is None or not self._enqueue(s, project, cfg, name, idea, full, by_priority=by_priority):
+                    idea, by_priority = self._pick(s, campaign, cfg, name, role, fits)
+                if idea is None or not self._enqueue(s, campaign, cfg, name, idea, full, by_priority=by_priority):
                     break
 
-    def _park_strays(self, s: Session, project: Project, cfg: ProjectConfig) -> None:
+    def _park_strays(self, s: Session, campaign: Campaign, cfg: CampaignConfig) -> None:
         """Park each runnable idea whose track is not in ``piloop.toml``, with a note that says how to fix it.
 
         Track names are in the config, not in the schema. A track can be renamed or removed, or raw SQL can have a typo.
         """
         names = [t.name for t in cfg.all_tracks]
-        strays = s.scalars(select(Idea).where(Idea.project_id == project.id, runnable(), Idea.track.not_in(names)))
+        strays = s.scalars(select(Idea).where(Idea.campaign_id == campaign.id, runnable(), Idea.track.not_in(names)))
         for idea in strays:
             idea.status = IdeaStatus.PARKED
             s.add(
@@ -816,10 +816,12 @@ class Scheduler:
                     ' ideas.track to one of them, then set it ready',
                 )
             )
-            self._tracer.event('idea.parked', project=project.name, idea=idea.id, reason=f'unknown track {idea.track}')
+            self._tracer.event(
+                'idea.parked', campaign=campaign.name, idea=idea.id, reason=f'unknown track {idea.track}'
+            )
 
     def _pick(
-        self, s: Session, project: Project, cfg: ProjectConfig, name: str, role: WorkerRole, query: Select[Idea]
+        self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: str, role: WorkerRole, query: Select[Idea]
     ) -> tuple[Idea | None, Idea | None]:
         """Return the most urgent idea of the track furthest below its share, and the pick by priority alone.
 
@@ -830,7 +832,7 @@ class Scheduler:
         first = s.scalars(query.order_by(Idea.priority, Idea.id).limit(1)).first()
         if first is None or not cfg.multitrack:
             return first, first
-        open_runs = project_runs(project.id).where(Run.status.in_(OPEN_RUNS), done_by(name))
+        open_runs = campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS), done_by(name))
         running = Counter(s.scalars(open_runs.with_only_columns(Idea.track)))
         ready = set(s.scalars(query.with_only_columns(Idea.track)))
         slots = role.max_concurrent
@@ -838,7 +840,7 @@ class Scheduler:
         idea = s.scalars(query.where(Idea.track == track.name).order_by(Idea.priority, Idea.id).limit(1)).first()
         return idea, first
 
-    def _explore(self, s: Session, project: Project, name: str, role: WorkerRole, query: Select[Idea]) -> Idea | None:
+    def _explore(self, s: Session, campaign: Campaign, name: str, role: WorkerRole, query: Select[Idea]) -> Idea | None:
         """Return the most urgent runnable idea pinned to an alternative base if an exploration run is due, else None.
 
         An exploration run is due if none of the role's last ``explore_every - 1`` runs was a branch run. If no such
@@ -850,7 +852,7 @@ class Scheduler:
         if every == 0:
             return None
         latest = (
-            project_runs(project.id)
+            campaign_runs(campaign.id)
             .where(done_by(name))
             .with_only_columns(Run.branch)
             .order_by(Run.id.desc())
@@ -860,14 +862,14 @@ class Scheduler:
         if len(recent) < every - 1 or any(recent):
             return None
         pinned = s.scalars(query.where(Idea.base_candidate_id.is_not(None)).order_by(Idea.priority, Idea.id))
-        trunk = head(s, project)
+        trunk = head(s, campaign)
         return next((i for i in pinned if branches(s.get(Candidate, i.base_candidate_id), trunk)), None)
 
     def _enqueue(
         self,
         s: Session,
-        project: Project,
-        cfg: ProjectConfig,
+        campaign: Campaign,
+        cfg: CampaignConfig,
         role: str,
         idea: Idea,
         full: Collection[str],
@@ -884,18 +886,18 @@ class Scheduler:
 
         Returns False, and queues nothing, if the idea pins no harness and every harness of the rotation is ``full``.
         """
-        total_runs = count(s, project_runs(project.id).where(done_by(role)))
+        total_runs = count(s, campaign_runs(campaign.id).where(done_by(role)))
         harnesses = cfg.role_harnesses(role)
         harness = idea.harness or free_harness(harnesses, harnesses[total_runs % len(harnesses)], full)
         if harness is None:
             return False
-        computed = head(s, project)
+        computed = head(s, campaign)
         pin = idea.base_candidate_id
         pinned = s.get(Candidate, pin) if pin is not None else None
         base = pinned if pin is not None else computed
         if base is None:
             reason = f'pinned candidate#{pin} does not exist' if pin is not None else 'no kept candidate'
-            self._tracer.event('idea.parked', project=project.name, idea=idea.id, reason=reason)
+            self._tracer.event('idea.parked', campaign=campaign.name, idea=idea.id, reason=reason)
             idea.status = IdeaStatus.PARKED
             return True
         attempt = len(idea.runs) + 1
@@ -921,7 +923,7 @@ class Scheduler:
         s.add(
             Worker(
                 kind=role,
-                project_id=project.id,
+                campaign_id=campaign.id,
                 run_id=run.id,
                 harness=harness,
                 model=model,
@@ -930,7 +932,7 @@ class Scheduler:
         )
         return True
 
-    def _full(self, s: Session, project: Project, cfg: ProjectConfig) -> set[str]:
+    def _full(self, s: Session, campaign: Campaign, cfg: CampaignConfig) -> set[str]:
         """Return the harnesses at their ``max_concurrent`` cap, counting live agents and the workers of queued runs.
 
         A queued run's harness was chosen when it was queued (``_enqueue``), so its requested worker holds its place.
@@ -940,12 +942,12 @@ class Scheduler:
             return set()
         queued = (Worker.state == WorkerState.REQUESTED) & Worker.kind.in_(cfg.roles.doing_runs())
         on = select(Worker.harness).where(
-            Worker.project_id == project.id, Worker.state.in_(LIVE) | queued, Worker.harness.in_(cfg.max_concurrent)
+            Worker.campaign_id == campaign.id, Worker.state.in_(LIVE) | queued, Worker.harness.in_(cfg.max_concurrent)
         )
         agents = Counter(s.scalars(on))
         return {harness for harness, cap in cfg.max_concurrent.items() if agents[harness] >= cap}
 
-    def _take(self, s: Session, project: Project, cfg: ProjectConfig) -> list[tuple[int, int | None]]:
+    def _take(self, s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[tuple[int, int | None]]:
         """Mark requested rows ``starting``, up to each role's ``max_concurrent``. Refuse a run role's row without a run.
 
         A sweep's harness is chosen here. A harness at its cap (``_full``) is skipped for the next one in the rotation.
@@ -957,19 +959,19 @@ class Scheduler:
         breaker holds (``_paused``).
         """
         taken: list[tuple[int, int | None]] = []
-        if self._paused(s, project):
+        if self._paused(s, campaign):
             return taken
         roles = cfg.roles.all()
         unknown = select(Worker).where(
-            Worker.project_id == project.id, Worker.state == WorkerState.REQUESTED, Worker.kind.not_in(roles)
+            Worker.campaign_id == campaign.id, Worker.state == WorkerState.REQUESTED, Worker.kind.not_in(roles)
         )
         for worker in s.scalars(unknown):
             self._close(s, worker, f'no [roles.{worker.kind}] in piloop.toml')
             if worker.run_id is not None:
                 self._fail_run(s, s.get_one(Run, worker.run_id), ROLE_REMOVED)
-        full = self._full(s, project, cfg)
+        full = self._full(s, campaign, cfg)
         for kind, rc in roles.items():
-            mine = (Worker.project_id == project.id, Worker.kind == kind)
+            mine = (Worker.campaign_id == campaign.id, Worker.kind == kind)
             active = count(s, select(Worker).where(*mine, Worker.state.in_(LIVE)))
             requested = s.scalars(
                 select(Worker)
@@ -992,10 +994,10 @@ class Scheduler:
                     worker.harness = harness
                 worker.state = WorkerState.STARTING
                 taken.append((worker.id, worker.run_id))
-                full = self._full(s, project, cfg)
+                full = self._full(s, campaign, cfg)
         return taken
 
-    def _reroute(self, s: Session, cfg: ProjectConfig, worker: Worker, rotation: list[str], full: set[str]) -> bool:
+    def _reroute(self, s: Session, cfg: CampaignConfig, worker: Worker, rotation: list[str], full: set[str]) -> bool:
         """Return True if a run's worker can launch. Move it to the next free harness if its harness left the rotation.
 
         The harness was in the rotation when the run was queued (``_enqueue``), but ``piloop init`` can change the
@@ -1013,15 +1015,15 @@ class Scheduler:
         run.model = worker.model = cfg.role_models(worker.kind)[harness]
         return True
 
-    def _paused(self, s: Session, project: Project) -> bool:
-        """Return True if ``STARTUP_BREAKER`` agents of the project failed at startup within ``STARTUP_WINDOW``.
+    def _paused(self, s: Session, campaign: Campaign) -> bool:
+        """Return True if ``STARTUP_BREAKER`` agents of the campaign failed at startup within ``STARTUP_WINDOW``.
 
         Requested rows wait, and launch when those failures are older than the window. The window is the back-off.
         Each pause posts one escalation (priority 1) with the load average and the failures' errors, which end with
         the agents' last screens. The escalation is updated in place while the pause holds, so an acknowledgement
         means that the human saw it. A new escalation is posted only after launches resume and pause again.
         """
-        workers = select(Worker.id).where(Worker.project_id == project.id)
+        workers = select(Worker.id).where(Worker.campaign_id == campaign.id)
         deaths = s.scalars(
             select(Event)
             .where(Event.kind == STARTUP_ANOMALY, Event.target_kind == TargetKind.WORKER, Event.target_id.in_(workers))
@@ -1031,27 +1033,27 @@ class Scheduler:
         latest = s.scalars(
             select(Event)
             .where(Event.kind.in_((LAUNCH_PAUSED, LAUNCH_RESUMED)))
-            .where(Event.target_kind == TargetKind.PROJECT, Event.target_id == project.id)
+            .where(Event.target_kind == TargetKind.CAMPAIGN, Event.target_id == campaign.id)
             .order_by(Event.id.desc())
             .limit(1)
         ).first()
         pause = latest if latest is not None and latest.kind == LAUNCH_PAUSED else None
         if len(deaths) < STARTUP_BREAKER:
             if pause is not None:
-                emit(s, LAUNCH_RESUMED, TargetKind.PROJECT, project.id, payload={'comment': pause.payload['comment']})
+                emit(s, LAUNCH_RESUMED, TargetKind.CAMPAIGN, campaign.id, payload={'comment': pause.payload['comment']})
             return False
         escalation = s.get(Comment, pause.payload['comment']) if pause is not None else None
         if pause is None or escalation is None:
-            self._escalate_pause(s, project, deaths)
+            self._escalate_pause(s, campaign, deaths)
         else:
             escalation.body = pause_body(deaths, str(pause.payload['load']))
         return True
 
-    def _escalate_pause(self, s: Session, project: Project, deaths: Sequence[Event]) -> None:
+    def _escalate_pause(self, s: Session, campaign: Campaign, deaths: Sequence[Event]) -> None:
         load = ' / '.join(f'{x:.1f}' for x in os.getloadavg())
         comment = Comment(
-            target_kind=TargetKind.PROJECT,
-            target_id=project.id,
+            target_kind=TargetKind.CAMPAIGN,
+            target_id=campaign.id,
             author=DAEMON_ACTOR,
             kind=CommentKind.ESCALATION,
             priority=1,
@@ -1060,13 +1062,13 @@ class Scheduler:
         s.add(comment)
         s.flush()
         payload: dict[str, object] = {'comment': comment.id, 'deaths': len(deaths), 'load': load}
-        emit(s, LAUNCH_PAUSED, TargetKind.PROJECT, project.id, payload=payload)
-        self._tracer.event(LAUNCH_PAUSED, project=project.name, deaths=len(deaths), load=load)
+        emit(s, LAUNCH_PAUSED, TargetKind.CAMPAIGN, campaign.id, payload=payload)
+        self._tracer.event(LAUNCH_PAUSED, campaign=campaign.name, deaths=len(deaths), load=load)
 
     def _sweep(self, worker_id: int) -> None:
         """Run a sweep, an agent without a run, in its role's ``workdir``, with a brief made from its row.
 
-        Every sweep gets the project overview (``piloop.reports.overview``) in its context. A sweep that got anomalies
+        Every sweep gets the campaign overview (``piloop.reports.overview``) in its context. A sweep that got anomalies
         is an incident sweep: the anomalies come first, the research pack is left out (``piloop history`` prints it),
         and the brief adds the role's incident prompt. Every other sweep reads the research pack
         (``piloop.reports.pack``), and its brief adds the role's routine prompt. The watchdog's are its incident sweep
@@ -1081,20 +1083,20 @@ class Scheduler:
         """
         with self._db.session() as s:
             worker = s.get_one(Worker, worker_id)
-            project = s.get_one(Project, worker.project_id)
-            cfg = config_of(project)
+            campaign = s.get_one(Campaign, worker.campaign_id)
+            cfg = config_of(campaign)
             role = role_of(s, worker)
-            in_project = self._in_project(s, worker) is not None
-            base = checkout_candidate(s, project)
+            in_campaign = self._in_campaign(s, worker) is not None
+            base = checkout_candidate(s, campaign)
             values = ', '.join(
-                f'{t.primary.name}={"unmeasured" if (v := score(base, project.evaluator_id or 0, t.primary)) is None else v}'
+                f'{t.primary.name}={"unmeasured" if (v := score(base, campaign.evaluator_id or 0, t.primary)) is None else v}'
                 for t in cfg.all_tracks
             )
             now = utcnow()
             cwd = (
-                f'- Your cwd is the project checkout, shared with the human; the head is candidate#{base.id} ({values}).'
+                f'- Your cwd is the campaign checkout, shared with the human; the head is candidate#{base.id} ({values}).'
                 ' Leave it as you found it: nothing you change here is scored or kept.'
-                if in_project
+                if in_campaign
                 else f'- Your cwd is a detached checkout of candidate#{base.id}, the head ({values}): read and run the'
                 ' code, try things. Nothing you commit here is scored or kept; it goes with the checkout when you end.'
             )
@@ -1102,35 +1104,35 @@ class Scheduler:
                 cwd,
                 f'- Shared workspace for notes and artifacts to other agents: `./{WORKSPACE}/` (not committed). The files'
                 ' of a done idea are archived, and removed from it after some days or when the disk is short; `piloop'
-                f' restore {project.name} <idea id>|<workspace path>` writes them back.',
+                f' restore {campaign.name} <idea id>|<workspace path>` writes them back.',
             ]
-            lines += self._context(s, project, cfg, worker, now)
+            lines += self._context(s, campaign, cfg, worker, now)
             incidents = assigned(s, worker_id)
             sections = [*lines, '']
             if incidents:
                 sections += ['## Incidents to investigate', *incidents, '']
-            sections.append(overview(s, project, cfg, now, partial(self._jobs, s)))
+            sections.append(overview(s, campaign, cfg, now, partial(self._jobs, s)))
             if not incidents:
-                sections.append(pack(s, project, cfg, workspace=workspace_dir(self._home, project.id)))
+                sections.append(pack(s, campaign, cfg, workspace=workspace_dir(self._home, campaign.id)))
             brief = compose_brief(
                 role,
-                project,
+                campaign,
                 worker_id,
                 reason=worker.reason or 'requested',
                 context='\n'.join(sections),
                 incident=bool(incidents),
-                wake=lessons_overview(s, project, cfg.wake_budget(role.kind)),
+                wake=lessons_overview(s, campaign, cfg.wake_budget(role.kind)),
             )
-            project_path, project_id, base_sha = Path(project.path), project.id, base.commit_sha
+            campaign_path, campaign_id, base_sha = Path(campaign.path), campaign.id, base.commit_sha
         if self._executor.launcher.cancelled.is_set():  # stop() closed the row, so do not create a worktree.
             return
         log_dir = self._workers_dir / str(worker_id)
-        if in_project:
-            self._executor.launcher.launch(worker_id, brief=brief, cwd=project_path, log_dir=log_dir)
+        if in_campaign:
+            self._executor.launcher.launch(worker_id, brief=brief, cwd=campaign_path, log_dir=log_dir)
             return
-        repo = git.open_repo(project_path)
+        repo = git.open_repo(campaign_path)
         wt_path = log_dir / 'worktree'
-        links = worktree_links(cfg, project_path, project_dir(self._home, project_id))
+        links = worktree_links(cfg, campaign_path, campaign_dir(self._home, campaign_id))
         make_cwd = partial(git.add_worktree, repo, wt_path, base_sha, links)
         launch = self._executor.launcher.launch
         _in_worktree(
@@ -1139,7 +1141,7 @@ class Scheduler:
             partial(launch, worker_id, brief=brief, cwd=wt_path, log_dir=log_dir, make_cwd=make_cwd, links=links),
         )
 
-    def _context(self, s: Session, project: Project, cfg: ProjectConfig, worker: Worker, now: datetime) -> list[str]:
+    def _context(self, s: Session, campaign: Campaign, cfg: CampaignConfig, worker: Worker, now: datetime) -> list[str]:
         """Return the context lines of a sweep: a built-in role's own, by the class of its table.
 
         Another role that defines ideas (``files = "ideas"``) is told its ``max_ideas``, which ``low_water`` counts on.
@@ -1147,27 +1149,27 @@ class Scheduler:
         """
         match cfg.roles.sweeping()[worker.kind]:
             case ResearchRole() as research:
-                return self._research_context(s, project, cfg, worker.kind, research, now)
+                return self._research_context(s, campaign, cfg, worker.kind, research, now)
             case ScoutRole(seeds=seeds):
-                return scout.context(s, project.id, worker.kind, worker.id, seeds, now)
+                return scout.context(s, campaign.id, worker.kind, worker.id, seeds, now)
             case SweepRole(files=Files.IDEAS, max_ideas=most):
                 return [f'- New ideas of your own in this sweep: at most {most} (`max_ideas`).']
             case _:
                 return []
 
     def _research_context(
-        self, s: Session, project: Project, cfg: ProjectConfig, name: str, role: ResearchRole, now: datetime
+        self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: str, role: ResearchRole, now: datetime
     ) -> list[str]:
         """Return the context lines of a research sweep: the seeds, its share of the backlog, the stall mark.
 
         The backlog's target has the ``buffer`` of the role's first ``low_water`` trigger, or none without one.
         """
         buffer = next((t.buffer for t in role.triggers if isinstance(t, LowWaterTrigger)), 0)
-        backlog = self._backlog(s, project, cfg, name, buffer)
+        backlog = self._backlog(s, campaign, cfg, name, buffer)
         most = role.max_ideas
         own = max(min(backlog.short + most, most), 0)  # This sweep's share of the shortfall.
-        seeds = count(s, select(Idea).where(Idea.project_id == project.id, Idea.status == IdeaStatus.SEED))
-        without, (mark, why) = runs_without_keep(s, project), stall(cfg)
+        seeds = count(s, select(Idea).where(Idea.campaign_id == campaign.id, Idea.status == IdeaStatus.SEED))
+        without, (mark, why) = runs_without_keep(s, campaign), stall(cfg)
         stalled = ': stalled, so one of your own ideas pivots (section 3)' if without >= mark else ''
         short = [
             '- Tracks short of their share of the backlog: '
@@ -1189,20 +1191,20 @@ class Scheduler:
             f'- Sweep started at: {now.strftime("%Y-%m-%d %H:%M:%S")} (UTC; the research pack below is as of then).',
         ]
 
-    def _in_project(self, s: Session, worker: Worker) -> Path | None:
-        """Return the project checkout if a sweep works in it (``workdir = "project"``), else None."""
-        if worker.project_id is None or (project := s.get(Project, worker.project_id)) is None:
+    def _in_campaign(self, s: Session, worker: Worker) -> Path | None:
+        """Return the campaign checkout if a sweep works in it (``workdir = "repo"``), else None."""
+        if worker.campaign_id is None or (campaign := s.get(Campaign, worker.campaign_id)) is None:
             return None
-        role = config_of(project).roles.sweeping().get(worker.kind)
-        return Path(project.path) if role is not None and role.workdir is Workdir.PROJECT else None
+        role = config_of(campaign).roles.sweeping().get(worker.kind)
+        return Path(campaign.path) if role is not None and role.workdir is Workdir.REPO else None
 
     def _reattach_sweep(self, worker_id: int) -> None:
         """Watch the agent of a sweep that a previous daemon process started, in its workdir, until it ends."""
         log_dir = self._workers_dir / str(worker_id)
         with self._db.session() as s:
             worker = s.get_one(Worker, worker_id)
-            checkout = self._in_project(s, worker)
-            repo = git.open_repo(Path(s.get_one(Project, worker.project_id).path))
+            checkout = self._in_campaign(s, worker)
+            repo = git.open_repo(Path(s.get_one(Campaign, worker.campaign_id).path))
         if checkout is not None:
             self._executor.launcher.reattach(worker_id, cwd=checkout, log_dir=log_dir)
             return
@@ -1281,10 +1283,10 @@ class Scheduler:
 
 @dataclass(frozen=True)
 class RoleTick:
-    """The ``Tick`` of one sweeping role of one project: what its triggers read in this tick."""
+    """The ``Tick`` of one sweeping role of one campaign: what its triggers read in this tick."""
 
     s: Session
-    project: Project
+    campaign: Campaign
     role: str
     last: Worker | None
     max_concurrent: int
@@ -1293,7 +1295,7 @@ class RoleTick:
     incidents: Callable[[], list[Incident]]
 
     def _mine(self) -> Select[Worker]:
-        return select(Worker).where(Worker.project_id == self.project.id, Worker.kind == self.role)
+        return select(Worker).where(Worker.campaign_id == self.campaign.id, Worker.kind == self.role)
 
     def live(self) -> int:
         return count(self.s, self._mine().where(Worker.state.in_(LIVE)))
@@ -1309,7 +1311,7 @@ class RoleTick:
         result says nothing about what was left to propose. The idle rest counts killed sweeps. Otherwise, a harness
         that dies every time would be launched again on every tick.
         """
-        signed = defined_by(self.s, self.project.id)
+        signed = defined_by(self.s, self.campaign.id)
         ended = self.s.scalars(self._mine().where(Worker.state.in_(states)).order_by(Worker.id.desc()))
         return list(itertools.takewhile(lambda worker: f'{self.role}#{worker.id}' not in signed, ended))
 
@@ -1332,7 +1334,7 @@ def done_by(role: str) -> ColumnElement[bool]:
     """Select the runs of ``role``.
 
     ``likely()`` tells SQLite that most runs match, as most runs are the worker's. Without it, SQLite drives a join
-    with ``ideas`` from ``runs`` and scans every run of every project.
+    with ``ideas`` from ``runs`` and scans every run of every campaign.
     """
     return func.likely(Run.role == role, type_=Boolean)
 

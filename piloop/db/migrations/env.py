@@ -1,5 +1,5 @@
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import engine_from_config, event, pool
 
 from piloop.db.models import Base
 from piloop.db.triggers.fts import is_fts_object
@@ -18,10 +18,21 @@ def include_name(name: str | None, type_: str, _parent_names: object) -> bool:
 
 
 def run_migrations_online() -> None:
+    """Run every pending revision in one transaction, so an upgrade that fails or is killed changes nothing.
+
+    pysqlite commits before each DDL statement by itself, so the driver's own transaction handling is turned off and
+    the transaction is begun by hand.
+    """
     connectable = engine_from_config(config.get_section(config.config_ini_section, {}), poolclass=pool.NullPool)
+    event.listen(connectable, 'connect', lambda dbapi, _: setattr(dbapi, 'isolation_level', None))
+    event.listen(connectable, 'begin', lambda connection: connection.exec_driver_sql('BEGIN'))
     with connectable.connect() as connection:
         context.configure(
-            connection=connection, target_metadata=target_metadata, render_as_batch=True, include_name=include_name
+            connection=connection,
+            target_metadata=target_metadata,
+            render_as_batch=True,
+            include_name=include_name,
+            transactional_ddl=True,
         )
         with context.begin_transaction():
             context.run_migrations()

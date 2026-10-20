@@ -1,4 +1,4 @@
-"""The project overview: the state of one project, computed from the database.
+"""The campaign overview: the state of one campaign, computed from the database.
 
 ``piloop status`` prints it, the daemon puts it in the brief of each sweep, and ``piloop watch`` draws its parts
 (``piloop/watch/panels.py``). So the three always say the same thing, and a sweep does not have to query the database
@@ -27,9 +27,9 @@ from piloop import git
 from piloop.agents.launcher import STARTUP_ANOMALY, TRANSCRIPT
 from piloop.campaign import inbox, spend
 from piloop.campaign.ideas import defined_by, links, runnable, superseded_by, yields
-from piloop.campaign.inbox import project_of
+from piloop.campaign.inbox import campaign_of
 from piloop.campaign.stop import attempt, blocked, hours, runs, runs_without_keep
-from piloop.config import Files, Metric, ProjectConfig, Track, harness_of
+from piloop.config import CampaignConfig, Files, Metric, Track, harness_of
 from piloop.db.events import ANOMALY_EVENT
 from piloop.db.models import (
     ENDED,
@@ -38,6 +38,8 @@ from piloop.db.models import (
     LIVE,
     OPEN_RUNS,
     Base,
+    Campaign,
+    CampaignStatus,
     Candidate,
     Comment,
     CommentKind,
@@ -46,16 +48,14 @@ from piloop.db.models import (
     IdeaStatus,
     Measurement,
     Pause,
-    Project,
-    ProjectStatus,
     Run,
     TargetKind,
     Verdict,
     Worker,
     WorkerState,
+    campaign_runs,
     count,
     latest_worker,
-    project_runs,
 )
 from piloop.plugins.contracts.verdict import Direction
 from piloop.reports.history import IDEAS_IN_HISTORY, block
@@ -73,7 +73,7 @@ from piloop.scoring.ledger import (
     trunk_keeps,
 )
 from piloop.text import NONE, cell, metric
-from piloop.usage import human, project_tokens
+from piloop.usage import campaign_tokens, human
 
 STEPS_SHOWN = 8
 ANOMALIES_SHOWN = 12
@@ -137,7 +137,7 @@ class Anomaly:
 
     kind: AnomalyKind
     ref: str
-    """The row that the anomaly is about: ``run#36``, ``worker#12``, ``measurement#117``, ``project#3``."""
+    """The row that the anomaly is about: ``run#36``, ``worker#12``, ``measurement#117``, ``campaign#3``."""
     at: datetime
     """When the anomaly began, for example the end of a failed run or the exit of an agent."""
     detail: str
@@ -161,28 +161,28 @@ class Anomaly:
 
 
 def overview(
-    s: Session, project: Project, cfg: ProjectConfig, now: datetime, jobs: JobsProbe, *, tools: bool = True
+    s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime, jobs: JobsProbe, *, tools: bool = True
 ) -> str:
     """Render the overview as markdown, as of ``now``.
 
     ``tools`` adds the summary of tools and schema that an agent needs and a human does not.
     """
     sections = [
-        f'## Project overview (computed at {now:%Y-%m-%d %H:%M} UTC)',
-        headline(s, project, cfg, now),
+        f'## Campaign overview (computed at {now:%Y-%m-%d %H:%M} UTC)',
+        headline(s, campaign, cfg, now),
         '### Goal',
-        *_goal(s, project, cfg, now),
-        *(['### Tracks', *tracks_lines(s, project, cfg, now)] if cfg.multitrack else []),
+        *_goal(s, campaign, cfg, now),
+        *(['### Tracks', *tracks_lines(s, campaign, cfg, now)] if cfg.multitrack else []),
         '### Trajectory',
-        *_trajectory(s, project, cfg, now),
+        *_trajectory(s, campaign, cfg, now),
         '### Now',
-        *_now(s, project, cfg, now),
-        *_candidates(s, project, cfg, now),
+        *_now(s, campaign, cfg, now),
+        *_candidates(s, campaign, cfg, now),
         '### Anomalies the daemon detected',
-        *_anomalies(anomalies(s, project, cfg, now, jobs), now),
-        *_comments(s, project, now),
+        *_anomalies(anomalies(s, campaign, cfg, now, jobs), now),
+        *_comments(s, campaign, now),
         '### Recent events',
-        _events(s, project, now),
+        _events(s, campaign, now),
     ]
     if tools:
         sections += ['### Tools', *TOOLS, *_schema()]
@@ -201,15 +201,15 @@ def age(then: datetime, now: datetime) -> str:
     return f'{seconds}s'
 
 
-def headline(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> str:
+def headline(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> str:
     """Return ``summary``, then the age of the evaluator and the stop reason."""
-    evaluator = project.evaluator
+    evaluator = campaign.evaluator
     evaluator_age = f' · evaluator #{evaluator.id}, {age(evaluator.created_at, now)} old' if evaluator else ''
-    return f'{summary(s, project, cfg)}{evaluator_age}{stopped(project)}'
+    return f'{summary(s, campaign, cfg)}{evaluator_age}{stopped(campaign)}'
 
 
-def summary(s: Session, project: Project, cfg: ProjectConfig) -> str:
-    """Return the one-line summary of the project.
+def summary(s: Session, campaign: Campaign, cfg: CampaignConfig) -> str:
+    """Return the one-line summary of the campaign.
 
     The format is ``<name> · head <metric> <score> (candidate#<id>, <delta> vs baseline) · <kept> kept / <total>
     candidates``. With several tracks, the head shows the primary of each track:
@@ -217,10 +217,10 @@ def summary(s: Session, project: Project, cfg: ProjectConfig) -> str:
     as candidates. ``· 3 starting points`` follows when there are any. ``· 1.2M tok`` follows when the usage of an
     agent is known: it is the total for all roles so far.
     """
-    at = head_scores(s, project, cfg)
-    total = count(s, produced(project))
-    kept = count(s, keeps(project))
-    imported = len(references(s, project))
+    at = head_scores(s, campaign, cfg)
+    total = count(s, produced(campaign))
+    kept = count(s, keeps(campaign))
+    imported = len(references(s, campaign))
     if at is None:
         head_text = 'no trunk keep'
     elif not cfg.multitrack:
@@ -233,25 +233,25 @@ def summary(s: Session, project: Project, cfg: ProjectConfig) -> str:
             f'{track.primary.name} {_four(value)}' + (f' ({metric(delta, signed=True)})' if delta is not None else '')
             for track, value, delta in values
         )
-    spent = project_tokens(s, project.id)
+    spent = campaign_tokens(s, campaign.id)
     tokens = f' · {human(spent)} tok' if spent else ''
     starts = f' · {imported} starting point{"s" if imported != 1 else ""}' if imported else ''
-    return f'{project.name} · {head_text} · {kept} kept / {total} candidates{starts}{tokens}'
+    return f'{campaign.name} · {head_text} · {kept} kept / {total} candidates{starts}{tokens}'
 
 
 def head_scores(
-    s: Session, project: Project, cfg: ProjectConfig
+    s: Session, campaign: Campaign, cfg: CampaignConfig
 ) -> tuple[Candidate, list[tuple[Track, float | None, float | None]]] | None:
     """Return the head and, for each track, its primary score and its delta against the baseline.
 
     A score is None when the current evaluator has not measured it. A delta is also None when the head is the
     baseline. Returns None when there is no trunk keep.
     """
-    trunk = head(s, project)
+    trunk = head(s, campaign)
     if trunk is None:
         return None
-    evaluator_id = project.evaluator_id or 0
-    first = baseline(s, project)
+    evaluator_id = campaign.evaluator_id or 0
+    first = baseline(s, campaign)
     values: list[tuple[Track, float | None, float | None]] = []
     for track in cfg.all_tracks:
         value = score(trunk, evaluator_id, track.primary)
@@ -260,19 +260,19 @@ def head_scores(
     return trunk, values
 
 
-def stopped(project: Project) -> str:
-    """Return `` · stopped: <reason>`` if the project stopped, then `` · paused (<what>): <reason>`` if it is paused."""
-    stop = f' · stopped: {project.stopped_reason}' if project.status is ProjectStatus.STOPPED else ''
-    return stop + (f' · {paused(project)}' if project.paused is not None else '')
+def stopped(campaign: Campaign) -> str:
+    """Return `` · stopped: <reason>`` if the campaign stopped, then `` · paused (<what>): <reason>`` if it is paused."""
+    stop = f' · stopped: {campaign.stopped_reason}' if campaign.status is CampaignStatus.STOPPED else ''
+    return stop + (f' · {paused(campaign)}' if campaign.paused is not None else '')
 
 
-def paused(project: Project) -> str:
-    """Return ``paused (<what it holds>): <reason>``. The project must be paused."""
-    holds = 'launches and evaluations' if project.paused is Pause.ALL else 'launches'
-    return f'paused ({holds}): {project.paused_reason}'
+def paused(campaign: Campaign) -> str:
+    """Return ``paused (<what it holds>): <reason>``. The campaign must be paused."""
+    holds = 'launches and evaluations' if campaign.paused is Pause.ALL else 'launches'
+    return f'paused ({holds}): {campaign.paused_reason}'
 
 
-def progress(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> str:
+def progress(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> str:
     """Return the runs and hours so far, with each ``[stop]`` condition against its limit: ``run 7/200 · 2.1h/12h``.
 
     If there is a ``[spend]`` budget, the spend follows (``$412.30/$1,000.00 spend``), with the reason when launches
@@ -280,32 +280,32 @@ def progress(s: Session, project: Project, cfg: ProjectConfig, now: datetime) ->
     """
     stop = cfg.stop
     parts = [
-        f'run {runs(s, project)}{"" if stop.max_runs is None else f"/{stop.max_runs}"}',
-        f'{hours(s, project, now) or 0:.1f}h{"" if stop.max_hours is None else f"/{stop.max_hours:g}h"}',
+        f'run {runs(s, campaign)}{"" if stop.max_runs is None else f"/{stop.max_runs}"}',
+        f'{hours(s, campaign, now) or 0:.1f}h{"" if stop.max_hours is None else f"/{stop.max_hours:g}h"}',
     ]
     if stop.max_tokens is not None:
-        parts.append(f'{human(project_tokens(s, project.id))}/{human(stop.max_tokens)} tok')
+        parts.append(f'{human(campaign_tokens(s, campaign.id))}/{human(stop.max_tokens)} tok')
     if stop.plateau is not None:
-        parts.append(f'{runs_without_keep(s, project)}/{stop.plateau} runs without a keep')
+        parts.append(f'{runs_without_keep(s, campaign)}/{stop.plateau} runs without a keep')
     if stop.target is not None:  # A target is only allowed with one track.
-        at = head_scores(s, project, cfg)
+        at = head_scores(s, campaign, cfg)
         value = at[1][0][1] if at is not None else None
         sign = '≥' if cfg.all_tracks[0].primary.direction is Direction.HIGHER else '≤'
         parts.append(f'target {sign} {metric(stop.target)} (head {_num(value)})')
-    if (budget := spend.progress(project, cfg)) is not None:
+    if (budget := spend.progress(campaign, cfg)) is not None:
         parts.append(budget)
     return ' · '.join(parts)
 
 
-def produced(project: Project) -> Select[Candidate]:
-    """Select the candidates of the project: the baseline and the commits of its runs, not imported references."""
-    return select(Candidate).where(Candidate.project_id == project.id, Candidate.verdict != Verdict.REFERENCE)
+def produced(campaign: Campaign) -> Select[Candidate]:
+    """Select the candidates of the campaign: the baseline and the commits of its runs, not imported references."""
+    return select(Candidate).where(Candidate.campaign_id == campaign.id, Candidate.verdict != Verdict.REFERENCE)
 
 
-def live_workers(s: Session, project: Project) -> Sequence[Worker]:
-    """Return the agents of the project that are starting or running, oldest first."""
+def live_workers(s: Session, campaign: Campaign) -> Sequence[Worker]:
+    """Return the agents of the campaign that are starting or running, oldest first."""
     return s.scalars(
-        select(Worker).where(Worker.project_id == project.id, Worker.state.in_(LIVE)).order_by(Worker.id)
+        select(Worker).where(Worker.campaign_id == campaign.id, Worker.state.in_(LIVE)).order_by(Worker.id)
     ).all()
 
 
@@ -317,7 +317,7 @@ def on(s: Session, w: Worker) -> str:
     return cell(w.reason or NONE)
 
 
-def agent_output(s: Session, w: Worker, project_path: Path, lines: int) -> list[str]:
+def agent_output(s: Session, w: Worker, campaign_path: Path, lines: int) -> list[str]:
     """Return the last ``lines`` non-empty lines of output of the agent.
 
     The first choice is the text in the session file of the harness, found in the same way as its usage
@@ -329,14 +329,14 @@ def agent_output(s: Session, w: Worker, project_path: Path, lines: int) -> list[
     said = definition.usage.resolved.said(w.session_id, lines) if definition and definition.usage else []
     return (
         said
-        or above_chrome(_live_output(s, w, project_path, lines + LIVE_LINES))[-lines:]
+        or above_chrome(_live_output(s, w, campaign_path, lines + LIVE_LINES))[-lines:]
         or above_chrome(_transcript(w.log_dir))[-lines:]
     )
 
 
-def _live_output(s: Session, w: Worker, project_path: Path, lines: int) -> str:
+def _live_output(s: Session, w: Worker, campaign_path: Path, lines: int) -> str:
     try:
-        return runtime_for(s, w, project_path).read(handle_for(w), lines=lines)
+        return runtime_for(s, w, campaign_path).read(handle_for(w), lines=lines)
     except Exception:  # Not launched yet, runtime missing or agent gone: the transcript is the fallback.
         return ''
 
@@ -355,9 +355,9 @@ def above_chrome(text: str) -> list[str]:
     return lines
 
 
-def queued_ideas(s: Session, project: Project) -> tuple[Sequence[Idea], Sequence[Idea]]:
+def queued_ideas(s: Session, campaign: Campaign) -> tuple[Sequence[Idea], Sequence[Idea]]:
     """Return every ``ready`` idea in scheduling order, and the ones not blocked by a prerequisite."""
-    mine = select(Idea).where(Idea.project_id == project.id).order_by(Idea.priority, Idea.id)
+    mine = select(Idea).where(Idea.campaign_id == campaign.id).order_by(Idea.priority, Idea.id)
     waiting = s.scalars(mine.where(Idea.status == IdeaStatus.READY)).all()
     ready = s.scalars(mine.where(runnable())).all()
     return waiting, ready
@@ -394,25 +394,25 @@ def item_lines(s: Session, c: Comment, now: datetime) -> tuple[str, list[str]]:
     return title, lines
 
 
-def anomalies(s: Session, project: Project, cfg: ProjectConfig, now: datetime, jobs: JobsProbe) -> list[Anomaly]:
-    """Return every anomaly of ``project``, newest first. ``jobs`` is called only for silent workers."""
+def anomalies(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime, jobs: JobsProbe) -> list[Anomaly]:
+    """Return every anomaly of ``campaign``, newest first. ``jobs`` is called only for silent workers."""
     found = [
-        *_failed_runs(s, project),
-        *_dead_at_startup(s, project, cfg),
-        *_same_as_parent(s, project, cfg),
-        *_idle_queue(s, project, cfg),
-        *_silent(s, project, now, jobs),
+        *_failed_runs(s, campaign),
+        *_dead_at_startup(s, campaign, cfg),
+        *_same_as_parent(s, campaign, cfg),
+        *_idle_queue(s, campaign, cfg),
+        *_silent(s, campaign, now, jobs),
     ]
     return sorted(found, key=lambda a: a.at, reverse=True)
 
 
-def reported(s: Session, project_id: int) -> set[str]:
-    """Return the keys of the anomalies that are already assigned to a watchdog of the project."""
+def reported(s: Session, campaign_id: int) -> set[str]:
+    """Return the keys of the anomalies that are already assigned to a watchdog of the campaign."""
     rows = s.scalars(
         select(Event.payload).where(
             Event.kind == ANOMALY_EVENT,
             Event.target_kind == TargetKind.WORKER,
-            Event.target_id.in_(select(Worker.id).where(Worker.project_id == project_id)),
+            Event.target_id.in_(select(Worker.id).where(Worker.campaign_id == campaign_id)),
         )
     )
     return {str(payload['key']) for payload in rows}
@@ -428,13 +428,13 @@ def assigned(s: Session, worker_id: int) -> list[str]:
     return [str(payload['anomaly']) for payload in rows]
 
 
-def _goal(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> list[str]:
+def _goal(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> list[str]:
     primaries = {t.primary.name for t in cfg.all_tracks}
     others = ', '.join(f'{m.name} ({m.direction}, {m.role})' for m in cfg.metrics if m.name not in primaries)
     also = f'; also measured: {others}' if others else ''
-    state = f'stopped — {project.stopped_reason}' if project.status is ProjectStatus.STOPPED else 'active'
-    if project.paused is not None:
-        state += f', {paused(project)}'
+    state = f'stopped — {campaign.stopped_reason}' if campaign.status is CampaignStatus.STOPPED else 'active'
+    if campaign.paused is not None:
+        state += f', {paused(campaign)}'
     stop = cfg.stop
     limits = (stop.target, stop.max_runs, stop.max_hours, stop.max_tokens, stop.plateau)
     open_ended = '' if any(v is not None for v in limits) else ' (no [stop] condition: open-ended)'
@@ -446,8 +446,8 @@ def _goal(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> li
         objective = f'- Primary metric: {primary.name}, {primary.direction} is better{also}'
     return [
         objective,
-        f'- Campaign: {state}. Progress: {progress(s, project, cfg, now)}{open_ended}.',
-        "- The goal in words is the project's brief.md: weigh the metric against it.",
+        f'- Campaign: {state}. Progress: {progress(s, campaign, cfg, now)}{open_ended}.',
+        "- The goal in words is the campaign's brief.md: weigh the metric against it.",
     ]
 
 
@@ -458,19 +458,19 @@ def _metric(m: Metric) -> str:
     return f'{m.name}, {m.direction}{margin}{floor}'
 
 
-def tracks_lines(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> list[str]:
+def tracks_lines(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> list[str]:
     """Return one line per track.
 
     Each line shows the primary at the head against the start and its floor, the trunk keeps of the track and the
     latest one, its share of the worker slots against its open runs, and its runnable ideas.
     """
-    evaluator_id = project.evaluator_id or 0
-    trunk = head(s, project)
-    first = baseline(s, project)
-    steps = s.scalars(trunk_keeps(project).where(Candidate.run_id.is_not(None)).order_by(Candidate.id)).all()
-    open_runs = project_runs(project.id).where(Run.status.in_(OPEN_RUNS)).with_only_columns(Idea.track)
+    evaluator_id = campaign.evaluator_id or 0
+    trunk = head(s, campaign)
+    first = baseline(s, campaign)
+    steps = s.scalars(trunk_keeps(campaign).where(Candidate.run_id.is_not(None)).order_by(Candidate.id)).all()
+    open_runs = campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS)).with_only_columns(Idea.track)
     running = Counter(s.scalars(open_runs))
-    ready = Counter(s.scalars(select(Idea.track).where(Idea.project_id == project.id, runnable())))
+    ready = Counter(s.scalars(select(Idea.track).where(Idea.campaign_id == campaign.id, runnable())))
     slots = cfg.run_slots
     lines = []
     for track in cfg.all_tracks:
@@ -493,10 +493,10 @@ def tracks_lines(s: Session, project: Project, cfg: ProjectConfig, now: datetime
     return lines
 
 
-def _trajectory(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> list[str]:
+def _trajectory(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> list[str]:
     """Show the trunk: the start, then each trunk keep in order, with its gain on its track."""
-    evaluator_id = project.evaluator_id or 0
-    steps = s.scalars(trunk_keeps(project).order_by(Candidate.id)).all()
+    evaluator_id = campaign.evaluator_id or 0
+    steps = s.scalars(trunk_keeps(campaign).order_by(Candidate.id)).all()
     if not steps:
         return ["- No trunk keep: the baseline's verdict was overridden and nothing was kept since."]
     first, last = steps[0], steps[-1]
@@ -508,7 +508,9 @@ def _trajectory(s: Session, project: Project, cfg: ProjectConfig, now: datetime)
             continue
         relative = f', {(b - a) / abs(a):+.1%}' if a else ''
         gains.append(f'{track.primary.name} {metric(a)} → {metric(b)} ({metric(b - a, signed=True)}{relative})')
-    finished = project_runs(project.id).where(Run.status.in_(FINISHED_RUNS), attempt(), Run.finished_at > _known(last))
+    finished = campaign_runs(campaign.id).where(
+        Run.status.in_(FINISHED_RUNS), attempt(), Run.finished_at > _known(last)
+    )
     lines = [
         f'- Start candidate#{first.id}, head candidate#{last.id}: {"; ".join(gains)}; {len(steps) - 1} trunk keeps.',
         f'- Last trunk keep {age(_known(last), now)} ago; {count(s, finished)} runs finished since.',
@@ -528,7 +530,7 @@ def _trajectory(s: Session, project: Project, cfg: ProjectConfig, now: datetime)
         lines.append(
             f'  - {_known(c):%m-%d %H:%M} candidate#{c.id}{on} {_num(value)}{delta}{idea}: {cell(c.summary or "—", 80)}'
         )
-    return lines + _branches(s, project, cfg)
+    return lines + _branches(s, campaign, cfg)
 
 
 def _known(c: Candidate) -> datetime:
@@ -536,17 +538,17 @@ def _known(c: Candidate) -> datetime:
     return min((m.created_at for m in c.measurements if m.error is None), default=c.created_at)
 
 
-def _values(c: Candidate, cfg: ProjectConfig, evaluator_id: int) -> str:
+def _values(c: Candidate, cfg: CampaignConfig, evaluator_id: int) -> str:
     """Format the primary of each track on ``c``: ``accuracy 0.91, seconds 3.1``. One track shows the score only."""
     if not cfg.multitrack:
         return _num(score(c, evaluator_id, cfg.all_tracks[0].primary))
     return ', '.join(f'{t.primary.name} {_num(score(c, evaluator_id, t.primary))}' for t in cfg.all_tracks)
 
 
-def _branches(s: Session, project: Project, cfg: ProjectConfig) -> list[str]:
+def _branches(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[str]:
     """List the lineages of keeps if there is more than one, then the latest notes: other places a run can start."""
-    found = branches(s, project)
-    evaluator_id = project.evaluator_id or 0
+    found = branches(s, campaign)
+    evaluator_id = campaign.evaluator_id or 0
     lines = []
     if len(found) > 1:
         lines.append('- Lineages (latest keep of each; a branch keep never moves the head):')
@@ -558,7 +560,7 @@ def _branches(s: Session, project: Project, cfg: ProjectConfig) -> list[str]:
     noted = s.scalars(
         select(Candidate)
         .where(
-            Candidate.project_id == project.id,
+            Candidate.campaign_id == campaign.id,
             Candidate.verdict == Verdict.INTERESTING,
             Candidate.verdict_reason.startswith(NOTE),
         )
@@ -575,17 +577,17 @@ def _branches(s: Session, project: Project, cfg: ProjectConfig) -> list[str]:
     return lines
 
 
-def _now(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> list[str]:
+def _now(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> list[str]:
     return [
-        *_runs_now(s, project, cfg, now),
-        *_queue(s, project, now),
-        *_agents(s, project, cfg, now),
-        _evaluations(s, project),
+        *_runs_now(s, campaign, cfg, now),
+        *_queue(s, campaign, now),
+        *_agents(s, campaign, cfg, now),
+        _evaluations(s, campaign),
     ]
 
 
-def _runs_now(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> list[str]:
-    open_runs = s.scalars(project_runs(project.id).where(Run.status.in_(OPEN_RUNS)).order_by(Run.id)).all()
+def _runs_now(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> list[str]:
+    open_runs = s.scalars(campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS)).order_by(Run.id)).all()
     lines = [f'- Worker slots: {len(open_runs)} of {cfg.run_slots} busy.']
     for run in open_runs:
         worker = latest_worker(s, run.id)
@@ -598,11 +600,11 @@ def _runs_now(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -
     return lines
 
 
-def _queue(s: Session, project: Project, now: datetime) -> list[str]:
+def _queue(s: Session, campaign: Campaign, now: datetime) -> list[str]:
     """Show the idea counts by status, what blocks the blocked ideas, and the runnable ideas in queue order."""
-    by_status = select(Idea.status, func.count()).where(Idea.project_id == project.id).group_by(Idea.status)
+    by_status = select(Idea.status, func.count()).where(Idea.campaign_id == campaign.id).group_by(Idea.status)
     counts: dict[IdeaStatus, int] = {status: n for status, n in s.execute(by_status)}
-    waiting, ready = queued_ideas(s, project)
+    waiting, ready = queued_ideas(s, campaign)
     blocked = [i for i in waiting if i not in ready]
     waits = [
         f'idea#{i.id} on ' + ', '.join(f'idea#{t.id} ({t.status})' for t in i.after if t.status is not IdeaStatus.DONE)
@@ -620,10 +622,10 @@ def _queue(s: Session, project: Project, now: datetime) -> list[str]:
     return [f'- Ideas: {len(ready)} runnable, {len(blocked)} blocked{shown}; {rest}.', *queue]
 
 
-def _agents(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> list[str]:
+def _agents(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> list[str]:
     """Show the live agents with their last line, the agents per role, the yield of each source and the tokens."""
-    rows = s.scalars(select(Worker).where(Worker.project_id == project.id).order_by(Worker.id)).all()
-    path = Path(project.path)
+    rows = s.scalars(select(Worker).where(Worker.campaign_id == campaign.id).order_by(Worker.id)).all()
+    path = Path(campaign.path)
     live = [
         f'  - {w.kind}#{w.id} {w.harness or NONE}/{w.model or NONE} {age(w.started_at, now)}'
         f'{f", {view}" if (view := view_of(w)) else ""}, on {on(s, w)}: '
@@ -639,14 +641,14 @@ def _agents(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> 
         killed = sum(w.state is WorkerState.KILLED for w in mine)
         per_kind.append(f'{len(mine)} {kind}' + (f' ({killed} killed)' if killed else ''))
         spend.append(f'{kind} {human(sum(_tokens(w) for w in mine))}')
-    defined = defined_by(s, project.id)
+    defined = defined_by(s, campaign.id)
     barren = []
     for kind in defining(cfg):
         sweeps = [w for w in rows if w.kind == kind and w.state in ENDED]
         empty = sum(f'{kind}#{w.id}' not in defined for w in sweeps)
         barren.append(f'; {empty} of {len(sweeps)} ended {kind} sweeps defined no idea')
     hour = sum(_tokens(w) for w in rows if w.ended_at is not None and now - w.ended_at <= timedelta(hours=1))
-    by_source = '; '.join(y.line() for y in yields(s, project.id)) or 'none yet'
+    by_source = '; '.join(y.line() for y in yields(s, campaign.id)) or 'none yet'
     return [
         f'- Agents live: {len(live) or "none"}' + (f'; requested: {", ".join(requested)}' if requested else ''),
         *live,
@@ -657,10 +659,10 @@ def _agents(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> 
     ]
 
 
-def _evaluations(s: Session, project: Project) -> str:
+def _evaluations(s: Session, campaign: Campaign) -> str:
     """Show the number of evaluations, their duration now against at first, and the candidates without a verdict."""
-    evaluator_id = project.evaluator_id or 0
-    mine = select(Candidate.id).where(Candidate.project_id == project.id)
+    evaluator_id = campaign.evaluator_id or 0
+    mine = select(Candidate.id).where(Candidate.campaign_id == campaign.id)
     rows = s.scalars(
         select(Measurement)
         .where(Measurement.candidate_id.in_(mine), Measurement.evaluator_id == evaluator_id)
@@ -669,7 +671,7 @@ def _evaluations(s: Session, project: Project) -> str:
     crashed = sum(m.error is not None for m in rows)
     seconds = [m.seconds for m in rows if m.seconds is not None]
     waiting = count(
-        s, select(Candidate).where(Candidate.project_id == project.id, Candidate.verdict == Verdict.PENDING)
+        s, select(Candidate).where(Candidate.campaign_id == campaign.id, Candidate.verdict == Verdict.PENDING)
     )
     timing = ''
     if seconds:
@@ -680,15 +682,15 @@ def _evaluations(s: Session, project: Project) -> str:
     return f'- Evaluations: {len(rows)} ({crashed} crashed){timing}; {waiting} candidates waiting for a verdict.'
 
 
-def _candidates(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> list[str]:
-    """List the last ``CANDIDATES_SHOWN`` candidates of the project, oldest first, scored against their parent."""
-    total = count(s, produced(project))
-    recent = s.scalars(produced(project).order_by(Candidate.id.desc()).limit(CANDIDATES_SHOWN)).all()[::-1]
+def _candidates(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> list[str]:
+    """List the last ``CANDIDATES_SHOWN`` candidates of the campaign, oldest first, scored against their parent."""
+    total = count(s, produced(campaign))
+    recent = s.scalars(produced(campaign).order_by(Candidate.id.desc()).limit(CANDIDATES_SHOWN)).all()[::-1]
     on = "each on its track's primary" if cfg.multitrack else cfg.all_tracks[0].primary.name
     lines = [f'### Recent candidates ({len(recent)} of {total}; {on}, vs parent)']
     for c in recent:
         track = track_of(cfg, c)
-        value, delta = scored(c, project.evaluator_id or 0, track.primary)
+        value, delta = scored(c, campaign.evaluator_id or 0, track.primary)
         run = f'run#{c.run_id}' if c.run_id else 'no run'
         tag = f' [{track.name}]' if cfg.multitrack else ''
         lines.append(
@@ -717,7 +719,7 @@ def _anomalies(found: list[Anomaly], now: datetime) -> list[str]:
     return lines
 
 
-def _comments(s: Session, project: Project, now: datetime) -> list[str]:
+def _comments(s: Session, campaign: Campaign, now: datetime) -> list[str]:
     """List the inbox and the latest decisions and escalations, newest first.
 
     A sweep reads this so it does not repeat an escalation, and a human sees what waits for an acknowledgement. The
@@ -727,11 +729,11 @@ def _comments(s: Session, project: Project, now: datetime) -> list[str]:
     said = unacked | Comment.kind.in_((CommentKind.DECISION, CommentKind.ESCALATION))
     rows = s.scalars(
         select(Comment)
-        .where(said, project_of(Comment.target_kind, Comment.target_id) == project.id)
+        .where(said, campaign_of(Comment.target_kind, Comment.target_id) == campaign.id)
         .order_by(Comment.id.desc())
         .limit(COMMENTS_SHOWN)
     ).all()
-    waiting = len(inbox.items(s, project_id=project.id))
+    waiting = len(inbox.items(s, campaign_id=campaign.id))
     lines = [
         f'- comment#{c.id} {c.kind}{f" (p{c.priority}, unacknowledged)" if c.priority is not None and c.acked_at is None else ""}'
         f' on {c.target_kind}#{c.target_id} by {c.author}, {age(c.created_at, now)} ago: {cell(c.body, DETAIL_CHARS)}'
@@ -743,14 +745,14 @@ def _comments(s: Session, project: Project, now: datetime) -> list[str]:
     ]
 
 
-def latest_events(s: Session, project: Project, limit: int) -> Sequence[Event]:
-    """Return the last ``limit`` events of the project, newest first."""
-    mine = select(Event).where(project_of(Event.target_kind, Event.target_id) == project.id)
+def latest_events(s: Session, campaign: Campaign, limit: int) -> Sequence[Event]:
+    """Return the last ``limit`` events of the campaign, newest first."""
+    mine = select(Event).where(campaign_of(Event.target_kind, Event.target_id) == campaign.id)
     return s.scalars(mine.order_by(Event.id.desc()).limit(limit)).all()
 
 
-def _events(s: Session, project: Project, now: datetime) -> str:
-    latest = latest_events(s, project, EVENTS_SHOWN)
+def _events(s: Session, campaign: Campaign, now: datetime) -> str:
+    latest = latest_events(s, campaign, EVENTS_SHOWN)
     return '- ' + (
         ' · '.join(f'{e.kind} {e.target_kind}#{e.target_id} {age(e.at, now)} ago' for e in latest) or 'None.'
     )
@@ -761,7 +763,7 @@ TOOLS = [
     ' It prints a table cut to the terminal width, so prefix `COLUMNS=400` for wide rows, or select one'
     " concatenated column (`a || ' | ' || b`); at most 500 rows.",
     "- Scores: `json_extract(m.metrics, '$.<metric>')`; a candidate's score is the mean over its measurements with"
-    ' `error IS NULL AND evaluator_id = projects.evaluator_id`.'
+    ' `error IS NULL AND evaluator_id = campaigns.evaluator_id`.'
     f' `piloop history` prints the latest {IDEAS_IN_HISTORY} ideas with their outcomes.',
     f'- Transcripts: `<runs.log_dir>/{TRANSCRIPT}` (a worker), `<workers.log_dir>/{TRANSCRIPT}` and `brief.md`'
     ' beside it (any agent); the whole session: `cd <repo> && entire checkpoint explain <workers.checkpoint_id>`.',
@@ -778,7 +780,7 @@ def _schema() -> list[str]:
     return [f'  - {t.name}({", ".join(c.name for c in t.columns)})' for t in Base.metadata.sorted_tables]
 
 
-def _failed_runs(s: Session, project: Project) -> list[Anomaly]:
+def _failed_runs(s: Session, campaign: Campaign) -> list[Anomaly]:
     return [
         Anomaly(
             AnomalyKind.RUN_FAILED,
@@ -786,17 +788,17 @@ def _failed_runs(s: Session, project: Project) -> list[Anomaly]:
             run.finished_at or run.created_at,
             f'{run.status} on {run.harness} (idea#{run.idea_id}): {cell(run.error or "no error recorded", DETAIL_CHARS)}',
         )
-        for run in s.scalars(project_runs(project.id).where(Run.status.in_(FAILED_RUNS), attempt(), ~blocked()))
+        for run in s.scalars(campaign_runs(campaign.id).where(Run.status.in_(FAILED_RUNS), attempt(), ~blocked()))
     ]
 
 
-def _dead_at_startup(s: Session, project: Project, cfg: ProjectConfig) -> list[Anomaly]:
+def _dead_at_startup(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Anomaly]:
     """Find agents of any role that the launcher found dead at startup (``launcher.STARTUP_ANOMALY``)."""
     investigators = {name for name, role in cfg.roles.sweeping().items() if any(t.INVESTIGATES for t in role.triggers)}
     events = select(Event).where(
         Event.kind == STARTUP_ANOMALY,
         Event.target_kind == TargetKind.WORKER,
-        Event.target_id.in_(select(Worker.id).where(Worker.project_id == project.id)),
+        Event.target_id.in_(select(Worker.id).where(Worker.campaign_id == campaign.id)),
     )
     found: list[Anomaly] = []
     for e in s.scalars(events):
@@ -808,14 +810,14 @@ def _dead_at_startup(s: Session, project: Project, cfg: ProjectConfig) -> list[A
     return found
 
 
-def _same_as_parent(s: Session, project: Project, cfg: ProjectConfig) -> list[Anomaly]:
+def _same_as_parent(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Anomaly]:
     """Find candidates whose primary score is exactly the score of their parent.
 
     If the other metrics are also equal (except a timing metric), the change did not affect what the evaluation sees.
     """
-    evaluator_id = project.evaluator_id or 0
+    evaluator_id = campaign.evaluator_id or 0
     found: list[Anomaly] = []
-    children = select(Candidate).where(Candidate.project_id == project.id, Candidate.parent_id.is_not(None))
+    children = select(Candidate).where(Candidate.campaign_id == campaign.id, Candidate.parent_id.is_not(None))
     for c in s.scalars(children.order_by(Candidate.id)):
         assert c.parent is not None
         primary = track_of(cfg, c).primary.name
@@ -833,27 +835,27 @@ def _same_as_parent(s: Session, project: Project, cfg: ProjectConfig) -> list[An
     return found
 
 
-def _idle_queue(s: Session, project: Project, cfg: ProjectConfig) -> list[Anomaly]:
-    """Find an active project, not paused, with a free worker slot and no runnable idea, since the last run moved."""
-    if project.status is not ProjectStatus.ACTIVE or project.paused is not None:
+def _idle_queue(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Anomaly]:
+    """Find an active campaign, not paused, with a free worker slot and no runnable idea, since the last run moved."""
+    if campaign.status is not CampaignStatus.ACTIVE or campaign.paused is not None:
         return []
-    open_runs = project_runs(project.id).where(Run.status.in_(OPEN_RUNS))
+    open_runs = campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS))
     free = cfg.run_slots - count(s, open_runs)
     if cfg.stop.max_runs is not None:
-        free = min(free, cfg.stop.max_runs - runs(s, project))
-    ready = count(s, select(Idea).where(Idea.project_id == project.id, runnable()))
+        free = min(free, cfg.stop.max_runs - runs(s, campaign))
+    ready = count(s, select(Idea).where(Idea.campaign_id == campaign.id, runnable()))
     if free <= 0 or ready:
         return []
-    moments = [project.created_at]
+    moments = [campaign.created_at]
     for column in (Run.created_at, Run.finished_at):
-        latest = s.scalar(project_runs(project.id).with_only_columns(func.max(column)))
+        latest = s.scalar(campaign_runs(campaign.id).with_only_columns(func.max(column)))
         if latest is not None:
             moments.append(latest)
     kinds = defining(cfg)
     pending = s.scalars(
         select(Worker)
         .where(
-            Worker.project_id == project.id,
+            Worker.campaign_id == campaign.id,
             Worker.kind.in_(kinds),
             Worker.state.in_((WorkerState.REQUESTED, *LIVE)),
         )
@@ -864,10 +866,10 @@ def _idle_queue(s: Session, project: Project, cfg: ProjectConfig) -> list[Anomal
         or f'no {" or ".join(kinds) or "defining"} sweep pending'
     )
     detail = f'{free} free worker slots and no runnable idea; {sweeps}'
-    return [Anomaly(AnomalyKind.IDLE_QUEUE, f'project#{project.id}', max(moments), detail)]
+    return [Anomaly(AnomalyKind.IDLE_QUEUE, f'campaign#{campaign.id}', max(moments), detail)]
 
 
-def _silent(s: Session, project: Project, now: datetime, jobs: JobsProbe) -> list[Anomaly]:
+def _silent(s: Session, campaign: Campaign, now: datetime, jobs: JobsProbe) -> list[Anomaly]:
     """Find running workers with jobs in flight that have not commented or committed for ``SILENT_SECONDS``.
 
     The silence starts at the latest of: the start of the run, a comment signed ``worker#<id>`` or ``run#<id>``, and
@@ -879,7 +881,7 @@ def _silent(s: Session, project: Project, now: datetime, jobs: JobsProbe) -> lis
     rows = s.scalars(
         select(Worker)
         .where(
-            Worker.project_id == project.id,
+            Worker.campaign_id == campaign.id,
             Worker.state == WorkerState.RUNNING,
             Worker.run_id.is_not(None),
         )
@@ -908,7 +910,7 @@ def _silent(s: Session, project: Project, now: datetime, jobs: JobsProbe) -> lis
     return found
 
 
-def defining(cfg: ProjectConfig) -> list[str]:
+def defining(cfg: CampaignConfig) -> list[str]:
     """Return the sweeping roles that define ideas (``files = "ideas"``): the ones that fill the queue."""
     return [name for name, role in cfg.roles.sweeping().items() if role.files is Files.IDEAS]
 

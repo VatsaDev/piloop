@@ -1,4 +1,4 @@
-# <project>: <one line that says what to improve and how it is measured>
+# <campaign>: <one line that says what to improve and how it is measured>
 
 Every worker reads this brief before its idea. Write it to the worker. Keep it short and concrete. The sections below
 are a suggestion: remove or add sections to fit the problem. `piloop.toml` holds the config. `evaluate.py` gives the

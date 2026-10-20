@@ -11,8 +11,8 @@ from pytest_mock import MockerFixture
 
 from piloop.agents import refill as refill_module
 from piloop.agents.refill import usage_of
-from piloop.config import ConfigError, load_project_config
-from piloop.db.models import Project, Worker, WorkerKind, WorkerState, utcnow
+from piloop.config import ConfigError, load_campaign_config
+from piloop.db.models import Campaign, Worker, WorkerKind, WorkerState, utcnow
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.usage import (
@@ -40,7 +40,7 @@ PI_SPEC = {
     'cwd': 'dash_separators_wrapped',
     'tally': 'pi',
 }
-"""The built-in pi spec as a project would write it under ``[harness.<name>.usage]``."""
+"""The built-in pi spec as a campaign would write it under ``[harness.<name>.usage]``."""
 
 
 def spec_of(harness: str) -> UsageSpec:
@@ -110,7 +110,7 @@ def test_the_registries_hold_the_shipped_pieces() -> None:
 
 
 def test_cwd_encoders_match_the_stores_on_disk() -> None:
-    """Folder names as pi 0.5x and Claude Code 2.1 wrote them for piloop worktrees and the project workspace."""
+    """Folder names as pi 0.5x and Claude Code 2.1 wrote them for piloop worktrees and the campaign workspace."""
     wrapped, non_alnum, none = (
         CWD_ENCODERS['dash_separators_wrapped'],
         CWD_ENCODERS['dash_non_alnum'],
@@ -198,23 +198,23 @@ def test_the_file_is_found_by_the_encoded_cwd_then_by_a_scan_of_every_cwd_folder
     assert nested.is_file() and pi.session_file('unknown', None) is None, 'the scan never recurses'
 
 
-def test_a_project_spells_a_spec_in_toml_for_an_override_or_a_custom_harness(home: Path, project_path: Path) -> None:
-    toml = project_path / 'piloop.toml'
+def test_a_campaign_spells_a_spec_in_toml_for_an_override_or_a_custom_harness(home: Path, campaign_path: Path) -> None:
+    toml = campaign_path / 'piloop.toml'
     toml.write_text(
         toml.read_text()
         + '\n[harness.claude]\nexecutable = "claude"\nheadless = ["--session-id", "{session_id}", "{prompt}"]\n'
-        '[harness.claude.usage]\nfile = "{home}/claude-work/projects/{cwd}/{session_id}.jsonl"\n'
+        '[harness.claude.usage]\nfile = "{home}/claude-work/campaigns/{cwd}/{session_id}.jsonl"\n'
         'cwd = "dash_non_alnum"\ntally = "claude"\n'
         '\n[harness.local]\nexecutable = "local-agent"\nheadless = ["--session", "{session_id}", "{prompt}"]\n'
         '[harness.local.usage]\nreader = "jsonl"\nfile = "{home}/.local-agent/{session_id}.jsonl"\ntally = "pi"\n'
     )
-    cfg = load_project_config(project_path)
+    cfg = load_campaign_config(campaign_path)
     moved = cfg.harness_for('claude').usage
     assert moved == UsageSpec(
-        file='{home}/claude-work/projects/{cwd}/{session_id}.jsonl', cwd='dash_non_alnum', tally='claude'
+        file='{home}/claude-work/campaigns/{cwd}/{session_id}.jsonl', cwd='dash_non_alnum', tally='claude'
     ), 'an override of a built-in changes where the file is; the reader and tally stay'
     path = store(
-        home, 'claude', CLAUDE_ID, name=f'claude-work/projects/{CWD_ENCODERS["dash_non_alnum"](CWD)}/{CLAUDE_ID}.jsonl'
+        home, 'claude', CLAUDE_ID, name=f'claude-work/campaigns/{CWD_ENCODERS["dash_non_alnum"](CWD)}/{CLAUDE_ID}.jsonl'
     )
     usage = read_usage(moved, CLAUDE_ID, CWD, None)
     assert usage is not None and (usage.total, usage.source) == (110989, str(path))
@@ -230,7 +230,7 @@ def test_a_project_spells_a_spec_in_toml_for_an_override_or_a_custom_harness(hom
     with pytest.raises(
         ConfigError, match=re.escape(f"harness.claude.usage: unknown usage tally 'gpt'; known: {sorted(TALLIES)}")
     ):
-        load_project_config(project_path)
+        load_campaign_config(campaign_path)
 
 
 def test_spec_names_are_checked_against_the_registries() -> None:
@@ -358,11 +358,11 @@ def test_what_cannot_be_read_is_a_usage_error_or_nothing(home: Path) -> None:
     )
 
 
-def test_usage_of_a_worker_never_raises(db: Database, project: Project, home: Path, mocker: MockerFixture) -> None:
+def test_usage_of_a_worker_never_raises(db: Database, campaign: Campaign, home: Path, mocker: MockerFixture) -> None:
     store(home, 'pi', PI_ID, cwd=Path('/gone/worktree'))
     with db.session() as s:
-        p = s.get_one(Project, project.id)
-        ended = dict(project_id=p.id, state=WorkerState.EXITED, ended_at=utcnow(), log_dir=str(home / 'logs'))
+        p = s.get_one(Campaign, campaign.id)
+        ended = dict(campaign_id=p.id, state=WorkerState.EXITED, ended_at=utcnow(), log_dir=str(home / 'logs'))
         found = Worker(kind=WorkerKind.WORKER, harness='pi', session_id=PI_ID, **ended)
         removed = Worker(kind=WorkerKind.WORKER, harness='local-agent', session_id='x', **ended)
         no_spec = Worker(kind=WorkerKind.WORKER, harness='script', session_id='x', **ended)
@@ -371,10 +371,10 @@ def test_usage_of_a_worker_never_raises(db: Database, project: Project, home: Pa
         s.flush()
         usage = usage_of(s, found)
         assert isinstance(usage, Usage) and usage.total == 16478
-        assert str(usage_of(s, removed)) == "harness 'local-agent' is no longer configured for the project", (
-            'a historical row keeps only the harness name; the project may have dropped it since'
+        assert str(usage_of(s, removed)) == "harness 'local-agent' is no longer configured for the campaign", (
+            'a historical row keeps only the harness name; the campaign may have dropped it since'
         )
-        assert usage_of(s, no_spec) is None and usage_of(s, orphan) is None, 'no spec; a row without a project'
+        assert usage_of(s, no_spec) is None and usage_of(s, orphan) is None, 'no spec; a row without a campaign'
         mocker.patch.object(refill_module, 'read_usage', side_effect=OSError('disk on fire'))
         assert str(usage_of(s, found)) == 'OSError: disk on fire', "a reader's failure is a UsageError, not a crash"
 

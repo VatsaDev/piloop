@@ -16,7 +16,7 @@ import pytest
 from pydantic import TypeAdapter
 
 from piloop.proc import TOKEN_ENV, kill_tagged, tagged
-from piloop.reports.feed import Batch, Envelope, ProjectState
+from piloop.reports.feed import Batch, CampaignState, Envelope
 from piloop.runtime.subprocess import STDOUT
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -41,7 +41,7 @@ class Status(TypedDict):
 
     cursor: int
     daemon: Daemon
-    projects: list[ProjectState]
+    campaigns: list[CampaignState]
 
 
 STATUS = TypeAdapter(Status)
@@ -67,12 +67,12 @@ def merged(base: Toml, over: Toml) -> dict[str, object]:
 
 
 @dataclass
-class Campaign:
-    """One campaign, with its own home and project repo, and what the tests learn of it as they go."""
+class Smoke:
+    """One campaign, with its own home and campaign repo, and what the tests learn of it as they go."""
 
     dir: Path
     name: str
-    """The project's name, from its ``piloop.toml``."""
+    """The campaign's name, from its ``piloop.toml``."""
     env: dict[str, str] = field(repr=False)
     """The environment of every ``piloop`` command. Not in the repr: it holds the caller's secrets."""
     ideas: dict[str, int] = field(default_factory=dict)
@@ -122,26 +122,26 @@ class Campaign:
         """``piloop events --after <after> --json``, checked against its documented shape."""
         return BATCH.validate_json(self.piloop('events', '--after', str(after), *args, '--json'))
 
-    # The project's names in the CLI, the schema and the feed are in these four methods, `Status`, and the event
+    # The campaign's names in the CLI, the schema and the feed are in these four methods, `Status`, and the event
     # kinds that a scenario requires: a rename of the noun changes only these.
 
     def status(self) -> Status:
-        """``piloop status --json`` of the project, checked against its documented shape."""
+        """``piloop status --json`` of the campaign, checked against its documented shape."""
         return STATUS.validate_json(self.piloop('status', self.name, '--json'))
 
-    def project_state(self) -> ProjectState:
-        """The project in ``piloop status --json``, the only one."""
+    def campaign_state(self) -> CampaignState:
+        """The campaign in ``piloop status --json``, the only one."""
         doc = self.status()
-        assert [p['name'] for p in doc['projects']] == [self.name], doc['projects']
-        return doc['projects'][0]
+        assert [p['name'] for p in doc['campaigns']] == [self.name], doc['campaigns']
+        return doc['campaigns'][0]
 
-    def project_row(self) -> sqlite3.Row:
-        """The project's row in the database."""
-        return self.sql('SELECT * FROM projects WHERE name = ?', self.name)[0]
+    def campaign_row(self) -> sqlite3.Row:
+        """The campaign's row in the database."""
+        return self.sql('SELECT * FROM campaigns WHERE name = ?', self.name)[0]
 
-    def stop_project(self, reason: str) -> None:
+    def stop_campaign(self, reason: str) -> None:
         """Stop the campaign gracefully: the running workers commit and stop."""
-        self.piloop('project', 'stop', self.name, '--reason', reason)
+        self.piloop('campaign', 'stop', self.name, '--reason', reason)
 
     def add_idea(self, key: str, title: str, plan: str, priority: int) -> int:
         """``piloop idea add``; ``ideas[key]`` is then its id."""

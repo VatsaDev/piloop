@@ -33,23 +33,23 @@ from sqlalchemy import String, case, cast, func, select
 from sqlalchemy.orm import Session
 
 from piloop.campaign import inbox
-from piloop.campaign.inbox import project_of
+from piloop.campaign.inbox import campaign_of
 from piloop.config import config_of
 from piloop.db.models import (
     OPEN_RUNS,
+    Campaign,
     CommentKind,
     Event,
     Idea,
     IdeaStatus,
-    Project,
     Run,
+    campaign_runs,
     count,
-    project_runs,
 )
 from piloop.db.session import read_transaction
 from piloop.reports.overview import head_scores, live_workers, produced, queued_ideas
 from piloop.scoring.ledger import keeps
-from piloop.usage import project_tokens
+from piloop.usage import campaign_tokens
 
 PROTOCOL = 1
 """The version of the documents and of the event envelope. A field may be added within a version, and readers ignore
@@ -67,11 +67,11 @@ class Subject(TypedDict):
     """The row that an event is about."""
 
     kind: str
-    """A ``TargetKind``: ``project``, ``idea``, ``run``, ``candidate``, ``measurement``, ``worker`` or ``comment``."""
+    """A ``TargetKind``: ``campaign``, ``idea``, ``run``, ``candidate``, ``measurement``, ``worker`` or ``comment``."""
     id: int
-    project: int | None
-    """The project of the row, resolved when the event is read. Null when the row is gone or has no project (a reply
-    to a reply). A project filter keeps these events too, because they may be of that project."""
+    campaign: int | None
+    """The campaign of the row, resolved when the event is read. Null when the row is gone or has no campaign (a reply
+    to a reply). A campaign filter keeps these events too, because they may be of that campaign."""
 
 
 class Envelope(TypedDict):
@@ -125,11 +125,11 @@ def snapshot(s: Session) -> Generator[int]:
 
 
 def read(
-    s: Session, after: int, *, project_id: int | None = None, kinds: Collection[str] = (), limit: int = LIMIT
+    s: Session, after: int, *, campaign_id: int | None = None, kinds: Collection[str] = (), limit: int = LIMIT
 ) -> Batch:
     """Read at most ``limit`` events after the cursor ``after``, oldest first.
 
-    ``project_id`` keeps the events whose subject belongs to that project, or whose project is unknown (``Subject``),
+    ``campaign_id`` keeps the events whose subject belongs to that campaign, or whose campaign is unknown (``Subject``),
     and ``kinds`` the events of those kinds.
 
     Raises:
@@ -140,7 +140,7 @@ def read(
         raise ValueError(f'cursor must be 0 or more, not {after}')
     if not 1 <= limit <= MAX_LIMIT:
         raise ValueError(f'limit must be from 1 to {MAX_LIMIT}, not {limit}')
-    owner = project_of(Event.target_kind, Event.target_id)
+    owner = campaign_of(Event.target_kind, Event.target_id)
     query = (
         select(
             Event.id,
@@ -148,7 +148,7 @@ def read(
             cast(Event.actor, String).label('actor'),
             Event.target_kind,
             Event.target_id,
-            owner.label('project'),
+            owner.label('campaign'),
             # the stored values as text, parsed here, so that a row that an older piloop let through cannot fail
             cast(Event.at, String).label('at'),
             case(
@@ -159,8 +159,8 @@ def read(
         .order_by(Event.id)
         .limit(limit)
     )
-    if project_id is not None:
-        query = query.where((owner == project_id) | owner.is_(None))
+    if campaign_id is not None:
+        query = query.where((owner == campaign_id) | owner.is_(None))
     if kinds:
         query = query.where(Event.kind.in_(kinds))
     with snapshot(s) as end:
@@ -180,7 +180,7 @@ def read(
         event = Envelope(
             id=row.id,
             kind=row.kind,
-            subject=Subject(kind=str(row.target_kind), id=row.target_id, project=row.project),
+            subject=Subject(kind=str(row.target_kind), id=row.target_id, campaign=row.campaign),
             actor=row.actor,
             time=time_,
             payload=payload,
@@ -196,7 +196,7 @@ def follow(
     s: Session,
     after: int,
     *,
-    project_id: int | None = None,
+    campaign_id: int | None = None,
     kinds: Collection[str] = (),
     limit: int = LIMIT,
     timeout: float,
@@ -210,7 +210,7 @@ def follow(
     """
     deadline = time.monotonic() + timeout
     while True:
-        batch = read(s, after, project_id=project_id, kinds=kinds, limit=limit)
+        batch = read(s, after, campaign_id=campaign_id, kinds=kinds, limit=limit)
         if batch['events'] or time.monotonic() >= deadline:
             return batch
         after = batch['next']
@@ -258,8 +258,8 @@ class LiveAgent(TypedDict):
     run: int | None
 
 
-class ProjectState(TypedDict):
-    """What ``piloop status`` shows of a project, as data."""
+class CampaignState(TypedDict):
+    """What ``piloop status`` shows of a campaign, as data."""
 
     id: int
     name: str
@@ -267,11 +267,11 @@ class ProjectState(TypedDict):
     status: str
     stopped_reason: str | None
     paused: str | None
-    """What ``piloop pause`` holds: ``launches`` or ``all``. Null while the project is not paused."""
+    """What ``piloop pause`` holds: ``launches`` or ``all``. Null while the campaign is not paused."""
     paused_reason: str | None
     evaluator: int | None
     head: Head | None
-    """Null when the project has no trunk keep."""
+    """Null when the campaign has no trunk keep."""
     kept: int
     candidates: int
     """The baseline and the commits of runs, not the imported references."""
@@ -287,24 +287,24 @@ class ProjectState(TypedDict):
     tokens: int
 
 
-def status_view(s: Session, projects: Sequence[Project]) -> list[ProjectState]:
-    """The state of each project, as ``piloop status`` shows it. Call it inside ``snapshot`` for one consistent view."""
+def status_view(s: Session, campaigns: Sequence[Campaign]) -> list[CampaignState]:
+    """The state of each campaign, as ``piloop status`` shows it. Call it inside ``snapshot`` for one consistent view."""
     states = []
-    for project in projects:
-        at = head_scores(s, project, config_of(project))
-        by_status = select(Idea.status, func.count()).where(Idea.project_id == project.id).group_by(Idea.status)
+    for campaign in campaigns:
+        at = head_scores(s, campaign, config_of(campaign))
+        by_status = select(Idea.status, func.count()).where(Idea.campaign_id == campaign.id).group_by(Idea.status)
         counts: dict[IdeaStatus, int] = {status: n for status, n in s.execute(by_status)}
-        open_runs = s.scalars(project_runs(project.id).where(Run.status.in_(OPEN_RUNS)).order_by(Run.id)).all()
+        open_runs = s.scalars(campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS)).order_by(Run.id)).all()
         states.append(
-            ProjectState(
-                id=project.id,
-                name=project.name,
-                path=project.path,
-                status=str(project.status),
-                stopped_reason=project.stopped_reason,
-                paused=None if project.paused is None else str(project.paused),
-                paused_reason=project.paused_reason,
-                evaluator=project.evaluator_id,
+            CampaignState(
+                id=campaign.id,
+                name=campaign.name,
+                path=campaign.path,
+                status=str(campaign.status),
+                stopped_reason=campaign.stopped_reason,
+                paused=None if campaign.paused is None else str(campaign.paused),
+                paused_reason=campaign.paused_reason,
+                evaluator=campaign.evaluator_id,
                 head=None
                 if at is None
                 else Head(
@@ -314,10 +314,10 @@ def status_view(s: Session, projects: Sequence[Project]) -> list[ProjectState]:
                         for track, value, delta in at[1]
                     ],
                 ),
-                kept=count(s, keeps(project)),
-                candidates=count(s, produced(project)),
+                kept=count(s, keeps(campaign)),
+                candidates=count(s, produced(campaign)),
                 ideas={str(status): counts.get(status, 0) for status in IdeaStatus},
-                runnable=len(queued_ideas(s, project)[1]),
+                runnable=len(queued_ideas(s, campaign)[1]),
                 runs=[
                     OpenRun(
                         id=r.id,
@@ -331,10 +331,10 @@ def status_view(s: Session, projects: Sequence[Project]) -> list[ProjectState]:
                 ],
                 agents=[
                     LiveAgent(id=w.id, kind=w.kind, state=str(w.state), harness=w.harness, model=w.model, run=w.run_id)
-                    for w in live_workers(s, project)
+                    for w in live_workers(s, campaign)
                 ],
-                inbox=len(inbox.items(s, project_id=project.id)),
-                tokens=project_tokens(s, project.id),
+                inbox=len(inbox.items(s, campaign_id=campaign.id)),
+                tokens=campaign_tokens(s, campaign.id),
             )
         )
     return states
@@ -353,7 +353,7 @@ class Item(TypedDict):
     id: int
     priority: int | None
     kind: str
-    project: int | None
+    campaign: int | None
     target: Target
     author: str
     created: str
@@ -366,7 +366,7 @@ class Seed(TypedDict):
     """A seed that waits for research."""
 
     idea: int
-    project: int
+    campaign: int
     created_by: str
     title: str
     provenance: str | None
@@ -381,7 +381,7 @@ class Inbox(TypedDict):
 
 
 def inbox_view(
-    s: Session, *, project_id: int | None = None, kinds: Collection[CommentKind] = (), acked: bool = False
+    s: Session, *, campaign_id: int | None = None, kinds: Collection[CommentKind] = (), acked: bool = False
 ) -> Inbox:
     """What ``piloop inbox`` lists, as data, with the same filters (``piloop.campaign.inbox.items``)."""
     return Inbox(
@@ -390,7 +390,7 @@ def inbox_view(
                 id=c.id,
                 priority=c.priority,
                 kind=str(c.kind),
-                project=p.id if p else None,
+                campaign=p.id if p else None,
                 target=Target(kind=str(c.target_kind), id=c.target_id),
                 author=c.author,
                 created=_iso(c.created_at),
@@ -398,11 +398,11 @@ def inbox_view(
                 acked_by=c.acked_by,
                 body=c.body,
             )
-            for c, p in inbox.items(s, project_id=project_id, kinds=kinds, acked=acked)
+            for c, p in inbox.items(s, campaign_id=campaign_id, kinds=kinds, acked=acked)
         ],
         seeds=[
-            Seed(idea=i.id, project=p.id, created_by=i.created_by, title=i.title, provenance=i.provenance)
-            for i, p in inbox.seeds(s, project_id=project_id)
+            Seed(idea=i.id, campaign=p.id, created_by=i.created_by, title=i.title, provenance=i.provenance)
+            for i, p in inbox.seeds(s, campaign_id=campaign_id)
         ],
     )
 

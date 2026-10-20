@@ -1,6 +1,6 @@
 """The research pack: the context that the daemon gives each research sweep.
 
-Ideas written with broad context produce more keeps. The daemon builds this pack from the database and the project
+Ideas written with broad context produce more keeps. The daemon builds this pack from the database and the campaign
 repo when a research sweep or a progress review starts. ``piloop history`` prints it too. It contains:
 
 - the metrics with their roles, tracks, margins and floors, and the start and the head on each;
@@ -31,9 +31,9 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from piloop.campaign.ideas import yields
-from piloop.campaign.inbox import project_of
-from piloop.config import MetricRole, ProjectConfig
-from piloop.db.models import Candidate, Comment, CommentKind, Idea, IdeaStatus, Project, TargetKind, Verdict
+from piloop.campaign.inbox import campaign_of
+from piloop.config import CampaignConfig, MetricRole
+from piloop.db.models import Campaign, Candidate, Comment, CommentKind, Idea, IdeaStatus, TargetKind, Verdict
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.reports.history import BRIEF_WIDTH, block, renderables as history, text_row, titled_table
 from piloop.scoring.ledger import head, metrics
@@ -69,45 +69,51 @@ OUTCOMES = (
 """Verdicts, best first. The outcome of an idea is the first verdict in this list that one of its candidates has."""
 
 
-def pack(s: Session, project: Project, cfg: ProjectConfig, *, workspace: Path | None) -> str:
+def pack(s: Session, campaign: Campaign, cfg: CampaignConfig, *, workspace: Path | None) -> str:
     """Render the pack as markdown for the brief of a sweep, with markdown tables and no colour."""
     out = io.StringIO()
     console = Console(file=out, width=BRIEF_WIDTH, color_system=None, force_terminal=False, legacy_windows=False)
-    console.print(Group(*renderables(s, project, cfg, table_box=box.MARKDOWN, heading='## ', workspace=workspace)))
+    console.print(Group(*renderables(s, campaign, cfg, table_box=box.MARKDOWN, heading='## ', workspace=workspace)))
     return '\n'.join(line.rstrip() for line in out.getvalue().splitlines()).strip() + '\n'
 
 
 def renderables(
-    s: Session, project: Project, cfg: ProjectConfig, *, table_box: box.Box, heading: str = '', workspace: Path | None
+    s: Session,
+    campaign: Campaign,
+    cfg: CampaignConfig,
+    *,
+    table_box: box.Box,
+    heading: str = '',
+    workspace: Path | None,
 ) -> list[RenderableType]:
     """Build every section in reading order. ``heading='## '`` makes the titles markdown headings."""
     return [
-        _metrics(s, project, cfg, table_box, heading),
+        _metrics(s, campaign, cfg, table_box, heading),
         Text(),
-        _yields(s, project, table_box, heading),
+        _yields(s, campaign, table_box, heading),
         Text(),
-        *_artifacts(project, cfg, workspace, heading),
-        _families(s, project, table_box, heading),
+        *_artifacts(campaign, cfg, workspace, heading),
+        _families(s, campaign, table_box, heading),
         Text(),
-        *_seeds(s, project, heading),
-        *history(s, project, cfg, table_box=table_box, heading=heading),
+        *_seeds(s, campaign, heading),
+        *history(s, campaign, cfg, table_box=table_box, heading=heading),
         Text(),
-        *_worker_findings(s, project, cfg, heading),
-        *_digests(s, project, heading),
-        *_escalations(s, project, heading),
+        *_worker_findings(s, campaign, cfg, heading),
+        *_digests(s, campaign, heading),
+        *_escalations(s, campaign, heading),
     ]
 
 
-def _metrics(s: Session, project: Project, cfg: ProjectConfig, table_box: box.Box, heading: str) -> Table:
+def _metrics(s: Session, campaign: Campaign, cfg: CampaignConfig, table_box: box.Box, heading: str) -> Table:
     """Show the definition of each metric, with the value of the start and of the head."""
-    evaluator_id = project.evaluator_id or 0
+    evaluator_id = campaign.evaluator_id or 0
     start = s.scalars(
         select(Candidate)
-        .where(Candidate.project_id == project.id, Candidate.verdict != Verdict.REFERENCE)
+        .where(Candidate.campaign_id == campaign.id, Candidate.verdict != Verdict.REFERENCE)
         .order_by(Candidate.id)
         .limit(1)
     ).first()
-    trunk = head(s, project)
+    trunk = head(s, campaign)
     at_start = metrics(start, evaluator_id) if start is not None else {}
     at_head = metrics(trunk, evaluator_id) if trunk is not None else {}
     start_ref = f'candidate#{start.id}' if start is not None else 'no candidate'
@@ -149,24 +155,24 @@ def _metrics(s: Session, project: Project, cfg: ProjectConfig, table_box: box.Bo
     return table
 
 
-def _yields(s: Session, project: Project, table_box: box.Box, heading: str) -> Table:
+def _yields(s: Session, campaign: Campaign, table_box: box.Box, heading: str) -> Table:
     """Show the ideas of each source and their outcomes, so research sees which sources find gains."""
     table = titled_table(
         f'{heading}Research pack: ideas by source (keeps, not ideas, measure a source)',
         ['source', 'ideas', 'ran', 'keep', 'interesting'],
         table_box,
     )
-    for y in yields(s, project.id):
+    for y in yields(s, campaign.id):
         text_row(table, y.source, str(y.ideas), str(y.ran), str(y.keeps), str(y.interesting))
     return table
 
 
-def _artifacts(project: Project, cfg: ProjectConfig, workspace: Path | None, heading: str) -> list[RenderableType]:
+def _artifacts(campaign: Campaign, cfg: CampaignConfig, workspace: Path | None, heading: str) -> list[RenderableType]:
     """List the analysis artifacts in ``context``, then the shared workspace, newest first.
 
     A pattern that matches no file is listed, so that a renamed report shows as missing instead of disappearing.
     """
-    repo = Path(project.path)
+    repo = Path(campaign.path)
     found: dict[str, Path] = {}
     missing: list[str] = []
     for pattern in cfg.context:
@@ -256,13 +262,13 @@ def _outline(text: str) -> str:
     return joined if len(joined) <= OUTLINE_CHARS else joined[: OUTLINE_CHARS - 1] + '…'
 
 
-def _families(s: Session, project: Project, table_box: box.Box, heading: str) -> Table:
+def _families(s: Session, campaign: Campaign, table_box: box.Box, heading: str) -> Table:
     """Show what was tried, by family: how many ideas, their outcomes, and which ideas.
 
     The outcome of an idea is the best verdict of the candidates of its runs. An idea that never ran shows its status.
     Ideas without a family share the ``—`` row. Families with a keep come first, then the families with more ideas.
     """
-    ideas = s.scalars(select(Idea).where(Idea.project_id == project.id).order_by(Idea.id)).all()
+    ideas = s.scalars(select(Idea).where(Idea.campaign_id == campaign.id).order_by(Idea.id)).all()
     by_family: defaultdict[str, list[tuple[Idea, str]]] = defaultdict(list)
     for idea in ideas:
         by_family[idea.family or NONE].append((idea, _outcome(idea)))
@@ -296,11 +302,11 @@ def _outcome(idea: Idea) -> str:
     return next((str(v) for v in OUTCOMES if v in verdicts), str(idea.status))
 
 
-def _seeds(s: Session, project: Project, heading: str) -> list[RenderableType]:
+def _seeds(s: Session, campaign: Campaign, heading: str) -> list[RenderableType]:
     """List the seeds that wait for research, oldest first, with their author, base candidate and pointers."""
     rows = s.scalars(
         select(Idea)
-        .where(Idea.project_id == project.id, Idea.status == IdeaStatus.SEED)
+        .where(Idea.campaign_id == campaign.id, Idea.status == IdeaStatus.SEED)
         .order_by(Idea.id)
         .limit(SEEDS_SHOWN)
     ).all()
@@ -318,13 +324,13 @@ def _seeds(s: Session, project: Project, heading: str) -> list[RenderableType]:
     return [title, *lines, Text()]
 
 
-def _worker_findings(s: Session, project: Project, cfg: ProjectConfig, heading: str) -> list[RenderableType]:
+def _worker_findings(s: Session, campaign: Campaign, cfg: CampaignConfig, heading: str) -> list[RenderableType]:
     """List the latest findings of the agents that did runs, with more text than the ideas table shows."""
     by_runs = or_(*(Comment.author.startswith(f'{name}#', autoescape=True) for name in cfg.roles.doing_runs()))
     rows = s.scalars(
         select(Comment)
         .join(Idea, (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == Idea.id))
-        .where(Idea.project_id == project.id, Comment.kind == CommentKind.FINDING, by_runs)
+        .where(Idea.campaign_id == campaign.id, Comment.kind == CommentKind.FINDING, by_runs)
         .order_by(Comment.id.desc())
         .limit(FINDINGS_SHOWN)
     ).all()
@@ -333,12 +339,12 @@ def _worker_findings(s: Session, project: Project, cfg: ProjectConfig, heading: 
     return [title, *(lines or [Text('- None yet.')]), Text()]
 
 
-def _digests(s: Session, project: Project, heading: str) -> list[RenderableType]:
+def _digests(s: Session, campaign: Campaign, heading: str) -> list[RenderableType]:
     """List the latest findings and decisions of the orchestrator or a human."""
     rows = s.scalars(
         select(Comment)
         .where(
-            project_of(Comment.target_kind, Comment.target_id) == project.id,
+            campaign_of(Comment.target_kind, Comment.target_id) == campaign.id,
             Comment.kind.in_((CommentKind.FINDING, CommentKind.DECISION)),
             Comment.author.not_like('%#%'),
             Comment.author != DAEMON_ACTOR,
@@ -354,12 +360,12 @@ def _digests(s: Session, project: Project, heading: str) -> list[RenderableType]
     return [title, *(lines or [Text('- None yet.')]), Text()]
 
 
-def _escalations(s: Session, project: Project, heading: str) -> list[RenderableType]:
+def _escalations(s: Session, campaign: Campaign, heading: str) -> list[RenderableType]:
     """List the unacknowledged escalations: open questions that an idea must not assume an answer to."""
     rows = s.scalars(
         select(Comment)
         .where(
-            project_of(Comment.target_kind, Comment.target_id) == project.id,
+            campaign_of(Comment.target_kind, Comment.target_id) == campaign.id,
             Comment.kind == CommentKind.ESCALATION,
             Comment.acked_at.is_(None),
         )

@@ -23,7 +23,7 @@ from pydantic import ValidationError
 import piloop
 from piloop import mcp
 from piloop.cli import skills, upgrade
-from piloop.config import ConfigError, ProjectConfig, explain, load_project_config
+from piloop.config import CampaignConfig, ConfigError, explain, load_campaign_config
 from piloop.daemon.main import preflight, unbound_failures
 from piloop.daemon.serve import SECRETS_COMMAND_ENV, SecretsError, running_pid, secrets
 from piloop.db.models import utcnow
@@ -42,22 +42,22 @@ CHANGELOG = 'https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md'
 def checks(cfg: Settings) -> list[Check]:
     """Run every check, in the best order to debug a broken upgrade: daemon, database, plugins, configs, skills, tools.
 
-    When the plugins do not compose, the checks of the projects, harnesses and runtimes, which use them, do not run.
+    When the plugins do not compose, the checks of the campaigns, harnesses and runtimes, which use them, do not run.
     """
     composed = _plugins(cfg)
     whose, names, command = _daemon_env(cfg)
     found_secrets, supplied = _secrets(whose, command)
-    first = [_cli(cfg), _daemon(cfg), _database(cfg.home / 'piloop.db'), composed, found_secrets]
+    first = [_cli(cfg), _daemon(cfg), _database(cfg.home / 'piloop.db', running_pid(cfg)), composed, found_secrets]
     if composed.fix is not None:
         found = [*first, *_skills(cfg)]
     else:
-        projects = stored_projects(cfg.home / 'piloop.db')
-        stored = [c for _, _, c in projects if isinstance(c, ProjectConfig)]
+        campaigns = stored_campaigns(cfg.home / 'piloop.db')
+        stored = [c for _, _, c in campaigns if isinstance(c, CampaignConfig)]
         env = whose, names | supplied
         found = [
             *first,
-            *(_project(name, path, c) for name, path, c in projects),
-            *(_mcp(name, c, env) for name, _, c in projects if isinstance(c, ProjectConfig) and c.mcp),
+            *(_campaign(name, path, c) for name, path, c in campaigns),
+            *(_mcp(name, c, env) for name, _, c in campaigns if isinstance(c, CampaignConfig) and c.mcp),
             *_skills(cfg),
             _harnesses(stored),
             *_runtimes(stored),
@@ -120,15 +120,20 @@ def _plugins(cfg: Settings) -> Check:
     return Check('plugins', found + warnings)
 
 
-def _database(path: Path) -> Check:
+def _database(path: Path, daemon: int | None) -> Check:
     if not path.is_file():
-        return Check('database', f'none at {path}', '`piloop init <repo>` creates it with the first project')
+        return Check('database', f'none at {path}', '`piloop init <repo>` creates it with the first campaign')
     if (newer := schema_ahead(path)) is not None:
         return Check('database', str(newer), '`piloop upgrade`, or set PILOOP_HOME to the home of a newer piloop')
     head, at = ScriptDirectory(str(MIGRATIONS)).get_current_head(), _revision(path)
     if at == head:
         return Check('database', f'{path} at schema {head}, current')
-    return Check('database', f'{path} at schema {at or "none"}, this piloop is at {head}', '`piloop migrate`')
+    found = f'{path} at schema {at or "none"}, this piloop is at {head}; its campaigns are checked once it is migrated'
+    if daemon is not None:  # it runs an older piloop, which a migration would break: piloop migrate refuses
+        return Check(
+            'database', found, f'`piloop restart` restarts the daemon (pid {daemon}) on this piloop, which migrates'
+        )
+    return Check('database', found, '`piloop migrate`')
 
 
 def schema_ahead(path: Path) -> SchemaAhead | None:
@@ -142,12 +147,12 @@ def schema_ahead(path: Path) -> SchemaAhead | None:
     return ahead(path, at)
 
 
-def _project(name: str, path: str, stored: ProjectConfig | ValidationError) -> Check:
-    """Check that the repo's ``piloop.toml`` loads, and that the stored copy (``projects.config``) validates."""
-    what = f'project {name}'
+def _campaign(name: str, path: str, stored: CampaignConfig | ValidationError) -> Check:
+    """Check that the repo's ``piloop.toml`` loads, and that the stored copy (``campaigns.config``) validates."""
+    what = f'campaign {name}'
     reread = f'fix {path}/piloop.toml, then `piloop init {path}` re-reads it'
     try:
-        load_project_config(Path(path))
+        load_campaign_config(Path(path))
     except FileNotFoundError:
         return Check(what, f'no piloop.toml in {path}', f'restore it, then `piloop init {path}`')
     except ConfigError as e:
@@ -155,7 +160,7 @@ def _project(name: str, path: str, stored: ProjectConfig | ValidationError) -> C
     if isinstance(stored, ValidationError):
         return Check(
             what,
-            explain('its stored copy (projects.config, what the daemon schedules from)', stored),
+            explain('its stored copy (campaigns.config, what the daemon schedules from)', stored),
             f'`piloop init {path}`',
         )
     return Check(what, f'{path}/piloop.toml loads')
@@ -193,8 +198,8 @@ def _secrets(whose: str, command: str | None) -> tuple[Check, set[str]]:
     return Check('secrets', f'{SECRETS_COMMAND_ENV} of {whose} ({command}) prints {", ".join(sorted(names))}'), names
 
 
-def _mcp(name: str, config: ProjectConfig, env: tuple[str, set[str]]) -> Check:
-    """Check that the project's MCP servers can start: their commands are on PATH and their variables are set.
+def _mcp(name: str, config: CampaignConfig, env: tuple[str, set[str]]) -> Check:
+    """Check that the campaign's MCP servers can start: their commands are on PATH and their variables are set.
 
     The config load checked their form already. Variables are reported by name. Values are never shown.
     """
@@ -234,8 +239,8 @@ def _skills(cfg: Settings) -> list[Check]:
     ]
 
 
-def _harnesses(configs: list[ProjectConfig]) -> Check:
-    """Check that each harness that a role of a project can launch has its executable on PATH."""
+def _harnesses(configs: list[CampaignConfig]) -> Check:
+    """Check that each harness that a role of a campaign can launch has its executable on PATH."""
     executables = {
         c.harness_for(h).executable: h for c in configs for kind in c.roles.all() for h in c.role_harnesses(kind)
     }
@@ -244,13 +249,13 @@ def _harnesses(configs: list[ProjectConfig]) -> Check:
         return Check(
             'harnesses',
             f'not on PATH: {", ".join(missing)}',
-            'install them, or take them out of `harnesses` in piloop.toml and `piloop init` the project',
+            'install them, or take them out of `harnesses` in piloop.toml and `piloop init` the campaign',
         )
     return Check('harnesses', f'on PATH: {", ".join(sorted(executables.values())) or "none configured"}')
 
 
-def _runtimes(configs: list[ProjectConfig]) -> list[Check]:
-    """Run the checks of each runtime that a project uses, with the harness executables of the projects that use it."""
+def _runtimes(configs: list[CampaignConfig]) -> list[Check]:
+    """Run the checks of each runtime that a campaign uses, with the harness executables of the campaigns that use it."""
     executables: dict[str, set[str]] = {}
     for c in configs:
         programs = {c.harness_for(h).executable for kind in c.roles.all() for h in c.role_harnesses(kind)}
@@ -268,21 +273,21 @@ def _revision(path: Path) -> str | None:
     return row[0] if row else None
 
 
-def stored_projects(path: Path) -> list[tuple[str, str, ProjectConfig | ValidationError]]:
-    """Return the name, repo path and stored config of each registered project, or why the config does not validate."""
+def stored_campaigns(path: Path) -> list[tuple[str, str, CampaignConfig | ValidationError]]:
+    """Return the name, repo path and stored config of each registered campaign, or why the config does not validate."""
     if not path.is_file():
         return []
     with closing(_read_only(path)) as con:
         try:
-            rows = con.execute('SELECT name, path, config FROM projects ORDER BY id').fetchall()
-        except sqlite3.OperationalError:  # never migrated, so there is no projects table
+            rows = con.execute('SELECT name, path, config FROM campaigns ORDER BY id').fetchall()
+        except sqlite3.OperationalError:  # never migrated, so there is no campaigns table
             return []
     return [(name, repo, _stored(config)) for name, repo, config in rows]
 
 
-def _stored(config: str) -> ProjectConfig | ValidationError:
+def _stored(config: str) -> CampaignConfig | ValidationError:
     try:
-        return ProjectConfig.model_validate(json.loads(config))
+        return CampaignConfig.model_validate(json.loads(config))
     except ValidationError as e:
         return e
 

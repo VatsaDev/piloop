@@ -1,6 +1,6 @@
 ---
 name: piloop-setup
-description: Set up or re-configure a piloop autoresearch campaign in the current repo, from any harness with a shell (Claude Code, Codex, pi, Gemini CLI, Cursor). Use when the human asks to set up, start, bootstrap or change a piloop project, or to use piloop to improve something ("use piloop to make X faster"); do not use it in an agent that piloop launched (PILOOP_ACTOR is set).
+description: Set up or re-configure a piloop autoresearch campaign in the current repo, from any harness with a shell (Claude Code, Codex, pi, Gemini CLI, Cursor). Use when the human asks to set up, start, bootstrap or change a piloop campaign, or to use piloop to improve something ("use piloop to make X faster"); do not use it in an agent that piloop launched (PILOOP_ACTOR is set).
 ---
 
 # Set up a piloop campaign
@@ -10,7 +10,7 @@ You do the setup. The human answers an interview and logs in where a CLI needs a
 - Work in the repo of this session, or in the repo that the human names.
 - Run every command yourself.
 - After each step, report the result in one line.
-- To try a bundled example, run `piloop init --example enwik8 <dir>` (or `titanic-tracks`). It registers the project, so
+- To try a bundled example, run `piloop init --example enwik8 <dir>` (or `titanic-tracks`). It registers the campaign, so
   skip steps 2 to 4: fit `harnesses` and `runtime` in `<dir>/piloop.toml` to step 1, run `piloop init <dir>` again, and
   go on at step 5.
 
@@ -27,7 +27,7 @@ Run each check yourself:
   `piloop prompt`. Only then, install [Herdr](https://herdr.dev), set `runtime = "herdr"` in step 3, and check it:
   - `herdr workspace list`. Herdr answers.
   - `herdr integration status`. Herdr tells a working agent from an idle one through a hook that it installs per
-    harness. Every harness that the project enables must show `current`.
+    harness. Every harness that the campaign enables must show `current`.
   - To fix one, run `herdr integration install pi|claude|codex`.
   - A pi worker without the hook stops with `prompt_lost`.
 - For each harness the human wants, check the version and the login:
@@ -58,13 +58,13 @@ The interview is a gate. Write no file before the human answers the interview or
    - Skip what the repo already answers. Say what you read, so that the human can object.
    - Merge, reorder and add questions that fit the problem.
    - Stop when you have enough to write the brief.
-   - Do not take answers from an example project. The blank template gives the shape, not the content.
+   - Do not take answers from an example campaign. The blank template gives the shape, not the content.
 
 Topics to cover:
 
 - **Objective.** The one primary metric, its direction, and what "done" is (a target value, a leaderboard position, a
   deadline).
-  - Several objectives for one artifact are *tracks* of one project, not several projects. An example is the
+  - Several objectives for one artifact are *tracks* of one campaign, not several campaigns. An example is the
     accuracy and the serving cost of one model.
   - Each track has its own primary metric, a `margin` and an optional `floor` that bind the candidates of the other
     tracks, and a share of the workers.
@@ -172,16 +172,16 @@ Show both files to the human. Ask once more before you register.
 
 ## 4. Register
 
-Run `piloop init .` again. It commits your edits, measures HEAD as the baseline and registers the project.
+Run `piloop init .` again. It commits your edits, measures HEAD as the baseline and registers the campaign.
 
 Tell the human the baseline value in one line. A surprising value means that the evaluate command is wrong.
 
 ## 5. Start the daemon
 
 Run `piloop serve --detach`. The log is at `$PILOOP_HOME/serve.log`. `piloop stop` stops the daemon, not the
-campaign: the project stays active, and the next `piloop serve` continues it.
+campaign: the campaign stays active, and the next `piloop serve` continues it.
 
-Run `piloop status <name>`. It shows the pid of the daemon and the project.
+Run `piloop status <name>`. It shows the pid of the daemon and the campaign.
 
 ## 6. Start the backlog
 
@@ -196,10 +196,10 @@ While the campaign runs, someone must answer escalations and record decisions. T
 `piloop-operate` skill and its loop on `piloop inbox wait`. Ask the human, in one question, whether to run the loop in
 this session or in a background subagent that leaves this session free.
 
-## Re-configure an existing project
+## Re-configure an existing campaign
 
 1. Run the same interview, but pre-fill it from the current `brief.md` and `piloop.toml`, not from guesses. The first
-   option you offer is always what the project says now.
+   option you offer is always what the campaign says now.
 2. Ask only about what the human wants to change.
 3. Apply the change to both files and show them.
 4. Run `piloop init .` again. It reads the config again.
@@ -212,7 +212,7 @@ scores from the new one.
 - `piloop status` prints the head, the running agents, the last candidates and the items in the human's inbox.
 - `piloop watch` shows the same, live, in the human's terminal.
 - `piloop sql "<statement>"` runs SQL.
-- Workers run as background processes. With `runtime = "herdr"`, they run as tabs in the workspace of this project
+- Workers run as background processes. With `runtime = "herdr"`, they run as tabs in the workspace of this campaign
   in the `piloop` Herdr session, and `piloop attach <worker_id>` focuses one.
 - Every commit a worker makes becomes a candidate (a commit whose tree is already a candidate is that candidate). The
   evaluate command measures it, unless the commit has a `Piloop-Eval: skip` trailer.

@@ -10,8 +10,15 @@ from sqlalchemy import select
 from piloop.cli import common
 from piloop.config import config_of
 from piloop.daemon.main import Daemon, preflight
-from piloop.daemon.serve import restart as restart_in_place, running_pid, service_unit, spawn_detached, terminate
-from piloop.db.models import Project
+from piloop.daemon.serve import (
+    OlderDaemon,
+    restart as restart_in_place,
+    running_pid,
+    service_unit,
+    spawn_detached,
+    terminate,
+)
+from piloop.db.models import Campaign
 from piloop.db.session import SchemaAhead
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.plugins.host import PluginError
@@ -45,7 +52,7 @@ def serve(
     inherited = Inherited.now()  # before the daemon starts a child of its own
     try:
         daemon = Daemon(common.settings, inherited)
-    except SchemaAhead as e:
+    except (OlderDaemon, SchemaAhead) as e:
         raise SystemExit(str(e)) from e
     daemon.serve()
 
@@ -104,12 +111,12 @@ def service_unit_cmd() -> None:
     """Print a systemd user unit (a launchd plist on macOS) that keeps `piloop serve` running.
 
     It prints the unit only, and installs nothing. The unit carries the variables that the usage globs of the built-in
-    harnesses and of the registered projects' harnesses name.
+    harnesses and of the registered campaigns' harnesses name.
     """
     harnesses = list(DEFAULT_HARNESSES.values())
     with common.session() as s:
-        for project in s.scalars(select(Project)):
-            harnesses += config_of(project).harness.values()
+        for campaign in s.scalars(select(Campaign)):
+            harnesses += config_of(campaign).harness.values()
     unit = service_unit(common.settings, harnesses)
     common.console.print(unit, end='', markup=False, highlight=False, soft_wrap=True)
 

@@ -10,9 +10,9 @@ write the same tables, with `piloop sql` or through the CLI. The rules live in t
 constraints fix the allowed values, foreign keys and unique keys fix the relations, and triggers record who changed a
 row and log each change in `events`.
 
-- A **project** is one repo. It owns its ideas, its candidates and its evaluators. `piloop init` adds an evaluator
+- A **campaign** is one repo. It owns its ideas, its candidates and its evaluators. `piloop init` adds an evaluator
   row when the evaluate command, the metrics or `link` change.
-- An **idea** is something to try. `idea_links` relates two ideas of one project: one runs `after` the other, or
+- An **idea** is something to try. `idea_links` relates two ideas of one campaign: one runs `after` the other, or
   `supersedes` it. A track is not a table. `ideas.track` is the name of a track in `piloop.toml`.
 - A **run** is one attempt at an idea. A **worker** row is one agent process. A run's worker row has its `run_id`.
 - A **candidate** is a distinct state of the code. Its git tree identifies it, and `parent_id` is its lineage. A
@@ -21,7 +21,7 @@ row and log each change in `events`.
   A program reads the events after a cursor with `piloop events`: see the [event feed](/reference/event-feed).
 - A **technique** is an outside technique that a [scout](/concepts/roles#scout) sweep found.
 
-Three columns hold a candidate id or an evaluator id without a foreign key: `projects.evaluator_id`,
+Three columns hold a candidate id or an evaluator id without a foreign key: `campaigns.evaluator_id`,
 `ideas.base_candidate_id` and `runs.base_candidate_id`. The foreign keys would make a cycle, and SQLite cannot add a
 foreign key to a cycle afterwards.
 

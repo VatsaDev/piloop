@@ -15,8 +15,8 @@ from pytest_mock import MockerFixture
 
 from piloop.cli import doctor, skills, upgrade
 from piloop.cli.doctor import checks, report
-from piloop.config import ProjectConfig
-from piloop.db.models import Project
+from piloop.config import CampaignConfig
+from piloop.db.models import Campaign
 from piloop.db.session import Database
 from piloop.runtime import Check
 from piloop.settings import Settings
@@ -33,7 +33,7 @@ def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     """The test's home, a uv receipt of a git install, and a PATH holding only what a test puts in ``bin``."""
     bin_dir = tmp_path / 'bin'
     bin_dir.mkdir(exist_ok=True)
-    for tool in ('git', 'sh', 'wc'):  # what the project fixture's repo and evaluate command need
+    for tool in ('git', 'sh', 'wc'):  # what the campaign fixture's repo and evaluate command need
         (bin_dir / tool).symlink_to(shutil.which(tool) or tool)
     (bin_dir / 'python3').symlink_to(sys.executable)  # the fake herdr's interpreter
     monkeypatch.setenv('PATH', str(bin_dir))
@@ -57,7 +57,7 @@ def by_name(cfg: Settings) -> dict[str, Check]:
 
 
 def test_a_healthy_install_passes_every_check(
-    cfg: Settings, project: Project, tmp_path: Path, mocker: MockerFixture
+    cfg: Settings, campaign: Campaign, tmp_path: Path, mocker: MockerFixture
 ) -> None:
     on_path(tmp_path, 'pi')
     skills.install(cfg.agent_skills_dir)
@@ -69,10 +69,10 @@ def test_a_healthy_install_passes_every_check(
         f'ok    database: {tmp_path}/piloop.db at schema {HEAD}, current',
         'ok    plugins: 4 roles, 2 runtimes, 1 stop rule, 2 remote backends, 6 triggers, 1 verdict rule; all built in',
         'ok    secrets: from the environment of this shell only (PILOOP_SECRETS_COMMAND unset)',
-        f'ok    project demo: {project.path}/piloop.toml loads',
+        f'ok    campaign demo: {campaign.path}/piloop.toml loads',
         f'ok    skills (pi): current in {cfg.agent_skills_dir}',
         'ok    harnesses: on PATH: script',
-    ], 'a subprocess-runtime project needs no Herdr check'
+    ], 'a subprocess-runtime campaign needs no Herdr check'
 
 
 def test_skills_missing_or_stale_for_a_harness_on_path_fail_with_the_install_command(
@@ -104,12 +104,17 @@ def test_a_daemon_started_before_the_code_changed_still_runs_the_old_code(cfg: S
 def test_a_database_missing_unmigrated_behind_or_ahead_says_which_command_brings_it_to_head(cfg: Settings) -> None:
     path = cfg.home / 'piloop.db'
     assert by_name(cfg)['database'] == Check(
-        'database', f'none at {path}', '`piloop init <repo>` creates it with the first project'
+        'database', f'none at {path}', '`piloop init <repo>` creates it with the first campaign'
     )
     path.touch()
-    assert by_name(cfg)['database'] == Check(
-        'database', f'{path} at schema none, this piloop is at {HEAD}', '`piloop migrate`'
-    )
+    behind = f'{path} at schema none, this piloop is at {HEAD}; its campaigns are checked once it is migrated'
+    assert by_name(cfg)['database'] == Check('database', behind, '`piloop migrate`')
+    for daemon in hold_lock(cfg.pid_file):
+        assert by_name(cfg)['database'] == Check(
+            'database',
+            behind,
+            f'`piloop restart` restarts the daemon (pid {daemon.pid}) on this piloop, which migrates',
+        ), 'piloop migrate refuses under the daemon of an older piloop'
     command.upgrade(alembic(path), 'head')
     assert by_name(cfg)['database'] == Check('database', f'{path} at schema {HEAD}, current')
     with closing(sqlite3.connect(path)) as con:
@@ -122,40 +127,40 @@ def test_a_database_missing_unmigrated_behind_or_ahead_says_which_command_brings
     assert path.read_bytes() == before and not (cfg.home / 'piloop.db-wal').exists(), 'opened read-only'
 
 
-def test_a_project_whose_toml_is_gone_invalid_or_whose_stored_copy_no_longer_validates_fails(
-    cfg: Settings, db: Database, project: Project
+def test_a_campaign_whose_toml_is_gone_invalid_or_whose_stored_copy_no_longer_validates_fails(
+    cfg: Settings, db: Database, campaign: Campaign
 ) -> None:
-    toml = Path(project.path) / 'piloop.toml'
+    toml = Path(campaign.path) / 'piloop.toml'
     text = toml.read_text()
     toml.write_text(text.replace('role = "primary"', 'role = "boss"'))
-    broken = by_name(cfg)['project demo']
+    broken = by_name(cfg)['campaign demo']
     assert broken.found.startswith(f'{toml} is not a valid piloop config (1 problem(s)):\n  metrics[0].role = ')
-    assert broken.fix == f'fix {toml}, then `piloop init {project.path}` re-reads it'
+    assert broken.fix == f'fix {toml}, then `piloop init {campaign.path}` re-reads it'
     toml.unlink()
-    assert by_name(cfg)['project demo'] == Check(
-        'project demo', f'no piloop.toml in {project.path}', f'restore it, then `piloop init {project.path}`'
+    assert by_name(cfg)['campaign demo'] == Check(
+        'campaign demo', f'no piloop.toml in {campaign.path}', f'restore it, then `piloop init {campaign.path}`'
     )
     toml.write_text(text)
     with db.session() as s:
         stale: dict[str, object] = {'name': 'demo'}
-        s.get_one(Project, project.id).config = stale
+        s.get_one(Campaign, campaign.id).config = stale
         s.commit()
-    assert by_name(cfg)['project demo'] == Check(
-        'project demo',
-        'its stored copy (projects.config, what the daemon schedules from) is not a valid piloop config (3 problem(s)):\n'
+    assert by_name(cfg)['campaign demo'] == Check(
+        'campaign demo',
+        'its stored copy (campaigns.config, what the daemon schedules from) is not a valid piloop config (3 problem(s)):\n'
         '  metrics: Field required. Fix: add the key; https://piloop.autoresearch.inc/reference/configuration says what it takes\n'
         '  evaluate: Field required. Fix: add the key; https://piloop.autoresearch.inc/reference/configuration says what it takes\n'
         '  model: Field required. Fix: add the key; https://piloop.autoresearch.inc/reference/configuration says what it takes',
-        f'`piloop init {project.path}`',
+        f'`piloop init {campaign.path}`',
     )
     assert by_name(cfg)['harnesses'].found == 'on PATH: none configured', 'no valid stored config, no harness to check'
 
 
 def test_a_missing_harness_and_herdr_are_named(
-    cfg: Settings, db: Database, project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    cfg: Settings, db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with db.session() as s:
-        row = s.get_one(Project, project.id)
+        row = s.get_one(Campaign, campaign.id)
         row.config = {
             **row.config,
             'runtime': 'herdr',
@@ -167,10 +172,10 @@ def test_a_missing_harness_and_herdr_are_named(
     assert found['harnesses'] == Check(
         'harnesses',
         'not on PATH: codex (codex)',
-        'install them, or take them out of `harnesses` in piloop.toml and `piloop init` the project',
+        'install them, or take them out of `harnesses` in piloop.toml and `piloop init` the campaign',
     )
     assert found['herdr'] == Check(
-        'herdr', 'a project uses the herdr runtime and herdr is not on PATH', 'install herdr'
+        'herdr', 'a campaign uses the herdr runtime and herdr is not on PATH', 'install herdr'
     )
     on_path(tmp_path, 'herdr', FAKE_HERDR)
     monkeypatch.setenv('FAKE_HERDR_LOG', str(tmp_path / 'herdr.log'))
@@ -187,12 +192,12 @@ def test_a_missing_harness_and_herdr_are_named(
     )
 
 
-def test_missing_herdr_hooks_for_a_harness_of_a_herdr_project_fail(
-    cfg: Settings, db: Database, project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_missing_herdr_hooks_for_a_harness_of_a_herdr_campaign_fail(
+    cfg: Settings, db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Herdr reports no session for an agent whose harness lacks Herdr's hooks, so doctor names the install command."""
     with db.session() as s:
-        row = s.get_one(Project, project.id)
+        row = s.get_one(Campaign, campaign.id)
         row.config = {**row.config, 'runtime': 'herdr', 'harnesses': ['codex'], 'model': {'codex': 'm'}}
         s.commit()
     on_path(tmp_path, 'herdr', FAKE_HERDR)
@@ -214,17 +219,17 @@ def test_missing_herdr_hooks_for_a_harness_of_a_herdr_project_fail(
 
 
 def test_mcp_servers_are_checked_for_their_commands_and_the_variables_they_name_by_name_only(
-    cfg: Settings, db: Database, project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    cfg: Settings, db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     servers = {
         'exa': {'url': 'https://mcp.exa.ai/mcp', 'headers_env': {'x-api-key': 'EXA_API_KEY'}},
         'xai': {'command': ['xai-server'], 'env': ['XAI_API_KEY', 'EXA_API_KEY']},
     }
     with db.session() as s:
-        row = s.get_one(Project, project.id)
+        row = s.get_one(Campaign, campaign.id)
         row.config = {**row.config, 'mcp': servers}
         s.commit()
-    assert 'mcp demo' not in by_name(Settings(home=tmp_path / 'empty')), 'no projects, nothing to check'
+    assert 'mcp demo' not in by_name(Settings(home=tmp_path / 'empty')), 'no campaigns, nothing to check'
     assert by_name(cfg)['mcp demo'] == Check(
         'mcp demo', 'not on PATH: xai-server', 'install them, or fix the [mcp.*] tables'
     )
@@ -244,8 +249,8 @@ def test_mcp_servers_are_checked_for_their_commands_and_the_variables_they_name_
         assert by_name(cfg)['mcp demo'].found == f'the daemon (pid {holder.pid}) lacks XAI_API_KEY'
     monkeypatch.setattr('piloop.cli.doctor.running_pid', lambda _cfg: 2**30)
     with db.session() as s:
-        row = s.get_one(Project, project.id)
-        roles = ProjectConfig.model_validate(row.config).roles.model_dump(mode='json')
+        row = s.get_one(Campaign, campaign.id)
+        roles = CampaignConfig.model_validate(row.config).roles.model_dump(mode='json')
         roles['watchdog']['mcp'] = ['exa', 'xai']
         script = {'executable': 'script', 'headless': ['{mcp}', '{prompt}'], 'mcp': 'claude'}
         row.config = {**row.config, 'harness': {'script': script}, 'roles': roles, 'harnesses': ['script']}
@@ -258,10 +263,10 @@ def test_mcp_servers_are_checked_for_their_commands_and_the_variables_they_name_
 
 
 def test_secrets_come_from_the_daemons_secrets_command_which_doctor_runs_reporting_names_only(
-    cfg: Settings, db: Database, project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    cfg: Settings, db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with db.session() as s:
-        row = s.get_one(Project, project.id)
+        row = s.get_one(Campaign, campaign.id)
         row.config = {**row.config, 'mcp': {'xai': {'command': ['sh'], 'env': ['XAI_API_KEY', 'EXA_API_KEY']}}}
         s.commit()
     shell = Settings(home=cfg.home, secrets_command="printf 'XAI_API_KEY=%s%s' xai value")
@@ -351,7 +356,7 @@ def test_a_newer_piloop_at_the_source_is_a_notice_that_says_who_upgrades_with_th
     assert by_name(canary)['cli'] == Check(
         'cli', f'{newer} PILOOP_AUTO_UPGRADE is on: `piloop-canary upgrade` installs it'
     )
-    assert by_name(canary)['database'].fix == '`piloop-canary init <repo>` creates it with the first project'
+    assert by_name(canary)['database'].fix == '`piloop-canary init <repo>` creates it with the first campaign'
     fake(tmp_path, 'git', f"printf '{OLD}\\trefs/heads/main\\n'")
     assert by_name(cfg)['cli'] == Check('cli', f'{installed()}, the newest at its source')
     fake(tmp_path, 'git', 'exit 2')

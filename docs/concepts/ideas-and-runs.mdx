@@ -10,7 +10,7 @@ import QueueKeys from '/snippets/generated/queue-keys.mdx';
 An **idea** is one thing to test: a title, a hypothesis and, optionally, a plan for the worker.
 
 ```bash
-piloop idea add my-project "Gradient boosting on engineered features" \
+piloop idea add my-campaign "Gradient boosting on engineered features" \
   --hypothesis "Trees use the title and family-size features better than the linear model" \
   --priority 1
 ```
@@ -56,7 +56,7 @@ from another starting point is a **branch run**. Its keeps form a branch and do 
 idea builds on a specific tree, such as an older keep or a [note](/concepts/verdict#notes). `piloop idea base <id>
 <candidate>|head --reason "…"` changes the pin of an idea that exists.
 
-`piloop candidate import <project> <commit>` registers any commit of the repo as a **reference**: a starting point
+`piloop candidate import <campaign> <commit>` registers any commit of the repo as a **reference**: a starting point
 from outside the lineage, such as a branch or the result of another campaign. The daemon measures it, and an idea
 can start from it with `--base`.
 
@@ -69,7 +69,7 @@ A **seed** is a hunch with pointers: a follow-up that a result suggests, two can
 when you do not have time to define the idea:
 
 ```bash
-piloop idea seed my-project "Combine the title feature of candidate#12 with the model of candidate#15" \
+piloop idea seed my-campaign "Combine the title feature of candidate#12 with the model of candidate#15" \
   --from "candidate#12, candidate#15"
 ```
 
@@ -116,7 +116,7 @@ an uncommitted change or a comment, is not an attempt, whatever tokens it spent.
 start. The daemon starts the same run again with a new worker, up
 to two times. If the third start fails too, the run fails with `no agent of the run started to work`, which is still
 no attempt, and the idea is `parked`. After three failed starts within 10 minutes, the daemon stops launching agents
-for the project and escalates.
+for the campaign and escalates.
 
 ### Commit trailers
 
@@ -132,7 +132,7 @@ other trailers can follow it in a paragraph of their own:
   seconds, the daemon queues the first line of the comment (up to 200 characters) for the worker, with a query for
   the full text. Put the instruction in the first line.
 - `piloop prompt <worker-id> "<text>"` sends text to a worker directly.
-- A comment on the project reaches no worker. When a decision changes the work of a running worker, write it on its
+- A comment on the campaign reaches no worker. When a decision changes the work of a running worker, write it on its
   run.
 
 A message never cuts the worker's current turn short. It waits for the turn to end. An idle worker takes it at once.

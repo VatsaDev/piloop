@@ -10,7 +10,7 @@ here.
 pack show it.
 
 Seeds: every role except the worker can file a hunch with pointers (``seed``). Research develops a seed into a
-defined idea (``develop``) or rejects it. ``defined_by`` returns the agents that added a defined idea to the project.
+defined idea (``develop``) or rejects it. ``defined_by`` returns the agents that added a defined idea to the campaign.
 This is how piloop measures the work of a research sweep.
 """
 
@@ -77,8 +77,8 @@ def _blocked_by(*settled: IdeaStatus) -> ColumnElement[bool]:
     )
 
 
-def supersede(s: Session, project_id: int) -> dict[int, int]:
-    """Reject each idea of the project that a newer idea supersedes and that never ran.
+def supersede(s: Session, campaign_id: int) -> dict[int, int]:
+    """Reject each idea of the campaign that a newer idea supersedes and that never ran.
 
     The daemon runs this on each tick. An idea never ran if it has no ``runs`` row and is ``seed``, ``proposed`` or
     ``ready``. A superseded idea that ran keeps its status and its candidates, even if a failed attempt put it back
@@ -95,7 +95,7 @@ def supersede(s: Session, project_id: int) -> dict[int, int]:
     superseded = (
         select(Idea)
         .where(
-            Idea.project_id == project_id,
+            Idea.campaign_id == campaign_id,
             Idea.status.in_(NEVER_RAN),
             ~exists().where(Run.idea_id == Idea.id),
             exists().where(link.target_id == Idea.id, link.kind == LinkKind.SUPERSEDES),
@@ -243,8 +243,8 @@ def develop(
     return idea
 
 
-def defined_by(s: Session, project_id: int) -> set[str]:
-    """Return the signatures that added a defined idea to the project, by inserting it or by developing a seed.
+def defined_by(s: Session, campaign_id: int) -> set[str]:
+    """Return the signatures that added a defined idea to the campaign, by inserting it or by developing a seed.
 
     The agent that filed a seed did not define anything. A research sweep that did neither added no ideas, whatever
     else it wrote.
@@ -252,14 +252,14 @@ def defined_by(s: Session, project_id: int) -> set[str]:
     from_seed = (Event.target_kind == TargetKind.IDEA) & (Event.kind == 'idea.status')
     from_seed &= Event.payload['old'].as_string() == IdeaStatus.SEED.value
     was_seed = exists().where(from_seed, Event.target_id == Idea.id)
-    inserted = select(Idea.created_by).where(Idea.project_id == project_id, Idea.status != IdeaStatus.SEED, ~was_seed)
+    inserted = select(Idea.created_by).where(Idea.campaign_id == campaign_id, Idea.status != IdeaStatus.SEED, ~was_seed)
     developed = (
         select(Event.actor)
         .join(Idea, Idea.id == Event.target_id)
         .where(
             from_seed,
             Event.payload['new'].as_string().in_((IdeaStatus.READY.value, IdeaStatus.PROPOSED.value)),
-            Idea.project_id == project_id,
+            Idea.campaign_id == campaign_id,
         )
     )
     return set(s.scalars(inserted)) | set(s.scalars(developed))
@@ -279,7 +279,7 @@ class Yield:
         return f'{self.source} {self.ideas} ideas, {self.ran} ran → {self.keeps} keep, {self.interesting} interesting'
 
 
-def yields(s: Session, project_id: int) -> list[Yield]:
+def yields(s: Session, campaign_id: int) -> list[Yield]:
     """Count, for each source, the ideas, the ideas with a run, and their ``keep`` and ``interesting`` candidates.
 
     The result is sorted by keeps, then interesting candidates, then ideas, most first. A verdict counts as it is
@@ -295,7 +295,7 @@ def yields(s: Session, project_id: int) -> list[Yield]:
         )
         .outerjoin(Run, Run.idea_id == Idea.id)
         .outerjoin(Candidate, Candidate.run_id == Run.id)
-        .where(Idea.project_id == project_id)
+        .where(Idea.campaign_id == campaign_id)
         .group_by(Idea.id)
     )
     tally: defaultdict[str, list[int]] = defaultdict(lambda: [0, 0, 0, 0])

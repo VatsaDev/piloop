@@ -1,7 +1,7 @@
-"""Project configuration: ``piloop.toml`` at the repo root.
+"""Campaign configuration: ``piloop.toml`` at the repo root.
 
-``piloop init`` loads the file and stores it in ``projects.config``, and the daemon schedules from that copy.
-``PILOOP_PROJECT_*`` environment variables override the file when it is loaded, so they apply to ``piloop init`` and
+``piloop init`` loads the file and stores it in ``campaigns.config``, and the daemon schedules from that copy.
+``PILOOP_CAMPAIGN_*`` environment variables override the file when it is loaded, so they apply to ``piloop init`` and
 ``piloop doctor``, not to the daemon.
 
 ``docs/reference/configuration.mdx`` is generated from these models. Run ``make docs`` after you change them.
@@ -10,6 +10,7 @@
 import hashlib
 import json
 import math
+import os
 import re
 import tomllib
 from dataclasses import dataclass
@@ -27,11 +28,17 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    EnvSettingsSource,
+    InitSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 from sqlalchemy.orm import Session
 
 from piloop import deprecated
-from piloop.db.models import Project, Worker, WorkerKind
+from piloop.db.models import Campaign, Worker, WorkerKind
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.mcp import McpServer, ServerName
 from piloop.plugins.contracts.runtime import RUNTIMES
@@ -85,17 +92,17 @@ class Metric(BaseModel):
     recorded and never affects the verdict."""
     track: str | None = None
     """Primary metrics only. The name of the track (objective) that this metric is the primary of. When unset, the
-    track has the metric's name, so a project with one primary needs nothing here. With several primaries, each one
+    track has the metric's name, so a campaign with one primary needs nothing here. With several primaries, each one
     names its own track, and each track needs a ``[tracks.<name>]`` table."""
     margin: float | None = Field(default=None, ge=0)
     """The largest regression from the bar that a candidate may show, in the metric's own units (an absolute value,
-    not a fraction). Required on a guardrail. Also required on every primary of a project with several tracks: when a
+    not a fraction). Required on a guardrail. Also required on every primary of a campaign with several tracks: when a
     candidate of another track is judged, that primary is a guardrail. When the evaluate command writes per-unit
     results, the margin is tested on the confidence bound of the bootstrap. Otherwise it is tested on the aggregate."""
     floor: float | None = None
     """Optional. The worst value a candidate may have: at least this value for ``higher``, at most this value for
     ``lower``. It is a hard limit on the aggregate, independent of the bar, and only an edit of ``piloop.toml`` changes
-    it. Allowed on a guardrail, and on a primary of a project with several tracks, where it applies to the candidates
+    it. Allowed on a guardrail, and on a primary of a campaign with several tracks, where it applies to the candidates
     of the other tracks."""
 
     @model_validator(mode='after')
@@ -123,14 +130,14 @@ class Metric(BaseModel):
 
 
 class TrackConfig(BaseModel):
-    """``[tracks.<name>]``: one track of the project. A track is an objective with its own primary metric and brief.
+    """``[tracks.<name>]``: one track of the campaign. A track is an objective with its own primary metric and brief.
 
     A track has the name of its primary's ``track``, or else the name of the primary. All tracks build on one trunk. A
     run starts from the head, which is the latest keep on the trunk. A keep on any track must also hold the primary of
-    every other track within that primary's ``margin`` and ``floor``. A project with one primary has one track and
-    needs no table. A project with several primaries needs one table for each track, and the shares must sum to 1.
+    every other track within that primary's ``margin`` and ``floor``. A campaign with one primary has one track and
+    needs no table. A campaign with several primaries needs one table for each track, and the shares must sum to 1.
 
-    Experimental: projects with more than one track.
+    Experimental: campaigns with more than one track.
     """
 
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
@@ -154,7 +161,7 @@ class Track:
     share: float
     addendum: str | None
     guardrails: tuple[Metric, ...]
-    """What a candidate of this track must hold: the project's guardrails, then the primary of every other track, each
+    """What a candidate of this track must hold: the campaign's guardrails, then the primary of every other track, each
     with its margin and floor."""
 
 
@@ -169,8 +176,8 @@ class Workdir(StrEnum):
 
     HEAD = 'head'
     """A detached worktree at the head. It is removed when the agent ends, and nothing committed in it is scored."""
-    PROJECT = 'project'
-    """The project checkout itself, shared with you. piloop does not reset or remove it."""
+    REPO = 'repo'
+    """The campaign's repository checkout itself, shared with you. piloop does not reset or remove it."""
 
 
 class Files(StrEnum):
@@ -193,17 +200,17 @@ class RoleConfig(BaseModel):
     """The built-in prompt of a built-in role, a file under ``piloop/agents/prompts/``. Empty for other roles."""
     IDEAS: ClassVar[str] = ''
     """The ideas line of a built-in role's brief when the line for its ``files`` does not fit it. ``{piloop}`` is the CLI
-    and ``{project}`` is the project's name. Empty: the line for ``files`` (``piloop.agents.roles.IDEAS``)."""
+    and ``{campaign}`` is the campaign's name. Empty: the line for ``files`` (``piloop.agents.roles.IDEAS``)."""
 
     prompt: str | None = None
     """The file that starts the brief of this role: a path relative to the repo root, or an absolute path. When unset,
     a built-in role uses its built-in prompt. A new role needs it."""
     runtime: RuntimeName | None = None
-    """Where the agents of this role run. When unset, the role uses the project's ``runtime``."""
+    """Where the agents of this role run. When unset, the role uses the campaign's ``runtime``."""
     harnesses: list[str] | None = Field(default=None, min_length=1)
-    """The harness rotation of this role. When unset, the role uses the project's ``harnesses``."""
+    """The harness rotation of this role. When unset, the role uses the campaign's ``harnesses``."""
     model: dict[str, str] | None = None
-    """The model for each harness in this role. It is merged over the project's ``model``."""
+    """The model for each harness in this role. It is merged over the campaign's ``model``."""
     timeout: float = 600
     """The number of seconds one agent may run before it is stopped."""
     max_concurrent: int = Field(default=1, ge=1)
@@ -293,7 +300,7 @@ class SweepRole(RoleConfig):
     order on each tick. A package can add triggers. An empty list means that agents start only on request
     (``piloop launch``)."""
     workdir: Workdir = Workdir.HEAD
-    """Where the agent works: ``head``, a detached worktree at the head, or ``project``, the project checkout."""
+    """Where the agent works: ``head``, a detached worktree at the head, or ``campaign``, the campaign checkout."""
     interval: float = Field(default=0, ge=0)
     """The number of seconds between two routine sweeps of the ``cron`` trigger, counted from the start of the last
     one. A sweep that investigates an anomaly is not a routine sweep. 0 turns the timer off."""
@@ -332,7 +339,7 @@ class WatchdogRole(SweepRole):
     anomaly is not a review. 0 turns the reviews off."""
     writes: list[str] = [
         'comments(escalation, finding, note)',
-        'lessons on the project once it stopped',
+        'lessons on the campaign once it stopped',
         'seeds via idea seed',
     ]
     """What a watchdog may write, as its brief states it."""
@@ -351,7 +358,7 @@ class ResearchRole(SweepRole):
     writes: list[str] = [
         'seeds via idea develop, or their status to rejected with a note',
         'ideas via idea add',
-        'comments(finding, escalation) on the project',
+        'comments(finding, escalation) on the campaign',
         'comments(note) on an idea',
     ]
     """What a research sweep may write, as its brief states it."""
@@ -378,11 +385,11 @@ class ScoutRole(SweepRole):
 
     PROMPT: ClassVar[str] = 'scout.md'
     IDEAS: ClassVar[str] = (
-        '- File a seed: `{piloop} idea seed {project} "<technique: its mechanism, one line>" --from "<link>; targets'
+        '- File a seed: `{piloop} idea seed {campaign} "<technique: its mechanism, one line>" --from "<link>; targets'
         ' <the measured loss it might reduce, with its size>; <its substance: a number, code, an ablation>"`: research'
         ' develops it into an idea or rejects it with the reason.'
-        '\n- File a technique into the library: `{piloop} sql "INSERT INTO techniques (project_id, title, mechanism,'
-        " url, created_by) VALUES (<project id>, '<technique>', '<mechanism and its substance, one line>', '<link>',"
+        '\n- File a technique into the library: `{piloop} sql "INSERT INTO techniques (campaign_id, title, mechanism,'
+        " url, created_by) VALUES (<campaign id>, '<technique>', '<mechanism and its substance, one line>', '<link>',"
         " '<your signature>')\"`."
     )
 
@@ -390,13 +397,13 @@ class ScoutRole(SweepRole):
     """The timer: a scout sweep every ``interval`` seconds."""
     interval: float = Field(default=0, ge=0)
     """The number of seconds between two scout sweeps, counted from the start of the last one. The first sweep counts
-    from the registration of the project. 0 (the default) turns the scout off."""
+    from the registration of the campaign. 0 (the default) turns the scout off."""
     seeds: int = Field(default=3, ge=1)
     """The maximum number of seeds one scout sweep may file. The other techniques it finds go to the library."""
     writes: list[str] = [
         'seeds via idea seed (at most the count under Context)',
         'techniques (the library), by INSERT',
-        'one comments(finding) on the project',
+        'one comments(finding) on the campaign',
     ]
     """What a scout sweep may write, as its brief states it."""
     timeout: float = 900
@@ -406,17 +413,17 @@ class ScoutRole(SweepRole):
 class Stop(BaseModel):
     """``[stop]``: conditions that end the campaign. One is enough. Without the table, the campaign has no end.
 
-    The daemon checks the conditions on every tick, before it requests anything. When one holds, the project is
-    ``stopped`` (``projects.status``, ``stopped_reason``). Running workers are told to commit and stop, and are ended
+    The daemon checks the conditions on every tick, before it requests anything. When one holds, the campaign is
+    ``stopped`` (``campaigns.status``, ``stopped_reason``). Running workers are told to commit and stop, and are ended
     10 minutes later. What they committed is scored. A worker in the middle of a turn reads the message only when the
     turn ends: one that is ended before it left its finding closes its run as ``campaign stopped``, which does not
     count toward ``max_runs`` or ``plateau``. Pending requests and queued runs are dropped
     (``campaign stopped``). The ``stopped`` triggers fire once, which by default requests the watchdog's closing
-    review, and the triggers request nothing more. The daemon files no seeds for the project either. An agent that you
+    review, and the triggers request nothing more. The daemon files no seeds for the campaign either. An agent that you
     request with ``piloop launch`` after the stop still starts.
 
-    ``piloop project stop`` stops a campaign the same way on the next tick, whatever this table says. With ``--kill``,
-    the workers are ended at once instead of told. ``piloop init`` resumes a stopped project when this table changed.
+    ``piloop campaign stop`` stops a campaign the same way on the next tick, whatever this table says. With ``--kill``,
+    the workers are ended at once instead of told. ``piloop init`` resumes a stopped campaign when this table changed.
 
     ``max_runs`` and ``plateau`` count the same runs: those that reached the evaluator, with a candidate that is
     measured or waits for its measurement. A run that ended at a cheap check with no commit, with only
@@ -429,28 +436,28 @@ class Stop(BaseModel):
 
     target: float | None = None
     """Stop when the primary metric at the head (the latest keep on the trunk) reaches this value, in its direction.
-    Only for a project with one track."""
+    Only for a campaign with one track."""
     max_runs: int | None = Field(default=None, ge=1)
     """Stop after this many runs that count (see above), once none is queued, running or being scored. A run also
     counts while it is queued, running or being scored, so piloop never starts more runs than this. A finished run that
     does not count frees its place, and piloop starts another run in it."""
     max_hours: float | None = Field(default=None, gt=0)
-    """Stop after this many hours of wall-clock time since the first run of the project started. The time that the
-    project was paused (``piloop pause``) does not count."""
+    """Stop after this many hours of wall-clock time since the first run of the campaign started. The time that the
+    campaign was paused (``piloop pause``) does not count."""
     max_tokens: int | None = Field(default=None, ge=1)
-    """Stop when all the agents of the project together spent this many tokens (the ``total`` of ``workers.usage``),
+    """Stop when all the agents of the campaign together spent this many tokens (the ``total`` of ``workers.usage``),
     summed over the agents that ended."""
     plateau: int | None = Field(default=None, ge=1)
     """Stop after this many finished runs that count (see above) without a new ``keep`` candidate. The count starts
-    again at each keep, and when the project is set ``active`` after a stop (``piloop init``, or an UPDATE of
-    ``projects.status``), so a reactivated campaign gets this many runs again. A new evaluator alone does not reset
+    again at each keep, and when the campaign is set ``active`` after a stop (``piloop init``, or an UPDATE of
+    ``campaigns.status``), so a reactivated campaign gets this many runs again. A new evaluator alone does not reset
     it."""
 
 
 class Spend(BaseModel):
     """``[spend]``: a hard budget in USD on what the campaign costs outside piloop, for example GPUs or APIs.
 
-    Every ``interval`` seconds, the daemon runs ``command`` to read the spend from the project (``projects.spend_usd``,
+    Every ``interval`` seconds, the daemon runs ``command`` to read the spend from the campaign (``campaigns.spend_usd``,
     ``spend_error``, ``spend_at``). When the spend passes a ``notices`` threshold, the daemon posts one note to the
     inbox at priority 1. At ``limit``, the daemon launches no agent and starts no evaluation (no request, no
     re-measure), and posts one escalation at priority 0. Work that already runs finishes and is scored. A command that
@@ -461,7 +468,7 @@ class Spend(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
 
     command: list[str] = Field(min_length=1)
-    """The command (argv) that prints the project's spend so far in USD, as one number. It runs at the repo root with
+    """The command (argv) that prints the campaign's spend so far in USD, as one number. It runs at the repo root with
     the daemon's environment, which is where its secrets come from. It must exit with code 0 within one minute.
     Example: ``["uv", "run", "scripts/spend.py"]``."""
     limit: float = Field(gt=0)
@@ -486,12 +493,12 @@ class Memory(BaseModel):
     documents: list[str] = []
     """Repo-relative globs of text documents, for example ``["docs/evidence/**/*.md"]``: campaign reports, orchestrator
     logs, design notes. ``piloop init`` and the stop of the campaign copy them into the ``documents`` table, where
-    every agent of every project can search them. Never name a document that is derived from validation or test
+    every agent of every campaign can search them. Never name a document that is derived from validation or test
     data."""
     wake_budget: int = Field(default=400, ge=0)
     """The size in tokens (about 4 characters each) of the overview that opens the briefs of workers and research
     sweeps: the current lesson of each mechanism family on the same repo, from the newest campaign that tried it, one
-    line each. Lessons in the project's own metrics come first (``lessons.metric``), then
+    line each. Lessons in the campaign's own metrics come first (``lessons.metric``), then
     lessons in related metrics, then the rest. Within those, dead or promising come before untested, then the larger
     effects of each metric, then newer campaigns: effects in different metrics are never compared by size. The brief
     then says how to read more. A role can change it with ``[roles.<kind>] wake_budget``. 0
@@ -589,7 +596,7 @@ looks them up, which activates the runtimes or the triggers first."""
 
 
 class PluginTable(BaseModel):
-    """``[plugins.<capability>]``: which provider of a capability the project uses, and its parameters.
+    """``[plugins.<capability>]``: which provider of a capability the campaign uses, and its parameters.
 
     The capability declares the table (``piloop.plugins.host.Selection``), and the provider checks the parameters.
     """
@@ -605,15 +612,15 @@ class PluginTable(BaseModel):
         return json.dumps(self.model_extra or {}, sort_keys=True)
 
 
-class ProjectConfig(BaseModel):
-    """Everything piloop needs to know about a project repo."""
+class CampaignConfig(BaseModel):
+    """Everything piloop needs to know about a campaign repo."""
 
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
 
     name: str
-    """A short name for the project. piloop names its git refs and Herdr workspaces after it."""
+    """A short name for the campaign. piloop names its git refs and Herdr workspaces after it."""
     metrics: list[Metric] = Field(min_length=1)
-    """Every metric the evaluate command prints, each with its ``role``. Each track has one ``primary``, so a project
+    """Every metric the evaluate command prints, each with its ``role``. Each track has one ``primary``, so a campaign
     with one track has exactly one."""
     tracks: dict[str, TrackConfig] = {}
     """``[tracks.<name>]``: the share and addendum of each track. Needed only with several primaries."""
@@ -634,7 +641,7 @@ class ProjectConfig(BaseModel):
     harness: dict[str, Harness] = {}
     """Harness definitions by name: overrides of the built-in harnesses, or new ones."""
     max_concurrent: dict[str, Annotated[int, Field(ge=1)]] = {}
-    """The maximum number of agents of one harness, across all roles of the project, that are started or queued to
+    """The maximum number of agents of one harness, across all roles of the campaign, that are started or queued to
     start. Example: ``{claude = 2}`` when the provider of its model limits the request rate. When it is the turn of a
     harness at its limit, the slot goes to the next harness of the rotation. An idea or request that pins that harness
     waits. When unset, only the limits of the roles apply."""
@@ -647,7 +654,7 @@ class ProjectConfig(BaseModel):
     """Repo-relative paths, ignored by git, that piloop symlinks into every worktree, for example data or virtual
     environments."""
     context: list[str] = []
-    """Repo-relative files or globs (for example ``docs/error-analysis-*.md``) that hold the project's analysis:
+    """Repo-relative files or globs (for example ``docs/error-analysis-*.md``) that hold the campaign's analysis:
     error analyses, comparisons with a reference, evaluation reports. The research pack lists each one with its
     outline, newest first, so that every sweep that reads the pack reads them before it proposes work."""
     mcp: dict[ServerName, McpServer] = {}
@@ -666,7 +673,7 @@ class ProjectConfig(BaseModel):
     def _check(self) -> Self:
         self._check_tracks()
         self._check_plugins()
-        self._check_harnesses(self.harnesses, self.model, 'project')
+        self._check_harnesses(self.harnesses, self.model, 'campaign')
         if unknown := [h for h in self.max_concurrent if h not in DEFAULT_HARNESSES and h not in self.harness]:
             raise ValueError(f'max_concurrent: unknown harnesses {unknown}; built-ins are {sorted(DEFAULT_HARNESSES)}')
         roles = self.roles.all()
@@ -683,7 +690,7 @@ class ProjectConfig(BaseModel):
 
     def _check_plugins(self) -> None:
         """Each ``[plugins.<name>]`` names a capability, one of its providers, and the parameters that it takes."""
-        tables = {c.selection.key: c for c in declared() if c.selection is not None and c.selection.scope == 'project'}
+        tables = {c.selection.key: c for c in declared() if c.selection is not None and c.selection.scope == 'campaign'}
         for name, table in self.plugins.items():
             capability = tables.get(f'plugins.{name}.provider')
             if capability is None:
@@ -691,7 +698,7 @@ class ProjectConfig(BaseModel):
                 raise ValueError(
                     f'[plugins.{name}]: no capability has that name; there is {", ".join(known) or "none"}'
                 )
-            check_selection(capability, {'plugins': {name: table.model_dump()}}, 'project')
+            check_selection(capability, {'plugins': {name: table.model_dump()}}, 'campaign')
 
     def _check_tracks(self) -> None:
         """Check that each track has one primary.
@@ -713,7 +720,7 @@ class ProjectConfig(BaseModel):
             if untabled := [n for n in names if n not in self.tracks]:
                 raise ValueError(f'tracks {untabled} need a [tracks.<name>] table with their share')
             if self.stop.target is not None:
-                raise ValueError('[stop] target needs a project of one track: per-track targets are not supported')
+                raise ValueError('[stop] target needs a campaign of one track: per-track targets are not supported')
         if unknown := sorted(set(self.tracks) - set(names)):
             raise ValueError(f'[tracks] {unknown} name no track a primary declares; tracks are {names}')
         total = sum(self.tracks[n].share if n in self.tracks else 1 for n in names)
@@ -762,20 +769,20 @@ class ProjectConfig(BaseModel):
         return self.memory.wake_budget if own is None else own
 
     def role_harnesses(self, kind: str) -> list[str]:
-        """The rotation a role uses: its own list, or else the project's."""
+        """The rotation a role uses: its own list, or else the campaign's."""
         return self.role(kind).harnesses or self.harnesses
 
     def role_models(self, kind: str) -> dict[str, str]:
-        """The model for each harness of a role: the project's map, with the role's overrides on top."""
+        """The model for each harness of a role: the campaign's map, with the role's overrides on top."""
         return {**self.model, **(self.role(kind).model or {})}
 
     def role_runtime(self, kind: str) -> str:
-        """The name of the runtime a role uses: its own, or else the project's."""
+        """The name of the runtime a role uses: its own, or else the campaign's."""
         return self.role(kind).runtime or self.runtime
 
     @property
     def runtimes(self) -> set[str]:
-        """The names of the runtimes that the roles of the project use."""
+        """The names of the runtimes that the roles of the campaign use."""
         return {self.role_runtime(kind) for kind in self.roles.all()}
 
     @property
@@ -785,7 +792,7 @@ class ProjectConfig(BaseModel):
 
     @property
     def guardrails(self) -> list[Metric]:
-        """The project's guardrails. A candidate of any track must stay within their margins and floors."""
+        """The campaign's guardrails. A candidate of any track must stay within their margins and floors."""
         return [m for m in self.metrics if m.role is MetricRole.GUARDRAIL]
 
     @property
@@ -805,7 +812,7 @@ class ProjectConfig(BaseModel):
 
     @property
     def multitrack(self) -> bool:
-        """Whether the project has more than one track. Only then do the renderers show track names."""
+        """Whether the campaign has more than one track. Only then do the renderers show track names."""
         return len(self.all_tracks) > 1
 
     def track(self, name: str) -> Track:
@@ -835,24 +842,24 @@ class ProjectConfig(BaseModel):
         return hashlib.sha256(json.dumps(self.evaluator_definition, sort_keys=True).encode()).hexdigest()[:16]
 
     def harness_for(self, name: str) -> Harness:
-        """The harness definition in use: the project's override, or else the built-in one."""
+        """The harness definition in use: the campaign's override, or else the built-in one."""
         return self.harness.get(name) or DEFAULT_HARNESSES[name]
 
 
-def config_of(project: Project) -> ProjectConfig:
+def config_of(campaign: Campaign) -> CampaignConfig:
     """The config the daemon schedules from: the copy of ``piloop.toml`` that the last ``piloop init`` stored."""
-    return ProjectConfig.model_validate(project.config)
+    return CampaignConfig.model_validate(campaign.config)
 
 
 def harness_of(s: Session, worker: Worker) -> Harness | None:
-    """The definition of the harness that a worker row runs, from its project's config.
+    """The definition of the harness that a worker row runs, from its campaign's config.
 
     None before the launcher picks a harness, and when ``piloop.toml`` no longer names it (a row keeps only the name).
     """
-    if worker.harness is None or worker.project_id is None:
+    if worker.harness is None or worker.campaign_id is None:
         return None
     try:
-        return config_of(s.get_one(Project, worker.project_id)).harness_for(worker.harness)
+        return config_of(s.get_one(Campaign, worker.campaign_id)).harness_for(worker.harness)
     except KeyError:
         return None
 
@@ -904,17 +911,17 @@ def prompt_files(role: RoleConfig) -> dict[str, str]:
     return {key: rel for key, rel in keys.items() if rel is not None}
 
 
-def load_project_config(project: Path, **overrides: object) -> ProjectConfig:
-    """Load ``<project>/piloop.toml``.
+def load_campaign_config(campaign: Path, **overrides: object) -> CampaignConfig:
+    """Load ``<campaign>/piloop.toml``.
 
-    ``overrides`` take precedence over ``PILOOP_PROJECT_*`` environment variables, which take precedence over the
+    ``overrides`` take precedence over ``PILOOP_CAMPAIGN_*`` environment variables, which take precedence over the
     file. Deprecated keys still load through ``piloop.deprecated``, with a ``PiloopDeprecationWarning``.
 
     Raises:
-        FileNotFoundError: The project has no ``piloop.toml``.
+        FileNotFoundError: The campaign has no ``piloop.toml``.
         ConfigError: The file is not valid TOML, not a valid config, or names a prompt file that does not exist.
     """
-    toml = project / CONFIG_FILE
+    toml = campaign / CONFIG_FILE
     if not toml.is_file():
         raise FileNotFoundError(toml)
     try:
@@ -922,10 +929,11 @@ def load_project_config(project: Path, **overrides: object) -> ProjectConfig:
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f'{toml} is not valid TOML: {e}') from e
     deprecated.bridge(toml, raw)
+    deprecated.old_env(toml, os.environ)
     with_registered_roles(raw)
 
-    class _Loader(BaseSettings, ProjectConfig):
-        model_config = SettingsConfigDict(env_prefix='PILOOP_PROJECT_', env_nested_delimiter='__', extra='forbid')
+    class _Loader(BaseSettings, CampaignConfig):
+        model_config = SettingsConfigDict(env_prefix='PILOOP_CAMPAIGN_', env_nested_delimiter='__', extra='forbid')
 
         @classmethod
         def settings_customise_sources(
@@ -936,19 +944,23 @@ def load_project_config(project: Path, **overrides: object) -> ProjectConfig:
             dotenv_settings: PydanticBaseSettingsSource,
             file_secret_settings: PydanticBaseSettingsSource,
         ) -> tuple[PydanticBaseSettingsSource, ...]:
-            return init_settings, env_settings, InitSettingsSource(settings_cls, raw)
+            # a PILOOP_PROJECT_<KEY> variable still applies, after its PILOOP_CAMPAIGN_<KEY> (piloop.deprecated.old_env)
+            old = EnvSettingsSource(
+                settings_cls, env_prefix=deprecated.OLD_ENV_PREFIX, env_nested_delimiter='__', case_sensitive=False
+            )
+            return init_settings, env_settings, old, InitSettingsSource(settings_cls, raw)
 
     # pydantic validates the values; the cast only tells the type checker to let them through
     kwargs = cast(dict[str, Any], {k: v for k, v in overrides.items() if v is not None})
     try:
-        cfg = ProjectConfig.model_validate(_Loader(**kwargs).model_dump())
+        cfg = CampaignConfig.model_validate(_Loader(**kwargs).model_dump())
     except ValidationError as e:
         raise ConfigError(explain(toml, e)) from e
     missing = [
         f'  roles.{name}.{key} = {rel!r}: no such file. Fix: create it, or correct the path'
         for name, role in cfg.roles.all().items()
         for key, rel in prompt_files(role).items()
-        if not (project / rel).is_file()
+        if not (campaign / rel).is_file()
     ]
     if missing:
         raise ConfigError('\n'.join([f'{toml} is not a valid piloop config ({len(missing)} problem(s)):', *missing]))

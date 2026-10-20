@@ -21,12 +21,12 @@ from sqlalchemy import Engine, event, select
 from sqlalchemy.engine import Connection
 
 from piloop.campaign import inbox
-from piloop.campaign.project import BLANK
+from piloop.campaign.campaigns import BLANK
 from piloop.campaign.stop import stop_reason
-from piloop.config import ProjectConfig, config_of, load_project_config
-from piloop.daemon.runner import RunExecutor
+from piloop.config import CampaignConfig, config_of, load_campaign_config
+from piloop.daemon.run_executor import RunExecutor
 from piloop.daemon.scheduler import Scheduler
-from piloop.db.models import Project, utcnow
+from piloop.db.models import Campaign, utcnow
 from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.reports import history, overview
@@ -34,25 +34,25 @@ from piloop.reports import history, overview
 ROOT = Path(__file__).resolve().parent.parent
 PROCEDURES = ROOT / 'piloop' / 'agents' / 'prompts' / 'sql_procedures.md'
 HOT_INDEXES = (
-    'ix_ideas_project_status_priority',
+    'ix_ideas_campaign_status_priority',
     'ix_runs_status',
     'ix_candidates_run',
     'ix_candidates_parent',
-    'ix_workers_project_kind_state',
+    'ix_workers_campaign_kind_state',
     'ix_workers_run',
     'ix_comments_inbox',
 )
 """The indexes that the hot paths need. ``tests/test_plans.py`` drops them to prove that its check finds a SCAN, and
 checks that the models still declare each one."""
 GROWING = frozenset({'ideas', 'runs', 'candidates', 'measurements', 'comments', 'workers', 'events'})
-"""The tables that grow with the campaign. ``projects`` and ``evaluators`` stay small, so a scan of them is fine."""
+"""The tables that grow with the campaign. ``campaigns`` and ``evaluators`` stay small, so a scan of them is fine."""
 
 
 @dataclass(frozen=True)
 class Volume:
     """Row counts to populate."""
 
-    projects: int
+    campaigns: int
     ideas: int
     runs: int
     candidates: int
@@ -62,7 +62,7 @@ class Volume:
     workers: int
 
 
-SMALL = Volume(projects=2, ideas=40, runs=60, candidates=80, measurements=160, comments=120, events=400, workers=70)
+SMALL = Volume(campaigns=2, ideas=40, runs=60, candidates=80, measurements=160, comments=120, events=400, workers=70)
 """The volume that the test uses: enough rows for every code path to run. Without ``ANALYZE`` statistics, a query
 plan does not depend on the row counts."""
 
@@ -80,15 +80,15 @@ def populate(path: Path, volume: Volume, seed: int = 0) -> None:
     """Fill a migrated database at ``path`` with ``volume`` rows of plausible shape, deterministically.
 
     It uses raw ``executemany`` for speed. The server defaults and CHECK constraints of a real database apply. Every
-    project gets one evaluator, a kept baseline candidate and a few live agents. The ideas, runs, candidates, comments,
-    workers and events are spread over the projects, with statuses drawn at the frequencies of a real campaign.
+    campaign gets one evaluator, a kept baseline candidate and a few live agents. The ideas, runs, candidates, comments,
+    workers and events are spread over the campaigns, with statuses drawn at the frequencies of a real campaign.
     """
     rng = random.Random(seed)
-    cfg = load_project_config(BLANK, runtime='subprocess', max_concurrent={'pi': 2})
+    cfg = load_campaign_config(BLANK, runtime='subprocess', max_concurrent={'pi': 2})
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         con.execute('PRAGMA foreign_keys=OFF')  # parents are inserted first, and the check costs a scan per row
         con.execute('BEGIN')
-        _projects(con, volume, cfg)
+        _campaigns(con, volume, cfg)
         _ideas(con, volume, rng)
         _runs(con, volume, rng)
         owners = _candidates(con, volume, rng)
@@ -99,27 +99,27 @@ def populate(path: Path, volume: Volume, seed: int = 0) -> None:
         con.execute('COMMIT')
 
 
-def _projects(con: sqlite3.Connection, v: Volume, cfg: ProjectConfig) -> None:
-    for p in range(1, v.projects + 1):
-        config = json.dumps(cfg.model_copy(update={'name': f'project-{p}'}).model_dump(mode='json'))
+def _campaigns(con: sqlite3.Connection, v: Volume, cfg: CampaignConfig) -> None:
+    for p in range(1, v.campaigns + 1):
+        config = json.dumps(cfg.model_copy(update={'name': f'campaign-{p}'}).model_dump(mode='json'))
         con.execute(
-            'INSERT INTO projects (id, name, path, config, evaluator_id) VALUES (?, ?, ?, ?, ?)',
-            (p, f'project-{p}', f'/tmp/project-{p}', config, p),
+            'INSERT INTO campaigns (id, name, path, config, evaluator_id) VALUES (?, ?, ?, ?, ?)',
+            (p, f'campaign-{p}', f'/tmp/campaign-{p}', config, p),
         )
         con.execute(
-            "INSERT INTO evaluators (id, project_id, key, definition) VALUES (?, ?, ?, '{}')", (p, p, f'key{p}')
+            "INSERT INTO evaluators (id, campaign_id, key, definition) VALUES (?, ?, ?, '{}')", (p, p, f'key{p}')
         )
 
 
 def _ideas(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
     statuses = ['done'] * 70 + ['ready'] * 12 + ['scheduled'] * 4 + ['parked'] * 8 + ['rejected'] * 4 + ['proposed'] * 2
     con.executemany(
-        'INSERT INTO ideas (id, project_id, title, hypothesis, status, priority, created_by, track)'
+        'INSERT INTO ideas (id, campaign_id, title, hypothesis, status, priority, created_by, track)'
         ' VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
         (
             (
                 i,
-                _project_of(i, v),
+                _campaign_of(i, v),
                 f'idea {i}',
                 f'hypothesis {i}',
                 rng.choice(statuses),
@@ -140,7 +140,7 @@ def _runs(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
         attempt = (r - 1) // v.ideas + 1
         st = rng.choice(statuses)
         finished = None if st in ('running', 'queued') else f'2026-01-{1 + r % 28:02d} 12:00:00'
-        rows.append((r, idea, attempt, _project_of(idea, v), 'pi', 'm', st, finished))
+        rows.append((r, idea, attempt, _campaign_of(idea, v), 'pi', 'm', st, finished))
     con.executemany(
         'INSERT INTO runs (id, idea_id, attempt, base_candidate_id, harness, model, status, finished_at)'
         ' VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
@@ -149,23 +149,23 @@ def _runs(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
 
 
 def _candidates(con: sqlite3.Connection, v: Volume, rng: random.Random) -> dict[int, int]:
-    """Insert the candidates, each chained to the previous one of its project; returns candidate id → project id."""
+    """Insert the candidates, each chained to the previous one of its campaign; returns candidate id → campaign id."""
     verdicts = ['discard'] * 75 + ['keep'] * 12 + ['crash'] * 10 + ['interesting'] * 2 + ['pending'] * 1
     last: dict[int, int] = {}
     owners: dict[int, int] = {}
     rows = []
     for c in range(1, v.candidates + 1):
-        if c <= v.projects:  # the baselines: no run, no parent, kept
+        if c <= v.campaigns:  # the baselines: no run, no parent, kept
             rows.append((c, c, None, None, f'tree{c}', f'commit{c}', 'baseline', 'keep'))
             last[c] = owners[c] = c
             continue
         run = rng.randint(1, v.runs)
-        p = _project_of((run - 1) % v.ideas + 1, v)
+        p = _campaign_of((run - 1) % v.ideas + 1, v)
         rows.append((c, p, run, last[p], f'tree{c}', f'commit{c}', f'summary {c}', rng.choice(verdicts)))
         last[p] = c
         owners[c] = p
     con.executemany(
-        'INSERT INTO candidates (id, project_id, run_id, parent_id, tree_sha, commit_sha, summary, verdict)'
+        'INSERT INTO candidates (id, campaign_id, run_id, parent_id, tree_sha, commit_sha, summary, verdict)'
         ' VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
         rows,
     )
@@ -184,8 +184,8 @@ def _measurements(con: sqlite3.Connection, v: Volume, rng: random.Random, owners
 
 def _comments(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
     kinds = ['note'] * 60 + ['finding'] * 36 + ['escalation'] * 2 + ['decision'] * 2
-    targets = ['idea'] * 60 + ['candidate'] * 20 + ['project'] * 15 + ['run'] * 5
-    limits = {'idea': v.ideas, 'candidate': v.candidates, 'project': v.projects, 'run': v.runs}
+    targets = ['idea'] * 60 + ['candidate'] * 20 + ['campaign'] * 15 + ['run'] * 5
+    limits = {'idea': v.ideas, 'candidate': v.candidates, 'campaign': v.campaigns, 'run': v.runs}
     authors = ['research#1', 'worker#2', 'watchdog#3', 'pi']
 
     def row(i: int) -> tuple[str, int, str, str, str, int | None, str | None]:
@@ -205,8 +205,8 @@ def _comments(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
 def _workers(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
     rows = []
     for w in range(1, v.workers + 1):
-        p = _project_of(w, v)
-        if w <= 2 * v.projects:  # a few live agents per project, on the headless runtime so status reads a file
+        p = _campaign_of(w, v)
+        if w <= 2 * v.campaigns:  # a few live agents per campaign, on the headless runtime so status reads a file
             kind, run = ('worker', w) if w % 2 else ('research', None)
             rows.append((w, kind, p, run, 'pi', 'm', 'subprocess', '{}', 'running', None))
             continue
@@ -215,7 +215,7 @@ def _workers(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
         state = rng.choice(['exited'] * 90 + ['killed'] * 10)
         rows.append((w, kind, p, run, 'pi', 'm', 'subprocess', '{}', state, f'2026-01-{1 + w % 28:02d} 12:00:00'))
     con.executemany(
-        'INSERT INTO workers (id, kind, project_id, run_id, harness, model, runtime, handle, state, ended_at)'
+        'INSERT INTO workers (id, kind, campaign_id, run_id, harness, model, runtime, handle, state, ended_at)'
         ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         rows,
     )
@@ -239,8 +239,8 @@ def _events(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
     )
 
 
-def _project_of(n: int, v: Volume) -> int:
-    return (n - 1) % v.projects + 1
+def _campaign_of(n: int, v: Volume) -> int:
+    return (n - 1) % v.campaigns + 1
 
 
 def record(engine: Engine, origin: str, body: Callable[[], object]) -> list[Statement]:
@@ -263,8 +263,8 @@ class HotPaths:
     """The hot paths of the daemon and the CLI, as callables over one session that is rolled back.
 
     The rollback makes sure that nothing is requested or launched. Entering yields origin → body: the two phases of a
-    scheduler tick (per project, rolled back after each, so every run of the body sees the same database), the stop
-    conditions with all four configured, the status and history renderers for every project, and one inbox wait.
+    scheduler tick (per campaign, rolled back after each, so every run of the body sees the same database), the stop
+    conditions with all four configured, the status and history renderers for every campaign, and one inbox wait.
     """
 
     def __init__(self, db: Database, home: Path) -> None:
@@ -274,16 +274,16 @@ class HotPaths:
 
     def __enter__(self) -> dict[str, Callable[[], object]]:
         s = self._session
-        rows = [(p, config_of(p)) for p in s.scalars(select(Project).order_by(Project.id))]
-        stopping = load_project_config(
+        rows = [(p, config_of(p)) for p in s.scalars(select(Campaign).order_by(Campaign.id))]
+        stopping = load_campaign_config(
             BLANK, stop={'target': 1.0, 'max_runs': 10**6, 'max_hours': 10**6, 'plateau': 10**6}
         )
         scheduler = self._scheduler
 
-        def each(body: Callable[[Project, ProjectConfig], object]) -> Callable[[], object]:
+        def each(body: Callable[[Campaign, CampaignConfig], object]) -> Callable[[], object]:
             return lambda: [body(p, cfg) for p, cfg in rows]
 
-        def tick(p: Project, cfg: ProjectConfig) -> None:
+        def tick(p: Campaign, cfg: CampaignConfig) -> None:
             scheduler._triggers(s, p, cfg)
             s.flush()
             scheduler._take(s, p, cfg)

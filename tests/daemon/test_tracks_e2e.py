@@ -1,4 +1,4 @@
-"""A project with two tracks, run through the real daemon: share picks, rebase on keep, and a floor on another track.
+"""A campaign with two tracks, run through the real daemon: share picks, rebase on keep, and a floor on another track.
 
 The harness is a script that edits files by idea title, so the whole loop runs in CI without a real agent.
 """
@@ -10,7 +10,7 @@ from git import Repo
 from sqlalchemy import select
 
 from piloop.daemon.main import Daemon
-from piloop.db.models import Candidate, Event, Idea, Project, Verdict
+from piloop.db.models import Campaign, Candidate, Event, Idea, Verdict
 from piloop.scoring.ledger import REBASED, head
 from piloop.settings import Settings
 from tests.conftest import ScriptRuntime, factory, register, write_script
@@ -86,10 +86,10 @@ def test_two_tracks_rebase_a_keep_that_lost_the_race_and_refuse_one_past_the_oth
     runtime = ScriptRuntime()
     daemon = Daemon(Settings(home=tmp_path / 'home', tick_seconds=0.05))
     daemon.executor.launcher.runtime_factory = factory(runtime)
-    project = register(daemon.db, path)
+    campaign = register(daemon.db, path)
     with daemon.db.session() as s:
         for title, track in (('slow accuracy', 'accuracy'), ('trim cost', 'cost')):
-            s.add(Idea(project_id=project.id, track=track, title=title, hypothesis=title, created_by='t'))
+            s.add(Idea(campaign_id=campaign.id, track=track, title=title, hypothesis=title, created_by='t'))
         s.commit()
 
     daemon.scheduler.reap()
@@ -124,9 +124,9 @@ def test_two_tracks_rebase_a_keep_that_lost_the_race_and_refuse_one_past_the_oth
         assert (rebased.target_id, rebased.payload) == (raced.id, {'head': trimmed.id, 'rebased': merged.id})
         queued = s.scalars(select(Event).where(Event.kind == 'run.queued').order_by(Event.id)).all()
         assert sorted(str(e.payload['track']) for e in queued) == ['accuracy', 'cost']
-        trunk = head(s, s.get_one(Project, project.id))
+        trunk = head(s, s.get_one(Campaign, campaign.id))
         assert trunk is not None and trunk.id == merged.id
-        s.add(Idea(project_id=project.id, track='accuracy', title='heavy accuracy', hypothesis='h', created_by='t'))
+        s.add(Idea(campaign_id=campaign.id, track='accuracy', title='heavy accuracy', hypothesis='h', created_by='t'))
         s.commit()
 
     assert len(daemon.scheduler.tick()) == 1
@@ -139,7 +139,7 @@ def test_two_tracks_rebase_a_keep_that_lost_the_race_and_refuse_one_past_the_oth
             'floor: cost 6 past its floor 5',
             merged.id,
         ), 'accuracy 3 beats the head, but the cost track holds its floor'
-        trunk = head(s, s.get_one(Project, project.id))
+        trunk = head(s, s.get_one(Campaign, campaign.id))
         assert trunk is not None and trunk.id == merged.id, 'the head stays'
     daemon.shutdown(timeout=5)
 

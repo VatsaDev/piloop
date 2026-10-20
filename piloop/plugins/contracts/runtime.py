@@ -32,6 +32,6 @@ RUNTIMES = Capability(
     'runtime',
     group='piloop.runtimes',
     check=_check,
-    selection=Selection('project', 'runtime', per_role=True, settings='runtimes'),
+    selection=Selection('campaign', 'runtime', per_role=True, settings='runtimes'),
 )
 """Every runtime by name. Each entry point of the group names a ``Runtime`` class whose ``kind`` is its name."""

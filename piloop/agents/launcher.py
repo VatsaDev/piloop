@@ -21,7 +21,7 @@ from piloop.agents.capture import ENTIRE_INSTALL, MIN_ENTIRE, AttachError, attac
 from piloop.agents.refill import usage_of
 from piloop.config import BRIEF_FILE, config_of, harness_of
 from piloop.db.events import emit
-from piloop.db.models import Comment, Event, Project, Run, TargetKind, UsageJson, Worker, WorkerState, utcnow
+from piloop.db.models import Campaign, Comment, Event, Run, TargetKind, UsageJson, Worker, WorkerState, utcnow
 from piloop.db.session import Database
 from piloop.harnesses import SESSION_ID, Invocation, fill, takes_session_id
 from piloop.mcp import RENDERERS, Launch, Rendered, expand, forwarded_env
@@ -46,13 +46,13 @@ the whole grace, and must still count as a failed start, not as a run that worke
 STARTUP_ANOMALY = 'anomaly.startup'
 """The event on a worker that did not start to work (``Outcome.startup_failed``): an environment fault, not bad work."""
 WRAP_UP = 'worker.wrap_up'
-"""Event on a worker of a stopped project, or of a run cancelled with its wrap-up: the worker was told to commit and stop.
+"""Event on a worker of a stopped campaign, or of a run cancelled with its wrap-up: the worker was told to commit and stop.
 
 The daemon ends the worker ``STOP_GRACE_SECONDS`` later."""
 STOP_ENDED = 'worker.stop_ended'
 """Event on an agent that the daemon ended for a stop or a cancel, with the ``reason`` and the run's ``error``.
 
-A worker of a stopped project is ended when the grace period after its wrap-up prompt is over, or at once for a stop
+A worker of a stopped campaign is ended when the grace period after its wrap-up prompt is over, or at once for a stop
 that kills. A worker in the middle of a turn takes a message only when the turn ends, so it may never have read the
 prompt. The scheduler commits the event before the kill, and the run closes with the ``error``
 (``CAMPAIGN_STOPPED_ERROR`` or ``CANCELLED_ERROR``) unless its worker left its finding."""
@@ -258,7 +258,7 @@ class Launcher:
             w = s.get_one(Worker, worker_id)
             assert w.started_at is not None  # only running rows are re-attached
             elapsed = (utcnow() - w.started_at).total_seconds()
-            timeout = config_of(s.get_one(Project, w.project_id)).role(w.kind).timeout - elapsed
+            timeout = config_of(s.get_one(Campaign, w.campaign_id)).role(w.kind).timeout - elapsed
             definition = harness_of(s, w)
             unreported = definition is not None and definition.captures_session and w.session_id is None
             runtime, handle = runtime_for(s, w, log_dir, self.runtime_factory), handle_for(w)
@@ -301,8 +301,8 @@ class Launcher:
         """Pick the harness and model, fill in the row, mark it ``starting`` and emit ``<kind>.started``."""
         with self.db.session() as s:
             w = s.get_one(Worker, worker_id)
-            project = s.get_one(Project, w.project_id)
-            cfg = config_of(project)
+            campaign = s.get_one(Campaign, w.campaign_id)
+            cfg = config_of(campaign)
             harness = w.harness or rotate(s, w, cfg.role_harnesses(w.kind))
             model = w.model or cfg.role_models(w.kind)[harness]
             definition = cfg.harness_for(harness)
@@ -320,7 +320,7 @@ class Launcher:
                 payload={'harness': harness, 'model': model, 'reason': w.reason},
             )
             s.commit()
-            kind, reason, project_name, project_path = w.kind, w.reason, project.name, Path(project.path)
+            kind, reason, campaign_name, campaign_path = w.kind, w.reason, campaign.name, Path(campaign.path)
             label = _label(s, w)
             actor = f'{w.kind}#{worker_id}'
         span.set(kind=kind, harness=harness, model=model, reason=reason, session_id=session_id)
@@ -372,7 +372,7 @@ class Launcher:
             session_id_pattern=definition.session_id_pattern,
             resume_args=expand(resume, mcp),
         )
-        runtime = self.runtime_factory(runtime_kind, project=project_name, project_path=project_path)
+        runtime = self.runtime_factory(runtime_kind, campaign=campaign_name, campaign_path=campaign_path)
         return Prepared(spec, runtime, cfg.role(kind).timeout, definition.captures_session, session_id)
 
     def _reported_session(self, worker_id: int, runtime: Runtime, handle: Handle, span: Span, *, last: bool) -> bool:
@@ -543,11 +543,11 @@ class Launcher:
 
 
 def rotate(s: Session, worker: Worker, harnesses: list[str]) -> str:
-    """Return the harness for a worker: the n-th agent of a kind in a project takes the n-th harness, round robin."""
+    """Return the harness for a worker: the n-th agent of a kind in a campaign takes the n-th harness, round robin."""
     earlier = s.scalar(
         select(func.count())
         .select_from(Worker)
-        .where(Worker.project_id == worker.project_id, Worker.kind == worker.kind, Worker.id < worker.id)
+        .where(Worker.campaign_id == worker.campaign_id, Worker.kind == worker.kind, Worker.id < worker.id)
     )
     return harnesses[(earlier or 0) % len(harnesses)]
 

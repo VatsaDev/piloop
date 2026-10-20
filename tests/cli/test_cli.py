@@ -12,20 +12,23 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from alembic import command
 from alembic.script import ScriptDirectory
 from git import Repo
 from pytest_mock import MockerFixture
 from rich.console import Console
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
 
-from piloop.campaign import inbox, project as project_module
+from piloop.campaign import campaigns as campaign_module, inbox
 from piloop.campaign.ideas import defined_by, runnable
-from piloop.cli import common, inbox as inbox_cli, main as cli, project as project_cli
+from piloop.cli import campaign as campaign_cli, common, inbox as inbox_cli, main as cli
 from piloop.config import ConfigError
 from piloop.daemon.main import Daemon
-from piloop.daemon.serve import running_pid
+from piloop.daemon.serve import acquire, refuse_older_daemon, running_pid
 from piloop.db import sql
 from piloop.db.models import (
+    Campaign,
+    CampaignStatus,
     Candidate,
     Evaluation,
     Event,
@@ -34,8 +37,6 @@ from piloop.db.models import (
     IdeaStatus,
     LinkKind,
     Measurement,
-    Project,
-    ProjectStatus,
     Run,
     RunStatus,
     TargetKind,
@@ -72,7 +73,7 @@ def isolated_home(tmp_path: Path, schema: Path, monkeypatch: pytest.MonkeyPatch)
         'settings',
         Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools'),
     )
-    monkeypatch.setattr(project_module, 'settings', common.settings)
+    monkeypatch.setattr(campaign_module, 'settings', common.settings)
     console = Console(record=True, width=200, force_terminal=False)
     monkeypatch.setattr(common, 'console', console)
     return console
@@ -92,14 +93,14 @@ def out(isolated_home: Console):
     return read
 
 
-def test_project_and_idea_lifecycle(project_path: Path, out) -> None:
-    run_cli(['init', str(project_path)])
+def test_campaign_and_idea_lifecycle(campaign_path: Path, out) -> None:
+    run_cli(['init', str(campaign_path)])
     assert out().startswith(
-        "wrote .entire/.gitignore\nwrote .entire/settings.json\nproject demo #1 registered; baseline candidate#1 {'score': 1.0"
-    ), 'a hand-made project gets the Entire settings, committed before the baseline is measured'
+        "wrote .entire/.gitignore\nwrote .entire/settings.json\ncampaign demo #1 registered; baseline candidate#1 {'score': 1.0"
+    ), 'a hand-made campaign gets the Entire settings, committed before the baseline is measured'
 
     run_cli(['idea', 'add', 'demo', 'more lines', '--hypothesis', 'lines help', '--priority', '1'])
-    run_cli(['idea', 'add', str(project_path), 'later', '--proposed'])
+    run_cli(['idea', 'add', str(campaign_path), 'later', '--proposed'])
     run_cli(['idea', 'add', 'demo', 'even more lines', '--after', '1', '--after', '2', '--supersedes', '2'])
     assert out().splitlines() == [
         'idea#1 ready p1: more lines',
@@ -123,15 +124,15 @@ def test_project_and_idea_lifecycle(project_path: Path, out) -> None:
     assert '  - idea#1 p1 "more lines" by human, Ns ago\n- Agents live: none' in text
     assert '### Tools' not in text, 'the cheat sheet is for agents'
 
-    run_cli(['init', str(project_path)])
-    assert out().strip() == 'project demo #1 already registered; config re-read from piloop.toml'
+    run_cli(['init', str(campaign_path)])
+    assert out().strip() == 'campaign demo #1 already registered; config re-read from piloop.toml'
 
 
 def test_every_role_but_the_worker_files_a_seed_and_only_research_the_orchestrator_and_humans_add_ideas(
-    project_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
+    campaign_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    research_files(project_path, 1)
-    run_cli(['init', str(project_path)])
+    research_files(campaign_path, 1)
+    run_cli(['init', str(campaign_path)])
 
     def as_(actor: str, *argv: str) -> None:
         monkeypatch.setattr(common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', actor=actor))
@@ -157,7 +158,7 @@ def test_every_role_but_the_worker_files_a_seed_and_only_research_the_orchestrat
             as_('worker#3', 'idea', *verb)
     with pytest.raises(SystemExit, match='a seed needs pointers'):
         as_('human', 'idea', 'seed', 'demo', 'a whim', '--from', ' ')
-    with pytest.raises(SystemExit, match='no candidate#99 in project demo'):
+    with pytest.raises(SystemExit, match='no candidate#99 in campaign demo'):
         as_('human', 'idea', 'seed', 'demo', 'from nowhere', '--from', 'x', '--base', '99')
 
     as_('orchestrator', 'inbox')
@@ -177,7 +178,7 @@ def test_every_role_but_the_worker_files_a_seed_and_only_research_the_orchestrat
         as_('research#8', 'idea', 'develop', '1', *define[:-2], '--effect', ' ')
     with pytest.raises(SystemExit, match='no idea#99'):
         as_('research#8', 'idea', 'develop', '99', *define)
-    with pytest.raises(SystemExit, match='no candidate#99 in project demo'):
+    with pytest.raises(SystemExit, match='no candidate#99 in campaign demo'):
         as_('research#8', 'idea', 'develop', '1', *define, '--base', '99')
     as_('research#8', 'idea', 'develop', '1', *define, '--title', 'pad short lines to 80', '--priority', '1')
     as_('research#8', 'idea', 'develop', '2', *define, '--plan', 'then all files', '--proposed', '--family', 'retry')
@@ -208,19 +209,19 @@ def test_every_role_but_the_worker_files_a_seed_and_only_research_the_orchestrat
         ]
         assert defined_by(s, 1) == {'research#7', 'research#8', 'orchestrator', 'human'}
     db.close()
-    with pytest.raises(SystemExit, match='no candidate#99 in project demo'):
+    with pytest.raises(SystemExit, match='no candidate#99 in campaign demo'):
         as_('human', 'idea', 'add', 'demo', 'from nowhere', '--base', '99')
 
 
 def test_a_seed_developed_with_its_links_is_never_runnable_without_them(
-    project_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
+    campaign_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``develop --after`` writes the idea and its links in one transaction, as ``add --after`` does.
 
     A link inserted after the idea is ``ready`` comes too late when the daemon takes the idea in between.
     """
-    research_files(project_path, 1)
-    run_cli(['init', str(project_path)])
+    research_files(campaign_path, 1)
+    run_cli(['init', str(campaign_path)])
     monkeypatch.setattr(
         common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', actor='research#8')
     )
@@ -237,30 +238,30 @@ def test_a_seed_developed_with_its_links_is_never_runnable_without_them(
     db.close()
 
 
-def research_files(project_path: Path, most: int) -> None:
-    """Set ``[roles.research] max_ideas`` in the project's ``piloop.toml`` (the test file sets 0)."""
-    toml = project_path / 'piloop.toml'
+def research_files(campaign_path: Path, most: int) -> None:
+    """Set ``[roles.research] max_ideas`` in the campaign's ``piloop.toml`` (the test file sets 0)."""
+    toml = campaign_path / 'piloop.toml'
     toml.write_text(re.sub(r'max_ideas = \d+', f'max_ideas = {most}', toml.read_text()))
 
 
 def test_a_sweep_files_its_new_ideas_as_proposed_while_its_role_may_file_none(
-    project_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
+    campaign_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An operator pauses research with ``max_ideas = 0``, and a sweep that started before goes on filing ideas.
 
     From then on, what a sweep of the role adds waits for a review (``proposed``). A seed that it develops is not a new
     idea: ``max_ideas`` never counted seeds, so it still becomes ``ready``. Other actors are not limited.
     """
-    research_files(project_path, 1)
-    run_cli(['init', str(project_path)])
+    research_files(campaign_path, 1)
+    run_cli(['init', str(campaign_path)])
 
     def as_(actor: str, *argv: str) -> None:
         monkeypatch.setattr(common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', actor=actor))
         run_cli(list(argv))
 
     as_('research#8', 'idea', 'add', 'demo', 'before the pause')
-    research_files(project_path, 0)
-    run_cli(['init', str(project_path)])
+    research_files(campaign_path, 0)
+    run_cli(['init', str(campaign_path)])
     out()
     as_('research#8', 'idea', 'add', 'demo', 'after the pause')
     as_('orchestrator', 'idea', 'add', 'demo', 'the orchestrator is not paused')
@@ -285,116 +286,116 @@ def test_a_sweep_files_its_new_ideas_as_proposed_while_its_role_may_file_none(
 
 
 def test_status_shows_why_a_campaign_stopped_and_init_resumes_it_when_the_stop_table_changes(
-    project_path: Path, out
+    campaign_path: Path, out
 ) -> None:
-    run_cli(['init', str(project_path)])
+    run_cli(['init', str(campaign_path)])
     db = Database(common.settings.database_url, actor=common.settings.actor)
 
     def stop(reason: str) -> None:
         with db.session() as s:
-            project = s.get_one(Project, 1)
-            project.status, project.stopped_reason = ProjectStatus.STOPPED, reason
+            campaign = s.get_one(Campaign, 1)
+            campaign.status, campaign.stopped_reason = CampaignStatus.STOPPED, reason
             s.commit()
 
-    def state() -> tuple[ProjectStatus, str | None]:
+    def state() -> tuple[CampaignStatus, str | None]:
         with db.session() as s:
-            project = s.get_one(Project, 1)
-            return project.status, project.stopped_reason
+            campaign = s.get_one(Campaign, 1)
+            return campaign.status, campaign.stopped_reason
 
     stop('target: score 3.0000 ≥ 3')
     out()
     run_cli(['status', 'demo'])
     lines = out().splitlines()
-    assert f' demo #1  {project_path} ' in lines[1] and lines[3].endswith(' · stopped: target: score 3.0000 ≥ 3'), (
+    assert f' demo #1  {campaign_path} ' in lines[1] and lines[3].endswith(' · stopped: target: score 3.0000 ≥ 3'), (
         'in the headline'
     )
-    run_cli(['init', str(project_path)])
-    assert out().strip() == 'project demo #1 already registered; config re-read from piloop.toml'
-    assert state() == (ProjectStatus.STOPPED, 'target: score 3.0000 ≥ 3'), 'the same conditions: still stopped'
+    run_cli(['init', str(campaign_path)])
+    assert out().strip() == 'campaign demo #1 already registered; config re-read from piloop.toml'
+    assert state() == (CampaignStatus.STOPPED, 'target: score 3.0000 ≥ 3'), 'the same conditions: still stopped'
 
-    toml = project_path / 'piloop.toml'
+    toml = campaign_path / 'piloop.toml'
     toml.write_text(toml.read_text() + '\n[stop]\ntarget = 4\n')
-    run_cli(['init', str(project_path)])
+    run_cli(['init', str(campaign_path)])
     assert out().strip() == (
-        'project demo #1 already registered; config re-read from piloop.toml; resumed: stop conditions changed'
+        'campaign demo #1 already registered; config re-read from piloop.toml; resumed: stop conditions changed'
     )
-    assert state() == (ProjectStatus.ACTIVE, None)
+    assert state() == (CampaignStatus.ACTIVE, None)
     run_cli(['status', 'demo'])
     assert 'stopped' not in out()
     with db.session() as s:
         assert [
             (e.kind, e.actor, e.payload)
-            for e in s.scalars(select(Event).where(Event.target_kind == TargetKind.PROJECT))
+            for e in s.scalars(select(Event).where(Event.target_kind == TargetKind.CAMPAIGN))
         ] == [
-            ('project.added', 'cli', {'baseline': 1}),
+            ('campaign.added', 'cli', {'baseline': 1}),
             (
-                'project.status',
+                'campaign.status',
                 'human',
                 {'old': 'active', 'new': 'stopped', 'stopped_reason': 'target: score 3.0000 ≥ 3'},
             ),
-            ('project.status', 'human', {'old': 'stopped', 'new': 'active', 'stopped_reason': None}),
+            ('campaign.status', 'human', {'old': 'stopped', 'new': 'active', 'stopped_reason': None}),
         ], 'the stop and the resume are the same change-log event, whoever wrote the row'
     db.close()
 
 
-def test_a_subdirectory_or_worktree_of_a_project_resolves_to_it(
-    project_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
+def test_a_subdirectory_or_worktree_of_a_campaign_resolves_to_it(
+    campaign_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run_cli(['init', str(project_path)])
+    run_cli(['init', str(campaign_path)])
     out()
-    sub = project_path / 'src' / 'deep'
+    sub = campaign_path / 'src' / 'deep'
     sub.mkdir(parents=True)
     monkeypatch.chdir(sub)
     run_cli(['status'])
-    assert f' demo #1  {project_path} ' in out(), 'cwd in a subdirectory'
+    assert f' demo #1  {campaign_path} ' in out(), 'cwd in a subdirectory'
     monkeypatch.chdir(tmp_path)
     run_cli(['status', str(sub)])
-    assert f' demo #1  {project_path} ' in out(), 'a path ref inside the repo'
+    assert f' demo #1  {campaign_path} ' in out(), 'a path ref inside the repo'
     worktree = tmp_path / 'worktree'
-    Repo(project_path).git.worktree('add', '--detach', '--quiet', str(worktree), 'HEAD')
+    Repo(campaign_path).git.worktree('add', '--detach', '--quiet', str(worktree), 'HEAD')
     monkeypatch.chdir(worktree)
     run_cli(['history'])
-    assert f' demo #1  {project_path} ' in out(), 'cwd in a linked worktree outside the repo'
+    assert f' demo #1  {campaign_path} ' in out(), 'cwd in a linked worktree outside the repo'
 
 
-def test_outside_every_project_the_only_active_one_is_meant_else_all_of_them(
-    project_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
+def test_outside_every_campaign_the_only_active_one_is_meant_else_all_of_them(
+    campaign_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run_cli(['init', str(project_path)])
+    run_cli(['init', str(campaign_path)])
     out()
     monkeypatch.chdir(tmp_path)
     db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
-        project = s.get_one(Project, 1)
-        s.add(Project(name='other', path='/other', config=project.config, status=ProjectStatus.STOPPED))
+        campaign = s.get_one(Campaign, 1)
+        s.add(Campaign(name='other', path='/other', config=campaign.config, status=CampaignStatus.STOPPED))
         s.add(
-            Project(
+            Campaign(
                 name='third',
                 path='/third',
-                config=project.config,
-                status=ProjectStatus.STOPPED,
+                config=campaign.config,
+                status=CampaignStatus.STOPPED,
                 stopped_reason='max_runs: 2 runs',
             )
         )
         s.commit()
     run_cli(['status'])
     text = out()
-    assert f' demo #1  {project_path} ' in text and 'other' not in text, 'one active project: that one'
+    assert f' demo #1  {campaign_path} ' in text and 'other' not in text, 'one active campaign: that one'
 
     with db.session() as s:
-        s.get_one(Project, 2).status = ProjectStatus.ACTIVE
+        s.get_one(Campaign, 2).status = CampaignStatus.ACTIVE
         s.commit()
     run_cli(['status'])
     text = out()
-    assert ' demo #1 ' in text and ' other #2 ' in text and ' third #3 ' in text, 'several active: every project'
+    assert ' demo #1 ' in text and ' other #2 ' in text and ' third #3 ' in text, 'several active: every campaign'
 
     with db.session() as s:
-        for project in s.scalars(select(Project)):
-            project.status = ProjectStatus.STOPPED
+        for campaign in s.scalars(select(Campaign)):
+            campaign.status = CampaignStatus.STOPPED
         s.commit()
     run_cli(['status'])
     text = out()
-    assert ' demo #1 ' in text and ' other #2 ' in text and ' third #3 ' in text, 'none active: every project'
+    assert ' demo #1 ' in text and ' other #2 ' in text and ' third #3 ' in text, 'none active: every campaign'
     db.close()
 
 
@@ -407,17 +408,17 @@ def test_init_blank_then_register_then_reread(tmp_path: Path, out) -> None:
         'wrote piloop.toml\n'
     )
     assert 'The evaluate command is the referee' in text and 'still the template stub' in text
-    assert Repo(path).head.commit.summary == 'project: baseline'
+    assert Repo(path).head.commit.summary == 'campaign: baseline'
     (path / 'evaluate.py').write_text('print("METRIC score=2")\n')
     run_cli(['init', str(path)])
     text = out()
-    assert "project fresh #1 registered; baseline candidate#1 {'score': 2.0}" in text and 'wrote' not in text
+    assert "campaign fresh #1 registered; baseline candidate#1 {'score': 2.0}" in text and 'wrote' not in text
     assert 'next: add ideas: `piloop idea add fresh' in text
     assert Repo(path).head.commit.summary == 'piloop init: evaluate.py' and not Repo(path).is_dirty(), (
         'the edit was committed'
     )
     run_cli(['init', str(path)])
-    assert 'project fresh #1 already registered; config re-read' in out()
+    assert 'campaign fresh #1 already registered; config re-read' in out()
 
 
 def test_init_example(tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -427,8 +428,8 @@ def test_init_example(tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch) -> N
         'name = "demo"\nevaluate = ["sh", "-c", "echo METRIC score=3"]\nmodel = { pi = "m" }\n'
         '[[metrics]]\nname = "score"\ndirection = "higher"\nrole = "primary"\n'
     )
-    monkeypatch.setattr(project_cli, 'TEMPLATES', tmp_path / 'templates')
-    monkeypatch.setattr(project_cli, 'EXAMPLE_DATA', {'demo': {}})
+    monkeypatch.setattr(campaign_cli, 'TEMPLATES', tmp_path / 'templates')
+    monkeypatch.setattr(campaign_cli, 'EXAMPLE_DATA', {'demo': {}})
     with pytest.raises(SystemExit, match='no example'):
         run_cli(['init', '--example', 'missing', str(tmp_path / 'x')])
     toml = template / 'piloop.toml'
@@ -437,7 +438,7 @@ def test_init_example(tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch) -> N
         run_cli(['init', '--example', 'demo', str(tmp_path / 'broken')])
     toml.write_text(toml.read_text().replace('"false"', '"sh"'))
     run_cli(['init', '--example', 'demo', str(tmp_path / 'd')])
-    assert "project demo #1 registered; baseline candidate#1 {'score': 3.0}" in out()
+    assert "campaign demo #1 registered; baseline candidate#1 {'score': 3.0}" in out()
     with pytest.raises(SystemExit, match="name 'demo' is already used by"):
         run_cli(['init', '--example', 'demo', str(tmp_path / 'e')])
 
@@ -447,31 +448,37 @@ def test_sql_and_status_while_another_client_holds_the_write_lock(
 ) -> None:
     """Reads succeed without a wait, and a write fails with the name of the lock holder."""
     monkeypatch.setattr(sql, 'CONNECTION_PRAGMAS', ('busy_timeout=0', *sql.CONNECTION_PRAGMAS[1:]))
-    run_cli(['sql', 'SELECT count(*) FROM projects'])
+    run_cli(['sql', 'SELECT count(*) FROM campaigns'])
     run_cli(['status'])
     assert out().endswith('│ 0        │\n└──────────┘\ndaemon: not running\n')
     holder = rf' \(pid {writer.pid} holds the write lock: ' if sys.platform == 'linux' else ''  # from /proc/locks
     with pytest.raises(SystemExit, match=rf'^sql error: database is locked{holder}'):
-        run_cli(['sql', "UPDATE projects SET name = 'x'"])
+        run_cli(['sql', "UPDATE campaigns SET name = 'x'"])
 
 
-def test_sql_refuses_a_database_that_a_newer_piloop_migrated(project_path: Path, out) -> None:
+def test_sql_refuses_a_database_that_a_newer_piloop_migrated(campaign_path: Path, out) -> None:
     """An older CLI reads and writes nothing in a newer schema: it would write rows that the newer code misreads."""
-    run_cli(['init', str(project_path)])
+    run_cli(['init', str(campaign_path)])
     database = common.settings.home / 'piloop.db'
     with closing(sqlite3.connect(database)) as con:
         con.execute("UPDATE alembic_version SET version_num = '9999_from_the_future'")
         con.commit()
     with pytest.raises(SystemExit, match=r'revision 9999_from_the_future, which this piloop .* does not know'):
-        run_cli(['sql', 'SELECT id FROM projects'])
+        run_cli(['sql', 'SELECT id FROM campaigns'])
 
 
-def test_sql(project_path: Path, out) -> None:
-    run_cli(['init', str(project_path)])
+def test_sql(campaign_path: Path, out) -> None:
+    run_cli(['init', str(campaign_path)])
     out()
-    run_cli(['sql', 'SELECT id, name FROM projects'])
+    run_cli(['sql', 'SELECT id, name FROM campaigns'])
     text = out()
     assert 'id' in text and 'demo' in text
+    with pytest.raises(
+        SystemExit, match=r'sql error: no such table: projects: `projects` is `campaigns` since piloop 0\.2'
+    ):
+        run_cli(['sql', 'SELECT id FROM projects'])
+    with pytest.raises(SystemExit, match='^sql error: no such table: nope$'):
+        run_cli(['sql', 'SELECT id FROM nope'])
     many = (
         'WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 501) '
         'INSERT INTO comments (target_kind, target_id, author, kind, body, created_at) '
@@ -481,18 +488,18 @@ def test_sql(project_path: Path, out) -> None:
     out()
     run_cli(['sql', 'SELECT id FROM comments'])
     assert 'truncated to 500 rows' in out()
-    run_cli(['sql', "UPDATE projects SET name='renamed'"])
+    run_cli(['sql', "UPDATE campaigns SET name='renamed'"])
     assert out().strip() == '1 row(s) changed, last insert id 0'
     with pytest.raises(SystemExit, match='not authorized'):
-        run_cli(['sql', 'DROP TABLE projects'])
+        run_cli(['sql', 'DROP TABLE campaigns'])
     with pytest.raises(SystemExit, match=r'^sql error: CHECK constraint failed: comments\.body must be a text value$'):
         run_cli(['sql', "INSERT INTO comments (target_kind, target_id, author, body) VALUES ('idea', 1, 'a', x'00')"])
-    run_cli(['sql', 'SELECT updated_by, updated_at > created_at FROM projects'])
+    run_cli(['sql', 'SELECT updated_by, updated_at > created_at FROM campaigns'])
     assert 'human' in out(), 'the CLI without PILOOP_ACTOR is the human'
     run_cli(
         [
             'sql',
-            "INSERT INTO ideas (track, project_id, title, hypothesis, created_by) VALUES ('score', 1, '[wip] Soft voting', 'h', 'me')",
+            "INSERT INTO ideas (track, campaign_id, title, hypothesis, created_by) VALUES ('score', 1, '[wip] Soft voting', 'h', 'me')",
         ]
     )
     out()
@@ -502,22 +509,22 @@ def test_sql(project_path: Path, out) -> None:
     assert '[wip] Soft [voting]' in out(), 'cells are data: brackets are printed, not read as rich markup'
 
 
-def test_init_syncs_the_memory_documents_and_names_the_repo(project_path: Path, out) -> None:
-    Repo(project_path).create_remote('origin', 'https://github.com/hiloopai/demo.git')
-    run_cli(['init', str(project_path)])
+def test_init_syncs_the_memory_documents_and_names_the_repo(campaign_path: Path, out) -> None:
+    Repo(campaign_path).create_remote('origin', 'https://github.com/hiloopai/demo.git')
+    run_cli(['init', str(campaign_path)])
     assert 'documents' not in out(), 'no [memory] documents: nothing to say'
-    (project_path / 'docs').mkdir()
-    (project_path / 'docs' / 'report.md').write_text('# Campaign report\n\nClock recovery kept twice.\n')
-    with (project_path / 'piloop.toml').open('a') as toml:
+    (campaign_path / 'docs').mkdir()
+    (campaign_path / 'docs' / 'report.md').write_text('# Campaign report\n\nClock recovery kept twice.\n')
+    with (campaign_path / 'piloop.toml').open('a') as toml:
         toml.write('\n[memory]\ndocuments = ["docs/*.md"]\n')
-    run_cli(['init', str(project_path)])
+    run_cli(['init', str(campaign_path)])
     assert 'documents: 1 added, 0 unchanged' in out()
-    run_cli(['init', str(project_path)])
+    run_cli(['init', str(campaign_path)])
     assert 'documents: 0 added, 1 unchanged' in out()
     run_cli(
         [
             'sql',
-            "SELECT p.repo || ' ' || d.path || ' ' || d.title || ' ' || d.created_by FROM documents d JOIN projects p ON p.id = d.project_id",
+            "SELECT p.repo || ' ' || d.path || ' ' || d.title || ' ' || d.created_by FROM documents d JOIN campaigns p ON p.id = d.campaign_id",
         ]
     )
     assert 'github.com/hiloopai/demo docs/report.md Campaign report human' in out()
@@ -526,8 +533,8 @@ def test_init_syncs_the_memory_documents_and_names_the_repo(project_path: Path, 
     assert 'hits: 1' in out()
 
 
-def test_journal_lines_come_back_in_wake(project_path: Path, out, monkeypatch: pytest.MonkeyPatch) -> None:
-    run_cli(['init', str(project_path)])
+def test_journal_lines_come_back_in_wake(campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_cli(['init', str(campaign_path)])
     out()
     monkeypatch.setattr(common, 'settings', Settings(home=common.settings.home, actor='orchestrator'))
     run_cli(['journal', '  demo: parked idea#4,\n  dup of #2  '])
@@ -544,10 +551,10 @@ def test_journal_lines_come_back_in_wake(project_path: Path, out, monkeypatch: p
 
 
 def test_inbox_lists_what_waits_shows_one_with_its_thread_and_acknowledges(
-    project_path: Path, out, monkeypatch: pytest.MonkeyPatch
+    campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run_cli(['init', str(project_path)])
-    other = shutil.copytree(project_path, project_path.parent / 'other')
+    run_cli(['init', str(campaign_path)])
+    other = shutil.copytree(campaign_path, campaign_path.parent / 'other')
     toml = other / 'piloop.toml'
     toml.write_text(re.sub(r'(?m)^name = .*$', 'name = "other"', toml.read_text(), count=1))
     run_cli(['init', str(other)])
@@ -559,10 +566,10 @@ def test_inbox_lists_what_waits_shows_one_with_its_thread_and_acknowledges(
     run_cli(
         [
             'sql',
-            insert + f"('project', 1, 'pi', 'decision', 'requeued idea#4, re comment#2\nRevert: park it', 3, {at}),"
-            f"('project', 1, 'watchdog#2', 'escalation', 'SSO expired; log in?', 1, {at}),"
-            f"('project', 2, 'pi', 'decision', '[goalpost, reversible] floor 2713 → 2687', 0, {at}),"
-            f"('project', 1, 'research#3', 'finding', 'the forum, not the inbox', NULL, {at}),"
+            insert + f"('campaign', 1, 'pi', 'decision', 'requeued idea#4, re comment#2\nRevert: park it', 3, {at}),"
+            f"('campaign', 1, 'watchdog#2', 'escalation', 'SSO expired; log in?', 1, {at}),"
+            f"('campaign', 2, 'pi', 'decision', '[goalpost, reversible] floor 2713 → 2687', 0, {at}),"
+            f"('campaign', 1, 'research#3', 'finding', 'the forum, not the inbox', NULL, {at}),"
             f"('comment', 2, 'pi', 'note', 'asked the team in chat', NULL, {at})",
         ]
     )
@@ -573,14 +580,14 @@ def test_inbox_lists_what_waits_shows_one_with_its_thread_and_acknowledges(
         ['│', '3', '│', '0'],
         ['│', '2', '│', '1'],
         ['│', '1', '│', '3'],
-    ], 'most urgent first, every project'
+    ], 'most urgent first, every campaign'
     assert 'other' in listing and 'the forum' not in listing
     assert listing.splitlines()[-1] == '3 item(s) unacknowledged; `piloop inbox show <id>`, `piloop inbox ack <id>`'
     run_cli(['inbox', 'demo', '--kind', 'decision'])
     assert 'requeued idea#4' in (text := out()) and 'SSO' not in text and 'floor' not in text
     run_cli(['inbox', 'show', '2'])
     assert out().splitlines() == [
-        'comment#2 escalation on project#1 by watchdog#2, 0s ago · p1, unacknowledged',
+        'comment#2 escalation on campaign#1 by watchdog#2, 0s ago · p1, unacknowledged',
         'SSO expired; log in?',
         '',
         'linked: the comments it cites, those citing it, its replies',
@@ -592,7 +599,7 @@ def test_inbox_lists_what_waits_shows_one_with_its_thread_and_acknowledges(
     assert out().splitlines() == ['comment#2 acknowledged', 'comment#4 is not in the inbox']
     run_cli(['inbox', 'show', '4'])
     assert out().splitlines()[0].endswith('· not in the inbox')
-    run_cli(['inbox', 'ack', '--up-to', '3', '--project', 'other'])
+    run_cli(['inbox', 'ack', '--up-to', '3', '--campaign', 'other'])
     assert out().splitlines() == ['comment#3 acknowledged']
     run_cli(['inbox', 'show', '3'])
     assert out().splitlines()[0].endswith('· p0, acknowledged by human 0s ago')
@@ -610,24 +617,24 @@ def test_inbox_lists_what_waits_shows_one_with_its_thread_and_acknowledges(
         run_cli(['inbox', 'ack'])
     with pytest.raises(SystemExit, match='name the ids to acknowledge, or --up-to <id>'):
         run_cli(['inbox', 'ack', '1', '--up-to', '3'])
-    for narrow in (['--kind', 'note'], ['--project', 'demo']):
-        with pytest.raises(SystemExit, match='--project and --kind work only with --up-to <id>'):
+    for narrow in (['--kind', 'note'], ['--campaign', 'demo']):
+        with pytest.raises(SystemExit, match='--campaign and --kind work only with --up-to <id>'):
             run_cli(['inbox', 'ack', '1', *narrow])
     with pytest.raises(SystemExit, match='no comment#99'):
         run_cli(['inbox', 'show', '99'])
 
 
 def test_inbox_wait_blocks_until_an_item_lands_and_hands_over_a_cursor_that_misses_nothing(
-    project_path: Path, out, monkeypatch: pytest.MonkeyPatch
+    campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run_cli(['init', str(project_path)])
+    run_cli(['init', str(campaign_path)])
     out()
     monkeypatch.setattr(inbox_cli, 'WAIT_POLL_SECONDS', 0.01)
     run_cli(['inbox', 'wait', '--timeout', '0'])
     quiet, again = out().splitlines()
     assert quiet == 'nothing new in 0:00:00' and re.fullmatch(r'next: piloop inbox wait --after \d+', again)
     cursor = again.split()[-1]
-    escalate = "INSERT INTO comments (target_kind, target_id, author, kind, priority, body) VALUES ('project', 1, 'watchdog#2', 'escalation', 1, 'SSO expired')"
+    escalate = "INSERT INTO comments (target_kind, target_id, author, kind, priority, body) VALUES ('campaign', 1, 'watchdog#2', 'escalation', 1, 'SSO expired')"
     writer = threading.Timer(0.3, run_cli, [['sql', escalate]])
     writer.start()
     run_cli(['inbox', 'wait', 'demo', '--timeout', '30'])
@@ -636,37 +643,37 @@ def test_inbox_wait_blocks_until_an_item_lands_and_hands_over_a_cursor_that_miss
     wrote = '1 row(s) changed, last insert id 1'
     assert wrote in lines, 'the writer, from the other thread: it prints after its commit, so before or after the item'
     item, after = [line for line in lines if line != wrote]
-    assert item == 'comment#1 escalation p1 on project#1 (demo) by watchdog#2: SSO expired'
+    assert item == 'comment#1 escalation p1 on campaign#1 (demo) by watchdog#2: SSO expired'
     assert re.fullmatch(r'next: piloop inbox wait demo --after \d+', after) and after.split()[-1] != cursor
     run_cli(['inbox', 'wait', '--after', cursor, '--timeout', '30'])
     assert out().splitlines()[0].startswith('comment#1 escalation'), 'from an old cursor: what landed in between'
 
 
 def test_cli_writes_as_the_actor_from_the_environment(
-    project_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
+    campaign_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run_cli(['init', str(project_path)])
+    run_cli(['init', str(campaign_path)])
     monkeypatch.setenv('PILOOP_ACTOR', 'watchdog#4')
     monkeypatch.setattr(common, 'settings', Settings(home=tmp_path))
-    run_cli(['sql', "UPDATE projects SET name='renamed'"])
+    run_cli(['sql', "UPDATE campaigns SET name='renamed'"])
     out()
-    run_cli(['sql', 'SELECT updated_by FROM projects'])
+    run_cli(['sql', 'SELECT updated_by FROM campaigns'])
     assert 'watchdog#4' in out()
-    run_cli(['sql', 'UPDATE projects SET updated_by = NULL'])
-    run_cli(['init', str(project_path)])
+    run_cli(['sql', 'UPDATE campaigns SET updated_by = NULL'])
+    run_cli(['init', str(campaign_path)])
     out()
-    run_cli(['sql', 'SELECT updated_by FROM projects'])
+    run_cli(['sql', 'SELECT updated_by FROM campaigns'])
     assert 'watchdog#4' in out(), 'ORM writes carry the same actor'
 
 
 def test_candidate_import_registers_a_reference_shown_apart_and_refuses_a_bad_ref_or_a_known_tree(
-    project_path: Path, out
+    campaign_path: Path, out
 ) -> None:
-    run_cli(['init', str(project_path)])
+    run_cli(['init', str(campaign_path)])
     out()
-    repo = Repo(project_path)
+    repo = Repo(campaign_path)
     repo.git.checkout('-qb', 'elsewhere')
-    (project_path / 'solve.txt').write_text('')
+    (campaign_path / 'solve.txt').write_text('')
     repo.git.commit('-qam', 'an empty solution')
     sha = repo.head.commit.hexsha
     repo.git.checkout('-q', 'main')
@@ -711,9 +718,9 @@ def test_candidate_import_registers_a_reference_shown_apart_and_refuses_a_bad_re
 
 
 def test_candidate_remeasure_asks_the_daemon_to_measure_a_candidate_again_and_refuses_what_is_never_measured(
-    project_path: Path, out
+    campaign_path: Path, out
 ) -> None:
-    run_cli(['init', str(project_path)])
+    run_cli(['init', str(campaign_path)])
     out()
     run_cli(['candidate', 'remeasure', '1'])
     assert (
@@ -723,13 +730,13 @@ def test_candidate_remeasure_asks_the_daemon_to_measure_a_candidate_again_and_re
     with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
         [event] = s.scalars(select(Event).where(Event.kind == REMEASURE_REQUESTED)).all()
         assert (event.actor, event.target_kind, event.target_id) == ('human', TargetKind.CANDIDATE, 1)
-        s.add(Candidate(project_id=1, commit_sha='0' * 40, tree_sha='1' * 40, verdict=Verdict.UNMEASURED))
+        s.add(Candidate(campaign_id=1, commit_sha='0' * 40, tree_sha='1' * 40, verdict=Verdict.UNMEASURED))
         s.commit()
     run_cli(['pause', 'demo', '--evals', '--reason', 'review'])
     out()
     run_cli(['candidate', 'remeasure', '1'])
     assert out().strip() == (
-        'candidate#1 keep: the daemon measures it again with the current evaluator once project demo is resumed'
+        'candidate#1 keep: the daemon measures it again with the current evaluator once campaign demo is resumed'
         ' (its evaluations are paused); a crash is judged again'
     )
     with pytest.raises(SystemExit, match=r'candidate#2 is unmeasured: the daemon never measures it'):
@@ -739,16 +746,16 @@ def test_candidate_remeasure_asks_the_daemon_to_measure_a_candidate_again_and_re
 
 
 def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_cancel_cancels_one(
-    project_path: Path, out
+    campaign_path: Path, out
 ) -> None:
-    run_cli(['init', str(project_path)])
+    run_cli(['init', str(campaign_path)])
     out()
     run_cli(['eval', 'queue'])
     assert out().strip() == '0 running, 0 waiting; 2 slot(s) (max_evaluations); `piloop eval cancel <candidate>`'
     with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
-        s.add(Candidate(project_id=1, tree_sha='t', commit_sha='c', summary='a newer commit'))
-        s.add(Candidate(project_id=1, tree_sha='u', commit_sha='d', summary='an older commit'))
-        s.add(Candidate(project_id=1, tree_sha='v', commit_sha='e', summary='a merge'))
+        s.add(Candidate(campaign_id=1, tree_sha='t', commit_sha='c', summary='a newer commit'))
+        s.add(Candidate(campaign_id=1, tree_sha='u', commit_sha='d', summary='an older commit'))
+        s.add(Candidate(campaign_id=1, tree_sha='v', commit_sha='e', summary='a merge'))
         s.flush()
         s.add(Evaluation(candidate_id=4, evaluator_id=1, started_at=utcnow()))
         s.add(Evaluation(candidate_id=2, evaluator_id=1))
@@ -764,7 +771,7 @@ def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_canc
     run_cli(['eval', 'queue'])
     *table, summary = out().splitlines()
     assert [line.split()[:5] for line in table] == [
-        ['candidate', 'project', 'state', 'summary'],
+        ['candidate', 'campaign', 'state', 'summary'],
         ['candidate#4', 'demo', 'running', '0s', 'a'],
         ['candidate#1', 'demo', 'cancelled', 'by', 'human'],
         ['candidate#3', 'demo', 'waiting', '0s', 'an'],
@@ -777,15 +784,15 @@ def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_canc
 
 
 def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_to_it(
-    project_path: Path, out, monkeypatch: pytest.MonkeyPatch
+    campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run_cli(['init', str(project_path)])
+    run_cli(['init', str(campaign_path)])
     run_cli(['idea', 'add', 'demo', 'try again'])
     out()
     with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
         for tree, verdict in (('worse', Verdict.DISCARD), ('waiting', Verdict.PENDING)):
             c = Candidate(
-                project_id=1, tree_sha=tree, commit_sha=tree, summary=tree, verdict=verdict, verdict_by='daemon'
+                campaign_id=1, tree_sha=tree, commit_sha=tree, summary=tree, verdict=verdict, verdict_by='daemon'
             )
             c.verdict_reason = 'against candidate#1: score 0 vs 1' if verdict is Verdict.DISCARD else None
             s.add(c)
@@ -826,17 +833,17 @@ def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_
         run_cli(['candidate', 'note', '2', 'worth a look', '--follow-up', 'a hunch'])
 
 
-def test_unknown_project(tmp_path: Path) -> None:
-    with pytest.raises(SystemExit, match='no project'):
+def test_unknown_campaign(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit, match='no campaign'):
         run_cli(['status', 'nope'])
 
 
-def test_baseline_must_evaluate(project_path: Path) -> None:
-    (project_path / 'piloop.toml').write_text(
-        (project_path / 'piloop.toml').read_text().replace('"sh", "-c"', '"false", "-c"')
+def test_baseline_must_evaluate(campaign_path: Path) -> None:
+    (campaign_path / 'piloop.toml').write_text(
+        (campaign_path / 'piloop.toml').read_text().replace('"sh", "-c"', '"false", "-c"')
     )
     with pytest.raises(SystemExit, match='baseline failed to evaluate'):
-        run_cli(['init', str(project_path)])
+        run_cli(['init', str(campaign_path)])
 
 
 def herdr_calls(log: Path) -> list[list[str]]:
@@ -844,9 +851,9 @@ def herdr_calls(log: Path) -> list[list[str]]:
 
 
 def test_attach_focuses_a_worker_tab(
-    project_path: Path, out, herdr_log: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    campaign_path: Path, out, herdr_log: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    run_cli(['init', str(project_path)])
+    run_cli(['init', str(campaign_path)])
     db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
         for runtime, handle in (
@@ -856,7 +863,7 @@ def test_attach_focuses_a_worker_tab(
             s.add(
                 Worker(
                     kind='watchdog',
-                    project_id=1,
+                    campaign_id=1,
                     harness='pi',
                     model='m',
                     runtime=runtime,
@@ -900,11 +907,13 @@ def test_attach_focuses_a_worker_tab(
         run_cli(['attach', '1'])
 
 
-def test_prompt(project_path: Path, out, herdr_log: Path) -> None:
-    run_cli(['init', str(project_path)])
+def test_prompt(campaign_path: Path, out, herdr_log: Path) -> None:
+    run_cli(['init', str(campaign_path)])
     db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
-        idea = Idea(track='score', project_id=1, title='x', hypothesis='x', created_by='t', status=IdeaStatus.SCHEDULED)
+        idea = Idea(
+            track='score', campaign_id=1, title='x', hypothesis='x', created_by='t', status=IdeaStatus.SCHEDULED
+        )
         s.add(idea)
         s.flush()
         s.add(
@@ -913,7 +922,7 @@ def test_prompt(project_path: Path, out, herdr_log: Path) -> None:
         s.add(
             Worker(
                 kind='worker',
-                project_id=1,
+                campaign_id=1,
                 run_id=1,
                 harness='script',
                 model='m',
@@ -933,11 +942,13 @@ def test_prompt(project_path: Path, out, herdr_log: Path) -> None:
         run_cli(['prompt', '2', 'x'])
 
 
-def test_project_stop_and_cancels_are_requests_that_the_daemon_acts_on(project_path: Path, out) -> None:
-    run_cli(['init', str(project_path)])
+def test_campaign_stop_and_cancels_are_requests_that_the_daemon_acts_on(campaign_path: Path, out) -> None:
+    run_cli(['init', str(campaign_path)])
     db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
-        idea = Idea(track='score', project_id=1, title='x', hypothesis='x', created_by='t', status=IdeaStatus.SCHEDULED)
+        idea = Idea(
+            track='score', campaign_id=1, title='x', hypothesis='x', created_by='t', status=IdeaStatus.SCHEDULED
+        )
         s.add(idea)
         s.flush()
         s.add(
@@ -946,9 +957,9 @@ def test_project_stop_and_cancels_are_requests_that_the_daemon_acts_on(project_p
         s.flush()
         s.add_all(
             [
-                Worker(kind='worker', project_id=1, run_id=1, state=WorkerState.RUNNING),
-                Worker(kind='worker', project_id=1, run_id=1, state=WorkerState.EXITED),
-                Worker(kind='research', project_id=1, state=WorkerState.RUNNING),
+                Worker(kind='worker', campaign_id=1, run_id=1, state=WorkerState.RUNNING),
+                Worker(kind='worker', campaign_id=1, run_id=1, state=WorkerState.EXITED),
+                Worker(kind='research', campaign_id=1, state=WorkerState.RUNNING),
             ]
         )
         s.commit()
@@ -956,7 +967,7 @@ def test_project_stop_and_cancels_are_requests_that_the_daemon_acts_on(project_p
     run_cli(['run', 'cancel', '1', '--wrap-up'])
     run_cli(['agent', 'cancel', '3'])
     run_cli(['agent', 'cancel', '1', '--wrap-up'])
-    run_cli(['project', 'stop', 'demo', '--reason', 'machine needed'])
+    run_cli(['campaign', 'stop', 'demo', '--reason', 'machine needed'])
     assert out().splitlines() == [
         'cancel requested for run#1: the daemon acts on its next tick',
         'cancel requested for worker#3: the daemon acts on its next tick',
@@ -973,22 +984,22 @@ def test_project_stop_and_cancels_are_requests_that_the_daemon_acts_on(project_p
             ('run.cancel_requested', 1, 'human', {'wrap_up': True}),
             ('worker.cancel_requested', 3, 'human', {'wrap_up': False}),
             ('worker.cancel_requested', 1, 'human', {'wrap_up': True}),
-            ('project.stop_requested', 1, 'human', {'reason': 'machine needed', 'kill': False}),
+            ('campaign.stop_requested', 1, 'human', {'reason': 'machine needed', 'kill': False}),
         ]
-        s.get_one(Project, 1).status, s.get_one(Project, 1).stopped_reason = ProjectStatus.STOPPED, 'by hand'
+        s.get_one(Campaign, 1).status, s.get_one(Campaign, 1).stopped_reason = CampaignStatus.STOPPED, 'by hand'
         s.commit()
     db.close()
     with pytest.raises(SystemExit, match=r'demo is stopped already \(by hand\); --kill ends its workers at once'):
-        run_cli(['project', 'stop', 'demo'])
-    run_cli(['project', 'stop', 'demo', '--kill'])
+        run_cli(['campaign', 'stop', 'demo'])
+    run_cli(['campaign', 'stop', 'demo', '--kill'])
     assert out().strip() == 'stop requested for demo: the daemon ends its workers at once on its next tick'
 
 
-def test_launch_requests_a_worker(project_path: Path, out) -> None:
-    run_cli(['init', str(project_path)])
+def test_launch_requests_a_worker(campaign_path: Path, out) -> None:
+    run_cli(['init', str(campaign_path)])
     out()
     run_cli(['launch', 'demo', 'research'])
-    run_cli(['launch', str(project_path), 'watchdog', '--harness', 'pi', '--model', 'opus', '--reason', 'eyeball it'])
+    run_cli(['launch', str(campaign_path), 'watchdog', '--harness', 'pi', '--model', 'opus', '--reason', 'eyeball it'])
     assert out().splitlines() == [
         'worker#1 research requested for demo: requested from the CLI',
         'worker#2 watchdog requested for demo: eyeball it',
@@ -1100,31 +1111,33 @@ def test_service_unit_prints_a_systemd_unit_on_linux(tmp_path: Path, out) -> Non
     )
 
 
-def test_the_service_unit_carries_what_the_usage_globs_of_a_projects_harnesses_name(
-    project_path: Path, out, monkeypatch: pytest.MonkeyPatch
+def test_the_service_unit_carries_what_the_usage_globs_of_a_campaigns_harnesses_name(
+    campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    toml = project_path / 'piloop.toml'
+    toml = campaign_path / 'piloop.toml'
     usage = '[harness.script.usage]\nfile = "{env:SCRIPT_HOME:~/.script}/{session_id}.jsonl"\ntally = "pi"\n\n'
     toml.write_text(
         toml.read_text()
         .replace('[harness.script]', usage + '[harness.script]')
         .replace('headless = ["{prompt}"]', 'headless = ["{prompt}", "{session_id}"]')
     )
-    run_cli(['init', str(project_path)])
+    run_cli(['init', str(campaign_path)])
     monkeypatch.setenv('SCRIPT_HOME', '/somewhere/script')
     out()
     run_cli(['service-unit'])
     unit = out()  # a systemd unit, or a launchd plist on macOS
-    assert 'SCRIPT_HOME' in unit and '/somewhere/script' in unit, 'a harness of a registered project'
+    assert 'SCRIPT_HOME' in unit and '/somewhere/script' in unit, 'a harness of a registered campaign'
 
 
-def test_status_without_results_and_prompt_not_steerable(project_path: Path, out, mocker: MockerFixture) -> None:
-    run_cli(['init', str(project_path)])
+def test_status_without_results_and_prompt_not_steerable(campaign_path: Path, out, mocker: MockerFixture) -> None:
+    run_cli(['init', str(campaign_path)])
     db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
         for c in s.scalars(select(Candidate)):
             c.verdict = Verdict.DISCARD
-        idea = Idea(track='score', project_id=1, title='x', hypothesis='x', created_by='t', status=IdeaStatus.SCHEDULED)
+        idea = Idea(
+            track='score', campaign_id=1, title='x', hypothesis='x', created_by='t', status=IdeaStatus.SCHEDULED
+        )
         s.add(idea)
         s.flush()
         s.add(
@@ -1141,7 +1154,7 @@ def test_status_without_results_and_prompt_not_steerable(project_path: Path, out
         s.add(
             Worker(
                 kind='worker',
-                project_id=1,
+                campaign_id=1,
                 run_id=1,
                 harness='script',
                 model='m',
@@ -1151,7 +1164,7 @@ def test_status_without_results_and_prompt_not_steerable(project_path: Path, out
                 log_dir='x',
             )
         )
-        s.add(Worker(kind='worker', project_id=1, run_id=1, harness='script', state=WorkerState.RUNNING))
+        s.add(Worker(kind='worker', campaign_id=1, run_id=1, harness='script', state=WorkerState.RUNNING))
         s.commit()
     db.close()
     out()
@@ -1205,7 +1218,7 @@ def add_candidate_with_worker(
     with db.session() as s:
         idea = Idea(
             track='score',
-            project_id=1,
+            campaign_id=1,
             title=f'idea {checkpoint} {session_id} {harness} {ended}',
             hypothesis='x',
             created_by='t',
@@ -1218,7 +1231,7 @@ def add_candidate_with_worker(
         s.add(
             Worker(
                 kind=WorkerKind.WORKER,
-                project_id=1,
+                campaign_id=1,
                 run_id=run.id,
                 harness=harness,
                 session_id=session_id,
@@ -1226,7 +1239,7 @@ def add_candidate_with_worker(
                 ended_at=utcnow() if ended else None,
             )
         )
-        candidate = Candidate(project_id=1, run_id=run.id, parent_id=1, tree_sha=f't{run.id}', commit_sha='c' * 40)
+        candidate = Candidate(campaign_id=1, run_id=run.id, parent_id=1, tree_sha=f't{run.id}', commit_sha='c' * 40)
         s.add(candidate)
         s.commit()
         return candidate.id
@@ -1337,15 +1350,15 @@ def test_upgrade_of_a_checkout_install_without_a_daemon_creates_the_schema(fake_
         run_cli(['upgrade'])
 
 
-def test_upgrade_fails_on_what_doctor_finds_after_it(fake_bins, out, project_path: Path) -> None:
-    run_cli(['init', str(project_path)])
-    shutil.rmtree(project_path)
+def test_upgrade_fails_on_what_doctor_finds_after_it(fake_bins, out, campaign_path: Path) -> None:
+    run_cli(['init', str(campaign_path)])
+    shutil.rmtree(campaign_path)
     write_receipt(GIT_RECEIPT)
     fake_bins('uv')
     out()
     with pytest.raises(SystemExit, match='piloop doctor found problems after the upgrade'):
         run_cli(['upgrade'])
-    assert f'FAIL  project demo: no piloop.toml in {project_path}' in out()
+    assert f'FAIL  campaign demo: no piloop.toml in {campaign_path}' in out()
 
 
 @pytest.mark.usefixtures('no_database')
@@ -1411,16 +1424,16 @@ def test_main_turns_a_bad_config_and_any_unexpected_error_into_one_message(
         cli.main()
 
 
-def test_watch_needs_a_terminal_and_runs_the_app_as_the_actor(project_path: Path, out, mocker: MockerFixture) -> None:
-    run_cli(['init', str(project_path)])
+def test_watch_needs_a_terminal_and_runs_the_app_as_the_actor(campaign_path: Path, out, mocker: MockerFixture) -> None:
+    run_cli(['init', str(campaign_path)])
     out()
     with pytest.raises(
         SystemExit, match='piloop watch reads keys from a terminal; `piloop status` prints the same once'
     ):
         run_cli(['watch'])
-    mocker.patch('piloop.cli.project.sys.stdin').isatty.return_value = True
+    mocker.patch('piloop.cli.campaign.sys.stdin').isatty.return_value = True
     ran: list[tuple[str | None, str, Path]] = []
-    mocker.patch.object(project_cli.Watch, 'run', lambda app: ran.append((app.ref, app.actor, app.db_file)))
+    mocker.patch.object(campaign_cli.Watch, 'run', lambda app: ran.append((app.ref, app.actor, app.db_file)))
     run_cli(['watch', 'demo'])
     assert ran == [('demo', 'human', common.settings.home / 'piloop.db')]
 
@@ -1431,14 +1444,14 @@ def test_schema_prints_the_procedures_and_tables_pi_puts_in_its_sql_tool(out) ->
     assert text.startswith('# Working with the piloop database') and 'CREATE TABLE comments (' in text
 
 
-def test_with_several_tracks_every_idea_and_seed_names_its_track(project_path: Path, out) -> None:
-    toml = project_path / 'piloop.toml'
+def test_with_several_tracks_every_idea_and_seed_names_its_track(campaign_path: Path, out) -> None:
+    toml = campaign_path / 'piloop.toml'
     text = toml.read_text().replace('role = "primary"', 'role = "primary"\nmargin = 1')
     text = text.replace(
         'name = "size"\ndirection = "lower"', 'name = "size"\ndirection = "lower"\nrole = "primary"\nmargin = 2'
     )
     toml.write_text(text + '\n[tracks.score]\nshare = 0.5\n\n[tracks.size]\nshare = 0.5\n')
-    run_cli(['init', str(project_path)])
+    run_cli(['init', str(campaign_path)])
     out()
     with pytest.raises(SystemExit, match='demo has tracks score, size: name one with --track'):
         run_cli(['idea', 'add', 'demo', 'more lines'])
@@ -1447,7 +1460,7 @@ def test_with_several_tracks_every_idea_and_seed_names_its_track(project_path: P
     run_cli(['idea', 'add', 'demo', 'shorter lines', '--track', 'size'])
     run_cli(['idea', 'seed', 'demo', 'more lines', '--from', 'run#1', '--track', 'score'])
     with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
-        worse = Candidate(project_id=1, tree_sha='w', commit_sha='w', summary='w', verdict=Verdict.DISCARD)
+        worse = Candidate(campaign_id=1, tree_sha='w', commit_sha='w', summary='w', verdict=Verdict.DISCARD)
         s.add(worse)
         s.commit()
     run_cli(['candidate', 'note', '2', 'cheaper', '--follow-up', 'trim it', '--track', 'size'])
@@ -1492,3 +1505,54 @@ def test_restart_and_upgrade_keep_the_daemon_running_when_the_code_would_not_sta
     reaper.start()
     run_cli(['stop'])
     reaper.join()
+
+
+def test_a_newer_cli_does_not_migrate_the_database_under_an_older_daemon(out) -> None:
+    database = common.settings.home / 'piloop.db'
+    database.unlink()
+    command.upgrade(alembic(database), '0015')
+    for daemon in hold_lock(common.settings.pid_file):
+        for argv in (['status'], ['migrate']):
+            with pytest.raises(
+                SystemExit,
+                match=rf'the daemon \(pid {daemon.pid}\) runs an older piloop: .* at schema'
+                rf' revision 0015, .* to {HEAD} under the daemon\. Run `piloop upgrade`',
+            ):
+                run_cli(argv)
+        assert revision_of(database) == '0015', 'nothing changed'
+    out()
+    run_cli(['migrate'])
+    assert out().strip() == f'schema: 0015 → {HEAD}', 'without the daemon, the CLI migrates'
+    for _ in hold_lock(common.settings.pid_file):
+        run_cli(['status'])  # at head: a daemon of the same piloop is no reason to refuse
+
+
+def revision_of(database: Path) -> str:
+    with closing(sqlite3.connect(database)) as con:
+        return con.execute('SELECT version_num FROM alembic_version').fetchone()[0]
+
+
+def test_serve_and_sql_change_nothing_under_the_daemon_of_an_older_piloop(out) -> None:
+    database = common.settings.home / 'piloop.db'
+    database.unlink()
+    command.upgrade(alembic(database), '0001')  # what 0.1.0 leaves
+    with pytest.raises(SystemExit, match=r'at schema revision 0001, and this piloop .* run `piloop migrate` first$'):
+        run_cli(['sql', 'SELECT 1'])
+    for daemon in hold_lock(common.settings.pid_file):
+        for argv in (['serve'], ['sql', 'SELECT 1']):
+            with pytest.raises(SystemExit, match=rf'^the daemon \(pid {daemon.pid}\) runs an older piloop'):
+                run_cli(argv)
+        with pytest.raises(SystemExit, match=rf'a daemon is already running \(pid {daemon.pid}'):
+            run_cli(['serve', '--detach'])
+        assert revision_of(database) == '0001', 'neither the daemon nor the command migrated under it'
+
+
+def test_an_in_place_restart_holds_the_lock_itself_and_migrates(tmp_path: Path) -> None:
+    database = common.settings.home / 'piloop.db'
+    database.unlink()
+    command.upgrade(alembic(database), '0001')
+    fd = acquire(common.settings)
+    try:
+        refuse_older_daemon(common.settings, create_engine(f'sqlite:///{database}'))  # its own lock: no refusal
+    finally:
+        os.close(fd)

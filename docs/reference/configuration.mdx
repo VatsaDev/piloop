@@ -3,13 +3,13 @@ title: Configuration
 description: Every key of piloop.toml, with its type and its default.
 ---
 
-{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the docstrings of the models that `ProjectConfig` reaches, `piloop/deprecated.py`, or `scripts/generate/configuration.py` if you want to change anything here. */}
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the docstrings of the models that `CampaignConfig` reaches, `piloop/deprecated.py`, or `scripts/generate/configuration.py` if you want to change anything here. */}
 
-`piloop.toml` is at the root of the project repo. `piloop init` reads it again each time you run it, and stores a
+`piloop.toml` is at the root of the campaign repo. `piloop init` reads it again each time you run it, and stores a
 copy. The daemon uses that copy, so an edit takes effect only when you run `piloop init`.
 
-To override a key when `piloop init` reads the file, set `PILOOP_PROJECT_<KEY>`. Join nested keys with `__`, for
-example `PILOOP_PROJECT_RUNTIME=herdr` or `PILOOP_PROJECT_ROLES__WORKER__MAX_CONCURRENT=2`. The stored copy keeps the
+To override a key when `piloop init` reads the file, set `PILOOP_CAMPAIGN_<KEY>`. Join nested keys with `__`, for
+example `PILOOP_CAMPAIGN_RUNTIME=herdr` or `PILOOP_CAMPAIGN_ROLES__WORKER__MAX_CONCURRENT=2`. The stored copy keeps the
 override until the next `piloop init`. The variable has no effect on `piloop serve`.
 
 A type in the tables links to the section that describes it. A table that you leave out has the defaults of its
@@ -19,8 +19,8 @@ section.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `name` | string | required | A short name for the project. piloop names its git refs and Herdr workspaces after it. |
-| `metrics` | list\[[Metric](#metric)\] | required | Every metric the evaluate command prints, each with its `role`. Each track has one `primary`, so a project with one track has exactly one. |
+| `name` | string | required | A short name for the campaign. piloop names its git refs and Herdr workspaces after it. |
+| `metrics` | list\[[Metric](#metric)\] | required | Every metric the evaluate command prints, each with its `role`. Each track has one `primary`, so a campaign with one track has exactly one. |
 | `tracks` | dict\[string, [TrackConfig](#trackconfig)\] | `{}` | `[tracks.<name>]`: the share and addendum of each track. Needed only with several primaries. |
 | `confidence` | number | `0.95` | The confidence level of the paired bootstrap behind the verdict. For a `keep`, the lower bound of the primary's gain must be above zero at this level. A guardrail's margin is tested on the bound at this level too. |
 | `evaluate` | list\[string\] | required | The command (argv) that scores a commit. It runs in a clean worktree of the commit and must print `METRIC <name>=<value>` lines. |
@@ -28,11 +28,11 @@ section.
 | `harnesses` | list\[string\] | `["pi"]` | The enabled harnesses. Runs use them in turn, unless an idea pins one. Built in: `claude`, `codex`, `pi`. |
 | `model` | dict\[string, string\] | required | The model id for each harness, for example `{pi = "anthropic/claude-opus-5-5", claude = "claude-opus-5-5", codex = "gpt-6.1-sol"}`. |
 | `harness` | dict\[string, [Harness](#harness)\] | `{}` | Harness definitions by name: overrides of the built-in harnesses, or new ones. |
-| `max_concurrent` | dict\[string, integer\] | `{}` | The maximum number of agents of one harness, across all roles of the project, that are started or queued to start. Example: `{claude = 2}` when the provider of its model limits the request rate. When it is the turn of a harness at its limit, the slot goes to the next harness of the rotation. An idea or request that pins that harness waits. When unset, only the limits of the roles apply. |
+| `max_concurrent` | dict\[string, integer\] | `{}` | The maximum number of agents of one harness, across all roles of the campaign, that are started or queued to start. Example: `{claude = 2}` when the provider of its model limits the request rate. When it is the turn of a harness at its limit, the slot goes to the next harness of the rotation. An idea or request that pins that harness waits. When unset, only the limits of the roles apply. |
 | `evaluate_timeout` | number | `600` | The number of seconds before the evaluate command is stopped. The evaluation is then a crash. |
 | `roles` | [Roles](#roles) | `{}` | The settings of each role (`[roles.worker]`, `[roles.watchdog]`, `[roles.research]`, `[roles.scout]`), and the roles that you define (`[roles.<name>]`). |
 | `link` | list\[string\] | `[]` | Repo-relative paths, ignored by git, that piloop symlinks into every worktree, for example data or virtual environments. |
-| `context` | list\[string\] | `[]` | Repo-relative files or globs (for example `docs/error-analysis-*.md`) that hold the project's analysis: error analyses, comparisons with a reference, evaluation reports. The research pack lists each one with its outline, newest first, so that every sweep that reads the pack reads them before it proposes work. |
+| `context` | list\[string\] | `[]` | Repo-relative files or globs (for example `docs/error-analysis-*.md`) that hold the campaign's analysis: error analyses, comparisons with a reference, evaluation reports. The research pack lists each one with its outline, newest first, so that every sweep that reads the pack reads them before it proposes work. |
 | `mcp` | dict\[string, [McpServer](#mcpserver)\] | `{}` | `[mcp.<name>]`: the MCP servers that a role can list in `[roles.<name>] mcp`. |
 | `stop` | [Stop](#stop) | `{}` | `[stop]`: conditions that end the campaign. None by default. |
 | `spend` | [Spend](#spend) \| null | `null` | `[spend]`: a hard budget on what the campaign spends outside piloop. None by default. |
@@ -48,20 +48,20 @@ One metric. The evaluate command prints it as a `METRIC name=value` line.
 | `name` | string | required | The name of the metric, as the evaluate command prints it. |
 | `direction` | `higher` \| `lower` | required | `higher` when a larger value is better, `lower` when a smaller value is better. |
 | `role` | `primary` \| `guardrail` \| `watch` | `"watch"` | How the metric affects the verdict. A `primary` metric must beat the bar with confidence for a `keep`, and each track has exactly one. A `guardrail` may get worse by at most its `margin`, or the candidate is at most `interesting`. It must never pass its `floor`, or the candidate is a `discard`. A `watch` metric is recorded and never affects the verdict. |
-| `track` | string \| null | `null` | Primary metrics only. The name of the track (objective) that this metric is the primary of. When unset, the track has the metric's name, so a project with one primary needs nothing here. With several primaries, each one names its own track, and each track needs a `[tracks.<name>]` table. |
-| `margin` | number \| null | `null` | The largest regression from the bar that a candidate may show, in the metric's own units (an absolute value, not a fraction). Required on a guardrail. Also required on every primary of a project with several tracks: when a candidate of another track is judged, that primary is a guardrail. When the evaluate command writes per-unit results, the margin is tested on the confidence bound of the bootstrap. Otherwise it is tested on the aggregate. |
-| `floor` | number \| null | `null` | Optional. The worst value a candidate may have: at least this value for `higher`, at most this value for `lower`. It is a hard limit on the aggregate, independent of the bar, and only an edit of `piloop.toml` changes it. Allowed on a guardrail, and on a primary of a project with several tracks, where it applies to the candidates of the other tracks. |
+| `track` | string \| null | `null` | Primary metrics only. The name of the track (objective) that this metric is the primary of. When unset, the track has the metric's name, so a campaign with one primary needs nothing here. With several primaries, each one names its own track, and each track needs a `[tracks.<name>]` table. |
+| `margin` | number \| null | `null` | The largest regression from the bar that a candidate may show, in the metric's own units (an absolute value, not a fraction). Required on a guardrail. Also required on every primary of a campaign with several tracks: when a candidate of another track is judged, that primary is a guardrail. When the evaluate command writes per-unit results, the margin is tested on the confidence bound of the bootstrap. Otherwise it is tested on the aggregate. |
+| `floor` | number \| null | `null` | Optional. The worst value a candidate may have: at least this value for `higher`, at most this value for `lower`. It is a hard limit on the aggregate, independent of the bar, and only an edit of `piloop.toml` changes it. Allowed on a guardrail, and on a primary of a campaign with several tracks, where it applies to the candidates of the other tracks. |
 
 ## TrackConfig
 
-`[tracks.<name>]`: one track of the project. A track is an objective with its own primary metric and brief.
+`[tracks.<name>]`: one track of the campaign. A track is an objective with its own primary metric and brief.
 
 A track has the name of its primary's `track`, or else the name of the primary. All tracks build on one trunk. A
 run starts from the head, which is the latest keep on the trunk. A keep on any track must also hold the primary of
-every other track within that primary's `margin` and `floor`. A project with one primary has one track and
-needs no table. A project with several primaries needs one table for each track, and the shares must sum to 1.
+every other track within that primary's `margin` and `floor`. A campaign with one primary has one track and
+needs no table. A campaign with several primaries needs one table for each track, and the shares must sum to 1.
 
-Experimental: projects with more than one track.
+Experimental: campaigns with more than one track.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -119,7 +119,7 @@ swallows a key that arrives inside the burst, so the key waits until the text is
 `[harness.<name>.usage]`: how to read the tokens that an agent of this harness spent, after it ended.
 
 `reader` names the code that reads them, and the other keys are its parameters. The built-in harnesses set
-their specs as data. A project can override any key, or give a custom harness a complete spec. piloop checks the
+their specs as data. A campaign can override any key, or give a custom harness a complete spec. piloop checks the
 names when the config loads.
 
 | Key | Type | Default | Description |
@@ -151,9 +151,9 @@ The keys that every `[roles.<name>]` table accepts. Each role's table below adds
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `prompt` | string \| null | `null` | The file that starts the brief of this role: a path relative to the repo root, or an absolute path. When unset, a built-in role uses its built-in prompt. A new role needs it. |
-| `runtime` | string \| null | `null` | Where the agents of this role run. When unset, the role uses the project's `runtime`. Built in: `herdr`, `subprocess`. |
-| `harnesses` | list\[string\] \| null | `null` | The harness rotation of this role. When unset, the role uses the project's `harnesses`. |
-| `model` | dict\[string, string\] \| null | `null` | The model for each harness in this role. It is merged over the project's `model`. |
+| `runtime` | string \| null | `null` | Where the agents of this role run. When unset, the role uses the campaign's `runtime`. Built in: `herdr`, `subprocess`. |
+| `harnesses` | list\[string\] \| null | `null` | The harness rotation of this role. When unset, the role uses the campaign's `harnesses`. |
+| `model` | dict\[string, string\] \| null | `null` | The model for each harness in this role. It is merged over the campaign's `model`. |
 | `timeout` | number | `600` | The number of seconds one agent may run before it is stopped. |
 | `max_concurrent` | integer | `1` | The maximum number of agents of this role that run at the same time. More requests stay `requested` until a slot is free. |
 | `addendum` | string \| null | `null` | A repo-relative file that is appended to `brief.md` in the briefs of this role only. Use it for instructions that only this role needs, for example how the research agent searches. |
@@ -191,7 +191,7 @@ name defines a new role, and needs `prompt` and `triggers`.
 |---|---|---|---|
 | `runs` | boolean | `false` | The agents of this role do no runs. Set `runs = true` in a new table to define a role that does runs. |
 | `triggers` | list\[[Trigger](#trigger)\] | required | When the daemon requests an agent of this role: a list of `{ kind = "<trigger>", ... }` entries, checked in order on each tick. A package can add triggers. An empty list means that agents start only on request (`piloop launch`). Built in: `anomaly`, `cron`, `low_water`, `seed`, `sql`, `stopped`. |
-| `workdir` | `head` \| `project` | `"head"` | Where the agent works: `head`, a detached worktree at the head, or `project`, the project checkout. |
+| `workdir` | `head` \| `repo` | `"head"` | Where the agent works: `head`, a detached worktree at the head, or `campaign`, the campaign checkout. |
 | `interval` | number | `0` | The number of seconds between two routine sweeps of the `cron` trigger, counted from the start of the last one. A sweep that investigates an anomaly is not a routine sweep. 0 turns the timer off. |
 | `max_ideas` | integer | `1` | The maximum number of new ideas one sweep may insert, as its brief states it. The seeds it develops do not count. `low_water` requests enough sweeps to fill the backlog at this many ideas each. 0 pauses the role's new ideas: `low_water` is off, and an idea that a sweep of the role adds (`piloop idea add`) is `proposed`, so it waits for a review, also from a sweep that started before the change. |
 | `incident_prompt` | string \| null | `null` | A file that follows `prompt` in the brief of an incident sweep, a sweep that got anomalies (the `anomaly` trigger): a path relative to the repo root, or an absolute path. When unset, a built-in role uses its built-in file (the watchdog's `watchdog_incident.md`), and another role adds nothing. |
@@ -203,7 +203,7 @@ name defines a new role, and needs `prompt` and `triggers`.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `writes` | list\[string\] | `["comments(escalation, finding, note)", "lessons on the project once it stopped", "seeds via idea seed"]` | What a watchdog may write, as its brief states it. |
+| `writes` | list\[string\] | `["comments(escalation, finding, note)", "lessons on the campaign once it stopped", "seeds via idea seed"]` | What a watchdog may write, as its brief states it. |
 | `wake_budget` | integer \| null | `0` | The size in tokens of the lessons overview that opens a watchdog's brief. Off by default: the closing review reads the lessons itself before it writes its own. |
 | `triggers` | list\[[Trigger](#trigger)\] | `[{"kind": "anomaly"}, {"kind": "cron"}, {"kind": "stopped"}]` | An anomaly requests an incident sweep, the timer requests a progress review, and the campaign's stop requests the closing review. |
 | `interval` | number | `1800` | The number of seconds between two progress reviews, counted from the last review. A sweep that investigates an anomaly is not a review. 0 turns the reviews off. |
@@ -226,7 +226,7 @@ The daemon checks the entries in the order of the list.
 |---|---|---|---|
 | `timeout` | number | `900` | The number of seconds one sweep may run before it is stopped. |
 | `max_concurrent` | integer | `1` | The maximum number of sweeps that run at the same time, each on the next harness of the rotation. The default is 1: sweeps that run at the same time read the same evidence and often duplicate each other, and two of them can race to develop the same seed. |
-| `writes` | list\[string\] | `["seeds via idea develop, or their status to rejected with a note", "ideas via idea add", "comments(finding, escalation) on the project", "comments(note) on an idea"]` | What a research sweep may write, as its brief states it. |
+| `writes` | list\[string\] | `["seeds via idea develop, or their status to rejected with a note", "ideas via idea add", "comments(finding, escalation) on the campaign", "comments(note) on an idea"]` | What a research sweep may write, as its brief states it. |
 | `files` | `nothing` \| `seeds` \| `ideas` | `"ideas"` | Research develops seeds into ideas and adds ideas of its own. |
 | `triggers` | list\[[Trigger](#trigger)\] | `[{"kind": "low_water", "buffer": 2}, {"kind": "seed"}]` | A short backlog, and a new seed. |
 
@@ -244,9 +244,9 @@ Experimental: the scout.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `timeout` | number | `900` | The number of seconds one sweep may run before it is stopped. |
-| `writes` | list\[string\] | `["seeds via idea seed (at most the count under Context)", "techniques (the library), by INSERT", "one comments(finding) on the project"]` | What a scout sweep may write, as its brief states it. |
+| `writes` | list\[string\] | `["seeds via idea seed (at most the count under Context)", "techniques (the library), by INSERT", "one comments(finding) on the campaign"]` | What a scout sweep may write, as its brief states it. |
 | `triggers` | list\[[Trigger](#trigger)\] | `[{"kind": "cron"}]` | The timer: a scout sweep every `interval` seconds. |
-| `interval` | number | `0` | The number of seconds between two scout sweeps, counted from the start of the last one. The first sweep counts from the registration of the project. 0 (the default) turns the scout off. |
+| `interval` | number | `0` | The number of seconds between two scout sweeps, counted from the start of the last one. The first sweep counts from the registration of the campaign. 0 (the default) turns the scout off. |
 | `seeds` | integer | `3` | The maximum number of seeds one scout sweep may file. The other techniques it finds go to the library. |
 
 ## McpServer
@@ -268,17 +268,17 @@ daemon's environment to the agent, and the harness puts their values into the he
 
 `[stop]`: conditions that end the campaign. One is enough. Without the table, the campaign has no end.
 
-The daemon checks the conditions on every tick, before it requests anything. When one holds, the project is
-`stopped` (`projects.status`, `stopped_reason`). Running workers are told to commit and stop, and are ended
+The daemon checks the conditions on every tick, before it requests anything. When one holds, the campaign is
+`stopped` (`campaigns.status`, `stopped_reason`). Running workers are told to commit and stop, and are ended
 10 minutes later. What they committed is scored. A worker in the middle of a turn reads the message only when the
 turn ends: one that is ended before it left its finding closes its run as `campaign stopped`, which does not
 count toward `max_runs` or `plateau`. Pending requests and queued runs are dropped
 (`campaign stopped`). The `stopped` triggers fire once, which by default requests the watchdog's closing
-review, and the triggers request nothing more. The daemon files no seeds for the project either. An agent that you
+review, and the triggers request nothing more. The daemon files no seeds for the campaign either. An agent that you
 request with `piloop launch` after the stop still starts.
 
-`piloop project stop` stops a campaign the same way on the next tick, whatever this table says. With `--kill`,
-the workers are ended at once instead of told. `piloop init` resumes a stopped project when this table changed.
+`piloop campaign stop` stops a campaign the same way on the next tick, whatever this table says. With `--kill`,
+the workers are ended at once instead of told. `piloop init` resumes a stopped campaign when this table changed.
 
 `max_runs` and `plateau` count the same runs: those that reached the evaluator, with a candidate that is
 measured or waits for its measurement. A run that ended at a cheap check with no commit, with only
@@ -288,17 +288,17 @@ count either. `[spend]`, `max_tokens` and `max_hours` stay hard limits on what a
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `target` | number \| null | `null` | Stop when the primary metric at the head (the latest keep on the trunk) reaches this value, in its direction. Only for a project with one track. |
+| `target` | number \| null | `null` | Stop when the primary metric at the head (the latest keep on the trunk) reaches this value, in its direction. Only for a campaign with one track. |
 | `max_runs` | integer \| null | `null` | Stop after this many runs that count (see above), once none is queued, running or being scored. A run also counts while it is queued, running or being scored, so piloop never starts more runs than this. A finished run that does not count frees its place, and piloop starts another run in it. |
-| `max_hours` | number \| null | `null` | Stop after this many hours of wall-clock time since the first run of the project started. The time that the project was paused (`piloop pause`) does not count. |
-| `max_tokens` | integer \| null | `null` | Stop when all the agents of the project together spent this many tokens (the `total` of `workers.usage`), summed over the agents that ended. |
-| `plateau` | integer \| null | `null` | Stop after this many finished runs that count (see above) without a new `keep` candidate. The count starts again at each keep, and when the project is set `active` after a stop (`piloop init`, or an UPDATE of `projects.status`), so a reactivated campaign gets this many runs again. A new evaluator alone does not reset it. |
+| `max_hours` | number \| null | `null` | Stop after this many hours of wall-clock time since the first run of the campaign started. The time that the campaign was paused (`piloop pause`) does not count. |
+| `max_tokens` | integer \| null | `null` | Stop when all the agents of the campaign together spent this many tokens (the `total` of `workers.usage`), summed over the agents that ended. |
+| `plateau` | integer \| null | `null` | Stop after this many finished runs that count (see above) without a new `keep` candidate. The count starts again at each keep, and when the campaign is set `active` after a stop (`piloop init`, or an UPDATE of `campaigns.status`), so a reactivated campaign gets this many runs again. A new evaluator alone does not reset it. |
 
 ## Spend
 
 `[spend]`: a hard budget in USD on what the campaign costs outside piloop, for example GPUs or APIs.
 
-Every `interval` seconds, the daemon runs `command` to read the spend from the project (`projects.spend_usd`,
+Every `interval` seconds, the daemon runs `command` to read the spend from the campaign (`campaigns.spend_usd`,
 `spend_error`, `spend_at`). When the spend passes a `notices` threshold, the daemon posts one note to the
 inbox at priority 1. At `limit`, the daemon launches no agent and starts no evaluation (no request, no
 re-measure), and posts one escalation at priority 0. Work that already runs finishes and is scored. A command that
@@ -307,7 +307,7 @@ read as $0. To resume, raise `limit` and run `piloop init`.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `command` | list\[string\] | required | The command (argv) that prints the project's spend so far in USD, as one number. It runs at the repo root with the daemon's environment, which is where its secrets come from. It must exit with code 0 within one minute. Example: `["uv", "run", "scripts/spend.py"]`. |
+| `command` | list\[string\] | required | The command (argv) that prints the campaign's spend so far in USD, as one number. It runs at the repo root with the daemon's environment, which is where its secrets come from. It must exit with code 0 within one minute. Example: `["uv", "run", "scripts/spend.py"]`. |
 | `limit` | number | required | The spend in USD at which launches and evaluations stop. |
 | `notices` | list\[number\] | `[]` | Amounts in USD below `limit`. When the spend passes one, the daemon posts one note to the inbox. |
 | `interval` | number | `300` | The number of seconds between two runs of `command`. |
@@ -318,12 +318,12 @@ read as $0. To resume, raise `limit` and run `piloop init`.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `documents` | list\[string\] | `[]` | Repo-relative globs of text documents, for example `["docs/evidence/**/*.md"]`: campaign reports, orchestrator logs, design notes. `piloop init` and the stop of the campaign copy them into the `documents` table, where every agent of every project can search them. Never name a document that is derived from validation or test data. |
-| `wake_budget` | integer | `400` | The size in tokens (about 4 characters each) of the overview that opens the briefs of workers and research sweeps: the current lesson of each mechanism family on the same repo, from the newest campaign that tried it, one line each. Lessons in the project's own metrics come first (`lessons.metric`), then lessons in related metrics, then the rest. Within those, dead or promising come before untested, then the larger effects of each metric, then newer campaigns: effects in different metrics are never compared by size. The brief then says how to read more. A role can change it with `[roles.<kind>] wake_budget`. 0 turns it off. |
+| `documents` | list\[string\] | `[]` | Repo-relative globs of text documents, for example `["docs/evidence/**/*.md"]`: campaign reports, orchestrator logs, design notes. `piloop init` and the stop of the campaign copy them into the `documents` table, where every agent of every campaign can search them. Never name a document that is derived from validation or test data. |
+| `wake_budget` | integer | `400` | The size in tokens (about 4 characters each) of the overview that opens the briefs of workers and research sweeps: the current lesson of each mechanism family on the same repo, from the newest campaign that tried it, one line each. Lessons in the campaign's own metrics come first (`lessons.metric`), then lessons in related metrics, then the rest. Within those, dead or promising come before untested, then the larger effects of each metric, then newer campaigns: effects in different metrics are never compared by size. The brief then says how to read more. A role can change it with `[roles.<kind>] wake_budget`. 0 turns it off. |
 
 ## PluginTable
 
-`[plugins.<capability>]`: which provider of a capability the project uses, and its parameters.
+`[plugins.<capability>]`: which provider of a capability the campaign uses, and its parameters.
 
 The capability declares the table (`piloop.plugins.host.Selection`), and the provider checks the parameters.
 
@@ -333,7 +333,7 @@ The capability declares the table (`piloop.plugins.host.Selection`), and the pro
 
 ## AnomalyTrigger
 
-The daemon detected an incident that no agent of the project got yet. The agent gets it to investigate.
+The daemon detected an incident that no agent of the campaign got yet. The agent gets it to investigate.
 
 Incidents are the incident-class anomalies of `piloop.reports.overview`. The row gets the new anomalies, one `anomaly.reported` event each. For the watchdog, that makes it an incident
 sweep.
@@ -346,7 +346,7 @@ sweep.
 
 The role's `interval` passed since the start of its last routine agent, one that got no anomaly.
 
-The first one counts from the registration of the project. An `interval` of 0 turns it off.
+The first one counts from the registration of the campaign. An `interval` of 0 turns it off.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -362,7 +362,7 @@ Nothing is requested while every slot of the role is busy. Runnable ideas count.
 prerequisites in flight also count, because they run when those finish. An idea blocked by a prerequisite that is
 not running does not count. Below the target, a sweep fires for one of these reasons:
 
-- The project has no sweep yet, so there is nothing to wait for.
+- The campaign has no sweep yet, so there is nothing to wait for.
 - The last batch was killed. Lost prompts, timeouts or a daemon stop say nothing about the backlog, so the batch
   is retried once. This applies to a streak of killed rows no longer than one batch (`max_concurrent`). A second
   killed batch is a systemic fault and counts as a normal last sweep.
@@ -402,15 +402,15 @@ seed filed in that moment waits for the next sweep.
 
 A query on the piloop database returns at least one row.
 
-The query may use two parameters: `:project`, the project's id, and `:since`, when the role's latest row
-started (or when the project was registered), as UTC text (`2026-01-31 12:00:00.000000`). Compare `:since` with
+The query may use two parameters: `:campaign`, the campaign's id, and `:since`, when the role's latest row
+started (or when the campaign was registered), as UTC text (`2026-01-31 12:00:00.000000`). Compare `:since` with
 a `created_at` column to fire only on what is new. The query is checked when `piloop.toml` loads: it must be
 one statement that only reads.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `kind` | string | `"sql"` |  |
-| `when` | string | required | The query, for example `SELECT 1 FROM candidates WHERE project_id = :project AND verdict = 'keep' AND created_at > :since`. |
+| `when` | string | required | The query, for example `SELECT 1 FROM candidates WHERE campaign_id = :campaign AND verdict = 'keep' AND created_at > :since`. |
 
 ## StoppedTrigger
 
@@ -425,11 +425,11 @@ trigger. The reason is `campaign stopped: <the condition>`.
 
 ## Global settings: `config.toml`
 
-`$PILOOP_HOME/config.toml` holds the settings that every project of one `PILOOP_HOME` shares. To override a key, set `PILOOP_<TABLE>__<KEY>`, for example `PILOOP_STORAGE__MIN_FREE_GB`.
+`$PILOOP_HOME/config.toml` holds the settings that every campaign of one `PILOOP_HOME` shares. To override a key, set `PILOOP_<TABLE>__<KEY>`, for example `PILOOP_STORAGE__MIN_FREE_GB`.
 
 ### `[storage]`
 
-`[storage]`: the artifact store every project of this PILOOP_HOME archives its workspace into.
+`[storage]`: the artifact store every campaign of this PILOOP_HOME archives its workspace into.
 
 The keys here hold for every backend. Blobs live in `<PILOOP_HOME>/store`, and in the remote too when
 `[storage.remote]` is set. The artifact store page of the docs describes the modes.
@@ -502,7 +502,7 @@ The settings of a runtime, which the runtime reads and checks. An environment va
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `session` | string | `"piloop"` | The name of the Herdr session that piloop owns. It has one workspace for each project, and every agent that piloop starts runs there, never in the session you use for other work. `piloop attach` attaches a terminal to it. piloop starts its server when it first needs it. |
+| `session` | string | `"piloop"` | The name of the Herdr session that piloop owns. It has one workspace for each campaign, and every agent that piloop starts runs there, never in the session you use for other work. `piloop attach` attaches a terminal to it. piloop starts its server when it first needs it. |
 | `server_start_seconds` | number | `10` | The number of seconds to wait for the Herdr server of the piloop session to answer after piloop starts it. |
 | `start_timeout_seconds` | number | `60` | The number of seconds Herdr may take to detect an agent that just started. |
 | `cli_timeout_seconds` | number | `30` | The timeout in seconds of one `herdr` CLI call, in addition to any wait that the call itself does. |

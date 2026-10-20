@@ -1,4 +1,4 @@
-"""Built-in coding-agent harness definitions. A project may override any of them in ``piloop.toml``."""
+"""Built-in coding-agent harness definitions. A campaign may override any of them in ``piloop.toml``."""
 
 from enum import StrEnum
 from typing import Self
@@ -16,7 +16,7 @@ CLAUDE_SETTINGS = (
 """``--settings`` for every Claude agent. They take precedence over the user's own settings.
 
 Auto-memory is off. Claude keeps it per repo (``~/.claude/projects/<cwd>/memory``), so the notes of one agent would
-load into every later agent of the project, outside piloop's database and brief.
+load into every later agent of the campaign, outside piloop's database and brief.
 
 A foreground Bash command moves to the background after 5 minutes, and after 10 minutes at most. Without this, a
 user's long ``BASH_DEFAULT_TIMEOUT_MS`` lets an agent block its turn on one command for an hour. pi's bash tool has no

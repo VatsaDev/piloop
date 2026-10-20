@@ -1,25 +1,25 @@
-"""The runtime registry, and the runtime of a project or of a launched worker row."""
+"""The runtime registry, and the runtime of a campaign or of a launched worker row."""
 
 from collections.abc import Callable
 from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from piloop.db.models import Project, Worker
+from piloop.db.models import Campaign, Worker
 from piloop.plugins.contracts.runtime import RUNTIMES
 from piloop.runtime import Handle, Runtime
 
 
-def make_runtime(kind: str, *, project: str, project_path: Path) -> Runtime:
+def make_runtime(kind: str, *, campaign: str, campaign_path: Path) -> Runtime:
     """Create the runtime called ``kind``.
 
-    Herdr uses the project to name its workspace. The subprocess runtime ignores it.
+    Herdr uses the campaign to name its workspace. The subprocess runtime ignores it.
     """
-    return RUNTIMES.get(kind)(project, project_path)
+    return RUNTIMES.get(kind)(campaign, campaign_path)
 
 
 type RuntimeFactory = Callable[..., Runtime]
-"""The signature of ``make_runtime``: ``(kind, *, project, project_path) -> Runtime``. Tests substitute their own."""
+"""The signature of ``make_runtime``: ``(kind, *, campaign, campaign_path) -> Runtime``. Tests substitute their own."""
 
 
 def handle_for(worker: Worker) -> Handle:
@@ -39,10 +39,10 @@ def view_of(worker: Worker) -> str | None:
 
 
 def runtime_for(s: Session, worker: Worker, fallback_path: Path, factory: RuntimeFactory = make_runtime) -> Runtime:
-    """Return the runtime that owns a launched worker row. Its project names the Herdr workspace."""
-    project = s.get(Project, worker.project_id) if worker.project_id else None
+    """Return the runtime that owns a launched worker row. Its campaign names the Herdr workspace."""
+    campaign = s.get(Campaign, worker.campaign_id) if worker.campaign_id else None
     return factory(
         handle_for(worker).runtime,
-        project=project.name if project else 'piloop',
-        project_path=Path(project.path) if project else fallback_path,
+        campaign=campaign.name if campaign else 'piloop',
+        campaign_path=Path(campaign.path) if campaign else fallback_path,
     )

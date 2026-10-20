@@ -15,18 +15,18 @@ from sqlalchemy import select
 from piloop.campaign.stop import ROLE_REMOVED
 from piloop.cli import common, main as cli
 from piloop.cli.plugins import selections
-from piloop.config import ROLES, ConfigError, ProjectConfig, load_project_config
+from piloop.config import ROLES, CampaignConfig, ConfigError, load_campaign_config
 from piloop.daemon.main import Daemon
-from piloop.daemon.runner import RunExecutor
+from piloop.daemon.run_executor import RunExecutor
 from piloop.daemon.scheduler import Scheduler
 from piloop.db.models import (
+    Campaign,
     Candidate,
     Comment,
     CommentKind,
     Idea,
     IdeaStatus,
     Measurement,
-    Project,
     Run,
     RunStatus,
     TargetKind,
@@ -67,7 +67,7 @@ TRIGGER_GROUP, ROLE_GROUP, RUNTIME_GROUP = TRIGGERS.group, ROLES.group, RUNTIMES
 def recording(runtime: ScriptRuntime, kinds: list[str]) -> RuntimeFactory:
     """A factory that runs every agent in ``runtime`` and records the kind of runtime that was asked for."""
 
-    def make(kind: str, *, project: str, project_path: Path) -> Runtime:
+    def make(kind: str, *, campaign: str, campaign_path: Path) -> Runtime:
         kinds.append(kind)
         return runtime
 
@@ -79,20 +79,20 @@ def scheduler(db: Database, make: RuntimeFactory, tmp_path: Path) -> Scheduler:
     return Scheduler(db, RunExecutor(db, tracer, tmp_path, make), tracer, tmp_path, make)
 
 
-def configure(db: Database, project: Project, harness_body: str, **roles: dict[str, object]) -> None:
-    write_toml(Path(project.path), harness_body)
+def configure(db: Database, campaign: Campaign, harness_body: str, **roles: dict[str, object]) -> None:
+    write_toml(Path(campaign.path), harness_body)
     with db.session() as s:
-        cfg = load_project_config(Path(project.path), roles=roles)
-        s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
+        cfg = load_campaign_config(Path(campaign.path), roles=roles)
+        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
         s.commit()
 
 
-def decide(db: Database, project: Project, body: str) -> None:
+def decide(db: Database, campaign: Campaign, body: str) -> None:
     with db.session() as s:
         s.add(
             Comment(
-                target_kind=TargetKind.PROJECT,
-                target_id=project.id,
+                target_kind=TargetKind.CAMPAIGN,
+                target_id=campaign.id,
                 author='human',
                 kind=CommentKind.DECISION,
                 body=body,
@@ -103,33 +103,33 @@ def decide(db: Database, project: Project, body: str) -> None:
 
 
 def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt_workdir_and_runtime(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """A ``[roles.reviewer]`` table with a ``sql`` trigger: each new decision requests one reviewer.
 
-    The reviewer runs with its own prompt, in the project checkout, under its own runtime, one at a time.
+    The reviewer runs with its own prompt, in the campaign checkout, under its own runtime, one at a time.
     """
     release = tmp_path / 'release'
-    (Path(project.path) / 'reviewer.md').write_text('# Review\nRead the latest decision and say if it holds.\n')
+    (Path(campaign.path) / 'reviewer.md').write_text('# Review\nRead the latest decision and say if it holds.\n')
     harness = f'#!/bin/sh\npwd > {tmp_path}/cwd.txt\n' + BLOCKING.format(release=release).removeprefix('#!/bin/sh\n')
     reviewer: dict[str, object] = {
         'prompt': 'reviewer.md',
         'triggers': [{'kind': 'sql', 'when': REVIEW}],
-        'workdir': 'project',
+        'workdir': 'repo',
         'runtime': 'herdr',
         'harnesses': ['script'],
         'max_concurrent': 1,
     }
-    configure(db, project, harness, reviewer=reviewer)
+    configure(db, campaign, harness, reviewer=reviewer)
     kinds: list[str] = []
     sched = scheduler(db, recording(runtime, kinds), tmp_path)
     assert sched.tick() == [], 'no decision yet: the query returns no row'
 
-    decide(db, project, 'keep the cache')
+    decide(db, campaign, 'keep the cache')
     assert sched.tick() == [1]
     wait_for(db, 1, WorkerState.RUNNING)
     assert sched.tick() == [], 'the decision is older than the running reviewer'
-    decide(db, project, 'drop the cache')
+    decide(db, campaign, 'drop the cache')
     assert sched.tick() == [], 'max_concurrent = 1: the second reviewer waits'
     assert sched.tick() == [], 'one pending request is enough'
     reason = f'sql: {REVIEW}'
@@ -142,11 +142,11 @@ def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt
 
     brief = (tmp_path / 'workers' / '1' / 'brief.md').read_text()
     assert brief.startswith('# Review\nRead the latest decision')
-    assert '- You are worker#1, the reviewer for project#1 (demo).' in brief
+    assert '- You are worker#1, the reviewer for campaign#1 (demo).' in brief
     assert f'- Trigger: {reason}' in brief
-    assert '- Your cwd is the project checkout, shared with the human' in brief
+    assert '- Your cwd is the campaign checkout, shared with the human' in brief
     assert '- File a seed:' in brief and '- You may write:' not in brief, 'a new role files seeds and states no writes'
-    assert Path((tmp_path / 'cwd.txt').read_text().strip()) == Path(project.path).resolve()
+    assert Path((tmp_path / 'cwd.txt').read_text().strip()) == Path(campaign.path).resolve()
     assert not (tmp_path / 'workers' / '1' / 'worktree').exists()
     with db.session() as s:
         rows = s.scalars(select(Worker).where(Worker.kind == 'reviewer')).all()
@@ -155,10 +155,10 @@ def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt
 
 
 def test_a_role_adds_its_incident_prompt_to_an_incident_sweep_and_its_routine_prompt_to_any_other(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """The keys that give the watchdog its two kinds of sweep work for a role that ``piloop.toml`` defines."""
-    repo = Path(project.path)
+    repo = Path(campaign.path)
     for name, text in (('triage.md', '# Triage'), ('incident.md', '## An incident'), ('routine.md', '## A routine')):
         (repo / name).write_text(text + '\n')
     triage: dict[str, object] = {
@@ -167,13 +167,13 @@ def test_a_role_adds_its_incident_prompt_to_an_incident_sweep_and_its_routine_pr
         'incident_prompt': 'incident.md',
         'routine_prompt': 'routine.md',
     }
-    configure(db, project, '#!/bin/sh\ntrue\n', triage=triage, watchdog={'triggers': []})
+    configure(db, campaign, '#!/bin/sh\ntrue\n', triage=triage, watchdog={'triggers': []})
     sched = scheduler(db, recording(runtime, []), tmp_path)
-    fail_a_run(db, project, 'broken')
+    fail_a_run(db, campaign, 'broken')
     assert sched.tick() == [1]
     sched.wait(10)
     with db.session() as s:
-        s.add(Worker(kind='triage', project_id=project.id, reason='by hand'))
+        s.add(Worker(kind='triage', campaign_id=campaign.id, reason='by hand'))
         s.commit()
     assert sched.tick() == [2]
     sched.wait(10)
@@ -182,21 +182,21 @@ def test_a_role_adds_its_incident_prompt_to_an_incident_sweep_and_its_routine_pr
     assert incident.startswith('# Triage\n\n## An incident\n\n# Demo') and '## Incidents to investigate' in incident
     assert routine.startswith('# Triage\n\n## A routine\n\n# Demo') and '## Research pack' in routine
     with pytest.raises(ConfigError, match=r"roles\.triage\.routine_prompt = 'gone\.md': no such file"):
-        load_project_config(repo, roles={'triage': triage | {'routine_prompt': 'gone.md'}})
+        load_campaign_config(repo, roles={'triage': triage | {'routine_prompt': 'gone.md'}})
 
 
 def test_a_role_that_defines_ideas_is_told_how_many_its_sweep_may_add(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """``low_water`` counts on ``max_ideas`` from each sweep of the role, so the brief of the sweep states it."""
-    (Path(project.path) / 'ideator.md').write_text('# Ideate\n')
+    (Path(campaign.path) / 'ideator.md').write_text('# Ideate\n')
     ideator: dict[str, object] = {
         'prompt': 'ideator.md',
         'triggers': [{'kind': 'low_water', 'buffer': 1}],
         'files': 'ideas',
         'max_ideas': 2,
     }
-    configure(db, project, '#!/bin/sh\ntrue\n', ideator=ideator, research={'triggers': []}, watchdog={'triggers': []})
+    configure(db, campaign, '#!/bin/sh\ntrue\n', ideator=ideator, research={'triggers': []}, watchdog={'triggers': []})
     sched = scheduler(db, recording(runtime, []), tmp_path)
     assert sched.tick() == [1], 'no runnable idea: the backlog is short'
     sched.wait(10)
@@ -228,26 +228,26 @@ def runs_by_role(db: Database) -> list[tuple[int, str, int, str]]:
         ]
 
 
-def queue(db: Database, sched: Scheduler, project: Project) -> None:
+def queue(db: Database, sched: Scheduler, campaign: Campaign) -> None:
     """Queue runs for the free slots, as a tick does, without launching their agents."""
     with db.session() as s:
-        p = s.get_one(Project, project.id)
-        sched._queue(s, p, ProjectConfig.model_validate(p.config))
+        p = s.get_one(Campaign, campaign.id)
+        sched._queue(s, p, CampaignConfig.model_validate(p.config))
         s.commit()
 
 
 def test_a_role_that_does_runs_takes_its_ideas_with_its_own_prompt_and_its_commits_are_scored(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """``[roles.quick]`` with ``runs = true`` takes the idea that ``takes`` selects, and the worker takes the other one.
 
     The quick agent works with its own prompt in a new worktree at the run's base, and its commit is measured and
     judged.
     """
-    (Path(project.path) / 'quick.md').write_text('# Quick\nTry the idea in a few minutes.\n')
-    configure(db, project, HARNESS_SIGNS, quick=QUICK)
-    (deep,) = add_ideas(db, project, 'deep', priority=1)
-    (cheap,) = add_ideas(db, project, 'cheap', priority=3)
+    (Path(campaign.path) / 'quick.md').write_text('# Quick\nTry the idea in a few minutes.\n')
+    configure(db, campaign, HARNESS_SIGNS, quick=QUICK)
+    (deep,) = add_ideas(db, campaign, 'deep', priority=1)
+    (cheap,) = add_ideas(db, campaign, 'cheap', priority=3)
     sched = scheduler(db, recording(runtime, []), tmp_path)
     assert sorted(sched.tick()) == [1, 2]
     sched.wait(30)
@@ -263,15 +263,15 @@ def test_a_role_that_does_runs_takes_its_ideas_with_its_own_prompt_and_its_commi
 
 
 def test_each_role_that_does_runs_fills_its_own_slots_and_the_worker_takes_what_waits(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """Quick has one slot, so its second idea goes to the worker. The worker takes what the roles before it leave."""
-    configure(db, project, HARNESS_APPEND, quick={**QUICK, 'prompt': None})
+    configure(db, campaign, HARNESS_APPEND, quick={**QUICK, 'prompt': None})
     cheap, cheaper, later = (
-        add_ideas(db, project, t, priority=p)[0] for t, p in (('cheap', 3), ('cheaper', 4), ('later', 4))
+        add_ideas(db, campaign, t, priority=p)[0] for t, p in (('cheap', 3), ('cheaper', 4), ('later', 4))
     )
     sched = scheduler(db, recording(runtime, []), tmp_path)
-    queue(db, sched, project)
+    queue(db, sched, campaign)
     assert runs_by_role(db) == [(1, 'quick', cheap, 'quick'), (2, 'worker', cheaper, 'worker')]
     with db.session() as s:
         assert s.get_one(Idea, later).status is IdeaStatus.READY, 'both slots are busy'
@@ -279,14 +279,14 @@ def test_each_role_that_does_runs_fills_its_own_slots_and_the_worker_takes_what_
 
 
 def test_a_queued_run_of_a_role_that_piloop_toml_no_longer_has_fails_and_its_idea_goes_back_to_the_queue(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    (Path(project.path) / 'quick.md').write_text('# Quick\n')
-    configure(db, project, HARNESS_APPEND, quick=QUICK)
-    (cheap,) = add_ideas(db, project, 'cheap', priority=3)
+    (Path(campaign.path) / 'quick.md').write_text('# Quick\n')
+    configure(db, campaign, HARNESS_APPEND, quick=QUICK)
+    (cheap,) = add_ideas(db, campaign, 'cheap', priority=3)
     sched = scheduler(db, recording(runtime, []), tmp_path)
-    queue(db, sched, project)
-    configure(db, project, HARNESS_APPEND)
+    queue(db, sched, campaign)
+    configure(db, campaign, HARNESS_APPEND)
     assert sched.tick() == []
     with db.session() as s:
         run, worker, idea = s.get_one(Run, 1), s.get_one(Worker, 1), s.get_one(Idea, cheap)
@@ -300,23 +300,23 @@ def test_a_queued_run_of_a_role_that_piloop_toml_no_longer_has_fails_and_its_ide
 
 
 def test_a_built_in_role_takes_other_triggers(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """The watchdog without its ``anomaly`` trigger ignores a failure; its timer still fires at its ``interval``."""
     configure(
         db,
-        project,
+        campaign,
         '#!/bin/sh\ntrue\n',
         watchdog={'triggers': [{'kind': 'cron'}], 'interval': 30},
         research={'triggers': [{'kind': 'sql', 'when': REVIEW}]},
     )
     sched = scheduler(db, recording(runtime, []), tmp_path)
-    fail_a_run(db, project, 'broken')
+    fail_a_run(db, campaign, 'broken')
     assert sched.tick() == [], 'no anomaly trigger, and the timer is not due'
     with db.session() as s:
-        s.get_one(Project, project.id).created_at = utcnow().replace(year=2000)
+        s.get_one(Campaign, campaign.id).created_at = utcnow().replace(year=2000)
         s.commit()
-    decide(db, project, 'look again')
+    decide(db, campaign, 'look again')
     assert sched.tick() == [1, 2]
     sched.wait(10)
     sched.stop(timeout=5)
@@ -326,14 +326,14 @@ def test_a_built_in_role_takes_other_triggers(
 
 
 def test_a_request_for_a_role_that_piloop_toml_no_longer_has_is_refused(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    (Path(project.path) / 'reviewer.md').write_text('# Review\n')
-    configure(db, project, '#!/bin/sh\ntrue\n', reviewer={'prompt': 'reviewer.md', 'triggers': []})
+    (Path(campaign.path) / 'reviewer.md').write_text('# Review\n')
+    configure(db, campaign, '#!/bin/sh\ntrue\n', reviewer={'prompt': 'reviewer.md', 'triggers': []})
     with db.session() as s:
-        s.add(Worker(kind='reviewer', project_id=project.id, reason='by hand'))
+        s.add(Worker(kind='reviewer', campaign_id=campaign.id, reason='by hand'))
         s.commit()
-    configure(db, project, '#!/bin/sh\ntrue\n')
+    configure(db, campaign, '#!/bin/sh\ntrue\n')
     sched = scheduler(db, recording(runtime, []), tmp_path)
     assert sched.tick() == []
     sched.stop(timeout=5)
@@ -342,15 +342,15 @@ def test_a_request_for_a_role_that_piloop_toml_no_longer_has_is_refused(
     assert (row.state, row.error) == (WorkerState.KILLED, 'no [roles.reviewer] in piloop.toml')
 
 
-def test_a_hand_over_leaves_a_sweep_in_the_project_checkout_running_and_the_next_scheduler_re_attaches_to_it(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+def test_a_hand_over_leaves_a_sweep_in_the_campaign_checkout_running_and_the_next_scheduler_re_attaches_to_it(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     hold = tmp_path / 'hold'
     hold.touch()
     harness = f'#!/bin/sh\necho $$ > {tmp_path}/agent.pid\nwhile [ -f {hold} ]; do sleep 0.05; done\n'
-    configure(db, project, harness, watchdog={'workdir': 'project', 'triggers': []})
+    configure(db, campaign, harness, watchdog={'workdir': 'repo', 'triggers': []})
     with db.session() as s:
-        s.add(Worker(kind=WorkerKind.WATCHDOG, project_id=project.id, reason='by hand'))
+        s.add(Worker(kind=WorkerKind.WATCHDOG, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     first = scheduler(db, recording(runtime, []), tmp_path)
     assert first.tick() == [1]
@@ -364,7 +364,7 @@ def test_a_hand_over_leaves_a_sweep_in_the_project_checkout_running_and_the_next
     with db.session() as s:
         sweep = s.get_one(Worker, 1)
     assert (sweep.state, sweep.error) == (WorkerState.EXITED, None), 'the next daemon watched it to its end'
-    assert Path(project.path).is_dir()
+    assert Path(campaign.path).is_dir()
     second.stop(timeout=5)
 
 
@@ -400,7 +400,7 @@ def plugins(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 def test_a_package_adds_a_role_and_triggers_through_entry_points(
     db: Database,
-    project: Project,
+    campaign: Campaign,
     runtime: ScriptRuntime,
     tmp_path: Path,
     plugins: None,
@@ -410,13 +410,13 @@ def test_a_package_adds_a_role_and_triggers_through_entry_points(
 
     The daemon runs it on the package's trigger. A trigger that raises is traced, and the role's other triggers fire.
     """
-    cfg = load_project_config(Path(project.path))
+    cfg = load_campaign_config(Path(campaign.path))
     auditor = cfg.roles.sweeping()['auditor']
     assert (auditor.timeout, auditor.triggers[0].kind) == (5, 'every_tick')
-    toml = Path(project.path) / 'piloop.toml'
+    toml = Path(campaign.path) / 'piloop.toml'
     toml.write_text(toml.read_text() + '\n[roles.auditor]\ntimeout = 9\n')
-    assert load_project_config(Path(project.path)).roles.sweeping()['auditor'].timeout == 9, 'the table goes over'
-    configure(db, project, '#!/bin/sh\ntrue\n', auditor={'triggers': [{'kind': 'broken'}, {'kind': 'every_tick'}]})
+    assert load_campaign_config(Path(campaign.path)).roles.sweeping()['auditor'].timeout == 9, 'the table goes over'
+    configure(db, campaign, '#!/bin/sh\ntrue\n', auditor={'triggers': [{'kind': 'broken'}, {'kind': 'every_tick'}]})
     sched = scheduler(db, recording(runtime, []), tmp_path)
     assert sched.tick() == [1]
     sched.wait(10)
@@ -424,7 +424,7 @@ def test_a_package_adds_a_role_and_triggers_through_entry_points(
     assert workers(db, 'auditor') == [(1, WorkerState.EXITED, 'every tick for auditor')]
     brief = (tmp_path / 'workers' / '1' / 'brief.md').read_text()
     assert brief.startswith('# Audit\n')
-    assert 'trigger.failed Ns project=demo role=auditor trigger=broken error=the probe is down' in console_lines(
+    assert 'trigger.failed Ns campaign=demo role=auditor trigger=broken error=the probe is down' in console_lines(
         capsys.readouterr().err
     )
 
@@ -443,17 +443,17 @@ role = "primary"
 
 
 def test_a_package_role_takes_its_defaults_and_a_roles_value_that_is_not_a_table_fails(
-    project_path: Path, plugins: None
+    campaign_path: Path, plugins: None
 ) -> None:
-    toml = project_path / 'piloop.toml'
+    toml = campaign_path / 'piloop.toml'
     toml.write_text(MINIMAL.format(roles='[roles.auditor]'))
-    assert load_project_config(project_path).roles.sweeping()['auditor'].timeout == 5, 'an empty table: the defaults'
+    assert load_campaign_config(campaign_path).roles.sweeping()['auditor'].timeout == 5, 'an empty table: the defaults'
     toml.write_text(MINIMAL.format(roles='roles = { auditor = 3 }'))
     with pytest.raises(ConfigError, match=r'roles\.auditor = 3: Input should be a valid dictionary'):
-        load_project_config(project_path)
+        load_campaign_config(campaign_path)
     toml.write_text(MINIMAL.format(roles='roles = 3'))
     with pytest.raises(ConfigError, match=r'\n  roles = 3: Input should be a valid dictionary'):
-        load_project_config(project_path)
+        load_campaign_config(campaign_path)
 
 
 @pytest.mark.parametrize(
@@ -482,8 +482,8 @@ def test_an_entry_point_of_the_wrong_kind_fails_with_its_name(
         forget_loaded()
 
 
-def test_a_package_adds_a_role_that_does_runs(project_path: Path, plugins: None) -> None:
-    cfg = load_project_config(project_path)
+def test_a_package_adds_a_role_that_does_runs(campaign_path: Path, plugins: None) -> None:
+    cfg = load_campaign_config(campaign_path)
     assert list(cfg.roles.doing_runs()) == ['quick', 'worker']
     quick = cfg.roles.doing_runs()['quick']
     assert (quick.takes, quick.timeout, quick.max_concurrent) == ('priority >= 3', 60, 1)
@@ -494,7 +494,7 @@ HARNESS_NICENESS = '#!/bin/sh\nps -o nice= -p $$ | tr -d " " > niceness.txt\n'
 
 
 def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_the_configuration(
-    db: Database, project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The example plugins ``piloop-nice`` and ``piloop-dir-store`` are installed, with a package role ``fast``.
 
@@ -509,13 +509,13 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
     monkeypatch.syspath_prepend(tmp_path / 'site')
     monkeypatch.setenv('PILOOP_HOME', str(tmp_path))  # where the runtime reads its [runtimes.nice] settings
     forget_loaded()
-    write_toml(Path(project.path), HARNESS_NICENESS)
+    write_toml(Path(campaign.path), HARNESS_NICENESS)
     with db.session() as s:
-        cfg = load_project_config(
-            Path(project.path), runtime='nice', roles={'watchdog': {'runtime': 'nice', 'workdir': 'project'}}
+        cfg = load_campaign_config(
+            Path(campaign.path), runtime='nice', roles={'watchdog': {'runtime': 'nice', 'workdir': 'repo'}}
         )
-        s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
-        s.add(Worker(kind=WorkerKind.WATCHDOG, project_id=project.id, reason='by hand'))
+        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.add(Worker(kind=WorkerKind.WATCHDOG, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     remote = f'[storage.remote]\nkind = "dir"\nroot = "{tmp_path / "remote"}"\n'
     (tmp_path / 'config.toml').write_text(f'{remote}[runtimes.nice]\nniceness = 5\n')
@@ -530,7 +530,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
     with db.session() as s:
         worker = s.get_one(Worker, 1)
         assert (worker.state, worker.runtime) == (WorkerState.EXITED, 'nice')
-    assert (Path(project.path) / 'niceness.txt').read_text().strip() == str(min(os.nice(0) + 5, 19))
+    assert (Path(campaign.path) / 'niceness.txt').read_text().strip() == str(min(os.nice(0) + 5, 19))
     monkeypatch.setattr(common, 'settings', home)
     printed: list[str] = []
     monkeypatch.setattr(common.console, 'print', lambda text, **_: printed.append(text))
@@ -541,7 +541,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
         'selected:',
     ]
     assert '  nice        piloop-nice 0.1.0, entry point nice = piloop_nice:NiceRuntime' in lines
-    toml, config = Path(project.path) / 'piloop.toml', tmp_path / 'config.toml'
+    toml, config = Path(campaign.path) / 'piloop.toml', tmp_path / 'config.toml'
     store = f'remote backend dir, from piloop-dir-store 0.1.0 ([storage.remote] kind in {config})'
     stored = f'in the config of demo that the last `piloop init` stored from {toml}'
     settings = f'; its settings: [runtimes.nice] in {config}'
@@ -557,25 +557,25 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
         f'  {store}',
     ]
     with db.session() as s:
-        row = s.get_one(Project, project.id)
+        row = s.get_one(Campaign, campaign.id)
         row.config = {**row.config, 'runtime': 'subprocess'}
         s.commit()
     built_in = RUNTIMES.sources()['subprocess'].release
     assert selections(home)[0] == f'demo worker: runtime subprocess, from {built_in} (runtime, its default, {stored})'
     with db.session() as s:
-        s.get_one(Project, project.id).config = {}
+        s.get_one(Campaign, campaign.id).config = {}
         s.commit()
     assert selections(home) == [store], 'a stored config that does not load binds nothing; piloop doctor says why'
     forget_loaded()
 
 
-def test_a_runtime_that_is_not_registered_fails_with_the_registered_ones(project_path: Path, plugins: None) -> None:
+def test_a_runtime_that_is_not_registered_fails_with_the_registered_ones(campaign_path: Path, plugins: None) -> None:
     with pytest.raises(
         ConfigError,
         match=re.escape(
             f"runtime = 'tmux': unknown runtime 'tmux'; registered runtimes: {', '.join(RUNTIMES.providers())}"
         ),
     ):
-        load_project_config(project_path, runtime='tmux')
+        load_campaign_config(campaign_path, runtime='tmux')
     with pytest.raises(ConfigError, match=r"roles.research.runtime = 'tmux': unknown runtime 'tmux'"):
-        load_project_config(project_path, roles={'research': {'runtime': 'tmux'}})
+        load_campaign_config(campaign_path, roles={'research': {'runtime': 'tmux'}})

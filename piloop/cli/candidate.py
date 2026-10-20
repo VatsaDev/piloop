@@ -8,9 +8,9 @@ import cyclopts
 from piloop import git
 from piloop.campaign import ops
 from piloop.cli import common
-from piloop.cli.common import ProjectRef
+from piloop.cli.common import CampaignRef
 from piloop.config import config_of
-from piloop.db.models import Candidate, Project, Verdict
+from piloop.db.models import Campaign, Candidate, Verdict
 from piloop.scoring.ledger import (
     ImportRefused,
     RemeasureRefused,
@@ -26,8 +26,8 @@ app = cyclopts.App(
 
 @app.command(name='import')
 def candidate_import(
-    ref: ProjectRef,
-    commit: Annotated[str, cyclopts.Parameter(help="A commit, branch or tag in the project's repo.")],
+    ref: CampaignRef,
+    commit: Annotated[str, cyclopts.Parameter(help="A commit, branch or tag in the campaign's repo.")],
     /,
     *,
     summary: Annotated[
@@ -37,22 +37,28 @@ def candidate_import(
     """Register the tree of a commit as a reference candidate: a starting point for an idea.
 
     The daemon measures it with the current evaluator. A reference is never kept, and it is never the head or a bar.
-    It does not count in the kept total, the sparkline or a stop condition. To import a candidate of another project,
+    It does not count in the kept total, the sparkline or a stop condition. To import a candidate of another campaign,
     fetch its `commit_sha` into this repo first (`git fetch <its repo> <sha>`).
     """
     with common.session() as s:
-        project = common.project(s, ref)
-        cfg = config_of(project)
+        campaign = common.campaign(s, ref)
+        cfg = config_of(campaign)
         try:
             candidate = import_reference(
-                s, project, cfg, git.open_repo(Path(project.path)), commit, summary=summary, actor=common.settings.actor
+                s,
+                campaign,
+                cfg,
+                git.open_repo(Path(campaign.path)),
+                commit,
+                summary=summary,
+                actor=common.settings.actor,
             )
         except ImportRefused as e:
             raise SystemExit(str(e)) from e
         s.commit()
         common.console.print(
             f'candidate#{candidate.id} reference: {candidate.summary}; the daemon measures it; start an idea from it'
-            f' with `piloop idea add {project.name} "<title>" --base {candidate.id}`',
+            f' with `piloop idea add {campaign.name} "<title>" --base {candidate.id}`',
             markup=False,
         )
 
@@ -65,7 +71,7 @@ def candidate_remeasure(
     """Ask the daemon to measure a candidate again with the current evaluator.
 
     Use it when a fault of the host spoiled a measurement (a full disk, a lost GPU), or for one more repeat. The daemon
-    measures it soon, after the head and the bars that runs need, also when the project is stopped: not while it is
+    measures it soon, after the head and the bars that runs need, also when the campaign is stopped: not while it is
     paused with `--evals`, or held by the spend guard. A `crash` that the daemon judged is judged again with the new
     measurement. Any other verdict stays. A pending, unmeasured or recovered candidate is never measured.
     """
@@ -78,8 +84,8 @@ def candidate_remeasure(
         except RemeasureRefused as e:
             raise SystemExit(str(e)) from e
         s.commit()
-        project = s.get_one(Project, candidate.project_id)
-        later = ops.measuring_held(project, config_of(project))
+        campaign = s.get_one(Campaign, candidate.campaign_id)
+        later = ops.measuring_held(campaign, config_of(campaign))
         common.console.print(
             f'candidate#{candidate.id} {candidate.verdict}: the daemon measures it again with the current evaluator'
             f'{later}; a crash is judged again',

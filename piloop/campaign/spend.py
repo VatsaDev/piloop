@@ -1,7 +1,7 @@
-"""The spend guard: the daemon polls a project's ``[spend] command``, posts notices and enforces a hard limit.
+"""The spend guard: the daemon polls a campaign's ``[spend] command``, posts notices and enforces a hard limit.
 
-piloop does not know any vendor. The project's command prints the total that the campaign has spent so far, in USD,
-for example a GPU cloud's bill for the project's environments. The daemon keeps the latest reading on the project
+piloop does not know any vendor. The campaign's command prints the total that the campaign has spent so far, in USD,
+for example a GPU cloud's bill for the campaign's environments. The daemon keeps the latest reading on the campaign
 row. The daemon enforces the limit, not an agent, so nothing launches past the limit even when no agent is active.
 """
 
@@ -13,8 +13,8 @@ from subprocess import PIPE
 
 from sqlalchemy.orm import Session
 
-from piloop.config import ProjectConfig, Spend
-from piloop.db.models import Comment, CommentKind, Project, TargetKind, utcnow
+from piloop.config import CampaignConfig, Spend
+from piloop.db.models import Campaign, Comment, CommentKind, TargetKind, utcnow
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.proc import STDERR_IN_ERROR, child_env, kill_group
 
@@ -29,9 +29,9 @@ class SpendError(Exception):
     """The spend command did not print a spend. It failed, timed out or printed something else."""
 
 
-def due(project: Project, spend: Spend) -> bool:
+def due(campaign: Campaign, spend: Spend) -> bool:
     """Return True if the command never ran, or last ran ``interval`` or more seconds ago."""
-    return project.spend_at is None or utcnow() - project.spend_at >= timedelta(seconds=spend.interval)
+    return campaign.spend_at is None or utcnow() - campaign.spend_at >= timedelta(seconds=spend.interval)
 
 
 def read(command: list[str], cwd: Path) -> float:
@@ -64,28 +64,28 @@ def read(command: list[str], cwd: Path) -> float:
     return usd
 
 
-def record(s: Session, project: Project, spend: Spend, reading: float | SpendError) -> None:
-    """Store a reading on the project row and post the notes and escalations that it causes. The caller commits.
+def record(s: Session, campaign: Campaign, spend: Spend, reading: float | SpendError) -> None:
+    """Store a reading on the campaign row and post the notes and escalations that it causes. The caller commits.
 
     A reading posts a note for each ``notices`` threshold that it crossed since the previous reading. It posts an
     escalation if it crossed ``limit``. The first reading crosses every threshold below it. Because only a crossing
     posts, a raised limit escalates again when the spend reaches it. A failed reading escalates only if the previous
     reading did not fail.
     """
-    project.spend_at = utcnow()
+    campaign.spend_at = utcnow()
     if isinstance(reading, SpendError):
-        if project.spend_error is None:
-            _post(s, project, CommentKind.ESCALATION, ESCALATION_PRIORITY, _failed(reading))
-        project.spend_error = str(reading)
+        if campaign.spend_error is None:
+            _post(s, campaign, CommentKind.ESCALATION, ESCALATION_PRIORITY, _failed(reading))
+        campaign.spend_error = str(reading)
         return
-    before = project.spend_usd if project.spend_usd is not None else -math.inf
-    project.spend_usd, project.spend_error = reading, None
+    before = campaign.spend_usd if campaign.spend_usd is not None else -math.inf
+    campaign.spend_usd, campaign.spend_error = reading, None
     for threshold in spend.notices:
         if before < threshold <= reading:
             body = f'Spend notice: ${reading:,.2f} spent, past the ${threshold:,.2f} notice. The limit is ${spend.limit:,.2f}.'
-            _post(s, project, CommentKind.NOTE, NOTICE_PRIORITY, body)
+            _post(s, campaign, CommentKind.NOTE, NOTICE_PRIORITY, body)
     if before < spend.limit <= reading:
-        _post(s, project, CommentKind.ESCALATION, ESCALATION_PRIORITY, _limited(reading, spend.limit))
+        _post(s, campaign, CommentKind.ESCALATION, ESCALATION_PRIORITY, _limited(reading, spend.limit))
 
 
 def _failed(error: SpendError) -> str:
@@ -103,11 +103,11 @@ def _limited(usd: float, limit: float) -> str:
     )
 
 
-def _post(s: Session, project: Project, kind: CommentKind, priority: int, body: str) -> None:
+def _post(s: Session, campaign: Campaign, kind: CommentKind, priority: int, body: str) -> None:
     s.add(
         Comment(
-            target_kind=TargetKind.PROJECT,
-            target_id=project.id,
+            target_kind=TargetKind.CAMPAIGN,
+            target_id=campaign.id,
             author=DAEMON_ACTOR,
             kind=kind,
             priority=priority,
@@ -116,7 +116,7 @@ def _post(s: Session, project: Project, kind: CommentKind, priority: int, body: 
     )
 
 
-def held(project: Project, cfg: ProjectConfig) -> str | None:
+def held(campaign: Campaign, cfg: CampaignConfig) -> str | None:
     """Return why the guard holds launches and evaluations now.
 
     Returns None if there is no ``[spend]`` table, or if the spend is known and below the limit.
@@ -124,20 +124,20 @@ def held(project: Project, cfg: ProjectConfig) -> str | None:
     spend = cfg.spend
     if spend is None:
         return None
-    if project.spend_error is not None:
-        return f'spend unknown: {project.spend_error}'
-    if project.spend_usd is None:
+    if campaign.spend_error is not None:
+        return f'spend unknown: {campaign.spend_error}'
+    if campaign.spend_usd is None:
         return 'spend not read yet'
-    if project.spend_usd >= spend.limit:
+    if campaign.spend_usd >= spend.limit:
         return 'spend limit reached'
     return None
 
 
-def progress(project: Project, cfg: ProjectConfig) -> str | None:
+def progress(campaign: Campaign, cfg: CampaignConfig) -> str | None:
     """Return ``$412.30/$1,000.00 spend`` and, if launches are held, why. Return None if there is no ``[spend]``."""
     spend = cfg.spend
     if spend is None:
         return None
-    usd = '$?' if project.spend_usd is None else f'${project.spend_usd:,.2f}'
-    hold = held(project, cfg)
+    usd = '$?' if campaign.spend_usd is None else f'${campaign.spend_usd:,.2f}'
+    hold = held(campaign, cfg)
     return f'{usd}/${spend.limit:,.2f} spend' + (f' (launches held: {hold})' if hold is not None else '')

@@ -1,10 +1,10 @@
-# piloop project config. This file lists every key. A key that is set shows its default, unless its comment says
+# piloop campaign config. This file lists every key. A key that is set shows its default, unless its comment says
 # otherwise. A commented key or table is optional, and its default is to leave it out.
 # Reference: https://piloop.autoresearch.inc/reference/configuration
 # `piloop init` stores this file, and the daemon uses that copy: run `piloop init` again after each edit.
-# PILOOP_PROJECT_<KEY> overrides a key when `piloop init` reads the file. Join nested keys with __.
+# PILOOP_CAMPAIGN_<KEY> overrides a key when `piloop init` reads the file. Join nested keys with __.
 
-name = "my-project"                       # required; short identifier; piloop names git refs and the Herdr workspace after it
+name = "my-campaign"                       # required; short identifier; piloop names git refs and the Herdr workspace after it
 evaluate = ["uv", "run", "python", "evaluate.py"]  # required; run in a clean worktree of each commit; prints METRIC lines
 evaluate_timeout = 600                    # seconds; a slower evaluation is stopped and recorded as a crash
 runtime = "subprocess"                    # subprocess: a background process per agent · herdr: a pane per agent · or a package's runtime
@@ -35,12 +35,12 @@ codex = "gpt-6.1-sol"
 [roles.worker]                            # a worker tries one idea in a new worktree; its commits are scored
 runs = true                               # its agents do runs; a sweeping role has runs = false
 # takes = "priority < 3"                  # the ideas it takes: an SQL condition on the ideas table; if not set: every one
-# harnesses = ["pi", "claude", "codex"]   # if not set: the project's harnesses
+# harnesses = ["pi", "claude", "codex"]   # if not set: the campaign's harnesses
 # model = { pi = "..." }                  # merged over [model]
 # addendum = "briefs/worker.md"           # a file appended to brief.md in this role's briefs only
 # mcp = ["exa"]                           # the [mcp.<name>] servers that this role's agents get; none by default
 # prompt = "briefs/my-worker.md"          # a file that replaces the built-in start of this role's brief
-# runtime = "herdr"                       # if not set: the project's runtime
+# runtime = "herdr"                       # if not set: the campaign's runtime
 # writes = ["commits"]                    # what the brief says the role may write; default: what piloop expects of it
 # files = "nothing"                       # what its agents may file with `piloop idea`: nothing, seeds or ideas
 # wake_budget = 400                       # tokens of the lessons overview that opens the brief; if not set: [memory]'s
@@ -50,17 +50,17 @@ explore_every = 4                         # at least 1 run in 4 starts from a pi
 recovery_requeues = 2                     # times an idea is requeued from work a failed worker left uncommitted
 
 [roles.watchdog]                          # a watchdog investigates anomalies and reviews progress every `interval` seconds
-# harnesses = ["pi", "claude", "codex"]   # if not set: the project's harnesses
+# harnesses = ["pi", "claude", "codex"]   # if not set: the campaign's harnesses
 # model = { pi = "..." }                  # merged over [model]
 # addendum = "briefs/watchdog.md"         # a file appended to brief.md in this role's briefs only
 # mcp = []                                # the [mcp.<name>] servers that this role's agents get; none by default
 # prompt = "briefs/my-watchdog.md"        # a file that replaces the built-in start of this role's brief
-# runtime = "herdr"                       # if not set: the project's runtime
+# runtime = "herdr"                       # if not set: the campaign's runtime
 # writes = ["comments(finding)"]          # what the brief says the role may write; default: what piloop expects of it
 # files = "seeds"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role: its triggers start it and nothing it commits is scored
 triggers = [{ kind = "anomaly" }, { kind = "cron" }, { kind = "stopped" }]  # an anomaly, the timer below, the stop
-# workdir = "project"                     # head (the default): a worktree at the head · project: the project checkout
+# workdir = "repo"                         # head (the default): a worktree at the head · repo: the campaign checkout
 wake_budget = 0                           # the lessons overview is off: the closing review reads the lessons itself
 interval = 1800                           # seconds between two progress reviews of the cron trigger; 0 turns it off
 # incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies; default: watchdog_incident.md
@@ -70,17 +70,17 @@ timeout = 600
 max_concurrent = 1
 
 [roles.research]                          # research keeps one runnable idea per run slot, plus the `buffer` of low_water
-# harnesses = ["pi", "claude", "codex"]   # if not set: the project's harnesses
+# harnesses = ["pi", "claude", "codex"]   # if not set: the campaign's harnesses
 # model = { pi = "..." }                  # merged over [model]
 # addendum = "briefs/research.md"         # a file appended to brief.md in this role's briefs only
 # mcp = ["exa"]                           # the [mcp.<name>] servers that this role's agents get; none by default
 # prompt = "briefs/my-research.md"        # a file that replaces the built-in start of this role's brief
-# runtime = "herdr"                       # if not set: the project's runtime
+# runtime = "herdr"                       # if not set: the campaign's runtime
 # writes = ["ideas via idea add"]         # what the brief says the role may write; default: what piloop expects of it
 # files = "ideas"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role
 triggers = [{ kind = "low_water", buffer = 2 }, { kind = "seed" }]  # a short backlog (buffer: ideas beyond one per run slot), a new seed
-# workdir = "project"                     # head (the default): a worktree at the head · project: the project checkout
+# workdir = "repo"                         # head (the default): a worktree at the head · repo: the campaign checkout
 # interval = 0                            # seconds between two sweeps of a cron trigger, if you add one
 # wake_budget = 400                       # tokens of the lessons overview that opens the brief; if not set: [memory]'s
 # incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies, if you add that trigger
@@ -90,17 +90,17 @@ timeout = 900
 max_concurrent = 1                        # sweeps at the same time; more than one duplicate each other's work
 
 [roles.scout]                             # experimental: sweeps that search X, GitHub and arXiv for outside techniques
-# harnesses = ["pi", "claude", "codex"]   # if not set: the project's harnesses
+# harnesses = ["pi", "claude", "codex"]   # if not set: the campaign's harnesses
 # model = { pi = "..." }                  # merged over [model]
 # addendum = "briefs/scout.md"            # a file appended to brief.md in this role's briefs only
 # mcp = ["xai"]                           # its search tools: an X search server, for example; none by default
 # prompt = "briefs/my-scout.md"           # a file that replaces the built-in start of this role's brief
-# runtime = "herdr"                       # if not set: the project's runtime
+# runtime = "herdr"                       # if not set: the campaign's runtime
 # writes = ["seeds via idea seed"]        # what the brief says the role may write; default: what piloop expects of it
 # files = "seeds"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role
 triggers = [{ kind = "cron" }]            # the timer below
-# workdir = "project"                     # head (the default): a worktree at the head · project: the project checkout
+# workdir = "repo"                         # head (the default): a worktree at the head · repo: the campaign checkout
 interval = 0                              # seconds between two scout sweeps; 0 (the default) turns the scout off
 # incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies, if you add that trigger
 # routine_prompt = "briefs/routine.md"    # follows the prompt in every other sweep; none by default
@@ -112,7 +112,7 @@ max_concurrent = 1
 
 # [roles.reviewer]                        # a role of your own: any new name; it needs a prompt and triggers
 # prompt = "briefs/reviewer.md"           # the file that starts its brief
-# triggers = [{ kind = "sql", when = "SELECT 1 FROM candidates WHERE project_id = :project AND verdict = 'keep' AND created_at > :since" }]
+# triggers = [{ kind = "sql", when = "SELECT 1 FROM candidates WHERE campaign_id = :campaign AND verdict = 'keep' AND created_at > :since" }]
 # max_concurrent = 1                      # it takes every key of [roles.watchdog] except its defaults
 
 # [roles.quick]                           # a role of your own that does runs: any new name with runs = true
@@ -127,8 +127,8 @@ max_concurrent = 1
 # [stop]                                  # any one of these ends the campaign; leave the table out to run with no end
 # target = 0.85                           # the primary metric at the head reaches this value (one track only)
 # max_runs = 200                          # runs of every role that reached the evaluator (a scored commit)
-# max_hours = 12                          # hours since the project's first run started
-# max_tokens = 50000000                   # tokens that all the agents of the project spent together
+# max_hours = 12                          # hours since the campaign's first run started
+# max_tokens = 50000000                   # tokens that all the agents of the campaign spent together
 # plateau = 50                            # runs counted as for max_runs, since the last keep or reactivation
 
 # [memory]                                # what past campaigns leave for the next ones; see the research memory page

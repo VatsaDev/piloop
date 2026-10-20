@@ -1,7 +1,7 @@
 """Rows that never change: a ``journal`` line or a lesson is never rewritten, and events are only ever appended.
 
 The authorizer of ``piloop sql`` (``piloop.db.sql``) denies an UPDATE of these tables, and a DELETE of the journal and
-of events. A lesson can be deleted, for example with its project. The authorizer cannot see an ``INSERT OR REPLACE``:
+of events. A lesson can be deleted, for example with its campaign. The authorizer cannot see an ``INSERT OR REPLACE``:
 SQLite deletes the old row to resolve the conflict without asking it. So a persistent trigger refuses an insert whose
 id is taken, whatever its conflict clause. For events, TEMP triggers (``EVENTS``) refuse any id that is not the next.
 """

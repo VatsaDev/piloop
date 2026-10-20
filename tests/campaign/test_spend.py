@@ -1,6 +1,6 @@
 """The ``[spend]`` guard.
 
-The daemon reads the project's spend command and posts each notice once. At the limit, or after a failed reading, it
+The daemon reads the campaign's spend command and posts each notice once. At the limit, or after a failed reading, it
 launches nothing and starts no evaluation. This lasts until a human raises the limit or the command works again.
 """
 
@@ -11,10 +11,10 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from piloop.campaign import spend
-from piloop.campaign.project import sync
+from piloop.campaign.campaigns import sync
 from piloop.campaign.spend import SpendError
-from piloop.config import ProjectConfig, Spend
-from piloop.db.models import Comment, Idea, IdeaStatus, Project, Run, RunStatus
+from piloop.config import CampaignConfig, Spend
+from piloop.db.models import Campaign, Comment, Idea, IdeaStatus, Run, RunStatus
 from piloop.db.session import Database
 from piloop.reports.overview import progress
 from tests.conftest import ScriptRuntime, write_toml
@@ -58,26 +58,26 @@ def daemon_comments(db: Database) -> list[tuple[str, int | None, str]]:
         return [(c.kind, c.priority, c.body) for c in rows]
 
 
-def bill(db: Database, project: Project, file: Path, usd: str) -> None:
+def bill(db: Database, campaign: Campaign, file: Path, usd: str) -> None:
     """Set the spend that the command prints from now on, and make the next reading due."""
     file.write_text(usd)
     with db.session() as s:
-        s.get_one(Project, project.id).spend_at = None
+        s.get_one(Campaign, campaign.id).spend_at = None
         s.commit()
 
 
 def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     file, hold = tmp_path / 'bill', tmp_path / 'hold'
     hold.touch()  # The first agent works until the limit is reached, so its run is in progress then.
     write_toml(
-        Path(project.path),
+        Path(campaign.path),
         f'#!/bin/sh\nwhile [ -f {hold} ]; do sleep 0.05; done\necho line >> solve.txt\ngit commit -qam "add a line"\n',
     )
     budget = {'command': ['cat', str(file)], 'limit': 300, 'notices': [100, 200]}
-    set_config(db, project, spend=budget)
-    first, second = add_ideas(db, project, 'first', 'second')
+    set_config(db, campaign, spend=budget)
+    first, second = add_ideas(db, campaign, 'first', 'second')
     scheduler = make_scheduler(db, runtime, tmp_path)
 
     file.write_text('150')
@@ -87,12 +87,12 @@ def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised
     ], 'the first reading posts the notices it is already past'
     assert scheduler.tick() == [] and len(daemon_comments(db)) == 1, 'the interval is not up: no new reading'
 
-    bill(db, project, file, '160')
+    bill(db, campaign, file, '160')
     assert scheduler.tick() == [], 'below the limit, but the first run still holds the one slot'
     assert len(daemon_comments(db)) == 1, 'each notice once'
 
-    bill(db, project, file, '1012')
-    request_watchdog(db, project)
+    bill(db, campaign, file, '1012')
+    request_watchdog(db, campaign)
     assert scheduler.tick() == [], 'at the limit nothing launches, not even a row inserted by hand'
     assert daemon_comments(db)[1:] == [
         ('note', 1, 'Spend notice: $1,012.00 spent, past the $200.00 notice. The limit is $300.00.'),
@@ -110,54 +110,54 @@ def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised
             'what ran finished and was scored; nothing else was queued'
         )
         assert s.get_one(Idea, second).status is IdeaStatus.READY
-        p = s.get_one(Project, project.id)
-        assert progress(s, p, ProjectConfig.model_validate(p.config), p.created_at).endswith(
+        p = s.get_one(Campaign, campaign.id)
+        assert progress(s, p, CampaignConfig.model_validate(p.config), p.created_at).endswith(
             ' · $1,012.00/$300.00 spend (launches held: spend limit reached)'
         )
-    bill(db, project, file, '1013')
+    bill(db, campaign, file, '1013')
     assert scheduler.tick() == [] and len(daemon_comments(db)) == 3, 'one escalation for the limit'
 
-    (Path(project.path) / 'piloop.toml').write_text(
-        (Path(project.path) / 'piloop.toml').read_text() + f'\n[spend]\ncommand = ["cat", "{file}"]\nlimit = 2000\n'
+    (Path(campaign.path) / 'piloop.toml').write_text(
+        (Path(campaign.path) / 'piloop.toml').read_text() + f'\n[spend]\ncommand = ["cat", "{file}"]\nlimit = 2000\n'
     )
     with db.session() as s:
-        sync(s, s.get_one(Project, project.id))  # This is what `piloop init` does.
+        sync(s, s.get_one(Campaign, campaign.id))  # This is what `piloop init` does.
         s.commit()
     assert len(scheduler.tick()) == 2, 'the limit raised: the watchdog and the next run launch'
     scheduler.wait(30)
 
 
 def test_a_failing_command_holds_launches_with_one_escalation_per_streak(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     file = tmp_path / 'bill'
-    set_config(db, project, spend={'command': ['cat', str(file)], 'limit': 300})
-    add_ideas(db, project, 'idea')
+    set_config(db, campaign, spend={'command': ['cat', str(file)], 'limit': 300})
+    add_ideas(db, campaign, 'idea')
     scheduler = make_scheduler(db, runtime, tmp_path)
 
     assert scheduler.tick() == [], 'no bill yet: the spend is unknown, not $0'
     [(kind, priority, body)] = daemon_comments(db)
     assert (kind, priority) == ('escalation', 0)
     assert body.startswith('Spend unknown: the [spend] command failed (exit 1: cat: ')
-    bill(db, project, file, 'oops')
+    bill(db, campaign, file, 'oops')
     assert scheduler.tick() == [] and len(daemon_comments(db)) == 1, 'still failing: no second escalation'
     with db.session() as s:
-        p = s.get_one(Project, project.id)
+        p = s.get_one(Campaign, campaign.id)
         assert p.spend_error == "printed 'oops', not a number of USD"
-        assert spend.progress(p, ProjectConfig.model_validate(p.config)) == (
+        assert spend.progress(p, CampaignConfig.model_validate(p.config)) == (
             "$?/$300.00 spend (launches held: spend unknown: printed 'oops', not a number of USD)"
         )
 
-    bill(db, project, file, '12')
+    bill(db, campaign, file, '12')
     assert scheduler.tick() == [1], 'a reading again: launches resume'
     scheduler.wait(30)
-    bill(db, project, file, 'oops')
+    bill(db, campaign, file, 'oops')
     scheduler.tick()
     assert len(daemon_comments(db)) == 2, 'a new streak, a new escalation'
 
 
-def test_progress_says_when_a_project_has_no_reading_yet(project: Project) -> None:
-    cfg = ProjectConfig.model_validate(project.config)
-    assert spend.progress(project, cfg) is None, 'no [spend]: nothing to show'
+def test_progress_says_when_a_campaign_has_no_reading_yet(campaign: Campaign) -> None:
+    cfg = CampaignConfig.model_validate(campaign.config)
+    assert spend.progress(campaign, cfg) is None, 'no [spend]: nothing to show'
     budget = cfg.model_copy(update={'spend': Spend(command=['true'], limit=10)})
-    assert spend.progress(project, budget) == '$?/$10.00 spend (launches held: spend not read yet)'
+    assert spend.progress(campaign, budget) == '$?/$10.00 spend (launches held: spend not read yet)'

@@ -22,13 +22,13 @@ def measurement_add(
         cyclopts.Parameter(help='A JSON file: {"metrics": {"<name>": <value>}, "seconds": <s>, "error": "<why>"}.'),
     ],
 ) -> None:
-    """Record a measurement of a candidate under the project's current evaluator, and have its verdict judged again.
+    """Record a measurement of a candidate under the campaign's current evaluator, and have its verdict judged again.
 
     Use it for an evaluation that you ran yourself, for example the evaluate command on the candidate's commit after
     the daemon's run timed out. `metrics` takes the metrics of piloop.toml, all of them unless `error` says why the
     evaluation failed. `seconds` and `error` are optional. A pending candidate is refused. When the verdict is the
     daemon's crash, discard or interesting, the daemon judges the candidate again with every measurement under the
-    current evaluator, the next time it measures the project. A keep, and a verdict that someone set, stay. The output
+    current evaluator, the next time it measures the campaign. A keep, and a verdict that someone set, stay. The output
     says which. The measurement is signed as PILOOP_ACTOR.
     """
     try:

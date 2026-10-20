@@ -10,7 +10,7 @@ list the key under ``Removed``. The old key then fails as an unknown key.
 """
 
 import warnings
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 Bridge = Callable[[Path, dict[str, object]], None]
@@ -153,7 +153,13 @@ def usage_dirs(toml: Path, raw: dict[str, object]) -> None:
         )
 
 
-BRIDGES: tuple[Bridge, ...] = (research_scout, scout_trigger, research_buffer, research_context, usage_dirs)
+BRIDGES: tuple[Bridge, ...] = (
+    research_scout,
+    scout_trigger,
+    research_buffer,
+    research_context,
+    usage_dirs,
+)
 
 
 def herdr_keys(toml: Path, raw: dict[str, object]) -> None:
@@ -179,6 +185,17 @@ CONFIG_BRIDGES: tuple[Bridge, ...] = (herdr_keys,)
 """The bridges of ``config.toml``, the global settings file (``piloop.settings.config_file``)."""
 
 
+OLD_ENV_PREFIX = 'PILOOP_PROJECT_'
+"""The prefix of the environment variables that override ``piloop.toml`` before 0.2.0. ``PILOOP_CAMPAIGN_`` now."""
+
+
+def old_env(toml: Path, environ: Mapping[str, str]) -> None:
+    """Warn for each ``PILOOP_PROJECT_<KEY>`` variable: it still overrides its key, after ``PILOOP_CAMPAIGN_<KEY>``."""
+    for name in sorted(n for n in environ if n.upper().startswith(OLD_ENV_PREFIX)):
+        new = 'PILOOP_CAMPAIGN_' + name[len(OLD_ENV_PREFIX) :]
+        warn(toml, name, f'{name} is deprecated; set {new}', removed_in=REMOVED_IN)
+
+
 def show_in_cli() -> None:
     """Show each deprecation once. By default, Python hides a ``DeprecationWarning`` outside ``__main__``."""
     warnings.simplefilter('default', PiloopDeprecationWarning)
@@ -202,6 +219,6 @@ def warn(toml: Path, key: str, message: str, *, removed_in: str, nth: int = 0) -
 
 
 def bridge(toml: Path, raw: dict[str, object], bridges: tuple[Bridge, ...] = BRIDGES) -> None:
-    """Run every bridge on the parsed file. ``config.load_project_config`` calls this before it validates the file."""
+    """Run every bridge on the parsed file. ``config.load_campaign_config`` calls this before it validates the file."""
     for b in bridges:
         b(toml, raw)

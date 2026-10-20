@@ -8,7 +8,7 @@ three commands. Each prints one JSON document on stdout. Messages go to stderr.
 
 | Command | What it prints |
 |---|---|
-| `piloop status --json` | A snapshot of each project, and the cursor it was read at. |
+| `piloop status --json` | A snapshot of each campaign, and the cursor it was read at. |
 | `piloop inbox --json` | The inbox items and the seeds, and the cursor they were read at. |
 | `piloop events --after <cursor> --json` | The events after a cursor, and the next cursor. |
 
@@ -30,10 +30,10 @@ Delivery is at least once: when you resume from a saved cursor, an event that yo
 again. Skip an event whose `id` you have handled. Each program keeps its own cursor. piloop keeps no state for a
 reader.
 
-`--project` and `--kind` filter the events. The `next` cursor still passes every event that the read examined, so a
-read that matches nothing moves on, and a filtered reader never reads the same range twice. `--project` also keeps
-the events whose project is unknown (see `subject.project` below), because they may be of that project: a project
-reader misses none of its events, and may get a few of other projects.
+`--campaign` and `--kind` filter the events. The `next` cursor still passes every event that the read examined, so a
+read that matches nothing moves on, and a filtered reader never reads the same range twice. `--campaign` also keeps
+the events whose campaign is unknown (see `subject.campaign` below), because they may be of that campaign: a campaign
+reader misses none of its events, and may get a few of other campaigns.
 
 ## The documents
 
@@ -49,7 +49,7 @@ A read of events:
     {
       "id": 42,
       "kind": "idea.status",
-      "subject": {"kind": "idea", "id": 7, "project": 1},
+      "subject": {"kind": "idea", "id": 7, "campaign": 1},
       "actor": "orchestrator",
       "time": "2026-10-19T12:00:00.123456Z",
       "payload": {"old": "ready", "new": "parked"}
@@ -66,12 +66,12 @@ A read of events:
 | `next` | The cursor for the next read. |
 | `more` | Newer events exist already. They may not match your filters. |
 
-`piloop status --json` has `cursor`, `daemon` (`pid`, null when the daemon is not running) and `projects`. Each project
+`piloop status --json` has `cursor`, `daemon` (`pid`, null when the daemon is not running) and `campaigns`. Each campaign
 has its `id`, `name`, `path`, `status` and `stopped_reason`, `paused` (`launches`, `all` or null) and
 `paused_reason`, the current `evaluator`, the `head` (its candidate, and for each track the primary metric, its value
 and its delta against the baseline; null when there is no keep yet), the `kept` and `candidates` counts, the number of
 `ideas` in each status, the `runnable` ideas, the open `runs`, the live `agents`, the unacknowledged `inbox` items and
-the `tokens` spent. It covers the projects that `piloop status` would show.
+the `tokens` spent. It covers the campaigns that `piloop status` would show.
 
 `piloop inbox --json` has `cursor`, `items` and `seeds`, with the filters of `piloop inbox`.
 
@@ -83,15 +83,15 @@ Every event has the same fields, whatever its kind.
 |---|---|
 | `id` | The cursor. Ids grow in the order in which the events were committed: events are append-only, and a new event always takes the next id. |
 | `kind` | `<subject>.<what>`, for example `idea.status`, `candidate.judged` or `comment.escalation`. |
-| `subject` | The row that the event is about: its `kind` (`project`, `idea`, `run`, `candidate`, `measurement`, `worker` or `comment`), its `id` and its `project`. |
+| `subject` | The row that the event is about: its `kind` (`campaign`, `idea`, `run`, `candidate`, `measurement`, `worker` or `comment`), its `id` and its `campaign`. |
 | `actor` | Who wrote it: `daemon`, `human`, `orchestrator`, an agent such as `worker#12`, or the `PILOOP_ACTOR` of a program. |
 | `time` | When it was written, in UTC. |
 | `payload` | The details, as stored: any JSON value. |
 | `invalid` | Only when a stored value is not of its type: its stored text, under `time` or `payload`. That field is then null. |
 
-The envelope shows each stored event as it is. It rewrites no row and invents no field. `subject.project` is looked up
+The envelope shows each stored event as it is. It rewrites no row and invents no field. `subject.campaign` is looked up
 when the event is read, so it is null when the row is gone (a deleted idea, its older events and its `idea.deleted`
-included) or has no project (a reply to a reply).
+included) or has no campaign (a reply to a reply).
 
 piloop checks the types of an event when it is written, through any piloop command, `piloop sql` included. A
 payload can still be text that is not strict JSON, such as `NaN` or `1e400`, and a row that an older piloop let
@@ -113,7 +113,7 @@ with status 1. The message goes to stderr too.
 |---|---|---|
 | `cursor_ahead` | The cursor is past the newest event, so it is not a cursor of this feed: it comes from another piloop home, for example. | Read a new snapshot and use its cursor. |
 
-Other failures, such as an unknown project or a bad option, print a message on stderr, print nothing on stdout, and
+Other failures, such as an unknown campaign or a bad option, print a message on stderr, print nothing on stdout, and
 exit with a status other than 0.
 
 `cursor_ahead` only catches a cursor that is ahead of this feed. A cursor of another home that is behind this feed's

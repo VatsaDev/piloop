@@ -5,7 +5,7 @@ from typing import get_args
 
 from pydantic import BaseModel
 
-from piloop.config import ProjectConfig
+from piloop.config import CampaignConfig
 from piloop.deprecated import BRIDGES, CONFIG_BRIDGES
 from piloop.plugins.contracts.store import REMOTES
 from piloop.runtime.herdr import HerdrSettings
@@ -16,7 +16,7 @@ from scripts.generate.markdown import JsonSchema, json_schema, mdx, table
 
 PATH = ROOT / 'docs' / 'reference' / 'configuration.mdx'
 SOURCE = (
-    'the docstrings of the models that `ProjectConfig` reaches, `piloop/deprecated.py`, or'
+    'the docstrings of the models that `CampaignConfig` reaches, `piloop/deprecated.py`, or'
     ' `scripts/generate/configuration.py`'
 )
 HEAD = f"""---
@@ -25,11 +25,11 @@ description: Every key of piloop.toml, with its type and its default.
 ---
 
 {header(SOURCE)}
-`piloop.toml` is at the root of the project repo. `piloop init` reads it again each time you run it, and stores a
+`piloop.toml` is at the root of the campaign repo. `piloop init` reads it again each time you run it, and stores a
 copy. The daemon uses that copy, so an edit takes effect only when you run `piloop init`.
 
-To override a key when `piloop init` reads the file, set `PILOOP_PROJECT_<KEY>`. Join nested keys with `__`, for
-example `PILOOP_PROJECT_RUNTIME=herdr` or `PILOOP_PROJECT_ROLES__WORKER__MAX_CONCURRENT=2`. The stored copy keeps the
+To override a key when `piloop init` reads the file, set `PILOOP_CAMPAIGN_<KEY>`. Join nested keys with `__`, for
+example `PILOOP_CAMPAIGN_RUNTIME=herdr` or `PILOOP_CAMPAIGN_ROLES__WORKER__MAX_CONCURRENT=2`. The stored copy keeps the
 override until the next `piloop init`. The variable has no effect on `piloop serve`.
 
 A type in the tables links to the section that describes it. A table that you leave out has the defaults of its
@@ -75,7 +75,7 @@ def generate() -> str:
     A model that subclasses another config model gets the table of its base once, and then a table of the keys that
     it adds or gives another default.
     """
-    top = json_schema(ProjectConfig)
+    top = json_schema(CampaignConfig)
     defs = top.get('$defs', {})
     out = HEAD + table(top, defs)
     shown: list[type[BaseModel]] = []
@@ -89,7 +89,7 @@ def generate() -> str:
             return _section(model, defs)
         return show(base) + _section(model, defs, _own_keys(model, base))
 
-    for model in [*_nested(ProjectConfig, []), *TRIGGERS.builtins().values()]:
+    for model in [*_nested(CampaignConfig, []), *TRIGGERS.builtins().values()]:
         out += show(model)
     return out + global_section() + deprecated_section()
 
@@ -98,7 +98,7 @@ def global_section() -> str:
     """Return the tables of the global settings file, ``$PILOOP_HOME/config.toml``: ``[storage]`` and each backend."""
     storage = json_schema(StorageSettings)
     out = (
-        '\n## Global settings: `config.toml`\n\n`$PILOOP_HOME/config.toml` holds the settings that every project of'
+        '\n## Global settings: `config.toml`\n\n`$PILOOP_HOME/config.toml` holds the settings that every campaign of'
         ' one `PILOOP_HOME` shares. To override a key, set `PILOOP_<TABLE>__<KEY>`, for example'
         ' `PILOOP_STORAGE__MIN_FREE_GB`.\n\n### `[storage]`\n\n'
         f'{mdx(storage.get("description", ""))}\n\n{table(storage, {}, set(storage["properties"]) - {"remote"})}'

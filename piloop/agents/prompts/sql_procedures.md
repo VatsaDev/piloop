@@ -9,16 +9,16 @@ Timestamps are UTC ISO-8601 strings.
 
 ## The model
 
-- A **project** is a git repo with a `piloop.toml`.
+- A **campaign** is a git repo with a `piloop.toml`.
 - **Ideas** are things worth trying. When an idea is `ready`, the scheduler creates a **run**: one attempt, on one
   harness and model. It starts a **worker** process in a fresh git worktree at the run's base **candidate**.
-- **Idea links** (`idea_links`) relate ideas of one project:
+- **Idea links** (`idea_links`) relate ideas of one campaign:
   - `after`: the idea waits for its prerequisites. It stays `ready` but is not taken until all of them are `done`. Then
     it starts from the head, which has what they kept.
   - `supersedes`: the idea is a sharper version of older ideas. The daemon rejects the older ones that never ran.
 - The worker commits. Every new commit becomes a candidate: a distinct state of the code, identified by its git tree.
   A commit that reverts to a known state *is* that candidate.
-- The daemon scores each new candidate with the project's **evaluator** into a **measurement** (metrics, or an
+- The daemon scores each new candidate with the campaign's **evaluator** into a **measurement** (metrics, or an
   error). The evaluator is the evaluate command and the metric definitions as of the last config sync. A change makes
   a new evaluator row. A candidate can have many measurements: repeats, or a newer evaluator.
 - A candidate's **verdict** (`keep`, `interesting`, `discard` or `crash`) is the daemon's judgement of its mean score
@@ -37,9 +37,9 @@ Timestamps are UTC ISO-8601 strings.
 - A `reference` is not a judgement. It is a starting point imported with `piloop candidate import`, with no run and no
   parent. The daemon measures it. An idea can pin it as `base_candidate_id`. It is never the head and never counts as a
   keep.
-- A project can have several **tracks** (objectives), each with its own primary metric. `ideas.track` names an idea's
+- A campaign can have several **tracks** (objectives), each with its own primary metric. `ideas.track` names an idea's
   track. A candidate is judged on its track's primary. The primary of every other track is one more guardrail for it,
-  with its margin and floor. A project with one primary has one track, named after that metric.
+  with its margin and floor. A campaign with one primary has one track, named after that metric.
 - **Comments** attach to any row. Agents and humans talk to each other through them.
 - **Events** are the append-only log of what happened.
 
@@ -49,7 +49,7 @@ Timestamps are UTC ISO-8601 strings.
 
 - A hunch is a *seed*. A defined experiment is an *idea*.
 - File a seed, when your brief says that you may, with
-  `piloop idea seed <project> "<hunch, one line>" --from "<pointers: ids, paths, numbers>"`.
+  `piloop idea seed <campaign> "<hunch, one line>" --from "<pointers: ids, paths, numbers>"`.
   Add `--base <candidate>` when it is about that tree.
 - A seed starts with status `seed`, and research develops it first. Research reads the existing work and checks for
   duplicates and earlier negative results. Then it either defines the seed or rejects it with a `note` that names the
@@ -57,12 +57,12 @@ Timestamps are UTC ISO-8601 strings.
 - To define a seed: `piloop idea develop <id> --hypothesis … --evidence … --check … --metric … --effect …`. This makes
   it `ready`.
 - An agent whose brief says so, the orchestrator and humans can also add defined ideas directly:
-  `piloop idea add <project> "<title>" --hypothesis … --plan … --family <mechanism> --from "<the evidence, with ids>"`.
+  `piloop idea add <campaign> "<title>" --hypothesis … --plan … --family <mechanism> --from "<the evidence, with ids>"`.
   The idea is `ready` ("schedule me"), or `proposed` with `--proposed` ("a human's approval first").
 - Both commands sign `created_by` with your actor and store `--from` in `provenance`. The full commands are under
   Context.
 - Priority 0 is urgent. 4 is someday.
-- Titles are unique per project. A UNIQUE error means someone proposed it first. Read their idea and extend it with a
+- Titles are unique per campaign. A UNIQUE error means someone proposed it first. Read their idea and extend it with a
   `note` comment instead.
 - What each source's ideas came to (keeps, not ideas) is in the overview's "Ideas by source" line.
 
@@ -84,7 +84,7 @@ Timestamps are UTC ISO-8601 strings.
   - On its next tick, the daemon sets n to `rejected` if it never ran (no run yet, and still `seed`, `proposed` or
     `ready`), with a `note` on n that names `new`.
   - If n ran, the daemon leaves it alone.
-- Both ideas must belong to the same project and must differ. A pair can have both kinds.
+- Both ideas must belong to the same campaign and must differ. A pair can have both kinds.
 
 ### Search
 
@@ -98,7 +98,7 @@ Ideas by mechanism, best match first, with the matching words marked:
 ```sql
 SELECT i.id, i.status, snippet(ideas_fts, -1, '[', ']', '…', 8) AS hit, bm25(ideas_fts) AS score
 FROM ideas_fts JOIN ideas i ON i.id = ideas_fts.rowid
-WHERE ideas_fts MATCH 'voting OR ensemble' AND i.project_id = 1 ORDER BY score LIMIT 10;
+WHERE ideas_fts MATCH 'voting OR ensemble' AND i.campaign_id = 1 ORDER BY score LIMIT 10;
 ```
 
 Comments (findings, decisions, notes) that use a phrase, newest first:
@@ -124,44 +124,44 @@ The MATCH string is FTS5 syntax, not free text:
 
 ### Remember past campaigns
 
-Every campaign that ever ran is in this database. `projects.repo` names the code that each project worked on, the
+Every campaign that ever ran is in this database. `campaigns.repo` names the code that each campaign worked on, the
 same for every clone. Before you propose or build a mechanism, look at what came of it before.
 
-Prior attempts on this repo, in every project, with what they came to and the primary metric that judged them. A
-discard under one project's evaluator is not dead under another's: read the idea's comments before you call it
+Prior attempts on this repo, in every campaign, with what they came to and the primary metric that judged them. A
+discard under one campaign's evaluator is not dead under another's: read the idea's comments before you call it
 settled.
 
 ```sql
-SELECT p.name AS project, i.id, i.status, i.family, i.title,
+SELECT p.name AS campaign, i.id, i.status, i.family, i.title,
   (SELECT group_concat(DISTINCT c.verdict) FROM runs r JOIN candidates c ON c.run_id = r.id WHERE r.idea_id = i.id) AS verdicts,
   (SELECT group_concat(json_extract(m.value, '$.name')) FROM json_each(p.config, '$.metrics') m
    WHERE json_extract(m.value, '$.role') = 'primary') AS judged_on
-FROM ideas_fts JOIN ideas i ON i.id = ideas_fts.rowid JOIN projects p ON p.id = i.project_id
-WHERE ideas_fts MATCH '"sync acquisition" OR onset' AND p.repo = (SELECT repo FROM projects WHERE id = 1)
+FROM ideas_fts JOIN ideas i ON i.id = ideas_fts.rowid JOIN campaigns p ON p.id = i.campaign_id
+WHERE ideas_fts MATCH '"sync acquisition" OR onset' AND p.repo = (SELECT repo FROM campaigns WHERE id = 1)
 ORDER BY bm25(ideas_fts) LIMIT 20;
 ```
 
-- An implementation to copy, from any project: drop the `p.repo` filter, keep what kept or was noted (`JOIN runs r ON
+- An implementation to copy, from any campaign: drop the `p.repo` filter, keep what kept or was noted (`JOIN runs r ON
   r.idea_id = i.id JOIN candidates c ON c.run_id = r.id WHERE c.verdict IN ('keep', 'interesting')`) and select
   `p.path, c.commit_sha`. Then `git -C <path> show <commit_sha>`.
 - How a past idea was worked: `SELECT w.id, w.checkpoint_id, w.log_dir FROM workers w JOIN runs r ON r.id = w.run_id
-  WHERE r.idea_id = <idea>`. `entire checkpoint explain <checkpoint_id>`, run in that project's repo
-  (`projects.path`), summarises the session. `<log_dir>/transcript.txt` is its screen. An archived workspace can be
+  WHERE r.idea_id = <idea>`. `entire checkpoint explain <checkpoint_id>`, run in that campaign's repo
+  (`campaigns.path`), summarises the session. `<log_dir>/transcript.txt` is its screen. An archived workspace can be
   restored with `piloop restore`, once your piloop has it.
 
 Lessons: a row of `lessons` is the standing conclusion about one mechanism family, written when a campaign stops.
-The newest for each (project, family) is the current one. What is dead or promising on this repo:
+The newest for each (campaign, family) is the current one. What is dead or promising on this repo:
 
 ```sql
-SELECT p.name AS project, l.id, l.family, l.status, l.effect, l.metric
-FROM lessons l JOIN projects p ON p.id = l.project_id
-WHERE p.repo = (SELECT repo FROM projects WHERE id = 1)
-  AND l.id = (SELECT MAX(n.id) FROM lessons n WHERE n.project_id = l.project_id AND lower(n.family) = lower(l.family))
+SELECT p.name AS campaign, l.id, l.family, l.status, l.effect, l.metric
+FROM lessons l JOIN campaigns p ON p.id = l.campaign_id
+WHERE p.repo = (SELECT repo FROM campaigns WHERE id = 1)
+  AND l.id = (SELECT MAX(n.id) FROM lessons n WHERE n.campaign_id = l.campaign_id AND lower(n.family) = lower(l.family))
 ORDER BY l.status, l.family;
 ```
 
 - `SELECT body FROM lessons WHERE id = <n>` reads why, with the ids it cites.
-- To write one: `INSERT INTO lessons (project_id, family, status, effect, metric, body, created_by) VALUES (<p>,
+- To write one: `INSERT INTO lessons (campaign_id, family, status, effect, metric, body, created_by) VALUES (<p>,
   '<family>', 'dead', 0.002, '<metric>', '<what was tried, the evaluator that measured it, why it stopped, with ids>',
   '<you>')`. `status` is `dead`, `promising` or `untested`. `effect` is the best effect measured, in the units of
   `metric` and with its sign. Leave both NULL when none was measured. A lesson is never changed: a new conclusion is a
@@ -170,14 +170,14 @@ ORDER BY l.status, l.family;
 Documents: campaign reports, logs and design notes (`[memory] documents` in `piloop.toml`, or inserted by an agent):
 
 ```sql
-SELECT p.name AS project, d.id, d.path, snippet(documents_fts, 1, '[', ']', '…', 12) AS hit
-FROM documents_fts JOIN documents d ON d.id = documents_fts.rowid JOIN projects p ON p.id = d.project_id
-WHERE documents_fts MATCH '"clock recovery" OR acquisition' AND p.repo = (SELECT repo FROM projects WHERE id = 1)
+SELECT p.name AS campaign, d.id, d.path, snippet(documents_fts, 1, '[', ']', '…', 12) AS hit
+FROM documents_fts JOIN documents d ON d.id = documents_fts.rowid JOIN campaigns p ON p.id = d.campaign_id
+WHERE documents_fts MATCH '"clock recovery" OR acquisition' AND p.repo = (SELECT repo FROM campaigns WHERE id = 1)
 ORDER BY bm25(documents_fts) LIMIT 10;
 ```
 
 - `SELECT body FROM documents WHERE id = <n>` reads one. It can be long.
-- To add one: `INSERT INTO documents (project_id, path, title, body, hash, created_by) SELECT <p>, '<path>',
+- To add one: `INSERT INTO documents (campaign_id, path, title, body, hash, created_by) SELECT <p>, '<path>',
   '<title>', body, blake3(body), '<you>' FROM (SELECT '<text>' AS body)`.
 - Never add a document derived from validation or test data: nothing that agents can search may show the scored
   data.
@@ -198,7 +198,7 @@ ORDER BY bm25(documents_fts) LIMIT 10;
 
 ### Ask for an agent
 
-- `INSERT INTO workers (kind, project_id, state) VALUES ('research', <p>, 'requested')`. The daemon starts it on its
+- `INSERT INTO workers (kind, campaign_id, state) VALUES ('research', <p>, 'requested')`. The daemon starts it on its
   next tick.
 - Kinds: the sweeping roles that the Context lists. A role that does runs needs a run, so leave its agents to the
   scheduler.
@@ -225,7 +225,7 @@ Special reasons:
 - A reason that starts with `keeps against its own bar, but the head moved on` is a keep that was rebased. The rest of
   the reason names the merged candidate or the conflict.
 
-Roles, tracks, margins and floors are in `projects.config`.
+Roles, tracks, margins and floors are in `campaigns.config`.
 
 Override verdicts freely, and record why. A candidate can be `interesting` without winning:
 `piloop candidate verdict <c> interesting --reason "<why>"`. It signs the verdict with your actor. A keep must build
@@ -246,7 +246,7 @@ The daemon never overwrites a verdict that is not its own.
 - A candidate's score is the mean of its successful measurements under the current evaluator.
 - To estimate noise, ask a worker, or run the evaluate command yourself, and record it:
   `piloop measurement add <c> --report <file>`, with `{"metrics": {"<name>": <value>}, "seconds": <s>}` in the file.
-  It counts under the current evaluator (`projects.evaluator_id`), with the metric names of `piloop.toml`. A `crash`,
+  It counts under the current evaluator (`campaigns.evaluator_id`), with the metric names of `piloop.toml`. A `crash`,
   `discard` or `interesting` that the daemon judged is judged again with every measurement. Never insert into `measurements` by hand: nothing judges it.
 
 ### Talk
@@ -286,29 +286,29 @@ Each command takes `--reason "<why>"`, signs the change with your actor and reco
 
 ### Pause a campaign
 
-- `piloop pause <project> --reason "<why>"` launches nothing more: no run, no sweep, no requested agent. Running work
+- `piloop pause <campaign> --reason "<why>"` launches nothing more: no run, no sweep, no requested agent. Running work
   finishes and is scored. It raises no escalation. A sweep that runs already files its ideas as `proposed`.
 - The daemon still measures what a new evaluator or a request needs. `--evals` holds that too.
 - No watchdog starts for an anomaly while paused; it gets the anomaly after the resume. Paused time does not count
   toward `[stop] max_hours`.
-- `piloop resume <project>` ends it. `projects.paused` and `paused_reason` show it, and `project.paused` events log it.
+- `piloop resume <campaign>` ends it. `campaigns.paused` and `paused_reason` show it, and `campaign.paused` events log it.
 - Never pause with a `[spend]` command that reads a file: the spend guard escalates each time it holds, and it stops
   every measurement.
 
 ### Stop, cancel, or resume a stopped campaign
 
-- When a `[stop]` condition in `piloop.toml` holds, or after `piloop project stop <project> [--kill]`, the daemon:
-  - sets `projects.status='stopped'` (`stopped_reason` says which condition, or who stopped it);
+- When a `[stop]` condition in `piloop.toml` holds, or after `piloop campaign stop <campaign> [--kill]`, the daemon:
+  - sets `campaigns.status='stopped'` (`stopped_reason` says which condition, or who stopped it);
   - drops the requests and queued runs pending at that moment (their ideas go back to `ready`);
   - tells each running worker to commit and stop, and ends it 10 minutes later (`--kill`: at once); its commits are
     scored;
   - checks the `stopped` triggers: by default, they request one closing watchdog sweep;
   - starts and files nothing more.
-- Stop a campaign with `piloop project stop`, not with an UPDATE of `projects.status`: an UPDATE gets no closing sweep.
+- Stop a campaign with `piloop campaign stop`, not with an UPDATE of `campaigns.status`: an UPDATE gets no closing sweep.
 - `piloop run cancel <run> [--wrap-up]` and `piloop agent cancel <worker> [--wrap-up]` end one run or one agent,
   with every process that it started. A cancelled run's idea is parked.
 - To continue, raise or change the conditions in `piloop.toml` and run `piloop init <path>`.
-- Or by hand: `UPDATE projects SET status='active', stopped_reason=NULL WHERE id=<p>`. With the conditions unchanged, it
+- Or by hand: `UPDATE campaigns SET status='active', stopped_reason=NULL WHERE id=<p>`. With the conditions unchanged, it
   stops again on the next tick.
 
 ### Spend
@@ -320,7 +320,7 @@ Each command takes `--reason "<why>"`, signs the change with your actor and reco
   - `turns` is the number of model responses.
   - `source` is the session file that was read.
 - It is NULL while the agent runs, or when no file was found.
-- `json_extract(usage, '$.total')` sums the spend per idea (workers → runs → ideas) or per project. The queries below do
+- `json_extract(usage, '$.total')` sums the spend per idea (workers → runs → ideas) or per campaign. The queries below do
   both.
 
 ### What not to change
@@ -337,7 +337,7 @@ Each command takes `--reason "<why>"`, signs the change with your actor and reco
   since its insert.
 - The same triggers keep a change log in `events`, signed by the same actor, each with `{old, new}` in the payload:
   `idea.status`, `idea.priority`, `idea.track`, `idea.base_candidate_id`, `candidate.verdict` (with `verdict_by` and
-  `verdict_reason`), `run.brief` (lengths only), `project.status` (with `stopped_reason`), `project.paused` (with
+  `verdict_reason`), `run.brief` (lengths only), `campaign.status` (with `stopped_reason`), `campaign.paused` (with
   `paused_reason`). An inserted or deleted `idea_links` row is `idea.linked` or `idea.unlinked` on its idea, with the
   target and the kind.
 - A DELETE of an idea, comment or candidate leaves a `<kind>.deleted` event with the row's key columns.
@@ -349,43 +349,43 @@ Each command takes `--reason "<why>"`, signs the change with your actor and reco
 ## Useful queries
 
 ```sql
--- a candidate's score under the project's current evaluator (mean over successful measurements)
+-- a candidate's score under the campaign's current evaluator (mean over successful measurements)
 SELECT c.id, c.verdict, c.summary, AVG(json_extract(m.metrics, '$.accuracy')) AS accuracy, COUNT(m.id) AS n
-FROM candidates c JOIN projects p ON p.id = c.project_id
+FROM candidates c JOIN campaigns p ON p.id = c.campaign_id
 LEFT JOIN measurements m ON m.candidate_id = c.id AND m.evaluator_id = p.evaluator_id AND m.error IS NULL
-WHERE c.project_id = 1 GROUP BY c.id ORDER BY c.id DESC LIMIT 20;
+WHERE c.campaign_id = 1 GROUP BY c.id ORDER BY c.id DESC LIMIT 20;
 
 -- the head: the latest trunk keep (a keep no branch run made)
 SELECT c.id, c.commit_sha, c.summary FROM candidates c LEFT JOIN runs r ON r.id = c.run_id
-WHERE c.project_id = 1 AND c.verdict = 'keep' AND (r.id IS NULL OR NOT r.branch) ORDER BY c.id DESC LIMIT 1;
+WHERE c.campaign_id = 1 AND c.verdict = 'keep' AND (r.id IS NULL OR NOT r.branch) ORDER BY c.id DESC LIMIT 1;
 
 -- what is running right now
 SELECT r.id, i.title, r.harness, r.model, r.started_at FROM runs r JOIN ideas i ON i.id = r.idea_id
 WHERE r.status = 'running';
 
--- the queue: ready ideas the scheduler may take (filter by project, which the index serves; every 'after'
+-- the queue: ready ideas the scheduler may take (filter by campaign, which the index serves; every 'after'
 -- prerequisite must be done)
-SELECT i.id, i.priority, i.title FROM ideas i WHERE i.project_id = 1 AND i.status = 'ready' AND NOT EXISTS (
+SELECT i.id, i.priority, i.title FROM ideas i WHERE i.campaign_id = 1 AND i.status = 'ready' AND NOT EXISTS (
   SELECT 1 FROM idea_links l JOIN ideas p ON p.id = l.target_id
   WHERE l.idea_id = i.id AND l.kind = 'after' AND p.status != 'done') ORDER BY i.priority, i.id;
 
 -- ready ideas that wait on a prerequisite, and what state it is in
 SELECT i.id, i.title, p.id AS prerequisite, p.status AS prerequisite_status
 FROM ideas i JOIN idea_links l ON l.idea_id = i.id AND l.kind = 'after' JOIN ideas p ON p.id = l.target_id
-WHERE i.project_id = 1 AND i.status = 'ready' AND p.status != 'done';
+WHERE i.campaign_id = 1 AND i.status = 'ready' AND p.status != 'done';
 
 -- everything said about idea 12
 SELECT author, kind, body, created_at FROM comments WHERE target_kind = 'idea' AND target_id = 12 ORDER BY id;
 
 -- the kept lineage
-SELECT id, parent_id, run_id, summary FROM candidates WHERE project_id = 1 AND verdict = 'keep' ORDER BY id;
+SELECT id, parent_id, run_id, summary FROM candidates WHERE campaign_id = 1 AND verdict = 'keep' ORDER BY id;
 
 -- tokens per idea: every worker run of it, summed (NULL usage counts nothing)
 SELECT i.id, i.title, SUM(json_extract(w.usage, '$.total')) AS tokens, COUNT(w.id) AS agents
 FROM ideas i JOIN runs r ON r.idea_id = i.id JOIN workers w ON w.run_id = r.id
-WHERE i.project_id = 1 GROUP BY i.id ORDER BY tokens DESC;
+WHERE i.campaign_id = 1 GROUP BY i.id ORDER BY tokens DESC;
 
--- tokens per role, every agent of the project that ended (filter by project: that is what the index serves)
+-- tokens per role, every agent of the campaign that ended (filter by campaign: that is what the index serves)
 SELECT kind, SUM(json_extract(usage, '$.total')) AS tokens, COUNT(*) AS agents
-FROM workers WHERE project_id = 1 AND ended_at IS NOT NULL GROUP BY kind;
+FROM workers WHERE campaign_id = 1 AND ended_at IS NOT NULL GROUP BY kind;
 ```

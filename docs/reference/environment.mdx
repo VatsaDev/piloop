@@ -22,7 +22,7 @@ These are the settings of the [`herdr` runtime](/concepts/runtimes). The default
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PILOOP_PROJECT_<KEY>` | none | Overrides a key of `piloop.toml` when `piloop init` reads the file. `piloop init` stores the result, and the daemon uses it until the next `piloop init`. Set on `piloop serve`, it has no effect. Join nested keys with `__`, for example `PILOOP_PROJECT_RUNTIME=herdr`. `piloop doctor` reads it too. |
+| `PILOOP_CAMPAIGN_<KEY>` | none | Overrides a key of `piloop.toml` when `piloop init` reads the file. `piloop init` stores the result, and the daemon uses it until the next `piloop init`. Set on `piloop serve`, it has no effect. Join nested keys with `__`, for example `PILOOP_CAMPAIGN_RUNTIME=herdr`. `piloop doctor` reads it too. |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's configuration directory. `piloop install-skills` writes Claude Code's skills to its `skills/` directory, unless `PILOOP_CLAUDE_SKILLS_DIR` names another one. The usage glob of the `claude` harness reads it (`{env:CLAUDE_CONFIG_DIR:~/.claude}`). |
 | `CODEX_HOME` | `~/.codex` | Codex's home directory. The usage glob of the `codex` harness reads it (`{env:CODEX_HOME:~/.codex}`). |
 | `PILOOP_SRC` | PyPI | For `install.sh` only: install piloop from this checkout or pip-style URL instead of from PyPI. |
@@ -38,6 +38,6 @@ the harnesses name.
 | `PILOOP_HOME` | every agent | The same directory as the daemon's, so that the agent's `piloop` commands use the same database. |
 | `PILOOP_BIN` | every agent | `$PILOOP_HOME/bin/piloop`, which runs the daemon's own piloop on the daemon's home. The briefs run piloop with it, so another piloop on your `PATH`, or a harness shell that runs your rc files again, does not matter. |
 | `PATH` | every agent | The daemon's `PATH`, after `$PILOOP_HOME/bin`, so that a plain `piloop` is the daemon's too. |
-| `PILOOP_UNITS_FILE` | the evaluate command, in piloop's own measurements only: the daemon's, and the baseline that `piloop init` measures. Never in an agent's environment. | The path where the evaluate command may write its [per-unit results](/concepts/projects#per-unit-results). |
+| `PILOOP_UNITS_FILE` | the evaluate command, in piloop's own measurements only: the daemon's, and the baseline that `piloop init` measures. Never in an agent's environment. | The path where the evaluate command may write its [per-unit results](/concepts/campaigns#per-unit-results). |
 | `PILOOP_WORKER_TOKEN` | every agent | A token that lets piloop find the processes that an agent started, also those in sessions of their own, and end them with the agent. |
 | `CLAUDE_CODE_CHILD_SESSION` | every agent, set to empty | Claude Code sets it for every process that it runs. A Claude Code agent that inherits it saves no transcript, so piloop clears it. |

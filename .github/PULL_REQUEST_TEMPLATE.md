@@ -1,5 +1,5 @@
 <!-- The title becomes the commit subject and a line of the release notes: a Conventional Commit that a user
-understands, such as "fix: a stopped project is measured again on request". See CONTRIBUTING.md. -->
+understands, such as "fix: a stopped campaign is measured again on request". See CONTRIBUTING.md. -->
 
 ## Summary
 

@@ -9,7 +9,7 @@ import Runtimes from '/snippets/generated/runtimes.mdx';
 A **runtime** is where an agent runs. It starts the agent, watches it until it ends, steers it with messages, shows
 it to you, and stops it. piloop has two built-in runtimes. A Python package can [add more](#add-a-runtime).
 
-A project sets its runtime with the `runtime` key of `piloop.toml`. A role can set another one with its own `runtime`
+A campaign sets its runtime with the `runtime` key of `piloop.toml`. A role can set another one with its own `runtime`
 key. See [Configure a role](/concepts/roles#configure-a-role).
 
 ## What a runtime does for you
@@ -46,7 +46,7 @@ prompt after the start. Some features of a harness depend on the invocation. For
   [Herdr](https://herdr.dev). See [In Herdr](/guides/watch#in-herdr) for the session, the workspaces and the tabs that
   piloop makes.
 
-You can mix them: for example, `runtime = "subprocess"` for the project and `runtime = "herdr"` for research only.
+You can mix them: for example, `runtime = "subprocess"` for the campaign and `runtime = "herdr"` for research only.
 
 ## When an agent ends
 
@@ -70,7 +70,7 @@ each agent as `subprocess` does, at a lower CPU priority:
 
 <ExampleNiceRuntime />
 
-Install the package next to piloop. A project then sets `runtime = "nice"`, or a role sets it in its own table, and
+Install the package next to piloop. A campaign then sets `runtime = "nice"`, or a role sets it in its own table, and
 `piloop plugins` lists it with its package and version. `piloop init` refuses a name that no runtime has.
 
 `piloop attach`, `piloop prompt`, `piloop doctor` and `piloop watch` call the methods of the runtime, so they work with

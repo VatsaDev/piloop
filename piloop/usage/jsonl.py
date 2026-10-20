@@ -115,7 +115,7 @@ def dash_separators_wrapped(cwd: Path) -> str:
 def dash_non_alnum(cwd: Path) -> str:
     """``/home/me/.piloop/runs/2/worktree`` → ``-home-me--piloop-runs-2-worktree``.
 
-    Every character outside ``[a-zA-Z0-9]`` becomes a dash. Claude Code names its project folders this way.
+    Every character outside ``[a-zA-Z0-9]`` becomes a dash. Claude Code names its campaign folders this way.
     """
     return re.sub(r'[^a-zA-Z0-9]', '-', str(cwd))
 

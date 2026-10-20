@@ -1,4 +1,4 @@
-"""What ``piloop watch`` shows, as data: the header, the projects, and for each panel its rows and the row detail.
+"""What ``piloop watch`` shows, as data: the header, the campaigns, and for each panel its rows and the row detail.
 
 There are four panels (inbox, agents, ideas, candidates). Each is a ``Panel``: a title, the rows (``Item``: a key and
 the cells) and the detail of one row for the main pane. Every function reads in the session that it gets, so a frame
@@ -19,14 +19,14 @@ from sqlalchemy.orm import Session
 
 from piloop.campaign import inbox
 from piloop.campaign.ideas import links, superseded_by
-from piloop.config import ProjectConfig, config_of
+from piloop.config import CampaignConfig, config_of
 from piloop.db.models import (
+    Campaign,
+    CampaignStatus,
     Candidate,
     Comment,
     Idea,
     IdeaStatus,
-    Project,
-    ProjectStatus,
     TargetKind,
     Verdict,
     Worker,
@@ -51,7 +51,7 @@ from piloop.runtime import WorkerStatus
 from piloop.runtime.factory import handle_for, runtime_for, view_of
 from piloop.scoring.ledger import metrics, references, score, track_of, trunk_keeps
 from piloop.text import NONE, cell, metric
-from piloop.usage import human, project_tokens
+from piloop.usage import campaign_tokens, human
 
 AGENT_LINES = 60
 """How many lines of the selected agent's own output its detail shows."""
@@ -59,7 +59,7 @@ CANDIDATE_ROWS = 50
 SPARK_POINTS = 40
 SPARKS = '▁▂▃▄▅▆▇█'
 STATUS_CHARS = 40
-"""How much of a stopped project's reason the projects screen shows. ``piloop status`` shows all of it."""
+"""How much of a stopped campaign's reason the campaigns screen shows. ``piloop status`` shows all of it."""
 IDEA_ORDER = (IdeaStatus.SEED, IdeaStatus.PROPOSED, IdeaStatus.READY, IdeaStatus.SCHEDULED, IdeaStatus.PARKED)
 """The statuses that the ideas panel shows, in this order: the seeds for research, then the ideas that wait for a
 review. The panel leaves out done and rejected ideas."""
@@ -84,10 +84,10 @@ class Item:
 
 @dataclass(frozen=True)
 class Context:
-    """What every panel of one project reads: the project, its config, the time of the frame and the watcher."""
+    """What every panel of one campaign reads: the campaign, its config, the time of the frame and the watcher."""
 
-    project: Project
-    cfg: ProjectConfig
+    campaign: Campaign
+    cfg: CampaignConfig
     now: datetime
     me: str
     """The watcher's actor. The inbox leaves out what it wrote: a reply waits for the orchestrator, not its author."""
@@ -109,25 +109,25 @@ class Panel(Protocol):
         ...
 
 
-def header(s: Session, project: Project, cfg: ProjectConfig, now: datetime) -> Text:
+def header(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> Text:
     """Return the summary line (head, kept, stopped), the progress line against ``[stop]`` (with the spend), and one per track."""
-    text = Text(f'{summary(s, project, cfg)}{stopped(project)}\n', style='bold')
-    text.append(progress(s, project, cfg, now), style='dim')
+    text = Text(f'{summary(s, campaign, cfg)}{stopped(campaign)}\n', style='bold')
+    text.append(progress(s, campaign, cfg, now), style='dim')
     if cfg.multitrack:
-        text.append('\n' + '\n'.join(tracks_lines(s, project, cfg, now)), style='dim')
+        text.append('\n' + '\n'.join(tracks_lines(s, campaign, cfg, now)), style='dim')
     return text
 
 
-def projects(s: Session, now: datetime, me: str) -> list[Item]:
-    """Return one row per project, active ones first: status, head, delta to baseline, agents, queue, inbox, spend."""
+def campaigns(s: Session, now: datetime, me: str) -> list[Item]:
+    """Return one row per campaign, active ones first: status, head, delta to baseline, agents, queue, inbox, spend."""
     rows = []
-    every = sorted(s.scalars(select(Project)).all(), key=lambda p: (p.status is not ProjectStatus.ACTIVE, p.id))
+    every = sorted(s.scalars(select(Campaign)).all(), key=lambda p: (p.status is not CampaignStatus.ACTIVE, p.id))
     for p in every:
         cfg = config_of(p)
         at = head_scores(s, p, cfg)
         values = at[1] if at is not None else []
         _, ready = queued_ideas(s, p)
-        spent = project_tokens(s, p.id)
+        spent = campaign_tokens(s, p.id)
         latest = next(iter(latest_events(s, p, 1)), None)
         rows.append(
             Item(
@@ -135,7 +135,7 @@ def projects(s: Session, now: datetime, me: str) -> list[Item]:
                 (
                     p.name,
                     cell(f'stopped: {p.stopped_reason}', STATUS_CHARS)
-                    if p.status is ProjectStatus.STOPPED
+                    if p.status is CampaignStatus.STOPPED
                     else cell(paused(p), STATUS_CHARS)
                     if p.paused is not None
                     else str(p.status),
@@ -152,12 +152,12 @@ def projects(s: Session, now: datetime, me: str) -> list[Item]:
     return rows
 
 
-PROJECT_COLUMNS = ('project', 'status', 'head', 'vs baseline', 'agents', 'ready', 'inbox', 'tokens', 'last event')
+CAMPAIGN_COLUMNS = ('campaign', 'status', 'head', 'vs baseline', 'agents', 'ready', 'inbox', 'tokens', 'last event')
 
 
-def waiting(s: Session, project_id: int, me: str) -> list[Comment]:
-    """Return the project's unacknowledged inbox items that someone other than ``me`` wrote, most urgent first."""
-    return [c for c, _ in inbox.items(s, project_id=project_id) if c.author != me]
+def waiting(s: Session, campaign_id: int, me: str) -> list[Comment]:
+    """Return the campaign's unacknowledged inbox items that someone other than ``me`` wrote, most urgent first."""
+    return [c for c, _ in inbox.items(s, campaign_id=campaign_id) if c.author != me]
 
 
 def lines(*parts: str) -> Group:
@@ -177,7 +177,7 @@ class InboxPanel:
                 c.id,
                 (f'p{c.priority}', str(c.kind), c.author, age(c.created_at, ctx.now), cell(c.body)),
             )
-            for c in waiting(s, ctx.project.id, ctx.me)
+            for c in waiting(s, ctx.campaign.id, ctx.me)
         ]
 
     def detail(self, s: Session, ctx: Context, key: int) -> RenderableType:
@@ -196,9 +196,9 @@ class AgentsPanel:
         return f'Agents {len(items)}{f" · {blocked} blocked" if blocked else ""}'
 
     def items(self, s: Session, ctx: Context) -> list[Item]:
-        path = Path(ctx.project.path)
+        path = Path(ctx.campaign.path)
         rows = []
-        for w in live_workers(s, ctx.project):
+        for w in live_workers(s, ctx.campaign):
             state = state_of(s, w, path)
             rows.append(
                 Item(
@@ -217,7 +217,7 @@ class AgentsPanel:
 
     def detail(self, s: Session, ctx: Context, key: int) -> RenderableType:
         w = s.get_one(Worker, key)
-        path = Path(ctx.project.path)
+        path = Path(ctx.campaign.path)
         state = state_of(s, w, path)
         where = ' '.join(p for p in (w.runtime, view_of(w)) if p) or NONE
         facts = [
@@ -238,10 +238,10 @@ class AgentsPanel:
         )
 
 
-def state_of(s: Session, w: Worker, project_path: Path) -> WorkerStatus | None:
+def state_of(s: Session, w: Worker, campaign_path: Path) -> WorkerStatus | None:
     """Return what the runtime says the agent does now. None when it cannot say (not launched, runtime missing)."""
     try:
-        return runtime_for(s, w, project_path).status(handle_for(w))
+        return runtime_for(s, w, campaign_path).status(handle_for(w))
     except Exception:  # not launched yet, or the runtime is missing: the row shows · and the rest of the screen draws
         return None
 
@@ -256,7 +256,7 @@ class IdeasPanel:
     def items(self, s: Session, ctx: Context) -> list[Item]:
         rank = {status: i for i, status in enumerate(IDEA_ORDER)}
         ideas = sorted(
-            s.scalars(select(Idea).where(Idea.project_id == ctx.project.id, Idea.status.in_(IDEA_ORDER))).all(),
+            s.scalars(select(Idea).where(Idea.campaign_id == ctx.campaign.id, Idea.status.in_(IDEA_ORDER))).all(),
             key=lambda i: (rank[i.status], i.priority, i.id),
         )
         newer = superseded_by(s, [i.id for i in ideas])
@@ -295,22 +295,22 @@ class CandidatesPanel:
     def title(self, s: Session, ctx: Context, items: Sequence[Item]) -> str:
         starts = sum(1 for i in items if i.cells[1] == Verdict.REFERENCE)
         points = f' · {starts} starting point{"s" if starts != 1 else ""}' if starts else ''
-        lines = kept_scores(s, ctx.project, ctx.cfg)
+        lines = kept_scores(s, ctx.campaign, ctx.cfg)
         if not ctx.cfg.multitrack:
             return f'Candidates {sparkline(lines[ctx.cfg.all_tracks[0].name])}{points}'
         return 'Candidates ' + ' · '.join(f'{name} {sparkline(values)}' for name, values in lines.items()) + points
 
     def items(self, s: Session, ctx: Context) -> list[Item]:
-        """Return the project's own candidates, newest first, then the imported references, which are never kept."""
-        evaluator = ctx.project.evaluator_id or 0
+        """Return the campaign's own candidates, newest first, then the imported references, which are never kept."""
+        evaluator = ctx.campaign.evaluator_id or 0
         recent = s.scalars(
             select(Candidate)
-            .where(Candidate.project_id == ctx.project.id, Candidate.verdict != Verdict.REFERENCE)
+            .where(Candidate.campaign_id == ctx.campaign.id, Candidate.verdict != Verdict.REFERENCE)
             .order_by(Candidate.id.desc())
             .limit(CANDIDATE_ROWS)
         ).all()
         rows = []
-        for c in [*recent, *references(s, ctx.project)]:
+        for c in [*recent, *references(s, ctx.campaign)]:
             rows.append(
                 Item(
                     c.id,
@@ -328,7 +328,7 @@ class CandidatesPanel:
 
     def detail(self, s: Session, ctx: Context, key: int) -> RenderableType:
         c = s.get_one(Candidate, key)
-        evaluator = ctx.project.evaluator_id or 0
+        evaluator = ctx.campaign.evaluator_id or 0
         mine = metrics(c, evaluator)
         theirs = metrics(c.parent, evaluator) if c.parent is not None else {}
         body = [
@@ -356,13 +356,13 @@ PANELS: dict[str, Panel] = {
 """The four panels, in their numbered order."""
 
 
-def kept_scores(s: Session, project: Project, cfg: ProjectConfig) -> dict[str, list[float]]:
+def kept_scores(s: Session, campaign: Campaign, cfg: CampaignConfig) -> dict[str, list[float]]:
     """Return, for each track, its primary metric at the head after each of the last ``SPARK_POINTS`` trunk keeps.
 
     Each trunk keep was the head in turn. A branch keep never was the head, so it does not move the line.
     """
-    kept = s.scalars(trunk_keeps(project).order_by(Candidate.id)).all()[-SPARK_POINTS:]
-    evaluator_id = project.evaluator_id or 0
+    kept = s.scalars(trunk_keeps(campaign).order_by(Candidate.id)).all()[-SPARK_POINTS:]
+    evaluator_id = campaign.evaluator_id or 0
     return {t.name: [v for c in kept if (v := score(c, evaluator_id, t.primary)) is not None] for t in cfg.all_tracks}
 
 

@@ -1,7 +1,7 @@
 """``piloop watch``: the campaign on one screen, with keys to act on it. A Textual app with a layout like lazygit.
 
-The first screen lists every project, one row each. ``enter`` opens a project, and ``piloop watch <project>`` starts
-there. A project screen has a header (head, spend, progress against ``[stop]``), four numbered panels on the left
+The first screen lists every campaign, one row each. ``enter`` opens a campaign, and ``piloop watch <campaign>`` starts
+there. A campaign screen has a header (head, spend, progress against ``[stop]``), four numbered panels on the left
 (inbox, agents, ideas, candidates), and on the right the detail of the selected row of the focused panel. Each panel
 has its own keys, which the key bar and ``?`` show. ``/`` filters the focused panel.
 
@@ -29,14 +29,14 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import DataTable, Footer, HelpPanel, Input, Label, Select, Static
 
 from piloop.campaign import inbox, ops
+from piloop.campaign.campaigns import find
 from piloop.campaign.ideas import reprioritise
-from piloop.campaign.project import find
 from piloop.config import config_of
 from piloop.db.models import Idea, IdeaStatus, Worker, WorkerState, utcnow
 from piloop.db.session import Database
 from piloop.runtime import Handle, NotAttachable, NotSteerable, Runtime, RuntimeFailure
 from piloop.runtime.factory import handle_for, runtime_for
-from piloop.watch.panels import PANELS, PROJECT_COLUMNS, Cell, Context, Item, Panel, header, projects
+from piloop.watch.panels import CAMPAIGN_COLUMNS, PANELS, Cell, Context, Item, Panel, campaigns, header
 
 POLL_SECONDS = 0.5
 """How often to check the database files for a change."""
@@ -58,7 +58,7 @@ PanelTable:focus { border: round $accent; border-title-color: $accent; }
 #main:focus { border: round $accent; border-title-color: $accent; }
 #filter { dock: bottom; display: none; }
 #filter.shown { display: block; }
-#projects { height: 1fr; }
+#campaigns { height: 1fr; }
 ModalScreen { align: center middle; }
 #dialog { width: 80%; height: auto; border: round $accent; padding: 0 1; background: $surface; }
 """
@@ -332,15 +332,15 @@ class FilterInput(Input):
         self.post_message(self.Submitted(self, ''))
 
 
-class ProjectsScreen(Screen[None]):
-    """Every project, one row each, active projects first. ``enter`` opens one."""
+class CampaignsScreen(Screen[None]):
+    """Every campaign, one row each, active campaigns first. ``enter`` opens one."""
 
     BINDINGS: ClassVar[list[BindingType]] = [Binding('enter', 'open', 'open', priority=True)]
 
     def compose(self) -> ComposeResult:
         yield Static(id='header')
-        table: DataTable[Text] = DataTable(cursor_type='row', id='projects')
-        table.add_columns(*PROJECT_COLUMNS)
+        table: DataTable[Text] = DataTable(cursor_type='row', id='campaigns')
+        table.add_columns(*CAMPAIGN_COLUMNS)
         yield table
         yield Footer()
 
@@ -352,13 +352,13 @@ class ProjectsScreen(Screen[None]):
         assert isinstance(app, Watch)
         table = self.query_one(DataTable)
         with app.db.session() as s:
-            rows = projects(s, utcnow(), app.actor)
+            rows = campaigns(s, utcnow(), app.actor)
         index = table.cursor_row
         table.clear()
         for item in rows:
             table.add_row(*plain(item.cells), key=str(item.cells[0]))
         table.move_cursor(row=min(index, len(rows) - 1), animate=False)
-        self.query_one('#header', Static).update(Text(f'piloop: {len(rows)} project{"" if len(rows) == 1 else "s"}'))
+        self.query_one('#header', Static).update(Text(f'piloop: {len(rows)} campaign{"" if len(rows) == 1 else "s"}'))
 
     def action_open(self) -> None:
         table = self.query_one(DataTable)
@@ -368,7 +368,7 @@ class ProjectsScreen(Screen[None]):
 
 
 class CampaignScreen(Screen[None]):
-    """One project: the header, the four panels and the selected row's detail."""
+    """One campaign: the header, the four panels and the selected row's detail."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding('1', 'panel("inbox")', 'inbox', show=False),
@@ -377,7 +377,7 @@ class CampaignScreen(Screen[None]):
         Binding('4', 'panel("candidates")', 'candidates', show=False),
         Binding('0', 'main', 'detail', show=False),
         Binding('slash', 'filter', 'filter'),
-        Binding('escape', 'projects', 'projects'),
+        Binding('escape', 'campaigns', 'campaigns'),
     ]
 
     def __init__(self, ref: str) -> None:
@@ -427,24 +427,24 @@ class CampaignScreen(Screen[None]):
         return list(self.query(PanelTable))
 
     def reload(self) -> None:
-        """Read the project, and fill every panel and the detail, in one session."""
+        """Read the campaign, and fill every panel and the detail, in one session."""
         with self.db.session() as s:
             ctx = self.context(s)
             if ctx is None:
                 self.query_one('#header', Static).update(
-                    Text(f'no project {self.ref!r} yet: `piloop init` registers it, and this view follows')
+                    Text(f'no campaign {self.ref!r} yet: `piloop init` registers it, and this view follows')
                 )
                 return
-            self.query_one('#header', Static).update(header(s, ctx.project, ctx.cfg, ctx.now))
+            self.query_one('#header', Static).update(header(s, ctx.campaign, ctx.cfg, ctx.now))
             for table in self.tables():
                 table.fill(table.panel.items(s, ctx), partial(table.panel.title, s, ctx))
             self.show(s, ctx)
 
     def context(self, s: Session) -> Context | None:
-        project = find(s, self.ref)
-        if project is None:
+        campaign = find(s, self.ref)
+        if campaign is None:
             return None
-        return Context(project, config_of(project), utcnow(), self.actor)
+        return Context(campaign, config_of(campaign), utcnow(), self.actor)
 
     def focused_table(self) -> PanelTable:
         focused = self.focused
@@ -512,12 +512,12 @@ class CampaignScreen(Screen[None]):
         self.filtering.focus()
         self.reload()
 
-    def action_projects(self) -> None:
+    def action_campaigns(self) -> None:
         self.app.pop_screen()
 
 
 class Watch(App[None]):
-    """The app: the projects screen at the bottom of the stack, and a project screen on top when one is open."""
+    """The app: the campaigns screen at the bottom of the stack, and a campaign screen on top when one is open."""
 
     CSS = CSS
     TITLE = 'piloop watch'
@@ -535,7 +535,7 @@ class Watch(App[None]):
 
     def on_mount(self) -> None:
         self._stamp = stamp(self.db_file)
-        self.push_screen(ProjectsScreen())
+        self.push_screen(CampaignsScreen())
         if self.ref is not None:
             self.push_screen(CampaignScreen(self.ref))
         self.set_interval(POLL_SECONDS, self.poll)
@@ -554,7 +554,7 @@ class Watch(App[None]):
             return
         self._stamp, self._read = now, monotonic()
         screen = self.screen
-        if isinstance(screen, ProjectsScreen | CampaignScreen) and screen.is_mounted and screen.is_attached:
+        if isinstance(screen, CampaignsScreen | CampaignScreen) and screen.is_mounted and screen.is_attached:
             screen.reload()
 
     def action_keys(self) -> None:

@@ -48,15 +48,15 @@ class UTCDateTime(TypeDecorator[datetime]):
         return value.replace(tzinfo=UTC) if value is not None and value.tzinfo is None else value
 
 
-class ProjectStatus(StrEnum):
-    """Whether the daemon still requests work for a project. ``stopped`` after a ``[stop]`` condition held."""
+class CampaignStatus(StrEnum):
+    """Whether the daemon still requests work for a campaign. ``stopped`` after a ``[stop]`` condition held."""
 
     ACTIVE = 'active'
     STOPPED = 'stopped'
 
 
 class Pause(StrEnum):
-    """What a paused project holds (``piloop pause``). Running work goes on either way, and nothing is escalated.
+    """What a paused campaign holds (``piloop pause``). Running work goes on either way, and nothing is escalated.
 
     ``launches``: nothing launches, no run is queued and no role is requested. The daemon still measures again what a
     new evaluator or a request needs. ``all``: those measurements wait too.
@@ -133,7 +133,7 @@ class Verdict(StrEnum):
 class TargetKind(StrEnum):
     """What a comment or an event points at."""
 
-    PROJECT = 'project'
+    CAMPAIGN = 'campaign'
     IDEA = 'idea'
     RUN = 'run'
     CANDIDATE = 'candidate'
@@ -160,7 +160,7 @@ class LessonStatus(StrEnum):
 
 
 class WorkerKind(StrEnum):
-    """The names of the built-in roles. ``workers.kind`` holds a role name: one of these, or a role of the project.
+    """The names of the built-in roles. ``workers.kind`` holds a role name: one of these, or a role of the campaign.
 
     A role's name is also its config table, CLI name, signature and pane prefix.
     """
@@ -195,6 +195,8 @@ def _values[E: StrEnum](enum: type[E]) -> Enum:
 NOW = func.now()
 OPTIMIZATION = 'optimization'
 """The built-in campaign type: improve the code against its evaluate command, candidate by candidate."""
+PROCESS = 'process'
+"""The built-in evaluator runner: the evaluate command, run as a process."""
 EMPTY_JSON = text("'{}'")
 
 
@@ -233,7 +235,7 @@ class Base(DeclarativeBase):
         dict[str, float]: JSON,
         dict[str, object]: JSON,
         UsageJson: JSON,
-        ProjectStatus: _values(ProjectStatus),
+        CampaignStatus: _values(CampaignStatus),
         Pause: _values(Pause),
         IdeaStatus: _values(IdeaStatus),
         LinkKind: _values(LinkKind),
@@ -263,16 +265,16 @@ class Tracked:
     NULL until the first UPDATE of the row."""
 
 
-PAUSE_CHECK = 'projects.paused and projects.paused_reason go together'
+PAUSE_CHECK = 'campaigns.paused and campaigns.paused_reason go together'
 
 
-class Project(Tracked, Base):
+class Campaign(Tracked, Base):
     """A git repository that piloop optimizes. ``piloop init`` creates it."""
 
-    __tablename__ = 'projects'
+    __tablename__ = 'campaigns'
     __table_args__ = (
         CheckConstraint('(paused IS NULL) = (paused_reason IS NULL)', name=PAUSE_CHECK),
-        *text_checks('projects', nullable=('paused_reason',)),
+        *text_checks('campaigns', nullable=('paused_reason',)),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -280,12 +282,12 @@ class Project(Tracked, Base):
     path: Mapped[str]
     """The absolute path of the repository. ``piloop.toml`` is at its root."""
     config: Mapped[dict[str, object]]
-    """The ``ProjectConfig`` as the last ``piloop init`` stored it."""
+    """The ``CampaignConfig`` as the last ``piloop init`` stored it."""
     evaluator_id: Mapped[int | None]
     """The ``evaluators.id`` that the config describes now. Measurements under older evaluators stay, but no longer
-    decide verdicts. A plain integer, not a foreign key, because evaluators reference projects."""
-    status: Mapped[ProjectStatus] = mapped_column(
-        default=ProjectStatus.ACTIVE, server_default=ProjectStatus.ACTIVE.value
+    decide verdicts. A plain integer, not a foreign key, because evaluators reference campaigns."""
+    status: Mapped[CampaignStatus] = mapped_column(
+        default=CampaignStatus.ACTIVE, server_default=CampaignStatus.ACTIVE.value
     )
     """``stopped`` after a ``[stop]`` condition held: running work finishes and nothing new is requested. To resume,
     set it back to ``active`` and clear ``stopped_reason``. ``piloop init`` does this when the ``[stop]`` table
@@ -293,10 +295,10 @@ class Project(Tracked, Base):
     stopped_reason: Mapped[str | None]
     """The condition that ended the campaign, for example ``target: accuracy 0.8531 ≥ 0.85``."""
     paused: Mapped[Pause | None]
-    """What ``piloop pause`` holds, NULL while the project is not paused. ``piloop resume`` clears it. Each change is a
-    ``project.paused`` event with ``paused_reason``."""
+    """What ``piloop pause`` holds, NULL while the campaign is not paused. ``piloop resume`` clears it. Each change is a
+    ``campaign.paused`` event with ``paused_reason``."""
     paused_reason: Mapped[str | None]
-    """Why the project is paused, as ``piloop pause --reason`` said it. NULL while it is not paused."""
+    """Why the campaign is paused, as ``piloop pause --reason`` said it. NULL while it is not paused."""
     spend_usd: Mapped[float | None]
     """What ``[spend] command`` printed last: the campaign's outside spend so far in USD. None until it first runs."""
     spend_error: Mapped[str | None]
@@ -304,49 +306,54 @@ class Project(Tracked, Base):
     spend_at: Mapped[datetime | None]
     """When ``[spend] command`` ran last, whatever the result. Its ``interval`` counts from this time."""
     repo: Mapped[str | None]
-    """The repository that the project works on, the same for every clone of it: the URL of its ``origin`` remote
+    """The repository that the campaign works on, the same for every clone of it: the URL of its ``origin`` remote
     (else of its first remote) as ``host/owner/name``, else ``path``. ``piloop init`` sets it. Past work on the same
-    code is ``WHERE repo = (SELECT repo FROM projects WHERE id = <p>)``."""
+    code is ``WHERE repo = (SELECT repo FROM campaigns WHERE id = <p>)``."""
     type: Mapped[str] = mapped_column(default=OPTIMIZATION, server_default=OPTIMIZATION)
     """What the campaign does: a campaign type, by its name. ``optimization`` is built in, and is the type of every
     campaign for now. ``piloop.campaign.ops.set_type`` refuses a name that no installed campaign type has. Each
-    change is a ``project.type`` event."""
-    parent_id: Mapped[int | None] = mapped_column(ForeignKey('projects.id'))
+    change is a ``campaign.type`` event."""
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey('campaigns.id'))
     """The campaign that this one is under, for example the one that spawned it, NULL for a root. It makes a tree of
     the campaigns of one piloop home. ``piloop.campaign.ops.set_parent`` sets it, and each change is a
-    ``project.parent_id`` event. The ``projects_parent`` triggers refuse a cycle. A raw DELETE of a project that has
+    ``campaign.parent_id`` event. The ``campaigns_parent`` triggers refuse a cycle. A raw DELETE of a campaign that has
     children fails on the foreign key. Nothing else reads it yet: each campaign runs on its own."""
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
-    ideas: Mapped[list[Idea]] = relationship(back_populates='project', order_by='Idea.id')
+    ideas: Mapped[list[Idea]] = relationship(back_populates='campaign', order_by='Idea.id')
     evaluator: Mapped[Evaluator | None] = relationship(
-        primaryjoin='foreign(Project.evaluator_id) == Evaluator.id', viewonly=True
+        primaryjoin='foreign(Campaign.evaluator_id) == Evaluator.id', viewonly=True
     )
 
 
 class Evaluator(Base):
-    """One version of how a project is scored: the evaluate command, the metric definitions and the linked inputs.
+    """One version of how a campaign is scored: the evaluate command, the metric definitions and the linked inputs.
 
     ``piloop init`` copies it from ``piloop.toml``, and a change makes a new row. A measurement points at the
     evaluator that produced it, so a number always says what it means, and an old number is never taken for a new one.
     """
 
     __tablename__ = 'evaluators'
-    __table_args__ = (UniqueConstraint('project_id', 'key'),)
+    __table_args__ = (UniqueConstraint('campaign_id', 'key'),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'))
+    campaign_id: Mapped[int] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
     key: Mapped[str]
-    """A short hash of ``definition``, from ``ProjectConfig.evaluator_key``."""
+    """A short hash of ``definition``, from ``CampaignConfig.evaluator_key``."""
     definition: Mapped[dict[str, object]]
     """``evaluate``, ``metrics`` and ``link``, as configured."""
+    runner: Mapped[str] = mapped_column(default=PROCESS, server_default=PROCESS)
+    """The evaluator runner, by name: how piloop runs the evaluator to measure a candidate. ``process``, built in, runs
+    the evaluate command as a process in a clean worktree of the candidate, and is the runner of every evaluator for
+    now. ``piloop.scoring.ledger.current_evaluator`` refuses a name that no installed runner has. It is not part of
+    ``key`` yet: with one runner, every evaluator has it."""
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
 
 class Idea(Tracked, Base):
     """Something worth trying. The scheduler turns ready ideas into runs.
 
-    Anyone can insert an idea: a human, the orchestrator or a research agent. Ideas link to ideas of the same project
+    Anyone can insert an idea: a human, the orchestrator or a research agent. Ideas link to ideas of the same campaign
     through ``idea_links`` (``IdeaLink``), many-to-many in both directions.
 
     ``after``: the idea is blocked (``ready``, but never taken) until every prerequisite is ``done``. Its run then
@@ -363,18 +370,18 @@ class Idea(Tracked, Base):
 
     __tablename__ = 'ideas'
     __table_args__ = (
-        UniqueConstraint('project_id', 'title'),
-        # the queue: the tick and the widget read the ``ready`` ideas of one project in priority order
-        Index('ix_ideas_project_status_priority', 'project_id', 'status', 'priority'),
+        UniqueConstraint('campaign_id', 'title'),
+        # the queue: the tick and the widget read the ``ready`` ideas of one campaign in priority order
+        Index('ix_ideas_campaign_status_priority', 'campaign_id', 'status', 'priority'),
         *text_checks(
             'ideas', 'title', 'hypothesis', 'created_by', 'track', nullable=('plan', 'harness', 'provenance', 'family')
         ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'))
+    campaign_id: Mapped[int] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
     title: Mapped[str]
-    """Unique in a project, so two research sweeps that pick the same title fail here and do not duplicate the idea."""
+    """Unique in a campaign, so two research sweeps that pick the same title fail here and do not duplicate the idea."""
     hypothesis: Mapped[str]
     """Why this idea should improve the primary metric."""
     track: Mapped[str]
@@ -388,7 +395,7 @@ class Idea(Tracked, Base):
     priority: Mapped[int] = mapped_column(default=2, server_default=text('2'))
     """0 (urgent) to 4 (someday). The scheduler takes the lowest number first."""
     harness: Mapped[str | None]
-    """The harness for this idea. None lets the scheduler use the project's harnesses in turn."""
+    """The harness for this idea. None lets the scheduler use the campaign's harnesses in turn."""
     base_candidate_id: Mapped[int | None]
     """A deliberate branch: the ``candidates.id`` to start from, instead of the head at the time the run starts. NULL
     unless the idea gives a reason for that starting point. Never pin the current head by default: when the idea
@@ -407,7 +414,7 @@ class Idea(Tracked, Base):
     ``ensembling``, ``test-time training``). The research pack shows what each family produced."""
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
-    project: Mapped[Project] = relationship(back_populates='ideas')
+    campaign: Mapped[Campaign] = relationship(back_populates='ideas')
     runs: Mapped[list[Run]] = relationship(back_populates='idea', order_by='Run.id')
     links: Mapped[list[IdeaLink]] = relationship(
         foreign_keys='IdeaLink.idea_id',
@@ -434,12 +441,12 @@ class Idea(Tracked, Base):
 
 
 class IdeaLink(Base):
-    """A directed link between two ideas of one project: ``idea_id`` comes *after* or *supersedes* ``target_id``.
+    """A directed link between two ideas of one campaign: ``idea_id`` comes *after* or *supersedes* ``target_id``.
 
     Links are many-to-many in both directions. An idea may wait for several prerequisites, several ideas may wait for
     it, and a sharper version may replace several earlier ideas. One pair may have both kinds. Rows are inserted and
     deleted, never updated, so they have no ``updated_at`` or ``updated_by``. A CHECK refuses a link from an idea to
-    itself, and a trigger refuses a link across projects. When either idea is deleted, the link is deleted too. To add
+    itself, and a trigger refuses a link across campaigns. When either idea is deleted, the link is deleted too. To add
     a kind of link, add a ``LinkKind`` member (which changes the CHECK) and a rule for it in
     ``piloop/campaign/ideas.py``.
     """
@@ -475,7 +482,7 @@ class Run(Tracked, Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     idea_id: Mapped[int] = mapped_column(ForeignKey('ideas.id', ondelete='CASCADE'))
     role: Mapped[str] = mapped_column(default=WorkerKind.WORKER.value, server_default=WorkerKind.WORKER.value)
-    """The role that does the run: ``worker``, or a role of the project with ``runs = true``. Its agents have this
+    """The role that does the run: ``worker``, or a role of the campaign with ``runs = true``. Its agents have this
     ``workers.kind``."""
     attempt: Mapped[int]
     base_candidate_id: Mapped[int]
@@ -507,9 +514,9 @@ class Run(Tracked, Base):
     )
 
 
-def project_runs(project_id: int) -> Select[Run]:
-    """Every run of the project. A run has no ``project_id``, but its idea has one."""
-    return select(Run).join(Idea).where(Idea.project_id == project_id)
+def campaign_runs(campaign_id: int) -> Select[Run]:
+    """Every run of the campaign. A run has no ``campaign_id``, but its idea has one."""
+    return select(Run).join(Idea).where(Idea.campaign_id == campaign_id)
 
 
 def count[*Ts](s: Session, query: Select[*Ts]) -> int:
@@ -523,10 +530,10 @@ def latest_worker(s: Session, run_id: int) -> Worker | None:
 
 
 class Candidate(Tracked, Base):
-    """A distinct state of the project's code. The git tree identifies it, so equal contents are one candidate.
+    """A distinct state of the campaign's code. The git tree identifies it, so equal contents are one candidate.
 
     The baseline has no run and no parent. A reference has neither (``piloop candidate import`` makes one from the
-    tree of any commit, pinned at ``refs/piloop/<project>/reference/<id>``). A worker committed every other candidate,
+    tree of any commit, pinned at ``refs/piloop/<campaign>/reference/<id>``). A worker committed every other candidate,
     and it descends from the candidate that its run started from. When the last commit of a run reverts to its base,
     the run produces nothing new: the commit resolves to the base candidate. Measurements score candidates, and the
     verdict judges them against a bar.
@@ -534,17 +541,17 @@ class Candidate(Tracked, Base):
 
     __tablename__ = 'candidates'
     __table_args__ = (
-        UniqueConstraint('project_id', 'tree_sha'),
-        Index('ix_candidates_project_verdict', 'project_id', 'verdict'),
+        UniqueConstraint('campaign_id', 'tree_sha'),
+        Index('ix_candidates_campaign_verdict', 'campaign_id', 'verdict'),
         # the candidates of a run (every history row), and the FK action when a run is deleted
         Index('ix_candidates_run', 'run_id'),
-        # the FK check on every delete of a candidate (deleting a project deletes thousands)
+        # the FK check on every delete of a candidate (deleting a campaign deletes thousands)
         Index('ix_candidates_parent', 'parent_id'),
         *text_checks('candidates', nullable=('summary', 'verdict_by', 'verdict_reason')),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'))
+    campaign_id: Mapped[int] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
     run_id: Mapped[int | None] = mapped_column(ForeignKey('runs.id', ondelete='SET NULL'))
     parent_id: Mapped[int | None] = mapped_column(ForeignKey('candidates.id'))
     """The candidate that this one comes from."""
@@ -587,7 +594,7 @@ class Evaluation(Base):
     """An evaluation that the daemon needs: it waits for a slot (``max_evaluations``) or runs. The evaluation queue.
 
     The daemon inserts a row when it needs a measurement, and deletes it when the measurement is recorded, so the table
-    holds only what waits or runs. A free slot goes to the project with the fewest running rows, and in it to its head
+    holds only what waits or runs. A free slot goes to the campaign with the fewest running rows, and in it to its head
     first, then to the lowest id (``piloop.scoring.queue``). The requests for one candidate under one evaluator share
     one row: a tree is evaluated once. An id is never reused, so a request that waits for a row never mistakes a later
     one for it. A daemon that starts deletes the rows that the previous one left, and asks again for what it still
@@ -657,41 +664,41 @@ class Technique(Base):
 
     __tablename__ = 'techniques'
     __table_args__ = (
-        UniqueConstraint('project_id', 'url'),
+        UniqueConstraint('campaign_id', 'url'),
         *text_checks('techniques', 'title', 'mechanism', 'url', 'created_by'),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'))
+    campaign_id: Mapped[int] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
     title: Mapped[str]
     """The technique, in a few words."""
     mechanism: Mapped[str]
     """One line: how it works, and the evidence for it (a number, code, an ablation)."""
     url: Mapped[str]
-    """The primary source: a post, repo or paper. Unique in a project, so the same link is never filed twice."""
+    """The primary source: a post, repo or paper. Unique in a campaign, so the same link is never filed twice."""
     created_by: Mapped[str]
     """Who filed it: the scout (``scout#<worker id>``) or someone else."""
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
 
 class Lesson(Base):
-    """The standing conclusion about one mechanism family (``ideas.family``) of a project, for the next campaigns.
+    """The standing conclusion about one mechanism family (``ideas.family``) of a campaign, for the next campaigns.
 
     The closing watchdog writes one for each family that a campaign tried, and the orchestrator may write more. The
-    newest lesson for a (project, family) is the current one: a new conclusion is a new row, and rows are never
+    newest lesson for a (campaign, family) is the current one: a new conclusion is a new row, and rows are never
     updated. Briefs open with the current lessons of the repo (``piloop.reports.wake``).
     """
 
     __tablename__ = 'lessons'
     __table_args__ = (
-        Index('ix_lessons_project_family', 'project_id', 'family'),
+        Index('ix_lessons_campaign_family', 'campaign_id', 'family'),
         CheckConstraint('(effect IS NULL) = (metric IS NULL)', name='lessons.effect and lessons.metric go together'),
         CheckConstraint("typeof(effect) IN ('integer', 'real', 'null')", name='lessons.effect must be a number'),
         *text_checks('lessons', 'family', 'body', 'created_by', nullable=('metric',)),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'))
+    campaign_id: Mapped[int] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
     family: Mapped[str]
     """The mechanism family, as ``ideas.family`` names it. Case and spacing do not matter when lessons are matched."""
     status: Mapped[LessonStatus]
@@ -699,7 +706,7 @@ class Lesson(Base):
     """The best effect that the campaign measured in the family, in the units of ``metric``, with the sign it had: a
     gain can be a lower time. NULL when none was measured."""
     metric: Mapped[str | None]
-    """The metric of ``effect``, as the project names it. NULL when no effect was measured."""
+    """The metric of ``effect``, as the campaign names it. NULL when no effect was measured."""
     body: Mapped[str]
     """Why: what was tried, the evaluator that measured the effect, why it stopped. It cites idea and candidate ids."""
     created_by: Mapped[str]
@@ -708,7 +715,7 @@ class Lesson(Base):
 
 
 class Document(Tracked, Base):
-    """A text document of a project, for agents to search: a campaign report, an orchestrator log, a design note.
+    """A text document of a campaign, for agents to search: a campaign report, an orchestrator log, a design note.
 
     ``piloop init`` and the stop of a campaign copy in the repo files that ``[memory] documents`` names. Agents may
     insert more with raw SQL: ``hash`` is ``blake3(body)``, a function that every piloop connection has. Each version
@@ -719,7 +726,7 @@ class Document(Tracked, Base):
 
     __tablename__ = 'documents'
     __table_args__ = (
-        UniqueConstraint('project_id', 'path', 'hash'),
+        UniqueConstraint('campaign_id', 'path', 'hash'),
         CheckConstraint(
             "length(hash) = 64 AND hash NOT GLOB '*[^0-9a-f]*'", name='documents.hash is the blake3 hex digest of body'
         ),
@@ -727,7 +734,7 @@ class Document(Tracked, Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'))
+    campaign_id: Mapped[int] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
     path: Mapped[str]
     """Where it is: repo-relative for a synced file, or else wherever its writer keeps it."""
     hash: Mapped[str]
@@ -771,7 +778,7 @@ class Journal(Base):
 
 
 class Archive(Base):
-    """A part of a project's shared workspace the daemon moved into the artifact store (``piloop.campaign.archive``).
+    """A part of a campaign's shared workspace the daemon moved into the artifact store (``piloop.campaign.archive``).
 
     One row per archiving: a done idea's subtree (``idea_id`` set) once its last run is judged, and whatever is left
     when the campaign stops (``idea_id`` NULL). ``manifest`` names the stored tree, once its every blob is in the
@@ -780,10 +787,10 @@ class Archive(Base):
     """
 
     __tablename__ = 'archives'
-    __table_args__ = (Index('ix_archives_project_idea', 'project_id', 'idea_id'),)
+    __table_args__ = (Index('ix_archives_campaign_idea', 'campaign_id', 'idea_id'),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'))
+    campaign_id: Mapped[int] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
     idea_id: Mapped[int | None]
     """The done idea whose subtree this is; NULL for what a stopped campaign left. Plain integer: the archive outlives
     a deleted idea."""
@@ -805,14 +812,14 @@ class Archive(Base):
 class Worker(Tracked, Base):
     """An agent process in one of the roles. While ``state`` is ``requested``, the row is a request to start one.
 
-    A request needs only ``kind`` and ``project_id``. ``harness`` and ``model`` pin the rotation, and ``reason`` says
+    A request needs only ``kind`` and ``campaign_id``. ``harness`` and ``model`` pin the rotation, and ``reason`` says
     why. The daemon fills in the rest when it launches the row, so the table is also the launch queue of every role.
     """
 
     __tablename__ = 'workers'
     __table_args__ = (
-        # the launch queue of the tick: the requested and active rows of a project for each role, and its latest row
-        Index('ix_workers_project_kind_state', 'project_id', 'kind', 'state'),
+        # the launch queue of the tick: the requested and active rows of a campaign for each role, and its latest row
+        Index('ix_workers_campaign_kind_state', 'campaign_id', 'kind', 'state'),
         # the session behind the candidates of a run (every kept-lineage row), and the FK action when a run is deleted
         Index('ix_workers_run', 'run_id'),
         *text_checks('workers', 'kind', nullable=('reason', 'harness', 'model')),
@@ -820,10 +827,10 @@ class Worker(Tracked, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     kind: Mapped[str]
-    """The agent's role: a role of its project, a built-in one or a ``[roles.<name>]`` table. A trigger refuses other
+    """The agent's role: a role of its campaign, a built-in one or a ``[roles.<name>]`` table. A trigger refuses other
     names."""
-    project_id: Mapped[int | None] = mapped_column(ForeignKey('projects.id', ondelete='CASCADE'))
-    """The project the agent works for. piloop always sets it, but readers must accept NULL."""
+    campaign_id: Mapped[int | None] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
+    """The campaign the agent works for. piloop always sets it, but readers must accept NULL."""
     run_id: Mapped[int | None] = mapped_column(ForeignKey('runs.id', ondelete='SET NULL'))
     """The run that the row does, for a role that does runs. Sweeping roles have none."""
     harness: Mapped[str | None]
@@ -867,9 +874,9 @@ class Event(Base):
     trigger writes ``comment.escalation``. The TEMP triggers of each connection (``piloop/db/actor_triggers.sql``,
     generated from ``piloop.db.triggers.TEMP``) write the change log, signed by the connection's actor:
     ``idea.status``, ``idea.priority``, ``idea.track``, ``idea.base_candidate_id``, ``candidate.verdict``, ``run.brief``,
-    ``project.status`` and ``project.paused`` as ``{old, new}``, ``idea.linked`` and ``idea.unlinked`` with the target
+    ``campaign.status`` and ``campaign.paused`` as ``{old, new}``, ``idea.linked`` and ``idea.unlinked`` with the target
     and the kind of an ``idea_links`` row, ``<kind>.deleted`` for deleted rows, and ``comment.<kind>``. The CLI also
-    writes the requests that the daemon acts on: ``project.stop_requested`` (``piloop project stop``),
+    writes the requests that the daemon acts on: ``campaign.stop_requested`` (``piloop campaign stop``),
     ``run.cancel_requested`` (``piloop run cancel``) and ``worker.cancel_requested`` (``piloop agent cancel``).
     """
 

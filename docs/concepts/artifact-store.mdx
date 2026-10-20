@@ -3,7 +3,7 @@ title: The artifact store
 description: How piloop archives the shared workspace when it is done with it, and how to get files back.
 ---
 
-Every project has one shared workspace, `$PILOOP_HOME/projects/<id>/workspace`. It is linked into every agent's
+Every campaign has one shared workspace, `$PILOOP_HOME/projects/<id>/workspace`. It is linked into every agent's
 worktree as `./workspace/`. Agents leave notes, logs, evaluation outputs and analysis arrays there. On a long campaign
 it grows to hundreds of gigabytes, much of it copies.
 
@@ -39,7 +39,7 @@ before the next archiving, and checks pressure again before it stores anything.
 Storing a file writes its compressed copy first, so archiving needs room on the disk of the store. A workspace larger
 than the free space above `min_free_gb` is stored in batches: before each batch, the daemon removes older local
 copies while the disk is short, then measures the free space again. When not one more file fits, the rest is not
-stored, and the daemon writes an `anomaly.disk` event on the project, with the bytes needed, the bytes free and the
+stored, and the daemon writes an `anomaly.disk` event on the campaign, with the bytes needed, the bytes free and the
 reserve. Only the last batch of a job that stored everything marks the job as done (`archives.complete`). A job that
 stops short, because of the disk, a failure or a stop of the daemon, stays due, and its next run stores the rest.
 After a failed or deferred archiving the daemon waits 10 minutes before the next one.
@@ -51,14 +51,14 @@ first daemon start after an upgrade archives every done idea and stopped campaig
 
 Workers are told to put their output under `workspace/idea<id>/`, so it is archived with their idea. They are also
 told not to copy the code tree into the workspace (every candidate's tree is in git) and to leave evaluator output in
-the project's own cache.
+the campaign's own cache.
 
 ## Getting files back
 
 ```bash
-piloop restore my-project 12            # the files of idea#12
-piloop restore my-project idea12/plots  # one path, or everything under it
-piloop restore my-project               # everything
+piloop restore my-campaign 12            # the files of idea#12
+piloop restore my-campaign idea12/plots  # one path, or everything under it
+piloop restore my-campaign               # everything
 ```
 
 `piloop restore` reads the files from the local store, or downloads them from the remote. A file that is already in
@@ -66,7 +66,7 @@ the workspace with other content is kept and listed, never overwritten. Agents m
 
 ## How the store works
 
-One store serves every project of a `PILOOP_HOME`, in `$PILOOP_HOME/store`.
+One store serves every campaign of a `PILOOP_HOME`, in `$PILOOP_HOME/store`.
 
 - **Content addressing.** A blob is addressed by the BLAKE3 hash of its whole content. A file that appears in many
   places, or in two campaigns, is stored once.

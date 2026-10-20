@@ -7,7 +7,7 @@ If `PILOOP_ACTOR` is already set to a `worker#`, `watchdog#`, `research#` or `sc
 your brief, and ignore this file and the skills.
 
 piloop runs an autoresearch campaign on a git repo. A daemon starts coding agents (Claude Code, Codex or pi). Each
-agent tries an idea in its own git worktree. piloop scores every commit with the project's evaluate command and keeps
+agent tries an idea in its own git worktree. piloop scores every commit with the campaign's evaluate command and keeps
 what beats the head. You, the agent that the human talks to, set up the campaign and act as its orchestrator.
 
 ## The skills
@@ -17,7 +17,7 @@ complete on its own.
 
 | Skill | Use it to |
 |---|---|
-| [piloop-setup](skills/piloop-setup/SKILL.md) | Set up or change a campaign in the current repo: check the machine, interview the human, write `brief.md` and `piloop.toml`, register the project, start the daemon. |
+| [piloop-setup](skills/piloop-setup/SKILL.md) | Set up or change a campaign in the current repo: check the machine, interview the human, write `brief.md` and `piloop.toml`, register the campaign, start the daemon. |
 | [piloop-operate](skills/piloop-operate/SKILL.md) | Orchestrate a running campaign: the inbox loop, ideas and priorities, escalations and decisions, sweeps, steering workers. |
 | [piloop-review](skills/piloop-review/SKILL.md) | Review a campaign during or after a run: are the gains real, did an agent game the evaluation, where did the time and tokens go. |
 
@@ -31,7 +31,7 @@ The database is the contract, and the `piloop` CLI is the only way in:
 
 - `piloop sql "<one statement>"` reads and writes the database.
 - `piloop schema` prints the conventions and every table. Read it before your first write.
-- `piloop status` shows the state of each project.
+- `piloop status` shows the state of each campaign.
 - `piloop inbox` lists what waits for a decision.
 - `piloop inbox wait` blocks until something needs you.
 - `piloop --help` lists every other command.

@@ -8,7 +8,7 @@ without stopping the agents.
 
 ## The daemon
 
-`piloop serve` is the daemon. It starts the agents, scores the commits and enforces the limits of every project.
+`piloop serve` is the daemon. It starts the agents, scores the commits and enforces the limits of every campaign.
 
 ```bash
 piloop serve --detach     # start in the background; output goes to ~/.piloop/serve.log
@@ -31,7 +31,7 @@ nothing to clean up.
   `ready`.
 - What each run made is pinned under `refs/piloop/`, with a note that its next attempt reads.
 - Requested agents stay requested, and start when the daemon starts again.
-- The projects stay `active`. The next `piloop serve` continues them. A campaign ends only at its `[stop]` limits.
+- The campaigns stay `active`. The next `piloop serve` continues them. A campaign ends only at its `[stop]` limits.
 - The sessions of the stopped agents are not attached to Entire.
 
 `piloop restart` keeps the agents running. The daemon stops its loop, and the same process starts the installed
@@ -40,10 +40,10 @@ finishes its run without interruption. The timeout of each agent still counts fr
 
 A daemon that starts after a crash does the same: it connects again to the agents that are still running.
 
-## Pause one project
+## Pause one campaign
 
-`piloop pause <project> --reason "…"` holds one project and leaves the daemon and the other projects running. Nothing
-new launches, and running work finishes and is scored. A pause raises no escalation. `piloop resume <project>` ends it.
+`piloop pause <campaign> --reason "…"` holds one campaign and leaves the daemon and the other campaigns running. Nothing
+new launches, and running work finishes and is scored. A pause raises no escalation. `piloop resume <campaign>` ends it.
 See [the CLI](/reference/cli#piloop-pause).
 
 ## Under a service manager

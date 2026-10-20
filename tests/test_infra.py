@@ -57,11 +57,11 @@ def test_tracer_otlp_export_is_optional(monkeypatch: pytest.MonkeyPatch, mocker:
     assert exporter.call_args.kwargs == {'endpoint': 'http://collector:4318/v1/traces'}
 
 
-def test_git_links_and_worktree_listing(project_path: Path, tmp_path: Path) -> None:
-    repo = Repo(project_path)
+def test_git_links_and_worktree_listing(campaign_path: Path, tmp_path: Path) -> None:
+    repo = Repo(campaign_path)
     sha = repo.head.commit.hexsha
     wt = tmp_path / 'wt' / 'a'
-    links = {'data': project_path / 'data', 'missing': project_path / 'nope', 'nested/ws': tmp_path / 'ws'}
+    links = {'data': campaign_path / 'data', 'missing': campaign_path / 'nope', 'nested/ws': tmp_path / 'ws'}
     (tmp_path / 'ws').mkdir()
     git.add_worktree(repo, wt, sha, links)
     assert (wt / 'data').is_symlink() and (wt / 'nested' / 'ws').is_symlink() and not (wt / 'missing').exists()
@@ -73,18 +73,18 @@ def test_git_links_and_worktree_listing(project_path: Path, tmp_path: Path) -> N
     assert git.worktrees_under(repo, tmp_path / 'wt') == [tmp_path / 'wt' / 'b']
 
 
-def test_worktrees_under_a_symlinked_root(project_path: Path, tmp_path: Path) -> None:
+def test_worktrees_under_a_symlinked_root(campaign_path: Path, tmp_path: Path) -> None:
     real = tmp_path / 'real'
     real.mkdir()
     link = tmp_path / 'link'
     link.symlink_to(real)
-    repo = Repo(project_path)
+    repo = Repo(campaign_path)
     git.add_worktree(repo, link / 'wt', repo.head.commit.hexsha, {})
     assert git.worktrees_under(repo, link) == [real / 'wt']
 
 
-def test_stale_directories_do_not_block_worktrees(project_path: Path, tmp_path: Path) -> None:
-    repo = Repo(project_path)
+def test_stale_directories_do_not_block_worktrees(campaign_path: Path, tmp_path: Path) -> None:
+    repo = Repo(campaign_path)
     sha = repo.head.commit.hexsha
     stale = tmp_path / 'wt' / 'stale'
     stale.mkdir(parents=True)
@@ -99,4 +99,4 @@ def test_stale_directories_do_not_block_worktrees(project_path: Path, tmp_path: 
 
 def test_handle_for_refuses_a_request() -> None:
     with pytest.raises(ValueError, match='worker#3 is requested: not launched yet'):
-        handle_for(Worker(id=3, kind=WorkerKind.RESEARCH, project_id=1, state=WorkerState.REQUESTED))
+        handle_for(Worker(id=3, kind=WorkerKind.RESEARCH, campaign_id=1, state=WorkerState.REQUESTED))

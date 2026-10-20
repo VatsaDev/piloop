@@ -10,8 +10,10 @@ from sqlalchemy.orm import Session
 
 from piloop.agents.launcher import STARTUP_ANOMALY, STOPPED_ERROR
 from piloop.campaign.stop import BLOCKED
-from piloop.config import ProjectConfig, load_project_config
+from piloop.config import CampaignConfig, load_campaign_config
 from piloop.db.models import (
+    Campaign,
+    CampaignStatus,
     Candidate,
     Comment,
     CommentKind,
@@ -21,8 +23,6 @@ from piloop.db.models import (
     IdeaStatus,
     LinkKind,
     Measurement,
-    Project,
-    ProjectStatus,
     Run,
     RunStatus,
     TargetKind,
@@ -49,11 +49,11 @@ def at(minutes: float) -> datetime:
 
 
 def idea(
-    s: Session, project: Project, title: str, status: IdeaStatus, *, after: tuple[int, ...] = (), **kw: object
+    s: Session, campaign: Campaign, title: str, status: IdeaStatus, *, after: tuple[int, ...] = (), **kw: object
 ) -> Idea:
     row = Idea(
         track='score',
-        project_id=project.id,
+        campaign_id=campaign.id,
         title=title,
         hypothesis=title,
         status=status,
@@ -86,7 +86,7 @@ def run(s: Session, i: Idea, status: RunStatus, base: int, start: float, end: fl
 
 def agent(
     s: Session,
-    project: Project,
+    campaign: Campaign,
     kind: WorkerKind,
     start: float,
     lived: float,
@@ -96,7 +96,7 @@ def agent(
 ) -> Worker:
     row = Worker(
         kind=kind,
-        project_id=project.id,
+        campaign_id=campaign.id,
         run_id=run_id,
         harness='script',
         runtime='subprocess',
@@ -110,10 +110,10 @@ def agent(
 
 
 def candidate(
-    s: Session, project: Project, parent: int, verdict: Verdict, value: float, when: float, **kw: object
+    s: Session, campaign: Campaign, parent: int, verdict: Verdict, value: float, when: float, **kw: object
 ) -> Candidate:
     row = Candidate(
-        project_id=project.id,
+        campaign_id=campaign.id,
         parent_id=parent,
         tree_sha=f'tree{when}',
         commit_sha=f'{when:07.0f}abcdef',
@@ -126,7 +126,7 @@ def candidate(
     s.add(
         Measurement(
             candidate_id=row.id,
-            evaluator_id=project.evaluator_id,
+            evaluator_id=campaign.evaluator_id,
             metrics={'score': value, 'size': 10.0},
             seconds=60 * value,
             created_at=at(when),
@@ -135,10 +135,10 @@ def candidate(
     return row
 
 
-def campaign(db: Database, project: Project) -> None:
+def live_campaign(db: Database, campaign: Campaign) -> None:
     """Add two hours of a small campaign that has one example of each anomaly."""
     with db.session() as s:
-        p = s.get_one(Project, project.id)
+        p = s.get_one(Campaign, campaign.id)
         p.created_at = T
         baseline = s.get_one(Candidate, 1)
         baseline.measurements[0].created_at = T
@@ -178,7 +178,7 @@ def campaign(db: Database, project: Project) -> None:
                     created_at=at(45),
                 ),
                 Comment(
-                    target_kind=TargetKind.PROJECT,
+                    target_kind=TargetKind.CAMPAIGN,
                     target_id=p.id,
                     author='pi',
                     kind=CommentKind.DECISION,
@@ -193,23 +193,23 @@ def campaign(db: Database, project: Project) -> None:
         s.commit()
 
 
-def render(db: Database, project: Project, cfg: ProjectConfig | None = None, now: datetime = NOW) -> str:
+def render(db: Database, campaign: Campaign, cfg: CampaignConfig | None = None, now: datetime = NOW) -> str:
     with db.session() as s:
-        p = s.get_one(Project, project.id)
-        return overview(s, p, cfg or ProjectConfig.model_validate(p.config), now, no_jobs)
+        p = s.get_one(Campaign, campaign.id)
+        return overview(s, p, cfg or CampaignConfig.model_validate(p.config), now, no_jobs)
 
 
-def test_the_overview_of_a_campaign(db: Database, project: Project) -> None:
-    campaign(db, project)
-    text = render(db, project)
+def test_the_overview_of_a_campaign(db: Database, campaign: Campaign) -> None:
+    live_campaign(db, campaign)
+    text = render(db, campaign)
     lay, tools = text.split('### Tools\n')
     assert lay == snapshot("""\
-## Project overview (computed at 2026-10-01 14:00 UTC)
+## Campaign overview (computed at 2026-10-01 14:00 UTC)
 demo · head score 3 (candidate#2, +2 vs baseline) · 2 kept / 3 candidates · 4k tok · evaluator #1, 0s old
 ### Goal
 - Primary metric: score, higher is better; also measured: size (lower, watch)
 - Campaign: active. Progress: run 2 · 1.9h (no [stop] condition: open-ended).
-- The goal in words is the project's brief.md: weigh the metric against it.
+- The goal in words is the campaign's brief.md: weigh the metric against it.
 ### Trajectory
 - Start candidate#1, head candidate#2: score 1 → 3 (+2, +200.0%); 1 trunk keeps.
 - Last trunk keep 1h ago; 2 runs finished since.
@@ -234,116 +234,116 @@ demo · head score 3 (candidate#2, +2 vs baseline) · 2 kept / 3 candidates · 4
 - [incident] worker#2 dead at startup, 1h ago: worker on script failed to start (5.0s): dialog
 - candidate#3 scored exactly its parent, 1h ago: scored what candidate#2 did on score and on 1 of 1 other metrics; 3.0 min of evaluation
 ### Inbox (1 unacknowledged), decisions and escalations
-- comment#2 decision on project#1 by pi, 1h ago: keep going
+- comment#2 decision on campaign#1 by pi, 1h ago: keep going
 - comment#1 escalation (p1, unacknowledged) on run#2 by watchdog#9, 1h ago: run#2 died in a dialog
 ### Recent events
 - comment.note comment#3 0s ago · comment.decision comment#2 0s ago · comment.escalation comment#1 0s ago · idea.linked idea#4 0s ago · idea.linked idea#3 0s ago
 """)
     assert tools.startswith('- `piloop sql "<one statement>"`')
-    assert '  - workers(id, kind, project_id, run_id,' in tools, (
+    assert '  - workers(id, kind, campaign_id, run_id,' in tools, (
         'the schema is listed, so an agent does not need PRAGMA table_info'
     )
 
 
-def test_stop_conditions_say_how_far_each_one_is(db: Database, project: Project) -> None:
-    campaign(db, project)
+def test_stop_conditions_say_how_far_each_one_is(db: Database, campaign: Campaign) -> None:
+    live_campaign(db, campaign)
     stop = {'target': 5, 'max_runs': 10, 'max_hours': 4, 'max_tokens': 1_000_000, 'plateau': 3}
-    cfg = load_project_config(Path(project.path), stop=stop)
-    [line] = [x for x in render(db, project, cfg).splitlines() if x.startswith('- Campaign:')]
+    cfg = load_campaign_config(Path(campaign.path), stop=stop)
+    [line] = [x for x in render(db, campaign, cfg).splitlines() if x.startswith('- Campaign:')]
     assert line == snapshot(
         '- Campaign: active. Progress: run 2/10 · 1.9h/4h · 4k/1.0M tok · 0/3 runs without a keep · target ≥ 5 (head 3).'
     ), 'run#2 failed before it committed: it counts toward neither limit'
     with db.session() as s:
-        s.get_one(Project, project.id).status = ProjectStatus.STOPPED
-        s.get_one(Project, project.id).stopped_reason = 'plateau: 3 runs without a keep'
+        s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
+        s.get_one(Campaign, campaign.id).stopped_reason = 'plateau: 3 runs without a keep'
         s.commit()
-    assert 'Campaign: stopped — plateau: 3 runs without a keep.' in render(db, project, cfg)
+    assert 'Campaign: stopped — plateau: 3 runs without a keep.' in render(db, campaign, cfg)
 
 
-def test_a_fresh_project_has_little_to_say(db: Database, project: Project) -> None:
-    """A project with no run, no comment and no trunk keep shows no trajectory and reports an idle queue."""
+def test_a_fresh_campaign_has_little_to_say(db: Database, campaign: Campaign) -> None:
+    """A campaign with no run, no comment and no trunk keep shows no trajectory and reports an idle queue."""
     stop = {'max_hours': 4, 'plateau': 2}
-    cfg = load_project_config(Path(project.path), stop=stop)
+    cfg = load_campaign_config(Path(campaign.path), stop=stop)
     with db.session() as s:
-        s.get_one(Project, project.id).created_at = T
+        s.get_one(Campaign, campaign.id).created_at = T
         s.get_one(Candidate, 1).verdict = Verdict.PENDING
         s.commit()
-    text = render(db, project, cfg)
+    text = render(db, campaign, cfg)
     assert '- Campaign: active. Progress: run 0 · 0.0h/4h · 0/2 runs without a keep.' in text
     assert "- No trunk keep: the baseline's verdict was overridden and nothing was kept since." in text
     assert '- Evaluations: 1 (0 crashed); median' not in text, 'the baseline has no recorded seconds'
     assert '- Evaluations: 1 (0 crashed); 1 candidates waiting for a verdict.' in text
-    assert '- project#1 idle, 2h ago: 1 free worker slots and no runnable idea; no research sweep pending' in text, (
+    assert '- campaign#1 idle, 2h ago: 1 free worker slots and no runnable idea; no research sweep pending' in text, (
         'not tagged: an idle queue is a cost for the progress review, not an incident'
     )
     assert '### Inbox (0 unacknowledged), decisions and escalations\n- None.\n' in text
 
 
-def test_no_anomaly_reads_none(db: Database, project: Project) -> None:
+def test_no_anomaly_reads_none(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
-        s.add(Idea(track='score', project_id=project.id, title='t', hypothesis='h', created_by='human'))
+        s.add(Idea(track='score', campaign_id=campaign.id, title='t', hypothesis='h', created_by='human'))
         s.commit()
-    assert '### Anomalies the daemon detected\n- None.\n' in render(db, project)
+    assert '### Anomalies the daemon detected\n- None.\n' in render(db, campaign)
 
 
-def test_the_idle_queue_counts_from_the_last_run_and_names_pending_research(db: Database, project: Project) -> None:
-    campaign(db, project)
+def test_the_idle_queue_counts_from_the_last_run_and_names_pending_research(db: Database, campaign: Campaign) -> None:
+    live_campaign(db, campaign)
     with db.session() as s:
         s.get_one(Run, 3).status = RunStatus.SUCCEEDED
         s.get_one(Run, 3).finished_at = at(70)
-        s.add(Worker(kind=WorkerKind.RESEARCH, project_id=project.id, started_at=at(100)))
+        s.add(Worker(kind=WorkerKind.RESEARCH, campaign_id=campaign.id, started_at=at(100)))
         s.commit()
-        [idle] = [a for a in found(s, project) if a.kind is AnomalyKind.IDLE_QUEUE]
+        [idle] = [a for a in found(s, campaign) if a.kind is AnomalyKind.IDLE_QUEUE]
     assert (idle.at, idle.detail) == (at(70), '1 free worker slots and no runnable idea; research#5 requested')
 
 
-def test_max_runs_reached_is_not_idle(db: Database, project: Project) -> None:
+def test_max_runs_reached_is_not_idle(db: Database, campaign: Campaign) -> None:
     """Two runs count toward ``max_runs``. The run that failed with no candidate does not count."""
-    campaign(db, project)
-    cfg = load_project_config(Path(project.path), stop={'max_runs': 2}, roles={'worker': {'max_concurrent': 4}})
+    live_campaign(db, campaign)
+    cfg = load_campaign_config(Path(campaign.path), stop={'max_runs': 2}, roles={'worker': {'max_concurrent': 4}})
     with db.session() as s:
-        p = s.get_one(Project, project.id)
+        p = s.get_one(Campaign, campaign.id)
         assert AnomalyKind.IDLE_QUEUE not in {a.kind for a in anomalies(s, p, cfg, NOW, no_jobs)}
-        p.status = ProjectStatus.STOPPED
-        uncapped = load_project_config(Path(project.path), roles={'worker': {'max_concurrent': 4}})
+        p.status = CampaignStatus.STOPPED
+        uncapped = load_campaign_config(Path(campaign.path), roles={'worker': {'max_concurrent': 4}})
         assert AnomalyKind.IDLE_QUEUE not in {a.kind for a in anomalies(s, p, uncapped, NOW, no_jobs)}, (
-            'a stopped project'
+            'a stopped campaign'
         )
 
 
-def test_a_run_that_the_daemon_stopped_is_not_a_failed_run(db: Database, project: Project) -> None:
-    campaign(db, project)
+def test_a_run_that_the_daemon_stopped_is_not_a_failed_run(db: Database, campaign: Campaign) -> None:
+    live_campaign(db, campaign)
     with db.session() as s:
         run = s.get_one(Run, 3)
         run.status, run.error, run.finished_at = RunStatus.FAILED, STOPPED_ERROR, at(70)
         s.commit()
-        assert f'run#{run.id}' not in {a.ref for a in found(s, project) if a.kind is AnomalyKind.RUN_FAILED}
+        assert f'run#{run.id}' not in {a.ref for a in found(s, campaign) if a.kind is AnomalyKind.RUN_FAILED}
 
 
-def test_a_run_blocked_on_its_workers_escalation_is_not_a_failed_run(db: Database, project: Project) -> None:
+def test_a_run_blocked_on_its_workers_escalation_is_not_a_failed_run(db: Database, campaign: Campaign) -> None:
     """The escalation is in the inbox already: an incident sweep would only find it again."""
-    campaign(db, project)
+    live_campaign(db, campaign)
     with db.session() as s:
         run = s.get_one(Run, 3)
         run.status, run.error, run.finished_at = RunStatus.FAILED, f'{BLOCKED} comment#9', at(70)
         s.commit()
-        assert f'run#{run.id}' not in {a.ref for a in found(s, project) if a.kind is AnomalyKind.RUN_FAILED}
+        assert f'run#{run.id}' not in {a.ref for a in found(s, campaign) if a.kind is AnomalyKind.RUN_FAILED}
 
 
-def found(s: Session, project: Project, now: datetime = NOW) -> list[overview_module.Anomaly]:
-    p = s.get_one(Project, project.id)
-    return anomalies(s, p, ProjectConfig.model_validate(p.config), now, no_jobs)
+def found(s: Session, campaign: Campaign, now: datetime = NOW) -> list[overview_module.Anomaly]:
+    p = s.get_one(Campaign, campaign.id)
+    return anomalies(s, p, CampaignConfig.model_validate(p.config), now, no_jobs)
 
 
-def test_a_short_life_without_the_launcher_event_is_not_a_startup_death(db: Database, project: Project) -> None:
+def test_a_short_life_without_the_launcher_event_is_not_a_startup_death(db: Database, campaign: Campaign) -> None:
     """The launcher decides that an agent died at startup (``STARTUP_ANOMALY``). The overview only reports it."""
     with db.session() as s:
-        agent(s, s.get_one(Project, project.id), WorkerKind.WATCHDOG, 0, 5)
+        agent(s, s.get_one(Campaign, campaign.id), WorkerKind.WATCHDOG, 0, 5)
         s.commit()
-        assert [a.key for a in found(s, project) if a.kind is AnomalyKind.DEAD_AT_STARTUP] == []
+        assert [a.key for a in found(s, campaign) if a.kind is AnomalyKind.DEAD_AT_STARTUP] == []
 
 
-def test_an_agent_that_investigates_incidents_dead_at_startup_is_no_incident(db: Database, project: Project) -> None:
+def test_an_agent_that_investigates_incidents_dead_at_startup_is_no_incident(db: Database, campaign: Campaign) -> None:
     """An agent of a role with the ``anomaly`` trigger that died at startup is reported, but it requests no agent.
 
     Otherwise each such agent that dies at startup requests a new one, which can die the same way. The watchdog has the
@@ -351,7 +351,7 @@ def test_an_agent_that_investigates_incidents_dead_at_startup_is_no_incident(db:
     """
     with db.session() as s:
         for kind in (WorkerKind.WATCHDOG, WorkerKind.RESEARCH):
-            dead = agent(s, s.get_one(Project, project.id), kind, 0, 35, state=WorkerState.KILLED)
+            dead = agent(s, s.get_one(Campaign, campaign.id), kind, 0, 35, state=WorkerState.KILLED)
             payload = {'kind': kind.value, 'harness': 'script', 'run': None, 'seconds': 35.0, 'error': 'prompt_lost'}
             s.add(
                 Event(
@@ -363,67 +363,67 @@ def test_an_agent_that_investigates_incidents_dead_at_startup_is_no_incident(db:
                 )
             )
         s.commit()
-        dead_at_startup = {a.key: a.incident for a in found(s, project) if a.kind is AnomalyKind.DEAD_AT_STARTUP}
+        dead_at_startup = {a.key: a.incident for a in found(s, campaign) if a.kind is AnomalyKind.DEAD_AT_STARTUP}
         assert dead_at_startup == {'worker#1 dead at startup': False, 'worker#2 dead at startup': True}
 
 
-def test_a_crashed_measurement_or_an_unmeasured_parent_is_not_same_as_parent(db: Database, project: Project) -> None:
+def test_a_crashed_measurement_or_an_unmeasured_parent_is_not_same_as_parent(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
-        p = s.get_one(Project, project.id)
-        orphan = Candidate(project_id=p.id, parent_id=1, tree_sha='x', commit_sha='x', verdict=Verdict.CRASH)
+        p = s.get_one(Campaign, campaign.id)
+        orphan = Candidate(campaign_id=p.id, parent_id=1, tree_sha='x', commit_sha='x', verdict=Verdict.CRASH)
         s.add(orphan)
         s.flush()
         s.add(Measurement(candidate_id=orphan.id, evaluator_id=p.evaluator_id, metrics={}, error='died'))
         s.commit()
-        assert found(s, project) == [a for a in found(s, project) if a.kind is not AnomalyKind.SAME_AS_PARENT]
+        assert found(s, campaign) == [a for a in found(s, campaign) if a.kind is not AnomalyKind.SAME_AS_PARENT]
 
 
-def test_the_anomaly_list_shows_the_latest_and_counts_the_rest(db: Database, project: Project) -> None:
+def test_the_anomaly_list_shows_the_latest_and_counts_the_rest(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
-        p = s.get_one(Project, project.id)
+        p = s.get_one(Campaign, campaign.id)
         for n in range(overview_module.ANOMALIES_SHOWN + 2):
             run(s, idea(s, p, f'idea {n}', IdeaStatus.DONE), RunStatus.TIMED_OUT, 1, n, n + 1)
         idea(s, p, 'next', IdeaStatus.READY)
         s.commit()
-    text = render(db, project)
+    text = render(db, campaign)
     assert 'run#14 failed' in text and 'run#3 failed' in text and 'run#2 failed' not in text
     assert '- … and 2 older incidents.\n' in text
     assert 'timed_out on script (idea#14): no error recorded' in text
 
 
-def test_costs_of_one_kind_share_a_line(db: Database, project: Project) -> None:
-    campaign(db, project)
+def test_costs_of_one_kind_share_a_line(db: Database, campaign: Campaign) -> None:
+    live_campaign(db, campaign)
     with db.session() as s:
-        p = s.get_one(Project, project.id)
+        p = s.get_one(Campaign, campaign.id)
         for n in range(overview_module.REFS_SHOWN):
             candidate(s, p, 2, Verdict.DISCARD, 3, 30 + n, run_id=1)
         s.commit()
-    [line] = [x for x in render(db, project).splitlines() if 'scored exactly its parent' in x]
+    [line] = [x for x in render(db, campaign).splitlines() if 'scored exactly its parent' in x]
     assert line == snapshot(
         '- 9 × scored exactly its parent (candidate#11, candidate#10, candidate#9, candidate#8, candidate#7, candidate#6, candidate#5, candidate#4, …); the latest, 1h ago: scored what candidate#2 did on score and on 1 of 1 other metrics; 3.0 min of evaluation'
     )
 
 
-def test_blocked_ideas_beyond_the_shown_few_are_counted(db: Database, project: Project) -> None:
+def test_blocked_ideas_beyond_the_shown_few_are_counted(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
-        p = s.get_one(Project, project.id)
+        p = s.get_one(Campaign, campaign.id)
         gate = idea(s, p, 'gate', IdeaStatus.PARKED)
         for n in range(overview_module.BLOCKED_SHOWN + 1):
             idea(s, p, f'waits {n}', IdeaStatus.READY, after=(gate.id,))
         s.commit()
-    assert ', 1 more); 0 seed, 0 proposed' in render(db, project)
+    assert ', 1 more); 0 seed, 0 proposed' in render(db, campaign)
 
 
-def test_open_runs_say_how_far_they_got(db: Database, project: Project) -> None:
+def test_open_runs_say_how_far_they_got(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
-        p = s.get_one(Project, project.id)
+        p = s.get_one(Campaign, campaign.id)
         waiting = run(s, idea(s, p, 'waiting', IdeaStatus.SCHEDULED), RunStatus.QUEUED, 1, 100, None)
         waiting.started_at = None
         going = run(s, idea(s, p, 'going', IdeaStatus.SCHEDULED), RunStatus.RUNNING, 1, 110, None)
-        s.add(Worker(kind=WorkerKind.WORKER, project_id=p.id, run_id=going.id, state=WorkerState.RUNNING))
+        s.add(Worker(kind=WorkerKind.WORKER, campaign_id=p.id, run_id=going.id, state=WorkerState.RUNNING))
         s.commit()
-    cfg = load_project_config(Path(project.path), roles={'worker': {'max_concurrent': 2}})
-    lines = render(db, project, cfg).splitlines()
+    cfg = load_campaign_config(Path(campaign.path), roles={'worker': {'max_concurrent': 2}})
+    lines = render(db, campaign, cfg).splitlines()
     start = lines.index('- Worker slots: 2 of 2 busy.')
     assert lines[start + 1 : start + 3] == [
         '  - run#1 idea#1 "waiting" (script): queued',
@@ -431,12 +431,12 @@ def test_open_runs_say_how_far_they_got(db: Database, project: Project) -> None:
     ]
 
 
-def busy(s: Session, project: Project, log_dir: Path | None, *, said: float | None = None) -> Worker:
+def busy(s: Session, campaign: Campaign, log_dir: Path | None, *, said: float | None = None) -> Worker:
     """A worker running since minute 0 on run#1, which comments at minute ``said``."""
-    p = s.get_one(Project, project.id)
+    p = s.get_one(Campaign, campaign.id)
     r = run(s, idea(s, p, 'train', IdeaStatus.SCHEDULED), RunStatus.RUNNING, 1, 0, None)
     r.log_dir = str(log_dir) if log_dir is not None else None
-    w = Worker(kind=WorkerKind.WORKER, project_id=p.id, run_id=r.id, state=WorkerState.RUNNING, started_at=at(0))
+    w = Worker(kind=WorkerKind.WORKER, campaign_id=p.id, run_id=r.id, state=WorkerState.RUNNING, started_at=at(0))
     s.add(w)
     s.flush()
     if said is not None:
@@ -461,36 +461,36 @@ class Jobs:
         return self.running
 
 
-def silent(s: Session, project: Project, jobs: Jobs, now: datetime = NOW) -> list[overview_module.Anomaly]:
-    p = s.get_one(Project, project.id)
-    found = anomalies(s, p, ProjectConfig.model_validate(p.config), now, jobs)
+def silent(s: Session, campaign: Campaign, jobs: Jobs, now: datetime = NOW) -> list[overview_module.Anomaly]:
+    p = s.get_one(Campaign, campaign.id)
+    found = anomalies(s, p, CampaignConfig.model_validate(p.config), now, jobs)
     return [a for a in found if a.kind is AnomalyKind.SILENT]
 
 
 def test_a_worker_quiet_for_an_hour_with_jobs_in_flight_is_an_incident(
-    db: Database, project: Project, tmp_path: Path
+    db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
     jobs = Jobs('4242 python train.py --epochs 90', '4243 tee train.log')
     with db.session() as s:
-        busy(s, project, tmp_path / 'run', said=30)
-        [quiet] = silent(s, project, jobs)
+        busy(s, campaign, tmp_path / 'run', said=30)
+        [quiet] = silent(s, campaign, jobs)
     assert (quiet.key, quiet.at, quiet.incident) == ('worker#1 silent while its jobs run', at(90), True)
     assert quiet.detail == snapshot(
         'run#1 idea#1: no comment or commit for 1h (its last comment); 2 jobs in flight, e.g. 4242 python train.py --epochs 90'
     )
     with db.session() as s:
-        text = overview(s, s.get_one(Project, project.id), ProjectConfig.model_validate(project.config), NOW, jobs)
+        text = overview(s, s.get_one(Campaign, campaign.id), CampaignConfig.model_validate(campaign.config), NOW, jobs)
     assert '- [incident] worker#1 silent while its jobs run, 30m ago: run#1 idea#1' in text
 
 
 def test_a_worker_that_spoke_or_committed_within_the_hour_is_not_asked_about_its_jobs(
-    db: Database, project: Project, tmp_path: Path
+    db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
     jobs = Jobs('4242 python train.py')
     with db.session() as s:
-        busy(s, project, None, said=61)
-        assert silent(s, project, jobs) == [] and jobs.asked == [], 'it commented 59 minutes ago'
-        assert silent(s, project, jobs, at(60)) == [], 'its run started an hour ago, to the second'
+        busy(s, campaign, None, said=61)
+        assert silent(s, campaign, jobs) == [] and jobs.asked == [], 'it commented 59 minutes ago'
+        assert silent(s, campaign, jobs, at(60)) == [], 'its run started an hour ago, to the second'
     worktree = tmp_path / 'run' / 'worktree'
     repo = Repo.init(worktree)
     repo.index.commit(
@@ -501,36 +501,38 @@ def test_a_worker_that_spoke_or_committed_within_the_hour_is_not_asked_about_its
     with db.session() as s:
         s.get_one(Run, 1).log_dir = str(tmp_path / 'run')
         s.commit()
-        assert silent(s, project, jobs, at(150)) == [] and jobs.asked == [], 'it committed 50 minutes ago'
-        assert [a.detail.split('; ')[0] for a in silent(s, project, jobs, at(170))] == [
+        assert silent(s, campaign, jobs, at(150)) == [] and jobs.asked == [], 'it committed 50 minutes ago'
+        assert [a.detail.split('; ')[0] for a in silent(s, campaign, jobs, at(170))] == [
             'run#1 idea#1: no comment or commit for 1h (its last commit)'
         ]
 
 
-def test_a_quiet_worker_with_nothing_running_is_not_silent(db: Database, project: Project) -> None:
+def test_a_quiet_worker_with_nothing_running_is_not_silent(db: Database, campaign: Campaign) -> None:
     """A silent worker with no job in flight is not an anomaly. The anomaly is about jobs that nobody watches."""
     jobs = Jobs()
     with db.session() as s:
-        worker = busy(s, project, None)
-        assert silent(s, project, jobs) == [] and jobs.asked == [worker.id]
+        worker = busy(s, campaign, None)
+        assert silent(s, campaign, jobs) == [] and jobs.asked == [worker.id]
 
 
-def test_branches_and_notes_say_where_else_a_run_may_start(db: Database, project: Project) -> None:
+def test_branches_and_notes_say_where_else_a_run_may_start(db: Database, campaign: Campaign) -> None:
     """A branch keep starts its own lineage, and a note shows a candidate that regressed.
 
     A keep that the current evaluator has not measured yet is in no lineage.
     """
-    campaign(db, project)
+    live_campaign(db, campaign)
     with db.session() as s:
-        p = s.get_one(Project, project.id)
+        p = s.get_one(Campaign, campaign.id)
         explore = idea(s, p, 'from the baseline', IdeaStatus.DONE, base_candidate_id=1)
         branch = run(s, explore, RunStatus.SUCCEEDED, 1, 60, 70, branch=True)
         candidate(s, p, 1, Verdict.KEEP, 2, 65, run_id=branch.id)
         noted = candidate(s, p, 1, Verdict.INTERESTING, 0.5, 66, run_id=branch.id, verdict_by=f'run#{branch.id}')
         noted.verdict_reason = 'note: halves the eval time; against candidate#1: score 0.5 vs 1'
-        s.add(Candidate(project_id=p.id, tree_sha='unmeasured', commit_sha='u', verdict=Verdict.KEEP, run_id=branch.id))
+        s.add(
+            Candidate(campaign_id=p.id, tree_sha='unmeasured', commit_sha='u', verdict=Verdict.KEEP, run_id=branch.id)
+        )
         s.commit()
-    trajectory = render(db, project).split('### Trajectory\n')[1].split('### Now')[0]
+    trajectory = render(db, campaign).split('### Trajectory\n')[1].split('### Now')[0]
     assert trajectory == snapshot("""\
 - Start candidate#1, head candidate#2: score 1 → 3 (+2, +200.0%); 1 trunk keeps.
 - Last trunk keep 1h ago; 3 runs finished since.
@@ -545,14 +547,14 @@ def test_branches_and_notes_say_where_else_a_run_may_start(db: Database, project
 """)
 
 
-def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, project: Project, tmp_path: Path) -> None:
+def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, campaign: Campaign, tmp_path: Path) -> None:
     """The Now, Inbox and Recent events sections show every row with its age."""
-    campaign(db, project)
+    live_campaign(db, campaign)
     log_dir = tmp_path / 'research-6'
     log_dir.mkdir()
     (log_dir / 'transcript.txt').write_text('thinking\n\nran evaluate.py: METRIC score=3\n\n')
     with db.session() as s:
-        p = s.get_one(Project, project.id)
+        p = s.get_one(Campaign, campaign.id)
         s.get_one(Idea, 2).status = IdeaStatus.DONE  # unblocks idea#4
         idea(s, p, 'a' * 120, IdeaStatus.READY, priority=0, created_at=at(100))
         newer = idea(s, p, 'even longer lines', IdeaStatus.READY, priority=1, created_at=at(110))
@@ -561,7 +563,7 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, projec
             [
                 Worker(
                     kind=WorkerKind.RESEARCH,
-                    project_id=p.id,
+                    campaign_id=p.id,
                     harness='script',
                     model='m',
                     runtime='subprocess',
@@ -570,12 +572,12 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, projec
                     reason='low_water: 2 ready < 10',
                     log_dir=str(log_dir),
                 ),
-                Worker(kind=WorkerKind.WATCHDOG, project_id=p.id, state=WorkerState.REQUESTED, reason='cron'),
+                Worker(kind=WorkerKind.WATCHDOG, campaign_id=p.id, state=WorkerState.REQUESTED, reason='cron'),
             ]
         )
         s.add(Event(kind='idea.created', actor='cli', target_kind=TargetKind.IDEA, target_id=newer.id, at=at(110)))
         s.commit()
-    text = render(db, project)
+    text = render(db, campaign)
     now = text[text.index('### Now') : text.index('### Anomalies')]
     assert now == snapshot("""\
 ### Now
@@ -598,7 +600,7 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, projec
 """)
     assert text[text.index('### Inbox') :].split('### Tools')[0] == snapshot("""\
 ### Inbox (1 unacknowledged), decisions and escalations
-- comment#2 decision on project#1 by pi, 1h ago: keep going
+- comment#2 decision on campaign#1 by pi, 1h ago: keep going
 - comment#1 escalation (p1, unacknowledged) on run#2 by watchdog#9, 1h ago: run#2 died in a dialog
 ### Recent events
 - idea.linked idea#6 0s ago · idea.created idea#6 10m ago · idea.status idea#2 0s ago · comment.note comment#3 0s ago · comment.decision comment#2 0s ago
@@ -643,7 +645,7 @@ SESSION_ID = 'd96a2121-355c-4608-b2f7-8bfc85bba1b5'
 
 
 def test_live_agents_say_their_last_words_from_the_session_file_else_the_screen_without_chrome(
-    db: Database, project: Project, tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
+    db: Database, campaign: Campaign, tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv('HOME', str(tmp_path))
     monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path / '.claude'))
@@ -668,7 +670,7 @@ def test_live_agents_say_their_last_words_from_the_session_file_else_the_screen_
             s.add(
                 Worker(
                     kind=WorkerKind.RESEARCH,
-                    project_id=project.id,
+                    campaign_id=campaign.id,
                     state=WorkerState.RUNNING,
                     harness=harness,
                     model='m' if harness else None,
@@ -681,7 +683,7 @@ def test_live_agents_say_their_last_words_from_the_session_file_else_the_screen_
                 )
             )
         s.commit()
-    assert [line for line in render(db, project).splitlines() if line.startswith('  - research#')] == snapshot(
+    assert [line for line in render(db, campaign).splitlines() if line.startswith('  - research#')] == snapshot(
         [
             '  - research#1 claude/m 20m, tab w7:t2, on cron: Starting both training runs (16 processes each).',
             '  - research#2 claude/m 20m, tab w7:t2, on cron: ⏺ Baseline finished. Starting the two training runs.',
@@ -697,20 +699,20 @@ def test_live_agents_say_their_last_words_from_the_session_file_else_the_screen_
 
 
 def test_a_row_holding_a_blob_renders_as_a_placeholder_with_one_warning_naming_it(
-    db: Database, project: Project, capsys: pytest.CaptureFixture[str]
+    db: Database, campaign: Campaign, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A comment body stored as bytes renders as a placeholder and prints one warning. It does not crash."""
     with db.session() as s:
-        s.add(Comment(target_kind=TargetKind.PROJECT, target_id=project.id, author='w', body='x', priority=1))
+        s.add(Comment(target_kind=TargetKind.CAMPAIGN, target_id=campaign.id, author='w', body='x', priority=1))
         s.commit()
     with db.engine.begin() as con:  # The CHECK constraints reject a blob, so turn them off to insert one.
         con.exec_driver_sql('PRAGMA ignore_check_constraints = ON')
         con.exec_driver_sql("UPDATE comments SET body = x'00ff' WHERE id = 1")
         con.exec_driver_sql('PRAGMA ignore_check_constraints = OFF')
-    assert '- comment#1 note (p1, unacknowledged) on project#1 by w, 0s ago: <not text: a 2-byte blob>' in render(
-        db, project
+    assert '- comment#1 note (p1, unacknowledged) on campaign#1 by w, 0s ago: <not text: a 2-byte blob>' in render(
+        db, campaign
     )
-    render(db, project)
+    render(db, campaign)
     assert capsys.readouterr().err == (
         'piloop: warning: comments#1 body is a 2-byte blob, not text; shown as a placeholder. Repair it:'
         ' UPDATE comments SET body = CAST(body AS TEXT) WHERE id = 1\n'
@@ -722,13 +724,13 @@ def test_a_row_holding_a_blob_renders_as_a_placeholder_with_one_warning_naming_i
         assert con.exec_driver_sql('SELECT typeof(body) FROM comments').scalar() == 'blob', 'never written back'
 
 
-def test_progress_lists_only_the_configured_conditions(db: Database, project: Project) -> None:
-    def config(stop: dict[str, object], direction: str = 'higher') -> ProjectConfig:
+def test_progress_lists_only_the_configured_conditions(db: Database, campaign: Campaign) -> None:
+    def config(stop: dict[str, object], direction: str = 'higher') -> CampaignConfig:
         metrics = [{'name': 'score', 'direction': direction, 'role': 'primary'}, {'name': 'size', 'direction': 'lower'}]
-        return ProjectConfig.model_validate({**project.config, 'stop': stop, 'metrics': metrics})
+        return CampaignConfig.model_validate({**campaign.config, 'stop': stop, 'metrics': metrics})
 
     with db.session() as s:
-        p = s.get_one(Project, project.id)
+        p = s.get_one(Campaign, campaign.id)
         assert (
             overview_module.progress(s, p, config({'target': 0.5}, 'lower'), NOW)
             == 'run 0 · 0.0h · target ≤ 0.5 (head 1)'

@@ -52,14 +52,14 @@ Each variable keeps one thing apart:
 | `PILOOP_HOME` | The database, the runs, the artifact store, `config.toml`, and the daemon's `serve.pid` and `serve.log`. One daemon runs for each home. |
 | `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR` | The installed package. uv keeps one tool named `piloop` per tool directory, and `piloop upgrade` upgrades the tool of this directory only. Keep the bin directory outside the tool directory. |
 | `PILOOP_CLAUDE_SKILLS_DIR`, `PILOOP_AGENT_SKILLS_DIR` | The orchestrator skills, which `install-skills` would otherwise put over the release's in `~/.claude/skills` and `~/.agents/skills`. |
-| `PILOOP_HERDR_SESSION` | The Herdr session of the agents, for projects with `runtime = "herdr"`. |
+| `PILOOP_HERDR_SESSION` | The Herdr session of the agents, for campaigns with `runtime = "herdr"`. |
 | `PILOOP_CLI` | The command that `piloop-canary doctor` names in what it tells you, or an orchestrator, to run. |
 
 The canary's agents run the canary's piloop: the daemon gives each agent `PILOOP_BIN`, its own `piloop` under its
 home, and puts that directory first on the agent's `PATH`.
 
-Use `piloop-canary` wherever you would use `piloop`, on a separate clone of the project repo: two daemons that run the
-same project name in one repo would write the same `refs/piloop/` refs. To orchestrate a canary campaign, tell your
+Use `piloop-canary` wherever you would use `piloop`, on a separate clone of the campaign repo: two daemons that run the
+same campaign name in one repo would write the same `refs/piloop/` refs. To orchestrate a canary campaign, tell your
 agent to read `~/.piloop-canary/skills/piloop-operate/SKILL.md` and to run `piloop-canary` wherever it says `piloop`.
 
 ```bash
@@ -135,7 +135,7 @@ uv run pytest -m e2e tests/e2e -rA --e2e-harness claude --e2e-model <model>
 
 The tests install piloop from your checkout once per session, into a new temporary directory. Each campaign there has
 its own `PILOOP_HOME` and skills directories, so the tests never touch `~/.piloop`, a running daemon or your skills.
-A campaign is configured as a user configures one: its keys are in the project's `piloop.toml`, and the daemon's
+A campaign is configured as a user configures one: its keys are in the campaign's `piloop.toml`, and the daemon's
 settings are in the `config.toml` of its home. On every exit, also on Ctrl-C and SIGTERM, the fixture stops each
 daemon. Then it kills every process that carries the campaign's home or the token of an agent.
 
@@ -162,7 +162,7 @@ To add a check to a scenario, add a test at the step where its state exists.
 
 `make docs` runs `uv run -m scripts.generate_all`, which writes these files from the code. Never edit them by hand:
 
-- `docs/reference/configuration.mdx`, from the models that `piloop.config.ProjectConfig` reaches (in
+- `docs/reference/configuration.mdx`, from the models that `piloop.config.CampaignConfig` reaches (in
   `piloop/config.py`, `piloop/harnesses.py`, `piloop/mcp/` and `piloop/usage/`), from `piloop/deprecated.py`, and from
   the header in `scripts/generate/configuration.py`.
 - `docs/reference/schema.mdx`, from `piloop/db/models.py`.
@@ -252,11 +252,11 @@ The package has one subpackage for each concern. Imports only point down this li
 
 1. `db/`: storage, the SQL gate for agents, the events feed. `store/`: the artifact store, its blobs, manifests
    and remote backends.
-2. `mcp/`, `usage/`, and `config.py` with `harnesses.py`: MCP servers, token usage, the project configuration.
+2. `mcp/`, `usage/`, and `config.py` with `harnesses.py`: MCP servers, token usage, the campaign configuration.
 3. `runtime/`: where the agent processes run (a background process, or a Herdr pane).
 4. `scoring/`: the evaluate command, the ledger, the verdict.
 5. `agents/`: the roles and their prompts, the agent lifecycle, session capture.
-6. `campaign/`: projects, ideas, the inbox, stop conditions, the spend limit.
+6. `campaign/`: campaigns, ideas, the inbox, stop conditions, the spend limit.
 7. `reports/`: status, history, the research pack.
 8. `daemon/`: the process, the scheduler, the run executor.
 9. `watch/` and `cli/`.
@@ -293,7 +293,7 @@ A pull request is squashed when it merges, and its title becomes the commit subj
 version come from these subjects, so write the title for a user:
 
 ```text
-fix: a stopped project is measured again on request
+fix: a stopped campaign is measured again on request
 feat(watch): filter the agents panel
 feat!: remove the herdr_ keys of config.toml
 refactor: the [roles.research.scout] table is deprecated, use [roles.scout]

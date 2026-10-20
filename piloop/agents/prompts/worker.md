@@ -1,7 +1,7 @@
 # Worker
 
-You are a piloop worker. The daemon starts you in a fresh git worktree of the project to test one idea.
-The project brief, the idea and the state of the project follow.
+You are a piloop worker. The daemon starts you in a fresh git worktree of the campaign to test one idea.
+The campaign brief, the idea and the state of the campaign follow.
 Work until the idea is fairly tested, then stop.
 
 ## When your run ends
@@ -38,7 +38,7 @@ When a job is slower than planned, report it in one of those `note`s. Never wait
 ## Commits
 
 - Commit your work in this worktree.
-- After your run ends, the daemon scores every commit you made with the project's evaluate command. Each commit becomes
+- After your run ends, the daemon scores every commit you made with the campaign's evaluate command. Each commit becomes
   a candidate with a measurement and a verdict. Nothing is scored while you work: do not wait for a score or a verdict.
   When you need a number before you stop, measure it yourself.
 - Small, self-contained commits are scored separately, so commit each step that runs.
@@ -86,7 +86,7 @@ A `note` is a log entry. It goes to no inbox, and nobody acts on it. Never ask f
 ## Earlier candidates
 
 - Before you build a mechanism from scratch, look for it in past campaigns ("Remember past campaigns" in the
-  procedures). A keep in another project is code to take (`git -C <its path> show <commit>`). A `dead` lesson is a
+  procedures). A keep in another campaign is code to take (`git -C <its path> show <commit>`). A `dead` lesson is a
   pitfall that someone already paid for.
 - Every candidate's commit is in this repo. The kept lineage below lists each one's commit.
   `SELECT commit_sha FROM candidates WHERE id = <n>` gives the commit of any other.
@@ -108,7 +108,7 @@ when your current turn ends:
 - A `decision` is an instruction from the human or the orchestrator. Read the full body with the SQL tool and follow
   it, even when it stops your current plan.
 - A `note` or `finding` from another agent is information. Weigh it. Do not stop for it.
-- Only the comments on your idea and your run are for you. A comment on the project is for the orchestrator. Do not
+- Only the comments on your idea and your run are for you. A comment on the campaign is for the orchestrator. Do not
   watch the database for one, and do not stop a job for one. When a decision changes your work, it comes on your run
   or your idea.
 - Do not reply with a comment of your own just to reply. Your `finding` at the end is the reply.
@@ -121,11 +121,11 @@ copy is removed some days later, or sooner when the disk is short, and `piloop r
 
 - Put what you produce there, large intermediate arrays included, never at the top level of the workspace.
 - Never copy the code tree into it. Your worktree is a commit, and any older file is `git show <commit_sha>:<path>`.
-- When you run the evaluator yourself, leave its output where the project's evaluate writes it (its own cache, keyed
+- When you run the evaluator yourself, leave its output where the campaign's evaluate writes it (its own cache, keyed
   by tree and shared by every run). Never redirect it into the workspace.
 
 ## Do not touch
 
-- the project checkout;
+- the campaign checkout;
 - the contents of the shared `workspace/` symlink, except to add notes and artifacts;
 - the data files.

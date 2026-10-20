@@ -27,6 +27,7 @@ SQL function ``blake3(text)`` (``install_functions``).
 """
 
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -266,6 +267,26 @@ class Result:
     changes: int
     last_insert_rowid: int
     truncated: bool
+
+
+RENAMED = {
+    'projects': 'campaigns',
+    'project_id': 'campaign_id',
+}
+"""The names of the schema of 0.1.0 that 0.2.0 renamed, with the new ones. ``with_renamed`` names the new one in an error.
+
+TODO: delete it with the hint one minor release after 0.2.0, as a deprecated key."""
+UPGRADE_NOTES = 'https://piloop.autoresearch.inc/guides/upgrading#renamed-tables-columns-and-commands'
+MISSING = re.compile(r'no such (?:table|column): (?:\w+\.)?(?P<name>\w+)')
+
+
+def with_renamed(error: str) -> str:
+    """Return ``error`` from SQL that piloop did not write, with the new name when it names a renamed one."""
+    missing = MISSING.match(error)
+    old = None if missing is None else missing['name'].lower()
+    if old not in RENAMED:
+        return error
+    return f'{error.rstrip(".")}: `{old}` is `{RENAMED[old]}` since piloop 0.2.0; see {UPGRADE_NOTES}'
 
 
 def run(con: sqlite3.Connection, sql: str, limit: int = ROW_LIMIT) -> Result:

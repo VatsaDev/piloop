@@ -94,6 +94,6 @@ XAI_API_KEY=… python3 scripts/xai_search_mcp.py <model> [--max-usd 1] [--max-t
 
 Each call costs money. The server limits the spend of one agent session: each reply states the cost of the call and
 the total so far, and the server refuses every call after the total reaches `--max-usd`. `--max-tool-calls` limits
-the searches of one call. The project's `[spend]` limit does not see this cost, so set `--max-usd`.
+the searches of one call. The campaign's `[spend]` limit does not see this cost, so set `--max-usd`.
 
 Use the script from a clone of the piloop repo. It is not part of the installed CLI.

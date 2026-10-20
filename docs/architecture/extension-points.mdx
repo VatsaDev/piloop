@@ -94,7 +94,7 @@ runtime's settings.
 A runtime is a class with the methods of the `Runtime` protocol, and two class attributes: `kind`, its name (the name
 of its entry point), and `invocation`, which argument list of a harness it starts (`headless` with the first prompt
 in it, or `interactive`, a terminal session that the runtime types the prompt into). Its constructor takes the
-project's name and path. It reports a failure as a `RuntimeFailure`. `piloop attach`, `prompt`, `doctor` and `watch`
+campaign's name and path. It reports a failure as a `RuntimeFailure`. `piloop attach`, `prompt`, `doctor` and `watch`
 call its methods, so a new runtime gets them at once. [Runtimes](/concepts/runtimes) says what a runtime does for
 you.
 
@@ -239,7 +239,7 @@ The rule decides only the verdict. piloop does the rest, whatever the rule:
 
 ### Built in
 
-`bootstrap` is the rule of a project without `[plugins.verdict_rule]`. [The verdict](/concepts/verdict#the-verdict)
+`bootstrap` is the rule of a campaign without `[plugins.verdict_rule]`. [The verdict](/concepts/verdict#the-verdict)
 describes it:
 
 - The primary metric must beat the bar at the `confidence` level of a paired bootstrap.
@@ -251,7 +251,7 @@ describes it:
 ### Example: a role in configuration
 
 Add a table with a new name, a prompt file and at least one trigger. This role reads each new escalation in the inbox
-and writes a plan for it, one agent at a time, in the project checkout:
+and writes a plan for it, one agent at a time, in the campaign checkout:
 
 ```toml
 [roles.planner]
@@ -259,7 +259,7 @@ prompt = "briefs/planner.md"
 triggers = [
   { kind = "sql", when = "SELECT id FROM comments WHERE kind = 'escalation' AND acked_at IS NULL AND created_at > :since" },
 ]
-workdir = "project"
+workdir = "repo"
 max_concurrent = 1
 timeout = 1200
 files = "seeds"
@@ -336,9 +336,9 @@ class NoKeep(Trigger):
 
     def fire(self, tick: Tick) -> Fire | None:
         keeps = select(func.max(Candidate.created_at)).where(
-            Candidate.project_id == tick.project.id, Candidate.verdict == Verdict.KEEP
+            Candidate.campaign_id == tick.campaign.id, Candidate.verdict == Verdict.KEEP
         )
-        latest = tick.s.scalar(keeps) or tick.project.created_at
+        latest = tick.s.scalar(keeps) or tick.campaign.created_at
         started = tick.last.started_at if tick.last is not None else latest
         if utcnow() - max(latest, started) < timedelta(hours=self.hours):
             return None
@@ -348,7 +348,7 @@ class NoKeep(Trigger):
 AUDITOR = SweepRole(prompt=str(Path(__file__).parent / 'auditor.md'), triggers=[NoKeep()], timeout=1800)
 ```
 
-```text
+```toml
 [project.entry-points."piloop.triggers"]
 no_keep = "my_package:NoKeep"
 
@@ -356,7 +356,7 @@ no_keep = "my_package:NoKeep"
 auditor = "my_package:AUDITOR"
 ```
 
-Any project can then use `{ kind = "no_keep", hours = 12 }` in the triggers of a role, and gets the `auditor` role,
+Any campaign can then use `{ kind = "no_keep", hours = 12 }` in the triggers of a role, and gets the `auditor` role,
 with its table in `piloop.toml` over the package's defaults, at its next `piloop init`.
 
 ### The contract
@@ -369,7 +369,7 @@ defaults. [Roles](/concepts/roles) describes each key.
 
 ### Built in
 
-The built-in roles are the same tables with defaults, so a project can change any key of them:
+The built-in roles are the same tables with defaults, so a campaign can change any key of them:
 
 <Roles />
 
@@ -385,7 +385,7 @@ code of its own comes from a plugin: see `no_keep` above.
 A trigger is an entry of `[roles.<name>] triggers`: `{ kind = "<trigger>", <parameter> = <value> }`. A plugin's
 trigger is a subclass of `piloop.triggers.Trigger`: its fields are its parameters. On each tick, for each sweeping role
 without a pending request, the daemon calls `fire(tick)` of each trigger of the role in order. It returns a `Fire`
-(the reason, how many agents) or None, and reads with `tick` (`piloop.triggers.Tick`: the session, the project, the
+(the reason, how many agents) or None, and reads with `tick` (`piloop.triggers.Tick`: the session, the campaign, the
 role and the queries of the built-in triggers). A trigger with `ON_STOP` fires only on the tick that stops the
 campaign.
 
@@ -416,7 +416,7 @@ a terminal (`interactive`) and without one (`headless`), and the startup dialogs
 
 ### Built in
 
-A project can override any key of a built-in harness. An override without `busy_screens`, `failed_turn_screens` or
+A campaign can override any key of a built-in harness. An override without `busy_screens`, `failed_turn_screens` or
 `queue_key` keeps those of the built-in harness with the same `executable`.
 
 <Harnesses />
@@ -467,12 +467,12 @@ print(f"METRIC score={lines.count('ok')}")
 The daemon runs the command in a clean worktree of each commit. It prints one line `METRIC <name>=<value>` for each
 metric in `piloop.toml` and exits with 0 within `evaluate_timeout` seconds; otherwise the candidate is a `crash`. With
 `PILOOP_UNITS_FILE` set, it can also write the result of each unit, for a paired bootstrap. See
-[The evaluate command](/concepts/projects#the-evaluate-command).
+[The evaluate command](/concepts/campaigns#the-evaluate-command).
 
 ### Built in
 
-Each project has its own. `piloop init` writes a stub `evaluate.py`, and `piloop init --example <name>` a bundled
-example project with a working one:
+Each campaign has its own. `piloop init` writes a stub `evaluate.py`, and `piloop init --example <name>` a bundled
+example campaign with a working one:
 
 <EvaluateExamples />
 
@@ -537,12 +537,12 @@ The facts are:
 - `keeps`: the candidates of runs that are kept.
 
 A `StopCase` has the name and direction of the primary metric, the limits of `[stop]`, the facts that the rule reads,
-and the rule's parameters as JSON text. A stop that a person requests (`piloop project stop`) comes first, whatever
+and the rule's parameters as JSON text. A stop that a person requests (`piloop campaign stop`) comes first, whatever
 the rule.
 
 ### Built in
 
-`limits` is the rule of a project without `[plugins.stop_rule]`. It stops the campaign at the first limit of `[stop]`
+`limits` is the rule of a campaign without `[plugins.stop_rule]`. It stops the campaign at the first limit of `[stop]`
 that the campaign reaches:
 
 ```toml

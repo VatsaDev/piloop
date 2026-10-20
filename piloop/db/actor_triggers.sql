@@ -5,10 +5,10 @@
 -- trigger's own UPDATE from firing it again, and replaces any actor that a statement tries to set.
 -- WITHOUT ROWID keeps the actor row out of last_insert_rowid, which clients report for the caller's statement.
 CREATE TEMP TABLE session_actor (actor TEXT NOT NULL PRIMARY KEY) WITHOUT ROWID;
-CREATE TEMP TRIGGER projects_updated_by AFTER UPDATE ON projects
+CREATE TEMP TRIGGER campaigns_updated_by AFTER UPDATE ON campaigns
 WHEN NEW.updated_by IS NOT (SELECT actor FROM temp.session_actor)
 BEGIN
-  UPDATE projects SET updated_by = (SELECT actor FROM temp.session_actor) WHERE id = NEW.id;
+  UPDATE campaigns SET updated_by = (SELECT actor FROM temp.session_actor) WHERE id = NEW.id;
 END;
 CREATE TEMP TRIGGER ideas_updated_by AFTER UPDATE ON ideas
 WHEN NEW.updated_by IS NOT (SELECT actor FROM temp.session_actor)
@@ -92,29 +92,29 @@ BEGIN
   INSERT INTO events (kind, actor, target_kind, target_id, payload)
   VALUES ('run.brief', (SELECT actor FROM temp.session_actor), 'run', NEW.id, json_object('old_length', length(OLD.brief), 'new_length', length(NEW.brief)));
 END;
-CREATE TEMP TRIGGER projects_status_event AFTER UPDATE OF status ON projects
+CREATE TEMP TRIGGER campaigns_status_event AFTER UPDATE OF status ON campaigns
 WHEN OLD.status IS NOT NEW.status
 BEGIN
   INSERT INTO events (kind, actor, target_kind, target_id, payload)
-  VALUES ('project.status', (SELECT actor FROM temp.session_actor), 'project', NEW.id, json_object('old', OLD.status, 'new', NEW.status, 'stopped_reason', NEW.stopped_reason));
+  VALUES ('campaign.status', (SELECT actor FROM temp.session_actor), 'campaign', NEW.id, json_object('old', OLD.status, 'new', NEW.status, 'stopped_reason', NEW.stopped_reason));
 END;
-CREATE TEMP TRIGGER projects_type_event AFTER UPDATE OF type ON projects
+CREATE TEMP TRIGGER campaigns_type_event AFTER UPDATE OF type ON campaigns
 WHEN OLD.type IS NOT NEW.type
 BEGIN
   INSERT INTO events (kind, actor, target_kind, target_id, payload)
-  VALUES ('project.type', (SELECT actor FROM temp.session_actor), 'project', NEW.id, json_object('old', OLD.type, 'new', NEW.type));
+  VALUES ('campaign.type', (SELECT actor FROM temp.session_actor), 'campaign', NEW.id, json_object('old', OLD.type, 'new', NEW.type));
 END;
-CREATE TEMP TRIGGER projects_parent_id_event AFTER UPDATE OF parent_id ON projects
+CREATE TEMP TRIGGER campaigns_parent_id_event AFTER UPDATE OF parent_id ON campaigns
 WHEN OLD.parent_id IS NOT NEW.parent_id
 BEGIN
   INSERT INTO events (kind, actor, target_kind, target_id, payload)
-  VALUES ('project.parent_id', (SELECT actor FROM temp.session_actor), 'project', NEW.id, json_object('old', OLD.parent_id, 'new', NEW.parent_id));
+  VALUES ('campaign.parent_id', (SELECT actor FROM temp.session_actor), 'campaign', NEW.id, json_object('old', OLD.parent_id, 'new', NEW.parent_id));
 END;
-CREATE TEMP TRIGGER projects_paused_event AFTER UPDATE OF paused ON projects
+CREATE TEMP TRIGGER campaigns_paused_event AFTER UPDATE OF paused ON campaigns
 WHEN OLD.paused IS NOT NEW.paused
 BEGIN
   INSERT INTO events (kind, actor, target_kind, target_id, payload)
-  VALUES ('project.paused', (SELECT actor FROM temp.session_actor), 'project', NEW.id, json_object('old', OLD.paused, 'new', NEW.paused, 'paused_reason', NEW.paused_reason));
+  VALUES ('campaign.paused', (SELECT actor FROM temp.session_actor), 'campaign', NEW.id, json_object('old', OLD.paused, 'new', NEW.paused, 'paused_reason', NEW.paused_reason));
 END;
 CREATE TEMP TRIGGER comments_acked_at_event AFTER UPDATE OF acked_at ON comments
 WHEN OLD.acked_at IS NOT NEW.acked_at
@@ -124,7 +124,7 @@ BEGIN
 END;
 
 -- Tombstones: the key columns of a deleted row, so the feed can still say what was there. A cascade (DELETE FROM
--- projects) fires them for every child row that it deletes.
+-- campaigns) fires them for every child row that it deletes.
 CREATE TEMP TRIGGER ideas_deleted_event AFTER DELETE ON ideas
 BEGIN
   INSERT INTO events (kind, actor, target_kind, target_id, payload)

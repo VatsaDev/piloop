@@ -10,16 +10,16 @@ from sqlalchemy import select
 
 from piloop.agents.roles import PILOOP_HINT as PYTHON_HINT
 from piloop.campaign.ideas import defined_by
-from piloop.config import load_project_config
-from piloop.daemon.runner import RunExecutor
+from piloop.config import load_campaign_config
+from piloop.daemon.run_executor import RunExecutor
 from piloop.daemon.scheduler import Scheduler
 from piloop.db.models import (
+    Campaign,
     Candidate,
     Comment,
     CommentKind,
     Idea,
     IdeaStatus,
-    Project,
     TargetKind,
     Worker,
     WorkerKind,
@@ -34,22 +34,22 @@ PYTHON = shlex.quote(sys.executable)
 FAKE_RESEARCHER = f"""#!/bin/sh
 # a research harness stand-in: proposes through `idea add` (signed by its PILOOP_ACTOR), reports through SQL
 sig=$(cat ../brief.md | sed -n "s/.*Sign what you write as '\\([a-z]*#[0-9]*\\)'.*/\\1/p")
-project=$(cat ../brief.md | sed -n "s/.*for project#\\([0-9]*\\).*/\\1/p")
-name=$(cat ../brief.md | sed -n "s/.*for project#[0-9]* (\\([a-z]*\\)).*/\\1/p")
+campaign=$(cat ../brief.md | sed -n "s/.*for campaign#\\([0-9]*\\).*/\\1/p")
+name=$(cat ../brief.md | sed -n "s/.*for campaign#[0-9]* (\\([a-z]*\\)).*/\\1/p")
 cat ../brief.md > workspace/brief-seen.txt
 git rev-parse HEAD > workspace/head.txt
 echo note >> solve.txt
 git commit -qam "a sweep may try things"
 {PYTHON} -m piloop idea add "$name" 'target encoding' --hypothesis 'categoricals carry signal' --plan 'encode, refit' \\
   --priority 1 --base 1 --family encoding --from 'loss table workspace/research/losses.md'
-{PYTHON} -m piloop sql "INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES ('project', $project, '$sig', 'finding', 'proposed target encoding; rejected bigger trees (tried in evaluation#1)')"
+{PYTHON} -m piloop sql "INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES ('campaign', $campaign, '$sig', 'finding', 'proposed target encoding; rejected bigger trees (tried in evaluation#1)')"
 """
 
 
 def test_research_sweep_inserts_ideas_signed_with_its_worker_id(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    configure(db, project, FAKE_RESEARCHER, research={'max_ideas': 2})
+    configure(db, campaign, FAKE_RESEARCHER, research={'max_ideas': 2})
     executor = RunExecutor(db, Tracer(None), tmp_path, factory(runtime))
     scheduler = Scheduler(db, executor, Tracer(None), tmp_path, factory(runtime))
 
@@ -73,9 +73,9 @@ def test_research_sweep_inserts_ideas_signed_with_its_worker_id(
             'target encoding',
         )
         assert (idea.family, idea.provenance) == ('encoding', 'loss table workspace/research/losses.md')
-        [finding] = s.scalars(select(Comment).where(Comment.target_kind == TargetKind.PROJECT)).all()
-        assert (finding.target_id, finding.author, finding.kind) == (project.id, 'research#1', CommentKind.FINDING)
-    workspace = tmp_path / 'projects' / str(project.id) / 'workspace'
+        [finding] = s.scalars(select(Comment).where(Comment.target_kind == TargetKind.CAMPAIGN)).all()
+        assert (finding.target_id, finding.author, finding.kind) == (campaign.id, 'research#1', CommentKind.FINDING)
+    workspace = tmp_path / 'projects' / str(campaign.id) / 'workspace'
     brief = (workspace / 'brief-seen.txt').read_text()
     assert brief.startswith('# Research sweep') and '- Seeds to develop first: 0, listed in the research pack' in brief
     assert '- Ideas of your own after the seeds: propose 2 (the backlog holds 0 of ' in brief
@@ -84,7 +84,7 @@ def test_research_sweep_inserts_ideas_signed_with_its_worker_id(
         r'^- Measured runs since the last keep: 0, of the \d+ that mark a stall \(two rounds of', brief, re.M
     )
     assert 'stalled, so one of your own ideas pivots' not in brief
-    assert (workspace / 'head.txt').read_text().strip() == Repo(project.path).head.commit.hexsha, (
+    assert (workspace / 'head.txt').read_text().strip() == Repo(campaign.path).head.commit.hexsha, (
         'the sweep ran in a checkout of the baseline, the only candidate'
     )
     assert (
@@ -93,7 +93,7 @@ def test_research_sweep_inserts_ideas_signed_with_its_worker_id(
     )
     assert (
         not (tmp_path / 'workers' / '1' / 'worktree').exists()
-        and Repo(project.path).git.worktree('list').count('\n') == 0
+        and Repo(campaign.path).git.worktree('list').count('\n') == 0
     ), 'the worktree is gone with the sweep'
     with db.session() as s:
         assert s.scalars(select(Candidate)).all() == [s.get_one(Candidate, 1)], "the sweep's commit is not scored"
@@ -122,7 +122,7 @@ cat ../brief.md > workspace/brief-seen.txt
 
 
 def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_backlog(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """A seed starts a research sweep even when the backlog is at its target.
 
@@ -130,7 +130,7 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
     sweep counts as one that defined an idea.
     """
     configure(
-        db, project, FAKE_DEVELOPER, worker={'max_concurrent': 1}, research={'triggers': low_water(0), 'max_ideas': 2}
+        db, campaign, FAKE_DEVELOPER, worker={'max_concurrent': 1}, research={'triggers': low_water(0), 'max_ideas': 2}
     )
     with db.session() as s:
         for title, by, pointers in (
@@ -140,7 +140,7 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
             s.add(
                 Idea(
                     track='score',
-                    project_id=project.id,
+                    campaign_id=campaign.id,
                     title=title,
                     hypothesis=title,
                     status=IdeaStatus.SEED,
@@ -150,10 +150,10 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
                 )
             )
         s.commit()
-    occupy(db, project)
-    add_ideas(db, project, 1)
-    finish_a_run(db, project, 'tried once')
-    finish_a_run(db, project, 'tried twice')
+    occupy(db, campaign)
+    add_ideas(db, campaign, 1)
+    finish_a_run(db, campaign, 'tried once')
+    finish_a_run(db, campaign, 'tried twice')
     executor = RunExecutor(db, Tracer(None), tmp_path, factory(runtime))
     scheduler = Scheduler(db, executor, Tracer(None), tmp_path, factory(runtime))
 
@@ -182,13 +182,13 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
         )
         assert developed.provenance == 'loss table l.md; seed pointers: run#3'
         assert rejected.status is IdeaStatus.REJECTED
-        assert defined_by(s, project.id) >= {'research#1'}, 'the sweep defined an idea: no back-off'
+        assert defined_by(s, campaign.id) >= {'research#1'}, 'the sweep defined an idea: no back-off'
 
 
 def test_with_several_tracks_research_reads_them_and_which_are_short_of_their_share(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    configure(db, project, '#!/bin/sh\ncat ../brief.md > workspace/brief-seen.txt\n', research={'max_ideas': 1})
+    configure(db, campaign, '#!/bin/sh\ncat ../brief.md > workspace/brief-seen.txt\n', research={'max_ideas': 1})
     with db.session() as s:
         tracks = {
             'metrics': [
@@ -198,7 +198,7 @@ def test_with_several_tracks_research_reads_them_and_which_are_short_of_their_sh
             'tracks': {'accuracy': {'share': 0.5}, 'cost': {'share': 0.5}},
             'roles': {'research': {'max_ideas': 1, 'timeout': 20}, 'worker': {'max_concurrent': 2}},
         }
-        s.get_one(Project, project.id).config = load_project_config(Path(project.path), **tracks).model_dump(
+        s.get_one(Campaign, campaign.id).config = load_campaign_config(Path(campaign.path), **tracks).model_dump(
             mode='json'
         )
         s.commit()
@@ -207,7 +207,7 @@ def test_with_several_tracks_research_reads_them_and_which_are_short_of_their_sh
     assert scheduler.tick() == [1]
     scheduler.wait(30)
     scheduler.stop(timeout=5)
-    brief = (tmp_path / 'projects' / str(project.id) / 'workspace' / 'brief-seen.txt').read_text()
+    brief = (tmp_path / 'projects' / str(campaign.id) / 'workspace' / 'brief-seen.txt').read_text()
     assert '- Your cwd is a detached checkout of candidate#1, the head (score=1.0, size=5.0)' in brief
     assert (
         '- Tracks short of their share of the backlog: accuracy 2 (0 of 2 runnable), cost 2 (0 of 2 runnable).'

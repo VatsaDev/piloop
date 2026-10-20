@@ -2,7 +2,7 @@
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PILOOP_HERDR_SESSION` | `piloop` | The name of the Herdr session that piloop owns. It has one workspace for each project, and every agent that piloop starts runs there, never in the session you use for other work. `piloop attach` attaches a terminal to it. piloop starts its server when it first needs it. |
+| `PILOOP_HERDR_SESSION` | `piloop` | The name of the Herdr session that piloop owns. It has one workspace for each campaign, and every agent that piloop starts runs there, never in the session you use for other work. `piloop attach` attaches a terminal to it. piloop starts its server when it first needs it. |
 | `HERDR_SOCKET_PATH` | none | The socket of the Herdr session that this process runs in. Herdr sets it in every pane it manages. `piloop attach` reads it to tell whether it already runs inside the piloop session. |
 | `PILOOP_HERDR_SERVER_START_SECONDS` | `10` | The number of seconds to wait for the Herdr server of the piloop session to answer after piloop starts it. |
 | `PILOOP_HERDR_START_TIMEOUT_SECONDS` | `60` | The number of seconds Herdr may take to detect an agent that just started. |

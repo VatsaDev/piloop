@@ -1,4 +1,4 @@
-"""Research memory: the documents a project's ``[memory]`` globs name are synced once per content, and searchable."""
+"""Research memory: the documents a campaign's ``[memory]`` globs name are synced once per content, and searchable."""
 
 import os
 import sqlite3
@@ -10,19 +10,19 @@ from git import Repo
 from sqlalchemy import select
 
 from piloop.campaign.memory import sync_documents, title_of
-from piloop.config import ConfigError, load_project_config
+from piloop.config import ConfigError, load_campaign_config
 from piloop.db import sql
-from piloop.db.models import Document, Project
+from piloop.db.models import Campaign, Document
 from piloop.db.session import Database
 from piloop.git import identity
 
 REPORT = '# Sync acquisition report\n\nThe clock recovery gained +0.4 gen_frame_correct; candidate#12.\n'
 
 
-def sync(db: Database, project: Project, *globs: str, config_from: Path | None = None) -> str:
-    cfg = load_project_config(config_from or Path(project.path), memory={'documents': list(globs)})
+def sync(db: Database, campaign: Campaign, *globs: str, config_from: Path | None = None) -> str:
+    cfg = load_campaign_config(config_from or Path(campaign.path), memory={'documents': list(globs)})
     with db.session() as s:
-        line = sync_documents(s, s.get_one(Project, project.id), cfg, 'human').line()
+        line = sync_documents(s, s.get_one(Campaign, campaign.id), cfg, 'human').line()
         s.commit()
     return line
 
@@ -32,9 +32,9 @@ def documents(db: Database) -> list[tuple[str, str, bool, str]]:
         return [(d.path, d.title, d.commit_sha is not None, d.created_by) for d in s.scalars(select(Document))]
 
 
-def test_a_sync_inserts_each_content_once_and_an_edit_as_a_new_version(db: Database, project: Project) -> None:
-    repo = Repo(project.path)
-    evidence = Path(project.path, 'docs', 'evidence', 'sync-r1')
+def test_a_sync_inserts_each_content_once_and_an_edit_as_a_new_version(db: Database, campaign: Campaign) -> None:
+    repo = Repo(campaign.path)
+    evidence = Path(campaign.path, 'docs', 'evidence', 'sync-r1')
     evidence.mkdir(parents=True)
     (evidence / 'report.md').write_text(REPORT)
     (evidence / 'notes.md').write_text('no heading, just notes\n')
@@ -43,7 +43,7 @@ def test_a_sync_inserts_each_content_once_and_an_edit_as_a_new_version(db: Datab
     (evidence / 'draft.md').write_text('# Draft\n')  # untracked: no commit
     (evidence / 'data.bin').write_bytes(b'\xff\xfe')
 
-    assert sync(db, project, 'docs/evidence/**/*.md', 'docs/evidence/sync-r1/report.md') == (
+    assert sync(db, campaign, 'docs/evidence/**/*.md', 'docs/evidence/sync-r1/report.md') == (
         'documents: 3 added, 0 unchanged'
     ), 'a file two globs match is synced once'
     assert documents(db) == [
@@ -51,16 +51,16 @@ def test_a_sync_inserts_each_content_once_and_an_edit_as_a_new_version(db: Datab
         ('docs/evidence/sync-r1/notes.md', 'notes', True, 'human'),
         ('docs/evidence/sync-r1/report.md', 'Sync acquisition report', True, 'human'),
     ]
-    assert sync(db, project, 'docs/evidence/**/*.md') == 'documents: 0 added, 3 unchanged', 'a re-sync is a no-op'
+    assert sync(db, campaign, 'docs/evidence/**/*.md') == 'documents: 0 added, 3 unchanged', 'a re-sync is a no-op'
 
     (evidence / 'report.md').write_text(REPORT + '\nAddendum: the onset gate is dead.\n')
-    assert sync(db, project, 'docs/**/*.md') == 'documents: 1 added, 2 unchanged'
+    assert sync(db, campaign, 'docs/**/*.md') == 'documents: 1 added, 2 unchanged'
     with db.session() as s:
         report = s.scalars(select(Document).where(Document.path.endswith('report.md')).order_by(Document.id)).all()
         assert [d.commit_sha is not None for d in report] == [True, False], 'the edit is a new row, dirty: no commit'
         assert report[0].commit_sha == repo.head.commit.hexsha
 
-    assert sync(db, project, 'docs/**/*.bin') == (
+    assert sync(db, campaign, 'docs/**/*.bin') == (
         'documents: 0 added, 0 unchanged; skipped docs/evidence/sync-r1/data.bin: not UTF-8 text (invalid start byte at'
         ' byte 0)'
     )
@@ -68,16 +68,16 @@ def test_a_sync_inserts_each_content_once_and_an_edit_as_a_new_version(db: Datab
 
 @pytest.mark.skipif(os.geteuid() == 0, reason='root reads a file whatever its mode')
 def test_unreadable_files_files_outside_the_repo_and_a_repo_without_git_are_skipped_or_uncommitted(
-    db: Database, project: Project, tmp_path: Path
+    db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
     outside = tmp_path / 'secret.md'
     outside.write_text('# Not the repo\n')
-    Path(project.path, 'link.md').symlink_to(outside)
-    locked = Path(project.path, 'locked.md')
+    Path(campaign.path, 'link.md').symlink_to(outside)
+    locked = Path(campaign.path, 'locked.md')
     locked.write_text('# Locked\n')
     locked.chmod(0)
     try:
-        assert sync(db, project, '*.md') == (
+        assert sync(db, campaign, '*.md') == (
             'documents: 1 added, 0 unchanged; skipped link.md: resolves outside the repo;'
             ' skipped locked.md: unreadable (Permission denied)'
         ), 'brief.md is the one file read'
@@ -87,21 +87,21 @@ def test_unreadable_files_files_outside_the_repo_and_a_repo_without_git_are_skip
     plain = tmp_path / 'not-a-repo'
     plain.mkdir()
     (plain / 'a.md').write_text('a\n')
-    config_from = Path(project.path)
+    config_from = Path(campaign.path)
     with db.session() as s:
-        s.get_one(Project, project.id).path = str(plain)
+        s.get_one(Campaign, campaign.id).path = str(plain)
         s.commit()
-    project.path = str(plain)
-    assert sync(db, project, '*.md', config_from=config_from) == 'documents: 1 added, 0 unchanged'
+    campaign.path = str(plain)
+    assert sync(db, campaign, '*.md', config_from=config_from) == 'documents: 1 added, 0 unchanged'
     assert documents(db)[-1] == ('a.md', 'a', False, 'human')
 
 
 def test_an_agent_inserts_a_document_with_the_blake3_function_and_searches_it(db: Database, tmp_path: Path) -> None:
     with closing(sql.connect(tmp_path / 'piloop.db', actor='research#4')) as con:
-        sql.run(con, "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+        sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
         sql.run(
             con,
-            'INSERT INTO documents (project_id, path, title, body, hash, created_by) SELECT 1, '
+            'INSERT INTO documents (campaign_id, path, title, body, hash, created_by) SELECT 1, '
             "'workspace/research/losses.md', 'Losses', body, blake3(body), 'research#4' FROM (SELECT 'The onset gate"
             " loses 31 frames' AS body)",
         )
@@ -112,17 +112,17 @@ def test_an_agent_inserts_a_document_with_the_blake3_function_and_searches_it(db
             " JOIN documents d ON d.id = documents_fts.rowid WHERE documents_fts MATCH 'gates'",
         )
         assert hits.rows == [(1, 'The onset [gate] loses…')]
-        with pytest.raises(sqlite3.IntegrityError, match='UNIQUE constraint failed: documents.project_id'):
+        with pytest.raises(sqlite3.IntegrityError, match='UNIQUE constraint failed: documents.campaign_id'):
             sql.run(
                 con,
-                'INSERT INTO documents (project_id, path, title, body, hash, created_by) SELECT 1, '
+                'INSERT INTO documents (campaign_id, path, title, body, hash, created_by) SELECT 1, '
                 "'workspace/research/losses.md', 'Losses again', body, blake3(body), 'research#5' FROM (SELECT 'The"
                 " onset gate loses 31 frames' AS body)",
             )
         with pytest.raises(sqlite3.IntegrityError, match='documents.hash is the blake3 hex digest of body'):
             sql.run(
                 con,
-                "INSERT INTO documents (project_id, path, title, body, hash, created_by) VALUES (1, 'x', 'x', 'x',"
+                "INSERT INTO documents (campaign_id, path, title, body, hash, created_by) VALUES (1, 'x', 'x', 'x',"
                 " 'not a hash', 'me')",
             )
         with pytest.raises(sqlite3.OperationalError, match='user-defined function raised exception'):
@@ -138,10 +138,10 @@ def test_a_title_is_the_first_heading_else_the_file_name() -> None:
 
 
 @pytest.mark.parametrize('glob', ['/etc/*.md', '//etc/*.md', '', '.', '../other/*.md', 'docs/../../x.md'])
-def test_a_document_glob_outside_the_repo_is_refused_when_the_config_loads(project: Project, glob: str) -> None:
+def test_a_document_glob_outside_the_repo_is_refused_when_the_config_loads(campaign: Campaign, glob: str) -> None:
     """Greptile on hiloopai/piloop#7: an absolute glob passed validation, then `Path.glob` raised at the stop."""
     with pytest.raises(ConfigError, match='is not a glob inside the repo'):
-        load_project_config(Path(project.path), memory={'documents': ['docs/*.md', glob]})
+        load_campaign_config(Path(campaign.path), memory={'documents': ['docs/*.md', glob]})
 
 
 @pytest.mark.parametrize(

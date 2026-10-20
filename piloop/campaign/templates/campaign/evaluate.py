@@ -11,7 +11,7 @@ metric must add up to its METRIC value. For a mean, each unit's contribution is 
 then tests the primary metric's gain with a paired bootstrap over the units. Leave out metrics that are not sums, such
 as a latency. piloop sets the variable only for its own measurements.
 
-Replace the body of ``main`` with the real measurement. ``piloop init`` registers the project when this file is
+Replace the body of ``main`` with the real measurement. ``piloop init`` registers the campaign when this file is
 different from the template.
 """
 

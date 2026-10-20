@@ -5,26 +5,25 @@ description: One agent runs a campaign in each of your repos, and one daemon ser
 
 You can run several campaigns at the same time and talk to one agent about all of them.
 
-## One project for each repo
+## One campaign for each repo
 
-A campaign is a **project**, and a project is one repo with its own `piloop.toml`. To improve two repos, set up two
-projects.
+A **campaign** is one repo with its own `piloop.toml`. To improve two repos, set up two campaigns.
 
-Several goals for one artifact, such as the accuracy and the serving cost of one model, are not several projects. They
-are [tracks](/concepts/tracks) of one project.
+Several goals for one artifact, such as the accuracy and the serving cost of one model, are not several campaigns. They
+are [tracks](/concepts/tracks) of one campaign.
 
 ## Set up each campaign
 
-Set up each project as in the [Quickstart](/quickstart): open your agent, name the repo, and tell it what to improve.
+Set up each campaign as in the [Quickstart](/quickstart): open your agent, name the repo, and tell it what to improve.
 
 ```text
 Use piloop on ~/projects/search to cut the p95 latency of the query endpoint.
 ```
 
-The agent runs the setup in that repo. It registers the project with `piloop init`.
+The agent runs the setup in that repo. It registers the campaign with `piloop init`.
 
-One daemon serves every registered project. Only one daemon runs for each `PILOOP_HOME` (default `~/.piloop`). When
-the daemon already runs, the new project needs no second one.
+One daemon serves every registered campaign. Only one daemon runs for each `PILOOP_HOME` (default `~/.piloop`). When
+the daemon already runs, the new campaign needs no second one.
 
 ## Orchestrate them from one agent
 
@@ -34,15 +33,15 @@ Ask one agent to orchestrate every campaign:
 Orchestrate all my piloop campaigns.
 ```
 
-Without a project name, `piloop inbox wait` waits for every project. So one wait covers all the campaigns, and it
+Without a campaign name, `piloop inbox wait` waits for every campaign. So one wait covers all the campaigns, and it
 returns when any of them needs the orchestrator:
 
 ```bash
 PILOOP_ACTOR=orchestrator piloop inbox wait --timeout 1800
 ```
 
-Each inbox item in its output names its project. The agent then decides and records each decision on the row that the
-decision is about, so every decision stays with its project. When every project that it watches has stopped, the
+Each inbox item in its output names its campaign. The agent then decides and records each decision on the row that the
+decision is about, so every decision stays with its campaign. When every campaign that it watches has stopped, the
 agent reports the results and stops the loop.
 
 Run at most one orchestrator for each campaign. If one agent orchestrates every campaign, do not start a second
@@ -50,9 +49,9 @@ orchestrator for one of them: two orchestrators answer the same escalation twice
 
 ## See every campaign
 
-- `piloop watch` lists every project first. Press `enter` to open one.
-- `piloop status` without a name, outside a project repo, shows every project when more than one is active.
-- `piloop inbox` lists the items of every project.
+- `piloop watch` lists every campaign first. Press `enter` to open one.
+- `piloop status` without a name, outside a campaign repo, shows every campaign when more than one is active.
+- `piloop inbox` lists the items of every campaign.
 
-Each project ends by itself at the limits in its own `[stop]` table. `piloop stop` stops the daemon, so it pauses
-every campaign at the same time. The projects stay active, and the next `piloop serve` continues all of them.
+Each campaign ends by itself at the limits in its own `[stop]` table. `piloop stop` stops the daemon, so it pauses
+every campaign at the same time. The campaigns stay active, and the next `piloop serve` continues all of them.

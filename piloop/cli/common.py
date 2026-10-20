@@ -1,4 +1,4 @@
-"""What every command module shares: the console, the settings, the session and finding a project.
+"""What every command module shares: the console, the settings, the session and finding a campaign.
 
 Command modules read ``common.console`` and ``common.settings`` through this module, so that a test replaces each in
 one place.
@@ -15,16 +15,17 @@ from rich.console import Console
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from piloop.campaign.campaigns import checked_out, find
 from piloop.campaign.ops import Refused
-from piloop.campaign.project import checked_out, find
-from piloop.db.models import Project, ProjectStatus
+from piloop.daemon.serve import OlderDaemon, refuse_older_daemon
+from piloop.db.models import Campaign, CampaignStatus
 from piloop.db.session import Database, SchemaAhead, migrate as migrate_schema
 from piloop.reports.feed import PROTOCOL
 from piloop.settings import settings
 
 console = Console()
 
-ProjectRef = Annotated[str, cyclopts.Parameter(help='The project name, or a path inside its repo.')]
+CampaignRef = Annotated[str, cyclopts.Parameter(help='The campaign name, or a path inside its repo.')]
 HARNESS_HELP = 'Use this harness instead of the rotation.'
 JsonFlag = Annotated[
     bool,
@@ -61,26 +62,34 @@ def session() -> Generator[Session]:
         db.close()
 
 
-def project(s: Session, ref: str) -> Project:
-    """Find the project that ``ref`` names, or exit with how to register it."""
+def campaign(s: Session, ref: str) -> Campaign:
+    """Find the campaign that ``ref`` names, or exit with how to register it."""
     found = find(s, ref)
     if found is None:
-        raise SystemExit(f'no project {ref!r}: register it with `piloop init <path>`')
+        raise SystemExit(f'no campaign {ref!r}: register it with `piloop init <path>`')
     return found
 
 
-def projects(s: Session, ref: str | None) -> list[Project]:
-    """The projects for a command without a ref: the one cwd is in, else the only active one, else every project."""
+def campaigns(s: Session, ref: str | None) -> list[Campaign]:
+    """The campaigns for a command without a ref: the one cwd is in, else the only active one, else every campaign."""
     if ref:
-        return [project(s, ref)]
+        return [campaign(s, ref)]
     if here := checked_out(s, Path.cwd()):
         return [here]
-    active = s.scalars(select(Project).where(Project.status == ProjectStatus.ACTIVE)).all()
-    return list(active) if len(active) == 1 else list(s.scalars(select(Project)).all())
+    active = s.scalars(select(Campaign).where(Campaign.status == CampaignStatus.ACTIVE)).all()
+    return list(active) if len(active) == 1 else list(s.scalars(select(Campaign)).all())
 
 
 def migrate(db: Database) -> None:
-    """Migrate the database to head, or close it and exit when its schema is ahead of this piloop."""
+    """Migrate the database to head, or close it and exit when its schema is ahead of this piloop.
+
+    It also exits, without a change, under the running daemon of an older piloop (``refuse_older_daemon``).
+    """
+    try:
+        refuse_older_daemon(settings, db.engine)
+    except OlderDaemon as e:
+        db.close()
+        raise SystemExit(str(e)) from e
     try:
         migrate_schema(db.engine)
     except SchemaAhead as e:

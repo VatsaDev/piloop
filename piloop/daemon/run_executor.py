@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from piloop import git
 from piloop.agents.launcher import STOP_ENDED, TRANSCRIPT, Launcher
 from piloop.agents.roles import compose_brief, role
-from piloop.campaign.project import WORKSPACE, project_dir, worktree_links
+from piloop.campaign.campaigns import WORKSPACE, campaign_dir, worktree_links
 from piloop.campaign.stop import (
     BLOCKED,
     CAMPAIGN_STOPPED_ERROR,
@@ -32,9 +32,10 @@ from piloop.campaign.stop import (
     park_cancelled,
     run_cancel,
 )
-from piloop.config import ProjectConfig, Track, config_of
+from piloop.config import CampaignConfig, Track, config_of
 from piloop.db.events import emit
 from piloop.db.models import (
+    Campaign,
     Candidate,
     Comment,
     CommentKind,
@@ -43,7 +44,6 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Measurement,
-    Project,
     Run,
     RunStatus,
     TargetKind,
@@ -212,19 +212,19 @@ class RunExecutor:
             with self._db.session() as s:
                 run = s.get_one(Run, run_id)
                 idea = run.idea
-                project = idea.project
-                cfg = config_of(project)
+                campaign = idea.campaign
+                cfg = config_of(campaign)
                 base = s.get_one(Candidate, run.base_candidate_id)
                 brief = run.brief or compose_brief(
-                    role(cfg, run.role, Path(project.path)),
-                    project,
+                    role(cfg, run.role, Path(campaign.path)),
+                    campaign,
                     worker_id,
                     reason=f'idea#{idea.id} is ready',
                     context=self._context(
                         s, cfg, idea, base, f'{run.role}#{worker_id}', self._runs_dir / str(run_id) / 'worktree'
                     ),
                     track=cfg.track(idea.track),
-                    wake=lessons_overview(s, project, cfg.wake_budget(run.role)),
+                    wake=lessons_overview(s, campaign, cfg.wake_budget(run.role)),
                 )
                 run.brief = brief
                 run.status = RunStatus.RUNNING
@@ -243,20 +243,20 @@ class RunExecutor:
         """
         with self._db.session() as s:
             run = s.get_one(Run, run_id)
-            project = run.idea.project
-            cfg = config_of(project)
+            campaign = run.idea.campaign
+            cfg = config_of(campaign)
             base_sha = s.get_one(Candidate, run.base_candidate_id).commit_sha
-            harness, model, project_path, idea_id, project_id = (
+            harness, model, campaign_path, idea_id, campaign_id = (
                 run.harness,
                 run.model,
-                Path(project.path),
+                Path(campaign.path),
                 run.idea_id,
-                project.id,
+                campaign.id,
             )
         log_dir = self._runs_dir / str(run_id)
-        repo = git.open_repo(project_path)
+        repo = git.open_repo(campaign_path)
         wt_path = log_dir / 'worktree'
-        links = worktree_links(cfg, project_path, project_dir(self._home, project_id))
+        links = worktree_links(cfg, campaign_path, campaign_dir(self._home, campaign_id))
         span.set(idea=idea_id, worker=worker_id, harness=harness, model=model)
         with ExitStack() as cleanup:
             cleanup.callback(git.remove_worktree, repo, wt_path)
@@ -312,7 +312,7 @@ class RunExecutor:
                 status, error = RunStatus.SUCCEEDED, None
             self._close(span, run_id, status, error)
             # Score all commits, even if the worker then timed out or crashed.
-            recovered = self._score(run_id, project_id, repo, shas, log_dir) if shas else None
+            recovered = self._score(run_id, campaign_id, repo, shas, log_dir) if shas else None
         self._settle(span, run_id, idea_id, status, startup_failed=False, recovered=recovered)
 
     def _relaunch(self, span: Span, run_id: int, worker_id: int, log_dir: Path) -> bool:
@@ -336,7 +336,7 @@ class RunExecutor:
                 run.status = RunStatus.QUEUED
                 worker = Worker(
                     kind=run.role,
-                    project_id=run.idea.project_id,
+                    campaign_id=run.idea.campaign_id,
                     run_id=run_id,
                     harness=run.harness,
                     model=run.model,
@@ -410,22 +410,22 @@ class RunExecutor:
         with self._tracer.span('piloop.resume', run=run_id) as span:
             with self._db.session() as s:
                 run = s.get_one(Run, run_id)
-                project = run.idea.project
-                status, idea_id, project_id = run.status, run.idea_id, project.id
-                name, project_path = config_of(project).name, Path(project.path)
+                campaign = run.idea.campaign
+                status, idea_id, campaign_id = run.status, run.idea_id, campaign.id
+                name, campaign_path = config_of(campaign).name, Path(campaign.path)
             recovered = None
             try:
-                repo = git.open_repo(project_path)
+                repo = git.open_repo(campaign_path)
                 shas = git.pinned(repo, f'refs/piloop/{name}/r{run_id}/')
                 span.set(commits=len(shas))
-                recovered = self._score(run_id, project_id, repo, shas, self._runs_dir / str(run_id))
+                recovered = self._score(run_id, campaign_id, repo, shas, self._runs_dir / str(run_id))
             except Exception as e:
                 span.error(e)
                 status = RunStatus.FAILED
             self._settle(span, run_id, idea_id, status, startup_failed=False, recovered=recovered)
 
     def remeasure(self, candidate_id: int) -> None:
-        """Measure a candidate with the project's current evaluator. Its verdict does not change, unless it is a crash.
+        """Measure a candidate with the campaign's current evaluator. Its verdict does not change, unless it is a crash.
 
         Never raises. If the evaluation cannot start, for example because the commit is gone, a crashed measurement is
         recorded. It is a result like any other, so the candidate is not tried again with this evaluator unless someone
@@ -434,15 +434,15 @@ class RunExecutor:
         """
         with self._db.session() as s:
             candidate = s.get_one(Candidate, candidate_id)
-            project = s.get_one(Project, candidate.project_id)
-            cfg = config_of(project)
-            evaluator_id = current_evaluator(s, project, cfg).id
+            campaign = s.get_one(Campaign, candidate.campaign_id)
+            cfg = config_of(campaign)
+            evaluator_id = current_evaluator(s, campaign, cfg).id
             s.commit()
-            project_id, project_path, sha = project.id, Path(project.path), candidate.commit_sha
-        eval_dir = project_dir(self._home, project_id) / 'measure' / f'{candidate_id}-e{evaluator_id}'
+            campaign_id, campaign_path, sha = campaign.id, Path(campaign.path), candidate.commit_sha
+        eval_dir = campaign_dir(self._home, campaign_id) / 'measure' / f'{candidate_id}-e{evaluator_id}'
         try:
-            repo = git.open_repo(project_path)
-            if not self._measure(None, project_id, cfg, repo, sha, candidate_id, evaluator_id, eval_dir):
+            repo = git.open_repo(campaign_path)
+            if not self._measure(None, campaign_id, cfg, repo, sha, candidate_id, evaluator_id, eval_dir):
                 return  # a stop killed the evaluator: there is nothing new to judge
         except Exception as e:
             self._record(None, candidate_id, evaluator_id, EvalResult({}, 0.0, f'{type(e).__name__}: {e}'))
@@ -457,10 +457,10 @@ class RunExecutor:
         """
         with self._db.session() as s:
             candidate = s.get_one(Candidate, candidate_id)
-            project_id, project_path = candidate.project_id, Path(s.get_one(Project, candidate.project_id).path)
+            campaign_id, campaign_path = candidate.campaign_id, Path(s.get_one(Campaign, candidate.campaign_id).path)
         try:
-            eval_dir = project_dir(self._home, project_id) / 'measure' / f'{candidate_id}-rejudge'
-            self._rejudge(candidate_id, git.open_repo(project_path), eval_dir, rejudgeable)
+            eval_dir = campaign_dir(self._home, campaign_id) / 'measure' / f'{candidate_id}-rejudge'
+            self._rejudge(candidate_id, git.open_repo(campaign_path), eval_dir, rejudgeable)
         except Exception as e:
             with self._db.session() as s:
                 payload: dict[str, object] = {'error': f'{type(e).__name__}: {e}'}
@@ -483,14 +483,14 @@ class RunExecutor:
             if run is None or not again(candidate):
                 return
             assert candidate.parent is not None  # a run's candidate descends from the run's base
-            cfg = config_of(run.idea.project)
+            cfg = config_of(run.idea.campaign)
             scope = Scope(
                 run.id,
-                candidate.project_id,
+                candidate.campaign_id,
                 cfg,
                 cfg.track(run.idea.track),
                 repo,
-                current_evaluator(s, run.idea.project, cfg).id,
+                current_evaluator(s, run.idea.campaign, cfg).id,
                 run.branch,
             )
             s.commit()
@@ -503,14 +503,14 @@ class RunExecutor:
         if judged.merged is not None:
             self._follow(scope, judged.merged, log_dir)
 
-    def _score(self, run_id: int, project_id: int, repo: Repo, shas: list[str], log_dir: Path) -> int | None:
+    def _score(self, run_id: int, campaign_id: int, repo: Repo, shas: list[str], log_dir: Path) -> int | None:
         """Turn each new commit into a candidate, or find its existing candidate, then measure and judge it.
 
         Return the id of the candidate of the run's recovery commit (``RECOVERED_TRAILER``), if it has one and scoring
         was not cancelled. A tree that is already a candidate keeps that candidate and its verdict.
 
-        The daemon scores with the project's current config, not the config at launch. A run that outlives a config
-        change must not move the project back to the old evaluator. All commits are candidates and pinned first, so a
+        The daemon scores with the campaign's current config, not the config at launch. A run that outlives a config
+        change must not move the campaign back to the old evaluator. All commits are candidates and pinned first, so a
         commit that waits for the evaluations before it is a ``pending`` candidate, and after a stop, ``resume`` finds
         all of them. It judges the candidates that the stop left pending, including rebased ones
         (``_follow``).
@@ -531,21 +531,21 @@ class RunExecutor:
         """
         with self._db.session() as s:
             run = s.get_one(Run, run_id)
-            cfg = config_of(run.idea.project)
+            cfg = config_of(run.idea.campaign)
             scope = Scope(
                 run_id,
-                project_id,
+                campaign_id,
                 cfg,
                 cfg.track(run.idea.track),
                 repo,
-                current_evaluator(s, run.idea.project, cfg).id,
+                current_evaluator(s, run.idea.campaign, cfg).id,
                 run.branch,
             )
             bar_id = bar_of(run.base).id
             candidate = run.base
             ids: list[int] = []
             for sha in shas:
-                candidate, _ = resolve(s, project_id, repo, sha, parent=candidate, run_id=run_id)
+                candidate, _ = resolve(s, campaign_id, repo, sha, parent=candidate, run_id=run_id)
                 ids.append(candidate.id)
             s.commit()
         for i, sha in enumerate(shas):
@@ -566,7 +566,7 @@ class RunExecutor:
                     span.set(status='known')
                     self._tracer.event('candidate.known', run=run_id, commit=sha, candidate=candidate_id)
                 elif not self._measure(
-                    run_id, project_id, cfg, repo, sha, candidate_id, scope.evaluator_id, log_dir / f'eval-{i}'
+                    run_id, campaign_id, cfg, repo, sha, candidate_id, scope.evaluator_id, log_dir / f'eval-{i}'
                 ):
                     span.set(status='cancelled')
                     return None
@@ -612,7 +612,7 @@ class RunExecutor:
                 span.set(rebased=True)
                 if needs_measurement and not self._measure(
                     scope.run_id,
-                    scope.project_id,
+                    scope.campaign_id,
                     scope.cfg,
                     scope.repo,
                     sha,
@@ -631,8 +631,8 @@ class RunExecutor:
     def _measure(
         self,
         run_id: int | None,
-        project_id: int,
-        cfg: ProjectConfig,
+        campaign_id: int,
+        cfg: CampaignConfig,
         repo: Repo,
         sha: str,
         candidate_id: int,
@@ -661,7 +661,7 @@ class RunExecutor:
                     span.set(status='joined')
                     return True
                 try:
-                    result = self._evaluate(evaluation_id, project_id, cfg, repo, sha, eval_dir)
+                    result = self._evaluate(evaluation_id, campaign_id, cfg, repo, sha, eval_dir)
                 except Exception as e:
                     span.error(e)
                     result = EvalResult({}, 0.0, f'{type(e).__name__}: {e}')
@@ -701,10 +701,10 @@ class RunExecutor:
         return Turn.STOPPED
 
     def _evaluate(
-        self, evaluation_id: int, project_id: int, cfg: ProjectConfig, repo: Repo, sha: str, eval_dir: Path
+        self, evaluation_id: int, campaign_id: int, cfg: CampaignConfig, repo: Repo, sha: str, eval_dir: Path
     ) -> EvalResult:
         """Run the evaluate command on ``sha`` in a clean worktree. Every evaluation of the daemon runs here."""
-        links = worktree_links(cfg, Path(repo.working_dir), project_dir(self._home, project_id))
+        links = worktree_links(cfg, Path(repo.working_dir), campaign_dir(self._home, campaign_id))
         eval_dir.mkdir(parents=True, exist_ok=True)
         eval_wt = eval_dir / 'worktree'
         self._units_dir.mkdir(parents=True, exist_ok=True)
@@ -830,7 +830,7 @@ class RunExecutor:
         A rebase is needed for a keep against a bar that is no longer the head, unless the run is a branch run. A
         candidate whose history already contains the head needs no merge. It is judged against the head.
         """
-        trunk = head(s, s.get_one(Project, candidate.project_id), excluding=candidate)
+        trunk = head(s, s.get_one(Campaign, candidate.campaign_id), excluding=candidate)
         verdict, reason = judge(
             candidate,
             s.get_one(Candidate, bar_id),
@@ -901,7 +901,7 @@ class RunExecutor:
                 run, idea = s.get_one(Run, run_id), s.get_one(Idea, idea_id)
                 run.scoring = False
                 # a role that piloop init removed while the run ran requeues nothing
-                role = config_of(idea.project).roles.doing_runs().get(run.role)
+                role = config_of(idea.campaign).roles.doing_runs().get(run.role)
                 if idea.status is IdeaStatus.SCHEDULED:  # A human may have parked or rejected it meanwhile.
                     if run.error == CANCELLED_ERROR:
                         park_cancelled(s, run)
@@ -956,7 +956,9 @@ class RunExecutor:
                         idea.status = IdeaStatus.DONE
                 s.commit()
 
-    def _context(self, s: Session, cfg: ProjectConfig, idea: Idea, base: Candidate, author: str, worktree: Path) -> str:
+    def _context(
+        self, s: Session, cfg: CampaignConfig, idea: Idea, base: Candidate, author: str, worktree: Path
+    ) -> str:
         """Return the worker's context: its worktree, the idea, its base, and the comments on the idea and its runs.
 
         A comment on a run is about the idea too. Examples are a human's decision during attempt 1, or a watchdog's
@@ -965,7 +967,7 @@ class RunExecutor:
         it is queued.
         """
         track = cfg.track(idea.track)
-        evaluator_id = idea.project.evaluator_id or 0
+        evaluator_id = idea.campaign.evaluator_id or 0
         on_idea = (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == idea.id)
         on_its_runs = (Comment.target_kind == TargetKind.RUN) & Comment.target_id.in_(
             select(Run.id).where(Run.idea_id == idea.id)
@@ -974,7 +976,7 @@ class RunExecutor:
         at_base = ', '.join(f'{t.primary.name}={score(base, evaluator_id, t.primary)}' for t in cfg.all_tracks)
         lines = [
             f'- Your cwd is your worktree, {worktree}: make every edit, run every evaluation and make every commit'
-            f' there. Only its commits are scored. The project repo, {idea.project.path}, is read-only for you: read'
+            f' there. Only its commits are scored. The campaign repo, {idea.campaign.path}, is read-only for you: read'
             ' its history and candidates, never edit, run or commit in it.',
             f'- Starting from candidate#{base.id}: {at_base} — {base.summary}',
         ]
@@ -1003,13 +1005,13 @@ class RunExecutor:
             f'- Shared workspace for artifacts and notes to future workers: `./{WORKSPACE}/` (not committed). Put what'
             f' your idea produces there under `./{WORKSPACE}/idea{idea.id}/`: it is archived when the idea is done, and'
             ' its local copy goes some days later. The files of a done idea come back with'
-            f' `piloop restore {idea.project.name} <idea id>|<workspace path>`.',
+            f' `piloop restore {idea.campaign.name} <idea id>|<workspace path>`.',
             f'- Leave a finding on your idea when you are done: INSERT INTO comments (target_kind, target_id, author,'
             f" kind, body) VALUES ('idea', {idea.id}, '{author}', 'finding', '...').",
             '- Ask for what you cannot do or decide yourself with an escalation, never a note: INSERT INTO comments'
             f" (target_kind, target_id, author, kind, priority, body) VALUES ('idea', {idea.id}, '{author}',"
             " 'escalation', 1, '...').",
-            '- The history below is what was tried in this project: do not repeat it; combine or go elsewhere.',
+            '- The history below is what was tried in this campaign: do not repeat it; combine or go elsewhere.',
         ]
         lines += ['', f'## Your idea (idea#{idea.id}): {idea.title}', idea.hypothesis.rstrip()]
         if idea.provenance:
@@ -1018,16 +1020,16 @@ class RunExecutor:
             lines += ['', '### Plan', idea.plan.rstrip()]
         if comments:
             lines += ['', '## Comments on this idea and its runs', *(_comment_line(c) for c in comments)]
-        return '\n'.join([*lines, '', history(s, idea.project, cfg)])
+        return '\n'.join([*lines, '', history(s, idea.campaign, cfg)])
 
 
 @dataclass(frozen=True)
 class Scope:
-    """The scope for scoring the candidates of one run: the run, the project's config at scoring time and the track."""
+    """The scope for scoring the candidates of one run: the run, the campaign's config at scoring time and the track."""
 
     run_id: int
-    project_id: int
-    cfg: ProjectConfig
+    campaign_id: int
+    cfg: CampaignConfig
     track: Track
     repo: Repo
     evaluator_id: int

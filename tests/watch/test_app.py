@@ -21,8 +21,10 @@ from textual.pilot import Pilot
 from textual.widgets import HelpPanel
 
 from piloop.campaign import inbox, ops
-from piloop.config import ProjectConfig
+from piloop.config import CampaignConfig
 from piloop.db.models import (
+    Campaign,
+    CampaignStatus,
     Candidate,
     Comment,
     CommentKind,
@@ -30,8 +32,6 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Measurement,
-    Project,
-    ProjectStatus,
     Run,
     RunStatus,
     TargetKind,
@@ -42,7 +42,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.watch.app import CampaignScreen, CandidatesTable, ProjectsScreen, Watch
+from piloop.watch.app import CampaignScreen, CampaignsScreen, CandidatesTable, Watch
 from piloop.watch.panels import PANELS, Context, kept_scores
 from tests.conftest import wait_until
 from tests.reports.test_history import idea
@@ -93,13 +93,13 @@ def campaign_screen(app: Watch) -> CampaignScreen:
 
 
 @pytest.fixture
-def campaign(db: Database, project: Project, tmp_path: Path) -> Project:
+def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Campaign:
     """A running campaign: kept candidates, two live agents (one in a Herdr tab), a queue, an inbox, a stopped twin."""
     log_dir = tmp_path / 'research-log'
     log_dir.mkdir()
     (log_dir / 'transcript.txt').write_text('reading the history\nproposing idea B\n')
     with db.session() as s:
-        p = s.get_one(Project, project.id)
+        p = s.get_one(Campaign, campaign.id)
         p.config = {**p.config, 'stop': STOP}
         s.get_one(Candidate, 1).created_at = ago(hours=3)
         done = idea(s, p, 'more lines', IdeaStatus.DONE, created_at=ago(hours=3))
@@ -121,7 +121,7 @@ def campaign(db: Database, project: Project, tmp_path: Path) -> Project:
             s.add(
                 Candidate(
                     id=n,
-                    project_id=p.id,
+                    campaign_id=p.id,
                     run_id=run.id,
                     parent_id=n - 1,
                     tree_sha=f't{n}',
@@ -143,7 +143,7 @@ def campaign(db: Database, project: Project, tmp_path: Path) -> Project:
             [
                 Worker(
                     kind=WorkerKind.WORKER,
-                    project_id=p.id,
+                    campaign_id=p.id,
                     run_id=live_run.id,
                     harness='pi',
                     model='m',
@@ -154,7 +154,7 @@ def campaign(db: Database, project: Project, tmp_path: Path) -> Project:
                 ),
                 Worker(
                     kind=WorkerKind.RESEARCH,
-                    project_id=p.id,
+                    campaign_id=p.id,
                     harness='claude',
                     model='opus',
                     state=WorkerState.STARTING,
@@ -164,7 +164,7 @@ def campaign(db: Database, project: Project, tmp_path: Path) -> Project:
                 ),
                 Worker(
                     kind=WorkerKind.WATCHDOG,
-                    project_id=p.id,
+                    campaign_id=p.id,
                     state=WorkerState.EXITED,
                     usage={'total': 1_234_567, 'turns': 9, 'source': '/x.jsonl'},
                 ),
@@ -193,7 +193,7 @@ def campaign(db: Database, project: Project, tmp_path: Path) -> Project:
                     created_at=ago(minutes=20),
                 ),
                 Comment(
-                    target_kind=TargetKind.PROJECT,
+                    target_kind=TargetKind.CAMPAIGN,
                     target_id=p.id,
                     kind=CommentKind.ESCALATION,
                     priority=1,
@@ -201,7 +201,7 @@ def campaign(db: Database, project: Project, tmp_path: Path) -> Project:
                     **comment,
                 ),
                 Comment(
-                    target_kind=TargetKind.PROJECT, target_id=p.id, kind=CommentKind.NOTE, body='a note', **comment
+                    target_kind=TargetKind.CAMPAIGN, target_id=p.id, kind=CommentKind.NOTE, body='a note', **comment
                 ),
                 Comment(
                     target_kind=TargetKind.RUN,
@@ -213,21 +213,21 @@ def campaign(db: Database, project: Project, tmp_path: Path) -> Project:
                 ),
             ]
         )
-        other = Project(
+        other = Campaign(
             name='other',
             path=str(tmp_path / 'other'),
             config=p.config,
-            status=ProjectStatus.STOPPED,
+            status=CampaignStatus.STOPPED,
             stopped_reason='max_runs: 50 runs, and more words than the column holds',
         )
         s.add(other)
         s.flush()
-        s.add(Candidate(project_id=other.id, tree_sha='o1', commit_sha='o', verdict=Verdict.PENDING))
+        s.add(Candidate(campaign_id=other.id, tree_sha='o1', commit_sha='o', verdict=Verdict.PENDING))
         s.commit()
         for e in s.scalars(select(Event)):  # trigger-written events are stamped to the second
             e.at = ago(minutes=1)
         s.commit()
-    return project
+    return campaign
 
 
 BLOCKED_AGENT: Response = {'result': {'type': 'agent_info', 'agent': {'name': 'worker-1', 'agent_status': 'blocked'}}}
@@ -238,8 +238,8 @@ def comment(s: object, comment_id: int) -> Comment:
     return s.get_one(Comment, comment_id)
 
 
-def test_the_projects_screen_opens_a_project_and_esc_comes_back(
-    db: Database, campaign: Project, herdr_log: Path
+def test_the_campaigns_screen_opens_a_campaign_and_esc_comes_back(
+    db: Database, live_campaign: Campaign, herdr_log: Path
 ) -> None:
     shots: list[str] = []
 
@@ -255,18 +255,18 @@ def test_the_projects_screen_opens_a_project_and_esc_comes_back(
     drive(db, None, scenario)
     assert shots[0].splitlines()[:5] == snapshot(
         [
-            ' piloop: 2 projects',
+            ' piloop: 2 campaigns',
             '',
-            ' project  status                                    head     vs baseline  agents    ready    inbox    tokens    last event',
-            ' demo     active                                    4 score  +3           2 agents  1 ready  2 inbox  1.2M tok  comment.note 1m ago',
-            ' other    stopped: max_runs: 50 runs, and more wo…  —        —            0 agents  0 ready  0 inbox  —         —',
+            ' campaign  status                                    head     vs baseline  agents    ready    inbox    tokens    last event',
+            ' demo      active                                    4 score  +3           2 agents  1 ready  2 inbox  1.2M tok  comment.note 1m ago',
+            ' other     stopped: max_runs: 50 runs, and more wo…  —        —            0 agents  0 ready  0 inbox  —         —',
         ]
     )
     assert shots[1] == snapshot("""\
  demo · head score 4 (candidate#4, +3 vs baseline) · 3 kept / 4 candidates · 1.2M tok
  run 2/50 · 2.0h/12h · 1.2M/5.0M tok · 0/10 runs without a keep · target ≥ 10 (head 4)
 ╭─ [1] Inbox 2 ────────────────────────────────────────────────────────────────────────╮╭─ [0] inbox ──────────────────────────────────────────────────────────╮
-│ p1  escalation  watchdog#3  30m  Codex cannot start: trust dialog. Environment or har││ comment#3 escalation on project#1 by watchdog#3, 30m ago · p1,       │
+│ p1  escalation  watchdog#3  30m  Codex cannot start: trust dialog. Environment or har││ comment#3 escalation on campaign#1 by watchdog#3, 30m ago · p1,      │
 │ p2  decision    pi          20m  Keep #2: the floor holds.                           ││ unacknowledged                                                       │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯│                                                                      │
 ╭─ [2] Agents 2 ───────────────────────────────────────────────────────────────────────╮│ Codex cannot start: trust dialog. Environment or harness?            │
@@ -306,7 +306,7 @@ def test_the_projects_screen_opens_a_project_and_esc_comes_back(
 │                                                                                      ││                                                                      │
 │                                                                                      ││                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────╯
- a ack  A ack all shown  r reply  / filter  esc projects  q quit  ? keys
+ a ack  A ack all shown  r reply  / filter  esc campaigns  q quit  ? keys
 """)
     assert shots[2].splitlines()[:2] == snapshot(
         [
@@ -316,17 +316,19 @@ def test_the_projects_screen_opens_a_project_and_esc_comes_back(
     )
 
 
-def test_a_project_not_registered_yet_is_waited_for(db: Database) -> None:
+def test_a_campaign_not_registered_yet_is_waited_for(db: Database) -> None:
     shots: list[str] = []
 
     async def scenario(pilot: Pilot[None], app: Watch) -> None:
         shots.append(screen_text(app).splitlines()[0])
 
     drive(db, '/nowhere/yet', scenario)
-    assert shots == [" no project '/nowhere/yet' yet: `piloop init` registers it, and this view follows"]
+    assert shots == [" no campaign '/nowhere/yet' yet: `piloop init` registers it, and this view follows"]
 
 
-def test_inbox_keys_acknowledge_one_item_or_every_item_shown(db: Database, campaign: Project, herdr_log: Path) -> None:
+def test_inbox_keys_acknowledge_one_item_or_every_item_shown(
+    db: Database, live_campaign: Campaign, herdr_log: Path
+) -> None:
     notes: list[str] = []
 
     async def scenario(pilot: Pilot[None], app: Watch) -> None:
@@ -353,7 +355,7 @@ def test_inbox_keys_acknowledge_one_item_or_every_item_shown(db: Database, campa
 
 
 def test_r_replies_to_the_thread_root_with_a_priority_that_wakes_the_orchestrator(
-    db: Database, campaign: Project, herdr_log: Path
+    db: Database, live_campaign: Campaign, herdr_log: Path
 ) -> None:
     notes: list[str] = []
 
@@ -384,12 +386,14 @@ def test_r_replies_to_the_thread_root_with_a_priority_that_wakes_the_orchestrato
             3,
             'Revert it',
         )
-        assert inbox.news(s, cursor, project_id=campaign.id, me='orchestrator')[1] == [
+        assert inbox.news(s, cursor, campaign_id=live_campaign.id, me='orchestrator')[1] == [
             'comment#6 decision p3 on comment#2 (demo) by human: Revert it'
         ]
 
 
-def test_slash_filters_the_focused_panel_and_esc_clears_it(db: Database, campaign: Project, herdr_log: Path) -> None:
+def test_slash_filters_the_focused_panel_and_esc_clears_it(
+    db: Database, live_campaign: Campaign, herdr_log: Path
+) -> None:
     shots: list[str] = []
 
     async def scenario(pilot: Pilot[None], app: Watch) -> None:
@@ -406,7 +410,7 @@ def test_slash_filters_the_focused_panel_and_esc_clears_it(db: Database, campaig
 
 
 def test_the_agents_panel_shows_the_selected_agents_output_and_its_state(
-    db: Database, campaign: Project, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
+    db: Database, live_campaign: Campaign, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     scripted(monkeypatch, agent_get=[BLOCKED_AGENT])
     shots: list[str] = []
@@ -464,13 +468,13 @@ def test_the_agents_panel_shows_the_selected_agents_output_and_its_state(
 │                                                                                      ││                                                                      │
 │                                                                                      ││                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯╰──────────────────────────────────────────────────────────────────────╯
- ⏎ focus  s steer  / filter  esc projects  q quit  ? keys
+ ⏎ focus  s steer  / filter  esc campaigns  q quit  ? keys
 """)
     assert 'proposing idea B' in shots[1], "a headless agent's saved transcript"
 
 
 def test_agents_keys_focus_the_tab_and_steer(
-    db: Database, campaign: Project, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
+    db: Database, live_campaign: Campaign, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     notes: list[str] = []
 
@@ -521,7 +525,7 @@ def test_agents_keys_focus_the_tab_and_steer(
 
 
 def test_ideas_keys_approve_park_reject_with_a_reason_and_move_the_priority(
-    db: Database, campaign: Project, herdr_log: Path
+    db: Database, live_campaign: Campaign, herdr_log: Path
 ) -> None:
     notes: list[str] = []
 
@@ -560,7 +564,7 @@ def test_ideas_keys_approve_park_reject_with_a_reason_and_move_the_priority(
 
 
 def test_a_review_that_another_client_made_meanwhile_is_refused_with_why(
-    db: Database, campaign: Project, herdr_log: Path
+    db: Database, live_campaign: Campaign, herdr_log: Path
 ) -> None:
     notes: list[str] = []
 
@@ -578,9 +582,11 @@ def test_a_review_that_another_client_made_meanwhile_is_refused_with_why(
     assert notes == ['idea#4 is ready already']
 
 
-def test_a_paused_project_says_so_in_its_row_and_its_header(db: Database, campaign: Project, herdr_log: Path) -> None:
+def test_a_paused_campaign_says_so_in_its_row_and_its_header(
+    db: Database, live_campaign: Campaign, herdr_log: Path
+) -> None:
     with db.session() as s:
-        ops.pause(s, campaign.id, evals=False, reason='evaluator v2')
+        ops.pause(s, live_campaign.id, evals=False, reason='evaluator v2')
         s.commit()
     shots: list[str] = []
 
@@ -591,17 +597,17 @@ def test_a_paused_project_says_so_in_its_row_and_its_header(db: Database, campai
         shots.append(screen_text(app))
 
     drive(db, None, scenario)
-    assert shots[0].splitlines()[3].startswith(' demo     paused (launches): evaluator v2  ')
+    assert shots[0].splitlines()[3].startswith(' demo      paused (launches): evaluator v2  ')
     assert shots[1].splitlines()[0].endswith(' · paused (launches): evaluator v2')
 
 
 def test_a_seed_heads_the_ideas_panel_and_is_developed_by_research_not_approved_by_a_key(
-    db: Database, campaign: Project, herdr_log: Path
+    db: Database, live_campaign: Campaign, herdr_log: Path
 ) -> None:
     with db.session() as s:
         seed = Idea(
             track='score',
-            project_id=campaign.id,
+            campaign_id=live_campaign.id,
             title='a hunch',
             hypothesis='a hunch',
             status=IdeaStatus.SEED,
@@ -629,7 +635,7 @@ def test_a_seed_heads_the_ideas_panel_and_is_developed_by_research_not_approved_
     ]
 
 
-def test_the_ideas_and_candidates_details(db: Database, campaign: Project, herdr_log: Path) -> None:
+def test_the_ideas_and_candidates_details(db: Database, live_campaign: Campaign, herdr_log: Path) -> None:
     shots: list[str] = []
 
     async def scenario(pilot: Pilot[None], app: Watch) -> None:
@@ -674,12 +680,12 @@ def test_the_ideas_and_candidates_details(db: Database, campaign: Project, herdr
 
 
 def test_imported_references_are_listed_apart_as_starting_points(
-    db: Database, campaign: Project, herdr_log: Path
+    db: Database, live_campaign: Campaign, herdr_log: Path
 ) -> None:
     with db.session() as s:
         s.add(
             Candidate(
-                project_id=campaign.id,
+                campaign_id=live_campaign.id,
                 tree_sha='r1',
                 commit_sha='r',
                 summary='paper repro',
@@ -708,7 +714,7 @@ def test_imported_references_are_listed_apart_as_starting_points(
 
 
 def test_question_mark_shows_the_panels_keys_and_0_focuses_the_detail(
-    db: Database, campaign: Project, herdr_log: Path
+    db: Database, live_campaign: Campaign, herdr_log: Path
 ) -> None:
     async def scenario(pilot: Pilot[None], app: Watch) -> None:
         await pilot.press('question_mark')
@@ -726,7 +732,9 @@ def test_question_mark_shows_the_panels_keys_and_0_focuses_the_detail(
     drive(db, 'demo', scenario)
 
 
-def test_an_empty_project_takes_every_key_without_acting(db: Database, campaign: Project, herdr_log: Path) -> None:
+def test_an_empty_campaign_takes_every_key_without_acting(
+    db: Database, live_campaign: Campaign, herdr_log: Path
+) -> None:
     async def scenario(pilot: Pilot[None], app: Watch) -> None:
         assert isinstance(app.focused, CandidatesTable), 'an empty inbox does not take the focus'
         await pilot.press('1', 'a', 'A', 'r', '2', 'enter', 's', '3', 'y', 'plus')
@@ -738,13 +746,15 @@ def test_an_empty_project_takes_every_key_without_acting(db: Database, campaign:
 
 
 def test_the_screen_follows_the_database_and_a_dialog_holds_it_still(
-    db: Database, campaign: Project, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
+    db: Database, live_campaign: Campaign, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     db_file = Path(str(db.engine.url.database))
 
     async def scenario(pilot: Pilot[None], app: Watch) -> None:
         with db.session() as s:
-            s.add(Comment(target_kind=TargetKind.PROJECT, target_id=campaign.id, author='w', priority=0, body='new'))
+            s.add(
+                Comment(target_kind=TargetKind.CAMPAIGN, target_id=live_campaign.id, author='w', priority=0, body='new')
+            )
             s.commit()
         app.poll()
         await pilot.pause()
@@ -758,20 +768,20 @@ def test_the_screen_follows_the_database_and_a_dialog_holds_it_still(
         monkeypatch.setattr('piloop.watch.app.REFRESH_SECONDS', 0)
         app.poll()
         await pilot.pause()
-        assert 'piloop: 2 projects' in screen_text(app), 'the projects screen re-reads too'
+        assert 'piloop: 2 campaigns' in screen_text(app), 'the campaigns screen re-reads too'
         app.poll()
 
     drive(db, 'demo', scenario)
 
 
-def test_details_of_rows_gone_or_bare(db: Database, campaign: Project) -> None:
+def test_details_of_rows_gone_or_bare(db: Database, live_campaign: Campaign) -> None:
     with db.session() as s:
-        other = s.get_one(Project, 2)
-        ctx = Context(other, ProjectConfig.model_validate(other.config), utcnow(), 'human')
+        other = s.get_one(Campaign, 2)
+        ctx = Context(other, CampaignConfig.model_validate(other.config), utcnow(), 'human')
         s.add(
             Idea(
                 track='score',
-                project_id=2,
+                campaign_id=2,
                 title='with a plan',
                 hypothesis='h',
                 plan='step one\nstep two',
@@ -790,24 +800,24 @@ def text(renderable: RenderableType) -> str:
     return console.export_text()
 
 
-def test_the_projects_screen_without_a_project_opens_nothing(db: Database) -> None:
+def test_the_campaigns_screen_without_a_campaign_opens_nothing(db: Database) -> None:
     async def scenario(pilot: Pilot[None], app: Watch) -> None:
         await pilot.press('enter')
         await pilot.pause()
-        assert isinstance(app.screen, ProjectsScreen) and 'piloop: 0 projects' in screen_text(app)
+        assert isinstance(app.screen, CampaignsScreen) and 'piloop: 0 campaigns' in screen_text(app)
 
     drive(db, None, scenario)
 
 
 def test_a_reply_typed_in_the_watch_wakes_the_orchestrators_inbox_wait(
-    db: Database, project: Project, tmp_path: Path
+    db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
     """End to end in an isolated PILOOP_HOME: `piloop watch` in a terminal, `piloop inbox wait` as the orchestrator."""
     with db.session() as s:
         s.add(
             Comment(
-                target_kind=TargetKind.PROJECT,
-                target_id=project.id,
+                target_kind=TargetKind.CAMPAIGN,
+                target_id=campaign.id,
                 author='watchdog#3',
                 kind=CommentKind.ESCALATION,
                 priority=1,
@@ -866,24 +876,31 @@ def _read(fd: int) -> bytes:
 
 
 def test_the_sparkline_is_the_head_after_each_trunk_keep_so_a_branch_keep_leaves_it_level(
-    db: Database, campaign: Project
+    db: Database, live_campaign: Campaign
 ) -> None:
     with db.session() as s:
         branch = Run(idea_id=1, attempt=2, base_candidate_id=1, harness='pi', model='m', branch=True)
         s.add(branch)
         s.flush()
         below = Candidate(
-            project_id=campaign.id, run_id=branch.id, tree_sha='b', commit_sha='b', summary='b', verdict=Verdict.KEEP
+            campaign_id=live_campaign.id,
+            run_id=branch.id,
+            tree_sha='b',
+            commit_sha='b',
+            summary='b',
+            verdict=Verdict.KEEP,
         )
         s.add(below)
         s.flush()
         s.add(Measurement(candidate_id=below.id, evaluator_id=1, metrics={'score': 9.0, 'size': 1}))
         s.commit()
-        p = s.get_one(Project, campaign.id)
-        assert kept_scores(s, p, ProjectConfig.model_validate(p.config)) == {'score': [1.0, 3.0, 4.0]}
+        p = s.get_one(Campaign, live_campaign.id)
+        assert kept_scores(s, p, CampaignConfig.model_validate(p.config)) == {'score': [1.0, 3.0, 4.0]}
 
 
-def test_a_screen_that_is_not_mounted_yet_is_not_read_again(db: Database, campaign: Project, herdr_log: Path) -> None:
+def test_a_screen_that_is_not_mounted_yet_is_not_read_again(
+    db: Database, live_campaign: Campaign, herdr_log: Path
+) -> None:
     """The poll timer can fire between a push and the mount of the new screen, whose widgets do not exist yet."""
 
     async def scenario(pilot: Pilot[None], app: Watch) -> None:
@@ -897,7 +914,7 @@ def test_a_screen_that_is_not_mounted_yet_is_not_read_again(db: Database, campai
 
 
 def test_a_screen_that_the_exit_is_tearing_down_is_not_read_again(
-    db: Database, campaign: Project, herdr_log: Path
+    db: Database, live_campaign: Campaign, herdr_log: Path
 ) -> None:
     """The poll timer can also fire while the exit prunes the widgets of the screen, which is still mounted."""
 
@@ -910,7 +927,9 @@ def test_a_screen_that_the_exit_is_tearing_down_is_not_read_again(
     drive(db, 'demo', scenario)
 
 
-def test_a_poll_after_the_app_stopped_running_reads_nothing(db: Database, campaign: Project, herdr_log: Path) -> None:
+def test_a_poll_after_the_app_stopped_running_reads_nothing(
+    db: Database, live_campaign: Campaign, herdr_log: Path
+) -> None:
     """The shutdown prunes the screens after the app stops running, and the poll timer can fire meanwhile: the screen is
     still mounted and attached (no ``exit`` ran), but its widgets are going."""
 

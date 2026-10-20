@@ -4,8 +4,8 @@
 |---|---|---|
 | `PILOOP_HOME` | `~/.piloop` | The directory that holds the database, the artifact store and the directories of each run (worktrees, logs, workspaces). |
 | `PILOOP_ACTOR` | `human` | Who this process is. Every row it updates records this value in `updated_by`. The daemon launches each agent with `<role>#<worker_id>`, for example `worker#12` or `scout#7`. |
-| `PILOOP_TICK_SECONDS` | `2` | The number of seconds between two ticks. On each tick, the daemon checks the triggers of every project and launches the requested workers. |
-| `PILOOP_MAX_EVALUATIONS` | `2` | The number of evaluate commands that the daemon runs at the same time, across all projects. The others wait in the evaluation queue (`piloop eval queue`). A free slot goes to the project with the fewest running evaluations, and in it to its head first, then to the oldest request. |
+| `PILOOP_TICK_SECONDS` | `2` | The number of seconds between two ticks. On each tick, the daemon checks the triggers of every campaign and launches the requested workers. |
+| `PILOOP_MAX_EVALUATIONS` | `2` | The number of evaluate commands that the daemon runs at the same time, across all campaigns. The others wait in the evaluation queue (`piloop eval queue`). A free slot goes to the campaign with the fewest running evaluations, and in it to its head first, then to the oldest request. |
 | `PILOOP_SECRETS_COMMAND` | none | A shell command that prints `NAME=value` lines: the API keys that the `[mcp.<name>]` servers name, from wherever you keep them. The daemon runs it when it starts and on every `piloop restart`. The keys go into the daemon's environment only, never into a file or a log. When unset, the daemon has only the environment that `piloop serve` started with. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | none | The standard OTLP endpoint. piloop exports traces only when this is set. |
 | `PILOOP_ENTIRE_ATTACH_TIMEOUT_SECONDS` | `120` | The number of seconds that `entire session attach` may take to turn the session of an ended agent into a checkpoint. After that, it is stopped and the checkpoint stays NULL. |

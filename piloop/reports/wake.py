@@ -3,7 +3,7 @@
 A session reads a short overview first and queries for more only when it needs it (the idea of OptMem's
 ``memo wake``). Two overviews use it. A worker's or research sweep's brief opens with the current lessons of the
 repo (``lessons_overview``). The orchestrator runs ``piloop wake`` (``orchestrator_overview``): its latest journal
-lines, the open inbox, the head of each active project and the current lessons. A budget is in tokens, counted as
+lines, the open inbox, the head of each active campaign and the current lessons. A budget is in tokens, counted as
 ``CHARS_PER_TOKEN`` characters each. It covers every line printed: the headings, and the last line of a list that
 counts what did not fit and says how to read it.
 """
@@ -18,14 +18,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from piloop.campaign import inbox
-from piloop.config import ProjectConfig, config_of
-from piloop.db.models import Journal, Lesson, LessonStatus, Project, ProjectStatus
+from piloop.config import CampaignConfig, config_of
+from piloop.db.models import Campaign, CampaignStatus, Journal, Lesson, LessonStatus
 from piloop.reports.overview import summary
 from piloop.text import metric as number
 
 CHARS_PER_TOKEN = 4
 JOURNAL_SHARE = 0.4
-"""The part of ``piloop wake``'s budget for the journal. The inbox, the projects and the lessons get 0.2 each."""
+"""The part of ``piloop wake``'s budget for the journal. The inbox, the campaigns and the lessons get 0.2 each."""
 OTHER_SHARE = 0.2
 LESSONS_MORE = 'the lessons query under "Remember past campaigns" in the procedures'
 WORD = re.compile(r'[a-z0-9]+')
@@ -69,7 +69,7 @@ def fitted(lines: Sequence[str], budget: int, more: str) -> list[str]:
 
 
 class Tier(IntEnum):
-    """How close a lesson's metric is to the metrics of the projects being briefed. A lower tier ranks first."""
+    """How close a lesson's metric is to the metrics of the campaigns being briefed. A lower tier ranks first."""
 
     PRIMARY = 0
     """A primary metric of theirs."""
@@ -86,13 +86,13 @@ class Tier(IntEnum):
 
 
 class Relevance:
-    """The ``Tier`` of a lesson's metric against the metrics of the projects being briefed.
+    """The ``Tier`` of a lesson's metric against the metrics of the campaigns being briefed.
 
     Names compare in lower case. Words are runs of letters and digits; split and aggregate words (``COMMON_WORDS``)
     and one- or two-letter words do not count.
     """
 
-    def __init__(self, configs: Sequence[ProjectConfig]) -> None:
+    def __init__(self, configs: Sequence[CampaignConfig]) -> None:
         self._primary = {t.primary.name.lower() for cfg in configs for t in cfg.all_tracks}
         self._other = {m.name.lower() for cfg in configs for m in cfg.metrics} - self._primary
         self._primary_words = set().union(*map(_words, self._primary))
@@ -117,33 +117,33 @@ def _words(metric: str) -> set[str]:
 
 
 class Current(NamedTuple):
-    """The current lesson of a family, with the name of its project and the age of its campaign (0 is the newest)."""
+    """The current lesson of a family, with the name of its campaign and the age of its campaign (0 is the newest)."""
 
     lesson: Lesson
-    project: str
+    campaign: str
     age: int
 
 
 def _family(lesson: Lesson) -> str:
-    """The family in lower case, with runs of spaces as one: the same family across projects."""
+    """The family in lower case, with runs of spaces as one: the same family across campaigns."""
     return ' '.join(lesson.family.lower().split())
 
 
 def current_lessons(s: Session, repos: Sequence[str | None], relevance: Relevance) -> list[tuple[Lesson, str]]:
-    """The current lesson of each family on each of ``repos``, most relevant first, with its project's name.
+    """The current lesson of each family on each of ``repos``, most relevant first, with its campaign's name.
 
-    A family's current lesson is the newest one of the newest campaign that has one, whichever project on the repo
+    A family's current lesson is the newest one of the newest campaign that has one, whichever campaign on the repo
     that is. Then they rank: by ``relevance`` of their metric first, so that a lesson in seconds does not outrank one
-    in the briefed project's own metric. Within a tier, dead or promising before untested, then a measured effect
+    in the briefed campaign's own metric. Within a tier, dead or promising before untested, then a measured effect
     before none, then the effect's rank among the lessons in the same metric (the largest, whatever its sign, first):
     effects in different units are never compared by size, the best of each metric comes before the second of any.
     Last, a newer campaign first.
     """
     rows = s.execute(
-        select(Lesson, Project.name, Project.repo)
-        .join(Project, Project.id == Lesson.project_id)
-        .where(Project.repo.in_([r for r in repos if r is not None]))
-        .order_by(Project.created_at.desc(), Project.id.desc(), Lesson.id.desc())
+        select(Lesson, Campaign.name, Campaign.repo)
+        .join(Campaign, Campaign.id == Lesson.campaign_id)
+        .where(Campaign.repo.in_([r for r in repos if r is not None]))
+        .order_by(Campaign.created_at.desc(), Campaign.id.desc(), Lesson.id.desc())
     ).all()
     current: dict[tuple[str | None, str], Current] = {}
     for age, (lesson, name, repo) in enumerate(rows):
@@ -164,25 +164,25 @@ def current_lessons(s: Session, repos: Sequence[str | None], relevance: Relevanc
         untested = lesson.status is LessonStatus.UNTESTED
         return relevance.tier(lesson.metric), untested, not measured, place, row.age
 
-    return [(row.lesson, row.project) for row in sorted(current.values(), key=key)]
+    return [(row.lesson, row.campaign) for row in sorted(current.values(), key=key)]
 
 
-def lesson_line(lesson: Lesson, project: str) -> str:
-    """One line of an overview: the project, the family, the status, the best effect and the id to read it by."""
+def lesson_line(lesson: Lesson, campaign: str) -> str:
+    """One line of an overview: the campaign, the family, the status, the best effect and the id to read it by."""
     best = 'none measured' if lesson.effect is None else f'{number(lesson.effect, signed=True)} {lesson.metric}'
-    return f'- [{project}] {lesson.family} | {lesson.status} | {best} (lesson#{lesson.id})'
+    return f'- [{campaign}] {lesson.family} | {lesson.status} | {best} (lesson#{lesson.id})'
 
 
-def lessons_overview(s: Session, project: Project, budget: int) -> str:
-    """The block that opens a brief: the current lessons on the project's repo, in ``budget``, heading included.
+def lessons_overview(s: Session, campaign: Campaign, budget: int) -> str:
+    """The block that opens a brief: the current lessons on the campaign's repo, in ``budget``, heading included.
 
     Empty when the budget is 0, when there are no lessons, or when not one line fits after the heading.
     """
-    lessons = current_lessons(s, [project.repo], Relevance([config_of(project)])) if budget else []
+    lessons = current_lessons(s, [campaign.repo], Relevance([config_of(campaign)])) if budget else []
     head = [
         '# What past campaigns on this repo concluded',
         '',
-        "The current lesson of each mechanism family, from the newest campaign that tried it; those in this project's"
+        "The current lesson of each mechanism family, from the newest campaign that tried it; those in this campaign's"
         ' metrics first, then related metrics; within them, dead or promising first, then the largest effects of each'
         ' metric. Before you propose or build a mechanism, read more with the queries under "Remember past campaigns"'
         ' in the procedures.',
@@ -193,7 +193,7 @@ def lessons_overview(s: Session, project: Project, budget: int) -> str:
 
 
 def orchestrator_overview(s: Session, budget: int, now: datetime) -> str:
-    """What ``piloop wake`` prints: the journal, the open inbox, the active projects and their lessons, in ``budget``.
+    """What ``piloop wake`` prints: the journal, the open inbox, the active campaigns and their lessons, in ``budget``.
 
     The title comes off the budget first. Of the rest, the journal gets ``JOURNAL_SHARE`` and each other section
     ``OTHER_SHARE``, its heading included. A section that does not fit is left out. Empty when the title does not fit.
@@ -226,10 +226,10 @@ def orchestrator_overview(s: Session, budget: int, now: datetime) -> str:
         'piloop inbox',
     )
 
-    active = s.scalars(select(Project).where(Project.status == ProjectStatus.ACTIVE).order_by(Project.id)).all()
-    projects_title = f'## Active projects ({len(active)})'
-    project_lines = fitted(
-        [f'- {summary(s, p, config_of(p))}' for p in active], _room(projects_title, other_share), 'piloop status'
+    active = s.scalars(select(Campaign).where(Campaign.status == CampaignStatus.ACTIVE).order_by(Campaign.id)).all()
+    campaigns_title = f'## Active campaigns ({len(active)})'
+    campaign_lines = fitted(
+        [f'- {summary(s, p, config_of(p))}' for p in active], _room(campaigns_title, other_share), 'piloop status'
     )
 
     repos = sorted({p.repo for p in active if p.repo is not None})
@@ -242,7 +242,7 @@ def orchestrator_overview(s: Session, budget: int, now: datetime) -> str:
     sections = (
         _section(journal_title, journal, lines, journal_share),
         _section(inbox_title, inbox_lines, len(items), other_share),
-        _section(projects_title, project_lines, len(active), other_share),
+        _section(campaigns_title, campaign_lines, len(active), other_share),
         _section(lessons_title, lesson_lines, len(lessons), other_share),
     )
     return '\n'.join([title, *(line for section in sections for line in section)])

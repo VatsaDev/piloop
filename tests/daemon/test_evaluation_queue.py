@@ -8,14 +8,14 @@ from pathlib import Path
 from pytest_mock import MockerFixture
 from sqlalchemy import delete, select
 
-from piloop.daemon.runner import RunExecutor
-from piloop.db.models import Candidate, Evaluation, Project, Run, RunStatus, Verdict
+from piloop.daemon.run_executor import RunExecutor
+from piloop.db.models import Campaign, Candidate, Evaluation, Run, RunStatus, Verdict
 from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.scoring import queue
 from piloop.scoring.ledger import measured
 from tests.conftest import ScriptRuntime, baseline, factory, write_script
-from tests.daemon.test_runner import execute, make_run, set_config
+from tests.daemon.test_run_executor import execute, make_run, set_config
 from tests.daemon.test_scheduler import add_ideas, make_scheduler
 
 HARNESS_OWN_LINE = '#!/bin/sh\nbasename "$(dirname "$PWD")" >> solve.txt\ngit commit -qam "own line"\n'
@@ -70,14 +70,14 @@ def errors(db: Database, candidate_id: int) -> tuple[list[str | None], Verdict]:
 
 
 def test_two_runs_that_reach_one_tree_share_one_evaluation_and_its_crash(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
     """A tree that a second run reaches while it is evaluated is not evaluated again, not even after a crash."""
     (tmp_path / 'hold').touch()
-    set_config(db, project, evaluate=held_evaluate(tmp_path, then='exit 7'))
+    set_config(db, campaign, evaluate=held_evaluate(tmp_path, then='exit 7'))
     ex = queued_executor(db, runtime, tmp_path, slots=2)
     waits = mocker.spy(ex, '_wait')
-    first, second = make_run(db, project), make_run(db, project, title='the same line')
+    first, second = make_run(db, campaign), make_run(db, campaign, title='the same line')
     one = in_thread(lambda: execute(ex, db, first))
     until(lambda: len(evaluated(tmp_path)) == 1, 'the first evaluation')
     two = in_thread(lambda: execute(ex, db, second))
@@ -93,7 +93,7 @@ def test_two_runs_that_reach_one_tree_share_one_evaluation_and_its_crash(
 
 
 def test_a_shared_evaluation_that_cannot_start_is_a_crash_for_every_request(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
     """The request that waits for another's evaluation gets that evaluation's crash, never an empty result."""
     ex = queued_executor(db, runtime, tmp_path, slots=2)
@@ -104,7 +104,7 @@ def test_a_shared_evaluation_that_cannot_start_is_a_crash_for_every_request(
         raise RuntimeError('cannot check out the commit')
 
     mocker.patch.object(ex, '_evaluate', side_effect=cannot_check_out)
-    first, second = make_run(db, project), make_run(db, project, title='the same line')
+    first, second = make_run(db, campaign), make_run(db, campaign, title='the same line')
     one = in_thread(lambda: execute(ex, db, first))
     until(lambda: len(rows(db)) == 1, 'the first request')
     two = in_thread(lambda: execute(ex, db, second))
@@ -118,14 +118,14 @@ def test_a_shared_evaluation_that_cannot_start_is_a_crash_for_every_request(
 
 
 def test_a_cancelled_evaluation_is_a_crash_that_names_who_cancelled_it_at_once(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """A cancel records the crash itself, so it holds even if no daemon sees it; a running evaluator is stopped."""
-    write_script(Path(project.path).parent / 'harness.sh', HARNESS_OWN_LINE)
+    write_script(Path(campaign.path).parent / 'harness.sh', HARNESS_OWN_LINE)
     (tmp_path / 'hold').touch()
-    set_config(db, project, evaluate=held_evaluate(tmp_path))
+    set_config(db, campaign, evaluate=held_evaluate(tmp_path))
     ex = queued_executor(db, runtime, tmp_path, slots=1)
-    first, second = make_run(db, project), make_run(db, project, title='another line')
+    first, second = make_run(db, campaign), make_run(db, campaign, title='another line')
     one = in_thread(lambda: execute(ex, db, first))
     until(lambda: len(evaluated(tmp_path)) == 1, 'the first evaluation')
     two = in_thread(lambda: execute(ex, db, second))
@@ -146,12 +146,12 @@ def test_a_cancelled_evaluation_is_a_crash_that_names_who_cancelled_it_at_once(
     assert rows(db) == []
 
 
-def test_a_cancel_holds_when_the_daemon_restarts_before_it_sees_it(db: Database, project: Project) -> None:
+def test_a_cancel_holds_when_the_daemon_restarts_before_it_sees_it(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
-        evaluator = s.get_one(Project, project.id).evaluator_id
+        evaluator = s.get_one(Campaign, campaign.id).evaluator_id
         assert evaluator is not None
-        base = baseline(db, project.id).id
-        other = Candidate(project_id=project.id, tree_sha='t', commit_sha='c')
+        base = baseline(db, campaign.id).id
+        other = Candidate(campaign_id=campaign.id, tree_sha='t', commit_sha='c')
         s.add(other)
         s.flush()
         running, _ = queue.request(s, base, evaluator)
@@ -168,13 +168,13 @@ def test_a_cancel_holds_when_the_daemon_restarts_before_it_sees_it(db: Database,
 
 
 def test_a_stop_ends_the_waiting_evaluations_and_records_nothing(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    write_script(Path(project.path).parent / 'harness.sh', HARNESS_OWN_LINE)
+    write_script(Path(campaign.path).parent / 'harness.sh', HARNESS_OWN_LINE)
     (tmp_path / 'hold').touch()
-    set_config(db, project, evaluate=held_evaluate(tmp_path))
+    set_config(db, campaign, evaluate=held_evaluate(tmp_path))
     ex = queued_executor(db, runtime, tmp_path, slots=1)
-    first, second = make_run(db, project), make_run(db, project, title='another line')
+    first, second = make_run(db, campaign), make_run(db, campaign, title='another line')
     threads = [in_thread(lambda: execute(ex, db, first))]
     until(lambda: len(evaluated(tmp_path)) == 1, 'the first evaluation')
     threads.append(in_thread(lambda: execute(ex, db, second)))
@@ -187,27 +187,27 @@ def test_a_stop_ends_the_waiting_evaluations_and_records_nothing(
     assert rows(db) == [], 'each request left the queue; the next daemon asks again'
 
 
-def add_project(db: Database, name: str, trees: int) -> list[int]:
-    """A second project with ``trees`` candidates, none kept."""
+def add_campaign(db: Database, name: str, trees: int) -> list[int]:
+    """A second campaign with ``trees`` candidates, none kept."""
     with db.session() as s:
-        other = Project(name=name, path=f'/{name}', config={})
+        other = Campaign(name=name, path=f'/{name}', config={})
         s.add(other)
         s.flush()
-        made = [Candidate(project_id=other.id, tree_sha=f'{name}{i}', commit_sha=f'{name}{i}') for i in range(trees)]
+        made = [Candidate(campaign_id=other.id, tree_sha=f'{name}{i}', commit_sha=f'{name}{i}') for i in range(trees)]
         s.add_all(made)
         s.commit()
         return [c.id for c in made]
 
 
-def test_a_busy_project_never_holds_back_another_project(db: Database, project: Project) -> None:
-    """A free slot goes to the project with the fewest running evaluations, then to the oldest request.
+def test_a_busy_campaign_never_holds_back_another_campaign(db: Database, campaign: Campaign) -> None:
+    """A free slot goes to the campaign with the fewest running evaluations, then to the oldest request.
 
-    A strict class order let one project's stream of run evaluations hold back another project's re-measure for ever.
+    A strict class order let one campaign's stream of run evaluations hold back another campaign's re-measure for ever.
     """
-    busy = add_project(db, 'busy', 8)
-    [third] = add_project(db, 'third', 1)
+    busy = add_campaign(db, 'busy', 8)
+    [third] = add_campaign(db, 'third', 1)
     with db.session() as s:
-        evaluator = s.get_one(Project, project.id).evaluator_id
+        evaluator = s.get_one(Campaign, campaign.id).evaluator_id
         assert evaluator is not None
 
         def ask(candidate_id: int) -> Evaluation:
@@ -217,7 +217,7 @@ def test_a_busy_project_never_holds_back_another_project(db: Database, project: 
             s.delete(evaluation)
             s.flush()
 
-        candidate = Candidate(project_id=project.id, tree_sha='t', commit_sha='c')
+        candidate = Candidate(campaign_id=campaign.id, tree_sha='t', commit_sha='c')
         s.add(candidate)
         s.flush()
         first = ask(busy[0])
@@ -226,42 +226,42 @@ def test_a_busy_project_never_holds_back_another_project(db: Database, project: 
         quiet = ask(candidate.id)
         newer = [ask(c) for c in busy[2:5]]
         assert [e.id for e in queue.waiting(s)] == [quiet.id, older.id, *(e.id for e in newer)], (
-            'while the busy project runs one, the quiet project is next'
+            'while the busy campaign runs one, the quiet campaign is next'
         )
         finish(first)
-        assert queue.start(s, older, 1), 'the request before the quiet project: its turn first'
+        assert queue.start(s, older, 1), 'the request before the quiet campaign: its turn first'
         finish(older)
         assert not queue.start(s, newer[0], 1)
-        assert queue.start(s, quiet, 1), 'the busy project asked again meanwhile, but the quiet one is next'
+        assert queue.start(s, quiet, 1), 'the busy campaign asked again meanwhile, but the quiet one is next'
         assert not queue.start(s, newer[0], 1), 'one slot, taken'
         assert queue.start(s, newer[0], 2)
         late = ask(busy[5])
         mine = ask(third)
         assert [e.id for e in queue.waiting(s)] == [mine.id, newer[1].id, newer[2].id, late.id], (
-            'two slots: the project with nothing running first, then the oldest'
+            'two slots: the campaign with nothing running first, then the oldest'
         )
         assert [e.id for e in queue.listing(s)] == [quiet.id, newer[0].id, mine.id, newer[1].id, newer[2].id, late.id]
 
 
-def test_a_project_takes_its_head_before_its_older_requests(db: Database, project: Project) -> None:
+def test_a_campaign_takes_its_head_before_its_older_requests(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
-        evaluator = s.get_one(Project, project.id).evaluator_id
+        evaluator = s.get_one(Campaign, campaign.id).evaluator_id
         assert evaluator is not None
-        other = Candidate(project_id=project.id, tree_sha='t', commit_sha='c')
+        other = Candidate(campaign_id=campaign.id, tree_sha='t', commit_sha='c')
         s.add(other)
         s.flush()
         older = queue.request(s, other.id, evaluator)[0]
-        trunk, created = queue.request(s, baseline(db, project.id).id, evaluator)
+        trunk, created = queue.request(s, baseline(db, campaign.id).id, evaluator)
         assert created and queue.request(s, trunk.candidate_id, evaluator) == (trunk, False), 'one row per tree'
         assert [e.id for e in queue.waiting(s)] == [trunk.id, older.id]
 
 
-def test_an_evaluation_id_is_never_reused(db: Database, project: Project) -> None:
+def test_an_evaluation_id_is_never_reused(db: Database, campaign: Campaign) -> None:
     """A request that waits for an evaluation by id never mistakes a later one for it."""
     with db.session() as s:
-        evaluator = s.get_one(Project, project.id).evaluator_id
+        evaluator = s.get_one(Campaign, campaign.id).evaluator_id
         assert evaluator is not None
-        base = baseline(db, project.id).id
+        base = baseline(db, campaign.id).id
         gone = queue.request(s, base, evaluator)[0].id
         s.commit()
         s.execute(delete(Evaluation))
@@ -270,13 +270,13 @@ def test_an_evaluation_id_is_never_reused(db: Database, project: Project) -> Non
 
 
 def test_evaluations_that_wait_for_a_slot_never_hold_back_an_agent_launch(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """A run waits in the evaluation queue on its pool thread, so the pool must not run out while many wait."""
     scheduler = make_scheduler(db, runtime, tmp_path)
     release = threading.Event()
     waiting = [scheduler._pool.submit(release.wait, 30) for _ in range(64)]  # more than any default pool size
-    add_ideas(db, project, 'one line')
+    add_ideas(db, campaign, 'one line')
     try:
         assert len(scheduler.tick()) == 1
         with db.session() as s:
@@ -295,10 +295,10 @@ def run_status(db: Database, run_id: int) -> RunStatus:
 
 
 def test_a_remeasure_whose_repo_is_gone_is_a_crash(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    Path(project.path).rename(tmp_path / 'moved')
-    base = baseline(db, project.id).id
+    Path(campaign.path).rename(tmp_path / 'moved')
+    base = baseline(db, campaign.id).id
     queued_executor(db, runtime, tmp_path, slots=1).remeasure(base)
     found, verdict = errors(db, base)
     assert found[-1] is not None and found[-1].startswith('NoSuchPathError'), 'it cannot start: a crash, asked again'

@@ -98,7 +98,7 @@ The example uses Claude Code and stops after 20 scored worker runs. See
 
 - [Introduction](https://piloop.autoresearch.inc): what piloop does, and how a campaign works.
 - [Quickstart](https://piloop.autoresearch.inc/quickstart): your first campaign, through your agent.
-- [Concepts](https://piloop.autoresearch.inc/concepts/projects): projects, ideas, runs, candidates and the verdict.
+- [Concepts](https://piloop.autoresearch.inc/concepts/campaigns): campaigns, ideas, runs, candidates and the verdict.
 - [Reference](https://piloop.autoresearch.inc/reference/cli): the CLI, the configuration, the database schema.
 
 ## Contributing

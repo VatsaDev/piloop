@@ -46,21 +46,25 @@ catches up with an upgrade that you already made.
 - The runtimes, remote backends, triggers and roles that packages add load, and none of them reuses a name. When
   they do not, the checks after this one do not run.
 - `PILOOP_SECRETS_COMMAND`, when it is set, runs and prints `NAME=value` lines. The check shows the names only.
-- The `piloop.toml` of every project loads.
-- The commands of each project's stdio MCP servers are on your `PATH`, and the variables that its servers need are
+- The `piloop.toml` of every campaign loads.
+- The commands of each campaign's stdio MCP servers are on your `PATH`, and the variables that its servers need are
   set. The check does not start the servers.
 - Every harness on your `PATH` has the skills of this CLI.
-- The harnesses that your projects use are on your `PATH`.
-- Each runtime that a project uses runs its own checks. For example, for `runtime = "herdr"`: Herdr is installed, the
-  piloop session answers, and Herdr's hooks are current for the harnesses of that project.
+- The harnesses that your campaigns use are on your `PATH`.
+- Each runtime that a campaign uses runs its own checks. For example, for `runtime = "herdr"`: Herdr is installed, the
+  piloop session answers, and Herdr's hooks are current for the harnesses of that campaign.
 
 Each failure says how to fix it, often with the command to run.
 
 ## The database
 
-The daemon, and every command that reads or writes projects (such as `init`, `status`, `inbox` and `watch`), migrates
+The daemon, and every command that reads or writes campaigns (such as `init`, `status`, `inbox` and `watch`), migrates
 the database to its own schema when it starts. `piloop doctor` and `piloop sql` do not. You never recreate the
 database by hand. `piloop migrate` migrates it and prints what changed, for example `schema: 0001 → 0002`.
+
+While a daemon of an older piloop runs, a newer piloop does not migrate the database, because the daemon would break
+on the new schema: it exits and says what to run. `piloop upgrade` restarts the daemon on the new code first, and the
+daemon migrates the database when it starts.
 
 An older piloop refuses to open a database that a newer one migrated, `piloop sql` included. The error names the
 database's schema revision and the newest one that this piloop knows: install a newer piloop (`piloop upgrade`).
@@ -84,6 +88,39 @@ When a release renames or removes a key of `piloop.toml`, the old key keeps work
 Each use shows a `PiloopDeprecationWarning` with the file, the line, the new key and the release that removes the old
 one. The [changelog](https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md) lists every deprecation.
 
+## Renamed tables, columns and commands
+
+piloop 0.2.0 renames one concept: a **project** is a **campaign**. Each evaluator also records its **runner**, how
+piloop runs it: `process`, the evaluate command run as a process, as before.
+The upgrade migrates the database, with the queries of the stored configs. Change the rest by hand:
+
+- the SQL in your `piloop.toml`: the `takes` of a role and the `when` of an `sql` trigger. `piloop init` refuses an
+  old name and names the new one.
+- the SQL in your own role prompt files and in the notes of an orchestrator.
+- the agents that run: restart them after `piloop upgrade`, so that they read the new names.
+
+A query with an old name fails, and the error names the new one. A query on old event kinds, such as `kind =
+'project.status'`, does not fail but finds nothing: use the new kinds.
+
+| What | Before 0.2.0 | Since 0.2.0 |
+|---|---|---|
+| Table | `projects` | `campaigns` |
+| Column | `project_id` (of `ideas`, `candidates`, `workers`, `evaluators`) | `campaign_id` |
+| New column | none | `evaluators.runner`, `process` for every evaluator |
+| `target_kind` of comments and events | `project` | `campaign` |
+| Event kinds | `project.added`, `project.status`, `project.stopped`, `project.invalid_config` | `campaign.added`, `campaign.status`, `campaign.stopped`, `campaign.invalid_config` |
+| Environment variable | `PILOOP_PROJECT_<KEY>` (still works, with a warning) | `PILOOP_CAMPAIGN_<KEY>` |
+
+If you ran piloop from its main branch after 0.1.0, the names that it added are renamed too, with no alias: the
+`project_id` of `techniques`, `documents`, `lessons` and `archives`, the events
+`project.paused`, `project.stop_requested`, `project.type` and `project.parent_id`, the parameter `:project` of an
+`sql` trigger (`@project`, `$project`), `workdir = "project"` (now `"repo"`), `piloop project stop` (now `piloop
+campaign stop`), the `--project` option of `piloop events`, and the `projects` and `subject.project` keys of the JSON
+output. The migration renames those that the database and its stored configs hold.
+
+The payloads of old events keep their text, so an old payload may have `project` keys. The directories of the
+campaigns stay under `$PILOOP_HOME/projects/<id>`, and the git refs keep their names.
+
 ## Other install types
 
 - A checkout that you installed with `uv sync` is not a uv tool. Upgrade it with `git pull`.
@@ -103,7 +140,7 @@ Before 1.0, a minor release may contain breaking changes. These interfaces chang
 - The `piloop` CLI: its commands and their flags.
 - The keys of `piloop.toml`. A renamed or removed key keeps working, with a warning, for at least one minor release.
   See [Deprecated configuration keys](#deprecated-configuration-keys).
-- The contract of the [evaluate command](/concepts/projects#the-evaluate-command): the `METRIC <name>=<value>` lines,
+- The contract of the [evaluate command](/concepts/campaigns#the-evaluate-command): the `METRIC <name>=<value>` lines,
   the exit status and the per-unit results file.
 - The [database schema](/reference/schema), as `piloop sql` shows it. Each release migrates the database forward
   automatically.

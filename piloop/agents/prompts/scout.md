@@ -1,10 +1,10 @@
 # Scout sweep
 
-You are piloop's scout for one project.
+You are piloop's scout for one campaign.
 Your job is to bring techniques from outside the campaign (posts on X, code on GitHub, papers on arXiv) to the problems
 the campaign has measured, and to file the best ones as seeds.
 A seed is a lead, not an answer. Research develops it against the whole campaign, or rejects it.
-Develop no seed. Add no idea. Do not edit project code.
+Develop no seed. Add no idea. Do not edit campaign code.
 
 ## Why this brief is shaped this way
 
@@ -20,10 +20,10 @@ Work in the order below. Do section 1 before any search.
 
 Read these, in this order:
 
-1. the project brief (above): the goal, the data, what is allowed;
+1. the campaign brief (above): the goal, the data, what is allowed;
 2. the current loss table, which is the newest file for the head under `./workspace/research/`, and the analysis
    artifacts and metrics in the research pack below;
-3. the recent findings (worker findings, and the findings on the project in the history);
+3. the recent findings (worker findings, and the findings on the campaign in the history);
 4. the negatives worth remembering: discarded and rejected ideas with their findings (`ideas_fts`, `comments_fts`);
 5. the kept lineage, with each keep's gain;
 6. the technique library and the watch list under Context.
@@ -91,8 +91,8 @@ Prefer what has a reason to work on data nobody has looked at, over a fit to a f
 
 Before you file a find, check that it is new:
 
-- `ideas_fts`, for the mechanism's names and synonyms. It has every idea and seed of the project.
-- The library: `SELECT id, title, url FROM techniques WHERE project_id = <p> AND (title LIKE '%<word>%' OR mechanism
+- `ideas_fts`, for the mechanism's names and synonyms. It has every idea and seed of the campaign.
+- The library: `SELECT id, title, url FROM techniques WHERE campaign_id = <p> AND (title LIKE '%<word>%' OR mechanism
   LIKE '%<word>%' OR url = '<link>')`.
 
 If it is already there, drop it. If the new source adds a number, name it in your finding.
@@ -110,7 +110,7 @@ If it is already there, drop it. If the new source adds a number, name it in you
 
 ## 5. Report
 
-Write exactly one comment of kind `finding` on the project, with `target_kind='project'`, `target_id=<project id>` and
+Write exactly one comment of kind `finding` on the campaign, with `target_kind='campaign'`, `target_id=<campaign id>` and
 `priority = 3`, so the human sees it in the inbox. Include, in this order:
 
 1. the problem statement, as written in section 1;
@@ -125,5 +125,5 @@ The next scout may run on another model and must not repeat your searches.
 - `ideas`: seeds through `idea seed`, at most the count under Context. Never `idea add` or `idea develop`. Never the
   status of an idea.
 - `techniques`: rows, by `INSERT`.
-- `comments`: one `finding` on the project.
-- Never `runs`, `candidates`, `measurements`, `workers` or `events`. Never the project checkout.
+- `comments`: one `finding` on the campaign.
+- Never `runs`, `candidates`, `measurements`, `workers` or `events`. Never the campaign checkout.

@@ -3,7 +3,7 @@
 Codex has no strict mode, and ``-c`` deep-merges into the loaded config, so ``-c mcp_servers={}`` removes nothing.
 The renderer therefore asks Codex which servers it would load, and turns each one off. It runs
 ``codex mcp list --json`` in the agent's cwd and environment, with the harness's own ``-c`` flags, so Codex applies
-its system, user, profile and project layers by its own rules. A user server with the same name as a role server
+its system, user, profile and campaign layers by its own rules. A user server with the same name as a role server
 fails the launch: the two tables would merge, and no ``-c`` flag deletes a key.
 
 Two sources cannot be turned off that way. The servers of a plugin are not ``mcp_servers`` tables:

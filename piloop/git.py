@@ -1,4 +1,4 @@
-"""Git operations on the project repo and its worktrees."""
+"""Git operations on the campaign repo and its worktrees."""
 
 import re
 import shutil
@@ -19,7 +19,7 @@ and every remove prunes."""
 
 
 def open_repo(path: Path) -> Repo:
-    """Open the project repository."""
+    """Open the campaign repository."""
     return Repo(path)
 
 
@@ -198,7 +198,7 @@ def changed(path: Path, ignore: list[str]) -> bool:
 
 
 def identity(path: Path) -> str:
-    """The repository that ``path`` is, the same for every clone of it: ``projects.repo``.
+    """The repository that ``path`` is, the same for every clone of it: ``campaigns.repo``.
 
     It is the URL of the ``origin`` remote (or else of the first remote by name) as ``host/owner/name``, so
     ``git@github.com:o/r.git`` and ``https://github.com/o/r`` are the same repository. Without a remote, it is the

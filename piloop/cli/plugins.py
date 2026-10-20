@@ -3,8 +3,8 @@
 from pathlib import Path
 
 from piloop.cli import common
-from piloop.cli.doctor import stored_projects
-from piloop.config import ROLES, ProjectConfig
+from piloop.cli.doctor import stored_campaigns
+from piloop.config import ROLES, CampaignConfig
 from piloop.daemon.main import preflight, unbound_failures
 from piloop.plugins.host import Activatable, PluginError, Selection, declared, lookup
 from piloop.settings import CONFIG_FILE, Settings
@@ -51,19 +51,19 @@ def selections(cfg: Settings) -> list[str]:
             if (name := lookup(home, selection.key)) is not None:
                 found.append(f'{_provider(capability, str(name))} ({_key(selection)} in {config})')
             continue
-        for project_name, path, project in stored_projects(cfg.home / 'piloop.db'):
-            if isinstance(project, ProjectConfig):  # else piloop doctor says why the stored config does not load
-                stored = f'in the config of {project_name} that the last `piloop init` stored from {Path(path)}'
-                found += _in_project(capability, selection, project, f'{stored}/piloop.toml', cfg)
+        for campaign_name, path, campaign in stored_campaigns(cfg.home / 'piloop.db'):
+            if isinstance(campaign, CampaignConfig):  # else piloop doctor says why the stored config does not load
+                stored = f'in the config of {campaign_name} that the last `piloop init` stored from {Path(path)}'
+                found += _in_campaign(capability, selection, campaign, f'{stored}/piloop.toml', cfg)
     return found
 
 
-def _in_project(
-    capability: Activatable, selection: Selection, project: ProjectConfig, stored: str, cfg: Settings
+def _in_campaign(
+    capability: Activatable, selection: Selection, campaign: CampaignConfig, stored: str, cfg: Settings
 ) -> list[str]:
-    """What one project selects: for each role, when a role's table can select too."""
-    data = project.model_dump(mode='json')
-    field = ProjectConfig.model_fields.get(selection.key)
+    """What one campaign selects: for each role, when a role's table can select too."""
+    data = campaign.model_dump(mode='json')
+    field = CampaignConfig.model_fields.get(selection.key)
     default = field.default if field is not None else None
     roles = data['roles'] if selection.per_role else {}
     found: list[str] = []
@@ -82,7 +82,7 @@ def _in_project(
         settings = selection.settings
         given = settings and lookup(cfg.model_dump(mode='json'), f'{settings}.{name}') is not None
         extra = f'; its settings: [{settings}.{name}] in {cfg.home / CONFIG_FILE}' if given else ''
-        who = f'{project.name} {role}' if role is not None else project.name
+        who = f'{campaign.name} {role}' if role is not None else campaign.name
         found.append(f'{who}: {_provider(capability, str(name))} ({key}, {stored}{extra})')
     return found
 

@@ -5,9 +5,9 @@ import pytest
 from rich.console import Console
 from sqlalchemy import select
 
-from piloop.campaign import project as project_module
+from piloop.campaign import campaigns as campaign_module
 from piloop.campaign.archive import Job, archive, prune
-from piloop.campaign.project import workspace_dir
+from piloop.campaign.campaigns import workspace_dir
 from piloop.cli import common
 from piloop.db.models import Archive, IdeaStatus
 from piloop.db.session import Database
@@ -23,7 +23,7 @@ from tests.conftest import at_head
 def isolated_home(tmp_path: Path, schema: Path, monkeypatch: pytest.MonkeyPatch) -> Console:
     at_head(schema, tmp_path / 'piloop.db')
     monkeypatch.setattr(common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools'))
-    monkeypatch.setattr(project_module, 'settings', common.settings)
+    monkeypatch.setattr(campaign_module, 'settings', common.settings)
     console = Console(record=True, width=200, force_terminal=False)
     monkeypatch.setattr(common, 'console', console)
     return console
@@ -38,9 +38,9 @@ def out(isolated_home: Console):
 
 
 @pytest.fixture
-def archived(project_path: Path, out) -> tuple[Database, int, dict[str, bytes]]:
+def archived(campaign_path: Path, out) -> tuple[Database, int, dict[str, bytes]]:
     """``demo`` registered, idea 1 done and archived with two files, then the rest at stop; what the workspace held."""
-    run_cli(['init', str(project_path)])
+    run_cli(['init', str(campaign_path)])
     out()
     db = Database(common.settings.database_url, actor=common.settings.actor)
     idea = add_idea(db, 1, 'idea')
@@ -79,8 +79,8 @@ def test_restore_writes_an_idea_a_path_or_everything_back(archived, out) -> None
     db.close()
 
 
-def test_restore_lists_at_most_ten_kept_files(project_path: Path, out) -> None:
-    run_cli(['init', str(project_path)])
+def test_restore_lists_at_most_ten_kept_files(campaign_path: Path, out) -> None:
+    run_cli(['init', str(campaign_path)])
     db = Database(common.settings.database_url, actor=common.settings.actor)
     workspace = workspace_dir(common.settings.home, 1)
     for n in range(12):
@@ -103,7 +103,7 @@ def test_store_status_evict_and_verify(archived, out, monkeypatch: pytest.Monkey
     assert lines[0].startswith(f'{tmp_path / "store"}: 5 blob(s), 5 local (3.')
     assert lines[0].endswith(' kB), no remote ([storage.remote])'), 'decimal units, as rich.filesize.decimal'
     assert lines[4].split() == ['demo', '2', '3', '3.1', 'kB']
-    assert lines[-1].startswith('to archive: 0 done idea(s), 0 stopped project(s); latest archiving 20')
+    assert lines[-1].startswith('to archive: 0 done idea(s), 0 stopped campaign(s); latest archiving 20')
     run_cli(['store', 'evict'])
     assert out().strip() == 'uploaded 0 blob(s), evicted 0 (0 bytes)'
     run_cli(['store', 'verify'])
@@ -125,8 +125,8 @@ def test_store_status_evict_and_verify(archived, out, monkeypatch: pytest.Monkey
     db.close()
 
 
-def test_status_with_a_ready_idea_shows_nothing_archived(project_path: Path, out) -> None:
-    run_cli(['init', str(project_path)])
+def test_status_with_a_ready_idea_shows_nothing_archived(campaign_path: Path, out) -> None:
+    run_cli(['init', str(campaign_path)])
     db = Database(common.settings.database_url, actor=common.settings.actor)
     add_idea(db, 1, 'waiting', IdeaStatus.READY)
     out()
@@ -135,6 +135,6 @@ def test_status_with_a_ready_idea_shows_nothing_archived(project_path: Path, out
     assert lines[0].endswith(': 0 blob(s), 0 local (0 bytes), no remote ([storage.remote])')
     assert (
         lines[-1]
-        == 'to archive: 0 done idea(s), 0 stopped project(s) (the daemon works through them in the background, one at a time)'
+        == 'to archive: 0 done idea(s), 0 stopped campaign(s) (the daemon works through them in the background, one at a time)'
     )
     db.close()

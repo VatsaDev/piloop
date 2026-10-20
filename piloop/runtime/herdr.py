@@ -1,9 +1,9 @@
-"""Workers as Herdr agents: one Herdr session for piloop, one workspace per project, one tab per worker.
+"""Workers as Herdr agents: one Herdr session for piloop, one workspace per campaign, one tab per worker.
 
 Every ``herdr`` call targets the session that ``herdr_settings.session`` names (``--session``). piloop starts its
 headless server when it is not running. Nothing piloop starts lands in the session the human uses for other work.
 
-The workspace has the project name as its label and the project path as its ``root`` metadata token, because Herdr
+The workspace has the campaign name as its label and the campaign path as its ``root`` metadata token, because Herdr
 keeps no path on a workspace. Its first tab is ``home``: a shell on the left for the human and ``piloop watch`` on the
 right. Each agent gets its own tab after it, labelled with ``spec.label`` (``worker-12 idea#5 stacking``). The tab's
 root pane runs the agent. Tabs are used instead of splits, so every worker is equally readable and closing a worker
@@ -81,11 +81,11 @@ DIALOG_REDRAW_POLL_SECONDS = 0.25
 SERVER_POLL_SECONDS = 0.1
 PICKUP_POLL_SECONDS = 0.25
 HOME_TAB = 'home'
-"""The label of the first tab of a project workspace: a shell beside ``piloop watch``."""
+"""The label of the first tab of a campaign workspace: a shell beside ``piloop watch``."""
 SHELL_SHARE = 0.5
 """The shell pane's share of the home tab's width (``pane split --ratio``); ``piloop watch`` gets the rest."""
 ROOT_TOKEN = 'root'
-"""The workspace metadata token that holds the project path, so two directories with the same name get two
+"""The workspace metadata token that holds the campaign path, so two directories with the same name get two
 workspaces."""
 METADATA_SOURCE = 'piloop'
 JOBS_POLL_SECONDS = 5
@@ -133,7 +133,7 @@ class HerdrSettings(BaseSettings):
         return init_settings, env_settings, InitSettingsSource(settings_cls, runtime_settings(HERDR))
 
     session: str = 'piloop'
-    """The name of the Herdr session that piloop owns. It has one workspace for each project, and every agent that
+    """The name of the Herdr session that piloop owns. It has one workspace for each campaign, and every agent that
     piloop starts runs there, never in the session you use for other work. ``piloop attach`` attaches a terminal to
     it. piloop starts its server when it first needs it."""
 
@@ -266,11 +266,11 @@ class HerdrRuntime:
     kind: ClassVar[str] = 'herdr'
     invocation: ClassVar[Invocation] = Invocation.INTERACTIVE
 
-    def __init__(self, project: str, project_path: Path, *, sleep: Callable[[float], None] = time.sleep) -> None:
+    def __init__(self, campaign: str, campaign_path: Path, *, sleep: Callable[[float], None] = time.sleep) -> None:
         if shutil.which(HERDR) is None:
             raise HerdrError('not_installed', 'herdr is not on PATH; install it or set runtime = "subprocess"')
-        self._project = project
-        self._project_path = project_path
+        self._campaign = campaign
+        self._campaign_path = campaign_path
         self._workspace_id: str | None = None
         self._sleep = sleep
         """Used for every wait in this runtime's loops, so a test can count them without other threads' sleeps."""
@@ -773,7 +773,7 @@ class HerdrRuntime:
         Never start the server: a server that is not running starts on first use.
         """
         if shutil.which(HERDR) is None:
-            return [Check('herdr', 'a project uses the herdr runtime and herdr is not on PATH', 'install herdr')]
+            return [Check('herdr', 'a campaign uses the herdr runtime and herdr is not on PATH', 'install herdr')]
         try:
             running = server_running()
         except (HerdrError, subprocess.TimeoutExpired, OSError) as e:
@@ -784,7 +784,7 @@ class HerdrRuntime:
         return [server, _hooks(executables)]
 
     def _split_watch(self, pane_id: str) -> None:
-        """Run ``piloop watch`` on this project in a new pane to the right of ``pane_id``.
+        """Run ``piloop watch`` on this campaign in a new pane to the right of ``pane_id``.
 
         The watch uses this process's interpreter and ``PILOOP_HOME``, so it reads the daemon's database, whatever
         ``piloop`` the pane's shell finds first.
@@ -798,19 +798,19 @@ class HerdrRuntime:
             '--ratio',
             str(SHELL_SHARE),
             '--cwd',
-            str(self._project_path),
+            str(self._campaign_path),
             '--env',
             f'PILOOP_HOME={settings_module.settings.home}',
             '--no-focus',
         )
-        watch = [*PILOOP_ARGV, 'watch', str(self._project_path)]
+        watch = [*PILOOP_ARGV, 'watch', str(self._campaign_path)]
         _call('pane', 'run', str(split['pane']['pane_id']), shlex.join(watch))
 
     def _workspace(self) -> str:
-        """Return the project's workspace id. Find it by its ``root`` token or create it. Cached per instance."""
+        """Return the campaign's workspace id. Find it by its ``root`` token or create it. Cached per instance."""
         if self._workspace_id is None:
             listed = _call('workspace', 'list')['workspaces']
-            root = str(self._project_path)
+            root = str(self._campaign_path)
             match = next((w for w in listed if w.get('tokens', {}).get(ROOT_TOKEN) == root), None)
             if match is None:
                 match = self._create_workspace(listed)
@@ -823,10 +823,10 @@ class HerdrRuntime:
         Herdr opens a workspace with one tab labelled ``1``. It becomes ``home``: the watch goes in a split of its
         pane, and the pane stays a shell for the human.
         """
-        label = self._project
+        label = self._campaign
         if any(w['label'] == label for w in existing):
-            label = f'{label} ({self._project_path.parent.name})'
-        created = _call('workspace', 'create', '--cwd', str(self._project_path), '--label', label, '--no-focus')
+            label = f'{label} ({self._campaign_path.parent.name})'
+        created = _call('workspace', 'create', '--cwd', str(self._campaign_path), '--label', label, '--no-focus')
         workspace = created['workspace']
         _call(
             'workspace',
@@ -835,7 +835,7 @@ class HerdrRuntime:
             '--source',
             METADATA_SOURCE,
             '--token',
-            f'{ROOT_TOKEN}={self._project_path}',
+            f'{ROOT_TOKEN}={self._campaign_path}',
         )
         _call('tab', 'rename', str(created['tab']['tab_id']), HOME_TAB)
         self._split_watch(str(created['root_pane']['pane_id']))

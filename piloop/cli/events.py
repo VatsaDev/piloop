@@ -21,7 +21,7 @@ def events(
             validator=validators.Number(gte=0),
         ),
     ] = 0,
-    project: Annotated[str | None, cyclopts.Parameter(help='Only the events about rows of this project.')] = None,
+    campaign: Annotated[str | None, cyclopts.Parameter(help='Only the events about rows of this campaign.')] = None,
     kind: Annotated[
         tuple[str, ...], cyclopts.Parameter(name='--kind', help='Only events of this kind. Repeatable.')
     ] = (),
@@ -39,20 +39,20 @@ def events(
 ) -> None:
     """Print the events after a cursor, oldest first, then the cursor to read after next.
 
-    The cursor moves over every event that the read examined, also those that --project and --kind leave out. Read a
+    The cursor moves over every event that the read examined, also those that --campaign and --kind leave out. Read a
     snapshot first (`piloop status --json` or `piloop inbox --json`), then the events after its cursor: nothing is
     missed in between. Save the cursor after you have handled the events, and read from it again after a disconnect.
     An event can come twice then: skip an id that you have handled.
     """
     with common.session() as s:
-        project_id = common.project(s, project).id if project else None
+        campaign_id = common.campaign(s, campaign).id if campaign else None
         try:
             if follow:
                 batch = feed.follow(
-                    s, after, project_id=project_id, kinds=kind, limit=limit, timeout=timeout, poll=feed.POLL_SECONDS
+                    s, after, campaign_id=campaign_id, kinds=kind, limit=limit, timeout=timeout, poll=feed.POLL_SECONDS
                 )
             else:
-                batch = feed.read(s, after, project_id=project_id, kinds=kind, limit=limit)
+                batch = feed.read(s, after, campaign_id=campaign_id, kinds=kind, limit=limit)
         except feed.CursorAhead as e:
             raise (common.json_error(e.code, str(e)) if json_ else SystemExit(str(e))) from e
     if json_:
@@ -66,6 +66,6 @@ def events(
             f' by {e["actor"]}: {payload}',
             highlight=False,
         )
-    narrow = [*(['--project', project] if project else []), *(a for k in kind for a in ('--kind', k))]
+    narrow = [*(['--campaign', campaign] if campaign else []), *(a for k in kind for a in ('--kind', k))]
     again = shlex.join(['piloop', 'events', '--after', str(batch['next']), *narrow])
     common.console.print(f'next: {again}' + (' (more now)' if batch['more'] else ''), markup=False, soft_wrap=True)

@@ -1,7 +1,7 @@
 """The triggers of the roles: the conditions that make the daemon request an agent (https://piloop.autoresearch.inc/concepts/roles#triggers).
 
 A trigger is a pydantic model. Its fields are its parameters, from its entry in ``[roles.<name>] triggers``. On each
-tick, for each project and each sweeping role without a pending request, the scheduler calls ``Trigger.fire`` of each
+tick, for each campaign and each sweeping role without a pending request, the scheduler calls ``Trigger.fire`` of each
 trigger of the role, in the order of the list. On the tick that stops the campaign, it calls only the triggers with
 ``ON_STOP``, and while the campaign runs, only the others. A package adds a trigger with an entry point in the group of ``TRIGGERS``.
 """
@@ -20,17 +20,17 @@ from sqlalchemy.orm import Session
 from piloop.db.events import ANOMALY_EVENT
 from piloop.db.models import (
     OPEN_RUNS,
+    Campaign,
     Idea,
     IdeaStatus,
-    Project,
     Run,
     Worker,
     WorkerState,
+    campaign_runs,
     count,
-    project_runs,
     utcnow,
 )
-from piloop.db.sql import schema_ddl
+from piloop.db.sql import schema_ddl, with_renamed
 from piloop.plugins.host import Capability
 
 
@@ -68,7 +68,7 @@ class Backlog:
     target: int
     """One idea per run slot plus the ``buffer`` of ``low_water``, but never more than ``[stop] max_runs`` allows."""
     free: int
-    """The runs that the project can start now."""
+    """The runs that the campaign can start now."""
     sweeps: int
     """The role's sweeps in flight."""
     per_sweep: int
@@ -126,10 +126,10 @@ class Backlog:
 
 
 class Tick(Protocol):
-    """What a trigger reads to decide. The scheduler makes one for each sweeping role of each project on each tick.
+    """What a trigger reads to decide. The scheduler makes one for each sweeping role of each campaign on each tick.
 
     A trigger reads with ``s`` and writes nothing. "The role's rows" are the ``workers`` rows of the role in the
-    project.
+    campaign.
     """
 
     @property
@@ -138,8 +138,8 @@ class Tick(Protocol):
         ...
 
     @property
-    def project(self) -> Project:
-        """The project of the tick."""
+    def campaign(self) -> Campaign:
+        """The campaign of the tick."""
         ...
 
     @property
@@ -163,11 +163,11 @@ class Tick(Protocol):
         ...
 
     def backlog(self, buffer: int, /) -> Backlog:
-        """The project's backlog of ideas, with ``buffer`` ideas beyond one per run slot, as the role's sweeps fill it."""
+        """The campaign's backlog of ideas, with ``buffer`` ideas beyond one per run slot, as the role's sweeps fill it."""
         ...
 
     def incidents(self) -> list[Incident]:
-        """The project's incidents that no agent has received yet, oldest first."""
+        """The campaign's incidents that no agent has received yet, oldest first."""
         ...
 
     def live(self) -> int:
@@ -191,8 +191,8 @@ class Tick(Protocol):
 
 
 def since(tick: Tick) -> datetime:
-    """Return when the role's latest row started, or when the project was registered if the role has no row yet."""
-    return tick.last.started_at if tick.last is not None else tick.project.created_at
+    """Return when the role's latest row started, or when the campaign was registered if the role has no row yet."""
+    return tick.last.started_at if tick.last is not None else tick.campaign.created_at
 
 
 @dataclass(frozen=True)
@@ -236,7 +236,7 @@ class Trigger(BaseModel, ABC):
 
 
 class AnomalyTrigger(Trigger):
-    """The daemon detected an incident that no agent of the project got yet. The agent gets it to investigate.
+    """The daemon detected an incident that no agent of the campaign got yet. The agent gets it to investigate.
 
     Incidents are the incident-class anomalies of ``piloop.reports.overview``. The row gets the new anomalies, one ``anomaly.reported`` event each. For the watchdog, that makes it an incident
     sweep.
@@ -257,7 +257,7 @@ class AnomalyTrigger(Trigger):
 class CronTrigger(Trigger):
     """The role's ``interval`` passed since the start of its last routine agent, one that got no anomaly.
 
-    The first one counts from the registration of the project. An ``interval`` of 0 turns it off.
+    The first one counts from the registration of the campaign. An ``interval`` of 0 turns it off.
     """
 
     kind: Literal['cron'] = 'cron'
@@ -266,7 +266,7 @@ class CronTrigger(Trigger):
         if tick.interval <= 0:
             return None
         routine = tick.routine() if tick.last is not None else None
-        since = routine.started_at if routine is not None else tick.project.created_at
+        since = routine.started_at if routine is not None else tick.campaign.created_at
         if utcnow() - since < timedelta(seconds=tick.interval):
             return None
         return Fire(f'timer: {tick.interval:g}s')
@@ -286,7 +286,7 @@ class SeedTrigger(Trigger):
     def fire(self, tick: Tick) -> Fire | None:
         if tick.live() >= tick.max_concurrent:
             return None
-        seeds = select(Idea).where(Idea.project_id == tick.project.id, Idea.status == IdeaStatus.SEED)
+        seeds = select(Idea).where(Idea.campaign_id == tick.campaign.id, Idea.status == IdeaStatus.SEED)
         waiting = count(tick.s, seeds)
         if not waiting:
             return None
@@ -309,7 +309,7 @@ class LowWaterTrigger(Trigger):
     prerequisites in flight also count, because they run when those finish. An idea blocked by a prerequisite that is
     not running does not count. Below the target, a sweep fires for one of these reasons:
 
-    - The project has no sweep yet, so there is nothing to wait for.
+    - The campaign has no sweep yet, so there is nothing to wait for.
     - The last batch was killed. Lost prompts, timeouts or a daemon stop say nothing about the backlog, so the batch
       is retried once. This applies to a streak of killed rows no longer than one batch (``max_concurrent``). A second
       killed batch is a systemic fault and counts as a normal last sweep.
@@ -350,7 +350,7 @@ class LowWaterTrigger(Trigger):
             return str(backlog)
         if last.state is WorkerState.KILLED and tick.killed_streak() <= tick.max_concurrent:
             return f'{backlog}; retrying after worker#{last.id} was killed: {last.error}'
-        mine = project_runs(tick.project.id)
+        mine = campaign_runs(tick.campaign.id)
         finished = count(tick.s, mine.where(Run.finished_at > last.started_at))
         in_flight = count(tick.s, mine.where(Run.status.in_(OPEN_RUNS)))
         barren = len(tick.empty_sweeps((WorkerState.EXITED,)))
@@ -379,24 +379,24 @@ class StoppedTrigger(Trigger):
     kind: Literal['stopped'] = 'stopped'
 
     def fire(self, tick: Tick) -> Fire | None:
-        return Fire(f'campaign stopped: {tick.project.stopped_reason}')
+        return Fire(f'campaign stopped: {tick.campaign.stopped_reason}')
 
 
-SQL_PARAMETERS = ('project', 'since')
+SQL_PARAMETERS = ('campaign', 'since')
 
 
 class SqlTrigger(Trigger):
     """A query on the piloop database returns at least one row.
 
-    The query may use two parameters: ``:project``, the project's id, and ``:since``, when the role's latest row
-    started (or when the project was registered), as UTC text (``2026-01-31 12:00:00.000000``). Compare ``:since`` with
+    The query may use two parameters: ``:campaign``, the campaign's id, and ``:since``, when the role's latest row
+    started (or when the campaign was registered), as UTC text (``2026-01-31 12:00:00.000000``). Compare ``:since`` with
     a ``created_at`` column to fire only on what is new. The query is checked when ``piloop.toml`` loads: it must be
     one statement that only reads.
     """
 
     kind: Literal['sql'] = 'sql'
     when: str
-    """The query, for example ``SELECT 1 FROM candidates WHERE project_id = :project AND verdict = 'keep' AND
+    """The query, for example ``SELECT 1 FROM candidates WHERE campaign_id = :campaign AND verdict = 'keep' AND
     created_at > :since``."""
 
     @field_validator('when')
@@ -407,7 +407,10 @@ class SqlTrigger(Trigger):
         return when
 
     def fire(self, tick: Tick) -> Fire | None:
-        params: dict[str, object] = {'project': tick.project.id, 'since': since(tick).strftime('%Y-%m-%d %H:%M:%S.%f')}
+        params: dict[str, object] = {
+            'campaign': tick.campaign.id,
+            'since': since(tick).strftime('%Y-%m-%d %H:%M:%S.%f'),
+        }
         row = tick.s.connection().exec_driver_sql(self.when, params).first()
         return None if row is None else Fire(f'sql: {" ".join(self.when.split())}')
 
@@ -432,7 +435,7 @@ def sql_error(statement: str, parameters: tuple[str, ...] = ()) -> str | None:
         con.set_authorizer(authorize)
         con.execute(f'EXPLAIN {statement}', dict.fromkeys(parameters, 0))
     except sqlite3.Error as e:
-        return str(e)
+        return with_renamed(str(e))
     finally:
         con.close()
     return None

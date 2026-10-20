@@ -14,19 +14,27 @@ from alembic import command
 from alembic.config import Config as AlembicConfig
 from alembic.script import ScriptDirectory
 from git import Repo
-from sqlalchemy import create_engine
+from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.exc import IntegrityError
 
-from piloop.config import ProjectConfig
-from piloop.db.models import Idea, Project
+from piloop.config import CampaignConfig
+from piloop.db.models import Campaign, Idea
 from piloop.db.session import MIGRATIONS, Database, SchemaAhead, migrate, revision
-from piloop.db.triggers import PERSISTENT, projects
+from piloop.db.triggers import PERSISTENT, campaigns, legacy
 from piloop.db.triggers.roles import known_role
 from piloop.version import installed
 
 INBOX = 'ix_comments_inbox'
-SINCE_0015 = {t.name for t in projects.acyclic()}
+SINCE_0015 = {t.name for t in campaigns.acyclic()}
 """The persistent triggers that revision 0015 adds: a test of an older revision expects every other one."""
+
+
+def triggers_at(revision: str) -> list[str]:
+    """The persistent triggers of ``revision``, by name: ``PERSISTENT``, in the names of that schema (``legacy``)."""
+    names = [t.name for t in PERSISTENT if revision >= '0015' or t.name not in SINCE_0015]
+    return sorted(legacy.old_name(n) if revision < '0016' else n for n in names)
+
+
 INBOX_WHERE = 'priority IS NOT NULL AND acked_at IS NULL'
 
 
@@ -46,6 +54,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
         assert tables == [
             'alembic_version',
             'archives',
+            'campaigns',
             'candidates',
             'comments',
             'comments_fts',
@@ -72,7 +81,6 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
             'journal',
             'lessons',
             'measurements',
-            'projects',
             'runs',
             'sqlite_sequence',
             'techniques',
@@ -80,17 +88,17 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
         ], 'an external-content FTS5 index has no _content shadow: the text stays in the base table only'
         triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
         assert triggers == sorted(t.name for t in PERSISTENT), 'the package lists what the migrations install'
-        con.execute("INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
-        con.execute("INSERT INTO candidates (project_id, tree_sha, commit_sha) VALUES (1, 't', 'c')")
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
+        con.execute("INSERT INTO candidates (campaign_id, tree_sha, commit_sha) VALUES (1, 't', 'c')")
         with pytest.raises(
-            sqlite3.IntegrityError, match='UNIQUE constraint failed: candidates.project_id, candidates.tree_sha'
+            sqlite3.IntegrityError, match='UNIQUE constraint failed: candidates.campaign_id, candidates.tree_sha'
         ):
-            con.execute("INSERT INTO candidates (project_id, tree_sha, commit_sha) VALUES (1, 't', 'other commit')")
+            con.execute("INSERT INTO candidates (campaign_id, tree_sha, commit_sha) VALUES (1, 't', 'other commit')")
         with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed'):
             con.execute("UPDATE candidates SET verdict = 'maybe' WHERE id = 1")
-        assert con.execute('SELECT status, stopped_reason FROM projects').fetchall() == [('active', None)]
+        assert con.execute('SELECT status, stopped_reason FROM campaigns').fetchall() == [('active', None)]
         with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed'):
-            con.execute("UPDATE projects SET status = 'paused' WHERE id = 1")
+            con.execute("UPDATE campaigns SET status = 'paused' WHERE id = 1")
     command.check(cfg)
     command.downgrade(cfg, 'base')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
@@ -120,25 +128,25 @@ def test_an_older_piloop_refuses_a_database_a_newer_one_migrated(tmp_path: Path)
     engine.dispose()
 
 
-def test_idea_links_stay_inside_the_project_never_point_at_the_idea_itself_and_go_with_either_idea(
+def test_idea_links_stay_inside_the_campaign_never_point_at_the_idea_itself_and_go_with_either_idea(
     tmp_path: Path,
 ) -> None:
-    """CHECKs refuse a self-link and an unknown kind, the trigger a link into another project (or to no idea)."""
+    """CHECKs refuse a self-link and an unknown kind, the trigger a link into another campaign (or to no idea)."""
     path = tmp_path / 'piloop.db'
     command.upgrade(alembic(path), 'head')
     link = 'INSERT INTO idea_links (idea_id, target_id, kind) VALUES '
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         con.execute('PRAGMA foreign_keys=ON')
         con.executescript(
-            "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}'), ('q', '/q', '{}');"
-            'INSERT INTO ideas (project_id, title, hypothesis, created_by, track)'
+            "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}'), ('q', '/q', '{}');"
+            'INSERT INTO ideas (campaign_id, title, hypothesis, created_by, track)'
             " VALUES (1, 'first', 'h', 't', 'a'), (2, 'other', 'h', 't', 'a'), (1, 'then', 'h', 't', 'a');"
         )
         refused = {
             "(1, 1, 'after')": 'CHECK constraint failed: idea_links_not_self',
             "(1, 3, 'blocks')": 'CHECK constraint failed: linkkind',
-            "(1, 2, 'after')": 'idea_links: idea_id and target_id must be ideas of the same project',
-            "(1, 99, 'supersedes')": 'idea_links: idea_id and target_id must be ideas of the same project',
+            "(1, 2, 'after')": 'idea_links: idea_id and target_id must be ideas of the same campaign',
+            "(1, 99, 'supersedes')": 'idea_links: idea_id and target_id must be ideas of the same campaign',
         }
         for values, error in refused.items():
             with pytest.raises(sqlite3.IntegrityError, match=error):
@@ -149,24 +157,24 @@ def test_idea_links_stay_inside_the_project_never_point_at_the_idea_itself_and_g
         con.execute('DELETE FROM ideas WHERE id = 1')
         assert con.execute('SELECT count(*) FROM idea_links').fetchone() == (0,), 'links go with the target'
         con.execute(
-            "INSERT INTO ideas (project_id, title, hypothesis, created_by, track) VALUES (1, 'again', 'h', 't', 'a')"
+            "INSERT INTO ideas (campaign_id, title, hypothesis, created_by, track) VALUES (1, 'again', 'h', 't', 'a')"
         )
         con.execute(link + "(4, 3, 'after')")
         con.execute('DELETE FROM ideas WHERE id = 4')
         assert con.execute('SELECT count(*) FROM idea_links').fetchone() == (0,), 'and with the idea'
 
 
-def test_idea_titles_are_unique_per_project(db: Database) -> None:
-    """Concurrent research sweeps that land on the same title collide at insert; another project may reuse it."""
+def test_idea_titles_are_unique_per_campaign(db: Database) -> None:
+    """Concurrent research sweeps that land on the same title collide at insert; another campaign may reuse it."""
     with db.session() as s:
-        s.add(Project(name='a', path='/a', config={}))
-        s.add(Project(name='b', path='/b', config={}))
+        s.add(Campaign(name='a', path='/a', config={}))
+        s.add(Campaign(name='b', path='/b', config={}))
         s.commit()
-        s.add(Idea(track='score', project_id=1, title='target encoding', hypothesis='x', created_by='research#1'))
-        s.add(Idea(track='score', project_id=2, title='target encoding', hypothesis='x', created_by='research#2'))
+        s.add(Idea(track='score', campaign_id=1, title='target encoding', hypothesis='x', created_by='research#1'))
+        s.add(Idea(track='score', campaign_id=2, title='target encoding', hypothesis='x', created_by='research#2'))
         s.commit()
-        s.add(Idea(track='score', project_id=1, title='target encoding', hypothesis='y', created_by='research#3'))
-        with pytest.raises(IntegrityError, match='UNIQUE constraint failed: ideas.project_id, ideas.title'):
+        s.add(Idea(track='score', campaign_id=1, title='target encoding', hypothesis='y', created_by='research#3'))
+        with pytest.raises(IntegrityError, match='UNIQUE constraint failed: ideas.campaign_id, ideas.title'):
             s.commit()
 
 
@@ -424,9 +432,7 @@ def test_0010_marks_the_runs_that_a_stopped_daemon_was_scoring_and_checks_the_fl
         with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: runs.scoring needs a finished'):
             con.execute('UPDATE runs SET scoring = 1 WHERE id = 3')
         triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
-        assert triggers == sorted(t.name for t in PERSISTENT if t.name not in SINCE_0015), (
-            'the rebuilt runs table has its triggers back'
-        )
+        assert triggers == triggers_at('0010'), 'the rebuilt runs table has its triggers back'
     command.downgrade(cfg, '0009')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert 'scoring' not in [c for (_, c, *_) in con.execute('PRAGMA table_info(runs)')]
@@ -459,7 +465,7 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
         assert stored[2] == {
             'roles': {'research': {'triggers': [{'kind': 'low_water', 'buffer': 3}, {'kind': 'seed'}]}}
         }, "a release's config has no triggers: research's defaults, with its buffer"
-        p = ProjectConfig.model_validate(stored[0])
+        p = CampaignConfig.model_validate(stored[0])
         assert (p.roles.scout.interval, p.roles.scout.seeds) == (86400, 4)
         assert (p.roles.scout.mcp, p.roles.scout.timeout, p.roles.scout.addendum) == (['xai'], 1200, 'research.md'), (
             'the keys of research that the scout used'
@@ -475,9 +481,9 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
         assert [t.kind for t in p.roles.watchdog.triggers] == ['anomaly', 'cron', 'stopped'], 'the closing review stays'
         con.execute("INSERT INTO workers (kind, project_id) VALUES ('scout', 2)")
         sql = con.execute("SELECT sql FROM sqlite_master WHERE name = 'workers_kind'").fetchone()[0]
-        assert sql + ';' == known_role().sql()
+        assert sql + ';' == legacy.rendered(known_role(), old=True)[3], 'the trigger of today, in the names of then'
         triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
-        assert triggers == sorted(t.name for t in PERSISTENT if t.name not in SINCE_0015)
+        assert triggers == triggers_at('0011')
     command.downgrade(cfg, '0010')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert con.execute(kinds).fetchall() == [('research',), ('research',), ('research',)]
@@ -561,18 +567,167 @@ def test_0015_makes_every_project_a_root_optimization_campaign_and_downgrades(tm
         con.execute('PRAGMA foreign_keys = ON')
         assert con.execute('SELECT type, parent_id FROM projects').fetchall() == [('optimization', None)] * 2
         con.execute('UPDATE projects SET parent_id = 1 WHERE id = 2')
-        with pytest.raises(sqlite3.IntegrityError, match='a project cannot be under itself'):
+        with pytest.raises(sqlite3.IntegrityError, match='cannot be under itself'):
             con.execute('UPDATE projects SET parent_id = 2 WHERE id = 1')
         con.execute("INSERT INTO workers (kind, project_id) VALUES ('worker', 2)")
         triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
-        assert triggers == sorted(t.name for t in PERSISTENT), 'projects was not rebuilt: workers_kind still reads it'
-        for t in PERSISTENT:
-            sql = con.execute('SELECT sql FROM sqlite_master WHERE name = ?', (t.name,)).fetchone()[0]
-            assert sql + ';' == t.sql(), f'{t.name}: the migration installs what the package renders'
+        assert triggers == triggers_at('0015'), 'projects was not rebuilt: workers_kind still reads it'
     command.downgrade(cfg, '0014')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         columns = [c for (_, c, *_) in con.execute('PRAGMA table_info(projects)')]
         assert 'type' not in columns and 'parent_id' not in columns
         assert con.execute('SELECT count(*) FROM projects').fetchone() == (2,)
         triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
-        assert triggers == sorted(t.name for t in PERSISTENT if t.name not in SINCE_0015)
+        assert triggers == triggers_at('0014')
+
+
+TAKES_0015 = 'project_id IN (SELECT "Project_Id" FROM evaluators) AND title NOT LIKE \'%projects%\' -- projects: kept'
+"""A role's ``takes`` at revision 0015: identifiers to rename (one quoted, in another case), a literal and a comment."""
+WHEN_0015 = "SELECT 1 FROM projects WHERE id = :project AND json_extract(config, '$.evaluator_id') IS NULL"
+
+
+def test_0016_renames_projects_campaigns_and_evaluators_evaluators_with_every_row_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0015')
+    roles = {
+        'fixer': {'takes': TAKES_0015, 'workdir': 'project', 'triggers': [{'kind': 'seed'}]},
+        'research': {
+            'workdir': 'head',
+            'triggers': [
+                {'kind': 'sql', 'when': WHEN_0015},
+                {'kind': 'sql', 'when': 'SELECT 1 WHERE @project = $Project'},
+            ],
+        },
+        'watchdog': {},
+    }
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute(
+            "INSERT INTO projects (name, path, config, evaluator_id) VALUES ('p', '/p', ?, 1), ('q', '/q', '{}', NULL)",
+            (json.dumps({'roles': roles}),),
+        )
+        con.execute('UPDATE projects SET parent_id = 1 WHERE id = 2')
+        con.execute("INSERT INTO evaluators (project_id, key, definition) VALUES (1, 'k', '{}')")
+        con.execute("INSERT INTO candidates (project_id, tree_sha, commit_sha) VALUES (1, 't', 'c')")
+        con.execute("INSERT INTO measurements (candidate_id, evaluator_id, metrics) VALUES (1, 1, '{}')")
+        con.execute('INSERT INTO evaluations (candidate_id, evaluator_id) VALUES (1, 1)')
+        con.execute("INSERT INTO comments (target_kind, target_id, author, body) VALUES ('project', 1, 'h', 'hi')")
+        con.execute(
+            'INSERT INTO events (kind, actor, target_kind, target_id, payload) VALUES'
+            " ('project.status', 'h', 'project', 1, '{\"project\": 1}'), ('idea.status', 'h', 'idea', 1, '{}')"
+        )
+    command.upgrade(cfg, '0016')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute('PRAGMA foreign_keys = ON')
+        assert con.execute('SELECT id, name, evaluator_id, type, parent_id FROM campaigns').fetchall() == [
+            (1, 'p', 1, 'optimization', None),
+            (2, 'q', None, 'optimization', 1),
+        ]
+        assert con.execute('SELECT id, campaign_id, key FROM evaluators').fetchall() == [(1, 1, 'k')]
+        assert con.execute('SELECT evaluator_id FROM measurements').fetchall() == [(1,)]
+        assert con.execute('SELECT target_kind FROM comments').fetchall() == [('campaign',)]
+        assert con.execute('SELECT kind, target_kind, payload FROM events ORDER BY id').fetchall() == [
+            ('campaign.status', 'campaign', '{"project": 1}'),
+            ('idea.status', 'idea', '{}'),
+        ], 'the kinds are renamed; a payload keeps its text'
+        with pytest.raises(sqlite3.IntegrityError, match='FOREIGN KEY'):
+            con.execute('INSERT INTO measurements (candidate_id, evaluator_id) VALUES (1, 9)')
+        with pytest.raises(sqlite3.IntegrityError, match='UNIQUE constraint failed: evaluations.candidate_id, eval'):
+            con.execute('INSERT INTO evaluations (candidate_id, evaluator_id) VALUES (1, 1)')
+        with pytest.raises(sqlite3.IntegrityError, match='campaigns.paused and campaigns.paused_reason go together'):
+            con.execute("UPDATE campaigns SET paused = 'all' WHERE id = 1")
+        with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: targetkind'):
+            con.execute("INSERT INTO comments (target_kind, target_id, author, body) VALUES ('project', 1, 'h', 'x')")
+        with pytest.raises(sqlite3.IntegrityError, match='cannot be under itself'):
+            con.execute('UPDATE campaigns SET parent_id = 2 WHERE id = 1')
+        con.execute("INSERT INTO workers (kind, campaign_id) VALUES ('worker', 1)")
+        assert con.execute("SELECT count(*) FROM comments_fts WHERE comments_fts MATCH 'hi'").fetchone() == (1,)
+        for t in PERSISTENT:
+            sql = con.execute('SELECT sql FROM sqlite_master WHERE name = ?', (t.name,)).fetchone()[0]
+            assert sql + ';' == t.sql(), f'{t.name}: the migration installs what the package renders'
+        assert triggers_at('0016') == sorted(t.name for t in PERSISTENT)
+        stored = json.loads(con.execute('SELECT config FROM campaigns WHERE id = 1').fetchone()[0])['roles']
+        assert stored['fixer'] == {
+            'takes': 'campaign_id IN (SELECT "campaign_id" FROM evaluators) AND title NOT LIKE \'%projects%\''
+            ' -- projects: kept',
+            'workdir': 'repo',
+            'triggers': [{'kind': 'seed'}],
+        }, 'identifiers only: the literal and the comment keep their text'
+        assert stored['research']['triggers'][0]['when'] == (
+            "SELECT 1 FROM campaigns WHERE id = :campaign AND json_extract(config, '$.evaluator_id') IS NULL"
+        )
+        assert stored['research']['workdir'] == 'head'
+        assert stored['research']['triggers'][1]['when'] == 'SELECT 1 WHERE @campaign = $campaign', 'every prefix'
+    command.upgrade(cfg, 'head')
+    command.check(cfg)
+    command.downgrade(cfg, '0015')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT id, evaluator_id, parent_id FROM projects').fetchall() == [
+            (1, 1, None),
+            (2, None, 1),
+        ]
+        assert con.execute('SELECT project_id FROM evaluators').fetchall() == [(1,)]
+        assert con.execute('SELECT kind, target_kind FROM events ORDER BY id').fetchall() == [
+            ('project.status', 'project'),
+            ('idea.status', 'idea'),
+        ]
+        assert con.execute('SELECT target_kind FROM comments').fetchall() == [('project',)]
+        restored = json.loads(con.execute('SELECT config FROM projects WHERE id = 1').fetchone()[0])['roles']
+        roles['fixer']['takes'] = TAKES_0015.replace('"Project_Id"', '"project_id"')
+        roles['research']['triggers'][1]['when'] = 'SELECT 1 WHERE @project = $project'
+        assert restored == roles, 'the old names come back, in lower case'
+        triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
+        assert triggers == triggers_at('0015')
+        indexes = "SELECT name FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL ORDER BY name"
+        assert 'ix_ideas_project_status_priority' in [i for (i,) in con.execute(indexes)]
+
+
+def test_0017_gives_every_evaluator_the_process_runner_and_downgrades(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0016')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
+        con.execute("INSERT INTO evaluators (campaign_id, key, definition) VALUES (1, 'k', '{}')")
+    command.upgrade(cfg, '0017')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT runner FROM evaluators').fetchall() == [('process',)]
+    command.downgrade(cfg, '0016')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert 'runner' not in [c for (_, c, *_) in con.execute('PRAGMA table_info(evaluators)')]
+        assert con.execute('SELECT key FROM evaluators').fetchall() == [('k',)]
+
+
+def test_an_upgrade_that_fails_halfway_leaves_the_database_as_it_was(tmp_path: Path) -> None:
+    """The whole upgrade is one transaction: 0016 renames and drops a lot before it can fail, and all of it goes back."""
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0015')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+        con.execute("INSERT INTO comments (target_kind, target_id, author, body) VALUES ('project', 1, 'h', 'hi')")
+        con.execute("INSERT INTO projects (name, path, config, parent_id) VALUES ('q', '/q', '{}', 1)")
+
+    def foreign_keys_on(con: sqlite3.Connection, _record: object) -> None:
+        con.execute('PRAGMA foreign_keys = ON')  # then 0016 fails at DROP TABLE campaigns, after the renames
+
+    event.listen(Engine, 'connect', foreign_keys_on)
+    try:
+        with pytest.raises(IntegrityError, match='FOREIGN KEY constraint failed'):
+            command.upgrade(cfg, 'head')
+    finally:
+        event.remove(Engine, 'connect', foreign_keys_on)
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT version_num FROM alembic_version').fetchall() == [('0015',)]
+        tables = {t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        assert {'projects', 'evaluators'} <= tables and not {
+            t for t in tables if t.startswith(('_rebuilt', 'campaigns'))
+        }
+        triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
+        assert triggers == triggers_at('0015')
+        assert con.execute('SELECT target_kind FROM comments').fetchall() == [('project',)]
+    command.upgrade(cfg, 'head')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT target_kind FROM comments').fetchall() == [('campaign',)]

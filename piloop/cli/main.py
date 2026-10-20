@@ -8,6 +8,7 @@ import cyclopts
 from piloop import deprecated
 from piloop.cli import (
     agents,
+    campaign,
     candidate,
     common,
     daemon,
@@ -20,7 +21,6 @@ from piloop.cli import (
     measurement,
     memory,
     plugins,
-    project,
     store,
 )
 from piloop.config import ConfigError
@@ -34,18 +34,18 @@ for group in (
     evaluation.app,
     inbox.app,
     store.app,
-    project.app,
+    campaign.app,
     agents.agent_app,
     agents.run_app,
 ):
     app.command(group)
-app.command(project.init)
-app.command(project.history)
-app.command(project.status)
+app.command(campaign.init)
+app.command(campaign.history)
+app.command(campaign.status)
 app.command(events.events)
-app.command(project.watch_cmd, name='watch')
-app.command(project.pause)
-app.command(project.resume)
+app.command(campaign.watch_cmd, name='watch')
+app.command(campaign.pause)
+app.command(campaign.resume)
 app.command(store.restore)
 app.command(agents.launch)
 app.command(agents.prompt)

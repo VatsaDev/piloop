@@ -7,9 +7,9 @@ from git.exc import GitCommandError
 from piloop import git
 
 
-def test_merge_and_contains_raise_on_a_commit_the_repo_does_not_have(project_path: Path) -> None:
+def test_merge_and_contains_raise_on_a_commit_the_repo_does_not_have(campaign_path: Path) -> None:
     """A conflict and "not an ancestor" are answers; an unknown commit is an error, never read as either."""
-    repo = Repo(project_path)
+    repo = Repo(campaign_path)
     head = repo.head.commit.hexsha
     assert git.contains(repo, head, head)
     with pytest.raises(GitCommandError, match='merge-tree'):
@@ -19,13 +19,13 @@ def test_merge_and_contains_raise_on_a_commit_the_repo_does_not_have(project_pat
 
 
 def test_worktree_changes_hold_the_process_lock(
-    project_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    campaign_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Every worktree command of the daemon's threads holds one lock.
 
     A ``git worktree prune`` that races a ``git worktree add`` in the same repo deletes the new worktree during the add.
     """
-    repo = Repo(project_path)
+    repo = Repo(campaign_path)
     real = repo.git
     held: list[tuple[str, bool]] = []
 
@@ -55,18 +55,18 @@ def test_worktree_changes_hold_the_process_lock(
     ],
     ids=['before-co-authored-by', 'before-generated-with', 'in-the-body'],
 )
-def test_piloop_trailers_count_on_any_line_after_the_subject(project_path: Path, message: str) -> None:
+def test_piloop_trailers_count_on_any_line_after_the_subject(campaign_path: Path, message: str) -> None:
     """hiloopai/piloop-dev#33: a harness puts its own trailers in a paragraph after the worker's, and git reads only
     the last paragraph. A line that only mentions a trailer is not one."""
-    repo = Repo(project_path)
+    repo = Repo(campaign_path)
     repo.git.commit('-q', '--allow-empty', '-m', message)
     sha = repo.head.commit.hexsha
     assert git.eval_skipped(repo, sha)
     assert git.trailers(repo, sha, 'Piloop-Note') == ['a lead']
 
 
-def test_a_line_that_mentions_a_trailer_or_the_subject_is_not_one(project_path: Path) -> None:
-    repo = Repo(project_path)
+def test_a_line_that_mentions_a_trailer_or_the_subject_is_not_one(campaign_path: Path) -> None:
+    repo = Repo(campaign_path)
     repo.git.commit(
         '-q', '--allow-empty', '-m', 'Piloop-Eval: skip\n\nThe trailer Piloop-Eval: skip is for scaffolding.'
     )
@@ -76,10 +76,10 @@ def test_a_line_that_mentions_a_trailer_or_the_subject_is_not_one(project_path: 
 
 
 def test_a_checkout_changed_by_an_edit_a_new_file_or_a_commit_not_by_what_was_linked_into_it(
-    project_path: Path, tmp_path: Path
+    campaign_path: Path, tmp_path: Path
 ) -> None:
     """``changed`` tells an agent that worked from one that left its checkout as it got it."""
-    repo = Repo(project_path)
+    repo = Repo(campaign_path)
     wt_path = tmp_path / 'wt'
     target = tmp_path / 'shared'
     target.mkdir()

@@ -3,7 +3,7 @@
 The docs include the generated snippets in ``docs/snippets/generated/``, and every snippet that a page imports exists.
 
 Placeholders: ``<anything>`` (a letter after the ``<``) and ``…`` become ``1`` before a shell or SQL block is checked.
-``1`` is a valid project name, id, number and text, so an example with placeholders parses like a real one.
+``1`` is a valid campaign name, id, number and text, so an example with placeholders parses like a real one.
 """
 
 import json
@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from piloop.cli.database import sql_cmd
 from piloop.cli.main import app
-from piloop.config import ProjectConfig
+from piloop.config import CampaignConfig
 from piloop.db import sql
 from piloop.plugins import host
 from piloop.settings import StorageSettings
@@ -102,12 +102,23 @@ GLOBAL_TABLES: dict[str, type[BaseModel]] = {'storage': StorageSettings}
 """The tables of ``$PILOOP_HOME/config.toml``, the global settings file. Every other TOML block is ``piloop.toml``."""
 
 
+PYPROJECT_MARKS = ('[project', '[build-system]', 'entry-points')
+"""What makes a TOML block a ``pyproject.toml``, or a part of one, and not a ``piloop.toml``."""
+
+
 def check_toml(block: Block, _db: Path) -> None:
     """A whole ``piloop.toml`` validates as it is. A fragment validates when it is merged into ``BASE_CONFIG``.
 
-    A block of ``config.toml`` tables only validates against those tables.
+    A block of ``config.toml`` tables only validates against those tables. A block of a ``pyproject.toml`` parses,
+    and each of its entry point tables sits under ``[project]``, where Python looks for a plugin.
     """
     data = tomllib.loads(block.code)
+    if any(mark in block.code for mark in PYPROJECT_MARKS):
+        misplaced = [
+            path for path in table_paths(data) if path[-1] == 'entry-points' and path != ('project', 'entry-points')
+        ]
+        assert not misplaced, f'{block.at()}: {", ".join(".".join(p) for p in misplaced)} is not project.entry-points'
+        return
     if data.keys() <= GLOBAL_TABLES.keys() and data:
         for table, values in data.items():
             GLOBAL_TABLES[table].model_validate(values)
@@ -116,7 +127,15 @@ def check_toml(block: Block, _db: Path) -> None:
             if settings.remote is not None:
                 remote_config(settings.remote)  # the backend checks its own keys, as when the store opens
         return
-    ProjectConfig.model_validate(data if {'name', 'evaluate'} <= data.keys() else merged(BASE_CONFIG, data))
+    CampaignConfig.model_validate(data if {'name', 'evaluate'} <= data.keys() else merged(BASE_CONFIG, data))
+
+
+def table_paths(table: dict[str, object], path: tuple[str, ...] = ()) -> Iterator[tuple[str, ...]]:
+    """The path of every table in ``table``, at every depth."""
+    for key, value in table.items():
+        if isinstance(value, dict):
+            yield (*path, key)
+            yield from table_paths(value, (*path, key))
 
 
 def commands(code: str) -> Iterator[tuple[int, list[str]]]:
@@ -263,3 +282,13 @@ def test_snippets_are_imported_and_exist() -> None:
     generated = set((ROOT / 'docs' / 'snippets' / 'generated').glob('*.mdx'))
     assert generated, 'no generated snippets: run `make docs`'
     assert generated <= imported, f'no page imports {sorted(p.name for p in generated - imported)}'
+
+
+def test_a_pyproject_block_puts_its_entry_points_under_project(tmp_path: Path) -> None:
+    good = '[project]\nname = "p"\n\n[project.entry-points."piloop.runtimes"]\nnice = "p:Nice"\n'
+    check_toml(Block(ROOT / 'README.md', 1, 'toml', good), tmp_path)
+    renamed = '[campaign.entry-points."piloop.runtimes"]\nnice = "p:Nice"\n'
+    with pytest.raises(AssertionError, match=r'README.md:1: campaign.entry-points is not project.entry-points'):
+        check_toml(Block(ROOT / 'README.md', 1, 'toml', renamed), tmp_path)
+    with pytest.raises(tomllib.TOMLDecodeError):
+        check_toml(Block(ROOT / 'README.md', 1, 'toml', '[build-system]\nrequires = [\n'), tmp_path)

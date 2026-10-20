@@ -7,7 +7,7 @@ from rich.table import Table
 from rich.text import Text
 
 from piloop.cli import common
-from piloop.db.models import Project, utcnow
+from piloop.db.models import Campaign, utcnow
 from piloop.reports.overview import age
 from piloop.scoring import queue
 from piloop.text import cell
@@ -19,13 +19,13 @@ app = cyclopts.App(name='eval', help='List or cancel the evaluations that the da
 def eval_queue() -> None:
     """List the running evaluations, then the waiting ones in the order in which they get a slot.
 
-    The daemon runs `max_evaluations` evaluations at the same time, across all projects. A free slot goes to the
-    project with the fewest running evaluations, and in that project to its head first, then to the oldest request.
+    The daemon runs `max_evaluations` evaluations at the same time, across all campaigns. A free slot goes to the
+    campaign with the fewest running evaluations, and in that campaign to its head first, then to the oldest request.
     """
     with common.session() as s:
         rows = queue.listing(s)
         now = utcnow()
-        table = Table('candidate', 'project', 'state', 'summary', box=None)
+        table = Table('candidate', 'campaign', 'state', 'summary', box=None)
         for e in rows:
             if e.cancelled_by is not None:
                 state = f'cancelled by {e.cancelled_by}'
@@ -35,7 +35,7 @@ def eval_queue() -> None:
                 state = f'waiting {age(e.created_at, now)}'
             table.add_row(
                 f'candidate#{e.candidate_id}',
-                s.get_one(Project, e.candidate.project_id).name,
+                s.get_one(Campaign, e.candidate.campaign_id).name,
                 state,
                 Text(cell(e.candidate.summary or '')),
             )

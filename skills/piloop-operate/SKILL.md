@@ -13,9 +13,9 @@ The database is the contract. Everything below is a `piloop` command in your she
   another command, such as `piloop-canary` next to a release, use that command wherever this skill says `piloop`.
   - The rows you change, the items you acknowledge and their events are then signed `orchestrator`.
   - `piloop inbox wait` then skips what you wrote yourself.
-- Limit your queries to the projects that you orchestrate: the project in the current directory
-  (`SELECT id, name FROM projects WHERE path = '<cwd>'` gives `<p>` and `<name>`), or each project that the human names.
-  For several projects, leave the name out of `piloop inbox wait`: it then waits for every project.
+- Limit your queries to the campaigns that you orchestrate: the campaign in the current directory
+  (`SELECT id, name FROM campaigns WHERE path = '<cwd>'` gives `<p>` and `<name>`), or each campaign that the human names.
+  For several campaigns, leave the name out of `piloop inbox wait`: it then waits for every campaign.
 
 ## The loop
 
@@ -30,7 +30,7 @@ It returns, one line each, as soon as something needs you:
 
 - a new unacknowledged inbox item that someone else wrote,
 - a seed that someone else filed,
-- a project that the daemon stopped,
+- a campaign that the daemon stopped,
 - an anomaly that the daemon gave to a watchdog,
 - the daemon's verdict on a measured candidate.
 
@@ -49,7 +49,7 @@ Do not let your shell tool kill the wait:
 Steps:
 
 1. **Start.** Run `PILOOP_ACTOR=orchestrator piloop wake` first. In a fixed budget (`--budget <tokens>`), it prints
-   your journal (what earlier sessions decided, planned and found), the open inbox, the head of each active project
+   your journal (what earlier sessions decided, planned and found), the open inbox, the head of each active campaign
    and the current lessons. Then run `piloop status` and `piloop inbox`. Items that already wait are yours too: the
    wait reports only new items.
    Then run `piloop doctor`, and again once a day. Run the commands that it names exactly as it names them: a second
@@ -57,7 +57,7 @@ Steps:
    - `FAIL daemon: … runs older code than the installed …`: run its fix, the restart. The running agents keep going.
    - `cli: … is out`: a newer piloop is available. When the line says that `PILOOP_AUTO_UPGRADE` is on, run the
      upgrade that it names with `PILOOP_ACTOR=orchestrator`, and record it as a decision. Otherwise do not upgrade:
-     file a p2 escalation on the project that asks the human, with the line and its changes link. An upgrade
+     file a p2 escalation on the campaign that asks the human, with the line and its changes link. An upgrade
      migrates the database one way, and the runs after it are scored by the new code.
    - Any other `FAIL`: fix it as its `fix:` line says, or escalate it.
 2. **Wait.** Run the command above.
@@ -81,17 +81,17 @@ Steps:
      decided. `piloop status <name>` has the numbers.
    - Include the keeps by source in every digest: the "ideas by source" table at the top of `piloop history <name>`.
      This shows whether research earns its sweeps.
-   - When every project you watch has stopped, report the result and stop the loop.
+   - When every campaign you watch has stopped, report the result and stop the loop.
 
 Run the loop yourself, or give it to a background subagent so that the human's session stays free. Give the subagent
-this skill and the project name. Tell it to report decisions and status back.
+this skill and the campaign name. Tell it to report decisions and status back.
 
 Run one orchestrator per campaign. Two loops answer the same escalation twice.
 
 ## Status
 
 `piloop status [<name>]` shows the same overview that watchdog and research sweeps get in their brief.
-Without a name, it uses the project in the current directory, else the only active project, else every project.
+Without a name, it uses the campaign in the current directory, else the only active campaign, else every campaign.
 It shows:
 
 - the head (the latest trunk keep) and its delta over the baseline,
@@ -221,8 +221,8 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
   characters) and a query for the full text, so put the instruction in the first line.
 - `comment.delivered` on the worker confirms that the comment arrived.
 - `piloop prompt <worker> "<text>"` sends text directly, when no comment is worth keeping. It needs `runtime = "herdr"`.
-- A comment on the project reaches no worker. When a decision changes the work of a running worker, write it on its
-  run, not on the project.
+- A comment on the campaign reaches no worker. When a decision changes the work of a running worker, write it on its
+  run, not on the campaign.
 - A worker asks for what it cannot do itself with an escalation. When its run ends before the answer, the run fails as
   `blocked on escalation` and its idea is parked. Answer with a `decision` on the idea, then set it `ready`.
 
@@ -231,9 +231,9 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
 - A run that became redundant: `piloop run cancel <run> --wrap-up`. The worker is told to commit and stop, and ended
   10 minutes later, with every process it started. Its commits are scored and its idea is parked. Without `--wrap-up`,
   it is ended at once. `piloop agent cancel <worker> [--wrap-up]` does the same for an agent of any role, a sweep too.
-- A campaign: `piloop project stop <name> --reason "<why>"`. The daemon stops it as a `[stop]` condition does: it
+- A campaign: `piloop campaign stop <name> --reason "<why>"`. The daemon stops it as a `[stop]` condition does: it
   drops queued work, winds the workers down, scores their commits and launches the closing review. `--kill` ends the
-  workers at once. Never `UPDATE projects SET status`: that gets no closing review.
+  workers at once. Never `UPDATE campaigns SET status`: that gets no closing review.
 - Never `pkill` an agent: the cancel ends what it left running, in any session.
 
 ### Start from a tree outside the lineage
@@ -244,7 +244,7 @@ Use this for a candidate of another campaign, or a branch.
   Never `INSERT INTO candidates`.
 - The daemon measures it.
 - Start an idea from it with `piloop idea add <name> "<title>" --base <c>`.
-- A candidate of another project is its `commit_sha`. If it is in another repo, fetch it into this repo first.
+- A candidate of another campaign is its `commit_sha`. If it is in another repo, fetch it into this repo first.
 - A reference is never a keep and never the head. It is the bar only of a run that is pinned to it.
 
 Branch runs:
@@ -274,7 +274,7 @@ piloop candidate note <c> "<why>" --follow-up "<hunch>"
 
 - Run `piloop launch <name> research`.
 - A sweep develops the seeds first. Then, while the backlog is short, it adds up to `max_ideas` ideas of its own.
-- It leaves a `finding` on the project.
+- It leaves a `finding` on the campaign.
 - Research sweeps also run by themselves while the backlog is below its target. They wait longer after sweeps that
   define nothing.
 
@@ -335,7 +335,7 @@ Revert: <the SQL, command or edit that undoes it>
 Re: comment#<the escalation, if one>')
 ```
 
-- Target the row that the decision is about: the target of the escalation, or the project for a project-wide decision.
+- Target the row that the decision is about: the target of the escalation, or the campaign for a campaign-wide decision.
 - Never move a goalpost after you see the result that the move would let in. If it really must move, the decision has
   priority 0 and the body says what you had seen.
 - A revision by the human arrives as a `decision` comment on the same target. From `piloop watch`, it arrives as a
@@ -365,7 +365,7 @@ without a priority), out of the inbox.
 - The ids of the agents are in the status.
 - By default (`runtime = "subprocess"`), each agent is a background process. `piloop prompt <worker_id> "…"` queues a
   message for it: when its turn ends, piloop resumes its session with the message.
-- With `runtime = "herdr"`, each agent runs as a tab in the workspace of the project in the `piloop` Herdr session:
+- With `runtime = "herdr"`, each agent runs as a tab in the workspace of the campaign in the `piloop` Herdr session:
   - `piloop attach <worker_id>` focuses that tab. From a terminal outside that session, it also attaches to the
     session. It takes over the terminal, so it is for the human, not for your shell tool.
   - `piloop prompt <worker_id> "…"` steers a running agent of any role. The message waits for the end of the
@@ -373,7 +373,7 @@ without a priority), out of the inbox.
 - To request one more sweep, run `piloop launch <name> <role> [--harness pi --model …] [--reason "…"]`: `watchdog`,
   `research`, or a role that `piloop.toml` defines.
   Or insert a request:
-  `INSERT INTO workers (kind, project_id, state, reason) VALUES ('research', <p>, 'requested', '…')`.
+  `INSERT INTO workers (kind, campaign_id, state, reason) VALUES ('research', <p>, 'requested', '…')`.
   The daemon launches it on the next tick, within the `max_concurrent` of the role.
 - When an agent's process exits, or its Herdr tab closes, the agent ends. The daemon records the outcome on its
   `workers` row.
@@ -395,17 +395,17 @@ without a priority), out of the inbox.
 
 ## Past research
 
-Every campaign that ever ran is in the database. `projects.repo` names the code that each project worked on, the same
+Every campaign that ever ran is in the database. `campaigns.repo` names the code that each campaign worked on, the same
 for every clone. Before you add an idea, and when an agent asks whether something was tried, query it. `piloop
-schema` ("Remember past campaigns") has every query: implementations to copy from any project, documents, the
+schema` ("Remember past campaigns") has every query: implementations to copy from any campaign, documents, the
 session that worked a past idea.
 
-- Prior attempts on this repo, in every project, with what judged them. A discard under one evaluator is not dead
+- Prior attempts on this repo, in every campaign, with what judged them. A discard under one evaluator is not dead
   under another: `SELECT p.name, i.id, i.status, i.title FROM ideas_fts JOIN ideas i ON i.id = ideas_fts.rowid JOIN
-  projects p ON p.id = i.project_id WHERE ideas_fts MATCH '<mechanism>' AND p.repo = (SELECT repo FROM projects WHERE
+  campaigns p ON p.id = i.campaign_id WHERE ideas_fts MATCH '<mechanism>' AND p.repo = (SELECT repo FROM campaigns WHERE
   id = <p>) ORDER BY bm25(ideas_fts) LIMIT 20`.
 - Lessons: the standing conclusion about each mechanism family, written by the closing watchdog when a campaign stops.
-  The newest for each project and family is the current one, and `piloop wake` lists them. You may write one too: a
+  The newest for each campaign and family is the current one, and `piloop wake` lists them. You may write one too: a
   row of `lessons` with the family, the status (`dead`, `promising` or `untested`), the best effect and its metric
   (both NULL when none was measured), and a body that says why, citing ids. The procedures show the INSERT.
 - Documents: the reports and logs that `[memory] documents` in `piloop.toml` names, copied in on `piloop init` and
@@ -468,7 +468,7 @@ Find who changed what:
 SELECT at, actor, kind, payload FROM events WHERE target_kind = '<k>' AND target_id = <t> ORDER BY id
 ```
 
-- Changes to an idea's status, priority or track, a candidate's verdict and a project's status or pause carry
+- Changes to an idea's status, priority or track, a candidate's verdict and a campaign's status or pause carry
   `{old, new}` and the actor (`human`, `orchestrator`, `daemon`, `watchdog#7` …).
 - `idea.base_candidate_id` carries `{old, new}` too, and `idea.linked` and `idea.unlinked` the target and the kind.
   The commands put their reason in a note on the idea. `measurement.recorded` has the metrics.

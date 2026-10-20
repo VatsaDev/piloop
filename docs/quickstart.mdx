@@ -55,7 +55,7 @@ The agent follows the `piloop-setup` skill. It runs every command itself and rep
    asks only what the repo does not answer. It writes no file before you answer or skip the interview.
 3. **It writes the campaign:** `brief.md` for the workers, `piloop.toml` with the metrics and limits, and the evaluate
    command. It runs the evaluate command once and shows you both files. It asks you once more before it continues.
-4. **It registers the project** with `piloop init .`. This measures the baseline. The agent tells you the baseline
+4. **It registers the campaign** with `piloop init .`. This measures the baseline. The agent tells you the baseline
    value. A value that surprises you usually means that the evaluate command is wrong.
 5. **It starts the daemon** with `piloop serve --detach`. It adds the first ideas with you, or asks a research agent
    for ideas.
@@ -125,11 +125,11 @@ piloop stop
 ```
 
 `piloop stop` stops the daemon and every agent that it runs. The ideas of the stopped runs go back to the backlog.
-The projects stay active, and the next `piloop serve --detach` continues them. Every candidate commit stays in the
+The campaigns stay active, and the next `piloop serve --detach` continues them. Every candidate commit stays in the
 repo under `refs/piloop/`, so `git show` and `git cherry-pick` work on any of them.
 
 To pause one campaign, let its running work finish and launch nothing new:
-`piloop pause <project> --reason "<why>"`, then `piloop resume <project>`.
+`piloop pause <campaign> --reason "<why>"`, then `piloop resume <campaign>`.
 
 ## Try it on an example
 

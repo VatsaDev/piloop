@@ -8,13 +8,13 @@ from pytest_mock import MockerFixture
 from sqlalchemy import select
 
 from piloop.campaign import ops
-from piloop.config import load_project_config
-from piloop.daemon.runner import RunExecutor
-from piloop.db.models import Candidate, Comment, Event, IdeaStatus, Project, TargetKind, Verdict, Worker, WorkerState
+from piloop.config import load_campaign_config
+from piloop.daemon.run_executor import RunExecutor
+from piloop.db.models import Campaign, Candidate, Comment, Event, IdeaStatus, TargetKind, Verdict, Worker, WorkerState
 from piloop.db.session import Database
 from piloop.scoring.ledger import DAEMON, REJUDGE_FAILED, head, import_reference, rejudges
 from tests.conftest import HARNESS_WORSE, Gate, ScriptRuntime, write_script
-from tests.daemon.test_runner import candidates, execute, executor, make_run
+from tests.daemon.test_run_executor import candidates, execute, executor, make_run
 from tests.daemon.test_scheduler import add_ideas, make_scheduler, measured_by, request_watchdog, statuses
 
 
@@ -24,12 +24,12 @@ def pause(db: Database, *, evals: bool) -> None:
         s.commit()
 
 
-def test_a_paused_project_launches_nothing_requests_nothing_and_escalates_nothing_until_resumed(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+def test_a_paused_campaign_launches_nothing_requests_nothing_and_escalates_nothing_until_resumed(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     sched = make_scheduler(db, runtime, tmp_path)
-    add_ideas(db, project, 'more lines')
-    watchdog = request_watchdog(db, project)
+    add_ideas(db, campaign, 'more lines')
+    watchdog = request_watchdog(db, campaign)
     pause(db, evals=False)
     assert sched.tick() == [] and sched.tick() == []
     assert statuses(db) == [IdeaStatus.READY], 'no run is queued'
@@ -46,16 +46,16 @@ def test_a_paused_project_launches_nothing_requests_nothing_and_escalates_nothin
 
 
 def test_a_pause_still_measures_what_the_evaluator_needs_unless_it_holds_the_evaluations_too(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    repo = Repo(project.path)
+    repo = Repo(campaign.path)
     repo.git.checkout('-qb', 'elsewhere')
-    (Path(project.path) / 'solve.txt').write_text('a\nb\nc\n')
+    (Path(campaign.path) / 'solve.txt').write_text('a\nb\nc\n')
     repo.git.commit('-qam', 'three lines')
     repo.git.checkout('-q', 'main')
     with db.session() as s:
-        proj = s.get_one(Project, project.id)
-        cfg = load_project_config(Path(project.path))
+        proj = s.get_one(Campaign, campaign.id)
+        cfg = load_campaign_config(Path(campaign.path))
         reference = import_reference(s, proj, cfg, repo, 'elsewhere', summary=None, actor='orchestrator').id
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)
@@ -72,14 +72,14 @@ def test_a_pause_still_measures_what_the_evaluator_needs_unless_it_holds_the_eva
 
 def test_the_daemon_judges_a_discard_again_with_a_measurement_by_hand(
     db: Database,
-    project: Project,
+    campaign: Campaign,
     runtime: ScriptRuntime,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mocker: MockerFixture,
 ) -> None:
-    write_script(Path(project.path).parent / 'harness.sh', HARNESS_WORSE)
-    run_id = make_run(db, project)
+    write_script(Path(campaign.path).parent / 'harness.sh', HARNESS_WORSE)
+    run_id = make_run(db, campaign)
     execute(executor(db, runtime, tmp_path), db, run_id)
     [worse] = candidates(db, run_id)
     assert worse.verdict is Verdict.DISCARD
@@ -97,11 +97,11 @@ def test_the_daemon_judges_a_discard_again_with_a_measurement_by_hand(
     sched.tick()
     gate.release.set()
     sched.wait(30)
-    assert asked.call_count == 1, 'one judgement at a time in the project slot'
+    assert asked.call_count == 1, 'one judgement at a time in the campaign slot'
     with db.session() as s:
         c = s.get_one(Candidate, worse.id)
         assert (c.verdict, c.verdict_by) == (Verdict.KEEP, DAEMON), 'a mean of 2.5 against the 1 of the baseline'
-        p = s.get_one(Project, project.id)
+        p = s.get_one(Campaign, campaign.id)
         trunk = head(s, p)
         assert trunk is not None and trunk.id == worse.id
         assert rejudges(s, p) == [], 'judged since the request'
@@ -109,17 +109,17 @@ def test_the_daemon_judges_a_discard_again_with_a_measurement_by_hand(
 
 
 def test_a_judgement_again_that_fails_answers_the_request_with_the_error(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
-    write_script(Path(project.path).parent / 'harness.sh', HARNESS_WORSE)
-    run_id = make_run(db, project)
+    write_script(Path(campaign.path).parent / 'harness.sh', HARNESS_WORSE)
+    run_id = make_run(db, campaign)
     ex = executor(db, runtime, tmp_path)
     execute(ex, db, run_id)
     [worse] = candidates(db, run_id)
     with db.session() as s:
         ops.add_measurement(s, worse.id, ops.Report(metrics={'score': 5.0, 'size': 1.0}), actor='orchestrator')
         s.commit()
-    mocker.patch('piloop.daemon.runner.git.open_repo', side_effect=OSError('the repo is gone'))
+    mocker.patch('piloop.daemon.run_executor.git.open_repo', side_effect=OSError('the repo is gone'))
     ex.rejudge(worse.id)
     with db.session() as s:
         [failed] = s.scalars(select(Event).where(Event.kind == REJUDGE_FAILED)).all()
@@ -129,4 +129,4 @@ def test_a_judgement_again_that_fails_answers_the_request_with_the_error(
             {'error': 'OSError: the repo is gone'},
         )
         assert s.get_one(Candidate, worse.id).verdict is Verdict.DISCARD
-        assert rejudges(s, s.get_one(Project, project.id)) == [], 'not tried on every tick'
+        assert rejudges(s, s.get_one(Campaign, campaign.id)) == [], 'not tried on every tick'

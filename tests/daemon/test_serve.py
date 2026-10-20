@@ -85,14 +85,14 @@ def test_a_daemon_that_a_failed_test_leaves_is_reaped(tmp_path: Path) -> None:
     wait_until(lambda: not alive(pid))
 
 
-def test_sigterm_kills_workers_and_exits(project_path: Path, tmp_path: Path, schema: Path) -> None:
+def test_sigterm_kills_workers_and_exits(campaign_path: Path, tmp_path: Path, schema: Path) -> None:
     cfg = Settings(home=tmp_path / 'home')
-    write_toml(project_path, HARNESS_SLEEPS, worker_timeout=60)
+    write_toml(campaign_path, HARNESS_SLEEPS, worker_timeout=60)
     at_head(schema, cfg.home / 'piloop.db')
     db = Database(cfg.database_url, actor=cfg.actor)
-    project = register(db, project_path)
+    campaign = register(db, campaign_path)
     with db.session() as s:
-        s.add(Idea(track='score', project_id=project.id, title='long', hypothesis='long', created_by='t'))
+        s.add(Idea(track='score', campaign_id=campaign.id, title='long', hypothesis='long', created_by='t'))
         s.commit()
 
     with (tmp_path / 'daemon.log').open('w') as log:
@@ -314,7 +314,7 @@ def test_the_service_unit_carries_the_settings_of_the_shell_and_no_other_variabl
         'PILOOP_SECRETS_COMMAND': "op inject -i '%h/keys'",
         'PILOOP_TICK_SECONDS': '0.5',
         'PILOOP_HERDR_SESSION': 'my <session> & "co"',
-        'PILOOP_PROJECT_RUNTIME': 'subprocess',
+        'PILOOP_CAMPAIGN_RUNTIME': 'subprocess',
         'OTEL_EXPORTER_OTLP_ENDPOINT': 'http://localhost:4318',
         'CLAUDE_CONFIG_DIR': '/home/me/claude work',
         'CODEX_HOME': '/home/me/100% codex',

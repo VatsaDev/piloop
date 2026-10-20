@@ -1,6 +1,6 @@
-"""Stop conditions: decide when a project's ``[stop]`` table, or a request, ends the campaign.
+"""Stop conditions: decide when a campaign's ``[stop]`` table, or a request, ends the campaign.
 
-The scheduler checks every active project once per tick. The reason goes into ``projects.stopped_reason`` and into
+The scheduler checks every active campaign once per tick. The reason goes into ``campaigns.stopped_reason`` and into
 the trigger of the closing watchdog. A stop or a cancel that someone requests is an event that the daemon acts on, so
 any client of the database can make one.
 """
@@ -11,12 +11,14 @@ from sqlalchemy import ColumnElement, exists, func, select
 from sqlalchemy.orm import Session
 
 from piloop.agents.launcher import STOPPED_ERROR
-from piloop.config import ProjectConfig
+from piloop.config import CampaignConfig
 from piloop.db.events import emit
 from piloop.db.models import (
     FINISHED_RUNS,
     LIVE,
     OPEN_RUNS,
+    Campaign,
+    CampaignStatus,
     Candidate,
     Comment,
     CommentKind,
@@ -24,21 +26,19 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Measurement,
-    Project,
-    ProjectStatus,
     Run,
     TargetKind,
     Verdict,
     Worker,
     WorkerState,
-    project_runs,
+    campaign_runs,
     utcnow,
 )
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.plugins.contracts import stop as stop_contract
 from piloop.plugins.contracts.stop import STOP_RULES, Fact, Limits, Progress, StopCase
 from piloop.scoring.ledger import head, keeps, score
-from piloop.usage import project_tokens
+from piloop.usage import campaign_tokens
 
 STALE_ERROR = 'daemon exited while the run was in progress'
 CAMPAIGN_STOPPED_ERROR = 'campaign stopped'
@@ -54,11 +54,11 @@ NOT_ATTEMPTS = (STOPPED_ERROR, STALE_ERROR, CAMPAIGN_STOPPED_ERROR, ROLE_REMOVED
 The causes are a daemon stop or restart (``piloop upgrade``), a daemon crash, a campaign stop, a ``piloop init`` that
 removed the role of a queued run, agents that failed to start, or a cancel. Such a run is not counted as an attempt at
 its idea. It does not count toward ``max_runs`` or ``plateau``, and it is not an anomaly: the failed starts are."""
-STOP_REQUESTED = 'project.stop_requested'
-"""Event on a project that someone asked to stop (``piloop project stop``), with ``reason`` and ``kill``.
+STOP_REQUESTED = 'campaign.stop_requested'
+"""Event on a campaign that someone asked to stop (``piloop campaign stop``), with ``reason`` and ``kill``.
 
 On its next tick, the daemon stops the campaign as for a ``[stop]`` condition (``stop_reason``). With ``kill``, it
-ends the project's workers at once, without the wrap-up prompt. A request made before the project was last set
+ends the campaign's workers at once, without the wrap-up prompt. A request made before the campaign was last set
 ``active`` is spent."""
 CANCELLABLE = (WorkerState.REQUESTED, *LIVE)
 """The states of an agent that a cancel acts on: requested, starting (once it runs) and running."""
@@ -116,24 +116,24 @@ def attempts(idea: Idea) -> int:
     return sum(run.error not in NOT_ATTEMPTS for run in idea.runs)
 
 
-def request_stop(s: Session, project: Project, actor: str, *, reason: str, kill: bool) -> None:
-    """Ask the daemon to stop ``project`` (``STOP_REQUESTED``). The caller commits."""
-    emit(s, STOP_REQUESTED, TargetKind.PROJECT, project.id, actor=actor, payload={'reason': reason, 'kill': kill})
+def request_stop(s: Session, campaign: Campaign, actor: str, *, reason: str, kill: bool) -> None:
+    """Ask the daemon to stop ``campaign`` (``STOP_REQUESTED``). The caller commits."""
+    emit(s, STOP_REQUESTED, TargetKind.CAMPAIGN, campaign.id, actor=actor, payload={'reason': reason, 'kill': kill})
 
 
-def requested_stop(s: Session, project: Project) -> Event | None:
-    """Return the latest stop request since the project was last set ``active``, or None."""
+def requested_stop(s: Session, campaign: Campaign) -> Event | None:
+    """Return the latest stop request since the campaign was last set ``active``, or None."""
     reactivated = s.scalar(
         select(func.max(Event.id)).where(
-            Event.kind == 'project.status',
-            Event.target_kind == TargetKind.PROJECT,
-            Event.target_id == project.id,
-            Event.payload['new'].as_string() == ProjectStatus.ACTIVE.value,
+            Event.kind == 'campaign.status',
+            Event.target_kind == TargetKind.CAMPAIGN,
+            Event.target_id == campaign.id,
+            Event.payload['new'].as_string() == CampaignStatus.ACTIVE.value,
         )
     )
     return s.scalars(
         select(Event)
-        .where(Event.kind == STOP_REQUESTED, Event.target_kind == TargetKind.PROJECT, Event.target_id == project.id)
+        .where(Event.kind == STOP_REQUESTED, Event.target_kind == TargetKind.CAMPAIGN, Event.target_id == campaign.id)
         .where(Event.id > (reactivated or 0))
         .order_by(Event.id.desc())
         .limit(1)
@@ -185,14 +185,14 @@ def park_cancelled(s: Session, run: Run) -> None:
     )
 
 
-def stop_reason(s: Session, project: Project, cfg: ProjectConfig) -> str | None:
-    """Return why ``project`` stops now, or None: a stop request (``requested_stop``), else its stop rule.
+def stop_reason(s: Session, campaign: Campaign, cfg: CampaignConfig) -> str | None:
+    """Return why ``campaign`` stops now, or None: a stop request (``requested_stop``), else its stop rule.
 
     The rule is ``[plugins.stop_rule]``, else ``limits``. Only the facts that it reads are counted
     (``StopRule.reads``). ``head`` is the first track's primary at the head: config validation rejects ``target`` for
-    a project with more than one track.
+    a campaign with more than one track.
     """
-    if (request := requested_stop(s, project)) is not None:
+    if (request := requested_stop(s, campaign)) is not None:
         why = request.payload.get('reason')
         return f'stopped by {request.actor}: {why}' if why else f'stopped by {request.actor}'
     table = cfg.plugins.get('stop_rule')
@@ -201,53 +201,55 @@ def stop_reason(s: Session, project: Project, cfg: ProjectConfig) -> str | None:
     primary, stop = cfg.all_tracks[0].primary, cfg.stop
     limits = Limits(stop.target, stop.max_runs, stop.max_hours, stop.max_tokens, stop.plateau)
     reads = set(rule.reads(limits, parameters))
-    trunk = head(s, project) if Fact.HEAD in reads else None
+    trunk = head(s, campaign) if Fact.HEAD in reads else None
     counting = Fact.RUNS in reads
     progress = Progress(
-        head=score(trunk, project.evaluator_id or 0, primary) if trunk is not None else None,
-        runs=runs(s, project) if counting else None,
-        unsettled=(_over_runs(s, project, func.count(Run.id), attempt(), unsettled()) or 0) if counting else None,
-        hours=hours(s, project, utcnow()) if Fact.HOURS in reads else None,
-        tokens=project_tokens(s, project.id) if Fact.TOKENS in reads else None,
-        without_keep=runs_without_keep(s, project) if Fact.WITHOUT_KEEP in reads else None,
-        keeps=kept(s, project) if Fact.KEEPS in reads else None,
+        head=score(trunk, campaign.evaluator_id or 0, primary) if trunk is not None else None,
+        runs=runs(s, campaign) if counting else None,
+        unsettled=(_over_runs(s, campaign, func.count(Run.id), attempt(), unsettled()) or 0) if counting else None,
+        hours=hours(s, campaign, utcnow()) if Fact.HOURS in reads else None,
+        tokens=campaign_tokens(s, campaign.id) if Fact.TOKENS in reads else None,
+        without_keep=runs_without_keep(s, campaign) if Fact.WITHOUT_KEEP in reads else None,
+        keeps=kept(s, campaign) if Fact.KEEPS in reads else None,
     )
     return rule.check(StopCase(primary.name, primary.direction, limits, progress, parameters))
 
 
-def kept(s: Session, project: Project) -> int:
-    """Count the project's candidates of runs that are kept, on the trunk or on a branch. The baseline is not one."""
-    return s.scalar(keeps(project).where(Candidate.run_id.is_not(None)).with_only_columns(func.count())) or 0
+def kept(s: Session, campaign: Campaign) -> int:
+    """Count the campaign's candidates of runs that are kept, on the trunk or on a branch. The baseline is not one."""
+    return s.scalar(keeps(campaign).where(Candidate.run_id.is_not(None)).with_only_columns(func.count())) or 0
 
 
-def _over_runs[T](s: Session, project: Project, aggregate: ColumnElement[T], *where: ColumnElement[bool]) -> T | None:
-    return s.scalar(project_runs(project.id).with_only_columns(aggregate).where(*where))
+def _over_runs[T](s: Session, campaign: Campaign, aggregate: ColumnElement[T], *where: ColumnElement[bool]) -> T | None:
+    return s.scalar(campaign_runs(campaign.id).with_only_columns(aggregate).where(*where))
 
 
-def runs(s: Session, project: Project) -> int:
-    """Count the project's runs, of every role, that hold a place under ``max_runs``.
+def runs(s: Session, campaign: Campaign) -> int:
+    """Count the campaign's runs, of every role, that hold a place under ``max_runs``.
 
     These are the runs that count (``counted``) and the unsettled attempts, which may still count. So the queue never
     starts more runs than ``max_runs``.
     """
-    return _over_runs(s, project, func.count(Run.id), counted() | (attempt() & unsettled())) or 0
+    return _over_runs(s, campaign, func.count(Run.id), counted() | (attempt() & unsettled())) or 0
 
 
-def hours(s: Session, project: Project, now: datetime) -> float | None:
-    """Return the hours from the start of the project's first run to ``now``, or None if no run started.
+def hours(s: Session, campaign: Campaign, now: datetime) -> float | None:
+    """Return the hours from the start of the campaign's first run to ``now``, or None if no run started.
 
-    The time that the project was paused (``piloop pause``) does not count, so a pause does not use up ``max_hours``.
-    The pauses are the ``project.paused`` events of the change log.
+    The time that the campaign was paused (``piloop pause``) does not count, so a pause does not use up ``max_hours``.
+    The pauses are the ``campaign.paused`` events of the change log.
     """
-    first = _over_runs(s, project, func.min(Run.started_at))
-    return None if first is None else (now - first - paused_for(s, project, first, now)) / timedelta(hours=1)
+    first = _over_runs(s, campaign, func.min(Run.started_at))
+    return None if first is None else (now - first - paused_for(s, campaign, first, now)) / timedelta(hours=1)
 
 
-def paused_for(s: Session, project: Project, since: datetime, now: datetime) -> timedelta:
-    """Return how long the project was paused between ``since`` and ``now``."""
+def paused_for(s: Session, campaign: Campaign, since: datetime, now: datetime) -> timedelta:
+    """Return how long the campaign was paused between ``since`` and ``now``."""
     changes = s.execute(
         select(Event.at, Event.payload['new'].as_string())
-        .where(Event.kind == 'project.paused', Event.target_kind == TargetKind.PROJECT, Event.target_id == project.id)
+        .where(
+            Event.kind == 'campaign.paused', Event.target_kind == TargetKind.CAMPAIGN, Event.target_id == campaign.id
+        )
         .order_by(Event.id)
     ).all()
     total, start = timedelta(), None
@@ -262,34 +264,34 @@ def paused_for(s: Session, project: Project, since: datetime, now: datetime) -> 
     return total
 
 
-def runs_without_keep(s: Session, project: Project) -> int:
+def runs_without_keep(s: Session, campaign: Campaign) -> int:
     """Count the finished runs that count (``counted``) since the latest keep or reactivation. ``plateau`` uses this.
 
-    The window starts when the run of the latest keep finished, or when the project was last set ``active`` again
+    The window starts when the run of the latest keep finished, or when the campaign was last set ``active`` again
     after a stop (``piloop init``, or an UPDATE), whichever is later. A reactivated campaign gets a fresh window, so
     a ``plateau`` stop does not fire again on the next tick. An evaluator change alone does not reset the window.
     """
     last_keep = s.scalar(
-        keeps(project).join(Run, Candidate.run_id == Run.id).with_only_columns(func.max(Run.finished_at))
+        keeps(campaign).join(Run, Candidate.run_id == Run.id).with_only_columns(func.max(Run.finished_at))
     )
     reactivated = s.scalar(
         select(func.max(Event.at)).where(
-            Event.kind == 'project.status',
-            Event.target_kind == TargetKind.PROJECT,
-            Event.target_id == project.id,
-            Event.payload['new'].as_string() == ProjectStatus.ACTIVE.value,
+            Event.kind == 'campaign.status',
+            Event.target_kind == TargetKind.CAMPAIGN,
+            Event.target_id == campaign.id,
+            Event.payload['new'].as_string() == CampaignStatus.ACTIVE.value,
         )
     )
     since = max((t for t in (last_keep, reactivated) if t is not None), default=None)
     after = (Run.finished_at > since,) if since is not None else ()
-    return _over_runs(s, project, func.count(Run.id), Run.status.in_(FINISHED_RUNS), counted(), *after) or 0
+    return _over_runs(s, campaign, func.count(Run.id), Run.status.in_(FINISHED_RUNS), counted(), *after) or 0
 
 
-def stall(cfg: ProjectConfig) -> tuple[int, str]:
+def stall(cfg: CampaignConfig) -> tuple[int, str]:
     """Return the number of runs without a keep after which research must pivot, and how it was derived.
 
     The number is half of ``plateau``, so half of the campaign's patience remains after the pivot. Without
-    ``plateau``, it is two rounds of the run slots (``ProjectConfig.run_slots``).
+    ``plateau``, it is two rounds of the run slots (``CampaignConfig.run_slots``).
     """
     if cfg.stop.plateau is not None:
         return -(-cfg.stop.plateau // 2), f'half of [stop] plateau = {cfg.stop.plateau}'

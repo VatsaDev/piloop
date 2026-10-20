@@ -7,7 +7,7 @@ import cyclopts
 from piloop.campaign import ops
 from piloop.campaign.ideas import Definition
 from piloop.cli import common
-from piloop.cli.common import HARNESS_HELP, ProjectRef
+from piloop.cli.common import HARNESS_HELP, CampaignRef
 from piloop.db.models import IdeaStatus, LinkKind
 
 app = cyclopts.App(
@@ -26,7 +26,7 @@ Reason = Annotated[str, cyclopts.Parameter(help=REASON_HELP)]
 
 @app.command(name='add')
 def idea_add(
-    ref: ProjectRef,
+    ref: CampaignRef,
     title: Annotated[str, cyclopts.Parameter(help='A short title for the idea.')],
     /,
     *,
@@ -61,7 +61,7 @@ def idea_add(
     with common.refused(), common.session() as s:
         idea, held = ops.add_idea(
             s,
-            common.project(s, ref).id,
+            common.campaign(s, ref).id,
             title,
             actor=common.settings.actor,
             hypothesis=hypothesis,
@@ -82,7 +82,7 @@ def idea_add(
 
 @app.command(name='seed')
 def idea_seed(
-    ref: ProjectRef,
+    ref: CampaignRef,
     hunch: Annotated[str, cyclopts.Parameter(help='The hunch, in one line: what might move the metric.')],
     /,
     *,
@@ -106,7 +106,7 @@ def idea_seed(
     """
     with common.refused(), common.session() as s:
         idea = ops.file_seed(
-            s, common.project(s, ref).id, hunch, actor=common.settings.actor, provenance=from_, base=base, track=track
+            s, common.campaign(s, ref).id, hunch, actor=common.settings.actor, provenance=from_, base=base, track=track
         )
         s.commit()
         common.console.print(f'idea#{idea.id} seed: {hunch}; research develops it next', markup=False)
@@ -194,7 +194,7 @@ def idea_link(
     *,
     reason: Reason,
 ) -> None:
-    """Link an idea that exists to another idea of its project: it runs after the target, or supersedes it.
+    """Link an idea that exists to another idea of its campaign: it runs after the target, or supersedes it.
 
     The link is written in one transaction, so the daemon never queues the idea in between. A scheduled idea takes no
     `after` link: its run started already. A link that closes a cycle of its kind is refused.
@@ -252,7 +252,7 @@ def idea_track(
     *,
     reason: Reason,
 ) -> None:
-    """Move an idea to another track of its project, with a note on the idea that says why.
+    """Move an idea to another track of its campaign, with a note on the idea that says why.
 
     Its runs are judged on that track's primary. A scheduled idea keeps its track: its run is judged on it.
     """

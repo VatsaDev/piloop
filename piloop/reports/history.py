@@ -1,4 +1,4 @@
-"""The project history, rendered as markdown for an agent's brief and as tables for ``piloop history``.
+"""The campaign history, rendered as markdown for an agent's brief and as tables for ``piloop history``.
 
 The history has four parts:
 
@@ -7,7 +7,7 @@ The history has four parts:
   session that made it, and the tokens that session used. An agent can run ``git show`` and
   ``entire checkpoint explain`` on these.
 - The starting points: imported references that a pinned idea can start from.
-- The latest findings on the project, of every role.
+- The latest findings on the campaign, of every role.
 
 The size is bounded. 60 idea rows of about 560 characters and 10 findings of about 850 characters come to
 about 42 KB (about 11k tokens). Each kept candidate adds one line of about 230 characters.
@@ -23,8 +23,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.campaign.ideas import links, superseded_by
-from piloop.config import Metric, ProjectConfig
-from piloop.db.models import Candidate, Comment, CommentKind, Idea, Project, TargetKind, count
+from piloop.config import CampaignConfig, Metric
+from piloop.db.models import Campaign, Candidate, Comment, CommentKind, Idea, TargetKind, count
 from piloop.scoring.ledger import fallback_track, keeps, references, score, session_checkpoint, session_tokens, track_of
 from piloop.text import NONE, cell, metric
 from piloop.usage import human
@@ -40,23 +40,23 @@ SHORT_SHA = 7
 """Enough of a commit SHA for ``git show``. Entire checkpoint ids (26-character ULIDs) are shown in full."""
 
 
-def history(s: Session, project: Project, cfg: ProjectConfig) -> str:
+def history(s: Session, campaign: Campaign, cfg: CampaignConfig) -> str:
     """Render the history as markdown for an agent's brief, with markdown tables and no colour."""
     out = io.StringIO()
     console = Console(file=out, width=BRIEF_WIDTH, color_system=None, force_terminal=False, legacy_windows=False)
-    console.print(Group(*renderables(s, project, cfg, table_box=box.MARKDOWN, heading='## ')))
+    console.print(Group(*renderables(s, campaign, cfg, table_box=box.MARKDOWN, heading='## ')))
     text = out.getvalue()
     return '\n'.join(line.rstrip() for line in text.splitlines()).strip() + '\n'
 
 
 def renderables(
-    s: Session, project: Project, cfg: ProjectConfig, *, table_box: box.Box, heading: str = ''
+    s: Session, campaign: Campaign, cfg: CampaignConfig, *, table_box: box.Box, heading: str = ''
 ) -> list[RenderableType]:
-    """Build the ideas table, the kept lineage, the starting points and the last findings on the project.
+    """Build the ideas table, the kept lineage, the starting points and the last findings on the campaign.
 
     The agent brief (``history``, with ``heading='## '``) and ``piloop history`` use the same renderables.
 
-    The findings are those on the project of every agent, whatever its role (an author ``<role>#<id>``). Each keeps up
+    The findings are those on the campaign of every agent, whatever its role (an author ``<role>#<id>``). Each keeps up
     to ``FINDING_CHARS`` of its body. The lines after the first of a research finding list the directions that the
     sweep rejected, and the next sweep must read them. The findings of the orchestrator and the human are in the pack's
     digests. The findings on ideas show in the table. The ``links`` column shows what blocks an idea and which idea replaces
@@ -64,16 +64,16 @@ def renderables(
     """
     tracks = cfg.all_tracks
     ideas = s.scalars(
-        select(Idea).where(Idea.project_id == project.id).order_by(Idea.id.desc()).limit(IDEAS_IN_HISTORY)
+        select(Idea).where(Idea.campaign_id == campaign.id).order_by(Idea.id.desc()).limit(IDEAS_IN_HISTORY)
     ).all()[::-1]
-    total = count(s, select(Idea).where(Idea.project_id == project.id))
+    total = count(s, select(Idea).where(Idea.campaign_id == campaign.id))
     findings = _last_findings(s, [i.id for i in ideas])
     newer = superseded_by(s, [i.id for i in ideas])
-    evaluator_id = project.evaluator_id or 0
-    kept = s.scalars(keeps(project).order_by(Candidate.id)).all()
-    project_findings = s.scalars(
+    evaluator_id = campaign.evaluator_id or 0
+    kept = s.scalars(keeps(campaign).order_by(Candidate.id)).all()
+    campaign_findings = s.scalars(
         select(Comment)
-        .where(Comment.target_kind == TargetKind.PROJECT, Comment.target_id == project.id)
+        .where(Comment.target_kind == TargetKind.CAMPAIGN, Comment.target_id == campaign.id)
         .where(Comment.kind == CommentKind.FINDING, Comment.author.like('%#%'))
         .order_by(Comment.id.desc())
         .limit(FINDINGS_IN_HISTORY)
@@ -143,17 +143,17 @@ def renderables(
             human(tokens) if tokens is not None else NONE,
             cell(c.summary or NONE),
         )
-    title = Text(f'{heading}History: findings on the project (last {FINDINGS_IN_HISTORY})', style='bold')
-    bodies = [Text(f'- {c.author}: {block(c.body).replace(chr(10), chr(10) + "  ")}') for c in project_findings]
-    starts = _starting_points(s, project, cfg, table_box, heading)
+    title = Text(f'{heading}History: findings on the campaign (last {FINDINGS_IN_HISTORY})', style='bold')
+    bodies = [Text(f'- {c.author}: {block(c.body).replace(chr(10), chr(10) + "  ")}') for c in campaign_findings]
+    starts = _starting_points(s, campaign, cfg, table_box, heading)
     return [ideas_table, Text(), lineage, Text(), *starts, title, *bodies]
 
 
 def _starting_points(
-    s: Session, project: Project, cfg: ProjectConfig, table_box: box.Box, heading: str
+    s: Session, campaign: Campaign, cfg: CampaignConfig, table_box: box.Box, heading: str
 ) -> list[RenderableType]:
     """List the imported references that a pinned idea can start from, with their deciding metrics."""
-    found = references(s, project)
+    found = references(s, campaign)
     if not found:
         return []
     deciding = [*(t.primary for t in cfg.all_tracks), *cfg.guardrails]
@@ -162,7 +162,7 @@ def _starting_points(
         ['candidate', 'commit', *(m.name for m in deciding), 'summary'],
         table_box,
     )
-    evaluator_id = project.evaluator_id or 0
+    evaluator_id = campaign.evaluator_id or 0
     for c in found:
         table.add_row(
             f'#{c.id}',

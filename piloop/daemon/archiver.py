@@ -24,7 +24,7 @@ from piloop.store import Store
 from piloop.store.tree import Cancelled
 
 DISK_ANOMALY = 'anomaly.disk'
-"""An event on a project: an archiving left files unstored because the store's disk was too full."""
+"""An event on a campaign: an archiving left files unstored because the store's disk was too full."""
 SKIPPED_EVENT = 'archive.skipped'
 """A span event: the paths that an archiving left out, and why. Only the first ``SKIPPED_SHOWN``."""
 SKIPPED_SHOWN = 20
@@ -65,7 +65,7 @@ class Archiver:
     """Runs the upkeep when it is time, else the next due archiving, one at a time.
 
     A failed job, or one that the disk was too full for, makes it wait ``policy.retry``. A job that the disk was too
-    full for also writes an ``anomaly.disk`` event on its project, so at most one per wait.
+    full for also writes an ``anomaly.disk`` event on its campaign, so at most one per wait.
     """
 
     def __init__(
@@ -111,7 +111,7 @@ class Archiver:
         self._paused_until = time.monotonic() + self._policy.retry.total_seconds()
 
     def _archive(self, job: Job) -> None:
-        with self._tracer.span('piloop.archive', project=job.project_id, idea=job.idea_id) as span:
+        with self._tracer.span('piloop.archive', campaign=job.campaign_id, idea=job.idea_id) as span:
             done = self._guarded(
                 span.error,
                 lambda: archive(
@@ -150,7 +150,7 @@ class Archiver:
             }
             span.event(DISK_ANOMALY, **short)
             with self._db.session() as s:
-                emit(s, DISK_ANOMALY, TargetKind.PROJECT, job.project_id, payload=dict(short))
+                emit(s, DISK_ANOMALY, TargetKind.CAMPAIGN, job.campaign_id, payload=dict(short))
                 s.commit()
 
     def _upkeep(self) -> None:

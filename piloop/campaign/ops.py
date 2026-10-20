@@ -22,11 +22,12 @@ from sqlalchemy.orm import Session
 from piloop.agents.roles import files_of
 from piloop.campaign import campaign_types, spend
 from piloop.campaign.ideas import Definition, NotASeed, develop
-from piloop.config import Files, ProjectConfig, config_of
+from piloop.config import CampaignConfig, Files, config_of
 from piloop.db.events import emit
 from piloop.db.models import (
     OPEN_RUNS,
     Base,
+    Campaign,
     Candidate,
     Comment,
     CommentKind,
@@ -36,7 +37,6 @@ from piloop.db.models import (
     LinkKind,
     Measurement,
     Pause,
-    Project,
     Run,
     TargetKind,
     Verdict,
@@ -61,8 +61,8 @@ def _reason(reason: str) -> str:
     return reason.strip()
 
 
-def pause(s: Session, project_id: int, *, evals: bool, reason: str) -> Project:
-    """Pause the project: nothing launches, and with ``evals`` the daemon starts no measurement either.
+def pause(s: Session, campaign_id: int, *, evals: bool, reason: str) -> Campaign:
+    """Pause the campaign: nothing launches, and with ``evals`` the daemon starts no measurement either.
 
     No run is queued, no role is requested and no requested row launches, so research files no ideas. A sweep that
     runs already files its ideas as ``proposed`` (``review_first``). Running work goes on and its commits are scored.
@@ -70,114 +70,114 @@ def pause(s: Session, project_id: int, *, evals: bool, reason: str) -> Project:
     pause can end on a measured head. A pause is state in the database, so the daemon holds wherever the caller is.
 
     Raises:
-        Refused: the reason is blank, or the project is paused that way already.
+        Refused: the reason is blank, or the campaign is paused that way already.
     """
-    project = _get(s, Project, project_id, 'project')
+    campaign = _get(s, Campaign, campaign_id, 'campaign')
     why = _reason(reason)
     scope = Pause.ALL if evals else Pause.LAUNCHES
-    if project.paused is scope:
-        raise Refused(f'project {project.name} is paused already ({scope}): {project.paused_reason}')
-    project.paused, project.paused_reason = scope, why
-    return project
+    if campaign.paused is scope:
+        raise Refused(f'campaign {campaign.name} is paused already ({scope}): {campaign.paused_reason}')
+    campaign.paused, campaign.paused_reason = scope, why
+    return campaign
 
 
-def resume(s: Session, project_id: int) -> Pause:
-    """Resume a paused project, and return what it held. The daemon schedules it again on its next tick.
+def resume(s: Session, campaign_id: int) -> Pause:
+    """Resume a paused campaign, and return what it held. The daemon schedules it again on its next tick.
 
     Raises:
-        Refused: the project is not paused.
+        Refused: the campaign is not paused.
     """
-    project = _get(s, Project, project_id, 'project')
-    if project.paused is None:
-        raise Refused(f'project {project.name} is not paused')
-    held = project.paused
-    project.paused, project.paused_reason = None, None
+    campaign = _get(s, Campaign, campaign_id, 'campaign')
+    if campaign.paused is None:
+        raise Refused(f'campaign {campaign.name} is not paused')
+    held = campaign.paused
+    campaign.paused, campaign.paused_reason = None, None
     return held
 
 
-def set_type(s: Session, project_id: int, type_name: str) -> Project:
-    """Make ``type_name`` the campaign type of the project, and return it. The ``project.type`` event is the trigger's.
+def set_type(s: Session, campaign_id: int, type_name: str) -> Campaign:
+    """Make ``type_name`` the campaign type of the campaign, and return it. The ``campaign.type`` event is the trigger's.
 
     Raises:
-        Refused: the project is missing, it has that type already, no installed campaign type has that name, or the
-            new type does not fit the project's parent or children (``campaign_types.misplaced``).
+        Refused: the campaign is missing, it has that type already, no installed campaign type has that name, or the
+            new type does not fit the campaign's parent or children (``campaign_types.misplaced``).
     """
-    project = _get(s, Project, project_id, 'project')
+    campaign = _get(s, Campaign, campaign_id, 'campaign')
     types = campaign_types.installed()
     new = types.get(type_name)
     if new is None:
         raise Refused(f'no campaign type {type_name!r}: the installed types are {", ".join(types)}')
-    if project.type == type_name:
-        raise Refused(f'{project.name} has the campaign type {type_name} already')
-    parent = None if project.parent_id is None else s.get_one(Project, project.parent_id)
+    if campaign.type == type_name:
+        raise Refused(f'{campaign.name} has the campaign type {type_name} already')
+    parent = None if campaign.parent_id is None else s.get_one(Campaign, campaign.parent_id)
     pairs = [(_type(parent), new)] if parent is not None else []
-    pairs += [(new, _type(child)) for child in s.scalars(select(Project).where(Project.parent_id == project.id))]
+    pairs += [(new, _type(child)) for child in s.scalars(select(Campaign).where(Campaign.parent_id == campaign.id))]
     for above, below in pairs:
         if (why := campaign_types.misplaced(above, below)) is not None:
-            raise Refused(f'{project.name} cannot have the campaign type {type_name}: {why}')
-    project.type = type_name
-    return project
+            raise Refused(f'{campaign.name} cannot have the campaign type {type_name}: {why}')
+    campaign.type = type_name
+    return campaign
 
 
-def _type(project: Project) -> campaign_types.CampaignType:
-    """Return the type of ``project``.
+def _type(campaign: Campaign) -> campaign_types.CampaignType:
+    """Return the type of ``campaign``.
 
     Raises:
         Refused: no installed campaign type has its name, for example after its plugin was removed.
     """
     types = campaign_types.installed()
-    if project.type not in types:
+    if campaign.type not in types:
         raise Refused(
-            f'{project.name} has the campaign type {project.type!r}, which is not installed: {", ".join(types)}'
+            f'{campaign.name} has the campaign type {campaign.type!r}, which is not installed: {", ".join(types)}'
         )
-    return types[project.type]
+    return types[campaign.type]
 
 
-def set_parent(s: Session, project_id: int, parent_id: int | None) -> Project:
-    """Put the project under ``parent_id`` in the tree of campaigns, or make it a root with None, and return it.
+def set_parent(s: Session, campaign_id: int, parent_id: int | None) -> Campaign:
+    """Put the campaign under ``parent_id`` in the tree of campaigns, or make it a root with None, and return it.
 
-    A project has at most one parent, a project of the same piloop home. The tree is for reading: it changes nothing
-    about how either campaign runs. The ``projects_parent`` triggers refuse a cycle, whoever writes the column, and
-    the ``project.parent_id`` event is the trigger's.
+    A campaign has at most one parent, a campaign of the same piloop home. The tree is for reading: it changes nothing
+    about how either campaign runs. The ``campaigns_parent`` triggers refuse a cycle, whoever writes the column, and
+    the ``campaign.parent_id`` event is the trigger's.
 
     The two campaign types must allow it (``campaign_types.misplaced``): a leaf-only parent has no children, and a type
     may restrict the types of its children or of its parent.
 
     Raises:
-        Refused: a project is missing, the parent is the project's already, the types do not allow it, or the parent is
-            the project itself or one of its descendants.
+        Refused: a campaign is missing, the parent is the campaign's already, the types do not allow it, or the parent is
+            the campaign itself or one of its descendants.
     """
-    project = _get(s, Project, project_id, 'project')
-    parent = None if parent_id is None else _get(s, Project, parent_id, 'project')
-    if project.parent_id == parent_id:
+    campaign = _get(s, Campaign, campaign_id, 'campaign')
+    parent = None if parent_id is None else _get(s, Campaign, parent_id, 'campaign')
+    if campaign.parent_id == parent_id:
         where = 'a root' if parent is None else f'under {parent.name}'
-        raise Refused(f'{project.name} is {where} already')
+        raise Refused(f'{campaign.name} is {where} already')
     if parent is None:
-        project.parent_id = None
-        return project
-    if (why := campaign_types.misplaced(_type(parent), _type(project))) is not None:
-        raise Refused(f'{project.name} cannot be under {parent.name}: {why}')
+        campaign.parent_id = None
+        return campaign
+    if (why := campaign_types.misplaced(_type(parent), _type(campaign))) is not None:
+        raise Refused(f'{campaign.name} cannot be under {parent.name}: {why}')
     try:
         with s.begin_nested():
-            project.parent_id = parent.id
+            campaign.parent_id = parent.id
     except IntegrityError as e:
-        raise Refused(f'{project.name} cannot be under {parent.name}: {e.orig}') from e
-    return project
+        raise Refused(f'{campaign.name} cannot be under {parent.name}: {e.orig}') from e
+    return campaign
 
 
-def review_first(project: Project, actor: str, *, new: bool) -> str | None:
+def review_first(campaign: Campaign, actor: str, *, new: bool) -> str | None:
     """Return why an idea that ``actor`` adds (``new``) or develops waits for a review (``proposed``), or None.
 
-    Only an agent of a sweeping role waits: while the project is paused, and for a new idea while its role's
+    Only an agent of a sweeping role waits: while the campaign is paused, and for a new idea while its role's
     ``max_ideas`` is 0 (a sweep reads it once, in its brief; the operator may have set it to 0 since). The orchestrator
-    and humans paused the project themselves.
+    and humans paused the campaign themselves.
     """
     name = actor.partition('#')[0]
-    role = config_of(project).roles.sweeping().get(name)
+    role = config_of(campaign).roles.sweeping().get(name)
     if role is None:
         return None
-    if project.paused is not None:
-        return f'project {project.name} is paused'
+    if campaign.paused is not None:
+        return f'campaign {campaign.name} is paused'
     if new and role.max_ideas == 0:
         return f'[roles.{name}] max_ideas = 0'
     return None
@@ -229,7 +229,7 @@ def missing_head(s: Session, candidate: Candidate) -> Candidate | None:
     """
     if candidate.run is not None and candidate.run.branch:
         return None
-    trunk = head(s, s.get_one(Project, candidate.project_id))
+    trunk = head(s, s.get_one(Campaign, candidate.campaign_id))
     ancestor: Candidate | None = candidate
     while ancestor is not None:
         if trunk is None or ancestor.id == trunk.id:
@@ -263,25 +263,25 @@ class Added:
 
 
 def add_measurement(s: Session, candidate_id: int, report: Report, *, actor: str) -> Added:
-    """Record ``report`` as a measurement of the candidate under the project's current evaluator.
+    """Record ``report`` as a measurement of the candidate under the campaign's current evaluator.
 
     The daemon judges the candidate again when its verdict is the daemon's ``crash``, ``discard`` or ``interesting`` on
     a run (``ledger.rejudgeable``), with every measurement under the current evaluator. It does that when it measures
-    the project again: not while the project is paused with its evaluations, or held by the spend guard. Any
+    the campaign again: not while the campaign is paused with its evaluations, or held by the spend guard. Any
     other verdict stays, and a keep's mean, which later runs from it must beat, includes the new measurement. Emits
     ``measurement.recorded``, shaped like the daemon's, and the request (``REJUDGE_REQUESTED``).
 
     Raises:
-        Refused: the project has no evaluator yet, the candidate is pending (the daemon is measuring and judging it),
+        Refused: the campaign has no evaluator yet, the candidate is pending (the daemon is measuring and judging it),
             the report names a metric that ``piloop.toml`` does not, or a report without an error lacks one.
     """
     candidate = _get(s, Candidate, candidate_id, 'candidate')
-    project = s.get_one(Project, candidate.project_id)
-    if project.evaluator_id is None:
-        raise Refused(f'project {project.name} has no evaluator yet: run `piloop init`')
+    campaign = s.get_one(Campaign, candidate.campaign_id)
+    if campaign.evaluator_id is None:
+        raise Refused(f'campaign {campaign.name} has no evaluator yet: run `piloop init`')
     if candidate.verdict is Verdict.PENDING:
         raise Refused(f'candidate#{candidate.id} is pending: the daemon judges it now; add the measurement after that')
-    cfg = config_of(project)
+    cfg = config_of(campaign)
     names = {m.name for m in cfg.metrics}
     if unknown := sorted(report.metrics.keys() - names):
         raise Refused(f'piloop.toml has no metric {", ".join(unknown)}: its metrics are {", ".join(sorted(names))}')
@@ -290,7 +290,7 @@ def add_measurement(s: Session, candidate_id: int, report: Report, *, actor: str
         raise Refused(f'the report has no {", ".join(missing)}: give every metric, or the error')
     measurement = Measurement(
         candidate_id=candidate.id,
-        evaluator_id=project.evaluator_id,
+        evaluator_id=campaign.evaluator_id,
         metrics=report.metrics,
         error=report.error,
         seconds=report.seconds,
@@ -307,7 +307,7 @@ def add_measurement(s: Session, candidate_id: int, report: Report, *, actor: str
     if not rejudgeable(candidate):
         return Added(measurement, False, _stays(candidate))
     emit(s, REJUDGE_REQUESTED, TargetKind.CANDIDATE, candidate.id, actor=actor, payload={'measurement': measurement.id})
-    later = measuring_held(project, cfg)
+    later = measuring_held(campaign, cfg)
     return Added(measurement, True, f'the daemon judges it again with all its measurements{later}')
 
 
@@ -317,25 +317,25 @@ def _stays(candidate: Candidate) -> str:
     return f'its verdict stays: {candidate.verdict}, set by {candidate.verdict_by or "nobody"}'
 
 
-def measuring_held(project: Project, cfg: ProjectConfig) -> str:
-    """Return `` once …``: when the daemon measures the project, as the scheduler's tick decides, or '' for now.
+def measuring_held(campaign: Campaign, cfg: CampaignConfig) -> str:
+    """Return `` once …``: when the daemon measures the campaign, as the scheduler's tick decides, or '' for now.
 
-    A stopped project is measured too, but only what someone asked for (``ledger.due``).
+    A stopped campaign is measured too, but only what someone asked for (``ledger.due``).
     """
-    if project.paused is Pause.ALL:
-        return f' once project {project.name} is resumed (its evaluations are paused)'
-    if (why := spend.held(project, cfg)) is not None:
+    if campaign.paused is Pause.ALL:
+        return f' once campaign {campaign.name} is resumed (its evaluations are paused)'
+    if (why := spend.held(campaign, cfg)) is not None:
         return f' once the spend guard lets it ({why})'
     return ''
 
 
-def files(project: Project, actor: str) -> Files | None:
-    """Return what ``actor`` may file in ``project`` (``[roles.<name>] files``); None when it is not a role.
+def files(campaign: Campaign, actor: str) -> Files | None:
+    """Return what ``actor`` may file in ``campaign`` (``[roles.<name>] files``); None when it is not a role.
 
     Raises:
         Refused: the actor's role files nothing.
     """
-    filed = files_of(config_of(project), actor)
+    filed = files_of(config_of(campaign), actor)
     if filed is Files.NOTHING:
         raise Refused(
             f"{actor} files no ideas or seeds: say the hunch in your run's finding, with pointers."
@@ -346,7 +346,7 @@ def files(project: Project, actor: str) -> Files | None:
 
 def add_idea(
     s: Session,
-    project_id: int,
+    campaign_id: int,
     title: str,
     *,
     actor: str,
@@ -368,20 +368,20 @@ def add_idea(
     the caller's transaction, so the daemon never sees the idea without them. Emits ``idea.created``.
 
     Raises:
-        Refused: the actor files only seeds or nothing, the base or the track is not the project's, or a link is
+        Refused: the actor files only seeds or nothing, the base or the track is not the campaign's, or a link is
             refused (``link``).
     """
-    project = _get(s, Project, project_id, 'project')
-    if files(project, actor) is Files.SEEDS:
+    campaign = _get(s, Campaign, campaign_id, 'campaign')
+    if files(campaign, actor) is Files.SEEDS:
         raise Refused(
-            f'{actor} files seeds, not ideas: `piloop idea seed {project.name} "<hunch>" --from "<pointers>"`.'
+            f'{actor} files seeds, not ideas: `piloop idea seed {campaign.name} "<hunch>" --from "<pointers>"`.'
             ' Research develops each seed with the whole campaign in view.'
         )
-    check_base(s, project, base)
-    held = review_first(project, actor, new=True)
+    check_base(s, campaign, base)
+    held = review_first(campaign, actor, new=True)
     idea = Idea(
-        project_id=project.id,
-        track=track_for(project, track),
+        campaign_id=campaign.id,
+        track=track_for(campaign, track),
         title=title,
         hypothesis=hypothesis or title,
         plan=plan,
@@ -400,7 +400,7 @@ def add_idea(
 
 def file_seed(
     s: Session,
-    project_id: int,
+    campaign_id: int,
     hunch: str,
     *,
     actor: str,
@@ -411,16 +411,16 @@ def file_seed(
     """File a seed: a hunch with pointers, for research to develop or reject. Emits ``idea.created``.
 
     Raises:
-        Refused: the actor files nothing, the pointers are blank, or the base or the track is not the project's.
+        Refused: the actor files nothing, the pointers are blank, or the base or the track is not the campaign's.
     """
-    project = _get(s, Project, project_id, 'project')
-    files(project, actor)
+    campaign = _get(s, Campaign, campaign_id, 'campaign')
+    files(campaign, actor)
     if not provenance.strip():
         raise Refused('a seed needs pointers: --from "<ids, paths, numbers>"')
-    check_base(s, project, base)
+    check_base(s, campaign, base)
     idea = Idea(
-        project_id=project.id,
-        track=track_for(project, track),
+        campaign_id=campaign.id,
+        track=track_for(campaign, track),
         title=hunch,
         hypothesis=hunch,
         provenance=provenance,
@@ -450,13 +450,13 @@ def develop_seed(
 
     Raises:
         Refused: the actor files only seeds or nothing, the idea is not a seed, the definition lacks a part, the base
-            is not the project's, or a link is refused (``link``): a link from a seed can close a cycle.
+            is not the campaign's, or a link is refused (``link``): a link from a seed can close a cycle.
     """
     idea = _get(s, Idea, idea_id, 'idea')
-    if files(idea.project, actor) is Files.SEEDS:
+    if files(idea.campaign, actor) is Files.SEEDS:
         raise Refused(f'{actor} files seeds; research develops them')
-    check_base(s, idea.project, base)
-    held = review_first(idea.project, actor, new=False)
+    check_base(s, idea.campaign, base)
+    held = review_first(idea.campaign, actor, new=False)
     try:
         develop(
             idea,
@@ -482,17 +482,17 @@ def note_candidate(
 
     Raises:
         Refused: the candidate is missing or not a measured discard or interesting, the reason is blank, the actor
-            files nothing and gave follow-ups, or the track is not the project's.
+            files nothing and gave follow-ups, or the track is not the campaign's.
     """
     candidate = _get(s, Candidate, candidate_id, 'candidate')
-    project = s.get_one(Project, candidate.project_id)
+    campaign = s.get_one(Campaign, candidate.campaign_id)
     if follow_ups:
-        files(project, actor)
+        files(campaign, actor)
     try:
         note(candidate, reason, actor)
     except NoteRefused as e:
         raise Refused(str(e)) from e
-    on = track_for(project, track) if track is not None else track_of(config_of(project), candidate).name
+    on = track_for(campaign, track) if track is not None else track_of(config_of(campaign), candidate).name
     return candidate, follow_up(s, candidate, follow_ups, reason, actor, track=on)
 
 
@@ -588,15 +588,15 @@ def _link(s: Session, idea: Idea, kind: LinkKind, target_id: int) -> None:
     """Add the link from ``idea``: every way to link ideas goes through here.
 
     Raises:
-        Refused: the target is missing, the two are one idea or in two projects, the link exists, the idea is
+        Refused: the target is missing, the two are one idea or in two campaigns, the link exists, the idea is
             scheduled or has an open run (an ``after`` link comes too late for its run), or the link closes a cycle of
             its kind.
     """
     target = _get(s, Idea, target_id, 'idea')
     if idea.id == target.id:
         raise Refused(f'idea#{idea.id} cannot link to itself')
-    if idea.project_id != target.project_id:
-        raise Refused(f'idea#{target.id} is in another project than idea#{idea.id}')
+    if idea.campaign_id != target.campaign_id:
+        raise Refused(f'idea#{target.id} is in another campaign than idea#{idea.id}')
     if any(lk.kind is kind and lk.target_id == target.id for lk in idea.links):
         raise Refused(f'idea#{idea.id} links {kind} idea#{target.id} already')
     if kind is LinkKind.AFTER and (busy := _busy(idea)) is not None:
@@ -641,11 +641,11 @@ def set_base(s: Session, idea_id: int, candidate_id: int | None, *, reason: str,
     attempt takes the new one. A ``note`` says why; the ``idea.base_candidate_id`` event is the trigger's.
 
     Raises:
-        Refused: the reason is blank, the idea is missing, the candidate is not one of its project, or it is the base.
+        Refused: the reason is blank, the idea is missing, the candidate is not one of its campaign, or it is the base.
     """
     idea = _get(s, Idea, idea_id, 'idea')
     why = _reason(reason)
-    check_base(s, idea.project, candidate_id)
+    check_base(s, idea.campaign, candidate_id)
     old = idea.base_candidate_id
     if old == candidate_id:
         raise Refused(f'idea#{idea.id} starts from {_base(candidate_id)} already')
@@ -658,20 +658,20 @@ def _base(candidate_id: int | None) -> str:
     return 'the head' if candidate_id is None else f'candidate#{candidate_id}'
 
 
-def check_base(s: Session, project: Project, candidate_id: int | None) -> None:
-    """Refuse a base that is not unset or a candidate of ``project``.
+def check_base(s: Session, campaign: Campaign, candidate_id: int | None) -> None:
+    """Refuse a base that is not unset or a candidate of ``campaign``.
 
     Raises:
-        Refused: no such candidate in the project.
+        Refused: no such candidate in the campaign.
     """
     if candidate_id is None:
         return
-    if s.scalar(select(Candidate.project_id).where(Candidate.id == candidate_id)) != project.id:
-        raise Refused(f'no candidate#{candidate_id} in project {project.name}')
+    if s.scalar(select(Candidate.campaign_id).where(Candidate.id == candidate_id)) != campaign.id:
+        raise Refused(f'no candidate#{candidate_id} in campaign {campaign.name}')
 
 
 def set_track(s: Session, idea_id: int, track: str, *, reason: str, actor: str) -> str:
-    """Move the idea to another track of its project, with a ``note`` that says why, and return the old track.
+    """Move the idea to another track of its campaign, with a ``note`` that says why, and return the old track.
 
     The ``idea.track`` event is the trigger's.
 
@@ -681,7 +681,7 @@ def set_track(s: Session, idea_id: int, track: str, *, reason: str, actor: str) 
     """
     idea = _get(s, Idea, idea_id, 'idea')
     why = _reason(reason)
-    track = track_for(idea.project, track)
+    track = track_for(idea.campaign, track)
     if idea.track == track:
         raise Refused(f'idea#{idea.id} is on track {track} already')
     if (busy := _busy(idea)) is not None:
@@ -692,18 +692,18 @@ def set_track(s: Session, idea_id: int, track: str, *, reason: str, actor: str) 
     return old
 
 
-def track_for(project: Project, track: str | None) -> str:
+def track_for(campaign: Campaign, track: str | None) -> str:
     """Return the track for an idea: ``track`` when ``piloop.toml`` has it, else the only track.
 
     Raises:
-        Refused: no track is given and the project has several, or the project has no such track.
+        Refused: no track is given and the campaign has several, or the campaign has no such track.
     """
-    tracks = [t.name for t in config_of(project).all_tracks]
+    tracks = [t.name for t in config_of(campaign).all_tracks]
     if track is None and len(tracks) == 1:
         return tracks[0]
     if track not in tracks:
         given = 'name one with --track' if track is None else f'there is no track {track!r}'
-        raise Refused(f'{project.name} has tracks {", ".join(tracks)}: {given}')
+        raise Refused(f'{campaign.name} has tracks {", ".join(tracks)}: {given}')
     return track
 
 

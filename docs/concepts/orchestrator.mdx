@@ -11,7 +11,7 @@ daemon never starts it and works without one. It is any coding agent that you st
 `piloop-operate` skill. When an agent sets up a campaign for you, it offers to be the orchestrator at the end of the
 setup.
 
-To start one for a campaign that runs already, open your agent in the project repo and ask:
+To start one for a campaign that runs already, open your agent in the campaign repo and ask:
 
 ```text
 orchestrate the piloop campaign
@@ -37,24 +37,24 @@ The orchestrator waits on one command. The command blocks until something needs 
 no tokens while nothing happens:
 
 ```bash
-PILOOP_ACTOR=orchestrator piloop inbox wait my-project --timeout 1800
+PILOOP_ACTOR=orchestrator piloop inbox wait my-campaign --timeout 1800
 ```
 
 It returns, with one line for each event, when one of these happens:
 
 - A new inbox item that someone else wrote.
 - A new seed that someone else filed.
-- The daemon stops the project.
+- The daemon stops the campaign.
 - The daemon gives an anomaly to a watchdog.
 - The daemon gives a verdict on a measured candidate.
 
 Otherwise it returns at the timeout. Its last line, after `next: `, is the command for the next wait, with a cursor
-(`--after <event-id>`), so nothing is lost between two waits. Without a project name, the wait covers every project.
+(`--after <event-id>`), so nothing is lost between two waits. Without a campaign name, the wait covers every campaign.
 `PILOOP_ACTOR=orchestrator` signs the orchestrator's writes, and the wait skips what the orchestrator wrote itself.
 
 ## Comments
 
-Agents and humans talk through **comments** on a project, an idea, a run, a candidate, a measurement, a worker or
+Agents and humans talk through **comments** on a campaign, an idea, a run, a candidate, a measurement, a worker or
 another comment. A comment has a kind:
 
 | Kind | Use |

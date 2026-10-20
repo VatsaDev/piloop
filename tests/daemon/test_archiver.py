@@ -15,10 +15,10 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from sqlalchemy import select
 
 from piloop.campaign.archive import Archived, Job, Pruned, archive, due, make_room
-from piloop.campaign.project import workspace_dir
+from piloop.campaign.campaigns import workspace_dir
 from piloop.daemon import archiver as archiver_module
 from piloop.daemon.archiver import DISK_ANOMALY, ArchivePolicy, Archiver
-from piloop.db.models import Archive, Event, Project, Run, TargetKind, utcnow
+from piloop.db.models import Archive, Campaign, Event, Run, TargetKind, utcnow
 from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.settings import GB, StorageSettings
@@ -72,7 +72,7 @@ def test_the_policy_takes_the_reserve_from_storage_and_defaults_the_rest() -> No
 
 def test_the_archiver_runs_one_job_at_a_time_and_pauses_after_a_failure(
     db: Database,
-    project: Project,
+    campaign: Campaign,
     home: Path,
     store: Store,
     tracer: Tracer,
@@ -80,10 +80,10 @@ def test_the_archiver_runs_one_job_at_a_time_and_pauses_after_a_failure(
     pool: ThreadPoolExecutor,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    first, second = add_idea(db, project.id, 'first'), add_idea(db, project.id, 'second')
+    first, second = add_idea(db, campaign.id, 'first'), add_idea(db, campaign.id, 'second')
     add_run(db, first)
     add_run(db, second)
-    write(workspace_dir(home, project.id) / f'idea{first}' / 'a.txt', 'a')
+    write(workspace_dir(home, campaign.id) / f'idea{first}' / 'a.txt', 'a')
     archiver = upkept(Archiver(db, store, home, POLICY, tracer, pool, threading.Event()))
     gate = threading.Event()
     real = archiver_module.archive
@@ -104,7 +104,7 @@ def test_the_archiver_runs_one_job_at_a_time_and_pauses_after_a_failure(
     done = spans_named(spans, 'piloop.archive')
     assert [s.get('idea') for s in done] == [first, second] and done[0].get('files') == 1
 
-    third = add_idea(db, project.id, 'third')
+    third = add_idea(db, campaign.id, 'third')
     add_run(db, third)
 
     def broken(
@@ -131,16 +131,16 @@ def test_the_archiver_runs_one_job_at_a_time_and_pauses_after_a_failure(
 
 def test_a_stopping_daemon_cancels_the_archiving_in_flight_and_the_next_one_resumes_it(
     db: Database,
-    project: Project,
+    campaign: Campaign,
     home: Path,
     store: Store,
     tracer: Tracer,
     pool: ThreadPoolExecutor,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    idea = add_idea(db, project.id, 'idea')
+    idea = add_idea(db, campaign.id, 'idea')
     add_run(db, idea)
-    write(workspace_dir(home, project.id) / f'idea{idea}' / 'a.txt', 'a')
+    write(workspace_dir(home, campaign.id) / f'idea{idea}' / 'a.txt', 'a')
     stop = threading.Event()
     real = archiver_module.archive
 
@@ -159,7 +159,7 @@ def test_a_stopping_daemon_cancels_the_archiving_in_flight_and_the_next_one_resu
     archiver.tick()
     assert archiver._job is first, 'nothing starts while the daemon stops'
     with db.session() as s:
-        assert due(s) == Job(project.id, idea), 'a restarted daemon picks the backlog up where it was'
+        assert due(s) == Job(campaign.id, idea), 'a restarted daemon picks the backlog up where it was'
     monkeypatch.setattr(archiver_module, 'archive', real)
     restarted = upkept(Archiver(db, store, home, POLICY, tracer, pool, threading.Event()))
     restarted.tick()
@@ -170,7 +170,7 @@ def test_a_stopping_daemon_cancels_the_archiving_in_flight_and_the_next_one_resu
 
 def test_with_nothing_due_the_upkeep_prunes_by_age_and_pressure_and_evicts_hourly(
     db: Database,
-    project: Project,
+    campaign: Campaign,
     home: Path,
     tracer: Tracer,
     spans: InMemorySpanExporter,
@@ -179,12 +179,12 @@ def test_with_nothing_due_the_upkeep_prunes_by_age_and_pressure_and_evicts_hourl
 ) -> None:
     remote = DirRemote(home / 'remote')
     store = Store(home / 'store', remote, evict_after=timedelta(days=1))
-    workspace = workspace_dir(home, project.id)
+    workspace = workspace_dir(home, campaign.id)
     for title in ('old', 'new'):
-        idea = add_idea(db, project.id, title)
+        idea = add_idea(db, campaign.id, title)
         add_run(db, idea)
         write(workspace / f'idea{idea}' / 'x.npy', os.urandom(100))
-        archive(db, store, home, Job(project.id, idea), live=POLICY.live, reserve=0)
+        archive(db, store, home, Job(campaign.id, idea), live=POLICY.live, reserve=0)
     with db.session() as s:
         old = s.scalars(select(Archive).order_by(Archive.id)).first()
         assert old is not None
@@ -218,7 +218,7 @@ def test_with_nothing_due_the_upkeep_prunes_by_age_and_pressure_and_evicts_hourl
 
 def test_a_job_the_disk_is_too_full_for_writes_one_disk_anomaly_and_pauses(
     db: Database,
-    project: Project,
+    campaign: Campaign,
     home: Path,
     store: Store,
     tracer: Tracer,
@@ -227,16 +227,16 @@ def test_a_job_the_disk_is_too_full_for_writes_one_disk_anomaly_and_pauses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The incident: a 21 GB idea was stored into a disk with less free, ENOSPC, and stored again every 600 s."""
-    idea, before = big_idea(db, project, home)
+    idea, before = big_idea(db, campaign, home)
     monkeypatch.setattr(Store, 'free', lambda self: GB + 100)
     archiver = upkept(Archiver(db, store, home, ArchivePolicy(reserve=GB), tracer, pool, threading.Event()))
     archiver.tick()
     settle(archiver)
-    assert files(workspace_dir(home, project.id)) == before
+    assert files(workspace_dir(home, campaign.id)) == before
     with db.session() as s:
-        assert s.scalars(select(Archive)).all() == [] and due(s) == Job(project.id, idea), 'still due'
+        assert s.scalars(select(Archive)).all() == [] and due(s) == Job(campaign.id, idea), 'still due'
         [event] = s.scalars(select(Event).where(Event.kind == DISK_ANOMALY)).all()
-        assert (event.target_kind, event.target_id) == (TargetKind.PROJECT, project.id)
+        assert (event.target_kind, event.target_id) == (TargetKind.CAMPAIGN, campaign.id)
         assert event.payload == {'needed': 12000, 'free': GB + 100, 'reserve': GB, 'idea': idea, 'retry_seconds': 600}
     assert events(spans, DISK_ANOMALY)[0]['needed'] == 12000
     jobs = archiver._job
@@ -258,13 +258,13 @@ def test_a_job_the_disk_is_too_full_for_writes_one_disk_anomaly_and_pauses(
 
 
 def test_what_an_archiving_leaves_out_is_on_its_span_with_why(
-    db: Database, project: Project, home: Path, store: Store, tracer: Tracer, spans: InMemorySpanExporter, pool
+    db: Database, campaign: Campaign, home: Path, store: Store, tracer: Tracer, spans: InMemorySpanExporter, pool
 ) -> None:
     """Greptile on hiloopai/piloop-dev#11: a skipped path went unreported."""
-    idea = add_idea(db, project.id, 'idea')
+    idea = add_idea(db, campaign.id, 'idea')
     add_run(db, idea)
-    write(workspace_dir(home, project.id) / f'idea{idea}' / 'a.txt', 'a')
-    os.mkfifo(workspace_dir(home, project.id) / f'idea{idea}' / 'pipe')
+    write(workspace_dir(home, campaign.id) / f'idea{idea}' / 'a.txt', 'a')
+    os.mkfifo(workspace_dir(home, campaign.id) / f'idea{idea}' / 'pipe')
     archiver = upkept(Archiver(db, store, home, POLICY, tracer, pool, threading.Event()))
     archiver.tick()
     settle(archiver)
@@ -276,7 +276,7 @@ def test_what_an_archiving_leaves_out_is_on_its_span_with_why(
 
 def test_the_upkeep_reports_a_file_it_cannot_read_and_counts_from_its_end(
     db: Database,
-    project: Project,
+    campaign: Campaign,
     home: Path,
     store: Store,
     tracer: Tracer,
@@ -285,10 +285,10 @@ def test_the_upkeep_reports_a_file_it_cannot_read_and_counts_from_its_end(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Greptile on hiloopai/piloop-dev#11: an upkeep slower than its period kept the archive jobs waiting."""
-    idea = add_idea(db, project.id, 'locked')
+    idea = add_idea(db, campaign.id, 'locked')
     add_run(db, idea)
-    path = write(workspace_dir(home, project.id) / f'idea{idea}' / 'x.npy', 'x')
-    archive(db, store, home, Job(project.id, idea), live=POLICY.live, reserve=0)
+    path = write(workspace_dir(home, campaign.id) / f'idea{idea}' / 'x.npy', 'x')
+    archive(db, store, home, Job(campaign.id, idea), live=POLICY.live, reserve=0)
     monkeypatch.setattr(Store, 'free', lambda self: 0)
     path.chmod(0)
     try:
@@ -313,7 +313,7 @@ class Clock:
 
 def test_an_upkeep_slower_than_its_period_still_leaves_the_next_tick_to_a_due_job(
     db: Database,
-    project: Project,
+    campaign: Campaign,
     home: Path,
     store: Store,
     tracer: Tracer,
@@ -324,7 +324,7 @@ def test_an_upkeep_slower_than_its_period_still_leaves_the_next_tick_to_a_due_jo
     """Greptile on hiloopai/piloop-dev#11: with the period counted from the start, a 2-hour upkeep ran again at once."""
     clock = Clock()
     monkeypatch.setattr(archiver_module, 'time', clock)
-    idea = add_idea(db, project.id, 'waiting')
+    idea = add_idea(db, campaign.id, 'waiting')
     add_run(db, idea)
     real = archiver_module.prune_older
 
@@ -343,7 +343,7 @@ def test_an_upkeep_slower_than_its_period_still_leaves_the_next_tick_to_a_due_jo
 
 def test_a_stopping_daemon_ends_the_upkeep_between_steps(
     db: Database,
-    project: Project,
+    campaign: Campaign,
     home: Path,
     tracer: Tracer,
     spans: InMemorySpanExporter,
@@ -356,7 +356,7 @@ def test_a_stopping_daemon_ends_the_upkeep_between_steps(
     evicted: list[bool] = []
     monkeypatch.setattr(store, 'evict', lambda: evicted.append(True))
     with db.session() as s:
-        s.add(Archive(project_id=project.id, created_at=utcnow() - timedelta(days=30)))
+        s.add(Archive(campaign_id=campaign.id, created_at=utcnow() - timedelta(days=30)))
         s.commit()
     stop.set()  # the daemon stops while the upkeep runs
     Archiver(db, store, home, POLICY, tracer, pool, stop)._upkeep()

@@ -5,7 +5,7 @@ description: What the agents use in tokens, and a hard limit on what the campaig
 
 import Stop from '/snippets/generated/stop.mdx';
 
-A campaign costs money in two ways: the tokens that the agents use, and what the project pays outside piloop, such as
+A campaign costs money in two ways: the tokens that the agents use, and what the campaign pays outside piloop, such as
 GPU time or paid APIs. piloop measures the first and enforces a limit on both.
 
 ## Tokens
@@ -17,9 +17,9 @@ Code, Codex and pi, and does not need Entire. piloop writes the totals to `worke
 {"input": 120345, "output": 18230, "cache_read": 950112, "cache_write": 40211, "total": 1128898, "turns": 41, "source": "…"}
 ```
 
-- `piloop status` and `piloop watch` show the tokens of each project.
+- `piloop status` and `piloop watch` show the tokens of each campaign.
 - The kept lineage shows the tokens that each candidate cost.
-- `[stop] max_tokens` ends the campaign when the agents of the project have used that many tokens in total.
+- `[stop] max_tokens` ends the campaign when the agents of the campaign have used that many tokens in total.
 
 ```toml
 [stop]
@@ -35,15 +35,15 @@ The `[stop]` table ends the campaign when one of its conditions holds:
 
 <Stop />
 
-When a condition holds, the project becomes `stopped`. The daemon tells the running workers to commit and stop, and
+When a condition holds, the campaign becomes `stopped`. The daemon tells the running workers to commit and stop, and
 ends them 10 minutes later. It scores what they committed. It drops the queued runs and the requested agents. Then
 the `stopped` triggers fire once: by default, the watchdog's closing review, which writes the closing report. The
 triggers request nothing more, but an agent that you request with `piloop launch` still starts. Without a `[stop]` table, the campaign has no end.
 
-`piloop project stop <project>` stops a campaign by hand, the same way. With `--kill`, the workers are ended at once.
+`piloop campaign stop <campaign>` stops a campaign by hand, the same way. With `--kill`, the workers are ended at once.
 `piloop stop` stops the daemon, not the campaign.
 
-To resume a stopped project, change its `[stop]` table and run `piloop init`.
+To resume a stopped campaign, change its `[stop]` table and run `piloop init`.
 
 These limits are the built-in stop rule, `limits`. A plugin can add another stop rule. You select it with
 `[plugins.stop_rule]` in `piloop.toml`. [Stop conditions](/architecture/extension-points#stop-conditions) has an
@@ -67,9 +67,9 @@ must print one number and exit 0 within a minute. Give it its keys through the d
 [Secrets](/guides/secrets).
 
 - When the spend crosses a value in `notices`, the daemon posts one note at priority 1.
-- When the spend reaches `limit`, the daemon starts no agent and no evaluation for the project, and posts one
+- When the spend reaches `limit`, the daemon starts no agent and no evaluation for the campaign, and posts one
   escalation at priority 0. Agents and evaluations that already run finish, and their commits are scored.
-- When the command fails, the daemon holds the project in the same way, with one escalation for each series of
+- When the command fails, the daemon holds the campaign in the same way, with one escalation for each series of
   failures. An unknown spend is never read as zero.
 
 This is a hold, not a stop: nothing is dropped. To resume, raise `limit` in `piloop.toml` and run `piloop init`.

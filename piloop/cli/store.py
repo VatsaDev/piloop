@@ -10,10 +10,10 @@ from rich.table import Table
 from sqlalchemy import func, select
 
 from piloop.campaign import archive
-from piloop.campaign.project import workspace_dir
+from piloop.campaign.campaigns import workspace_dir
 from piloop.cli import common
-from piloop.cli.common import ProjectRef
-from piloop.db.models import Archive, Project
+from piloop.cli.common import CampaignRef
+from piloop.db.models import Archive, Campaign
 from piloop.store.config import open_store
 
 app = cyclopts.App(
@@ -22,7 +22,7 @@ app = cyclopts.App(
 
 
 def restore(
-    ref: ProjectRef,
+    ref: CampaignRef,
     target: Annotated[
         str | None,
         cyclopts.Parameter(
@@ -32,7 +32,7 @@ def restore(
     ] = None,
     /,
 ) -> None:
-    """Write archived files back into the project's workspace (`./workspace/` in every agent's worktree).
+    """Write archived files back into the campaign's workspace (`./workspace/` in every agent's worktree).
 
     The daemon archives a done idea's workspace files, and what is left when a campaign stops, into the artifact store
     and removes the local copies. This brings them back from the local store or its remote. A file that is already
@@ -41,13 +41,13 @@ def restore(
     idea = target.removeprefix('idea#') if target is not None else None
     parsed: int | str | None = int(idea) if idea is not None and idea.isdigit() else target
     with common.session() as s:
-        project = common.project(s, ref)
-        restored = archive.restore(s, open_store(common.settings), common.settings.home, project, parsed)
+        campaign = common.campaign(s, ref)
+        restored = archive.restore(s, open_store(common.settings), common.settings.home, campaign, parsed)
     done = restored.done
     if done.written + done.same + len(done.kept) == 0:
         what = f'idea#{parsed}' if isinstance(parsed, int) else parsed or 'anything'
-        raise SystemExit(f'nothing archived matches {what} in {restored.archives} archive(s) of {project.name}')
-    workspace = workspace_dir(common.settings.home, project.id)
+        raise SystemExit(f'nothing archived matches {what} in {restored.archives} archive(s) of {campaign.name}')
+    workspace = workspace_dir(common.settings.home, campaign.id)
     common.console.print(
         f'restored {done.written} file(s), {decimal(done.bytes)}, into {workspace}; {done.same} already there',
         markup=False,
@@ -63,7 +63,7 @@ def restore(
 
 @app.command(name='status')
 def store_status() -> None:
-    """What the store holds, where, and how much of each project's workspace was archived into it."""
+    """What the store holds, where, and how much of each campaign's workspace was archived into it."""
     store = open_store(common.settings)
     usage = store.usage()
     remote = f'{usage.remote} on {store.remote.url}' if store.remote is not None else 'no remote ([storage.remote])'
@@ -71,13 +71,13 @@ def store_status() -> None:
         f'{store.root}: {usage.blobs} blob(s), {usage.local} local ({decimal(usage.local_bytes)}), {remote}',
         markup=False,
     )
-    table = Table('project', 'archives', 'files', 'archived', box=box.SIMPLE_HEAD)
+    table = Table('campaign', 'archives', 'files', 'archived', box=box.SIMPLE_HEAD)
     with common.session() as s:
         rows = s.execute(
-            select(Project.name, func.count(Archive.id), func.sum(Archive.files), func.sum(Archive.bytes))
-            .join(Archive, Archive.project_id == Project.id)
-            .group_by(Project.id)
-            .order_by(Project.id)
+            select(Campaign.name, func.count(Archive.id), func.sum(Archive.files), func.sum(Archive.bytes))
+            .join(Archive, Archive.campaign_id == Campaign.id)
+            .group_by(Campaign.id)
+            .order_by(Campaign.id)
         ).all()
         owed = archive.backlog(s)
         latest = s.scalar(select(func.max(Archive.created_at)))
@@ -86,7 +86,7 @@ def store_status() -> None:
     common.console.print(table)
     since = f'; latest archiving {latest:%Y-%m-%d %H:%M} UTC' if latest is not None else ''
     common.console.print(
-        f'to archive: {owed.ideas} done idea(s), {owed.projects} stopped project(s){since}'
+        f'to archive: {owed.ideas} done idea(s), {owed.campaigns} stopped campaign(s){since}'
         ' (the daemon works through them in the background, one at a time)',
         markup=False,
     )
@@ -100,7 +100,7 @@ def store_evict() -> None:
 
 
 @app.command(name='verify')
-def store_verify(ref: ProjectRef | None = None, /) -> None:
+def store_verify(ref: CampaignRef | None = None, /) -> None:
     """Check that every blob of every archive is in the store: local copies are re-hashed, evicted ones asked of the remote.
 
     Exits non-zero when one is missing or corrupt.
@@ -109,7 +109,7 @@ def store_verify(ref: ProjectRef | None = None, /) -> None:
     with common.session() as s:
         query = select(Archive.manifest).where(Archive.manifest.is_not(None))
         if ref is not None:
-            query = query.where(Archive.project_id == common.project(s, ref).id)
+            query = query.where(Archive.campaign_id == common.campaign(s, ref).id)
         manifests = [m for m in s.scalars(query).all() if m is not None]
     hashes = set(manifests)
     for manifest in manifests:

@@ -6,12 +6,12 @@ description: Several objectives for one piece of code, on one trunk.
 <Note>Experimental: tracks.</Note>
 
 Sometimes you want to improve two things about the same code, for example the accuracy of a model and its cost to
-run. Run them as **tracks** of one project, not as two projects. Each track has its own primary metric. A keep on one
+run. Run them as **tracks** of one campaign, not as two campaigns. Each track has its own primary metric. A keep on one
 track must hold the primary of every other track within a margin.
 
 ## The example
 
-`piloop init --example titanic-tracks` creates a project with two tracks on Kaggle's Titanic data. Workers edit
+`piloop init --example titanic-tracks` creates a campaign with two tracks on Kaggle's Titanic data. Workers edit
 `solve.py`, which trains a model and predicts survival. One evaluate command prints two metrics:
 
 - `accuracy`: the accuracy on a fixed holdout. Higher is better.
@@ -48,13 +48,13 @@ addendum = "briefs/cost.md"
 - Each primary metric names its `track`. With several primaries, each one needs a `margin` and may have a `floor`.
 - Each track has a `[tracks.<name>]` table. `share` is the part of the worker slots that the track gets. The shares
   sum to 1. `addendum` is a file that is added to the brief of the track's runs.
-- Every idea names its track: `piloop idea add <project> "<title>" --track cost`. With several tracks, piloop refuses
+- Every idea names its track: `piloop idea add <campaign> "<title>" --track cost`. With several tracks, piloop refuses
   an idea without one.
 - A candidate is judged on the track of its idea. The primary of that track must beat the bar. The primary of every
   other track is one more guardrail, with its own margin and floor.
 - All tracks share one trunk and one head. A keep on any track moves the head.
 
-A project with one primary metric is one track, named after the metric. It needs no `[tracks]` table.
+A campaign with one primary metric is one track, named after the metric. It needs no `[tracks]` table.
 
 ## What you see
 
@@ -73,4 +73,4 @@ A project with one primary metric is one track, named after the metric. It needs
 ## What is the same for every track
 
 The evaluate command, the `[stop]` conditions, the `[spend]` limit and the watchdog's timer are for the whole
-project. `[stop] target` is not allowed with several tracks.
+campaign. `[stop] target` is not allowed with several tracks.

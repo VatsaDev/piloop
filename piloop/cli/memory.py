@@ -35,7 +35,7 @@ def wake(
 ) -> None:
     """Print what an orchestrator session needs first, in a fixed budget.
 
-    The latest journal lines, the open inbox, the head of each active project and the current lessons on their repos.
+    The latest journal lines, the open inbox, the head of each active campaign and the current lessons on their repos.
     Each section says how to read what did not fit. Run it at the start of every orchestrator session.
     """
     with common.session() as s:

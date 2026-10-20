@@ -16,20 +16,20 @@ from pydantic import TypeAdapter
 from rich.console import Console
 from sqlalchemy import select, text
 
-from piloop.campaign import ops, project as project_module
+from piloop.campaign import campaigns as campaign_module, ops
 from piloop.cli import common, main as cli
-from piloop.db.models import Comment, CommentKind, Event, Idea, IdeaStatus, Project, TargetKind
+from piloop.db.models import Campaign, Comment, CommentKind, Event, Idea, IdeaStatus, TargetKind
 from piloop.db.session import Database
 from piloop.reports import feed
 from piloop.settings import Settings
 
 UNKNOWN = (
-    "INSERT INTO events (kind, actor, target_kind, target_id, payload) VALUES ('acme.observed', 'acme', 'project', 1, "
+    "INSERT INTO events (kind, actor, target_kind, target_id, payload) VALUES ('acme.observed', 'acme', 'campaign', 1, "
     '\'{"latency_ms": 12.5, "tags": ["a"]}\')'
 )
-BROKEN = "INSERT INTO events (kind, actor, target_kind, target_id, payload) VALUES ('acme.raw', 'acme', 'project', 1, 'oops')"
+BROKEN = "INSERT INTO events (kind, actor, target_kind, target_id, payload) VALUES ('acme.raw', 'acme', 'campaign', 1, 'oops')"
 HUGE = (
-    "INSERT INTO events (kind, actor, target_kind, target_id, payload) VALUES ('acme.huge', 'acme', 'project', 1, "
+    "INSERT INTO events (kind, actor, target_kind, target_id, payload) VALUES ('acme.huge', 'acme', 'campaign', 1, "
     '\'{"v": 1e400}\')'
 )
 
@@ -41,7 +41,7 @@ def run_cli(tokens: list[str]) -> None:
 @pytest.fixture(autouse=True)
 def isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Console:
     monkeypatch.setattr(common, 'settings', Settings(home=tmp_path))
-    monkeypatch.setattr(project_module, 'settings', common.settings)
+    monkeypatch.setattr(campaign_module, 'settings', common.settings)
     console = Console(record=True, width=80, force_terminal=False)
     monkeypatch.setattr(common, 'console', console)
     return console
@@ -63,7 +63,7 @@ class StatusDocument(TypedDict):
     protocol: Literal[1]
     cursor: int
     daemon: Daemon
-    projects: list[feed.ProjectState]
+    campaigns: list[feed.CampaignState]
 
 
 class InboxDocument(feed.Inbox):
@@ -96,9 +96,9 @@ def write(db: Database, statement: str) -> None:
         conn.execute(text(statement))
 
 
-def add_idea(db: Database, project_id: int, title: str) -> int:
+def add_idea(db: Database, campaign_id: int, title: str) -> int:
     with db.session() as s:
-        idea = Idea(project_id=project_id, title=title, hypothesis='it helps', track='score', created_by='human')
+        idea = Idea(campaign_id=campaign_id, title=title, hypothesis='it helps', track='score', created_by='human')
         s.add(idea)
         s.commit()
         return idea.id
@@ -110,27 +110,27 @@ def event_ids(db: Database, after: int) -> list[int]:
 
 
 def test_status_and_inbox_print_one_json_document_with_the_cursor_they_were_read_at(
-    db: Database, project: Project, out
+    db: Database, campaign: Campaign, out
 ) -> None:
     with db.session() as s:
         s.add(
             Comment(
-                target_kind=TargetKind.PROJECT,
-                target_id=project.id,
+                target_kind=TargetKind.CAMPAIGN,
+                target_id=campaign.id,
                 author='watchdog#2',
                 kind=CommentKind.ESCALATION,
                 priority=0,
                 body='a long body ' * 20,
             )
         )
-        ops.pause(s, project.id, evals=True, reason='budget review')
+        ops.pause(s, campaign.id, evals=True, reason='budget review')
         s.commit()
     end = event_ids(db, 0)[-1]
 
     run_cli(['status', '--json'])
     status = document(StatusDocument, out())
     assert status['cursor'] == end and status['daemon'] == {'pid': None}
-    [state] = status['projects']
+    [state] = status['campaigns']
     assert state['name'] == 'demo' and state['paused'] == 'all' and state['paused_reason'] == 'budget review'
     assert state['inbox'] == 1 and state['head'] is not None
 
@@ -143,9 +143,9 @@ def test_status_and_inbox_print_one_json_document_with_the_cursor_they_were_read
 
 
 def test_events_reads_after_a_cursor_with_filters_and_says_how_to_read_on(
-    db: Database, project: Project, out, monkeypatch: pytest.MonkeyPatch
+    db: Database, campaign: Campaign, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    first = add_idea(db, project.id, 'one')
+    first = add_idea(db, campaign.id, 'one')
     write(db, UNKNOWN)
     write(db, BROKEN)
     run_cli(['events', '--json'])
@@ -158,24 +158,24 @@ def test_events_reads_after_a_cursor_with_filters_and_says_how_to_read_on(
 
     run_cli(['events', '--after', '0', '--limit', '1'])
     lines = out().splitlines()
-    assert lines[0].startswith('event#1 ') and ' acme.observed project#1 by acme: {"latency_ms": 12.5' in lines[0]
+    assert lines[0].startswith('event#1 ') and ' acme.observed campaign#1 by acme: {"latency_ms": 12.5' in lines[0]
     assert lines[1] == 'next: piloop events --after 1 (more now)'
-    run_cli(['events', '--after', '1', '--project', 'demo', '--kind', 'acme.raw', '--kind', 'idea.status'])
+    run_cli(['events', '--after', '1', '--campaign', 'demo', '--kind', 'acme.raw', '--kind', 'idea.status'])
     lines = out().splitlines()
-    assert lines[0].endswith('acme.raw project#1 by acme: "oops"'), 'a payload that is not JSON prints as stored'
-    assert lines[1] == f'next: piloop events --after {end} --project demo --kind acme.raw --kind idea.status'
+    assert lines[0].endswith('acme.raw campaign#1 by acme: "oops"'), 'a payload that is not JSON prints as stored'
+    assert lines[1] == f'next: piloop events --after {end} --campaign demo --kind acme.raw --kind idea.status'
 
     monkeypatch.setattr(feed, 'POLL_SECONDS', 0.01)
     threading.Timer(0.3, write, [db, f"UPDATE ideas SET status = 'parked' WHERE id = {first}"]).start()
     run_cli(['events', '--after', str(end), '--follow', '--timeout', '30', '--json', '--kind', 'idea.status'])
     [parked] = document(EventsDocument, out())['events']
-    assert parked['payload'] == {'old': 'ready', 'new': 'parked'} and parked['subject']['project'] == project.id
+    assert parked['payload'] == {'old': 'ready', 'new': 'parked'} and parked['subject']['campaign'] == campaign.id
     run_cli(['events', '--after', str(parked['id']), '--follow', '--timeout', '0'])
     assert out().splitlines() == [f'next: piloop events --after {parked["id"]}']
 
 
 def test_a_payload_that_json_cannot_say_prints_as_stored_text_never_as_infinity(
-    db: Database, project: Project, out
+    db: Database, campaign: Campaign, out
 ) -> None:
     write(db, HUGE)
     run_cli(['events', '--json'])
@@ -184,10 +184,10 @@ def test_a_payload_that_json_cannot_say_prints_as_stored_text_never_as_infinity(
     [event] = document(EventsDocument, text_out)['events']
     assert event['payload'] is None and event['invalid'] == {'payload': '{"v": 1e400}'}
     run_cli(['events'])
-    assert out().splitlines()[0].endswith('acme.huge project#1 by acme: "{\\"v\\": 1e400}"')
+    assert out().splitlines()[0].endswith('acme.huge campaign#1 by acme: "{\\"v\\": 1e400}"')
 
 
-def test_a_cursor_ahead_of_the_feed_is_an_error_a_program_can_act_on(db: Database, project: Project, out) -> None:
+def test_a_cursor_ahead_of_the_feed_is_an_error_a_program_can_act_on(db: Database, campaign: Campaign, out) -> None:
     with pytest.raises(SystemExit, match='cursor 99 is ahead of the feed, which ends at 0: read a new snapshot'):
         run_cli(['events', '--after', '99', '--json'])
     error = document(ErrorDocument, out())['error']
@@ -215,9 +215,9 @@ def one_document[T](shape: type[T], proc: subprocess.CompletedProcess[str]) -> T
 
 
 def test_a_separate_process_joins_a_snapshot_to_the_feed_and_resumes_after_a_disconnect_without_loss(
-    db: Database, project: Project, tmp_path: Path
+    db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
-    before = add_idea(db, project.id, 'before the snapshot')
+    before = add_idea(db, campaign.id, 'before the snapshot')
     with db.session() as s:
         s.get_one(Idea, before).status = IdeaStatus.PARKED
         s.commit()
@@ -225,7 +225,7 @@ def test_a_separate_process_joins_a_snapshot_to_the_feed_and_resumes_after_a_dis
     snap = one_document(StatusDocument, controller(tmp_path, 'status', 'demo', '--json'))
     cursor = snap['cursor']
     assert cursor == event_ids(db, 0)[-1]
-    [state] = snap['projects']
+    [state] = snap['campaigns']
     assert state['ideas']['parked'] == 1, 'the snapshot holds what the events up to its cursor did'
 
     args = ['events', '--follow', '--timeout', '30', '--json', '--limit', '2']
@@ -236,7 +236,7 @@ def test_a_separate_process_joins_a_snapshot_to_the_feed_and_resumes_after_a_dis
         stderr=subprocess.PIPE,
         text=True,
     ) as waiting:
-        idea = add_idea(db, project.id, 'while it waits')
+        idea = add_idea(db, campaign.id, 'while it waits')
         with db.session() as s:
             s.get_one(Idea, idea).priority = 0
             s.commit()
@@ -256,7 +256,7 @@ def test_a_separate_process_joins_a_snapshot_to_the_feed_and_resumes_after_a_dis
     ) as dropped:
         dropped.kill()
     with db.session() as s:
-        ops.pause(s, project.id, evals=False, reason='night')
+        ops.pause(s, campaign.id, evals=False, reason='night')
         s.get_one(Idea, idea).status = IdeaStatus.PARKED
         s.commit()
     write(db, UNKNOWN)
@@ -276,7 +276,7 @@ def test_a_separate_process_joins_a_snapshot_to_the_feed_and_resumes_after_a_dis
         EventsDocument, controller(tmp_path, 'events', '--after', str(cursor), '--json', '--limit', '1000')
     )
     kinds = {e['kind']: e for e in last['events']}
-    assert {'idea.priority', 'idea.status', 'project.paused', 'acme.observed', 'acme.raw'} <= kinds.keys()
+    assert {'idea.priority', 'idea.status', 'campaign.paused', 'acme.observed', 'acme.raw'} <= kinds.keys()
     assert kinds['acme.observed']['payload'] == {'latency_ms': 12.5, 'tags': ['a']}
     assert kinds['acme.raw']['invalid'] == {'payload': 'oops'}
 

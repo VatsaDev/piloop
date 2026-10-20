@@ -8,7 +8,7 @@ import pytest
 
 from piloop.cli import agents, common, doctor
 from piloop.config import config_of
-from piloop.db.models import Project, Worker, WorkerKind, WorkerState, utcnow
+from piloop.db.models import Campaign, Worker, WorkerKind, WorkerState, utcnow
 from piloop.db.session import Database
 from piloop.plugins.contracts.runtime import RUNTIMES
 from piloop.reports.overview import overview
@@ -30,13 +30,13 @@ def shown(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 
 def test_attach_focus_view_and_doctor_use_the_methods_of_a_runtime_that_a_package_adds(
-    db: Database, project: Project, shown: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    db: Database, campaign: Campaign, shown: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with db.session() as s:
-        s.get_one(Project, project.id).config = {**project.config, 'runtime': 'shown'}
+        s.get_one(Campaign, campaign.id).config = {**campaign.config, 'runtime': 'shown'}
         worker = Worker(
             kind=WorkerKind.WATCHDOG,
-            project_id=project.id,
+            campaign_id=campaign.id,
             harness='script',
             model='m',
             runtime='shown',
@@ -47,7 +47,7 @@ def test_attach_focus_view_and_doctor_use_the_methods_of_a_runtime_that_a_packag
         s.add(worker)
         s.commit()
         assert view_of(worker) == 'pane 7'
-        row = s.get_one(Project, project.id)
+        row = s.get_one(Campaign, campaign.id)
         assert ', pane 7, on ' in overview(s, row, config_of(row), utcnow(), lambda w: [])
     assert focus(db, worker.id, tmp_path) == f'worker#{worker.id}: focused pane 7'
     monkeypatch.setattr(common, 'settings', Settings(home=tmp_path))

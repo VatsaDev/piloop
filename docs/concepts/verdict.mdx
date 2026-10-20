@@ -10,7 +10,7 @@ The baseline that `piloop init` measures is the first one.
 
 Because a candidate is a tree, a commit that goes back to a known state is that known candidate, and piloop does not
 measure it again. A candidate can have several measurements. Its score is their mean under the current
-[evaluator](/concepts/projects#evaluators).
+[evaluator](/concepts/campaigns#evaluators).
 
 ## The head and the bar
 
@@ -81,7 +81,7 @@ that. Only an edit of `piloop.toml` moves a floor.
 
 ## Confidence
 
-When the evaluate command writes [per-unit results](/concepts/projects#per-unit-results), the verdict uses a paired
+When the evaluate command writes [per-unit results](/concepts/campaigns#per-unit-results), the verdict uses a paired
 bootstrap over the units:
 
 1. Take the units that the candidate and the bar both report, and the difference of each.
@@ -134,16 +134,16 @@ piloop candidate remeasure 42
 The daemon measures the candidate again with the current evaluator, after the head and the bars that runs need. A
 `crash` that the daemon judged is judged again with the new measurement, as its run would have judged it. Any other
 verdict stays, and the new measurement is one more repeat in the mean. A `pending`, `unmeasured` or `recovered`
-candidate is never measured this way. A stopped project is measured too, but only what someone asked for, so you can
-measure a result again when you review a campaign. A project paused with `--evals`, or held by the spend guard, is
+candidate is never measured this way. A stopped campaign is measured too, but only what someone asked for, so you can
+measure a result again when you review a campaign. A campaign paused with `--evals`, or held by the spend guard, is
 measured once the hold ends. The command says when.
 
 ## The evaluation queue
 
-The daemon runs at most `max_evaluations` evaluate commands at the same time, across all projects (2 by default, in
-`config.toml` or `PILOOP_MAX_EVALUATIONS`). The others wait in the evaluation queue. A free slot goes to the project
-with the fewest running evaluations, and in that project to its head first (the runs that start from the head wait
-for its score), then to the oldest request. So a busy project never holds back another one. The order in which a run
+The daemon runs at most `max_evaluations` evaluate commands at the same time, across all campaigns (2 by default, in
+`config.toml` or `PILOOP_MAX_EVALUATIONS`). The others wait in the evaluation queue. A free slot goes to the campaign
+with the fewest running evaluations, and in that campaign to its head first (the runs that start from the head wait
+for its score), then to the oldest request. So a busy campaign never holds back another one. The order in which a run
 measures its own commits does not change.
 
 A tree is evaluated once: a second request for a candidate that waits or runs waits for that evaluation.

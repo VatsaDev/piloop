@@ -14,14 +14,14 @@ This example is a small version of the [Hutter Prize](http://prize.hutter1.net/)
 `compressor.py`. The baseline is zlib at level 9.
 
 <Steps>
-  <Step title="Create the project">
+  <Step title="Create the campaign">
     ```bash
     piloop init --example enwik8 ~/piloop-enwik8
     cd ~/piloop-enwik8
     ```
 
     `piloop init` copies the example, downloads `data/enwik8.zip` (about 36 MB, not committed) and makes a git repo
-    with a baseline commit. Then it measures the baseline and registers the project. The baseline is about 3.69 MB.
+    with a baseline commit. Then it measures the baseline and registers the campaign. The baseline is about 3.69 MB.
   </Step>
   <Step title="Choose your agents">
     The example uses Claude Code (`harnesses = ["claude"]` in `piloop.toml`). To use Codex or pi as well, or instead,
@@ -56,7 +56,7 @@ This example is a small version of the [Hutter Prize](http://prize.hutter1.net/)
     piloop watch
     ```
 
-    Press `enter` to open the project. The four panels show the inbox, the agents, the ideas and the candidates. Press
+    Press `enter` to open the campaign. The four panels show the inbox, the agents, the ideas and the candidates. Press
     `q` to quit. The daemon continues to run.
   </Step>
 </Steps>
@@ -64,7 +64,7 @@ This example is a small version of the [Hutter Prize](http://prize.hutter1.net/)
 <Note>
   The example stops after 20 scored worker runs (`[stop] max_runs = 20` in `piloop.toml`). A run that ends without a
   scored commit does not count. To run longer or shorter, change `max_runs` and run `piloop init`. `piloop stop`
-  stops the daemon, not the campaign: the project stays active, and the next `piloop serve` continues it.
+  stops the daemon, not the campaign: the campaign stays active, and the next `piloop serve` continues it.
 </Note>
 
 ### What happens
@@ -142,7 +142,7 @@ A campaign needs three files in your repo and a registration:
   </Step>
   <Step title="Write the evaluate command">
     Make `evaluate.py` measure your code, or set `evaluate` in `piloop.toml` to a command that you have already. See
-    [the evaluate command](/concepts/projects#the-evaluate-command) for the contract. Run it once yourself.
+    [the evaluate command](/concepts/campaigns#the-evaluate-command) for the contract. Run it once yourself.
   </Step>
   <Step title="Edit piloop.toml">
     Set `name`, `evaluate`, the `[[metrics]]` tables, `harnesses` and `[model]`. The template lists every key. A key
@@ -156,12 +156,12 @@ A campaign needs three files in your repo and a registration:
     Write to the worker: what to improve, how to measure it, which files it may edit, which files it must not touch,
     and what needs a human decision. Keep it to one page. The template has a heading for each topic.
   </Step>
-  <Step title="Register the project">
+  <Step title="Register the campaign">
     ```bash
     piloop init
     ```
 
-    This commits your edits, measures `HEAD` as the baseline and registers the project. Check the baseline value. A
+    This commits your edits, measures `HEAD` as the baseline and registers the campaign. Check the baseline value. A
     value that surprises you usually means that the evaluate command is wrong.
   </Step>
   <Step title="Start the campaign">
@@ -171,13 +171,13 @@ A campaign needs three files in your repo and a registration:
     piloop watch
     ```
 
-    The project name is the `name` in `piloop.toml`. `piloop init` sets it to the name of the directory.
+    The campaign name is the `name` in `piloop.toml`. `piloop init` sets it to the name of the directory.
   </Step>
 </Steps>
 
 ## Change the configuration
 
-Edit `piloop.toml` and run `piloop init` again. piloop reads the file again and keeps the history of the project. The
+Edit `piloop.toml` and run `piloop init` again. piloop reads the file again and keeps the history of the campaign. The
 daemon uses the copy of the file that the last `piloop init` stored, so an edit has no effect until you run
 `piloop init`. You can also ask your agent to reconfigure the campaign. It runs the setup interview again, with the
 current values as the first options.
@@ -189,5 +189,5 @@ margin, a floor or `confidence` changes how the next candidates are judged, and 
 
 ## Next steps
 
-- [Projects and the evaluate command](/concepts/projects)
+- [Campaigns and the evaluate command](/concepts/campaigns)
 - [Running for days](/guides/running-for-days)

@@ -9,8 +9,8 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from piloop.config import BRIEF_FILE, Files, ProjectConfig, SweepRole, Track, config_of
-from piloop.db.models import Project, Worker
+from piloop.config import BRIEF_FILE, CampaignConfig, Files, SweepRole, Track, config_of
+from piloop.db.models import Campaign, Worker
 
 PROMPTS = Path(__file__).resolve().parent / 'prompts'
 PROCEDURES = 'sql_procedures.md'
@@ -42,12 +42,12 @@ class Role:
     ideas: str
     """How this role gives work to the workers, as the context block of the brief says it.
 
-    ``{piloop}`` is the CLI and ``{project}`` is the project's name.
+    ``{piloop}`` is the CLI and ``{campaign}`` is the campaign's name.
     """
 
 
 SEED_HINT = (
-    '- File a seed: `{piloop} idea seed {project} "<hunch, one line>" --from "<pointers: ids, paths, numbers>"`'
+    '- File a seed: `{piloop} idea seed {campaign} "<hunch, one line>" --from "<pointers: ids, paths, numbers>"`'
     ' (`--base <candidate>` when it is about that tree): research checks it against the existing work and develops it'
     ' into an idea, or rejects it with the reason.'
 )
@@ -62,15 +62,15 @@ IDEAS: dict[Files, str] = {
         ' "<cheapest measurement that kills it, and the result that stops the run>" --metric "<what decides'
         ' success>" --effect "<expected size, in the metric\'s units, and why>" [--plan "…"] [--family "…"]'
         ' [--title "…"] [--base <candidate>]`.\n'
-        '- Add an idea of your own: `{piloop} idea add {project} "<title>" --hypothesis "…" --plan "…" --family'
+        '- Add an idea of your own: `{piloop} idea add {campaign} "<title>" --hypothesis "…" --plan "…" --family'
         ' "<mechanism>" --from "<the evidence, with ids>"` (`--help` for links, a base, a priority).'
     ),
 }
 """The ideas line of the brief for each value of ``files``."""
 
 
-def role(cfg: ProjectConfig, kind: str, repo: Path) -> Role:
-    """Return the role of ``[roles.<kind>]`` in a project at ``repo``.
+def role(cfg: CampaignConfig, kind: str, repo: Path) -> Role:
+    """Return the role of ``[roles.<kind>]`` in a campaign at ``repo``.
 
     Raises:
         KeyError: ``piloop.toml`` has no such role.
@@ -94,12 +94,12 @@ def _prompt(repo: Path, configured: str | None, built_in: str) -> Path | None:
 
 
 def role_of(s: Session, worker: Worker) -> Role:
-    """Return the role of a row: the role of its kind in its project."""
-    project = s.get_one(Project, worker.project_id)
-    return role(config_of(project), worker.kind, Path(project.path))
+    """Return the role of a row: the role of its kind in its campaign."""
+    campaign = s.get_one(Campaign, worker.campaign_id)
+    return role(config_of(campaign), worker.kind, Path(campaign.path))
 
 
-def files_of(cfg: ProjectConfig, actor: str) -> Files | None:
+def files_of(cfg: CampaignConfig, actor: str) -> Files | None:
     """Return what ``actor`` may file with ``piloop idea``, by the role in its signature (``watchdog#4``).
 
     None for an actor that is not a role, such as ``orchestrator`` or ``human``: it may file anything.
@@ -110,7 +110,7 @@ def files_of(cfg: ProjectConfig, actor: str) -> Files | None:
 
 def compose_brief(
     role: Role,
-    project: Project,
+    campaign: Campaign,
     worker_id: int,
     *,
     reason: str,
@@ -119,15 +119,15 @@ def compose_brief(
     track: Track | None = None,
     wake: str = '',
 ) -> str:
-    """Compose a brief: the role prompt, the project brief, the role's addendum, the database procedures, the context.
+    """Compose a brief: the role prompt, the campaign brief, the role's addendum, the database procedures, the context.
 
     A sweep also gets its role's incident or routine prompt after the role prompt: the incident prompt when it got
     anomalies (``incident``). ``wake``, the lessons overview of the repo (``piloop.reports.wake``), follows them. A
     worker also gets its track's addendum after the role's addendum. With several tracks, the context lists them.
     """
     author = f'{role.kind}#{worker_id}'
-    repo = Path(project.path)
-    cfg = config_of(project)
+    repo = Path(campaign.path)
+    cfg = config_of(campaign)
     addendum = cfg.role(role.kind).addendum
     follows = role.incident if incident else role.routine
     parts = [
@@ -141,15 +141,15 @@ def compose_brief(
         '\n'.join(
             [
                 '# Context',
-                f'- You are worker#{worker_id}, the {role.kind} for project#{project.id} ({project.name}).',
-                f'- Project repo: {project.path} (every candidate commit and Entire checkpoint is in it).',
+                f'- You are worker#{worker_id}, the {role.kind} for campaign#{campaign.id} ({campaign.name}).',
+                f'- Campaign repo: {campaign.path} (every candidate commit and Entire checkpoint is in it).',
                 f"- Sign what you write as '{author}' (comments.author, ideas.created_by).",
                 f'- Trigger: {reason}',
                 f"- piloop: `{PILOOP_HINT}` is this daemon's piloop. Run every `piloop` command of this brief with it.",
                 f'- SQL tool: `{SQL_HINT} "<sql>"`',
                 f'- Sweeping roles (`workers.kind` of a request): {", ".join(cfg.roles.sweeping())}.',
                 *([tracks_line(cfg, track)] if cfg.multitrack else []),
-                role.ideas.format(piloop=PILOOP_HINT, project=project.name),
+                role.ideas.format(piloop=PILOOP_HINT, campaign=campaign.name),
                 *([f'- You may write: {", ".join(sorted(role.writes))}.'] if role.writes else []),
                 context.rstrip(),
             ]
@@ -158,8 +158,8 @@ def compose_brief(
     return '\n\n'.join(p for p in parts if p) + '\n'
 
 
-def tracks_line(cfg: ProjectConfig, track: Track | None) -> str:
-    """Return the project's tracks in one line for a brief. Every idea and seed names one. A worker learns its own."""
+def tracks_line(cfg: CampaignConfig, track: Track | None) -> str:
+    """Return the campaign's tracks in one line for a brief. Every idea and seed names one. A worker learns its own."""
     tracks = '; '.join(
         f'{t.name} (primary {t.primary.name}, {t.primary.direction} is better; share {t.share:g})'
         for t in cfg.all_tracks

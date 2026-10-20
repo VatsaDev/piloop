@@ -8,7 +8,7 @@ from sqlalchemy import select
 from piloop.agents.launcher import TRANSCRIPT
 from piloop.campaign.stop import CANCELLABLE, request_cancel
 from piloop.cli import common
-from piloop.cli.common import HARNESS_HELP, ProjectRef
+from piloop.cli.common import HARNESS_HELP, CampaignRef
 from piloop.config import config_of
 from piloop.db.models import OPEN_RUNS, Run, Worker, WorkerState
 from piloop.runtime import Handle, NotAttachable, NotSteerable, Runtime, RuntimeFailure
@@ -19,11 +19,11 @@ run_app = cyclopts.App(name='run', help='Act on one run.')
 
 
 def launch(
-    ref: ProjectRef,
+    ref: CampaignRef,
     role: Annotated[
         str,
         cyclopts.Parameter(
-            help='The role of the agent: a sweeping role of the project (`[roles.<name>]`). The daemon launches the'
+            help='The role of the agent: a sweeping role of the campaign (`[roles.<name>]`). The daemon launches the'
             ' agents of a role that does runs by itself, one for each queued run.'
         ),
     ],
@@ -40,18 +40,18 @@ def launch(
     The daemon launches it on its next tick, within the role's `max_concurrent`.
     """
     with common.session() as s:
-        project = common.project(s, ref)
-        roles = config_of(project).roles
+        campaign = common.campaign(s, ref)
+        roles = config_of(campaign).roles
         sweeping = roles.sweeping()
         if role not in sweeping:
             workers = (
                 ' The daemon launches workers by itself, one for each queued run.' if role in roles.doing_runs() else ''
             )
-            raise SystemExit(f'{project.name} has no sweeping role {role!r}; it has {", ".join(sweeping)}.{workers}')
-        worker = Worker(kind=role, project_id=project.id, harness=harness, model=model, reason=reason)
+            raise SystemExit(f'{campaign.name} has no sweeping role {role!r}; it has {", ".join(sweeping)}.{workers}')
+        worker = Worker(kind=role, campaign_id=campaign.id, harness=harness, model=model, reason=reason)
         s.add(worker)
         s.commit()
-        common.console.print(f'worker#{worker.id} {role} requested for {project.name}: {reason}')
+        common.console.print(f'worker#{worker.id} {role} requested for {campaign.name}: {reason}')
 
 
 def prompt(

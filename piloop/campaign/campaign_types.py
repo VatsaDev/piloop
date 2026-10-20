@@ -16,7 +16,7 @@ class CampaignType(BaseModel):
     model_config = ConfigDict(frozen=True, extra='forbid')
 
     name: str
-    """The name that ``projects.type`` holds."""
+    """The name that ``campaigns.type`` holds."""
     parameters: dict[str, object] = {}
     """The JSON Schema of the type's own configuration, which the type validates. Empty: the type takes none."""
     leaf: bool = False

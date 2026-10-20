@@ -41,7 +41,7 @@ def allowed(st: Statement, table: str) -> bool:
     """A scan the plan may keep: ``events`` or ``comments`` walked backwards by rowid for their newest rows.
 
     The overview's last events and latest comments read newest first and stop after a handful of rows; they filter
-    by project with a CASE over the target columns, which no index can serve until those rows carry a project column.
+    by campaign with a CASE over the target columns, which no index can serve until those rows carry a campaign column.
     """
     return table in ('events', 'comments') and f'ORDER BY {table}.id DESC' in st.sql
 
@@ -98,6 +98,8 @@ def test_the_models_declare_what_the_script_drops() -> None:
 
 
 def test_scans_resolves_aliases_and_ignores_small_tables() -> None:
-    st = Statement('t', 'SELECT c.id FROM candidates c JOIN projects p ON p.id = c.project_id JOIN runs AS r ON 1', ())
+    st = Statement(
+        't', 'SELECT c.id FROM candidates c JOIN campaigns p ON p.id = c.campaign_id JOIN runs AS r ON 1', ()
+    )
     plan = ['SCAN p', 'SCAN c', 'SCAN r', 'SEARCH ideas USING INTEGER PRIMARY KEY (rowid=?)', 'USE TEMP B-TREE']
     assert scans(st, plan) == ['candidates', 'runs']

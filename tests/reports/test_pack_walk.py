@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from piloop.db.models import Project
+from piloop.db.models import Campaign
 from piloop.db.session import Database
 from piloop.reports import pack as pack_module
 from piloop.reports.pack import _file_lines, _recent
@@ -93,13 +93,13 @@ def test_the_walk_reads_a_large_directory_only_up_to_its_budget(
 
 
 def test_the_pack_says_when_its_listing_was_cut(
-    db: Database, project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     workspace = tmp_path / 'workspace'
     for n in range(3):
         write(workspace / f'f{n}.md', '# f\n', n)
     monkeypatch.setattr(pack_module, 'WALK_ENTRIES', 2)
-    text = render(db, project, workspace)
+    text = render(db, campaign, workspace)
     assert '- (listed from the 2 entries of the most recently changed directories)' in text
 
 

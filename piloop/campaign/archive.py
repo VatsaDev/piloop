@@ -4,7 +4,7 @@ Agents write to ``<PILOOP_HOME>/projects/<id>/workspace`` and nothing used to de
 hundreds of gigabytes in millions of files, most of them copies. What the store owes (``due``):
 
 - an idea is done (its last run judged): every top-level entry named ``idea<id>…`` goes into the store;
-- a project stopped and nothing of it runs any more: everything left in its workspace goes.
+- a campaign stopped and nothing of it runs any more: everything left in its workspace goes.
 
 ``archive`` stores a job's files, stores their manifest, checks that the store holds every blob, and records an
 ``archives`` row. It removes nothing: the local copies stay, so an agent or a human that still reads them finds them.
@@ -23,15 +23,15 @@ from pathlib import Path, PurePosixPath
 from sqlalchemy import Select, exists, func, select
 from sqlalchemy.orm import Session
 
-from piloop.campaign.project import workspace_dir
+from piloop.campaign.campaigns import workspace_dir
 from piloop.db.models import (
     ENDED,
     OPEN_RUNS,
     Archive,
+    Campaign,
+    CampaignStatus,
     Idea,
     IdeaStatus,
-    Project,
-    ProjectStatus,
     Run,
     Worker,
     count,
@@ -55,26 +55,26 @@ def idea_of(name: str) -> int | None:
     return int(m[1]) if m else None
 
 
-def owners(s: Session, project_id: int, names: Iterable[str]) -> dict[str, int]:
-    """The idea of ``project_id`` that each of ``names`` (top-level workspace entries) belongs to; the rest are left out.
+def owners(s: Session, campaign_id: int, names: Iterable[str]) -> dict[str, int]:
+    """The idea of ``campaign_id`` that each of ``names`` (top-level workspace entries) belongs to; the rest are left out.
 
-    A name of an idea that is not in the project belongs to none, so the campaign's stop takes it.
+    A name of an idea that is not in the campaign belongs to none, so the campaign's stop takes it.
     """
     ideas = {name: idea for name in names if (idea := idea_of(name)) is not None}
-    known = set(s.scalars(select(Idea.id).where(Idea.project_id == project_id, Idea.id.in_(set(ideas.values())))))
+    known = set(s.scalars(select(Idea.id).where(Idea.campaign_id == campaign_id, Idea.id.in_(set(ideas.values())))))
     return {name: idea for name, idea in ideas.items() if idea in known}
 
 
 @dataclass(frozen=True)
 class Job:
-    """One archiving: a done idea's entries, or (``idea_id`` None) what a stopped project left."""
+    """One archiving: a done idea's entries, or (``idea_id`` None) what a stopped campaign left."""
 
-    project_id: int
+    campaign_id: int
     idea_id: int | None
 
 
 def _due_ideas() -> Select[int, int]:
-    """``(project, idea)`` of every idea due, oldest first.
+    """``(campaign, idea)`` of every idea due, oldest first.
 
     Due: ``done``, no run of it open, and its latest run finished after its latest complete archiving (a re-run idea is
     archived again, and a job that stopped short is done again).
@@ -85,43 +85,43 @@ def _due_ideas() -> Select[int, int]:
         select(func.max(Archive.created_at)).where(Archive.idea_id == Idea.id, Archive.complete).scalar_subquery()
     )
     return (
-        select(Idea.project_id, Idea.id)
+        select(Idea.campaign_id, Idea.id)
         .where(Idea.status == IdeaStatus.DONE, ~open_run, archived.is_(None) | (last_run > archived))
         .order_by(Idea.id)
     )
 
 
-def _due_projects() -> Select[int]:
-    """Every project due, oldest first.
+def _due_campaigns() -> Select[int]:
+    """Every campaign due, oldest first.
 
     Due: ``stopped``, none of its agents requested or alive, and no complete archiving of it newer than its last agent's
     end (a resumed and stopped again campaign is due again, and so is a job that stopped short).
     """
-    live = exists().where(Worker.project_id == Project.id, Worker.state.not_in(ENDED))
-    last_end = select(func.max(Worker.ended_at)).where(Worker.project_id == Project.id).scalar_subquery()
+    live = exists().where(Worker.campaign_id == Campaign.id, Worker.state.not_in(ENDED))
+    last_end = select(func.max(Worker.ended_at)).where(Worker.campaign_id == Campaign.id).scalar_subquery()
     swept = (
         select(func.max(Archive.created_at))
-        .where(Archive.project_id == Project.id, Archive.idea_id.is_(None), Archive.complete)
+        .where(Archive.campaign_id == Campaign.id, Archive.idea_id.is_(None), Archive.complete)
         .scalar_subquery()
     )
     return (
-        select(Project.id)
-        .where(Project.status == ProjectStatus.STOPPED, ~live, swept.is_(None) | (last_end > swept))
-        .order_by(Project.id)
+        select(Campaign.id)
+        .where(Campaign.status == CampaignStatus.STOPPED, ~live, swept.is_(None) | (last_end > swept))
+        .order_by(Campaign.id)
     )
 
 
 def due(s: Session) -> Job | None:
-    """The next archiving the store owes, oldest first; a project's own waits until its every done idea is archived.
+    """The next archiving the store owes, oldest first; a campaign's own waits until its every done idea is archived.
 
     Computed from the database alone, so a daemon that stops in the middle of a backlog picks it up where it was: the
     job it cut is done again, and what it had stored is found by hash and not stored twice.
     """
     idea = s.execute(_due_ideas().limit(1)).first()
     if idea is not None:
-        return Job(idea.project_id, idea.id)
-    project = s.scalar(_due_projects().limit(1))
-    return None if project is None else Job(project, None)
+        return Job(idea.campaign_id, idea.id)
+    campaign = s.scalar(_due_campaigns().limit(1))
+    return None if campaign is None else Job(campaign, None)
 
 
 @dataclass(frozen=True)
@@ -129,12 +129,12 @@ class Backlog:
     """What the store still owes, for ``piloop store status``."""
 
     ideas: int
-    projects: int
+    campaigns: int
 
 
 def backlog(s: Session) -> Backlog:
-    """How many ideas and projects are due."""
-    return Backlog(count(s, _due_ideas()), count(s, _due_projects()))
+    """How many ideas and campaigns are due."""
+    return Backlog(count(s, _due_ideas()), count(s, _due_campaigns()))
 
 
 def _unpruned() -> Select[Archive]:
@@ -156,7 +156,7 @@ def prune(db: Database, store: Store, home: Path, archive_id: int) -> Removed:
             manifest = store.manifest(row.manifest)
             # a workspace copy is the last good one of a blob that went bad in the store: it stays
             doubtful = {blob for blob in manifest.blobs if store.check(blob) != 'ok'}
-            done = remove(workspace_dir(home, row.project_id), manifest, keep=doubtful)
+            done = remove(workspace_dir(home, row.campaign_id), manifest, keep=doubtful)
         if not done.left:
             row.pruned_at = utcnow()
         s.commit()
@@ -246,11 +246,11 @@ def archive(
     stored, and ``short`` says so. A job that stops short (no room, a failure, a stop of the daemon) has no complete
     row, so it stays due, and its next run stores the rest: what was stored already is found by hash.
     """
-    workspace = workspace_dir(home, job.project_id)
+    workspace = workspace_dir(home, job.campaign_id)
     names = [entry.name for entry in workspace.iterdir() if entry.name not in live] if workspace.is_dir() else []
     if job.idea_id is not None:
         with db.session() as s:
-            names = [name for name, idea in owners(s, job.project_id, names).items() if idea == job.idea_id]
+            names = [name for name, idea in owners(s, job.campaign_id, names).items() if idea == job.idea_id]
     left = walk(workspace, names)
     done = Archived([])
     while True:
@@ -293,7 +293,7 @@ def _store_batch(
     """Store one batch and record its row. Returns the row, and the paths left out with why."""
     stored = put_walk(store, workspace, batch, stop)
     row = Archive(
-        project_id=job.project_id,
+        campaign_id=job.campaign_id,
         idea_id=job.idea_id,
         files=len(stored.manifest.entries),
         bytes=stored.size,
@@ -323,8 +323,8 @@ class Restored:
     done: Materialised
 
 
-def restore(s: Session, store: Store, home: Path, project: Project, target: int | str | None) -> Restored:
-    """Write archived files back into the project's workspace: an idea's (``target`` an id), a path's, or all.
+def restore(s: Session, store: Store, home: Path, campaign: Campaign, target: int | str | None) -> Restored:
+    """Write archived files back into the campaign's workspace: an idea's (``target`` an id), a path's, or all.
 
     A path is workspace-relative: the file itself or everything under it. When several archivings hold a path, the
     latest wins, and a newer file where an older one had a directory (or the reverse) displaces the older paths. A file
@@ -332,7 +332,7 @@ def restore(s: Session, store: Store, home: Path, project: Project, target: int 
     """
     manifests = s.scalars(
         select(Archive.manifest)
-        .where(Archive.project_id == project.id, Archive.manifest.is_not(None))
+        .where(Archive.campaign_id == campaign.id, Archive.manifest.is_not(None))
         .order_by(Archive.id)
     ).all()
     latest: dict[str, Entry] = {}
@@ -350,5 +350,5 @@ def restore(s: Session, store: Store, home: Path, project: Project, target: int 
     elif target is not None:
         prefix = target.strip('/')
         entries = [e for e in entries if e.path == prefix or e.path.startswith(f'{prefix}/')]
-    done = materialise(store, Manifest(tuple(entries)), workspace_dir(home, project.id))
+    done = materialise(store, Manifest(tuple(entries)), workspace_dir(home, campaign.id))
     return Restored(len(manifests), done)

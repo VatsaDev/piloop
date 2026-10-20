@@ -19,6 +19,8 @@ from sqlalchemy.orm import Mapped, Session, aliased
 
 from piloop.db.events import ANOMALY_EVENT
 from piloop.db.models import (
+    Campaign,
+    CampaignStatus,
     Candidate,
     Comment,
     CommentKind,
@@ -26,8 +28,6 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Measurement,
-    Project,
-    ProjectStatus,
     Run,
     TargetKind,
     Worker,
@@ -45,56 +45,54 @@ An escalation writes two events: one from the persistent trigger and one from th
 
 
 def items(
-    s: Session, *, project_id: int | None = None, kinds: Collection[CommentKind] = (), acked: bool = False
-) -> list[tuple[Comment, Project | None]]:
-    """Return the inbox items with their projects, most urgent first, then oldest first.
+    s: Session, *, campaign_id: int | None = None, kinds: Collection[CommentKind] = (), acked: bool = False
+) -> list[tuple[Comment, Campaign | None]]:
+    """Return the inbox items with their campaigns, most urgent first, then oldest first.
 
-    Only unacknowledged items are returned, unless ``acked`` is True. ``project_id`` and ``kinds`` filter the items.
-    An item whose target has no project (a reply to a reply) appears only when ``project_id`` is None.
+    Only unacknowledged items are returned, unless ``acked`` is True. ``campaign_id`` and ``kinds`` filter the items.
+    An item whose target has no campaign (a reply to a reply) appears only when ``campaign_id`` is None.
     """
-    owner = project_of(Comment.target_kind, Comment.target_id)
+    owner = campaign_of(Comment.target_kind, Comment.target_id)
     query = (
-        select(Comment, Project)
-        .outerjoin(Project, Project.id == owner)
+        select(Comment, Campaign)
+        .outerjoin(Campaign, Campaign.id == owner)
         .where(Comment.priority.is_not(None))
         .order_by(Comment.priority, Comment.id)
     )
     if not acked:
         query = query.where(Comment.acked_at.is_(None))
-    if project_id is not None:
-        query = query.where(owner == project_id)
+    if campaign_id is not None:
+        query = query.where(owner == campaign_id)
     if kinds:
         query = query.where(Comment.kind.in_(kinds))
     return [(c, p) for c, p in s.execute(query)]
 
 
-def seeds(s: Session, *, project_id: int | None = None) -> list[tuple[Idea, Project]]:
-    """Return the seeds that wait for research, oldest first, with their projects. ``project_id`` filters them."""
-    query = select(Idea, Project).join(Project).where(Idea.status == IdeaStatus.SEED).order_by(Idea.id)
-    if project_id is not None:
-        query = query.where(Idea.project_id == project_id)
+def seeds(s: Session, *, campaign_id: int | None = None) -> list[tuple[Idea, Campaign]]:
+    """Return the seeds that wait for research, oldest first, with their campaigns. ``campaign_id`` filters them."""
+    query = select(Idea, Campaign).join(Campaign).where(Idea.status == IdeaStatus.SEED).order_by(Idea.id)
+    if campaign_id is not None:
+        query = query.where(Idea.campaign_id == campaign_id)
     return [(i, p) for i, p in s.execute(query)]
 
 
-def seed_line(idea: Idea, project: Project) -> str:
+def seed_line(idea: Idea, campaign: Campaign) -> str:
     """Format one seed as the inbox prints it: who filed it, its title and its provenance."""
-    return (
-        f'seed idea#{idea.id} ({project.name}) by {idea.created_by}: {cell(idea.title)} — {cell(idea.provenance or "")}'
-    )
+    return f'seed idea#{idea.id} ({campaign.name}) by {idea.created_by}: {cell(idea.title)} — {cell(idea.provenance or "")}'
 
 
-def news(s: Session, after: int, *, project_id: int | None = None, me: str) -> tuple[int, list[str]]:
+def news(s: Session, after: int, *, campaign_id: int | None = None, me: str) -> tuple[int, list[str]]:
     """Return the events after event#``after`` that the orchestrator must look at, one line each, and the last id.
 
     The lines report:
 
     - new unacknowledged inbox items not written by ``me``. The orchestrator's own decisions are for the human.
     - seeds that someone else filed.
-    - projects that the daemon stopped.
+    - campaigns that the daemon stopped.
     - anomalies that the daemon gave to a watchdog.
     - verdicts on measured candidates. Skipped commits (``unmeasured``) are not reported.
 
-    ``project_id`` filters all of them. The returned id is the cursor for the next call, so no event is missed.
+    ``campaign_id`` filters all of them. The returned id is the cursor for the next call, so no event is missed.
     """
     events = s.scalars(select(Event).where(Event.id > after).order_by(Event.id)).all()
     if not events:
@@ -102,26 +100,26 @@ def news(s: Session, after: int, *, project_id: int | None = None, me: str) -> t
     fresh = {e.target_id for e in events if e.kind in COMMENT_EVENTS}
     lines = [
         f'comment#{c.id} {c.kind} p{c.priority} on {c.target_kind}#{c.target_id}'
-        f' ({project.name if project else "—"}) by {c.author}: {cell(c.body)}'
-        for c, project in items(s, project_id=project_id)
+        f' ({campaign.name if campaign else "—"}) by {c.author}: {cell(c.body)}'
+        for c, campaign in items(s, campaign_id=campaign_id)
         if c.id in fresh and c.author != me
     ]
     for e in events:
-        if e.kind == 'project.status' and e.payload.get('new') == ProjectStatus.STOPPED:
-            project = s.get(Project, e.target_id)
-            if project is not None and project_id in (None, project.id):
-                lines.append(f'project {project.name} stopped: {e.payload.get("stopped_reason")}')
+        if e.kind == 'campaign.status' and e.payload.get('new') == CampaignStatus.STOPPED:
+            campaign = s.get(Campaign, e.target_id)
+            if campaign is not None and campaign_id in (None, campaign.id):
+                lines.append(f'campaign {campaign.name} stopped: {e.payload.get("stopped_reason")}')
         elif e.kind == ANOMALY_EVENT:
             worker = s.get(Worker, e.target_id)
-            if worker is not None and project_id in (None, worker.project_id):
+            if worker is not None and campaign_id in (None, worker.campaign_id):
                 lines.append(f'anomaly, {worker.kind}#{worker.id} requested: {e.payload.get("anomaly")}')
         elif e.kind == 'idea.created' and e.actor != me:
             idea = s.get(Idea, e.target_id)
-            if idea is not None and idea.status is IdeaStatus.SEED and project_id in (None, idea.project_id):
-                lines.append(seed_line(idea, idea.project))
+            if idea is not None and idea.status is IdeaStatus.SEED and campaign_id in (None, idea.campaign_id):
+                lines.append(seed_line(idea, idea.campaign))
         elif e.kind == 'candidate.judged' and e.payload.get('reason') != SKIPPED:
             candidate = s.get(Candidate, e.target_id)
-            if candidate is not None and project_id in (None, candidate.project_id):
+            if candidate is not None and campaign_id in (None, candidate.campaign_id):
                 lines.append(
                     f'candidate#{candidate.id} {e.payload.get("verdict")}: {cell(str(e.payload.get("reason")))}'
                 )
@@ -151,8 +149,8 @@ def ack(s: Session, ids: Sequence[int], actor: str) -> list[str]:
 def reply(s: Session, comment_id: int, body: str, *, author: str, priority: int) -> Comment:
     """Answer inbox item ``comment_id`` as ``author`` with a ``decision`` on the root of its thread, and commit.
 
-    The root is the first comment up the reply chain that is not a reply. A reply to a reply has no project, because
-    ``project_of`` resolves only one level, so ``piloop inbox wait <project>`` would not show it. The priority makes
+    The root is the first comment up the reply chain that is not a reply. A reply to a reply has no campaign, because
+    ``campaign_of`` resolves only one level, so ``piloop inbox wait <campaign>`` would not show it. The priority makes
     the answer an inbox item, so ``news`` reports it to every orchestrator except its author until it is acknowledged.
     """
     root = s.get_one(Comment, comment_id)
@@ -175,7 +173,7 @@ def thread(s: Session, comment: Comment) -> list[Comment]:
     """Return the comments linked to an item, in order: those it cites, those that cite it, and its replies.
 
     A citation is ``comment#<id>`` in the body, for example ``Re: comment#12`` in a decision. Other comments on the
-    same target are not part of the thread. A project collects every research finding, and the answer would be
+    same target are not part of the thread. A campaign collects every research finding, and the answer would be
     lost among them.
     """
     ref = f'comment#{comment.id}'
@@ -189,11 +187,11 @@ def thread(s: Session, comment: Comment) -> list[Comment]:
     )
 
 
-def project_of(target_kind: Mapped[TargetKind], target_id: Mapped[int]) -> ColumnElement[int | None]:
-    """Return the project that the target of a comment or event belongs to.
+def campaign_of(target_kind: Mapped[TargetKind], target_id: Mapped[int]) -> ColumnElement[int | None]:
+    """Return the campaign that the target of a comment or event belongs to.
 
     A ``comment`` target, such as a reply or a ``comment.escalation`` event, is resolved one level through that
-    comment's target. A reply to a reply has no project.
+    comment's target. A reply to a reply has no campaign.
     """
     return case(
         (target_kind == TargetKind.COMMENT, _owner_of_comment(target_id)),
@@ -214,22 +212,22 @@ def _owner_branches(
     target_kind: Mapped[TargetKind], target_id: Mapped[int]
 ) -> list[tuple[ColumnElement[bool], Mapped[int] | ScalarSelect[int]]]:
     return [
-        (target_kind == TargetKind.PROJECT, target_id),
-        (target_kind == TargetKind.IDEA, select(Idea.project_id).where(Idea.id == target_id).scalar_subquery()),
+        (target_kind == TargetKind.CAMPAIGN, target_id),
+        (target_kind == TargetKind.IDEA, select(Idea.campaign_id).where(Idea.id == target_id).scalar_subquery()),
         (
             target_kind == TargetKind.RUN,
-            select(Idea.project_id).join(Run.idea).where(Run.id == target_id).scalar_subquery(),
+            select(Idea.campaign_id).join(Run.idea).where(Run.id == target_id).scalar_subquery(),
         ),
         (
             target_kind == TargetKind.CANDIDATE,
-            select(Candidate.project_id).where(Candidate.id == target_id).scalar_subquery(),
+            select(Candidate.campaign_id).where(Candidate.id == target_id).scalar_subquery(),
         ),
         (
             target_kind == TargetKind.MEASUREMENT,
-            select(Candidate.project_id)
+            select(Candidate.campaign_id)
             .join(Measurement.candidate)
             .where(Measurement.id == target_id)
             .scalar_subquery(),
         ),
-        (target_kind == TargetKind.WORKER, select(Worker.project_id).where(Worker.id == target_id).scalar_subquery()),
+        (target_kind == TargetKind.WORKER, select(Worker.campaign_id).where(Worker.id == target_id).scalar_subquery()),
     ]

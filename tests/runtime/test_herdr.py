@@ -229,7 +229,7 @@ def test_existing_workspace_is_reused_and_cached(
 
 
 def workspace(workspace_id: str, label: str, root: Path) -> dict[str, object]:
-    """A listed workspace as herdr reports one piloop created: its ``root`` token is the project path."""
+    """A listed workspace as herdr reports one piloop created: its ``root`` token is the campaign path."""
     return {'workspace_id': workspace_id, 'label': label, 'tokens': {'root': str(root)}}
 
 
@@ -788,7 +788,7 @@ def test_missing_binary_and_malformed_output(tmp_path: Path, monkeypatch: pytest
 
 @pytest.mark.parametrize('kind', ['herdr', 'subprocess'])
 def test_every_runtime_kind_is_registered(kind: str, tmp_path: Path, herdr_log: Path) -> None:
-    runtime = make_runtime(kind, project='p', project_path=tmp_path)
+    runtime = make_runtime(kind, campaign='p', campaign_path=tmp_path)
     assert runtime.kind == kind
     assert isinstance(runtime, {'herdr': HerdrRuntime, 'subprocess': SubprocessRuntime}[kind])
 

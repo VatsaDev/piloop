@@ -123,11 +123,11 @@ class Selection:
     """Where the configuration names the provider of a capability.
 
     A capability without one is a registry that many entries use by name, as the triggers of the roles do. A new
-    capability uses ``[plugins.<name>]`` in ``piloop.toml``: ``Selection('project', 'plugins.<name>.provider')``.
+    capability uses ``[plugins.<name>]`` in ``piloop.toml``: ``Selection('campaign', 'plugins.<name>.provider')``.
     """
 
-    scope: Literal['project', 'home']
-    """``project``: the key is in ``piloop.toml``. ``home``: in ``$PILOOP_HOME/config.toml``."""
+    scope: Literal['campaign', 'home']
+    """``campaign``: the key is in ``piloop.toml``. ``home``: in ``$PILOOP_HOME/config.toml``."""
     key: str
     """The dotted key whose value is the provider's name: ``runtime``, ``storage.remote.kind``."""
     per_role: bool = False
@@ -478,7 +478,7 @@ def lookup(data: object, key: str) -> object | None:
     return data
 
 
-def check_selection(capability: Activatable, data: dict[str, object], scope: Literal['project', 'home']) -> None:
+def check_selection(capability: Activatable, data: dict[str, object], scope: Literal['campaign', 'home']) -> None:
     """Check what a parsed file of ``scope`` selects for ``capability``: the provider, then its parameters.
 
     The parameters are the other keys of the table of the selecting key. A provider that is a pydantic model class

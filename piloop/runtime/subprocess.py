@@ -53,7 +53,7 @@ class SubprocessRuntime:
     kind: ClassVar[str] = 'subprocess'
     invocation: ClassVar[Invocation] = Invocation.HEADLESS
 
-    def __init__(self, project: str = '', project_path: Path | None = None) -> None:
+    def __init__(self, campaign: str = '', campaign_path: Path | None = None) -> None:
         """Take the same arguments as every runtime constructor. A child process needs neither of them."""
         self._procs: dict[int, subprocess.Popen[bytes]] = {}
         """The process of each agent's latest turn, by the pid of its first process (the handle's)."""

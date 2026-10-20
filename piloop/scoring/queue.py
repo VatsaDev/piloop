@@ -1,8 +1,8 @@
 """The evaluation queue (``evaluations``): the evaluations that the daemon runs now or next, one row each.
 
-The daemon runs at most ``max_evaluations`` evaluations at the same time, across all projects. A free slot goes to the
-project with the fewest running evaluations, and in that project to its head first, then to the oldest request. So a
-project with many requests never holds back the requests of another, and inside a project each request waits only
+The daemon runs at most ``max_evaluations`` evaluations at the same time, across all campaigns. A free slot goes to the
+campaign with the fewest running evaluations, and in that campaign to its head first, then to the oldest request. So a
+campaign with many requests never holds back the requests of another, and inside a campaign each request waits only
 for the ones before it. The queue is in the database, so ``piloop eval`` reads and cancels it without the daemon.
 """
 
@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from piloop.db.events import emit
-from piloop.db.models import Candidate, Evaluation, Measurement, Project, TargetKind, utcnow
+from piloop.db.models import Campaign, Candidate, Evaluation, Measurement, TargetKind, utcnow
 from piloop.scoring.ledger import head
 
 CANCELLED = 'evaluation cancelled by {actor}'
@@ -39,23 +39,23 @@ def request(s: Session, candidate_id: int, evaluator_id: int) -> tuple[Evaluatio
 def waiting(s: Session) -> list[Evaluation]:
     """Return the evaluations that wait for a slot, in the order in which they get one if none ends meanwhile."""
     rows = list(s.scalars(select(Evaluation).where(Evaluation.started_at.is_(None)).order_by(Evaluation.id)))
-    project = {e.id: e.candidate.project_id for e in rows}
+    campaign = {e.id: e.candidate.campaign_id for e in rows}
     running = Counter(
         s.scalars(
-            select(Candidate.project_id)
+            select(Candidate.campaign_id)
             .join(Evaluation, Evaluation.candidate_id == Candidate.id)
             .where(Evaluation.started_at.is_not(None))
         )
     )
     heads = {
-        p: trunk.id if (trunk := head(s, s.get_one(Project, p))) is not None else None for p in set(project.values())
+        p: trunk.id if (trunk := head(s, s.get_one(Campaign, p))) is not None else None for p in set(campaign.values())
     }
     order: list[Evaluation] = []
     while rows:
-        nxt = min(rows, key=lambda e: (running[project[e.id]], e.candidate_id != heads[project[e.id]], e.id))
+        nxt = min(rows, key=lambda e: (running[campaign[e.id]], e.candidate_id != heads[campaign[e.id]], e.id))
         order.append(nxt)
         rows.remove(nxt)
-        running[project[nxt.id]] += 1
+        running[campaign[nxt.id]] += 1
     return order
 
 

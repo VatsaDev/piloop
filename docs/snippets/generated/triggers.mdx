@@ -2,7 +2,7 @@
 
 | Trigger | Fires when | Parameters |
 |---|---|---|
-| `anomaly` | The daemon detected an incident that no agent of the project got yet. The agent gets it to investigate. | none |
+| `anomaly` | The daemon detected an incident that no agent of the campaign got yet. The agent gets it to investigate. | none |
 | `cron` | The role's `interval` passed since the start of its last routine agent, one that got no anomaly. | none |
 | `low_water` | The backlog of runnable ideas is shorter than its target, and there is a reason to sweep now. | `buffer` |
 | `seed` | A seed was filed after the role's latest agent started, and a slot of the role is free. | none |

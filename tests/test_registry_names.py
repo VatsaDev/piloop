@@ -2,7 +2,7 @@
 
 And every capability of the plugin host states its tier, and the contract of a pure one is data in, data out.
 
-A module that needs a property of an entry asks the registry for it, so that an entry that a package or a project adds
+A module that needs a property of an entry asks the registry for it, so that an entry that a package or a campaign adds
 gets the same treatment. Only the module that defines an entry, and the files listed here with their reason, may name it.
 """
 
@@ -48,7 +48,7 @@ LEAVES: dict[str, frozenset[str] | None] = {
     'cli/main.py': frozenset({'sql'}),
     'campaign/inbox.py': frozenset({'anomaly'}),
     'reports/overview.py': frozenset({'anomaly'}),
-    'daemon/runner.py': frozenset({'worker'}),
+    'daemon/run_executor.py': frozenset({'worker'}),
     'daemon/archiver.py': frozenset({'research'}),
 }
 """The files that may name entries, and which ones (None: any). The reasons:
@@ -60,7 +60,7 @@ LEAVES: dict[str, frozenset[str] | None] = {
 - ``deprecated.py``: the bridges rewrite the keys of earlier releases, which named built-in roles and triggers.
 - ``cli/skills.py``: the skill folder of each agent CLI, which is not the harness registry.
 - ``cli/idea.py`` and ``cli/main.py``: the commands ``piloop idea seed`` and ``piloop sql``.
-- ``campaign/inbox.py``, ``reports/overview.py`` and ``daemon/runner.py``: keys of event payloads (``anomaly`` of
+- ``campaign/inbox.py``, ``reports/overview.py`` and ``daemon/run_executor.py``: keys of event payloads (``anomaly`` of
   ``anomaly.reported``, ``worker`` of ``run.relaunched``), not entries.
 - ``daemon/archiver.py``: ``research/`` is a folder of the shared workspace, not the role.
 """

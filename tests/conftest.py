@@ -18,10 +18,10 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from sqlalchemy import select
 
-from piloop.campaign import project as project_module
-from piloop.config import load_project_config
+from piloop.campaign import campaigns as campaign_module
+from piloop.config import load_campaign_config
 from piloop.daemon.main import ACTOR
-from piloop.db.models import Candidate, Measurement, Project, Verdict, Worker, WorkerState
+from piloop.db.models import Campaign, Candidate, Measurement, Verdict, Worker, WorkerState
 from piloop.db.session import Database, migrate
 from piloop.otel import Tracer
 from piloop.runtime import Handle, Runtime
@@ -100,15 +100,15 @@ def write_script(path: Path, body: str) -> Path:
 
 
 def write_toml(
-    project: Path,
+    campaign: Path,
     harness_body: str,
     *,
     max_workers: int = 1,
     worker_timeout: float = 20,
     evaluate: list[str] = EVALUATE,
 ) -> None:
-    script = write_script(project.parent / 'harness.sh', harness_body)
-    (project / 'piloop.toml').write_text(
+    script = write_script(campaign.parent / 'harness.sh', harness_body)
+    (campaign / 'piloop.toml').write_text(
         TOML.format(
             evaluate=repr(evaluate).replace("'", '"'),
             worker_timeout=worker_timeout,
@@ -140,10 +140,10 @@ def piloop_entry_points(group: str) -> list[EntryPoint]:
 
 def example(root: Path, name: str) -> None:
     """Install the example plugin ``examples/plugins/<name>`` under ``root``, with the entry points of its pyproject."""
-    project = tomllib.loads((EXAMPLES / name / 'pyproject.toml').read_text())['project']
-    groups = project['entry-points']
+    campaign = tomllib.loads((EXAMPLES / name / 'pyproject.toml').read_text())['project']
+    groups = campaign['entry-points']
     entries = ''.join(f'[{g}]\n' + ''.join(f'{n} = {v}\n' for n, v in eps.items()) for g, eps in groups.items())
-    package(root, project['name'], project['version'], entries)
+    package(root, campaign['name'], campaign['version'], entries)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -161,9 +161,9 @@ def no_real_skill_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def project_path(tmp_path: Path) -> Path:
+def campaign_path(tmp_path: Path) -> Path:
     """A git repo with solve.txt (one line), an untracked data/ dir, brief.md and a piloop.toml using HARNESS_APPEND."""
-    path = tmp_path / 'project'
+    path = tmp_path / 'campaign'
     path.mkdir()
     (path / 'solve.txt').write_text('base\n')
     (path / 'brief.md').write_text('# Demo\nAdd lines.\n')
@@ -207,29 +207,29 @@ def db(tmp_path: Path, schema: Path) -> Iterator[Database]:
 
 
 @pytest.fixture
-def project(db: Database, project_path: Path) -> Project:
-    """Registered project with its baseline candidate measured (score=1)."""
-    return register(db, project_path)
+def campaign(db: Database, campaign_path: Path) -> Campaign:
+    """Registered campaign with its baseline candidate measured (score=1)."""
+    return register(db, campaign_path)
 
 
-def register(db: Database, project_path: Path) -> Project:
-    cfg = load_project_config(project_path)
-    repo = Repo(project_path)
+def register(db: Database, campaign_path: Path) -> Campaign:
+    cfg = load_campaign_config(campaign_path)
+    repo = Repo(campaign_path)
     sha = repo.head.commit.hexsha
     result = run_evaluate(
         cfg.evaluate,
-        cwd=project_path,
-        log_dir=project_path.parent,
+        cwd=campaign_path,
+        log_dir=campaign_path.parent,
         timeout=30,
         required={m.name for m in cfg.metrics},
     )
     with db.session() as s:
-        proj = Project(name=cfg.name, path=str(project_path), config=cfg.model_dump(mode='json'))
+        proj = Campaign(name=cfg.name, path=str(campaign_path), config=cfg.model_dump(mode='json'))
         s.add(proj)
         s.flush()
         evaluator = current_evaluator(s, proj, cfg)
         base = Candidate(
-            project_id=proj.id,
+            campaign_id=proj.id,
             tree_sha=repo.head.commit.tree.hexsha,
             commit_sha=sha,
             summary='baseline',
@@ -243,10 +243,10 @@ def register(db: Database, project_path: Path) -> Project:
         return proj
 
 
-def baseline(db: Database, project_id: int) -> Candidate:
+def baseline(db: Database, campaign_id: int) -> Candidate:
     with db.session() as s:
         return s.scalars(
-            select(Candidate).where(Candidate.project_id == project_id).order_by(Candidate.id).limit(1)
+            select(Candidate).where(Candidate.campaign_id == campaign_id).order_by(Candidate.id).limit(1)
         ).one()
 
 
@@ -374,7 +374,7 @@ def span_named(spans: InMemorySpanExporter, name: str) -> ReadableSpan:
 
 
 def factory(rt: Runtime) -> RuntimeFactory:
-    def make(_kind: str, *, project: str, project_path: Path) -> Runtime:
+    def make(_kind: str, *, campaign: str, campaign_path: Path) -> Runtime:
         return rt
 
     return make
@@ -387,9 +387,9 @@ def plenty_of_disk(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def isolated_projects_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def isolated_campaigns_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``register`` measures the baseline under the global ``settings.home``: keep it out of ``~/.piloop``."""
-    monkeypatch.setattr(project_module, 'settings', Settings(home=tmp_path / 'home'))
+    monkeypatch.setattr(campaign_module, 'settings', Settings(home=tmp_path / 'home'))
 
 
 @pytest.fixture(autouse=True)

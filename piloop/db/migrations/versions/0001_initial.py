@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 
 import piloop.db.models
-from piloop.db.triggers import PERSISTENT
+from piloop.db.triggers import install
 from piloop.db.triggers.fts import fts_table
 
 revision: str = '0001'
@@ -446,9 +446,7 @@ def upgrade() -> None:
         batch_op.create_index('ix_measurements_candidate_evaluator', ['candidate_id', 'evaluator_id'], unique=False)
     for table in INDEXED:
         op.execute(fts_table(table))
-    for trigger in PERSISTENT:
-        if trigger.name in TRIGGERS:
-            op.execute(trigger.sql())
+    install(op, TRIGGERS)
 
 
 def downgrade() -> None:

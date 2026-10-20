@@ -50,9 +50,9 @@ Anyone can add to the queue. Each actor sees different information, so each one 
 | Actor | What it adds or changes | What it sees |
 |---|---|---|
 | You | Ideas and seeds. The priority and status of any idea. | Everything: `piloop watch`, `piloop status`, the inbox. |
-| Orchestrator | Ideas and seeds. The priority and status of any idea. | The inbox and the project status. |
-| Research | Develops each seed into an idea or rejects it. Adds ideas of its own, with a priority. | The project overview and the research pack: what was tried, by family, and every finding. |
-| Watchdog | Seeds, for example a retry that avoids a failure. Escalations for the orchestrator. | The project overview, and the research pack or the incidents to investigate. |
+| Orchestrator | Ideas and seeds. The priority and status of any idea. | The inbox and the campaign status. |
+| Research | Develops each seed into an idea or rejects it. Adds ideas of its own, with a priority. | The campaign overview and the research pack: what was tried, by family, and every finding. |
+| Watchdog | Seeds, for example a retry that avoids a failure. Escalations for the orchestrator. | The campaign overview, and the research pack or the incidents to investigate. |
 | Worker | A hunch in its `finding` comment. Research reads it. A worker files no ideas or seeds. | Its brief: its idea, its starting point, the comments on the idea, and the history. |
 | Daemon | Puts an idea back in the queue when its run failed and attempts are left. Files a seed when a rebase conflicts. Rejects an idea that a newer one supersedes before it ran. | The database. |
 
@@ -79,7 +79,7 @@ flowchart LR
         watchdog["watchdog"]
     end
     evaluate["Evaluate command<br/>prints METRIC lines"]
-    repo[("Project repo<br/>refs/piloop/")]
+    repo[("Campaign repo<br/>refs/piloop/")]
 
     human --> cli
     orch --> cli
@@ -102,7 +102,7 @@ flowchart LR
   the allowed values, who changed a row last, a log of every change, and full-text search. An authorizer refuses
   schema changes and transactions from `piloop sql`. See the [data model](/architecture/data-model).
 - **The daemon** (`piloop serve`) is one process for each piloop home. On each tick, the **scheduler** checks the
-  triggers of every project, queues runs of ready ideas and launches the requested agents. The **run executor** runs
+  triggers of every campaign, queues runs of ready ideas and launches the requested agents. The **run executor** runs
   one run: the worktree, the agent, the scores, the verdict. The **launcher** starts, watches and closes every agent.
 - **The [runtime](/concepts/runtimes)** is where an agent process runs: a background process by default, or a
   [Herdr](https://herdr.dev) pane that you can watch and steer. A package can add others.

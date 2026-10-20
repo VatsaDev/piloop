@@ -55,12 +55,12 @@ class Progress:
     unsettled: int | None = None
     """``runs`` too: the attempts whose outcome can still change: queued, running, or being scored."""
     hours: float | None = None
-    """``hours``: the hours since the first run started, without the time that the project was paused. Also None
+    """``hours``: the hours since the first run started, without the time that the campaign was paused. Also None
     before the first run."""
     tokens: int | None = None
-    """``tokens``: the tokens that the agents of the project spent, summed over the agents that ended."""
+    """``tokens``: the tokens that the agents of the campaign spent, summed over the agents that ended."""
     without_keep: int | None = None
-    """``without_keep``: the finished runs that count since the latest keep, or since the project was last set
+    """``without_keep``: the finished runs that count since the latest keep, or since the campaign was last set
     active again."""
     keeps: int | None = None
     """``keeps``: the candidates of runs that are kept, on the trunk or on a branch. The baseline is not one."""
@@ -71,7 +71,7 @@ class StopCase:
     """Everything that a stop rule reads."""
 
     primary: str
-    """The name of the primary metric of the project's first track."""
+    """The name of the primary metric of the campaign's first track."""
     direction: Direction
     limits: Limits
     progress: Progress
@@ -96,9 +96,9 @@ STOP_RULES = PureCapability(
     'stop rule',
     group='piloop.stop_rules',
     contract=StopRule,
-    selection=Selection('project', 'plugins.stop_rule.provider'),
+    selection=Selection('campaign', 'plugins.stop_rule.provider'),
 )
 """The stop rule capability: every stop rule by name. The built-in rule is ``limits``
 (``piloop.plugins.builtin.stop``)."""
 DEFAULT = 'limits'
-"""The rule of a project without ``[plugins.stop_rule]``."""
+"""The rule of a campaign without ``[plugins.stop_rule]``."""

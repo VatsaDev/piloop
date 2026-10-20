@@ -16,7 +16,7 @@ from sqlalchemy.exc import OperationalError
 
 from piloop.daemon.main import ACTOR
 from piloop.db import sql
-from piloop.db.models import JOURNAL_LINE_BYTES, Base, CommentKind, Project
+from piloop.db.models import JOURNAL_LINE_BYTES, Base, Campaign, CommentKind
 from piloop.db.session import Database
 from tests.conftest import WRITER
 
@@ -29,16 +29,16 @@ def con(db: Database, tmp_path: Path) -> Iterator[sqlite3.Connection]:
 
 
 def test_anything_but_schema_changes(con: sqlite3.Connection) -> None:
-    r = sql.run(con, "INSERT INTO projects (name, path, config, created_at) VALUES ('p', '/p', '{}', '2026-01-01')")
+    r = sql.run(con, "INSERT INTO campaigns (name, path, config, created_at) VALUES ('p', '/p', '{}', '2026-01-01')")
     assert (r.changes, r.last_insert_rowid, r.columns) == (1, 1, [])
-    r = sql.run(con, 'SELECT id, name FROM projects')
+    r = sql.run(con, 'SELECT id, name FROM campaigns')
     assert (r.columns, r.rows, r.truncated) == (['id', 'name'], [(1, 'p')], False)
-    assert sql.run(con, 'DELETE FROM projects').changes == 1
+    assert sql.run(con, 'DELETE FROM campaigns').changes == 1
     for statement in (
         'CREATE TABLE t (x)',
-        'DROP TABLE projects',
-        'ALTER TABLE projects ADD COLUMN x',
-        'CREATE INDEX i ON projects(name)',
+        'DROP TABLE campaigns',
+        'ALTER TABLE campaigns ADD COLUMN x',
+        'CREATE INDEX i ON campaigns(name)',
         'CREATE VIRTUAL TABLE v USING fts5(body)',
         "ATTACH DATABASE ':memory:' AS m",
         'PRAGMA journal_mode=DELETE',
@@ -46,14 +46,14 @@ def test_anything_but_schema_changes(con: sqlite3.Connection) -> None:
         'SAVEPOINT s',
         'DELETE FROM alembic_version',
         'CREATE TEMP TABLE t (x)',
-        'CREATE TEMP TRIGGER t AFTER UPDATE ON projects BEGIN SELECT 1; END',
+        'CREATE TEMP TRIGGER t AFTER UPDATE ON campaigns BEGIN SELECT 1; END',
         "INSERT INTO session_actor (actor) VALUES ('me')",
         "UPDATE session_actor SET actor = 'me'",
         'DELETE FROM session_actor',
     ):
         with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
             sql.run(con, statement)
-    assert 'name' in sql.run(con, 'PRAGMA table_info(projects)').columns
+    assert 'name' in sql.run(con, 'PRAGMA table_info(campaigns)').columns
 
 
 def test_row_limit(con: sqlite3.Connection) -> None:
@@ -70,6 +70,7 @@ def test_schema_ddl_lists_every_table_with_its_indexes_and_runs(tmp_path: Path) 
     assert sorted(line.split()[2] for line in ddl.splitlines() if line.startswith('CREATE TABLE')) == snapshot(
         [
             'archives',
+            'campaigns',
             'candidates',
             'comments',
             'documents',
@@ -81,7 +82,6 @@ def test_schema_ddl_lists_every_table_with_its_indexes_and_runs(tmp_path: Path) 
             'journal',
             'lessons',
             'measurements',
-            'projects',
             'runs',
             'techniques',
             'workers',
@@ -99,10 +99,10 @@ def test_schema_ddl_lists_every_table_with_its_indexes_and_runs(tmp_path: Path) 
 
 def test_documented_procedures_work_verbatim(con: sqlite3.Connection) -> None:
     """The INSERTs in sql_procedures.md rely on server defaults for timestamps, statuses and priorities."""
-    sql.run(con, "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+    sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
     idea = sql.run(
         con,
-        "INSERT INTO ideas (track, project_id, title, hypothesis, plan, priority, created_by, status) VALUES ('score', 1, 't', 'h', NULL, 1, 'me', 'ready')",
+        "INSERT INTO ideas (track, campaign_id, title, hypothesis, plan, priority, created_by, status) VALUES ('score', 1, 't', 'h', NULL, 1, 'me', 'ready')",
     )
     assert idea.last_insert_rowid == 1
     row = sql.run(con, 'SELECT status, max_runs, created_at IS NOT NULL FROM ideas').rows[0]
@@ -121,15 +121,15 @@ def test_documented_procedures_work_verbatim(con: sqlite3.Connection) -> None:
 
 def test_every_update_is_stamped_with_the_connection_actor(db: Database, tmp_path: Path) -> None:
     with closing(sql.connect(tmp_path / 'piloop.db', actor='research#3')) as con:
-        sql.run(con, "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
-        assert sql.run(con, 'SELECT updated_at = created_at, updated_by FROM projects').rows == [(1, None)]
-        sql.run(con, "UPDATE projects SET name = 'q'")
-        assert sql.run(con, 'SELECT updated_by FROM projects').rows == [('research#3',)]
-        sql.run(con, "UPDATE projects SET name = 'r', updated_by = 'someone else'")
-        assert sql.run(con, 'SELECT updated_by FROM projects').rows == [('research#3',)], 'callers cannot pick'
+        sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
+        assert sql.run(con, 'SELECT updated_at = created_at, updated_by FROM campaigns').rows == [(1, None)]
+        sql.run(con, "UPDATE campaigns SET name = 'q'")
+        assert sql.run(con, 'SELECT updated_by FROM campaigns').rows == [('research#3',)]
+        sql.run(con, "UPDATE campaigns SET name = 'r', updated_by = 'someone else'")
+        assert sql.run(con, 'SELECT updated_by FROM campaigns').rows == [('research#3',)], 'callers cannot pick'
     with closing(sql.connect(tmp_path / 'piloop.db', actor='human')) as con:
-        sql.run(con, "UPDATE projects SET name = 's'")
-        assert sql.run(con, 'SELECT updated_by FROM projects').rows == [('human',)]
+        sql.run(con, "UPDATE campaigns SET name = 's'")
+        assert sql.run(con, 'SELECT updated_by FROM campaigns').rows == [('human',)]
 
 
 def test_actor_triggers_cover_every_table_with_updated_by() -> None:
@@ -138,7 +138,7 @@ def test_actor_triggers_cover_every_table_with_updated_by() -> None:
     assert (
         triggered
         == tracked
-        == snapshot({'candidates', 'comments', 'documents', 'ideas', 'projects', 'runs', 'workers'})
+        == snapshot({'candidates', 'comments', 'documents', 'ideas', 'campaigns', 'runs', 'workers'})
     )
 
 
@@ -182,7 +182,7 @@ def test_every_client_connection_has_the_same_pragmas_and_optimizes_on_close(db:
 def test_a_write_the_lock_refuses_names_the_holder(db: Database, tmp_path: Path, writer: subprocess.Popen[str]) -> None:
     """A 'database is locked' error names the process that holds the write lock and its command line."""
     holder = f'pid {writer.pid} holds the write lock: {sys.executable} -c {WRITER} {tmp_path / "piloop.db"}'
-    insert = "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')"
+    insert = "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')"
     with db.session() as s:
         s.connection().exec_driver_sql('PRAGMA busy_timeout=0')
         with pytest.raises(OperationalError) as engine_error:
@@ -204,10 +204,10 @@ def test_a_write_the_lock_refuses_names_the_holder(db: Database, tmp_path: Path,
 def test_reads_close_while_another_client_holds_the_write_lock(db: Database, tmp_path: Path, writer) -> None:
     """A close's ``PRAGMA optimize`` may ANALYZE, which writes: it is skipped, not waited for or failed with."""
     with db.session() as s:
-        assert s.scalars(select(Project)).all() == []
+        assert s.scalars(select(Campaign)).all() == []
     db.close()
     agent = sql.connect(tmp_path / 'piloop.db', actor='human')
-    assert sql.run(agent, 'SELECT count(*) FROM projects').rows == [(0,)]
+    assert sql.run(agent, 'SELECT count(*) FROM campaigns').rows == [(0,)]
     agent.close()
 
 
@@ -259,9 +259,9 @@ def test_one_update_of_a_tracked_column_is_one_event_and_the_provenance_stamps_s
     con: sqlite3.Connection,
 ) -> None:
     """The change-log trigger, the updated_at trigger and the updated_by trigger each do their own UPDATE: one event."""
-    sql.run(con, "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+    sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
     sql.run(
-        con, "INSERT INTO ideas (track, project_id, title, hypothesis, created_by) VALUES ('score', 1, 't', 'h', 'me')"
+        con, "INSERT INTO ideas (track, campaign_id, title, hypothesis, created_by) VALUES ('score', 1, 't', 'h', 'me')"
     )
     (created,) = sql.run(con, 'SELECT updated_at FROM ideas').rows[0]
     sql.run(con, "UPDATE ideas SET status = 'parked' WHERE id = 1")
@@ -280,22 +280,22 @@ def test_one_update_of_a_tracked_column_is_one_event_and_the_provenance_stamps_s
     )
 
 
-def test_verdict_brief_and_project_status_changes_carry_what_the_feed_needs(
+def test_verdict_brief_and_campaign_status_changes_carry_what_the_feed_needs(
     db: Database, tmp_path: Path, con: sqlite3.Connection
 ) -> None:
-    sql.run(con, "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+    sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
     sql.run(
-        con, "INSERT INTO ideas (track, project_id, title, hypothesis, created_by) VALUES ('score', 1, 't', 'h', 'me')"
+        con, "INSERT INTO ideas (track, campaign_id, title, hypothesis, created_by) VALUES ('score', 1, 't', 'h', 'me')"
     )
-    sql.run(con, "INSERT INTO candidates (project_id, tree_sha, commit_sha) VALUES (1, 'tree', 'sha')")
+    sql.run(con, "INSERT INTO candidates (campaign_id, tree_sha, commit_sha) VALUES (1, 'tree', 'sha')")
     sql.run(con, "INSERT INTO runs (idea_id, attempt, base_candidate_id, harness, model) VALUES (1, 1, 1, 'pi', 'm')")
     sql.run(
         con,
         "UPDATE candidates SET verdict = 'interesting', verdict_by = 'human', verdict_reason = 'not a win, a lead' WHERE id = 1",
     )
     sql.run(con, "UPDATE runs SET brief = 'do it my way' WHERE id = 1")
-    sql.run(con, "UPDATE projects SET status = 'stopped', stopped_reason = 'enough' WHERE id = 1")
-    sql.run(con, "UPDATE projects SET status = 'active', stopped_reason = NULL WHERE id = 1")
+    sql.run(con, "UPDATE campaigns SET status = 'stopped', stopped_reason = 'enough' WHERE id = 1")
+    sql.run(con, "UPDATE campaigns SET status = 'active', stopped_reason = NULL WHERE id = 1")
     assert events(con) == snapshot(
         [
             (
@@ -306,8 +306,8 @@ def test_verdict_brief_and_project_status_changes_carry_what_the_feed_needs(
                 '{"old":"pending","new":"interesting","verdict_by":"human","verdict_reason":"not a win, a lead"}',
             ),
             ('run.brief', 'human', 'run', 1, '{"old_length":null,"new_length":12}'),
-            ('project.status', 'human', 'project', 1, '{"old":"active","new":"stopped","stopped_reason":"enough"}'),
-            ('project.status', 'human', 'project', 1, '{"old":"stopped","new":"active","stopped_reason":null}'),
+            ('campaign.status', 'human', 'campaign', 1, '{"old":"active","new":"stopped","stopped_reason":"enough"}'),
+            ('campaign.status', 'human', 'campaign', 1, '{"old":"stopped","new":"active","stopped_reason":null}'),
         ]
     )
     with closing(sql.connect(tmp_path / 'piloop.db', actor=ACTOR)) as daemon:
@@ -324,16 +324,18 @@ def test_verdict_brief_and_project_status_changes_carry_what_the_feed_needs(
 
 
 def test_deletes_leave_tombstones_and_cascades_too(con: sqlite3.Connection) -> None:
-    sql.run(con, "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+    sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
     sql.run(
-        con, "INSERT INTO ideas (track, project_id, title, hypothesis, created_by) VALUES ('score', 1, 't', 'h', 'me')"
+        con, "INSERT INTO ideas (track, campaign_id, title, hypothesis, created_by) VALUES ('score', 1, 't', 'h', 'me')"
     )
-    sql.run(con, "INSERT INTO candidates (project_id, tree_sha, commit_sha, verdict) VALUES (1, 'tree', 'sha', 'keep')")
+    sql.run(
+        con, "INSERT INTO candidates (campaign_id, tree_sha, commit_sha, verdict) VALUES (1, 'tree', 'sha', 'keep')"
+    )
     sql.run(
         con, "INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES ('idea', 1, 'me', 'note', 'hi')"
     )
     sql.run(con, 'DELETE FROM comments WHERE id = 1')
-    sql.run(con, 'DELETE FROM projects WHERE id = 1')
+    sql.run(con, 'DELETE FROM campaigns WHERE id = 1')
     assert events(con) == snapshot(
         [
             ('comment.note', 'me', 'comment', 1, '{"target_kind":"idea","target_id":1}'),
@@ -369,8 +371,8 @@ def test_every_comment_kind_is_an_event_shaped_like_the_escalation_one(con: sqli
 
 def test_a_lesson_has_a_status_and_an_effect_only_with_its_metric(con: sqlite3.Connection) -> None:
     """Agents write lessons with raw SQL: a malformed one fails at insert, and the error names the rule."""
-    sql.run(con, "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
-    insert = 'INSERT INTO lessons (project_id, family, status, effect, metric, body, created_by) VALUES (1, {})'
+    sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
+    insert = 'INSERT INTO lessons (campaign_id, family, status, effect, metric, body, created_by) VALUES (1, {})'
     for values in (
         "'voting', 'dead', 0.002, 'accuracy', 'the trees agree on every row: idea#3', 'watchdog#2'",
         "'voting', 'promising', -40, 'seconds', 'faster: candidate#9', 'watchdog#2'",
@@ -397,14 +399,14 @@ def test_a_lesson_has_a_status_and_an_effect_only_with_its_metric(con: sqlite3.C
         ('journal', "INSERT INTO journal (author, line) VALUES ('orchestrator', 'parked idea#4: dup of #2')"),
         (
             'lessons',
-            'INSERT INTO lessons (project_id, family, status, body, created_by)'
+            'INSERT INTO lessons (campaign_id, family, status, body, created_by)'
             " VALUES (1, 'voting', 'dead', 'idea#3', 'watchdog#2')",
         ),
     ],
 )
 def test_agents_never_rewrite_a_journal_line_or_a_lesson(con: sqlite3.Connection, table: str, insert: str) -> None:
     """An UPDATE is denied, and an INSERT OR REPLACE of a row is refused: the authorizer does not see it."""
-    sql.run(con, "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+    sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
     sql.run(con, insert)
     before = sql.run(con, f'SELECT * FROM {table}').rows
     with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
@@ -417,17 +419,19 @@ def test_agents_never_rewrite_a_journal_line_or_a_lesson(con: sqlite3.Connection
     assert len(sql.run(con, f'SELECT id FROM {table}').rows) == 2, 'a new row is an append'
 
 
-def test_a_journal_line_is_never_deleted_but_a_lesson_goes_with_its_project(con: sqlite3.Connection) -> None:
-    sql.run(con, "INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}')")
+def test_a_journal_line_is_never_deleted_but_a_lesson_goes_with_its_campaign(con: sqlite3.Connection) -> None:
+    sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
     sql.run(con, "INSERT INTO journal (author, line) VALUES ('orchestrator', 'parked idea#4')")
-    sql.run(con, "INSERT INTO lessons (project_id, family, status, body, created_by) VALUES (1, 'v', 'dead', 'b', 'w')")
+    sql.run(
+        con, "INSERT INTO lessons (campaign_id, family, status, body, created_by) VALUES (1, 'v', 'dead', 'b', 'w')"
+    )
     with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
         sql.run(con, 'DELETE FROM journal')
-    sql.run(con, 'DELETE FROM projects')
+    sql.run(con, 'DELETE FROM campaigns')
     assert sql.run(con, 'SELECT count(*) FROM lessons').rows == [(0,)]
 
 
-EVENT = "INSERT INTO events (kind, actor, target_kind, target_id{cols}) VALUES ('x.y', 'a', 'project', 1{vals})"
+EVENT = "INSERT INTO events (kind, actor, target_kind, target_id{cols}) VALUES ('x.y', 'a', 'campaign', 1{vals})"
 
 
 def event(con: sqlite3.Connection, cols: str = '', vals: str = '', verb: str = 'INSERT') -> None:
@@ -473,9 +477,9 @@ def test_an_event_that_piloop_could_not_read_is_refused(con: sqlite3.Connection)
             with pytest.raises(sqlite3.IntegrityError, match=message):
                 event(con, cols, vals)
     for statement, message in (
-        ("INSERT INTO events (kind, actor, target_kind, target_id) VALUES (x'6b', 'a', 'project', 1)", 'kind'),
-        ("INSERT INTO events (kind, actor, target_kind, target_id) VALUES ('k', x'61', 'project', 1)", 'actor'),
-        ("INSERT INTO events (kind, actor, target_kind, target_id) VALUES ('k', 'a', 'project', 'one')", 'target_id'),
+        ("INSERT INTO events (kind, actor, target_kind, target_id) VALUES (x'6b', 'a', 'campaign', 1)", 'kind'),
+        ("INSERT INTO events (kind, actor, target_kind, target_id) VALUES ('k', x'61', 'campaign', 1)", 'actor'),
+        ("INSERT INTO events (kind, actor, target_kind, target_id) VALUES ('k', 'a', 'campaign', 'one')", 'target_id'),
     ):
         with pytest.raises(sqlite3.IntegrityError, match=message):
             sql.run(con, statement)

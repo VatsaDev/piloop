@@ -1,4 +1,4 @@
-"""Each ``[stop]`` condition ends the campaign exactly as the configuration reference says. A stopped project requests nothing."""
+"""Each ``[stop]`` condition ends the campaign exactly as the configuration reference says. A stopped campaign requests nothing."""
 
 import ast
 import json
@@ -26,16 +26,16 @@ from piloop.campaign.stop import (
     stall,
     stop_reason,
 )
-from piloop.config import ConfigError, ProjectConfig, load_project_config
+from piloop.config import CampaignConfig, ConfigError, load_campaign_config
 from piloop.db.models import (
+    Campaign,
+    CampaignStatus,
     Candidate,
     Document,
     Event,
     Idea,
     IdeaStatus,
     Measurement,
-    Project,
-    ProjectStatus,
     Run,
     RunStatus,
     TargetKind,
@@ -55,30 +55,30 @@ from piloop.plugins.host import data_errors
 from piloop.reports.overview import progress
 from piloop.scoring.ledger import SKIPPED
 from tests.conftest import HARNESS_APPEND, HARNESS_NOOP, HARNESS_WORSE, ScriptRuntime, example, span_named, write_toml
-from tests.daemon.test_scheduler import add_ideas, make_scheduler, stop_project
+from tests.daemon.test_scheduler import add_ideas, make_scheduler, stop_campaign
 
 LOWER_PRIMARY = [{'name': 'score', 'direction': 'higher'}, {'name': 'size', 'direction': 'lower', 'role': 'primary'}]
 
 
 def configure(
     db: Database,
-    project: Project,
+    campaign: Campaign,
     max_workers: int = 1,
     harness: str = HARNESS_NOOP,
     roles: dict[str, object] | None = None,
     **stop: float,
-) -> ProjectConfig:
-    write_toml(Path(project.path), harness, max_workers=max_workers)
+) -> CampaignConfig:
+    write_toml(Path(campaign.path), harness, max_workers=max_workers)
     with db.session() as s:
-        cfg = load_project_config(Path(project.path), stop=stop, roles=roles)
-        s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
+        cfg = load_campaign_config(Path(campaign.path), stop=stop, roles=roles)
+        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
         s.commit()
     return cfg
 
 
 def add_run(
     db: Database,
-    project: Project,
+    campaign: Campaign,
     *,
     status: RunStatus = RunStatus.SUCCEEDED,
     started_at: timedelta = timedelta(0),
@@ -96,7 +96,7 @@ def add_run(
         n = s.scalar(select(func.count(Idea.id))) or 0
         idea = Idea(
             track='score',
-            project_id=project.id,
+            campaign_id=campaign.id,
             title=f'idea {n}',
             hypothesis='t',
             created_by='t',
@@ -120,19 +120,19 @@ def add_run(
         s.commit()
     if keep_score is not None or (measured and not in_flight):
         verdict = Verdict.DISCARD if keep_score is None else Verdict.KEEP
-        candidate_id = add_candidate(db, project, run.id, verdict)
+        candidate_id = add_candidate(db, campaign, run.id, verdict)
         with db.session() as s:
-            evaluator_id = s.get_one(Project, project.id).evaluator_id or 0
+            evaluator_id = s.get_one(Campaign, campaign.id).evaluator_id or 0
             s.add(Measurement(candidate_id=candidate_id, evaluator_id=evaluator_id, metrics={'score': keep_score or 0}))
             s.commit()
     return run.id
 
 
-def add_candidate(db: Database, project: Project, run_id: int, verdict: Verdict, why: str | None = None) -> int:
+def add_candidate(db: Database, campaign: Campaign, run_id: int, verdict: Verdict, why: str | None = None) -> int:
     """Add an unmeasured candidate of run ``run_id``, a child of the baseline."""
     with db.session() as s:
         candidate = Candidate(
-            project_id=project.id,
+            campaign_id=campaign.id,
             run_id=run_id,
             parent_id=1,
             tree_sha=f'tree{run_id}',
@@ -145,119 +145,119 @@ def add_candidate(db: Database, project: Project, run_id: int, verdict: Verdict,
         return candidate.id
 
 
-def reason(db: Database, project: Project) -> str | None:
+def reason(db: Database, campaign: Campaign) -> str | None:
     with db.session() as s:
-        row = s.get_one(Project, project.id)
-        return stop_reason(s, row, ProjectConfig.model_validate(row.config))
+        row = s.get_one(Campaign, campaign.id)
+        return stop_reason(s, row, CampaignConfig.model_validate(row.config))
 
 
-def progress_line(db: Database, project: Project, cfg: ProjectConfig) -> str:
+def progress_line(db: Database, campaign: Campaign, cfg: CampaignConfig) -> str:
     """Return the first part of the progress line: the runs against ``max_runs``."""
     with db.session() as s:
-        return progress(s, s.get_one(Project, project.id), cfg, utcnow()).split(' · ')[0]
+        return progress(s, s.get_one(Campaign, campaign.id), cfg, utcnow()).split(' · ')[0]
 
 
-def project_state(db: Database, project: Project) -> tuple[ProjectStatus, str | None]:
+def campaign_state(db: Database, campaign: Campaign) -> tuple[CampaignStatus, str | None]:
     with db.session() as s:
-        row = s.get_one(Project, project.id)
+        row = s.get_one(Campaign, campaign.id)
         return row.status, row.stopped_reason
 
 
-def test_no_stop_table_means_open_ended(db: Database, project: Project) -> None:
-    configure(db, project)
-    add_run(db, project, keep_score=100.0, started_at=timedelta(days=30))
+def test_no_stop_table_means_open_ended(db: Database, campaign: Campaign) -> None:
+    configure(db, campaign)
+    add_run(db, campaign, keep_score=100.0, started_at=timedelta(days=30))
     for _ in range(3):
-        add_run(db, project, status=RunStatus.FAILED)
-    assert reason(db, project) is None
+        add_run(db, campaign, status=RunStatus.FAILED)
+    assert reason(db, campaign) is None
 
 
-def test_target_on_the_best_kept_candidate_in_the_metric_direction(db: Database, project: Project) -> None:
-    configure(db, project, target=3.0)
+def test_target_on_the_best_kept_candidate_in_the_metric_direction(db: Database, campaign: Campaign) -> None:
+    configure(db, campaign, target=3.0)
     with db.session() as s:
         s.get_one(Candidate, 1).verdict = Verdict.DISCARD
         s.commit()
-    assert reason(db, project) is None, 'nothing kept'
+    assert reason(db, campaign) is None, 'nothing kept'
     with db.session() as s:
         s.get_one(Candidate, 1).verdict = Verdict.KEEP
         s.commit()
-    assert reason(db, project) is None, 'the baseline scores 1'
-    add_run(db, project, keep_score=2.9)
-    assert reason(db, project) is None
+    assert reason(db, campaign) is None, 'the baseline scores 1'
+    add_run(db, campaign, keep_score=2.9)
+    assert reason(db, campaign) is None
     with db.session() as s:
         s.get_one(Candidate, 2).verdict = Verdict.DISCARD
         s.commit()
-    add_run(db, project, keep_score=3.0)
-    assert reason(db, project) == 'target: score 3 ≥ 3'
+    add_run(db, campaign, keep_score=3.0)
+    assert reason(db, campaign) == 'target: score 3 ≥ 3'
     with db.session() as s:
         s.get_one(Candidate, 3).verdict = Verdict.INTERESTING
         s.commit()
-    assert reason(db, project) is None, 'only a keep counts'
+    assert reason(db, campaign) is None, 'only a keep counts'
     with db.session() as s:
         s.get_one(Candidate, 3).verdict = Verdict.REFERENCE
         s.commit()
-    assert reason(db, project) is None, 'a reference is never the best'
+    assert reason(db, campaign) is None, 'a reference is never the best'
     with db.session() as s:
         s.get_one(Candidate, 3).verdict = Verdict.KEEP
         for m in s.scalars(select(Measurement).where(Measurement.candidate_id == 3)):
             m.metrics = {'score': 3.4}
         s.commit()
-    assert reason(db, project) == 'target: score 3.4 ≥ 3'
+    assert reason(db, campaign) == 'target: score 3.4 ≥ 3'
 
 
-def test_target_lower_is_better(db: Database, project: Project) -> None:
+def test_target_lower_is_better(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
-        cfg = load_project_config(Path(project.path), metrics=LOWER_PRIMARY, stop={'target': 5})
-        s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
+        cfg = load_campaign_config(Path(campaign.path), metrics=LOWER_PRIMARY, stop={'target': 5})
+        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
         s.commit()
-    assert reason(db, project) == 'target: size 5 ≤ 5', "the baseline's solve.txt is five bytes"
+    assert reason(db, campaign) == 'target: size 5 ≤ 5', "the baseline's solve.txt is five bytes"
 
 
-def test_a_project_that_max_runs_stopped_shows_all_its_runs_in_the_progress_line(
-    db: Database, project: Project
+def test_a_campaign_that_max_runs_stopped_shows_all_its_runs_in_the_progress_line(
+    db: Database, campaign: Campaign
 ) -> None:
     """The progress line counts the runs as ``max_runs`` does, and a stop never ends a run that ``max_runs`` counts."""
-    cfg = configure(db, project, max_runs=2)
-    add_run(db, project)
-    in_flight = add_run(db, project, status=RunStatus.RUNNING)
-    assert (reason(db, project), progress_line(db, project, cfg)) == (None, 'run 2/2'), (
+    cfg = configure(db, campaign, max_runs=2)
+    add_run(db, campaign)
+    in_flight = add_run(db, campaign, status=RunStatus.RUNNING)
+    assert (reason(db, campaign), progress_line(db, campaign, cfg)) == (None, 'run 2/2'), (
         'the run in flight counts, but it can still end without a scored candidate, so the campaign goes on'
     )
     with db.session() as s:
         run = s.get_one(Run, in_flight)
         run.status, run.error, run.finished_at = RunStatus.FAILED, 'worker produced no commits', utcnow()
         s.commit()
-    assert (reason(db, project), progress_line(db, project, cfg)) == (None, 'run 1/2'), 'a run without a commit'
-    add_run(db, project)
-    assert (reason(db, project), progress_line(db, project, cfg)) == ('max_runs: 2 runs', 'run 2/2')
+    assert (reason(db, campaign), progress_line(db, campaign, cfg)) == (None, 'run 1/2'), 'a run without a commit'
+    add_run(db, campaign)
+    assert (reason(db, campaign), progress_line(db, campaign, cfg)) == ('max_runs: 2 runs', 'run 2/2')
 
 
-def test_max_runs_waits_for_a_finished_run_whose_commits_are_scored(db: Database, project: Project) -> None:
+def test_max_runs_waits_for_a_finished_run_whose_commits_are_scored(db: Database, campaign: Campaign) -> None:
     """While the commits of a finished run are scored (``runs.scoring``), the run counts but cannot stop the campaign.
 
     Its idea's status does not matter: a human may park or reject it meanwhile.
     """
-    configure(db, project, max_runs=1)
-    run_id = add_run(db, project, measured=False)
+    configure(db, campaign, max_runs=1)
+    run_id = add_run(db, campaign, measured=False)
 
     def scoring(on: bool, idea: IdeaStatus) -> tuple[str | None, int]:
         with db.session() as s:
             run = s.get_one(Run, run_id)
             run.scoring, run.idea.status = on, idea
             s.commit()
-            return reason(db, project), runs(s, s.get_one(Project, project.id))
+            return reason(db, campaign), runs(s, s.get_one(Campaign, campaign.id))
 
     assert scoring(True, IdeaStatus.SCHEDULED) == (None, 1), 'its candidates do not exist yet, but it keeps its place'
     assert scoring(True, IdeaStatus.PARKED) == (None, 1), 'parked meanwhile: it still keeps its place'
-    add_candidate(db, project, run_id, Verdict.UNMEASURED, SKIPPED)
+    add_candidate(db, campaign, run_id, Verdict.UNMEASURED, SKIPPED)
     assert scoring(False, IdeaStatus.DONE) == (None, 0), 'only skip commits: it does not count, and another run starts'
     assert scoring(False, IdeaStatus.SCHEDULED) == (None, 0), 'scored: the status of its idea does not matter'
 
 
 def test_max_runs_caps_the_runs_queued_in_one_tick(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    configure(db, project, max_workers=4, max_runs=1)
-    add_ideas(db, project, 'a', 'b', 'c', 'd')
+    configure(db, campaign, max_workers=4, max_runs=1)
+    add_ideas(db, campaign, 'a', 'b', 'c', 'd')
     sched = make_scheduler(db, runtime, tmp_path)
     assert sched.tick() == [1], 'four free slots, but max_runs leaves room for one run'
     sched.wait(10)
@@ -267,12 +267,12 @@ def test_max_runs_caps_the_runs_queued_in_one_tick(
 
 
 def test_max_runs_leaves_room_for_the_remaining_runs_only(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    configure(db, project, max_workers=4, max_runs=3)
-    add_run(db, project)
-    add_run(db, project)
-    add_ideas(db, project, 'a', 'b')
+    configure(db, campaign, max_workers=4, max_runs=3)
+    add_run(db, campaign)
+    add_run(db, campaign)
+    add_ideas(db, campaign, 'a', 'b')
     sched = make_scheduler(db, runtime, tmp_path)
     assert sched.tick() == [1], 'two runs already: max_runs 3 leaves room for one more'
     sched.wait(10)
@@ -281,19 +281,19 @@ def test_max_runs_leaves_room_for_the_remaining_runs_only(
     sched.stop(timeout=5)
 
 
-def test_max_hours_since_the_first_run_started(db: Database, project: Project) -> None:
-    configure(db, project, max_hours=12)
-    assert reason(db, project) is None, 'the clock starts with the first run'
-    add_run(db, project, started_at=timedelta(hours=11, minutes=59))
-    assert reason(db, project) is None
-    add_run(db, project, started_at=timedelta(hours=12, minutes=30))
-    assert reason(db, project) == 'max_hours: 12.5h since the first run'
+def test_max_hours_since_the_first_run_started(db: Database, campaign: Campaign) -> None:
+    configure(db, campaign, max_hours=12)
+    assert reason(db, campaign) is None, 'the clock starts with the first run'
+    add_run(db, campaign, started_at=timedelta(hours=11, minutes=59))
+    assert reason(db, campaign) is None
+    add_run(db, campaign, started_at=timedelta(hours=12, minutes=30))
+    assert reason(db, campaign) == 'max_hours: 12.5h since the first run'
 
 
-def test_the_time_a_project_was_paused_does_not_count_toward_max_hours(db: Database, project: Project) -> None:
-    configure(db, project, max_hours=12)
-    add_run(db, project, started_at=timedelta(hours=12, minutes=30))
-    assert reason(db, project) == 'max_hours: 12.5h since the first run'
+def test_the_time_a_campaign_was_paused_does_not_count_toward_max_hours(db: Database, campaign: Campaign) -> None:
+    configure(db, campaign, max_hours=12)
+    add_run(db, campaign, started_at=timedelta(hours=12, minutes=30))
+    assert reason(db, campaign) == 'max_hours: 12.5h since the first run'
     now = utcnow()
 
     def paused(hours_ago: float, new: str | None) -> None:
@@ -301,10 +301,10 @@ def test_the_time_a_project_was_paused_does_not_count_toward_max_hours(db: Datab
             payload: dict[str, object] = {'old': None, 'new': new, 'paused_reason': None}
             s.add(
                 Event(
-                    kind='project.paused',
+                    kind='campaign.paused',
                     actor='t',
-                    target_kind=TargetKind.PROJECT,
-                    target_id=project.id,
+                    target_kind=TargetKind.CAMPAIGN,
+                    target_id=campaign.id,
                     payload=payload,
                     at=now - timedelta(hours=hours_ago),
                 )
@@ -319,121 +319,121 @@ def test_the_time_a_project_was_paused_does_not_count_toward_max_hours(db: Datab
 
     def elapsed() -> float | None:
         with db.session() as s:
-            value = hours(s, s.get_one(Project, project.id), now)
+            value = hours(s, s.get_one(Campaign, campaign.id), now)
             return None if value is None else round(value, 2)
 
-    assert (elapsed(), reason(db, project)) == (11.75, None), '12.5h less half an hour and a quarter paused'
+    assert (elapsed(), reason(db, campaign)) == (11.75, None), '12.5h less half an hour and a quarter paused'
     paused(1, 'launches')  # still paused: up to now
     assert elapsed() == 10.75
 
 
-def test_max_tokens_sums_the_usage_of_every_ended_agent_of_the_project(db: Database, project: Project) -> None:
-    configure(db, project, max_tokens=100_000)
-    assert reason(db, project) is None, 'nothing spent yet'
+def test_max_tokens_sums_the_usage_of_every_ended_agent_of_the_campaign(db: Database, campaign: Campaign) -> None:
+    configure(db, campaign, max_tokens=100_000)
+    assert reason(db, campaign) is None, 'nothing spent yet'
     with db.session() as s:
-        other = Project(name='other', path='/other', config=project.config)
+        other = Campaign(name='other', path='/other', config=campaign.config)
         s.add(other)
         s.flush()
         ended = dict(state=WorkerState.EXITED, ended_at=utcnow())
         s.add_all(
             [
-                Worker(kind=WorkerKind.WORKER, project_id=project.id, usage={'total': 60_000, 'turns': 9}, **ended),
-                Worker(kind=WorkerKind.RESEARCH, project_id=project.id, usage={'total': 30_000, 'turns': 2}, **ended),
-                Worker(kind=WorkerKind.WATCHDOG, project_id=project.id, usage=None, **ended),
-                Worker(kind=WorkerKind.WORKER, project_id=other.id, usage={'total': 50_000, 'turns': 1}, **ended),
+                Worker(kind=WorkerKind.WORKER, campaign_id=campaign.id, usage={'total': 60_000, 'turns': 9}, **ended),
+                Worker(kind=WorkerKind.RESEARCH, campaign_id=campaign.id, usage={'total': 30_000, 'turns': 2}, **ended),
+                Worker(kind=WorkerKind.WATCHDOG, campaign_id=campaign.id, usage=None, **ended),
+                Worker(kind=WorkerKind.WORKER, campaign_id=other.id, usage={'total': 50_000, 'turns': 1}, **ended),
             ]
         )
         s.commit()
-    assert reason(db, project) is None, "90k: every role counts, another project's agents do not, unknown usage is 0"
+    assert reason(db, campaign) is None, "90k: every role counts, another campaign's agents do not, unknown usage is 0"
     with db.session() as s:
-        s.add(Worker(kind=WorkerKind.WATCHDOG, project_id=project.id, usage={'total': 10_000, 'turns': 1}, **ended))
+        s.add(Worker(kind=WorkerKind.WATCHDOG, campaign_id=campaign.id, usage={'total': 10_000, 'turns': 1}, **ended))
         s.commit()
-    assert reason(db, project) == 'max_tokens: 100000 tokens spent'
+    assert reason(db, campaign) == 'max_tokens: 100000 tokens spent'
 
 
-def test_plateau_counts_finished_runs_since_the_last_keep(db: Database, project: Project) -> None:
-    configure(db, project, plateau=2)
-    add_run(db, project, status=RunStatus.FAILED)
-    add_run(db, project, status=RunStatus.RUNNING)
-    assert reason(db, project) is None, 'a run in flight has not failed to keep yet'
-    add_run(db, project, status=RunStatus.TIMED_OUT)
-    assert reason(db, project) == 'plateau: 2 runs without a keep'
-    add_run(db, project, keep_score=5.0)
-    assert reason(db, project) is None, 'a keep resets the count'
-    add_run(db, project, status=RunStatus.SUCCEEDED)
-    assert reason(db, project) is None
-    add_run(db, project, status=RunStatus.SUCCEEDED)
-    assert reason(db, project) == 'plateau: 2 runs without a keep'
+def test_plateau_counts_finished_runs_since_the_last_keep(db: Database, campaign: Campaign) -> None:
+    configure(db, campaign, plateau=2)
+    add_run(db, campaign, status=RunStatus.FAILED)
+    add_run(db, campaign, status=RunStatus.RUNNING)
+    assert reason(db, campaign) is None, 'a run in flight has not failed to keep yet'
+    add_run(db, campaign, status=RunStatus.TIMED_OUT)
+    assert reason(db, campaign) == 'plateau: 2 runs without a keep'
+    add_run(db, campaign, keep_score=5.0)
+    assert reason(db, campaign) is None, 'a keep resets the count'
+    add_run(db, campaign, status=RunStatus.SUCCEEDED)
+    assert reason(db, campaign) is None
+    add_run(db, campaign, status=RunStatus.SUCCEEDED)
+    assert reason(db, campaign) == 'plateau: 2 runs without a keep'
     with db.session() as s:
-        s.add(Candidate(project_id=project.id, tree_sha='imported', commit_sha='c', verdict=Verdict.REFERENCE))
+        s.add(Candidate(campaign_id=campaign.id, tree_sha='imported', commit_sha='c', verdict=Verdict.REFERENCE))
         s.commit()
-    assert reason(db, project) == 'plateau: 2 runs without a keep', 'an imported reference resets nothing'
+    assert reason(db, campaign) == 'plateau: 2 runs without a keep', 'an imported reference resets nothing'
 
 
-def test_only_runs_that_produced_a_measured_candidate_count_toward_max_runs(db: Database, project: Project) -> None:
+def test_only_runs_that_produced_a_measured_candidate_count_toward_max_runs(db: Database, campaign: Campaign) -> None:
     """A run with no commit, or with only ``Piloop-Eval: skip`` commits, counts toward neither ``max_runs`` nor
     ``plateau``.
 
     A run in flight counts toward ``max_runs``, so the queue never starts more runs than ``max_runs`` allows. A run
     whose candidate waits for its measurement also counts.
     """
-    configure(db, project, max_runs=3)
-    add_run(db, project, status=RunStatus.FAILED, error='worker produced no commits', measured=False)
-    add_candidate(db, project, add_run(db, project, measured=False), Verdict.UNMEASURED, SKIPPED)
+    configure(db, campaign, max_runs=3)
+    add_run(db, campaign, status=RunStatus.FAILED, error='worker produced no commits', measured=False)
+    add_candidate(db, campaign, add_run(db, campaign, measured=False), Verdict.UNMEASURED, SKIPPED)
     with db.session() as s:
-        row = s.get_one(Project, project.id)
+        row = s.get_one(Campaign, campaign.id)
         assert (runs(s, row), runs_without_keep(s, row)) == (0, 0)
-    add_run(db, project)
-    assert reason(db, project) is None, 'one measured run'
-    add_candidate(db, project, add_run(db, project, measured=False), Verdict.PENDING)
-    assert reason(db, project) is None, 'two'
-    add_run(db, project, status=RunStatus.RUNNING)
+    add_run(db, campaign)
+    assert reason(db, campaign) is None, 'one measured run'
+    add_candidate(db, campaign, add_run(db, campaign, measured=False), Verdict.PENDING)
+    assert reason(db, campaign) is None, 'two'
+    add_run(db, campaign, status=RunStatus.RUNNING)
     with db.session() as s:
-        assert runs(s, s.get_one(Project, project.id)) == 3, 'a run in flight counts toward max_runs'
+        assert runs(s, s.get_one(Campaign, campaign.id)) == 3, 'a run in flight counts toward max_runs'
 
 
-def test_plateau_counts_the_runs_that_max_runs_counts(db: Database, project: Project) -> None:
+def test_plateau_counts_the_runs_that_max_runs_counts(db: Database, campaign: Campaign) -> None:
     """Only a run that reached the evaluator counts toward a run limit, ``plateau`` as ``max_runs``.
 
     A run that stopped at a cheap check with no commit, or with only ``Piloop-Eval: skip`` commits, or that a harness
     fault ended before it committed, says nothing about the metric. ``[spend]``, ``max_tokens`` and ``max_hours``
     limit what such runs cost.
     """
-    configure(db, project, plateau=2)
-    add_run(db, project, keep_score=5.0)
-    add_run(db, project, status=RunStatus.FAILED, error='worker produced no commits', measured=False)
-    add_candidate(db, project, add_run(db, project, measured=False), Verdict.UNMEASURED, SKIPPED)
-    add_run(db, project, status=RunStatus.SUCCEEDED, measured=False)
-    add_run(db, project, status=RunStatus.FAILED, error='worker exit 1', measured=False)
-    assert reason(db, project) is None, 'four runs without a keep, none of them measured'
-    add_candidate(db, project, add_run(db, project, measured=False), Verdict.PENDING)
-    assert reason(db, project) is None, 'one waits for its measurement'
-    add_run(db, project, status=RunStatus.FAILED, error='worker exit 1')
-    assert reason(db, project) == 'plateau: 2 runs without a keep', 'a failed run whose commit was measured counts'
+    configure(db, campaign, plateau=2)
+    add_run(db, campaign, keep_score=5.0)
+    add_run(db, campaign, status=RunStatus.FAILED, error='worker produced no commits', measured=False)
+    add_candidate(db, campaign, add_run(db, campaign, measured=False), Verdict.UNMEASURED, SKIPPED)
+    add_run(db, campaign, status=RunStatus.SUCCEEDED, measured=False)
+    add_run(db, campaign, status=RunStatus.FAILED, error='worker exit 1', measured=False)
+    assert reason(db, campaign) is None, 'four runs without a keep, none of them measured'
+    add_candidate(db, campaign, add_run(db, campaign, measured=False), Verdict.PENDING)
+    assert reason(db, campaign) is None, 'one waits for its measurement'
+    add_run(db, campaign, status=RunStatus.FAILED, error='worker exit 1')
+    assert reason(db, campaign) == 'plateau: 2 runs without a keep', 'a failed run whose commit was measured counts'
 
 
-def test_reactivating_a_stopped_project_starts_a_fresh_plateau_window(db: Database, project: Project) -> None:
-    """A project reactivated after a plateau stop must not stop again on the next tick.
+def test_reactivating_a_stopped_campaign_starts_a_fresh_plateau_window(db: Database, campaign: Campaign) -> None:
+    """A campaign reactivated after a plateau stop must not stop again on the next tick.
 
     ``plateau`` counts the runs that finished after the later of the last keep and the last reactivation (a
-    ``project.status`` event to ``active``, by ``piloop init`` or by SQL). An evaluator change alone resets nothing:
+    ``campaign.status`` event to ``active``, by ``piloop init`` or by SQL). An evaluator change alone resets nothing:
     the campaign still has made no progress.
     """
-    configure(db, project, plateau=2)
-    add_run(db, project, keep_score=5.0, finished_at=timedelta(minutes=11))
-    add_run(db, project, finished_at=timedelta(minutes=10))
-    add_run(db, project, finished_at=timedelta(minutes=9))
-    assert reason(db, project) == 'plateau: 2 runs without a keep'
-    stop_project(db, project, 'plateau: 2 runs without a keep')
+    configure(db, campaign, plateau=2)
+    add_run(db, campaign, keep_score=5.0, finished_at=timedelta(minutes=11))
+    add_run(db, campaign, finished_at=timedelta(minutes=10))
+    add_run(db, campaign, finished_at=timedelta(minutes=9))
+    assert reason(db, campaign) == 'plateau: 2 runs without a keep'
+    stop_campaign(db, campaign, 'plateau: 2 runs without a keep')
     with db.session() as s:
-        row = s.get_one(Project, project.id)
-        row.status, row.stopped_reason = ProjectStatus.ACTIVE, None
+        row = s.get_one(Campaign, campaign.id)
+        row.status, row.stopped_reason = CampaignStatus.ACTIVE, None
         s.commit()
-    assert reason(db, project) is None, 'the runs before the reactivation are not counted'
-    add_run(db, project)
-    assert reason(db, project) is None
-    add_run(db, project)
-    assert reason(db, project) == 'plateau: 2 runs without a keep'
+    assert reason(db, campaign) is None, 'the runs before the reactivation are not counted'
+    add_run(db, campaign)
+    assert reason(db, campaign) is None
+    add_run(db, campaign)
+    assert reason(db, campaign) == 'plateau: 2 runs without a keep'
 
 
 def test_the_stall_mark_is_half_the_plateau_else_two_rounds_of_the_worker_slots() -> None:
@@ -443,56 +443,56 @@ def test_the_stall_mark_is_half_the_plateau_else_two_rounds_of_the_worker_slots(
         'evaluate': ['true'],
         'model': {'pi': 'm'},
     }
-    assert stall(ProjectConfig.model_validate({**bare, 'stop': {'plateau': 15}})) == (8, 'half of [stop] plateau = 15')
-    workers = ProjectConfig.model_validate({**bare, 'roles': {'worker': {'max_concurrent': 3}}})
+    assert stall(CampaignConfig.model_validate({**bare, 'stop': {'plateau': 15}})) == (8, 'half of [stop] plateau = 15')
+    workers = CampaignConfig.model_validate({**bare, 'roles': {'worker': {'max_concurrent': 3}}})
     assert stall(workers) == (6, 'two rounds of [roles.worker] max_concurrent = 3')
     quick = {'worker': {'max_concurrent': 3}, 'quick': {'runs': True, 'max_concurrent': 2}}
-    assert stall(ProjectConfig.model_validate({**bare, 'roles': quick})) == (
+    assert stall(CampaignConfig.model_validate({**bare, 'roles': quick})) == (
         10,
         'two rounds of [roles.quick] max_concurrent + [roles.worker] max_concurrent = 5',
     )
 
 
-def test_runs_that_the_daemon_stopped_count_toward_no_budget(db: Database, project: Project) -> None:
-    configure(db, project, plateau=1, max_runs=2)
+def test_runs_that_the_daemon_stopped_count_toward_no_budget(db: Database, campaign: Campaign) -> None:
+    configure(db, campaign, plateau=1, max_runs=2)
     for error in (STOPPED_ERROR, STALE_ERROR, CAMPAIGN_STOPPED_ERROR):
-        add_run(db, project, status=RunStatus.FAILED, error=error)
-    assert reason(db, project) is None, 'a stop, a crash or a campaign stop is not an attempt'
-    add_run(db, project, status=RunStatus.FAILED, error='evaluate timed out')
-    assert reason(db, project) == 'plateau: 1 runs without a keep'
-    add_run(db, project)
-    assert reason(db, project) == 'max_runs: 2 runs'
+        add_run(db, campaign, status=RunStatus.FAILED, error=error)
+    assert reason(db, campaign) is None, 'a stop, a crash or a campaign stop is not an attempt'
+    add_run(db, campaign, status=RunStatus.FAILED, error='evaluate timed out')
+    assert reason(db, campaign) == 'plateau: 1 runs without a keep'
+    add_run(db, campaign)
+    assert reason(db, campaign) == 'max_runs: 2 runs'
 
 
-def test_plateau_counts_in_completion_order(db: Database, project: Project) -> None:
-    configure(db, project, plateau=1)
-    add_run(db, project)
-    add_run(db, project, keep_score=5.0, finished_at=timedelta(hours=1))
-    assert reason(db, project) == 'plateau: 1 runs without a keep', (
+def test_plateau_counts_in_completion_order(db: Database, campaign: Campaign) -> None:
+    configure(db, campaign, plateau=1)
+    add_run(db, campaign)
+    add_run(db, campaign, keep_score=5.0, finished_at=timedelta(hours=1))
+    assert reason(db, campaign) == 'plateau: 1 runs without a keep', (
         'the earlier-created run finished after the keep, so it counts'
     )
 
 
-def test_plateau_ignores_runs_that_finished_before_a_later_keep(db: Database, project: Project) -> None:
-    configure(db, project, plateau=1)
-    add_run(db, project, keep_score=5.0)
-    add_run(db, project, finished_at=timedelta(hours=1))
-    assert reason(db, project) is None, 'the later-created run finished before the keep, so it does not count'
+def test_plateau_ignores_runs_that_finished_before_a_later_keep(db: Database, campaign: Campaign) -> None:
+    configure(db, campaign, plateau=1)
+    add_run(db, campaign, keep_score=5.0)
+    add_run(db, campaign, finished_at=timedelta(hours=1))
+    assert reason(db, campaign) is None, 'the later-created run finished before the keep, so it does not count'
 
 
 def test_stopping_drains_the_requests_and_queued_runs_pending_at_that_moment(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    configure(db, project, plateau=1)
-    add_run(db, project)
-    (idea,) = add_ideas(db, project, 'queued before the stop')
+    configure(db, campaign, plateau=1)
+    add_run(db, campaign)
+    (idea,) = add_ideas(db, campaign, 'queued before the stop')
     with db.session() as s:
         s.get_one(Idea, idea).status = IdeaStatus.SCHEDULED
         run = Run(idea_id=idea, attempt=1, base_candidate_id=1, harness='script', model='m')
         s.add(run)
         s.flush()
-        s.add(Worker(kind=WorkerKind.WORKER, project_id=project.id, run_id=run.id, harness='script', model='m'))
-        s.add(Worker(kind=WorkerKind.RESEARCH, project_id=project.id, reason='low_water before the stop'))
+        s.add(Worker(kind=WorkerKind.WORKER, campaign_id=campaign.id, run_id=run.id, harness='script', model='m'))
+        s.add(Worker(kind=WorkerKind.RESEARCH, campaign_id=campaign.id, reason='low_water before the stop'))
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)
 
@@ -509,7 +509,7 @@ def test_stopping_drains_the_requests_and_queued_runs_pending_at_that_moment(
         assert s.get_one(Idea, idea).status is IdeaStatus.READY
         [event] = s.scalars(select(Event).where(Event.kind == 'run.finished')).all()
         assert (event.target_id, event.payload) == (2, {'status': 'failed', 'error': CAMPAIGN_STOPPED_ERROR})
-        s.add(Worker(kind=WorkerKind.RESEARCH, project_id=project.id, reason='by hand, after the stop'))
+        s.add(Worker(kind=WorkerKind.RESEARCH, campaign_id=campaign.id, reason='by hand, after the stop'))
         s.commit()
     assert sched.tick() == [4], 'a request made after the stop is explicit and launches'
     sched.wait(10)
@@ -519,52 +519,52 @@ def test_stopping_drains_the_requests_and_queued_runs_pending_at_that_moment(
 
 
 def test_a_requested_stop_ends_the_campaign_as_a_stop_condition_does(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    """An orchestrator that set ``projects.status`` by hand got no closing review and no drain.
-    ``piloop project stop`` records the request, and the daemon stops the campaign on the [stop] path."""
-    configure(db, project)
-    add_run(db, project)
-    (idea,) = add_ideas(db, project, 'queued before the stop')
+    """An orchestrator that set ``campaigns.status`` by hand got no closing review and no drain.
+    ``piloop campaign stop`` records the request, and the daemon stops the campaign on the [stop] path."""
+    configure(db, campaign)
+    add_run(db, campaign)
+    (idea,) = add_ideas(db, campaign, 'queued before the stop')
     with db.session() as s:
         s.get_one(Idea, idea).status = IdeaStatus.SCHEDULED
         run = Run(idea_id=idea, attempt=1, base_candidate_id=1, harness='script', model='m')
         s.add(run)
         s.flush()
-        s.add(Worker(kind=WorkerKind.WORKER, project_id=project.id, run_id=run.id, harness='script', model='m'))
-        request_stop(s, s.get_one(Project, project.id), 'human', reason='machine needed', kill=False)
+        s.add(Worker(kind=WorkerKind.WORKER, campaign_id=campaign.id, run_id=run.id, harness='script', model='m'))
+        request_stop(s, s.get_one(Campaign, campaign.id), 'human', reason='machine needed', kill=False)
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)
     assert sched.tick() == [2], 'only the closing watchdog launches'
     sched.wait(10)
-    assert project_state(db, project) == (ProjectStatus.STOPPED, 'stopped by human: machine needed')
+    assert campaign_state(db, campaign) == (CampaignStatus.STOPPED, 'stopped by human: machine needed')
     with db.session() as s:
         assert (s.get_one(Run, 2).error, s.get_one(Idea, idea).status) == (CAMPAIGN_STOPPED_ERROR, IdeaStatus.READY)
         assert s.get_one(Worker, 2).reason == 'campaign stopped: stopped by human: machine needed'
-        s.get_one(Project, project.id).status = ProjectStatus.ACTIVE
+        s.get_one(Campaign, campaign.id).status = CampaignStatus.ACTIVE
         s.commit()
     assert sched.tick() == [3], 'reactivated: the old request stops nothing, and the queued idea runs'
     sched.wait(10)
     sched.stop(timeout=5)
-    assert project_state(db, project)[0] is ProjectStatus.ACTIVE
+    assert campaign_state(db, campaign)[0] is CampaignStatus.ACTIVE
     with db.session() as s:
-        request_stop(s, s.get_one(Project, project.id), 'worker#3', reason='', kill=True)
+        request_stop(s, s.get_one(Campaign, campaign.id), 'worker#3', reason='', kill=True)
         s.commit()
-        assert stop_reason(s, s.get_one(Project, project.id), load_project_config(Path(project.path))) == (
+        assert stop_reason(s, s.get_one(Campaign, campaign.id), load_campaign_config(Path(campaign.path))) == (
             'stopped by worker#3'
         )
-        event = requested_stop(s, s.get_one(Project, project.id))
+        event = requested_stop(s, s.get_one(Campaign, campaign.id))
         assert event is not None and (event.actor, event.payload) == ('worker#3', {'reason': '', 'kill': True})
 
 
 def test_the_closing_sweep_is_each_stopped_trigger_and_none_without_one(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """``[roles.watchdog] triggers = []`` drops the closing review; a ``stopped`` trigger of another role fires once."""
-    (Path(project.path) / 'closer.md').write_text('# Close\n')
+    (Path(campaign.path) / 'closer.md').write_text('# Close\n')
     closer = {'prompt': 'closer.md', 'triggers': [{'kind': 'stopped'}]}
-    configure(db, project, harness=HARNESS_WORSE, roles={'watchdog': {'triggers': []}, 'closer': closer}, max_runs=1)
-    add_ideas(db, project, 'a')
+    configure(db, campaign, harness=HARNESS_WORSE, roles={'watchdog': {'triggers': []}, 'closer': closer}, max_runs=1)
+    add_ideas(db, campaign, 'a')
     sched = make_scheduler(db, runtime, tmp_path)
     assert sched.tick() == [1]
     sched.wait(10)
@@ -577,18 +577,23 @@ def test_the_closing_sweep_is_each_stopped_trigger_and_none_without_one(
     assert rows == [('closer', 'campaign stopped: max_runs: 1 runs')]
 
 
-def test_a_stopped_project_gets_one_closing_watchdog_and_no_trigger_requests(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer, spans: InMemorySpanExporter
+def test_a_stopped_campaign_gets_one_closing_watchdog_and_no_trigger_requests(
+    db: Database,
+    campaign: Campaign,
+    runtime: ScriptRuntime,
+    tmp_path: Path,
+    tracer: Tracer,
+    spans: InMemorySpanExporter,
 ) -> None:
-    configure(db, project, harness=HARNESS_WORSE, max_runs=1)
-    add_ideas(db, project, 'a', 'b')
+    configure(db, campaign, harness=HARNESS_WORSE, max_runs=1)
+    add_ideas(db, campaign, 'a', 'b')
     sched = make_scheduler(db, runtime, tmp_path, tracer)
     assert sched.tick() == [1], 'below max_runs: the queue trigger creates run 1, which commits a measured discard'
     sched.wait(10)
-    assert project_state(db, project) == (ProjectStatus.ACTIVE, None)
+    assert campaign_state(db, campaign) == (CampaignStatus.ACTIVE, None)
 
-    assert sched.tick() == [2], 'the closing watchdog launches on the tick that stops the project'
-    assert project_state(db, project) == (ProjectStatus.STOPPED, 'max_runs: 1 runs')
+    assert sched.tick() == [2], 'the closing watchdog launches on the tick that stops the campaign'
+    assert campaign_state(db, campaign) == (CampaignStatus.STOPPED, 'max_runs: 1 runs')
     sched.wait(10)
     assert sched.tick() == []
     sched.tick()
@@ -597,20 +602,20 @@ def test_a_stopped_project_gets_one_closing_watchdog_and_no_trigger_requests(
             (WorkerKind.WATCHDOG, 'campaign stopped: max_runs: 1 runs')
         ], 'requested exactly once, and no worker or research request follows'
         assert s.scalars(select(Run)).all() and s.get_one(Idea, 2).status is IdeaStatus.READY, 'idea b never ran'
-        [event] = s.scalars(select(Event).where(Event.kind == 'project.status')).all()
+        [event] = s.scalars(select(Event).where(Event.kind == 'campaign.status')).all()
         assert (event.actor, event.target_id, event.payload) == (
             'daemon',
-            project.id,
+            campaign.id,
             {'old': 'active', 'new': 'stopped', 'stopped_reason': 'max_runs: 1 runs'},
         ), 'the change log trigger records the stop, reason included; the daemon emits nothing by hand'
-    assert dict(span_named(spans, 'project.stopped').attributes or {}) == {
-        'project': 'demo',
+    assert dict(span_named(spans, 'campaign.stopped').attributes or {}) == {
+        'campaign': 'demo',
         'reason': 'max_runs: 1 runs',
     }
     assert 'Trigger: campaign stopped: max_runs: 1 runs' in (tmp_path / 'workers' / '2' / 'brief.md').read_text()
 
     with db.session() as s:
-        s.add(Worker(kind=WorkerKind.RESEARCH, project_id=project.id, reason='by hand'))
+        s.add(Worker(kind=WorkerKind.RESEARCH, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     assert sched.tick() == [3], 'a hand-inserted request is explicit and launches'
     sched.wait(10)
@@ -620,16 +625,21 @@ def test_a_stopped_project_gets_one_closing_watchdog_and_no_trigger_requests(
 
 
 def test_a_stop_syncs_the_memory_documents_before_the_closing_watchdog_whose_brief_asks_for_lessons(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer, spans: InMemorySpanExporter
+    db: Database,
+    campaign: Campaign,
+    runtime: ScriptRuntime,
+    tmp_path: Path,
+    tracer: Tracer,
+    spans: InMemorySpanExporter,
 ) -> None:
-    write_toml(Path(project.path), HARNESS_NOOP)
+    write_toml(Path(campaign.path), HARNESS_NOOP)
     with db.session() as s:
-        cfg = load_project_config(Path(project.path), stop={'max_runs': 1}, memory={'documents': ['docs/*.md']})
-        s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
+        cfg = load_campaign_config(Path(campaign.path), stop={'max_runs': 1}, memory={'documents': ['docs/*.md']})
+        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
         s.commit()
-    add_run(db, project)
-    Path(project.path, 'docs').mkdir()
-    Path(project.path, 'docs', 'report.md').write_text('# Closing report\n')
+    add_run(db, campaign)
+    Path(campaign.path, 'docs').mkdir()
+    Path(campaign.path, 'docs', 'report.md').write_text('# Closing report\n')
     sched = make_scheduler(db, runtime, tmp_path, tracer)
     [watchdog] = sched.tick()
     sched.wait(10)
@@ -639,19 +649,19 @@ def test_a_stop_syncs_the_memory_documents_before_the_closing_watchdog_whose_bri
         [document] = s.scalars(select(Document)).all()
         assert (document.path, document.title, document.created_by) == ('docs/report.md', 'Closing report', 'daemon')
     assert dict(span_named(spans, 'documents.synced').attributes or {}) == {
-        'project': 'demo',
+        'campaign': 'demo',
         'result': 'documents: 1 added, 0 unchanged',
     }
     brief = (tmp_path / 'workers' / str(watchdog) / 'brief.md').read_text()
-    assert 'one row of `lessons` on the project for each mechanism family that this' in brief
-    assert 'INSERT INTO lessons (project_id, family, status, effect, metric, body, created_by)' in brief, (
+    assert 'one row of `lessons` on the campaign for each mechanism family that this' in brief
+    assert 'INSERT INTO lessons (campaign_id, family, status, effect, metric, body, created_by)' in brief, (
         'the INSERT, from the procedures'
     )
 
 
 def test_a_stop_whose_document_sync_fails_still_stops_and_launches_the_closing_watchdog(
     db: Database,
-    project: Project,
+    campaign: Campaign,
     runtime: ScriptRuntime,
     tmp_path: Path,
     tracer: Tracer,
@@ -659,12 +669,12 @@ def test_a_stop_whose_document_sync_fails_still_stops_and_launches_the_closing_w
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Greptile on hiloopai/piloop#7: a sync that raised rolled the stop back and ended the daemon."""
-    write_toml(Path(project.path), HARNESS_NOOP)
+    write_toml(Path(campaign.path), HARNESS_NOOP)
     with db.session() as s:
-        cfg = load_project_config(Path(project.path), stop={'max_runs': 1}, memory={'documents': ['docs/*.md']})
-        s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
+        cfg = load_campaign_config(Path(campaign.path), stop={'max_runs': 1}, memory={'documents': ['docs/*.md']})
+        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
         s.commit()
-    add_run(db, project)
+    add_run(db, campaign)
 
     def broken(*_args: object) -> None:
         raise GitCommandError(['git', 'log'], 128, b'fatal: bad object')
@@ -675,7 +685,7 @@ def test_a_stop_whose_document_sync_fails_still_stops_and_launches_the_closing_w
     sched.wait(10)
     sched.stop(timeout=5)
     with db.session() as s:
-        assert s.get_one(Project, project.id).status is ProjectStatus.STOPPED
+        assert s.get_one(Campaign, campaign.id).status is CampaignStatus.STOPPED
         assert s.get_one(Worker, watchdog).reason == 'campaign stopped: max_runs: 1 runs'
     error = dict(span_named(spans, 'documents.sync_failed').attributes or {})['error']
     assert isinstance(error, str) and error.startswith('GitCommandError: Cmd')
@@ -715,7 +725,7 @@ def test_the_example_stop_rule_ends_after_its_keeps_or_at_its_cost_limits() -> N
 
 
 def test_a_stop_rule_from_a_plugin_replaces_the_built_in_one_through_piloop_toml(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The example plugin ``examples/plugins/stop-after-keeps``, installed, is selected by ``[plugins.stop_rule]``.
 
@@ -725,26 +735,26 @@ def test_a_stop_rule_from_a_plugin_replaces_the_built_in_one_through_piloop_toml
     monkeypatch.syspath_prepend(tmp_path / 'site')
     host.close()
     try:
-        write_toml(Path(project.path), HARNESS_APPEND)
+        write_toml(Path(campaign.path), HARNESS_APPEND)
         for table, error in [
             ({'provider': 'never'}, "[plugins.stop_rule] provider = 'never': unknown stop rule 'never'"),
             ({'provider': 'after_keeps'}, 'keeps: Field required'),
             ({'provider': 'limits', 'keeps': 1}, "stop rule 'limits' takes no parameters: keeps"),
         ]:
             with pytest.raises(ConfigError, match=re.escape(error)):
-                load_project_config(Path(project.path), plugins={'stop_rule': table})
+                load_campaign_config(Path(campaign.path), plugins={'stop_rule': table})
         with db.session() as s:
-            cfg = load_project_config(
-                Path(project.path), plugins={'stop_rule': {'provider': 'after_keeps', 'keeps': 1}}
+            cfg = load_campaign_config(
+                Path(campaign.path), plugins={'stop_rule': {'provider': 'after_keeps', 'keeps': 1}}
             )
-            s.get_one(Project, project.id).config = cfg.model_dump(mode='json')
+            s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
             s.commit()
-        add_ideas(db, project, 'a', 'b')
+        add_ideas(db, campaign, 'a', 'b')
         sched = make_scheduler(db, runtime, tmp_path)
         assert sched.tick() == [1]
         sched.wait(10)
         sched.tick()
-        assert project_state(db, project) == (ProjectStatus.STOPPED, 'after_keeps: 1 keeps')
+        assert campaign_state(db, campaign) == (CampaignStatus.STOPPED, 'after_keeps: 1 keeps')
         sched.stop(timeout=5)
         assert STOP_RULES.sources()['after_keeps'].release == 'piloop-stop-after-keeps 0.1.0'
     finally:

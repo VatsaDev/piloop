@@ -2,13 +2,13 @@
 
 ```mermaid
 erDiagram
-    projects {
+    campaigns {
         integer id PK
         varchar name UK
         varchar path
         json config
         integer evaluator_id
-        ProjectStatus status
+        CampaignStatus status
         varchar stopped_reason
         Pause paused
         varchar paused_reason
@@ -24,14 +24,15 @@ erDiagram
     }
     evaluators {
         integer id PK
-        integer project_id FK
+        integer campaign_id FK
         varchar key
         json definition
+        varchar runner
         datetime created_at
     }
     ideas {
         integer id PK
-        integer project_id FK
+        integer campaign_id FK
         varchar title
         varchar hypothesis
         varchar track
@@ -75,7 +76,7 @@ erDiagram
     }
     candidates {
         integer id PK
-        integer project_id FK
+        integer campaign_id FK
         integer run_id FK
         integer parent_id FK
         varchar tree_sha
@@ -121,7 +122,7 @@ erDiagram
     }
     techniques {
         integer id PK
-        integer project_id FK
+        integer campaign_id FK
         varchar title
         varchar mechanism
         varchar url
@@ -130,7 +131,7 @@ erDiagram
     }
     lessons {
         integer id PK
-        integer project_id FK
+        integer campaign_id FK
         varchar family
         LessonStatus status
         double effect
@@ -141,7 +142,7 @@ erDiagram
     }
     documents {
         integer id PK
-        integer project_id FK
+        integer campaign_id FK
         varchar path
         varchar hash
         varchar title
@@ -160,7 +161,7 @@ erDiagram
     }
     archives {
         integer id PK
-        integer project_id FK
+        integer campaign_id FK
         integer idea_id
         varchar manifest
         integer files
@@ -172,7 +173,7 @@ erDiagram
     workers {
         integer id PK
         varchar kind
-        integer project_id FK
+        integer campaign_id FK
         integer run_id FK
         varchar harness
         varchar model
@@ -199,24 +200,24 @@ erDiagram
         integer target_id
         json payload
     }
-    projects |o--o{ projects : "parent_id"
-    projects ||--o{ evaluators : "project_id"
-    projects ||--o{ ideas : "project_id"
+    campaigns |o--o{ campaigns : "parent_id"
+    campaigns ||--o{ evaluators : "campaign_id"
+    campaigns ||--o{ ideas : "campaign_id"
     ideas ||--o{ idea_links : "idea_id"
     ideas ||--o{ idea_links : "target_id"
     ideas ||--o{ runs : "idea_id"
-    projects ||--o{ candidates : "project_id"
+    campaigns ||--o{ candidates : "campaign_id"
     runs |o--o{ candidates : "run_id"
     candidates |o--o{ candidates : "parent_id"
     candidates ||--o{ measurements : "candidate_id"
     evaluators ||--o{ measurements : "evaluator_id"
     candidates ||--o{ evaluations : "candidate_id"
     evaluators ||--o{ evaluations : "evaluator_id"
-    projects ||--o{ techniques : "project_id"
-    projects ||--o{ lessons : "project_id"
-    projects ||--o{ documents : "project_id"
-    projects ||--o{ archives : "project_id"
-    projects |o--o{ workers : "project_id"
+    campaigns ||--o{ techniques : "campaign_id"
+    campaigns ||--o{ lessons : "campaign_id"
+    campaigns ||--o{ documents : "campaign_id"
+    campaigns ||--o{ archives : "campaign_id"
+    campaigns |o--o{ workers : "campaign_id"
     runs |o--o{ workers : "run_id"
 ```
 

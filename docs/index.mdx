@@ -56,7 +56,7 @@ scored, and whether the gain is real or noise. piloop does this bookkeeping for 
 
 - **Every commit is scored.** piloop runs your evaluate command in a clean checkout of each commit, so an agent does
   not report its own score. Keep the evaluate command out of the files that the agents may change (see
-  [the evaluate command](/concepts/projects#the-evaluate-command)).
+  [the evaluate command](/concepts/campaigns#the-evaluate-command)).
 - **A gain must be real.** piloop compares each result with the best one so far. When your evaluate command reports
   results per example, piloop uses a paired bootstrap, so a gain that comes from a few lucky examples is not kept.
 - **Guardrails are enforced.** A second metric, such as latency or size, can get worse only by a margin that you set,
@@ -85,7 +85,7 @@ flowchart LR
     O[Orchestrator] -->|decisions| I
 ```
 
-1. You, the orchestrator or the research agent add **ideas** to the backlog of the **project**.
+1. You, the orchestrator or the research agent add **ideas** to the backlog of the **campaign**.
 2. The daemon, `piloop serve`, starts a **worker** for each ready idea, up to a limit that you set. Each worker is a
    coding agent in a git worktree of the **head**, the best result so far.
 3. The worker implements the idea and commits.
@@ -120,7 +120,7 @@ flowchart LR
   <Card title="Run a campaign by hand" icon="terminal" href="/by-hand">
     The same steps without an agent, on the enwik8 example or your own repo.
   </Card>
-  <Card title="Concepts" icon="book" href="/concepts/projects">
-    Projects, ideas, runs, candidates and the verdict.
+  <Card title="Concepts" icon="book" href="/concepts/campaigns">
+    Campaigns, ideas, runs, candidates and the verdict.
   </Card>
 </CardGroup>

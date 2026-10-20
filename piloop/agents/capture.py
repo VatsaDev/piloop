@@ -22,7 +22,7 @@ ENTIRE_DIR = '.entire'
 
 ``settings.json`` stores checkpoints as git refs, never pushes sessions and turns telemetry off. ``piloop init``
 commits the directory. Entire reads it from the tree of the worktree it runs in. A worktree of an older tree that does
-not have it gets a link to the project's (``piloop.campaign.project.worktree_links``).
+not have it gets a link to the campaign's (``piloop.campaign.campaigns.worktree_links``).
 """
 ENTIRE_INSTALL = 'curl -fsSL https://entire.io/install.sh | bash'
 MIN_ENTIRE = '0.10.6'
@@ -56,7 +56,7 @@ def attach_session(session_id: str, agent: str, cwd: Path) -> Attached:
     """Attach an ended harness session to Entire from ``cwd``, then read back the checkpoint it made.
 
     ``cwd`` is the repo that gets the checkpoint ref, and where Entire looks for the session file first, because pi
-    and Claude Code key their stores by the agent's cwd. It is the agent's worktree while that exists, else the project
+    and Claude Code key their stores by the agent's cwd. It is the agent's worktree while that exists, else the campaign
     checkout. The call is non-interactive, so Entire prints the trailer and amends nothing. The checkpoint id comes
     from ``session info --json`` (``last_checkpoint_id``), not from the printed text.
 

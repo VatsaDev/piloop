@@ -7,7 +7,7 @@ Find out why each one happened. Use all the sources:
 - the agent's transcript and brief;
 - its session (`entire checkpoint explain`);
 - the process table and the Herdr panes, for anything still alive;
-- the project's git history.
+- the campaign's git history.
 
 Classify the root cause:
 
@@ -15,7 +15,7 @@ Classify the root cause:
   misread an agent's state, closed or left open a run, picked a base, scored a commit, or started an agent into a
   dialog. A harness bug is never "transient": it will happen again. Escalate it, with the code path if you find it.
 - **environment**: the machine, credentials, a dependency, the network, a third-party tool.
-- **spec**: the project's brief, evaluate command or config asked for something wrong or impossible.
+- **spec**: the campaign's brief, evaluate command or config asked for something wrong or impossible.
 - **model**: the agent misbehaved. It gave up early, ignored the brief, or misjudged its own result.
 
 Write one comment per root cause, on the row it is about. Anomalies that share a cause share the comment.

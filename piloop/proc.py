@@ -24,7 +24,7 @@ AGENT_ENV = ('PILOOP_ACTOR', TOKEN_ENV)
 ``piloop`` command starts must not sign as that agent, nor die when the agent is killed."""
 PILOOP_ARGV = (sys.executable, '-P', '-m', 'piloop')
 """The command that runs this process's piloop, from any cwd. ``-P`` keeps the cwd off ``sys.path``: an agent's cwd is a
-project's worktree, and its own ``json.py`` or ``piloop/`` would otherwise shadow piloop's imports."""
+campaign's worktree, and its own ``json.py`` or ``piloop/`` would otherwise shadow piloop's imports."""
 KILL_SCANS = 50
 """How many rounds ``kill_tagged`` makes, at most, to end the processes that a tree forks meanwhile."""
 KILL_POLL_SECONDS = 0.05
@@ -41,7 +41,7 @@ def child_env(*drop: str) -> dict[str, str]:
     """The environment for subprocesses: this process's environment without the variables that it must not pass on.
 
     These are VIRTUAL_ENV, ``UNITS_ENV``, ``AGENT_ENV`` and ``drop``. Without VIRTUAL_ENV, uv does not warn about the
-    project's own virtual environment. Only ``run_evaluate`` sets ``UNITS_ENV``, so no agent gets a units path. The
+    campaign's own virtual environment. Only ``run_evaluate`` sets ``UNITS_ENV``, so no agent gets a units path. The
     launcher signs each agent and its runtime tags it, after this.
 
     This is the only place outside ``Settings`` that reads the environment. It passes the values on and does not

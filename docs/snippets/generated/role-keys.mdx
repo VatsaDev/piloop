@@ -3,9 +3,9 @@
 | Key | Meaning |
 |---|---|
 | `prompt` | The file that starts the brief of this role: a path relative to the repo root, or an absolute path. When unset, a built-in role uses its built-in prompt. A new role needs it. |
-| `runtime` | Where the agents of this role run. When unset, the role uses the project's `runtime`. Built in: `herdr`, `subprocess`. |
-| `harnesses` | The harness rotation of this role. When unset, the role uses the project's `harnesses`. |
-| `model` | The model for each harness in this role. It is merged over the project's `model`. |
+| `runtime` | Where the agents of this role run. When unset, the role uses the campaign's `runtime`. Built in: `herdr`, `subprocess`. |
+| `harnesses` | The harness rotation of this role. When unset, the role uses the campaign's `harnesses`. |
+| `model` | The model for each harness in this role. It is merged over the campaign's `model`. |
 | `timeout` | The number of seconds one agent may run before it is stopped. |
 | `max_concurrent` | The maximum number of agents of this role that run at the same time. More requests stay `requested` until a slot is free. |
 | `addendum` | A repo-relative file that is appended to `brief.md` in the briefs of this role only. Use it for instructions that only this role needs, for example how the research agent searches. |

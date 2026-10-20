@@ -23,9 +23,9 @@ from piloop.usage import READERS
 from piloop.usage.jsonl import TALLIES
 
 BUILT_IN: dict[tuple[str, str], Iterable[str]] = {
-    ('ProjectConfig', 'runtime'): RUNTIMES.builtins(),
+    ('CampaignConfig', 'runtime'): RUNTIMES.builtins(),
     ('RoleConfig', 'runtime'): RUNTIMES.builtins(),
-    ('ProjectConfig', 'harnesses'): DEFAULT_HARNESSES,
+    ('CampaignConfig', 'harnesses'): DEFAULT_HARNESSES,
     ('SweepRole', 'triggers'): TRIGGERS.builtins(),
     ('Trigger', 'kind'): TRIGGERS.builtins(),
     ('Harness', 'mcp'): RENDERERS,

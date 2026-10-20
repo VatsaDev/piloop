@@ -1,7 +1,7 @@
 """What the ledger means: the current evaluator, a candidate's score under it, the head, the verdict and the rebase.
 
 All code that reads candidates and measurements to answer "how good is this" uses this module. So the CLI, the
-scheduler, the runner and the history block agree.
+scheduler, the run executor and the history block agree.
 """
 
 import json
@@ -17,17 +17,18 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from piloop import git
-from piloop.config import Metric, ProjectConfig, Track
+from piloop.config import CampaignConfig, Metric, Track
 from piloop.db.events import emit
 from piloop.db.models import (
     OPEN_RUNS,
+    PROCESS,
+    Campaign,
+    CampaignStatus,
     Candidate,
     Evaluator,
     Event,
     Idea,
     IdeaStatus,
-    Project,
-    ProjectStatus,
     Run,
     TargetKind,
     Verdict,
@@ -48,18 +49,35 @@ When a commit without the trailer reaches the same tree, the daemon measures and
 """
 
 
-def current_evaluator(s: Session, project: Project, cfg: ProjectConfig) -> Evaluator:
-    """Return the evaluator row that ``cfg`` describes, and make it the project's current one. Create it if needed."""
+def current_evaluator(s: Session, campaign: Campaign, cfg: CampaignConfig) -> Evaluator:
+    """Return the evaluator row that ``cfg`` describes, and make it the campaign's current one. Create it if needed.
+
+    Raises:
+        ValueError: the evaluator has a runner that is not installed (``evaluator_runners``).
+    """
     key = cfg.evaluator_key
-    evaluator = s.scalar(select(Evaluator).where(Evaluator.project_id == project.id, Evaluator.key == key))
+    evaluator = s.scalar(select(Evaluator).where(Evaluator.campaign_id == campaign.id, Evaluator.key == key))
     if evaluator is None:
-        evaluator = Evaluator(project_id=project.id, key=key, definition=cfg.evaluator_definition)
+        evaluator = Evaluator(campaign_id=campaign.id, key=key, definition=cfg.evaluator_definition)
         s.add(evaluator)
         s.flush()
-    if project.evaluator_id != evaluator.id:
-        project.evaluator_id = evaluator.id
+    if evaluator.runner not in (installed := evaluator_runners()):
+        raise ValueError(
+            f'evaluator#{evaluator.id} of {campaign.name} has the evaluator runner {evaluator.runner!r}, which is not'
+            f' installed: {", ".join(installed)}'
+        )
+    if campaign.evaluator_id != evaluator.id:
+        campaign.evaluator_id = evaluator.id
         s.flush()
     return evaluator
+
+
+def evaluator_runners() -> tuple[str, ...]:
+    """Return the names of the installed evaluator runners: the built-in ``process`` for now.
+
+    TODO: add the evaluator-runner plugins from the plugin registry when it lands; nothing else changes here.
+    """
+    return (PROCESS,)
 
 
 def metrics(candidate: Candidate, evaluator_id: int) -> dict[str, float]:
@@ -79,25 +97,25 @@ def measured(candidate: Candidate, evaluator_id: int) -> bool:
     return any(m.evaluator_id == evaluator_id for m in candidate.measurements)
 
 
-def head(s: Session, project: Project, *, excluding: Candidate | None = None) -> Candidate | None:
+def head(s: Session, campaign: Campaign, *, excluding: Candidate | None = None) -> Candidate | None:
     """Return the head: the latest trunk keep, a kept candidate that no branch run made. The baseline is the first.
 
     Every run that pins no base starts from the head. Research and the watchdog get the head checked out, and
-    ``target`` is read on it. "Latest" is by id: the runner keeps a run's candidate only while its bar is the head, and
+    ``target`` is read on it. "Latest" is by id: the run executor keeps a run's candidate only while its bar is the head, and
     a candidate is always newer than its bar. So each trunk keep is newer than the one before. Scores do not matter:
     after an evaluator change, the head stays where it was.
 
     ``excluding`` leaves out one candidate: the one being judged, which is never its own bar.
     """
-    query = trunk_keeps(project)
+    query = trunk_keeps(campaign)
     if excluding is not None:
         query = query.where(Candidate.id != excluding.id)
     return s.scalars(query.order_by(Candidate.id.desc()).limit(1)).first()
 
 
-def trunk_keeps(project: Project) -> Select[Candidate]:
-    """Select the project's trunk keeps: its kept candidates except those that a branch run (``runs.branch``) made."""
-    return keeps(project).outerjoin(Run, Candidate.run_id == Run.id).where(Run.id.is_(None) | ~Run.branch)
+def trunk_keeps(campaign: Campaign) -> Select[Candidate]:
+    """Select the campaign's trunk keeps: its kept candidates except those that a branch run (``runs.branch``) made."""
+    return keeps(campaign).outerjoin(Run, Candidate.run_id == Run.id).where(Run.id.is_(None) | ~Run.branch)
 
 
 def bar_of(candidate: Candidate) -> Candidate:
@@ -123,7 +141,7 @@ def raises_bar(candidate: Candidate, *, branch: bool) -> bool:
     return candidate.verdict is Verdict.KEEP and (branch or trunk)
 
 
-def track_of(cfg: ProjectConfig, candidate: Candidate) -> Track:
+def track_of(cfg: CampaignConfig, candidate: Candidate) -> Track:
     """Return the track of the candidate's run (its idea's track). A renderer shows the candidate's score on it.
 
     The baseline and a reference get the first track (``fallback_track``).
@@ -131,12 +149,12 @@ def track_of(cfg: ProjectConfig, candidate: Candidate) -> Track:
     return fallback_track(cfg, candidate.run.idea.track if candidate.run is not None else None)
 
 
-def fallback_track(cfg: ProjectConfig, name: str | None) -> Track:
+def fallback_track(cfg: CampaignConfig, name: str | None) -> Track:
     """Return the track called ``name``, else the first track. An idea can name a track that ``piloop.toml`` removed."""
     return next((t for t in cfg.all_tracks if t.name == name), cfg.all_tracks[0])
 
 
-def due(s: Session, project: Project) -> list[Candidate]:
+def due(s: Session, campaign: Campaign) -> list[Candidate]:
     """Return what the daemon measures with the current evaluator, most urgent first, each once.
 
     1. The head: an unpinned run starts from it and is judged against it, so the queue waits only for it
@@ -150,25 +168,25 @@ def due(s: Session, project: Project) -> list[Candidate]:
     The head and the bars come only while the current evaluator has not measured them. Nothing else is measured again
     unasked: after an evaluator change, an older keep or a reference that no run needs keeps the scores of the old
     evaluator until someone asks (``request_remeasure``). A measurement never changes a keep's verdict. A stopped
-    project gets only 3: what someone asked for, to review the campaign. The rest is for runs, and none starts.
+    campaign gets only 3: what someone asked for, to review the campaign. The rest is for runs, and none starts.
     """
-    open_runs = select(Run).join(Idea).where(Idea.project_id == project.id, Run.status.in_(OPEN_RUNS))
+    open_runs = select(Run).join(Idea).where(Idea.campaign_id == campaign.id, Run.status.in_(OPEN_RUNS))
     pins = select(Candidate).join(Idea, Idea.base_candidate_id == Candidate.id)
     new_references = select(Candidate).where(
-        Candidate.project_id == project.id, Candidate.verdict == Verdict.REFERENCE, ~Candidate.measurements.any()
+        Candidate.campaign_id == campaign.id, Candidate.verdict == Verdict.REFERENCE, ~Candidate.measurements.any()
     )
-    asked = requested(s, project)
-    active = project.status is ProjectStatus.ACTIVE
-    found = [head(s, project), *(bar_of(run.base) for run in s.scalars(open_runs.order_by(Run.id)))] if active else []
+    asked = requested(s, campaign)
+    active = campaign.status is CampaignStatus.ACTIVE
+    found = [head(s, campaign), *(bar_of(run.base) for run in s.scalars(open_runs.order_by(Run.id)))] if active else []
     for candidate in asked:
         if judged_again(candidate) and candidate.parent is not None:
             found.append(bar_of(candidate.parent))
         found.append(candidate)
     if active:
-        ready = (Idea.project_id == project.id, Idea.status == IdeaStatus.READY)
+        ready = (Idea.campaign_id == campaign.id, Idea.status == IdeaStatus.READY)
         found += [bar_of(c) for c in s.scalars(pins.where(*ready).order_by(Idea.id))]
         found += s.scalars(new_references.order_by(Candidate.id))
-    evaluator_id = project.evaluator_id or 0
+    evaluator_id = campaign.evaluator_id or 0
     return [c for c in dict.fromkeys(found) if c is not None and (c in asked or not measured(c, evaluator_id))]
 
 
@@ -177,10 +195,10 @@ def judged_again(candidate: Candidate) -> bool:
     return candidate.verdict is Verdict.CRASH and candidate.verdict_by == DAEMON and candidate.run_id is not None
 
 
-def head_unmeasured(s: Session, project: Project) -> bool:
+def head_unmeasured(s: Session, campaign: Campaign) -> bool:
     """Whether the head has no measurement from the current evaluator: the queue then holds the unpinned ideas."""
-    trunk = head(s, project)
-    return trunk is not None and not measured(trunk, project.evaluator_id or 0)
+    trunk = head(s, campaign)
+    return trunk is not None and not measured(trunk, campaign.evaluator_id or 0)
 
 
 REMEASURE_REQUESTED = 'candidate.remeasure_requested'
@@ -206,19 +224,19 @@ def request_remeasure(s: Session, candidate: Candidate, actor: str) -> None:
     emit(s, REMEASURE_REQUESTED, TargetKind.CANDIDATE, candidate.id, actor=actor)
 
 
-def requested(s: Session, project: Project) -> list[Candidate]:
+def requested(s: Session, campaign: Campaign) -> list[Candidate]:
     """Return the candidates that someone asked to measure again, with no measurement since, oldest request first.
 
     Only a measurement with the current evaluator answers a request.
     """
-    evaluator_id = project.evaluator_id or 0
+    evaluator_id = campaign.evaluator_id or 0
     asks = s.execute(
         select(Event.target_id, func.max(Event.at))
         .join(Candidate, Candidate.id == Event.target_id)
         .where(
             Event.kind == REMEASURE_REQUESTED,
             Event.target_kind == TargetKind.CANDIDATE,
-            Candidate.project_id == project.id,
+            Candidate.campaign_id == campaign.id,
         )
         .group_by(Event.target_id)
         .order_by(func.max(Event.id))
@@ -247,7 +265,7 @@ def rejudgeable(candidate: Candidate) -> bool:
     return candidate.run_id is not None and candidate.verdict_by == DAEMON and candidate.verdict in REJUDGED
 
 
-def rejudges(s: Session, project: Project) -> list[Candidate]:
+def rejudges(s: Session, campaign: Campaign) -> list[Candidate]:
     """Return the candidates to judge again: still ``rejudgeable``, asked after their last judgement, oldest first.
 
     A request is answered by a later ``candidate.judged`` event, or by a ``REJUDGE_FAILED`` one.
@@ -258,7 +276,7 @@ def rejudges(s: Session, project: Project) -> list[Candidate]:
         .where(
             Event.kind == REJUDGE_REQUESTED,
             Event.target_kind == TargetKind.CANDIDATE,
-            Candidate.project_id == project.id,
+            Candidate.campaign_id == campaign.id,
         )
         .group_by(Event.target_id)
         .order_by(func.max(Event.id))
@@ -278,25 +296,27 @@ def rejudges(s: Session, project: Project) -> list[Candidate]:
     return found
 
 
-def references(s: Session, project: Project) -> list[Candidate]:
-    """Return the project's imported starting points (``piloop candidate import``), oldest first."""
-    query = select(Candidate).where(Candidate.project_id == project.id, Candidate.verdict == Verdict.REFERENCE)
+def references(s: Session, campaign: Campaign) -> list[Candidate]:
+    """Return the campaign's imported starting points (``piloop candidate import``), oldest first."""
+    query = select(Candidate).where(Candidate.campaign_id == campaign.id, Candidate.verdict == Verdict.REFERENCE)
     return list(s.scalars(query.order_by(Candidate.id)))
 
 
-def keeps(project: Project) -> Select[Candidate]:
-    """Select the project's kept candidates. The baseline is one while its verdict is ``keep``."""
-    return select(Candidate).where(Candidate.project_id == project.id, Candidate.verdict == Verdict.KEEP)
+def keeps(campaign: Campaign) -> Select[Candidate]:
+    """Select the campaign's kept candidates. The baseline is one while its verdict is ``keep``."""
+    return select(Candidate).where(Candidate.campaign_id == campaign.id, Candidate.verdict == Verdict.KEEP)
 
 
-def baseline(s: Session, project: Project) -> Candidate:
-    """Return the project's first candidate: the repo's HEAD when the project was registered."""
-    return s.scalars(select(Candidate).where(Candidate.project_id == project.id).order_by(Candidate.id).limit(1)).one()
+def baseline(s: Session, campaign: Campaign) -> Candidate:
+    """Return the campaign's first candidate: the repo's HEAD when the campaign was registered."""
+    return s.scalars(
+        select(Candidate).where(Candidate.campaign_id == campaign.id).order_by(Candidate.id).limit(1)
+    ).one()
 
 
-def checkout_candidate(s: Session, project: Project) -> Candidate:
+def checkout_candidate(s: Session, campaign: Campaign) -> Candidate:
     """Return what a sweeping agent gets checked out: the head, or the baseline when its verdict was overridden."""
-    return head(s, project) or baseline(s, project)
+    return head(s, campaign) or baseline(s, campaign)
 
 
 def units_file(units_dir: Path, measurement_id: int) -> Path:
@@ -338,7 +358,7 @@ def judge(
     candidate: Candidate,
     own: Candidate,
     evaluator_id: int,
-    cfg: ProjectConfig,
+    cfg: CampaignConfig,
     track: Track,
     units_dir: Path,
     *,
@@ -348,13 +368,13 @@ def judge(
     """Return the daemon's verdict on ``candidate``, a candidate of ``track``, against ``own``, and the reason.
 
     ``own`` is the run's bar: its last keep, or its last candidate that kept against its bar and was rebased. It
-    starts as the run's base. The runner keeps a run's candidate on the trunk only while ``own`` is the head. A keep
+    starts as the run's base. The run executor keeps a run's candidate on the trunk only while ``own`` is the head. A keep
     against an ``own`` that the head has moved past is rebased onto the head instead (``rebase``).
 
     A branch run (``runs.branch``: its idea pinned another starting point) keeps what beats ``own``: a branch keep.
     Its reason also says whether it is above ``head`` on the track's primary.
 
-    The project's verdict rule gives the verdict (``decide``): ``[plugins.verdict_rule]``, else ``bootstrap``. When
+    The campaign's verdict rule gives the verdict (``decide``): ``[plugins.verdict_rule]``, else ``bootstrap``. When
     the deciding metrics equal the parent's (``same``), the reason says so first: the change did not affect what the
     evaluation measures, whatever the verdict against the bar.
     """
@@ -423,12 +443,12 @@ MOVED = 'keeps against its own bar, but the head moved on to candidate#{head}: '
 """How the reason of a candidate to rebase starts. The candidate is ``interesting``, never a keep off the trunk."""
 
 
-def rebase(s: Session, cfg: ProjectConfig, repo: Repo, candidate: Candidate, onto: Candidate) -> Candidate | None:
+def rebase(s: Session, cfg: CampaignConfig, repo: Repo, candidate: Candidate, onto: Candidate) -> Candidate | None:
     """Merge ``candidate``'s commit onto the head ``onto``. Return the merged candidate to measure and judge, or None.
 
     ``candidate`` kept against its own bar after the head moved on. So it is ``interesting`` (``MOVED``), and its
     reason ends with the result of the merge. The merge is a commit with both as parents, made without a worktree
-    (``git.merge``) and pinned at ``refs/piloop/<project>/rebase/<candidate id>``. A new tree becomes a pending
+    (``git.merge``) and pinned at ``refs/piloop/<campaign>/rebase/<candidate id>``. A new tree becomes a pending
     candidate of the same run, with ``onto`` as its parent. A merge that conflicts files a seed on the run's track to
     compose the two by hand, unless the campaign stopped. The seed is not pinned, so it runs from the head
     (``follow_up``). A merged tree that is already a candidate (the head had the change) gives no new candidate. Emits
@@ -445,7 +465,7 @@ def rebase(s: Session, cfg: ProjectConfig, repo: Repo, candidate: Candidate, ont
             f' from the head, git merge {candidate.commit_sha} and resolve the conflicts'
         )
         assert candidate.run is not None  # only a run's candidate is rebased
-        stopped = s.get_one(Project, candidate.project_id).status is ProjectStatus.STOPPED
+        stopped = s.get_one(Campaign, candidate.campaign_id).status is CampaignStatus.STOPPED
         seeds = (
             []
             if stopped
@@ -464,7 +484,7 @@ def rebase(s: Session, cfg: ProjectConfig, repo: Repo, candidate: Candidate, ont
         payload['conflicts'] = merged
     else:
         git.pin(repo, f'refs/piloop/{cfg.name}/rebase/{candidate.id}', merged)
-        found, created = resolve(s, candidate.project_id, repo, merged, parent=onto, run_id=candidate.run_id)
+        found, created = resolve(s, candidate.campaign_id, repo, merged, parent=onto, run_id=candidate.run_id)
         if created:
             candidate.verdict_reason = f'{candidate.verdict_reason}; rebased onto the head as candidate#{found.id}'
             payload['rebased'] = found.id
@@ -487,7 +507,7 @@ def skipped(candidate: Candidate) -> bool:
 
 
 def resolve(
-    s: Session, project_id: int, repo: Repo, sha: str, *, parent: Candidate | None, run_id: int | None
+    s: Session, campaign_id: int, repo: Repo, sha: str, *, parent: Candidate | None, run_id: int | None
 ) -> tuple[Candidate, bool]:
     """Return the candidate for the tree of ``sha``: the existing one, or a new row with ``parent`` as its parent.
 
@@ -495,11 +515,11 @@ def resolve(
     state is that state, whatever run or commit reached it.
     """
     tree = git.tree_sha(repo, sha)
-    found = s.scalar(select(Candidate).where(Candidate.project_id == project_id, Candidate.tree_sha == tree))
+    found = s.scalar(select(Candidate).where(Candidate.campaign_id == campaign_id, Candidate.tree_sha == tree))
     if found is not None:
         return found, False
     candidate = Candidate(
-        project_id=project_id,
+        campaign_id=campaign_id,
         run_id=run_id,
         parent_id=parent.id if parent else None,
         tree_sha=tree,
@@ -516,21 +536,21 @@ class ImportRefused(Exception):
 
 
 def import_reference(
-    s: Session, project: Project, cfg: ProjectConfig, repo: Repo, ref: str, *, summary: str | None, actor: str
+    s: Session, campaign: Campaign, cfg: CampaignConfig, repo: Repo, ref: str, *, summary: str | None, actor: str
 ) -> Candidate:
-    """Register the tree of ``ref`` (a commit, branch or tag in the project's repo) as a ``reference`` candidate.
+    """Register the tree of ``ref`` (a commit, branch or tag in the campaign's repo) as a ``reference`` candidate.
 
-    Like the baseline, it has no run and no parent. The commit is pinned at ``refs/piloop/<project>/reference/<id>``,
+    Like the baseline, it has no run and no parent. The commit is pinned at ``refs/piloop/<campaign>/reference/<id>``,
     so it outlives its branch. The daemon measures it under the current evaluator (``unmeasured``).
 
     Raises:
-        ImportRefused: ``ref`` names no commit, or its tree is already a candidate of the project.
+        ImportRefused: ``ref`` names no commit, or its tree is already a candidate of the campaign.
     """
     try:
         sha = repo.commit(ref).hexsha
     except (BadName, ValueError) as e:
         raise ImportRefused(f'{ref!r} names no commit in {repo.working_dir}: {e}') from e
-    candidate, created = resolve(s, project.id, repo, sha, parent=None, run_id=None)
+    candidate, created = resolve(s, campaign.id, repo, sha, parent=None, run_id=None)
     if not created:
         raise ImportRefused(f'the tree of {ref!r} already is candidate#{candidate.id} ({candidate.verdict})')
     candidate.summary = summary or candidate.summary
@@ -585,7 +605,7 @@ def follow_up(
 ) -> list[Idea]:
     """File one seed per title on ``track``, pinned to ``candidate`` unless ``pin`` is False. Return the new seeds.
 
-    A title that the project already has gets `` (from candidate#<id>)``. A follow-up already filed from this candidate
+    A title that the campaign already has gets `` (from candidate#<id>)``. A follow-up already filed from this candidate
     with that title is not filed twice. These are seeds, not ready ideas: research develops them before they run. A
     pinned one runs as a branch run when its candidate is not the computed base (``[roles.worker] explore_every``). An
     unpinned one runs from the head, as a trunk run.
@@ -594,13 +614,13 @@ def follow_up(
     hypothesis = f'Follow-up of candidate#{candidate.id} ({candidate.summary or "no summary"})'
     for title in titles:
         free = (
-            n for n in (title, f'{title} (from candidate#{candidate.id})') if not _titled(s, candidate.project_id, n)
+            n for n in (title, f'{title} (from candidate#{candidate.id})') if not _titled(s, candidate.campaign_id, n)
         )
         name = next(free, None)
         if name is None:
             continue
         idea = Idea(
-            project_id=candidate.project_id,
+            campaign_id=candidate.campaign_id,
             title=name,
             hypothesis=f'{hypothesis}: {why}',
             status=IdeaStatus.SEED,
@@ -616,8 +636,8 @@ def follow_up(
     return ideas
 
 
-def _titled(s: Session, project_id: int, title: str) -> bool:
-    return s.scalar(select(Idea.id).where(Idea.project_id == project_id, Idea.title == title)) is not None
+def _titled(s: Session, campaign_id: int, title: str) -> bool:
+    return s.scalar(select(Idea.id).where(Idea.campaign_id == campaign_id, Idea.title == title)) is not None
 
 
 @dataclass(frozen=True)
@@ -645,10 +665,10 @@ def branch_root(candidate: Candidate) -> tuple[Candidate, bool]:
     return candidate, False
 
 
-def branches(s: Session, project: Project) -> list[Branch]:
+def branches(s: Session, campaign: Campaign) -> list[Branch]:
     """Return every lineage of keeps: the trunk first (its latest keep is the head), then the branches, newest first."""
     found: dict[tuple[int, bool], Branch] = {}
-    for c in s.scalars(keeps(project).order_by(Candidate.id)):
+    for c in s.scalars(keeps(campaign).order_by(Candidate.id)):
         root, branched = branch_root(c)
         known = found.get((root.id, branched))
         found[root.id, branched] = Branch(root, branched, c, (known.keeps if known else 0) + 1)

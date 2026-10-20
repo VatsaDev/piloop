@@ -1,8 +1,8 @@
 """Research memory: copy the repo documents that ``[memory] documents`` names into the ``documents`` table.
 
 ``piloop init`` and the stop of a campaign run the sync. Agents then search the documents with ``documents_fts``,
-next to the ideas, comments and lessons of every project. A sync inserts the text of each file once for each distinct
-content (``UNIQUE (project_id, path, hash)``), so running it again does nothing, and an edited file is a new version.
+next to the ideas, comments and lessons of every campaign. A sync inserts the text of each file once for each distinct
+content (``UNIQUE (campaign_id, path, hash)``), so running it again does nothing, and an edited file is a new version.
 """
 
 from dataclasses import dataclass, field
@@ -13,8 +13,8 @@ from git.exc import InvalidGitRepositoryError, NoSuchPathError
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
-from piloop.config import ProjectConfig
-from piloop.db.models import Document, Project
+from piloop.config import CampaignConfig
+from piloop.db.models import Campaign, Document
 from piloop.db.sql import digest
 from piloop.text import HEADING
 
@@ -39,9 +39,9 @@ class Synced:
         return f'documents: {len(self.added)} added, {len(self.unchanged)} unchanged{skipped}'
 
 
-def sync_documents(s: Session, project: Project, cfg: ProjectConfig, actor: str) -> Synced:
+def sync_documents(s: Session, campaign: Campaign, cfg: CampaignConfig, actor: str) -> Synced:
     """Insert every file under the repo that ``cfg.memory.documents`` matches and that is not in yet. It only flushes."""
-    root = Path(project.path).resolve()
+    root = Path(campaign.path).resolve()
     repo = _repo(root)
     synced = Synced()
     for rel in _matches(root, cfg.memory.documents):
@@ -58,7 +58,7 @@ def sync_documents(s: Session, project: Project, cfg: ProjectConfig, actor: str)
             synced.skipped[rel] = f'unreadable ({e.strerror})'
             continue
         values = {
-            'project_id': project.id,
+            'campaign_id': campaign.id,
             'path': rel,
             'hash': digest(text),
             'title': title_of(text, rel),

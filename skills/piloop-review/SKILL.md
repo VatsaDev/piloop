@@ -1,6 +1,6 @@
 ---
 name: piloop-review
-description: Review a piloop campaign during or after a run to check if the gains are real, if an agent gamed the evaluation, where time and tokens went, and which failures are piloop bugs, then turn the findings into bug reports, PRs and inbox items. Use when the human asks to review, audit, post-mortem or look back at a campaign or project, or asks if a result can be trusted.
+description: Review a piloop campaign during or after a run to check if the gains are real, if an agent gamed the evaluation, where time and tokens went, and which failures are piloop bugs, then turn the findings into bug reports, PRs and inbox items. Use when the human asks to review, audit, post-mortem or look back at a campaign or campaign, or asks if a result can be trusted.
 ---
 
 # Review a piloop campaign
@@ -20,7 +20,7 @@ Rules for the whole review:
 - Open the database read-only, with `?mode=ro`. If that fails with "unable to open database file" while the daemon
   is stopped, use `?immutable=1` instead. Use `immutable=1` only when nothing writes the database.
 - Never prompt a running agent.
-- Never edit the working tree of a project repo.
+- Never edit the working tree of a campaign repo.
 - Never change config.
 - **Verify before you claim.** Every number comes from a query, a diff or a transcript line that you can cite:
   `path:line`, `path @ timestamp`, or a database row id. An agent's own report is a claim to check, not evidence. This
@@ -39,8 +39,8 @@ Rules for the whole review:
 | Agent screen | `<PILOOP_HOME>/workers/<worker>/transcript.txt`; `runs.log_dir` |
 | Agent session file | `workers.usage->>'$.source'` names it |
 | Orchestrator | the harness that ran `piloop-operate`; its writes are signed `orchestrator`. pi: `~/.pi/agent/sessions/--<cwd>--/`, subagents in `~/.pi/agent/pi-subagents/` and `run-history.jsonl`. Claude Code: `$CLAUDE_CONFIG_DIR/projects/<cwd, non-alphanumerics as ->/*.jsonl`, subagents under `<session>/subagents/`. Codex: `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` |
-| What agents left in `./workspace/` | `<PILOOP_HOME>/projects/<id>/workspace` while an idea runs. A done idea's files, and what a stopped campaign left (except `NOTES.md` and `research/`), are archived (`archives`) and removed from the workspace later (`archives.pruned_at`): `piloop restore <project> [<idea>\|<path>]` writes them back |
-| Candidates | the project repo: `refs/piloop/<project>/r<run>/<n>`, `git show <commit_sha>`; `entire checkpoint explain <workers.checkpoint_id>` when Entire is on |
+| What agents left in `./workspace/` | `<PILOOP_HOME>/projects/<id>/workspace` while an idea runs. A done idea's files, and what a stopped campaign left (except `NOTES.md` and `research/`), are archived (`archives`) and removed from the workspace later (`archives.pruned_at`): `piloop restore <campaign> [<idea>\|<path>]` writes them back |
+| Candidates | the campaign repo: `refs/piloop/<campaign>/r<run>/<n>`, `git show <commit_sha>`; `entire checkpoint explain <workers.checkpoint_id>` when Entire is on |
 | Side effects outside piloop | `$CLAUDE_CONFIG_DIR/settings.json`, `$CODEX_HOME/config.toml`, `$CLAUDE_CONFIG_DIR/projects/*/memory/` |
 
 Token counts:
@@ -66,7 +66,7 @@ The subagents:
 1. **Database numbers.** Trajectory with the global best so far, funnel, run outcomes and wall-clock time, tokens and
    cost per role, escalations, goalpost changes, statistical checks. This subagent owns the numbers that the others
    cite.
-2. **Workers, one subagent per project.** Read the transcripts and diffs of the kept lineage. Run the integrity checks
+2. **Workers, one subagent per campaign.** Read the transcripts and diffs of the kept lineage. Run the integrity checks
    below.
 3. **Orchestrator.** Its session: decisions it took for the human, briefs, status reports compared with the database,
    spend.
@@ -95,56 +95,56 @@ Before you trust the results:
 
 ## SQL queries
 
-`<p>` is the project id. `<m>` is the primary metric: `SELECT config->'$.metrics' FROM projects WHERE id = <p>`.
+`<p>` is the campaign id. `<m>` is the primary metric: `SELECT config->'$.metrics' FROM campaigns WHERE id = <p>`.
 
 ```sql
 -- Trajectory: every measured candidate and the global best so far (MIN for a lower-is-better metric).
--- `keep` is relative to the bar of its run; this is the project-level view. Only the current evaluator's scores
+-- `keep` is relative to the bar of its run; this is the campaign-level view. Only the current evaluator's scores
 -- count. References are left out, because an imported reference was never a keep.
 WITH s AS (SELECT c.id, c.run_id, c.parent_id, c.verdict, c.created_at,
                   AVG(json_extract(m.metrics, '$.<m>')) AS score, COUNT(*) AS n
            FROM candidates c JOIN measurements m ON m.candidate_id = c.id
-           WHERE c.project_id = <p> AND c.verdict != 'reference' AND m.error IS NULL
-             AND m.evaluator_id = (SELECT evaluator_id FROM projects WHERE id = <p>)
+           WHERE c.campaign_id = <p> AND c.verdict != 'reference' AND m.error IS NULL
+             AND m.evaluator_id = (SELECT evaluator_id FROM campaigns WHERE id = <p>)
            GROUP BY c.id)
 SELECT *, MAX(score) OVER (ORDER BY created_at ROWS UNBOUNDED PRECEDING) AS best FROM s ORDER BY created_at;
 
 -- Funnel
-SELECT 'idea', status, COUNT(*) FROM ideas WHERE project_id = <p> GROUP BY status
+SELECT 'idea', status, COUNT(*) FROM ideas WHERE campaign_id = <p> GROUP BY status
 UNION ALL SELECT 'run', r.status, COUNT(*) FROM runs r JOIN ideas i ON i.id = r.idea_id
-          WHERE i.project_id = <p> GROUP BY r.status
-UNION ALL SELECT 'candidate', verdict, COUNT(*) FROM candidates WHERE project_id = <p> GROUP BY verdict;
+          WHERE i.campaign_id = <p> GROUP BY r.status
+UNION ALL SELECT 'candidate', verdict, COUNT(*) FROM candidates WHERE campaign_id = <p> GROUP BY verdict;
 
 -- Keeps that break a guardrail (floor from the config or the brief)
 SELECT c.id, c.verdict_by, json_extract(m.metrics, '$.<guard>') AS guard
 FROM candidates c JOIN measurements m ON m.candidate_id = c.id
-WHERE c.project_id = <p> AND c.verdict = 'keep' AND json_extract(m.metrics, '$.<guard>') < <floor>;
+WHERE c.campaign_id = <p> AND c.verdict = 'keep' AND json_extract(m.metrics, '$.<guard>') < <floor>;
 
 -- Selection noise: spread among the candidates of one run (SQLite has no STDEV)
 SELECT run_id, COUNT(*) n, AVG(s) mean, SQRT(AVG(s*s) - AVG(s)*AVG(s)) sd, MIN(s), MAX(s)
 FROM (SELECT c.run_id, json_extract(m.metrics, '$.<m>') s FROM candidates c
-      JOIN measurements m ON m.candidate_id = c.id WHERE c.project_id = <p> AND m.error IS NULL
-        AND m.evaluator_id = (SELECT evaluator_id FROM projects WHERE id = <p>)) GROUP BY run_id HAVING n > 3;
+      JOIN measurements m ON m.candidate_id = c.id WHERE c.campaign_id = <p> AND m.error IS NULL
+        AND m.evaluator_id = (SELECT evaluator_id FROM campaigns WHERE id = <p>)) GROUP BY run_id HAVING n > 3;
 
 -- Repeat measurements of one tree (double evaluation) and their cost
 SELECT candidate_id, COUNT(*), SUM(seconds) FROM measurements m JOIN candidates c ON c.id = m.candidate_id
-WHERE c.project_id = <p> GROUP BY candidate_id HAVING COUNT(*) > 1;
+WHERE c.campaign_id = <p> GROUP BY candidate_id HAVING COUNT(*) > 1;
 
 -- Tokens and wall-clock time per role / harness / model
 SELECT kind, harness, model, COUNT(*) agents, SUM(usage->>'$.total') tokens, SUM(usage->>'$.output') output,
        ROUND(SUM(julianday(ended_at) - julianday(started_at)) * 1440) minutes,
        SUM(usage IS NULL) no_usage, SUM(state = 'killed') killed
-FROM workers WHERE project_id = <p> GROUP BY kind, harness, model;
+FROM workers WHERE campaign_id = <p> GROUP BY kind, harness, model;
 
 -- Runs left open after their worker exited
 SELECT r.id run, w.id worker, w.ended_at, r.finished_at,
        ROUND((julianday(COALESCE(r.finished_at, 'now')) - julianday(w.ended_at)) * 1440) open_min
 FROM runs r JOIN workers w ON w.run_id = r.id JOIN ideas i ON i.id = r.idea_id
-WHERE i.project_id = <p> AND w.ended_at IS NOT NULL ORDER BY open_min DESC LIMIT 10;
+WHERE i.campaign_id = <p> AND w.ended_at IS NOT NULL ORDER BY open_min DESC LIMIT 10;
 
--- Work after the last stop of the project (agents still running, measurements nobody used)
+-- Work after the last stop of the campaign (agents still running, measurements nobody used)
 SELECT r.id, r.started_at, r.finished_at FROM runs r JOIN ideas i ON i.id = r.idea_id
-WHERE i.project_id = <p> AND COALESCE(r.finished_at, 'now') > (SELECT MAX(at) FROM events WHERE kind = 'project.status'
+WHERE i.campaign_id = <p> AND COALESCE(r.finished_at, 'now') > (SELECT MAX(at) FROM events WHERE kind = 'campaign.status'
       AND target_id = <p> AND payload->>'$.new' = 'stopped');
 
 -- Escalations: who decided, how fast (limit to the campaign window; targets can be any kind of row).
@@ -156,19 +156,19 @@ FROM comments e LEFT JOIN comments d ON d.id = (SELECT MIN(id) FROM comments WHE
             OR (target_kind = 'comment' AND target_id = e.id)))
 WHERE e.kind = 'escalation' AND e.created_at BETWEEN '<start>' AND '<end>';
 
--- Lessons that the closing watchdog left, and what past campaigns on the same code tried (projects.repo)
-SELECT id, created_at, family, status, effect, metric, body FROM lessons WHERE project_id = <p> ORDER BY id;
+-- Lessons that the closing watchdog left, and what past campaigns on the same code tried (campaigns.repo)
+SELECT id, created_at, family, status, effect, metric, body FROM lessons WHERE campaign_id = <p> ORDER BY id;
 SELECT p.name, i.id, i.status, i.title FROM ideas_fts JOIN ideas i ON i.id = ideas_fts.rowid
-JOIN projects p ON p.id = i.project_id
-WHERE ideas_fts MATCH '<mechanism>' AND p.repo = (SELECT repo FROM projects WHERE id = <p>) ORDER BY bm25(ideas_fts);
+JOIN campaigns p ON p.id = i.campaign_id
+WHERE ideas_fts MATCH '<mechanism>' AND p.repo = (SELECT repo FROM campaigns WHERE id = <p>) ORDER BY bm25(ideas_fts);
 
 -- The orchestrator's journal: what it decided and planned, in its own words
 SELECT created_at, author, line FROM journal ORDER BY id;
 
 -- Goalposts: verdict overrides, status changes, evaluator versions
-SELECT at, actor, kind, payload FROM events WHERE kind IN ('candidate.verdict', 'project.status')
+SELECT at, actor, kind, payload FROM events WHERE kind IN ('candidate.verdict', 'campaign.status')
   AND at BETWEEN '<start>' AND '<end>' AND actor != 'daemon';
-SELECT id, key, created_at FROM evaluators WHERE project_id = <p>;
+SELECT id, key, created_at FROM evaluators WHERE campaign_id = <p>;
 ```
 
 Orchestrator spend and cache churn:
@@ -269,9 +269,9 @@ Separate harness faults and environment faults before you blame a model.
    - In the PR body, cite the review evidence and say what you verified and what you did not.
    - Do not merge.
 3. **Inbox items for the human.** Decisions that only the human can make: goalposts, reverting an agent's config or
-   memory writes, pausing a project whose evaluation is broken, keeps below a floor.
+   memory writes, pausing a campaign whose evaluation is broken, keeps below a floor.
    - One item for each decision, with a recommendation and a priority.
-   - Post each one as an `escalation` comment on the project, with a `priority`.
+   - Post each one as an `escalation` comment on the campaign, with a `priority`.
 
 ## Every review: check the surfacing policy of the inbox
 

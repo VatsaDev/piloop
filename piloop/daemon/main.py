@@ -7,9 +7,18 @@ from types import FrameType
 
 from piloop.agents.capture import MIN_ENTIRE, AttachError, entire_version, usable
 from piloop.daemon.archiver import ArchivePolicy, Archiving
-from piloop.daemon.runner import RunExecutor
+from piloop.daemon.run_executor import RunExecutor
 from piloop.daemon.scheduler import Scheduler
-from piloop.daemon.serve import RESTART_SIGNAL, SECRETS_COMMAND_ENV, SERVE_ARGV, SecretsError, acquire, secrets
+from piloop.daemon.serve import (
+    RESTART_SIGNAL,
+    SECRETS_COMMAND_ENV,
+    SERVE_ARGV,
+    OlderDaemon,
+    SecretsError,
+    acquire,
+    refuse_older_daemon,
+    secrets,
+)
 from piloop.db.session import Database, SchemaAhead, migrate
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Span, tracer
@@ -31,7 +40,7 @@ def bound(cfg: Settings) -> list[plugins.Activatable]:
     return [
         c
         for c in plugins.declared()
-        if c.selection is None or c.selection.scope == 'project' or plugins.lookup(home, c.selection.key) is not None
+        if c.selection is None or c.selection.scope == 'campaign' or plugins.lookup(home, c.selection.key) is not None
     ]
 
 
@@ -78,8 +87,9 @@ class Daemon:
         """The children an in-place restart handed over (``piloop.proc.Inherited``): reaped on every tick."""
         self.db = Database(cfg.database_url, actor=ACTOR)
         try:
+            refuse_older_daemon(cfg, self.db.engine)
             migrate(self.db.engine)
-        except SchemaAhead:
+        except OlderDaemon, SchemaAhead:
             self.db.close()
             raise
         self._cfg = cfg

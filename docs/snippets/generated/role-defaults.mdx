@@ -12,7 +12,7 @@ explore_every = 4
 [roles.watchdog]
 timeout = 600
 max_concurrent = 1
-writes = ["comments(escalation, finding, note)", "lessons on the project once it stopped", "seeds via idea seed"]
+writes = ["comments(escalation, finding, note)", "lessons on the campaign once it stopped", "seeds via idea seed"]
 files = "seeds"
 wake_budget = 0
 triggers = [{ kind = "anomaly" }, { kind = "cron" }, { kind = "stopped" }]
@@ -23,7 +23,7 @@ max_ideas = 1
 [roles.research]
 timeout = 900
 max_concurrent = 1
-writes = ["seeds via idea develop, or their status to rejected with a note", "ideas via idea add", "comments(finding, escalation) on the project", "comments(note) on an idea"]
+writes = ["seeds via idea develop, or their status to rejected with a note", "ideas via idea add", "comments(finding, escalation) on the campaign", "comments(note) on an idea"]
 files = "ideas"
 triggers = [{ kind = "low_water", buffer = 2 }, { kind = "seed" }]
 workdir = "head"
@@ -33,7 +33,7 @@ max_ideas = 1
 [roles.scout]
 timeout = 900
 max_concurrent = 1
-writes = ["seeds via idea seed (at most the count under Context)", "techniques (the library), by INSERT", "one comments(finding) on the project"]
+writes = ["seeds via idea seed (at most the count under Context)", "techniques (the library), by INSERT", "one comments(finding) on the campaign"]
 files = "seeds"
 triggers = [{ kind = "cron" }]
 workdir = "head"

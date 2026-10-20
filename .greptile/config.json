@@ -33,7 +33,7 @@
     },
     {
       "id": "writing-style",
-      "rule": "Docs, skills and agent prompts use Simplified Technical English, in the style of pydantic-ai's docs: one idea per sentence, most sentences 20 words or fewer, active voice, present tense, the imperative for instructions, common words used with one meaning each, piloop's own terms (project, idea, seed, run, candidate, keep, head, track, worker, watchdog, research, orchestrator, evaluate command, inbox). No idioms, no history (no 'used to', PR numbers or dates), no retirement notes. Every command, key and code example must be real: tests/test_docs.py checks the code blocks.",
+      "rule": "Docs, skills and agent prompts use Simplified Technical English, in the style of pydantic-ai's docs: one idea per sentence, most sentences 20 words or fewer, active voice, present tense, the imperative for instructions, common words used with one meaning each, piloop's own terms (campaign, idea, seed, run, candidate, keep, head, track, worker, watchdog, research, orchestrator, evaluate command, inbox). No idioms, no history (no 'used to', PR numbers or dates), no retirement notes. Every command, key and code example must be real: tests/test_docs.py checks the code blocks.",
       "scope": [
         "docs/**",
         "README.md",
@@ -89,7 +89,7 @@
     },
     {
       "id": "config-compat",
-      "rule": "A renamed or removed piloop.toml key needs a bridge in piloop/deprecated.py and a commit subject that says the key is deprecated, so existing projects keep loading for at least one minor release.",
+      "rule": "A renamed or removed piloop.toml key needs a bridge in piloop/deprecated.py and a commit subject that says the key is deprecated, so existing campaigns keep loading for at least one minor release.",
       "scope": [
         "piloop/config.py",
         "piloop/deprecated.py"

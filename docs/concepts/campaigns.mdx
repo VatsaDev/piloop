@@ -1,18 +1,18 @@
 ---
-title: Projects and the evaluate command
-description: A project is a git repo with a goal that a program can measure.
+title: Campaigns and the evaluate command
+description: A campaign is a git repo with a goal that a program can measure.
 ---
 
-A **project** is a git repo that piloop knows about. It has two files at its root and one command:
+A **campaign** is a git repo that piloop knows about. It has two files at its root and one command:
 
 - `piloop.toml`: the configuration. See the [configuration reference](/reference/configuration).
 - `brief.md`: the instructions that every agent reads before its task.
 - The **evaluate command**: the program that scores the code, such as the template's `evaluate.py`. The `evaluate` key
   in `piloop.toml` names it.
 
-`piloop init` registers the project in the piloop database, `~/.piloop/piloop.db`, with a copy of `piloop.toml`. The
+`piloop init` registers the campaign in the piloop database, `~/.piloop/piloop.db`, with a copy of `piloop.toml`. The
 daemon uses that copy, so run `piloop init` again after you edit the file. Set `PILOOP_HOME` to use another
-directory. One database holds every project, and one daemon serves them all.
+directory. One database holds every campaign, and one daemon serves them all.
 
 ## The evaluate command
 
@@ -49,7 +49,7 @@ direction = "higher"   # or "lower"
 role = "primary"       # or "guardrail" or "watch"
 ```
 
-- The **primary** metric is the one to improve. A project has exactly one, or one for each
+- The **primary** metric is the one to improve. A campaign has exactly one, or one for each
   [track](/concepts/tracks).
 - A **guardrail** must not get worse by more than its `margin`, and never past its `floor`.
 - A **watch** metric is recorded and has no effect on the verdict.
@@ -96,18 +96,22 @@ piloop candidate remeasure 42
 A change to a metric's role, margin or floor, or to `confidence`, does not make a new evaluator. It changes how the
 next candidates are judged.
 
+Each evaluator records its **runner** (`evaluators.runner`): how piloop runs it to measure a candidate. The only
+runner is `process`: piloop runs the evaluate command as a process in a clean worktree of the candidate, as this page
+describes. An **evaluation** is one run of an evaluator on a candidate, and it produces measurements.
+
 ## Shared files
 
 - `link` in `piloop.toml` lists repo-relative paths that git ignores, such as `data` or `.venv`. piloop symlinks them
   into every worktree.
-- `workspace/` is a directory that every agent of the project shares: notes, cached features, plots. piloop links it
+- `workspace/` is a directory that every agent of the campaign shares: notes, cached features, plots. piloop links it
   into every worktree. It is never committed.
 
 ## Where the results are
 
-- Every commit of a run is pinned in your repo under `refs/piloop/<project>/r<run>/<n>`. A reference is pinned under
-  `refs/piloop/<project>/reference/<id>`, and a keep that is rebased onto the head is pinned under
-  `refs/piloop/<project>/rebase/<id>`. `git show`, `git diff` and `git cherry-pick` work on all of them, even after
+- Every commit of a run is pinned in your repo under `refs/piloop/<campaign>/r<run>/<n>`. A reference is pinned under
+  `refs/piloop/<campaign>/reference/<id>`, and a keep that is rebased onto the head is pinned under
+  `refs/piloop/<campaign>/rebase/<id>`. `git show`, `git diff` and `git cherry-pick` work on all of them, even after
   the worktree is gone.
 - The database holds the ideas, runs, candidates, measurements, comments and events. Read it with
   `piloop sql "<statement>"`. See the [database schema](/reference/schema).

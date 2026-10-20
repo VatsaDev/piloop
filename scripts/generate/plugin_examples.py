@@ -15,6 +15,6 @@ def snippet(name: str, *files: str) -> str:
         f'[project.entry-points."{group}"]\n' + '\n'.join(f'{n} = "{v}"' for n, v in eps.items())
         for group, eps in groups.items()
     )
-    blocks = [f'```text pyproject.toml\n{tables}\n```']
+    blocks = [f'```toml pyproject.toml\n{tables}\n```']
     blocks += [f'```python {f}\n{(root / f).read_text().rstrip()}\n```' for f in files]
     return header(f'the example plugin in `examples/plugins/{name}/`') + '\n' + '\n\n'.join(blocks) + '\n'

@@ -7,18 +7,18 @@ from pathlib import Path
 import pytest
 from inline_snapshot import snapshot
 from pytest_mock import MockerFixture
-from sqlalchemy import func, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.exc import OperationalError
 
 from piloop.agents.launcher import STOPPED_ERROR
-from piloop.config import load_project_config
+from piloop.config import load_campaign_config
 from piloop.daemon.main import ACTOR, Daemon
 from piloop.daemon.serve import RESTART_SIGNAL, SERVE_ARGV
 from piloop.db.models import (
+    Campaign,
     Candidate,
     Idea,
     IdeaStatus,
-    Project,
     Run,
     RunStatus,
     Verdict,
@@ -26,22 +26,23 @@ from piloop.db.models import (
     WorkerKind,
     WorkerState,
 )
+from piloop.db.session import migrate
 from piloop.proc import Inherited, alive, started
 from piloop.settings import Settings
 from tests.conftest import HARNESS_NOOP, ScriptRuntime, console_lines, factory, register, write_toml
 
 
 def test_daemon_end_to_end(
-    project_path: Path, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
+    campaign_path: Path, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr('piloop.agents.launcher.STARTUP_SECONDS', 0)  # the failing worker worked, then left nothing
     home = tmp_path / 'home'
     runtime = ScriptRuntime()
     daemon = Daemon(Settings(home=home, tick_seconds=0.05))
     mocker.patch.object(daemon.executor.launcher, 'runtime_factory', factory(runtime))
-    project = register(daemon.db, project_path)
+    campaign = register(daemon.db, campaign_path)
     with daemon.db.session() as s:
-        s.add(Idea(track='score', project_id=project.id, title='ok', hypothesis='ok', created_by='t'))
+        s.add(Idea(track='score', campaign_id=campaign.id, title='ok', hypothesis='ok', created_by='t'))
         s.commit()
 
     daemon.scheduler.reap()
@@ -52,10 +53,10 @@ def test_daemon_end_to_end(
         assert (run.status, run.updated_by) == (RunStatus.SUCCEEDED, ACTOR)
     assert daemon.scheduler.tick() == [], 'a successful run does not wake the watchdog'
 
-    write_toml(project_path, HARNESS_NOOP)
+    write_toml(campaign_path, HARNESS_NOOP)
     with daemon.db.session() as s:
-        s.get_one(Project, project.id).config = load_project_config(project_path).model_dump(mode='json')
-        s.add(Idea(track='score', project_id=project.id, title='bad', hypothesis='bad', created_by='t', max_runs=1))
+        s.get_one(Campaign, campaign.id).config = load_campaign_config(campaign_path).model_dump(mode='json')
+        s.add(Idea(track='score', campaign_id=campaign.id, title='bad', hypothesis='bad', created_by='t', max_runs=1))
         s.commit()
     assert daemon.scheduler.tick() == [2]
     daemon.scheduler.wait(30)
@@ -258,7 +259,7 @@ HARNESS_HELD = (
 
 
 def test_an_in_place_restart_leaves_the_agents_running_and_the_new_daemon_finishes_their_runs(
-    project_path: Path, tmp_path: Path, mocker: MockerFixture
+    campaign_path: Path, tmp_path: Path, mocker: MockerFixture
 ) -> None:
     """An in-place restart does not kill the agents, and the new daemon finishes their runs.
 
@@ -267,12 +268,14 @@ def test_an_in_place_restart_leaves_the_agents_running_and_the_new_daemon_finish
     """
     hold = tmp_path / 'hold'
     hold.touch()
-    write_toml(project_path, HARNESS_HELD.format(hold=hold), worker_timeout=60)
+    write_toml(campaign_path, HARNESS_HELD.format(hold=hold), worker_timeout=60)
     cfg = Settings(home=tmp_path / 'home', tick_seconds=0.01)
     first = Daemon(cfg)
-    project = register(first.db, project_path)
+    campaign = register(first.db, campaign_path)
     with first.db.session() as s:
-        s.add(Idea(track='score', project_id=project.id, title='two steps', hypothesis='x', created_by='t', max_runs=1))
+        s.add(
+            Idea(track='score', campaign_id=campaign.id, title='two steps', hypothesis='x', created_by='t', max_runs=1)
+        )
         s.commit()
     execv = mocker.patch('piloop.daemon.main.os.execv')
     under_way = cfg.home / 'runs' / '1' / 'agent.pid'
@@ -313,6 +316,9 @@ def test_serve_refuses_when_a_daemon_holds_the_pid_file(
     tmp_path: Path, mocker: MockerFixture, lock_holder: subprocess.Popen[str]
 ) -> None:
     cfg = Settings(home=tmp_path)
+    engine = create_engine(cfg.database_url)
+    migrate(engine)  # as the running daemon left it: under an older one, Daemon() refuses before it migrates
+    engine.dispose()
     daemon = Daemon(cfg)
     shutdown = mocker.patch.object(daemon, 'shutdown')
     with pytest.raises(SystemExit, match=f'already running \\(pid {lock_holder.pid}'):
@@ -324,10 +330,10 @@ def test_serve_refuses_when_a_daemon_holds_the_pid_file(
 def test_shutdown_fails_open_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     daemon = Daemon(Settings(home=tmp_path / 'home'))
     with daemon.db.session() as s:
-        s.add(Project(name='p', path='/p', config={}))
-        s.add(Idea(track='score', project_id=1, title='x', hypothesis='x', created_by='t'))
+        s.add(Campaign(name='p', path='/p', config={}))
+        s.add(Idea(track='score', campaign_id=1, title='x', hypothesis='x', created_by='t'))
         s.add(Run(idea_id=1, attempt=1, base_candidate_id=1, harness='h', model='m', status=RunStatus.RUNNING))
-        s.add(Worker(kind=WorkerKind.RESEARCH, project_id=1, reason='by hand'))
+        s.add(Worker(kind=WorkerKind.RESEARCH, campaign_id=1, reason='by hand'))
         s.commit()
     daemon.shutdown(timeout=1)
     with daemon.db.session() as s:

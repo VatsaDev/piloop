@@ -62,9 +62,9 @@ class Watched:
         return f'- {self.source} ({how}; {", ".join(f"idea#{i}" for i in self.ideas)})'
 
 
-def watch_list(s: Session, project_id: int, role: str) -> list[Watched]:
+def watch_list(s: Session, campaign_id: int, role: str) -> list[Watched]:
     """Return the sources that later sweeps of ``role`` query directly: kept ones first, then the latest payoff first."""
-    seeds = s.scalars(select(Idea).where(Idea.project_id == project_id, Idea.created_by.like(f'{role}#%'))).all()
+    seeds = s.scalars(select(Idea).where(Idea.campaign_id == campaign_id, Idea.created_by.like(f'{role}#%'))).all()
     developed: dict[int, datetime] = {
         idea_id: at
         for idea_id, at in s.execute(
@@ -95,7 +95,7 @@ def watch_list(s: Session, project_id: int, role: str) -> list[Watched]:
             entry.ideas.append(idea.id)
             entry.kept |= bool(kept[idea.id])
             entry.paid = paid if entry.paid is None else max(entry.paid, paid)
-    scouts = select(Worker).where(Worker.project_id == project_id, Worker.kind == role)
+    scouts = select(Worker).where(Worker.campaign_id == campaign_id, Worker.kind == role)
     for entry in by_source.values():
         assert entry.paid is not None  # every entry comes from a developed seed
         entry.since = count(s, scouts.where(Worker.started_at > entry.paid))
@@ -103,11 +103,11 @@ def watch_list(s: Session, project_id: int, role: str) -> list[Watched]:
     return sorted(watched, key=lambda e: (not e.kept, -(e.paid.timestamp() if e.paid else 0)))
 
 
-def window(s: Session, project_id: int, role: str, worker_id: int, now: datetime) -> datetime:
+def window(s: Session, campaign_id: int, role: str, worker_id: int, now: datetime) -> datetime:
     """Return the start of the search window: the role's previous sweep's start, at least ``MIN_WINDOW`` back."""
     previous = s.scalar(
         select(Worker.started_at)
-        .where(Worker.project_id == project_id, Worker.id < worker_id, Worker.started_at.is_not(None))
+        .where(Worker.campaign_id == campaign_id, Worker.id < worker_id, Worker.started_at.is_not(None))
         .where(Worker.kind == role)
         .order_by(Worker.id.desc())
         .limit(1)
@@ -115,19 +115,19 @@ def window(s: Session, project_id: int, role: str, worker_id: int, now: datetime
     return now - WINDOW if previous is None else min(previous, now - MIN_WINDOW)
 
 
-def context(s: Session, project_id: int, role: str, worker_id: int, seeds: int, now: datetime) -> list[str]:
+def context(s: Session, campaign_id: int, role: str, worker_id: int, seeds: int, now: datetime) -> list[str]:
     """Return the scout's lines of the context block: its seed limit, its window, the watch list and the library."""
     library = s.scalars(
-        select(Technique).where(Technique.project_id == project_id).order_by(Technique.id.desc()).limit(LIBRARY_SHOWN)
+        select(Technique).where(Technique.campaign_id == campaign_id).order_by(Technique.id.desc()).limit(LIBRARY_SHOWN)
     ).all()
-    total = count(s, select(Technique).where(Technique.project_id == project_id))
-    watched = watch_list(s, project_id, role)
+    total = count(s, select(Technique).where(Technique.campaign_id == campaign_id))
+    watched = watch_list(s, campaign_id, role)
     stamp = now.strftime('%Y-%m-%d-%H%M')
     older = f' ({total - len(library)} older: query `techniques`)' if total > len(library) else ''
     return [
         '- This is a scout sweep: follow the scout brief at the top; develop no seed and add no idea.',
         f'- Seeds you may file: at most {seeds}; every other technique worth keeping goes to the library.',
-        f'- Search window: since {window(s, project_id, role, worker_id, now).strftime("%Y-%m-%d")} (posts, repos, papers).',
+        f'- Search window: since {window(s, campaign_id, role, worker_id, now).strftime("%Y-%m-%d")} (posts, repos, papers).',
         f'- Write the problem statement to `./workspace/scout/{stamp}-problem.md` before your first search.',
         f'- Sweep started at: {now.strftime("%Y-%m-%d %H:%M:%S")} (UTC; the research pack below is as of then).',
         '',

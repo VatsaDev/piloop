@@ -128,8 +128,8 @@ class Runtime(Protocol):
     invocation: ClassVar[Invocation]
     """Which argument list of a harness the runtime starts: ``interactive`` or ``headless``."""
 
-    def __init__(self, project: str, project_path: Path) -> None:
-        """Make the runtime of one project. A runtime can name what it makes after the project."""
+    def __init__(self, campaign: str, campaign_path: Path) -> None:
+        """Make the runtime of one campaign. A runtime can name what it makes after the campaign."""
         ...
 
     def start(self, spec: WorkerSpec) -> Handle:
@@ -198,7 +198,7 @@ class Runtime(Protocol):
     def checks(cls, executables: set[str]) -> list[Check]:
         """Check that the runtime can run agents on this machine. ``piloop doctor`` shows the result.
 
-        ``executables`` are the programs of the harnesses that the projects of this runtime launch. Read only: start
+        ``executables`` are the programs of the harnesses that the campaigns of this runtime launch. Read only: start
         nothing.
         """
         ...

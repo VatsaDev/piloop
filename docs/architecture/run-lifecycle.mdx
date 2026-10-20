@@ -5,7 +5,7 @@ description: What the daemon does between a ready idea and the verdict on each o
 
 A **run** is one attempt at an idea. The scheduler queues it on a tick. A thread of the daemon then executes it:
 the worktree, the agent, the scores and the verdicts. The code is in `piloop/daemon/scheduler.py` and
-`piloop/daemon/runner.py`.
+`piloop/daemon/run_executor.py`.
 
 ```mermaid
 sequenceDiagram

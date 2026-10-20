@@ -21,7 +21,7 @@ import pytest
 import tomli_w
 
 from tests.conftest import wait_until
-from tests.e2e.campaign import CHEAPEST_MODEL, ROOT, TEMPLATES, Campaign, Toml, merged
+from tests.e2e.campaign import CHEAPEST_MODEL, ROOT, TEMPLATES, Smoke, Toml, merged
 
 PASSED = pytest.StashKey[set[str]]()
 SUMMARY = pytest.StashKey[list[str]]()
@@ -49,7 +49,7 @@ class MakeCampaign(Protocol):
         home_config: Toml | None = None,
         harness: str | None = None,
         model: str | None = None,
-    ) -> Campaign: ...
+    ) -> Smoke: ...
 
 
 @pytest.fixture(scope='session')
@@ -88,7 +88,7 @@ def make_campaign(request: pytest.FixtureRequest, piloop_install: Install) -> It
     ``piloop install-skills`` into temporary skills directories, and ``piloop serve --detach``. ``harness`` and
     ``model`` default to ``--e2e-harness`` and ``--e2e-model``; the campaign uses that harness only.
     """
-    made: list[tuple[Campaign, str, float]] = []
+    made: list[tuple[Smoke, str, float]] = []
     module = request.module.__name__.rpartition('.')[2]
 
     def make(
@@ -98,7 +98,7 @@ def make_campaign(request: pytest.FixtureRequest, piloop_install: Install) -> It
         home_config: Toml | None = None,
         harness: str | None = None,
         model: str | None = None,
-    ) -> Campaign:
+    ) -> Smoke:
         harness = harness or request.config.getoption('e2e_harness')
         model = model or request.config.getoption('e2e_model') or CHEAPEST_MODEL.get(harness)
         if model is None:
@@ -121,23 +121,26 @@ def make_campaign(request: pytest.FixtureRequest, piloop_install: Install) -> It
             'PILOOP_AGENT_SKILLS_DIR': str(directory / 'skills' / 'agents'),
             'PILOOP_CLAUDE_SKILLS_DIR': str(directory / 'skills' / 'claude'),
         }
-        campaign = Campaign(directory, str(toml['name']), env)
-        made.append((campaign, f'harness {harness}, model {model}', time.monotonic()))
-        campaign.piloop('init', str(repo), '--example', template)
-        campaign.piloop('install-skills')
-        campaign.piloop('serve', '--detach')
+        live_campaign = Smoke(directory, str(toml['name']), env)
+        made.append((live_campaign, f'harness {harness}, model {model}', time.monotonic()))
+        live_campaign.piloop('init', str(repo), '--example', template)
+        live_campaign.piloop('install-skills')
+        live_campaign.piloop('serve', '--detach')
         wait_until((home / 'serve.pid').is_file)
-        return campaign
+        return live_campaign
 
     try:
         yield make
     finally:
         summary = request.config.stash.setdefault(SUMMARY, [])
-        for campaign, models, started in made:
+        for live_campaign, models, started in made:
             try:
-                campaign.shut_down()
+                live_campaign.shut_down()
             finally:
-                summary += [f'{module}: {models}, {(time.monotonic() - started) / 60:.1f} minutes', *campaign.summary()]
+                summary += [
+                    f'{module}: {models}, {(time.monotonic() - started) / 60:.1f} minutes',
+                    *live_campaign.summary(),
+                ]
 
 
 @pytest.hookimpl(wrapper=True)

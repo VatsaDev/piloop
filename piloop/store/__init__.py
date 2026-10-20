@@ -1,6 +1,6 @@
 """The artifact store: a content-addressed store of blobs and the manifests that name them.
 
-Generic: it knows files and bytes, nothing of projects, ideas or workspaces (``piloop.campaign.archive`` does). A blob
+Generic: it knows files and bytes, nothing of campaigns, ideas or workspaces (``piloop.campaign.archive`` does). A blob
 is addressed by the BLAKE3 hash of its whole content and kept zstd-compressed under ``blake3/<hash>/bytes.zst``, where
 ``<hash>`` is the 32-byte digest in lowercase unpadded base32: covalence's ``KvCas`` layout (``blake3/<digest>/bytes``)
 with the compression in the name. A manifest is a blob too: a tree of paths, each with its blob, size and mode.

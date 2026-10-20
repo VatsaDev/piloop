@@ -8,12 +8,12 @@ import pytest
 from sqlalchemy import select
 
 from piloop.campaign.archive import Pruned
-from piloop.campaign.project import workspace_dir
+from piloop.campaign.campaigns import workspace_dir
 from piloop.daemon import archiver as archiver_module
 from piloop.daemon.archiver import ArchivePolicy, Archiving
-from piloop.daemon.runner import RunExecutor
+from piloop.daemon.run_executor import RunExecutor
 from piloop.daemon.scheduler import Scheduler
-from piloop.db.models import Archive, Project, utcnow
+from piloop.db.models import Archive, Campaign, utcnow
 from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.store import Store
@@ -28,9 +28,9 @@ HARNESS_LEAVES_AN_ARRAY = (
 
 
 def test_the_tick_archives_an_idea_once_its_run_is_judged_and_leaves_its_files_for_later(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, project_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, campaign_path: Path
 ) -> None:
-    write_toml(project_path, HARNESS_LEAVES_AN_ARRAY)
+    write_toml(campaign_path, HARNESS_LEAVES_AN_ARRAY)
     tracer = Tracer(None)
     store = Store(tmp_path / 'store')
     scheduler = Scheduler(
@@ -41,9 +41,9 @@ def test_the_tick_archives_an_idea_once_its_run_is_judged_and_leaves_its_files_f
         factory(runtime),
         archiving=Archiving(store, ArchivePolicy(reserve=0)),
     )
-    (idea,) = add_ideas(db, project, 'leaves an array')
+    (idea,) = add_ideas(db, campaign, 'leaves an array')
     assert idea == 1
-    workspace = workspace_dir(tmp_path, project.id)
+    workspace = workspace_dir(tmp_path, campaign.id)
     assert scheduler.tick() == [1]
     scheduler.wait(timeout=30)
     assert files(workspace) == {'idea1/x.npy': b'array\n'}
@@ -62,7 +62,7 @@ def test_the_tick_archives_an_idea_once_its_run_is_judged_and_leaves_its_files_f
 
 
 def test_a_stopping_scheduler_waits_for_the_archivers_job(
-    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Greptile on hiloopai/piloop-dev#11: the daemon released its lock while an upkeep still pruned."""
     tracer = Tracer(None)

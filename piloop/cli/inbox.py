@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 
 from piloop.campaign import inbox
 from piloop.cli import common
-from piloop.cli.common import JsonFlag, ProjectRef
+from piloop.cli.common import CampaignRef, JsonFlag
 from piloop.db.models import Comment, CommentKind, Event, utcnow
 from piloop.reports import feed
 from piloop.reports.overview import age, item_lines
@@ -32,7 +32,7 @@ KindFilter = Annotated[
 
 @app.default
 def inbox_list(
-    ref: ProjectRef | None = None,
+    ref: CampaignRef | None = None,
     /,
     *,
     kind: KindFilter = (),
@@ -41,35 +41,35 @@ def inbox_list(
 ) -> None:
     """List the unacknowledged inbox items, most urgent first, then the seeds that wait for research.
 
-    Priority 0 is urgent and 4 is someday. Without a project, it lists the items of every project. With --json, it
+    Priority 0 is urgent and 4 is someday. Without a campaign, it lists the items of every campaign. With --json, it
     prints them read at one cursor: follow them with `piloop events --after <cursor>`.
     """
     if json_:
         with common.session() as s, feed.snapshot(s) as cursor:
-            project_id = common.project(s, ref).id if ref else None
-            view = feed.inbox_view(s, project_id=project_id, kinds=kind, acked=all_)
+            campaign_id = common.campaign(s, ref).id if ref else None
+            view = feed.inbox_view(s, campaign_id=campaign_id, kinds=kind, acked=all_)
         common.print_json({'cursor': cursor, **view})
         return
     with common.session() as s:
-        project_id = common.project(s, ref).id if ref else None
-        rows = inbox.items(s, project_id=project_id, kinds=kind, acked=all_)
+        campaign_id = common.campaign(s, ref).id if ref else None
+        rows = inbox.items(s, campaign_id=campaign_id, kinds=kind, acked=all_)
         now = utcnow()
-        table = Table('id', 'p', 'kind', 'project', 'on', 'by', 'age', *(['acked'] if all_ else []), 'first line')
-        for c, project in rows:
+        table = Table('id', 'p', 'kind', 'campaign', 'on', 'by', 'age', *(['acked'] if all_ else []), 'first line')
+        for c, campaign in rows:
             acked = [f'{c.acked_by}, {age(c.acked_at, now)} ago' if c.acked_at else '—'] if all_ else []
             table.add_row(
                 str(c.id),
                 str(c.priority),
                 str(c.kind),
-                project.name if project else '—',
+                campaign.name if campaign else '—',
                 f'{c.target_kind}#{c.target_id}',
                 c.author,
                 age(c.created_at, now),
                 *acked,
                 Text(cell(c.body)),
             )
-        waiting = inbox.seeds(s, project_id=project_id)
-        seeds = [inbox.seed_line(idea, project) for idea, project in waiting]
+        waiting = inbox.seeds(s, campaign_id=campaign_id)
+        seeds = [inbox.seed_line(idea, campaign) for idea, campaign in waiting]
     if rows:
         common.console.print(table)
     common.console.print(
@@ -94,7 +94,7 @@ def inbox_show(comment_id: Annotated[int, cyclopts.Parameter(help='The id of the
 
 @app.command(name='wait')
 def inbox_wait(
-    ref: ProjectRef | None = None,
+    ref: CampaignRef | None = None,
     /,
     *,
     timeout: Annotated[float, cyclopts.Parameter(help='Seconds to wait before it returns with nothing new.')] = 1800,
@@ -106,16 +106,16 @@ def inbox_wait(
     """Wait until something needs the orchestrator, print it one line per item, then print the command to wait again.
 
     These events end the wait: a new unacknowledged inbox item that someone else wrote, a seed that someone else
-    filed, a project that the daemon stopped, an anomaly that the daemon gave to a watchdog, and the daemon's verdict
+    filed, a campaign that the daemon stopped, an anomaly that the daemon gave to a watchdog, and the daemon's verdict
     on a measured candidate. Your own decisions, as PILOOP_ACTOR, do not end it. At --timeout it returns with nothing.
-    Set the timeout of your shell tool higher than --timeout. Without a project, it waits for every project.
+    Set the timeout of your shell tool higher than --timeout. Without a campaign, it waits for every campaign.
     """
     deadline = time.monotonic() + timeout
     with common.session() as s:
-        project_id = common.project(s, ref).id if ref else None
+        campaign_id = common.campaign(s, ref).id if ref else None
         cursor = after if after is not None else s.scalar(select(func.max(Event.id))) or 0
         while True:
-            cursor, lines = inbox.news(s, cursor, project_id=project_id, me=common.settings.actor)
+            cursor, lines = inbox.news(s, cursor, campaign_id=campaign_id, me=common.settings.actor)
             s.rollback()  # end the read transaction: a WAL reader that stays open while it sleeps blocks checkpoints
             if lines or time.monotonic() >= deadline:
                 break
@@ -133,10 +133,10 @@ def inbox_ack(
     up_to: Annotated[
         int | None,
         cyclopts.Parameter(
-            help='Acknowledge every unacknowledged item up to this id instead. --project and --kind narrow it.'
+            help='Acknowledge every unacknowledged item up to this id instead. --campaign and --kind narrow it.'
         ),
     ] = None,
-    project: Annotated[str | None, cyclopts.Parameter(help='With --up-to: only the items of this project.')] = None,
+    campaign: Annotated[str | None, cyclopts.Parameter(help='With --up-to: only the items of this campaign.')] = None,
     kind: Annotated[
         tuple[CommentKind, ...],
         cyclopts.Parameter(name='--kind', help='With --up-to: only the items of this kind. Repeatable.'),
@@ -148,11 +148,11 @@ def inbox_ack(
     """
     if bool(ids) == (up_to is not None):
         raise SystemExit('name the ids to acknowledge, or --up-to <id>')
-    if ids and (project or kind):
-        raise SystemExit('--project and --kind work only with --up-to <id>')
+    if ids and (campaign or kind):
+        raise SystemExit('--campaign and --kind work only with --up-to <id>')
     with common.session() as s:
         if up_to is not None:
-            project_id = common.project(s, project).id if project else None
-            ids = tuple(c.id for c, _ in inbox.items(s, project_id=project_id, kinds=kind) if c.id <= up_to)
+            campaign_id = common.campaign(s, campaign).id if campaign else None
+            ids = tuple(c.id for c, _ in inbox.items(s, campaign_id=campaign_id, kinds=kind) if c.id <= up_to)
         lines = inbox.ack(s, ids, common.settings.actor)
     common.console.print('\n'.join(lines) or 'nothing to acknowledge', markup=False)

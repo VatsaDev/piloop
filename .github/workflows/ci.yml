@@ -43,7 +43,7 @@ jobs:
       - run: PILOOP_SRC=. ./install.sh
       - name: enwik8 example, headless (no Herdr on a runner)
         env:
-          PILOOP_PROJECT_RUNTIME: subprocess
+          PILOOP_CAMPAIGN_RUNTIME: subprocess
           COLUMNS: 200
         run: |
           export PATH="$HOME/.local/bin:$PATH"
@@ -53,11 +53,11 @@ jobs:
       - name: the example plugins install next to piloop and are selected through the configuration
         env:
           PILOOP_HOME: /tmp/plugins-home
-          PILOOP_PROJECT_RUNTIME: nice
-          PILOOP_PROJECT_PLUGINS__VERDICT_RULE__PROVIDER: min_gain
-          PILOOP_PROJECT_PLUGINS__VERDICT_RULE__MIN_GAIN: "100"
-          PILOOP_PROJECT_PLUGINS__STOP_RULE__PROVIDER: after_keeps
-          PILOOP_PROJECT_PLUGINS__STOP_RULE__KEEPS: "3"
+          PILOOP_CAMPAIGN_RUNTIME: nice
+          PILOOP_CAMPAIGN_PLUGINS__VERDICT_RULE__PROVIDER: min_gain
+          PILOOP_CAMPAIGN_PLUGINS__VERDICT_RULE__MIN_GAIN: "100"
+          PILOOP_CAMPAIGN_PLUGINS__STOP_RULE__PROVIDER: after_keeps
+          PILOOP_CAMPAIGN_PLUGINS__STOP_RULE__KEEPS: "3"
           COLUMNS: 200
         run: |
           export PATH="$HOME/.local/bin:$PATH"

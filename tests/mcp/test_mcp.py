@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from piloop.config import ProjectConfig
+from piloop.config import CampaignConfig
 from piloop.db.models import WorkerKind
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.mcp import (
@@ -142,7 +142,7 @@ def calls(fake: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in Path(f'{fake}.calls').read_text().splitlines()]
 
 
-HARNESS_ARGV = ['--model', 'm', '-c', 'projects={"/w"={trust_level="trusted"}}', '--sandbox', 'x', MCP, 'go -c']
+HARNESS_ARGV = ['--model', 'm', '-c', 'campaigns={"/w"={trust_level="trusted"}}', '--sandbox', 'x', MCP, 'go -c']
 
 
 def codex_launch(tmp_path: Path, fake: Path, servers: dict[str, McpServer], **fake_env: str) -> Launch:
@@ -183,7 +183,7 @@ def test_codex_turns_off_every_server_codex_would_load_then_adds_the_roles(tmp_p
         'mcp_servers.open': {'url': 'https://open.example/mcp'},
         'shell_environment_policy.exclude': ['EXA_API_KEY', 'FIRECRAWL_API_KEY', 'XAI_API_KEY'],
     }
-    harness = ['-c', 'projects={"/w"={trust_level="trusted"}}']
+    harness = ['-c', 'campaigns={"/w"={trust_level="trusted"}}']
     assert calls(fake_codex) == [
         {
             'cwd': str(tmp_path / 'worktree'),
@@ -277,7 +277,7 @@ def test_pi_refuses_an_argv_that_keeps_its_extensions_on() -> None:
 
 
 def config(**extra: object) -> dict[str, object]:
-    """A minimal project config table with ``extra`` keys on top."""
+    """A minimal campaign config table with ``extra`` keys on top."""
     base: dict[str, object] = {
         'name': 'demo',
         'evaluate': ['true'],
@@ -291,36 +291,36 @@ def config(**extra: object) -> dict[str, object]:
 
 
 def test_a_role_lists_servers_by_table_and_gets_exactly_those() -> None:
-    cfg = ProjectConfig.model_validate(config(roles={'research': {'mcp': ['xai', 'exa']}}))
+    cfg = CampaignConfig.model_validate(config(roles={'research': {'mcp': ['xai', 'exa']}}))
     assert cfg.role_servers(WorkerKind.RESEARCH) == {'xai': XAI, 'exa': EXA}
     assert cfg.role_servers(WorkerKind.WORKER) == {}, 'a role lists none by default'
     with pytest.raises(ValidationError, match=re.escape("roles.worker.mcp: no [mcp.<name>] table for ['nope']")):
-        ProjectConfig.model_validate(config(roles={'worker': {'mcp': ['exa', 'nope']}}))
+        CampaignConfig.model_validate(config(roles={'worker': {'mcp': ['exa', 'nope']}}))
     with pytest.raises(ValidationError, match='String should match pattern'):
-        ProjectConfig.model_validate(config(mcp={'a.b': OPEN.model_dump()}))
+        CampaignConfig.model_validate(config(mcp={'a.b': OPEN.model_dump()}))
 
 
 def test_every_harness_a_role_with_servers_may_run_must_carry_them() -> None:
     plain = {'executable': 'x', 'headless': ['{prompt}']}
     custom = config(harnesses=['claude', 'plain'], model={'claude': 'c', 'plain': 'p'}, harness={'plain': plain})
-    assert ProjectConfig.model_validate(custom).harnesses == ['claude', 'plain'], 'no role lists a server: any will do'
+    assert CampaignConfig.model_validate(custom).harnesses == ['claude', 'plain'], 'no role lists a server: any will do'
     with pytest.raises(
         ValidationError,
         match=re.escape(
             "harness 'plain' under the subprocess runtime (headless): it takes no MCP servers in its headless argv"
         ),
     ):
-        ProjectConfig.model_validate(custom | {'roles': {'watchdog': {'mcp': ['exa']}}})
+        CampaignConfig.model_validate(custom | {'roles': {'watchdog': {'mcp': ['exa']}}})
     without = {'executable': 'x', 'headless': ['{prompt}'], 'mcp': 'claude'}
     with pytest.raises(ValidationError, match="harness 'plain' under the subprocess runtime"):
-        ProjectConfig.model_validate(custom | {'harness': {'plain': without}, 'roles': {'watchdog': {'mcp': ['exa']}}})
+        CampaignConfig.model_validate(custom | {'harness': {'plain': without}, 'roles': {'watchdog': {'mcp': ['exa']}}})
     herdr = config(runtime='herdr', roles={'research': {'mcp': ['exa']}})
     with pytest.raises(
         ValidationError,
         match=re.escape("harness 'pi' under the herdr runtime (interactive): pi takes MCP servers only with"),
     ):
-        ProjectConfig.model_validate(herdr)
-    ProjectConfig.model_validate(herdr | {'roles': {'research': {'mcp': ['exa'], 'harnesses': ['claude', 'codex']}}})
+        CampaignConfig.model_validate(herdr)
+    CampaignConfig.model_validate(herdr | {'roles': {'research': {'mcp': ['exa'], 'harnesses': ['claude', 'codex']}}})
 
 
 def test_a_harness_names_a_known_renderer_and_mcp_only_with_one() -> None:

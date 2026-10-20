@@ -5,9 +5,9 @@ description: Every piloop command and its options.
 
 Run `piloop --help` for the list of commands, and `piloop <command> --help` for the options of one command.
 
-Many commands take a `REF`: a project name, or a path inside the project's repo. Without a `REF`, `piloop status`
-and `piloop history` use the project of the current directory, else the only active project, else every project.
-`piloop inbox`, `piloop inbox wait` and `piloop watch` cover every project.
+Many commands take a `REF`: a campaign name, or a path inside the campaign's repo. Without a `REF`, `piloop status`
+and `piloop history` use the campaign of the current directory, else the only active campaign, else every campaign.
+`piloop inbox`, `piloop inbox wait` and `piloop watch` cover every campaign.
 
 Commands that write sign their writes with `PILOOP_ACTOR` (`human` by default). See
 [Environment variables](/reference/environment).
@@ -20,12 +20,12 @@ Commands that write sign their writes with `PILOOP_ACTOR` (`human` by default). 
 piloop init [PATH] [--example enwik8|titanic-tracks]
 ```
 
-Makes `PATH` (default `.`) a piloop project and registers it. It is safe to run again.
+Makes `PATH` (default `.`) a piloop campaign and registers it. It is safe to run again.
 
 - Runs `git init` and makes a baseline commit when necessary.
 - When there is no `piloop.toml`, writes `piloop.toml`, `brief.md` and `evaluate.py` from the template. It keeps
   files that exist already. While `evaluate.py` is the unchanged stub, it stops and says what to edit.
-- Measures `HEAD` as the baseline candidate and registers the project. When the project is registered already, it
+- Measures `HEAD` as the baseline candidate and registers the campaign. When the campaign is registered already, it
   reads `piloop.toml` again.
 - Copies the documents that `[memory] documents` names into the database. See
   [research memory](/concepts/research-memory).
@@ -62,7 +62,7 @@ how long to wait for the daemon to come back. See [Upgrading](/guides/upgrading)
 ### piloop migrate
 
 Brings the database to the schema of this CLI and prints what changed. The daemon and every command that reads or
-writes projects do this silently when they start. `piloop doctor` and `piloop sql` do not.
+writes campaigns do this silently when they start. `piloop doctor` and `piloop sql` do not.
 
 ## The daemon
 
@@ -86,19 +86,19 @@ piloop stop [--timeout SECONDS]
 Sends SIGTERM to the daemon and waits up to `--timeout` seconds (default 30) for it to exit. The daemon stops the
 running agents, and their runs fail with `daemon stopped`. Their ideas go back to `ready`. A run whose worker already
 left its finding is finished, not stopped: the next `piloop serve` scores its commits, and its idea does not run
-again. The projects stay active, and the next `piloop serve` continues them. A campaign ends only at its `[stop]`
+again. The campaigns stay active, and the next `piloop serve` continues them. A campaign ends only at its `[stop]`
 limits.
 
-### piloop project stop
+### piloop campaign stop
 
 ```text
-piloop project stop REF [--kill] [--reason TEXT]
+piloop campaign stop REF [--kill] [--reason TEXT]
 ```
 
 Stops a campaign. The daemon stops it on its next tick, as when a [`[stop]` condition](/concepts/cost) holds: it
 drops the queued runs and the requested agents, the `stopped` triggers request the closing review, and each running
 worker is told to commit and stop, then ended 10 minutes later. What the workers committed is scored. With `--kill`,
-the workers are ended at once, without the prompt, and their commits are still scored. On a stopped project, `--kill`
+the workers are ended at once, without the prompt, and their commits are still scored. On a stopped campaign, `--kill`
 ends the workers that are still winding down. `--reason` goes into `stopped_reason`, after who stopped it.
 
 ### piloop restart
@@ -125,11 +125,11 @@ See [Running for days](/guides/running-for-days#under-a-service-manager).
 piloop pause REF --reason TEXT [--evals]
 ```
 
-Pauses one project. The daemon queues no run, requests no role and launches no requested agent, so research files no
+Pauses one campaign. The daemon queues no run, requests no role and launches no requested agent, so research files no
 ideas. A sweep that is running already files its new and developed ideas as `proposed`, for a review. Running work
 goes on, and its commits are scored. Nothing is escalated. The daemon still measures what a new evaluator or
 `piloop candidate remeasure` needs, so the pause can end on a measured head. `--evals` holds those measurements too.
-The pause is a state of the project in the database (`projects.paused`), not a file, so it holds wherever you run the
+The pause is a state of the campaign in the database (`campaigns.paused`), not a file, so it holds wherever you run the
 command. `piloop status` shows it with the reason. The paused time does not count toward `[stop] max_hours`, and no
 `[stop]` condition is checked while paused.
 
@@ -164,7 +164,7 @@ Adds a defined idea. A `ready` idea runs when a worker slot is free, in order of
 | `--harness` | Pin a harness instead of the rotation. |
 | `--base` | The candidate id to start from, instead of the head. |
 | `--proposed` | Wait for a human to approve the idea. |
-| `--track` | The track. Required when the project has several. |
+| `--track` | The track. Required when the campaign has several. |
 | `--after` | An idea to wait for. Repeat it for several. |
 | `--supersedes` | An idea that this one refines. Repeat it for several. |
 
@@ -218,7 +218,7 @@ is scored.
 piloop idea link IDEA_ID after|supersedes TARGET_ID --reason TEXT
 ```
 
-Links an idea that exists to another idea of the same project: it waits until the target is `done` (`after`), or it
+Links an idea that exists to another idea of the same campaign: it waits until the target is `done` (`after`), or it
 refines it (`supersedes`). The link is written in one transaction, so the daemon never takes the idea without it. An
 idea whose run is open takes no `after` link, and a link that closes a cycle of its kind is refused. The `--after` and
 `--supersedes` of `idea add` and `idea develop` are checked the same way.
@@ -254,8 +254,8 @@ piloop candidate remeasure CANDIDATE_ID
 ```
 
 Asks the daemon to measure the candidate again with the current evaluator, for a measurement that a fault of the host
-spoiled, or for one more repeat, also on a stopped project. A `crash` that the daemon judged is judged again. Any
-other verdict stays. The command says when the daemon measures it: not while the project is paused with `--evals`, or
+spoiled, or for one more repeat, also on a stopped campaign. A `crash` that the daemon judged is judged again. Any
+other verdict stays. The command says when the daemon measures it: not while the campaign is paused with `--evals`, or
 held by the spend guard. See
 [Measure a candidate again](/concepts/verdict#measure-a-candidate-again).
 
@@ -285,7 +285,7 @@ piloop candidate import REF COMMIT [--summary TEXT]
 
 Registers the tree of a commit, branch or tag of the repo as a `reference` candidate: a starting point that an idea
 can pin with `--base`. The daemon measures it. It is never kept, never the head and never a bar. To import a candidate
-of another project, fetch its commit into this repo first: `git fetch <its repo> <sha>`.
+of another campaign, fetch its commit into this repo first: `git fetch <its repo> <sha>`.
 
 ### piloop candidate note
 
@@ -316,11 +316,11 @@ piloop measurement add CANDIDATE_ID --report FILE
 ```
 
 Records a measurement that you made yourself, for example by running the evaluate command on the candidate's commit,
-under the project's current evaluator. `FILE` is JSON: `{"metrics": {"<name>": <value>}, "seconds": <s>, "error":
+under the campaign's current evaluator. `FILE` is JSON: `{"metrics": {"<name>": <value>}, "seconds": <s>, "error":
 "<why>"}`. Every metric name must be one of `piloop.toml`, and every metric is needed unless `error` says why the
 evaluation failed. A `pending` candidate is refused: add the measurement once the daemon has judged it. When the
 candidate's verdict is the daemon's `crash`, `discard` or `interesting`, the daemon judges it again with every
-measurement under the current evaluator, the next time it measures the project, also when the project is stopped:
+measurement under the current evaluator, the next time it measures the campaign, also when the campaign is stopped:
 not while it is paused with `--evals`, or held by the spend guard. Any other verdict stays, and a keep's mean, which the runs that
 start from it must beat, includes the new measurement. The command says which of these happens.
 
@@ -332,22 +332,22 @@ start from it must beat, includes the new measurement. The command says which of
 piloop status [REF] [--json]
 ```
 
-Prints the daemon's state, then for each project: the head, the tracks, the trajectory, the progress against
+Prints the daemon's state, then for each campaign: the head, the tracks, the trajectory, the progress against
 `[stop]`, the open runs, the queue, the running agents with their last line, the recent candidates, the anomalies,
 the inbox, the latest decisions and the recent events. The watchdog and research agents get the same overview in
 their brief.
 
-`--json` prints one JSON document instead: the daemon's pid and the main facts of each project, read at one cursor of
+`--json` prints one JSON document instead: the daemon's pid and the main facts of each campaign, read at one cursor of
 the [event feed](/reference/event-feed).
 
 ### piloop events
 
 ```text
-piloop events [--after CURSOR] [--project REF] [--kind KIND]... [--limit N] [--follow] [--timeout SECONDS] [--json]
+piloop events [--after CURSOR] [--campaign REF] [--kind KIND]... [--limit N] [--follow] [--timeout SECONDS] [--json]
 ```
 
 Prints the events after `CURSOR` (default 0, the start of the feed), oldest first, at most `--limit` (default 100,
-at most 1000), then the cursor to read after next. `--project` keeps the events about rows of one project, and
+at most 1000), then the cursor to read after next. `--campaign` keeps the events about rows of one campaign, and
 `--kind` the events of a kind; repeat it for several. The next cursor passes every event that the read examined,
 also those that the filters left out. `--follow` waits, up to `--timeout` seconds (default 1800), until an event
 arrives. `--json` prints one JSON document. See [Event feed](/reference/event-feed).
@@ -393,11 +393,11 @@ Prints one item, then the comments linked to it: the comments it cites, the comm
 
 ```text
 piloop inbox ack IDS...
-piloop inbox ack --up-to ID [--project REF] [--kind KIND]...
+piloop inbox ack --up-to ID [--campaign REF] [--kind KIND]...
 ```
 
-Marks items as seen. `--up-to` marks every unacknowledged item up to that id instead. With `--up-to`, `--project`
-keeps only the items of one project, and `--kind` keeps only the items of the given kinds. With `IDS`, `--project` and
+Marks items as seen. `--up-to` marks every unacknowledged item up to that id instead. With `--up-to`, `--campaign`
+keeps only the items of one campaign, and `--kind` keeps only the items of the given kinds. With `IDS`, `--campaign` and
 `--kind` are refused.
 Nothing waits on an acknowledgement. To revise a decision, write a `decision` comment on its target.
 
@@ -408,7 +408,7 @@ piloop inbox wait [REF] [--after EVENT_ID] [--timeout SECONDS]
 ```
 
 Blocks until something needs the orchestrator, then prints it, one line each, and the command for the next wait. It
-returns for a new inbox item that someone else wrote, a seed that someone else filed, a project that the daemon stopped,
+returns for a new inbox item that someone else wrote, a seed that someone else filed, a campaign that the daemon stopped,
 an anomaly that the daemon gave to a watchdog, and the daemon's verdict on a measured candidate. `--after` is the cursor
 that the last wait printed (default: now). `--timeout` (default 1800) is how long to wait before it returns with
 nothing. Set the timeout of your shell tool above it.
@@ -420,7 +420,7 @@ piloop wake [--budget TOKENS]
 ```
 
 Prints what an orchestrator session needs first, in a fixed budget (default 2000 tokens, about 4 characters each; 0
-prints nothing): the latest lines of the journal, the open inbox, the head of each active project, and the current
+prints nothing): the latest lines of the journal, the open inbox, the head of each active campaign, and the current
 lessons on their repos. Each section says how to read what did not fit. Run it at the start of every orchestrator
 session.
 
@@ -513,15 +513,15 @@ they write.
 piloop restore REF [IDEA | PATH]
 ```
 
-Writes archived workspace files back into the project's workspace. `IDEA` (`12` or `idea#12`) restores the files of
+Writes archived workspace files back into the campaign's workspace. `IDEA` (`12` or `idea#12`) restores the files of
 that idea. `PATH` restores one workspace-relative file or everything under a directory. With neither, it restores
 every archived file. A file that is already there with other content is kept and listed, never overwritten. See
 [The artifact store](/concepts/artifact-store).
 
 ### piloop store status
 
-Prints what the store holds (blobs, their local size, how many are on the remote), how much of each project was
-archived, and how many done ideas and stopped projects are still due.
+Prints what the store holds (blobs, their local size, how many are on the remote), how much of each campaign was
+archived, and how many done ideas and stopped campaigns are still due.
 
 ### piloop store evict
 
