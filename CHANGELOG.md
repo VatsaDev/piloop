@@ -14,6 +14,9 @@ A deprecated configuration key shows a warning for at least one minor release be
 - Architecture proposal for shared plugin composition, public research operations, campaign types, measurements by
   evaluator, benchmark and artifact, and an incremental migration that keeps today's workflow as the optimization
   campaign type. The proposal does not change runtime behavior.
+- Architecture proposal for distributed workers and a hosted control plane: the seams between the local default and
+  a hosted deployment, one lease protocol with fencing for every job, local or remote, and a rollout. It does not
+  change runtime behavior.
 - Roles are configuration. A `[roles.<name>]` table with a new name defines a role: its prompt, its triggers, its
   runtime, its working copy (`workdir`), its harnesses and limits, and what it may file (`files`). The worker, the
   watchdog, research and the scout are the same tables with defaults, and each built-in role accepts every key.
