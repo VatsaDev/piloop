@@ -70,6 +70,8 @@ CREATE TABLE projects (
 	spend_error VARCHAR,
 	spend_at DATETIME,
 	repo VARCHAR,
+	type VARCHAR DEFAULT 'optimization' NOT NULL,
+	parent_id INTEGER,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
 	updated_by VARCHAR,
@@ -78,7 +80,8 @@ CREATE TABLE projects (
 	CONSTRAINT "projects.paused_reason must be a text value" CHECK (typeof(paused_reason) IN ('text', 'null')),
 	UNIQUE (name),
 	CONSTRAINT projectstatus CHECK (status IN ('active', 'stopped')),
-	CONSTRAINT pause CHECK (paused IN ('launches', 'all'))
+	CONSTRAINT pause CHECK (paused IN ('launches', 'all')),
+	FOREIGN KEY(parent_id) REFERENCES projects (id)
 );
 CREATE TABLE archives (
 	id INTEGER NOT NULL,

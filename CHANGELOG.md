@@ -9,11 +9,13 @@ A deprecated configuration key shows a warning for at least one minor release be
 
 ### Added
 
+- Each campaign has a type, `projects.type`, and an optional parent campaign, `projects.parent_id`. Every campaign is
+  an `optimization` campaign, the only type for now. The database refuses a cycle of parents. Each change is a
+  `project.type` or `project.parent_id` event.
 - A program can read a campaign and follow it without missing an event. `piloop status --json` and
   `piloop inbox --json` print one JSON document with the cursor they were read at, and `piloop events --after
   <cursor> [--project] [--kind] [--limit] [--follow] --json` prints the events after it, in a versioned envelope that
   every stored event fits, unknown kinds included. See the event feed page of the docs.
-
 - `piloop eval queue` lists the evaluations that run or wait for a slot. `piloop eval cancel <candidate>` cancels one:
   the candidate gets a crashed measurement that names who cancelled it, at once, so a daemon restart does not run it.
 - Architecture proposal for shared plugin composition, public research operations, campaign types, measurements by

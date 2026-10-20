@@ -16,6 +16,8 @@ erDiagram
         varchar spend_error
         datetime spend_at
         varchar repo
+        varchar type
+        integer parent_id FK
         datetime created_at
         datetime updated_at
         varchar updated_by
@@ -197,6 +199,7 @@ erDiagram
         integer target_id
         json payload
     }
+    projects |o--o{ projects : "parent_id"
     projects ||--o{ evaluators : "project_id"
     projects ||--o{ ideas : "project_id"
     ideas ||--o{ idea_links : "idea_id"

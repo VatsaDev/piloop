@@ -19,7 +19,7 @@ table when Alembic's batch mode rebuilds it, so a batch migration also ends with
 from alembic.operations import Operations
 from sqlalchemy import text
 
-from piloop.db.triggers import changelog, fts, immutable, links, provenance, roles
+from piloop.db.triggers import changelog, fts, immutable, links, projects, provenance, roles
 from piloop.db.triggers.ddl import Event, Trigger
 from piloop.db.triggers.provenance import DAEMON_ACTOR, TRACKED_TABLES
 
@@ -45,6 +45,7 @@ PERSISTENT: tuple[Trigger, ...] = (
     changelog.escalation(),
     links.same_project(),
     roles.known_role(),
+    *projects.acyclic(),
     *immutable.NO_REPLACE,
     *fts.SYNC,
 )

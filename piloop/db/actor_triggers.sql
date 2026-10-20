@@ -98,6 +98,18 @@ BEGIN
   INSERT INTO events (kind, actor, target_kind, target_id, payload)
   VALUES ('project.status', (SELECT actor FROM temp.session_actor), 'project', NEW.id, json_object('old', OLD.status, 'new', NEW.status, 'stopped_reason', NEW.stopped_reason));
 END;
+CREATE TEMP TRIGGER projects_type_event AFTER UPDATE OF type ON projects
+WHEN OLD.type IS NOT NEW.type
+BEGIN
+  INSERT INTO events (kind, actor, target_kind, target_id, payload)
+  VALUES ('project.type', (SELECT actor FROM temp.session_actor), 'project', NEW.id, json_object('old', OLD.type, 'new', NEW.type));
+END;
+CREATE TEMP TRIGGER projects_parent_id_event AFTER UPDATE OF parent_id ON projects
+WHEN OLD.parent_id IS NOT NEW.parent_id
+BEGIN
+  INSERT INTO events (kind, actor, target_kind, target_id, payload)
+  VALUES ('project.parent_id', (SELECT actor FROM temp.session_actor), 'project', NEW.id, json_object('old', OLD.parent_id, 'new', NEW.parent_id));
+END;
 CREATE TEMP TRIGGER projects_paused_event AFTER UPDATE OF paused ON projects
 WHEN OLD.paused IS NOT NEW.paused
 BEGIN

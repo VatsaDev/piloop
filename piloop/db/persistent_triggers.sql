@@ -52,6 +52,16 @@ WHEN NEW.kind NOT IN ('worker', 'watchdog', 'research', 'scout') AND (SELECT jso
 BEGIN
   SELECT RAISE(ABORT, 'workers.kind must be a role of the project: worker, watchdog, research, scout or a [roles.<name>] table of its piloop.toml');
 END;
+CREATE TRIGGER projects_parent_insert AFTER INSERT ON projects
+WHEN NEW.parent_id IS NOT NULL AND NEW.id IN (WITH RECURSIVE up(id) AS (SELECT NEW.parent_id UNION SELECT p.parent_id FROM projects p JOIN up ON p.id = up.id WHERE p.parent_id IS NOT NULL) SELECT id FROM up)
+BEGIN
+  SELECT RAISE(ABORT, 'projects.parent_id: a project cannot be under itself or under one of its descendants');
+END;
+CREATE TRIGGER projects_parent_update AFTER UPDATE OF parent_id ON projects
+WHEN NEW.parent_id IS NOT NULL AND NEW.id IN (WITH RECURSIVE up(id) AS (SELECT NEW.parent_id UNION SELECT p.parent_id FROM projects p JOIN up ON p.id = up.id WHERE p.parent_id IS NOT NULL) SELECT id FROM up)
+BEGIN
+  SELECT RAISE(ABORT, 'projects.parent_id: a project cannot be under itself or under one of its descendants');
+END;
 CREATE TRIGGER journal_no_replace BEFORE INSERT ON journal
 WHEN EXISTS (SELECT 1 FROM journal WHERE id = NEW.id)
 BEGIN

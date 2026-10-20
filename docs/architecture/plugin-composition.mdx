@@ -186,6 +186,12 @@ candidates, harness rotation, the research, watchdog, and scout roles, lessons, 
 checks, head advancement, merges of concurrent keeps, and recovery. Other compositions of this type can choose other
 policies, such as several candidates on a Pareto frontier or repeated measurement before selection.
 
+A campaign type describes itself with a descriptor of plain data (`piloop.campaign.campaign_types.CampaignType`):
+its name, the JSON Schema of its own parameters, and its place in the campaign tree. A leaf-only type has no child
+campaigns, and a type can list the types that its children or its parent may have. `projects.type` holds the name, and
+`projects.parent_id` the parent campaign. Setting either checks both types' rules first. The optimization type takes
+children of any type, for example a campaign that optimizes one component of a larger system.
+
 A planning binding names one authority for its scope. An external planner replaces the default planner for that scope;
 the two never compete. When the controller disconnects, accepted work continues and unplanned work waits. A fallback
 is an explicit, recorded configuration change.

@@ -19,10 +19,12 @@ from sqlalchemy.exc import IntegrityError
 from piloop.config import ProjectConfig
 from piloop.db.models import Idea, Project
 from piloop.db.session import MIGRATIONS, Database, SchemaAhead, migrate, revision
-from piloop.db.triggers import PERSISTENT
+from piloop.db.triggers import PERSISTENT, projects
 from piloop.db.triggers.roles import known_role
 
 INBOX = 'ix_comments_inbox'
+SINCE_0015 = {t.name for t in projects.acyclic()}
+"""The persistent triggers that revision 0015 adds: a test of an older revision expects every other one."""
 INBOX_WHERE = 'priority IS NOT NULL AND acked_at IS NULL'
 
 
@@ -414,7 +416,9 @@ def test_0010_marks_the_runs_that_a_stopped_daemon_was_scoring_and_checks_the_fl
         with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: runs.scoring needs a finished'):
             con.execute('UPDATE runs SET scoring = 1 WHERE id = 3')
         triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
-        assert triggers == sorted(t.name for t in PERSISTENT), 'the rebuilt runs table has its triggers back'
+        assert triggers == sorted(t.name for t in PERSISTENT if t.name not in SINCE_0015), (
+            'the rebuilt runs table has its triggers back'
+        )
     command.downgrade(cfg, '0009')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert 'scoring' not in [c for (_, c, *_) in con.execute('PRAGMA table_info(runs)')]
@@ -465,7 +469,7 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
         sql = con.execute("SELECT sql FROM sqlite_master WHERE name = 'workers_kind'").fetchone()[0]
         assert sql + ';' == known_role().sql()
         triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
-        assert triggers == sorted(t.name for t in PERSISTENT)
+        assert triggers == sorted(t.name for t in PERSISTENT if t.name not in SINCE_0015)
     command.downgrade(cfg, '0010')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert con.execute(kinds).fetchall() == [('research',), ('research',), ('research',)]
@@ -535,3 +539,32 @@ def test_0014_adds_the_pause_of_a_project_which_needs_its_reason_and_downgrades(
         columns = [c for _, c, *_ in con.execute('PRAGMA table_info(projects)')]
         assert 'paused' not in columns and 'paused_reason' not in columns
         assert con.execute('SELECT name FROM projects').fetchall() == [('p',)]
+
+
+def test_0015_makes_every_project_a_root_optimization_campaign_and_downgrades(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0014')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO projects (name, path, config) VALUES ('p', '/p', '{}'), ('q', '/q', '{}')")
+        con.execute("INSERT INTO workers (kind, project_id) VALUES ('worker', 1)")
+    command.upgrade(cfg, '0015')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute('PRAGMA foreign_keys = ON')
+        assert con.execute('SELECT type, parent_id FROM projects').fetchall() == [('optimization', None)] * 2
+        con.execute('UPDATE projects SET parent_id = 1 WHERE id = 2')
+        with pytest.raises(sqlite3.IntegrityError, match='a project cannot be under itself'):
+            con.execute('UPDATE projects SET parent_id = 2 WHERE id = 1')
+        con.execute("INSERT INTO workers (kind, project_id) VALUES ('worker', 2)")
+        triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
+        assert triggers == sorted(t.name for t in PERSISTENT), 'projects was not rebuilt: workers_kind still reads it'
+        for t in PERSISTENT:
+            sql = con.execute('SELECT sql FROM sqlite_master WHERE name = ?', (t.name,)).fetchone()[0]
+            assert sql + ';' == t.sql(), f'{t.name}: the migration installs what the package renders'
+    command.downgrade(cfg, '0014')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        columns = [c for (_, c, *_) in con.execute('PRAGMA table_info(projects)')]
+        assert 'type' not in columns and 'parent_id' not in columns
+        assert con.execute('SELECT count(*) FROM projects').fetchone() == (2,)
+        triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
+        assert triggers == sorted(t.name for t in PERSISTENT if t.name not in SINCE_0015)

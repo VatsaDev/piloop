@@ -193,6 +193,8 @@ def _values[E: StrEnum](enum: type[E]) -> Enum:
 
 
 NOW = func.now()
+OPTIMIZATION = 'optimization'
+"""The built-in campaign type: improve the code against its evaluate command, candidate by candidate."""
 EMPTY_JSON = text("'{}'")
 
 
@@ -305,6 +307,15 @@ class Project(Tracked, Base):
     """The repository that the project works on, the same for every clone of it: the URL of its ``origin`` remote
     (else of its first remote) as ``host/owner/name``, else ``path``. ``piloop init`` sets it. Past work on the same
     code is ``WHERE repo = (SELECT repo FROM projects WHERE id = <p>)``."""
+    type: Mapped[str] = mapped_column(default=OPTIMIZATION, server_default=OPTIMIZATION)
+    """What the campaign does: a campaign type, by its name. ``optimization`` is built in, and is the type of every
+    campaign for now. ``piloop.campaign.ops.set_type`` refuses a name that no installed campaign type has. Each
+    change is a ``project.type`` event."""
+    parent_id: Mapped[int | None] = mapped_column(ForeignKey('projects.id'))
+    """The campaign that this one is under, for example the one that spawned it, NULL for a root. It makes a tree of
+    the campaigns of one piloop home. ``piloop.campaign.ops.set_parent`` sets it, and each change is a
+    ``project.parent_id`` event. The ``projects_parent`` triggers refuse a cycle. A raw DELETE of a project that has
+    children fails on the foreign key. Nothing else reads it yet: each campaign runs on its own."""
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
     ideas: Mapped[list[Idea]] = relationship(back_populates='project', order_by='Idea.id')

@@ -16,10 +16,11 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from piloop.agents.roles import files_of
-from piloop.campaign import spend
+from piloop.campaign import campaign_types, spend
 from piloop.campaign.ideas import Definition, NotASeed, develop
 from piloop.config import Files, ProjectConfig, config_of
 from piloop.db.events import emit
@@ -93,6 +94,76 @@ def resume(s: Session, project_id: int) -> Pause:
     held = project.paused
     project.paused, project.paused_reason = None, None
     return held
+
+
+def set_type(s: Session, project_id: int, type_name: str) -> Project:
+    """Make ``type_name`` the campaign type of the project, and return it. The ``project.type`` event is the trigger's.
+
+    Raises:
+        Refused: the project is missing, it has that type already, no installed campaign type has that name, or the
+            new type does not fit the project's parent or children (``campaign_types.misplaced``).
+    """
+    project = _get(s, Project, project_id, 'project')
+    types = campaign_types.installed()
+    new = types.get(type_name)
+    if new is None:
+        raise Refused(f'no campaign type {type_name!r}: the installed types are {", ".join(types)}')
+    if project.type == type_name:
+        raise Refused(f'{project.name} has the campaign type {type_name} already')
+    parent = None if project.parent_id is None else s.get_one(Project, project.parent_id)
+    pairs = [(_type(parent), new)] if parent is not None else []
+    pairs += [(new, _type(child)) for child in s.scalars(select(Project).where(Project.parent_id == project.id))]
+    for above, below in pairs:
+        if (why := campaign_types.misplaced(above, below)) is not None:
+            raise Refused(f'{project.name} cannot have the campaign type {type_name}: {why}')
+    project.type = type_name
+    return project
+
+
+def _type(project: Project) -> campaign_types.CampaignType:
+    """Return the type of ``project``.
+
+    Raises:
+        Refused: no installed campaign type has its name, for example after its plugin was removed.
+    """
+    types = campaign_types.installed()
+    if project.type not in types:
+        raise Refused(
+            f'{project.name} has the campaign type {project.type!r}, which is not installed: {", ".join(types)}'
+        )
+    return types[project.type]
+
+
+def set_parent(s: Session, project_id: int, parent_id: int | None) -> Project:
+    """Put the project under ``parent_id`` in the tree of campaigns, or make it a root with None, and return it.
+
+    A project has at most one parent, a project of the same piloop home. The tree is for reading: it changes nothing
+    about how either campaign runs. The ``projects_parent`` triggers refuse a cycle, whoever writes the column, and
+    the ``project.parent_id`` event is the trigger's.
+
+    The two campaign types must allow it (``campaign_types.misplaced``): a leaf-only parent has no children, and a type
+    may restrict the types of its children or of its parent.
+
+    Raises:
+        Refused: a project is missing, the parent is the project's already, the types do not allow it, or the parent is
+            the project itself or one of its descendants.
+    """
+    project = _get(s, Project, project_id, 'project')
+    parent = None if parent_id is None else _get(s, Project, parent_id, 'project')
+    if project.parent_id == parent_id:
+        where = 'a root' if parent is None else f'under {parent.name}'
+        raise Refused(f'{project.name} is {where} already')
+    if parent is None:
+        project.parent_id = None
+        return project
+    if (why := campaign_types.misplaced(_type(parent), _type(project))) is not None:
+        raise Refused(f'{project.name} cannot be under {parent.name}: {why}')
+    try:
+        with s.begin_nested():
+            project.parent_id = parent.id
+    except IntegrityError as e:
+        raise Refused(f'{project.name} cannot be under {parent.name}: {e.orig}') from e
+    return project
 
 
 def review_first(project: Project, actor: str, *, new: bool) -> str | None:

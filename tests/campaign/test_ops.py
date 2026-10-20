@@ -9,8 +9,10 @@ import pytest
 from pydantic import ValidationError
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
-from piloop.campaign import ops
+from piloop.campaign import campaign_types, ops
+from piloop.campaign.campaign_types import CampaignType
 from piloop.config import load_project_config
 from piloop.db.events import emit
 from piloop.db.models import (
@@ -472,3 +474,121 @@ def test_a_track_must_be_in_the_config_and_its_move_says_why(me: Database, proje
     assert [(k, a, p) for k, a, p in kinds(me, TargetKind.IDEA, idea) if k == 'idea.track'] == [
         ('idea.track', ACTOR, {'old': 'score', 'new': 'size'})
     ]
+
+
+def parents(s: Session) -> dict[str, str | None]:
+    """Each campaign's name, with the name of its parent."""
+    names = {p.id: p.name for p in s.scalars(select(Project))}
+    return {p.name: names.get(p.parent_id) if p.parent_id else None for p in s.scalars(select(Project))}
+
+
+def test_a_campaign_has_one_parent_never_itself_or_a_descendant_and_each_change_is_an_event(me: Database) -> None:
+    with me.session() as s:
+        a = s.get_one(Project, 1)
+        b, c, d = (Project(name=name, path=f'/{name}', config=a.config) for name in 'bcd')
+        s.add_all([a, b, c, d])
+        s.flush()
+        assert (a.type, a.parent_id) == ('optimization', None), 'an optimization campaign, a root'
+        assert ops.set_parent(s, b.id, a.id) is b
+        ops.set_parent(s, c.id, b.id)
+        ops.set_parent(s, d.id, a.id)
+        assert parents(s) == {'demo': None, 'b': 'demo', 'c': 'b', 'd': 'demo'}
+        for child, parent in ((a, c), (a, a)):
+            with pytest.raises(ops.Refused, match=f'^{child.name} cannot be under {parent.name}: .*its descendants'):
+                ops.set_parent(s, child.id, parent.id)
+        assert a.parent_id is None and s.get(Project, c.id) is c, 'a refused change leaves the session usable'
+        with pytest.raises(ops.Refused, match='^c is under b already'):
+            ops.set_parent(s, c.id, b.id)
+        with pytest.raises(ops.Refused, match='^no project#9'):
+            ops.set_parent(s, c.id, 9)
+        ops.set_parent(s, c.id, None)
+        with pytest.raises(ops.Refused, match='^c is a root already'):
+            ops.set_parent(s, c.id, None)
+        s.commit()
+        assert parents(s) == {'demo': None, 'b': 'demo', 'c': None, 'd': 'demo'}
+        changes = s.scalars(select(Event).where(Event.kind == 'project.parent_id').order_by(Event.id)).all()
+        assert [(e.target_id, e.actor, e.payload) for e in changes] == [
+            (b.id, ACTOR, {'old': None, 'new': a.id}),
+            (c.id, ACTOR, {'old': None, 'new': b.id}),
+            (d.id, ACTOR, {'old': None, 'new': a.id}),
+            (c.id, ACTOR, {'old': b.id, 'new': None}),
+        ], 'the trigger logs each change, and a refused one leaves no event'
+        with pytest.raises(IntegrityError, match='FOREIGN KEY'):
+            s.execute(text('DELETE FROM projects WHERE id = :id'), {'id': a.id})
+
+
+PROOF = CampaignType(name='proof', leaf=True, parent_types=['optimization'])
+"""A test-only leaf type that goes only under an optimization campaign."""
+SURVEY = CampaignType(name='survey', child_types=['proof'])
+"""A test-only type whose children are proofs only."""
+
+
+@pytest.fixture
+def test_types(monkeypatch: pytest.MonkeyPatch) -> None:
+    types = {t.name: t for t in (*campaign_types.BUILT_IN, PROOF, SURVEY)}
+    monkeypatch.setattr(campaign_types, 'installed', lambda: types)
+
+
+def test_a_campaign_type_is_an_installed_one_that_fits_its_parent_and_children(me: Database, test_types: None) -> None:
+    with me.session() as s:
+        top = s.get_one(Project, 1)
+        child, other = (Project(name=name, path=f'/{name}', config=top.config) for name in ('child', 'other'))
+        s.add_all([child, other])
+        s.flush()
+        with pytest.raises(ops.Refused, match="^no campaign type 'nope': the installed types are optimization, proof"):
+            ops.set_type(s, child.id, 'nope')
+        with pytest.raises(ops.Refused, match='^child has the campaign type optimization already'):
+            ops.set_type(s, child.id, 'optimization')
+        ops.set_parent(s, child.id, top.id)
+        assert ops.set_type(s, child.id, 'proof').type == 'proof'
+        with pytest.raises(ops.Refused, match='^other cannot be under child: campaign type proof is leaf-only$'):
+            ops.set_parent(s, other.id, child.id)
+        with pytest.raises(
+            ops.Refused, match='^demo cannot have the campaign type proof: campaign type proof is leaf-only'
+        ):
+            ops.set_type(s, top.id, 'proof')
+        with pytest.raises(
+            ops.Refused, match="^demo cannot have the campaign type survey: type proof can't be under type su"
+        ):
+            ops.set_type(s, top.id, 'survey')
+        ops.set_type(s, other.id, 'survey')
+        with pytest.raises(
+            ops.Refused,
+            match="^child cannot be under other: type proof can't be under type survey: it goes under optimization$",
+        ):
+            ops.set_parent(s, child.id, other.id)
+        with pytest.raises(
+            ops.Refused,
+            match="^demo cannot be under other: type optimization can't be under type survey: it takes proof$",
+        ):
+            ops.set_parent(s, top.id, other.id)
+        s.commit()
+        changes = s.scalars(select(Event).where(Event.kind == 'project.type').order_by(Event.id)).all()
+        assert [(e.target_id, e.payload) for e in changes] == [
+            (child.id, {'old': 'optimization', 'new': 'proof'}),
+            (other.id, {'old': 'optimization', 'new': 'survey'}),
+        ]
+        s.execute(text("UPDATE projects SET type = 'gone' WHERE id = :id"), {'id': other.id})
+        s.expire_all()
+        with pytest.raises(ops.Refused, match="^other has the campaign type 'gone', which is not installed"):
+            ops.set_parent(s, other.id, top.id)
+
+
+def test_the_database_refuses_a_cycle_of_parents(me: Database, tmp_path: Path) -> None:
+    with closing(sqlite3.connect(tmp_path / 'piloop.db')) as con:
+        con.execute('PRAGMA foreign_keys = ON')
+        con.execute("INSERT INTO projects (name, path, config) VALUES ('b', '/b', '{}')")
+        con.execute('UPDATE projects SET parent_id = 1 WHERE id = 2')
+        for statement in (
+            'UPDATE projects SET parent_id = 2 WHERE id = 1',
+            'UPDATE projects SET parent_id = id WHERE id = 1',
+            "INSERT INTO projects (id, name, path, config, parent_id) VALUES (9, 'c', '/c', '{}', 9)",
+        ):
+            with pytest.raises(sqlite3.IntegrityError, match='^projects.parent_id: a project cannot be under itself'):
+                con.execute(statement)
+        with pytest.raises(sqlite3.IntegrityError, match='FOREIGN KEY'):
+            con.execute('UPDATE projects SET parent_id = 7 WHERE id = 1')
+        assert con.execute('SELECT id, type, parent_id FROM projects').fetchall() == [
+            (1, 'optimization', None),
+            (2, 'optimization', 1),
+        ]
