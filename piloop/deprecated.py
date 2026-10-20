@@ -2,10 +2,11 @@
 
 To deprecate a key, add a bridge to ``BRIDGES``. A bridge is a function that takes the file path and the parsed TOML,
 changes the old key to the new form in place and calls ``warn``. Its docstring is its entry under "Deprecated keys" in
-the generated configuration reference (``docs/reference/configuration.mdx``). Add a ``Deprecated`` line to CHANGELOG.md.
+the generated configuration reference (``docs/reference/configuration.mdx``). The release notes list it under
+``Deprecated``.
 
-To remove a bridge, delete its function, its ``BRIDGES`` entry and its tests, run ``make docs`` and move its
-CHANGELOG.md line to ``Removed``. The old key then fails as an unknown key.
+To remove a bridge, delete its function, its ``BRIDGES`` entry and its tests, and run ``make docs``. The release notes
+list the key under ``Removed``. The old key then fails as an unknown key.
 """
 
 import warnings

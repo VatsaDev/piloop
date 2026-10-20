@@ -1,4 +1,6 @@
-"""scripts/generate_all.py: the modes, the stale-file check and its diff, and that every generated file is current.
+"""scripts/generate_all.py: the modes, the stale-file check and its diff, and the warning in each generated page.
+
+The pre-commit hook `docs` (`make docs-check`) checks that every generated file is current.
 
 The diff tests follow the tests of ``generated_file_diff`` in ruff's ``crates/ruff_dev/src/generate_all.rs`` (MIT).
 """
@@ -67,13 +69,6 @@ def test_dry_run_prints_and_writes_nothing(target: Path, capsys: pytest.CaptureF
     emit(target, 'new', Mode.DRY_RUN)
     assert capsys.readouterr().out == 'new\n'
     assert not target.exists()
-
-
-def test_every_generated_file_is_current(capsys: pytest.CaptureFixture[str]) -> None:
-    generate_all.main(Mode.CHECK)
-    out = capsys.readouterr().out.splitlines()
-    assert len(out) == len(generate_all.GENERATORS)
-    assert all(line.startswith('Up-to-date: ') for line in out)
 
 
 def test_each_generated_mdx_file_starts_with_the_warning() -> None:

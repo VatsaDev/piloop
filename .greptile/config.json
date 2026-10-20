@@ -13,7 +13,7 @@
   "excludeAuthors": [
     "dependabot[bot]"
   ],
-  "ignorePatterns": "uv.lock\ndocs/reference/configuration.mdx\ndocs/reference/schema.mdx\ndocs/snippets/generated/**\npiloop/db/actor_triggers.sql\npiloop/db/persistent_triggers.sql\ndocs/images/**\ntests/fixtures/**",
+  "ignorePatterns": "uv.lock\ndocs/reference/configuration.mdx\ndocs/reference/schema.mdx\ndocs/snippets/generated/**\npiloop/db/actor_triggers.sql\ndocs/images/**\ntests/fixtures/**",
   "instructions": "piloop is a daemon that manages a queue of ideas: coding agents try each idea in a git worktree, the evaluate command scores the commit, and the verdict keeps it only if it beats the head. Review for correctness first: the scheduler, the verdict statistics, the database triggers and the run lifecycle. CI already enforces ruff, ty, 100% branch coverage and generated-docs drift, so do not comment on formatting, import order or coverage numbers. Flag a change that makes the design less simple: a second way to do something that already exists, a compensating loop or retry for a design flaw, a flag or knob with no clear user.",
   "rules": [
     {
@@ -89,21 +89,12 @@
     },
     {
       "id": "config-compat",
-      "rule": "A renamed or removed piloop.toml key needs a bridge in piloop/deprecated.py and a Deprecated line in CHANGELOG.md, so existing projects keep loading for at least one minor release.",
+      "rule": "A renamed or removed piloop.toml key needs a bridge in piloop/deprecated.py and a commit subject that says the key is deprecated, so existing projects keep loading for at least one minor release.",
       "scope": [
         "piloop/config.py",
         "piloop/deprecated.py"
       ],
       "severity": "medium"
-    },
-    {
-      "id": "changelog",
-      "rule": "A change a user can see (CLI, piloop.toml, database schema, agent behaviour, docs of a feature) has a line under [Unreleased] in CHANGELOG.md.",
-      "scope": [
-        "piloop/**",
-        "skills/**"
-      ],
-      "severity": "low"
     },
     {
       "id": "regression-test",

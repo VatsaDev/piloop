@@ -4,10 +4,8 @@ The change log must be TEMP: only a trigger of the connection can read the conne
 (``temp.session_actor``), and an event without an actor is of no use. ``updated_at`` and ``comment.escalation`` need
 nothing from the connection, so they are persistent. ``updated_by`` and every event of the change log are TEMP and
 belong to the connection. ``temp_sql`` renders them into ``piloop/db/actor_triggers.sql``, which
-``piloop.db.sql.install_actor`` runs at connect time. ``persistent_sql`` renders ``PERSISTENT`` into
-``piloop/db/persistent_triggers.sql``, a copy for review only: the migrations run the DDL that Python renders.
-``uv run -m scripts.generate_all`` writes both files, and ``make docs-check`` fails when either one is out of date, so
-a change to a trigger is reviewed as a SQL diff.
+``piloop.db.sql.install_actor`` runs at connect time. ``uv run -m scripts.generate_all`` writes that file, and
+``make docs-check`` fails when it is out of date. The migrations run the DDL of ``PERSISTENT`` that Python renders.
 
 To add a trigger, add one call to one tuple, then run ``make docs``: ``changed('ideas', 'plan')`` in
 ``changelog.CHANGES`` for a decision, ``tombstone(...)`` in ``TOMBSTONES`` for a delete, a table in
@@ -30,7 +28,6 @@ __all__ = [
     'TRACKED_TABLES',
     'Event',
     'Trigger',
-    'persistent_sql',
     'recreate',
     'temp_sql',
 ]
@@ -93,15 +90,6 @@ COMMENTS = """
 APPEND_ONLY = """
 -- The feed is append-only: an event takes the next id, because a reader's cursor is an event id. Its columns have the
 -- types that a reader reads. The authorizer of `piloop sql` denies an UPDATE or a DELETE of events."""
-
-
-def persistent_sql() -> str:
-    """The text of ``piloop/db/persistent_triggers.sql``."""
-    header = (
-        '-- What the migrations install, for review: they run the same DDL, rendered from PERSISTENT. A change here\n'
-        '-- without a migration is a bug. A rename needs a migration that drops the old name.\n'
-    )
-    return GENERATED + header + '\n'.join(t.sql() for t in PERSISTENT) + '\n'
 
 
 def temp_sql() -> str:

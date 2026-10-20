@@ -39,5 +39,4 @@ repos:
         entry: make
         args: [docs-check]
         language: system
-        types: [python]
         pass_filenames: false

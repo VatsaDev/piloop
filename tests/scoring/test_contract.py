@@ -1,6 +1,7 @@
 """Pin the public behaviour of piloop 0.1.0: the verdict's bootstrap and the evaluate command's output protocol.
 
-Other tools and ports reproduce these values. Change a test here only together with a CHANGELOG entry.
+Other tools and ports reproduce these values. Change a test here only in a commit whose subject says what changed:
+the release notes come from it.
 """
 
 import json

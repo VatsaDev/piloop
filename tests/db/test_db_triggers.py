@@ -17,25 +17,18 @@ from piloop.db.models import Base, TargetKind
 from piloop.db.session import migrate
 from piloop.db.triggers import PERSISTENT, TEMP, Trigger, changelog, provenance
 
-ROOT = Path(__file__).resolve().parent.parent.parent
-
 
 def trigger_names(con: sqlite3.Connection, schema: str = 'main') -> list[str]:
     master = 'sqlite_temp_master' if schema == 'temp' else 'sqlite_master'
     return [n for (n,) in con.execute(f"SELECT name FROM {master} WHERE type = 'trigger' ORDER BY name")]
 
 
-def test_the_generated_files_are_the_package_rendered() -> None:
-    """``make docs`` writes both files; the tuples in the package are the source of truth."""
-    assert (ROOT / 'piloop/db/actor_triggers.sql').read_text() == triggers.temp_sql() == sql.ACTOR_TRIGGERS, (
-        'stale piloop/db/actor_triggers.sql: run `make docs`'
-    )
-    assert (ROOT / 'piloop/db/persistent_triggers.sql').read_text() == triggers.persistent_sql(), (
-        'stale piloop/db/persistent_triggers.sql: run `make docs`'
-    )
+def test_the_generated_file_is_the_package_rendered() -> None:
+    """``make docs`` writes the TEMP triggers that every connection installs; the tuples in the package are the source."""
+    assert triggers.temp_sql() == sql.ACTOR_TRIGGERS, 'stale piloop/db/actor_triggers.sql: run `make docs`'
     assert all(t.temp and t.sql() in sql.ACTOR_TRIGGERS for t in TEMP)
-    assert all(not t.temp and t.sql() in triggers.persistent_sql() for t in PERSISTENT)
-    assert 'CREATE TEMP' not in triggers.persistent_sql() and 'CREATE TRIGGER' not in sql.ACTOR_TRIGGERS
+    assert all(not t.temp and 'CREATE TEMP' not in t.sql() for t in PERSISTENT)
+    assert 'CREATE TRIGGER' not in sql.ACTOR_TRIGGERS
 
 
 def test_every_trigger_is_one_statement_named_table_what_and_references_real_columns(tmp_path: Path) -> None:
