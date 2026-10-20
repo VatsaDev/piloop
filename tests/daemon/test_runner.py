@@ -747,6 +747,23 @@ def test_brief_carries_history_and_comments(
     assert '- A hunch worth a run of its own goes in your finding' in brief and 'idea seed demo' not in brief
 
 
+def test_a_worker_brief_names_its_worktree_as_the_place_to_work_and_the_project_repo_as_read_only(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """Given only the project repo's path, a worker edited and committed there: never scored, and main moved."""
+    write_toml(Path(project.path), HARNESS_APPEND.replace('\n', '\npwd > ../cwd.txt\n', 1))
+    reload_project(db, project)
+    run_id = make_run(db, project)
+    execute(executor(db, runtime, tmp_path), db, run_id)
+    cwd = (tmp_path / 'runs' / str(run_id) / 'cwd.txt').read_text().strip()
+    brief = run_row(db, run_id).brief or ''
+    assert (
+        f'- Your cwd is your worktree, {cwd}: make every edit, run every evaluation and make every commit there.'
+        f' Only its commits are scored. The project repo, {project.path}, is read-only for you: read its history'
+        ' and candidates, never edit, run or commit in it.'
+    ) in brief
+
+
 @pytest.mark.parametrize('budget', [400, 0])
 def test_a_worker_brief_opens_with_the_current_lessons_of_the_repo_within_its_budget(
     db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, budget: int

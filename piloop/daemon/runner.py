@@ -220,7 +220,9 @@ class RunExecutor:
                     project,
                     worker_id,
                     reason=f'idea#{idea.id} is ready',
-                    context=self._context(s, cfg, idea, base, f'{run.role}#{worker_id}'),
+                    context=self._context(
+                        s, cfg, idea, base, f'{run.role}#{worker_id}', self._runs_dir / str(run_id) / 'worktree'
+                    ),
                     track=cfg.track(idea.track),
                     wake=lessons_overview(s, project, cfg.wake_budget(run.role)),
                 )
@@ -954,8 +956,8 @@ class RunExecutor:
                         idea.status = IdeaStatus.DONE
                 s.commit()
 
-    def _context(self, s: Session, cfg: ProjectConfig, idea: Idea, base: Candidate, author: str) -> str:
-        """Return the worker's context: the idea, its base, and the comments on the idea and on all its runs.
+    def _context(self, s: Session, cfg: ProjectConfig, idea: Idea, base: Candidate, author: str, worktree: Path) -> str:
+        """Return the worker's context: its worktree, the idea, its base, and the comments on the idea and its runs.
 
         A comment on a run is about the idea too. Examples are a human's decision during attempt 1, or a watchdog's
         finding on why it failed. The next attempt is a new run, so without these comments it would start with no
@@ -970,7 +972,12 @@ class RunExecutor:
         )
         comments = s.scalars(select(Comment).where(on_idea | on_its_runs).order_by(Comment.id)).all()
         at_base = ', '.join(f'{t.primary.name}={score(base, evaluator_id, t.primary)}' for t in cfg.all_tracks)
-        lines = [f'- Starting from candidate#{base.id}: {at_base} — {base.summary}']
+        lines = [
+            f'- Your cwd is your worktree, {worktree}: make every edit, run every evaluation and make every commit'
+            f' there. Only its commits are scored. The project repo, {idea.project.path}, is read-only for you: read'
+            ' its history and candidates, never edit, run or commit in it.',
+            f'- Starting from candidate#{base.id}: {at_base} — {base.summary}',
+        ]
         if base.verdict is Verdict.RECOVERED:
             lines.append(
                 f'- candidate#{base.id} is work that an earlier run of this idea left uncommitted when its worker'
