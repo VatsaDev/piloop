@@ -291,7 +291,9 @@ def test_a_pure_plugin_is_installed_selected_by_config_and_answers_with_data(
     rule = VERDICT_RULES.get(table.provider)
     assert rule is piloop_min_gain.MIN_GAIN
     assert table.parameters == '{"min_gain": 2}'
-    assert rule.decide(CASE) == Judgement(Outcome.KEEP, 'against candidate#1: score gains +3, keeps at 2')
+    assert rule.decide(CASE) == Judgement(
+        Outcome.KEEP, 'against candidate#1: score 13 vs 10 (+3; aggregate: no per-unit results)'
+    )
     assert VERDICT_RULES.sources()['min_gain'].release == 'piloop-min-gain 0.1.0'
     home = Settings(home=tmp_path)
     assert not any(line.startswith('demo: verdict rule') for line in selections(home)), 'demo selects none yet'
@@ -421,3 +423,73 @@ def test_a_pure_contract_takes_and_returns_data_only() -> None:
     ]
     with pytest.raises(TypeError, match=r'^Leaky is not a pure contract: db is not a method'):
         PureCapability('leak', group='piloop.example.leaks', contract=Leaky)
+
+
+def test_a_plugin_declares_a_capability_calls_its_providers_and_another_package_provides_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, project: Project
+) -> None:
+    """``examples/plugins/verdict-checks`` declares ``verdict check`` and calls its providers from its verdict rule;
+    ``examples/plugins/no-unit-regression`` provides one. piloop lists, loads and checks it as one of its own."""
+    project_path = Path(project.path)
+    example(tmp_path / 'site', 'verdict-checks')
+    example(tmp_path / 'site', 'no-unit-regression')
+    monkeypatch.syspath_prepend(tmp_path / 'site')
+    checks = next(c for c in plugins.declared() if c.noun == 'verdict check')
+    assert (checks.tier, checks.group, checks.selection) == (Tier.PURE, 'piloop_verdict_checks.checks', None)
+    assert checks.sources()['no_unit_regression'].release == 'piloop-no-unit-regression 0.1.0'
+    with pytest.raises(
+        ConfigError, match=re.escape("unknown verdict check 'none'; registered verdict checks: no_unit")
+    ):
+        load_project_config(project_path, plugins={'verdict_rule': {'provider': 'checked', 'checks': ['none']}})
+    table = {'provider': 'checked', 'checks': ['no_unit_regression']}
+    cfg = load_project_config(project_path, plugins={'verdict_rule': table})
+    rule = VERDICT_RULES.get(cfg.plugins['verdict_rule'].provider)
+    units = {f'u{i}': 1.0 for i in range(30)}
+    better = {**units, **{f'u{i}': 2.0 for i in range(1, 30)}}
+
+    def case(mine: dict[str, float]) -> Case:
+        sides = Side('candidate#2', {'score': sum(mine.values())}, {'score': mine})
+        bar = Side('candidate#1', {'score': 30.0}, {'score': units})
+        return Case(Criterion('score', Direction.HIGHER), (), 0.95, sides, bar, cfg.plugins['verdict_rule'].parameters)
+
+    assert rule.decide(case(better)).verdict is Outcome.KEEP, 'no unit got worse'
+    worse = rule.decide(case({**better, 'u0': 0.5}))
+    assert worse.verdict is Outcome.INTERESTING
+    assert worse.reason.endswith('; held by no_unit_regression: 1 units of score got worse: u0')
+    monkeypatch.setattr(common, 'settings', Settings(home=tmp_path))
+    printed: list[str] = []
+    monkeypatch.setattr(common.console, 'print', lambda text, **_: printed.append(text))
+    app(['plugins'], result_action='return_value', exit_on_error=False)
+    lines = printed[0].splitlines()
+    listed = lines.index('verdict checks (pure tier, piloop_verdict_checks.checks):')
+    assert lines[listed + 1].split() == [
+        'no_unit_regression',
+        'piloop-no-unit-regression',
+        '0.1.0,',
+        'entry',
+        'point',
+        'no_unit_regression',
+        '=',
+        'piloop_no_unit_regression:NO_UNIT_REGRESSION',
+    ]
+
+
+STORES_AGAIN = PureCapability('copy', group='piloop.stores', contract=VerdictRule)
+"""A capability whose provider group the remote backends have already."""
+
+
+@pytest.mark.parametrize(
+    ('value', 'error'),
+    [
+        ('tests.fixtures.no_such_module:X', 'does not load: ModuleNotFoundError'),
+        (f'{PLUGIN}:NOT_A_ROLE', 'is not a piloop.plugins.host.Capability$'),
+        (f'{__name__}:STORES_AGAIN', 'the remote backends have the provider group piloop.stores already'),
+    ],
+)
+def test_a_declared_capability_loads_is_a_capability_and_has_a_group_of_its_own(
+    monkeypatch: pytest.MonkeyPatch, value: str, error: str
+) -> None:
+    """Each entry point of ``piloop.capabilities`` names one capability; the next one with its group is refused."""
+    installed(monkeypatch, [EntryPoint('odd', value, plugins.CAPABILITIES)])
+    with pytest.raises(PluginError, match=f'^entry point odd = {re.escape(value)} in piloop.capabilities.*{error}'):
+        plugins.declared()

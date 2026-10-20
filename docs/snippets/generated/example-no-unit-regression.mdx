@@ -1,0 +1,33 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the example plugin in `examples/plugins/no-unit-regression/` if you want to change anything here. */}
+
+```text pyproject.toml
+[project.entry-points."piloop_verdict_checks.checks"]
+no_unit_regression = "piloop_no_unit_regression:NO_UNIT_REGRESSION"
+```
+
+```python piloop_no_unit_regression/__init__.py
+"""``no_unit_regression``: a verdict check that refuses a keep when a unit of the primary metric got worse.
+
+A unit is one record, file or example that the evaluate command measures. A gain can be real in total and still
+make some units worse. This check refuses such a keep, so that a person looks at it. It needs per-unit results:
+without them, it refuses nothing. No state, no I/O.
+"""
+
+from piloop.plugins.contracts.verdict import Case
+
+
+class NoUnitRegression:
+    """A provider of the ``verdict check`` capability that ``piloop-verdict-checks`` declares."""
+
+    def check(self, case: Case) -> str | None:
+        name, direction = case.primary.name, case.primary.direction
+        mine, theirs = case.candidate.units.get(name), case.bar.units.get(name)
+        if mine is None or theirs is None:
+            return None
+        worse = sorted(u for u in mine.keys() & theirs.keys() if direction.gain(mine[u], theirs[u]) < 0)
+        return f'{len(worse)} units of {name} got worse: {", ".join(worse[:3])}' if worse else None
+
+
+NO_UNIT_REGRESSION = NoUnitRegression()
+"""The provider: an instance, as the entry point of a pure provider names."""
+```

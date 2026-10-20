@@ -1,7 +1,7 @@
 [project]
 name = "piloop-min-gain"
 version = "0.1.0"
-description = "A piloop verdict rule that keeps only a gain of at least a fixed size on the primary metric"
+description = "A piloop verdict rule that calls the built-in rule and keeps only a gain of at least a fixed size"
 requires-python = ">=3.14"
 dependencies = ["piloop"]
 

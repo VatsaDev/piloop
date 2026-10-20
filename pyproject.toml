@@ -50,6 +50,14 @@ Issues = "https://github.com/hiloopai/piloop/issues"
 piloop = "piloop.cli.main:main"
 
 # The providers of piloop itself, in the groups that a plugin package uses (piloop.plugins.host).
+[project.entry-points."piloop.capabilities"]
+runtime = "piloop.plugins.contracts.runtime:RUNTIMES"
+remote_backend = "piloop.plugins.contracts.store:REMOTES"
+trigger = "piloop.triggers:TRIGGERS"
+role = "piloop.config:ROLES"
+verdict_rule = "piloop.plugins.contracts.verdict:VERDICT_RULES"
+stop_rule = "piloop.plugins.contracts.stop:STOP_RULES"
+
 [project.entry-points."piloop.runtimes"]
 herdr = "piloop.runtime.herdr:HerdrRuntime"
 subprocess = "piloop.runtime.subprocess:SubprocessRuntime"
@@ -143,7 +151,7 @@ quote-style = "single"
 
 [tool.ty.environment]
 python-version = "3.14"
-extra-paths = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps"]
+extra-paths = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/verdict-checks", "examples/plugins/no-unit-regression"]
 
 [tool.ty.src]
 include = ["piloop", "tests", "scripts", "examples"]
@@ -152,7 +160,7 @@ exclude = ["piloop/db/migrations/versions", "piloop/campaign/templates"]  # temp
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The example plugins import as packages; their entry points register only where a test installs them.
-pythonpath = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps"]
+pythonpath = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/verdict-checks", "examples/plugins/no-unit-regression"]
 # The e2e tests run real agents and cost money: only `make e2e` (`-m e2e`, which overrides this) selects them.
 addopts = ["-m", "not e2e"]
 markers = [

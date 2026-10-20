@@ -400,7 +400,9 @@ def test_a_verdict_rule_from_a_plugin_replaces_the_built_in_one_through_piloop_t
         with db.session() as s:
             reason = s.get_one(Candidate, e.id).verdict_reason
         assert (e.verdict, e.verdict_by, e.metrics['score']) == (Verdict.INTERESTING, DAEMON, 2.0)
-        assert reason == snapshot('against candidate#1: score gains +1, keeps at 2')
+        assert reason == snapshot(
+            'against candidate#1: score 2 vs 1 (+1; aggregate: no per-unit results); the gain is below min_gain 2'
+        )
         assert VERDICT_RULES.sources()['min_gain'].release == 'piloop-min-gain 0.1.0'
         stored = f'in the config of demo that the last `piloop init` stored from {project.path}/piloop.toml'
         selected = (

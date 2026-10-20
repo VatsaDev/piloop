@@ -1,0 +1,13 @@
+[project]
+name = "piloop-no-unit-regression"
+version = "0.1.0"
+description = "A verdict check for piloop-verdict-checks: a keep may not make any unit of the primary metric worse"
+requires-python = ">=3.14"
+dependencies = ["piloop", "piloop-verdict-checks"]
+
+[project.entry-points."piloop_verdict_checks.checks"]
+no_unit_regression = "piloop_no_unit_regression:NO_UNIT_REGRESSION"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

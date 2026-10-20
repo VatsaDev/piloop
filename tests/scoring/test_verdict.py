@@ -356,26 +356,31 @@ def test_the_built_in_rule_imports_only_the_standard_library_and_its_contract() 
     assert outside == {'piloop.plugins.contracts.verdict'}
 
 
-def test_the_example_rule_min_gain_keeps_only_a_gain_of_its_size() -> None:
-    """``examples/plugins/min-gain``: the rule of a plugin, called through the host's side of the contract."""
+def test_the_example_rule_min_gain_delegates_to_bootstrap_and_holds_back_a_small_gain() -> None:
+    """``examples/plugins/min-gain``: it calls the built-in rule and changes one thing, through the host's contract."""
     track = rule(config(COVERAGE))[0]
     least = json.dumps({'min_gain': 2})
 
-    def judged(mine: dict[str, float], theirs: dict[str, float]) -> tuple[Verdict, str]:
-        return ledger.decide(MIN_GAIN, track, 0.95, Side('candidate#74', mine, {}), Side(BAR, theirs, {}), least)
+    def judged(mine: dict[str, float], theirs: dict[str, float], with_rule: VerdictRule) -> tuple[Verdict, str]:
+        return ledger.decide(with_rule, track, 0.95, Side('candidate#74', mine, {}), Side(BAR, theirs, {}), least)
 
     bar = {'accuracy': 10.0, 'coverage': 1000.0}
-    assert judged({'accuracy': 12.0, 'coverage': 1000.0}, bar) == (
-        Verdict.KEEP,
-        'against candidate#73: accuracy gains +2, keeps at 2',
+    for mine, theirs in [
+        ({'accuracy': 12.0, 'coverage': 1000.0}, bar),
+        ({'accuracy': 9.0, 'coverage': 1000.0}, bar),
+        ({'accuracy': 99.0, 'coverage': 990.0}, bar),
+        ({'accuracy': 1.0}, {}),
+        ({}, bar),
+    ]:
+        assert judged(mine, theirs, MIN_GAIN) == judged(mine, theirs, BOOTSTRAP), 'the built-in verdict stays'
+    assert judged({'accuracy': 11.0, 'coverage': 1000.0}, bar, MIN_GAIN) == (
+        Verdict.INTERESTING,
+        'against candidate#73: accuracy 11 vs 10 (+1; aggregate: no per-unit results); guardrails: coverage 1000 vs'
+        ' 1000 (+0; aggregate: no per-unit results) within its margin 10; the gain is below min_gain 2',
     )
-    assert judged({'accuracy': 11.0, 'coverage': 1000.0}, bar)[0] is Verdict.INTERESTING
-    assert judged({'accuracy': 9.0, 'coverage': 1000.0}, bar)[0] is Verdict.DISCARD
-    assert judged({'accuracy': 99.0, 'coverage': 990.0}, bar) == (Verdict.DISCARD, 'past its floor: coverage')
-    assert judged({'accuracy': 1.0}, {}) == (Verdict.KEEP, 'candidate#73 has no score')
-    assert judged({}, bar) == (Verdict.CRASH, 'no successful measurement')
     tree = ast.parse(Path(piloop_min_gain.__file__ or '').read_text())
     imported = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module is not None}
     assert {m for m in imported if m.split('.')[0] not in sys.stdlib_module_names} == {
-        'piloop.plugins.contracts.verdict'
-    }, 'a plugin imports only the standard library and its contract'
+        'piloop.plugins.contracts.verdict',
+        'piloop.plugins.builtin.verdict',
+    }, 'a plugin imports only the standard library, its contract and the built-in provider that it calls'

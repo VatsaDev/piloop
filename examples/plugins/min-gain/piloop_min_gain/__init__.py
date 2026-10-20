@@ -1,12 +1,14 @@
-"""``min_gain``: keep a candidate only when it beats its bar by at least ``min_gain``. No state, no I/O.
+"""``min_gain``: the built-in verdict, but a keep needs a gain of at least ``min_gain``. No state, no I/O.
 
 Use it when a tiny gain is not worth a keep. Each keep moves the head, and every later run must beat the head. The
-floors of the guardrail metrics still apply. Their margins do not.
+rule calls the built-in rule ``bootstrap`` and changes one thing. The confidence, the guardrails and the reasons stay
+those of ``bootstrap``.
 """
 
 import json
 from dataclasses import dataclass
 
+from piloop.plugins.builtin.verdict import BOOTSTRAP
 from piloop.plugins.contracts.verdict import Case, Judgement, Outcome, number
 
 
@@ -18,26 +20,20 @@ class Parameters:
 
 
 class MinGain:
-    """A gain of at least ``min_gain`` keeps, a smaller one is interesting, and no gain discards."""
+    """What ``bootstrap`` decides, but a keep with a gain below ``min_gain`` is ``interesting``."""
 
     Parameters = Parameters
 
     def decide(self, case: Case) -> Judgement:
+        judged = BOOTSTRAP.decide(case)
+        name = case.primary.name
+        if judged.verdict is not Outcome.KEEP or name not in case.bar.means:
+            return judged
         least = Parameters(**json.loads(case.parameters)).min_gain
-        primary, mine, theirs = case.primary, case.candidate.means, case.bar.means
-        if primary.name not in mine:
-            return Judgement(Outcome.CRASH, 'no successful measurement')
-        floors = [m for m in case.guardrails if m.floor is not None and m.name in mine]
-        floored = [m.name for m in floors if m.floor is not None and m.direction.better(m.floor, mine[m.name])]
-        if floored:
-            return Judgement(Outcome.DISCARD, f'past its floor: {", ".join(floored)}')
-        if primary.name not in theirs:
-            return Judgement(Outcome.KEEP, f'{case.bar.name} has no score')
-        gain = primary.direction.gain(mine[primary.name], theirs[primary.name])
-        why = f'against {case.bar.name}: {primary.name} gains {number(gain, signed=True)}, keeps at {number(least)}'
+        gain = case.primary.direction.gain(case.candidate.means[name], case.bar.means[name])
         if gain >= least:
-            return Judgement(Outcome.KEEP, why)
-        return Judgement(Outcome.INTERESTING if gain > 0 else Outcome.DISCARD, why)
+            return judged
+        return Judgement(Outcome.INTERESTING, f'{judged.reason}; the gain is below min_gain {number(least)}')
 
 
 MIN_GAIN = MinGain()

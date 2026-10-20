@@ -10,6 +10,7 @@ import argparse
 from scripts.generate import (
     Mode,
     actor_triggers,
+    capabilities,
     configuration,
     cwd_encoders,
     data_model,
@@ -18,7 +19,9 @@ from scripts.generate import (
     example_dir_store,
     example_min_gain,
     example_nice_runtime,
+    example_no_unit_regression,
     example_stop_after_keeps,
+    example_verdict_checks,
     harnesses,
     herdr_settings,
     imports,
@@ -73,6 +76,9 @@ GENERATORS = (
     example_dir_store,
     example_min_gain,
     example_stop_after_keeps,
+    example_verdict_checks,
+    example_no_unit_regression,
+    capabilities,
 )
 
 

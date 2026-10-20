@@ -116,10 +116,36 @@ flowchart LR
 
 Everything runs on one machine: one SQLite file, one daemon, and local worktrees.
 
+## What you can replace
+
+A **capability** is a part of piloop that makes one kind of decision, for example which candidates to keep. Each
+capability has a **built-in provider**: the implementation that piloop includes. You can select another provider in
+the configuration, or add one with a plugin, a Python package that you install next to piloop.
+
+| Part of piloop | Can you replace it? |
+|---|---|
+| The SQLite database and its log of events | No. |
+| The plugin host: the part of piloop that loads plugins | No. |
+| The interface of the artifact store | No. A storage backend can change where its files go. |
+| Each capability: runtime, storage backend, role, trigger, verdict rule, stop rule | Yes. |
+
+The parts that you cannot replace make piloop run, and keep its data correct. Each capability has the name of a thing
+that you know from piloop, for example "verdict rule". piloop has few capabilities, and each one keeps the same
+interface from version to version.
+
+A plugin can also:
+
+- Call a built-in provider and change one part of its answer. For example, a verdict rule can call the built-in rule
+  `bootstrap`, then change its verdict.
+- Let other plugins extend it. The plugin declares a capability of its own and calls its providers. Other plugins add
+  providers.
+
+[Extension points](/architecture/extension-points) has an example of each.
+
 ## Read next
 
 - [One run's life](/architecture/run-lifecycle): what happens between a ready idea and a verdict.
 - [State machines](/architecture/state-machines): the statuses of ideas, runs, agents and candidates.
 - [Code layout](/architecture/code-layout): the subpackages of `piloop` and how they depend on each other.
-- [Extension points](/architecture/extension-points): add a role, a trigger, a runtime, a harness, an MCP server or an
-  evaluate command.
+- [Extension points](/architecture/extension-points): every capability, and how to replace one, call a built-in
+  provider, or declare your own.

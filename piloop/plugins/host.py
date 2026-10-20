@@ -208,8 +208,8 @@ _lock = RLock()
 """Held while capabilities activate or close: the daemon's threads look providers up."""
 _process = ExitStack()
 """The registrations of every capability of the process, in the order that they activated."""
-_declared: list[Activatable] = []
-"""Every capability that a module of the process declares (``declared``)."""
+CAPABILITIES = 'piloop.capabilities'
+"""The entry point group that declares the capabilities: piloop's own, and a plugin's. Each names a ``Capability``."""
 
 
 class Capability[P]:
@@ -234,7 +234,6 @@ class Capability[P]:
         self.group = group
         self.selection = selection
         self._check = check
-        _declared.append(self)
         self._providers: dict[str, Provider[P]] | None = None
         self.activating = False
 
@@ -293,12 +292,7 @@ class Capability[P]:
         for offer in _python_entry_points(self.group):
             if (other := found.get(offer.name)) is not None:
                 raise PluginError(f'{offer.where}: {offer.name!r} is a {self.noun} already, from {other.source}')
-            try:
-                loaded = offer.load()
-            except PluginError:
-                raise
-            except Exception as e:
-                raise PluginError(f'{offer.where} does not load: {type(e).__name__}: {e}') from e
+            loaded = _loaded(offer)
             try:
                 value = self._check(offer.name, loaded)
             except TypeError as e:
@@ -444,9 +438,35 @@ def _takes_anything(schema: object) -> bool:
     return any(_takes_anything(s) for s in nested)
 
 
+def _loaded(offer: Offer) -> object:
+    """Load what ``offer`` names. Raises ``PluginError``, with the offer's declaration, when it does not load."""
+    try:
+        return offer.load()
+    except PluginError:
+        raise
+    except Exception as e:
+        raise PluginError(f'{offer.where} does not load: {type(e).__name__}: {e}') from e
+
+
 def declared() -> list[Activatable]:
-    """Every capability that the modules of the process declare, by entry point group."""
-    return sorted(_declared, key=lambda c: c.group)
+    """Every capability that an installed package declares in ``CAPABILITIES``, piloop included, by provider group.
+
+    A plugin declares a capability for a seam of its own the same way that piloop declares its own: an entry point
+    that names the ``Capability``. Other packages provide it, and piloop lists, checks and selects it as any other.
+
+    Raises:
+        PluginError: An entry point does not load, does not name a capability, or names a capability whose provider
+            group another one has.
+    """
+    found: dict[str, Activatable] = {}
+    for offer in _python_entry_points(CAPABILITIES):
+        loaded = _loaded(offer)
+        if not isinstance(loaded, Capability):
+            raise PluginError(f'{offer.where} is not a piloop.plugins.host.Capability')
+        if (other := found.get(loaded.group)) is not None and other is not loaded:
+            raise PluginError(f'{offer.where}: the {other.noun}s have the provider group {loaded.group} already')
+        found[loaded.group] = loaded
+    return sorted(found.values(), key=lambda c: c.group)
 
 
 def lookup(data: object, key: str) -> object | None:

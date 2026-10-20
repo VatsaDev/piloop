@@ -7,6 +7,9 @@ import ExampleNiceRuntime from '/snippets/generated/example-nice-runtime.mdx';
 import ExampleDirStore from '/snippets/generated/example-dir-store.mdx';
 import ExampleMinGain from '/snippets/generated/example-min-gain.mdx';
 import ExampleStopAfterKeeps from '/snippets/generated/example-stop-after-keeps.mdx';
+import ExampleVerdictChecks from '/snippets/generated/example-verdict-checks.mdx';
+import ExampleNoUnitRegression from '/snippets/generated/example-no-unit-regression.mdx';
+import Capabilities from '/snippets/generated/capabilities.mdx';
 import Roles from '/snippets/generated/roles.mdx';
 import Triggers from '/snippets/generated/triggers.mdx';
 import RuntimeProtocol from '/snippets/generated/runtime-protocol.mdx';
@@ -36,6 +39,16 @@ Each example plugin on this page is a package in
 [`examples/plugins/`](https://github.com/hiloopai/piloop/tree/main/examples/plugins). piloop's tests install each
 one and select it in the configuration.
 
+Each decision that piloop makes is a capability, for example the verdict rule that decides which candidates to
+keep. You can replace the built-in provider of a capability. Some parts of piloop are not capabilities, and you cannot
+replace them: the [overview](/architecture/overview#what-you-can-replace) lists them.
+
+A plugin can also do two more things:
+
+- [Call a built-in provider](#call-a-built-in-provider) and change one part of its answer.
+- [Let other plugins extend it](#let-other-plugins-extend-your-plugin): it declares a capability of its own, and
+  other plugins add providers to it.
+
 | Extension point | Select it in | Add your own |
 |---|---|---|
 | [Runtimes](#runtimes) | `runtime`, `[roles.<name>] runtime` | a plugin: `piloop.runtimes` |
@@ -49,6 +62,7 @@ one and select it in the configuration.
 | [The evaluate command](#the-evaluate-command) | `evaluate` | your command |
 | [Usage readers and MCP renderers](#usage-readers-and-mcp-renderers) | `[harness.<name>]` | built-in ones only |
 | [Stop conditions](#stop-conditions) | `[stop]`, `[plugins.stop_rule] provider` | a plugin: `piloop.stop_rules` |
+| [A capability of your own](#let-other-plugins-extend-your-plugin) | where your plugin uses it | a plugin: `piloop.capabilities` |
 
 ## Runtimes
 
@@ -178,8 +192,8 @@ guardrail metric gets too much worse.
 
 ### Example: keep only a gain of a fixed size
 
-This rule keeps a candidate only when it beats its bar by at least `min_gain`, in the units of the primary metric. A
-smaller gain is `interesting`:
+This rule [calls the built-in rule](#call-a-built-in-provider) `bootstrap` and changes one thing: a keep whose gain is
+below `min_gain` becomes `interesting`. `min_gain` is in the units of the primary metric:
 
 <ExampleMinGain />
 
@@ -539,10 +553,101 @@ plateau = 30
 
 <Stop />
 
+## Call a built-in provider
+
+A provider of a plugin can call a built-in provider, and then change one part of the answer. The rest of the answer
+stays the same as the built-in provider's.
+
+### Example: the built-in verdict rule, with a minimum gain
+
+The verdict rule `min_gain` (in [Verdict rules](#verdict-rules)) does this:
+
+1. piloop calls `min_gain` with a `Case`: the measurements of a candidate and of its bar.
+2. `min_gain` calls the built-in rule `bootstrap` with the same `Case`. `bootstrap` returns a `Judgement`: a verdict
+   and a reason.
+3. If the verdict is `keep` and the gain is below `min_gain`, `min_gain` returns `interesting` with the same reason
+   and a note. Otherwise it returns the `Judgement` of `bootstrap`.
+
+```python
+from piloop.plugins.builtin.verdict import BOOTSTRAP
+from piloop.plugins.contracts.verdict import Case, Judgement, Outcome
+
+
+class MinGain:
+    def decide(self, case: Case) -> Judgement:
+        judged = BOOTSTRAP.decide(case)  # the built-in rule's verdict and reason
+        if judged.verdict is Outcome.KEEP and gain(case) < least(case):
+            return Judgement(Outcome.INTERESTING, judged.reason + '; the gain is below min_gain')
+        return judged
+```
+
+`gain` and `least` are short helpers. The full rule is in the [example](#example-keep-only-a-gain-of-a-fixed-size).
+
+### Where to import the built-in providers
+
+You import a built-in provider from the path of its entry point. The table shows each capability of piloop, where
+the configuration selects its provider, and the path of each built-in provider. These paths do not change unless the
+contract of the capability changes.
+
+<Capabilities />
+
+## Let other plugins extend your plugin
+
+A plugin can let other plugins extend it. It declares a capability: a named kind of provider. Then it calls the
+providers of that capability. Other plugins add providers to the capability, and piloop loads them.
+
+### Example: verdict checks
+
+Two example plugins work together:
+
+- `verdict-checks` declares the capability `verdict check`. A verdict check looks at a candidate that `bootstrap`
+  keeps, and can refuse it. `verdict-checks` also adds the verdict rule `checked`. This rule calls `bootstrap`, then
+  each verdict check that its parameter `checks` names. When a check refuses the candidate, `checked` returns
+  `interesting` with the reason of the check.
+- `no-unit-regression` adds one verdict check, `no_unit_regression`. It refuses a candidate when a unit of the primary
+  metric got worse, for example one test file. `verdict-checks` runs it.
+
+The plugin that declares the capability:
+
+<ExampleVerdictChecks />
+
+The plugin that adds a provider to it. It imports only the contract of the verdict rule:
+
+<ExampleNoUnitRegression />
+
+Install both next to piloop. Then select the rule in `piloop.toml` and run `piloop init .`:
+
+```bash
+uv tool install piloop --with ./examples/plugins/verdict-checks --with ./examples/plugins/no-unit-regression
+piloop plugins
+```
+
+```text
+[plugins.verdict_rule]
+provider = "checked"
+checks = ["no_unit_regression"]
+```
+
+### How to declare a capability
+
+1. Make a `Capability`, or a `PureCapability` with its contract. Both are in `piloop.plugins.host`. Give it a name
+   (`verdict check`) and an entry point group for its providers (`piloop_verdict_checks.checks`).
+2. Add an entry point in `piloop.capabilities` that names it. The name of the entry point is the name of the concept
+   (`verdict_check`).
+3. Call a provider with `get(name)`. piloop loads and checks all the providers when you first call `get`.
+4. Check the names of the providers when the configuration loads, for example in your `Parameters`. `get` fails on a
+   name that no provider has, and the error lists the names that exist.
+
+`piloop plugins` and `piloop doctor` list your capability and its providers. piloop itself calls only its own
+capabilities. A provider that calls another capability runs in the process of piloop.
+
 ## How piloop loads plugins
 
 The **plugin host** is the part of piloop that finds, checks and loads plugins (`piloop.plugins.host`).
 
+- **Capabilities.** An entry point in `piloop.capabilities` declares a capability. piloop declares its own
+  capabilities in this way. A plugin can also declare one
+  ([Let other plugins extend your plugin](#let-other-plugins-extend-your-plugin)).
 - **Entry points.** A plugin adds a provider with an entry point in the group of a capability, for example
   `piloop.runtimes`. The name of the entry point is the name of the provider. piloop's own providers are entry points
   of the `piloop` package, in the same groups, so piloop loads them as it loads a plugin's.

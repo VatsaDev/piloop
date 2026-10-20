@@ -267,11 +267,13 @@ subpackage may use.
 `plugins/` is everything about plugins. `plugins/host.py` loads, checks and shows them, and imports nothing else of
 piloop, so every layer may use it. `plugins/contracts/` has one module for each capability: its contract, its entry
 point group and where the configuration selects it. A host contract may import the types that it passes; a pure one
-imports only the standard library. `plugins/builtin/` has the providers of piloop that live nowhere else. piloop's own
-providers are entry points in `pyproject.toml`, in the same groups that a plugin uses. To add a capability: a contract
-module, a builtin module, and an entry point line. The triggers and the roles declare their capability where they are
-defined (`triggers.py`, `config.py`): their contract module would import them, and they import their capability.
-Run `uv sync` after you change an entry point: piloop finds its own providers in its installed metadata.
+imports only the standard library and the host. `plugins/builtin/` has the providers of piloop that live nowhere else:
+they are public, and a plugin may import one to call it. piloop declares its capabilities, and its own providers, with
+entry points in `pyproject.toml`, in the same groups that a plugin uses (`piloop.capabilities`, then each provider
+group). To add a capability: a contract module, a builtin module, an entry point in `piloop.capabilities`, and one in
+the provider group. The triggers and the roles declare their capability where they are defined (`triggers.py`,
+`config.py`): their contract module would import them, and they import their capability. Run `uv sync` after you
+change an entry point: piloop finds its own capabilities and providers in its installed metadata.
 
 ## Send a change
 
