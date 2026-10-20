@@ -21,7 +21,6 @@ from sqlalchemy import select
 from piloop.campaign import inbox, project as project_module
 from piloop.campaign.ideas import defined_by, runnable
 from piloop.cli import common, inbox as inbox_cli, main as cli, project as project_cli
-from piloop.cli.version import installed
 from piloop.config import ConfigError
 from piloop.daemon.main import Daemon
 from piloop.daemon.serve import running_pid
@@ -51,6 +50,7 @@ from piloop.runtime import herdr
 from piloop.runtime.herdr import HerdrSettings
 from piloop.scoring.ledger import REMEASURE_REQUESTED
 from piloop.settings import Settings
+from piloop.version import direct_url, installed
 from tests.conftest import at_head, hold_lock, wait_until
 from tests.daemon.test_serve import alive
 from tests.db.test_migrations import alembic
@@ -453,6 +453,17 @@ def test_sql_and_status_while_another_client_holds_the_write_lock(
     holder = rf' \(pid {writer.pid} holds the write lock: ' if sys.platform == 'linux' else ''  # from /proc/locks
     with pytest.raises(SystemExit, match=rf'^sql error: database is locked{holder}'):
         run_cli(['sql', "UPDATE projects SET name = 'x'"])
+
+
+def test_sql_refuses_a_database_that_a_newer_piloop_migrated(project_path: Path, out) -> None:
+    """An older CLI reads and writes nothing in a newer schema: it would write rows that the newer code misreads."""
+    run_cli(['init', str(project_path)])
+    database = common.settings.home / 'piloop.db'
+    with closing(sqlite3.connect(database)) as con:
+        con.execute("UPDATE alembic_version SET version_num = '9999_from_the_future'")
+        con.commit()
+    with pytest.raises(SystemExit, match=r'revision 9999_from_the_future, which this piloop .* does not know'):
+        run_cli(['sql', 'SELECT id FROM projects'])
 
 
 def test_sql(project_path: Path, out) -> None:
@@ -1077,7 +1088,7 @@ def test_service_unit_prints_a_systemd_unit_on_linux(tmp_path: Path, out) -> Non
     text = out()
     assert text.startswith('[Unit]\n') and text.endswith('WantedBy=default.target\n')
     assert (
-        f'ExecStart={sys.executable} -m piloop serve\nRestart=on-failure\nEnvironment="PILOOP_HOME={common.settings.home}"\n'
+        f'ExecStart={sys.executable} -P -m piloop serve\nRestart=on-failure\nEnvironment="PILOOP_HOME={common.settings.home}"\n'
         in text
     )
     assert f'Environment="CLAUDE_CONFIG_DIR={tmp_path / "claude-config"}"\n' in text, (
@@ -1226,11 +1237,17 @@ def test_migrate_reports_the_schema_change_and_a_newer_database_is_refused(out) 
     with closing(sqlite3.connect(common.settings.home / 'piloop.db')) as con:
         con.execute("UPDATE alembic_version SET version_num = '9999_from_the_future'")
         con.commit()
-    with pytest.raises(SystemExit, match='revision 9999_from_the_future.*Run `piloop upgrade`'):
+    with pytest.raises(SystemExit, match='revision 9999_from_the_future.*`piloop upgrade`'):
         run_cli(['status'])
-    with pytest.raises(SystemExit, match='revision 9999_from_the_future.*Run `piloop upgrade`'):
+    with pytest.raises(SystemExit, match='revision 9999_from_the_future.*`piloop upgrade`'):
         run_cli(['serve'])
     assert running_pid(common.settings) is None, 'the daemon refused before taking the pid file'
+
+
+def cli_check() -> str:
+    """The doctor's line on the CLI of this checkout, which the test venv installs from its directory."""
+    checkout = json.loads(direct_url() or '{}')['url']
+    return f'ok    cli: {installed()}; not checked for a newer one: installed from {checkout}: update that checkout'
 
 
 @pytest.mark.usefixtures('no_database')
@@ -1266,6 +1283,7 @@ def test_upgrade_reinstalls_migrates_and_restarts_the_daemon(
         f'daemon: restarting pid {pid}; its running agents keep going and the new code re-attaches',
         f'daemon: pid {pid} runs the new code',
         f'schema: {HEAD}, current',
+        cli_check(),
         f'ok    daemon: pid {pid} runs the installed {installed()}',
         f'ok    database: {common.settings.home}/piloop.db at schema {HEAD}, current',
         f'ok    secrets: from the environment of the daemon (pid {pid}) only (PILOOP_SECRETS_COMMAND unset)',
@@ -1291,6 +1309,7 @@ def test_upgrade_of_a_checkout_install_without_a_daemon_creates_the_schema(fake_
         'skills: none of claude, codex, pi, gemini, cursor-agent is on PATH, nothing installed',
         f'schema: none → {HEAD}',
         'daemon: not running, left stopped',
+        cli_check(),
         'ok    daemon: not running',
         f'ok    database: {common.settings.home}/piloop.db at schema {HEAD}, current',
         'ok    secrets: from the environment of this shell only (PILOOP_SECRETS_COMMAND unset)',
@@ -1307,7 +1326,7 @@ def test_upgrade_of_a_checkout_install_without_a_daemon_creates_the_schema(fake_
         con.commit()
     with pytest.raises(
         SystemExit,
-        match='piloop migrate on the new code failed with exit 1: .*revision 9999_from_the_future.*Run `piloop upgrade`',
+        match='piloop migrate on the new code failed with exit 1: .*revision 9999_from_the_future.*`piloop upgrade`',
     ):
         run_cli(['upgrade'])
 
@@ -1329,7 +1348,10 @@ def test_doctor_exits_non_zero_on_a_failed_check_and_writes_nothing(fake_bins, o
     with pytest.raises(SystemExit) as exited:
         run_cli(['doctor'])
     assert exited.value.code == 1
-    assert out().splitlines()[1] == f'FAIL  database: none at {common.settings.home}/piloop.db'
+    assert out().splitlines()[1:3] == [
+        'ok    daemon: not running',
+        f'FAIL  database: none at {common.settings.home}/piloop.db',
+    ]
     assert not common.settings.home.joinpath('piloop.db').exists(), 'no database appears'
     run_cli(['migrate'])
     out()

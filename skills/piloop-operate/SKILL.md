@@ -9,7 +9,8 @@ The database is the contract. Everything below is a `piloop` command in your she
 
 - Run SQL with `piloop sql "<one statement>"`.
 - Read `piloop schema` once before your first write. It gives the conventions and every table.
-- Run every piloop command as `PILOOP_ACTOR=orchestrator piloop …`.
+- Run every piloop command as `PILOOP_ACTOR=orchestrator piloop …`. When the human runs a second install under
+  another command, such as `piloop-canary` next to a release, use that command wherever this skill says `piloop`.
   - The rows you change, the items you acknowledge and their events are then signed `orchestrator`.
   - `piloop inbox wait` then skips what you wrote yourself.
 - Limit your queries to the projects that you orchestrate: the project in the current directory
@@ -51,6 +52,14 @@ Steps:
    your journal (what earlier sessions decided, planned and found), the open inbox, the head of each active project
    and the current lessons. Then run `piloop status` and `piloop inbox`. Items that already wait are yours too: the
    wait reports only new items.
+   Then run `piloop doctor`, and again once a day. Run the commands that it names exactly as it names them: a second
+   install, such as `piloop-canary`, names its own command, so that you never restart or upgrade the other install.
+   - `FAIL daemon: … runs older code than the installed …`: run its fix, the restart. The running agents keep going.
+   - `cli: … is out`: a newer piloop is available. When the line says that `PILOOP_AUTO_UPGRADE` is on, run the
+     upgrade that it names with `PILOOP_ACTOR=orchestrator`, and record it as a decision. Otherwise do not upgrade:
+     file a p2 escalation on the project that asks the human, with the line and its changes link. An upgrade
+     migrates the database one way, and the runs after it are scored by the new code.
+   - Any other `FAIL`: fix it as its `fix:` line says, or escalate it.
 2. **Wait.** Run the command above.
 3. **Read** each line.
    - An item: `piloop inbox show <id>` shows it with its thread.

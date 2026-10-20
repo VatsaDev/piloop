@@ -14,12 +14,13 @@ import warnings
 from collections.abc import Iterable
 
 from piloop.harnesses import Harness
-from piloop.proc import child_env, kill_group
-from piloop.settings import Settings, env_names
+from piloop.proc import PILOOP_ARGV, child_env, kill_group
+from piloop.settings import DEFAULT_HOME, Settings, env_names
 
-SERVE_ARGV = [sys.executable, '-m', 'piloop', 'serve']
+SERVE_ARGV = [*PILOOP_ARGV, 'serve']
 """The command that starts the daemon. It uses the current interpreter, however the CLI was invoked."""
 POLL_SECONDS = 0.1
+LAUNCHD_LABEL = 'dev.piloop.serve'
 RESTART_SIGNAL = signal.SIGUSR1
 """Stop as on SIGTERM, then exec ``piloop serve`` in place.
 
@@ -246,7 +247,7 @@ def service_unit(cfg: Settings, harnesses: Iterable[Harness], platform: str = sy
             env[key] = value
     if platform == 'darwin':
         plist = {
-            'Label': 'dev.piloop.serve',
+            'Label': launchd_label(cfg),
             'ProgramArguments': SERVE_ARGV,
             'EnvironmentVariables': env,
             'RunAtLoad': True,
@@ -257,6 +258,15 @@ def service_unit(cfg: Settings, harnesses: Iterable[Harness], platform: str = sy
         return plistlib.dumps(plist, sort_keys=False).decode()
     environment = '\n'.join(f'Environment={systemd_quote(f"{k}={v}")}' for k, v in env.items())
     return SYSTEMD_UNIT.format(exec_start=shlex.join(SERVE_ARGV), environment=environment)
+
+
+def launchd_label(cfg: Settings) -> str:
+    """Return ``dev.piloop.serve``, plus the name of the home when it is not the default one.
+
+    launchd keeps one agent per label, so a second piloop on the machine (``PILOOP_HOME=~/.piloop-canary``) gets
+    ``dev.piloop.serve.piloop-canary`` and does not replace the agent of the first.
+    """
+    return LAUNCHD_LABEL if cfg.home == DEFAULT_HOME else f'{LAUNCHD_LABEL}.{cfg.home.name.lstrip(".")}'
 
 
 def systemd_quote(value: str) -> str:

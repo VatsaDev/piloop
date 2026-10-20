@@ -4,6 +4,8 @@ Roles differ in data (``piloop.agents.roles``) and in the content of their brief
 that starts, waits for and closes an agent process. It never raises: a failure goes on the worker row and its span.
 """
 
+import os
+import shlex
 import threading
 import time
 from collections.abc import Callable
@@ -24,7 +26,7 @@ from piloop.db.session import Database
 from piloop.harnesses import SESSION_ID, Invocation, fill, takes_session_id
 from piloop.mcp import RENDERERS, Launch, Rendered, expand, forwarded_env
 from piloop.otel import Span, Tracer
-from piloop.proc import child_env
+from piloop.proc import PILOOP_ARGV, child_env
 from piloop.runtime import Handle, Outcome, Runtime, StartFailed, WorkerSpec, WorkerStatus
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for, runtimes
 from piloop.text import cell
@@ -74,6 +76,23 @@ It names the brief's file instead of holding the brief. The prompt is one argume
 TAB_TITLE_CHARS = 30
 """How many characters of the idea's title go in a worker's tab label: enough to tell tabs apart in Herdr."""
 
+CLI_SHIM = '#!/bin/sh\nPILOOP_HOME={home} exec {argv} "$@"\n'
+"""``<home>/bin/piloop``: this home's piloop, the daemon's own code on the daemon's home. Agents get it as ``PILOOP_BIN``,
+which the briefs use, and its directory first on their PATH, for the prompts' plain ``piloop``. Another install can
+come first on the user's PATH (a release next to a build of ``main``), and a harness's shell can run the user's rc
+files again, which can put it back in front."""
+
+
+def own_cli(home: Path) -> Path:
+    """Write the ``CLI_SHIM`` for this process's piloop under ``home``, and return its path."""
+    shim = home / 'bin' / 'piloop'
+    text = CLI_SHIM.format(home=shlex.quote(str(home)), argv=shlex.join(PILOOP_ARGV))
+    if not shim.is_file() or shim.read_text() != text:
+        shim.parent.mkdir(parents=True, exist_ok=True)
+        shim.write_text(text)
+        shim.chmod(0o755)
+    return shim
+
 
 @dataclass(frozen=True)
 class Prepared:
@@ -97,6 +116,7 @@ class Launcher:
         self.db = db
         self.tracer = tracer
         self.home = home
+        self.cli = own_cli(home)
         self.runtime_factory = runtime_factory
         self.cancelled = threading.Event()
         """Set when the daemon stops. Agents not started yet are skipped, and the daemon closes the rows of the rest."""
@@ -307,12 +327,13 @@ class Launcher:
         (log_dir / BRIEF_FILE).write_text(brief)
         prompt = PROMPT.format(path=log_dir / BRIEF_FILE)
         # A Herdr pane does not inherit the daemon's environment. Pass the daemon's PATH, where the harness CLIs and
-        # uv were found, and the variables that the role's MCP servers name.
+        # uv were found, after the daemon's own piloop, and the variables that the role's MCP servers name.
         servers = cfg.role_servers(kind)
         env = {
             'PILOOP_HOME': str(self.home),
             'PILOOP_ACTOR': actor,
-            'PATH': child_env()['PATH'],
+            'PILOOP_BIN': str(self.cli),
+            'PATH': f'{self.cli.parent}{os.pathsep}{child_env()["PATH"]}',
             **dict.fromkeys(PARENT_SESSION_ENV, ''),
             **forwarded_env(servers, child_env()),
         }

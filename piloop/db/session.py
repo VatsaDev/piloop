@@ -15,6 +15,7 @@ from pathlib import Path
 from alembic import command
 from alembic.config import Config as AlembicConfig
 from alembic.runtime.migration import MigrationContext
+from alembic.script import ScriptDirectory
 from alembic.script.revision import ResolutionError
 from alembic.util.exc import CommandError
 from sqlalchemy import Engine, create_engine, event, make_url
@@ -23,6 +24,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import ConnectionPoolEntry
 
 from piloop.db.sql import CONNECTION_PRAGMAS, install_actor, install_functions, lock_holder, optimize
+from piloop.version import installed
 
 MIGRATIONS = Path(__file__).parent / 'migrations'
 
@@ -87,10 +89,20 @@ def migrate(engine: Engine) -> None:
     except CommandError as e:
         if not isinstance(e.__cause__, ResolutionError):  # pragma: no cover - alembic fails here for no other reason
             raise
-        raise SchemaAhead(
-            f'{engine.url.database} is at schema revision {revision(engine)}, which this piloop does not know: '
-            'it was migrated by a newer piloop. Run `piloop upgrade`.'
-        ) from e
+        raise ahead(path, revision(engine)) from e
+
+
+def ahead(database: Path, at: str | None) -> SchemaAhead:
+    """Return the error for ``database`` at revision ``at``, which a newer piloop wrote and this one does not know.
+
+    Only the newer piloop has the script of ``at``, so this one cannot name the version: it names its own and the
+    newest revision it knows.
+    """
+    head = ScriptDirectory(str(MIGRATIONS)).get_current_head()
+    return SchemaAhead(
+        f'{database} is at schema revision {at}, which this {installed()} does not know (it knows up to {head}): '
+        'a newer piloop migrated it. Install a newer piloop (`piloop upgrade`), or set PILOOP_HOME to another directory.'
+    )
 
 
 @contextmanager

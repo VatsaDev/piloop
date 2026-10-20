@@ -20,6 +20,64 @@ To try the installer from your checkout, as CI does:
 PILOOP_SRC=. ./install.sh
 ```
 
+## Run main next to a release
+
+To try `main`, or your checkout, without touching the campaigns of the piloop release that you use, install it as a
+second piloop, `piloop-canary`, with a home of its own. The home must be separate: a newer piloop migrates the
+database of its home when it opens it, and the release then refuses to open that database until it knows the schema.
+
+```bash
+C=~/.piloop-canary
+UV_TOOL_DIR=$C/uv/tools UV_TOOL_BIN_DIR=$C/uv/bin uv tool install 'git+https://github.com/hiloopai/piloop'
+cat > ~/.local/bin/piloop-canary <<'EOF'
+#!/bin/sh
+C="$HOME/.piloop-canary"
+export PILOOP_HOME="$C" UV_TOOL_DIR="$C/uv/tools" UV_TOOL_BIN_DIR="$C/uv/bin" PILOOP_CLI=piloop-canary \
+    PILOOP_CLAUDE_SKILLS_DIR="$C/skills" PILOOP_AGENT_SKILLS_DIR="$C/skills" PILOOP_HERDR_SESSION=piloop-canary
+exec "$C/uv/bin/piloop" "$@"
+EOF
+chmod +x ~/.local/bin/piloop-canary
+piloop-canary install-skills
+piloop-canary --version
+```
+
+To install your checkout instead, run the `uv tool install` line with `--reinstall .` in place of the URL.
+`piloop-canary --version` prints the commit, and `piloop --version` still prints the release. uv warns that
+`~/.piloop-canary/uv/bin` is not on your `PATH`: only the wrapper runs the canary.
+
+Each variable keeps one thing apart:
+
+| Variable | What it keeps apart |
+|---|---|
+| `PILOOP_HOME` | The database, the runs, the artifact store, `config.toml`, and the daemon's `serve.pid` and `serve.log`. One daemon runs for each home. |
+| `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR` | The installed package. uv keeps one tool named `piloop` per tool directory, and `piloop upgrade` upgrades the tool of this directory only. Keep the bin directory outside the tool directory. |
+| `PILOOP_CLAUDE_SKILLS_DIR`, `PILOOP_AGENT_SKILLS_DIR` | The orchestrator skills, which `install-skills` would otherwise put over the release's in `~/.claude/skills` and `~/.agents/skills`. |
+| `PILOOP_HERDR_SESSION` | The Herdr session of the agents, for projects with `runtime = "herdr"`. |
+| `PILOOP_CLI` | The command that `piloop-canary doctor` names in what it tells you, or an orchestrator, to run. |
+
+The canary's agents run the canary's piloop: the daemon gives each agent `PILOOP_BIN`, its own `piloop` under its
+home, and puts that directory first on the agent's `PATH`.
+
+Use `piloop-canary` wherever you would use `piloop`, on a separate clone of the project repo: two daemons that run the
+same project name in one repo would write the same `refs/piloop/` refs. To orchestrate a canary campaign, tell your
+agent to read `~/.piloop-canary/skills/piloop-operate/SKILL.md` and to run `piloop-canary` wherever it says `piloop`.
+
+```bash
+piloop-canary init <clone>
+piloop-canary serve --detach
+```
+
+To keep its daemon running, write its service unit under a name of its own. The unit carries the wrapper's variables.
+On macOS, the launchd label of a home other than `~/.piloop` ends with the home's name.
+
+```bash
+piloop-canary service-unit > ~/.config/systemd/user/piloop-canary.service  # Linux
+piloop-canary service-unit > ~/Library/LaunchAgents/dev.piloop.serve.piloop-canary.plist  # macOS
+```
+
+`piloop-canary upgrade` installs the latest `main` (or reinstalls the checkout), installs its skills into
+`~/.piloop-canary/skills`, and restarts the canary's daemon in place. The release and its daemon do not change.
+
 ## Run the checks
 
 ```bash
@@ -186,8 +244,8 @@ The package has one subpackage for each concern. Imports only point down this li
 8. `daemon/`: the process, the scheduler, the run executor.
 9. `watch/` and `cli/`.
 
-The top-level modules `settings`, `otel`, `git`, `proc`, `text` and `deprecated` are leaves that every subpackage may
-use.
+The top-level modules `settings`, `otel`, `git`, `proc`, `text`, `version` and `deprecated` are leaves that every
+subpackage may use.
 
 ## Send a change
 

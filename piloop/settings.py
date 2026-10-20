@@ -110,12 +110,28 @@ class Settings(BaseSettings):
     set. ``piloop upgrade`` reads the ``uv-receipt.toml`` of the piloop tool there to learn where the CLI was installed
     from."""
 
+    cli: str = 'piloop'
+    """The command that runs this install. ``piloop doctor`` names it in what it tells you to run. A second install,
+    such as a build of ``main`` next to a release, sets it in its wrapper (``PILOOP_CLI=piloop-canary``), so that an
+    orchestrator restarts and upgrades that install, never the release."""
+
+    auto_upgrade: bool = False
+    """Whether the orchestrator may upgrade piloop by itself when ``piloop doctor`` reports a newer version at its
+    source. Off, it asks you in the inbox: an upgrade migrates the database one way, and the runs after it are scored
+    by the new code. A daemon that runs older code than the installed CLI is restarted either way."""
+
     debug: bool = False
     """Show the full traceback of an unexpected error in the CLI, instead of a short message."""
 
     agent_skills_dir: Path = Path.home() / '.agents' / 'skills'
     """The user directory of Agent Skills, which Codex, pi, Gemini CLI and Cursor read. piloop installs the orchestrator
     skills there for them."""
+
+    claude_skills_dir: Path | None = None
+    """The directory in which piloop installs the orchestrator skills for Claude Code. Unset, it is the one Claude Code
+    reads: ``skills`` in its config directory (``CLAUDE_CONFIG_DIR``, by default ``~/.claude``). A second piloop on
+    the same machine, such as a build of ``main`` next to a release, sets this and ``agent_skills_dir`` to directories
+    of its own, so that its skills do not replace those of the release."""
 
     storage: StorageSettings = StorageSettings()
     """``[storage]`` in ``config.toml``: where archived workspace files go."""
@@ -189,8 +205,6 @@ def runtime_settings(name: str) -> dict[str, object]:
     return found if isinstance(found, dict) else {}
 
 
-settings = Settings()
-
 ENV_PLACEHOLDER = re.compile(r'\{env:(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?::(?P<default>[^}]*))?\}')
 """``{env:NAME:default}``: the value of the environment variable ``NAME``, or ``default`` when it is unset or empty."""
 
@@ -207,3 +221,6 @@ def expand_env(text: str) -> str:
 def env_names(text: str) -> list[str]:
     """Return the environment variables that the placeholders of ``text`` name, once each, in order."""
     return list(dict.fromkeys(m['name'] for m in ENV_PLACEHOLDER.finditer(text)))
+
+
+settings = Settings()

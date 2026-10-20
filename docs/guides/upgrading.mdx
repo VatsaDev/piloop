@@ -11,7 +11,7 @@ The command prints each step as it runs it:
 
 1. It upgrades the CLI with `uv tool upgrade --reinstall-package piloop piloop`, from the source that you installed
    it from: PyPI (the latest release), the GitHub repo (the latest `main`), or a local checkout. It prints the version
-   before and after.
+   before and after. To change the source, see [Follow main](#follow-main).
 2. It runs `piloop install-skills` from the new code, so the skills of every harness on your `PATH` match the new CLI.
    A running harness reads them at its next session.
 3. It restarts a running daemon in place, as `piloop restart` does. The running agents continue. The new code
@@ -22,10 +22,22 @@ The command prints each step as it runs it:
 `piloop --version` prints the version, for example `piloop 0.1.0`. For an install from the GitHub repo, it also
 prints the commit, for example `piloop 0.1.0 (a1b2c3d)`.
 
+## Who upgrades during a campaign
+
+An upgrade migrates the database one way, and the runs after it are scored by the new code. So by default the
+orchestrator does not upgrade by itself: when `piloop doctor` reports a newer piloop, it asks you in the inbox, with a
+link to the changes. Set `PILOOP_AUTO_UPGRADE=1` in the orchestrator's environment to let it upgrade and record the
+decision instead. A daemon that runs older code than the installed CLI is restarted either way, because that only
+catches up with an upgrade that you already made.
+
 ## Check the install
 
 `piloop doctor` is read-only. You can run it at any time. It checks that:
 
+- Whether the source that you installed the CLI from has a newer piloop: a newer release on PyPI, or a new commit on
+  the branch of the GitHub repo. This check asks the network. A newer piloop is a notice, not a failure. An install
+  pinned to a version (`piloop==0.1.0`) is not checked, because `uv tool upgrade` keeps the pin. When the check cannot
+  tell, it says why.
 - The daemon runs the installed code.
 - The database has the current schema.
 - `PILOOP_SECRETS_COMMAND`, when it is set, runs and prints `NAME=value` lines. The check shows the names only.
@@ -45,7 +57,21 @@ The daemon, and every command that reads or writes projects (such as `init`, `st
 the database to its own schema when it starts. `piloop doctor` and `piloop sql` do not. You never recreate the
 database by hand. `piloop migrate` migrates it and prints what changed, for example `schema: 0001 → 0002`.
 
-An older piloop refuses to open a database that a newer one migrated, and tells you to run `piloop upgrade`.
+An older piloop refuses to open a database that a newer one migrated, `piloop sql` included. The error names the
+database's schema revision and the newest one that this piloop knows: install a newer piloop (`piloop upgrade`).
+
+## Follow main
+
+To follow `main` instead of the releases, install piloop from the repo, then upgrade. From then on, `piloop upgrade`
+installs the latest `main`, and a release opens the database again only once it knows the schema that `main` gave it.
+
+```bash
+uv tool install --reinstall 'git+https://github.com/hiloopai/piloop'
+piloop upgrade
+```
+
+To try `main` next to the release that runs your campaigns instead, see
+[Run main next to a release](https://github.com/hiloopai/piloop/blob/main/CONTRIBUTING.md#run-main-next-to-a-release) in the contributing guide.
 
 ## Deprecated configuration keys
 

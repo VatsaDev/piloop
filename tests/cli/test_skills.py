@@ -14,8 +14,8 @@ from piloop.settings import Settings
 
 @pytest.fixture
 def harness_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
-    settings = Settings(home=tmp_path / 'piloop', agent_skills_dir=tmp_path / 'agents/skills')
     monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path / 'claude'))
+    settings = Settings(home=tmp_path / 'piloop', agent_skills_dir=tmp_path / 'agents/skills')
     monkeypatch.setattr(common, 'settings', settings)
     monkeypatch.setattr(common, 'console', Console(record=True, width=300, force_terminal=False))
     monkeypatch.setenv('PATH', str(tmp_path / 'bin'))
@@ -101,3 +101,14 @@ def test_install_skills_copies_into_each_harness_dir_once_and_replaces_only_pilo
     assert skills.drift(claude) == skills.drift(agents) == []
     assert sorted(p.name for p in agents.iterdir()) == ['piloop-operate', 'piloop-review', 'piloop-setup', 'theirs']
     assert not (agents / 'piloop-setup').is_symlink()
+
+
+def test_each_skills_directory_is_a_setting_so_a_second_install_keeps_its_skills_apart(
+    harness_home: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Claude Code's directory follows CLAUDE_CONFIG_DIR, unless PILOOP_CLAUDE_SKILLS_DIR names another one."""
+    on_path('claude', 'codex')
+    assert skills.targets(Settings())[tmp_path / 'claude' / 'skills'] == ['claude']
+    monkeypatch.setenv('PILOOP_CLAUDE_SKILLS_DIR', str(tmp_path / 'canary'))
+    monkeypatch.setenv('PILOOP_AGENT_SKILLS_DIR', str(tmp_path / 'canary'))
+    assert skills.targets(Settings()) == {tmp_path / 'canary': ['claude', 'codex']}

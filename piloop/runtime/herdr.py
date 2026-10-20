@@ -41,7 +41,7 @@ from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSett
 
 from piloop import settings as settings_module
 from piloop.harnesses import Harness, Invocation, QueueKey
-from piloop.proc import TOKEN_ENV, kill_tagged, tagged
+from piloop.proc import PILOOP_ARGV, TOKEN_ENV, kill_tagged, tagged
 from piloop.runtime import Check, Handle, NotSteerable, Outcome, RuntimeFailure, StartFailed, WorkerSpec, WorkerStatus
 from piloop.settings import runtime_settings
 
@@ -803,7 +803,7 @@ class HerdrRuntime:
             f'PILOOP_HOME={settings_module.settings.home}',
             '--no-focus',
         )
-        watch = [sys.executable, '-m', 'piloop', 'watch', str(self._project_path)]
+        watch = [*PILOOP_ARGV, 'watch', str(self._project_path)]
         _call('pane', 'run', str(split['pane']['pane_id']), shlex.join(watch))
 
     def _workspace(self) -> str:

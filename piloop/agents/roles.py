@@ -4,8 +4,6 @@ Every role shares one lifecycle (``piloop.agents.launcher``). A role differs in 
 (``piloop.config``), its triggers (``piloop.triggers``) and the content of its brief, which this module composes.
 """
 
-import shlex
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,7 +14,8 @@ from piloop.db.models import Project, Worker
 
 PROMPTS = Path(__file__).resolve().parent / 'prompts'
 PROCEDURES = 'sql_procedures.md'
-PILOOP_HINT = f'{shlex.quote(sys.executable)} -m piloop'
+PILOOP_HINT = '"$PILOOP_BIN"'
+"""How a brief runs piloop: the daemon sets ``PILOOP_BIN`` for every agent (``piloop.agents.launcher.own_cli``)."""
 SQL_HINT = f'{PILOOP_HINT} sql'
 
 
@@ -146,6 +145,7 @@ def compose_brief(
                 f'- Project repo: {project.path} (every candidate commit and Entire checkpoint is in it).',
                 f"- Sign what you write as '{author}' (comments.author, ideas.created_by).",
                 f'- Trigger: {reason}',
+                f"- piloop: `{PILOOP_HINT}` is this daemon's piloop. Run every `piloop` command of this brief with it.",
                 f'- SQL tool: `{SQL_HINT} "<sql>"`',
                 f'- Sweeping roles (`workers.kind` of a request): {", ".join(cfg.roles.sweeping())}.',
                 *([tracks_line(cfg, track)] if cfg.multitrack else []),

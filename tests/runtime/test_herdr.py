@@ -91,7 +91,7 @@ def as_harness(worker: WorkerSpec, name: str, **changes: object) -> WorkerSpec:
 
 def home_calls(tab_id: str, pane_id: str, cwd: Path) -> list[list[str]]:
     """What laying out a home tab sends: the rename (a workspace's first tab), the split, ``piloop watch`` in it."""
-    watch = f'{shlex.quote(sys.executable)} -m piloop watch {shlex.quote(str(cwd))}'
+    watch = f'{shlex.quote(sys.executable)} -P -m piloop watch {shlex.quote(str(cwd))}'
     split = ['pane', 'split', pane_id, '--direction', 'right', '--ratio', '0.5', '--cwd', str(cwd)]
     env = ['--env', f'PILOOP_HOME={settings_module.settings.home}', '--no-focus']
     return [['tab', 'rename', tab_id, 'home'], [*split, *env], ['pane', 'run', 'w7:p3', watch]]

@@ -17,14 +17,14 @@ PREFIX = 'piloop-'
 """Every skill that piloop ships is named ``piloop-*``. A directory with this prefix in a skills directory is piloop's.
 """
 SKILL_DIRS: dict[str, Callable[[Settings], Path]] = {
-    'claude': lambda _: Path(expand_env('{env:CLAUDE_CONFIG_DIR:~/.claude}/skills')),
+    'claude': lambda s: s.claude_skills_dir or Path(expand_env('{env:CLAUDE_CONFIG_DIR:~/.claude}/skills')),
     'codex': lambda s: s.agent_skills_dir,
     'pi': lambda s: s.agent_skills_dir,
     'gemini': lambda s: s.agent_skills_dir,
     'cursor-agent': lambda s: s.agent_skills_dir,
 }
 """Where the harness of each executable finds user skills. Codex, pi, Gemini CLI and Cursor read the Agent Skills
-directory ``~/.agents/skills``. Claude Code reads only its own directory."""
+directory ``~/.agents/skills``. Claude Code reads only its own directory (``Settings.claude_skills_dir``)."""
 
 
 def source(package: Path = Path(__file__).parent) -> Path:

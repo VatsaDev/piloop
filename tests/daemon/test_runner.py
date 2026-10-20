@@ -741,7 +741,7 @@ def test_brief_carries_history_and_comments(
     assert 'about another idea' not in brief
     assert '| 1 ' in brief and 'first idea' in brief, 'the same history block the research agent reads'
     assert 'Tried so far' not in brief
-    assert '-m piloop sql' in brief and "'worker#2', 'finding'" in brief
+    assert '"$PILOOP_BIN" sql' in brief and "'worker#2', 'finding'" in brief
     assert "VALUES ('idea', 2, 'worker#2', 'escalation', 1, '...')" in brief, 'a request is an escalation, never a note'
     assert 'Never wait with `pgrep -f "<pattern>"`' in brief, 'a waiter that finds itself keeps the run open'
     assert '- A hunch worth a run of its own goes in your finding' in brief and 'idea seed demo' not in brief
@@ -955,7 +955,7 @@ def test_a_rejection_during_the_run_is_not_undone(
 def test_worker_env_points_at_the_daemon_home(
     db: Database, project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The worker sees the daemon's home and PATH, and not the child marker of a Claude Code session.
+    """The worker sees the daemon's home, its PATH after its own piloop, and not the child marker of Claude Code.
 
     A daemon started from a Claude Code session inherits that marker, and a Claude agent that has it saves no
     transcript. The marker is cleared for every agent, whatever its harness definition: ``[harness.claude]`` replaces
@@ -973,7 +973,7 @@ def test_worker_env_points_at_the_daemon_home(
     [e] = candidates(db, run_id)
     assert Repo(project.path).git.show(f'{e.commit_sha}:home.txt').splitlines() == [
         str(tmp_path),
-        os.environ['PATH'],
+        f'{tmp_path / "bin"}{os.pathsep}{os.environ["PATH"]}',
         'child=',
     ]
 

@@ -18,5 +18,9 @@ def describe(version: str, direct_url: str | None) -> str:
 
 def installed() -> str:
     """Return ``describe`` for the piloop distribution that this process runs from."""
-    dist = distribution('piloop')
-    return describe(dist.version, dist.read_text('direct_url.json'))
+    return describe(distribution('piloop').version, direct_url())
+
+
+def direct_url() -> str | None:
+    """Return the PEP 610 ``direct_url.json`` of the piloop that this process runs from. None for an index install."""
+    return distribution('piloop').read_text('direct_url.json')

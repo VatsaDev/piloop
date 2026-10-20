@@ -11,15 +11,16 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.script import ScriptDirectory
+from pytest_mock import MockerFixture
 
-from piloop.cli import skills
+from piloop.cli import doctor, skills, upgrade
 from piloop.cli.doctor import checks, report
-from piloop.cli.version import installed
 from piloop.config import ProjectConfig
 from piloop.db.models import Project
 from piloop.db.session import Database
 from piloop.runtime import Check
 from piloop.settings import Settings
+from piloop.version import installed
 from tests.conftest import FAKE_HERDR, hold_lock
 from tests.db.test_migrations import alembic
 from tests.runtime.test_herdr import scripted
@@ -55,11 +56,15 @@ def by_name(cfg: Settings) -> dict[str, Check]:
     return {c.name: c for c in checks(cfg)}
 
 
-def test_a_healthy_install_passes_every_check(cfg: Settings, project: Project, tmp_path: Path) -> None:
+def test_a_healthy_install_passes_every_check(
+    cfg: Settings, project: Project, tmp_path: Path, mocker: MockerFixture
+) -> None:
     on_path(tmp_path, 'pi')
     skills.install(cfg.agent_skills_dir)
+    mocker.patch.object(doctor, 'direct_url', return_value=json.dumps({'url': 'file:///src/piloop', 'dir_info': {}}))
     lines = list(report(checks(cfg)))
     assert lines == [
+        f'ok    cli: {installed()}; not checked for a newer one: installed from file:///src/piloop: update that checkout',
         'ok    daemon: not running',
         f'ok    database: {tmp_path}/piloop.db at schema {HEAD}, current',
         'ok    secrets: from the environment of this shell only (PILOOP_SECRETS_COMMAND unset)',
@@ -110,7 +115,9 @@ def test_a_database_missing_unmigrated_behind_or_ahead_says_which_command_brings
         con.execute("UPDATE alembic_version SET version_num = '9999_from_the_future'")
         con.commit()
     before = path.read_bytes()
-    assert by_name(cfg)['database'].fix == '`piloop upgrade`'
+    ahead = by_name(cfg)['database']
+    assert ahead.found.startswith(f'{path} is at schema revision 9999_from_the_future, which this {installed()}')
+    assert ahead.fix == '`piloop upgrade`, or set PILOOP_HOME to the home of a newer piloop'
     assert path.read_bytes() == before and not (cfg.home / 'piloop.db-wal').exists(), 'opened read-only'
 
 
@@ -273,3 +280,104 @@ def test_secrets_come_from_the_daemons_secrets_command_which_doctor_runs_reporti
         ), "the daemon's command, not this shell's"
         assert found['mcp demo'].found == f'the daemon (pid {holder.pid}) lacks XAI_API_KEY, EXA_API_KEY'
     assert 'xaivalue' not in ' '.join(report(checks(shell)))
+
+
+GIT_URL = 'https://example.com/piloop'
+OLD, NEW = 'a' * 40, 'b' * 40
+
+
+def fake(tmp_path: Path, name: str, body: str) -> Path:
+    """A fake CLI in the test's ``bin`` that records its argv in ``<name>.argv`` and then runs ``body``."""
+    exe = tmp_path / 'bin' / name
+    exe.unlink(missing_ok=True)  # the cfg fixture links the real git: never write through the link
+    exe.write_text(f'#!/bin/sh\necho "$@" > {tmp_path / f"{name}.argv"}\n{body}\n')
+    exe.chmod(0o755)
+    return tmp_path / f'{name}.argv'
+
+
+def git_install(rev: str | None) -> str:
+    """The ``direct_url.json`` that uv writes for a ``git+`` install of ``rev`` (the default branch without one)."""
+    vcs = {'vcs': 'git', 'commit_id': OLD} | ({'requested_revision': rev} if rev else {})
+    return json.dumps({'url': GIT_URL, 'vcs_info': vcs})
+
+
+def test_a_git_install_is_behind_when_its_branch_has_moved(cfg: Settings, tmp_path: Path) -> None:
+    argv = fake(tmp_path, 'git', f"printf '{NEW}\\trefs/heads/main\\n'")
+    assert upgrade.newer(cfg.uv_tool_dir, git_install('main')) == f'commit {NEW[:7]} on main of {GIT_URL}'
+    assert argv.read_text().split() == ['ls-remote', GIT_URL, 'main']
+    fake(tmp_path, 'git', f"printf '{OLD}\\tHEAD\\n'")
+    assert upgrade.newer(cfg.uv_tool_dir, git_install(None)) is None, 'the default branch, at the installed commit'
+    fake(tmp_path, 'git', f"printf '{NEW}\\trefs/tags/v0.1.0\\n'")
+    with pytest.raises(upgrade.InstallError, match=f'^v0.1.0 is not a branch of {GIT_URL}: a pinned install'):
+        upgrade.newer(cfg.uv_tool_dir, git_install('v0.1.0'))
+    fake(tmp_path, 'git', 'echo "could not resolve host" >&2; exit 128')
+    with pytest.raises(upgrade.InstallError, match=f'^git ls-remote {GIT_URL} main failed: could not resolve host$'):
+        upgrade.newer(cfg.uv_tool_dir, git_install('main'))
+
+
+def test_an_index_install_is_behind_when_uv_lists_it_as_outdated(cfg: Settings, tmp_path: Path) -> None:
+    argv = fake(tmp_path, 'uv', "printf 'piloop v0.1.0 [latest: 0.2.0]\\n- piloop\\nruff v0.5.0 [latest: 0.17.1]\\n'")
+    assert upgrade.newer(cfg.uv_tool_dir, None) == 'piloop 0.2.0'
+    assert argv.read_text().split() == ['tool', 'list', '--outdated']
+    fake(tmp_path, 'uv', "printf 'ruff v0.5.0 [latest: 0.17.1]\\n'")
+    assert upgrade.newer(cfg.uv_tool_dir, None) is None
+    (tmp_path / 'bin' / 'uv').unlink()
+    with pytest.raises(
+        upgrade.InstallError, match=r"^uv tool list --outdated failed: .*No such file or directory: 'uv'$"
+    ):
+        upgrade.newer(cfg.uv_tool_dir, None)
+
+
+def test_a_directory_install_or_no_uv_tool_is_not_checked_and_says_why(cfg: Settings, tmp_path: Path) -> None:
+    with pytest.raises(upgrade.InstallError, match='^installed from file:///src/piloop: update that checkout$'):
+        upgrade.newer(cfg.uv_tool_dir, json.dumps({'url': 'file:///src/piloop', 'dir_info': {'editable': True}}))
+    with pytest.raises(upgrade.InstallError, match='^piloop is not installed as a uv tool'):
+        upgrade.newer(tmp_path / 'elsewhere', None)
+
+
+def test_a_newer_piloop_at_the_source_is_a_notice_that_says_who_upgrades_with_this_installs_command(
+    cfg: Settings, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """Not a failure: an upgrade mid-campaign is one-way, so by default the orchestrator asks the human."""
+    fake(tmp_path, 'git', f"printf '{NEW}\\trefs/heads/main\\n'")
+    mocker.patch.object(doctor, 'direct_url', return_value=git_install('main'))
+    newer = f'{installed()}; commit {NEW[:7]} on main of {GIT_URL} is out:'
+    assert by_name(cfg)['cli'] == Check(
+        'cli',
+        f'{newer} ask the human before `piloop upgrade` (PILOOP_AUTO_UPGRADE is off); changes: {doctor.CHANGELOG}',
+    )
+    canary = Settings(home=cfg.home, uv_tool_dir=cfg.uv_tool_dir, cli='piloop-canary', auto_upgrade=True)
+    assert by_name(canary)['cli'] == Check(
+        'cli', f'{newer} PILOOP_AUTO_UPGRADE is on: `piloop-canary upgrade` installs it'
+    )
+    assert by_name(canary)['database'].fix == '`piloop-canary init <repo>` creates it with the first project'
+    fake(tmp_path, 'git', f"printf '{OLD}\\trefs/heads/main\\n'")
+    assert by_name(cfg)['cli'] == Check('cli', f'{installed()}, the newest at its source')
+    fake(tmp_path, 'git', 'exit 2')
+    assert by_name(cfg)['cli'] == Check(
+        'cli', f'{installed()}; not checked for a newer one: git ls-remote {GIT_URL} main failed: exit 2'
+    )
+
+
+def test_a_pinned_index_install_is_not_reported_behind_because_uv_tool_upgrade_keeps_the_pin(
+    cfg: Settings, tmp_path: Path
+) -> None:
+    (cfg.uv_tool_dir / 'piloop' / 'uv-receipt.toml').write_text(
+        '[tool]\nrequirements = [{ name = "piloop", specifier = "==0.1.0" }]\n'
+    )
+    fake(tmp_path, 'uv', "printf 'piloop v0.1.0 [latest: 0.2.0]\\n'")
+    with pytest.raises(upgrade.InstallError, match=r'^installed as piloop==0\.1\.0, which `uv tool upgrade` keeps$'):
+        upgrade.newer(cfg.uv_tool_dir, None)
+
+
+def test_the_source_check_never_waits_for_a_password(cfg: Settings, tmp_path: Path) -> None:
+    """No stdin, no git prompt, ssh in batch mode: a private repo without credentials fails at once."""
+    seen = tmp_path / 'seen'
+    fake(
+        tmp_path,
+        'git',
+        f'read answer; echo "stdin=[$answer] prompt=$GIT_TERMINAL_PROMPT ssh=$GIT_SSH_COMMAND" > {seen}; exit 128',
+    )
+    with pytest.raises(upgrade.InstallError, match='failed: exit 128'):
+        upgrade.newer(cfg.uv_tool_dir, git_install('main'))
+    assert seen.read_text().strip() == 'stdin=[] prompt=0 ssh=ssh -o BatchMode=yes'

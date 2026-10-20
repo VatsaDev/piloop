@@ -22,8 +22,8 @@ from piloop.cli import (
     project,
     store,
 )
-from piloop.cli.version import installed
 from piloop.config import ConfigError
+from piloop.version import installed
 
 app = cyclopts.App(name='piloop', help='Run autoresearch campaigns with coding agents.', version=installed)
 for group in (

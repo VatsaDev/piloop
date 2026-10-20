@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import tomllib
 from pathlib import Path
@@ -107,6 +108,7 @@ def test_brief_is_role_prompt_project_brief_procedures_then_context(project: Pro
 - Project repo: {project.path} (every candidate commit and Entire checkpoint is in it).
 - Sign what you write as 'watchdog#7' (comments.author, ideas.created_by).
 - Trigger: timer
+- piloop: `{PILOOP_HINT}` is this daemon's piloop. Run every `piloop` command of this brief with it.
 - SQL tool: `{SQL_HINT} "<sql>"`
 - Sweeping roles (`workers.kind` of a request): watchdog, research, scout.
 - File a seed: `{PILOOP_HINT} idea seed demo "<hunch, one line>" --from "<pointers: ids, paths, numbers>"` (`--base\
@@ -212,6 +214,33 @@ def test_an_agent_writes_through_piloop_sql_as_its_own_actor(
     with db.session() as s:
         row = s.get_one(Project, project.id)
         assert (row.name, row.updated_by) == ('renamed', f'research#{worker_id}')
+
+
+@pytest.mark.parametrize('cli', ['piloop', '"$PILOOP_BIN"', PILOOP_HINT])
+def test_an_agents_piloop_is_the_daemons_whatever_comes_first_on_path_or_sits_in_its_cwd(
+    cli: str, project: Project, db: Database, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The prompts say `piloop`, the brief `"$PILOOP_BIN"`: neither another install nor the project's code answers.
+
+    A second install (a release next to a build of main) comes first on the PATH. The agent's cwd is the project's
+    worktree, and a project's own ``json.py`` or ``piloop/`` must not shadow piloop's imports (``python -P``).
+    """
+    other = tmp_path / 'other-bin'
+    other.mkdir()
+    (other / 'piloop').write_text('#!/bin/sh\necho "another piloop" >&2\nexit 9\n')
+    (other / 'piloop').chmod(0o755)
+    monkeypatch.setenv('PATH', f'{other}:{os.environ["PATH"]}')
+    cwd = tmp_path / 'cwd'
+    (cwd / 'piloop').mkdir(parents=True)
+    for module in (cwd / 'json.py', cwd / 'piloop' / '__init__.py'):
+        module.write_text("raise SystemExit('SHADOWED')\n")
+    use_harness(db, project, f'#!/bin/sh\n{cli} sql "UPDATE projects SET name = \'renamed\' WHERE id = {project.id}"\n')
+
+    worker_id = request(db, project, kind=WorkerKind.RESEARCH)
+    outcome = launch(db, runtime, tmp_path, worker_id)
+    assert outcome.error is None, (tmp_path / 'w' / 'worker.stderr').read_text()
+    with db.session() as s:
+        assert s.get_one(Project, project.id).name == 'renamed'
 
 
 def test_harness_exit_code_is_recorded_not_raised(

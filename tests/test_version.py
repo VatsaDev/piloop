@@ -5,7 +5,7 @@ import subprocess
 import sys
 from importlib.metadata import version
 
-from piloop.cli.version import describe, installed
+from piloop.version import describe, installed
 from tests.cli.test_cli import run_cli
 
 GIT_INSTALL = '{"url":"https://github.com/hiloopai/piloop","vcs_info":{"vcs":"git","commit_id":"5780463db30736b134d173a7b340c6403da0e558"}}'

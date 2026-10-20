@@ -1,10 +1,11 @@
 """``piloop doctor``: read-only checks of an install. Each failure says how to fix it, with the command when there is one.
 
-The checks find what can break after an upgrade: a daemon that still runs the old code, a database behind the code, a
-secrets command that fails, a ``piloop.toml`` that the new code refuses, an MCP server that cannot start, skills that
-are missing or out of date, a missing harness, and what each runtime in use checks itself (``Runtime.checks``).
-Nothing here writes: the database is opened read-only, and no runtime starts anything. ``piloop upgrade`` runs the
-checks last.
+The checks note a newer piloop at the source of the CLI, and find what can break after an upgrade: a daemon that still
+runs the old code, a database behind the code, a secrets command that fails, a ``piloop.toml`` that the new code refuses,
+an MCP server that cannot start, skills that are missing or out of date, a missing harness, and what each runtime in
+use checks itself (``Runtime.checks``). Nothing here writes: the database is opened read-only, and no runtime starts
+anything. The check of the source asks the network (``git ls-remote`` or the package index). The commands that the
+lines name use ``Settings.cli``. ``piloop upgrade`` runs the checks last.
 """
 
 import json
@@ -12,6 +13,7 @@ import shutil
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -20,17 +22,19 @@ from pydantic import ValidationError
 
 import piloop
 from piloop import mcp
-from piloop.cli import skills
-from piloop.cli.version import installed
+from piloop.cli import skills, upgrade
 from piloop.config import ConfigError, ProjectConfig, explain, load_project_config
 from piloop.daemon.serve import SECRETS_COMMAND_ENV, SecretsError, running_pid, secrets
 from piloop.db.models import utcnow
-from piloop.db.session import MIGRATIONS
+from piloop.db.session import MIGRATIONS, SchemaAhead, ahead
 from piloop.proc import child_env, environment
 from piloop.reports.overview import age
 from piloop.runtime import Check
 from piloop.runtime.factory import runtimes
 from piloop.settings import Settings
+from piloop.version import direct_url, installed
+
+CHANGELOG = 'https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md'
 
 
 def checks(cfg: Settings) -> list[Check]:
@@ -40,7 +44,8 @@ def checks(cfg: Settings) -> list[Check]:
     whose, names, command = _daemon_env(cfg)
     found_secrets, supplied = _secrets(whose, command)
     env = whose, names | supplied
-    return [
+    found = [
+        _cli(cfg),
         _daemon(cfg),
         _database(cfg.home / 'piloop.db'),
         found_secrets,
@@ -50,6 +55,29 @@ def checks(cfg: Settings) -> list[Check]:
         _harnesses(stored),
         *_runtimes(stored),
     ]
+    # the commands that the lines name are this install's, which a second install (piloop-canary) runs under its name
+    return [replace(c, found=_named(c.found, cfg), fix=c.fix and _named(c.fix, cfg)) for c in found]
+
+
+def _named(text: str, cfg: Settings) -> str:
+    return text.replace('`piloop ', f'`{cfg.cli} ')
+
+
+def _cli(cfg: Settings) -> Check:
+    """Check that the source that uv installed piloop from has nothing newer: a release, or a commit on the branch."""
+    try:
+        found = upgrade.newer(cfg.uv_tool_dir, direct_url())
+    except upgrade.InstallError as e:
+        return Check('cli', f'{installed()}; not checked for a newer one: {e}')
+    if found is None:
+        return Check('cli', f'{installed()}, the newest at its source')
+    # a notice, not a failure: whether to upgrade mid-campaign is the human's call (Settings.auto_upgrade)
+    policy = (
+        'PILOOP_AUTO_UPGRADE is on: `piloop upgrade` installs it'
+        if cfg.auto_upgrade
+        else f'ask the human before `piloop upgrade` (PILOOP_AUTO_UPGRADE is off); changes: {CHANGELOG}'
+    )
+    return Check('cli', f'{installed()}; {found} is out: {policy}')
 
 
 def _daemon(cfg: Settings) -> Check:
@@ -72,13 +100,23 @@ def _daemon(cfg: Settings) -> Check:
 def _database(path: Path) -> Check:
     if not path.is_file():
         return Check('database', f'none at {path}', '`piloop init <repo>` creates it with the first project')
-    scripts = ScriptDirectory(str(MIGRATIONS))
-    head, at = scripts.get_current_head(), _revision(path)
+    if (newer := schema_ahead(path)) is not None:
+        return Check('database', str(newer), '`piloop upgrade`, or set PILOOP_HOME to the home of a newer piloop')
+    head, at = ScriptDirectory(str(MIGRATIONS)).get_current_head(), _revision(path)
     if at == head:
         return Check('database', f'{path} at schema {head}, current')
-    if at is None or at in {s.revision for s in scripts.walk_revisions()}:
-        return Check('database', f'{path} at schema {at or "none"}, this piloop is at {head}', '`piloop migrate`')
-    return Check('database', f'{path} at schema {at}, which a newer piloop wrote', '`piloop upgrade`')
+    return Check('database', f'{path} at schema {at or "none"}, this piloop is at {head}', '`piloop migrate`')
+
+
+def schema_ahead(path: Path) -> SchemaAhead | None:
+    """Return the error for a database that a newer piloop migrated, else None. Reads it read-only.
+
+    ``piloop sql`` checks this before it connects, because it does not migrate.
+    """
+    at = _revision(path) if path.is_file() else None
+    if at is None or at in {s.revision for s in ScriptDirectory(str(MIGRATIONS)).walk_revisions()}:
+        return None
+    return ahead(path, at)
 
 
 def _project(name: str, path: str, stored: ProjectConfig | ValidationError) -> Check:

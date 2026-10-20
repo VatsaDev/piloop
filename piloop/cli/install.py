@@ -2,17 +2,16 @@
 
 import shlex
 import subprocess
-import sys
 from typing import Annotated
 
 import cyclopts
 
 from piloop.cli import common, doctor as doctor_module, skills
 from piloop.cli.daemon import restarted
-from piloop.cli.upgrade import requirement, source
-from piloop.cli.version import installed
+from piloop.cli.upgrade import InstallError, requirement, source
 from piloop.daemon.serve import running_pid
-from piloop.proc import child_env
+from piloop.proc import PILOOP_ARGV, child_env
+from piloop.version import installed
 
 
 def upgrade(
@@ -26,7 +25,10 @@ def upgrade(
     database and re-attaches to them. When no daemon runs, the new code migrates the database and the daemon stays
     stopped. A checkout installed with `uv sync` is not a uv tool: upgrade it with `git pull`.
     """
-    req = requirement(common.settings.uv_tool_dir)
+    try:
+        req = requirement(common.settings.uv_tool_dir)
+    except InstallError as e:
+        raise SystemExit(str(e)) from e
     before = installed().removeprefix('piloop ')
     common.console.print(f'CLI: {before}, installed by uv from {source(req)}')
     # --reinstall-package: without it, uv serves a directory install (PILOOP_SRC=<checkout>) from its cached build
@@ -61,10 +63,11 @@ def _new_binary(*args: str, check: bool = True) -> subprocess.CompletedProcess[s
         'PILOOP_HOME': common.settings.home,
         'UV_TOOL_DIR': common.settings.uv_tool_dir,
         'PILOOP_AGENT_SKILLS_DIR': common.settings.agent_skills_dir,
+        **({'PILOOP_CLAUDE_SKILLS_DIR': claude} if (claude := common.settings.claude_skills_dir) else {}),
     }
     try:
         return subprocess.run(
-            [sys.executable, '-m', 'piloop', *args],
+            [*PILOOP_ARGV, *args],
             capture_output=True,
             text=True,
             check=check,
@@ -79,8 +82,9 @@ def _new_binary(*args: str, check: bool = True) -> subprocess.CompletedProcess[s
 def doctor_cmd() -> None:
     """Check the install without writing anything, and say how to fix each failure.
 
-    It checks that the daemon runs the installed code, the database is at head, each piloop.toml loads, the MCP
-    servers can start, the harnesses are on PATH and have the skills of this CLI, and Herdr answers.
+    It notes a newer piloop at the source of the CLI, and checks that the daemon runs the installed code, the database
+    is at head, each piloop.toml loads, the MCP servers can start, the harnesses are on PATH and have the skills of
+    this CLI, and Herdr answers. The commands it names use PILOOP_CLI.
     """
     results = doctor_module.checks(common.settings)
     common.console.print('\n'.join(doctor_module.report(results)), markup=False, highlight=False, soft_wrap=True)
@@ -92,7 +96,8 @@ def install_skills() -> None:
     """Install the orchestrator skills for every harness on PATH.
 
     Claude Code reads them from ~/.claude/skills (or $CLAUDE_CONFIG_DIR/skills). Codex, pi, Gemini CLI and Cursor read
-    them from ~/.agents/skills. It replaces piloop's own skills there and nothing else. A running harness loads them
+    them from ~/.agents/skills. PILOOP_CLAUDE_SKILLS_DIR and PILOOP_AGENT_SKILLS_DIR install them elsewhere, for a
+    second install such as a build of main next to a release. It replaces piloop's own skills there and nothing else. A running harness loads them
     at its next session. The installer and `piloop upgrade` run this command.
     """
     found = skills.targets(common.settings)

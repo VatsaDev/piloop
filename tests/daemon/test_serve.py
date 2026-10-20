@@ -33,7 +33,7 @@ from piloop.db.models import Idea, Run, RunStatus, Worker, WorkerState
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.proc import TOKEN_ENV, child_env
-from piloop.settings import Settings
+from piloop.settings import DEFAULT_HOME, Settings
 from piloop.usage import UsageSpec
 from tests.conftest import HARNESS_SLEEPS, at_head, hold_lock, register, wait_for_worker_handle, wait_until, write_toml
 
@@ -275,7 +275,7 @@ def test_service_unit_texts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     clear_settings_env(monkeypatch)
     cfg = Settings(home=tmp_path)
     unit = service_unit(cfg, BUILT_IN, 'linux')
-    assert f'ExecStart={sys.executable} -m piloop serve' in unit
+    assert f'ExecStart={sys.executable} -P -m piloop serve' in unit
     assert 'Restart=on-failure' in unit and f'Environment="PILOOP_HOME={tmp_path}"' in unit
     assert f'Environment="PATH={os.environ["PATH"]}"' in unit
     awkward = Settings(home=tmp_path / 'my "home" 50% back\\slash')
@@ -284,7 +284,7 @@ def test_service_unit_texts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     )
     plist = plistlib.loads(service_unit(cfg, BUILT_IN, 'darwin').encode())
     assert plist == {
-        'Label': 'dev.piloop.serve',
+        'Label': f'dev.piloop.serve.{tmp_path.name}',
         'ProgramArguments': SERVE_ARGV,
         'EnvironmentVariables': {'PILOOP_HOME': str(tmp_path), 'PATH': os.environ['PATH']},
         'RunAtLoad': True,
@@ -292,6 +292,19 @@ def test_service_unit_texts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
         'StandardOutPath': str(tmp_path / 'serve.log'),
         'StandardErrorPath': str(tmp_path / 'serve.log'),
     }
+
+
+def test_each_home_gets_its_own_launchd_label_and_the_default_home_keeps_the_first_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """launchd keeps one agent per label: a second piloop (a build of main next to a release) must not replace it."""
+    clear_settings_env(monkeypatch)
+
+    def label(home: Path) -> str:
+        return plistlib.loads(service_unit(Settings(home=home), BUILT_IN, 'darwin').encode())['Label']
+
+    assert label(DEFAULT_HOME) == 'dev.piloop.serve'
+    assert label(Path('/Users/me/.piloop-canary')) == 'dev.piloop.serve.piloop-canary'
 
 
 def test_the_service_unit_carries_the_settings_of_the_shell_and_no_other_variables(

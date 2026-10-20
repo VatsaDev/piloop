@@ -1,6 +1,7 @@
 """The schema at head: what the migrations create, that models and migrations agree, and that 0001 upgrades to head."""
 
 import json
+import re
 import sqlite3
 import threading
 import time
@@ -21,6 +22,7 @@ from piloop.db.models import Idea, Project
 from piloop.db.session import MIGRATIONS, Database, SchemaAhead, migrate, revision
 from piloop.db.triggers import PERSISTENT, projects
 from piloop.db.triggers.roles import known_role
+from piloop.version import installed
 
 INBOX = 'ix_comments_inbox'
 SINCE_0015 = {t.name for t in projects.acyclic()}
@@ -104,10 +106,16 @@ def test_an_older_piloop_refuses_a_database_a_newer_one_migrated(tmp_path: Path)
     path = tmp_path / 'piloop.db'
     engine = create_engine(f'sqlite:///{path}')
     migrate(engine)
+    head = ScriptDirectory.from_config(alembic(path)).get_current_head()
     with closing(sqlite3.connect(path)) as con:
         con.execute("UPDATE alembic_version SET version_num = '9999_from_the_future'")
         con.commit()
-    with pytest.raises(SchemaAhead, match='revision 9999_from_the_future.*Run `piloop upgrade`'):
+    this = re.escape(installed())
+    with pytest.raises(
+        SchemaAhead,
+        match=rf'revision 9999_from_the_future, which this {this} does not know \(it knows up to {head}\): a newer '
+        r'piloop migrated it\. Install a newer piloop \(`piloop upgrade`\), or set PILOOP_HOME to another directory\.$',
+    ):
         migrate(engine)
     engine.dispose()
 

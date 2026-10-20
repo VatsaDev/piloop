@@ -10,7 +10,7 @@ from rich.table import Table
 from rich.text import Text
 
 from piloop.agents.roles import PROCEDURES, PROMPTS
-from piloop.cli import common
+from piloop.cli import common, doctor
 from piloop.db import sql
 from piloop.db.session import Database, revision
 
@@ -22,6 +22,8 @@ def sql_cmd(statement: Annotated[str, cyclopts.Parameter(help='One SQL statement
     the PRAGMAs that describe the schema are allowed. A query prints at most 500 rows.
     """
     database = common.settings.home / 'piloop.db'
+    if (newer := doctor.schema_ahead(database)) is not None:
+        raise SystemExit(str(newer))
     with closing(sql.connect(database, actor=common.settings.actor)) as con:
         try:
             result = sql.run(con, statement)

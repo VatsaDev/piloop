@@ -7,6 +7,7 @@ import contextlib
 import os
 import signal
 import subprocess
+import sys
 import time
 
 import psutil
@@ -21,6 +22,9 @@ the agent's session, so ``tagged`` finds them all."""
 AGENT_ENV = ('PILOOP_ACTOR', TOKEN_ENV)
 """The variables that piloop sets for one agent. ``child_env`` drops them: a daemon or an evaluation that an agent's
 ``piloop`` command starts must not sign as that agent, nor die when the agent is killed."""
+PILOOP_ARGV = (sys.executable, '-P', '-m', 'piloop')
+"""The command that runs this process's piloop, from any cwd. ``-P`` keeps the cwd off ``sys.path``: an agent's cwd is a
+project's worktree, and its own ``json.py`` or ``piloop/`` would otherwise shadow piloop's imports."""
 KILL_SCANS = 50
 """How many rounds ``kill_tagged`` makes, at most, to end the processes that a tree forks meanwhile."""
 KILL_POLL_SECONDS = 0.05
