@@ -19,7 +19,15 @@ from piloop import git, proc
 from piloop.agents.launcher import STARTUP_ANOMALY
 from piloop.agents.roles import SQL_HINT, compose_brief
 from piloop.campaign.project import sync
-from piloop.campaign.stop import BLOCKED, CAMPAIGN_STOPPED_ERROR, STALE_ERROR, runs
+from piloop.campaign.stop import (
+    BLOCKED,
+    CAMPAIGN_STOPPED_ERROR,
+    CANCELLED_ERROR,
+    STALE_ERROR,
+    request_cancel,
+    request_stop,
+    runs,
+)
 from piloop.config import ProjectConfig, load_project_config
 from piloop.daemon.runner import UNCOMMITTED_SUMMARY, RunExecutor
 from piloop.daemon.scheduler import STARTUP_BREAKER, STARTUP_WINDOW, STOPPED_ERROR, Scheduler
@@ -1634,11 +1642,152 @@ def test_a_worker_that_the_stop_ends_mid_turn_closes_its_run_as_cut_by_the_campa
         run = s.get_one(Run, 1)
         assert (run.status, run.error) == (RunStatus.FAILED, CAMPAIGN_STOPPED_ERROR)
         [ended] = s.scalars(select(Event).where(Event.kind == 'worker.stop_ended')).all()
-        assert (ended.target_id, ended.payload) == (1, {'reason': 'plateau: 5 runs without a keep'})
+        assert (ended.target_id, ended.payload) == (
+            1,
+            {'reason': 'plateau: 5 runs without a keep', 'error': CAMPAIGN_STOPPED_ERROR},
+        )
         verdicts = [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == 1).order_by(Candidate.id))]
         assert verdicts == [Verdict.KEEP, Verdict.RECOVERED], 'its commit is scored, its draft recovered'
         assert s.get_one(Idea, idea).status is IdeaStatus.READY, 'requeued from the recovered draft'
         assert runs(s, s.get_one(Project, project.id)) == 0, 'cut by the stop: no run limit counts it'
+
+
+def test_a_stop_with_kill_ends_the_workers_at_once_and_a_graceful_one_can_be_made_one(
+    db: Database, project: Project, tmp_path: Path
+) -> None:
+    """``piloop project stop --kill``: no wrap-up prompt and no grace. A sweep keeps its timeout."""
+    runtime = PromptingRuntime()
+    running_worker(db, project, 'in flight')
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    with db.session() as s:
+        request_stop(s, s.get_one(Project, project.id), 'human', reason='machine needed', kill=False)
+        s.commit()
+    scheduler.tick()  # stops the project; its workers wind down from the next tick, as for a [stop] condition
+    scheduler.tick()
+    assert (len(runtime.prompts), runtime.killed) == (1, []), 'graceful: told, and the grace runs'
+    with db.session() as s:
+        request_stop(s, s.get_one(Project, project.id), 'human', reason='now', kill=True)
+        s.commit()
+    scheduler.tick()
+    assert [h.data['agent'] for h in runtime.killed] == ['worker-1'], 'a stopped project can still be killed'
+    scheduler.tick()
+    assert settled(db, 'worker.stop_ended') == [
+        (1, {'reason': 'stopped by human: machine needed', 'error': CAMPAIGN_STOPPED_ERROR})
+    ], 'one event, however many ticks the kill takes to land'
+    scheduler.stop(timeout=5)
+
+
+def test_a_cancelled_run_is_told_to_wrap_up_and_ended_after_the_grace(
+    db: Database, project: Project, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = PromptingRuntime()
+    running_worker(db, project, 'redundant')
+    running_worker(db, project, 'useful')
+    with db.session() as s:
+        sweep = Worker(
+            kind=WorkerKind.RESEARCH,
+            project_id=project.id,
+            runtime='subprocess',
+            handle={'agent': 'research-3', 'pid': 4243},
+            state=WorkerState.RUNNING,
+        )
+        s.add(sweep)
+        s.flush()
+        request_cancel(s, s.get_one(Run, 1), 'human', wrap_up=True)
+        request_cancel(s, sweep, 'orchestrator', wrap_up=True)
+        s.commit()
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    scheduler.tick()
+    assert runtime.prompts == snapshot(
+        [
+            (
+                'worker-1',
+                '[piloop] Your run was cancelled (by human). Commit what you have now, with a message that says where it stands. Leave your finding and stop. This session ends in 10 minutes.',
+            ),
+            (
+                'research-3',
+                '[piloop] This sweep was cancelled (by orchestrator). Commit what you have now, with a message that says where it stands. Leave your finding and stop. This session ends in 10 minutes.',
+            ),
+        ]
+    ), 'only the cancelled run and the cancelled sweep are told'
+    scheduler.tick()
+    assert runtime.killed == []
+    monkeypatch.setattr('piloop.daemon.scheduler.STOP_GRACE_SECONDS', 0)
+    scheduler.tick()
+    assert [h.data['agent'] for h in runtime.killed] == ['worker-1', 'research-3']
+    assert settled(db, 'worker.stop_ended') == [
+        (1, {'reason': 'cancelled by human', 'error': CANCELLED_ERROR}),
+        (3, {'reason': 'cancelled by orchestrator', 'error': CANCELLED_ERROR}),
+    ]
+    scheduler.stop(timeout=5)
+
+
+def test_a_cancelled_worker_closes_its_run_as_cancelled_scores_its_commits_and_parks_its_idea(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """``piloop agent cancel``: the run became redundant, so its idea does not run again until it is set ready."""
+    harness = '#!/bin/sh\necho step >> solve.txt\ngit commit -qam "step"\nexec sleep 30\n'
+    write_toml(Path(project.path), harness, worker_timeout=60)
+    set_config(db, project)
+    (idea,) = add_ideas(db, project, 'redundant')
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    assert scheduler.tick() == [1]
+    wait_for_worker_handle(db)
+    deadline = time.monotonic() + 10
+    while not Repo(tmp_path / 'runs' / '1' / 'worktree').git.log('--oneline').count('step'):
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    with db.session() as s:
+        request_cancel(s, s.get_one(Worker, 1), 'human', wrap_up=False)
+        s.commit()
+    assert scheduler.tick() == []
+    scheduler.wait(20)
+    scheduler.stop(timeout=5)
+    with db.session() as s:
+        run = s.get_one(Run, 1)
+        assert (run.status, run.error) == (RunStatus.FAILED, CANCELLED_ERROR)
+        verdicts = [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == 1))]
+        assert verdicts == [Verdict.KEEP], 'what it committed is scored'
+        assert s.get_one(Idea, idea).status is IdeaStatus.PARKED
+        [note] = s.scalars(select(Comment).where(Comment.target_kind == TargetKind.IDEA)).all()
+        assert note.body == 'parked: run#1 was cancelled by human; set the idea ready to run it again'
+        assert runs(s, s.get_one(Project, project.id)) == 0, 'not an attempt: no run limit counts it'
+
+
+def test_a_cancelled_request_never_launches_and_a_cancelled_sweep_is_ended(
+    db: Database, project: Project, tmp_path: Path
+) -> None:
+    runtime = PromptingRuntime()
+    (idea,) = add_ideas(db, project, 'queued')
+    with db.session() as s:
+        s.get_one(Idea, idea).status = IdeaStatus.SCHEDULED
+        run = Run(idea_id=idea, attempt=1, base_candidate_id=1, harness='script', model='m')
+        s.add(run)
+        s.flush()
+        queued = Worker(kind=WorkerKind.WORKER, project_id=project.id, run_id=run.id, harness='script', model='m')
+        sweep = Worker(
+            kind=WorkerKind.RESEARCH,
+            project_id=project.id,
+            runtime='subprocess',
+            handle={'agent': 'research-2', 'pid': 4243},
+            state=WorkerState.RUNNING,
+        )
+        requested = Worker(kind=WorkerKind.RESEARCH, project_id=project.id, reason='low_water')
+        s.add_all([queued, sweep, requested])
+        s.flush()
+        request_cancel(s, queued, 'human', wrap_up=True)
+        request_cancel(s, sweep, 'human', wrap_up=False)
+        request_cancel(s, requested, 'human', wrap_up=False)
+        s.commit()
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    assert scheduler.tick() == [], 'the queued run is cancelled before it launches'
+    assert [h.data['agent'] for h in runtime.killed] == ['research-2']
+    with db.session() as s:
+        w = s.get_one(Worker, 1)
+        assert (w.state, w.error, s.get_one(Run, 1).error) == (WorkerState.KILLED, CANCELLED_ERROR, CANCELLED_ERROR)
+        assert (s.get_one(Worker, 3).state, s.get_one(Worker, 3).error) == (WorkerState.KILLED, CANCELLED_ERROR)
+        assert s.get_one(Idea, idea).status is IdeaStatus.PARKED
+    scheduler.stop(timeout=5)
 
 
 class BusyRuntime(ScriptRuntime):

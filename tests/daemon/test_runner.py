@@ -1116,6 +1116,49 @@ def test_a_worker_that_spends_tokens_but_ends_at_once_with_nothing_did_not_start
         )
 
 
+@pytest.mark.parametrize('on', ['run', 'agent'])
+def test_a_cancel_made_while_the_worker_starts_survives_a_failed_start(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture, on: str
+) -> None:
+    """The daemon leaves a starting agent alone. When its start then failed, the run was queued again with a new
+    worker, which the cancel did not name, and the cancelled run ran after all."""
+    run_id = make_run(db, project)
+
+    def cancel_then_fail(spec: object) -> Handle:
+        with db.session() as s:
+            run = s.get_one(Run, run_id)
+            [worker] = s.scalars(select(Worker).where(Worker.run_id == run_id)).all()
+            if on == 'run':
+                stop.request_cancel(s, run, 'human', wrap_up=False)
+            else:
+                stop.request_cancel(s, worker, 'human', wrap_up=False)
+            s.commit()
+        raise StartFailed('HerdrError: prompt_lost: no pickup', 'Welcome\n')
+
+    mocker.patch.object(runtime, 'start', side_effect=cancel_then_fail)
+    execute(executor(db, runtime, tmp_path), db, run_id)
+    with db.session() as s:
+        run = s.get_one(Run, run_id)
+        assert (run.status, run.error, run.idea.status) == (RunStatus.FAILED, stop.CANCELLED_ERROR, IdeaStatus.PARKED)
+        assert [w.state for w in s.scalars(select(Worker).where(Worker.run_id == run_id))] == [WorkerState.KILLED]
+        assert s.scalars(select(Event).where(Event.kind == 'run.relaunched')).all() == []
+
+
+def test_a_cancelled_run_whose_worker_ends_by_itself_first_closes_as_cancelled(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """The daemon ends a cancelled worker on its next tick; one that ends before that does not requeue its idea."""
+    run_id = make_run(db, project)
+    with db.session() as s:
+        stop.request_cancel(s, s.get_one(Run, run_id), 'human', wrap_up=False)
+        s.commit()
+    execute(executor(db, runtime, tmp_path), db, run_id)
+    with db.session() as s:
+        run = s.get_one(Run, run_id)
+        assert (run.status, run.error, run.idea.status) == (RunStatus.FAILED, stop.CANCELLED_ERROR, IdeaStatus.PARKED)
+        assert [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == run_id))] == [Verdict.KEEP]
+
+
 def test_a_relaunched_worker_signs_as_itself_and_its_finding_without_a_commit_is_a_result(
     db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
@@ -2027,6 +2070,23 @@ def test_a_keep_whose_merge_onto_the_head_conflicts_stays_interesting_and_files_
         assert (event.target_id, event.payload) == (x.id, {'head': h2, 'conflicts': ['solve.txt']})
         trunk = head(s, s.get_one(Project, project.id))
         assert trunk is not None and trunk.id == h2
+
+
+def test_a_conflicting_merge_in_a_stopped_campaign_files_no_seed(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """The final commits of a stopped campaign are still scored, but the daemon files no idea for it."""
+    run_id = make_run(db, project)
+    keep_elsewhere(db, project, 'other line', {'solve.txt': 'base\nother\n'}, {'score': 2.0, 'size': 11.0})
+    with db.session() as s:
+        s.get_one(Project, project.id).status = ProjectStatus.STOPPED
+        s.commit()
+    execute(executor(db, runtime, tmp_path), db, run_id)
+    [(_, verdict, reason, _, _)] = scored(db, run_id)
+    assert verdict is Verdict.INTERESTING
+    assert reason is not None and reason.endswith('its merge onto the head conflicts in solve.txt')
+    with db.session() as s:
+        assert s.scalars(select(Idea).where(Idea.status == IdeaStatus.SEED)).all() == []
 
 
 def test_a_keep_whose_merge_onto_the_head_is_the_head_already_changes_nothing(

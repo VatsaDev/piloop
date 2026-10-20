@@ -273,10 +273,11 @@ The daemon checks the conditions on every tick, before it requests anything. Whe
 turn ends: one that is ended before it left its finding closes its run as `campaign stopped`, which does not
 count toward `max_runs` or `plateau`. Pending requests and queued runs are dropped
 (`campaign stopped`). The `stopped` triggers fire once, which by default requests the watchdog's closing
-review, and the triggers request nothing more. An agent that you request with `piloop launch` after the stop
-still starts.
+review, and the triggers request nothing more. The daemon files no seeds for the project either. An agent that you
+request with `piloop launch` after the stop still starts.
 
-`piloop init` resumes a stopped project when this table changed.
+`piloop project stop` stops a campaign the same way on the next tick, whatever this table says. With `--kill`,
+the workers are ended at once instead of told. `piloop init` resumes a stopped project when this table changed.
 
 `max_runs` and `plateau` count the same runs: those that reached the evaluator, with a candidate that is
 measured or waits for its measurement. A run that ended at a cheap check with no commit, with only

@@ -27,6 +27,7 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Project,
+    ProjectStatus,
     Run,
     TargetKind,
     Verdict,
@@ -395,8 +396,9 @@ def rebase(s: Session, cfg: ProjectConfig, repo: Repo, candidate: Candidate, ont
     reason ends with the result of the merge. The merge is a commit with both as parents, made without a worktree
     (``git.merge``) and pinned at ``refs/piloop/<project>/rebase/<candidate id>``. A new tree becomes a pending
     candidate of the same run, with ``onto`` as its parent. A merge that conflicts files a seed on the run's track to
-    compose the two by hand. The seed is not pinned, so it runs from the head (``follow_up``). A merged tree that is
-    already a candidate (the head had the change) gives no new candidate. Emits ``REBASED``.
+    compose the two by hand, unless the campaign stopped. The seed is not pinned, so it runs from the head
+    (``follow_up``). A merged tree that is already a candidate (the head had the change) gives no new candidate. Emits
+    ``REBASED``.
     """
     subject = REBASED_SUFFIX.sub('', candidate.summary or '')
     merged = git.merge(repo, onto.commit_sha, candidate.commit_sha, f'{subject} (rebased onto candidate#{onto.id})')
@@ -409,14 +411,19 @@ def rebase(s: Session, cfg: ProjectConfig, repo: Repo, candidate: Candidate, ont
             f' from the head, git merge {candidate.commit_sha} and resolve the conflicts'
         )
         assert candidate.run is not None  # only a run's candidate is rebased
-        seeds = follow_up(
-            s,
-            candidate,
-            [f'Compose candidate#{candidate.id} onto the head'],
-            why,
-            DAEMON,
-            track=candidate.run.idea.track,
-            pin=False,
+        stopped = s.get_one(Project, candidate.project_id).status is ProjectStatus.STOPPED
+        seeds = (
+            []
+            if stopped
+            else follow_up(
+                s,
+                candidate,
+                [f'Compose candidate#{candidate.id} onto the head'],
+                why,
+                DAEMON,
+                track=candidate.run.idea.track,
+                pin=False,
+            )
         )
         filed = f': seed idea#{seeds[0].id} composes it by hand' if seeds else ''
         candidate.verdict_reason = f'{candidate.verdict_reason}; its merge onto the head conflicts in {paths}{filed}'

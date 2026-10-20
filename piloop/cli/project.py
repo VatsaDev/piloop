@@ -1,4 +1,4 @@
-"""The commands about projects: ``init``, ``status``, ``history``, ``watch``, ``pause`` and ``resume``."""
+"""The commands about projects: ``init``, ``status``, ``history``, ``watch``, ``pause``, ``resume``, ``project stop``."""
 
 import sys
 from functools import partial
@@ -26,6 +26,7 @@ from piloop.campaign.project import (
     sync,
     workspace_dir,
 )
+from piloop.campaign.stop import request_stop
 from piloop.cli import common
 from piloop.cli.common import ProjectRef
 from piloop.cli.daemon import daemon_line
@@ -36,6 +37,8 @@ from piloop.reports.overview import overview, paused
 from piloop.reports.pack import renderables as pack_renderables
 from piloop.runtime.factory import handle_for, runtime_for
 from piloop.watch.app import Watch
+
+app = cyclopts.App(name='project', help='Act on a campaign as a whole.')
 
 
 def init(
@@ -186,3 +189,32 @@ def watch_cmd(ref: ProjectRef | None = None, /) -> None:
         Watch(db, common.settings.home / 'piloop.db', ref, common.settings.actor).run()
     finally:
         db.close()
+
+
+@app.command(name='stop')
+def stop(
+    ref: ProjectRef,
+    /,
+    *,
+    kill: Annotated[
+        bool, cyclopts.Parameter(help='End the running workers at once, without the wrap-up prompt.', negative='')
+    ] = False,
+    reason: Annotated[str, cyclopts.Parameter(help='Why, for `stopped_reason` and the closing review.')] = '',
+) -> None:
+    """Stop a campaign. The daemon stops it on its next tick, as when a `[stop]` condition holds.
+
+    It drops the queued runs and the requested agents, and the `stopped` triggers request the closing review. Each
+    running worker is told to commit and stop, and is ended 10 minutes later. What the workers committed is scored.
+    With `--kill`, the workers are ended at once, and what they committed is still scored. On a stopped project,
+    `--kill` ends the workers that are still winding down. The project's `piloop.toml` is not changed.
+    """
+    with common.session() as s:
+        project = common.project(s, ref)
+        if project.status is ProjectStatus.STOPPED and not kill:
+            raise SystemExit(
+                f'{project.name} is stopped already ({project.stopped_reason}); --kill ends its workers at once'
+            )
+        request_stop(s, project, common.settings.actor, reason=reason, kill=kill)
+        s.commit()
+        how = 'ends its workers at once' if kill else 'tells its workers to commit and stop'
+        common.console.print(f'stop requested for {project.name}: the daemon {how} on its next tick', markup=False)

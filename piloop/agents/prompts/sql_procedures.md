@@ -295,13 +295,18 @@ Each command takes `--reason "<why>"`, signs the change with your actor and reco
 - Never pause with a `[spend]` command that reads a file: the spend guard escalates each time it holds, and it stops
   every measurement.
 
-### Resume a stopped campaign
+### Stop, cancel, or resume a stopped campaign
 
-- When a `[stop]` condition in `piloop.toml` holds, the daemon:
-  - sets `projects.status='stopped'` (`stopped_reason` says which condition);
+- When a `[stop]` condition in `piloop.toml` holds, or after `piloop project stop <project> [--kill]`, the daemon:
+  - sets `projects.status='stopped'` (`stopped_reason` says which condition, or who stopped it);
   - drops the requests and queued runs pending at that moment (their ideas go back to `ready`);
+  - tells each running worker to commit and stop, and ends it 10 minutes later (`--kill`: at once); its commits are
+    scored;
   - checks the `stopped` triggers: by default, they request one closing watchdog sweep;
-  - starts nothing more.
+  - starts and files nothing more.
+- Stop a campaign with `piloop project stop`, not with an UPDATE of `projects.status`: an UPDATE gets no closing sweep.
+- `piloop run cancel <run> [--wrap-up]` and `piloop agent cancel <worker> [--wrap-up]` end one run or one agent,
+  with every process that it started. A cancelled run's idea is parked.
 - To continue, raise or change the conditions in `piloop.toml` and run `piloop init <path>`.
 - Or by hand: `UPDATE projects SET status='active', stopped_reason=NULL WHERE id=<p>`. With the conditions unchanged, it
   stops again on the next tick.

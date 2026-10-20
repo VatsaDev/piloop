@@ -97,6 +97,14 @@ A deprecated configuration key shows a warning for at least one minor release be
   than parked or rejected for an idea whose run is open, an `after` link or a track change for such an idea, and a
   track that `piloop.toml` does not have are refused. The change log now records `idea.base_candidate_id`,
   `idea.linked` and `idea.unlinked`, from a command or from raw SQL. Before, these were raw SQL and unlogged.
+- `piloop project stop <project> [--kill] [--reason TEXT]` stops a campaign by hand, as a `[stop]` condition does: the
+  daemon drops the queued work, tells the running workers to commit and stop, ends them 10 minutes later, scores
+  their commits and launches the closing review. `--kill` ends the workers at once. Before, the only way was an
+  `UPDATE projects SET status = 'stopped'`, which got no closing review and dropped nothing.
+- `piloop run cancel <run> [--wrap-up]` and `piloop agent cancel <worker> [--wrap-up]` end one run or one agent, of any
+  role, on the daemon's next tick. A cancelled run closes as `cancelled`, counts toward no run limit, and its idea is
+  parked; its commits are scored. A run whose worker fails to start after the cancel is not launched again. With
+  `--wrap-up`, the agent is told to commit and stop first.
 
 ### Changed
 
@@ -178,6 +186,7 @@ A deprecated configuration key shows a warning for at least one minor release be
   children. A shared server that an agent starts (sccache, Gradle, Bazel) ends with it.
 - What piloop starts from an agent's shell no longer carries the agent's `PILOOP_WORKER_TOKEN` or `PILOOP_ACTOR`: a
   daemon started with `piloop serve --detach` from an agent signed as that agent and died with it.
+- A stopped campaign no longer files compose seeds when the merge of one of its last keeps onto the head conflicts.
 - An agent whose start failed after its process was spawned is now stopped and waited for. Before, the process
   ran on with nothing that watched it, and was never reaped.
 - A daemon stop no longer sets the idea of a run whose worker had left its finding back to `ready`, which started the

@@ -904,6 +904,57 @@ def test_prompt(project_path: Path, out, herdr_log: Path) -> None:
         run_cli(['prompt', '2', 'x'])
 
 
+def test_project_stop_and_cancels_are_requests_that_the_daemon_acts_on(project_path: Path, out) -> None:
+    run_cli(['init', str(project_path)])
+    db = Database(common.settings.database_url, actor=common.settings.actor)
+    with db.session() as s:
+        idea = Idea(track='score', project_id=1, title='x', hypothesis='x', created_by='t', status=IdeaStatus.SCHEDULED)
+        s.add(idea)
+        s.flush()
+        s.add(
+            Run(idea_id=idea.id, attempt=1, base_candidate_id=1, harness='script', model='m', status=RunStatus.RUNNING)
+        )
+        s.flush()
+        s.add_all(
+            [
+                Worker(kind='worker', project_id=1, run_id=1, state=WorkerState.RUNNING),
+                Worker(kind='worker', project_id=1, run_id=1, state=WorkerState.EXITED),
+                Worker(kind='research', project_id=1, state=WorkerState.RUNNING),
+            ]
+        )
+        s.commit()
+    out()
+    run_cli(['run', 'cancel', '1', '--wrap-up'])
+    run_cli(['agent', 'cancel', '3'])
+    run_cli(['agent', 'cancel', '1', '--wrap-up'])
+    run_cli(['project', 'stop', 'demo', '--reason', 'machine needed'])
+    assert out().splitlines() == [
+        'cancel requested for run#1: the daemon acts on its next tick',
+        'cancel requested for worker#3: the daemon acts on its next tick',
+        'cancel requested for worker#1: the daemon acts on its next tick',
+        'stop requested for demo: the daemon tells its workers to commit and stop on its next tick',
+    ]
+    with pytest.raises(SystemExit, match='run#9 is not queued or running'):
+        run_cli(['run', 'cancel', '9'])
+    with pytest.raises(SystemExit, match='worker#2 is not requested, starting or running'):
+        run_cli(['agent', 'cancel', '2'])
+    with db.session() as s:
+        requests = [(e.kind, e.target_id, e.actor, e.payload) for e in s.scalars(select(Event).where(Event.id > 0))]
+        assert [r for r in requests if r[0].endswith('_requested')] == [
+            ('run.cancel_requested', 1, 'human', {'wrap_up': True}),
+            ('worker.cancel_requested', 3, 'human', {'wrap_up': False}),
+            ('worker.cancel_requested', 1, 'human', {'wrap_up': True}),
+            ('project.stop_requested', 1, 'human', {'reason': 'machine needed', 'kill': False}),
+        ]
+        s.get_one(Project, 1).status, s.get_one(Project, 1).stopped_reason = ProjectStatus.STOPPED, 'by hand'
+        s.commit()
+    db.close()
+    with pytest.raises(SystemExit, match=r'demo is stopped already \(by hand\); --kill ends its workers at once'):
+        run_cli(['project', 'stop', 'demo'])
+    run_cli(['project', 'stop', 'demo', '--kill'])
+    assert out().strip() == 'stop requested for demo: the daemon ends its workers at once on its next tick'
+
+
 def test_launch_requests_a_worker(project_path: Path, out) -> None:
     run_cli(['init', str(project_path)])
     out()

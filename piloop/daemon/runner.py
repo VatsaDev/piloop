@@ -23,7 +23,15 @@ from piloop import git
 from piloop.agents.launcher import TRANSCRIPT, Launcher
 from piloop.agents.roles import compose_brief, role
 from piloop.campaign.project import WORKSPACE, project_dir, worktree_links
-from piloop.campaign.stop import BLOCKED, CAMPAIGN_STOPPED_ERROR, NOT_STARTED, attempts
+from piloop.campaign.stop import (
+    BLOCKED,
+    CAMPAIGN_STOPPED_ERROR,
+    CANCELLED_ERROR,
+    NOT_STARTED,
+    attempts,
+    park_cancelled,
+    run_cancel,
+)
 from piloop.config import ProjectConfig, Track, config_of
 from piloop.db.events import emit
 from piloop.db.models import (
@@ -89,10 +97,12 @@ RECOVERY_REQUEUED = 'idea.recovery_requeued'
 caps the requeues (the ``recovery_requeues`` of the run's role): candidates cannot, because two runs that leave the
 same tree share one candidate."""
 STOP_ENDED = 'worker.stop_ended'
-"""Event on a worker of a stopped project that the daemon ended when the grace period after its wrap-up prompt was
-over, with the stop's ``reason``. A worker in the middle of a turn takes a message only when the turn ends, so it may
-never have read the prompt. The scheduler commits the event before the kill, and the run closes as cut by the stop
-(``CAMPAIGN_STOPPED_ERROR``) unless its worker left its finding."""
+"""Event on an agent that the daemon ended for a stop or a cancel, with the ``reason`` and the run's ``error``.
+
+A worker of a stopped project is ended when the grace period after its wrap-up prompt is over, or at once for a stop
+that kills. A worker in the middle of a turn takes a message only when the turn ends, so it may never have read the
+prompt. The scheduler commits the event before the kill, and the run closes with the ``error``
+(``CAMPAIGN_STOPPED_ERROR`` or ``CANCELLED_ERROR``) unless its worker left its finding."""
 STARTUP_RELAUNCHES = 2
 """How many times a run is queued again with a new worker after its worker failed to start. Then the run fails.
 
@@ -268,7 +278,9 @@ class RunExecutor:
                 return
             if outcome.startup_failed:
                 if not self._relaunch(span, run_id, worker_id, log_dir):
-                    self._close(span, run_id, RunStatus.FAILED, NOT_STARTED)
+                    with self._db.session() as s:
+                        error = CANCELLED_ERROR if run_cancel(s, run_id) is not None else NOT_STARTED
+                    self._close(span, run_id, RunStatus.FAILED, error)
                     self._settle(span, run_id, idea_id, RunStatus.FAILED, startup_failed=True, recovered=None)
                 return
             wt = Repo(wt_path)
@@ -282,12 +294,15 @@ class RunExecutor:
             with self._db.session() as s:
                 asked = open_escalation(s, s.get_one(Run, run_id))
                 stop_ended = s.scalar(
-                    select(Event.id).where(
+                    select(Event.payload).where(
                         Event.target_kind == TargetKind.WORKER, Event.target_id == worker_id, Event.kind == STOP_ENDED
                     )
                 )
+                cancelled = run_cancel(s, run_id) is not None
             if stop_ended is not None and not finding:  # the stop cut it, whatever the kill left in the outcome
-                status, error = RunStatus.FAILED, CAMPAIGN_STOPPED_ERROR
+                status, error = RunStatus.FAILED, str(stop_ended.get('error', CAMPAIGN_STOPPED_ERROR))
+            elif cancelled and not finding:  # a worker that ended by itself before the daemon could end it
+                status, error = RunStatus.FAILED, CANCELLED_ERROR
             elif outcome.status is WorkerStatus.TIMED_OUT:
                 status, error = RunStatus.TIMED_OUT, outcome.error
             elif outcome.error is not None:
@@ -312,7 +327,7 @@ class RunExecutor:
         new worker's id. The new worker signs its notes and finding with its own id, and only its own finding counts
         (``_left_finding``). The scheduler launches the new worker row like any other. The old worker's transcript is
         renamed so that the new one does not overwrite it. Also returns True if the daemon stopped meanwhile, because
-        the stop then owns the rows.
+        the stop then owns the rows. A cancelled run (``run_cancel``) is not queued again.
         """
         with self.launcher.lock:
             if self.launcher.cancelled.is_set():
@@ -321,7 +336,7 @@ class RunExecutor:
             with self._db.session() as s:
                 run = s.get_one(Run, run_id)
                 launches = s.scalar(select(func.count()).select_from(Worker).where(Worker.run_id == run_id)) or 0
-                if launches > STARTUP_RELAUNCHES:
+                if launches > STARTUP_RELAUNCHES or run_cancel(s, run_id) is not None:
                     return False
                 run.status = RunStatus.QUEUED
                 worker = Worker(
@@ -893,7 +908,9 @@ class RunExecutor:
                 # a role that piloop init removed while the run ran requeues nothing
                 role = config_of(idea.project).roles.doing_runs().get(run.role)
                 if idea.status is IdeaStatus.SCHEDULED:  # A human may have parked or rejected it meanwhile.
-                    if (asked := open_escalation(s, run)) is not None:
+                    if run.error == CANCELLED_ERROR:
+                        park_cancelled(s, run)
+                    elif (asked := open_escalation(s, run)) is not None:
                         idea.status = IdeaStatus.PARKED
                         s.add(
                             Comment(

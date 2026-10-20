@@ -80,6 +80,18 @@ left its finding is finished, not stopped: the next `piloop serve` scores its co
 again. The projects stay active, and the next `piloop serve` continues them. A campaign ends only at its `[stop]`
 limits.
 
+### piloop project stop
+
+```text
+piloop project stop REF [--kill] [--reason TEXT]
+```
+
+Stops a campaign. The daemon stops it on its next tick, as when a [`[stop]` condition](/concepts/cost) holds: it
+drops the queued runs and the requested agents, the `stopped` triggers request the closing review, and each running
+worker is told to commit and stop, then ended 10 minutes later. What the workers committed is scored. With `--kill`,
+the workers are ended at once, without the prompt, and their commits are still scored. On a stopped project, `--kill`
+ends the workers that are still winding down. `--reason` goes into `stopped_reason`, after who stopped it.
+
 ### piloop restart
 
 ```text
@@ -426,6 +438,28 @@ piloop prompt WORKER_ID TEXT
 Queues `TEXT` for the next turn of a running agent of any role. The [runtime](/concepts/runtimes) of the agent
 defines how the message reaches it. When the runtime cannot deliver it, the command says why. The worker ids are in
 `piloop status`.
+
+### piloop run cancel
+
+```text
+piloop run cancel RUN_ID [--wrap-up]
+```
+
+Cancels a queued or running run on the daemon's next tick. A queued run never starts, and a run whose worker fails to
+start is not launched again. A running worker is ended with
+[every process that it started](/concepts/runtimes#when-an-agent-ends), also those in sessions of their own. With `--wrap-up`, the worker is first told to
+commit and stop, and ended 10 minutes later. The run closes as `cancelled`, unless its worker left its finding.
+Its commits are scored, it counts toward no run limit, and its idea is parked: set the idea `ready` to run it again.
+
+### piloop agent cancel
+
+```text
+piloop agent cancel WORKER_ID [--wrap-up]
+```
+
+Cancels an agent of any role on the daemon's next tick: a sweep, or a worker, whose run it cancels as
+`piloop run cancel` does. A requested agent never starts. A running one is ended with every process that it started,
+at once or, with `--wrap-up`, after it was told to commit and stop.
 
 ## The database
 

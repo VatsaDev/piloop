@@ -857,7 +857,9 @@ class Event(Base):
     generated from ``piloop.db.triggers.TEMP``) write the change log, signed by the connection's actor:
     ``idea.status``, ``idea.priority``, ``idea.track``, ``idea.base_candidate_id``, ``candidate.verdict``, ``run.brief``,
     ``project.status`` and ``project.paused`` as ``{old, new}``, ``idea.linked`` and ``idea.unlinked`` with the target
-    and the kind of an ``idea_links`` row, ``<kind>.deleted`` for deleted rows, and ``comment.<kind>``.
+    and the kind of an ``idea_links`` row, ``<kind>.deleted`` for deleted rows, and ``comment.<kind>``. The CLI also
+    writes the requests that the daemon acts on: ``project.stop_requested`` (``piloop project stop``),
+    ``run.cancel_requested`` (``piloop run cancel``) and ``worker.cancel_requested`` (``piloop agent cancel``).
     """
 
     __tablename__ = 'events'

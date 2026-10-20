@@ -1,4 +1,4 @@
-"""The commands that act on agents: ``launch``, ``prompt`` and ``attach``."""
+"""The commands that act on agents: ``launch``, ``prompt``, ``attach``, ``agent cancel`` and ``run cancel``."""
 
 from typing import Annotated
 
@@ -6,12 +6,16 @@ import cyclopts
 from sqlalchemy import select
 
 from piloop.agents.launcher import TRANSCRIPT
+from piloop.campaign.stop import CANCELLABLE, request_cancel
 from piloop.cli import common
 from piloop.cli.common import HARNESS_HELP, ProjectRef
 from piloop.config import config_of
-from piloop.db.models import Worker, WorkerState
+from piloop.db.models import OPEN_RUNS, Run, Worker, WorkerState
 from piloop.runtime import Handle, NotAttachable, NotSteerable, Runtime, RuntimeFailure
 from piloop.runtime.factory import handle_for, runtime_for
+
+agent_app = cyclopts.App(name='agent', help='Act on one agent.')
+run_app = cyclopts.App(name='run', help='Act on one run.')
 
 
 def launch(
@@ -88,3 +92,49 @@ def _running(worker_id: int) -> tuple[Runtime, Handle, str | None]:
         if worker is None:
             raise SystemExit(f'worker#{worker_id} is not running')
         return runtime_for(s, worker, common.settings.home), handle_for(worker), worker.log_dir
+
+
+WrapUp = Annotated[
+    bool,
+    cyclopts.Parameter(
+        name='--wrap-up', help='Tell the agent to commit and stop first, and end it 10 minutes later.', negative=''
+    ),
+]
+
+
+@agent_app.command(name='cancel')
+def agent_cancel(
+    worker_id: Annotated[int, cyclopts.Parameter(help='The id of the agent.')], /, *, wrap_up: WrapUp = False
+) -> None:
+    """Cancel an agent of any role. The daemon acts on its next tick.
+
+    A requested agent never starts. A running one is ended with every process that it started, at once or, with
+    `--wrap-up`, after it was told to commit and stop. For a worker, this cancels its run (`piloop run cancel`).
+    """
+    with common.session() as s:
+        worker = s.get(Worker, worker_id)
+        if worker is None or worker.state not in CANCELLABLE:
+            raise SystemExit(f'worker#{worker_id} is not requested, starting or running')
+        request_cancel(s, worker, common.settings.actor, wrap_up=wrap_up)
+        s.commit()
+    common.console.print(f'cancel requested for worker#{worker_id}: the daemon acts on its next tick')
+
+
+@run_app.command(name='cancel')
+def run_cancel(
+    run_id: Annotated[int, cyclopts.Parameter(help='The id of the run.')], /, *, wrap_up: WrapUp = False
+) -> None:
+    """Cancel a queued or running run. The daemon acts on its next tick.
+
+    A queued run never starts, and a run whose worker fails to start is not launched again. A running worker is ended
+    with every process that it started, at once or, with `--wrap-up`, after it was told to commit and stop. The run
+    closes as `cancelled`, unless the worker left its finding. Its commits are scored, and its idea is parked: set it
+    `ready` to run it again.
+    """
+    with common.session() as s:
+        run = s.get(Run, run_id)
+        if run is None or run.status not in OPEN_RUNS:
+            raise SystemExit(f'run#{run_id} is not queued or running')
+        request_cancel(s, run, common.settings.actor, wrap_up=wrap_up)
+        s.commit()
+    common.console.print(f'cancel requested for run#{run_id}: the daemon acts on its next tick')

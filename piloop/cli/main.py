@@ -25,7 +25,17 @@ from piloop.cli.version import installed
 from piloop.config import ConfigError
 
 app = cyclopts.App(name='piloop', help='Run autoresearch campaigns with coding agents.', version=installed)
-for group in (idea.app, candidate.app, measurement.app, evaluation.app, inbox.app, store.app):
+for group in (
+    idea.app,
+    candidate.app,
+    measurement.app,
+    evaluation.app,
+    inbox.app,
+    store.app,
+    project.app,
+    agents.agent_app,
+    agents.run_app,
+):
     app.command(group)
 app.command(project.init)
 app.command(project.history)

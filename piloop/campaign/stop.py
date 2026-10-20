@@ -1,7 +1,8 @@
-"""Stop conditions: decide when a project's ``[stop]`` table ends the campaign.
+"""Stop conditions: decide when a project's ``[stop]`` table, or a request, ends the campaign.
 
 The scheduler checks every active project once per tick. The reason goes into ``projects.stopped_reason`` and into
-the trigger of the closing watchdog.
+the trigger of the closing watchdog. A stop or a cancel that someone requests is an event that the daemon acts on, so
+any client of the database can make one.
 """
 
 from datetime import datetime, timedelta
@@ -11,21 +12,29 @@ from sqlalchemy.orm import Session
 
 from piloop.agents.launcher import STOPPED_ERROR
 from piloop.config import Direction, ProjectConfig
+from piloop.db.events import emit
 from piloop.db.models import (
     FINISHED_RUNS,
+    LIVE,
     OPEN_RUNS,
     Candidate,
+    Comment,
+    CommentKind,
     Event,
     Idea,
+    IdeaStatus,
     Measurement,
     Project,
     ProjectStatus,
     Run,
     TargetKind,
     Verdict,
+    Worker,
+    WorkerState,
     project_runs,
     utcnow,
 )
+from piloop.db.triggers import DAEMON_ACTOR
 from piloop.scoring.ledger import head, keeps, score
 from piloop.text import metric
 from piloop.usage import project_tokens
@@ -36,13 +45,30 @@ ROLE_REMOVED = 'its role is no longer in piloop.toml'
 NOT_STARTED = 'no agent of the run started to work'
 """The error of a run whose every agent failed to start (``launcher.STARTUP_ANOMALY`` on each): a fault of the host or
 the harness. The errors of its workers say what failed."""
-NOT_ATTEMPTS = (STOPPED_ERROR, STALE_ERROR, CAMPAIGN_STOPPED_ERROR, ROLE_REMOVED, NOT_STARTED)
-"""Run errors that mean the daemon stopped the run, or that no agent started to work on it, not that the idea was tried.
+CANCELLED_ERROR = 'cancelled'
+"""The error of a run, and of an agent, that someone cancelled (``CANCEL_REQUESTED``). The run's idea is parked."""
+NOT_ATTEMPTS = (STOPPED_ERROR, STALE_ERROR, CAMPAIGN_STOPPED_ERROR, ROLE_REMOVED, NOT_STARTED, CANCELLED_ERROR)
+"""Run errors that mean the run was stopped, or that no agent started to work on it, not that the idea was tried.
 
-The causes are a daemon stop or restart (``piloop upgrade``), a daemon crash, a campaign stop while the run was
-queued, a ``piloop init`` that removed the role of a queued run, or agents that failed to start. Such a run is not
-counted as an attempt at its idea. It does not count toward ``max_runs`` or ``plateau``, and it is not an anomaly: the
-failed starts are."""
+The causes are a daemon stop or restart (``piloop upgrade``), a daemon crash, a campaign stop, a ``piloop init`` that
+removed the role of a queued run, agents that failed to start, or a cancel. Such a run is not counted as an attempt at
+its idea. It does not count toward ``max_runs`` or ``plateau``, and it is not an anomaly: the failed starts are."""
+STOP_REQUESTED = 'project.stop_requested'
+"""Event on a project that someone asked to stop (``piloop project stop``), with ``reason`` and ``kill``.
+
+On its next tick, the daemon stops the campaign as for a ``[stop]`` condition (``stop_reason``). With ``kill``, it
+ends the project's workers at once, without the wrap-up prompt. A request made before the project was last set
+``active`` is spent."""
+CANCELLABLE = (WorkerState.REQUESTED, *LIVE)
+"""The states of an agent that a cancel acts on: requested, starting (once it runs) and running."""
+CANCEL_REQUESTED = ('run.cancel_requested', 'worker.cancel_requested')
+"""Events on a run (``piloop run cancel``) and on an agent (``piloop agent cancel``) that someone asked to cancel, with
+``wrap_up``.
+
+The daemon closes a requested row with its queued run. It ends a running agent with everything it started, at once,
+or with ``wrap_up`` after the wrap-up prompt and its grace period. A starting agent waits until it runs, and a run
+whose agent then fails to start is not launched again. The run closes with ``CANCELLED_ERROR`` unless its worker left
+its finding, and its commits are scored."""
 BLOCKED = 'blocked on escalation'
 """How the error of a run starts when its worker stopped while its own escalation waited for an answer.
 
@@ -89,8 +115,80 @@ def attempts(idea: Idea) -> int:
     return sum(run.error not in NOT_ATTEMPTS for run in idea.runs)
 
 
+def request_stop(s: Session, project: Project, actor: str, *, reason: str, kill: bool) -> None:
+    """Ask the daemon to stop ``project`` (``STOP_REQUESTED``). The caller commits."""
+    emit(s, STOP_REQUESTED, TargetKind.PROJECT, project.id, actor=actor, payload={'reason': reason, 'kill': kill})
+
+
+def requested_stop(s: Session, project: Project) -> Event | None:
+    """Return the latest stop request since the project was last set ``active``, or None."""
+    reactivated = s.scalar(
+        select(func.max(Event.id)).where(
+            Event.kind == 'project.status',
+            Event.target_kind == TargetKind.PROJECT,
+            Event.target_id == project.id,
+            Event.payload['new'].as_string() == ProjectStatus.ACTIVE.value,
+        )
+    )
+    return s.scalars(
+        select(Event)
+        .where(Event.kind == STOP_REQUESTED, Event.target_kind == TargetKind.PROJECT, Event.target_id == project.id)
+        .where(Event.id > (reactivated or 0))
+        .order_by(Event.id.desc())
+        .limit(1)
+    ).first()
+
+
+def request_cancel(s: Session, target: Run | Worker, actor: str, *, wrap_up: bool) -> None:
+    """Ask the daemon to cancel a run or an agent (``CANCEL_REQUESTED``). The caller commits."""
+    kind, on = (
+        (CANCEL_REQUESTED[0], TargetKind.RUN) if isinstance(target, Run) else (CANCEL_REQUESTED[1], TargetKind.WORKER)
+    )
+    emit(s, kind, on, target.id, actor=actor, payload={'wrap_up': wrap_up})
+
+
+def run_cancel(s: Session, run_id: int) -> Event | None:
+    """Return the latest cancel of a run: requested on the run, or on any of its agents, or None.
+
+    A cancel on an agent holds for its run, so a worker that a relaunch puts in the place of one that failed to start
+    is cancelled too.
+    """
+    on_run = (Event.target_kind == TargetKind.RUN) & (Event.target_id == run_id)
+    agents = select(Worker.id).where(Worker.run_id == run_id)
+    on_agent = (Event.target_kind == TargetKind.WORKER) & Event.target_id.in_(agents)
+    return _latest_cancel(s, on_run | on_agent)
+
+
+def agent_cancel(s: Session, worker: Worker) -> Event | None:
+    """Return the latest cancel of an agent, or None: its run's (``run_cancel``) for a worker, its own for a sweep."""
+    if worker.run_id is not None:
+        return run_cancel(s, worker.run_id)
+    return _latest_cancel(s, (Event.target_kind == TargetKind.WORKER) & (Event.target_id == worker.id))
+
+
+def _latest_cancel(s: Session, target: ColumnElement[bool]) -> Event | None:
+    query = select(Event).where(Event.kind.in_(CANCEL_REQUESTED), target).order_by(Event.id.desc()).limit(1)
+    return s.scalars(query).first()
+
+
+def park_cancelled(s: Session, run: Run) -> None:
+    """Park the idea of a cancelled run, with a note on the idea: a run is cancelled because it is not wanted now."""
+    cancel = run_cancel(s, run.id)
+    run.idea.status = IdeaStatus.PARKED
+    by = f' by {cancel.actor}' if cancel is not None else ''
+    body = f'parked: run#{run.id} was cancelled{by}; set the idea ready to run it again'
+    s.add(
+        Comment(
+            target_kind=TargetKind.IDEA, target_id=run.idea_id, author=DAEMON_ACTOR, kind=CommentKind.NOTE, body=body
+        )
+    )
+
+
 def stop_reason(s: Session, project: Project, cfg: ProjectConfig) -> str | None:
-    """Return the first ``[stop]`` condition that holds for ``project`` as a reason, or None."""
+    """Return why ``project`` stops now, or None: a stop request (``requested_stop``), else the first condition."""
+    if (request := requested_stop(s, project)) is not None:
+        why = request.payload.get('reason')
+        return f'stopped by {request.actor}: {why}' if why else f'stopped by {request.actor}'
     stop = cfg.stop
     checks = (
         _target(s, project, cfg, stop.target) if stop.target is not None else None,

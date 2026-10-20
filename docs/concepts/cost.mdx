@@ -38,8 +38,10 @@ The `[stop]` table ends the campaign when one of its conditions holds:
 When a condition holds, the project becomes `stopped`. The daemon tells the running workers to commit and stop, and
 ends them 10 minutes later. It scores what they committed. It drops the queued runs and the requested agents. Then
 the `stopped` triggers fire once: by default, the watchdog's closing review, which writes the closing report. The
-triggers request nothing more, but an agent that you request with `piloop launch` still starts. Without a `[stop]` table, the campaign has no end. `piloop stop` stops
-the daemon, not the campaign.
+triggers request nothing more, but an agent that you request with `piloop launch` still starts. Without a `[stop]` table, the campaign has no end.
+
+`piloop project stop <project>` stops a campaign by hand, the same way. With `--kill`, the workers are ended at once.
+`piloop stop` stops the daemon, not the campaign.
 
 To resume a stopped project, change its `[stop]` table and run `piloop init`.
 

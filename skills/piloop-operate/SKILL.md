@@ -217,6 +217,16 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
 - A worker asks for what it cannot do itself with an escalation. When its run ends before the answer, the run fails as
   `blocked on escalation` and its idea is parked. Answer with a `decision` on the idea, then set it `ready`.
 
+### Cancel a run, stop a campaign
+
+- A run that became redundant: `piloop run cancel <run> --wrap-up`. The worker is told to commit and stop, and ended
+  10 minutes later, with every process it started. Its commits are scored and its idea is parked. Without `--wrap-up`,
+  it is ended at once. `piloop agent cancel <worker> [--wrap-up]` does the same for an agent of any role, a sweep too.
+- A campaign: `piloop project stop <name> --reason "<why>"`. The daemon stops it as a `[stop]` condition does: it
+  drops queued work, winds the workers down, scores their commits and launches the closing review. `--kill` ends the
+  workers at once. Never `UPDATE projects SET status`: that gets no closing review.
+- Never `pkill` an agent: the cancel ends what it left running, in any session.
+
 ### Start from a tree outside the lineage
 
 Use this for a candidate of another campaign, or a branch.

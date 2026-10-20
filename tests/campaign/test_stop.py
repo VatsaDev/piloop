@@ -13,6 +13,8 @@ from piloop.campaign.stop import (
     CAMPAIGN_STOPPED_ERROR,
     STALE_ERROR,
     hours,
+    request_stop,
+    requested_stop,
     runs,
     runs_without_keep,
     stall,
@@ -503,6 +505,45 @@ def test_stopping_drains_the_requests_and_queued_runs_pending_at_that_moment(
     sched.stop(timeout=5)
     with db.session() as s:
         assert s.get_one(Worker, 4).state is WorkerState.EXITED
+
+
+def test_a_requested_stop_ends_the_campaign_as_a_stop_condition_does(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """An orchestrator that set ``projects.status`` by hand got no closing review and no drain.
+    ``piloop project stop`` records the request, and the daemon stops the campaign on the [stop] path."""
+    configure(db, project)
+    add_run(db, project)
+    (idea,) = add_ideas(db, project, 'queued before the stop')
+    with db.session() as s:
+        s.get_one(Idea, idea).status = IdeaStatus.SCHEDULED
+        run = Run(idea_id=idea, attempt=1, base_candidate_id=1, harness='script', model='m')
+        s.add(run)
+        s.flush()
+        s.add(Worker(kind=WorkerKind.WORKER, project_id=project.id, run_id=run.id, harness='script', model='m'))
+        request_stop(s, s.get_one(Project, project.id), 'human', reason='machine needed', kill=False)
+        s.commit()
+    sched = make_scheduler(db, runtime, tmp_path)
+    assert sched.tick() == [2], 'only the closing watchdog launches'
+    sched.wait(10)
+    assert project_state(db, project) == (ProjectStatus.STOPPED, 'stopped by human: machine needed')
+    with db.session() as s:
+        assert (s.get_one(Run, 2).error, s.get_one(Idea, idea).status) == (CAMPAIGN_STOPPED_ERROR, IdeaStatus.READY)
+        assert s.get_one(Worker, 2).reason == 'campaign stopped: stopped by human: machine needed'
+        s.get_one(Project, project.id).status = ProjectStatus.ACTIVE
+        s.commit()
+    assert sched.tick() == [3], 'reactivated: the old request stops nothing, and the queued idea runs'
+    sched.wait(10)
+    sched.stop(timeout=5)
+    assert project_state(db, project)[0] is ProjectStatus.ACTIVE
+    with db.session() as s:
+        request_stop(s, s.get_one(Project, project.id), 'worker#3', reason='', kill=True)
+        s.commit()
+        assert stop_reason(s, s.get_one(Project, project.id), load_project_config(Path(project.path))) == (
+            'stopped by worker#3'
+        )
+        event = requested_stop(s, s.get_one(Project, project.id))
+        assert event is not None and (event.actor, event.payload) == ('worker#3', {'reason': '', 'kill': True})
 
 
 def test_the_closing_sweep_is_each_stopped_trigger_and_none_without_one(

@@ -45,9 +45,14 @@ from piloop.campaign.spend import SpendError
 from piloop.campaign.stop import (
     BLOCKED,
     CAMPAIGN_STOPPED_ERROR,
+    CANCEL_REQUESTED,
+    CANCELLED_ERROR,
     ROLE_REMOVED,
     STALE_ERROR,
+    agent_cancel,
     attempts,
+    park_cancelled,
+    requested_stop,
     runs,
     runs_without_keep,
     stall,
@@ -111,13 +116,13 @@ SETTLED = ('comment.delivered', 'comment.undelivered')
 STEER_LINE_CHARS = 200
 """The number of characters of a comment's first line that a ``[piloop]`` line quotes. The worker can query the rest."""
 WRAP_UP = 'worker.wrap_up'
-"""Event on a worker of a stopped project: the worker was told to commit and stop.
+"""Event on a worker of a stopped project, or of a run cancelled with its wrap-up: the worker was told to commit and stop.
 
 The daemon ends the worker ``STOP_GRACE_SECONDS`` later."""
 STOP_GRACE_SECONDS = 600
-"""The seconds that a worker of a stopped project has to commit its work before the daemon ends it."""
+"""The seconds that a worker that was told to wrap up has to commit its work before the daemon ends it."""
 WRAP_UP_PROMPT = (
-    '[piloop] The campaign stopped ({reason}). Commit what you have now, with a message that says where it stands.'
+    '[piloop] {what} ({cause}). Commit what you have now, with a message that says where it stands.'
     ' Leave your finding and stop. This session ends in {minutes:g} minutes.'
 )
 JOBS_LEFT = 'worker.jobs_left'
@@ -261,7 +266,9 @@ class Scheduler:
         run.status, run.error, run.finished_at = RunStatus.FAILED, error, utcnow()
         emit(s, 'run.finished', TargetKind.RUN, run.id, payload={'status': run.status, 'error': error})
         idea = run.idea
-        if idea.status is IdeaStatus.SCHEDULED:
+        if idea.status is IdeaStatus.SCHEDULED and error == CANCELLED_ERROR:
+            park_cancelled(s, run)
+        elif idea.status is IdeaStatus.SCHEDULED:
             idea.status = IdeaStatus.READY if attempts(idea) < idea.max_runs else IdeaStatus.DONE
         self._tracer.event('run.aborted', run=run.id, error=error)
 
@@ -507,53 +514,84 @@ class Scheduler:
             s.commit()
 
     def _wind_down(self) -> None:
-        """Tell each worker of a stopped project to commit and stop (``WRAP_UP``), and end it after the grace period.
+        """Wind down the workers of stopped projects and the agents that someone cancelled (``CANCEL_REQUESTED``).
 
-        The grace period is ``STOP_GRACE_SECONDS``. The runs then close and their commits are scored. A worker in the
-        middle of a turn takes the prompt only when the turn ends, which can be after the grace period. A worker that
-        the daemon ends then (``STOP_ENDED``) without its finding closes its run as cut by the stop
-        (``CAMPAIGN_STOPPED_ERROR``), not as a failed attempt. Sweeps are not changed, because their timeouts limit them
-        and the closing review is one of them.
+        A worker of a stopped project is told to commit and stop (``WRAP_UP``), and ended after the grace period
+        (``STOP_GRACE_SECONDS``), or at once when the stop request asked to ``kill``. The runs then close and their
+        commits are scored. A worker in the middle of a turn takes the prompt only when the turn ends, which can be
+        after the grace period. A worker that the daemon ends (``STOP_ENDED``) without its finding closes its run as
+        cut by the stop (``CAMPAIGN_STOPPED_ERROR``), not as a failed attempt. Sweeps of a stopped project are not
+        changed, because their timeouts limit them and the closing review is one of them.
+
+        A cancelled run or agent of any role (``agent_cancel``) is ended at once, or after the wrap-up prompt and the
+        grace period when the cancel asked for it. Its run closes with ``CANCELLED_ERROR``. A cancelled request never
+        starts, and its queued run fails. Both park the run's idea. A starting agent is left for a later tick, once it
+        runs; if its start fails, the run is not launched again (``RunExecutor._relaunch``).
         """
         with self._db.session() as s:
-            workers = s.scalars(
-                select(Worker)
+            requested = select(Event.target_id).where(Event.kind.in_(CANCEL_REQUESTED))
+            on_agents = requested.where(Event.target_kind == TargetKind.WORKER)
+            on_runs = requested.where(Event.target_kind == TargetKind.RUN)
+            runs_of_agents = select(Worker.run_id).where(Worker.id.in_(on_agents), Worker.run_id.is_not(None))
+            cancelled = Worker.state.in_((WorkerState.REQUESTED, WorkerState.RUNNING)) & (
+                Worker.id.in_(on_agents) | Worker.run_id.in_(on_runs) | Worker.run_id.in_(runs_of_agents)
+            )
+            stopping = (
+                select(Worker.id)
                 .join(Project, Worker.project_id == Project.id)
-                .where(
-                    Worker.run_id.is_not(None),
-                    Worker.state == WorkerState.RUNNING,
-                    Project.status == ProjectStatus.STOPPED,
-                )
-                .order_by(Worker.id)
-            ).all()
+                .where(Worker.run_id.is_not(None), Worker.state == WorkerState.RUNNING)
+                .where(Project.status == ProjectStatus.STOPPED)
+            )
+            workers = s.scalars(select(Worker).where(cancelled | Worker.id.in_(stopping)).order_by(Worker.id)).all()
             for worker in workers:
+                if (cancel := agent_cancel(s, worker)) is not None:
+                    reason, error = f'cancelled by {cancel.actor}', CANCELLED_ERROR
+                    what = 'Your run was cancelled' if worker.run_id is not None else 'This sweep was cancelled'
+                    cause, wrap_up = f'by {cancel.actor}', bool(cancel.payload.get('wrap_up'))
+                else:
+                    project = s.get_one(Project, worker.project_id)
+                    reason, error = project.stopped_reason or CAMPAIGN_STOPPED_ERROR, CAMPAIGN_STOPPED_ERROR
+                    what, cause, request = 'The campaign stopped', reason, requested_stop(s, project)
+                    wrap_up = request is None or not request.payload.get('kill')
+                if worker.state is WorkerState.REQUESTED:
+                    self._close(s, worker, error)
+                    if worker.run_id is not None:
+                        self._fail_run(s, s.get_one(Run, worker.run_id), error)
+                    continue
                 told = s.scalar(
                     select(Event.at).where(
                         Event.target_kind == TargetKind.WORKER, Event.target_id == worker.id, Event.kind == WRAP_UP
                     )
                 )
-                if told is None:
-                    self._wrap_up(s, worker)
+                if not wrap_up:
+                    self._end(s, worker, reason, error)
+                elif told is None:
+                    text = WRAP_UP_PROMPT.format(what=what, cause=cause, minutes=STOP_GRACE_SECONDS / 60)
+                    self._wrap_up(s, worker, reason, text)
                 elif utcnow() - told >= timedelta(seconds=STOP_GRACE_SECONDS):
-                    reason = s.get_one(Project, worker.project_id).stopped_reason or CAMPAIGN_STOPPED_ERROR
-                    emit(s, STOP_ENDED, TargetKind.WORKER, worker.id, payload={'reason': reason})
-                    s.commit()  # before the kill: the run that the kill ends reads it when it closes
-                    self._tracer.event('worker.ended', worker=worker.id, reason=CAMPAIGN_STOPPED_ERROR)
-                    self._kill_stale(s, worker)
+                    self._end(s, worker, reason, error)
             s.commit()
 
-    def _wrap_up(self, s: Session, worker: Worker) -> None:
+    def _wrap_up(self, s: Session, worker: Worker, reason: str, text: str) -> None:
         """Send the wrap-up prompt. The grace period starts even if the prompt fails, as for a headless worker."""
-        reason = s.get_one(Project, worker.project_id).stopped_reason or CAMPAIGN_STOPPED_ERROR
         payload: dict[str, object] = {'reason': reason}
         try:
-            runtime_for(s, worker, self._runs_dir, self._runtime_factory).prompt(
-                handle_for(worker), WRAP_UP_PROMPT.format(reason=reason, minutes=STOP_GRACE_SECONDS / 60)
-            )
+            runtime_for(s, worker, self._runs_dir, self._runtime_factory).prompt(handle_for(worker), text)
         except Exception as e:  # NotSteerable (subprocess), a blocked agent or a closed pane.
             payload['error'] = str(e)
         emit(s, WRAP_UP, TargetKind.WORKER, worker.id, payload=payload)
         self._tracer.event(WRAP_UP, worker=worker.id, **{k: str(v) for k, v in payload.items()})
+
+    def _end(self, s: Session, worker: Worker, reason: str, error: str) -> None:
+        """Kill a wound-down agent, after ``STOP_ENDED``. The kill is tried again on each tick until the agent is gone."""
+        ended = select(Event.id).where(
+            Event.target_kind == TargetKind.WORKER, Event.target_id == worker.id, Event.kind == STOP_ENDED
+        )
+        if s.scalar(ended) is None:
+            emit(s, STOP_ENDED, TargetKind.WORKER, worker.id, payload={'reason': reason, 'error': error})
+            s.commit()  # before the kill: the run that the kill ends reads it when it closes
+            self._tracer.event('worker.ended', worker=worker.id, reason=reason)
+        self._kill_stale(s, worker)
 
     def _triggers(self, s: Session, project: Project, cfg: ProjectConfig) -> None:
         """Stop the campaign if a ``[stop]`` condition holds. Otherwise queue runs and check every role's triggers.
