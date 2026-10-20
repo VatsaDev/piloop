@@ -13,10 +13,11 @@ from sqlalchemy import select
 
 from piloop.agents import capture
 from piloop.agents.capture import ENTIRE_INSTALL, MIN_ENTIRE
-from piloop.agents.launcher import PROMPT, STARTUP_ANOMALY, STOPPED_ERROR, Launcher, fill
+from piloop.agents.launcher import PROMPT, STARTUP_ANOMALY, STOPPED_ERROR, WRAP_UP, Launcher, fill
 from piloop.agents.roles import PILOOP_HINT, PROMPTS, SQL_HINT, Role, compose_brief, role
 from piloop.config import ProjectConfig, config_of, load_project_config
-from piloop.db.models import Event, Project, Worker, WorkerKind, WorkerState
+from piloop.db.events import emit
+from piloop.db.models import Event, Project, TargetKind, Worker, WorkerKind, WorkerState
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.mcp import MCP
@@ -340,6 +341,21 @@ def test_an_agent_that_never_got_going_is_an_anomaly(
         'a harness whose usage is not read cannot tell "spent nothing" from "unknown"'
     )
     assert len(anomalies(db)) == 2
+
+
+def test_an_agent_told_to_wrap_up_that_stops_with_nothing_is_not_a_failed_start(
+    project: Project, db: Database, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancel or a stop with the wrap-up prompt: the agent stopped because it was told to, not at startup."""
+    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+    counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], 'usage': PI_SPEC}
+    use_harness(db, project, HARNESS_PROMPT_TO_FILE, **counted)
+    told = request(db, project)
+    with db.session() as s:
+        emit(s, WRAP_UP, TargetKind.WORKER, told)
+        s.commit()
+    outcome = launch(db, runtime, tmp_path, told)
+    assert (outcome.startup_failed, worker(db, told).state, anomalies(db)) == (False, WorkerState.EXITED, [])
 
 
 def test_a_cwd_that_cannot_be_made_is_a_failed_start(

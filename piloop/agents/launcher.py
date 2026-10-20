@@ -19,7 +19,7 @@ from piloop.agents.capture import ENTIRE_INSTALL, MIN_ENTIRE, AttachError, attac
 from piloop.agents.refill import usage_of
 from piloop.config import BRIEF_FILE, config_of, harness_of
 from piloop.db.events import emit
-from piloop.db.models import Comment, Project, Run, TargetKind, UsageJson, Worker, WorkerState, utcnow
+from piloop.db.models import Comment, Event, Project, Run, TargetKind, UsageJson, Worker, WorkerState, utcnow
 from piloop.db.session import Database
 from piloop.harnesses import SESSION_ID, Invocation, fill, takes_session_id
 from piloop.mcp import RENDERERS, Launch, Rendered, expand, forwarded_env
@@ -42,6 +42,19 @@ Longer than the default Herdr ``startup_grace_seconds``: a Herdr agent that neve
 the whole grace, and must still count as a failed start, not as a run that worked and left nothing."""
 STARTUP_ANOMALY = 'anomaly.startup'
 """The event on a worker that did not start to work (``Outcome.startup_failed``): an environment fault, not bad work."""
+WRAP_UP = 'worker.wrap_up'
+"""Event on a worker of a stopped project, or of a run cancelled with its wrap-up: the worker was told to commit and stop.
+
+The daemon ends the worker ``STOP_GRACE_SECONDS`` later."""
+STOP_ENDED = 'worker.stop_ended'
+"""Event on an agent that the daemon ended for a stop or a cancel, with the ``reason`` and the run's ``error``.
+
+A worker of a stopped project is ended when the grace period after its wrap-up prompt is over, or at once for a stop
+that kills. A worker in the middle of a turn takes a message only when the turn ends, so it may never have read the
+prompt. The scheduler commits the event before the kill, and the run closes with the ``error``
+(``CAMPAIGN_STOPPED_ERROR`` or ``CANCELLED_ERROR``) unless its worker left its finding."""
+ASKED_TO_END = (WRAP_UP, STOP_ENDED)
+"""Events on an agent that the daemon told to stop or ended. Such an agent never counts as a failed start."""
 PARENT_SESSION_ENV = ('CLAUDE_CODE_CHILD_SESSION',)
 """Variables that an agent CLI sets for the processes of its session, cleared in the environment of every agent.
 
@@ -166,9 +179,12 @@ class Launcher:
                     outcome = Outcome(WorkerStatus.EXITED, time.monotonic() - started, error=f'{type(e).__name__}: {e}')
                     killed = True
                 cancelled = self.cancelled.is_set()
+                asked = self._asked_to_end(worker_id)
+                killed = killed or STOP_ENDED in asked
                 usage = None if cancelled else self._usage(worker_id, cwd, log_dir, span)
                 if (
                     not cancelled
+                    and not asked
                     and not outcome.startup_failed
                     and self._never_worked(worker_id, outcome, usage, cwd, links)
                 ):
@@ -390,6 +406,12 @@ class Launcher:
             return None
         span.set(tokens=found.total)
         return found.as_json()
+
+    def _asked_to_end(self, worker_id: int) -> set[str]:
+        """Return the ``ASKED_TO_END`` events on the worker: a stop or a cancel ended it, not a failed start."""
+        on_worker = (Event.target_kind == TargetKind.WORKER) & (Event.target_id == worker_id)
+        with self.db.session() as s:
+            return set(s.scalars(select(Event.kind).where(on_worker, Event.kind.in_(ASKED_TO_END))))
 
     def _never_worked(
         self, worker_id: int, outcome: Outcome, usage: UsageJson | None, cwd: Path, links: dict[str, Path]

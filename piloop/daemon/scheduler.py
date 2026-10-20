@@ -34,7 +34,7 @@ from sqlalchemy.orm import Session
 
 from piloop import git
 from piloop.agents import scout
-from piloop.agents.launcher import STARTUP_ANOMALY, STOPPED_ERROR, rotate
+from piloop.agents.launcher import STARTUP_ANOMALY, STOP_ENDED, STOPPED_ERROR, WRAP_UP, rotate
 from piloop.agents.refill import usage_of
 from piloop.agents.roles import compose_brief, role_of
 from piloop.campaign import spend
@@ -71,7 +71,7 @@ from piloop.config import (
     ideas_taken,
 )
 from piloop.daemon.archiver import Archiver, Archiving
-from piloop.daemon.runner import STOP_ENDED, RunExecutor, left_finding, open_escalation
+from piloop.daemon.runner import RunExecutor, left_finding, open_escalation
 from piloop.db.events import ANOMALY_EVENT, emit
 from piloop.db.models import (
     LIVE,
@@ -115,10 +115,6 @@ SETTLED = ('comment.delivered', 'comment.undelivered')
 """Events on a worker that record a comment as sent or failed. The comment id is in the payload."""
 STEER_LINE_CHARS = 200
 """The number of characters of a comment's first line that a ``[piloop]`` line quotes. The worker can query the rest."""
-WRAP_UP = 'worker.wrap_up'
-"""Event on a worker of a stopped project, or of a run cancelled with its wrap-up: the worker was told to commit and stop.
-
-The daemon ends the worker ``STOP_GRACE_SECONDS`` later."""
 STOP_GRACE_SECONDS = 600
 """The seconds that a worker that was told to wrap up has to commit its work before the daemon ends it."""
 WRAP_UP_PROMPT = (

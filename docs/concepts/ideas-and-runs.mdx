@@ -112,7 +112,8 @@ run whose worker stops while its escalation waits for an answer is blocked. It f
 the escalation with a `decision` on the idea, which the next run reads in its brief, then set the idea `ready`.
 
 A run whose agent could not be launched (its worktree, its runtime), or that ended within two minutes without a commit,
-an uncommitted change or a comment, is not an attempt, whatever tokens it spent. The daemon starts the same run again with a new worker, up
+an uncommitted change or a comment, is not an attempt, whatever tokens it spent. An agent that a cancel or a stop ended, or told to wrap up, is not a failed
+start. The daemon starts the same run again with a new worker, up
 to two times. If the third start fails too, the run fails with `no agent of the run started to work`, which is still
 no attempt, and the idea is `parked`. After three failed starts within 10 minutes, the daemon stops launching agents
 for the project and escalates.

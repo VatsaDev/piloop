@@ -20,7 +20,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from piloop import git
-from piloop.agents.launcher import TRANSCRIPT, Launcher
+from piloop.agents.launcher import STOP_ENDED, TRANSCRIPT, Launcher
 from piloop.agents.roles import compose_brief, role
 from piloop.campaign.project import WORKSPACE, project_dir, worktree_links
 from piloop.campaign.stop import (
@@ -96,13 +96,6 @@ RECOVERY_REQUEUED = 'idea.recovery_requeued'
 """The event on an idea that ``_settle`` requeued from recovered work, with ``{run, candidate}``. Counting these events
 caps the requeues (the ``recovery_requeues`` of the run's role): candidates cannot, because two runs that leave the
 same tree share one candidate."""
-STOP_ENDED = 'worker.stop_ended'
-"""Event on an agent that the daemon ended for a stop or a cancel, with the ``reason`` and the run's ``error``.
-
-A worker of a stopped project is ended when the grace period after its wrap-up prompt is over, or at once for a stop
-that kills. A worker in the middle of a turn takes a message only when the turn ends, so it may never have read the
-prompt. The scheduler commits the event before the kill, and the run closes with the ``error``
-(``CAMPAIGN_STOPPED_ERROR`` or ``CANCELLED_ERROR``) unless its worker left its finding."""
 STARTUP_RELAUNCHES = 2
 """How many times a run is queued again with a new worker after its worker failed to start. Then the run fails.
 

@@ -1743,6 +1743,31 @@ def test_a_cancelled_worker_closes_its_run_as_cancelled_scores_its_commits_and_p
         assert runs(s, s.get_one(Project, project.id)) == 0, 'not an attempt: no run limit counts it'
 
 
+def test_a_worker_cancelled_before_it_did_anything_is_not_a_failed_start(
+    db: Database, project: Project, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """An agent that the daemon ends on request within ``STARTUP_SECONDS``, with no commit and no comment, did not
+    fail to start: no ``anomaly.startup`` and no count toward the startup breaker. Its row is ``killed``."""
+    write_toml(Path(project.path), '#!/bin/sh\nexec sleep 30\n', worker_timeout=60)
+    set_config(db, project)
+    add_ideas(db, project, 'unwanted')
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    assert scheduler.tick() == [1]
+    wait_for_worker_handle(db)
+    with db.session() as s:
+        request_cancel(s, s.get_one(Run, 1), 'human', wrap_up=False)
+        s.commit()
+    assert scheduler.tick() == []
+    scheduler.wait(20)
+    scheduler.stop(timeout=5)
+    with db.session() as s:
+        assert s.scalars(select(Event).where(Event.kind == STARTUP_ANOMALY)).all() == []
+        assert s.get_one(Worker, 1).state is WorkerState.KILLED
+        run = s.get_one(Run, 1)
+        assert (run.status, run.error) == (RunStatus.FAILED, CANCELLED_ERROR)
+        assert s.scalar(select(func.count()).select_from(Worker)) == 1, 'not launched again'
+
+
 def test_a_cancelled_request_never_launches_and_a_cancelled_sweep_is_ended(
     db: Database, project: Project, tmp_path: Path
 ) -> None:
