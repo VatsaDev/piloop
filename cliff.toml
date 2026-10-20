@@ -1,0 +1,65 @@
+# git-cliff (https://git-cliff.org) writes a release's section of CHANGELOG.md from the squash commit subjects since
+# the last tag: `make changelog`. CONTRIBUTING.md has the release steps, the commit types and when to use `!`.
+
+[changelog]
+# The header must match the top of CHANGELOG.md: `--prepend` puts the new section after it.
+header = """
+# Changelog
+
+All notable changes to piloop are in this file. The format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and piloop follows
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before 1.0, a minor release may contain breaking changes.
+A deprecated configuration key shows a warning for at least one minor release before it is removed.
+"""
+# release.yml finds the section by its `## [<version>]` prefix. A line starts with a capital letter, unless it starts
+# with a `piloop` command.
+body = """
+{% if version -%}
+## [{{ version | trim_start_matches(pat="v") }}]\
+{% if previous.version -%}
+(https://github.com/hiloopai/piloop/compare/{{ previous.version }}...{{ version }})\
+{%- endif %} \
+- {{ timestamp | date(format="%Y-%m-%d") }}
+{% else -%}
+## [Unreleased]
+{% endif -%}
+{% if commits | filter(attribute="breaking", value=true) | length > 0 %}
+This release has breaking changes, marked **Breaking** below. Read
+[Upgrading](https://piloop.autoresearch.inc/guides/upgrading) before you upgrade.
+{% endif -%}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+{%- set message = commit.message | trim -%}
+{%- if not message is starting_with("piloop ") %}{% set message = message | upper_first %}{% endif %}
+- {% if commit.breaking %}**Breaking:** {% endif %}{{ message }}{% if not message is ending_with(".") %}.{% endif %}\
+{% if commit.breaking and commit.breaking_description != commit.message %} \
+{{ commit.breaking_description | trim | upper_first }}{% endif %}
+{%- endfor %}
+{% endfor %}
+"""
+trim = false
+
+[git]
+conventional_commits = true
+filter_unconventional = false
+require_conventional = true
+fail_on_unmatched_commit = true
+sort_commits = "oldest"
+# Release notes link the release's compare view, not each pull request: most pull requests are on a private mirror.
+commit_preprocessors = [
+    { pattern = '\s*\((?:[\w.-]+/[\w.-]+)?#\d+[^)]*\)', replace = "" },
+]
+# The first parser that matches a commit sets its group, and a commit that none matches stops the run. The HTML
+# comment orders the groups as Keep a Changelog does. CONTRIBUTING.md lists the types: keep the two in step.
+commit_parsers = [
+    { message = '^(feat|fix|perf|revert|refactor|docs|test|ci|build|style|chore)\((ci|tests?)\): ', skip = true },
+    { message = '^(feat|fix|perf|revert|refactor)(\(.+\))?!?: .*deprecat', group = "<!-- 2 -->Deprecated" },
+    { message = '^\w+(\(.+\))?!: remove\b', group = "<!-- 3 -->Removed" },
+    { message = '^feat(\(.+\))?!?: ', group = "<!-- 0 -->Added" },
+    { message = '^fix(\(.+\))?!?: ', group = "<!-- 4 -->Fixed" },
+    { message = '^(perf|revert)(\(.+\))?!?: ', group = "<!-- 1 -->Changed" },
+    { message = '^(refactor|docs|test|ci|build|style|chore)(\(.+\))?!: ', group = "<!-- 1 -->Changed" },
+    { field = "breaking", pattern = "true", group = "<!-- 1 -->Changed" },
+    { message = '^(refactor|docs|test|ci|build|style|chore)(\(.+\))?: ', skip = true },
+]

@@ -234,7 +234,7 @@ batch migration that rebuilds a table drops its triggers, so call `piloop.db.tri
 
 To rename or remove a key of `piloop.toml`, add a bridge in `piloop/deprecated.py`. The module docstring explains
 how. The old key then keeps working, with a warning, for at least one minor release. The release notes list it under
-`Deprecated`, so say in the commit subject that the key is deprecated.
+`Deprecated` when the pull request title says that the key is deprecated.
 
 ## Code style
 
@@ -267,9 +267,8 @@ subpackage may use.
 ## Send a change
 
 - Open an issue first for a large change, so that we can agree on the approach.
-- Use [Conventional Commits](https://www.conventionalcommits.org/): `fix: keep the head when a merge conflicts`,
-  `feat(watch): filter the agents panel`.
-- Write the subject as one sentence that a user understands: the release notes come from the commit subjects.
+- Give the pull request a title that is a [Conventional Commit](https://www.conventionalcommits.org/). See
+  [The pull request title](#the-pull-request-title).
 - A bug fix comes with a test that fails without the fix.
 - Keep the design simple: no second way to do something that exists, no retry loop that hides a design flaw, and no
   flag or knob without a clear user.
@@ -277,21 +276,64 @@ subpackage may use.
   path, private ticket, key or token, also not in test data.
 - Make sure that `make` passes before you open the pull request.
 
+## The pull request title
+
+A pull request is squashed when it merges, and its title becomes the commit subject. The release notes of the next
+version come from these subjects, so write the title for a user:
+
+```text
+fix: a stopped project is measured again on request
+feat(watch): filter the agents panel
+feat!: remove the herdr_ keys of config.toml
+refactor: the [roles.research.scout] table is deprecated, use [roles.scout]
+```
+
+The form is `type(scope): description`. The scope is optional. The description is one sentence that a user
+understands. The type sets where the line goes in `CHANGELOG.md`:
+
+| Type | Use it for | Release notes |
+| --- | --- | --- |
+| `feat` | Something new that a user can see or use, or a change to what a user sees | `Added` |
+| `fix` | A bug fix that a user can see | `Fixed` |
+| `perf` | Faster or cheaper, with the same behavior | `Changed` |
+| `revert` | The revert of an earlier change | `Changed` |
+| `refactor`, `docs`, `test`, `ci`, `build`, `style`, `chore` | A change that a user does not see | Not listed |
+
+Some titles go to another place:
+
+- A `feat`, `fix`, `perf`, `revert` or `refactor` whose description says `deprecated` goes under `Deprecated`.
+- A breaking change whose description starts with `remove` goes under `Removed`.
+- A title with the scope `ci` or `test` is not listed, unless it is breaking.
+
+Add `!` after the type or the scope for a breaking change: a change that makes a user change a `piloop.toml`, a
+script, a query or a plugin, or that drops something that a user can use. A breaking change is always listed, with
+**Breaking** in front of it, and the release section tells the reader to read the upgrade guide. To say what a user
+must change, end the squash commit message with a footer when you merge: `BREAKING CHANGE: <what to change>`. The
+release notes add it after the line. Before 1.0, a minor release may break, so a breaking change does not need a major
+version.
+
+The `PR title` check fails on a title that is not a Conventional Commit, or whose type is not in the table. The
+types are also in `cliff.toml`: change both together.
+
 ## Release
 
 Maintainers only.
 
-1. Set `version` in `pyproject.toml`, and run `uv lock`.
-2. Write the release notes in `CHANGELOG.md`. List the subjects of the commits since the last tag:
+1. Fetch the tags (`git fetch --tags origin`). Set `version` in `pyproject.toml`, and run `uv lock`.
+2. Write the release notes:
 
    ```bash
-   git log --reverse --format='- %s' "$(git describe --tags --abbrev=0)"..main
+   make changelog
    ```
 
-   Add a section for the version and the date under `[Unreleased]`. Sort the lines into `Added`, `Changed`,
-   `Deprecated`, `Removed` and `Fixed`, remove the type prefixes and the PR numbers, and remove the lines that a user
-   cannot see (`test:`, `ci:`, `chore:`). Move the lines under `[Unreleased]`, if any, into the new section, and drop
-   the commits that they describe. Update the links at the bottom.
+   [git-cliff](https://git-cliff.org) reads the commits since the last tag. It writes the section of the version, with
+   the date and a link to the comparison with the last release, at the top of `CHANGELOG.md`. It sorts the commits
+   into `Added`, `Changed`, `Deprecated`, `Removed` and `Fixed`, as `cliff.toml` says, and stops on a commit subject
+   that is not a Conventional Commit of an allowed type.
+
+   Then edit the section by hand. Correct the wording, join the lines that describe one change, and move a line to a
+   better group. If `CHANGELOG.md` still has an `[Unreleased]` section, move its entries into the new section, remove
+   the generated lines that repeat them, and remove the heading and its link at the bottom.
 3. Merge that change, then tag the commit on `main`: `git tag v0.2.0 && git push origin v0.2.0`.
 
 The `Release` workflow runs CI, checks that the tag matches the version, creates the GitHub release with the

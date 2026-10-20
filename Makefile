@@ -40,5 +40,9 @@ docs:  ## Regenerate the generated docs and the trigger SQL from code
 docs-check:  ## Fail if a generated file is stale
 	uv run -m scripts.generate_all --mode check
 
+.PHONY: changelog
+changelog:  ## Write the section of the version in pyproject.toml into CHANGELOG.md, from the commits since the last tag
+	uv run --group release git-cliff --unreleased --tag "v$$(uv version --short)" --prepend CHANGELOG.md
+
 .PHONY: all
 all: format lint typecheck testcov docs

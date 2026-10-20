@@ -83,6 +83,8 @@ lint = [
     "ty>=0.0.1a",
     "types-psutil>=7.2.2.20260906",
 ]
+# Release-time only, never a dependency of piloop: `make changelog` and the PR title check.
+release = ["git-cliff>=2.14.2"]
 
 [tool.ruff]
 line-length = 120

@@ -20,7 +20,9 @@ concurrency:
 
 jobs:
   lint:
+    name: lint and install
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -37,6 +39,23 @@ jobs:
         env:
           SKIP: no-commit-to-branch
           UV_NO_SYNC: "1"
+      - run: git config --global user.name piloop-ci && git config --global user.email ci@piloop
+      - run: PILOOP_SRC=. ./install.sh
+      - name: enwik8 example, headless (no Herdr on a runner)
+        env:
+          PILOOP_PROJECT_RUNTIME: subprocess
+          COLUMNS: 200
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          piloop init --example enwik8 /tmp/enwik8 | tee /tmp/init.txt
+          grep -q "registered; baseline candidate#1" /tmp/init.txt
+          piloop status enwik8
+      - name: the wheel carries the skills (a stand-in codex on PATH)
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          mkdir -p /tmp/bin && printf '#!/bin/sh\n' > /tmp/bin/codex && chmod +x /tmp/bin/codex
+          PATH="/tmp/bin:$PATH" piloop install-skills
+          test -f ~/.agents/skills/piloop-operate/SKILL.md
 
   test:
     name: test on ${{ matrix.os }}
@@ -67,35 +86,9 @@ jobs:
         env:
           PYTEST_XDIST_AUTO_NUM_WORKERS: ${{ matrix.workers }}
 
-  install:
-    name: install.sh quickstart
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - run: git config --global user.name piloop-ci && git config --global user.email ci@piloop
-      - run: PILOOP_SRC=. ./install.sh
-      - name: enwik8 example, headless (no Herdr on a runner)
-        env:
-          PILOOP_PROJECT_RUNTIME: subprocess
-          COLUMNS: 200
-        run: |
-          export PATH="$HOME/.local/bin:$PATH"
-          piloop init --example enwik8 /tmp/enwik8 | tee /tmp/init.txt
-          grep -q "registered; baseline candidate#1" /tmp/init.txt
-          piloop status enwik8
-      - name: the wheel carries the skills (a stand-in codex on PATH)
-        run: |
-          export PATH="$HOME/.local/bin:$PATH"
-          mkdir -p /tmp/bin && printf '#!/bin/sh\n' > /tmp/bin/codex && chmod +x /tmp/bin/codex
-          PATH="/tmp/bin:$PATH" piloop install-skills
-          test -f ~/.agents/skills/piloop-operate/SKILL.md
-
   check:
     if: always()
-    needs: [lint, test, install]
+    needs: [lint, test]
     runs-on: ubuntu-latest
     steps:
       - uses: re-actors/alls-green@release/v1
