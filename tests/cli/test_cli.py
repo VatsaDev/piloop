@@ -876,11 +876,6 @@ def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_
         run_cli(['candidate', 'note', '2', 'worth a look', '--follow-up', 'a hunch'])
 
 
-def test_unknown_campaign(tmp_path: Path) -> None:
-    with pytest.raises(SystemExit, match='no campaign'):
-        run_cli(['status', 'nope'])
-
-
 def test_baseline_must_evaluate(campaign_path: Path) -> None:
     (campaign_path / 'piloop.toml').write_text(
         (campaign_path / 'piloop.toml').read_text().replace('"sh", "-c"', '"false", "-c"')
@@ -1527,7 +1522,34 @@ def test_watch_needs_a_terminal_and_runs_the_app_as_the_actor(campaign_path: Pat
     ran: list[tuple[str | None, str, Path]] = []
     mocker.patch.object(campaign_cli.Watch, 'run', lambda app: ran.append((app.ref, app.actor, app.db_file)))
     run_cli(['watch', 'demo'])
-    assert ran == [('demo', 'human', common.settings.home / 'piloop.db')]
+    run_cli(['watch'])
+    database = common.settings.home / 'piloop.db'
+    assert ran == [('demo', 'human', database), (None, 'human', database)], 'without a campaign, every campaign'
+
+
+def test_watch_refuses_a_campaign_that_the_home_does_not_have_before_it_opens_the_database(
+    campaign_path: Path, mocker: MockerFixture
+) -> None:
+    mocker.patch('piloop.cli.campaign.sys.stdin').isatty.return_value = True
+    mocker.patch.object(campaign_cli, 'Database', side_effect=AssertionError('the database was opened for writing'))
+    home = re.escape(str(common.settings.home))
+    database = common.settings.home / 'piloop.db'
+    before = database.read_bytes()
+    with pytest.raises(SystemExit, match=rf'^no campaign at {re.escape(str(campaign_path))} in {home}; is PILOOP_HOME'):
+        run_cli(['watch', str(campaign_path)])
+    with pytest.raises(SystemExit, match=rf"^no campaign 'demo' in {home}; is PILOOP_HOME right\?"):
+        run_cli(['watch', 'demo'])
+    assert database.read_bytes() == before and not database.with_name('piloop.db-wal').exists()
+
+
+def test_a_command_names_the_home_that_has_no_such_campaign(campaign_path: Path) -> None:
+    home = re.escape(str(common.settings.home))
+    with pytest.raises(SystemExit, match=rf'^no campaign at {re.escape(str(campaign_path))} in {home}; is PILOOP_HOME'):
+        run_cli(['resume', str(campaign_path)])
+    with pytest.raises(
+        SystemExit, match=rf"^no campaign 'nope' in {home}; is PILOOP_HOME right\? `piloop init <path>`"
+    ):
+        run_cli(['status', 'nope'])
 
 
 def test_schema_prints_the_procedures_and_tables_pi_puts_in_its_sql_tool(out) -> None:

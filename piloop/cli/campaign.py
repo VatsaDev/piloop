@@ -201,6 +201,8 @@ def watch_cmd(ref: CampaignRef | None = None, /) -> None:
     if not sys.stdin.isatty():
         raise SystemExit('piloop watch reads keys from a terminal; `piloop status` prints the same once')
     common.refuse_other_schema()
+    if ref is not None:
+        common.known(ref)
     db = Database(common.settings.database_url, actor=common.settings.actor)
     try:
         Watch(db, common.settings.home / 'piloop.db', ref, common.settings.actor).run()

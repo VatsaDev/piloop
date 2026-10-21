@@ -12,7 +12,7 @@ from typing import Annotated
 
 import cyclopts
 from rich.console import Console
-from sqlalchemy import select
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from piloop.campaign.campaigns import checked_out, find
@@ -78,8 +78,27 @@ def campaign(s: Session, ref: str) -> Campaign:
     """Find the campaign that ``ref`` names, or exit with how to register it."""
     found = find(s, ref)
     if found is None:
-        raise SystemExit(f'no campaign {ref!r}: register it with `piloop init <path>`')
+        raise _unknown(ref)
     return found
+
+
+def known(ref: str) -> None:
+    """Exit unless the home has a campaign that ``ref`` names. Reads the database read-only; check its schema first."""
+    engine = create_engine(f'sqlite:///file:{settings.home / "piloop.db"}?mode=ro&uri=true')
+    try:
+        with Session(engine) as s:
+            found = find(s, ref)
+    finally:
+        engine.dispose()
+    if found is None:
+        raise _unknown(ref)
+
+
+def _unknown(ref: str) -> SystemExit:
+    where = f'at {ref}' if Path(ref).exists() else repr(ref)
+    return SystemExit(
+        f'no campaign {where} in {settings.home}; is PILOOP_HOME right? `piloop init <path>` registers one'
+    )
 
 
 def campaigns(s: Session, ref: str | None) -> list[Campaign]:
