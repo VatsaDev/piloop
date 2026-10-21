@@ -1,6 +1,6 @@
 ---
 name: piloop-review
-description: Review a piloop campaign during or after a run to check if the gains are real, if an agent gamed the evaluation, where time and tokens went, and which failures are piloop bugs, then turn the findings into bug reports, PRs and inbox items. Use when the human asks to review, audit, post-mortem or look back at a campaign or campaign, or asks if a result can be trusted.
+description: Review a piloop campaign during or after a run to check if the gains are real, if an agent gamed the evaluation, where time and tokens went, and which failures are piloop bugs, then turn the findings into bug reports, PRs and inbox items. Use when the human asks to review, audit, post-mortem or look back at a campaign, or asks if a result can be trusted.
 ---
 
 # Review a piloop campaign
