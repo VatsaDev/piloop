@@ -12,7 +12,7 @@ piloop plugins                                               # lists `dir  piloo
 Select it in `$PILOOP_HOME/config.toml`, then restart the daemon (`piloop restart`):
 
 ```toml
-[storage.remote]
+[storage.backend]
 kind = "dir"
 root = "/mnt/archive/piloop"
 ```

@@ -10,9 +10,9 @@ The contract callers use is ``Store``'s: ``put``/``put_path``, ``open``/``get``/
 blobs in one pack file (a hash → pack, offset, length index) fits behind it without changing a caller. Reads and
 writes stream in ``CHUNK``-sized pieces: a blob of any size is never held in memory.
 
-The store's own directory always holds what is local; a ``Remote`` (``piloop.store.s3``) mirrors it. Every blob put
-while a remote is set is uploaded and marked ``blake3/<hash>/remote``; ``evict`` uploads what is still unmarked, then
-drops the local bytes of marked blobs by age and by the store's local size. Evicting at age 0 makes the directory a
+The store's own directory always holds what is local; its remote, a ``StorageBackend`` (``piloop.store.s3``), mirrors
+it. Every blob put while a remote is set is uploaded and marked ``blake3/<hash>/remote``; ``evict`` uploads what is
+still unmarked, then drops the local bytes of marked blobs by age and by the store's local size. Evicting at age 0 makes the directory a
 staging area: a blob's bytes are dropped as soon as they are uploaded, and a read fetches them back.
 
 Append-only: there is no delete and no garbage collection.
@@ -89,8 +89,8 @@ class Writer(Protocol):
         ...
 
 
-class Remote(Protocol):
-    """Where blobs are mirrored: whole compressed objects by key. ``RemoteConfig.open`` makes one."""
+class StorageBackend(Protocol):
+    """Where blobs are mirrored: whole compressed objects by key. ``StorageBackendConfig.open`` makes one."""
 
     url: str
 
@@ -107,11 +107,12 @@ class Remote(Protocol):
         ...
 
 
-class RemoteConfig(BaseModel, ABC):
-    """The settings of a remote backend, ``[storage.remote]``: each backend subclasses it with its own keys.
+class StorageBackendConfig(BaseModel, ABC):
+    """The settings of a storage backend, ``[storage.backend]``: each backend subclasses it with its own keys.
 
-    ``kind`` names the backend (``piloop.store.config.remotes``). ``open`` makes the ``Remote`` that the settings
-    describe. ``piloop.store.s3.S3Config`` and ``piloop.store.gcs.GcsConfig`` are the built-in ones.
+    ``kind`` names the backend (``piloop.plugins.contracts.store.STORAGE_BACKENDS``). ``open`` makes the
+    ``StorageBackend`` that the settings describe. ``piloop.store.s3.S3Config`` and ``piloop.store.gcs.GcsConfig`` are
+    the built-in ones.
     """
 
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
@@ -120,7 +121,7 @@ class RemoteConfig(BaseModel, ABC):
     """The backend: the name it is registered under."""
 
     @abstractmethod
-    def open(self) -> Remote:
+    def open(self) -> StorageBackend:
         """The remote these settings describe."""
 
 
@@ -224,7 +225,7 @@ class Store:
     """
 
     root: Path
-    remote: Remote | None = None
+    remote: StorageBackend | None = None
     evict_after: timedelta | None = None
     max_local_bytes: int | None = None
     level: int = 3
@@ -241,7 +242,7 @@ class Store:
         if was is not None and was != (self.remote.url if self.remote is not None else None):
             raise RemoteChanged(
                 f'{self.root} mirrors to {was}, and its blobs marked as uploaded are there, but the store is opened with'
-                f' {self.remote.url if self.remote is not None else "no remote"}: point [storage.remote] back at {was},'
+                f' {self.remote.url if self.remote is not None else "no remote"}: point [storage.backend] back at {was},'
                 f' or copy its objects to the new remote and then write the new URL into {bound}'
             )
 

@@ -43,7 +43,7 @@ catches up with an upgrade that you already made.
   tell, it says why.
 - The daemon runs the installed code.
 - The database has the current schema.
-- The runtimes, remote backends, triggers and roles that packages add load, and none of them reuses a name. When
+- The runtimes, storage backends, triggers and roles that packages add load, and none of them reuses a name. When
   they do not, the checks after this one do not run.
 - `PILOOP_SECRETS_COMMAND`, when it is set, runs and prints `NAME=value` lines. The check shows the names only.
 - The `piloop.toml` of every campaign loads.
@@ -153,6 +153,13 @@ If you ran piloop from its main branch after 0.1.0, the names that it added are 
 `sql` trigger (`@project`, `$project`), `workdir = "project"` (now `"repo"`), `piloop project stop` (now `piloop
 campaign stop`), the `--project` option of `piloop events`, and the `projects` and `subject.project` keys of the JSON
 output. The migration renames those that the database and its stored configs hold.
+
+The artifact store also came after 0.1.0, and its plugin capability is the **storage backend** now, not the remote
+backend. `[storage.remote]` in `config.toml` is `[storage.backend]`: the old table still works until 0.3.0, with a
+warning. A package that adds a backend subclasses `piloop.store.StorageBackendConfig` (was `RemoteConfig`), its
+`open()` returns a `piloop.store.StorageBackend` (was `Remote`), and its tests call
+`piloop.store.contract.check_storage_backend` (was `check_remote`). These have no alias. The entry point group stays
+`piloop.stores`.
 
 The payloads of old events keep their text, so an old payload may have `project` keys. A signature in a payload and
 the `worker` key of `run.relaunched` are renamed. The directories of the campaigns stay under

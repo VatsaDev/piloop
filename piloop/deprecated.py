@@ -227,7 +227,20 @@ def herdr_keys(toml: Path, raw: dict[str, object]) -> None:
         )
 
 
-CONFIG_BRIDGES: tuple[Bridge, ...] = (herdr_keys,)
+@until('0.3.0', '[storage.remote] in config.toml is [storage.backend]: delete the storage_remote bridge')
+def storage_remote(toml: Path, raw: dict[str, object]) -> None:
+    """In ``config.toml``, ``[storage.remote]`` is ``[storage.backend]``: the storage backend that mirrors the store.
+
+    A key that ``[storage.backend]`` sets too keeps its value there.
+    """
+    storage = _table(raw, 'storage')
+    if storage is None or (old := storage.pop('remote', None)) is None:
+        return
+    storage['backend'] = (old if isinstance(old, dict) else {}) | (_table(storage, 'backend') or {})
+    warn(toml, 'storage.remote', '[storage.remote] is deprecated; write [storage.backend]', removed_in=REMOVED_IN)
+
+
+CONFIG_BRIDGES: tuple[Bridge, ...] = (herdr_keys, storage_remote)
 """The bridges of ``config.toml``, the global settings file (``piloop.settings.config_file``)."""
 
 

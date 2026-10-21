@@ -62,13 +62,13 @@ jobs:
         run: |
           export PATH="$HOME/.local/bin:$PATH"
           uv tool install --force --from . piloop $(printf -- '--with ./%s ' examples/plugins/*/)
-          mkdir -p "$PILOOP_HOME" && printf '[storage.remote]\nkind = "dir"\nroot = "/tmp/plugins-store"\n' > "$PILOOP_HOME/config.toml"
+          mkdir -p "$PILOOP_HOME" && printf '[storage.backend]\nkind = "dir"\nroot = "/tmp/plugins-store"\n' > "$PILOOP_HOME/config.toml"
           piloop serve --check
           piloop init --example enwik8 /tmp/enwik8-nice
           piloop plugins | tee /tmp/plugins.txt
           grep -q "nice        piloop-nice 0.1.0, entry point nice = piloop_nice:NiceRuntime" /tmp/plugins.txt
           grep -q "enwik8 implementer: runtime nice, from piloop-nice 0.1.0" /tmp/plugins.txt
-          grep -q "remote backend dir, from piloop-dir-store 0.1.0" /tmp/plugins.txt
+          grep -q "storage backend dir, from piloop-dir-store 0.1.0" /tmp/plugins.txt
           grep -q "enwik8: verdict rule min_gain, from piloop-min-gain 0.1.0" /tmp/plugins.txt
           grep -q "enwik8: stop rule after_keeps, from piloop-stop-after-keeps 0.1.0" /tmp/plugins.txt
           grep -q "verdict checks (pure tier, piloop_verdict_checks.checks):" /tmp/plugins.txt

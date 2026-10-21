@@ -25,8 +25,8 @@ MAX_EVALUATIONS = 2
 """The default of ``Settings.max_evaluations``."""
 
 
-class RemoteTable(BaseModel):
-    """``[storage.remote]``: the backend that mirrors the store, by ``kind``, and that backend's own keys.
+class BackendTable(BaseModel):
+    """``[storage.backend]``: the backend that mirrors the store, by ``kind``, and that backend's own keys.
 
     Only ``kind`` is read here. The backend's settings model checks the other keys when the store opens
     (``piloop.store.config``): ``s3`` is built in, and packages add backends with a ``piloop.stores`` entry point.
@@ -42,14 +42,14 @@ class StorageSettings(BaseModel):
     """``[storage]``: the artifact store every campaign of this PILOOP_HOME archives its workspace into.
 
     The keys here hold for every backend. Blobs live in ``<PILOOP_HOME>/store``, and in the remote too when
-    ``[storage.remote]`` is set. The artifact store page of the docs describes the modes.
+    ``[storage.backend]`` is set. The artifact store page of the docs describes the modes.
     """
 
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
 
-    remote: RemoteTable | None = None
-    """``[storage.remote]``: every blob is uploaded there as it is stored. Unset, the store is the local directory alone
-    and no blob is ever evicted."""
+    backend: BackendTable | None = None
+    """``[storage.backend]``: every blob is uploaded there as it is stored. Unset, the store is the local directory
+    alone and no blob is ever evicted."""
     evict_after_days: float | None = Field(default=None, ge=0)
     """Drop the local copy of a blob the remote holds once it is this old (since it was stored or fetched); 0 drops it
     as soon as it is uploaded, so the local directory is only a staging area and every read fetches. Unset: by age
@@ -63,8 +63,8 @@ class StorageSettings(BaseModel):
 
     @model_validator(mode='after')
     def _check(self) -> Self:
-        if self.remote is None and (self.evict_after_days is not None or self.local_max_gb is not None):
-            raise ValueError('evict_after_days and local_max_gb need a remote: the local copy is the only one')
+        if self.backend is None and (self.evict_after_days is not None or self.local_max_gb is not None):
+            raise ValueError('evict_after_days and local_max_gb need a storage backend: the local copy is the only one')
         return self
 
 

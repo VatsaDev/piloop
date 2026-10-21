@@ -1,6 +1,6 @@
 """The Google Cloud Storage remote of the artifact store: one object per blob under ``gs://<bucket>/<prefix>/...``.
 
-``[storage.remote]`` with ``kind = "gcs"`` selects it, and ``GcsConfig`` holds its keys. It shows how the table
+``[storage.backend]`` with ``kind = "gcs"`` selects it, and ``GcsConfig`` holds its keys. It shows how the table
 changes with the backend: S3 names one URL and a size threshold, GCS a bucket, a prefix and one storage class. Every
 GCS class reads in milliseconds, so there is no threshold: ``STANDARD`` costs nothing to read back, the colder
 classes cost less to keep and bill a minimum storage time and each read. Credentials are Google's Application Default
@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import field_validator
 
-from piloop.store import RemoteConfig
+from piloop.store import StorageBackendConfig
 
 if TYPE_CHECKING:
     from google.cloud.storage import Bucket
@@ -24,8 +24,8 @@ if TYPE_CHECKING:
 type StorageClass = Literal['STANDARD', 'NEARLINE', 'COLDLINE', 'ARCHIVE']
 
 
-class GcsConfig(RemoteConfig):
-    """``[storage.remote]`` with ``kind = "gcs"``: a bucket, a prefix in it, and the storage class of each blob."""
+class GcsConfig(StorageBackendConfig):
+    """``[storage.backend]`` with ``kind = "gcs"``: a bucket, a prefix in it, and the storage class of each blob."""
 
     kind: Literal['gcs'] = 'gcs'
     """The Google Cloud Storage backend."""
@@ -60,7 +60,7 @@ class Gcs:
             from google.cloud import storage
         except ImportError as e:
             raise ImportError(
-                "[storage.remote] kind = 'gcs' needs the gcs extra: uv tool install --reinstall 'piloop[gcs]'"
+                "[storage.backend] kind = 'gcs' needs the gcs extra: uv tool install --reinstall 'piloop[gcs]'"
             ) from e
         prefix = config.prefix.strip('/')
         self.prefix = f'{prefix}/' if prefix else ''

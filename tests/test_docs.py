@@ -28,7 +28,7 @@ from piloop.config import CampaignConfig
 from piloop.db import sql
 from piloop.plugins import host
 from piloop.settings import StorageSettings
-from piloop.store.config import remote_config
+from piloop.store.config import backend_config
 from tests.conftest import at_head, example
 
 ROOT = Path(__file__).parent.parent
@@ -127,8 +127,8 @@ def check_toml(block: Block, _db: Path) -> None:
             GLOBAL_TABLES[table].model_validate(values)
         if (storage := data.get('storage')) is not None:
             settings = StorageSettings.model_validate(storage)
-            if settings.remote is not None:
-                remote_config(settings.remote)  # the backend checks its own keys, as when the store opens
+            if settings.backend is not None:
+                backend_config(settings.backend)  # the backend checks its own keys, as when the store opens
         return
     CampaignConfig.model_validate(data if {'name', 'evaluate'} <= data.keys() else merged(BASE_CONFIG, data))
 

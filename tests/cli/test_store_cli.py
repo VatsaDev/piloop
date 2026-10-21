@@ -11,7 +11,7 @@ from piloop.campaign.campaigns import workspace_dir
 from piloop.cli import common
 from piloop.db.models import Archive, IdeaStatus
 from piloop.db.session import Database
-from piloop.settings import RemoteTable, Settings, StorageSettings
+from piloop.settings import BackendTable, Settings, StorageSettings
 from piloop.store import key
 from piloop.store.config import open_store
 from tests.campaign.test_archive import add_idea, add_run, files, write
@@ -101,7 +101,7 @@ def test_store_status_evict_and_verify(archived, out, monkeypatch: pytest.Monkey
     run_cli(['store', 'status'])
     lines = out().splitlines()
     assert lines[0].startswith(f'{tmp_path / "store"}: 5 blob(s), 5 local (3.')
-    assert lines[0].endswith(' kB), no remote ([storage.remote])'), 'decimal units, as rich.filesize.decimal'
+    assert lines[0].endswith(' kB), no storage backend ([storage.backend])'), 'decimal units, as rich.filesize.decimal'
     assert lines[4].split() == ['demo', '2', '3', '3.1', 'kB']
     assert lines[-1].startswith('to archive: 0 done idea(s), 0 stopped campaign(s); latest archiving 20')
     run_cli(['store', 'evict'])
@@ -117,7 +117,7 @@ def test_store_status_evict_and_verify(archived, out, monkeypatch: pytest.Monkey
     with pytest.raises(SystemExit):
         run_cli(['store', 'verify'])
     assert out().strip() == '2 manifest(s), 3 blob(s): 2 ok, 0 missing, 1 corrupt', 'a rotten manifest names nothing'
-    storage = StorageSettings(remote=RemoteTable(kind='s3', url='s3://bucket/prefix'))
+    storage = StorageSettings(backend=BackendTable(kind='s3', url='s3://bucket/prefix'))
     monkeypatch.setattr(common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', storage=storage))
     monkeypatch.setattr('boto3.client', lambda _: None)
     run_cli(['store', 'status'])
@@ -132,7 +132,7 @@ def test_status_with_a_ready_idea_shows_nothing_archived(campaign_path: Path, ou
     out()
     run_cli(['store', 'status'])
     lines = out().splitlines()
-    assert lines[0].endswith(': 0 blob(s), 0 local (0 bytes), no remote ([storage.remote])')
+    assert lines[0].endswith(': 0 blob(s), 0 local (0 bytes), no storage backend ([storage.backend])')
     assert (
         lines[-1]
         == 'to archive: 0 done idea(s), 0 stopped campaign(s) (the daemon works through them in the background, one at a time)'

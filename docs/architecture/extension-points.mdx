@@ -14,7 +14,7 @@ import Roles from '/snippets/generated/roles.mdx';
 import Triggers from '/snippets/generated/triggers.mdx';
 import RuntimeProtocol from '/snippets/generated/runtime-protocol.mdx';
 import Runtimes from '/snippets/generated/runtimes.mdx';
-import Remotes from '/snippets/generated/remotes.mdx';
+import StorageBackends from '/snippets/generated/storage-backends.mdx';
 import Harnesses from '/snippets/generated/harnesses.mdx';
 import McpKeys from '/snippets/generated/mcp-keys.mdx';
 import EvaluateExamples from '/snippets/generated/evaluate-examples.mdx';
@@ -52,7 +52,7 @@ A plugin can also do two more things:
 | Extension point | Select it in | Add your own |
 |---|---|---|
 | [Runtimes](#runtimes) | `runtime`, `[roles.<name>] runtime` | a plugin: `piloop.runtimes` |
-| [Storage backends](#storage-backends) | `[storage.remote] kind` in `config.toml` | a plugin: `piloop.stores` |
+| [Storage backends](#storage-backends) | `[storage.backend] kind` in `config.toml` | a plugin: `piloop.stores` |
 | [Pure plugins](#pure-plugins) | `[plugins.<capability>] provider` | a plugin: data in, data out |
 | [Verdict rules](#verdict-rules) | `[plugins.verdict_rule] provider` | a plugin: `piloop.verdict_rules` |
 | [Roles](#roles) | `[roles.<name>]` | configuration, or a plugin: `piloop.roles` |
@@ -118,17 +118,17 @@ This backend copies the files to a directory, for example a network share that i
 Install it, then select it in `$PILOOP_HOME/config.toml` and restart the daemon (`piloop restart`):
 
 ```toml
-[storage.remote]
+[storage.backend]
 kind = "dir"
 root = "/mnt/archive/piloop"
 ```
 
 ### The contract
 
-The artifact store keeps its blobs in `$PILOOP_HOME/store` and can mirror them to a remote. A backend is a settings
-model, a subclass of `piloop.store.RemoteConfig`: its `kind` is the name of its entry point, its fields are the other
-keys of `[storage.remote]`, and its `open()` returns the remote. A remote stores whole objects by key, and the store
-never lists, deletes or changes one:
+The artifact store keeps its blobs in `$PILOOP_HOME/store` and can mirror them to a storage backend. A backend is a
+settings model, a subclass of `piloop.store.StorageBackendConfig`: its `kind` is the name of its entry point, its fields
+are the other keys of `[storage.backend]`, and its `open()` returns the `piloop.store.StorageBackend`. That one stores
+whole objects by key, and the store never lists, deletes or changes one:
 
 - `url`: where it puts objects, without a trailing `/`. The store records it at its first upload, and refuses to open
   later with another one.
@@ -136,13 +136,13 @@ never lists, deletes or changes one:
 - `download(key, path) -> bool`: write the object to `path`; `False`, and no file, when there is none.
 - `has(key) -> bool`: whether an object is stored under `key`.
 
-`piloop.store.contract.check_remote(remote, scratch)` runs the contract against a remote, as piloop's tests do with
-the example. It writes under `piloop-contract/<random>/` and never deletes, so point it at a folder that you can
+`piloop.store.contract.check_storage_backend(backend, scratch)` runs the contract against a backend, as piloop's tests
+do with the example. It writes under `piloop-contract/<random>/` and never deletes, so point it at a folder that you can
 empty.
 
 ### Built in
 
-<Remotes />
+<StorageBackends />
 
 The [configuration reference](/reference/configuration) shows the store with each backend.
 

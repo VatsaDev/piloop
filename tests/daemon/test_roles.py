@@ -509,7 +509,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
 ) -> None:
     """The example plugins ``piloop-nice`` and ``piloop-dir-store`` are installed, with a package role ``fast``.
 
-    ``runtime = "nice"`` in piloop.toml and ``[storage.remote] kind = "dir"`` in config.toml bind them in place of
+    ``runtime = "nice"`` in piloop.toml and ``[storage.backend] kind = "dir"`` in config.toml bind them in place of
     ``subprocess`` and of no remote. The daemon composes them before it starts, its agents start through ``nice`` at
     the niceness of ``[runtimes.nice]``, and ``piloop plugins`` shows each binding with its package, its version and
     where the choice comes from.
@@ -528,7 +528,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
         s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
         s.add(AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, reason='by hand'))
         s.commit()
-    remote = f'[storage.remote]\nkind = "dir"\nroot = "{tmp_path / "remote"}"\n'
+    remote = f'[storage.backend]\nkind = "dir"\nroot = "{tmp_path / "remote"}"\n'
     (tmp_path / 'config.toml').write_text(f'{remote}[runtimes.nice]\nniceness = 5\n')
     home = Settings(home=tmp_path, tick_seconds=0.05)
     assert isinstance(open_store(home).remote, Dir)
@@ -553,7 +553,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
     ]
     assert '  nice        piloop-nice 0.1.0, entry point nice = piloop_nice:NiceRuntime' in lines
     toml, config = Path(campaign.path) / 'piloop.toml', tmp_path / 'config.toml'
-    store = f'remote backend dir, from piloop-dir-store 0.1.0 ([storage.remote] kind in {config})'
+    store = f'storage backend dir, from piloop-dir-store 0.1.0 ([storage.backend] kind in {config})'
     stored = f'in the config of demo that the last `piloop init` stored from {toml}'
     settings = f'; its settings: [runtimes.nice] in {config}'
     keys = {

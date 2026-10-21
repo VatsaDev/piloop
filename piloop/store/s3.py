@@ -1,6 +1,6 @@
 """The S3 remote of the artifact store: one object per blob under ``s3://<bucket>/<prefix>/blake3/<hash>/bytes.zst``.
 
-``[storage.remote]`` with ``kind = "s3"`` selects it, and ``S3Config`` holds its keys. An object's storage class is
+``[storage.backend]`` with ``kind = "s3"`` selects it, and ``S3Config`` holds its keys. An object's storage class is
 chosen by its compressed size: ``storage_class`` (Glacier Instant Retrieval by default: millisecond reads at a fraction
 of STANDARD's price), except below ``standard_below`` bytes, where Glacier IR would bill a 128 KB minimum for each and
 STANDARD is cheaper. Uploads and downloads stream through boto3's transfer manager (multipart past its threshold).
@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 from pydantic import Field, field_validator
 
-from piloop.store import RemoteConfig
+from piloop.store import StorageBackendConfig
 
 if TYPE_CHECKING:
     from botocore.exceptions import ClientError
@@ -27,8 +27,8 @@ STANDARD = 'STANDARD'
 NOT_FOUND = ('404', 'NoSuchKey', 'NotFound')
 
 
-class S3Config(RemoteConfig):
-    """``[storage.remote]`` with ``kind = "s3"``: a bucket and prefix, and the storage class of each blob."""
+class S3Config(StorageBackendConfig):
+    """``[storage.backend]`` with ``kind = "s3"``: a bucket and prefix, and the storage class of each blob."""
 
     kind: Literal['s3'] = 's3'
     """The S3 backend."""

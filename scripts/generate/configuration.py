@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from piloop.config import CampaignConfig
 from piloop.deprecated import BRIDGES, CONFIG_BRIDGES
-from piloop.plugins.contracts.store import REMOTES
+from piloop.plugins.contracts.store import STORAGE_BACKENDS
 from piloop.runtime.herdr import HerdrSettings
 from piloop.settings import StorageSettings
 from piloop.triggers import TRIGGERS
@@ -101,20 +101,20 @@ def global_section() -> str:
         '\n## Global settings: `config.toml`\n\n`$PILOOP_HOME/config.toml` holds the settings that every campaign of'
         ' one `PILOOP_HOME` shares. To override a key, set `PILOOP_<TABLE>__<KEY>`, for example'
         ' `PILOOP_STORAGE__MIN_FREE_GB`.\n\n### `[storage]`\n\n'
-        f'{mdx(storage.get("description", ""))}\n\n{table(storage, {}, set(storage["properties"]) - {"remote"})}'
-        '\n`[storage.remote]` picks the backend that mirrors the store by its `kind`, and the backend owns the other'
+        f'{mdx(storage.get("description", ""))}\n\n{table(storage, {}, set(storage["properties"]) - {"backend"})}'
+        '\n`[storage.backend]` picks the backend that mirrors the store by its `kind`, and the backend owns the other'
         ' keys of the table. The keys of `[storage]` stay the same whatever the backend. The same store, mirrored to S3'
         ' or to Google Cloud Storage:\n\n'
-        f'<CodeGroup>\n\n```toml S3\n{SHARED_STORAGE}[storage.remote]\nkind = "s3"\nurl = "s3://my-bucket/piloop"\n'
+        f'<CodeGroup>\n\n```toml S3\n{SHARED_STORAGE}[storage.backend]\nkind = "s3"\nurl = "s3://my-bucket/piloop"\n'
         'storage_class = "GLACIER_IR"\n```\n\n'
-        f'```toml GCS\n{SHARED_STORAGE}[storage.remote]\nkind = "gcs"\nbucket = "my-bucket"\nprefix = "piloop"\n'
+        f'```toml GCS\n{SHARED_STORAGE}[storage.backend]\nkind = "gcs"\nbucket = "my-bucket"\nprefix = "piloop"\n'
         'storage_class = "COLDLINE"\ncredentials_file = "/etc/piloop/gcs-key.json"\n```\n\n</CodeGroup>\n\n'
         'A package adds a backend with an entry point in the `piloop.stores` group: see'
         ' [storage backends](/architecture/extension-points#storage-backends). The built-in ones:\n'
     )
-    for kind, backend in REMOTES.builtins().items():
+    for kind, backend in STORAGE_BACKENDS.builtins().items():
         schema = json_schema(backend)
-        out += f'\n### `[storage.remote]` with `kind = "{kind}"`\n\n{mdx(schema.get("description", ""))}\n\n'
+        out += f'\n### `[storage.backend]` with `kind = "{kind}"`\n\n{mdx(schema.get("description", ""))}\n\n'
         out += table(schema, schema.get('$defs', {}))
     herdr = json_schema(HerdrSettings)
     out += (

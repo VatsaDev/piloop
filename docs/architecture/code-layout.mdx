@@ -8,7 +8,7 @@ import Imports from '/snippets/generated/imports.mdx';
 The `piloop` package has one subpackage for each concern. Imports only point down this list:
 
 1. `db/`: storage, the SQL gate for agents, the events feed. `store/`: the artifact store, its blobs, manifests
-   and remote backends.
+   and storage backends.
 2. `mcp/`, `usage/`, and `config.py` with `harnesses.py`: MCP servers, token usage, the campaign configuration.
 3. `runtime/`: where the agent processes run (a background process, or a Herdr pane).
 4. `scoring/`: the evaluate command, the ledger, the verdict.

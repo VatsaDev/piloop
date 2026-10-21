@@ -10,9 +10,9 @@ from google.api_core.exceptions import NotFound
 from google.cloud import storage
 from pydantic import ValidationError
 
-from piloop.settings import RemoteTable
+from piloop.settings import BackendTable
 from piloop.store import Store, key
-from piloop.store.config import remote_config
+from piloop.store.config import backend_config
 from piloop.store.gcs import Gcs, GcsConfig
 
 
@@ -83,16 +83,16 @@ def test_a_key_file_replaces_application_default_credentials(buckets: dict[str, 
 
 
 def test_the_gcs_table_has_its_own_keys() -> None:
-    """The same ``[storage.remote]`` table, with GCS's keys instead of S3's."""
-    config = remote_config(RemoteTable(kind='gcs', bucket='b', prefix='p', storage_class='ARCHIVE', project='x'))
+    """The same ``[storage.backend]`` table, with GCS's keys instead of S3's."""
+    config = backend_config(BackendTable(kind='gcs', bucket='b', prefix='p', storage_class='ARCHIVE', project='x'))
     assert config == GcsConfig(bucket='b', prefix='p', storage_class='ARCHIVE', project='x')
     for table, error in (
-        (RemoteTable(kind='gcs', bucket='gs://b/p'), 'is no bucket name'),
-        (RemoteTable(kind='gcs', bucket='b', storage_class='GLACIER_IR'), "'STANDARD', 'NEARLINE', 'COLDLINE'"),
-        (RemoteTable(kind='gcs', url='s3://b'), 'bucket'),
+        (BackendTable(kind='gcs', bucket='gs://b/p'), 'is no bucket name'),
+        (BackendTable(kind='gcs', bucket='b', storage_class='GLACIER_IR'), "'STANDARD', 'NEARLINE', 'COLDLINE'"),
+        (BackendTable(kind='gcs', url='s3://b'), 'bucket'),
     ):
         with pytest.raises(ValidationError, match=error):
-            remote_config(table)
+            backend_config(table)
 
 
 def test_without_the_gcs_extra_the_store_says_how_to_install_it(monkeypatch: pytest.MonkeyPatch) -> None:

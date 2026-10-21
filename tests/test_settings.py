@@ -5,35 +5,35 @@ from pydantic import ValidationError
 
 from piloop.deprecated import PiloopDeprecationWarning
 from piloop.runtime.herdr import HerdrSettings
-from piloop.settings import RemoteTable, Settings, StorageSettings, env_names, expand_env
+from piloop.settings import BackendTable, Settings, StorageSettings, env_names, expand_env
 
 
 def test_storage_is_read_from_config_toml_under_the_home_and_the_environment_wins(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     (tmp_path / 'config.toml').write_text(
-        '[storage]\nevict_after_days = 30\n\n[storage.remote]\nkind = "s3"\nurl = "s3://bucket/piloop"\n'
+        '[storage]\nevict_after_days = 30\n\n[storage.backend]\nkind = "s3"\nurl = "s3://bucket/piloop"\n'
     )
     given = Settings(home=tmp_path)
     assert given.storage == StorageSettings(
-        remote=RemoteTable(kind='s3', url='s3://bucket/piloop'), evict_after_days=30
+        backend=BackendTable(kind='s3', url='s3://bucket/piloop'), evict_after_days=30
     ), "the backend's own keys ride along, unread here"
     assert given.store_dir == tmp_path / 'store'
     monkeypatch.setenv('PILOOP_HOME', str(tmp_path))
     monkeypatch.setenv('PILOOP_STORAGE__MIN_FREE_GB', '5')
     from_env = Settings()
-    assert from_env.storage.min_free_gb == 5 and from_env.storage.remote is not None
-    assert from_env.storage.remote.model_dump() == {'kind': 's3', 'url': 's3://bucket/piloop'}
-    assert Settings(home=tmp_path / 'elsewhere').storage.remote is None, 'no config.toml there'
+    assert from_env.storage.min_free_gb == 5 and from_env.storage.backend is not None
+    assert from_env.storage.backend.model_dump() == {'kind': 's3', 'url': 's3://bucket/piloop'}
+    assert Settings(home=tmp_path / 'elsewhere').storage.backend is None, 'no config.toml there'
 
 
-def test_eviction_needs_a_remote_and_a_remote_needs_a_kind() -> None:
-    with pytest.raises(ValidationError, match='need a remote'):
+def test_eviction_needs_a_storage_backend_and_a_backend_needs_a_kind() -> None:
+    with pytest.raises(ValidationError, match='need a storage backend'):
         StorageSettings(local_max_gb=10)
     with pytest.raises(ValidationError, match='kind'):
-        StorageSettings.model_validate({'remote': {'url': 's3://bucket'}})
+        StorageSettings.model_validate({'backend': {'url': 's3://bucket'}})
     with pytest.raises(ValidationError, match='Extra inputs are not permitted'):
-        StorageSettings.model_validate({'storage_class': 'STANDARD'}), 'a backend key belongs in [storage.remote]'
+        StorageSettings.model_validate({'storage_class': 'STANDARD'}), 'a backend key belongs in [storage.backend]'
 
 
 def test_an_env_placeholder_is_the_variable_or_its_default_in_the_home(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -58,6 +58,22 @@ def test_herdr_keys_of_config_toml_still_load_and_are_the_herdr_runtime_s(
     (tmp_path / 'config.toml').write_text('[runtimes.herdr]\nsession = "theirs"\n')
     monkeypatch.setenv('PILOOP_HERDR_CLI_TIMEOUT_SECONDS', '7')
     assert (HerdrSettings().session, HerdrSettings().cli_timeout_seconds) == ('theirs', 7), 'the environment wins'
+
+
+def test_the_storage_remote_table_of_config_toml_is_the_storage_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Builds of main after 0.1.0 wrote the storage backend as ``[storage.remote]``."""
+    (tmp_path / 'config.toml').write_text(
+        '[storage]\nevict_after_days = 3\n\n[storage.remote]\nkind = "s3"\nurl = "s3://b/p"\n'
+    )
+    monkeypatch.setenv('PILOOP_HOME', str(tmp_path))
+    with pytest.warns(
+        PiloopDeprecationWarning, match=r'\[storage.remote\] is deprecated; write \[storage.backend\]'
+    ) as w:
+        storage = Settings().storage
+    assert storage == StorageSettings(backend=BackendTable(kind='s3', url='s3://b/p'), evict_after_days=3)
+    assert w[0].lineno == 4, 'at the table header'
 
 
 def test_a_runtimes_value_that_is_no_table_of_tables_is_refused_and_gives_the_runtime_nothing(

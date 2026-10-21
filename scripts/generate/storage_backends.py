@@ -1,16 +1,16 @@
-"""Generate ``docs/snippets/generated/remotes.mdx``: the built-in storage backends."""
+"""Generate ``docs/snippets/generated/storage-backends.mdx``: the built-in storage backends."""
 
-from piloop.plugins.contracts.store import REMOTES
+from piloop.plugins.contracts.store import STORAGE_BACKENDS
 from scripts.generate import SNIPPETS, header
 from scripts.generate.markdown import cell, lead
 
-PATH = SNIPPETS / 'remotes.mdx'
+PATH = SNIPPETS / 'storage-backends.mdx'
 
 
 def generate() -> str:
     """Return a table of the built-in storage backends: the ``kind``, what it stores into, and its keys."""
     rows = ['| Backend | What it is | Keys |', '|---|---|---|']
-    for kind, backend in REMOTES.builtins().items():
+    for kind, backend in STORAGE_BACKENDS.builtins().items():
         what = cell(lead(backend, backend.__name__)).split(': ', 1)[-1]
         what = what[:1].upper() + what[1:]
         keys = ', '.join(f'`{k}`' for k in backend.model_fields if k != 'kind')

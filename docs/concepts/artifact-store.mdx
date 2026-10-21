@@ -78,9 +78,9 @@ One store serves every campaign of a `PILOOP_HOME`, in `$PILOOP_HOME/store`.
 
 Nothing is ever deleted from the store. There is no garbage collection.
 
-## A remote
+## A storage backend
 
-Set `[storage.remote]` in `$PILOOP_HOME/config.toml` to mirror the store. Its `kind` picks the backend, and the
+Set `[storage.backend]` in `$PILOOP_HOME/config.toml` to mirror the store. Its `kind` picks the backend, and the
 backend owns the other keys of the table. `s3` and `gcs` are built in; `gcs` needs the `gcs` extra
 (`uv tool install --reinstall 'piloop[gcs]'`). A package can add a backend: see
 [storage backends](/architecture/extension-points#storage-backends). The keys of `[storage]` itself hold for every
@@ -92,14 +92,14 @@ GCS.
 evict_after_days = 30
 local_max_gb = 200
 
-[storage.remote]
+[storage.backend]
 kind = "s3"
 url = "s3://my-bucket/piloop"
 storage_class = "GLACIER_IR"   # the default
 standard_below = 131072        # compressed bytes; the default (128 KB)
 ```
 
-piloop checks `[storage.remote]` against its backend when it opens the store: `piloop serve`, `piloop restore` and
+piloop checks `[storage.backend]` against its backend when it opens the store: `piloop serve`, `piloop restore` and
 `piloop store` fail on a key the backend does not know.
 
 - **Mirror.** With a remote, every blob is uploaded as it is stored. For S3, boto3 finds the credentials

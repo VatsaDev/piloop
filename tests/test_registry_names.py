@@ -103,7 +103,7 @@ def test_every_leaf_entry_is_still_needed() -> None:
 
 HOST_CONTRACTS = {
     'runtime': 'starts, watches, steers and stops agent processes',
-    'remote backend': 'reads files and writes to a bucket or a directory',
+    'storage backend': 'reads files and writes to a bucket or a directory',
     'trigger': 'fire(tick) reads the database through the session of a Tick',
     'role': 'a role holds trigger objects and names a runtime',
 }

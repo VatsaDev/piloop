@@ -52,7 +52,7 @@ piloop = "piloop.cli.main:main"
 # The providers of piloop itself, in the groups that a plugin package uses (piloop.plugins.host).
 [project.entry-points."piloop.capabilities"]
 runtime = "piloop.plugins.contracts.runtime:RUNTIMES"
-remote_backend = "piloop.plugins.contracts.store:REMOTES"
+storage_backend = "piloop.plugins.contracts.store:STORAGE_BACKENDS"
 trigger = "piloop.triggers:TRIGGERS"
 role = "piloop.config:ROLES"
 verdict_rule = "piloop.plugins.contracts.verdict:VERDICT_RULES"

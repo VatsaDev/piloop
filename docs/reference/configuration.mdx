@@ -434,7 +434,7 @@ trigger. The reason is `campaign stopped: <the condition>`.
 `[storage]`: the artifact store every campaign of this PILOOP_HOME archives its workspace into.
 
 The keys here hold for every backend. Blobs live in `<PILOOP_HOME>/store`, and in the remote too when
-`[storage.remote]` is set. The artifact store page of the docs describes the modes.
+`[storage.backend]` is set. The artifact store page of the docs describes the modes.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -442,7 +442,7 @@ The keys here hold for every backend. Blobs live in `<PILOOP_HOME>/store`, and i
 | `local_max_gb` | number \| null | `null` | Drop the local copies of the oldest blobs the remote holds until the local store is at most this size. |
 | `min_free_gb` | number | `20` | Free space, in GB, that archiving keeps on the disk of the local store. Storing a file writes its compressed copy first, so the daemon removes the workspace copies of archived files, oldest archive first, while the disk has less than this free, and it archives in batches that fit above it. |
 
-`[storage.remote]` picks the backend that mirrors the store by its `kind`, and the backend owns the other keys of the table. The keys of `[storage]` stay the same whatever the backend. The same store, mirrored to S3 or to Google Cloud Storage:
+`[storage.backend]` picks the backend that mirrors the store by its `kind`, and the backend owns the other keys of the table. The keys of `[storage]` stay the same whatever the backend. The same store, mirrored to S3 or to Google Cloud Storage:
 
 <CodeGroup>
 
@@ -451,7 +451,7 @@ The keys here hold for every backend. Blobs live in `<PILOOP_HOME>/store`, and i
 evict_after_days = 30
 min_free_gb = 50
 
-[storage.remote]
+[storage.backend]
 kind = "s3"
 url = "s3://my-bucket/piloop"
 storage_class = "GLACIER_IR"
@@ -462,7 +462,7 @@ storage_class = "GLACIER_IR"
 evict_after_days = 30
 min_free_gb = 50
 
-[storage.remote]
+[storage.backend]
 kind = "gcs"
 bucket = "my-bucket"
 prefix = "piloop"
@@ -474,9 +474,9 @@ credentials_file = "/etc/piloop/gcs-key.json"
 
 A package adds a backend with an entry point in the `piloop.stores` group: see [storage backends](/architecture/extension-points#storage-backends). The built-in ones:
 
-### `[storage.remote]` with `kind = "gcs"`
+### `[storage.backend]` with `kind = "gcs"`
 
-`[storage.remote]` with `kind = "gcs"`: a bucket, a prefix in it, and the storage class of each blob.
+`[storage.backend]` with `kind = "gcs"`: a bucket, a prefix in it, and the storage class of each blob.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -487,9 +487,9 @@ A package adds a backend with an entry point in the `piloop.stores` group: see [
 | `project` | string \| null | `null` | The Google Cloud project to bill. Unset: the project of the credentials. |
 | `credentials_file` | string \| null | `null` | A service account key file (JSON) to use instead of Application Default Credentials. A path, never the key. |
 
-### `[storage.remote]` with `kind = "s3"`
+### `[storage.backend]` with `kind = "s3"`
 
-`[storage.remote]` with `kind = "s3"`: a bucket and prefix, and the storage class of each blob.
+`[storage.backend]` with `kind = "s3"`: a bucket and prefix, and the storage class of each blob.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -525,3 +525,4 @@ These keys still work. Each one shows a `PiloopDeprecationWarning` that names th
 - `[roles.research] context` is the top-level `context`: every sweep's research pack lists the files.
 - `{claude_config_dir}` and `{codex_home}` in `[harness.<name>.usage] file` are `{env:…}` placeholders. `{claude_config_dir}` is `{env:CLAUDE_CONFIG_DIR:~/.claude}`, and `{codex_home}` is `{env:CODEX_HOME:~/.codex}`.
 - In `config.toml`, `herdr_<key> = …` is `<key> = …` in its `[runtimes.herdr]` table. The Herdr settings are the Herdr runtime's own. Their environment variables (`PILOOP_HERDR_<KEY>`) do not change.
+- In `config.toml`, `[storage.remote]` is `[storage.backend]`: the storage backend that mirrors the store. A key that `[storage.backend]` sets too keeps its value there.

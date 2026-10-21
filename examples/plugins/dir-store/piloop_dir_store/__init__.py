@@ -4,17 +4,17 @@ import shutil
 from pathlib import Path
 from typing import Literal
 
-from piloop.store import Remote, RemoteConfig
+from piloop.store import StorageBackend, StorageBackendConfig
 
 
-class DirConfig(RemoteConfig):
-    """``[storage.remote]`` with ``kind = "dir"``: a directory that the objects go under."""
+class DirConfig(StorageBackendConfig):
+    """``[storage.backend]`` with ``kind = "dir"``: a directory that the objects go under."""
 
     kind: Literal['dir'] = 'dir'
     root: Path
     """The directory. It is created when the first object is stored."""
 
-    def open(self) -> Remote:
+    def open(self) -> StorageBackend:
         return Dir(self.root)
 
 

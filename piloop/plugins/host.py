@@ -2,7 +2,7 @@
 
 Terms:
 
-- A **capability** is a public interface with a registry of named providers: the runtimes, the remote backends of the
+- A **capability** is a public interface with a registry of named providers: the runtimes, the storage backends of the
   store, the triggers, the roles. It names its entry point group, the check of what an entry point names, and where
   the configuration selects a provider (``Selection``).
 - A **provider** is one entry of a registry. Configuration picks a provider by its name.
@@ -129,7 +129,7 @@ class Selection:
     scope: Literal['campaign', 'home']
     """``campaign``: the key is in ``piloop.toml``. ``home``: in ``$PILOOP_HOME/config.toml``."""
     key: str
-    """The dotted key whose value is the provider's name: ``runtime``, ``storage.remote.kind``."""
+    """The dotted key whose value is the provider's name: ``runtime``, ``storage.backend.kind``."""
     per_role: bool = False
     """A role's own table can set the key too, for its agents: ``[roles.<role>] runtime``."""
     settings: str | None = None
@@ -137,7 +137,7 @@ class Selection:
 
     @property
     def table(self) -> str | None:
-        """The table that holds the key, whose other keys are the parameters of the provider: ``storage.remote``."""
+        """The table that holds the key, whose other keys are the parameters of the provider: ``storage.backend``."""
         return self.key.rpartition('.')[0] or None
 
 
@@ -482,7 +482,7 @@ def check_selection(capability: Activatable, data: dict[str, object], scope: Lit
     """Check what a parsed file of ``scope`` selects for ``capability``: the provider, then its parameters.
 
     The parameters are the other keys of the table of the selecting key. A provider that is a pydantic model class
-    (a remote backend) checks them itself; any other declares ``Parameters``, a type that pydantic validates, or takes
+    (a storage backend) checks them itself; any other declares ``Parameters``, a type that pydantic validates, or takes
     none. In ``config.toml``, a ``settings`` table may name only providers that there are.
 
     Raises:

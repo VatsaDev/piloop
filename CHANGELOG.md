@@ -61,9 +61,9 @@ A deprecated configuration key shows a warning for at least one minor release be
   store's disk has less than `[storage] min_free_gb` (20 GB) free. It removes only a file that still holds what was
   stored. `piloop restore <project> [<idea>|<path>]` writes files back. `piloop store status|evict|verify` show the
   store and the backlog, and check it. The new global settings file `$PILOOP_HOME/config.toml` holds `[storage]`:
-  `[storage.remote]` picks a backend by `kind` (`s3` is built in: Glacier Instant Retrieval, STANDARD under 128 KB;
+  `[storage.backend]` picks a backend by `kind` (`s3` is built in: Glacier Instant Retrieval, STANDARD under 128 KB;
   `gcs` is built in with the `piloop[gcs]` extra; packages add backends through the `piloop.stores` entry point group,
-  and `piloop.store.contract.check_remote` tests one), with eviction of the store's local copies by
+  and `piloop.store.contract.check_storage_backend` tests one), with eviction of the store's local copies by
   age and size, or remote only (`evict_after_days = 0`). The worker brief asks for output under `workspace/idea<id>/`,
   no copies of the code tree, and evaluator output left in the project's cache. The research pack lists workspace
   files from a bounded walk instead of the whole workspace. The first daemon start after the upgrade archives every

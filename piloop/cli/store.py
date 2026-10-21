@@ -66,7 +66,11 @@ def store_status() -> None:
     """What the store holds, where, and how much of each campaign's workspace was archived into it."""
     store = open_store(common.settings)
     usage = store.usage()
-    remote = f'{usage.remote} on {store.remote.url}' if store.remote is not None else 'no remote ([storage.remote])'
+    remote = (
+        f'{usage.remote} on {store.remote.url}'
+        if store.remote is not None
+        else 'no storage backend ([storage.backend])'
+    )
     common.console.print(
         f'{store.root}: {usage.blobs} blob(s), {usage.local} local ({decimal(usage.local_bytes)}), {remote}',
         markup=False,
