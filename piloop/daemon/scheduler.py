@@ -888,7 +888,7 @@ class Scheduler:
             return None
         pinned = s.scalars(query.where(Idea.base_candidate_id.is_not(None)).order_by(Idea.priority, Idea.id))
         trunk = head(s, campaign)
-        return next((i for i in pinned if branches(s.get(Candidate, i.base_candidate_id), trunk)), None)
+        return next((i for i in pinned if branches(campaign, s.get(Candidate, i.base_candidate_id), trunk)), None)
 
     def _enqueue(
         self,
@@ -932,7 +932,7 @@ class Scheduler:
             role=role,
             attempt=attempt,
             base_candidate_id=base.id,
-            branch=branches(pinned, computed),
+            branch=branches(campaign, pinned, computed),
             harness=harness,
             model=model,
         )
@@ -1364,13 +1364,18 @@ def done_by(role: str) -> ColumnElement[bool]:
     return func.likely(Run.role == role, type_=Boolean)
 
 
-def branches(pinned: Candidate | None, computed: Candidate | None) -> bool:
+def branches(campaign: Campaign, pinned: Candidate | None, computed: Candidate | None) -> bool:
     """Return True if a run on ``pinned`` is a branch run: the pinned base's bar is not the current head.
 
     A pin to a non-keep whose nearest keep is the head is not a branch. Its run is judged against the head
-    (``ledger.bar_of``).
+    (``ledger.bar_of``). Nor is a pin whose commit has the head's (``git.contains``), such as a compose that
+    cherry-picked it: a keep of it builds on the head.
     """
-    return pinned is not None and (computed is None or bar_of(pinned).id != computed.id)
+    if pinned is None or computed is None:
+        return pinned is not None
+    if bar_of(pinned).id == computed.id:
+        return False
+    return not git.contains(git.open_repo(Path(campaign.path)), pinned.commit_sha, computed.commit_sha)
 
 
 def steer_line(comment: Comment) -> str:

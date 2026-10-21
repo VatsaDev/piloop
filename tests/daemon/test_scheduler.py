@@ -392,11 +392,8 @@ def test_a_pin_is_honored_over_the_after_link_and_the_run_records_both_bases(
     (done,) = add_ideas(db, campaign, 'prerequisite', status=IdeaStatus.DONE)
     (branch,) = add_ideas(db, campaign, 'branch from the baseline', after=(done,))
     (missing,) = add_ideas(db, campaign, 'pinned to nothing', priority=3)
+    commit_candidate(db, campaign, 1, {'other.txt': 'x\n'}, Verdict.KEEP)
     with db.session() as s:
-        s.add(
-            Candidate(campaign_id=campaign.id, tree_sha='b', commit_sha='b', verdict=Verdict.KEEP, verdict_by='human')
-        )
-        s.flush()
         s.add(Measurement(candidate_id=2, evaluator_id=1, metrics={'score': 9, 'size': 9}))
         s.get_one(Idea, branch).base_candidate_id = 1
         s.get_one(Idea, missing).base_candidate_id = 99
@@ -416,6 +413,29 @@ def test_a_pin_is_honored_over_the_after_link_and_the_run_records_both_bases(
         assert s.scalars(select(Run).where(Run.idea_id == missing)).all() == []
 
 
+def commit_candidate(db: Database, campaign: Campaign, parent: int, files: dict[str, str], verdict: Verdict) -> int:
+    """Commit ``files`` on candidate ``parent``'s commit, and add the commit as a candidate with ``verdict``."""
+    repo = Repo(campaign.path)
+    with db.session() as s:
+        repo.git.checkout('-q', '--detach', s.get_one(Candidate, parent).commit_sha)
+        for name, body in files.items():
+            (Path(campaign.path) / name).write_text(body)
+        repo.git.add('-A')
+        repo.git.commit('-qm', ', '.join(files))
+        commit = repo.head.commit
+        repo.git.checkout('-q', 'main')
+        c = Candidate(
+            campaign_id=campaign.id,
+            parent_id=parent,
+            tree_sha=commit.tree.hexsha,
+            commit_sha=commit.hexsha,
+            verdict=verdict,
+        )
+        s.add(c)
+        s.commit()
+        return c.id
+
+
 def test_a_run_pinned_to_a_non_keep_is_a_branch_run_only_when_its_nearest_keep_is_not_the_head(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
@@ -424,23 +444,23 @@ def test_a_run_pinned_to_a_non_keep_is_a_branch_run_only_when_its_nearest_keep_i
     A candidate that is not a keep is not a bar, so the run is judged against its nearest kept ancestor
     (``ledger.bar_of``). When the pin is a noted candidate on top of the head, that ancestor is the head. The run is
     then a trunk run, and its keep moves the head.
+
+    hiloopai/piloop-dev#60: a pin that has the head's changes builds on the head too, whatever its nearest keep. Here
+    a compose off the baseline repeats the head's change. Its run is a trunk run, so its keep can move the head.
     """
-    set_config(db, campaign, roles={'worker': {'max_concurrent': 2}})
-    on_head, on_older = add_ideas(db, campaign, 'on a note of the head', 'on a discard of the baseline')
+    set_config(db, campaign, roles={'worker': {'max_concurrent': 3}})
+    on_head, on_older, on_compose = add_ideas(
+        db, campaign, 'on a note of the head', 'on a discard of the baseline', 'on a compose of the head'
+    )
+    k = commit_candidate(db, campaign, 1, {'other.txt': 'x\n'}, Verdict.KEEP)
+    n = commit_candidate(db, campaign, k, {'notes.txt': 'n\n'}, Verdict.INTERESTING)
+    d = commit_candidate(db, campaign, 1, {'solve.txt': 'base\nd\n'}, Verdict.DISCARD)
+    c = commit_candidate(db, campaign, 1, {'solve.txt': 'base\nc\n', 'other.txt': 'x\n'}, Verdict.INTERESTING)
     with db.session() as s:
-        s.add_all(
-            [
-                Candidate(campaign_id=campaign.id, parent_id=1, tree_sha='k', commit_sha='k', verdict=Verdict.KEEP),
-                Candidate(
-                    campaign_id=campaign.id, parent_id=2, tree_sha='n', commit_sha='n', verdict=Verdict.INTERESTING
-                ),
-                Candidate(campaign_id=campaign.id, parent_id=1, tree_sha='d', commit_sha='d', verdict=Verdict.DISCARD),
-            ]
-        )
-        s.flush()
-        s.add(Measurement(candidate_id=2, evaluator_id=1, metrics={'score': 9, 'size': 9}))
-        s.get_one(Idea, on_head).base_candidate_id = 3
-        s.get_one(Idea, on_older).base_candidate_id = 4
+        s.add(Measurement(candidate_id=k, evaluator_id=1, metrics={'score': 9, 'size': 9}))
+        s.get_one(Idea, on_head).base_candidate_id = n
+        s.get_one(Idea, on_older).base_candidate_id = d
+        s.get_one(Idea, on_compose).base_candidate_id = c
         s.commit()
     scheduler = make_scheduler(db, runtime, tmp_path)
     with db.session() as s:
@@ -449,7 +469,7 @@ def test_a_run_pinned_to_a_non_keep_is_a_branch_run_only_when_its_nearest_keep_i
         s.commit()
     with db.session() as s:
         runs = {r.idea_id: (r.base_candidate_id, r.branch) for r in s.scalars(select(Run))}
-    assert runs == {on_head: (3, False), on_older: (4, True)}, 'the base is the pin; the bar decides the branch'
+    assert runs == {on_head: (n, False), on_older: (d, True), on_compose: (c, False)}, 'the pin is the base'
 
 
 def test_a_blocked_idea_waits_for_every_prerequisite_then_starts_from_the_head(
@@ -1998,11 +2018,8 @@ def explore_setup(db: Database, campaign: Campaign, explore_every: int) -> tuple
     urgent, level, explore = (
         add_ideas(db, campaign, t, priority=p)[0] for t, p in (('urgent', 0), ('level', 1), ('explore', 4))
     )
+    commit_candidate(db, campaign, 1, {'other.txt': 'x\n'}, Verdict.KEEP)
     with db.session() as s:
-        s.add(
-            Candidate(campaign_id=campaign.id, tree_sha='b', commit_sha='b', verdict=Verdict.KEEP, verdict_by='human')
-        )
-        s.flush()
         s.add(Measurement(candidate_id=2, evaluator_id=1, metrics={'score': 9, 'size': 9}))
         s.get_one(Idea, level).base_candidate_id = 2
         s.get_one(Idea, explore).base_candidate_id = 1

@@ -12,13 +12,16 @@ into a ``note`` on the row. An operation emits the events of the changes that no
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Annotated
 
+from git import GitError
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from piloop import git
 from piloop.agents.roles import files_of
 from piloop.campaign import campaign_types
 from piloop.campaign.ideas import Definition, NotASeed, develop
@@ -193,7 +196,7 @@ def set_verdict(s: Session, candidate_id: int, verdict: Verdict, *, reason: str,
     """Override a candidate's judgement with ``actor``'s, and return the verdict it had.
 
     The verdict is ``actor``'s now, so the daemon never changes it. The ``candidate.verdict`` event (a trigger) has the
-    reason. A keep of a trunk run must build on the head (``builds_on_head``): the head is the newest trunk keep, and a
+    reason. A keep of a trunk run must build on the head (``missing_head``): the head is the newest trunk keep, and a
     keep that lacks the head's changes would drop them from the trunk. A keep of a branch run never moves the head.
 
     Raises:
@@ -226,17 +229,28 @@ def missing_head(s: Session, candidate: Candidate) -> Candidate | None:
     """Return the head if a keep of ``candidate`` would be a trunk keep without it, else None.
 
     A candidate builds on the head when the head is among its ancestors (``parent_id``): a commit of a run that
-    started from it, or a merge onto it. A candidate of a branch run is a branch keep, which never moves the head.
+    started from it. Else git decides (``git.contains``): a merge onto the head, or a compose that cherry-picked it.
+    A candidate of a branch run is a branch keep, which never moves the head.
+
+    Raises:
+        Refused: git cannot tell, for example because the campaign repo is gone.
     """
     if candidate.run is not None and candidate.run.branch:
         return None
-    trunk = head(s, s.get_one(Campaign, candidate.campaign_id))
+    campaign = s.get_one(Campaign, candidate.campaign_id)
+    trunk = head(s, campaign)
     ancestor: Candidate | None = candidate
-    while ancestor is not None:
-        if trunk is None or ancestor.id == trunk.id:
-            return None
+    while trunk is not None and ancestor is not None and ancestor.id != trunk.id:
         ancestor = ancestor.parent
-    return trunk
+    if trunk is None or ancestor is not None:
+        return None
+    try:
+        builds = git.contains(git.open_repo(Path(campaign.path)), candidate.commit_sha, trunk.commit_sha)
+    except GitError as e:
+        raise Refused(
+            f'git cannot tell if candidate#{candidate.id} builds on the head candidate#{trunk.id}: {e}'
+        ) from e
+    return None if builds else trunk
 
 
 class Report(BaseModel):

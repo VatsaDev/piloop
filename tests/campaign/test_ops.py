@@ -6,6 +6,7 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
+from git import Repo
 from pydantic import ValidationError
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
@@ -82,8 +83,12 @@ def run_candidate(
     by: str | None = DAEMON,
     parent: int = 1,
     branch: bool = False,
+    commit: str | None = None,
 ) -> int:
-    """A candidate of a run of a new idea from ``parent``, with the daemon's ``verdict`` and one measurement (score 0)."""
+    """A candidate of a run of a new idea from ``parent``, with the daemon's ``verdict`` and one measurement (score 0).
+
+    Its commit is ``commit``, else a sha that the repo does not have.
+    """
     idea_id = add_idea(db, campaign.id, f'tried {verdict} {parent} {branch} {by}')
     with db.session() as s:
         run = Run(idea_id=idea_id, attempt=1, base_candidate_id=parent, harness='script', model='m', branch=branch)
@@ -93,8 +98,8 @@ def run_candidate(
             campaign_id=campaign.id,
             run_id=run.id,
             parent_id=parent,
-            tree_sha=f'tree {idea_id}',
-            commit_sha=f'commit {idea_id}',
+            tree_sha=Repo(campaign.path).commit(commit).tree.hexsha if commit else f'tree {idea_id}',
+            commit_sha=commit or f'commit {idea_id}',
             verdict=verdict,
             verdict_by=by,
         )
@@ -191,10 +196,27 @@ def test_a_verdict_override_is_the_actors_with_the_reason_in_its_event(me: Datab
                 ops.set_verdict(s, pending, Verdict.KEEP, reason='why', actor=ACTOR)
 
 
+def commit_on(campaign: Campaign, on: str, files: dict[str, str], *, merge: str | None = None) -> str:
+    """Commit ``files`` on commit ``on`` of the campaign repo, or a merge of ``merge`` onto it, and return the sha."""
+    repo = Repo(campaign.path)
+    repo.git.checkout('-q', '--detach', on)
+    if merge is not None:
+        repo.git.merge('-q', '--no-edit', merge)
+    for name, body in files.items():
+        (Path(campaign.path) / name).write_text(body)
+    repo.git.add('-A')
+    repo.git.commit('-qm', ', '.join(files) or 'merge', '--allow-empty')
+    sha = repo.head.commit.hexsha
+    repo.git.checkout('-q', 'main')
+    return sha
+
+
 def test_a_hand_keep_must_build_on_the_head_unless_its_run_is_a_branch(me: Database, campaign: Campaign) -> None:
     """The head is the newest trunk keep, so a keep from an older bar would drop what the head kept since."""
-    old = run_candidate(me, campaign, Verdict.DISCARD)
-    trunk = run_candidate(me, campaign, Verdict.KEEP)
+    base = Repo(campaign.path).head.commit.hexsha
+    old_sha, trunk_sha = commit_on(campaign, base, {'old.txt': 'o\n'}), commit_on(campaign, base, {'t.txt': 't\n'})
+    old = run_candidate(me, campaign, Verdict.DISCARD, commit=old_sha)
+    trunk = run_candidate(me, campaign, Verdict.KEEP, commit=trunk_sha)
     on_head = run_candidate(me, campaign, Verdict.DISCARD, parent=trunk)
     after_it = run_candidate(me, campaign, Verdict.INTERESTING, parent=on_head)
     branch = run_candidate(me, campaign, Verdict.DISCARD, branch=True)
@@ -207,6 +229,29 @@ def test_a_hand_keep_must_build_on_the_head_unless_its_run_is_a_branch(me: Datab
         s.commit()
         now = head(s, s.get_one(Campaign, 1))
         assert now is not None and now.id == after_it, 'the newest trunk keep'
+
+
+def test_a_hand_keep_builds_on_the_head_by_git_where_the_parent_links_miss_it(me: Database, campaign: Campaign) -> None:
+    """hiloopai/piloop-dev#106: git decides what a candidate builds on when piloop's parent links do not reach the head.
+
+    The merge's parent is the merged-in line, as piloop recorded merges before, but its commit merges the head.
+    """
+    base = Repo(campaign.path).head.commit.hexsha
+    side_sha, trunk_sha = commit_on(campaign, base, {'side.txt': 's\n'}), commit_on(campaign, base, {'t.txt': 't\n'})
+    side = run_candidate(me, campaign, Verdict.INTERESTING, commit=side_sha)
+    trunk = run_candidate(me, campaign, Verdict.KEEP, commit=trunk_sha)
+    merge_sha = commit_on(campaign, trunk_sha, {}, merge=side_sha)
+    merged = run_candidate(me, campaign, Verdict.DISCARD, parent=side, commit=merge_sha)
+    with me.session() as s:
+        ops.set_verdict(s, merged, Verdict.KEEP, reason='its commit merges the head', actor=ACTOR)
+        s.commit()
+        now = head(s, s.get_one(Campaign, 1))
+        assert now is not None and now.id == merged, f'a trunk keep newer than candidate#{trunk}'
+        lost = run_candidate(me, campaign, Verdict.DISCARD)
+        with pytest.raises(
+            ops.Refused, match=f'git cannot tell if candidate#{lost} builds on the head candidate#{merged}'
+        ):
+            ops.set_verdict(s, lost, Verdict.KEEP, reason='its commit is gone', actor=ACTOR)
 
 
 def test_a_measurement_by_hand_is_recorded_and_asks_the_daemon_to_judge_its_candidate_again(

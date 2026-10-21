@@ -9,7 +9,10 @@ A **candidate** is one state of the code, identified by its git tree. Each commi
 The baseline that `piloop init` measures is the first one.
 
 Because a candidate is a tree, a commit that goes back to a known state is that known candidate, and piloop does not
-measure it again. A candidate can have several measurements. Its score is their mean under the current
+measure it again. It keeps its verdict, unless another run reaches it: then the daemon's verdict, if it is not a keep,
+is judged again on that run's bar. A keep stays. A run's commits are its first-parent history, so a line that a worker
+merges in is not the run's, and a merge's parent is the commit it merged onto. A candidate can have several
+measurements. Its score is their mean under the current
 [evaluator](/concepts/campaigns#evaluators).
 
 ## The head and the bar

@@ -71,12 +71,14 @@ from piloop.scoring.ledger import (
     current_evaluator,
     head,
     judge,
+    judgeable,
     judged_again,
     measured,
     note,
     raises_bar,
     rebase,
     rejudgeable,
+    reproposed,
     resolve,
     save_units,
     score,
@@ -395,11 +397,13 @@ class RunExecutor:
         """Return the new commits in the worktree, oldest first. Uncommitted work is committed first, on its own.
 
         It is never amended into the worker's last commit, which is scored as the worker made it. Its commit has the
-        ``RECOVERED_TRAILER``, so its candidate is ``recovered`` (``_score``).
+        ``RECOVERED_TRAILER``, so its candidate is ``recovered`` (``_score``). The commits are the first-parent history
+        from the base: a line that the worker merges in is not the run's, so a merge's parent is the commit that it
+        merged onto, and the merged line's commits are not scored again.
         """
         if git.is_dirty(wt, ignore):
             git.commit_all(wt, f'{UNCOMMITTED_SUMMARY}\n\n{RECOVERED_TRAILER}: run#{run_id}', ignore)
-        return [c.hexsha for c in wt.iter_commits(f'{base_sha}..HEAD')][::-1]
+        return [c.hexsha for c in wt.iter_commits(f'{base_sha}..HEAD', first_parent=True)][::-1]
 
     def resume(self, run_id: int) -> None:
         """Score the commits of a closed run and settle its idea, after a daemon stopped while it scored them.
@@ -507,7 +511,8 @@ class RunExecutor:
         """Turn each new commit into a candidate, or find its existing candidate, then measure and judge it.
 
         Return the id of the candidate of the run's recovery commit (``RECOVERED_TRAILER``), if it has one and scoring
-        was not cancelled. A tree that is already a candidate keeps that candidate and its verdict.
+        was not cancelled. A tree that is already a candidate keeps that candidate, and its verdict unless another run
+        proposes it again (``ledger.reproposed``).
 
         The daemon scores with the campaign's current config, not the config at launch. A run that outlives a config
         change must not move the campaign back to the old evaluator. All commits are candidates and pinned first, so a
@@ -520,7 +525,8 @@ class RunExecutor:
         is not a branch run keeps on the trunk only while its bar is the head. If the head has moved past the bar, a
         keep is rebased onto the head and the merge is judged there (``_judge``, ``_follow``). A commit whose tree is
         already a candidate is that candidate. It is measured only if the current evaluator has not measured it, and it
-        keeps its verdict.
+        keeps its verdict, unless another run reached it (``ledger.reproposed``): then it is judged again on this
+        run's bar.
 
         A commit with ``Piloop-Eval: skip`` is not measured. A new candidate gets the daemon's ``unmeasured``
         verdict, which moves no bar. So a later commit without the trailer that has the same tree is measured and
@@ -557,7 +563,8 @@ class RunExecutor:
             with self._db.session() as s:
                 candidate = s.get_one(Candidate, candidate_id)
                 unmeasured = skip or recovered
-                judge_now = candidate.verdict is Verdict.PENDING or (not unmeasured and skipped(candidate))
+                again = skipped(candidate) or reproposed(candidate, s.get_one(Run, run_id))
+                judge_now = candidate.verdict is Verdict.PENDING or (not unmeasured and again)
                 needs_measurement = not unmeasured and not measured(candidate, scope.evaluator_id)
             with self._tracer.span('piloop.candidate', run=run_id, commit=sha, candidate=candidate_id) as span:
                 if unmeasured:
@@ -765,9 +772,11 @@ class RunExecutor:
         recovered: bool,
         notes: list[str],
     ) -> Judged:
-        """Set the daemon's verdict on a new candidate, unless someone already judged it. Return the result.
+        """Set the daemon's verdict on a candidate while it is ``judgeable``, if ``judge_now``. Return the result.
 
-        A known candidate keeps its verdict, because the same tree again (a revert) says nothing new about it. With
+        A known candidate keeps its verdict, because the same tree again (a revert) says nothing new about it, unless
+        another run proposes it again (``_score``). ``judgeable`` is read in the transaction that judges, so a keep
+        that another run made meanwhile, of the same tree, stays. With
         ``skip``, the verdict is ``unmeasured`` (``SKIPPED``) instead of the rule's verdict, and when ``recovered``, it
         is ``recovered`` (``RECOVERED_REASON``).
 
@@ -784,7 +793,7 @@ class RunExecutor:
         moved = False
         with self._db.session() as s:
             candidate = s.get_one(Candidate, candidate_id)
-            if judge_now and candidate.verdict_by in (None, DAEMON):
+            if judge_now and judgeable(candidate):
                 if recovered:
                     candidate.verdict = Verdict.RECOVERED
                     candidate.verdict_reason = RECOVERED_REASON.format(run=scope.run_id)

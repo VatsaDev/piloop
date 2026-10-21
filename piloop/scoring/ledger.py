@@ -506,6 +506,29 @@ def skipped(candidate: Candidate) -> bool:
     return candidate.verdict_by == DAEMON and candidate.verdict in (Verdict.UNMEASURED, Verdict.RECOVERED)
 
 
+def judgeable(candidate: Candidate) -> bool:
+    """Return whether the daemon may set its verdict on ``candidate`` now: no keep, and nobody else's verdict.
+
+    That is a pending candidate, or a verdict of the daemon that a measurement can change (``REJUDGED``, ``skipped``).
+    A keep stays: runs started from it as their bar, and it may be the head. The daemon checks it in the transaction
+    that judges, so another run's keep that landed during a measurement is never judged over.
+    """
+    judgements = (Verdict.PENDING, *REJUDGED, Verdict.UNMEASURED, Verdict.RECOVERED)
+    return candidate.verdict_by in (None, DAEMON) and candidate.verdict in judgements
+
+
+def reproposed(candidate: Candidate, run: Run) -> bool:
+    """Return whether ``run``'s commit proposes the known ``candidate`` again, so that the run judges it again.
+
+    It is a ``judgeable`` candidate of another run on the same side of the trunk (``runs.branch``). Its verdict came
+    from another bar, or from a merge onto the head that conflicted. A compose that reproduces the tree must be able to
+    land. A run on the other side never judges it: a branch run's keep of a trunk run's candidate would move the head,
+    and a trunk run's keep of a branch run's candidate never would.
+    """
+    other = candidate.run
+    return other is not None and other.id != run.id and other.branch == run.branch and judgeable(candidate)
+
+
 def resolve(
     s: Session, campaign_id: int, repo: Repo, sha: str, *, parent: Candidate | None, run_id: int | None
 ) -> tuple[Candidate, bool]:

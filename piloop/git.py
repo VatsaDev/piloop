@@ -100,6 +100,18 @@ def merge(repo: Repo, onto: str, sha: str, message: str) -> str | list[str]:
     Raises:
         GitCommandError: Git failed for a reason other than a conflict, for example a commit the repo does not have.
     """
+    merged = merge_tree(repo, onto, sha)
+    if isinstance(merged, list):
+        return merged
+    return str(repo.git.commit_tree(merged, '-p', onto, '-p', sha, '-m', message))
+
+
+def merge_tree(repo: Repo, onto: str, sha: str) -> str | list[str]:
+    """Return the tree of a merge of commit ``sha`` onto ``onto``, or the paths that conflict (see ``merge``).
+
+    Raises:
+        GitCommandError: Git failed for a reason other than a conflict.
+    """
     argv = ('--write-tree', '--name-only', '--no-messages', onto, sha)
     status, out, err = repo.git.merge_tree(*argv, with_extended_output=True, with_exceptions=False)
     lines = out.splitlines()
@@ -107,11 +119,14 @@ def merge(repo: Repo, onto: str, sha: str, message: str) -> str | list[str]:
         return [line for line in lines[1:] if line]
     if status != 0:
         raise GitCommandError(['git', 'merge-tree', *argv], status, err, out)
-    return str(repo.git.commit_tree(lines[0], '-p', onto, '-p', sha, '-m', message))
+    return lines[0]
 
 
 def contains(repo: Repo, sha: str, ancestor: str) -> bool:
-    """Whether commit ``ancestor`` is in the history of ``sha``, or is ``sha``.
+    """Whether commit ``sha`` has all of commit ``ancestor``: it is in its history, or merging it changes nothing.
+
+    The merge test finds what history misses: a commit that cherry-picked or squashed ``ancestor``'s changes. A commit
+    contains itself.
 
     Raises:
         GitCommandError: The repo does not have one of the two commits.
@@ -120,7 +135,10 @@ def contains(repo: Repo, sha: str, ancestor: str) -> bool:
     status, out, err = repo.git.merge_base(*argv, with_extended_output=True, with_exceptions=False)
     if status not in (0, 1):
         raise GitCommandError(['git', 'merge-base', *argv], status, err, out)
-    return status == 0
+    if status == 0:
+        return True
+    merged = merge_tree(repo, sha, ancestor)
+    return isinstance(merged, str) and merged == tree_sha(repo, sha)
 
 
 def is_dirty(wt: Repo, ignore: list[str]) -> bool:

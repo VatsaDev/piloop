@@ -20,6 +20,7 @@ from piloop.agents.launcher import STARTUP_ANOMALY
 from piloop.agents.roles import SQL_HINT
 from piloop.campaign import stop
 from piloop.campaign.campaigns import sync
+from piloop.campaign.ops import set_verdict
 from piloop.campaign.stop import NOT_STARTED
 from piloop.cli.plugins import selections
 from piloop.config import CampaignConfig, ConfigError, config_of, load_campaign_config
@@ -1999,8 +2000,8 @@ def test_a_trunk_run_that_merges_a_branch_keep_is_judged_against_the_head_not_th
 ) -> None:
     """hiloopai/piloop-dev#35: a trunk run that merges a branch keep onto the head must beat the head.
 
-    The branch keep is one of the run's commits, a known keep, but a branch's numbers are never a trunk run's bar.
-    Judged against the branch keep, the merge was a no-op discard, though it beats the head.
+    A branch's numbers are never a trunk run's bar. Judged against the branch keep, the merge was a no-op discard,
+    though it beats the head. The merge's parent is the head it merged onto, not the branch (hiloopai/piloop-dev#106).
     """
     with db.session() as s:
         idea = Idea(track='score', campaign_id=campaign.id, title='a branch', hypothesis='h', created_by='t')
@@ -2026,10 +2027,9 @@ def test_a_trunk_run_that_merges_a_branch_keep_is_judged_against_the_head_not_th
     [(_, verdict, reason, _, parent)] = scored(db, run_id)
     assert (verdict, reason, parent) == (
         Verdict.KEEP,
-        f'no-op: score identical to parent candidate#{kept};'
-        f' against candidate#{trunk}: score 3 vs 1 (+2; aggregate: no per-unit results)',
-        kept,
-    ), 'judged against the head it merged onto; level with the branch keep it merged'
+        f'against candidate#{trunk}: score 3 vs 1 (+2; aggregate: no per-unit results)',
+        trunk,
+    ), 'judged against the head it merged onto'
     with db.session() as s:
         new_head = head(s, s.get_one(Campaign, campaign.id))
         assert new_head is not None and new_head.run_id == run_id, 'the merge is the new head'
@@ -2194,6 +2194,135 @@ def test_a_keep_whose_merge_onto_the_head_is_the_head_already_changes_nothing(
     with db.session() as s:
         [event] = s.scalars(select(Event).where(Event.kind == REBASED)).all()
         assert event.payload == {'head': h2, 'known': h2}
+
+
+def test_a_keep_that_lands_while_another_run_measures_its_tree_is_not_judged_again(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """hiloopai/piloop-dev#106: a run that reaches a pending tree of another run judges it only while it is pending.
+
+    The other run's keep lands while this run measures the same tree on another track. Judged again on this track's
+    primary, the keep would become a discard and miss the head.
+    """
+    tracks = {
+        'metrics': [
+            {'name': 'score', 'direction': 'higher', 'role': 'primary', 'track': 'accuracy', 'margin': 1},
+            {'name': 'size', 'direction': 'lower', 'role': 'primary', 'track': 'cost', 'margin': 100},
+        ],
+        'tracks': {'accuracy': {'share': 0.5}, 'cost': {'share': 0.5}},
+    }
+    set_config(db, campaign, **tracks)
+    ex = executor(db, runtime, tmp_path)
+    first = make_run(db, campaign, track='accuracy')
+    execute(ex, db, first)
+    [kept] = candidates(db, first)
+    assert kept.verdict is Verdict.KEEP
+    with db.session() as s:  # back to while the first run measures its commit
+        candidate = s.get_one(Candidate, kept.id)
+        [measurement] = candidate.measurements
+        evaluator_id = measurement.evaluator_id
+        s.delete(measurement)
+        candidate.verdict = Verdict.PENDING
+        s.commit()
+    track = ex._track_evaluation
+
+    def kept_meanwhile(evaluation_id: int, proc: subprocess.Popen[bytes] | None) -> None:
+        track(evaluation_id, proc)
+        if proc is None:  # the first run's measurement and keep land while the second run measures the same tree
+            with db.session() as s:
+                s.add(Measurement(candidate_id=kept.id, evaluator_id=evaluator_id, metrics=kept.metrics))
+                c = s.get_one(Candidate, kept.id)
+                c.verdict, c.verdict_reason = Verdict.KEEP, 'kept on accuracy'
+                s.commit()
+
+    monkeypatch.setattr(ex, '_track_evaluation', kept_meanwhile)
+    execute(ex, db, make_run(db, campaign, title='the same line, on the cost track', track='cost'))
+    with db.session() as s:
+        again = s.get_one(Candidate, kept.id)
+        assert (again.verdict, again.verdict_reason) == (Verdict.KEEP, 'kept on accuracy')
+
+
+def test_a_known_non_keep_that_another_run_reaches_again_is_judged_again_on_that_runs_bar(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """hiloopai/piloop-dev#55: a tree that another run proposes again is judged again, unless it is a keep.
+
+    The daemon's old verdict judged the tree against another bar, or a merge that conflicted. A compose that reproduces
+    the tree on the head must be able to land.
+    """
+    ex = executor(db, runtime, tmp_path)
+    first = make_run(db, campaign)
+    execute(ex, db, first)
+    [known] = candidates(db, first)
+    with db.session() as s:
+        c = s.get_one(Candidate, known.id)
+        c.verdict, c.verdict_reason = Verdict.INTERESTING, 'its merge onto the head conflicts in solve.txt'
+        s.commit()
+    execute(ex, db, make_run(db, campaign, title='a compose that reproduces the tree'))
+    with db.session() as s:
+        again = s.get_one(Candidate, known.id)
+        assert (again.verdict, again.verdict_by, again.verdict_reason) == (
+            Verdict.KEEP,
+            DAEMON,
+            'against candidate#1: score 2 vs 1 (+1; aggregate: no per-unit results)',
+        )
+        assert len(again.measurements) == 1, 'judged with the measurement it has'
+        now = head(s, s.get_one(Campaign, campaign.id))
+        assert now is not None and now.id == known.id
+
+
+def test_a_merge_commit_descends_from_its_first_parent_the_runs_base(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """hiloopai/piloop-dev#106: a run's commits are its first-parent history, so a merge's parent is the run's base.
+
+    The merged-in line is not the run's, and its commits are known candidates already. With the merged line's last
+    candidate as its parent, the merge did not build on the head, and a keep by hand was refused.
+    """
+    metrics = {'score': 1.0, 'size': 5.0}
+    side = keep_elsewhere(db, campaign, 'notes', {'notes.txt': 'n\n'}, metrics, verdict=Verdict.INTERESTING)
+    trunk = keep_elsewhere(db, campaign, 'docs', {'docs.txt': 'd\n'}, metrics)
+    with db.session() as s:
+        side_sha = s.get_one(Candidate, side).commit_sha
+    write_toml(Path(campaign.path), f'#!/bin/sh\ngit merge -q --no-ff --no-edit {side_sha}\n')
+    reload_campaign(db, campaign)
+    run_id = make_run(db, campaign)
+    with db.session() as s:
+        s.get_one(Run, run_id).base_candidate_id = trunk
+        s.commit()
+    execute(executor(db, runtime, tmp_path), db, run_id)
+    [(_, verdict, _, measurements, parent)] = scored(db, run_id)
+    assert (verdict, measurements, parent) == (Verdict.DISCARD, 1, trunk)
+    with db.session() as s:
+        [merge] = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).all()
+        assert set_verdict(s, merge.id, Verdict.KEEP, reason='the notes are worth it', actor='human') is Verdict.DISCARD
+        assert len(s.get_one(Candidate, side).measurements) == 1, 'the merged line is not measured again'
+
+
+def test_a_keep_that_has_the_heads_changes_without_its_history_is_judged_against_the_head(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """hiloopai/piloop-dev#55: a commit that cherry-picked the head needs no merge onto it.
+
+    The merge would give the candidate's own tree, a known candidate, so the keep stayed ``interesting`` for good.
+    """
+    run_id = make_run(db, campaign)
+    h2 = keep_elsewhere(db, campaign, 'other', {'other.txt': 'x\n'}, {'score': 1.0, 'size': 5.0})
+    with db.session() as s:
+        h2_sha = s.get_one(Candidate, h2).commit_sha
+    pick = f'#!/bin/sh\ngit cherry-pick -n {h2_sha}\necho line >> solve.txt\ngit commit -qam "the head and a line"\n'
+    write_toml(Path(campaign.path), pick)
+    reload_campaign(db, campaign)
+    execute(executor(db, runtime, tmp_path), db, run_id)
+    [(_, verdict, reason, _, _)] = scored(db, run_id)
+    assert (verdict, reason) == (
+        Verdict.KEEP,
+        f'the head candidate#{h2} is in its history: against candidate#{h2}: score 2 vs 1'
+        ' (+1; aggregate: no per-unit results)',
+    )
+    with db.session() as s:
+        now = head(s, s.get_one(Campaign, campaign.id))
+        assert now is not None and now.run_id == run_id
 
 
 def test_a_merge_a_stop_left_unjudged_is_measured_and_judged_when_the_run_resumes(

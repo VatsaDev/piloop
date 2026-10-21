@@ -254,6 +254,8 @@ Branch runs:
 - To bring a branch keep onto the trunk, file an unpinned idea that merges it into the head.
 - A noted candidate (`piloop candidate note`) or any other non-keep is not a bar. A run pinned to one starts from its
   tree and is judged against the nearest keep. When that keep is the head, it is a trunk run.
+- A run pinned to a candidate that has the head's changes (a merge onto the head, or a compose that cherry-picked it)
+  is a trunk run too: its keep can move the head.
 - So pin a follow-up to a lead. Do not tell its worker to reset onto the lead.
 - One run in `[roles.worker] explore_every` (default 4) takes the most urgent ready idea pinned to a base other than
   the head, whatever its priority.

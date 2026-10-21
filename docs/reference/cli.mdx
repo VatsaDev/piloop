@@ -308,8 +308,9 @@ piloop candidate verdict CANDIDATE_ID keep|interesting|discard|crash --reason TE
 Overrides the judgement of a candidate. The verdict is then yours, so the daemon never changes it. The
 `candidate.verdict` event records the old and new verdict, with the reason. Only a judgement is overridden: a
 `pending` candidate (the daemon is judging it), a `reference`, and an `unmeasured` or `recovered` one are refused. A
-keep of a trunk run must build on the head (the head is among its ancestors), because the head is the newest trunk
-keep: a keep without the head's changes would drop them. A keep of a branch run never moves the head.
+keep of a trunk run must build on the head (its commit has the head's changes, in its history or cherry-picked),
+because the head is the newest trunk keep: a keep without the head's changes would drop them. A keep of a branch run
+never moves the head.
 
 ### piloop measurement add
 

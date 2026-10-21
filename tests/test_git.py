@@ -18,6 +18,26 @@ def test_merge_and_contains_raise_on_a_commit_the_repo_does_not_have(campaign_pa
         git.contains(repo, head, '0' * 40)
 
 
+def test_a_commit_contains_another_by_history_or_by_having_all_its_changes(campaign_path: Path) -> None:
+    """hiloopai/piloop-dev#60: a commit that cherry-picked the head has the head's changes, though not its history."""
+    repo = Repo(campaign_path)
+    base = repo.head.commit.hexsha
+    (campaign_path / 'other.txt').write_text('x\n')
+    repo.git.add('-A')
+    repo.git.commit('-qm', 'the head')
+    head = repo.head.commit.hexsha
+    repo.git.checkout('-q', '--detach', base)
+    (campaign_path / 'solve.txt').write_text('base\nb\n')
+    repo.git.commit('-qam', 'a lead')
+    lead = repo.head.commit.hexsha
+    repo.git.cherry_pick(head)
+    picked = repo.head.commit.hexsha
+    repo.git.merge('-q', '--no-edit', head)
+    merged = repo.head.commit.hexsha
+    assert (git.contains(repo, merged, head), git.contains(repo, picked, head)) == (True, True)
+    assert (git.contains(repo, lead, head), git.contains(repo, head, picked)) == (False, False), 'a change is missing'
+
+
 def test_worktree_changes_hold_the_process_lock(
     campaign_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
