@@ -29,7 +29,7 @@ testcov:  ## Run tests in parallel with coverage; fails under 100%
 	uv run coverage report
 
 .PHONY: e2e
-e2e:  ## Run the end-to-end scenarios with real agents (about 3 minutes and 0.45 USD)
+e2e:  ## Run the end-to-end scenarios with real agents (about 9 minutes and 1 USD)
 	COLUMNS=150 uv run pytest -m e2e tests/e2e -rA
 
 .PHONY: docs

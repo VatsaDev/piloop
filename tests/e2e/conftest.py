@@ -78,6 +78,15 @@ def piloop_install() -> Iterator[Install]:
         signal.signal(signal.SIGTERM, previous)
 
 
+@pytest.fixture(scope='session')
+def e2e_summary(request: pytest.FixtureRequest) -> list[str]:
+    """The lines that the terminal summary prints at the end, for a scenario that makes its campaign itself.
+
+    A fixture, not ``SUMMARY``: a test module that imports this conftest gets a second copy of it, with another key.
+    """
+    return request.config.stash.setdefault(SUMMARY, [])
+
+
 @pytest.fixture(scope='module')
 def make_campaign(request: pytest.FixtureRequest, piloop_install: Install) -> Iterator[MakeCampaign]:
     """Make campaigns as a user does, each with its daemon running; stop and kill them all when the module ends.

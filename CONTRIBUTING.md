@@ -126,8 +126,10 @@ make e2e
 These tests carry the `e2e` marker. The pytest configuration leaves this marker out (`-m "not e2e"`), so `make`,
 `make test` and CI never run them. They need `claude` on the `PATH`, logged in, and network access. The lifecycle
 scenario (`tests/e2e/test_lifecycle.py`) takes about 3 minutes on `claude-haiku-4-5-20251001`. Its three agents use
-about 1.5 million tokens, most of them cache reads. That is about 0.45 USD at API prices. To pick another harness or
-model:
+about 1.5 million tokens, most of them cache reads. That is about 0.45 USD at API prices. The upgrade scenario
+(`tests/e2e/test_upgrade.py`) installs the last release from PyPI, runs a small campaign on it, upgrades to your
+checkout while an agent works, and checks that no row, ref, commit or file was lost. It takes about 6 minutes and
+0.5 USD, with Claude only. To pick another harness or model:
 
 ```bash
 uv run pytest -m e2e tests/e2e -rA --e2e-harness claude --e2e-model <model>
@@ -157,6 +159,10 @@ A scenario is one test module in `tests/e2e/`, with `pytestmark = pytest.mark.e2
    the test and gives the reason.
 
 To add a check to a scenario, add a test at the step where its state exists.
+
+A scenario that runs another piloop than the checkout, such as the release that `tests/e2e/test_upgrade.py` upgrades
+from, makes its campaign itself, and adds its lines to the summary with the `e2e_summary` fixture. When a release
+renames a table, a column or a value, add the rename to `RENAMES` in that module, as the upgrading guide lists it.
 
 ## Generated files
 
