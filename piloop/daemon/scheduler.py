@@ -60,6 +60,7 @@ from piloop.campaign.stop import (
 )
 from piloop.config import (
     CampaignConfig,
+    ClosingReview,
     Files,
     ResearchRole,
     ScoutRole,
@@ -324,7 +325,9 @@ class Scheduler:
         superseded (``piloop.campaign.ideas.supersede``). This also happens for a stopped campaign, which requests
         nothing and is measured again only on request (``ledger.due``). A campaign that the spend guard holds
         (``_read_spend``) gets only this step. A paused campaign (``piloop pause``) gets no triggers and launches
-        nothing, and with ``all`` it is not measured again either. The
+        nothing, and with ``all`` it is not measured again either. Both still stop on a stop request
+        (``requested_stop``). A stopped campaign launches its closing review, and what a human requests, whatever
+        the pause; while the spend guard holds, as ``[spend] closing_review`` says (``launches``). The
         archiver starts the next archiving of a workspace that is due, or its upkeep, on a background thread
         (``piloop.daemon.archiver``).
         """
@@ -347,13 +350,14 @@ class Scheduler:
                 for idea_id, by in supersede(s, campaign.id).items():
                     self._tracer.event('idea.superseded', campaign=campaign.name, idea=idea_id, by=by)
                 held = spend.held(campaign, cfg)
-                if held is None:
-                    if campaign.paused is not Pause.ALL:
-                        self._remeasure(s, campaign)
-                    if campaign.status is CampaignStatus.ACTIVE and campaign.paused is None:
-                        self._triggers(s, campaign, cfg)
+                if held is None and campaign.paused is not Pause.ALL:
+                    self._remeasure(s, campaign)
+                # A stop request goes through the spend guard and a pause.
+                go = held is None and campaign.paused is None
+                if campaign.status is CampaignStatus.ACTIVE and (go or requested_stop(s, campaign) is not None):
+                    self._triggers(s, campaign, cfg, held)
                 s.flush()
-                if held is None and campaign.paused is None:
+                if launches(campaign, cfg, held):
                     launched += self._take(s, campaign, cfg)
             s.commit()
         for worker_id, run_id in launched:
@@ -362,7 +366,10 @@ class Scheduler:
         return [worker_id for worker_id, _ in launched]
 
     def _read_spend(self) -> None:
-        """Run the ``[spend] command`` of each active campaign whose ``interval`` is up, and record the result.
+        """Run the ``[spend] command`` of each campaign whose ``interval`` is up, and record the result.
+
+        That is each active campaign, and each stopped one whose closing review waits for the hold to end
+        (``spend.review_waits``).
 
         This runs outside any transaction, because the command can take up to ``spend.TIMEOUT``. A write lock held for
         that long locks all other clients out. While ``spend.held`` returns a reason, the tick does not request,
@@ -370,12 +377,14 @@ class Scheduler:
         """
         with self._db.session() as s:
             todo: list[tuple[int, Path, Spend]] = []
-            for campaign in s.scalars(select(Campaign).where(Campaign.status == CampaignStatus.ACTIVE)):
+            for campaign in s.scalars(select(Campaign)):
                 try:
                     cfg = config_of(campaign)
                 except ValidationError:
                     continue  # The tick records this error for each campaign.
-                if cfg.spend is not None and spend.due(campaign, cfg.spend):
+                if cfg.spend is None or not spend.due(campaign, cfg.spend):
+                    continue
+                if campaign.status is CampaignStatus.ACTIVE or spend.review_waits(s, campaign, cfg):
                     todo.append((campaign.id, Path(campaign.path), cfg.spend))
         for campaign_id, path, budget in todo:
             try:
@@ -590,8 +599,11 @@ class Scheduler:
             self._tracer.event('worker.ended', worker=worker.id, reason=reason)
         self._kill_stale(s, worker)
 
-    def _triggers(self, s: Session, campaign: Campaign, cfg: CampaignConfig) -> None:
+    def _triggers(self, s: Session, campaign: Campaign, cfg: CampaignConfig, held: str | None) -> None:
         """Stop the campaign if a ``[stop]`` condition holds. Otherwise queue runs and check every role's triggers.
+
+        ``held`` is why the spend guard holds launches: then only a stop request gets here. ``[spend] closing_review
+        = "skip"`` then requests no closing review and posts an escalation instead.
 
         Triggers requested everything that is pending when the campaign stops, so it is all cancelled. Requested rows
         are closed and queued runs fail with ``CAMPAIGN_STOPPED_ERROR``. Their ideas go back to ``ready``. The
@@ -616,6 +628,9 @@ class Scheduler:
             self._tracer.event('documents.sync_failed', campaign=campaign.name, error=f'{type(e).__name__}: {e}')
         else:
             self._tracer.event('documents.synced', campaign=campaign.name, result=synced.line())
+        if held is not None and cfg.spend is not None and cfg.spend.closing_review is ClosingReview.SKIP:
+            spend.review_skipped(s, campaign, held)
+            return
         for name, role in cfg.roles.sweeping().items():
             self._request(s, campaign, cfg, name, role, stopping=True)
 
@@ -1383,3 +1398,15 @@ def pause_body(deaths: Sequence[Event], load: str) -> str:
 def free_harness(rotation: Sequence[str], turn: str, full: Collection[str]) -> str | None:
     """Return ``turn``, the rotation's pick, unless it is ``full``. Then return the first harness that is not full."""
     return turn if turn not in full else next((h for h in rotation if h not in full), None)
+
+
+def launches(campaign: Campaign, cfg: CampaignConfig, held: str | None) -> bool:
+    """Whether the tick launches the campaign's requested agents, given why the spend guard holds (``held``).
+
+    An active campaign launches when nothing holds it: no spend hold and no pause. A stopped campaign launches its
+    closing review and what a human requests, paused or not. While the spend guard holds, it launches unless
+    ``[spend] closing_review`` is ``wait``.
+    """
+    if campaign.status is CampaignStatus.ACTIVE:
+        return held is None and campaign.paused is None
+    return held is None or cfg.spend is None or cfg.spend.closing_review is not ClosingReview.WAIT

@@ -99,7 +99,9 @@ Stops a campaign. The daemon stops it on its next tick, as when a [`[stop]` cond
 drops the queued runs and the requested agents, the `stopped` triggers request the closing review, and each running
 worker is told to commit and stop, then ended 10 minutes later. What the workers committed is scored. With `--kill`,
 the workers are ended at once, without the prompt, and their commits are still scored. On a stopped campaign, `--kill`
-ends the workers that are still winding down. `--reason` goes into `stopped_reason`, after who stopped it.
+ends the workers that are still winding down. `--reason` goes into `stopped_reason`, after who stopped it. It also stops a campaign that
+is paused or held at its `[spend]` limit. A paused campaign gets its closing review; a held one as `[spend]
+closing_review` says ([Cost and spend limits](/concepts/cost#spend-outside-piloop)).
 
 ### piloop restart
 

@@ -454,6 +454,17 @@ class Stop(BaseModel):
     it."""
 
 
+class ClosingReview(StrEnum):
+    """What happens to the closing review of a campaign that stops while ``[spend]`` holds its launches."""
+
+    RUN = 'run'
+    """The review runs, also past the limit or with an unknown spend."""
+    SKIP = 'skip'
+    """No review: the stop ends at once, and the daemon posts an escalation that says so."""
+    WAIT = 'wait'
+    """The review starts when the hold ends. The daemon goes on reading the spend until it starts."""
+
+
 class Spend(BaseModel):
     """``[spend]``: a hard budget in USD on what the campaign costs outside piloop, for example GPUs or APIs.
 
@@ -477,6 +488,9 @@ class Spend(BaseModel):
     """Amounts in USD below ``limit``. When the spend passes one, the daemon posts one note to the inbox."""
     interval: float = Field(default=300, gt=0)
     """The number of seconds between two runs of ``command``."""
+    closing_review: ClosingReview = ClosingReview.RUN
+    """What happens to the closing review when the campaign stops while launches are held (``piloop campaign
+    stop``): ``run`` it anyway, ``skip`` it, or ``wait`` until the hold ends."""
 
     @model_validator(mode='after')
     def _check(self) -> Self:

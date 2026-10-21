@@ -252,7 +252,9 @@ def stop(
 ) -> None:
     """Stop a campaign. The daemon stops it on its next tick, as when a `[stop]` condition holds.
 
-    It drops the queued runs and the requested agents, and the `stopped` triggers request the closing review. Each
+    This works also while the campaign is paused or held at its `[spend]` limit. A paused campaign gets its closing
+    review; a held one as `[spend] closing_review` says. It drops the queued runs and the requested agents, and the
+    `stopped` triggers request the closing review. Each
     running worker is told to commit and stop, and is ended 10 minutes later. What the workers committed is scored.
     With `--kill`, the workers are ended at once, and what they committed is still scored. On a stopped campaign,
     `--kill` ends the workers that are still winding down. The campaign's `piloop.toml` is not changed.

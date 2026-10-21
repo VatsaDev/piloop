@@ -18,7 +18,7 @@ from piloop.db.models import Campaign, Comment, Idea, IdeaStatus, Run, RunStatus
 from piloop.db.session import Database
 from piloop.reports.overview import progress
 from tests.conftest import ScriptRuntime, write_toml
-from tests.daemon.test_scheduler import add_ideas, make_scheduler, request_watchdog, set_config
+from tests.daemon.test_scheduler import add_ideas, make_scheduler, request_watchdog, set_config, stop_campaign
 
 
 def test_notices_must_be_below_the_limit() -> None:
@@ -161,3 +161,23 @@ def test_progress_says_when_a_campaign_has_no_reading_yet(campaign: Campaign) ->
     assert spend.progress(campaign, cfg) is None, 'no [spend]: nothing to show'
     budget = cfg.model_copy(update={'spend': Spend(command=['true'], limit=10)})
     assert spend.progress(campaign, budget) == '$?/$10.00 spend (launches held: spend not read yet)'
+
+
+def test_a_closing_review_waits_only_on_a_stopped_campaign_with_wait_and_a_requested_agent(
+    db: Database, campaign: Campaign
+) -> None:
+    def waits(**spend_table: object) -> bool:
+        set_config(
+            db, campaign, **({'spend': {'command': ['true'], 'limit': 10, **spend_table}} if spend_table else {})
+        )
+        with db.session() as s:
+            p = s.get_one(Campaign, campaign.id)
+            return spend.review_waits(s, p, CampaignConfig.model_validate(p.config))
+
+    assert not waits(closing_review='wait'), 'active'
+    stop_campaign(db, campaign, 'max_runs: 3 runs')
+    assert not waits(), 'no [spend]'
+    assert not waits(closing_review='wait'), 'nothing requested'
+    request_watchdog(db, campaign)
+    assert not waits(closing_review='run')
+    assert waits(closing_review='wait')

@@ -15,6 +15,7 @@ from piloop_stop_after_keeps import AFTER_KEEPS
 from sqlalchemy import func, select
 
 from piloop.agents.launcher import STOPPED_ERROR
+from piloop.campaign.ops import pause
 from piloop.campaign.stop import (
     CAMPAIGN_STOPPED_ERROR,
     STALE_ERROR,
@@ -31,6 +32,8 @@ from piloop.db.models import (
     Campaign,
     CampaignStatus,
     Candidate,
+    Comment,
+    CommentKind,
     Document,
     Event,
     Idea,
@@ -55,7 +58,7 @@ from piloop.plugins.host import data_errors
 from piloop.reports.overview import progress
 from piloop.scoring.ledger import SKIPPED
 from tests.conftest import HARNESS_APPEND, HARNESS_NOOP, HARNESS_WORSE, ScriptRuntime, example, span_named, write_toml
-from tests.daemon.test_scheduler import add_ideas, make_scheduler, stop_campaign
+from tests.daemon.test_scheduler import add_ideas, make_scheduler, set_config, stop_campaign
 
 LOWER_PRIMARY = [{'name': 'score', 'direction': 'higher'}, {'name': 'size', 'direction': 'lower', 'role': 'primary'}]
 
@@ -555,6 +558,94 @@ def test_a_requested_stop_ends_the_campaign_as_a_stop_condition_does(
         )
         event = requested_stop(s, s.get_one(Campaign, campaign.id))
         assert event is not None and (event.actor, event.payload) == ('worker#3', {'reason': '', 'kill': True})
+
+
+def stop_while_held(db: Database, campaign: Campaign, hold: str, review: str | None = None) -> int:
+    """Queue a run, hold the campaign's launches (an unknown spend, or a pause), and request a stop. Return the idea.
+
+    The spend command reads ``bill`` next to the campaign, which does not exist yet.
+    """
+    configure(db, campaign)
+    if hold == 'spend':
+        budget = {'command': ['cat', str(Path(campaign.path).parent / 'bill')], 'limit': 10}
+        set_config(db, campaign, spend=budget | ({'closing_review': review} if review else {}))
+    (idea,) = add_ideas(db, campaign, 'queued before the stop')
+    with db.session() as s:
+        s.get_one(Idea, idea).status = IdeaStatus.SCHEDULED
+        s.add(Run(idea_id=idea, attempt=1, base_candidate_id=1, harness='script', model='m'))
+        if hold == 'pause':
+            pause(s, campaign.id, evals=False, reason='too expensive')
+        request_stop(s, s.get_one(Campaign, campaign.id), 'human', reason='over budget', kill=False)
+        s.commit()
+    return idea
+
+
+def closing_reviews(db: Database, campaign: Campaign) -> list[WorkerState]:
+    with db.session() as s:
+        rows = s.scalars(select(Worker).where(Worker.campaign_id == campaign.id, Worker.kind == WorkerKind.WATCHDOG))
+        return [w.state for w in rows]
+
+
+@pytest.mark.parametrize('hold', ['spend', 'pause'])
+def test_a_requested_stop_ends_a_held_campaign_and_by_default_its_closing_review_runs(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, hold: str
+) -> None:
+    """Someone stops a campaign because it spends, so a stop works while the spend holds launches, or a pause does.
+
+    The queued run is dropped. The closing review runs: a pause ends with the stop, and ``[spend] closing_review``
+    is ``run`` by default.
+    """
+    idea = stop_while_held(db, campaign, hold)
+    sched = make_scheduler(db, runtime, tmp_path)
+    assert sched.tick() == [1], 'only the closing review launches'
+    assert campaign_state(db, campaign) == (CampaignStatus.STOPPED, 'stopped by human: over budget')
+    with db.session() as s:
+        assert (s.get_one(Run, 1).error, s.get_one(Idea, idea).status) == (CAMPAIGN_STOPPED_ERROR, IdeaStatus.READY)
+    sched.wait(10)
+    sched.stop(timeout=5)
+
+
+def test_closing_review_skip_ends_the_stop_at_once_with_an_escalation(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    stop_while_held(db, campaign, 'spend', 'skip')
+    sched = make_scheduler(db, runtime, tmp_path)
+    assert sched.tick() == []
+    assert campaign_state(db, campaign) == (CampaignStatus.STOPPED, 'stopped by human: over budget')
+    assert closing_reviews(db, campaign) == [], 'no closing review is requested'
+    with db.session() as s:
+        last = s.scalars(select(Comment).order_by(Comment.id.desc()).limit(1)).one()
+        assert (last.kind, last.priority, last.author) == (CommentKind.ESCALATION, 0, 'daemon')
+        assert last.body.startswith(
+            'Closing review skipped: the campaign stopped while the spend guard held its launches (spend unknown: exit'
+        )
+        assert last.body.endswith('[spend] closing_review = "skip".')
+        s.get_one(Campaign, campaign.id).spend_at = None
+        s.commit()
+    sched.tick()
+    with db.session() as s:
+        assert s.get_one(Campaign, campaign.id).spend_at is None, (
+            'no review waits: the spend of a stopped campaign is not read'
+        )
+    sched.stop(timeout=5)
+
+
+def test_closing_review_wait_starts_the_review_once_the_spend_hold_lifts(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """The daemon goes on reading the spend of a stopped campaign whose closing review waits."""
+    stop_while_held(db, campaign, 'spend', 'wait')
+    sched = make_scheduler(db, runtime, tmp_path)
+    assert sched.tick() == []
+    assert campaign_state(db, campaign)[0] is CampaignStatus.STOPPED
+    assert closing_reviews(db, campaign) == [WorkerState.REQUESTED], 'requested, waiting for the hold'
+    (Path(campaign.path).parent / 'bill').write_text('3')
+    with db.session() as s:
+        s.get_one(Campaign, campaign.id).spend_at = None  # the next reading is due
+        s.commit()
+    assert sched.tick() == [1], 'a spend below the limit: the review starts'
+    sched.wait(10)
+    sched.stop(timeout=5)
 
 
 def test_the_closing_sweep_is_each_stopped_trigger_and_none_without_one(

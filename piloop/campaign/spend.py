@@ -11,10 +11,20 @@ from datetime import timedelta
 from pathlib import Path
 from subprocess import PIPE
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop.config import CampaignConfig, Spend
-from piloop.db.models import Campaign, Comment, CommentKind, TargetKind, utcnow
+from piloop.config import CampaignConfig, ClosingReview, Spend
+from piloop.db.models import (
+    Campaign,
+    CampaignStatus,
+    Comment,
+    CommentKind,
+    TargetKind,
+    Worker,
+    WorkerState,
+    utcnow,
+)
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.proc import STDERR_IN_ERROR, child_env, kill_group
 
@@ -101,6 +111,29 @@ def _limited(usd: float, limit: float) -> str:
         f'Spend limit reached: ${usd:,.2f} spent, limit ${limit:,.2f}. Nothing launches and no evaluation starts.'
         ' Runs in progress finish and are scored. To resume, raise [spend] limit in piloop.toml and run `piloop init`.'
     )
+
+
+def review_waits(s: Session, campaign: Campaign, cfg: CampaignConfig) -> bool:
+    """Whether the stopped campaign's closing review waits for the spend hold to end.
+
+    That is ``[spend] closing_review = "wait"``, with an agent still requested. The daemon reads the spend of such a
+    campaign, so that the hold can end.
+    """
+    if campaign.status is not CampaignStatus.STOPPED or cfg.spend is None:
+        return False
+    if cfg.spend.closing_review is not ClosingReview.WAIT:
+        return False
+    requested = select(Worker.id).where(Worker.campaign_id == campaign.id, Worker.state == WorkerState.REQUESTED)
+    return s.scalar(requested.limit(1)) is not None
+
+
+def review_skipped(s: Session, campaign: Campaign, held: str) -> None:
+    """Post the escalation of a closing review that ``[spend] closing_review = "skip"`` dropped. The caller commits."""
+    body = (
+        f'Closing review skipped: the campaign stopped while the spend guard held its launches ({held}), and'
+        ' [spend] closing_review = "skip".'
+    )
+    _post(s, campaign, CommentKind.ESCALATION, ESCALATION_PRIORITY, body)
 
 
 def _post(s: Session, campaign: Campaign, kind: CommentKind, priority: int, body: str) -> None:

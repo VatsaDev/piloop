@@ -73,6 +73,23 @@ must print one number and exit 0 within a minute. Give it its keys through the d
   failures. An unknown spend is never read as zero.
 
 This is a hold, not a stop: nothing is dropped. To resume, raise `limit` in `piloop.toml` and run `piloop init`.
+`piloop campaign stop` still stops a held campaign on the next tick. `closing_review` in `[spend]` says what
+happens to the closing review of that stop:
+
+| `closing_review` | What the daemon does |
+|---|---|
+| `"run"` (default) | It starts the closing review, also past the limit or with an unknown spend. |
+| `"skip"` | It starts no closing review. The stop ends at once, and the daemon posts an escalation that says so. |
+| `"wait"` | It requests the closing review, and starts it when the hold ends. It goes on reading the spend until then. |
+
+```toml
+[spend]
+command = ["uv", "run", "scripts/spend.py"]
+limit = 1000
+closing_review = "wait"
+```
+
+A paused campaign that you stop starts its closing review at once: a pause does not hold a stopped campaign.
 
 `piloop status` shows the spend as `$412.30/$1,000.00 spend`. Tokens are not part of the spend, because piloop has no
 price table. Use `[stop] max_tokens` for them.

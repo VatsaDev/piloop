@@ -140,6 +140,7 @@ max_concurrent = 1
 # notices = [300, 600]                    # piloop posts one inbox note when the spend crosses each value
 # limit = 1000                            # above the limit nothing starts; raise it, then run `piloop init` again
 # interval = 300                          # seconds between two runs of the command
+# closing_review = "run"                  # a stop while held: run the closing review, skip it, or wait for the hold
 
 [[metrics]]                               # one entry for each METRIC <name>=<value> line; one primary for each track
 name = "score"

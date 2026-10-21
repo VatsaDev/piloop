@@ -284,7 +284,7 @@ class HotPaths:
             return lambda: [body(p, cfg) for p, cfg in rows]
 
         def tick(p: Campaign, cfg: CampaignConfig) -> None:
-            scheduler._triggers(s, p, cfg)
+            scheduler._triggers(s, p, cfg, None)
             s.flush()
             scheduler._take(s, p, cfg)
             s.rollback()
