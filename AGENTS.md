@@ -3,7 +3,7 @@
 This file is for a coding agent that a human asks to set up, run or review a piloop campaign. To change piloop's own
 code, read [CONTRIBUTING.md](CONTRIBUTING.md) instead.
 
-If `PILOOP_ACTOR` is already set to a `worker#`, `watchdog#`, `research#` or `scout#` id, piloop started you. Follow
+If `PILOOP_ACTOR` is already set to a `implementer#`, `watchdog#`, `research#` or `scout#` id, piloop started you. Follow
 your brief, and ignore this file and the skills.
 
 piloop runs an autoresearch campaign on a git repo. A daemon starts coding agents (Claude Code, Codex or pi). Each
@@ -18,7 +18,7 @@ complete on its own.
 | Skill | Use it to |
 |---|---|
 | [piloop-setup](skills/piloop-setup/SKILL.md) | Set up or change a campaign in the current repo: check the machine, interview the human, write `brief.md` and `piloop.toml`, register the campaign, start the daemon. |
-| [piloop-operate](skills/piloop-operate/SKILL.md) | Orchestrate a running campaign: the inbox loop, ideas and priorities, escalations and decisions, sweeps, steering workers. |
+| [piloop-operate](skills/piloop-operate/SKILL.md) | Orchestrate a running campaign: the inbox loop, ideas and priorities, escalations and decisions, sweeps, steering implementers. |
 | [piloop-review](skills/piloop-review/SKILL.md) | Review a campaign during or after a run: are the gains real, did an agent game the evaluation, where did the time and tokens go. |
 
 `piloop install-skills` copies these skills into `~/.claude/skills` (Claude Code) and `~/.agents/skills` (Codex, pi,

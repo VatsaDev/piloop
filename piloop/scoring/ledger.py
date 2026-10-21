@@ -23,6 +23,7 @@ from piloop.db.events import emit
 from piloop.db.models import (
     OPEN_RUNS,
     PROCESS,
+    AgentSession,
     Campaign,
     CampaignStatus,
     Candidate,
@@ -33,8 +34,7 @@ from piloop.db.models import (
     Run,
     TargetKind,
     Verdict,
-    Worker,
-    latest_worker,
+    latest_agent_session,
 )
 from piloop.plugins.contracts import verdict as rules
 from piloop.plugins.contracts.verdict import VERDICT_RULES, Case, Criterion, Side, VerdictRule
@@ -324,7 +324,7 @@ def units_file(units_dir: Path, measurement_id: int) -> Path:
     """Return the path of a measurement's per-unit results, under ``PILOOP_HOME``.
 
     The file is outside every worktree and the database. The results are not a column, because every agent can read
-    every table through ``piloop sql``, and a worker must not tune against per-unit results. A file is not a sandbox,
+    every table through ``piloop sql``, and an implementer must not tune against per-unit results. A file is not a sandbox,
     because an agent's shell can read ``PILOOP_HOME``. But the file is not in the schema, the briefs or any renderer.
     """
     return units_dir / f'{measurement_id}.json'
@@ -637,7 +637,7 @@ def follow_up(
     A title that the campaign already has gets `` (from candidate#<id>)``. A follow-up already filed from this candidate
     with that title, under either name and in any status, is not filed again: a rejected compose seed stays rejected
     when the candidate is judged again. These are seeds, not ready ideas: research develops them before they run. A
-    pinned one runs as a branch run when its candidate is not the computed base (``[roles.worker] explore_every``). An
+    pinned one runs as a branch run when its candidate is not the computed base (``[roles.implementer] explore_every``). An
     unpinned one runs from the head, as a trunk run.
     """
     ideas: list[Idea] = []
@@ -701,21 +701,21 @@ def branches(s: Session, campaign: Campaign) -> list[Branch]:
     return sorted(found.values(), key=lambda b: (b.branched, -b.latest.id))
 
 
-def session_worker(s: Session, candidate: Candidate) -> Worker | None:
-    """Return the worker whose session made ``candidate`` (through ``workers.run_id``). None for the baseline."""
-    return latest_worker(s, candidate.run_id) if candidate.run_id is not None else None
+def session_agent_session(s: Session, candidate: Candidate) -> AgentSession | None:
+    """Return the implementer whose session made ``candidate`` (through ``agent_sessions.run_id``). None for the baseline."""
+    return latest_agent_session(s, candidate.run_id) if candidate.run_id is not None else None
 
 
 def session_checkpoint(s: Session, candidate: Candidate) -> str | None:
-    """Return the Entire checkpoint of the session that made ``candidate`` (``workers.checkpoint_id``).
+    """Return the Entire checkpoint of the session that made ``candidate`` (``agent_sessions.checkpoint_id``).
 
-    None for the baseline, which has no run, and for a run whose worker session was not attached.
+    None for the baseline, which has no run, and for a run whose agent session was not attached.
     """
-    worker = session_worker(s, candidate)
-    return worker.checkpoint_id if worker is not None else None
+    agent_session = session_agent_session(s, candidate)
+    return agent_session.checkpoint_id if agent_session is not None else None
 
 
 def session_tokens(s: Session, candidate: Candidate) -> int | None:
-    """Return the tokens that the session that made ``candidate`` spent (``workers.usage`` total). None when unknown."""
-    worker = session_worker(s, candidate)
-    return worker.usage['total'] if worker is not None and worker.usage else None
+    """Return the tokens that the session that made ``candidate`` spent (``agent_sessions.usage`` total). None when unknown."""
+    agent_session = session_agent_session(s, candidate)
+    return agent_session.usage['total'] if agent_session is not None and agent_session.usage else None

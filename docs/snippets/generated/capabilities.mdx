@@ -3,7 +3,7 @@
 | Capability | Tier | Selected by | Built-in providers, and where to import them |
 |---|---|---|---|
 | remote backend (`piloop.stores`) | host | `[storage.remote] kind` in `config.toml` | `gcs`: `piloop.store.gcs:GcsConfig`<br/>`s3`: `piloop.store.s3:S3Config` |
-| role (`piloop.roles`) | host | its name, where the configuration uses it | `research`: `piloop.plugins.builtin.roles:RESEARCH`<br/>`scout`: `piloop.plugins.builtin.roles:SCOUT`<br/>`watchdog`: `piloop.plugins.builtin.roles:WATCHDOG`<br/>`worker`: `piloop.plugins.builtin.roles:WORKER` |
+| role (`piloop.roles`) | host | its name, where the configuration uses it | `implementer`: `piloop.plugins.builtin.roles:IMPLEMENTER`<br/>`research`: `piloop.plugins.builtin.roles:RESEARCH`<br/>`scout`: `piloop.plugins.builtin.roles:SCOUT`<br/>`watchdog`: `piloop.plugins.builtin.roles:WATCHDOG` |
 | runtime (`piloop.runtimes`) | host | `runtime` | `herdr`: `piloop.runtime.herdr:HerdrRuntime`<br/>`subprocess`: `piloop.runtime.subprocess:SubprocessRuntime` |
 | stop rule (`piloop.stop_rules`) | pure | `[plugins.stop_rule] provider` | `limits`: `piloop.plugins.builtin.stop:LIMITS` |
 | trigger (`piloop.triggers`) | host | its name, where the configuration uses it | `anomaly`: `piloop.triggers:AnomalyTrigger`<br/>`cron`: `piloop.triggers:CronTrigger`<br/>`low_water`: `piloop.triggers:LowWaterTrigger`<br/>`seed`: `piloop.triggers:SeedTrigger`<br/>`sql`: `piloop.triggers:SqlTrigger`<br/>`stopped`: `piloop.triggers:StoppedTrigger` |

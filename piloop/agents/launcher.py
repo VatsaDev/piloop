@@ -1,7 +1,7 @@
-"""One lifecycle for every agent role (https://piloop.autoresearch.inc/concepts/roles): brief, start, wait, collect, close the ``workers`` row.
+"""One lifecycle for every agent role (https://piloop.autoresearch.inc/concepts/roles): brief, start, wait, collect, close the ``agent_sessions`` row.
 
 Roles differ in data (``piloop.agents.roles``) and in the content of their brief. ``Launcher.launch`` is the only code
-that starts, waits for and closes an agent process. It never raises: a failure goes on the worker row and its span.
+that starts, waits for and closes an agent process. It never raises: a failure goes on the agent session row and its span.
 """
 
 import os
@@ -16,19 +16,29 @@ from uuid import uuid4
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from piloop import git
+from piloop import deprecated, git
 from piloop.agents.capture import ENTIRE_INSTALL, MIN_ENTIRE, AttachError, attach_session, attachable, usable
 from piloop.agents.refill import usage_of
 from piloop.config import BRIEF_FILE, config_of, harness_of
 from piloop.db.events import emit
-from piloop.db.models import Campaign, Comment, Event, Run, TargetKind, UsageJson, Worker, WorkerState, utcnow
+from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
+    Campaign,
+    Comment,
+    Event,
+    Run,
+    TargetKind,
+    UsageJson,
+    utcnow,
+)
 from piloop.db.session import Database
 from piloop.harnesses import SESSION_ID, Invocation, fill, takes_session_id
 from piloop.mcp import RENDERERS, Launch, Rendered, expand, forwarded_env
 from piloop.otel import Span, Tracer
 from piloop.plugins.contracts.runtime import RUNTIMES
 from piloop.proc import PILOOP_ARGV, child_env
-from piloop.runtime import Handle, Outcome, Runtime, StartFailed, WorkerSpec, WorkerStatus
+from piloop.runtime import AgentSpec, AgentStatus, Handle, Outcome, Runtime, StartFailed
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
 from piloop.text import cell
 from piloop.usage import UsageError
@@ -44,18 +54,18 @@ STARTUP_SECONDS = 120
 Longer than the default Herdr ``startup_grace_seconds``: a Herdr agent that never starts its first turn is watched for
 the whole grace, and must still count as a failed start, not as a run that worked and left nothing."""
 STARTUP_ANOMALY = 'anomaly.startup'
-"""The event on a worker that did not start to work (``Outcome.startup_failed``): an environment fault, not bad work."""
-WRAP_UP = 'worker.wrap_up'
-"""Event on a worker of a stopped campaign, or of a run cancelled with its wrap-up: the worker was told to commit and stop.
+"""The event on an implementer that did not start to work (``Outcome.startup_failed``): an environment fault, not bad work."""
+WRAP_UP = 'agent_session.wrap_up'
+"""Event on an implementer of a stopped campaign, or of a run cancelled with its wrap-up: the implementer was told to commit and stop.
 
-The daemon ends the worker ``STOP_GRACE_SECONDS`` later."""
-STOP_ENDED = 'worker.stop_ended'
+The daemon ends the implementer ``STOP_GRACE_SECONDS`` later."""
+STOP_ENDED = 'agent_session.stop_ended'
 """Event on an agent that the daemon ended for a stop or a cancel, with the ``reason`` and the run's ``error``.
 
-A worker of a stopped campaign is ended when the grace period after its wrap-up prompt is over, or at once for a stop
-that kills. A worker in the middle of a turn takes a message only when the turn ends, so it may never have read the
+An implementer of a stopped campaign is ended when the grace period after its wrap-up prompt is over, or at once for a stop
+that kills. An implementer in the middle of a turn takes a message only when the turn ends, so it may never have read the
 prompt. The scheduler commits the event before the kill, and the run closes with the ``error``
-(``CAMPAIGN_STOPPED_ERROR`` or ``CANCELLED_ERROR``) unless its worker left its finding."""
+(``CAMPAIGN_STOPPED_ERROR`` or ``CANCELLED_ERROR``) unless its implementer left its finding."""
 ASKED_TO_END = (WRAP_UP, STOP_ENDED)
 """Events on an agent that the daemon told to stop or ended. Such an agent never counts as a failed start."""
 PARENT_SESSION_ENV = ('CLAUDE_CODE_CHILD_SESSION',)
@@ -75,7 +85,7 @@ It names the brief's file instead of holding the brief. The prompt is one argume
 128 KiB (``MAX_ARG_STRLEN``). A research brief with a long history is longer than that.
 """
 TAB_TITLE_CHARS = 30
-"""How many characters of the idea's title go in a worker's tab label: enough to tell tabs apart in Herdr."""
+"""How many characters of the idea's title go in an implementer's tab label: enough to tell tabs apart in Herdr."""
 
 CLI_SHIM = '#!/bin/sh\nPILOOP_HOME={home} exec {argv} "$@"\n'
 """``<home>/bin/piloop``: this home's piloop, the daemon's own code on the daemon's home. Agents get it as ``PILOOP_BIN``,
@@ -97,9 +107,9 @@ def own_cli(home: Path) -> Path:
 
 @dataclass(frozen=True)
 class Prepared:
-    """A worker row marked ``starting``: what the runtime needs to start it, and how long it may run."""
+    """An agent session row marked ``starting``: what the runtime needs to start it, and how long it may run."""
 
-    spec: WorkerSpec
+    spec: AgentSpec
     runtime: Runtime
     timeout: float
     captures_session: bool
@@ -109,7 +119,7 @@ class Prepared:
 
 
 class Launcher:
-    """Turns a ``workers`` row into a process, and the ended process into a closed row, on the calling thread."""
+    """Turns a ``agent_sessions`` row into a process, and the ended process into a closed row, on the calling thread."""
 
     def __init__(
         self, db: Database, tracer: Tracer, home: Path, runtime_factory: RuntimeFactory = make_runtime
@@ -141,7 +151,7 @@ class Launcher:
         ``cancelled`` leaves open is handed over, not stopped.
         """
         self.watching: set[int] = set()
-        """Workers whose agent this process started or re-attached to and did not close yet.
+        """The agent sessions whose agent this process started or re-attached to and did not close yet.
 
         A hand-over leaves these to the next daemon, and waits for every other thread.
         """
@@ -153,7 +163,7 @@ class Launcher:
 
     def launch(
         self,
-        worker_id: int,
+        agent_session_id: int,
         *,
         brief: str,
         cwd: Path,
@@ -161,7 +171,7 @@ class Launcher:
         make_cwd: Callable[[], object] = lambda: None,
         links: dict[str, Path] | None = None,
     ) -> Outcome:
-        """Run worker row ``worker_id`` to the end and close it.
+        """Run agent session row ``agent_session_id`` to the end and close it.
 
         The steps are: make the cwd, pick the harness and model, start, wait, save the transcript, read the usage,
         attach the session, close the row and emit the events. The caller owns ``cwd`` (a worktree) and removes it after
@@ -171,54 +181,58 @@ class Launcher:
         (``git.linked``): they are no change of the agent's.
         """
         return self._run(
-            worker_id,
+            agent_session_id,
             cwd,
             log_dir,
             links or {},
-            lambda span: self._launch(worker_id, span, brief, cwd, log_dir, make_cwd),
+            lambda span: self._launch(agent_session_id, span, brief, cwd, log_dir, make_cwd),
         )
 
-    def reattach(self, worker_id: int, *, cwd: Path, log_dir: Path, links: dict[str, Path] | None = None) -> Outcome:
+    def reattach(
+        self, agent_session_id: int, *, cwd: Path, log_dir: Path, links: dict[str, Path] | None = None
+    ) -> Outcome:
         """Like ``launch``, for an agent that an earlier daemon process started: watch it to its end and close it.
 
         The agent can still run, or it can have ended while no daemon watched. Its role's timeout counts from its start.
         """
-        return self._run(worker_id, cwd, log_dir, links or {}, lambda span: self._reattach(worker_id, span, log_dir))
+        return self._run(
+            agent_session_id, cwd, log_dir, links or {}, lambda span: self._reattach(agent_session_id, span, log_dir)
+        )
 
     def _run(
-        self, worker_id: int, cwd: Path, log_dir: Path, links: dict[str, Path], agent: Callable[[Span], Outcome]
+        self, agent_session_id: int, cwd: Path, log_dir: Path, links: dict[str, Path], agent: Callable[[Span], Outcome]
     ) -> Outcome:
         """Run the agent phase (``agent``), then read the usage, check the startup, attach the session and close."""
         started = time.monotonic()
-        with self.tracer.span('piloop.agent', worker=worker_id) as span:
+        with self.tracer.span('piloop.agent', agent_session=agent_session_id) as span:
             try:
                 try:
                     outcome = agent(span)
-                    killed = outcome.status is WorkerStatus.TIMED_OUT or outcome.startup_failed
+                    killed = outcome.status is AgentStatus.TIMED_OUT or outcome.startup_failed
                 except Exception as e:
                     span.error(e)
-                    outcome = Outcome(WorkerStatus.EXITED, time.monotonic() - started, error=f'{type(e).__name__}: {e}')
+                    outcome = Outcome(AgentStatus.EXITED, time.monotonic() - started, error=f'{type(e).__name__}: {e}')
                     killed = True
                 cancelled = self.cancelled.is_set()
-                asked = self._asked_to_end(worker_id)
+                asked = self._asked_to_end(agent_session_id)
                 killed = killed or STOP_ENDED in asked
-                usage = None if cancelled else self._usage(worker_id, cwd, log_dir, span)
+                usage = None if cancelled else self._usage(agent_session_id, cwd, log_dir, span)
                 if (
                     not cancelled
                     and not asked
                     and not outcome.startup_failed
-                    and self._never_worked(worker_id, outcome, usage, cwd, links)
+                    and self._never_worked(agent_session_id, outcome, usage, cwd, links)
                 ):
                     outcome = replace(outcome, startup_failed=True)
-                checkpoint = None if cancelled else self._attach(worker_id, cwd, span)
-                if self._close(worker_id, outcome, killed, span, checkpoint, usage):
+                checkpoint = None if cancelled else self._attach(agent_session_id, cwd, span)
+                if self._close(agent_session_id, outcome, killed, span, checkpoint, usage):
                     outcome = replace(outcome, handed_over=True)
             finally:
-                self.watching.discard(worker_id)
+                self.watching.discard(agent_session_id)
         return outcome
 
     def _launch(
-        self, worker_id: int, span: Span, brief: str, cwd: Path, log_dir: Path, make_cwd: Callable[[], object]
+        self, agent_session_id: int, span: Span, brief: str, cwd: Path, log_dir: Path, make_cwd: Callable[[], object]
     ) -> Outcome:
         started = time.monotonic()
         try:
@@ -226,36 +240,38 @@ class Launcher:
         except Exception as e:  # a full disk, a locked index: a fault of the host, not of the agent
             span.error(e)
             error = f'{type(e).__name__}: {e}'
-            return Outcome(WorkerStatus.EXITED, time.monotonic() - started, error=error, startup_failed=True)
+            return Outcome(AgentStatus.EXITED, time.monotonic() - started, error=error, startup_failed=True)
         with self.lock:
             if self.cancelled.is_set():
-                return Outcome(WorkerStatus.EXITED, 0, error=STOPPED_ERROR)
-            prepared = self._prepare(worker_id, span, brief, cwd, log_dir)
+                return Outcome(AgentStatus.EXITED, 0, error=STOPPED_ERROR)
+            prepared = self._prepare(agent_session_id, span, brief, cwd, log_dir)
             started = time.monotonic()
             try:
                 handle = prepared.runtime.start(prepared.spec)
             except Exception as e:  # an unanswered dialog or a lost prompt: the agent did not start to work
                 span.error(e)
                 error = self._start_error(e, log_dir)
-                return Outcome(WorkerStatus.EXITED, time.monotonic() - started, error=error, startup_failed=True)
+                return Outcome(AgentStatus.EXITED, time.monotonic() - started, error=error, startup_failed=True)
             try:
                 with self.db.session() as s:
-                    w = s.get_one(Worker, worker_id)
-                    w.handle, w.state = handle.data, WorkerState.RUNNING
+                    w = s.get_one(AgentSession, agent_session_id)
+                    w.handle, w.state = handle.data, AgentSessionState.RUNNING
                     s.commit()
             except BaseException:
                 # Not recorded, so nothing would ever watch the agent or wait for its process: end it here.
                 prepared.runtime.kill(handle)
                 raise
-            self.watching.add(worker_id)
+            self.watching.add(agent_session_id)
         unreported = prepared.captures_session and prepared.session_id is None
-        return self._watch(worker_id, span, prepared.runtime, handle, prepared.timeout, log_dir, unreported=unreported)
+        return self._watch(
+            agent_session_id, span, prepared.runtime, handle, prepared.timeout, log_dir, unreported=unreported
+        )
 
-    def _reattach(self, worker_id: int, span: Span, log_dir: Path) -> Outcome:
+    def _reattach(self, agent_session_id: int, span: Span, log_dir: Path) -> Outcome:
         """Watch the agent of a running row through its runtime. Its seconds count from the row's start."""
-        self.watching.add(worker_id)
+        self.watching.add(agent_session_id)
         with self.db.session() as s:
-            w = s.get_one(Worker, worker_id)
+            w = s.get_one(AgentSession, agent_session_id)
             assert w.started_at is not None  # only running rows are re-attached
             elapsed = (utcnow() - w.started_at).total_seconds()
             timeout = config_of(s.get_one(Campaign, w.campaign_id)).role(w.kind).timeout - elapsed
@@ -263,12 +279,12 @@ class Launcher:
             unreported = definition is not None and definition.captures_session and w.session_id is None
             runtime, handle = runtime_for(s, w, log_dir, self.runtime_factory), handle_for(w)
             span.set(kind=w.kind, harness=w.harness, model=w.model, reason=w.reason, reattached=True)
-        outcome = self._watch(worker_id, span, runtime, handle, max(timeout, 0), log_dir, unreported=unreported)
+        outcome = self._watch(agent_session_id, span, runtime, handle, max(timeout, 0), log_dir, unreported=unreported)
         return replace(outcome, seconds=elapsed + outcome.seconds)
 
     def _watch(
         self,
-        worker_id: int,
+        agent_session_id: int,
         span: Span,
         runtime: Runtime,
         handle: Handle,
@@ -286,21 +302,26 @@ class Launcher:
         reported = not unreported
         try:
             if not reported:
-                reported = self._reported_session(worker_id, runtime, handle, span, last=False)
+                reported = self._reported_session(agent_session_id, runtime, handle, span, last=False)
             return runtime.wait(handle, timeout)
         finally:
             if not reported:
                 try:
-                    self._reported_session(worker_id, runtime, handle, span, last=True)
+                    self._reported_session(agent_session_id, runtime, handle, span, last=True)
                 except Exception as e:  # the pane or the server can be gone; releasing the agent comes first
-                    span.event('worker.session_unknown', worker=worker_id, runtime=runtime.kind, error=str(e))
+                    span.event(
+                        'agent_session.session_unknown',
+                        agent_session=agent_session_id,
+                        runtime=runtime.kind,
+                        error=str(e),
+                    )
             self._save_transcript(runtime, handle, log_dir)
             runtime.kill(handle)
 
-    def _prepare(self, worker_id: int, span: Span, brief: str, cwd: Path, log_dir: Path) -> Prepared:
+    def _prepare(self, agent_session_id: int, span: Span, brief: str, cwd: Path, log_dir: Path) -> Prepared:
         """Pick the harness and model, fill in the row, mark it ``starting`` and emit ``<kind>.started``."""
         with self.db.session() as s:
-            w = s.get_one(Worker, worker_id)
+            w = s.get_one(AgentSession, agent_session_id)
             campaign = s.get_one(Campaign, w.campaign_id)
             cfg = config_of(campaign)
             harness = w.harness or rotate(s, w, cfg.role_harnesses(w.kind))
@@ -311,18 +332,18 @@ class Launcher:
             template = definition.argv(invocation)
             session_id = str(uuid4()) if definition.captures_session and takes_session_id(template) else None
             w.harness, w.model, w.runtime, w.log_dir = harness, model, runtime_kind, str(log_dir)
-            w.state, w.started_at, w.session_id = WorkerState.STARTING, utcnow(), session_id
+            w.state, w.started_at, w.session_id = AgentSessionState.STARTING, utcnow(), session_id
             emit(
                 s,
                 f'{w.kind}.started',
-                TargetKind.WORKER,
-                worker_id,
+                TargetKind.AGENT_SESSION,
+                agent_session_id,
                 payload={'harness': harness, 'model': model, 'reason': w.reason},
             )
             s.commit()
             kind, reason, campaign_name, campaign_path = w.kind, w.reason, campaign.name, Path(campaign.path)
             label = _label(s, w)
-            actor = f'{w.kind}#{worker_id}'
+            actor = f'{w.kind}#{agent_session_id}'
         span.set(kind=kind, harness=harness, model=model, reason=reason, session_id=session_id)
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / BRIEF_FILE).write_text(brief)
@@ -331,6 +352,8 @@ class Launcher:
         # uv were found, after the daemon's own piloop, and the variables that the role's MCP servers name.
         servers = cfg.role_servers(kind)
         env = {
+            # the shim sets it too, but a harness shell that runs the user's rc files can put another install's piloop
+            # first on PATH: with the variable, that one still uses this home's database, never the default home's
             'PILOOP_HOME': str(self.home),
             'PILOOP_ACTOR': actor,
             'PILOOP_BIN': str(self.cli),
@@ -355,8 +378,8 @@ class Launcher:
             for a in (definition.resume if invocation is Invocation.HEADLESS else [])
         ]
         busy, failed, queue, composer = definition.screens
-        spec = WorkerSpec(
-            name=f'{kind}-{worker_id}',
+        spec = AgentSpec(
+            name=f'{kind}-{agent_session_id}',
             label=label,
             executable=definition.executable,
             args=expand(argv, mcp),
@@ -375,7 +398,9 @@ class Launcher:
         runtime = self.runtime_factory(runtime_kind, campaign=campaign_name, campaign_path=campaign_path)
         return Prepared(spec, runtime, cfg.role(kind).timeout, definition.captures_session, session_id)
 
-    def _reported_session(self, worker_id: int, runtime: Runtime, handle: Handle, span: Span, *, last: bool) -> bool:
+    def _reported_session(
+        self, agent_session_id: int, runtime: Runtime, handle: Handle, span: Span, *, last: bool
+    ) -> bool:
         """Record the session id that the runtime reports for the started agent. Return whether there was one.
 
         Without an id, the session cannot be attached. After the ``last`` ask, emit an event and leave the row's id
@@ -384,11 +409,11 @@ class Launcher:
         session_id = runtime.session_id(handle)
         if session_id is None:
             if last:
-                span.event('worker.session_unknown', worker=worker_id, runtime=runtime.kind)
+                span.event('agent_session.session_unknown', agent_session=agent_session_id, runtime=runtime.kind)
             return False
         span.set(session_id=session_id)
         with self.lock, self.db.session() as s:
-            s.get_one(Worker, worker_id).session_id = session_id
+            s.get_one(AgentSession, agent_session_id).session_id = session_id
             s.commit()
         return True
 
@@ -408,35 +433,35 @@ class Launcher:
         try:
             (log_dir / TRANSCRIPT).write_text(runtime.read(handle, lines=TRANSCRIPT_LINES))
         except Exception as e:  # the pane can already be gone; a missing transcript is not an error
-            self.tracer.event('worker.transcript_lost', error=str(e))
+            self.tracer.event('agent_session.transcript_lost', error=str(e))
 
-    def _usage(self, worker_id: int, cwd: Path, log_dir: Path, span: Span) -> UsageJson | None:
+    def _usage(self, agent_session_id: int, cwd: Path, log_dir: Path, span: Span) -> UsageJson | None:
         """Read the ended agent's tokens as its harness's ``usage`` spec says. A failure is an event, and stays NULL.
 
         This runs while the worktree still exists, because a session store can be keyed by the agent's cwd. A harness
         without a spec records nothing. An agent that never ran (no harness picked) has nothing to read.
         """
         with self.db.session() as s:
-            w = s.get_one(Worker, worker_id)
+            w = s.get_one(AgentSession, agent_session_id)
             if w.harness is None:
                 return None
             found = usage_of(s, w, cwd)
         if found is None:
             return None
         if isinstance(found, UsageError):
-            span.event('worker.usage_unknown', worker=worker_id, error=str(found))
+            span.event('agent_session.usage_unknown', agent_session=agent_session_id, error=str(found))
             return None
         span.set(tokens=found.total)
         return found.as_json()
 
-    def _asked_to_end(self, worker_id: int) -> set[str]:
-        """Return the ``ASKED_TO_END`` events on the worker: a stop or a cancel ended it, not a failed start."""
-        on_worker = (Event.target_kind == TargetKind.WORKER) & (Event.target_id == worker_id)
+    def _asked_to_end(self, agent_session_id: int) -> set[str]:
+        """Return the ``ASKED_TO_END`` events on the implementer: a stop or a cancel ended it, not a failed start."""
+        on_agent_session = (Event.target_kind == TargetKind.AGENT_SESSION) & (Event.target_id == agent_session_id)
         with self.db.session() as s:
-            return set(s.scalars(select(Event.kind).where(on_worker, Event.kind.in_(ASKED_TO_END))))
+            return set(s.scalars(select(Event.kind).where(on_agent_session, Event.kind.in_(ASKED_TO_END))))
 
     def _never_worked(
-        self, worker_id: int, outcome: Outcome, usage: UsageJson | None, cwd: Path, links: dict[str, Path]
+        self, agent_session_id: int, outcome: Outcome, usage: UsageJson | None, cwd: Path, links: dict[str, Path]
     ) -> bool:
         """Return whether a started agent ended within ``STARTUP_SECONDS`` and left nothing behind.
 
@@ -450,42 +475,48 @@ class Launcher:
         harness's usage is read is judged. The tokens can be unknown for a sweep that worked too: Herdr reports no
         session for a harness without Herdr hooks.
         """
-        if outcome.status is WorkerStatus.TIMED_OUT or outcome.seconds >= STARTUP_SECONDS:
+        if outcome.status is AgentStatus.TIMED_OUT or outcome.seconds >= STARTUP_SECONDS:
             return False
         if git.changed(cwd, git.linked(cwd, links)):
             return False
         with self.db.session() as s:
-            w = s.get_one(Worker, worker_id)
+            w = s.get_one(AgentSession, agent_session_id)
             if w.run_id is None:
                 definition = harness_of(s, w)
                 if definition is None or definition.usage is None or (usage is not None and usage['total'] > 0):
                     return False
-            signed = select(Comment.id).where(Comment.author == f'{w.kind}#{worker_id}').limit(1)
+            signed = (
+                select(Comment.id).where(Comment.author.in_(deprecated.signatures(w.kind, agent_session_id))).limit(1)
+            )
             return s.scalar(signed) is None
 
-    def _attach(self, worker_id: int, cwd: Path, span: Span) -> str | None:
+    def _attach(self, agent_session_id: int, cwd: Path, span: Span) -> str | None:
         """Attach the ended session to Entire from ``cwd``. A failure is an event, and the row's checkpoint stays NULL.
 
         Nothing retries the attach: the session stays readable in the harness's own store.
         """
         with self.db.session() as s:
-            w = s.get_one(Worker, worker_id)
+            w = s.get_one(AgentSession, agent_session_id)
             target = attachable(w, harness_of(s, w))
         if target is None:
             return None
         session_id, agent = target
         if self.entire_version is not None and not usable(self.entire_version):
             error = f'entire {self.entire_version} is older than {MIN_ENTIRE}; upgrade it: {ENTIRE_INSTALL}'
-            span.event('worker.session_unattached', worker=worker_id, session_id=session_id, error=error)
+            span.event(
+                'agent_session.session_unattached', agent_session=agent_session_id, session_id=session_id, error=error
+            )
             return None
         try:
             attached = attach_session(session_id, agent, cwd)
         except AttachError as e:
-            span.event('worker.session_unattached', worker=worker_id, session_id=session_id, error=str(e))
+            span.event(
+                'agent_session.session_unattached', agent_session=agent_session_id, session_id=session_id, error=str(e)
+            )
             return None
         span.event(
-            'worker.session_attached',
-            worker=worker_id,
+            'agent_session.session_attached',
+            agent_session=agent_session_id,
             session_id=session_id,
             checkpoint=attached.checkpoint_id,
             agent=attached.agent,
@@ -496,7 +527,7 @@ class Launcher:
 
     def _close(
         self,
-        worker_id: int,
+        agent_session_id: int,
         outcome: Outcome,
         killed: bool,
         span: Span,
@@ -511,20 +542,20 @@ class Launcher:
         """
         with self.lock:
             if self.cancelled.is_set():
-                if self.handover.is_set() and worker_id in self.watching:
+                if self.handover.is_set() and agent_session_id in self.watching:
                     span.set(state='handed_over')
                     return True
-                span.set(state=WorkerState.KILLED, error=STOPPED_ERROR)
+                span.set(state=AgentSessionState.KILLED, error=STOPPED_ERROR)
                 return False
             with self.db.session() as s:
-                w = s.get_one(Worker, worker_id)
-                w.state = WorkerState.KILLED if killed else WorkerState.EXITED
+                w = s.get_one(AgentSession, agent_session_id)
+                w.state = AgentSessionState.KILLED if killed else AgentSessionState.EXITED
                 w.ended_at, w.error, w.checkpoint_id, w.usage = utcnow(), outcome.error, checkpoint, usage
                 emit(
                     s,
                     f'{w.kind}.finished',
-                    TargetKind.WORKER,
-                    worker_id,
+                    TargetKind.AGENT_SESSION,
+                    agent_session_id,
                     payload={'reason': w.reason, 'status': outcome.status, 'error': outcome.error},
                 )
                 if outcome.startup_failed:
@@ -535,25 +566,29 @@ class Launcher:
                         'seconds': round(outcome.seconds, 1),
                         'error': outcome.error,
                     }
-                    emit(s, STARTUP_ANOMALY, TargetKind.WORKER, worker_id, payload=anomaly)
-                    span.event(STARTUP_ANOMALY, worker=worker_id, harness=w.harness, error=outcome.error)
+                    emit(s, STARTUP_ANOMALY, TargetKind.AGENT_SESSION, agent_session_id, payload=anomaly)
+                    span.event(STARTUP_ANOMALY, agent_session=agent_session_id, harness=w.harness, error=outcome.error)
                 s.commit()
                 span.set(state=w.state, error=outcome.error, checkpoint=checkpoint)
         return False
 
 
-def rotate(s: Session, worker: Worker, harnesses: list[str]) -> str:
-    """Return the harness for a worker: the n-th agent of a kind in a campaign takes the n-th harness, round robin."""
+def rotate(s: Session, agent_session: AgentSession, harnesses: list[str]) -> str:
+    """Return the harness for an implementer: the n-th agent of a kind in a campaign takes the n-th harness, round robin."""
     earlier = s.scalar(
         select(func.count())
-        .select_from(Worker)
-        .where(Worker.campaign_id == worker.campaign_id, Worker.kind == worker.kind, Worker.id < worker.id)
+        .select_from(AgentSession)
+        .where(
+            AgentSession.campaign_id == agent_session.campaign_id,
+            AgentSession.kind == agent_session.kind,
+            AgentSession.id < agent_session.id,
+        )
     )
     return harnesses[(earlier or 0) % len(harnesses)]
 
 
-def _label(s: Session, w: Worker) -> str:
-    """Return the tab label: ``worker-12 idea#5 Stacking with a meta-learner…``, or ``research-7`` for a sweep."""
+def _label(s: Session, w: AgentSession) -> str:
+    """Return the tab label: ``implementer-12 idea#5 Stacking with a meta-learner…``, or ``research-7`` for a sweep."""
     if w.run_id is None:
         return f'{w.kind}-{w.id}'
     idea = s.get_one(Run, w.run_id).idea

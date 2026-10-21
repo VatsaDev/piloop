@@ -27,13 +27,13 @@ from piloop.campaign.campaigns import workspace_dir
 from piloop.db.models import (
     ENDED,
     OPEN_RUNS,
+    AgentSession,
     Archive,
     Campaign,
     CampaignStatus,
     Idea,
     IdeaStatus,
     Run,
-    Worker,
     count,
     utcnow,
 )
@@ -42,7 +42,7 @@ from piloop.store import Entry, Manifest, Store, hash_file
 from piloop.store.tree import Materialised, Removed, Walk, materialise, put_walk, remove, walk
 
 IDEA_NAME = re.compile(r'idea(\d+)(?!\d)')
-"""A top-level workspace entry of an idea: ``idea12/``, ``idea12-canary.log``. Workers are told to use it."""
+"""A top-level workspace entry of an idea: ``idea12/``, ``idea12-canary.log``. Implementers are told to use it."""
 
 
 class NotArchived(RuntimeError):
@@ -97,8 +97,8 @@ def _due_campaigns() -> Select[int]:
     Due: ``stopped``, none of its agents requested or alive, and no complete archiving of it newer than its last agent's
     end (a resumed and stopped again campaign is due again, and so is a job that stopped short).
     """
-    live = exists().where(Worker.campaign_id == Campaign.id, Worker.state.not_in(ENDED))
-    last_end = select(func.max(Worker.ended_at)).where(Worker.campaign_id == Campaign.id).scalar_subquery()
+    live = exists().where(AgentSession.campaign_id == Campaign.id, AgentSession.state.not_in(ENDED))
+    last_end = select(func.max(AgentSession.ended_at)).where(AgentSession.campaign_id == Campaign.id).scalar_subquery()
     swept = (
         select(func.max(Archive.created_at))
         .where(Archive.campaign_id == Campaign.id, Archive.idea_id.is_(None), Archive.complete)

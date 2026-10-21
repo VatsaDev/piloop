@@ -27,7 +27,7 @@ nothing to clean up.
 
 `piloop stop` stops the running agents:
 
-- The runs of the stopped workers fail with `daemon stopped`. This does not count as an attempt: the ideas go back to
+- The runs of the stopped implementers fail with `daemon stopped`. This does not count as an attempt: the ideas go back to
   `ready`.
 - What each run made is pinned under `refs/piloop/`, with a note that its next attempt reads.
 - Requested agents stay requested, and start when the daemon starts again.
@@ -68,7 +68,7 @@ See [the CLI](/reference/cli#piloop-pause).
 The unit restarts the daemon when it fails. It sets `PILOOP_HOME` and your current `PATH`, because the daemon must
 find the harness CLIs on its `PATH`. It also carries the `PILOOP_*` variables that are set in your shell, such as
 `PILOOP_SECRETS_COMMAND` and `PILOOP_TICK_SECONDS`, `OTEL_EXPORTER_OTLP_ENDPOINT`, and the variables that the usage
-globs of the harnesses name, such as `CLAUDE_CONFIG_DIR` and `CODEX_HOME`. It never carries `PILOOP_ACTOR`, `PILOOP_WORKER_TOKEN` or `PILOOP_UNITS_FILE`, because piloop sets them
+globs of the harnesses name, such as `CLAUDE_CONFIG_DIR` and `CODEX_HOME`. It never carries `PILOOP_ACTOR`, `PILOOP_PROCESS_TAG` or `PILOOP_UNITS_FILE`, because piloop sets them
 for one agent or one evaluation, not for the daemon. It carries no other variable, so give API keys to the daemon
 through `PILOOP_SECRETS_COMMAND`. Set the variables before you run `piloop service-unit`. See
 [Secrets](/guides/secrets).

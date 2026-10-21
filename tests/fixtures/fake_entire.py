@@ -59,7 +59,7 @@ def info(sid: str, mode: str, log_path: str) -> dict[str, object]:
         'checkpoints': 0,
         'last_checkpoint_id': None if mode == 'silent' else CHECKPOINT,
         'tokens': {'total': TOKENS, 'input': 22440, 'cache_read': 209024, 'cache_write': 0, 'output': 2980},
-        'last_prompt': '# Worker\n',
+        'last_prompt': '# Implementer\n',
     }
 
 

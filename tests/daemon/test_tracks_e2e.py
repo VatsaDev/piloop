@@ -25,7 +25,7 @@ evaluate_timeout = 30
 [model]
 script = "test-model"
 
-[roles.worker]
+[roles.implementer]
 timeout = 30
 max_concurrent = 2
 

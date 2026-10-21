@@ -4,7 +4,7 @@ wrong type."""
 from pathlib import Path
 from typing import ClassVar, Literal
 
-from piloop.config import SweepRole, WorkerRole
+from piloop.config import ImplementerRole, SweepRole
 from piloop.harnesses import Invocation
 from piloop.plugins.contracts.stop import GO, Fact, Go, Hold, Limits, Stop, StopCase
 from piloop.runtime import Check, Handle
@@ -79,8 +79,8 @@ class Unsure:
 
 
 AUDITOR = SweepRole(prompt=str(Path(__file__).parent / 'auditor.md'), triggers=[EveryTick(label='audit')], timeout=5)
-QUICK = WorkerRole(takes='priority >= 3', timeout=60, max_concurrent=1)
-FAST = WorkerRole.model_construct(takes='priority >= 9', runtime='nice')
+QUICK = ImplementerRole(takes='priority >= 3', timeout=60, max_concurrent=1)
+FAST = ImplementerRole.model_construct(takes='priority >= 9', runtime='nice')
 """A role whose default runtime is ``nice``. Built unvalidated: ``nice`` is a runtime only once a test installs it."""
 NOT_A_TRIGGER = 'every_tick'
 NOT_A_ROLE = 'auditor'

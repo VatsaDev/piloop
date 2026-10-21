@@ -8,16 +8,16 @@ from piloop.config import (
     CampaignConfig,
     ConfigError,
     Files,
+    ImplementerRole,
     Metric,
     MetricRole,
     ResearchRole,
     Roles,
     Stop,
     WatchdogRole,
-    WorkerRole,
     load_campaign_config,
 )
-from piloop.db.models import WorkerKind
+from piloop.db.models import RoleName
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.plugins.contracts.verdict import Direction
 from piloop.triggers import TRIGGERS
@@ -39,10 +39,10 @@ def test_load_precedence(campaign_path: Path, monkeypatch: pytest.MonkeyPatch) -
         ('trust', ['down', 'enter'])
     ]
 
-    monkeypatch.setenv('PILOOP_CAMPAIGN_ROLES__WORKER__MAX_CONCURRENT', '3')
+    monkeypatch.setenv('PILOOP_CAMPAIGN_ROLES__IMPLEMENTER__MAX_CONCURRENT', '3')
     monkeypatch.setenv('PILOOP_CAMPAIGN_RUNTIME', 'herdr')
     cfg = load_campaign_config(campaign_path)
-    assert (cfg.roles.worker.max_concurrent, cfg.runtime) == (3, 'herdr')
+    assert (cfg.roles.implementer.max_concurrent, cfg.runtime) == (3, 'herdr')
     assert load_campaign_config(campaign_path, runtime=None).runtime == 'herdr'
 
 
@@ -50,15 +50,15 @@ def test_roles_are_typed_per_kind(campaign_path: Path) -> None:
     cfg = load_campaign_config(campaign_path)
     assert cfg.roles == snapshot(
         Roles(
-            worker=WorkerRole(timeout=20.0, max_concurrent=1),
+            implementer=ImplementerRole(timeout=20.0, max_concurrent=1),
             watchdog=WatchdogRole(harnesses=['script'], model={'script': 'watchdog-model'}, timeout=20.0),
             research=ResearchRole(timeout=20.0, max_ideas=0, max_concurrent=1),
         )
     )
-    assert cfg.role(WorkerKind.RESEARCH) is cfg.roles.research
-    assert set(Roles.model_fields) == {k.value for k in WorkerKind}, 'every kind has its table'
-    assert cfg.role_harnesses(WorkerKind.RESEARCH) == ['script'], 'unset: the campaign rotation'
-    assert cfg.role_models(WorkerKind.WATCHDOG) == {'script': 'watchdog-model'}, 'role map over the campaign map'
+    assert cfg.role(RoleName.RESEARCH) is cfg.roles.research
+    assert set(Roles.model_fields) == {k.value for k in RoleName}, 'every kind has its table'
+    assert cfg.role_harnesses(RoleName.RESEARCH) == ['script'], 'unset: the campaign rotation'
+    assert cfg.role_models(RoleName.WATCHDOG) == {'script': 'watchdog-model'}, 'role map over the campaign map'
     assert CampaignConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the campaign row'
     defaults = CampaignConfig(
         name='bare',
@@ -68,7 +68,7 @@ def test_roles_are_typed_per_kind(campaign_path: Path) -> None:
     )
     assert defaults.context == [], 'no analysis artifacts unless the campaign names them'
     defaults = defaults.roles
-    assert (defaults.worker.timeout, defaults.worker.max_concurrent) == (1800, 4)
+    assert (defaults.implementer.timeout, defaults.implementer.max_concurrent) == (1800, 4)
     assert (defaults.watchdog.harnesses, defaults.watchdog.model) == (None, None), 'the campaign rotation and models'
     assert (defaults.watchdog.timeout, defaults.watchdog.interval) == (600, 1800)
     assert (defaults.research.timeout, defaults.research.max_ideas) == (900, 1)
@@ -97,8 +97,8 @@ def test_validators(campaign_path: Path) -> None:
         load_campaign_config(campaign_path, metrics=[{'name': 'a', 'direction': 'higher'}])
     with pytest.raises(ValueError, match='roles.janitor'):
         load_campaign_config(campaign_path, roles={'janitor': {}})
-    with pytest.raises(ValueError, match='roles.worker.max_ideas'):
-        load_campaign_config(campaign_path, roles={'worker': {'max_ideas': 3}})
+    with pytest.raises(ValueError, match='roles.implementer.max_ideas'):
+        load_campaign_config(campaign_path, roles={'implementer': {'max_ideas': 3}})
     with pytest.raises(ValueError, match='roles.research.min_ready'):
         load_campaign_config(campaign_path, roles={'research': {'min_ready': 3}})
     with pytest.raises(ValueError, match='roles.research: unknown harnesses'):
@@ -340,9 +340,9 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
     when = 'SELECT 1 FROM ideas WHERE campaign_id = :campaign AND created_at > :since'
     good = {'prompt': 'reviewer.md', 'triggers': [{'kind': 'sql', 'when': when}], 'runtime': 'herdr'}
     cfg = load_campaign_config(campaign_path, roles={'reviewer': good})
-    assert list(cfg.roles.all()) == ['worker', 'watchdog', 'research', 'scout', 'reviewer']
+    assert list(cfg.roles.all()) == ['implementer', 'watchdog', 'research', 'scout', 'reviewer']
     assert list(cfg.roles.sweeping()) == ['watchdog', 'research', 'scout', 'reviewer'], (
-        'the worker does runs, not sweeps'
+        'the implementer does runs, not sweeps'
     )
     assert (cfg.role_runtime('reviewer'), cfg.role_runtime('research')) == ('herdr', 'subprocess')
     assert cfg.runtimes == {'herdr', 'subprocess'}
@@ -384,6 +384,7 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
         'SELECT nope FROM ideas': 'no such column: nope',
         'SELECT 1 FROM projects': 'no such table: projects: `projects` is `campaigns` since piloop 0.2.0; see https://',
         'SELECT i.PROJECT_ID FROM ideas i': 'no such column: i.PROJECT_ID: `project_id` is `campaign_id`',
+        'SELECT 1 FROM Workers': 'no such table: Workers: `workers` is `agent_sessions` since piloop 0.2.0',
         'SELECT 1 FROM ideas WHERE id = :idea': 'You did not supply a value for binding parameter :idea',
         'SELECT 1; SELECT 2': 'You can only execute one statement at a time',
     }.items():
@@ -394,15 +395,15 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
         assert f'{name!r} is not a role name: use lowercase letters, digits, _ and -' in fails({name: good})
 
 
-def test_a_table_with_runs_defines_a_role_that_does_runs_with_the_worker_defaults(campaign_path: Path) -> None:
+def test_a_table_with_runs_defines_a_role_that_does_runs_with_the_implementer_defaults(campaign_path: Path) -> None:
     quick = {'runs': True, 'takes': "priority >= 3 OR track = 'speed'", 'timeout': 60, 'max_concurrent': 1}
     cfg = load_campaign_config(campaign_path, roles={'quick': quick})
-    assert list(cfg.roles.all()) == ['worker', 'watchdog', 'research', 'scout', 'quick']
-    assert list(cfg.roles.doing_runs()) == ['quick', 'worker'], 'the roles of the file fill their slots first'
+    assert list(cfg.roles.all()) == ['implementer', 'watchdog', 'research', 'scout', 'quick']
+    assert list(cfg.roles.doing_runs()) == ['quick', 'implementer'], 'the roles of the file fill their slots first'
     assert list(cfg.roles.sweeping()) == ['watchdog', 'research', 'scout']
     role = cfg.roles.doing_runs()['quick']
-    assert (role.prompt, role.PROMPT, role.files, role.explore_every) == (None, 'worker.md', Files.NOTHING, 4)
-    assert cfg.run_slots == 1 + cfg.roles.worker.max_concurrent
+    assert (role.prompt, role.PROMPT, role.files, role.explore_every) == (None, 'implementer.md', Files.NOTHING, 4)
+    assert cfg.run_slots == 1 + cfg.roles.implementer.max_concurrent
     assert CampaignConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the campaign row'
 
     def fails(roles: dict[str, object]) -> str:
@@ -426,7 +427,7 @@ def test_a_table_with_runs_defines_a_role_that_does_runs_with_the_worker_default
         {'quick': {'takes': 'priority > 1', 'triggers': []}}
     )
     assert 'roles.watchdog.runs = True: Input should be False' in fails({'watchdog': {'runs': True}})
-    assert 'roles.worker.runs = False: Input should be True' in fails({'worker': {'runs': False}})
+    assert 'roles.implementer.runs = False: Input should be True' in fails({'implementer': {'runs': False}})
 
 
 def test_an_override_of_a_built_in_harness_keeps_the_screens_and_queue_key_of_its_executable(

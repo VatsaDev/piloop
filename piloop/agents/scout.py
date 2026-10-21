@@ -1,6 +1,6 @@
 """Experimental: the context of a scout sweep (``[roles.scout]``), which files outside techniques as seeds.
 
-A scout sweep runs ``prompts/scout.md`` and signs ``<role>#<worker id>``. So its seeds have their own row in the
+A scout sweep runs ``prompts/scout.md`` and signs ``<role>#<agent session id>``. So its seeds have their own row in the
 keeps-by-source count (``piloop.campaign.ideas.yields``), next to research's own ideas.
 
 The scout's memory is the database. The technique library is the ``techniques`` table. The watch list is computed,
@@ -17,7 +17,18 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop.db.models import Candidate, Event, Idea, IdeaStatus, Run, TargetKind, Technique, Verdict, Worker, count
+from piloop.db.models import (
+    AgentSession,
+    Candidate,
+    Event,
+    Idea,
+    IdeaStatus,
+    Run,
+    TargetKind,
+    Technique,
+    Verdict,
+    count,
+)
 from piloop.text import cell
 
 WATCH_RUNS = 5
@@ -95,27 +106,31 @@ def watch_list(s: Session, campaign_id: int, role: str) -> list[Watched]:
             entry.ideas.append(idea.id)
             entry.kept |= bool(kept[idea.id])
             entry.paid = paid if entry.paid is None else max(entry.paid, paid)
-    scouts = select(Worker).where(Worker.campaign_id == campaign_id, Worker.kind == role)
+    scouts = select(AgentSession).where(AgentSession.campaign_id == campaign_id, AgentSession.kind == role)
     for entry in by_source.values():
         assert entry.paid is not None  # every entry comes from a developed seed
-        entry.since = count(s, scouts.where(Worker.started_at > entry.paid))
+        entry.since = count(s, scouts.where(AgentSession.started_at > entry.paid))
     watched = [e for e in by_source.values() if e.kept or e.since < WATCH_RUNS]
     return sorted(watched, key=lambda e: (not e.kept, -(e.paid.timestamp() if e.paid else 0)))
 
 
-def window(s: Session, campaign_id: int, role: str, worker_id: int, now: datetime) -> datetime:
+def window(s: Session, campaign_id: int, role: str, agent_session_id: int, now: datetime) -> datetime:
     """Return the start of the search window: the role's previous sweep's start, at least ``MIN_WINDOW`` back."""
     previous = s.scalar(
-        select(Worker.started_at)
-        .where(Worker.campaign_id == campaign_id, Worker.id < worker_id, Worker.started_at.is_not(None))
-        .where(Worker.kind == role)
-        .order_by(Worker.id.desc())
+        select(AgentSession.started_at)
+        .where(
+            AgentSession.campaign_id == campaign_id,
+            AgentSession.id < agent_session_id,
+            AgentSession.started_at.is_not(None),
+        )
+        .where(AgentSession.kind == role)
+        .order_by(AgentSession.id.desc())
         .limit(1)
     )
     return now - WINDOW if previous is None else min(previous, now - MIN_WINDOW)
 
 
-def context(s: Session, campaign_id: int, role: str, worker_id: int, seeds: int, now: datetime) -> list[str]:
+def context(s: Session, campaign_id: int, role: str, agent_session_id: int, seeds: int, now: datetime) -> list[str]:
     """Return the scout's lines of the context block: its seed limit, its window, the watch list and the library."""
     library = s.scalars(
         select(Technique).where(Technique.campaign_id == campaign_id).order_by(Technique.id.desc()).limit(LIBRARY_SHOWN)
@@ -127,7 +142,7 @@ def context(s: Session, campaign_id: int, role: str, worker_id: int, seeds: int,
     return [
         '- This is a scout sweep: follow the scout brief at the top; develop no seed and add no idea.',
         f'- Seeds you may file: at most {seeds}; every other technique worth keeping goes to the library.',
-        f'- Search window: since {window(s, campaign_id, role, worker_id, now).strftime("%Y-%m-%d")} (posts, repos, papers).',
+        f'- Search window: since {window(s, campaign_id, role, agent_session_id, now).strftime("%Y-%m-%d")} (posts, repos, papers).',
         f'- Write the problem statement to `./workspace/scout/{stamp}-problem.md` before your first search.',
         f'- Sweep started at: {now.strftime("%Y-%m-%d %H:%M:%S")} (UTC; the research pack below is as of then).',
         '',

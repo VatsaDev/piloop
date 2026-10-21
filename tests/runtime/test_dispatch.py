@@ -8,7 +8,7 @@ import pytest
 
 from piloop.cli import agents, common, doctor
 from piloop.config import config_of
-from piloop.db.models import Campaign, Worker, WorkerKind, WorkerState, utcnow
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, RoleName, utcnow
 from piloop.db.session import Database
 from piloop.plugins.contracts.runtime import RUNTIMES
 from piloop.reports.overview import overview
@@ -34,26 +34,26 @@ def test_attach_focus_view_and_doctor_use_the_methods_of_a_runtime_that_a_packag
 ) -> None:
     with db.session() as s:
         s.get_one(Campaign, campaign.id).config = {**campaign.config, 'runtime': 'shown'}
-        worker = Worker(
-            kind=WorkerKind.WATCHDOG,
+        agent_session = AgentSession(
+            kind=RoleName.WATCHDOG,
             campaign_id=campaign.id,
             harness='script',
             model='m',
             runtime='shown',
             handle={'pid': 7, 'start_time': 0, 'log_dir': str(tmp_path)},
-            state=WorkerState.RUNNING,
+            state=AgentSessionState.RUNNING,
             log_dir=str(tmp_path),
         )
-        s.add(worker)
+        s.add(agent_session)
         s.commit()
-        assert view_of(worker) == 'pane 7'
+        assert view_of(agent_session) == 'pane 7'
         row = s.get_one(Campaign, campaign.id)
         assert ', pane 7, on ' in overview(s, row, config_of(row), utcnow(), lambda w: [])
-    assert focus(db, worker.id, tmp_path) == f'worker#{worker.id}: focused pane 7'
+    assert focus(db, agent_session.id, tmp_path) == f'agent_session#{agent_session.id}: focused pane 7'
     monkeypatch.setattr(common, 'settings', Settings(home=tmp_path))
     printed: list[object] = []
     monkeypatch.setattr(common.console, 'print', printed.append)
-    agents.attach(worker.id)
+    agents.attach(agent_session.id)
     assert printed == ['attached to pane 7']
     harness = str(tmp_path / 'harness.sh')
     assert doctor.checks(Settings(home=tmp_path))[-1] == Check('shown', f'ready for {harness}')

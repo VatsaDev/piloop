@@ -1,8 +1,8 @@
-{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the fields of `WorkerRole` in `piloop/config.py` if you want to change anything here. */}
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the fields of `ImplementerRole` in `piloop/config.py` if you want to change anything here. */}
 
 | Key | Meaning |
 |---|---|
 | `runs` | The agents of this role do runs. A table without `runs = true` is a sweeping role. |
-| `takes` | The ideas that this role takes: an SQL condition on the `ideas` table, without parameters, for example `priority >= 3` or `track = 'speed'`. When unset, the role takes every runnable idea. A free slot of a role that you define is filled before a slot of the worker, so the worker takes what the other roles leave. |
-| `recovery_requeues` | How many times one idea goes back to the queue from the work its worker left uncommitted, when the run did not succeed (`recovered`): a new worker then starts from that work to finish it. After that, the idea settles as after any failed run, so an idea whose workers keep dying is not run forever. 0 never requeues: the recovered candidate waits for you or the orchestrator. |
+| `takes` | The ideas that this role takes: an SQL condition on the `ideas` table, without parameters, for example `priority >= 3` or `track = 'speed'`. When unset, the role takes every runnable idea. A free slot of a role that you define is filled before a slot of the implementer, so the implementer takes what the other roles leave. |
+| `recovery_requeues` | How many times one idea goes back to the queue from the work its implementer left uncommitted, when the run did not succeed (`recovered`): a new implementer then starts from that work to finish it. After that, the idea settles as after any failed run, so an idea whose implementers keep dying is not run forever. 0 never requeues: the recovered candidate waits for you or the orchestrator. |
 | `explore_every` | At least one run of this role in this many starts from an alternative starting point. When none of the role's last `explore_every - 1` runs did, the next slot goes to the most urgent ready idea that is pinned to a base other than the head (a reference, an older keep or a note), whatever its priority. Nothing changes while no such idea is ready. 0 turns this off. |

@@ -18,6 +18,8 @@ from piloop.db.models import (
     FINISHED_RUNS,
     LIVE,
     OPEN_RUNS,
+    AgentSession,
+    AgentSessionState,
     Campaign,
     CampaignStatus,
     Candidate,
@@ -30,8 +32,6 @@ from piloop.db.models import (
     Run,
     TargetKind,
     Verdict,
-    Worker,
-    WorkerState,
     campaign_runs,
     utcnow,
 )
@@ -46,7 +46,7 @@ CAMPAIGN_STOPPED_ERROR = 'campaign stopped'
 ROLE_REMOVED = 'its role is no longer in piloop.toml'
 NOT_STARTED = 'no agent of the run started to work'
 """The error of a run whose every agent failed to start (``launcher.STARTUP_ANOMALY`` on each): a fault of the host or
-the harness. The errors of its workers say what failed."""
+the harness. The errors of its implementers say what failed."""
 CANCELLED_ERROR = 'cancelled'
 """The error of a run, and of an agent, that someone cancelled (``CANCEL_REQUESTED``). The run's idea is parked."""
 NOT_ATTEMPTS = (STOPPED_ERROR, STALE_ERROR, CAMPAIGN_STOPPED_ERROR, ROLE_REMOVED, NOT_STARTED, CANCELLED_ERROR)
@@ -59,20 +59,20 @@ STOP_REQUESTED = 'campaign.stop_requested'
 """Event on a campaign that someone asked to stop (``piloop campaign stop``), with ``reason`` and ``kill``.
 
 On its next tick, the daemon stops the campaign as for a ``[stop]`` condition (``check``). With ``kill``, it
-ends the campaign's workers at once, without the wrap-up prompt. A request made before the campaign was last set
+ends the campaign's implementers at once, without the wrap-up prompt. A request made before the campaign was last set
 ``active`` is spent."""
-CANCELLABLE = (WorkerState.REQUESTED, *LIVE)
+CANCELLABLE = (AgentSessionState.REQUESTED, *LIVE)
 """The states of an agent that a cancel acts on: requested, starting (once it runs) and running."""
-CANCEL_REQUESTED = ('run.cancel_requested', 'worker.cancel_requested')
+CANCEL_REQUESTED = ('run.cancel_requested', 'agent_session.cancel_requested')
 """Events on a run (``piloop run cancel``) and on an agent (``piloop agent cancel``) that someone asked to cancel, with
 ``wrap_up``.
 
 The daemon closes a requested row with its queued run. It ends a running agent with everything it started, at once,
 or with ``wrap_up`` after the wrap-up prompt and its grace period. A starting agent waits until it runs, and a run
-whose agent then fails to start is not launched again. The run closes with ``CANCELLED_ERROR`` unless its worker left
+whose agent then fails to start is not launched again. The run closes with ``CANCELLED_ERROR`` unless its implementer left
 its finding, and its commits are scored."""
 BLOCKED = 'blocked on escalation'
-"""How the error of a run starts when its worker stopped while its own escalation waited for an answer.
+"""How the error of a run starts when its implementer stopped while its own escalation waited for an answer.
 
 The run is an attempt that failed, but not an anomaly: the escalation is in the inbox already. Its idea is parked
 until someone answers the escalation and sets the idea ``ready``."""
@@ -84,7 +84,7 @@ def attempt() -> ColumnElement[bool]:
 
 
 def blocked() -> ColumnElement[bool]:
-    """Select the runs that ended blocked on their worker's escalation (``BLOCKED``)."""
+    """Select the runs that ended blocked on their implementer's escalation (``BLOCKED``)."""
     return Run.error.is_not(None) & Run.error.startswith(BLOCKED, autoescape=True)
 
 
@@ -141,10 +141,12 @@ def requested_stop(s: Session, campaign: Campaign) -> Event | None:
     ).first()
 
 
-def request_cancel(s: Session, target: Run | Worker, actor: str, *, wrap_up: bool) -> None:
+def request_cancel(s: Session, target: Run | AgentSession, actor: str, *, wrap_up: bool) -> None:
     """Ask the daemon to cancel a run or an agent (``CANCEL_REQUESTED``). The caller commits."""
     kind, on = (
-        (CANCEL_REQUESTED[0], TargetKind.RUN) if isinstance(target, Run) else (CANCEL_REQUESTED[1], TargetKind.WORKER)
+        (CANCEL_REQUESTED[0], TargetKind.RUN)
+        if isinstance(target, Run)
+        else (CANCEL_REQUESTED[1], TargetKind.AGENT_SESSION)
     )
     emit(s, kind, on, target.id, actor=actor, payload={'wrap_up': wrap_up})
 
@@ -152,20 +154,20 @@ def request_cancel(s: Session, target: Run | Worker, actor: str, *, wrap_up: boo
 def run_cancel(s: Session, run_id: int) -> Event | None:
     """Return the latest cancel of a run: requested on the run, or on any of its agents, or None.
 
-    A cancel on an agent holds for its run, so a worker that a relaunch puts in the place of one that failed to start
+    A cancel on an agent holds for its run, so an implementer that a relaunch puts in the place of one that failed to start
     is cancelled too.
     """
     on_run = (Event.target_kind == TargetKind.RUN) & (Event.target_id == run_id)
-    agents = select(Worker.id).where(Worker.run_id == run_id)
-    on_agent = (Event.target_kind == TargetKind.WORKER) & Event.target_id.in_(agents)
+    agents = select(AgentSession.id).where(AgentSession.run_id == run_id)
+    on_agent = (Event.target_kind == TargetKind.AGENT_SESSION) & Event.target_id.in_(agents)
     return _latest_cancel(s, on_run | on_agent)
 
 
-def agent_cancel(s: Session, worker: Worker) -> Event | None:
-    """Return the latest cancel of an agent, or None: its run's (``run_cancel``) for a worker, its own for a sweep."""
-    if worker.run_id is not None:
-        return run_cancel(s, worker.run_id)
-    return _latest_cancel(s, (Event.target_kind == TargetKind.WORKER) & (Event.target_id == worker.id))
+def agent_cancel(s: Session, agent_session: AgentSession) -> Event | None:
+    """Return the latest cancel of an agent, or None: its run's (``run_cancel``) for an implementer, its own for a sweep."""
+    if agent_session.run_id is not None:
+        return run_cancel(s, agent_session.run_id)
+    return _latest_cancel(s, (Event.target_kind == TargetKind.AGENT_SESSION) & (Event.target_id == agent_session.id))
 
 
 def _latest_cancel(s: Session, target: ColumnElement[bool]) -> Event | None:

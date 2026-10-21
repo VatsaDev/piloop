@@ -3,7 +3,7 @@
     make e2e
     uv run pytest -m e2e tests/e2e/test_lifecycle.py -rA [--e2e-harness claude] [--e2e-model <model>]
 
-Three ideas run with two workers. The slow one is cancelled, lzma is judged, and the campaign stops while bz2 runs.
+Three ideas run with two implementers. The slow one is cancelled, lzma is judged, and the campaign stops while bz2 runs.
 About 3 minutes and 0.45 USD.
 
 The tests are the steps of this one campaign. They run in the order of this file, and read the state that earlier
@@ -19,7 +19,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from piloop.proc import TOKEN_ENV, tagged
+from piloop.runtime.tags import TAG_ENV, tagged
 from tests.conftest import wait_until
 from tests.e2e.campaign import OPEN, Smoke, needs
 from tests.e2e.conftest import MakeCampaign
@@ -31,13 +31,13 @@ MAX_EVALUATIONS = 1
 CONFIG = {
     'evaluate_timeout': 300,
     'roles': {
-        'worker': {'max_concurrent': 2, 'timeout': 600},
+        'implementer': {'max_concurrent': 2, 'timeout': 600},
         'research': {'triggers': []},
         'watchdog': {'triggers': []},
     },
     'stop': {'max_runs': 5, 'max_hours': 1, 'max_tokens': 20_000_000},
 }
-"""Over the template's ``piloop.toml``: two workers, no sweeps (the tests add the ideas), and stop conditions only as a
+"""Over the template's ``piloop.toml``: two implementers, no sweeps (the tests add the ideas), and stop conditions only as a
 backstop (the tests stop the campaign)."""
 CANCEL_AFTER = 40
 """Seconds that the slow run works before it is cancelled."""
@@ -45,7 +45,7 @@ EXIT_GRACE = 10
 """Seconds that a process of the stopped campaign may take to end."""
 REQUIRED_EVENTS = (
     'campaign.paused',
-    'worker.started',
+    'implementer.started',
     'run.started',
     'run.cancel_requested',
     'measurement.recorded',
@@ -135,7 +135,7 @@ def test_pause_holds_launches(live_campaign: Smoke) -> None:
         live_campaign.add_idea(idea.key, idea.title, idea.plan, idea.priority)
     time.sleep(10)  # a fixed window: nothing must launch during five ticks of the daemon
     assert [dict(r) for r in live_campaign.sql('SELECT id, status FROM runs')] == []
-    assert live_campaign.sql("SELECT id FROM workers WHERE kind = 'worker'") == []
+    assert live_campaign.sql("SELECT id FROM agent_sessions WHERE kind = 'implementer'") == []
     assert live_campaign.campaign_state()['paused'] == 'launches'
 
 
@@ -162,7 +162,7 @@ def test_run_cancel(live_campaign: Smoke) -> None:
     time.sleep(CANCEL_AFTER)  # let the slow run work, so the cancel ends an agent in the middle of its work
     run = live_campaign.run_of('slow')
     assert run is not None and run['status'] == 'running', f'the slow run after {CANCEL_AFTER}s: {run and dict(run)}'
-    tokens = live_campaign.worker_tokens(run['id'])
+    tokens = live_campaign.process_tags(run['id'])
     live_campaign.piloop('run', 'cancel', str(run['id']))
     wait_until(lambda: live_campaign.run_in('slow', OPEN, within=False), timeout=120)
     closed = live_campaign.run_of('slow')
@@ -175,7 +175,7 @@ def test_run_cancel(live_campaign: Smoke) -> None:
     # The daemon closes the run, then settles its idea in a later write.
     wait_until(lambda: idea_status() != 'scheduled', timeout=60)
     assert idea_status() == 'parked'
-    assert [p for t in tokens for p in tagged(f'{TOKEN_ENV}={t}')] == []
+    assert [p for t in tokens for p in tagged(f'{TAG_ENV}={t}')] == []
     print(f'run {run["id"]} failed ({closed["error"]}), idea parked, no process left')
 
 
@@ -230,7 +230,7 @@ def test_candidate_remeasure_keeps_the_head(live_campaign: Smoke) -> None:
 
 @needs(test_resume_launches_the_two_most_urgent)
 def test_graceful_stop(live_campaign: Smoke) -> None:
-    """A graceful stop of the campaign while the bz2 worker runs: it winds down, its commits are scored, nothing stays open."""
+    """A graceful stop of the campaign while the bz2 implementer runs: it winds down, its commits are scored, nothing stays open."""
     bz2 = live_campaign.run_of('bz2')
     at_stop = f'run {bz2["id"]} was {bz2["status"]}' if bz2 else 'no bz2 run'
     live_campaign.stop_campaign('e2e: graceful stop')
@@ -238,7 +238,7 @@ def test_graceful_stop(live_campaign: Smoke) -> None:
     def settled() -> bool:
         open_ = live_campaign.sql(
             "SELECT (SELECT count(*) FROM runs WHERE status IN ('queued', 'running') OR scoring)"
-            " + (SELECT count(*) FROM workers WHERE state IN ('requested', 'starting', 'running'))"
+            " + (SELECT count(*) FROM agent_sessions WHERE state IN ('requested', 'starting', 'running'))"
             " + (SELECT count(*) FROM candidates WHERE verdict = 'pending')"
             ' + (SELECT count(*) FROM evaluations) AS n'
         )
@@ -330,7 +330,7 @@ def test_daemon_stops(live_campaign: Smoke) -> None:
 
 @needs(test_daemon_stops)
 def test_no_orphan_process(live_campaign: Smoke) -> None:
-    """No process of the campaign is left: none with its PILOOP_HOME, none with an agent's token."""
+    """No process of the campaign is left: none with its PILOOP_HOME, none with an agent's process tag."""
     # `piloop stop` returns when the daemon releases its lock, a moment before its process ends: an orphan is a
     # process that stays.
     started = time.monotonic()
@@ -338,7 +338,7 @@ def test_no_orphan_process(live_campaign: Smoke) -> None:
         wait_until(lambda: not live_campaign.processes(), timeout=EXIT_GRACE)
     except AssertionError as e:
         raise AssertionError(f'processes left: {live_campaign.processes()}') from e
-    tokens = len(live_campaign.worker_tokens())
+    tokens = len(live_campaign.process_tags())
     print(f'{tokens} agent tokens checked; the last process ended within {time.monotonic() - started:.1f}s')
 
 

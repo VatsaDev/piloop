@@ -33,7 +33,7 @@
     },
     {
       "id": "writing-style",
-      "rule": "Docs, skills and agent prompts use Simplified Technical English, in the style of pydantic-ai's docs: one idea per sentence, most sentences 20 words or fewer, active voice, present tense, the imperative for instructions, common words used with one meaning each, piloop's own terms (campaign, idea, seed, run, candidate, keep, head, track, worker, watchdog, research, orchestrator, evaluate command, inbox). No idioms, no history (no 'used to', PR numbers or dates), no retirement notes. Every command, key and code example must be real: tests/test_docs.py checks the code blocks.",
+      "rule": "Docs, skills and agent prompts use Simplified Technical English, in the style of pydantic-ai's docs: one idea per sentence, most sentences 20 words or fewer, active voice, present tense, the imperative for instructions, common words used with one meaning each, piloop's own terms (campaign, idea, seed, run, candidate, keep, head, track, implementer, watchdog, research, orchestrator, evaluate command, inbox). No idioms, no history (no 'used to', PR numbers or dates), no retirement notes. Every command, key and code example must be real: tests/test_docs.py checks the code blocks.",
       "scope": [
         "docs/**",
         "README.md",

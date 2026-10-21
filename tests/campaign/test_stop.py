@@ -31,6 +31,8 @@ from piloop.campaign.stop import (
 )
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
 from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
     Campaign,
     CampaignStatus,
     Candidate,
@@ -41,13 +43,11 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Measurement,
+    RoleName,
     Run,
     RunStatus,
     TargetKind,
     Verdict,
-    Worker,
-    WorkerKind,
-    WorkerState,
     utcnow,
 )
 from piloop.db.session import Database
@@ -70,12 +70,12 @@ LOWER_PRIMARY = [{'name': 'score', 'direction': 'higher'}, {'name': 'size', 'dir
 def configure(
     db: Database,
     campaign: Campaign,
-    max_workers: int = 1,
+    max_implementers: int = 1,
     harness: str = HARNESS_NOOP,
     roles: dict[str, object] | None = None,
     **stop: float,
 ) -> CampaignConfig:
-    write_toml(Path(campaign.path), harness, max_workers=max_workers)
+    write_toml(Path(campaign.path), harness, max_implementers=max_implementers)
     with db.session() as s:
         cfg = load_campaign_config(Path(campaign.path), stop=stop, roles=roles)
         s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
@@ -234,7 +234,7 @@ def test_a_campaign_that_max_runs_stopped_shows_all_its_runs_in_the_progress_lin
     )
     with db.session() as s:
         run = s.get_one(Run, in_flight)
-        run.status, run.error, run.finished_at = RunStatus.FAILED, 'worker produced no commits', utcnow()
+        run.status, run.error, run.finished_at = RunStatus.FAILED, 'implementer produced no commits', utcnow()
         s.commit()
     assert (reason(db, campaign), progress_line(db, campaign, cfg)) == (None, 'run 1/2'), 'a run without a commit'
     add_run(db, campaign)
@@ -266,7 +266,7 @@ def test_max_runs_waits_for_a_finished_run_whose_commits_are_scored(db: Database
 def test_max_runs_caps_the_runs_queued_in_one_tick(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    configure(db, campaign, max_workers=4, max_runs=1)
+    configure(db, campaign, max_implementers=4, max_runs=1)
     add_ideas(db, campaign, 'a', 'b', 'c', 'd')
     sched = make_scheduler(db, runtime, tmp_path)
     assert sched.tick() == [1], 'four free slots, but max_runs leaves room for one run'
@@ -279,7 +279,7 @@ def test_max_runs_caps_the_runs_queued_in_one_tick(
 def test_max_runs_leaves_room_for_the_remaining_runs_only(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    configure(db, campaign, max_workers=4, max_runs=3)
+    configure(db, campaign, max_implementers=4, max_runs=3)
     add_run(db, campaign)
     add_run(db, campaign)
     add_ideas(db, campaign, 'a', 'b')
@@ -344,19 +344,27 @@ def test_max_tokens_sums_the_usage_of_every_ended_agent_of_the_campaign(db: Data
         other = Campaign(name='other', path='/other', config=campaign.config)
         s.add(other)
         s.flush()
-        ended = dict(state=WorkerState.EXITED, ended_at=utcnow())
+        ended = dict(state=AgentSessionState.EXITED, ended_at=utcnow())
         s.add_all(
             [
-                Worker(kind=WorkerKind.WORKER, campaign_id=campaign.id, usage={'total': 60_000, 'turns': 9}, **ended),
-                Worker(kind=WorkerKind.RESEARCH, campaign_id=campaign.id, usage={'total': 30_000, 'turns': 2}, **ended),
-                Worker(kind=WorkerKind.WATCHDOG, campaign_id=campaign.id, usage=None, **ended),
-                Worker(kind=WorkerKind.WORKER, campaign_id=other.id, usage={'total': 50_000, 'turns': 1}, **ended),
+                AgentSession(
+                    kind=RoleName.IMPLEMENTER, campaign_id=campaign.id, usage={'total': 60_000, 'turns': 9}, **ended
+                ),
+                AgentSession(
+                    kind=RoleName.RESEARCH, campaign_id=campaign.id, usage={'total': 30_000, 'turns': 2}, **ended
+                ),
+                AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, usage=None, **ended),
+                AgentSession(
+                    kind=RoleName.IMPLEMENTER, campaign_id=other.id, usage={'total': 50_000, 'turns': 1}, **ended
+                ),
             ]
         )
         s.commit()
     assert reason(db, campaign) is None, "90k: every role counts, another campaign's agents do not, unknown usage is 0"
     with db.session() as s:
-        s.add(Worker(kind=WorkerKind.WATCHDOG, campaign_id=campaign.id, usage={'total': 10_000, 'turns': 1}, **ended))
+        s.add(
+            AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, usage={'total': 10_000, 'turns': 1}, **ended)
+        )
         s.commit()
     assert reason(db, campaign) == 'max_tokens: 100000 tokens spent'
 
@@ -388,7 +396,7 @@ def test_only_runs_that_produced_a_measured_candidate_count_toward_max_runs(db: 
     whose candidate waits for its measurement also counts.
     """
     configure(db, campaign, max_runs=3)
-    add_run(db, campaign, status=RunStatus.FAILED, error='worker produced no commits', measured=False)
+    add_run(db, campaign, status=RunStatus.FAILED, error='implementer produced no commits', measured=False)
     add_candidate(db, campaign, add_run(db, campaign, measured=False), Verdict.UNMEASURED, SKIPPED)
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
@@ -411,14 +419,14 @@ def test_plateau_counts_the_runs_that_max_runs_counts(db: Database, campaign: Ca
     """
     configure(db, campaign, plateau=2)
     add_run(db, campaign, keep_score=5.0)
-    add_run(db, campaign, status=RunStatus.FAILED, error='worker produced no commits', measured=False)
+    add_run(db, campaign, status=RunStatus.FAILED, error='implementer produced no commits', measured=False)
     add_candidate(db, campaign, add_run(db, campaign, measured=False), Verdict.UNMEASURED, SKIPPED)
     add_run(db, campaign, status=RunStatus.SUCCEEDED, measured=False)
-    add_run(db, campaign, status=RunStatus.FAILED, error='worker exit 1', measured=False)
+    add_run(db, campaign, status=RunStatus.FAILED, error='agent exit 1', measured=False)
     assert reason(db, campaign) is None, 'four runs without a keep, none of them measured'
     add_candidate(db, campaign, add_run(db, campaign, measured=False), Verdict.PENDING)
     assert reason(db, campaign) is None, 'one waits for its measurement'
-    add_run(db, campaign, status=RunStatus.FAILED, error='worker exit 1')
+    add_run(db, campaign, status=RunStatus.FAILED, error='agent exit 1')
     assert reason(db, campaign) == 'plateau: 2 runs without a keep', 'a failed run whose commit was measured counts'
 
 
@@ -446,7 +454,7 @@ def test_reactivating_a_stopped_campaign_starts_a_fresh_plateau_window(db: Datab
     assert reason(db, campaign) == 'plateau: 2 runs without a keep'
 
 
-def test_the_stall_mark_is_half_the_plateau_else_two_rounds_of_the_worker_slots() -> None:
+def test_the_stall_mark_is_half_the_plateau_else_two_rounds_of_the_implementer_slots() -> None:
     bare = {
         'name': 'bare',
         'metrics': [{'name': 'a', 'direction': 'higher', 'role': 'primary'}],
@@ -454,12 +462,12 @@ def test_the_stall_mark_is_half_the_plateau_else_two_rounds_of_the_worker_slots(
         'model': {'pi': 'm'},
     }
     assert stall(CampaignConfig.model_validate({**bare, 'stop': {'plateau': 15}})) == (8, 'half of [stop] plateau = 15')
-    workers = CampaignConfig.model_validate({**bare, 'roles': {'worker': {'max_concurrent': 3}}})
-    assert stall(workers) == (6, 'two rounds of [roles.worker] max_concurrent = 3')
-    quick = {'worker': {'max_concurrent': 3}, 'quick': {'runs': True, 'max_concurrent': 2}}
+    agent_sessions = CampaignConfig.model_validate({**bare, 'roles': {'implementer': {'max_concurrent': 3}}})
+    assert stall(agent_sessions) == (6, 'two rounds of [roles.implementer] max_concurrent = 3')
+    quick = {'implementer': {'max_concurrent': 3}, 'quick': {'runs': True, 'max_concurrent': 2}}
     assert stall(CampaignConfig.model_validate({**bare, 'roles': quick})) == (
         10,
-        'two rounds of [roles.quick] max_concurrent + [roles.worker] max_concurrent = 5',
+        'two rounds of [roles.quick] max_concurrent + [roles.implementer] max_concurrent = 5',
     )
 
 
@@ -501,31 +509,33 @@ def test_stopping_drains_the_requests_and_queued_runs_pending_at_that_moment(
         run = Run(idea_id=idea, attempt=1, base_candidate_id=1, harness='script', model='m')
         s.add(run)
         s.flush()
-        s.add(Worker(kind=WorkerKind.WORKER, campaign_id=campaign.id, run_id=run.id, harness='script', model='m'))
-        s.add(Worker(kind=WorkerKind.RESEARCH, campaign_id=campaign.id, reason='low_water before the stop'))
+        s.add(
+            AgentSession(kind=RoleName.IMPLEMENTER, campaign_id=campaign.id, run_id=run.id, harness='script', model='m')
+        )
+        s.add(AgentSession(kind=RoleName.RESEARCH, campaign_id=campaign.id, reason='low_water before the stop'))
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)
 
     assert sched.tick() == [3], 'only the closing watchdog launches'
     sched.wait(10)
     with db.session() as s:
-        assert [(w.kind, w.state, w.error, w.ended_at is not None) for w in s.scalars(select(Worker))] == [
-            (WorkerKind.WORKER, WorkerState.KILLED, CAMPAIGN_STOPPED_ERROR, True),
-            (WorkerKind.RESEARCH, WorkerState.KILLED, CAMPAIGN_STOPPED_ERROR, True),
-            (WorkerKind.WATCHDOG, WorkerState.EXITED, None, True),
+        assert [(w.kind, w.state, w.error, w.ended_at is not None) for w in s.scalars(select(AgentSession))] == [
+            (RoleName.IMPLEMENTER, AgentSessionState.KILLED, CAMPAIGN_STOPPED_ERROR, True),
+            (RoleName.RESEARCH, AgentSessionState.KILLED, CAMPAIGN_STOPPED_ERROR, True),
+            (RoleName.WATCHDOG, AgentSessionState.EXITED, None, True),
         ]
         run = s.get_one(Run, 2)
         assert (run.status, run.error, run.finished_at is not None) == (RunStatus.FAILED, CAMPAIGN_STOPPED_ERROR, True)
         assert s.get_one(Idea, idea).status is IdeaStatus.READY
         [event] = s.scalars(select(Event).where(Event.kind == 'run.finished')).all()
         assert (event.target_id, event.payload) == (2, {'status': 'failed', 'error': CAMPAIGN_STOPPED_ERROR})
-        s.add(Worker(kind=WorkerKind.RESEARCH, campaign_id=campaign.id, reason='by hand, after the stop'))
+        s.add(AgentSession(kind=RoleName.RESEARCH, campaign_id=campaign.id, reason='by hand, after the stop'))
         s.commit()
     assert sched.tick() == [4], 'a request made after the stop is explicit and launches'
     sched.wait(10)
     sched.stop(timeout=5)
     with db.session() as s:
-        assert s.get_one(Worker, 4).state is WorkerState.EXITED
+        assert s.get_one(AgentSession, 4).state is AgentSessionState.EXITED
 
 
 def test_a_requested_stop_ends_the_campaign_as_a_stop_condition_does(
@@ -541,7 +551,9 @@ def test_a_requested_stop_ends_the_campaign_as_a_stop_condition_does(
         run = Run(idea_id=idea, attempt=1, base_candidate_id=1, harness='script', model='m')
         s.add(run)
         s.flush()
-        s.add(Worker(kind=WorkerKind.WORKER, campaign_id=campaign.id, run_id=run.id, harness='script', model='m'))
+        s.add(
+            AgentSession(kind=RoleName.IMPLEMENTER, campaign_id=campaign.id, run_id=run.id, harness='script', model='m')
+        )
         request_stop(s, s.get_one(Campaign, campaign.id), 'human', reason='machine needed', kill=False)
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)
@@ -550,7 +562,7 @@ def test_a_requested_stop_ends_the_campaign_as_a_stop_condition_does(
     assert campaign_state(db, campaign) == (CampaignStatus.STOPPED, 'stopped by human: machine needed')
     with db.session() as s:
         assert (s.get_one(Run, 2).error, s.get_one(Idea, idea).status) == (CAMPAIGN_STOPPED_ERROR, IdeaStatus.READY)
-        assert s.get_one(Worker, 2).reason == 'campaign stopped: stopped by human: machine needed'
+        assert s.get_one(AgentSession, 2).reason == 'campaign stopped: stopped by human: machine needed'
         s.get_one(Campaign, campaign.id).status = CampaignStatus.ACTIVE
         s.commit()
     assert sched.tick() == [3], 'reactivated: the old request stops nothing, and the queued idea runs'
@@ -558,11 +570,11 @@ def test_a_requested_stop_ends_the_campaign_as_a_stop_condition_does(
     sched.stop(timeout=5)
     assert campaign_state(db, campaign)[0] is CampaignStatus.ACTIVE
     with db.session() as s:
-        request_stop(s, s.get_one(Campaign, campaign.id), 'worker#3', reason='', kill=True)
+        request_stop(s, s.get_one(Campaign, campaign.id), 'implementer#3', reason='', kill=True)
         s.commit()
-        assert requested(s, s.get_one(Campaign, campaign.id)) == (Stop('stopped by worker#3'))
+        assert requested(s, s.get_one(Campaign, campaign.id)) == (Stop('stopped by implementer#3'))
         event = requested_stop(s, s.get_one(Campaign, campaign.id))
-        assert event is not None and (event.actor, event.payload) == ('worker#3', {'reason': '', 'kill': True})
+        assert event is not None and (event.actor, event.payload) == ('implementer#3', {'reason': '', 'kill': True})
 
 
 def stop_while_held(db: Database, campaign: Campaign, hold: str, review: str | None = None) -> int:
@@ -585,9 +597,11 @@ def stop_while_held(db: Database, campaign: Campaign, hold: str, review: str | N
     return idea
 
 
-def closing_reviews(db: Database, campaign: Campaign) -> list[WorkerState]:
+def closing_reviews(db: Database, campaign: Campaign) -> list[AgentSessionState]:
     with db.session() as s:
-        rows = s.scalars(select(Worker).where(Worker.campaign_id == campaign.id, Worker.kind == WorkerKind.WATCHDOG))
+        rows = s.scalars(
+            select(AgentSession).where(AgentSession.campaign_id == campaign.id, AgentSession.kind == RoleName.WATCHDOG)
+        )
         return [w.state for w in rows]
 
 
@@ -643,7 +657,7 @@ def test_closing_review_wait_starts_the_review_once_the_spend_hold_lifts(
     sched = make_scheduler(db, runtime, tmp_path)
     assert sched.tick() == []
     assert campaign_state(db, campaign)[0] is CampaignStatus.STOPPED
-    assert closing_reviews(db, campaign) == [WorkerState.REQUESTED], 'requested, waiting for the hold'
+    assert closing_reviews(db, campaign) == [AgentSessionState.REQUESTED], 'requested, waiting for the hold'
     (Path(campaign.path).parent / 'bill').write_text('3')
     with db.session() as s:
         s.get_one(Campaign, campaign.id).spend_at = None  # the next reading is due
@@ -669,7 +683,7 @@ def test_the_closing_sweep_is_each_stopped_trigger_and_none_without_one(
     assert sched.tick() == [], 'it fires on the tick that stops the campaign only'
     sched.stop(timeout=5)
     with db.session() as s:
-        rows = [(w.kind, w.reason) for w in s.scalars(select(Worker).where(Worker.id > 1))]
+        rows = [(w.kind, w.reason) for w in s.scalars(select(AgentSession).where(AgentSession.id > 1))]
     assert rows == [('closer', 'campaign stopped: max_runs: 1 runs')]
 
 
@@ -694,9 +708,12 @@ def test_a_stopped_campaign_gets_one_closing_watchdog_and_no_trigger_requests(
     assert sched.tick() == []
     sched.tick()
     with db.session() as s:
-        assert [(w.kind, w.reason) for w in s.scalars(select(Worker).where(Worker.id > 1).order_by(Worker.id))] == [
-            (WorkerKind.WATCHDOG, 'campaign stopped: max_runs: 1 runs')
-        ], 'requested exactly once, and no worker or research request follows'
+        assert [
+            (w.kind, w.reason)
+            for w in s.scalars(select(AgentSession).where(AgentSession.id > 1).order_by(AgentSession.id))
+        ] == [(RoleName.WATCHDOG, 'campaign stopped: max_runs: 1 runs')], (
+            'requested exactly once, and no implementer or research request follows'
+        )
         assert s.scalars(select(Run)).all() and s.get_one(Idea, 2).status is IdeaStatus.READY, 'idea b never ran'
         [event] = s.scalars(select(Event).where(Event.kind == 'campaign.status')).all()
         assert (event.actor, event.target_id, event.payload) == (
@@ -708,16 +725,16 @@ def test_a_stopped_campaign_gets_one_closing_watchdog_and_no_trigger_requests(
         'campaign': 'demo',
         'reason': 'max_runs: 1 runs',
     }
-    assert 'Trigger: campaign stopped: max_runs: 1 runs' in (tmp_path / 'workers' / '2' / 'brief.md').read_text()
+    assert 'Trigger: campaign stopped: max_runs: 1 runs' in (tmp_path / 'agent_sessions' / '2' / 'brief.md').read_text()
 
     with db.session() as s:
-        s.add(Worker(kind=WorkerKind.RESEARCH, campaign_id=campaign.id, reason='by hand'))
+        s.add(AgentSession(kind=RoleName.RESEARCH, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     assert sched.tick() == [3], 'a hand-inserted request is explicit and launches'
     sched.wait(10)
     sched.stop(timeout=5)
     with db.session() as s:
-        assert s.get_one(Worker, 3).state is WorkerState.EXITED
+        assert s.get_one(AgentSession, 3).state is AgentSessionState.EXITED
 
 
 def test_a_stop_syncs_the_memory_documents_before_the_closing_watchdog_whose_brief_asks_for_lessons(
@@ -741,14 +758,14 @@ def test_a_stop_syncs_the_memory_documents_before_the_closing_watchdog_whose_bri
     sched.wait(10)
     sched.stop(timeout=5)
     with db.session() as s:
-        assert s.get_one(Worker, watchdog).reason == 'campaign stopped: max_runs: 1 runs'
+        assert s.get_one(AgentSession, watchdog).reason == 'campaign stopped: max_runs: 1 runs'
         [document] = s.scalars(select(Document)).all()
         assert (document.path, document.title, document.created_by) == ('docs/report.md', 'Closing report', 'daemon')
     assert dict(span_named(spans, 'documents.synced').attributes or {}) == {
         'campaign': 'demo',
         'result': 'documents: 1 added, 0 unchanged',
     }
-    brief = (tmp_path / 'workers' / str(watchdog) / 'brief.md').read_text()
+    brief = (tmp_path / 'agent_sessions' / str(watchdog) / 'brief.md').read_text()
     assert 'one row of `lessons` on the campaign for each mechanism family that this' in brief
     assert 'INSERT INTO lessons (campaign_id, family, status, effect, metric, body, created_by)' in brief, (
         'the INSERT, from the procedures'
@@ -782,7 +799,7 @@ def test_a_stop_whose_document_sync_fails_still_stops_and_launches_the_closing_w
     sched.stop(timeout=5)
     with db.session() as s:
         assert s.get_one(Campaign, campaign.id).status is CampaignStatus.STOPPED
-        assert s.get_one(Worker, watchdog).reason == 'campaign stopped: max_runs: 1 runs'
+        assert s.get_one(AgentSession, watchdog).reason == 'campaign stopped: max_runs: 1 runs'
     error = dict(span_named(spans, 'documents.sync_failed').attributes or {})['error']
     assert isinstance(error, str) and error.startswith('GitCommandError: Cmd')
 

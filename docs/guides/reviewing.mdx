@@ -50,7 +50,7 @@ git diff --stat <baseline-sha> <head-sha> -- evaluate.py data/
 
 <Warning>
   An evaluator is defined by the evaluate command, the names and directions of the metrics and the `link` paths, not
-  by the contents of `evaluate.py` or of the linked files. A worker that edits `evaluate.py` changes the score without
+  by the contents of `evaluate.py` or of the linked files. An implementer that edits `evaluate.py` changes the score without
   a new evaluator. Check the diffs of the kept candidates.
 </Warning>
 
@@ -63,7 +63,7 @@ entire checkpoint explain <checkpoint-id>
 Tokens and time for each role and harness:
 
 ```bash
-piloop sql "SELECT kind, harness, COUNT(*) AS agents, SUM(usage->>'$.total') AS tokens FROM workers WHERE campaign_id = 1 GROUP BY kind, harness"
+piloop sql "SELECT kind, harness, COUNT(*) AS agents, SUM(usage->>'$.total') AS tokens FROM agent_sessions WHERE campaign_id = 1 GROUP BY kind, harness"
 ```
 
 Who changed a verdict or a status, other than the daemon:

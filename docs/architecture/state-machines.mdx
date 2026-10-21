@@ -5,7 +5,7 @@ description: The statuses of ideas, runs, agents and candidates, and the paths b
 
 import States from '/snippets/generated/states.mdx';
 
-Four columns hold a lifecycle: `ideas.status`, `runs.status`, `workers.state` and `candidates.verdict`. A CHECK
+Four columns hold a lifecycle: `ideas.status`, `runs.status`, `agent_sessions.state` and `candidates.verdict`. A CHECK
 constraint fixes the set of values of each one. piloop has no table of allowed transitions: the daemon and the CLI
 take the paths below. Anyone with `piloop sql` can set any value, for example to park an idea or to change a verdict.
 
@@ -50,18 +50,18 @@ stateDiagram-v2
     queued --> failed: the campaign or the daemon stopped
 ```
 
-A run that the daemon stopped is not counted as an attempt. Its idea goes back to `ready`. A run whose worker had
+A run that the daemon stopped is not counted as an attempt. Its idea goes back to `ready`. A run whose implementer had
 left its finding before the stop is not stopped: it is finished. The stop closes it as `succeeded`, its idea stays
-`scheduled`, and the next daemon scores its commits and settles the idea. The same holds when such a worker times
+`scheduled`, and the next daemon scores its commits and settles the idea. The same holds when such an implementer times
 out, because a job of its own keeps the run open, or exits with an error: the run `succeeded`, the idea is `done`,
-and the worker row keeps the error.
+and the agent session row keeps the error.
 
-A worker that stops while its own escalation waits for an answer ends its run `failed`, with an error that starts with
+An implementer that stops while its own escalation waits for an answer ends its run `failed`, with an error that starts with
 `blocked on escalation`. Its idea is `parked` until someone answers and sets it `ready`.
 
 ## Agent
 
-A `workers` row is an agent process of any role. While it is `requested`, the row is a request to start one.
+A `agent_sessions` row is an agent process of any role. While it is `requested`, the row is a request to start one.
 
 ```mermaid
 stateDiagram-v2

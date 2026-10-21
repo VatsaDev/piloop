@@ -15,7 +15,7 @@ must also hold with statistical confidence.
 
 ![piloop watch on the enwik8 example: 10 Claude Code runs took the compressed size from 3,688,770 to 2,361,893 bytes](https://raw.githubusercontent.com/hiloopai/piloop/main/docs/images/watch-campaign.svg)
 
-*The enwik8 example after 10 worker runs: Claude Code agents took the first 10 MB of Wikipedia from 3,688,770 bytes (zlib) to 2,361,893 bytes (−36%) in 1.6 hours.*
+*The enwik8 example after 10 implementer runs: Claude Code agents took the first 10 MB of Wikipedia from 3,688,770 bytes (zlib) to 2,361,893 bytes (−36%) in 1.6 hours.*
 
 piloop keeps its state on your machine: a SQLite database and the run directories in `PILOOP_HOME` (`~/.piloop` by
 default), and every candidate commit as a git ref in your repo. piloop has no hosted service. The coding agents send
@@ -50,7 +50,7 @@ your code and their prompts to their model providers, as they do when you use th
 1. **Setup.** The agent checks your machine and asks you a few questions: the metric, how to measure it, what must
    not get worse, which files the agents may edit, and the budget. Then it writes `brief.md`, `piloop.toml` and the
    evaluate command, measures the baseline and starts the campaign.
-2. **The campaign runs.** Worker agents try ideas. piloop scores each commit and keeps what wins. A research agent
+2. **The campaign runs.** Implementer agents try ideas. piloop scores each commit and keeps what wins. A research agent
    adds ideas, and a watchdog agent looks for problems.
 3. **The agent reports.** Your agent answers what the other agents escalate and records each decision in your inbox.
    It asks you only what needs you. Ask it "how is the campaign going?" at any time.
@@ -78,7 +78,7 @@ piloop serve --detach
 piloop watch
 ```
 
-The example uses Claude Code and stops after 20 scored worker runs. See
+The example uses Claude Code and stops after 20 scored implementer runs. See
 [Run a campaign by hand](https://piloop.autoresearch.inc/by-hand).
 
 </details>
@@ -88,7 +88,7 @@ The example uses Claude Code and stops after 20 scored worker runs. See
 - Linux or macOS.
 - git, with a commit identity.
 - [uv](https://docs.astral.sh/uv/). The installer installs it.
-- At least one worker agent CLI, logged in: [Claude Code](https://code.claude.com),
+- At least one implementer agent CLI, logged in: [Claude Code](https://code.claude.com),
   [Codex](https://github.com/openai/codex) or [pi](https://github.com/badlogic/pi-mono).
 - Optional: [Herdr](https://herdr.dev), to see and steer every agent in a terminal pane. By default, the agents run
   in the background. To use Herdr, set `runtime = "herdr"`.

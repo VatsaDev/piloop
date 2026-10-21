@@ -162,7 +162,7 @@ def test_only_a_sweeping_agent_files_its_ideas_for_review_while_the_campaign_is_
             ops.review_first(campaign, ACTOR, new=True) is None
             and ops.review_first(campaign, 'human', new=True) is None
         )
-        assert ops.review_first(campaign, 'worker#6', new=True) is None, 'a worker files no ideas anyway'
+        assert ops.review_first(campaign, 'implementer#6', new=True) is None, 'an implementer files no ideas anyway'
 
 
 def test_a_verdict_override_is_the_actors_with_the_reason_in_its_event(me: Database, campaign: Campaign) -> None:

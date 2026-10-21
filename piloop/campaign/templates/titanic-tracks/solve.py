@@ -1,4 +1,4 @@
-"""Baseline: logistic regression on sex and class. Workers edit this file."""
+"""Baseline: logistic regression on sex and class. Implementers edit this file."""
 
 import argparse
 

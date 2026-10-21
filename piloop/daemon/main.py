@@ -186,7 +186,7 @@ class Daemon:
         span.set(entire=version)
 
     def _on_sigterm(self, signum: int, frame: FrameType | None) -> None:
-        """Treat a service manager's stop as Ctrl-C: the loop ends and ``shutdown`` kills the running workers."""
+        """Treat a service manager's stop as Ctrl-C: the loop ends and ``shutdown`` kills the running agents."""
         self.scheduler.interrupt()
 
     def _on_restart(self, signum: int, frame: FrameType | None) -> None:

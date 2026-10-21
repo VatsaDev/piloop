@@ -1,11 +1,11 @@
-"""The runtime registry, and the runtime of a campaign or of a launched worker row."""
+"""The runtime registry, and the runtime of a campaign or of a launched agent session row."""
 
 from collections.abc import Callable
 from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from piloop.db.models import Campaign, Worker
+from piloop.db.models import AgentSession, Campaign
 from piloop.plugins.contracts.runtime import RUNTIMES
 from piloop.runtime import Handle, Runtime
 
@@ -22,27 +22,29 @@ type RuntimeFactory = Callable[..., Runtime]
 """The signature of ``make_runtime``: ``(kind, *, campaign, campaign_path) -> Runtime``. Tests substitute their own."""
 
 
-def handle_for(worker: Worker) -> Handle:
-    """Return the runtime address of a launched worker row. A requested row has none yet."""
-    if worker.runtime is None:
-        raise ValueError(f'worker#{worker.id} is {worker.state}: not launched yet')
-    return Handle(worker.runtime, worker.handle)
+def handle_for(agent_session: AgentSession) -> Handle:
+    """Return the runtime address of a launched agent session row. A requested row has none yet."""
+    if agent_session.runtime is None:
+        raise ValueError(f'agent_session#{agent_session.id} is {agent_session.state}: not launched yet')
+    return Handle(agent_session.runtime, agent_session.handle)
 
 
-def view_of(worker: Worker) -> str | None:
+def view_of(agent_session: AgentSession) -> str | None:
     """Return where you can see a launched agent (``Runtime.view``), or None.
 
     None also for a row not launched yet, and for a runtime that is no longer installed: this only labels the agent.
     """
-    runtime = RUNTIMES.providers().get(worker.runtime) if worker.runtime is not None else None
-    return None if runtime is None else runtime.value.view(handle_for(worker))
+    runtime = RUNTIMES.providers().get(agent_session.runtime) if agent_session.runtime is not None else None
+    return None if runtime is None else runtime.value.view(handle_for(agent_session))
 
 
-def runtime_for(s: Session, worker: Worker, fallback_path: Path, factory: RuntimeFactory = make_runtime) -> Runtime:
-    """Return the runtime that owns a launched worker row. Its campaign names the Herdr workspace."""
-    campaign = s.get(Campaign, worker.campaign_id) if worker.campaign_id else None
+def runtime_for(
+    s: Session, agent_session: AgentSession, fallback_path: Path, factory: RuntimeFactory = make_runtime
+) -> Runtime:
+    """Return the runtime that owns a launched agent session row. Its campaign names the Herdr workspace."""
+    campaign = s.get(Campaign, agent_session.campaign_id) if agent_session.campaign_id else None
     return factory(
-        handle_for(worker).runtime,
+        handle_for(agent_session).runtime,
         campaign=campaign.name if campaign else 'piloop',
         campaign_path=Path(campaign.path) if campaign else fallback_path,
     )

@@ -38,7 +38,7 @@ from pydantic_settings import (
 from sqlalchemy.orm import Session
 
 from piloop import deprecated
-from piloop.db.models import Campaign, Worker, WorkerKind
+from piloop.db.models import AgentSession, Campaign, RoleName
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.mcp import McpServer, ServerName
 from piloop.plugins.contracts.runtime import RUNTIMES
@@ -149,7 +149,7 @@ class TrackConfig(BaseModel):
     urgent idea of that track. A track with no idea that can run gives its slot to another track. A share of 0 stops the track: its ideas
     wait."""
     addendum: str | None = None
-    """A repo-relative file that is appended to the brief of this track's runs, after ``[roles.worker] addendum``. Use
+    """A repo-relative file that is appended to the brief of this track's runs, after ``[roles.implementer] addendum``. Use
     it to say how work on this objective is done, for example "profile first" or "keep the output identical"."""
 
 
@@ -167,7 +167,7 @@ class Track:
 
 
 ROLE_NAME = r'[a-z][a-z0-9_-]{0,19}'
-"""The form of a role name: the agents' signature, ``workers.kind``, and the start of their Herdr agent name."""
+"""The form of a role name: the agents' signature, ``agent_sessions.kind``, and the start of their Herdr agent name."""
 RESERVED_NAMES = frozenset({'run', 'orchestrator', 'human', 'daemon'})
 """Names that already sign writes: a run, and the actors that are not roles."""
 
@@ -233,35 +233,35 @@ class RoleConfig(BaseModel):
     wake_budget``. 0 turns it off for this role."""
 
 
-class WorkerRole(RoleConfig):
-    """``[roles.worker]``, and every ``[roles.<name>]`` table with ``runs = true``: a role that does runs.
+class ImplementerRole(RoleConfig):
+    """``[roles.implementer]``, and every ``[roles.<name>]`` table with ``runs = true``: a role that does runs.
 
     The run queue starts its agents. Each agent does one idea in a new worktree at its run's base, and its commits are
-    scored and judged when it ends. A new role of this kind takes the worker's defaults, its prompt included.
+    scored and judged when it ends. A new role of this kind takes the implementer's defaults, its prompt included.
     """
 
-    PROMPT: ClassVar[str] = 'worker.md'
+    PROMPT: ClassVar[str] = 'implementer.md'
 
     runs: Literal[True] = True
     """The agents of this role do runs. A table without ``runs = true`` is a sweeping role."""
     takes: str | None = None
     """The ideas that this role takes: an SQL condition on the ``ideas`` table, without parameters, for example
     ``priority >= 3`` or ``track = 'speed'``. When unset, the role takes every runnable idea. A free slot of a role
-    that you define is filled before a slot of the worker, so the worker takes what the other roles leave."""
+    that you define is filled before a slot of the implementer, so the implementer takes what the other roles leave."""
 
     timeout: float = 1800
-    """The number of seconds one worker may run before it is stopped."""
+    """The number of seconds one implementer may run before it is stopped."""
     max_concurrent: int = Field(default=4, ge=1)
-    """The maximum number of workers that run at the same time. Each worker is one harness process on this machine. A
-    run that is being scored after its worker ended does not count."""
+    """The maximum number of implementers that run at the same time. Each implementer is one harness process on this machine. A
+    run that is being scored after its implementer ended does not count."""
     writes: list[str] = ['commits', 'comments(finding) on your idea', 'comments(note) on your run']
-    """What a worker may write, as its brief states it."""
+    """What an implementer may write, as its brief states it."""
     files: Files = Files.NOTHING
-    """A worker files no ideas and no seeds. Its hunches go in its finding, which research reads."""
+    """An implementer files no ideas and no seeds. Its hunches go in its finding, which research reads."""
     recovery_requeues: int = Field(default=2, ge=0)
-    """How many times one idea goes back to the queue from the work its worker left uncommitted, when the run did not
-    succeed (``recovered``): a new worker then starts from that work to finish it. After that, the idea settles as
-    after any failed run, so an idea whose workers keep dying is not run forever. 0 never requeues: the recovered
+    """How many times one idea goes back to the queue from the work its implementer left uncommitted, when the run did not
+    succeed (``recovered``): a new implementer then starts from that work to finish it. After that, the idea settles as
+    after any failed run, so an idea whose implementers keep dying is not run forever. 0 never requeues: the recovered
     candidate waits for you or the orchestrator."""
     explore_every: int = Field(default=4, ge=0)
     """At least one run of this role in this many starts from an alternative starting point. When none of the role's
@@ -350,7 +350,7 @@ class WatchdogRole(SweepRole):
 
 
 class ResearchRole(SweepRole):
-    """``[roles.research]``: research develops seeds and keeps ideas ready for the workers."""
+    """``[roles.research]``: research develops seeds and keeps ideas ready for the implementers."""
 
     PROMPT: ClassVar[str] = 'research.md'
 
@@ -378,7 +378,7 @@ class ScoutRole(SweepRole):
 
     Every ``interval`` seconds, a scout sweep states the open problems of the campaign from the evidence, and searches
     X, GitHub and arXiv for outside techniques that address them. It files at most ``seeds`` of them as seeds, signed
-    ``scout#<worker id>``, and puts the rest in the technique library (the ``techniques`` table). It never files a
+    ``scout#<agent session id>``, and puts the rest in the technique library (the ``techniques`` table). It never files a
     defined idea. The search tool limits what one sweep spends on xAI (``scripts/xai_search_mcp.py --max-usd``).
 
     Experimental: the scout.
@@ -415,8 +415,8 @@ class Stop(BaseModel):
     """``[stop]``: conditions that end the campaign. One is enough. Without the table, the campaign has no end.
 
     The daemon checks the conditions on every tick, before it requests anything. When one holds, the campaign is
-    ``stopped`` (``campaigns.status``, ``stopped_reason``). Running workers are told to commit and stop, and are ended
-    10 minutes later. What they committed is scored. A worker in the middle of a turn reads the message only when the
+    ``stopped`` (``campaigns.status``, ``stopped_reason``). Running implementers are told to commit and stop, and are ended
+    10 minutes later. What they committed is scored. An implementer in the middle of a turn reads the message only when the
     turn ends: one that is ended before it left its finding closes its run as ``campaign stopped``, which does not
     count toward ``max_runs`` or ``plateau``. Pending requests and queued runs are dropped
     (``campaign stopped``). The ``stopped`` triggers fire once, which by default requests the watchdog's closing
@@ -424,7 +424,7 @@ class Stop(BaseModel):
     request with ``piloop launch`` after the stop still starts.
 
     ``piloop campaign stop`` stops a campaign the same way on the next tick, whatever this table says. With ``--kill``,
-    the workers are ended at once instead of told. ``piloop init`` resumes a stopped campaign when this table changed.
+    the implementers are ended at once instead of told. ``piloop init`` resumes a stopped campaign when this table changed.
 
     ``max_runs`` and ``plateau`` count the same runs: those that reached the evaluator, with a candidate that is
     measured or waits for its measurement. A run that ended at a cheap check with no commit, with only
@@ -446,7 +446,7 @@ class Stop(BaseModel):
     """Stop after this many hours of wall-clock time since the first run of the campaign started. The time that the
     campaign was paused (``piloop pause``) does not count."""
     max_tokens: int | None = Field(default=None, ge=1)
-    """Stop when all the agents of the campaign together spent this many tokens (the ``total`` of ``workers.usage``),
+    """Stop when all the agents of the campaign together spent this many tokens (the ``total`` of ``agent_sessions.usage``),
     summed over the agents that ended."""
     plateau: int | None = Field(default=None, ge=1)
     """Stop after this many finished runs that count (see above) without a new ``keep`` candidate. The count starts
@@ -512,7 +512,7 @@ class Memory(BaseModel):
     every agent of every campaign can search them. Never name a document that is derived from validation or test
     data."""
     wake_budget: int = Field(default=400, ge=0)
-    """The size in tokens (about 4 characters each) of the overview that opens the briefs of workers and research
+    """The size in tokens (about 4 characters each) of the overview that opens the briefs of implementers and research
     sweeps: the current lesson of each mechanism family on the same repo, from the newest campaign that tried it, one
     line each. Lessons in the campaign's own metrics come first (``lessons.metric``), then
     lessons in related metrics, then the rest. Within those, dead or promising come before untested, then the larger
@@ -532,18 +532,18 @@ class Memory(BaseModel):
 
 def _role(table: object) -> object:
     """Validate a ``[roles.<name>]`` table with a new name: a role that does runs with ``runs = true``, else a sweep."""
-    does_runs = isinstance(table, WorkerRole) or (isinstance(table, dict) and bool(table.get('runs')))
-    return (WorkerRole if does_runs else SweepRole).model_validate(table)
+    does_runs = isinstance(table, ImplementerRole) or (isinstance(table, dict) and bool(table.get('runs')))
+    return (ImplementerRole if does_runs else SweepRole).model_validate(table)
 
 
-RoleEntry = Annotated[WorkerRole | SweepRole, BeforeValidator(_role)]
+RoleEntry = Annotated[ImplementerRole | SweepRole, BeforeValidator(_role)]
 """The type of a ``[roles.<name>]`` table with a new name."""
 
 
 class Roles(BaseModel):
     """One table for each role. A built-in role without a table uses its defaults.
 
-    A table with a new name defines a new role: a role that does runs (``WorkerRole``) with ``runs = true``, else a
+    A table with a new name defines a new role: a role that does runs (``ImplementerRole``) with ``runs = true``, else a
     sweeping role (``SweepRole``). A role that a package adds with a ``piloop.roles`` entry point is in the config that
     ``piloop init`` stores, with its table over its defaults.
     """
@@ -551,8 +551,8 @@ class Roles(BaseModel):
     model_config = ConfigDict(extra='allow', frozen=True, use_attribute_docstrings=True)
     __pydantic_extra__: dict[str, RoleEntry] = Field(init=False)
 
-    worker: WorkerRole = WorkerRole()
-    """``[roles.worker]``."""
+    implementer: ImplementerRole = ImplementerRole()
+    """``[roles.implementer]``."""
     watchdog: WatchdogRole = WatchdogRole()
     """``[roles.watchdog]``."""
     research: ResearchRole = ResearchRole()
@@ -574,40 +574,40 @@ class Roles(BaseModel):
         """The sweeping roles by name: the built-in ones, then the sweeping roles of the file in its order."""
         mine = {name: role for name, role in self.__pydantic_extra__.items() if isinstance(role, SweepRole)}
         return {
-            WorkerKind.WATCHDOG: self.watchdog,
-            WorkerKind.RESEARCH: self.research,
-            WorkerKind.SCOUT: self.scout,
+            RoleName.WATCHDOG: self.watchdog,
+            RoleName.RESEARCH: self.research,
+            RoleName.SCOUT: self.scout,
             **mine,
         }
 
-    def doing_runs(self) -> dict[str, WorkerRole]:
+    def doing_runs(self) -> dict[str, ImplementerRole]:
         """The roles that do runs by name, in the order in which they fill their slots.
 
-        The roles that you define come first, in the order of the file, and the worker comes last.
+        The roles that you define come first, in the order of the file, and the implementer comes last.
         """
-        mine = {name: role for name, role in self.__pydantic_extra__.items() if isinstance(role, WorkerRole)}
-        return {**mine, WorkerKind.WORKER: self.worker}
+        mine = {name: role for name, role in self.__pydantic_extra__.items() if isinstance(role, ImplementerRole)}
+        return {**mine, RoleName.IMPLEMENTER: self.implementer}
 
     def all(self) -> dict[str, RoleConfig]:
         """Every role by name: the built-in roles, then the roles that you define in the order of the file."""
         return {
-            WorkerKind.WORKER: self.worker,
-            WorkerKind.WATCHDOG: self.watchdog,
-            WorkerKind.RESEARCH: self.research,
-            WorkerKind.SCOUT: self.scout,
+            RoleName.IMPLEMENTER: self.implementer,
+            RoleName.WATCHDOG: self.watchdog,
+            RoleName.RESEARCH: self.research,
+            RoleName.SCOUT: self.scout,
             **self.__pydantic_extra__,
         }
 
 
-def _check_role(name: str, loaded: object) -> SweepRole | WorkerRole:
-    if isinstance(loaded, SweepRole | WorkerRole):
+def _check_role(name: str, loaded: object) -> SweepRole | ImplementerRole:
+    if isinstance(loaded, SweepRole | ImplementerRole):
         return loaded
-    raise TypeError('is not a piloop SweepRole or WorkerRole')
+    raise TypeError('is not a piloop SweepRole or ImplementerRole')
 
 
 ROLES = Capability('role', group='piloop.roles', check=_check_role)
 """Every role by name, with its defaults: the built-in ones, then the ones that packages add. Each entry point of the
-group names a ``SweepRole`` or a ``WorkerRole``. A role whose runtime or triggers are checked when it is defined
+group names a ``SweepRole`` or a ``ImplementerRole``. A role whose runtime or triggers are checked when it is defined
 looks them up, which activates the runtimes or the triggers first."""
 
 
@@ -664,7 +664,7 @@ class CampaignConfig(BaseModel):
     evaluate_timeout: float = 600
     """The number of seconds before the evaluate command is stopped. The evaluation is then a crash."""
     roles: Roles = Roles()
-    """The settings of each role (``[roles.worker]``, ``[roles.watchdog]``, ``[roles.research]``, ``[roles.scout]``),
+    """The settings of each role (``[roles.implementer]``, ``[roles.watchdog]``, ``[roles.research]``, ``[roles.scout]``),
     and the roles that you define (``[roles.<name>]``)."""
     link: list[str] = []
     """Repo-relative paths, ignored by git, that piloop symlinks into every worktree, for example data or virtual
@@ -885,15 +885,15 @@ def config_of(campaign: Campaign) -> CampaignConfig:
     return CampaignConfig.model_validate(campaign.config)
 
 
-def harness_of(s: Session, worker: Worker) -> Harness | None:
-    """The definition of the harness that a worker row runs, from its campaign's config.
+def harness_of(s: Session, agent_session: AgentSession) -> Harness | None:
+    """The definition of the harness that an agent session row runs, from its campaign's config.
 
     None before the launcher picks a harness, and when ``piloop.toml`` no longer names it (a row keeps only the name).
     """
-    if worker.harness is None or worker.campaign_id is None:
+    if agent_session.harness is None or agent_session.campaign_id is None:
         return None
     try:
-        return config_of(s.get_one(Campaign, worker.campaign_id)).harness_for(worker.harness)
+        return config_of(s.get_one(Campaign, agent_session.campaign_id)).harness_for(agent_session.harness)
     except KeyError:
         return None
 

@@ -1,4 +1,4 @@
-"""Baseline: zlib at level 9. Workers edit this file."""
+"""Baseline: zlib at level 9. Implementers edit this file."""
 
 import zlib
 

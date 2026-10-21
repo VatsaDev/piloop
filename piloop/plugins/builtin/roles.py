@@ -1,8 +1,8 @@
 """The roles of piloop itself, as providers of the ``piloop.roles`` group: the defaults of ``piloop.config.Roles``."""
 
-from piloop.config import ResearchRole, ScoutRole, WatchdogRole, WorkerRole
+from piloop.config import ImplementerRole, ResearchRole, ScoutRole, WatchdogRole
 
-WORKER = WorkerRole()
+IMPLEMENTER = ImplementerRole()
 WATCHDOG = WatchdogRole()
 RESEARCH = ResearchRole()
 SCOUT = ScoutRole()

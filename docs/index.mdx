@@ -17,7 +17,7 @@ they are. The state is one SQLite file that every agent reads and writes with pl
 
 ![piloop watch on the enwik8 example campaign](/images/watch-campaign.svg)
 
-The enwik8 example after 10 worker runs: Claude Code agents took the first 10 MB of Wikipedia from 3,688,770 bytes (zlib) to 2,361,893 bytes (−36%) in 1.6 hours. Every number on this screen is from that run.
+The enwik8 example after 10 implementer runs: Claude Code agents took the first 10 MB of Wikipedia from 3,688,770 bytes (zlib) to 2,361,893 bytes (−36%) in 1.6 hours. Every number on this screen is from that run.
 
 ## You talk to one agent
 
@@ -25,7 +25,7 @@ The enwik8 example after 10 worker runs: Claude Code agents took the first 10 MB
 flowchart LR
     H((You)) <-->|goal, answers, reports| A["Your agent<br/>(orchestrator, with the piloop skills)"]
     A -->|piloop CLI| D[piloop daemon]
-    D --> W[Workers]
+    D --> W[Implementers]
     D --> R[Research]
     D --> G[Watchdog]
     W -->|commits| Repo[(Your repo)]
@@ -42,7 +42,7 @@ flowchart LR
 - **Your agent** is Claude Code, Codex, pi, Gemini CLI or Cursor, with the piloop skills. It sets up the campaign,
   starts the daemon and then orchestrates: it watches the inbox, decides escalations and records each decision in your
   inbox. It can run one campaign or [several](/several-campaigns).
-- **The piloop daemon** starts worker, research and watchdog agents. It scores every commit and gives it a verdict.
+- **The piloop daemon** starts implementer, research and watchdog agents. It scores every commit and gives it a verdict.
 - **The inbox** holds the escalations and every decision that your agent took for you. You review it when you want,
   in `piloop watch` or through your agent.
 
@@ -61,7 +61,7 @@ scored, and whether the gain is real or noise. piloop does this bookkeeping for 
   results per example, piloop uses a paired bootstrap, so a gain that comes from a few lucky examples is not kept.
 - **Guardrails are enforced.** A second metric, such as latency or size, can get worse only by a margin that you set,
   and never past a floor.
-- **Agents work in parallel.** Each worker has its own worktree. A research agent keeps the backlog full. A watchdog
+- **Agents work in parallel.** Each implementer has its own worktree. A research agent keeps the backlog full. A watchdog
   agent looks for problems.
 - **You do not have to wait at the screen.** Your agent answers what the other agents escalate. It records each
   decision in your inbox, so you can review and revert it later.
@@ -75,7 +75,7 @@ scored, and whether the gain is real or noise. piloop does this bookkeeping for 
 flowchart LR
     R[Research agent] -->|adds ideas| B[(Backlog)]
     Y[You or the orchestrator] -->|add ideas| B
-    B --> W[Worker agent<br/>in a git worktree]
+    B --> W[Implementer agent<br/>in a git worktree]
     W -->|commits| E[Evaluate command]
     E -->|METRIC lines| V{Verdict}
     V -->|keep| H[New head]
@@ -86,9 +86,9 @@ flowchart LR
 ```
 
 1. You, the orchestrator or the research agent add **ideas** to the backlog of the **campaign**.
-2. The daemon, `piloop serve`, starts a **worker** for each ready idea, up to a limit that you set. Each worker is a
+2. The daemon, `piloop serve`, starts an **implementer** for each ready idea, up to a limit that you set. Each implementer is a
    coding agent in a git worktree of the **head**, the best result so far.
-3. The worker implements the idea and commits.
+3. The implementer implements the idea and commits.
 4. The daemon runs the **evaluate command** in a clean worktree of each commit. The command prints one
    `METRIC <name>=<value>` line for each metric.
 5. The daemon gives the commit a **verdict**: `keep`, `interesting`, `discard` or `crash`. A `keep` becomes the new
@@ -101,7 +101,7 @@ flowchart LR
 - Linux or macOS.
 - git, with a commit identity (`git config user.email`).
 - [uv](https://docs.astral.sh/uv/). The installer installs it.
-- At least one worker agent CLI, logged in: [Claude Code](https://code.claude.com),
+- At least one implementer agent CLI, logged in: [Claude Code](https://code.claude.com),
   [Codex](https://github.com/openai/codex) or [pi](https://github.com/badlogic/pi-mono). The agent that you talk to
   can also be Gemini CLI or Cursor.
 - Optional: [Herdr](https://herdr.dev), to see and steer every agent in a terminal pane. By default, the agents run

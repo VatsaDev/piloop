@@ -20,6 +20,8 @@ from piloop.daemon.main import Daemon
 from piloop.daemon.run_executor import RunExecutor
 from piloop.daemon.scheduler import Scheduler
 from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
     Campaign,
     Candidate,
     Comment,
@@ -27,13 +29,11 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Measurement,
+    RoleName,
     Run,
     RunStatus,
     TargetKind,
     Verdict,
-    Worker,
-    WorkerKind,
-    WorkerState,
     utcnow,
 )
 from piloop.db.session import Database
@@ -57,7 +57,7 @@ from tests.conftest import (
     write_toml,
 )
 from tests.daemon.test_scheduler import add_ideas
-from tests.daemon.test_triggers import BLOCKING, fail_a_run, reported_events, wait_for, workers
+from tests.daemon.test_triggers import BLOCKING, agent_sessions, fail_a_run, reported_events, wait_for
 
 REVIEW = "SELECT id FROM comments WHERE kind = 'decision' AND created_at > :since"
 PLUGIN = 'tests.fixtures.plugin'
@@ -127,30 +127,33 @@ def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt
 
     decide(db, campaign, 'keep the cache')
     assert sched.tick() == [1]
-    wait_for(db, 1, WorkerState.RUNNING)
+    wait_for(db, 1, AgentSessionState.RUNNING)
     assert sched.tick() == [], 'the decision is older than the running reviewer'
     decide(db, campaign, 'drop the cache')
     assert sched.tick() == [], 'max_concurrent = 1: the second reviewer waits'
     assert sched.tick() == [], 'one pending request is enough'
     reason = f'sql: {REVIEW}'
-    assert workers(db, 'reviewer') == [(1, WorkerState.RUNNING, reason), (2, WorkerState.REQUESTED, reason)]
+    assert agent_sessions(db, 'reviewer') == [
+        (1, AgentSessionState.RUNNING, reason),
+        (2, AgentSessionState.REQUESTED, reason),
+    ]
     release.touch()
     sched.wait(10)
     assert sched.tick() == [2], 'the slot is free'
     sched.wait(10)
     sched.stop(timeout=5)
 
-    brief = (tmp_path / 'workers' / '1' / 'brief.md').read_text()
+    brief = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
     assert brief.startswith('# Review\nRead the latest decision')
-    assert '- You are worker#1, the reviewer for campaign#1 (demo).' in brief
+    assert '- You are reviewer#1, the reviewer for campaign#1 (demo).' in brief
     assert f'- Trigger: {reason}' in brief
     assert '- Your cwd is the campaign checkout, shared with the human' in brief
     assert '- File a seed:' in brief and '- You may write:' not in brief, 'a new role files seeds and states no writes'
     assert Path((tmp_path / 'cwd.txt').read_text().strip()) == Path(campaign.path).resolve()
-    assert not (tmp_path / 'workers' / '1' / 'worktree').exists()
+    assert not (tmp_path / 'agent_sessions' / '1' / 'worktree').exists()
     with db.session() as s:
-        rows = s.scalars(select(Worker).where(Worker.kind == 'reviewer')).all()
-        assert [(w.state, w.runtime, w.harness) for w in rows] == [(WorkerState.EXITED, 'herdr', 'script')] * 2
+        rows = s.scalars(select(AgentSession).where(AgentSession.kind == 'reviewer')).all()
+        assert [(w.state, w.runtime, w.harness) for w in rows] == [(AgentSessionState.EXITED, 'herdr', 'script')] * 2
     assert 'herdr' in kinds
 
 
@@ -173,12 +176,12 @@ def test_a_role_adds_its_incident_prompt_to_an_incident_sweep_and_its_routine_pr
     assert sched.tick() == [1]
     sched.wait(10)
     with db.session() as s:
-        s.add(Worker(kind='triage', campaign_id=campaign.id, reason='by hand'))
+        s.add(AgentSession(kind='triage', campaign_id=campaign.id, reason='by hand'))
         s.commit()
     assert sched.tick() == [2]
     sched.wait(10)
     sched.stop(timeout=5)
-    incident, routine = ((tmp_path / 'workers' / str(w) / 'brief.md').read_text() for w in (1, 2))
+    incident, routine = ((tmp_path / 'agent_sessions' / str(w) / 'brief.md').read_text() for w in (1, 2))
     assert incident.startswith('# Triage\n\n## An incident\n\n# Demo') and '## Incidents to investigate' in incident
     assert routine.startswith('# Triage\n\n## A routine\n\n# Demo') and '## Research pack' in routine
     with pytest.raises(ConfigError, match=r"roles\.triage\.routine_prompt = 'gone\.md': no such file"):
@@ -201,10 +204,10 @@ def test_a_role_that_defines_ideas_is_told_how_many_its_sweep_may_add(
     assert sched.tick() == [1], 'no runnable idea: the backlog is short'
     sched.wait(10)
     sched.stop(timeout=5)
-    brief = (tmp_path / 'workers' / '1' / 'brief.md').read_text()
+    brief = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
     assert '- New ideas of your own in this sweep: at most 2 (`max_ideas`).' in brief
-    [(_, _, reason)] = workers(db, 'ideator')
-    assert reason is not None and reason.startswith('1 free worker slots without a runnable idea')
+    [(_, _, reason)] = agent_sessions(db, 'ideator')
+    assert reason is not None and reason.startswith('1 free implementer slots without a runnable idea')
 
 
 HARNESS_SIGNS = '#!/bin/sh\necho "$PILOOP_ACTOR" >> solve.txt\ngit commit -qam "sign"\n'
@@ -223,7 +226,12 @@ def runs_by_role(db: Database) -> list[tuple[int, str, int, str]]:
     """Return each run as ``(id, role, idea, kind of its agent)``."""
     with db.session() as s:
         return [
-            (run.id, run.role, run.idea_id, s.scalars(select(Worker.kind).where(Worker.run_id == run.id)).one())
+            (
+                run.id,
+                run.role,
+                run.idea_id,
+                s.scalars(select(AgentSession.kind).where(AgentSession.run_id == run.id)).one(),
+            )
             for run in s.scalars(select(Run).order_by(Run.id))
         ]
 
@@ -239,7 +247,7 @@ def queue(db: Database, sched: Scheduler, campaign: Campaign) -> None:
 def test_a_role_that_does_runs_takes_its_ideas_with_its_own_prompt_and_its_commits_are_scored(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    """``[roles.quick]`` with ``runs = true`` takes the idea that ``takes`` selects, and the worker takes the other one.
+    """``[roles.quick]`` with ``runs = true`` takes the idea that ``takes`` selects, and the implementer takes the other one.
 
     The quick agent works with its own prompt in a new worktree at the run's base, and its commit is measured and
     judged.
@@ -252,9 +260,9 @@ def test_a_role_that_does_runs_takes_its_ideas_with_its_own_prompt_and_its_commi
     assert sorted(sched.tick()) == [1, 2]
     sched.wait(30)
     sched.stop(timeout=5)
-    assert runs_by_role(db) == [(1, 'quick', cheap, 'quick'), (2, 'worker', deep, 'worker')]
+    assert runs_by_role(db) == [(1, 'quick', cheap, 'quick'), (2, 'implementer', deep, 'implementer')]
     assert (tmp_path / 'runs' / '1' / 'brief.md').read_text().startswith('# Quick\nTry the idea')
-    assert (tmp_path / 'runs' / '2' / 'brief.md').read_text().startswith('# Worker\n')
+    assert (tmp_path / 'runs' / '2' / 'brief.md').read_text().startswith('# Implementer\n')
     with db.session() as s:
         assert s.get_one(Run, 1).status is RunStatus.SUCCEEDED
         candidate = s.scalars(select(Candidate).where(Candidate.run_id == 1)).one()
@@ -262,17 +270,17 @@ def test_a_role_that_does_runs_takes_its_ideas_with_its_own_prompt_and_its_commi
         assert s.scalars(select(Measurement).where(Measurement.candidate_id == candidate.id)).all() != []
 
 
-def test_each_role_that_does_runs_fills_its_own_slots_and_the_worker_takes_what_waits(
+def test_each_role_that_does_runs_fills_its_own_slots_and_the_implementer_takes_what_waits(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    """Quick has one slot, so its second idea goes to the worker. The worker takes what the roles before it leave."""
+    """Quick has one slot, so its second idea goes to the implementer. The implementer takes what the roles before it leave."""
     configure(db, campaign, HARNESS_APPEND, quick={**QUICK, 'prompt': None})
     cheap, cheaper, later = (
         add_ideas(db, campaign, t, priority=p)[0] for t, p in (('cheap', 3), ('cheaper', 4), ('later', 4))
     )
     sched = scheduler(db, recording(runtime, []), tmp_path)
     queue(db, sched, campaign)
-    assert runs_by_role(db) == [(1, 'quick', cheap, 'quick'), (2, 'worker', cheaper, 'worker')]
+    assert runs_by_role(db) == [(1, 'quick', cheap, 'quick'), (2, 'implementer', cheaper, 'implementer')]
     with db.session() as s:
         assert s.get_one(Idea, later).status is IdeaStatus.READY, 'both slots are busy'
     sched.stop(timeout=5)
@@ -289,14 +297,17 @@ def test_a_queued_run_of_a_role_that_piloop_toml_no_longer_has_fails_and_its_ide
     configure(db, campaign, HARNESS_APPEND)
     assert sched.tick() == []
     with db.session() as s:
-        run, worker, idea = s.get_one(Run, 1), s.get_one(Worker, 1), s.get_one(Idea, cheap)
+        run, agent_session, idea = s.get_one(Run, 1), s.get_one(AgentSession, 1), s.get_one(Idea, cheap)
         assert (run.status, run.error) == (RunStatus.FAILED, ROLE_REMOVED)
-        assert (worker.state, worker.error) == (WorkerState.KILLED, 'no [roles.quick] in piloop.toml')
+        assert (agent_session.state, agent_session.error) == (
+            AgentSessionState.KILLED,
+            'no [roles.quick] in piloop.toml',
+        )
         assert idea.status is IdeaStatus.READY, 'the removed role was not an attempt at the idea'
     assert sched.tick() == [2]
     sched.wait(30)
     sched.stop(timeout=5)
-    assert runs_by_role(db)[1:] == [(2, 'worker', cheap, 'worker')]
+    assert runs_by_role(db)[1:] == [(2, 'implementer', cheap, 'implementer')]
 
 
 def test_a_built_in_role_takes_other_triggers(
@@ -320,8 +331,8 @@ def test_a_built_in_role_takes_other_triggers(
     assert sched.tick() == [1, 2]
     sched.wait(10)
     sched.stop(timeout=5)
-    assert workers(db, WorkerKind.WATCHDOG) == [(1, WorkerState.EXITED, 'timer: 30s')]
-    assert workers(db, WorkerKind.RESEARCH) == [(2, WorkerState.EXITED, f'sql: {REVIEW}')]
+    assert agent_sessions(db, RoleName.WATCHDOG) == [(1, AgentSessionState.EXITED, 'timer: 30s')]
+    assert agent_sessions(db, RoleName.RESEARCH) == [(2, AgentSessionState.EXITED, f'sql: {REVIEW}')]
     assert reported_events(db) == [], 'the watchdog got no anomaly'
 
 
@@ -331,15 +342,15 @@ def test_a_request_for_a_role_that_piloop_toml_no_longer_has_is_refused(
     (Path(campaign.path) / 'reviewer.md').write_text('# Review\n')
     configure(db, campaign, '#!/bin/sh\ntrue\n', reviewer={'prompt': 'reviewer.md', 'triggers': []})
     with db.session() as s:
-        s.add(Worker(kind='reviewer', campaign_id=campaign.id, reason='by hand'))
+        s.add(AgentSession(kind='reviewer', campaign_id=campaign.id, reason='by hand'))
         s.commit()
     configure(db, campaign, '#!/bin/sh\ntrue\n')
     sched = scheduler(db, recording(runtime, []), tmp_path)
     assert sched.tick() == []
     sched.stop(timeout=5)
     with db.session() as s:
-        row = s.get_one(Worker, 1)
-    assert (row.state, row.error) == (WorkerState.KILLED, 'no [roles.reviewer] in piloop.toml')
+        row = s.get_one(AgentSession, 1)
+    assert (row.state, row.error) == (AgentSessionState.KILLED, 'no [roles.reviewer] in piloop.toml')
 
 
 def test_a_hand_over_leaves_a_sweep_in_the_campaign_checkout_running_and_the_next_scheduler_re_attaches_to_it(
@@ -350,7 +361,7 @@ def test_a_hand_over_leaves_a_sweep_in_the_campaign_checkout_running_and_the_nex
     harness = f'#!/bin/sh\necho $$ > {tmp_path}/agent.pid\nwhile [ -f {hold} ]; do sleep 0.05; done\n'
     configure(db, campaign, harness, watchdog={'workdir': 'repo', 'triggers': []})
     with db.session() as s:
-        s.add(Worker(kind=WorkerKind.WATCHDOG, campaign_id=campaign.id, reason='by hand'))
+        s.add(AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     first = scheduler(db, recording(runtime, []), tmp_path)
     assert first.tick() == [1]
@@ -362,8 +373,8 @@ def test_a_hand_over_leaves_a_sweep_in_the_campaign_checkout_running_and_the_nex
     second.wait(30)
     first.wait(10)
     with db.session() as s:
-        sweep = s.get_one(Worker, 1)
-    assert (sweep.state, sweep.error) == (WorkerState.EXITED, None), 'the next daemon watched it to its end'
+        sweep = s.get_one(AgentSession, 1)
+    assert (sweep.state, sweep.error) == (AgentSessionState.EXITED, None), 'the next daemon watched it to its end'
     assert Path(campaign.path).is_dir()
     second.stop(timeout=5)
 
@@ -421,8 +432,8 @@ def test_a_package_adds_a_role_and_triggers_through_entry_points(
     assert sched.tick() == [1]
     sched.wait(10)
     sched.stop(timeout=5)
-    assert workers(db, 'auditor') == [(1, WorkerState.EXITED, 'every tick for auditor')]
-    brief = (tmp_path / 'workers' / '1' / 'brief.md').read_text()
+    assert agent_sessions(db, 'auditor') == [(1, AgentSessionState.EXITED, 'every tick for auditor')]
+    brief = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
     assert brief.startswith('# Audit\n')
     assert 'trigger.failed Ns campaign=demo role=auditor trigger=broken error=the probe is down' in console_lines(
         capsys.readouterr().err
@@ -484,7 +495,7 @@ def test_an_entry_point_of_the_wrong_kind_fails_with_its_name(
 
 def test_a_package_adds_a_role_that_does_runs(campaign_path: Path, plugins: None) -> None:
     cfg = load_campaign_config(campaign_path)
-    assert list(cfg.roles.doing_runs()) == ['quick', 'worker']
+    assert list(cfg.roles.doing_runs()) == ['quick', 'implementer']
     quick = cfg.roles.doing_runs()['quick']
     assert (quick.takes, quick.timeout, quick.max_concurrent) == ('priority >= 3', 60, 1)
 
@@ -515,7 +526,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
             Path(campaign.path), runtime='nice', roles={'watchdog': {'runtime': 'nice', 'workdir': 'repo'}}
         )
         s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
-        s.add(Worker(kind=WorkerKind.WATCHDOG, campaign_id=campaign.id, reason='by hand'))
+        s.add(AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     remote = f'[storage.remote]\nkind = "dir"\nroot = "{tmp_path / "remote"}"\n'
     (tmp_path / 'config.toml').write_text(f'{remote}[runtimes.nice]\nniceness = 5\n')
@@ -528,8 +539,8 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
     finally:
         daemon.shutdown(timeout=5)
     with db.session() as s:
-        worker = s.get_one(Worker, 1)
-        assert (worker.state, worker.runtime) == (WorkerState.EXITED, 'nice')
+        agent_session = s.get_one(AgentSession, 1)
+        assert (agent_session.state, agent_session.runtime) == (AgentSessionState.EXITED, 'nice')
     assert (Path(campaign.path) / 'niceness.txt').read_text().strip() == str(min(os.nice(0) + 5, 19))
     monkeypatch.setattr(common, 'settings', home)
     printed: list[str] = []
@@ -546,7 +557,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
     stored = f'in the config of demo that the last `piloop init` stored from {toml}'
     settings = f'; its settings: [runtimes.nice] in {config}'
     keys = {
-        'worker': 'runtime',
+        'implementer': 'runtime',
         'watchdog': '[roles.watchdog] runtime',
         'research': 'runtime',
         'scout': 'runtime',
@@ -561,7 +572,9 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
         row.config = {**row.config, 'runtime': 'subprocess'}
         s.commit()
     built_in = RUNTIMES.sources()['subprocess'].release
-    assert selections(home)[0] == f'demo worker: runtime subprocess, from {built_in} (runtime, its default, {stored})'
+    assert (
+        selections(home)[0] == f'demo implementer: runtime subprocess, from {built_in} (runtime, its default, {stored})'
+    )
     with db.session() as s:
         s.get_one(Campaign, campaign.id).config = {}
         s.commit()

@@ -48,20 +48,19 @@ LEAVES: dict[str, frozenset[str] | None] = {
     'cli/main.py': frozenset({'sql'}),
     'campaign/inbox.py': frozenset({'anomaly'}),
     'reports/overview.py': frozenset({'anomaly'}),
-    'daemon/run_executor.py': frozenset({'worker'}),
     'daemon/archiver.py': frozenset({'research'}),
 }
 """The files that may name entries, and which ones (None: any). The reasons:
 
-- ``harnesses.py``, ``triggers.py``, ``db/models.py`` (``WorkerKind``), the MCP renderers and the usage readers and
+- ``harnesses.py``, ``triggers.py``, ``db/models.py`` (``RoleName``), the MCP renderers and the usage readers and
   tallies define the entries. The migrations are history.
 - ``runtime/subprocess.py`` and ``runtime/herdr.py`` define their runtime.
 - ``config.py``: the defaults of ``runtime`` and ``harnesses``.
 - ``deprecated.py``: the bridges rewrite the keys of earlier releases, which named built-in roles and triggers.
 - ``cli/skills.py``: the skill folder of each agent CLI, which is not the harness registry.
 - ``cli/idea.py`` and ``cli/main.py``: the commands ``piloop idea seed`` and ``piloop sql``.
-- ``campaign/inbox.py``, ``reports/overview.py`` and ``daemon/run_executor.py``: keys of event payloads (``anomaly`` of
-  ``anomaly.reported``, ``worker`` of ``run.relaunched``), not entries.
+- ``campaign/inbox.py`` and ``reports/overview.py``: the key ``anomaly`` of the payload of ``anomaly.reported``, not an
+  entry.
 - ``daemon/archiver.py``: ``research/`` is a folder of the shared workspace, not the role.
 """
 

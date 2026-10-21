@@ -32,22 +32,22 @@ codex = "gpt-6.1-sol"
 # command = ["python3", "server.py"]      # or a stdio server (keys: command, env)
 # env = ["XAI_API_KEY"]                   # the variables that a stdio server reads
 
-[roles.worker]                            # a worker tries one idea in a new worktree; its commits are scored
+[roles.implementer]                            # an implementer tries one idea in a new worktree; its commits are scored
 runs = true                               # its agents do runs; a sweeping role has runs = false
 # takes = "priority < 3"                  # the ideas it takes: an SQL condition on the ideas table; if not set: every one
 # harnesses = ["pi", "claude", "codex"]   # if not set: the campaign's harnesses
 # model = { pi = "..." }                  # merged over [model]
-# addendum = "briefs/worker.md"           # a file appended to brief.md in this role's briefs only
+# addendum = "briefs/implementer.md"           # a file appended to brief.md in this role's briefs only
 # mcp = ["exa"]                           # the [mcp.<name>] servers that this role's agents get; none by default
-# prompt = "briefs/my-worker.md"          # a file that replaces the built-in start of this role's brief
+# prompt = "briefs/my-implementer.md"          # a file that replaces the built-in start of this role's brief
 # runtime = "herdr"                       # if not set: the campaign's runtime
 # writes = ["commits"]                    # what the brief says the role may write; default: what piloop expects of it
 # files = "nothing"                       # what its agents may file with `piloop idea`: nothing, seeds or ideas
 # wake_budget = 400                       # tokens of the lessons overview that opens the brief; if not set: [memory]'s
-timeout = 1800                            # seconds one worker may run
+timeout = 1800                            # seconds one implementer may run
 max_concurrent = 4                        # the most runs at the same time; each run is one harness process on this machine
 explore_every = 4                         # at least 1 run in 4 starts from a pinned idea, when one is ready; 0 = off
-recovery_requeues = 2                     # times an idea is requeued from work a failed worker left uncommitted
+recovery_requeues = 2                     # times an idea is requeued from work a failed implementer left uncommitted
 
 [roles.watchdog]                          # a watchdog investigates anomalies and reviews progress every `interval` seconds
 # harnesses = ["pi", "claude", "codex"]   # if not set: the campaign's harnesses
@@ -116,8 +116,8 @@ max_concurrent = 1
 # max_concurrent = 1                      # it takes every key of [roles.watchdog] except its defaults
 
 # [roles.quick]                           # a role of your own that does runs: any new name with runs = true
-# runs = true                             # it takes every key and default of [roles.worker], its prompt included
-# takes = "priority >= 3"                 # the ideas it takes; its slots fill before the worker's
+# runs = true                             # it takes every key and default of [roles.implementer], its prompt included
+# takes = "priority >= 3"                 # the ideas it takes; its slots fill before the implementer's
 # timeout = 300
 # max_concurrent = 2
 
@@ -133,7 +133,7 @@ max_concurrent = 1
 
 # [memory]                                # what past campaigns leave for the next ones; see the research memory page
 # documents = ["docs/evidence/**/*.md"]   # repo files that `piloop init` and the stop copy into `documents`; default none
-# wake_budget = 400                       # tokens of the current lessons that open worker and research briefs; 0 = off
+# wake_budget = 400                       # tokens of the current lessons that open implementer and research briefs; 0 = off
 
 # [spend]                                 # a hard limit in USD on what the campaign costs outside piloop (GPUs, APIs)
 # command = ["uv", "run", "scripts/spend.py"]  # prints the spend so far in USD; it gets secrets from the daemon's environment

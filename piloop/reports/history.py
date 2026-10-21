@@ -94,7 +94,7 @@ def renderables(
             'title',
             'hypothesis',
             f'best candidate ({on})',
-            'worker finding',
+            'implementer finding',
         ],
         table_box,
     )
@@ -224,7 +224,7 @@ def _delta(c: Candidate, primary: Metric, evaluator_id: int) -> str:
 
 
 def _last_findings(s: Session, idea_ids: list[int]) -> dict[int, Comment]:
-    """Return the latest worker ``finding`` for each idea."""
+    """Return the latest implementer ``finding`` for each idea."""
     rows = s.scalars(
         select(Comment)
         .where(Comment.target_kind == TargetKind.IDEA, Comment.kind == CommentKind.FINDING)

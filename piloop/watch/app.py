@@ -32,7 +32,7 @@ from piloop.campaign import inbox, ops
 from piloop.campaign.campaigns import find
 from piloop.campaign.ideas import reprioritise
 from piloop.config import config_of
-from piloop.db.models import Idea, IdeaStatus, Worker, WorkerState, utcnow
+from piloop.db.models import AgentSession, AgentSessionState, Idea, IdeaStatus, utcnow
 from piloop.db.session import Database
 from piloop.runtime import Handle, NotAttachable, NotSteerable, Runtime, RuntimeFailure
 from piloop.runtime.factory import handle_for, runtime_for
@@ -216,41 +216,41 @@ class AgentsTable(PanelTable):
             if text is not None:
                 self.campaign.say(steer(self.campaign.db, key, text, self.campaign.home))
 
-        self.app.push_screen(Ask(f'steer worker#{key}: a message for its next turn'), send)
+        self.app.push_screen(Ask(f'steer agent_session#{key}: a message for its next turn'), send)
 
 
-def focus(db: Database, worker_id: int, home: Path) -> str:
+def focus(db: Database, agent_session_id: int, home: Path) -> str:
     """Bring a running agent to the front of its runtime's view, and return a note that says what happened."""
     try:
-        runtime, handle = _running(db, worker_id, home, 'focus')
-        return f'worker#{worker_id}: {runtime.focus(handle)}'
+        runtime, handle = _running(db, agent_session_id, home, 'focus')
+        return f'agent_session#{agent_session_id}: {runtime.focus(handle)}'
     except NotRunning as e:
         return str(e)
     except NotAttachable as e:
-        return f'worker#{worker_id}: {e}'
+        return f'agent_session#{agent_session_id}: {e}'
     except RuntimeFailure as e:
-        return f'could not focus worker#{worker_id}: {e}'
+        return f'could not focus agent_session#{agent_session_id}: {e}'
 
 
-def steer(db: Database, worker_id: int, text: str, home: Path) -> str:
+def steer(db: Database, agent_session_id: int, text: str, home: Path) -> str:
     """Prompt a running agent as ``piloop prompt`` does, and return a note that says what happened."""
     try:
-        runtime, handle = _running(db, worker_id, home, 'steer')
+        runtime, handle = _running(db, agent_session_id, home, 'steer')
         runtime.prompt(handle, text)
     except NotRunning as e:
         return str(e)
     except NotSteerable as e:
         return f'not steered: {e}'
     except RuntimeFailure as e:
-        return f'could not steer worker#{worker_id}: {e}'
-    return f'steered worker#{worker_id}'
+        return f'could not steer agent_session#{agent_session_id}: {e}'
+    return f'steered agent_session#{agent_session_id}'
 
 
 class NotRunning(Exception):
     """The agent is not running, so there is nothing to act on. The message says so."""
 
 
-def _running(db: Database, worker_id: int, home: Path, verb: str) -> tuple[Runtime, Handle]:
+def _running(db: Database, agent_session_id: int, home: Path, verb: str) -> tuple[Runtime, Handle]:
     """Return the runtime and the handle of a running agent.
 
     Raises:
@@ -258,10 +258,12 @@ def _running(db: Database, worker_id: int, home: Path, verb: str) -> tuple[Runti
         RuntimeFailure: the runtime cannot be made, for example because it is not installed.
     """
     with db.session() as s:
-        worker = s.get_one(Worker, worker_id)
-        if worker.state is not WorkerState.RUNNING:
-            raise NotRunning(f'worker#{worker_id} is {worker.state}, not running: nothing to {verb}')
-        return runtime_for(s, worker, home), handle_for(worker)
+        agent_session = s.get_one(AgentSession, agent_session_id)
+        if agent_session.state is not AgentSessionState.RUNNING:
+            raise NotRunning(
+                f'agent_session#{agent_session_id} is {agent_session.state}, not running: nothing to {verb}'
+            )
+        return runtime_for(s, agent_session, home), handle_for(agent_session)
 
 
 class IdeasTable(PanelTable):

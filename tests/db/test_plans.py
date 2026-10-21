@@ -83,13 +83,13 @@ def test_the_recording_covers_every_hot_path(populated: tuple[Path, list[Stateme
 
 
 def test_the_check_fails_without_the_hot_indexes(populated: tuple[Path, list[Statement]], tmp_path: Path) -> None:
-    """Proof the test has teeth: without the hot indexes the same statements scan workers, candidates, comments, runs."""
+    """Proof the test has teeth: without the hot indexes the same statements scan implementers, candidates, comments, runs."""
     path, statements = populated
     copy = tmp_path / 'before.db'
     shutil.copy(path, copy)
     drop_new_indexes(copy)
     scanned = ' '.join(violations(copy, statements))
-    assert all(table in scanned for table in ('workers', 'candidates', 'comments', 'runs'))
+    assert all(table in scanned for table in ('agent_sessions', 'candidates', 'comments', 'runs'))
 
 
 def test_the_models_declare_what_the_script_drops() -> None:

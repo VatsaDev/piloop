@@ -170,7 +170,7 @@ erDiagram
         datetime pruned_at
         boolean complete
     }
-    workers {
+    agent_sessions {
         integer id PK
         varchar kind
         integer campaign_id FK
@@ -179,7 +179,7 @@ erDiagram
         varchar model
         varchar runtime
         json handle
-        WorkerState state
+        AgentSessionState state
         varchar reason
         varchar log_dir
         datetime started_at
@@ -217,8 +217,8 @@ erDiagram
     campaigns ||--o{ lessons : "campaign_id"
     campaigns ||--o{ documents : "campaign_id"
     campaigns ||--o{ archives : "campaign_id"
-    campaigns |o--o{ workers : "campaign_id"
-    runs |o--o{ workers : "run_id"
+    campaigns |o--o{ agent_sessions : "campaign_id"
+    runs |o--o{ agent_sessions : "run_id"
 ```
 
 The full-text indexes are not in the diagram: `ideas_fts` (`title`, `hypothesis`, `plan`), `comments_fts` (`body`), `documents_fts` (`title`, `body`).

@@ -1,13 +1,11 @@
-import contextlib
 import os
 import subprocess
 import sys
 import time
 
-import psutil
 import pytest
 
-from piloop.proc import TOKEN_ENV, UNITS_ENV, Inherited, child_env, kill_group, kill_tagged, tagged
+from piloop.proc import UNITS_ENV, Inherited, child_env, kill_group
 
 
 def test_kill_group_tolerates_a_reaped_child() -> None:
@@ -21,66 +19,10 @@ def test_no_child_inherits_a_units_path(monkeypatch: pytest.MonkeyPatch) -> None
     assert UNITS_ENV not in child_env()
 
 
-def test_no_child_inherits_the_token_or_the_signature_of_the_agent_that_ran_piloop(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """An agent that runs ``piloop`` would hand its token to what piloop starts, a daemon or an evaluation, and the end
-    of the agent would kill them. The runtime gives each agent its own token, after this."""
-    monkeypatch.setenv(TOKEN_ENV, 'w-1')
-    monkeypatch.setenv('PILOOP_ACTOR', 'worker#1')
-    assert TOKEN_ENV not in child_env() and 'PILOOP_ACTOR' not in child_env()
-
-
-FORKER = """
-import os, time
-while True:
-    if os.fork() == 0:
-        time.sleep(60)
-        os._exit(0)
-    time.sleep(0.002)
-"""
-
-
-def test_kill_tagged_tolerates_a_process_that_ends_after_the_scan(monkeypatch: pytest.MonkeyPatch) -> None:
-    child = subprocess.Popen(['sleep', '30'])
-    scanned = psutil.Process(child.pid)
-    child.kill()
-    child.wait()
-    scans = iter([[scanned]])
-    monkeypatch.setattr('piloop.proc._tagged', lambda marker: next(scans, []))
-    kill_tagged('X=1')
-    monkeypatch.setattr('piloop.proc._tagged', lambda marker: [scanned])
-    assert tagged('X=1') == [], 'gone before its session and command line were read'
-
-
-def test_kill_tagged_ends_what_it_found_in_its_last_round(monkeypatch: pytest.MonkeyPatch) -> None:
-    token = os.urandom(8).hex()
-    child = subprocess.Popen(['sleep', '30'], env={**os.environ, TOKEN_ENV: token})
-    monkeypatch.setattr('piloop.proc.KILL_SCANS', 1)
-    kill_tagged(f'{TOKEN_ENV}={token}')
-    assert child.wait(5) == -9
-
-
-def test_kill_tagged_ends_a_tree_that_forks_while_it_is_killed() -> None:
-    """A build (``make -j``, ``lake build``) forks while the kill reads the process table: one pass of SIGKILL over
-    the processes it found left about 20 of 330 alive. Each is stopped first, and the scan repeats until none is new."""
-    token = os.urandom(8).hex()
-    marker = f'{TOKEN_ENV}={token}'
-    forker = subprocess.Popen(
-        [sys.executable, '-c', FORKER], env={**os.environ, TOKEN_ENV: token}, start_new_session=True
-    )
-    try:
-        deadline = time.monotonic() + 10
-        while len(tagged(marker)) < 100 and time.monotonic() < deadline:
-            time.sleep(0.05)
-        kill_tagged(marker)
-        assert tagged(marker) == []
-    finally:
-        for pid, _, _ in tagged(marker):
-            with contextlib.suppress(psutil.Error):
-                psutil.Process(pid).kill()
-        forker.kill()
-        forker.wait()
+def test_no_child_inherits_the_signature_of_the_agent_that_ran_piloop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A daemon or an evaluation that an agent's ``piloop`` command starts must not sign as that agent."""
+    monkeypatch.setenv('PILOOP_ACTOR', 'implementer#1')
+    assert 'PILOOP_ACTOR' not in child_env()
 
 
 AFTER_EXEC = """

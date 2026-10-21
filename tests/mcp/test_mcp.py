@@ -11,7 +11,7 @@ import pytest
 from pydantic import ValidationError
 
 from piloop.config import CampaignConfig
-from piloop.db.models import WorkerKind
+from piloop.db.models import RoleName
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.mcp import (
     MCP,
@@ -292,10 +292,10 @@ def config(**extra: object) -> dict[str, object]:
 
 def test_a_role_lists_servers_by_table_and_gets_exactly_those() -> None:
     cfg = CampaignConfig.model_validate(config(roles={'research': {'mcp': ['xai', 'exa']}}))
-    assert cfg.role_servers(WorkerKind.RESEARCH) == {'xai': XAI, 'exa': EXA}
-    assert cfg.role_servers(WorkerKind.WORKER) == {}, 'a role lists none by default'
-    with pytest.raises(ValidationError, match=re.escape("roles.worker.mcp: no [mcp.<name>] table for ['nope']")):
-        CampaignConfig.model_validate(config(roles={'worker': {'mcp': ['exa', 'nope']}}))
+    assert cfg.role_servers(RoleName.RESEARCH) == {'xai': XAI, 'exa': EXA}
+    assert cfg.role_servers(RoleName.IMPLEMENTER) == {}, 'a role lists none by default'
+    with pytest.raises(ValidationError, match=re.escape("roles.implementer.mcp: no [mcp.<name>] table for ['nope']")):
+        CampaignConfig.model_validate(config(roles={'implementer': {'mcp': ['exa', 'nope']}}))
     with pytest.raises(ValidationError, match='String should match pattern'):
         CampaignConfig.model_validate(config(mcp={'a.b': OPEN.model_dump()}))
 

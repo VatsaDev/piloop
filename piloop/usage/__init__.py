@@ -1,4 +1,4 @@
-"""Token usage of each agent, kept in ``workers.usage``.
+"""Token usage of each agent, kept in ``agent_sessions.usage``.
 
 piloop reads the usage from the files that the agent's harness leaves when the agent ends. This module knows no
 harness. A harness definition has a ``UsageSpec``: the name of a *reader* and the reader's parameters. This module
@@ -25,12 +25,12 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from piloop.db.models import UsageJson, Worker
+from piloop.db.models import AgentSession, UsageJson
 
 
 @dataclass(frozen=True)
 class Usage:
-    """The token usage of one session. ``as_json`` gives the value that ``workers.usage`` stores."""
+    """The token usage of one session. ``as_json`` gives the value that ``agent_sessions.usage`` stores."""
 
     input: int
     """The input tokens that the prompt cache did not serve."""
@@ -165,8 +165,10 @@ def read_usage(spec: UsageSpec | None, session_id: str | None, cwd: Path | None,
 
 
 def campaign_tokens(s: Session, campaign_id: int) -> int:
-    """The tokens that all agents of the campaign spent: ``SUM(json_extract(usage, '$.total'))`` over its workers."""
-    total = s.scalar(select(func.sum(Worker.usage['total'].as_integer())).where(Worker.campaign_id == campaign_id))
+    """The tokens that all agents of the campaign spent: ``SUM(json_extract(usage, '$.total'))`` over its agent sessions."""
+    total = s.scalar(
+        select(func.sum(AgentSession.usage['total'].as_integer())).where(AgentSession.campaign_id == campaign_id)
+    )
     return int(total or 0)
 
 

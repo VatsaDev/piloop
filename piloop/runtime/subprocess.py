@@ -14,11 +14,12 @@ from typing import ClassVar
 from uuid import uuid4
 
 from piloop.harnesses import Invocation, fill
-from piloop.proc import TOKEN_ENV, alive, child_env, kill_group, kill_tagged, started
-from piloop.runtime import Check, Handle, NotAttachable, NotSteerable, Outcome, WorkerSpec, WorkerStatus
+from piloop.proc import alive, child_env, kill_group, started
+from piloop.runtime import AgentSpec, AgentStatus, Check, Handle, NotAttachable, NotSteerable, Outcome
+from piloop.runtime.tags import TAG_ENV, kill_tagged
 
-STDOUT = 'worker.stdout'
-STDERR = 'worker.stderr'
+STDOUT = 'agent_session.stdout'
+STDERR = 'agent_session.stderr'
 POLL_SECONDS = 0.1
 SESSION_ID_SECONDS = 30
 """How long a live process has to print the line that ``session_id_pattern`` matches. After that, the session id is
@@ -26,13 +27,16 @@ unknown."""
 QUEUE = 'queued-messages'
 """Under the agent's log directory: the messages ``prompt`` queued for its next turn, one JSON string per line. A file,
 because ``prompt`` runs in another runtime instance, or another process (``piloop prompt``), than ``wait``."""
-RESUMER = 'worker.resumer'
+RESUMER = 'agent_session.resumer'
 """Under the agent's log directory: present while the instance that started the agent waits on it and can resume it.
 ``wait`` in any other instance (a re-attach after an in-place restart) removes it, so ``prompt`` refuses from then
 on instead of queueing messages that no turn would take."""
-CURRENT = 'worker.current'
+CURRENT = 'agent_session.current'
 """Under the agent's log directory: the pid and start time of the process of the agent's latest turn, once a resumed
 turn replaced the first process. Every instance reads it, so ``kill`` and ``status`` reach the agent's live process."""
+OLD_CURRENT = 'worker.current'
+"""``CURRENT`` before 0.2.0: an agent that an older daemon resumed outlives an upgrade with it. TODO(0.3.0): delete it,
+with its read in ``_current``."""
 
 
 class SubprocessRuntime:
@@ -57,13 +61,13 @@ class SubprocessRuntime:
         """Take the same arguments as every runtime constructor. A child process needs neither of them."""
         self._procs: dict[int, subprocess.Popen[bytes]] = {}
         """The process of each agent's latest turn, by the pid of its first process (the handle's)."""
-        self._specs: dict[int, WorkerSpec] = {}
+        self._specs: dict[int, AgentSpec] = {}
         """The spec of each agent this instance started with resume arguments, by the handle's pid."""
 
-    def start(self, spec: WorkerSpec) -> Handle:
+    def start(self, spec: AgentSpec) -> Handle:
         """Start the process in its own session, with stdout and stderr written under ``spec.log_dir``.
 
-        Its environment has ``TOKEN_ENV``, which every process it starts inherits, so ``kill`` finds them all.
+        Its environment has ``TAG_ENV``, which every process it starts inherits, so ``kill`` finds them all.
         """
         spec.log_dir.mkdir(parents=True, exist_ok=True)
         token = uuid4().hex
@@ -109,18 +113,18 @@ class SubprocessRuntime:
                 if time.monotonic() - started > timeout:
                     self.kill(handle)
                     seconds = time.monotonic() - started
-                    return Outcome(WorkerStatus.TIMED_OUT, seconds, None, f'worker timeout after {timeout:g}s')
+                    return Outcome(AgentStatus.TIMED_OUT, seconds, None, f'agent timeout after {timeout:g}s')
                 time.sleep(POLL_SECONDS)
             if not self._resume(handle):
                 break
         rc = self._exit_code(handle)
         return Outcome(
-            WorkerStatus.EXITED, time.monotonic() - started, rc, None if rc in (0, None) else f'worker exit {rc}'
+            AgentStatus.EXITED, time.monotonic() - started, rc, None if rc in (0, None) else f'agent exit {rc}'
         )
 
-    def status(self, handle: Handle) -> WorkerStatus:
+    def status(self, handle: Handle) -> AgentStatus:
         """A live process is working. A one-shot process is never idle."""
-        return WorkerStatus.WORKING if self._alive(handle) else WorkerStatus.EXITED
+        return AgentStatus.WORKING if self._alive(handle) else AgentStatus.EXITED
 
     def session_id(self, handle: Handle) -> str | None:
         """Return the first match of the spec's ``session_id_pattern`` in the captured stdout. None without a pattern.
@@ -162,20 +166,20 @@ class SubprocessRuntime:
         log_dir = handle.data.get('log_dir')  # a handle that names none has no queue either
         if log_dir is None or not (Path(str(log_dir)) / RESUMER).is_file():
             raise NotSteerable(
-                f'subprocess worker pid {_pid(handle)} cannot take a message: its harness has no resume arguments, or'
+                f'subprocess agent pid {_pid(handle)} cannot take a message: its harness has no resume arguments, or'
                 ' the daemon that started it was restarted'
             )
         if not self._alive(handle):
-            raise NotSteerable(f'subprocess worker pid {_pid(handle)} has ended')
+            raise NotSteerable(f'subprocess agent pid {_pid(handle)} has ended')
         with _locked(_log_dir(handle)), (_log_dir(handle) / QUEUE).open('a') as queue:
             queue.write(json.dumps(text) + '\n')
 
     def focus(self, handle: Handle) -> str:
-        """Cannot: the agent is a background process without a terminal. Its output is in ``worker.stdout`` instead."""
+        """Cannot: the agent is a background process without a terminal. Its output is in ``agent_session.stdout`` instead."""
         raise NotAttachable(_elsewhere(handle))
 
     def attach(self, handle: Handle) -> str:
-        """Cannot: the agent is a background process without a terminal. Its output is in ``worker.stdout`` instead."""
+        """Cannot: the agent is a background process without a terminal. Its output is in ``agent_session.stdout`` instead."""
         raise NotAttachable(_elsewhere(handle))
 
     @classmethod
@@ -223,10 +227,12 @@ class SubprocessRuntime:
         return '\n'.join(_stdout(handle).splitlines()[-lines:])
 
     def kill(self, handle: Handle) -> None:
-        """Send SIGKILL to the process group, then to every process that carries the agent's token.
+        """Send SIGKILL to the process group, then to every process that carries the agent's process tag.
+
+        The handle keeps the tag under its ``token`` key: a handle is stored, and its agent can outlive an upgrade.
 
         Harnesses run tool commands in sessions of their own (Claude Code's Bash calls), outside the group, and those
-        outlive the agent. A group or a process that is already gone is not an error. A handle from before the token
+        outlive the agent. A group or a process that is already gone is not an error. A handle from before the tag
         reaches only the group.
         """
         if self._alive(handle):
@@ -235,7 +241,7 @@ class SubprocessRuntime:
                 while self._alive(handle):
                     time.sleep(POLL_SECONDS)
         if (token := handle.data.get('token')) is not None:
-            kill_tagged(f'{TOKEN_ENV}={token}')
+            kill_tagged(f'{TAG_ENV}={token}')
 
     def _alive(self, handle: Handle) -> bool:
         proc = self._procs.get(_pid(handle))
@@ -254,8 +260,8 @@ def _pid(handle: Handle) -> int:
 
 def _current(handle: Handle) -> tuple[int, float]:
     """The pid and start time of the agent's latest process: ``CURRENT`` once a turn was resumed, else the handle's."""
-    path = _log_dir(handle) / CURRENT
-    data = json.loads(path.read_text()) if path.is_file() else handle.data
+    path = next((p for p in (_log_dir(handle) / n for n in (CURRENT, OLD_CURRENT)) if p.is_file()), None)
+    data = json.loads(path.read_text()) if path is not None else handle.data
     return int(str(data['pid'])), float(str(data['start_time']))
 
 
@@ -270,7 +276,7 @@ def _locked(log_dir: Path) -> Generator[None]:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
 
-def _spawn(spec: WorkerSpec, args: list[str], mode: str, token: str) -> subprocess.Popen[bytes]:
+def _spawn(spec: AgentSpec, args: list[str], mode: str, token: str) -> subprocess.Popen[bytes]:
     """Start one turn of the agent in a session of its own, writing (``w``) or appending (``a``) its output files."""
     with (spec.log_dir / STDOUT).open(mode) as out, (spec.log_dir / STDERR).open(mode) as err:
         return subprocess.Popen(
@@ -279,7 +285,7 @@ def _spawn(spec: WorkerSpec, args: list[str], mode: str, token: str) -> subproce
             stdout=out,
             stderr=err,
             stdin=subprocess.DEVNULL,
-            env=child_env() | spec.env | {TOKEN_ENV: token},
+            env=child_env() | spec.env | {TAG_ENV: token},
             start_new_session=True,
         )
 

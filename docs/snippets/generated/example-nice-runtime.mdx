@@ -16,7 +16,7 @@ from dataclasses import replace
 from typing import ClassVar
 
 from piloop.harnesses import Invocation
-from piloop.runtime import Handle, WorkerSpec
+from piloop.runtime import AgentSpec, Handle
 from piloop.runtime.subprocess import SubprocessRuntime
 from piloop.settings import runtime_settings
 
@@ -27,7 +27,7 @@ class NiceRuntime(SubprocessRuntime):
     kind: ClassVar[str] = 'nice'
     invocation: ClassVar[Invocation] = Invocation.HEADLESS
 
-    def start(self, spec: WorkerSpec) -> Handle:
+    def start(self, spec: AgentSpec) -> Handle:
         niceness = str(runtime_settings(self.kind).get('niceness', 10))
         args = ['-n', niceness, spec.executable, *spec.args]
         return super().start(replace(spec, executable='nice', args=args))

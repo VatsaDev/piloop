@@ -20,12 +20,12 @@ from sqlalchemy.orm import Session
 from piloop.db.events import ANOMALY_EVENT
 from piloop.db.models import (
     OPEN_RUNS,
+    AgentSession,
+    AgentSessionState,
     Campaign,
     Idea,
     IdeaStatus,
     Run,
-    Worker,
-    WorkerState,
     campaign_runs,
     count,
     utcnow,
@@ -105,7 +105,7 @@ class Backlog:
 
     @property
     def idle(self) -> int:
-        """The free worker slots that no runnable idea and no sweep in flight will fill."""
+        """The free implementer slots that no runnable idea and no sweep in flight will fill."""
         return self.free - self.runnable - self.pending
 
     def held(self) -> str:
@@ -122,13 +122,13 @@ class Backlog:
         if len(self.tracks) > 1:
             per_track = ' (' + ', '.join(f'{t.name} {t.runnable} of {t.target}' for t in self.tracks) + ')'
         backlog = f'{self.held()}{per_track}{coming}'
-        return f'{self.idle} free worker slots without a runnable idea; {backlog}' if self.idle > 0 else backlog
+        return f'{self.idle} free implementer slots without a runnable idea; {backlog}' if self.idle > 0 else backlog
 
 
 class Tick(Protocol):
     """What a trigger reads to decide. The scheduler makes one for each sweeping role of each campaign on each tick.
 
-    A trigger reads with ``s`` and writes nothing. "The role's rows" are the ``workers`` rows of the role in the
+    A trigger reads with ``s`` and writes nothing. "The role's rows" are the ``agent_sessions`` rows of the role in the
     campaign.
     """
 
@@ -144,11 +144,11 @@ class Tick(Protocol):
 
     @property
     def role(self) -> str:
-        """The name of the role: its ``[roles.<name>]`` table and ``workers.kind``."""
+        """The name of the role: its ``[roles.<name>]`` table and ``agent_sessions.kind``."""
         ...
 
     @property
-    def last(self) -> Worker | None:
+    def last(self) -> AgentSession | None:
         """The role's latest row. None before the first."""
         ...
 
@@ -178,14 +178,14 @@ class Tick(Protocol):
         """The number of the role's latest rows, newest first, that were killed in a row."""
         ...
 
-    def empty_sweeps(self, states: tuple[WorkerState, ...]) -> list[Worker]:
+    def empty_sweeps(self, states: tuple[AgentSessionState, ...]) -> list[AgentSession]:
         """The role's latest rows in ``states``, newest first, until one that defined an idea.
 
         A row defined an idea if it inserted one or developed a seed into one (``piloop.campaign.ideas.defined_by``).
         """
         ...
 
-    def routine(self) -> Worker | None:
+    def routine(self) -> AgentSession | None:
         """The role's latest row that got no anomaly."""
         ...
 
@@ -200,7 +200,7 @@ class Fire:
     """A trigger that fired: the reason for the request, and what the requested row gets."""
 
     reason: str
-    """The ``workers.reason`` of the request. The agent's brief shows it."""
+    """The ``agent_sessions.reason`` of the request. The agent's brief shows it."""
     count: int = 1
     """The number of rows to request. When several triggers fire together, the largest count wins."""
     alone: bool = False
@@ -295,8 +295,8 @@ class SeedTrigger(Trigger):
         if fresh:
             return Fire(f'{fresh} new seeds to develop')
         assert last is not None  # With no row yet, every waiting seed is fresh.
-        if last.state is WorkerState.KILLED and tick.killed_streak() <= tick.max_concurrent:
-            return Fire(f'{waiting} seeds to develop; retrying after worker#{last.id} was killed: {last.error}')
+        if last.state is AgentSessionState.KILLED and tick.killed_streak() <= tick.max_concurrent:
+            return Fire(f'{waiting} seeds to develop; retrying after agent_session#{last.id} was killed: {last.error}')
         return None
 
 
@@ -332,7 +332,7 @@ class LowWaterTrigger(Trigger):
     buffer: int = Field(default=2, ge=0)
     """The number of ready ideas to keep in addition to one for each run slot (the ``max_concurrent`` of every role
     that does runs). With this backlog, a free slot finds an idea at once and does not wait for a sweep. A larger value
-    makes workers wait less for the role, but the ideas they run are older."""
+    makes implementers wait less for the role, but the ideas they run are older."""
 
     def fire(self, tick: Tick) -> Fire | None:
         backlog = tick.backlog(self.buffer)
@@ -348,16 +348,16 @@ class LowWaterTrigger(Trigger):
         last = tick.last
         if last is None:
             return str(backlog)
-        if last.state is WorkerState.KILLED and tick.killed_streak() <= tick.max_concurrent:
-            return f'{backlog}; retrying after worker#{last.id} was killed: {last.error}'
+        if last.state is AgentSessionState.KILLED and tick.killed_streak() <= tick.max_concurrent:
+            return f'{backlog}; retrying after agent_session#{last.id} was killed: {last.error}'
         mine = campaign_runs(tick.campaign.id)
         finished = count(tick.s, mine.where(Run.finished_at > last.started_at))
         in_flight = count(tick.s, mine.where(Run.status.in_(OPEN_RUNS)))
-        barren = len(tick.empty_sweeps((WorkerState.EXITED,)))
+        barren = len(tick.empty_sweeps((AgentSessionState.EXITED,)))
         if finished >= max(min(2**barren, finished + in_flight), 1):
             backoff = f' (after {barren} sweeps that defined no idea)' if barren else ''
-            return f'{backlog}; {finished} runs finished since worker#{last.id} started{backoff}'
-        empty = tick.empty_sweeps((WorkerState.EXITED, WorkerState.KILLED))
+            return f'{backlog}; {finished} runs finished since agent_session#{last.id} started{backoff}'
+        empty = tick.empty_sweeps((AgentSessionState.EXITED, AgentSessionState.KILLED))
         if not empty:
             return str(backlog)
         latest = empty[0]

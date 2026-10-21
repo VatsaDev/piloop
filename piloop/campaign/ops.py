@@ -354,7 +354,7 @@ def files(campaign: Campaign, actor: str) -> Files | None:
     if filed is Files.NOTHING:
         raise Refused(
             f"{actor} files no ideas or seeds: say the hunch in your run's finding, with pointers."
-            ' Research reads the findings of the workers.'
+            ' Research reads the findings of the implementers.'
         )
     return filed
 

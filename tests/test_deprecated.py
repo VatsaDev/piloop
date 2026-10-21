@@ -157,6 +157,19 @@ def test_the_claude_and_codex_placeholders_of_a_usage_glob_are_env_placeholders(
     assert usage is not None and usage.file == '{env:CODEX_HOME:~/.codex}/{session_id}.jsonl'
 
 
+def test_the_worker_role_is_the_implementer(campaign_path: Path) -> None:
+    write_toml(campaign_path, HARNESS_APPEND, implementer_timeout=7)
+    toml = campaign_path / 'piloop.toml'
+    toml.write_text(toml.read_text().replace('[roles.implementer]', '[roles.worker]'))
+    with pytest.warns(
+        PiloopDeprecationWarning, match=r'\[roles.worker\] is deprecated; write \[roles.implementer\]'
+    ) as w:
+        cfg = load_campaign_config(campaign_path)
+    assert cfg.roles.implementer.timeout == 7
+    assert 'worker' not in cfg.roles.all(), 'no role of its own'
+    assert w[0].lineno == toml.read_text().splitlines().index('[roles.worker]') + 1
+
+
 TEMPLATES = Path(__file__).parent / 'fixtures' / 'templates'
 """The campaign template that ``piloop init`` wrote in 0.1.0, and in this release before the scout was a role."""
 

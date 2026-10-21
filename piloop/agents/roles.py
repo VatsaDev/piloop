@@ -10,7 +10,7 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from piloop.config import BRIEF_FILE, CampaignConfig, Files, SweepRole, Track, config_of
-from piloop.db.models import Campaign, Worker
+from piloop.db.models import AgentSession, Campaign
 
 PROMPTS = Path(__file__).resolve().parent / 'prompts'
 PROCEDURES = 'sql_procedures.md'
@@ -27,8 +27,8 @@ class Role:
     """
 
     kind: str
-    """The role's name in ``piloop.toml``, and so ``workers.kind``, the signature of its agents
-    (``<kind>#<worker id>``) and the source of the ideas they file."""
+    """The role's name in ``piloop.toml``, and so ``agent_sessions.kind``, the signature of its agents
+    (``<kind>#<agent session id>``) and the source of the ideas they file."""
     prompt: Path
     """The file that starts the brief."""
     incident: Path | None
@@ -40,7 +40,7 @@ class Role:
     files: Files
     """What the role may file with ``piloop idea``. The CLI enforces it."""
     ideas: str
-    """How this role gives work to the workers, as the context block of the brief says it.
+    """How this role gives work to the implementers, as the context block of the brief says it.
 
     ``{piloop}`` is the CLI and ``{campaign}`` is the campaign's name.
     """
@@ -54,7 +54,7 @@ SEED_HINT = (
 IDEAS: dict[Files, str] = {
     Files.NOTHING: (
         '- A hunch worth a run of its own goes in your finding, with pointers (ids, paths, the number): research'
-        " reads the workers' findings. You file no ideas or seeds."
+        " reads the implementers' findings. You file no ideas or seeds."
     ),
     Files.SEEDS: SEED_HINT,
     Files.IDEAS: (
@@ -93,10 +93,10 @@ def _prompt(repo: Path, configured: str | None, built_in: str) -> Path | None:
     return PROMPTS / built_in if built_in else None
 
 
-def role_of(s: Session, worker: Worker) -> Role:
+def role_of(s: Session, agent_session: AgentSession) -> Role:
     """Return the role of a row: the role of its kind in its campaign."""
-    campaign = s.get_one(Campaign, worker.campaign_id)
-    return role(config_of(campaign), worker.kind, Path(campaign.path))
+    campaign = s.get_one(Campaign, agent_session.campaign_id)
+    return role(config_of(campaign), agent_session.kind, Path(campaign.path))
 
 
 def files_of(cfg: CampaignConfig, actor: str) -> Files | None:
@@ -111,7 +111,7 @@ def files_of(cfg: CampaignConfig, actor: str) -> Files | None:
 def compose_brief(
     role: Role,
     campaign: Campaign,
-    worker_id: int,
+    agent_session_id: int,
     *,
     reason: str,
     context: str,
@@ -122,10 +122,10 @@ def compose_brief(
     """Compose a brief: the role prompt, the campaign brief, the role's addendum, the database procedures, the context.
 
     A sweep also gets its role's incident or routine prompt after the role prompt: the incident prompt when it got
-    anomalies (``incident``). ``wake``, the lessons overview of the repo (``piloop.reports.wake``), follows them. A
-    worker also gets its track's addendum after the role's addendum. With several tracks, the context lists them.
+    anomalies (``incident``). ``wake``, the lessons overview of the repo (``piloop.reports.wake``), follows them. An
+    implementer also gets its track's addendum after the role's addendum. With several tracks, the context lists them.
     """
-    author = f'{role.kind}#{worker_id}'
+    author = f'{role.kind}#{agent_session_id}'
     repo = Path(campaign.path)
     cfg = config_of(campaign)
     addendum = cfg.role(role.kind).addendum
@@ -141,13 +141,13 @@ def compose_brief(
         '\n'.join(
             [
                 '# Context',
-                f'- You are worker#{worker_id}, the {role.kind} for campaign#{campaign.id} ({campaign.name}).',
+                f'- You are {author}, the {role.kind} for campaign#{campaign.id} ({campaign.name}).',
                 f'- Campaign repo: {campaign.path} (every candidate commit and Entire checkpoint is in it).',
                 f"- Sign what you write as '{author}' (comments.author, ideas.created_by).",
                 f'- Trigger: {reason}',
                 f"- piloop: `{PILOOP_HINT}` is this daemon's piloop. Run every `piloop` command of this brief with it.",
                 f"- SQL tool: `{SQL_HINT} -`, with the statement on stdin from a quoted heredoc (`<<'EOF'`).",
-                f'- Sweeping roles (`workers.kind` of a request): {", ".join(cfg.roles.sweeping())}.',
+                f'- Sweeping roles (`agent_sessions.kind` of a request): {", ".join(cfg.roles.sweeping())}.',
                 *([tracks_line(cfg, track)] if cfg.multitrack else []),
                 role.ideas.format(piloop=PILOOP_HINT, campaign=campaign.name),
                 *([f'- You may write: {", ".join(sorted(role.writes))}.'] if role.writes else []),
@@ -159,7 +159,7 @@ def compose_brief(
 
 
 def tracks_line(cfg: CampaignConfig, track: Track | None) -> str:
-    """Return the campaign's tracks in one line for a brief. Every idea and seed names one. A worker learns its own."""
+    """Return the campaign's tracks in one line for a brief. Every idea and seed names one. An implementer learns its own."""
     tracks = '; '.join(
         f'{t.name} (primary {t.primary.name}, {t.primary.direction} is better; share {t.share:g})'
         for t in cfg.all_tracks

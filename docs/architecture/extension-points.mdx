@@ -319,11 +319,11 @@ piloop init .
 ```
 
 The daemon now checks the query on each tick. When it returns a row, the daemon requests a `planner` agent, and
-`piloop status` lists it as `planner#<worker id>`. The agent signs its comments `planner#<worker id>`.
+`piloop status` lists it as `planner#<agent session id>`. The agent signs its comments `planner#<agent session id>`.
 
 ### Example: a role that does runs
 
-Add a table with a new name and `runs = true`. The role takes the worker's defaults, so every other key is optional.
+Add a table with a new name and `runs = true`. The role takes the implementer's defaults, so every other key is optional.
 This role runs the ideas of the `speed` track with Claude, two at a time, and stops each agent after 10 minutes:
 
 ```toml
@@ -337,12 +337,12 @@ harnesses = ["claude"]
 max_concurrent = 2
 timeout = 600
 
-[roles.worker]
+[roles.implementer]
 takes = "track != 'speed'"
 ```
 
 `takes` is an SQL condition on the `ideas` table, so it can select by any column: `priority`, `track`, `family`,
-`harness`, or a subquery. Without `takes` on the worker, the worker also runs the `speed` ideas that wait for a free
+`harness`, or a subquery. Without `takes` on the implementer, the implementer also runs the `speed` ideas that wait for a free
 `sprinter` slot. Write the prompt and store the config:
 
 ```bash
@@ -351,8 +351,8 @@ printf '# Sprinter\nMake the change that the idea names, measure it once, and co
 piloop init .
 ```
 
-The daemon queues each `speed` idea for a `sprinter` run. The run's agent signs `sprinter#<worker id>`, its brief has
-the idea and the starting point as a worker's has, and its commits are scored and judged like a worker's.
+The daemon queues each `speed` idea for a `sprinter` run. The run's agent signs `sprinter#<agent session id>`, its brief has
+the idea and the starting point as an implementer's has, and its commits are scored and judged like an implementer's.
 [Roles](/concepts/roles#define-a-role-that-does-runs) lists which rules apply to each role and which apply to every run.
 
 ### Example: a role and a trigger from a plugin
@@ -408,7 +408,7 @@ with its table in `piloop.toml` over the package's defaults, at its next `piloop
 A role is a table in `piloop.toml`: its prompt, when it starts (the run queue, or its triggers), where it works, how
 (harnesses, models, MCP servers, timeout, concurrency) and what it may file. A role that does runs (`runs = true`)
 takes ideas from the run queue, and its commits are scored and judged. A sweeping role starts on its triggers, and
-nothing it commits is scored. A plugin's role is a `piloop.config.SweepRole` or `piloop.config.WorkerRole` with the
+nothing it commits is scored. A plugin's role is a `piloop.config.SweepRole` or `piloop.config.ImplementerRole` with the
 defaults. [Roles](/concepts/roles) describes each key.
 
 ### Built in

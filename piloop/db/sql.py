@@ -272,6 +272,7 @@ class Result:
 RENAMED = {
     'projects': 'campaigns',
     'project_id': 'campaign_id',
+    'workers': 'agent_sessions',
 }
 """The names of the schema of 0.1.0 that 0.2.0 renamed, with the new ones. ``with_renamed`` names the new one in an error.
 

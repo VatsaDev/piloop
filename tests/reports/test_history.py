@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from piloop.config import CampaignConfig
 from piloop.db.models import (
+    AgentSession,
     Campaign,
     Candidate,
     Comment,
@@ -14,12 +15,11 @@ from piloop.db.models import (
     IdeaStatus,
     LinkKind,
     Measurement,
+    RoleName,
     Run,
     RunStatus,
     TargetKind,
     Verdict,
-    Worker,
-    WorkerKind,
 )
 from piloop.db.session import Database
 from piloop.reports.history import (
@@ -76,8 +76,8 @@ def scored(
     s.flush()
     usage = {'total': tokens, 'turns': 3, 'source': '/x.jsonl'} if tokens is not None else None
     s.add(
-        Worker(
-            kind=WorkerKind.WORKER, campaign_id=row.campaign_id, run_id=run.id, checkpoint_id=checkpoint, usage=usage
+        AgentSession(
+            kind=RoleName.IMPLEMENTER, campaign_id=row.campaign_id, run_id=run.id, checkpoint_id=checkpoint, usage=usage
         )
     )
     evaluator_id = row.campaign.evaluator_id
@@ -100,7 +100,7 @@ def scored(
     return c
 
 
-def comment(s: Session, kind: TargetKind, target: int, body: str, author: str = 'worker#1') -> None:
+def comment(s: Session, kind: TargetKind, target: int, body: str, author: str = 'implementer#1') -> None:
     s.add(Comment(target_kind=kind, target_id=target, author=author, kind=CommentKind.FINDING, body=body))
 
 
@@ -137,7 +137,7 @@ def test_history_lists_every_idea_with_its_outcome_the_lineage_and_the_findings(
             tokens=234_444,
         )
         comment(s, TargetKind.IDEA, kept.id, 'appending works | keep appending\nsecond line is not shown')
-        worse = idea(s, campaign, 'fewer lines', family='appending', created_by='worker#4')
+        worse = idea(s, campaign, 'fewer lines', family='appending', created_by='implementer#4')
         scored(s, worse, e2.id, (Verdict.DISCARD, {'score': 2, 'size': 8}, None))
         crashed = idea(s, campaign, 'delete solve.txt', IdeaStatus.REJECTED, priority=3)
         scored(s, crashed, e2.id, (Verdict.CRASH, {}, 'no such file'))
@@ -160,10 +160,10 @@ def test_history_lists_every_idea_with_its_outcome_the_lineage_and_the_findings(
     assert render(db, campaign) == snapshot("""\
 ## History: ideas (8 of 8)
 
-| id | status | by | family | links | prio | title | hypothesis | best candidate (score) | worker finding |
+| id | status | by | family | links | prio | title | hypothesis | best candidate (score) | implementer finding |
 |---|---|---|---|---|---|---|---|---|---|
 | 1 | done | research#9 | appending | — | 1 | more lines | more lines helps | keep 3 (+2 vs candidate#1) (candidate#2) | appending works / keep appending |
-| 2 | done | worker#4 | appending | superseded by idea#7, idea#8 | 2 | fewer lines | fewer lines helps | discard 2 (-1 vs candidate#2) (candidate#3) | — |
+| 2 | done | implementer#4 | appending | superseded by idea#7, idea#8 | 2 | fewer lines | fewer lines helps | discard 2 (-1 vs candidate#2) (candidate#3) | — |
 | 3 | rejected | t | — | superseded by idea#8 | 3 | delete solve.txt | delete solve.txt helps | crash (candidate#4) | second attempt agrees; rejected |
 | 4 | done | t | — | after idea#1 | 2 | two commits | two commits helps | keep 4 (+1 vs candidate#2) (candidate#6) | — |
 | 5 | ready | t | — | blocked by idea#3 (rejected); after idea#1 | 0 | aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa… | hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh… | — | — |

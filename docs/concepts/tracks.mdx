@@ -11,7 +11,7 @@ track must hold the primary of every other track within a margin.
 
 ## The example
 
-`piloop init --example titanic-tracks` creates a campaign with two tracks on Kaggle's Titanic data. Workers edit
+`piloop init --example titanic-tracks` creates a campaign with two tracks on Kaggle's Titanic data. Implementers edit
 `solve.py`, which trains a model and predicts survival. One evaluate command prints two metrics:
 
 - `accuracy`: the accuracy on a fixed holdout. Higher is better.
@@ -35,7 +35,7 @@ margin = 0.3           # what an accuracy keep may add per step
 floor = 2.0            # an accuracy keep may not push the cost past this
 
 [tracks.accuracy]
-share = 0.75           # of [roles.worker] max_concurrent
+share = 0.75           # of [roles.implementer] max_concurrent
 addendum = "briefs/accuracy.md"
 
 [tracks.cost]
@@ -46,7 +46,7 @@ addendum = "briefs/cost.md"
 ## How tracks work
 
 - Each primary metric names its `track`. With several primaries, each one needs a `margin` and may have a `floor`.
-- Each track has a `[tracks.<name>]` table. `share` is the part of the worker slots that the track gets. The shares
+- Each track has a `[tracks.<name>]` table. `share` is the part of the implementer slots that the track gets. The shares
   sum to 1. `addendum` is a file that is added to the brief of the track's runs.
 - Every idea names its track: `piloop idea add <campaign> "<title>" --track cost`. With several tracks, piloop refuses
   an idea without one.
@@ -61,7 +61,7 @@ A campaign with one primary metric is one track, named after the metric. It need
 - `piloop status` and `piloop watch` show the head with the primary of every track. Then one line for each track: its
   primary at the head and at the start, the distance to its floor, its keeps, and its share next to the number of runs
   it has running.
-- A free worker slot goes to the track that is furthest below its share and has a ready idea. A track with no ready
+- A free implementer slot goes to the track that is furthest below its share and has a ready idea. A track with no ready
   idea gives its slot to the others. A share of 0 stops a track.
 - A candidate on one track that makes another track's primary worse by more than its margin is `interesting`, not
   `keep`. For example:

@@ -23,7 +23,7 @@ Read these, in this order:
 1. the campaign brief (above): the goal, the data, what is allowed;
 2. the current loss table, which is the newest file for the head under `./workspace/research/`, and the analysis
    artifacts and metrics in the research pack below;
-3. the recent findings (worker findings, and the findings on the campaign in the history);
+3. the recent findings (implementer findings, and the findings on the campaign in the history);
 4. the negatives worth remembering: discarded and rejected ideas with their findings (`ideas_fts`, `comments_fts`);
 5. the kept lineage, with each keep's gain;
 6. the technique library and the watch list under Context.
@@ -126,4 +126,4 @@ The next scout may run on another model and must not repeat your searches.
   status of an idea.
 - `techniques`: rows, by `INSERT`.
 - `comments`: one `finding` on the campaign.
-- Never `runs`, `candidates`, `measurements`, `workers` or `events`. Never the campaign checkout.
+- Never `runs`, `candidates`, `measurements`, `agent_sessions` or `events`. Never the campaign checkout.

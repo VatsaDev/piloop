@@ -33,7 +33,7 @@ from piloop.cli.common import CampaignRef, JsonFlag
 from piloop.cli.daemon import daemon_line
 from piloop.config import config_of
 from piloop.daemon.serve import running_pid
-from piloop.db.models import Campaign, CampaignStatus, Worker, utcnow
+from piloop.db.models import AgentSession, Campaign, CampaignStatus, utcnow
 from piloop.db.session import Database
 from piloop.reports import feed
 from piloop.reports.overview import overview, paused
@@ -148,10 +148,10 @@ def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> Non
             common.console.print(text, markup=False, highlight=False, soft_wrap=True)
 
 
-def _jobs(s: Session, worker: Worker) -> list[str]:
-    """What a running worker has in flight, for the ``silent`` anomaly. Empty when its runtime cannot say."""
+def _jobs(s: Session, agent_session: AgentSession) -> list[str]:
+    """What a running implementer has in flight, for the ``silent`` anomaly. Empty when its runtime cannot say."""
     try:
-        return runtime_for(s, worker, common.settings.home).jobs(handle_for(worker))
+        return runtime_for(s, agent_session, common.settings.home).jobs(handle_for(agent_session))
     except Exception:  # the runtime is not installed or the agent is gone: status still prints, without this anomaly
         return []
 
@@ -246,7 +246,7 @@ def stop(
     /,
     *,
     kill: Annotated[
-        bool, cyclopts.Parameter(help='End the running workers at once, without the wrap-up prompt.', negative='')
+        bool, cyclopts.Parameter(help='End the running implementers at once, without the wrap-up prompt.', negative='')
     ] = False,
     reason: Annotated[str, cyclopts.Parameter(help='Why, for `stopped_reason` and the closing review.')] = '',
 ) -> None:
@@ -255,17 +255,17 @@ def stop(
     This works also while the campaign is paused or held at its `[spend]` limit. A paused campaign gets its closing
     review; a held one as `[spend] closing_review` says. It drops the queued runs and the requested agents, and the
     `stopped` triggers request the closing review. Each
-    running worker is told to commit and stop, and is ended 10 minutes later. What the workers committed is scored.
-    With `--kill`, the workers are ended at once, and what they committed is still scored. On a stopped campaign,
-    `--kill` ends the workers that are still winding down. The campaign's `piloop.toml` is not changed.
+    running implementer is told to commit and stop, and is ended 10 minutes later. What the implementers committed is scored.
+    With `--kill`, the implementers are ended at once, and what they committed is still scored. On a stopped campaign,
+    `--kill` ends the implementers that are still winding down. The campaign's `piloop.toml` is not changed.
     """
     with common.session() as s:
         campaign = common.campaign(s, ref)
         if campaign.status is CampaignStatus.STOPPED and not kill:
             raise SystemExit(
-                f'{campaign.name} is stopped already ({campaign.stopped_reason}); --kill ends its workers at once'
+                f'{campaign.name} is stopped already ({campaign.stopped_reason}); --kill ends its implementers at once'
             )
         request_stop(s, campaign, common.settings.actor, reason=reason, kill=kill)
         s.commit()
-        how = 'ends its workers at once' if kill else 'tells its workers to commit and stop'
+        how = 'ends its implementers at once' if kill else 'tells its implementers to commit and stop'
         common.console.print(f'stop requested for {campaign.name}: the daemon {how} on its next tick', markup=False)

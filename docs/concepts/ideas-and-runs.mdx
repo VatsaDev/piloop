@@ -7,7 +7,7 @@ import QueueKeys from '/snippets/generated/queue-keys.mdx';
 
 ## Ideas
 
-An **idea** is one thing to test: a title, a hypothesis and, optionally, a plan for the worker.
+An **idea** is one thing to test: a title, a hypothesis and, optionally, a plan for the implementer.
 
 ```bash
 piloop idea add my-campaign "Gradient boosting on engineered features" \
@@ -22,7 +22,7 @@ of these statuses:
 |---|---|
 | `seed` | A hunch that waits for the research agent. See [Seeds](#seeds). |
 | `proposed` | A defined idea that waits for a human to approve it. Add it with `--proposed`. |
-| `ready` | Waits for a free worker slot. |
+| `ready` | Waits for a free implementer slot. |
 | `scheduled` | A run of it is queued or running. |
 | `done` | Its runs are finished and their commits are judged. |
 | `parked` | Set aside for now. The daemon does not run it. |
@@ -32,7 +32,7 @@ Who adds what:
 
 - You, the orchestrator and the research agent add defined ideas with `piloop idea add`.
 - The watchdog files only seeds.
-- A worker files neither. It writes a hunch in its `finding` comment, and the research agent reads it.
+- An implementer files neither. It writes a hunch in its `finding` comment, and the research agent reads it.
 
 Each idea records who wrote it. The research pack counts, for each source, how many of its ideas produced a keep.
 
@@ -61,7 +61,7 @@ idea builds on a specific tree, such as an older keep or a [note](/concepts/verd
 from outside the lineage, such as a branch or the result of another campaign. The daemon measures it, and an idea
 can start from it with `--base`.
 
-So that the campaign explores, at least one run in every `[roles.worker] explore_every` runs (4 by default) starts
+So that the campaign explores, at least one run in every `[roles.implementer] explore_every` runs (4 by default) starts
 from a pinned idea when one is ready, whatever its priority.
 
 ## Seeds
@@ -85,62 +85,62 @@ Seeds show in `piloop inbox` and at the top of the ideas panel in `piloop watch`
 
 ## Runs
 
-A **run** is one attempt at an idea by one worker, with one harness and one model. When a worker slot is free, the
+A **run** is one attempt at an idea by one implementer, with one harness and one model. When an implementer slot is free, the
 daemon:
 
 1. Takes the most urgent ready idea that no other idea blocks, and queues a run of it.
 2. Chooses the harness: the next one of the rotation in `harnesses`, unless the idea pins one with `--harness`.
 3. Creates a git worktree at the starting point of the run, and links the `link` paths and `workspace/` into it.
-4. Writes the brief: the worker instructions, your `brief.md`, the SQL procedures, the idea, the base candidate, the
+4. Writes the brief: the implementer instructions, your `brief.md`, the SQL procedures, the idea, the base candidate, the
    recent candidates and every comment on the idea and on its earlier runs.
-5. Starts the worker. It runs until it exits or until `[roles.worker] timeout`.
+5. Starts the implementer. It runs until it exits or until `[roles.implementer] timeout`.
 
-The worker implements the idea and commits. Every commit is scored once the run ends, so a worker commits even when
+The implementer implements the idea and commits. Every commit is scored once the run ends, so an implementer commits even when
 the idea did not work, and says so in the message. What it leaves uncommitted, piloop commits on its own as a
-`recovered` candidate: never measured, never kept. When the run did not succeed (the worker died, was killed or timed
-out), the idea goes back to the queue with that candidate as its base, so a new worker finishes the work.
+`recovered` candidate: never measured, never kept. When the run did not succeed (the implementer died, was killed or timed
+out), the idea goes back to the queue with that candidate as its base, so a new implementer finishes the work.
 
-The run ends when the worker stops with nothing left running. A job that the worker started keeps the run open. Under
-the `herdr` runtime, a worker that left its finding and went idle while such a job still runs is told once which
+The run ends when the implementer stops with nothing left running. A job that the implementer started keeps the run open. Under
+the `herdr` runtime, an implementer that left its finding and went idle while such a job still runs is told once which
 jobs keep its run open, so that it can kill the ones that it forgot.
 
-After the worker ends, each new commit becomes a `pending` candidate at once. Then the daemon measures and judges
+After the implementer ends, each new commit becomes a `pending` candidate at once. Then the daemon measures and judges
 them, oldest first. The idea becomes `done`. If the run failed or timed out and
-the idea has attempts left, the idea goes back to `ready` instead. An idea has two attempts by default. A worker that
-left its finding has finished its run: the run succeeds even when the worker then times out or exits with an error.
+the idea has attempts left, the idea goes back to `ready` instead. An idea has two attempts by default. An implementer that
+left its finding has finished its run: the run succeeds even when the implementer then times out or exits with an error.
 
-A worker asks for what it cannot do or decide itself with an `escalation`, never a `note`: a note goes to no inbox. A
-run whose worker stops while its escalation waits for an answer is blocked. It fails, and its idea is `parked`. Answer
+An implementer asks for what it cannot do or decide itself with an `escalation`, never a `note`: a note goes to no inbox. A
+run whose implementer stops while its escalation waits for an answer is blocked. It fails, and its idea is `parked`. Answer
 the escalation with a `decision` on the idea, which the next run reads in its brief, then set the idea `ready`.
 
 A run whose agent could not be launched (its worktree, its runtime), or that ended within two minutes without a commit,
 an uncommitted change or a comment, is not an attempt, whatever tokens it spent. An agent that a cancel or a stop ended, or told to wrap up, is not a failed
-start. The daemon starts the same run again with a new worker, up
+start. The daemon starts the same run again with a new implementer, up
 to two times. If the third start fails too, the run fails with `no agent of the run started to work`, which is still
 no attempt, and the idea is `parked`. After three failed starts within 10 minutes, the daemon stops launching agents
 for the campaign and escalates.
 
 ### Commit trailers
 
-A worker can end a commit message with a trailer. A trailer is a line of its own, anywhere after the subject, so
+An implementer can end a commit message with a trailer. A trailer is a line of its own, anywhere after the subject, so
 other trailers can follow it in a paragraph of their own:
 
 - `Piloop-Note: <why>`: the commit regressed, but it is worth starting from. See [Notes](/concepts/verdict#notes).
 - `Piloop-Eval: skip`: the commit is scaffolding. The daemon does not measure it and marks it `unmeasured`.
 
-## Steer a running worker
+## Steer a running implementer
 
-- A `note`, `finding` or `decision` comment on a running run, or on its idea, reaches the worker. Within a few
-  seconds, the daemon queues the first line of the comment (up to 200 characters) for the worker, with a query for
+- A `note`, `finding` or `decision` comment on a running run, or on its idea, reaches the implementer. Within a few
+  seconds, the daemon queues the first line of the comment (up to 200 characters) for the implementer, with a query for
   the full text. Put the instruction in the first line.
-- `piloop prompt <worker-id> "<text>"` sends text to a worker directly.
-- A comment on the campaign reaches no worker. When a decision changes the work of a running worker, write it on its
+- `piloop prompt <agent-session-id> "<text>"` sends text to an implementer directly.
+- A comment on the campaign reaches no implementer. When a decision changes the work of a running implementer, write it on its
   run.
 
-A message never cuts the worker's current turn short. It waits for the turn to end. An idle worker takes it at once.
-The [runtime](/concepts/runtimes#built-in-runtimes) of the worker defines how the message reaches it, and when it
+A message never cuts the implementer's current turn short. It waits for the turn to end. An idle implementer takes it at once.
+The [runtime](/concepts/runtimes#built-in-runtimes) of the implementer defines how the message reaches it, and when it
 cannot.
 
 <QueueKeys />
 
-A message that cannot reach the worker stays in the comments: the next run of the idea reads it in its brief.
+A message that cannot reach the implementer stays in the comments: the next run of the idea reads it in its brief.

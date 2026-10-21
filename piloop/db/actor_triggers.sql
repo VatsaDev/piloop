@@ -30,10 +30,10 @@ WHEN NEW.updated_by IS NOT (SELECT actor FROM temp.session_actor)
 BEGIN
   UPDATE comments SET updated_by = (SELECT actor FROM temp.session_actor) WHERE id = NEW.id;
 END;
-CREATE TEMP TRIGGER workers_updated_by AFTER UPDATE ON workers
+CREATE TEMP TRIGGER agent_sessions_updated_by AFTER UPDATE ON agent_sessions
 WHEN NEW.updated_by IS NOT (SELECT actor FROM temp.session_actor)
 BEGIN
-  UPDATE workers SET updated_by = (SELECT actor FROM temp.session_actor) WHERE id = NEW.id;
+  UPDATE agent_sessions SET updated_by = (SELECT actor FROM temp.session_actor) WHERE id = NEW.id;
 END;
 CREATE TEMP TRIGGER documents_updated_by AFTER UPDATE ON documents
 WHEN NEW.updated_by IS NOT (SELECT actor FROM temp.session_actor)
@@ -42,7 +42,7 @@ BEGIN
 END;
 
 -- The change log: decisions leave a record in the append-only events table, signed by the same actor. Every client
--- loads this file, so a raw UPDATE from the CLI or a worker is logged like an ORM write of the daemon.
+-- loads this file, so a raw UPDATE from the CLI or an implementer is logged like an ORM write of the daemon.
 -- `AFTER UPDATE OF <col>` fires only when a statement names that column, so the updated_at and updated_by triggers
 -- above (which SET their own column) never fire these. The WHEN clause ignores a SET to the value already there.
 -- Event kinds are `<table singular>.<column>`. Payloads have the old and new value, never a large body.
@@ -143,7 +143,7 @@ END;
 
 -- Every comment is an event, with the same shape as the event of the persistent escalation trigger. That trigger
 -- stays persistent, because `comment.escalation` must be logged whatever connection wrote the comment. The rest of
--- the forum (`comment.note`, `comment.finding`, `comment.decision`) is what the daemon pushes to a running worker.
+-- the forum (`comment.note`, `comment.finding`, `comment.decision`) is what the daemon pushes to a running implementer.
 CREATE TEMP TRIGGER comments_inserted_event AFTER INSERT ON comments
 WHEN NEW.kind != 'escalation'
 BEGIN

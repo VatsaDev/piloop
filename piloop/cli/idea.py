@@ -33,7 +33,7 @@ def idea_add(
     hypothesis: Annotated[
         str, cyclopts.Parameter(help='Why this should help, and by how much. Default: the title.', show_default=False)
     ] = '',
-    plan: Annotated[str | None, cyclopts.Parameter(help='The steps for the worker.')] = None,
+    plan: Annotated[str | None, cyclopts.Parameter(help='The steps for the implementer.')] = None,
     from_: Annotated[
         str | None,
         cyclopts.Parameter(
@@ -129,7 +129,7 @@ def idea_develop(
         str, cyclopts.Parameter(help='The metric that decides success: the primary metric, or the slice it targets.')
     ],
     effect: Annotated[str, cyclopts.Parameter(help="The expected size of the effect in the metric's units, and why.")],
-    plan: Annotated[str | None, cyclopts.Parameter(help='More steps for the worker, after the check.')] = None,
+    plan: Annotated[str | None, cyclopts.Parameter(help='More steps for the implementer, after the check.')] = None,
     title: Annotated[str | None, cyclopts.Parameter(help="A clearer title. Default: the seed's title.")] = None,
     family: Annotated[str | None, cyclopts.Parameter(help=FAMILY_HELP)] = None,
     base: Annotated[int | None, cyclopts.Parameter(help=BASE_HELP)] = None,
@@ -142,7 +142,7 @@ def idea_develop(
 ) -> None:
     """Develop a seed into a defined idea that the daemon can schedule.
 
-    The hypothesis, the evidence, the check, the metric and the effect are all required, because the worker needs
+    The hypothesis, the evidence, the check, the metric and the effect are all required, because the implementer needs
     each one. Reject a seed that does not hold up instead, with a note that names the earlier work (see
     `piloop schema`). The idea is signed as PILOOP_ACTOR. The idea and its links are written together, so the daemon
     never sees the ready idea without them.

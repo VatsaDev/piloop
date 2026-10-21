@@ -3,8 +3,8 @@
 | Variable | Default | Meaning |
 |---|---|---|
 | `PILOOP_HOME` | `~/.piloop` | The directory that holds the database, the artifact store and the directories of each run (worktrees, logs, workspaces). |
-| `PILOOP_ACTOR` | `human` | Who this process is. Every row it updates records this value in `updated_by`. The daemon launches each agent with `<role>#<worker_id>`, for example `worker#12` or `scout#7`. |
-| `PILOOP_TICK_SECONDS` | `2` | The number of seconds between two ticks. On each tick, the daemon checks the triggers of every campaign and launches the requested workers. |
+| `PILOOP_ACTOR` | `human` | Who this process is. Every row it updates records this value in `updated_by`. The daemon launches each agent with `<role>#<agent_session_id>`, for example `implementer#12` or `scout#7`. |
+| `PILOOP_TICK_SECONDS` | `2` | The number of seconds between two ticks. On each tick, the daemon checks the triggers of every campaign and launches the requested agents. |
 | `PILOOP_MAX_EVALUATIONS` | `2` | The number of evaluate commands that the daemon runs at the same time, across all campaigns. The others wait in the evaluation queue (`piloop eval queue`). A free slot goes to the campaign with the fewest running evaluations, and in it to its head first, then to the oldest request. |
 | `PILOOP_MIGRATION_BACKUPS` | `3` | The number of copies of the database to keep, one written before each migration: `piloop.db.bak-<revision>-<UTC time>` next to it, the database as that revision left it. A new copy removes the oldest beyond this number. 0 writes none. Each copy is about the size of the database. |
 | `PILOOP_SECRETS_COMMAND` | none | A shell command that prints `NAME=value` lines: the API keys that the `[mcp.<name>]` servers name, from wherever you keep them. The daemon runs it when it starts and on every `piloop restart`. The keys go into the daemon's environment only, never into a file or a log. When unset, the daemon has only the environment that `piloop serve` started with. |

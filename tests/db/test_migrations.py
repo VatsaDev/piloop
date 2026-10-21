@@ -34,7 +34,8 @@ SINCE_0015 = {t.name for t in campaigns.acyclic()}
 def triggers_at(revision: str) -> list[str]:
     """The persistent triggers of ``revision``, by name: ``PERSISTENT``, in the names of that schema (``legacy``)."""
     names = [t.name for t in PERSISTENT if revision >= '0015' or t.name not in SINCE_0015]
-    return sorted(legacy.old_name(n) if revision < '0016' else n for n in names)
+    old = tuple(s for s in legacy.STAGES if revision < s.revision)
+    return sorted(legacy.old_name(n, old) for n in names)
 
 
 INBOX_WHERE = 'priority IS NOT NULL AND acked_at IS NULL'
@@ -54,6 +55,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         tables = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]
         assert tables == [
+            'agent_sessions',
             'alembic_version',
             'archives',
             'campaigns',
@@ -86,7 +88,6 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
             'runs',
             'sqlite_sequence',
             'techniques',
-            'workers',
         ], 'an external-content FTS5 index has no _content shadow: the text stays in the base table only'
         triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
         assert triggers == sorted(t.name for t in PERSISTENT), 'the package lists what the migrations install'
@@ -530,7 +531,9 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
         assert [t.kind for t in p.roles.watchdog.triggers] == ['anomaly', 'cron', 'stopped'], 'the closing review stays'
         con.execute("INSERT INTO workers (kind, project_id) VALUES ('scout', 2)")
         sql = con.execute("SELECT sql FROM sqlite_master WHERE name = 'workers_kind'").fetchone()[0]
-        assert sql + ';' == legacy.rendered(known_role(), old=True)[3], 'the trigger of today, in the names of then'
+        assert sql + ';' == legacy.rendered(known_role(), legacy.STAGES)[3], (
+            'the trigger of today, in the names of then'
+        )
         triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
         assert triggers == triggers_at('0011')
     command.downgrade(cfg, '0010')
@@ -693,10 +696,8 @@ def test_0016_renames_projects_campaigns_and_evaluators_evaluators_with_every_ro
             con.execute('UPDATE campaigns SET parent_id = 2 WHERE id = 1')
         con.execute("INSERT INTO workers (kind, campaign_id) VALUES ('worker', 1)")
         assert con.execute("SELECT count(*) FROM comments_fts WHERE comments_fts MATCH 'hi'").fetchone() == (1,)
-        for t in PERSISTENT:
-            sql = con.execute('SELECT sql FROM sqlite_master WHERE name = ?', (t.name,)).fetchone()[0]
-            assert sql + ';' == t.sql(), f'{t.name}: the migration installs what the package renders'
-        assert triggers_at('0016') == sorted(t.name for t in PERSISTENT)
+        triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
+        assert triggers == triggers_at('0016'), 'every trigger of the package, in the names of then'
         stored = json.loads(con.execute('SELECT config FROM campaigns WHERE id = 1').fetchone()[0])['roles']
         assert stored['fixer'] == {
             'takes': 'campaign_id IN (SELECT "campaign_id" FROM evaluators) AND title NOT LIKE \'%projects%\''
@@ -747,6 +748,152 @@ def test_0017_gives_every_evaluator_the_process_runner_and_downgrades(tmp_path: 
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert 'runner' not in [c for (_, c, *_) in con.execute('PRAGMA table_info(evaluators)')]
         assert con.execute('SELECT key FROM evaluators').fetchall() == [('k',)]
+
+
+TAKES_0017 = 'id IN (SELECT run_id FROM "Workers" WHERE kind = \'worker\') -- workers: kept'
+"""A role's ``takes`` at revision 0017: the table to rename (quoted, in another case), a literal and a comment."""
+
+
+def at_0017(con: sqlite3.Connection) -> None:
+    """Fill a database at revision 0017 with a row of every kind that names the worker role or the ``workers`` table."""
+    roles = {
+        'worker': {'takes': TAKES_0017},
+        'research': {'triggers': [{'kind': 'sql', 'when': 'SELECT 1 FROM workers'}]},
+    }
+    con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', ?)", (json.dumps({'roles': roles}),))
+    con.execute(
+        "INSERT INTO ideas (campaign_id, title, hypothesis, track, created_by) VALUES (1, 't', 'h', 'main', 'worker#1')"
+    )
+    con.execute("INSERT INTO candidates (campaign_id, tree_sha, commit_sha) VALUES (1, 't', 'c')")
+    con.execute(
+        'INSERT INTO runs (idea_id, attempt, base_candidate_id, harness, model, role, updated_by) VALUES'
+        " (1, 1, 1, 'claude', 'm', 'worker', 'worker#1'), (1, 2, 1, 'claude', 'm', 'critic', 'critic#2')"
+    )
+    con.execute(
+        "INSERT INTO workers (kind, campaign_id, run_id, updated_by) VALUES ('worker', 1, 1, NULL), ('research', 1, NULL, NULL)"
+    )
+    con.execute(
+        "INSERT INTO comments (target_kind, target_id, author, body) VALUES ('worker', 1, 'worker#1', 'a worker')"
+    )
+    con.execute(
+        'INSERT INTO events (kind, actor, target_kind, target_id, payload) VALUES'
+        " ('worker.wrap_up', 'daemon', 'worker', 1, '{}'),"
+        " ('worker.started', 'daemon', 'worker', 1, '{\"kind\": \"worker\"}'),"
+        " ('research.finished', 'daemon', 'worker', 2, '{}'),"
+        " ('candidate.verdict', 'worker#1', 'candidate', 1, '{\"verdict_by\": \"worker#1\"}'),"
+        " ('run.relaunched', 'daemon', 'run', 1, '{\"worker\": 1, \"launches\": 1}')"
+    )
+
+
+def test_0018_renames_workers_agent_sessions_and_the_worker_role_implementer_with_every_row_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0017')
+    # a table's constraints come in a different order from each process that makes it, so tables by name only
+    schema = "SELECT name, iif(type = 'table', type, sql) FROM sqlite_master ORDER BY name"
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        at_0017(con)
+        before = con.execute(schema).fetchall()
+    command.upgrade(cfg, '0018')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute('PRAGMA foreign_keys = ON')
+        assert con.execute('SELECT id, kind, run_id FROM agent_sessions').fetchall() == [
+            (1, 'implementer', 1),
+            (2, 'research', None),
+        ]
+        assert con.execute('SELECT role, updated_by FROM runs ORDER BY id').fetchall() == [
+            ('implementer', 'implementer#1'),
+            ('critic', 'critic#2'),
+        ]
+        assert con.execute('SELECT created_by FROM ideas').fetchall() == [('implementer#1',)]
+        assert con.execute('SELECT target_kind, author, body FROM comments').fetchall() == [
+            ('agent_session', 'implementer#1', 'a worker')
+        ], 'a body keeps its text'
+        assert con.execute('SELECT kind, actor, target_kind, payload FROM events ORDER BY id').fetchall() == [
+            ('agent_session.wrap_up', 'daemon', 'agent_session', '{}'),
+            ('implementer.started', 'daemon', 'agent_session', '{"kind": "worker"}'),
+            ('research.finished', 'daemon', 'agent_session', '{}'),
+            ('candidate.verdict', 'implementer#1', 'candidate', '{"verdict_by": "implementer#1"}'),
+            ('run.relaunched', 'daemon', 'run', '{"launches":1,"agent_session":1}'),
+        ], 'session events take the target kind, role events and signatures the role, a payload key the row'
+        stored = json.loads(con.execute('SELECT config FROM campaigns').fetchone()[0])['roles']
+        assert stored == {
+            'implementer': {
+                'takes': 'id IN (SELECT run_id FROM "agent_sessions" WHERE kind = \'worker\') -- workers: kept'
+            },
+            'research': {'triggers': [{'kind': 'sql', 'when': 'SELECT 1 FROM agent_sessions'}]},
+        }, 'the role table is renamed, and the queries rename identifiers only'
+        with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: targetkind'):
+            con.execute("INSERT INTO comments (target_kind, target_id, author, body) VALUES ('worker', 1, 'h', 'x')")
+        with pytest.raises(sqlite3.IntegrityError, match='agent_sessions.kind must be a role of the campaign'):
+            con.execute("INSERT INTO agent_sessions (kind, campaign_id) VALUES ('worker', 1)")
+        con.execute("INSERT INTO agent_sessions (kind, campaign_id) VALUES ('implementer', 1)")
+        with pytest.raises(sqlite3.IntegrityError, match='FOREIGN KEY'):
+            con.execute("INSERT INTO agent_sessions (kind, campaign_id, run_id) VALUES ('implementer', 1, 9)")
+        con.execute("INSERT INTO runs (idea_id, attempt, base_candidate_id, harness, model) VALUES (1, 3, 1, 'c', 'm')")
+        assert con.execute('SELECT role FROM runs WHERE id = 3').fetchone() == ('implementer',), 'the new default'
+        assert con.execute("SELECT count(*) FROM comments_fts WHERE comments_fts MATCH 'worker'").fetchone() == (1,)
+        for t in PERSISTENT:
+            sql = con.execute('SELECT sql FROM sqlite_master WHERE name = ?', (t.name,)).fetchone()[0]
+            assert sql + ';' == t.sql(), f'{t.name}: the migration installs what the package renders'
+        con.execute('DELETE FROM agent_sessions WHERE id = 3')
+        con.execute('DELETE FROM runs WHERE id = 3')
+    command.check(cfg)
+    command.downgrade(cfg, '0017')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT kind FROM workers ORDER BY id').fetchall() == [('worker',), ('research',)]
+        assert con.execute('SELECT role, updated_by FROM runs ORDER BY id').fetchall() == [
+            ('worker', 'worker#1'),
+            ('critic', 'critic#2'),
+        ]
+        assert con.execute('SELECT target_kind, author FROM comments').fetchall() == [('worker', 'worker#1')]
+        assert [k for (k,) in con.execute('SELECT kind FROM events ORDER BY id')] == [
+            'worker.wrap_up',
+            'worker.started',
+            'research.finished',
+            'candidate.verdict',
+            'run.relaunched',
+        ]
+        payload = "SELECT json_extract(payload, '$.worker') FROM events WHERE kind = 'run.relaunched'"
+        assert con.execute(payload).fetchall() == [(1,)]
+        assert {t for (t,) in con.execute('SELECT DISTINCT target_kind FROM events')} == {'worker', 'candidate', 'run'}
+        restored = json.loads(con.execute('SELECT config FROM campaigns').fetchone()[0])['roles']
+        assert restored == {
+            'worker': {'takes': 'id IN (SELECT run_id FROM "workers" WHERE kind = \'worker\') -- workers: kept'},
+            'research': {'triggers': [{'kind': 'sql', 'when': 'SELECT 1 FROM workers'}]},
+        }, 'the old names come back, in lower case'
+        assert con.execute(schema).fetchall() == before, 'every table as it was, every index and trigger to the letter'
+        triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
+        assert triggers == triggers_at('0017')
+        con.execute("INSERT INTO workers (kind, campaign_id) VALUES ('worker', 1)")
+
+
+def test_an_0018_upgrade_that_fails_halfway_leaves_the_database_as_it_was(tmp_path: Path) -> None:
+    """0018 renames ``workers`` and rebuilds three tables before a bad ``events`` row fails it: all of it goes back."""
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0017')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        at_0017(con)
+        con.execute('PRAGMA ignore_check_constraints = ON')
+        con.execute("INSERT INTO events (kind, actor, target_kind, target_id) VALUES ('x', 'h', 'bogus', 1)")
+    with pytest.raises(IntegrityError, match='CHECK constraint failed: targetkind'):
+        command.upgrade(cfg, 'head')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT version_num FROM alembic_version').fetchall() == [('0017',)]
+        tables = {t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+        assert 'workers' in tables and not {t for t in tables if t.startswith(('_rebuilt', 'agent_sessions'))}
+        triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
+        assert triggers == triggers_at('0017')
+        assert con.execute('SELECT kind FROM workers ORDER BY id').fetchall() == [('worker',), ('research',)]
+        assert con.execute('SELECT role FROM runs ORDER BY id').fetchall() == [('worker',), ('critic',)]
+        assert con.execute('SELECT target_kind FROM comments').fetchall() == [('worker',)]
+        con.execute("DELETE FROM events WHERE target_kind = 'bogus'")
+    command.upgrade(cfg, 'head')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT target_kind FROM comments').fetchall() == [('agent_session',)]
 
 
 def test_an_upgrade_that_fails_halfway_leaves_the_database_as_it_was(tmp_path: Path) -> None:

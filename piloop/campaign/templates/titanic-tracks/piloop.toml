@@ -13,7 +13,7 @@ pi = "anthropic/claude-opus-5-5"
 claude = "claude-opus-5-5"
 codex = "gpt-6.1-sol"
 
-[roles.worker]
+[roles.implementer]
 timeout = 900
 
 [[metrics]]

@@ -19,15 +19,15 @@ each command does:
 
 | You run | The runtime of the agent |
 |---|---|
-| `piloop prompt <worker-id> "<text>"`, or `s` in `piloop watch` | Queues the message for the agent's next turn. It never cuts the turn in progress short. |
-| `piloop attach <worker-id>` | Shows the agent in this terminal. |
+| `piloop prompt <agent-session-id> "<text>"`, or `s` in `piloop watch` | Queues the message for the agent's next turn. It never cuts the turn in progress short. |
+| `piloop attach <agent-session-id>` | Shows the agent in this terminal. |
 | `enter` on an agent in `piloop watch` | Brings the agent to the front of the runtime's own view. |
 | `piloop status`, `piloop watch` | Show where you can see the agent, for example its tab, when the runtime has such a place. |
 | `piloop doctor` | Checks that the runtime can run agents on this machine. |
 
 When a runtime cannot do one of these, the command says so, and tells you where to look instead. In every runtime,
 the brief, log and transcript of an agent are in its log directory: `~/.piloop/runs/<run>/` for an agent that does a
-run, and `~/.piloop/workers/<worker-id>/` for the sweeping roles.
+run, and `~/.piloop/agent_sessions/<agent-session-id>/` for the sweeping roles.
 
 ## Built-in runtimes
 
@@ -50,16 +50,16 @@ You can mix them: for example, `runtime = "subprocess"` for the campaign and `ru
 
 ## When an agent ends
 
-Both runtimes give each agent a `PILOOP_WORKER_TOKEN` of its own, and every process that the agent starts inherits
+Both runtimes give each agent a `PILOOP_PROCESS_TAG` of its own, and every process that the agent starts inherits
 it, also a command that runs in a session of its own, as Claude Code's Bash calls do. When the agent ends (its run is
-over, it times out, a stop or a cancel ends it), piloop ends every process that carries its token. A build that forks
+over, it times out, a stop or a cancel ends it), piloop ends every process that carries its tag. A build that forks
 meanwhile is stopped first, so none of its children is left.
 
-- A shared server that an agent starts, such as an sccache, Gradle or Bazel daemon, carries the agent's token too, and
+- A shared server that an agent starts, such as an sccache, Gradle or Bazel daemon, carries the agent's tag too, and
   ends with the agent. The next agent that needs it starts it again. Start it outside piloop to keep it running.
 - What piloop itself starts is never tagged: the daemon, also one that an agent starts with `piloop serve --detach`,
   and the evaluations.
-- A process that clears its environment (`env -i`) loses the token, and piloop cannot find it.
+- A process that clears its environment (`env -i`) loses the tag, and piloop cannot find it.
 
 ## Add a runtime
 

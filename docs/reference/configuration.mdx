@@ -9,7 +9,7 @@ description: Every key of piloop.toml, with its type and its default.
 copy. The daemon uses that copy, so an edit takes effect only when you run `piloop init`.
 
 To override a key when `piloop init` reads the file, set `PILOOP_CAMPAIGN_<KEY>`. Join nested keys with `__`, for
-example `PILOOP_CAMPAIGN_RUNTIME=herdr` or `PILOOP_CAMPAIGN_ROLES__WORKER__MAX_CONCURRENT=2`. The stored copy keeps the
+example `PILOOP_CAMPAIGN_RUNTIME=herdr` or `PILOOP_CAMPAIGN_ROLES__IMPLEMENTER__MAX_CONCURRENT=2`. The stored copy keeps the
 override until the next `piloop init`. The variable has no effect on `piloop serve`.
 
 A type in the tables links to the section that describes it. A table that you leave out has the defaults of its
@@ -30,7 +30,7 @@ section.
 | `harness` | dict\[string, [Harness](#harness)\] | `{}` | Harness definitions by name: overrides of the built-in harnesses, or new ones. |
 | `max_concurrent` | dict\[string, integer\] | `{}` | The maximum number of agents of one harness, across all roles of the campaign, that are started or queued to start. Example: `{claude = 2}` when the provider of its model limits the request rate. When it is the turn of a harness at its limit, the slot goes to the next harness of the rotation. An idea or request that pins that harness waits. When unset, only the limits of the roles apply. |
 | `evaluate_timeout` | number | `600` | The number of seconds before the evaluate command is stopped. The evaluation is then a crash. |
-| `roles` | [Roles](#roles) | `{}` | The settings of each role (`[roles.worker]`, `[roles.watchdog]`, `[roles.research]`, `[roles.scout]`), and the roles that you define (`[roles.<name>]`). |
+| `roles` | [Roles](#roles) | `{}` | The settings of each role (`[roles.implementer]`, `[roles.watchdog]`, `[roles.research]`, `[roles.scout]`), and the roles that you define (`[roles.<name>]`). |
 | `link` | list\[string\] | `[]` | Repo-relative paths, ignored by git, that piloop symlinks into every worktree, for example data or virtual environments. |
 | `context` | list\[string\] | `[]` | Repo-relative files or globs (for example `docs/error-analysis-*.md`) that hold the campaign's analysis: error analyses, comparisons with a reference, evaluation reports. The research pack lists each one with its outline, newest first, so that every sweep that reads the pack reads them before it proposes work. |
 | `mcp` | dict\[string, [McpServer](#mcpserver)\] | `{}` | `[mcp.<name>]`: the MCP servers that a role can list in `[roles.<name>] mcp`. |
@@ -66,7 +66,7 @@ Experimental: campaigns with more than one track.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `share` | number | `1` | The fraction of the `max_concurrent` of each role that does runs that the ideas of this track get. A free slot of a role goes to the track that is furthest below its share and has an idea that can run, and then to the most urgent idea of that track. A track with no idea that can run gives its slot to another track. A share of 0 stops the track: its ideas wait. |
-| `addendum` | string \| null | `null` | A repo-relative file that is appended to the brief of this track's runs, after `[roles.worker] addendum`. Use it to say how work on this objective is done, for example "profile first" or "keep the output identical". |
+| `addendum` | string \| null | `null` | A repo-relative file that is appended to the brief of this track's runs, after `[roles.implementer] addendum`. Use it to say how work on this objective is done, for example "profile first" or "keep the output identical". |
 
 ## Harness
 
@@ -75,7 +75,7 @@ Experimental: campaigns with more than one track.
 piloop substitutes these placeholders in both argument lists: `{model}`, `{session_id}`, `{cwd}` (the
 agent's working directory), `{log_dir}` (the directory of the agent's brief and logs) and `{prompt}` (the first
 prompt, which names the file that holds the brief). An element that is exactly `{mcp}` expands to the role's MCP
-servers, in the form that `mcp` names. The built-in harnesses run without permission prompts: workers run
+servers, in the form that `mcp` names. The built-in harnesses run without permission prompts: agents run
 in worktrees that the daemon owns and throws away, and a sandbox that cannot reach the repo's `.git` cannot
 commit. The built-in Claude harness passes `--settings` that move a foreground Bash command to the background
 after 5 minutes.
@@ -98,7 +98,7 @@ read the tokens the agent spent.
 | `composer` | string \| null | `null` | For an interactive runtime: the marker at the start of the agent's input line. The runtime reads the text after the last one to tell a first prompt that the TUI left typed but not submitted, and submits it with Enter. When unset, the marker of the built-in harness with the same `executable`; without one, a prompt is never submitted again. |
 | `entire_agent` | string \| null | `null` | Entire's name for this agent, as `entire agent list` shows it. When it is set and `entire` is installed, the agent's session is attached to Entire as a checkpoint when the agent ends. When unset, the session is not captured. |
 | `session_id_pattern` | string \| null | `null` | A regex with one group that finds the session id in the first lines of the process's stdout. Use it in a `headless` runtime for a harness that cannot take its id as an argument (`{session_id}`). For example, Codex `exec --json` prints `{"type":"thread.started","thread_id":"<uuid>"}` first. |
-| `usage` | [UsageSpec](#usagespec) \| null | `null` | `[harness.<name>.usage]`: how to read the tokens an agent spent, when it ends, into `workers.usage`. When unset, token usage is not recorded. |
+| `usage` | [UsageSpec](#usagespec) \| null | `null` | `[harness.<name>.usage]`: how to read the tokens an agent spent, when it ends, into `agent_sessions.usage`. When unset, token usage is not recorded. |
 | `mcp` | string \| null | `null` | The renderer that expands the `{mcp}` element of the argv into the role's `[mcp.<name>]` servers. Each renderer also keeps the user's own servers out, where its harness allows it. When unset, the harness takes no servers, and a role that lists servers cannot use it. Built in: `claude`, `codex`, `pi`. |
 
 ## QueueKey
@@ -133,13 +133,13 @@ names when the config loads.
 
 One table for each role. A built-in role without a table uses its defaults.
 
-A table with a new name defines a new role: a role that does runs (`WorkerRole`) with `runs = true`, else a
+A table with a new name defines a new role: a role that does runs (`ImplementerRole`) with `runs = true`, else a
 sweeping role (`SweepRole`). A role that a package adds with a `piloop.roles` entry point is in the config that
 `piloop init` stores, with its table over its defaults.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `worker` | [WorkerRole](#workerrole) | `{}` | `[roles.worker]`. |
+| `implementer` | [ImplementerRole](#implementerrole) | `{}` | `[roles.implementer]`. |
 | `watchdog` | [WatchdogRole](#watchdogrole) | `{}` | `[roles.watchdog]`. |
 | `research` | [ResearchRole](#researchrole) | `{}` | `[roles.research]`. |
 | `scout` | [ScoutRole](#scoutrole) | `{}` | `[roles.scout]`. |
@@ -162,22 +162,22 @@ The keys that every `[roles.<name>]` table accepts. Each role's table below adds
 | `files` | `nothing` \| `seeds` \| `ideas` | `"seeds"` | What the agents of this role may file with `piloop idea`: `nothing`, `seeds` or `ideas`. The CLI refuses the rest. |
 | `wake_budget` | integer \| null | `null` | The size in tokens of the lessons overview that opens this role's briefs. When unset, `[memory] wake_budget`. 0 turns it off for this role. |
 
-## WorkerRole
+## ImplementerRole
 
-`[roles.worker]`, and every `[roles.<name>]` table with `runs = true`: a role that does runs.
+`[roles.implementer]`, and every `[roles.<name>]` table with `runs = true`: a role that does runs.
 
 The run queue starts its agents. Each agent does one idea in a new worktree at its run's base, and its commits are
-scored and judged when it ends. A new role of this kind takes the worker's defaults, its prompt included.
+scored and judged when it ends. A new role of this kind takes the implementer's defaults, its prompt included.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `timeout` | number | `1800` | The number of seconds one worker may run before it is stopped. |
-| `max_concurrent` | integer | `4` | The maximum number of workers that run at the same time. Each worker is one harness process on this machine. A run that is being scored after its worker ended does not count. |
-| `writes` | list\[string\] | `["commits", "comments(finding) on your idea", "comments(note) on your run"]` | What a worker may write, as its brief states it. |
-| `files` | `nothing` \| `seeds` \| `ideas` | `"nothing"` | A worker files no ideas and no seeds. Its hunches go in its finding, which research reads. |
+| `timeout` | number | `1800` | The number of seconds one implementer may run before it is stopped. |
+| `max_concurrent` | integer | `4` | The maximum number of implementers that run at the same time. Each implementer is one harness process on this machine. A run that is being scored after its implementer ended does not count. |
+| `writes` | list\[string\] | `["commits", "comments(finding) on your idea", "comments(note) on your run"]` | What an implementer may write, as its brief states it. |
+| `files` | `nothing` \| `seeds` \| `ideas` | `"nothing"` | An implementer files no ideas and no seeds. Its hunches go in its finding, which research reads. |
 | `runs` | boolean | `true` | The agents of this role do runs. A table without `runs = true` is a sweeping role. |
-| `takes` | string \| null | `null` | The ideas that this role takes: an SQL condition on the `ideas` table, without parameters, for example `priority >= 3` or `track = 'speed'`. When unset, the role takes every runnable idea. A free slot of a role that you define is filled before a slot of the worker, so the worker takes what the other roles leave. |
-| `recovery_requeues` | integer | `2` | How many times one idea goes back to the queue from the work its worker left uncommitted, when the run did not succeed (`recovered`): a new worker then starts from that work to finish it. After that, the idea settles as after any failed run, so an idea whose workers keep dying is not run forever. 0 never requeues: the recovered candidate waits for you or the orchestrator. |
+| `takes` | string \| null | `null` | The ideas that this role takes: an SQL condition on the `ideas` table, without parameters, for example `priority >= 3` or `track = 'speed'`. When unset, the role takes every runnable idea. A free slot of a role that you define is filled before a slot of the implementer, so the implementer takes what the other roles leave. |
+| `recovery_requeues` | integer | `2` | How many times one idea goes back to the queue from the work its implementer left uncommitted, when the run did not succeed (`recovered`): a new implementer then starts from that work to finish it. After that, the idea settles as after any failed run, so an idea whose implementers keep dying is not run forever. 0 never requeues: the recovered candidate waits for you or the orchestrator. |
 | `explore_every` | integer | `4` | At least one run of this role in this many starts from an alternative starting point. When none of the role's last `explore_every - 1` runs did, the next slot goes to the most urgent ready idea that is pinned to a base other than the head (a reference, an older keep or a note), whatever its priority. Nothing changes while no such idea is ready. 0 turns this off. |
 
 ## SweepRole
@@ -220,7 +220,7 @@ The daemon checks the entries in the order of the list.
 
 ## ResearchRole
 
-`[roles.research]`: research develops seeds and keeps ideas ready for the workers.
+`[roles.research]`: research develops seeds and keeps ideas ready for the implementers.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -236,7 +236,7 @@ The daemon checks the entries in the order of the list.
 
 Every `interval` seconds, a scout sweep states the open problems of the campaign from the evidence, and searches
 X, GitHub and arXiv for outside techniques that address them. It files at most `seeds` of them as seeds, signed
-`scout#<worker id>`, and puts the rest in the technique library (the `techniques` table). It never files a
+`scout#<agent session id>`, and puts the rest in the technique library (the `techniques` table). It never files a
 defined idea. The search tool limits what one sweep spends on xAI (`scripts/xai_search_mcp.py --max-usd`).
 
 Experimental: the scout.
@@ -269,8 +269,8 @@ daemon's environment to the agent, and the harness puts their values into the he
 `[stop]`: conditions that end the campaign. One is enough. Without the table, the campaign has no end.
 
 The daemon checks the conditions on every tick, before it requests anything. When one holds, the campaign is
-`stopped` (`campaigns.status`, `stopped_reason`). Running workers are told to commit and stop, and are ended
-10 minutes later. What they committed is scored. A worker in the middle of a turn reads the message only when the
+`stopped` (`campaigns.status`, `stopped_reason`). Running implementers are told to commit and stop, and are ended
+10 minutes later. What they committed is scored. An implementer in the middle of a turn reads the message only when the
 turn ends: one that is ended before it left its finding closes its run as `campaign stopped`, which does not
 count toward `max_runs` or `plateau`. Pending requests and queued runs are dropped
 (`campaign stopped`). The `stopped` triggers fire once, which by default requests the watchdog's closing
@@ -278,7 +278,7 @@ review, and the triggers request nothing more. The daemon files no seeds for the
 request with `piloop launch` after the stop still starts.
 
 `piloop campaign stop` stops a campaign the same way on the next tick, whatever this table says. With `--kill`,
-the workers are ended at once instead of told. `piloop init` resumes a stopped campaign when this table changed.
+the implementers are ended at once instead of told. `piloop init` resumes a stopped campaign when this table changed.
 
 `max_runs` and `plateau` count the same runs: those that reached the evaluator, with a candidate that is
 measured or waits for its measurement. A run that ended at a cheap check with no commit, with only
@@ -291,7 +291,7 @@ count either. `[spend]`, `max_tokens` and `max_hours` stay hard limits on what a
 | `target` | number \| null | `null` | Stop when the primary metric at the head (the latest keep on the trunk) reaches this value, in its direction. Only for a campaign with one track. |
 | `max_runs` | integer \| null | `null` | Stop after this many runs that count (see above), once none is queued, running or being scored. A run also counts while it is queued, running or being scored, so piloop never starts more runs than this. A finished run that does not count frees its place, and piloop starts another run in it. |
 | `max_hours` | number \| null | `null` | Stop after this many hours of wall-clock time since the first run of the campaign started. The time that the campaign was paused (`piloop pause`) does not count. |
-| `max_tokens` | integer \| null | `null` | Stop when all the agents of the campaign together spent this many tokens (the `total` of `workers.usage`), summed over the agents that ended. |
+| `max_tokens` | integer \| null | `null` | Stop when all the agents of the campaign together spent this many tokens (the `total` of `agent_sessions.usage`), summed over the agents that ended. |
 | `plateau` | integer \| null | `null` | Stop after this many finished runs that count (see above) without a new `keep` candidate. The count starts again at each keep, and when the campaign is set `active` after a stop (`piloop init`, or an UPDATE of `campaigns.status`), so a reactivated campaign gets this many runs again. A new evaluator alone does not reset it. |
 
 ## Spend
@@ -321,7 +321,7 @@ built-in stop rule `limits` holds; a stop rule of a plugin must read the spend, 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `documents` | list\[string\] | `[]` | Repo-relative globs of text documents, for example `["docs/evidence/**/*.md"]`: campaign reports, orchestrator logs, design notes. `piloop init` and the stop of the campaign copy them into the `documents` table, where every agent of every campaign can search them. Never name a document that is derived from validation or test data. |
-| `wake_budget` | integer | `400` | The size in tokens (about 4 characters each) of the overview that opens the briefs of workers and research sweeps: the current lesson of each mechanism family on the same repo, from the newest campaign that tried it, one line each. Lessons in the campaign's own metrics come first (`lessons.metric`), then lessons in related metrics, then the rest. Within those, dead or promising come before untested, then the larger effects of each metric, then newer campaigns: effects in different metrics are never compared by size. The brief then says how to read more. A role can change it with `[roles.<kind>] wake_budget`. 0 turns it off. |
+| `wake_budget` | integer | `400` | The size in tokens (about 4 characters each) of the overview that opens the briefs of implementers and research sweeps: the current lesson of each mechanism family on the same repo, from the newest campaign that tried it, one line each. Lessons in the campaign's own metrics come first (`lessons.metric`), then lessons in related metrics, then the rest. Within those, dead or promising come before untested, then the larger effects of each metric, then newer campaigns: effects in different metrics are never compared by size. The brief then says how to read more. A role can change it with `[roles.<kind>] wake_budget`. 0 turns it off. |
 
 ## PluginTable
 
@@ -385,7 +385,7 @@ no idea that a sweep adds could run sooner.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `kind` | string | `"low_water"` |  |
-| `buffer` | integer | `2` | The number of ready ideas to keep in addition to one for each run slot (the `max_concurrent` of every role that does runs). With this backlog, a free slot finds an idea at once and does not wait for a sweep. A larger value makes workers wait less for the role, but the ideas they run are older. |
+| `buffer` | integer | `2` | The number of ready ideas to keep in addition to one for each run slot (the `max_concurrent` of every role that does runs). With this backlog, a free slot finds an idea at once and does not wait for a sweep. A larger value makes implementers wait less for the role, but the ideas they run are older. |
 
 ## SeedTrigger
 
@@ -512,12 +512,13 @@ The settings of a runtime, which the runtime reads and checks. An environment va
 | `prompt_pickup_seconds` | number | `5` | The number of seconds to wait for an idle agent to start working again after piloop prompts it to resume, and for Herdr to report the session id of a started agent. The first prompt has `startup_grace_seconds`. |
 | `startup_grace_seconds` | number | `60` | The number of seconds an agent has to start its first turn after its brief is submitted. Within it, an agent whose state has not changed yet is still starting, not a lost prompt, and a quiet idle screen is not a finished turn: under load a TUI can take many seconds to show that it took the brief. After it, a brief that was never picked up is lost, and an agent that never worked counts as failed to start. |
 | `shell_ready_seconds` | number | `10` | The number of seconds to retry `agent start` while the shell of a new tab is still starting. |
-| `wait_chunk_seconds` | number | `10` | The longest `agent wait` call, in seconds. piloop notices a worker whose tab was closed within this time. |
+| `wait_chunk_seconds` | number | `10` | The longest `agent wait` call, in seconds. piloop notices an agent whose tab was closed within this time. |
 
 ## Deprecated keys
 
 These keys still work. Each one shows a `PiloopDeprecationWarning` that names the file, the key, its replacement and the release that removes it. The changelog lists them too.
 
+- `[roles.worker]` is `[roles.implementer]`: the role that runs one idea in its own worktree. A key that `[roles.implementer]` sets too keeps its value there.
 - `[roles.research.scout]` is `[roles.scout]`, a role of its own. The keys of `[roles.research]` that the scout used (`runtime`, `harnesses`, `model`, `timeout`, `mcp`, `addendum` and `workdir`) are copied into it, unless `[roles.scout]` sets them.
 - The `scout` trigger of `[roles.research] triggers` is gone: the scout is a role with its own `cron`.
 - `[roles.research] buffer` is the `buffer` of research's `low_water` trigger. Without `triggers` in the table, research gets its default triggers with that `buffer`.

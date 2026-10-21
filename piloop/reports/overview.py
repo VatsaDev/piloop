@@ -23,7 +23,7 @@ from statistics import median
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
-from piloop import git
+from piloop import deprecated, git
 from piloop.agents.launcher import STARTUP_ANOMALY, TRANSCRIPT
 from piloop.campaign import inbox
 from piloop.campaign.ideas import defined_by, links, runnable, superseded_by, yields
@@ -37,6 +37,8 @@ from piloop.db.models import (
     FINISHED_RUNS,
     LIVE,
     OPEN_RUNS,
+    AgentSession,
+    AgentSessionState,
     Base,
     Campaign,
     CampaignStatus,
@@ -51,11 +53,9 @@ from piloop.db.models import (
     Run,
     TargetKind,
     Verdict,
-    Worker,
-    WorkerState,
     campaign_runs,
     count,
-    latest_worker,
+    latest_agent_session,
 )
 from piloop.plugins.contracts.verdict import Direction
 from piloop.reports.history import IDEAS_IN_HISTORY, block
@@ -87,9 +87,9 @@ EVALS_IN_TREND = 5
 """How many of the first and of the latest measurements the evaluation-time trend compares."""
 DETAIL_CHARS = 160
 SILENT_SECONDS = 3600
-"""How long a worker with jobs in flight can go without a comment or a commit before it is ``silent``.
+"""How long an implementer with jobs in flight can go without a comment or a commit before it is ``silent``.
 
-One hour allows several progress checks on a long job, and is a small part of ``[roles.worker] timeout``.
+One hour allows several progress checks on a long job, and is a small part of ``[roles.implementer] timeout``.
 """
 LIVE_LINES = 40
 """How many extra screen lines to read when the session file of an agent has no text yet.
@@ -127,8 +127,8 @@ INCIDENTS = frozenset(
 An anomaly of an agent that investigates incidents is not an incident (``Anomaly.investigator``).
 """
 
-type JobsProbe = Callable[[Worker], list[str]]
-"""Return the jobs that a running worker has in flight (``Runtime.jobs``). Tests pass their own function."""
+type JobsProbe = Callable[[AgentSession], list[str]]
+"""Return the jobs that a running implementer has in flight (``Runtime.jobs``). Tests pass their own function."""
 
 
 @dataclass(frozen=True)
@@ -137,7 +137,7 @@ class Anomaly:
 
     kind: AnomalyKind
     ref: str
-    """The row that the anomaly is about: ``run#36``, ``worker#12``, ``measurement#117``, ``campaign#3``."""
+    """The row that the anomaly is about: ``run#36``, ``agent_session#12``, ``measurement#117``, ``campaign#3``."""
     at: datetime
     """When the anomaly began, for example the end of a failed run or the exit of an agent."""
     detail: str
@@ -304,14 +304,16 @@ def produced(campaign: Campaign) -> Select[Candidate]:
     return select(Candidate).where(Candidate.campaign_id == campaign.id, Candidate.verdict != Verdict.REFERENCE)
 
 
-def live_workers(s: Session, campaign: Campaign) -> Sequence[Worker]:
+def live_agent_sessions(s: Session, campaign: Campaign) -> Sequence[AgentSession]:
     """Return the agents of the campaign that are starting or running, oldest first."""
     return s.scalars(
-        select(Worker).where(Worker.campaign_id == campaign.id, Worker.state.in_(LIVE)).order_by(Worker.id)
+        select(AgentSession)
+        .where(AgentSession.campaign_id == campaign.id, AgentSession.state.in_(LIVE))
+        .order_by(AgentSession.id)
     ).all()
 
 
-def on(s: Session, w: Worker) -> str:
+def on(s: Session, w: AgentSession) -> str:
     """Describe what the agent works on: the idea of its run, or else the reason for its request."""
     if w.run_id is not None:
         idea = s.get_one(Run, w.run_id).idea
@@ -319,7 +321,7 @@ def on(s: Session, w: Worker) -> str:
     return cell(w.reason or NONE)
 
 
-def agent_output(s: Session, w: Worker, campaign_path: Path, lines: int) -> list[str]:
+def agent_output(s: Session, w: AgentSession, campaign_path: Path, lines: int) -> list[str]:
     """Return the last ``lines`` non-empty lines of output of the agent.
 
     The first choice is the text in the session file of the harness, found in the same way as its usage
@@ -336,7 +338,7 @@ def agent_output(s: Session, w: Worker, campaign_path: Path, lines: int) -> list
     )
 
 
-def _live_output(s: Session, w: Worker, campaign_path: Path, lines: int) -> str:
+def _live_output(s: Session, w: AgentSession, campaign_path: Path, lines: int) -> str:
     try:
         return runtime_for(s, w, campaign_path).read(handle_for(w), lines=lines)
     except Exception:  # Not launched yet, runtime missing or agent gone: the transcript is the fallback.
@@ -397,7 +399,7 @@ def item_lines(s: Session, c: Comment, now: datetime) -> tuple[str, list[str]]:
 
 
 def anomalies(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime, jobs: JobsProbe) -> list[Anomaly]:
-    """Return every anomaly of ``campaign``, newest first. ``jobs`` is called only for silent workers."""
+    """Return every anomaly of ``campaign``, newest first. ``jobs`` is called only for silent implementers."""
     found = [
         *_failed_runs(s, campaign),
         *_dead_at_startup(s, campaign, cfg),
@@ -413,18 +415,22 @@ def reported(s: Session, campaign_id: int) -> set[str]:
     rows = s.scalars(
         select(Event.payload).where(
             Event.kind == ANOMALY_EVENT,
-            Event.target_kind == TargetKind.WORKER,
-            Event.target_id.in_(select(Worker.id).where(Worker.campaign_id == campaign_id)),
+            Event.target_kind == TargetKind.AGENT_SESSION,
+            Event.target_id.in_(select(AgentSession.id).where(AgentSession.campaign_id == campaign_id)),
         )
     )
     return {str(payload['key']) for payload in rows}
 
 
-def assigned(s: Session, worker_id: int) -> list[str]:
+def assigned(s: Session, agent_session_id: int) -> list[str]:
     """Return the anomaly lines assigned to a watchdog, in order. A progress sweep has none."""
     rows = s.scalars(
         select(Event.payload)
-        .where(Event.kind == ANOMALY_EVENT, Event.target_kind == TargetKind.WORKER, Event.target_id == worker_id)
+        .where(
+            Event.kind == ANOMALY_EVENT,
+            Event.target_kind == TargetKind.AGENT_SESSION,
+            Event.target_id == agent_session_id,
+        )
         .order_by(Event.id)
     )
     return [str(payload['anomaly']) for payload in rows]
@@ -464,7 +470,7 @@ def tracks_lines(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datet
     """Return one line per track.
 
     Each line shows the primary at the head against the start and its floor, the trunk keeps of the track and the
-    latest one, its share of the worker slots against its open runs, and its runnable ideas.
+    latest one, its share of the implementer slots against its open runs, and its runnable ideas.
     """
     evaluator_id = campaign.evaluator_id or 0
     trunk = head(s, campaign)
@@ -590,14 +596,14 @@ def _now(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> 
 
 def _runs_now(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> list[str]:
     open_runs = s.scalars(campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS)).order_by(Run.id)).all()
-    lines = [f'- Worker slots: {len(open_runs)} of {cfg.run_slots} busy.']
+    lines = [f'- Implementer slots: {len(open_runs)} of {cfg.run_slots} busy.']
     for run in open_runs:
-        worker = latest_worker(s, run.id)
+        agent_session = latest_agent_session(s, run.id)
         state = f'{run.status}'
         if run.started_at is not None:
             state += f' {age(run.started_at, now)}'
-        if worker is not None and worker.ended_at is not None:
-            state += f', worker#{worker.id} ended {age(worker.ended_at, now)} ago'
+        if agent_session is not None and agent_session.ended_at is not None:
+            state += f', agent_session#{agent_session.id} ended {age(agent_session.ended_at, now)} ago'
         lines.append(f'  - run#{run.id} idea#{run.idea_id} "{cell(run.idea.title, 60)}" ({run.harness}): {state}')
     return lines
 
@@ -626,7 +632,9 @@ def _queue(s: Session, campaign: Campaign, now: datetime) -> list[str]:
 
 def _agents(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> list[str]:
     """Show the live agents with their last line, the agents per role, the yield of each source and the tokens."""
-    rows = s.scalars(select(Worker).where(Worker.campaign_id == campaign.id).order_by(Worker.id)).all()
+    rows = s.scalars(
+        select(AgentSession).where(AgentSession.campaign_id == campaign.id).order_by(AgentSession.id)
+    ).all()
     path = Path(campaign.path)
     live = [
         f'  - {w.kind}#{w.id} {w.harness or NONE}/{w.model or NONE} {age(w.started_at, now)}'
@@ -635,12 +643,12 @@ def _agents(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) 
         for w in rows
         if w.state in LIVE
     ]
-    requested = [f'{w.kind}#{w.id}' for w in rows if w.state is WorkerState.REQUESTED]
+    requested = [f'{w.kind}#{w.id}' for w in rows if w.state is AgentSessionState.REQUESTED]
     per_kind: list[str] = []
     spend: list[str] = []
     for kind in dict.fromkeys([*cfg.roles.all(), *(w.kind for w in rows)]):
         mine = [w for w in rows if w.kind == kind]
-        killed = sum(w.state is WorkerState.KILLED for w in mine)
+        killed = sum(w.state is AgentSessionState.KILLED for w in mine)
         per_kind.append(f'{len(mine)} {kind}' + (f' ({killed} killed)' if killed else ''))
         spend.append(f'{kind} {human(sum(_tokens(w) for w in mine))}')
     defined = defined_by(s, campaign.id)
@@ -767,8 +775,8 @@ TOOLS = [
     "- Scores: `json_extract(m.metrics, '$.<metric>')`; a candidate's score is the mean over its measurements with"
     ' `error IS NULL AND evaluator_id = campaigns.evaluator_id`.'
     f' `piloop history` prints the latest {IDEAS_IN_HISTORY} ideas with their outcomes.',
-    f'- Transcripts: `<runs.log_dir>/{TRANSCRIPT}` (a worker), `<workers.log_dir>/{TRANSCRIPT}` and `brief.md`'
-    ' beside it (any agent); the whole session: `cd <repo> && entire checkpoint explain <workers.checkpoint_id>`.',
+    f'- Transcripts: `<runs.log_dir>/{TRANSCRIPT}` (an implementer), `<agent_sessions.log_dir>/{TRANSCRIPT}` and `brief.md`'
+    ' beside it (any agent); the whole session: `cd <repo> && entire checkpoint explain <agent_sessions.checkpoint_id>`.',
     '- Code: `git -C <repo> show <candidates.commit_sha>`; a candidate against its parent:'
     ' `git -C <repo> diff <parent commit_sha> <commit_sha>`.',
     "- Who changed what: `SELECT at, actor, kind, payload FROM events WHERE target_kind='idea' AND target_id=12`.",
@@ -799,8 +807,8 @@ def _dead_at_startup(s: Session, campaign: Campaign, cfg: CampaignConfig) -> lis
     investigators = {name for name, role in cfg.roles.sweeping().items() if any(t.INVESTIGATES for t in role.triggers)}
     events = select(Event).where(
         Event.kind == STARTUP_ANOMALY,
-        Event.target_kind == TargetKind.WORKER,
-        Event.target_id.in_(select(Worker.id).where(Worker.campaign_id == campaign.id)),
+        Event.target_kind == TargetKind.AGENT_SESSION,
+        Event.target_id.in_(select(AgentSession.id).where(AgentSession.campaign_id == campaign.id)),
     )
     found: list[Anomaly] = []
     for e in s.scalars(events):
@@ -808,7 +816,7 @@ def _dead_at_startup(s: Session, campaign: Campaign, cfg: CampaignConfig) -> lis
         error = cell(str(p.get('error') or 'no error recorded'), DETAIL_CHARS)
         detail = f'{p.get("kind")} on {p.get("harness")} failed to start ({p.get("seconds")}s): {error}'
         investigator = p.get('kind') in investigators
-        found.append(Anomaly(AnomalyKind.DEAD_AT_STARTUP, f'worker#{e.target_id}', e.at, detail, investigator))
+        found.append(Anomaly(AnomalyKind.DEAD_AT_STARTUP, f'agent_session#{e.target_id}', e.at, detail, investigator))
     return found
 
 
@@ -838,7 +846,7 @@ def _same_as_parent(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list
 
 
 def _idle_queue(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Anomaly]:
-    """Find an active campaign, not paused, with a free worker slot and no runnable idea, since the last run moved."""
+    """Find an active campaign, not paused, with a free implementer slot and no runnable idea, since the last run moved."""
     if campaign.status is not CampaignStatus.ACTIVE or campaign.paused is not None:
         return []
     open_runs = campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS))
@@ -855,60 +863,60 @@ def _idle_queue(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Ano
             moments.append(latest)
     kinds = defining(cfg)
     pending = s.scalars(
-        select(Worker)
+        select(AgentSession)
         .where(
-            Worker.campaign_id == campaign.id,
-            Worker.kind.in_(kinds),
-            Worker.state.in_((WorkerState.REQUESTED, *LIVE)),
+            AgentSession.campaign_id == campaign.id,
+            AgentSession.kind.in_(kinds),
+            AgentSession.state.in_((AgentSessionState.REQUESTED, *LIVE)),
         )
-        .order_by(Worker.id)
+        .order_by(AgentSession.id)
     ).all()
     sweeps = (
         ', '.join(f'{w.kind}#{w.id} {w.state}' for w in pending)
         or f'no {" or ".join(kinds) or "defining"} sweep pending'
     )
-    detail = f'{free} free worker slots and no runnable idea; {sweeps}'
+    detail = f'{free} free implementer slots and no runnable idea; {sweeps}'
     return [Anomaly(AnomalyKind.IDLE_QUEUE, f'campaign#{campaign.id}', max(moments), detail)]
 
 
 def _silent(s: Session, campaign: Campaign, now: datetime, jobs: JobsProbe) -> list[Anomaly]:
-    """Find running workers with jobs in flight that have not commented or committed for ``SILENT_SECONDS``.
+    """Find running implementers with jobs in flight that have not commented or committed for ``SILENT_SECONDS``.
 
-    The silence starts at the latest of: the start of the run, a comment signed ``worker#<id>`` or ``run#<id>``, and
-    the HEAD commit of its worktree. The commits of a worker become candidates only when it ends, so the worktree is
-    checked directly. The runtime is asked for jobs last, and only for workers that are already silent. Each worker
-    gets one anomaly. If a worker goes silent again later, the progress review notices it.
+    The silence starts at the latest of: the start of the run, a comment signed ``implementer#<id>`` or ``run#<id>``, and
+    the HEAD commit of its worktree. The commits of an implementer become candidates only when it ends, so the worktree is
+    checked directly. The runtime is asked for jobs last, and only for implementers that are already silent. Each implementer
+    gets one anomaly. If an implementer goes silent again later, the progress review notices it.
     """
     limit = timedelta(seconds=SILENT_SECONDS)
     rows = s.scalars(
-        select(Worker)
+        select(AgentSession)
         .where(
-            Worker.campaign_id == campaign.id,
-            Worker.state == WorkerState.RUNNING,
-            Worker.run_id.is_not(None),
+            AgentSession.campaign_id == campaign.id,
+            AgentSession.state == AgentSessionState.RUNNING,
+            AgentSession.run_id.is_not(None),
         )
-        .order_by(Worker.id)
+        .order_by(AgentSession.id)
     )
     found: list[Anomaly] = []
-    for worker in rows:
-        run = s.get_one(Run, worker.run_id)
-        signed = (f'{worker.kind}#{worker.id}', f'run#{run.id}')
+    for agent_session in rows:
+        run = s.get_one(Run, agent_session.run_id)
+        signed = (*deprecated.signatures(agent_session.kind, agent_session.id), f'run#{run.id}')
         moments = [
-            ('its run started', run.started_at or worker.started_at),
+            ('its run started', run.started_at or agent_session.started_at),
             ('its last comment', s.scalar(select(func.max(Comment.created_at)).where(Comment.author.in_(signed)))),
             ('its last commit', git.head_time(Path(run.log_dir) / 'worktree') if run.log_dir else None),
         ]
         what, last = max(((w, m) for w, m in moments if m is not None), key=lambda p: p[1])
         if now - last <= limit:
             continue
-        running = jobs(worker)
+        running = jobs(agent_session)
         if not running:
             continue
         detail = (
             f'run#{run.id} idea#{run.idea_id}: no comment or commit for {age(last, now)} ({what});'
             f' {len(running)} jobs in flight, e.g. {cell(running[0], DETAIL_CHARS)}'
         )
-        found.append(Anomaly(AnomalyKind.SILENT, f'worker#{worker.id}', last + limit, detail))
+        found.append(Anomaly(AnomalyKind.SILENT, f'agent_session#{agent_session.id}', last + limit, detail))
     return found
 
 
@@ -917,7 +925,7 @@ def defining(cfg: CampaignConfig) -> list[str]:
     return [name for name, role in cfg.roles.sweeping().items() if role.files is Files.IDEAS]
 
 
-def _tokens(w: Worker) -> int:
+def _tokens(w: AgentSession) -> int:
     return w.usage['total'] if w.usage else 0
 
 

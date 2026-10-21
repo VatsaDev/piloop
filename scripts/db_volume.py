@@ -39,13 +39,13 @@ HOT_INDEXES = (
     'ix_runs_status',
     'ix_candidates_run',
     'ix_candidates_parent',
-    'ix_workers_campaign_kind_state',
-    'ix_workers_run',
+    'ix_agent_sessions_campaign_kind_state',
+    'ix_agent_sessions_run',
     'ix_comments_inbox',
 )
 """The indexes that the hot paths need. ``tests/test_plans.py`` drops them to prove that its check finds a SCAN, and
 checks that the models still declare each one."""
-GROWING = frozenset({'ideas', 'runs', 'candidates', 'measurements', 'comments', 'workers', 'events'})
+GROWING = frozenset({'ideas', 'runs', 'candidates', 'measurements', 'comments', 'agent_sessions', 'events'})
 """The tables that grow with the campaign. ``campaigns`` and ``evaluators`` stay small, so a scan of them is fine."""
 
 
@@ -60,10 +60,12 @@ class Volume:
     measurements: int
     comments: int
     events: int
-    workers: int
+    agent_sessions: int
 
 
-SMALL = Volume(campaigns=2, ideas=40, runs=60, candidates=80, measurements=160, comments=120, events=400, workers=70)
+SMALL = Volume(
+    campaigns=2, ideas=40, runs=60, candidates=80, measurements=160, comments=120, events=400, agent_sessions=70
+)
 """The volume that the test uses: enough rows for every code path to run. Without ``ANALYZE`` statistics, a query
 plan does not depend on the row counts."""
 
@@ -82,7 +84,7 @@ def populate(path: Path, volume: Volume, seed: int = 0) -> None:
 
     It uses raw ``executemany`` for speed. The server defaults and CHECK constraints of a real database apply. Every
     campaign gets one evaluator, a kept baseline candidate and a few live agents. The ideas, runs, candidates, comments,
-    workers and events are spread over the campaigns, with statuses drawn at the frequencies of a real campaign.
+    implementers and events are spread over the campaigns, with statuses drawn at the frequencies of a real campaign.
     """
     rng = random.Random(seed)
     cfg = load_campaign_config(BLANK, runtime='subprocess', max_concurrent={'pi': 2})
@@ -95,7 +97,7 @@ def populate(path: Path, volume: Volume, seed: int = 0) -> None:
         owners = _candidates(con, volume, rng)
         _measurements(con, volume, rng, owners)
         _comments(con, volume, rng)
-        _workers(con, volume, rng)
+        _agent_sessions(con, volume, rng)
         _events(con, volume, rng)
         con.execute('COMMIT')
 
@@ -187,7 +189,7 @@ def _comments(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
     kinds = ['note'] * 60 + ['finding'] * 36 + ['escalation'] * 2 + ['decision'] * 2
     targets = ['idea'] * 60 + ['candidate'] * 20 + ['campaign'] * 15 + ['run'] * 5
     limits = {'idea': v.ideas, 'candidate': v.candidates, 'campaign': v.campaigns, 'run': v.runs}
-    authors = ['research#1', 'worker#2', 'watchdog#3', 'pi']
+    authors = ['research#1', 'implementer#2', 'watchdog#3', 'pi']
 
     def row(i: int) -> tuple[str, int, str, str, str, int | None, str | None]:
         target, kind = rng.choice(targets), rng.choice(kinds)
@@ -203,33 +205,40 @@ def _comments(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
     )
 
 
-def _workers(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
+def _agent_sessions(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
     rows = []
-    for w in range(1, v.workers + 1):
+    for w in range(1, v.agent_sessions + 1):
         p = _campaign_of(w, v)
         if w <= 2 * v.campaigns:  # a few live agents per campaign, on the headless runtime so status reads a file
-            kind, run = ('worker', w) if w % 2 else ('research', None)
+            kind, run = ('implementer', w) if w % 2 else ('research', None)
             rows.append((w, kind, p, run, 'pi', 'm', 'subprocess', '{}', 'running', None))
             continue
-        kind = rng.choice(['worker'] * 80 + ['watchdog'] * 10 + ['research'] * 10)
-        run = rng.randint(1, v.runs) if kind == 'worker' else None
+        kind = rng.choice(['implementer'] * 80 + ['watchdog'] * 10 + ['research'] * 10)
+        run = rng.randint(1, v.runs) if kind == 'implementer' else None
         state = rng.choice(['exited'] * 90 + ['killed'] * 10)
         rows.append((w, kind, p, run, 'pi', 'm', 'subprocess', '{}', state, f'2026-01-{1 + w % 28:02d} 12:00:00'))
     con.executemany(
-        'INSERT INTO workers (id, kind, campaign_id, run_id, harness, model, runtime, handle, state, ended_at)'
+        'INSERT INTO agent_sessions (id, kind, campaign_id, run_id, harness, model, runtime, handle, state, ended_at)'
         ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         rows,
     )
 
 
 def _events(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
-    kinds = ['run.started', 'run.finished', 'measurement.recorded', 'candidate.judged', 'idea.status', 'worker.started']
+    kinds = [
+        'run.started',
+        'run.finished',
+        'measurement.recorded',
+        'candidate.judged',
+        'idea.status',
+        'implementer.started',
+    ]
     targets = {
         'run': v.runs,
         'measurement': v.measurements,
         'candidate': v.candidates,
         'idea': v.ideas,
-        'worker': v.workers,
+        'agent_session': v.agent_sessions,
     }
     con.executemany(
         "INSERT INTO events (kind, actor, target_kind, target_id, payload) VALUES (?, 'daemon', ?, ?, '{}')",

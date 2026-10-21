@@ -21,6 +21,7 @@ from piloop.campaign import inbox
 from piloop.campaign.ideas import links, superseded_by
 from piloop.config import CampaignConfig, config_of
 from piloop.db.models import (
+    AgentSession,
     Campaign,
     CampaignStatus,
     Candidate,
@@ -29,7 +30,6 @@ from piloop.db.models import (
     IdeaStatus,
     TargetKind,
     Verdict,
-    Worker,
 )
 from piloop.reports.overview import (
     age,
@@ -37,7 +37,7 @@ from piloop.reports.overview import (
     head_scores,
     item_lines,
     latest_events,
-    live_workers,
+    live_agent_sessions,
     on,
     paused,
     progress,
@@ -47,7 +47,7 @@ from piloop.reports.overview import (
     summary,
     tracks_lines,
 )
-from piloop.runtime import WorkerStatus
+from piloop.runtime import AgentStatus
 from piloop.runtime.factory import handle_for, runtime_for, view_of
 from piloop.scoring.ledger import metrics, references, score, track_of, trunk_keeps
 from piloop.text import NONE, cell, metric
@@ -64,9 +64,9 @@ IDEA_ORDER = (IdeaStatus.SEED, IdeaStatus.PROPOSED, IdeaStatus.READY, IdeaStatus
 """The statuses that the ideas panel shows, in this order: the seeds for research, then the ideas that wait for a
 review. The panel leaves out done and rejected ideas."""
 STATES = {
-    WorkerStatus.WORKING: '●',
-    WorkerStatus.IDLE: '○',
-    WorkerStatus.BLOCKED: '◐',
+    AgentStatus.WORKING: '●',
+    AgentStatus.IDLE: '○',
+    AgentStatus.BLOCKED: '◐',
 }
 """The mark for an agent's state, as the runtime reports it. Any other state (gone, unknown) is ``·``."""
 BLOCKED = 'blocked on a dialog'
@@ -141,7 +141,7 @@ def campaigns(s: Session, now: datetime, me: str) -> list[Item]:
                     else str(p.status),
                     ', '.join(f'{_four(value)} {track.primary.name}' for track, value, _ in values) or NONE,
                     ', '.join(NONE if delta is None else metric(delta, signed=True) for _, _, delta in values) or NONE,
-                    f'{len(live_workers(s, p))} agents',
+                    f'{len(live_agent_sessions(s, p))} agents',
                     f'{len(ready)} ready',
                     f'{len(waiting(s, p.id, me))} inbox',
                     f'{human(spent)} tok' if spent else NONE,
@@ -192,13 +192,13 @@ class AgentsPanel:
     """Panel 2: the running agents, with the state that the runtime reports. The detail is the agent's last output."""
 
     def title(self, s: Session, ctx: Context, items: Sequence[Item]) -> str:
-        blocked = sum(1 for i in items if i.cells[2] == WorkerStatus.BLOCKED)
+        blocked = sum(1 for i in items if i.cells[2] == AgentStatus.BLOCKED)
         return f'Agents {len(items)}{f" · {blocked} blocked" if blocked else ""}'
 
     def items(self, s: Session, ctx: Context) -> list[Item]:
         path = Path(ctx.campaign.path)
         rows = []
-        for w in live_workers(s, ctx.campaign):
+        for w in live_agent_sessions(s, ctx.campaign):
             state = state_of(s, w, path)
             rows.append(
                 Item(
@@ -216,7 +216,7 @@ class AgentsPanel:
         return rows
 
     def detail(self, s: Session, ctx: Context, key: int) -> RenderableType:
-        w = s.get_one(Worker, key)
+        w = s.get_one(AgentSession, key)
         path = Path(ctx.campaign.path)
         state = state_of(s, w, path)
         where = ' '.join(p for p in (w.runtime, view_of(w)) if p) or NONE
@@ -226,7 +226,7 @@ class AgentsPanel:
         ]
         if w.reason:
             facts.append(f'why: {cell(w.reason)}')
-        if state is WorkerStatus.BLOCKED:
+        if state is AgentStatus.BLOCKED:
             facts.append(f'{BLOCKED}: steering is refused until it is answered; enter brings it to the front')
         output = agent_output(s, w, path, AGENT_LINES)
         return Group(
@@ -238,7 +238,7 @@ class AgentsPanel:
         )
 
 
-def state_of(s: Session, w: Worker, campaign_path: Path) -> WorkerStatus | None:
+def state_of(s: Session, w: AgentSession, campaign_path: Path) -> AgentStatus | None:
     """Return what the runtime says the agent does now. None when it cannot say (not launched, runtime missing)."""
     try:
         return runtime_for(s, w, campaign_path).status(handle_for(w))

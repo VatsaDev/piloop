@@ -11,12 +11,12 @@ import pytest
 from dirty_equals import IsPositive, IsStr
 
 from piloop.proc import alive, started
-from piloop.runtime import Handle, NotSteerable, WorkerSpec, WorkerStatus, subprocess as subprocess_runtime
+from piloop.runtime import AgentSpec, AgentStatus, Handle, NotSteerable, subprocess as subprocess_runtime
 from piloop.runtime.subprocess import SubprocessRuntime
 
 
 def script(tmp_path: Path, body: str) -> Path:
-    path = tmp_path / 'worker.sh'
+    path = tmp_path / 'agent_session.sh'
     path.write_text(f'#!/bin/sh\n{body}\n')
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
     return path
@@ -29,8 +29,8 @@ def spec(
     env: dict[str, str] | None = None,
     pattern: str | None = None,
     resume: list[str] | None = None,
-) -> WorkerSpec:
-    return WorkerSpec(
+) -> AgentSpec:
+    return AgentSpec(
         name='w1',
         label='w1',
         executable=str(executable),
@@ -46,7 +46,7 @@ def spec(
 
 def test_runs_to_completion_and_captures_output(tmp_path: Path) -> None:
     rt = SubprocessRuntime()
-    exe = script(tmp_path, 'echo "prompt=$1 var=$PILOOP_TEST token=$PILOOP_WORKER_TOKEN"; echo oops >&2; exit 3')
+    exe = script(tmp_path, 'echo "prompt=$1 var=$PILOOP_TEST token=$PILOOP_PROCESS_TAG"; echo oops >&2; exit 3')
     handle = rt.start(spec(tmp_path, exe, 'the brief', env={'PILOOP_TEST': 'yes'}))
     assert handle.runtime == 'subprocess'
     assert handle.data == {
@@ -59,23 +59,23 @@ def test_runs_to_completion_and_captures_output(tmp_path: Path) -> None:
         'token': IsStr(regex='[0-9a-f]{32}'),
     }
     outcome = rt.wait(handle, timeout=10)
-    assert (outcome.status, outcome.exit_code, outcome.error) == (WorkerStatus.EXITED, 3, 'worker exit 3')
+    assert (outcome.status, outcome.exit_code, outcome.error) == (AgentStatus.EXITED, 3, 'agent exit 3')
     assert outcome.seconds == IsPositive()
-    assert rt.status(handle) is WorkerStatus.EXITED
+    assert rt.status(handle) is AgentStatus.EXITED
     assert rt.read(handle) == f'prompt=the brief var=yes token={handle.data["token"]}'
-    assert (tmp_path / 'logs' / 'worker.stderr').read_text() == 'oops\n'
+    assert (tmp_path / 'logs' / 'agent_session.stderr').read_text() == 'oops\n'
 
 
 def test_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
     rt = SubprocessRuntime()
     exe = script(tmp_path, 'sleep 30 &\necho $! > child.pid\nwait')
     handle = rt.start(spec(tmp_path, exe))
-    assert rt.status(handle) is WorkerStatus.WORKING
+    assert rt.status(handle) is AgentStatus.WORKING
     outcome = rt.wait(handle, timeout=0.5)
     assert (outcome.status, outcome.exit_code, outcome.error) == (
-        WorkerStatus.TIMED_OUT,
+        AgentStatus.TIMED_OUT,
         None,
-        'worker timeout after 0.5s',
+        'agent timeout after 0.5s',
     )
     child = int((tmp_path / 'child.pid').read_text())
     time.sleep(0.2)
@@ -108,13 +108,13 @@ def gone(pid: int, start: float) -> bool:
 
 def test_a_timeout_kills_what_the_agent_started_in_a_session_of_its_own(tmp_path: Path) -> None:
     """A Claude Code Bash call runs in its own session, outside the agent's group: the builds it ran outlived the
-    worker by an hour. Every process of the agent carries its token, and the kill ends the tagged ones."""
+    agent by an hour. Every process of the agent carries its token, and the kill ends the tagged ones."""
     rt = SubprocessRuntime()
     handle = rt.start(spec(tmp_path, script(tmp_path, f'{ESCAPE}sleep 30')))
     pid, start = escaped(tmp_path)
     try:
         assert os.getsid(pid) != handle.data['pid'], 'the child left the group that killpg reaches'
-        assert rt.wait(handle, timeout=0.5).status is WorkerStatus.TIMED_OUT
+        assert rt.wait(handle, timeout=0.5).status is AgentStatus.TIMED_OUT
         assert gone(pid, start), 'the escaped child dies with the agent'
     finally:
         if alive(pid, start):
@@ -127,7 +127,7 @@ def test_kill_ends_an_escaped_child_after_the_agent_itself_exited(tmp_path: Path
     handle = rt.start(spec(tmp_path, script(tmp_path, ESCAPE)))
     pid, start = escaped(tmp_path)
     try:
-        assert rt.wait(handle, timeout=10).status is WorkerStatus.EXITED
+        assert rt.wait(handle, timeout=10).status is AgentStatus.EXITED
         assert alive(pid, start), 'the agent exited, its job did not'
         SubprocessRuntime().kill(Handle(handle.runtime, dict(handle.data)))
         assert gone(pid, start), 'any instance, from the handle in the database'
@@ -161,11 +161,11 @@ def test_a_harness_without_resume_arguments_takes_no_message(tmp_path: Path) -> 
         rt.prompt(handle, 'hi')
     rt.kill(handle)
     rt.kill(handle)
-    assert rt.status(handle) is WorkerStatus.EXITED
+    assert rt.status(handle) is AgentStatus.EXITED
 
 
 def test_no_jobs_are_reported(tmp_path: Path) -> None:
-    """A one-shot process is not watched for what it leaves running, so no worker of it is ever ``silent``."""
+    """A one-shot process is not watched for what it leaves running, so no agent of it is ever ``silent``."""
     rt = SubprocessRuntime()
     handle = rt.start(spec(tmp_path, script(tmp_path, 'sleep 5 &\nwait')))
     assert rt.jobs(handle) == []
@@ -177,20 +177,20 @@ def test_rehydrated_handle_is_observable_without_an_exit_code(tmp_path: Path) ->
     handle = starter.start(spec(tmp_path, script(tmp_path, 'sleep 5')))
     other = SubprocessRuntime()  # another process would rebuild the handle from the database
     rehydrated = Handle(handle.runtime, {k: v for k, v in handle.data.items() if k != 'token'})  # a row from before it
-    assert other.status(rehydrated) is WorkerStatus.WORKING
+    assert other.status(rehydrated) is AgentStatus.WORKING
     other.kill(rehydrated)
     starter.wait(handle, timeout=5)
-    assert other.status(rehydrated) is WorkerStatus.EXITED
+    assert other.status(rehydrated) is AgentStatus.EXITED
     assert other.wait(rehydrated, timeout=1).exit_code is None
     assert other.read(Handle('subprocess', {**handle.data, 'log_dir': str(tmp_path / 'nope')})) == ''
 
 
-def test_reused_pid_is_not_mistaken_for_the_worker(tmp_path: Path) -> None:
+def test_reused_pid_is_not_mistaken_for_the_implementer(tmp_path: Path) -> None:
     rt = SubprocessRuntime()
     handle = rt.start(spec(tmp_path, script(tmp_path, 'true')))
     rt.wait(handle, timeout=5)
     impostor = Handle('subprocess', {**handle.data, 'pid': os.getpid(), 'start_time': -1.0})
-    assert SubprocessRuntime().status(impostor) is WorkerStatus.EXITED
+    assert SubprocessRuntime().status(impostor) is AgentStatus.EXITED
 
 
 def test_kill_tolerates_a_vanished_group(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -221,7 +221,7 @@ def test_an_agent_that_exits_at_once_still_starts(tmp_path: Path, monkeypatch: p
     rt = SubprocessRuntime()
     handle = rt.start(spec(tmp_path, script(tmp_path, 'exit 0')))
     assert handle.data['pgid'] == handle.data['pid']
-    assert rt.wait(handle, timeout=10).status is WorkerStatus.EXITED
+    assert rt.wait(handle, timeout=10).status is AgentStatus.EXITED
 
 
 TURNS = """
@@ -242,7 +242,7 @@ def test_a_message_waits_for_the_turn_to_end_then_resumes_the_session_with_it(tm
             tmp_path, exe, 'the brief', pattern=r'"thread_id":"([^"]+)"', resume=['resume', '{session_id}', '{prompt}']
         )
     )
-    assert (tmp_path / 'logs' / 'worker.resumer').is_file()
+    assert (tmp_path / 'logs' / 'agent_session.resumer').is_file()
     elsewhere = SubprocessRuntime()  # the scheduler's push and piloop prompt use instances of their own
     elsewhere.prompt(handle, '[piloop] note on run#1 by research#2: stop after the next commit')
     elsewhere.prompt(handle, 'and say so')
@@ -250,7 +250,7 @@ def test_a_message_waits_for_the_turn_to_end_then_resumes_the_session_with_it(tm
         time.sleep(0.05)
     assert 'turn 2' not in (tmp_path / 'turns.log').read_text(), 'the turn in progress gets nothing'
     outcome = rt.wait(handle, timeout=20)
-    assert (outcome.status, outcome.error) == (WorkerStatus.EXITED, None)
+    assert (outcome.status, outcome.error) == (AgentStatus.EXITED, None)
     assert (tmp_path / 'turns.log').read_text() == (
         'turn 1: the brief\nturn 2 of t-42: [piloop] note on run#1 by research#2: stop after the next commit\n'
         'and say so\n'
@@ -273,9 +273,12 @@ def test_a_resumed_turn_is_the_one_kill_and_status_reach_from_any_instance(tmp_p
         time.sleep(0.05)
     assert rt._resume(handle), 'the launcher filled in the minted session id'
     elsewhere = SubprocessRuntime()
-    assert elsewhere.status(handle) is WorkerStatus.WORKING, 'the resumed process, from worker.current'
+    assert elsewhere.status(handle) is AgentStatus.WORKING, 'the resumed process, from agent_session.current'
+    logs = tmp_path / 'logs'
+    (logs / 'agent_session.current').rename(logs / 'worker.current')
+    assert elsewhere.status(handle) is AgentStatus.WORKING, 'its 0.1.0 name, from a daemon before the upgrade'
     elsewhere.kill(handle)
-    assert elsewhere.status(handle) is WorkerStatus.EXITED and rt.status(handle) is WorkerStatus.EXITED
+    assert elsewhere.status(handle) is AgentStatus.EXITED and rt.status(handle) is AgentStatus.EXITED
 
 
 def test_queued_messages_stay_when_the_turn_failed_or_the_session_is_unknown_or_another_instance_waits(
@@ -315,7 +318,7 @@ def test_a_re_attached_agent_refuses_messages_that_no_turn_would_take(tmp_path: 
     reattached = SubprocessRuntime()
     waiting = threading.Thread(target=reattached.wait, args=(handle, 10))
     waiting.start()
-    while (tmp_path / 'logs' / 'worker.resumer').exists():
+    while (tmp_path / 'logs' / 'agent_session.resumer').exists():
         time.sleep(0.01)
     with pytest.raises(NotSteerable, match='the daemon that started it was restarted'):
         reattached.prompt(handle, 'after it')
@@ -360,7 +363,7 @@ def test_a_start_that_fails_after_the_spawn_kills_and_waits_for_the_process(
     spawned: list[subprocess.Popen[bytes]] = []
     real = subprocess_runtime._spawn
 
-    def spawn(spec: WorkerSpec, args: list[str], mode: str, token: str) -> subprocess.Popen[bytes]:
+    def spawn(spec: AgentSpec, args: list[str], mode: str, token: str) -> subprocess.Popen[bytes]:
         spawned.append(proc := real(spec, args, mode, token))
         return proc
 

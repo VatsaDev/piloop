@@ -1,7 +1,7 @@
 """Wake overviews: the most important memory, in a fixed reading budget, at the start of a session.
 
 A session reads a short overview first and queries for more only when it needs it (the idea of OptMem's
-``memo wake``). Two overviews use it. A worker's or research sweep's brief opens with the current lessons of the
+``memo wake``). Two overviews use it. An implementer's or research sweep's brief opens with the current lessons of the
 repo (``lessons_overview``). The orchestrator runs ``piloop wake`` (``orchestrator_overview``): its latest journal
 lines, the open inbox, the head of each active campaign and the current lessons. A budget is in tokens, counted as
 ``CHARS_PER_TOKEN`` characters each. It covers every line printed: the headings, and the last line of a list that

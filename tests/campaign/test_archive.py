@@ -25,16 +25,16 @@ from piloop.campaign.archive import (
 )
 from piloop.campaign.campaigns import workspace_dir
 from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
     Archive,
     Campaign,
     CampaignStatus,
     Idea,
     IdeaStatus,
+    RoleName,
     Run,
     RunStatus,
-    Worker,
-    WorkerKind,
-    WorkerState,
     utcnow,
 )
 from piloop.db.session import Database
@@ -53,9 +53,9 @@ def add_idea(db: Database, campaign_id: int, title: str, status: IdeaStatus = Id
 
 
 def add_run(
-    db: Database, idea_id: int, status: RunStatus = RunStatus.SUCCEEDED, kind: WorkerKind = WorkerKind.WORKER
+    db: Database, idea_id: int, status: RunStatus = RunStatus.SUCCEEDED, kind: RoleName = RoleName.IMPLEMENTER
 ) -> int:
-    """A run of ``idea_id`` and the worker that ran it; the worker's id."""
+    """A run of ``idea_id`` and the implementer that ran it; the implementer's id."""
     with db.session() as s:
         idea = s.get_one(Idea, idea_id)
         finished = utcnow() if status not in (RunStatus.QUEUED, RunStatus.RUNNING) else None
@@ -70,13 +70,13 @@ def add_run(
         )
         s.add(run)
         s.flush()
-        state = WorkerState.EXITED if finished is not None else WorkerState.RUNNING
-        worker = Worker(
+        state = AgentSessionState.EXITED if finished is not None else AgentSessionState.RUNNING
+        agent_session = AgentSession(
             kind=kind, campaign_id=idea.campaign_id, run_id=run.id, state=state, ended_at=finished, harness='script'
         )
-        s.add(worker)
+        s.add(agent_session)
         s.commit()
-        return worker.id
+        return agent_session.id
 
 
 def write(path: Path, data: bytes | str = b'x') -> Path:
@@ -102,7 +102,7 @@ def store(home: Path) -> Store:
 def test_an_entry_belongs_to_an_idea_by_its_name(db: Database, campaign: Campaign) -> None:
     idea = add_idea(db, campaign.id, 'one')
     other = add_idea(db, campaign.id, 'two')
-    worker = add_run(db, idea)
+    agent_session = add_run(db, idea)
     with db.session() as s:
         alien = Campaign(name='alien', path='/alien', config={})
         s.add(alien)
@@ -116,8 +116,8 @@ def test_an_entry_belongs_to_an_idea_by_its_name(db: Database, campaign: Campaig
         f'idea{idea}-canary.log',
         f'idea{other}',
         f'idea{idea}0',
-        f'w{worker}',
-        f'worker-{worker}',
+        f'w{agent_session}',
+        f'implementer-{agent_session}',
         f'idea{stranger_id}',
         'research-31',
         'NOTES.md',
@@ -127,7 +127,7 @@ def test_an_entry_belongs_to_an_idea_by_its_name(db: Database, campaign: Campaig
             f'idea{idea}': idea,
             f'idea{idea}-canary.log': idea,
             f'idea{other}': other,
-        }, 'idea<id>0 is another idea, an idea of another campaign is not this one, a worker name is no idea'
+        }, 'idea<id>0 is another idea, an idea of another campaign is not this one, an implementer name is no idea'
 
 
 def test_an_idea_is_due_once_done_and_again_after_a_new_run(db: Database, campaign: Campaign) -> None:
@@ -151,18 +151,18 @@ def test_an_idea_is_due_once_done_and_again_after_a_new_run(db: Database, campai
 
 def test_a_stopped_campaign_is_due_once_its_ideas_are_and_nothing_of_it_runs(db: Database, campaign: Campaign) -> None:
     idea = add_idea(db, campaign.id, 'idea')
-    worker = add_run(db, idea)
+    agent_session = add_run(db, idea)
     with db.session() as s:
         s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
-        s.add(Worker(kind=WorkerKind.WATCHDOG, campaign_id=campaign.id, reason='campaign stopped'))
+        s.add(AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, reason='campaign stopped'))
         s.commit()
         assert due(s) == Job(campaign.id, idea), 'its done ideas first'
         assert backlog(s) == Backlog(ideas=1, campaigns=0), 'the closing watchdog is still requested'
         s.add(Archive(campaign_id=campaign.id, idea_id=idea))
         s.commit()
         assert due(s) is None, 'the closing watchdog is still requested'
-        for w in s.scalars(select(Worker).where(Worker.id != worker)):
-            w.state, w.ended_at = WorkerState.EXITED, utcnow()
+        for w in s.scalars(select(AgentSession).where(AgentSession.id != agent_session)):
+            w.state, w.ended_at = AgentSessionState.EXITED, utcnow()
         s.commit()
         assert due(s) == Job(campaign.id, None) and backlog(s) == Backlog(ideas=0, campaigns=1)
         s.add(Archive(campaign_id=campaign.id))
@@ -170,7 +170,11 @@ def test_a_stopped_campaign_is_due_once_its_ideas_are_and_nothing_of_it_runs(db:
         assert due(s) is None
     time.sleep(0.01)
     with db.session() as s:
-        s.add(Worker(kind=WorkerKind.WATCHDOG, campaign_id=campaign.id, state=WorkerState.EXITED, ended_at=utcnow()))
+        s.add(
+            AgentSession(
+                kind=RoleName.WATCHDOG, campaign_id=campaign.id, state=AgentSessionState.EXITED, ended_at=utcnow()
+            )
+        )
         s.commit()
         assert due(s) == Job(campaign.id, None), 'resumed and stopped again: what it wrote since is archived'
 
@@ -405,7 +409,9 @@ def test_a_newer_archiving_displaces_an_older_file_or_directory_at_the_same_path
         prune(db, store, home, row.id)
         with db.session() as s:  # the next stop of the campaign
             s.add(
-                Worker(kind=WorkerKind.WATCHDOG, campaign_id=campaign.id, state=WorkerState.EXITED, ended_at=utcnow())
+                AgentSession(
+                    kind=RoleName.WATCHDOG, campaign_id=campaign.id, state=AgentSessionState.EXITED, ended_at=utcnow()
+                )
             )
             s.commit()
         time.sleep(0.01)

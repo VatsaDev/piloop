@@ -14,16 +14,16 @@ from piloop.config import load_campaign_config
 from piloop.daemon.run_executor import RunExecutor
 from piloop.daemon.scheduler import Scheduler
 from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
     Campaign,
     Candidate,
     Comment,
     CommentKind,
     Idea,
     IdeaStatus,
+    RoleName,
     TargetKind,
-    Worker,
-    WorkerKind,
-    WorkerState,
 )
 from piloop.db.session import Database
 from piloop.otel import Tracer
@@ -46,22 +46,22 @@ git commit -qam "a sweep may try things"
 """
 
 
-def test_research_sweep_inserts_ideas_signed_with_its_worker_id(
+def test_research_sweep_inserts_ideas_signed_with_its_implementer_id(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     configure(db, campaign, FAKE_RESEARCHER, research={'max_ideas': 2})
     executor = RunExecutor(db, Tracer(None), tmp_path, factory(runtime))
     scheduler = Scheduler(db, executor, Tracer(None), tmp_path, factory(runtime))
 
-    assert scheduler.tick() == [1], 'a free worker slot, no idea for it: low water requests a research sweep'
+    assert scheduler.tick() == [1], 'a free implementer slot, no idea for it: low water requests a research sweep'
     scheduler.wait(30)
     scheduler.stop(timeout=5)
 
     with db.session() as s:
-        worker = s.get_one(Worker, 1)
-        assert (worker.kind, worker.state, worker.error) == (
-            WorkerKind.RESEARCH,
-            WorkerState.EXITED,
+        agent_session = s.get_one(AgentSession, 1)
+        assert (agent_session.kind, agent_session.state, agent_session.error) == (
+            RoleName.RESEARCH,
+            AgentSessionState.EXITED,
             None,
         )
         [idea] = s.scalars(select(Idea)).all()
@@ -92,7 +92,7 @@ def test_research_sweep_inserts_ideas_signed_with_its_worker_id(
         ' things. Nothing you commit here is scored or kept; it goes with the checkout when you end.' in brief
     )
     assert (
-        not (tmp_path / 'workers' / '1' / 'worktree').exists()
+        not (tmp_path / 'agent_sessions' / '1' / 'worktree').exists()
         and Repo(campaign.path).git.worktree('list').count('\n') == 0
     ), 'the worktree is gone with the sweep'
     with db.session() as s:
@@ -107,8 +107,8 @@ def test_research_sweep_inserts_ideas_signed_with_its_worker_id(
         'the sweep reads the research pack from its brief instead of querying for it'
     )
     assert '## History: ideas (0 of 0)' in tail and '## History: kept lineage' in tail
-    assert brief == (tmp_path / 'workers' / '1' / 'brief.md').read_text()
-    assert (tmp_path / 'workers' / '1' / 'transcript.txt').is_file()
+    assert brief == (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
+    assert (tmp_path / 'agent_sessions' / '1' / 'transcript.txt').is_file()
 
 
 FAKE_DEVELOPER = f"""#!/bin/sh
@@ -130,7 +130,11 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
     sweep counts as one that defined an idea.
     """
     configure(
-        db, campaign, FAKE_DEVELOPER, worker={'max_concurrent': 1}, research={'triggers': low_water(0), 'max_ideas': 2}
+        db,
+        campaign,
+        FAKE_DEVELOPER,
+        implementer={'max_concurrent': 1},
+        research={'triggers': low_water(0), 'max_ideas': 2},
     )
     with db.session() as s:
         for title, by, pointers in (
@@ -162,11 +166,11 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
     scheduler.wait(30)
     scheduler.stop(timeout=5)
 
-    brief = (tmp_path / 'workers' / '1' / 'brief.md').read_text()
+    brief = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
     assert '- Seeds to develop first: 2, listed in the research pack oldest first.' in brief
     assert '- Ideas of your own after the seeds: propose 0 (the backlog holds 1 of 1 runnable ideas' in brief
     assert (
-        '- Measured runs since the last keep: 2, of the 2 that mark a stall (two rounds of [roles.worker]'
+        '- Measured runs since the last keep: 2, of the 2 that mark a stall (two rounds of [roles.implementer]'
         ' max_concurrent = 1): stalled, so one of your own ideas pivots (section 3).' in brief
     )
     assert '- idea#1 by orchestrator: deeper trees — pointers: run#3' in brief
@@ -196,7 +200,7 @@ def test_with_several_tracks_research_reads_them_and_which_are_short_of_their_sh
                 {'name': 'size', 'direction': 'lower', 'role': 'primary', 'track': 'cost', 'margin': 5},
             ],
             'tracks': {'accuracy': {'share': 0.5}, 'cost': {'share': 0.5}},
-            'roles': {'research': {'max_ideas': 1, 'timeout': 20}, 'worker': {'max_concurrent': 2}},
+            'roles': {'research': {'max_ideas': 1, 'timeout': 20}, 'implementer': {'max_concurrent': 2}},
         }
         s.get_one(Campaign, campaign.id).config = load_campaign_config(Path(campaign.path), **tracks).model_dump(
             mode='json'

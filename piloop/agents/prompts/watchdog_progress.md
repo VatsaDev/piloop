@@ -1,7 +1,7 @@
 ## This sweep: a progress review
 
 Is the campaign really getting closer to the goal, at a fair cost?
-Take the time you need. Read candidate diffs, worker transcripts and findings, and the measurements behind the numbers.
+Take the time you need. Read candidate diffs, implementer transcripts and findings, and the measurements behind the numbers.
 
 These questions are worth answering. They are not a checklist.
 

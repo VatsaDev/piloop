@@ -140,8 +140,8 @@ def test_the_pack_of_a_campaign(db: Database, campaign: Campaign, tmp_path: Path
     assert tail == snapshot("""\
 - research#4: batch 1: rejected deleting
 
-## Research pack: latest worker findings (newest first)
-- comment#1 worker#1 on idea#2: NEGATIVE: fewer lines lose score
+## Research pack: latest implementer findings (newest first)
+- comment#1 implementer#1 on idea#2: NEGATIVE: fewer lines lose score
   because score counts lines
 
 ## Research pack: orchestrator and human digests and decisions (newest first)
@@ -173,7 +173,7 @@ def test_an_empty_pack_says_what_is_missing(db: Database, campaign: Campaign, tm
     assert 'shared workspace' not in text, 'no section without a workspace directory'
     assert '## Research pack: seeds to develop (oldest first)\n- None.' in text
     for title, empty in [
-        ('latest worker findings', '- None yet.'),
+        ('latest implementer findings', '- None yet.'),
         ('digests and decisions', '- None yet.'),
         ('open escalations', '- None.'),
     ]:
@@ -206,7 +206,7 @@ def test_the_pack_is_bounded(db: Database, campaign: Campaign, tmp_path: Path) -
     assert len(outlines) == ARTIFACTS_SHOWN and all(len(line) == OUTLINE_CHARS + 2 for line in outlines)
     assert text.count('- idea#') == SEEDS_SHOWN
     assert '- idea#1 by t: idea 0 ' in text, 'oldest first: research develops the seeds in the order they arrived'
-    assert text.count(' worker#1 on idea#') == FINDINGS_SHOWN
+    assert text.count(' implementer#1 on idea#') == FINDINGS_SHOWN
     assert text.count(' finding by orchestrator on campaign#') == DIGESTS_SHOWN
     assert text.count(' p2 by watchdog#1 on campaign#') == ESCALATIONS_SHOWN
     pack_only = (
@@ -228,16 +228,16 @@ def test_yields_count_ideas_runs_keeps_and_interesting_per_source(db: Database, 
             Yield('research', ideas=2, ran=1, keeps=2, interesting=1),
             Yield('orchestrator', ideas=1, ran=1, keeps=0, interesting=1),
         ]
-    assert Yield('worker', 3, 2, 1, 0).line() == 'worker 3 ideas, 2 ran → 1 keep, 0 interesting'
+    assert Yield('implementer', 3, 2, 1, 0).line() == 'implementer 3 ideas, 2 ran → 1 keep, 0 interesting'
 
 
 def test_where_an_idea_comes_from_says_whether_it_may_be_more_than_a_seed(campaign_path: Path) -> None:
-    assert [source(a) for a in ('research#12', 'orchestrator', 'human', 'worker#3')] == [
+    assert [source(a) for a in ('research#12', 'orchestrator', 'human', 'implementer#3')] == [
         'research',
         'orchestrator',
         'human',
-        'worker',
+        'implementer',
     ]
-    actors = ('worker#3', 'watchdog#4', 'scout#6', 'research#5', 'orchestrator', 'human')
+    actors = ('implementer#3', 'watchdog#4', 'scout#6', 'research#5', 'orchestrator', 'human')
     cfg = load_campaign_config(campaign_path)
     assert [files_of(cfg, a) for a in actors] == [Files.NOTHING, Files.SEEDS, Files.SEEDS, Files.IDEAS, None, None]

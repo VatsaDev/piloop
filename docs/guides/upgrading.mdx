@@ -114,36 +114,50 @@ one. The [changelog](https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md) 
 
 ## Renamed tables, columns and commands
 
-piloop 0.2.0 renames one concept: a **project** is a **campaign**. Each evaluator also records its **runner**, how
-piloop runs it: `process`, the evaluate command run as a process, as before.
+piloop 0.2.0 renames three concepts: a **project** is a **campaign**, the **worker** role, which runs one idea in its
+own worktree, is the **implementer**, and the `workers` table, which has one row per agent session in any role, is
+`agent_sessions`. Each evaluator also records its **runner**, how piloop runs it: `process`, the evaluate command run
+as a process, as before.
 The upgrade migrates the database, with the queries of the stored configs. Change the rest by hand:
 
 - the SQL in your `piloop.toml`: the `takes` of a role and the `when` of an `sql` trigger. `piloop init` refuses an
   old name and names the new one.
 - the SQL in your own role prompt files and in the notes of an orchestrator.
-- the agents that run: restart them after `piloop upgrade`, so that they read the new names.
+- the agents that run: restart them after `piloop upgrade`, so that they read the new names. An implementer that an
+  older piloop started and that you leave running still signs its rows `worker#<id>`. Until 0.3.0, piloop counts
+  those rows as the implementer's: its finding, its escalation and its own comments.
 
-A query with an old name fails, and the error names the new one. A query on old event kinds, such as `kind =
-'project.status'`, does not fail but finds nothing: use the new kinds.
+A query with an old name fails, and the error names the new one. A query on old values, such as `kind =
+'project.status'` or `kind = 'worker'`, does not fail but finds nothing: use the new values.
 
 | What | Before 0.2.0 | Since 0.2.0 |
 |---|---|---|
 | Table | `projects` | `campaigns` |
+| Table | `workers` | `agent_sessions` |
 | Column | `project_id` (of `ideas`, `candidates`, `workers`, `evaluators`) | `campaign_id` |
 | New column | none | `evaluators.runner`, `process` for every evaluator |
-| `target_kind` of comments and events | `project` | `campaign` |
+| `target_kind` of comments and events | `project`, `worker` | `campaign`, `agent_session` |
+| Role, in `agent_sessions.kind` and `runs.role` | `worker` | `implementer` |
+| Role table of `piloop.toml` | `[roles.worker]` (still works, with a warning) | `[roles.implementer]` |
+| Signature, in `PILOOP_ACTOR` and the `*_by` columns | `worker#<id>` | `implementer#<id>` |
 | Event kinds | `project.added`, `project.status`, `project.stopped`, `project.invalid_config` | `campaign.added`, `campaign.status`, `campaign.stopped`, `campaign.invalid_config` |
+| Event kind of a session | `worker.wrap_up` | `agent_session.wrap_up` |
+| Event kinds of the role | `worker.started`, `worker.finished` | `implementer.started`, `implementer.finished` |
 | Environment variable | `PILOOP_PROJECT_<KEY>` (still works, with a warning) | `PILOOP_CAMPAIGN_<KEY>` |
+| Environment variable of an agent, its process tag | `PILOOP_WORKER_TOKEN` (an agent that an older daemon started is still found) | `PILOOP_PROCESS_TAG` |
 
 If you ran piloop from its main branch after 0.1.0, the names that it added are renamed too, with no alias: the
 `project_id` of `techniques`, `documents`, `lessons` and `archives`, the events
-`project.paused`, `project.stop_requested`, `project.type` and `project.parent_id`, the parameter `:project` of an
+`project.paused`, `project.stop_requested`, `project.type` and `project.parent_id`, the events `worker.stop_ended`,
+`worker.cancel_requested` and `worker.jobs_left` (now `agent_session.*`), the parameter `:project` of an
 `sql` trigger (`@project`, `$project`), `workdir = "project"` (now `"repo"`), `piloop project stop` (now `piloop
 campaign stop`), the `--project` option of `piloop events`, and the `projects` and `subject.project` keys of the JSON
 output. The migration renames those that the database and its stored configs hold.
 
-The payloads of old events keep their text, so an old payload may have `project` keys. The directories of the
-campaigns stay under `$PILOOP_HOME/projects/<id>`, and the git refs keep their names.
+The payloads of old events keep their text, so an old payload may have `project` keys. A signature in a payload and
+the `worker` key of `run.relaunched` are renamed. The directories of the campaigns stay under
+`$PILOOP_HOME/projects/<id>`, the agent sessions that started before the upgrade keep theirs under
+`$PILOOP_HOME/workers/<id>`, and the git refs keep their names.
 
 ## Other install types
 

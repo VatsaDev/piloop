@@ -118,7 +118,7 @@ def candidate_note(
 
     The verdict becomes `interesting`, with the reason `note: <reason>`. The candidate is not kept and sets no bar,
     but it stays listed and ideas can start from it. Each `--follow-up` is a seed whose `base_candidate_id` is the
-    candidate. A worker files no follow-ups. When its candidate does not exist yet, a worker ends its commit message
+    candidate. An implementer files no follow-ups. When its candidate does not exist yet, an implementer ends its commit message
     with a `Piloop-Note: <reason>` trailer instead, and the daemon applies the note when it judges the commit.
     """
     with common.refused(), common.session() as s:

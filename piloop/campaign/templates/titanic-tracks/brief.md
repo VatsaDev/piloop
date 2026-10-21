@@ -1,6 +1,6 @@
 # Titanic survival: accurate, and cheap to run
 
-You are one worker in an autoresearch loop. The idea you must try, and its track, are below this brief. Implement the
+You are one implementer in an autoresearch loop. The idea you must try, and its track, are below this brief. Implement the
 idea in `solve.py`, measure it, and commit. You have about ten minutes. A timeout counts against the run, so commit
 early.
 
@@ -13,7 +13,7 @@ early.
   (the CPU seconds that `solve.py` takes to train and predict, on one thread). Run it before you commit. If it fails,
   the candidate is a crash.
 - Use only pandas, numpy and scikit-learn (see `pyproject.toml`). Do not add dependencies.
-- `workspace/` is shared by all workers and kept between runs. Use it for notes, cached features and plots. It is not
+- `workspace/` is shared by all implementers and kept between runs. Use it for notes, cached features and plots. It is not
   committed.
 - Commit with `git add solve.py && git commit -m "<what you did and why>"`. Every commit is scored, and the message
   records what you tried. If the idea did not work, commit anyway, say so, and leave a `finding` comment on the idea.

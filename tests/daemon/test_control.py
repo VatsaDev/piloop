@@ -10,7 +10,17 @@ from sqlalchemy import select
 from piloop.campaign import ops
 from piloop.config import load_campaign_config
 from piloop.daemon.run_executor import RunExecutor
-from piloop.db.models import Campaign, Candidate, Comment, Event, IdeaStatus, TargetKind, Verdict, Worker, WorkerState
+from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
+    Campaign,
+    Candidate,
+    Comment,
+    Event,
+    IdeaStatus,
+    TargetKind,
+    Verdict,
+)
 from piloop.db.session import Database
 from piloop.scoring.ledger import DAEMON, REJUDGE_FAILED, head, import_reference, rejudges
 from tests.conftest import HARNESS_WORSE, Gate, ScriptRuntime, write_script
@@ -34,8 +44,10 @@ def test_a_paused_campaign_launches_nothing_requests_nothing_and_escalates_nothi
     assert sched.tick() == [] and sched.tick() == []
     assert statuses(db) == [IdeaStatus.READY], 'no run is queued'
     with db.session() as s:
-        workers = s.scalars(select(Worker)).all()
-        assert [(w.id, w.state) for w in workers] == [(watchdog, WorkerState.REQUESTED)], 'nothing launches or is asked'
+        agent_sessions = s.scalars(select(AgentSession)).all()
+        assert [(w.id, w.state) for w in agent_sessions] == [(watchdog, AgentSessionState.REQUESTED)], (
+            'nothing launches or is asked'
+        )
         assert s.scalars(select(Comment)).all() == [], 'a pause raises no escalation'
         ops.resume(s, 1)
         s.commit()

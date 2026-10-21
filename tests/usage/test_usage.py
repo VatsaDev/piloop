@@ -12,7 +12,7 @@ from pytest_mock import MockerFixture
 from piloop.agents import refill as refill_module
 from piloop.agents.refill import usage_of
 from piloop.config import ConfigError, load_campaign_config
-from piloop.db.models import Campaign, Worker, WorkerKind, WorkerState, utcnow
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, RoleName, utcnow
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.usage import (
@@ -318,7 +318,7 @@ def test_a_new_kind_of_source_is_one_reader_registered_by_name() -> None:
             self.spec = spec
 
         def read(self, session_id: str | None, cwd: Path | None, log_dir: Path | None) -> Usage:
-            return Usage(1, 2, 0, 0, 3, 1, f'{log_dir}/worker.stdout')
+            return Usage(1, 2, 0, 0, 3, 1, f'{log_dir}/agent_session.stdout')
 
         def said(self, session_id: str | None, lines: int = 1) -> list[str]:
             return []
@@ -326,9 +326,9 @@ def test_a_new_kind_of_source_is_one_reader_registered_by_name() -> None:
     reader('test-stdout')(FromStdout)
     try:
         spec = UsageSpec(reader='test-stdout')
-        assert read_usage(spec, None, None, Path('/logs/7')) == Usage(1, 2, 0, 0, 3, 1, '/logs/7/worker.stdout'), (
-            'no session id, no cwd: a reader decides what it needs'
-        )
+        assert read_usage(spec, None, None, Path('/logs/7')) == Usage(
+            1, 2, 0, 0, 3, 1, '/logs/7/agent_session.stdout'
+        ), 'no session id, no cwd: a reader decides what it needs'
     finally:
         del READERS['test-stdout']
 
@@ -358,15 +358,17 @@ def test_what_cannot_be_read_is_a_usage_error_or_nothing(home: Path) -> None:
     )
 
 
-def test_usage_of_a_worker_never_raises(db: Database, campaign: Campaign, home: Path, mocker: MockerFixture) -> None:
+def test_usage_of_an_implementer_never_raises(
+    db: Database, campaign: Campaign, home: Path, mocker: MockerFixture
+) -> None:
     store(home, 'pi', PI_ID, cwd=Path('/gone/worktree'))
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        ended = dict(campaign_id=p.id, state=WorkerState.EXITED, ended_at=utcnow(), log_dir=str(home / 'logs'))
-        found = Worker(kind=WorkerKind.WORKER, harness='pi', session_id=PI_ID, **ended)
-        removed = Worker(kind=WorkerKind.WORKER, harness='local-agent', session_id='x', **ended)
-        no_spec = Worker(kind=WorkerKind.WORKER, harness='script', session_id='x', **ended)
-        orphan = Worker(kind=WorkerKind.WATCHDOG, harness='pi', session_id=PI_ID, state=WorkerState.EXITED)
+        ended = dict(campaign_id=p.id, state=AgentSessionState.EXITED, ended_at=utcnow(), log_dir=str(home / 'logs'))
+        found = AgentSession(kind=RoleName.IMPLEMENTER, harness='pi', session_id=PI_ID, **ended)
+        removed = AgentSession(kind=RoleName.IMPLEMENTER, harness='local-agent', session_id='x', **ended)
+        no_spec = AgentSession(kind=RoleName.IMPLEMENTER, harness='script', session_id='x', **ended)
+        orphan = AgentSession(kind=RoleName.WATCHDOG, harness='pi', session_id=PI_ID, state=AgentSessionState.EXITED)
         s.add_all([found, removed, no_spec, orphan])
         s.flush()
         usage = usage_of(s, found)

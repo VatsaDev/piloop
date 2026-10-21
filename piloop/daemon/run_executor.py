@@ -1,6 +1,6 @@
-"""Execute one run: make a worktree, run the worker, close the run, score its commits and settle the idea.
+"""Execute one run: make a worktree, run the implementer, close the run, score its commits and settle the idea.
 
-The run closes when its worker ends, so the worker slot is free while the daemon measures the commits. The idea stays
+The run closes when its implementer ends, so the implementer slot is free while the daemon measures the commits. The idea stays
 ``scheduled`` until its candidates are judged, because a dependent idea builds on the keeps of its prerequisites.
 """
 
@@ -19,7 +19,7 @@ from git import Repo
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
-from piloop import git
+from piloop import deprecated, git
 from piloop.agents.launcher import STOP_ENDED, TRANSCRIPT, Launcher
 from piloop.agents.roles import compose_brief, role
 from piloop.campaign.campaigns import WORKSPACE, campaign_dir, worktree_links
@@ -35,6 +35,8 @@ from piloop.campaign.stop import (
 from piloop.config import CampaignConfig, Track, config_of
 from piloop.db.events import emit
 from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
     Campaign,
     Candidate,
     Comment,
@@ -48,8 +50,6 @@ from piloop.db.models import (
     RunStatus,
     TargetKind,
     Verdict,
-    Worker,
-    WorkerState,
     utcnow,
 )
 from piloop.db.session import Database
@@ -58,7 +58,7 @@ from piloop.otel import Span, Tracer
 from piloop.proc import kill_group
 from piloop.reports.history import history
 from piloop.reports.wake import lessons_overview
-from piloop.runtime import WorkerStatus
+from piloop.runtime import AgentStatus
 from piloop.runtime.factory import RuntimeFactory, make_runtime
 from piloop.scoring import queue
 from piloop.scoring.evaluate import SENT, EvalResult, run_evaluate
@@ -86,20 +86,20 @@ from piloop.scoring.ledger import (
 )
 from piloop.settings import MAX_EVALUATIONS
 
-UNCOMMITTED_SUMMARY = 'piloop: uncommitted worker changes'
+UNCOMMITTED_SUMMARY = 'piloop: uncommitted implementer changes'
 RECOVERED_TRAILER = 'Piloop-Recovered'
-"""The trailer of the commit the daemon makes of what a worker left uncommitted: ``Piloop-Recovered: run#<id>``."""
-RECOVERED_REASON = 'recovered: what the worker of run#{run} left uncommitted, never declared ready; not measured'
-NO_CHANGES = 'worker produced no commits'
+"""The trailer of the commit the daemon makes of what an implementer left uncommitted: ``Piloop-Recovered: run#<id>``."""
+RECOVERED_REASON = 'recovered: what the implementer of run#{run} left uncommitted, never declared ready; not measured'
+NO_CHANGES = 'implementer produced no commits'
 INTERRUPTED = (
-    'worker stopped without a commit or a finding of its own; its uncommitted changes are a recovered candidate'
+    'implementer stopped without a commit or a finding of its own; its uncommitted changes are a recovered candidate'
 )
 RECOVERY_REQUEUED = 'idea.recovery_requeued'
 """The event on an idea that ``_settle`` requeued from recovered work, with ``{run, candidate}``. Counting these events
 caps the requeues (the ``recovery_requeues`` of the run's role): candidates cannot, because two runs that leave the
 same tree share one candidate."""
 STARTUP_RELAUNCHES = 2
-"""How many times a run is queued again with a new worker after its worker failed to start. Then the run fails.
+"""How many times a run is queued again with a new implementer after its implementer failed to start. Then the run fails.
 
 A failure at startup is a fault of the host or the harness, not an attempt at the idea. So it does not count as an
 attempt or toward ``max_runs``."""
@@ -176,20 +176,20 @@ class RunExecutor:
         self.launcher.handover.set()
         self.cancel()
 
-    def execute(self, run_id: int, worker_id: int) -> None:
-        """Make the worktree, run the worker, evaluate and record. Never raises: failures are recorded on the run."""
-        self._guarded(run_id, worker_id, lambda span: self._execute(run_id, worker_id, span))
+    def execute(self, run_id: int, agent_session_id: int) -> None:
+        """Make the worktree, run the implementer, evaluate and record. Never raises: failures are recorded on the run."""
+        self._guarded(run_id, agent_session_id, lambda span: self._execute(run_id, agent_session_id, span))
 
-    def reattach(self, run_id: int, worker_id: int) -> None:
+    def reattach(self, run_id: int, agent_session_id: int) -> None:
         """Finish a run whose agent a previous daemon process started (``Launcher.reattach``). Never raises.
 
         The daemon watches the agent in the run's worktree until it ends. Then it scores and settles the run as
         ``execute`` does.
         """
-        self._guarded(run_id, worker_id, lambda span: self._finish(run_id, worker_id, None, span))
+        self._guarded(run_id, agent_session_id, lambda span: self._finish(run_id, agent_session_id, None, span))
 
-    def _guarded(self, run_id: int, worker_id: int, body: Callable[[Span], None]) -> None:
-        """Run ``body``. A failure fails the run, and closes its worker if the failure came before the launch."""
+    def _guarded(self, run_id: int, agent_session_id: int, body: Callable[[Span], None]) -> None:
+        """Run ``body``. A failure fails the run, and closes its implementer if the failure came before the launch."""
         with self._tracer.span('piloop.run', run=run_id) as span:
             try:
                 body(span)
@@ -198,15 +198,19 @@ class RunExecutor:
                 error = f'{type(e).__name__}: {e}'
                 with self._db.session() as s:
                     idea_id = s.get_one(Run, run_id).idea_id
-                    unstarted = (Worker.id == worker_id) & (Worker.state == WorkerState.STARTING)
+                    unstarted = (AgentSession.id == agent_session_id) & (
+                        AgentSession.state == AgentSessionState.STARTING
+                    )
                     s.execute(
-                        update(Worker).where(unstarted).values(state=WorkerState.KILLED, ended_at=utcnow(), error=error)
+                        update(AgentSession)
+                        .where(unstarted)
+                        .values(state=AgentSessionState.KILLED, ended_at=utcnow(), error=error)
                     )
                     s.commit()
                 self._close(span, run_id, RunStatus.FAILED, error)
                 self._settle(span, run_id, idea_id, RunStatus.FAILED, startup_failed=False, recovered=None)
 
-    def _execute(self, run_id: int, worker_id: int, span: Span) -> None:
+    def _execute(self, run_id: int, agent_session_id: int, span: Span) -> None:
         with self.launcher.lock:
             if self.launcher.cancelled.is_set():  # Queued after stop(). The scheduler already failed the row.
                 span.set(status='cancelled')
@@ -220,24 +224,24 @@ class RunExecutor:
                 brief = run.brief or compose_brief(
                     role(cfg, run.role, Path(campaign.path)),
                     campaign,
-                    worker_id,
+                    agent_session_id,
                     reason=f'idea#{idea.id} is ready',
                     context=self._context(
-                        s, cfg, idea, base, f'{run.role}#{worker_id}', self._runs_dir / str(run_id) / 'worktree'
+                        s, cfg, idea, base, f'{run.role}#{agent_session_id}', self._runs_dir / str(run_id) / 'worktree'
                     ),
                     track=cfg.track(idea.track),
                     wake=lessons_overview(s, campaign, cfg.wake_budget(run.role)),
                 )
                 run.brief = brief
                 run.status = RunStatus.RUNNING
-                # A relaunch keeps the start time, so comments since then are sent to the new worker again.
+                # A relaunch keeps the start time, so comments since then are sent to the new implementer again.
                 run.started_at = run.started_at or utcnow()
                 run.log_dir = str(self._runs_dir / str(run_id))
                 emit(s, 'run.started', TargetKind.RUN, run_id, payload={'harness': run.harness, 'model': run.model})
                 s.commit()
-        self._finish(run_id, worker_id, brief, span)
+        self._finish(run_id, agent_session_id, brief, span)
 
-    def _finish(self, run_id: int, worker_id: int, brief: str | None, span: Span) -> None:
+    def _finish(self, run_id: int, agent_session_id: int, brief: str | None, span: Span) -> None:
         """Run the agent, then record the outcome, score the commits and settle the idea.
 
         With a ``brief``, a new agent starts in a new worktree. With None, the daemon re-attaches to the agent that is
@@ -259,22 +263,22 @@ class RunExecutor:
         repo = git.open_repo(campaign_path)
         wt_path = log_dir / 'worktree'
         links = worktree_links(cfg, campaign_path, campaign_dir(self._home, campaign_id))
-        span.set(idea=idea_id, worker=worker_id, harness=harness, model=model)
+        span.set(idea=idea_id, agent_session=agent_session_id, harness=harness, model=model)
         with ExitStack() as cleanup:
             cleanup.callback(git.remove_worktree, repo, wt_path)
             if brief is None:
-                outcome = self.launcher.reattach(worker_id, cwd=wt_path, log_dir=log_dir, links=links)
+                outcome = self.launcher.reattach(agent_session_id, cwd=wt_path, log_dir=log_dir, links=links)
             else:
                 make_cwd = partial(git.add_worktree, repo, wt_path, base_sha, links)
                 outcome = self.launcher.launch(
-                    worker_id, brief=brief, cwd=wt_path, log_dir=log_dir, make_cwd=make_cwd, links=links
+                    agent_session_id, brief=brief, cwd=wt_path, log_dir=log_dir, make_cwd=make_cwd, links=links
                 )
             if outcome.handed_over:  # The next daemon re-attaches to the agent in the worktree.
                 cleanup.pop_all()
                 span.set(status='handed_over')
                 return
             if outcome.startup_failed:
-                if not self._relaunch(span, run_id, worker_id, log_dir):
+                if not self._relaunch(span, run_id, agent_session_id, log_dir):
                     with self._db.session() as s:
                         error = CANCELLED_ERROR if run_cancel(s, run_id) is not None else NOT_STARTED
                     self._close(span, run_id, RunStatus.FAILED, error)
@@ -282,17 +286,19 @@ class RunExecutor:
                 return
             wt = Repo(wt_path)
             if self.launcher.cancelled.is_set():
-                cut = not self._left_finding(run_id, idea_id, worker_id)  # else the stop closed it as handed off
+                cut = not self._left_finding(run_id, idea_id, agent_session_id)  # else the stop closed it as handed off
                 self._keep_cut_work(run_id, cfg.name, repo, wt, base_sha, git.linked(wt_path, links), noted=cut)
                 span.set(status='cancelled')
                 return
             shas = self._commits(wt, base_sha, git.linked(wt_path, links), run_id)
-            finding = self._left_finding(run_id, idea_id, worker_id)
+            finding = self._left_finding(run_id, idea_id, agent_session_id)
             with self._db.session() as s:
                 asked = open_escalation(s, s.get_one(Run, run_id))
                 stop_ended = s.scalar(
                     select(Event.payload).where(
-                        Event.target_kind == TargetKind.WORKER, Event.target_id == worker_id, Event.kind == STOP_ENDED
+                        Event.target_kind == TargetKind.AGENT_SESSION,
+                        Event.target_id == agent_session_id,
+                        Event.kind == STOP_ENDED,
                     )
                 )
                 cancelled = run_cancel(s, run_id) is not None
@@ -300,7 +306,7 @@ class RunExecutor:
                 finding=finding,
                 stop_error=None if stop_ended is None else str(stop_ended.get('error', CAMPAIGN_STOPPED_ERROR)),
                 cancelled=cancelled,
-                timed_out=outcome.status is WorkerStatus.TIMED_OUT,
+                timed_out=outcome.status is AgentStatus.TIMED_OUT,
                 error=outcome.error,
                 asked=asked,
                 commits=len(shas),
@@ -308,16 +314,16 @@ class RunExecutor:
             )
             status, error = run_outcome(end)
             self._close(span, run_id, status, error)
-            # Score all commits, even if the worker then timed out or crashed.
+            # Score all commits, even if the implementer then timed out or crashed.
             recovered = self._score(run_id, campaign_id, repo, shas, log_dir) if shas else None
         self._settle(span, run_id, idea_id, status, startup_failed=False, recovered=recovered)
 
-    def _relaunch(self, span: Span, run_id: int, worker_id: int, log_dir: Path) -> bool:
-        """Queue the run again with a new worker, up to ``STARTUP_RELAUNCHES`` times, after its worker failed to start.
+    def _relaunch(self, span: Span, run_id: int, agent_session_id: int, log_dir: Path) -> bool:
+        """Queue the run again with a new implementer, up to ``STARTUP_RELAUNCHES`` times, after its implementer failed to start.
 
-        The run stays open, so it keeps its slot, attempt number and brief. The ``worker#<id>`` in the brief becomes the
-        new worker's id. The new worker signs its notes and finding with its own id, and only its own finding counts
-        (``_left_finding``). The scheduler launches the new worker row like any other. The old worker's transcript is
+        The run stays open, so it keeps its slot, attempt number and brief. The ``implementer#<id>`` in the brief becomes the
+        new implementer's id. The new implementer signs its notes and finding with its own id, and only its own finding counts
+        (``_left_finding``). The scheduler launches the new agent session row like any other. The old implementer's transcript is
         renamed so that the new one does not overwrite it. Also returns True if the daemon stopped meanwhile, because
         the stop then owns the rows. A cancelled run (``run_cancel``) is not queued again.
         """
@@ -327,28 +333,36 @@ class RunExecutor:
                 return True
             with self._db.session() as s:
                 run = s.get_one(Run, run_id)
-                launches = s.scalar(select(func.count()).select_from(Worker).where(Worker.run_id == run_id)) or 0
+                launches = (
+                    s.scalar(select(func.count()).select_from(AgentSession).where(AgentSession.run_id == run_id)) or 0
+                )
                 if launches > STARTUP_RELAUNCHES or run_cancel(s, run_id) is not None:
                     return False
                 run.status = RunStatus.QUEUED
-                worker = Worker(
+                agent_session = AgentSession(
                     kind=run.role,
                     campaign_id=run.idea.campaign_id,
                     run_id=run_id,
                     harness=run.harness,
                     model=run.model,
-                    reason=f'run#{run_id} relaunched: {run.role}#{worker_id} failed to start',
+                    reason=f'run#{run_id} relaunched: {run.role}#{agent_session_id} failed to start',
                 )
-                s.add(worker)
+                s.add(agent_session)
                 s.flush()
                 # Edit the brief, do not compose it again: a human may have changed it (``UPDATE runs SET brief``).
-                signed = rf'\b({re.escape(run.role)})#{worker_id}\b'
-                run.brief = re.sub(signed, rf'\g<1>#{worker.id}', run.brief or '')
-                emit(s, 'run.relaunched', TargetKind.RUN, run_id, payload={'worker': worker_id, 'launches': launches})
+                signed = rf'\b({re.escape(run.role)})#{agent_session_id}\b'
+                run.brief = re.sub(signed, rf'\g<1>#{agent_session.id}', run.brief or '')
+                emit(
+                    s,
+                    'run.relaunched',
+                    TargetKind.RUN,
+                    run_id,
+                    payload={'agent_session': agent_session_id, 'launches': launches},
+                )
                 s.commit()
             transcript = log_dir / TRANSCRIPT
             if transcript.exists():
-                transcript.rename(log_dir / f'transcript-worker{worker_id}.txt')
+                transcript.rename(log_dir / f'transcript-implementer{agent_session_id}.txt')
         span.set(status='relaunched')
         return True
 
@@ -359,7 +373,7 @@ class RunExecutor:
 
         The stop owns the rows. A run that the stop cut is not an attempt (``stop.NOT_ATTEMPTS``): its work is not
         scored, and the note (``noted``) goes into the brief of the idea's next run, which can start from those
-        commits. A run whose worker had left its finding was handed off: the stop closed it as finished, and the next
+        commits. A run whose implementer had left its finding was handed off: the stop closed it as finished, and the next
         daemon scores the pinned commits (``resume``), so no note sends a new run to them.
         """
         shas = self._commits(wt, base_sha, ignore, run_id)
@@ -383,17 +397,17 @@ class RunExecutor:
             )
             s.commit()
 
-    def _left_finding(self, run_id: int, idea_id: int, worker_id: int) -> bool:
+    def _left_finding(self, run_id: int, idea_id: int, agent_session_id: int) -> bool:
         """Return True if the agent signed a ``finding`` on its idea or its run (``left_finding``)."""
         with self._db.session() as s:
-            return left_finding(s, s.get_one(Run, run_id), s.get_one(Worker, worker_id))
+            return left_finding(s, s.get_one(Run, run_id), s.get_one(AgentSession, agent_session_id))
 
     def _commits(self, wt: Repo, base_sha: str, ignore: list[str], run_id: int) -> list[str]:
         """Return the new commits in the worktree, oldest first. Uncommitted work is committed first, on its own.
 
-        It is never amended into the worker's last commit, which is scored as the worker made it. Its commit has the
+        It is never amended into the implementer's last commit, which is scored as the implementer made it. Its commit has the
         ``RECOVERED_TRAILER``, so its candidate is ``recovered`` (``_score``). The commits are the first-parent history
-        from the base: a line that the worker merges in is not the run's, so a merge's parent is the commit that it
+        from the base: a line that the implementer merges in is not the run's, so a merge's parent is the commit that it
         merged onto, and the merged line's commits are not scored again.
         """
         if git.is_dirty(wt, ignore):
@@ -526,7 +540,7 @@ class RunExecutor:
         A commit with ``Piloop-Eval: skip`` is not measured. A new candidate gets the daemon's ``unmeasured``
         verdict, which moves no bar. So a later commit without the trailer that has the same tree is measured and
         judged like a new one. ``Piloop-Note`` trailers are applied when the commit is judged
-        (``_judge``). The commit the daemon made of the worker's uncommitted work (``RECOVERED_TRAILER``) is not
+        (``_judge``). The commit the daemon made of the implementer's uncommitted work (``RECOVERED_TRAILER``) is not
         measured either: it gets the daemon's ``recovered`` verdict, which moves no bar, and the same tree committed
         later is measured and judged like a new one.
         """
@@ -888,7 +902,7 @@ class RunExecutor:
                 kill_group(proc)
 
     def _close(self, span: Span, run_id: int, status: RunStatus, error: str | None) -> None:
-        """Record the run's outcome when its worker ends, so the slot is free while the commits are scored (``scoring``)."""
+        """Record the run's outcome when its implementer ends, so the slot is free while the commits are scored (``scoring``)."""
         with self.launcher.lock:
             if self.launcher.cancelled.is_set():  # stop() failed the row. Do not open it again.
                 span.set(status='cancelled')
@@ -911,10 +925,10 @@ class RunExecutor:
 
         A run that did not succeed and left ``recovered`` work requeues its idea from that work, attempts left or not,
         up to ``recovery_requeues`` times of the run's role (``RECOVERY_REQUEUED`` events): the idea's base becomes the
-        recovered candidate, so a new worker starts from it and finishes it, and that run is judged as any other. A
+        recovered candidate, so a new implementer starts from it and finishes it, and that run is judged as any other. A
         note on the idea says so.
 
-        A run whose worker's escalation still waits for an answer (``open_escalation``) parks its idea first, whatever
+        A run whose implementer's escalation still waits for an answer (``open_escalation``) parks its idea first, whatever
         its status. A new run would stop on the same question, and ``done`` would start the ideas that wait for it.
         """
         with self.launcher.lock:
@@ -958,7 +972,7 @@ class RunExecutor:
                                 author=DAEMON_ACTOR,
                                 kind=CommentKind.NOTE,
                                 body=f'requeued from candidate#{recovered}: run#{run_id} ended {status} with work its'
-                                f' worker never committed, recovered as candidate#{recovered}; the next run starts'
+                                f' implementer never committed, recovered as candidate#{recovered}; the next run starts'
                                 ' from it to finish it',
                             )
                         )
@@ -971,7 +985,7 @@ class RunExecutor:
                                 author=DAEMON_ACTOR,
                                 kind=CommentKind.NOTE,
                                 body=f'parked: no agent of run#{run_id} started to work; fix what stopped them (the'
-                                ' errors of its workers, their anomaly.startup events), then set it ready',
+                                ' errors of its implementers, their anomaly.startup events), then set it ready',
                             )
                         )
                     elif status is not RunStatus.SUCCEEDED and attempts(idea) < idea.max_runs:
@@ -983,7 +997,7 @@ class RunExecutor:
     def _context(
         self, s: Session, cfg: CampaignConfig, idea: Idea, base: Candidate, author: str, worktree: Path
     ) -> str:
-        """Return the worker's context: its worktree, the idea, its base, and the comments on the idea and its runs.
+        """Return the implementer's context: its worktree, the idea, its base, and the comments on the idea and its runs.
 
         A comment on a run is about the idea too. Examples are a human's decision during attempt 1, or a watchdog's
         finding on why it failed. The next attempt is a new run, so without these comments it would start with no
@@ -1006,7 +1020,7 @@ class RunExecutor:
         ]
         if base.verdict is Verdict.RECOVERED:
             lines.append(
-                f'- candidate#{base.id} is work that an earlier run of this idea left uncommitted when its worker'
+                f'- candidate#{base.id} is work that an earlier run of this idea left uncommitted when its implementer'
                 ' stopped. It was never measured. Read its diff against its parent, finish it, and commit what you'
                 ' would ship.'
             )
@@ -1026,7 +1040,7 @@ class RunExecutor:
                 f' better) with confidence and hold {guards}.'
             )
         lines += [
-            f'- Shared workspace for artifacts and notes to future workers: `./{WORKSPACE}/` (not committed). Put what'
+            f'- Shared workspace for artifacts and notes to future implementers: `./{WORKSPACE}/` (not committed). Put what'
             f' your idea produces there under `./{WORKSPACE}/idea{idea.id}/`: it is archived when the idea is done, and'
             ' its local copy goes some days later. The files of a done idea come back with'
             f' `piloop restore {idea.campaign.name} <idea id>|<workspace path>`.',
@@ -1076,15 +1090,15 @@ def _comment_line(c: Comment) -> str:
     return f'- {c.author} ({c.kind}{where}): {c.body}'
 
 
-def left_finding(s: Session, run: Run, worker: Worker) -> bool:
-    """Return True if ``worker`` signed a ``finding`` on its run's idea or on the run, as ``<role>#<id>`` or ``run#<id>``.
+def left_finding(s: Session, run: Run, agent_session: AgentSession) -> bool:
+    """Return True if ``implementer`` signed a ``finding`` on its run's idea or on the run, as ``<role>#<id>`` or ``run#<id>``.
 
-    A finding is the worker's report that it is done. Only the worker's own finding counts: a relaunched run's dead
-    worker did not finish it.
+    A finding is the implementer's report that it is done. Only the implementer's own finding counts: a relaunched run's dead
+    implementer did not finish it.
     """
     on_idea = (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == run.idea_id)
     on_run = (Comment.target_kind == TargetKind.RUN) & (Comment.target_id == run.id)
-    signed = (f'{worker.kind}#{worker.id}', f'run#{run.id}')
+    signed = (*deprecated.signatures(agent_session.kind, agent_session.id), f'run#{run.id}')
     found = s.scalar(
         select(Comment.id)
         .where(on_idea | on_run, Comment.kind == CommentKind.FINDING, Comment.author.in_(signed))
@@ -1095,20 +1109,20 @@ def left_finding(s: Session, run: Run, worker: Worker) -> bool:
 
 @dataclass(frozen=True)
 class RunEnd:
-    """The facts that decide a finished run's status (``run_outcome``), gathered when its worker ends."""
+    """The facts that decide a finished run's status (``run_outcome``), gathered when its implementer ends."""
 
     finding: bool = False
-    """The worker left its own finding (``left_finding``): its report that it is done."""
+    """The implementer left its own finding (``left_finding``): its report that it is done."""
     stop_error: str | None = None
-    """The error of a stop that ended the worker (``STOP_ENDED``)."""
+    """The error of a stop that ended the implementer (``STOP_ENDED``)."""
     cancelled: bool = False
     """Someone cancelled the run (``run_cancel``)."""
     timed_out: bool = False
-    """The worker ran into its role's timeout."""
+    """The implementer ran into its role's timeout."""
     error: str | None = None
-    """How the worker's process failed, a timeout included."""
+    """How the implementer's process failed, a timeout included."""
     asked: int | None = None
-    """The worker's escalation that waits for an answer (``open_escalation``)."""
+    """The implementer's escalation that waits for an answer (``open_escalation``)."""
     commits: int = 0
     recovered_only: bool = False
     """There are commits, and each is the daemon's commit of uncommitted work (``UNCOMMITTED_SUMMARY``)."""
@@ -1120,7 +1134,7 @@ type RunOutcome = tuple[RunStatus, str | None]
 def run_outcome(end: RunEnd) -> RunOutcome:
     """Return the status and error of a run that ``end`` describes: the first case that matches, in priority order."""
     match end:
-        # A finding is the worker's report that it is done; nothing that ends its process after it undoes that. But a
+        # A finding is the implementer's report that it is done; nothing that ends its process after it undoes that. But a
         # question it left open blocks the run, or a retry would stop on it and done would release the waiting ideas.
         case RunEnd(finding=True, asked=int() as comment):
             return RunStatus.FAILED, f'{BLOCKED} comment#{comment}'
@@ -1129,7 +1143,7 @@ def run_outcome(end: RunEnd) -> RunOutcome:
         # A stop cut it, whatever the kill left in the outcome.
         case RunEnd(stop_error=str() as error):
             return RunStatus.FAILED, error
-        # A cancelled worker that ended by itself before the daemon could end it.
+        # A cancelled implementer that ended by itself before the daemon could end it.
         case RunEnd(cancelled=True):
             return RunStatus.FAILED, CANCELLED_ERROR
         # It ran into its role's timeout.
@@ -1144,7 +1158,7 @@ def run_outcome(end: RunEnd) -> RunOutcome:
         # No commit and no finding: nothing was tried.
         case RunEnd(commits=0):
             return RunStatus.FAILED, NO_CHANGES
-        # Only what the worker left uncommitted: it did not finish.
+        # Only what the implementer left uncommitted: it did not finish.
         case RunEnd(recovered_only=True):
             return RunStatus.FAILED, INTERRUPTED
         # It committed and ended cleanly.
@@ -1153,12 +1167,13 @@ def run_outcome(end: RunEnd) -> RunOutcome:
 
 
 def open_escalation(s: Session, run: Run) -> int | None:
-    """Return the id of the first escalation that a worker of ``run`` wrote on its run or idea and nobody acknowledged.
+    """Return the id of the first escalation that an implementer of ``run`` wrote on its run or idea and nobody acknowledged.
 
-    The worker asked for something that it cannot do itself, and the answer has not come. A worker signs as
+    The implementer asked for something that it cannot do itself, and the answer has not come. An implementer signs as
     ``<role>#<id>`` or ``run#<id>``. Escalations of other agents on the same idea do not block the run.
     """
-    signed = [f'{w.kind}#{w.id}' for w in s.scalars(select(Worker).where(Worker.run_id == run.id))]
+    sessions = s.scalars(select(AgentSession).where(AgentSession.run_id == run.id))
+    signed = [name for w in sessions for name in deprecated.signatures(w.kind, w.id)]
     on_idea = (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == run.idea_id)
     on_run = (Comment.target_kind == TargetKind.RUN) & (Comment.target_id == run.id)
     return s.scalar(

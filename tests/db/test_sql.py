@@ -69,6 +69,7 @@ def test_schema_ddl_lists_every_table_with_its_indexes_and_runs(tmp_path: Path) 
     ddl = sql.schema_ddl()
     assert sorted(line.split()[2] for line in ddl.splitlines() if line.startswith('CREATE TABLE')) == snapshot(
         [
+            'agent_sessions',
             'archives',
             'campaigns',
             'candidates',
@@ -84,7 +85,6 @@ def test_schema_ddl_lists_every_table_with_its_indexes_and_runs(tmp_path: Path) 
             'measurements',
             'runs',
             'techniques',
-            'workers',
         ]
     )
     assert 'CREATE TRIGGER' not in ddl
@@ -138,7 +138,7 @@ def test_actor_triggers_cover_every_table_with_updated_by() -> None:
     assert (
         triggered
         == tracked
-        == snapshot({'candidates', 'comments', 'documents', 'ideas', 'campaigns', 'runs', 'workers'})
+        == snapshot({'candidates', 'comments', 'documents', 'ideas', 'campaigns', 'runs', 'agent_sessions'})
     )
 
 

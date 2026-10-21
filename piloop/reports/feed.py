@@ -47,7 +47,7 @@ from piloop.db.models import (
     count,
 )
 from piloop.db.session import read_transaction
-from piloop.reports.overview import head_scores, live_workers, produced, queued_ideas
+from piloop.reports.overview import head_scores, live_agent_sessions, produced, queued_ideas
 from piloop.scoring.ledger import keeps
 from piloop.usage import campaign_tokens
 
@@ -67,7 +67,7 @@ class Subject(TypedDict):
     """The row that an event is about."""
 
     kind: str
-    """A ``TargetKind``: ``campaign``, ``idea``, ``run``, ``candidate``, ``measurement``, ``worker`` or ``comment``."""
+    """A ``TargetKind``: ``campaign``, ``idea``, ``run``, ``candidate``, ``measurement``, ``agent_session`` or ``comment``."""
     id: int
     campaign: int | None
     """The campaign of the row, resolved when the event is read. Null when the row is gone or has no campaign (a reply
@@ -331,7 +331,7 @@ def status_view(s: Session, campaigns: Sequence[Campaign]) -> list[CampaignState
                 ],
                 agents=[
                     LiveAgent(id=w.id, kind=w.kind, state=str(w.state), harness=w.harness, model=w.model, run=w.run_id)
-                    for w in live_workers(s, campaign)
+                    for w in live_agent_sessions(s, campaign)
                 ],
                 inbox=len(inbox.items(s, campaign_id=campaign.id)),
                 tokens=campaign_tokens(s, campaign.id),

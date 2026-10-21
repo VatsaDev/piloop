@@ -21,7 +21,7 @@ from sqlalchemy import select
 from piloop.campaign import campaigns as campaign_module
 from piloop.config import load_campaign_config
 from piloop.daemon.main import ACTOR
-from piloop.db.models import Campaign, Candidate, Measurement, Verdict, Worker, WorkerState
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Measurement, Verdict
 from piloop.db.session import Database, migrate
 from piloop.otel import Tracer
 from piloop.runtime import Handle, Runtime
@@ -63,9 +63,9 @@ link = ["data"]
 [model]
 script = "test-model"
 
-[roles.worker]
-timeout = {worker_timeout}
-max_concurrent = {max_workers}
+[roles.implementer]
+timeout = {implementer_timeout}
+max_concurrent = {max_implementers}
 
 [roles.watchdog]
 harnesses = ["script"]
@@ -103,16 +103,16 @@ def write_toml(
     campaign: Path,
     harness_body: str,
     *,
-    max_workers: int = 1,
-    worker_timeout: float = 20,
+    max_implementers: int = 1,
+    implementer_timeout: float = 20,
     evaluate: list[str] = EVALUATE,
 ) -> None:
     script = write_script(campaign.parent / 'harness.sh', harness_body)
     (campaign / 'piloop.toml').write_text(
         TOML.format(
             evaluate=repr(evaluate).replace("'", '"'),
-            worker_timeout=worker_timeout,
-            max_workers=max_workers,
+            implementer_timeout=implementer_timeout,
+            max_implementers=max_implementers,
             script=script,
         )
     )
@@ -340,8 +340,8 @@ def wait_until(predicate: Callable[[], object], *, timeout: float = 30) -> None:
         time.sleep(0.05)
 
 
-def wait_for_worker_handle(db: Database) -> dict[str, object]:
-    """Poll until some worker is ``running`` with a published handle; returns the handle.
+def wait_for_agent_session_handle(db: Database) -> dict[str, object]:
+    """Poll until some implementer is ``running`` with a published handle; returns the handle.
 
     As generous as ``wait_until``: with a daemon process, this waits for its start too. That takes about two seconds
     alone, and more than ten on a loaded host.
@@ -349,11 +349,13 @@ def wait_for_worker_handle(db: Database) -> dict[str, object]:
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         with db.session() as s:
-            worker = s.scalars(select(Worker).where(Worker.state == WorkerState.RUNNING)).first()
-            if worker is not None and worker.handle:
-                return worker.handle
+            agent_session = s.scalars(
+                select(AgentSession).where(AgentSession.state == AgentSessionState.RUNNING)
+            ).first()
+            if agent_session is not None and agent_session.handle:
+                return agent_session.handle
         time.sleep(0.05)
-    raise AssertionError('worker never reached running')
+    raise AssertionError('implementer never reached running')
 
 
 @pytest.fixture

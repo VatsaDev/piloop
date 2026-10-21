@@ -29,14 +29,14 @@ Run each check yourself:
   - `herdr integration status`. Herdr tells a working agent from an idle one through a hook that it installs per
     harness. Every harness that the campaign enables must show `current`.
   - To fix one, run `herdr integration install pi|claude|codex`.
-  - A pi worker without the hook stops with `prompt_lost`.
+  - A pi implementer without the hook stops with `prompt_lost`.
 - For each harness the human wants, check the version and the login:
   - pi: `pi --version`, and look at `~/.pi/agent/auth.json`.
   - Claude Code: `claude --version` and `claude auth status`.
   - Codex: `codex --version` and `codex login status`.
 - `entire version`. Session capture is on when it prints 0.10.6 or newer.
   - Session capture keeps the full session of every agent in the repo as an [Entire](https://github.com/entireio/cli)
-    checkpoint. Read one with `entire checkpoint explain <workers.checkpoint_id>`.
+    checkpoint. Read one with `entire checkpoint explain <agent_sessions.checkpoint_id>`.
   - It is on whenever Entire CLI 0.10.6 or newer is installed, for the built-in pi, claude and codex harnesses. You
     can install or upgrade it later: `curl -fsSL https://entire.io/install.sh | bash`.
   - There is nothing to configure: `piloop init` writes `.entire/settings.json`. No data leaves the machine.
@@ -67,23 +67,23 @@ Topics to cover:
   - Several objectives for one artifact are *tracks* of one campaign, not several campaigns. An example is the
     accuracy and the serving cost of one model.
   - Each track has its own primary metric, a `margin` and an optional `floor` that bind the candidates of the other
-    tracks, and a share of the workers.
+    tracks, and a share of the implementers.
   - A yardstick (a validation dataset, the speed of the evaluator) is never a track. It changes only through a new
     evaluator version that a human approves.
 - **Measurement.** The evaluate command. How long one measurement takes. Is it deterministic (fixed seeds and
   splits)? How noisy is it between identical runs? Which split is the holdout? Is there a hidden test set?
 - **Guardrails.** What must not regress (latency, model size, cost). Each one becomes one more `[[metrics]]` table,
   with its direction.
-- **Editable surface and forbidden moves.** The files a worker may change. The frozen files (data preparation, the
+- **Editable surface and forbidden moves.** The files an implementer may change. The frozen files (data preparation, the
   evaluator, the tokenizer). Forbidden dependencies and techniques (no external data, no pretrained model X).
 - **Budget and concurrency.** Wall-clock time per run. Compute (GPUs, cores). The total budget of the campaign (runs,
-  hours or dollars). How many workers the machine can run at the same time.
+  hours or dollars). How many implementers the machine can run at the same time.
 - **Prior art and beliefs.** What the human tried, what they believe works, what result would surprise them.
-- **Harnesses and models.** Which ones are installed and logged in (from step 1). Which ones run workers and which run
+- **Harnesses and models.** Which ones are installed and logged in (from step 1). Which ones run implementers and which run
   research. The runtime: `subprocess` (background processes, the default), or `herdr` when the human wants to see and
   steer every agent in a pane.
 - **Escalation policy.** What the human wants to be asked about (a new dependency, data changes, a cost above X), and
-  what workers decide alone.
+  what implementers decide alone.
 
 How to ask:
 
@@ -112,7 +112,7 @@ Then edit the files. Put each answer in one place only.
 
 - The eight headings of the template follow the interview topics. Keep the headings that fit. Remove or add
   headings to fit the problem.
-- Write it to the worker: "you may edit…", "never touch…".
+- Write it to the implementer: "you may edit…", "never touch…".
 - The editable surface, the prior art and the escalation policy go only here.
 - Keep it under one page.
 
@@ -134,7 +134,7 @@ Map each answer to its keys:
     file for the runs of that track).
   - piloop refuses `[stop] target` when there are several tracks.
 - **Measurement → `evaluate`, `evaluate_timeout`.**
-- **Budget → `[roles.worker]` `timeout` and `max_concurrent`, and `[roles.research]`.**
+- **Budget → `[roles.implementer]` `timeout` and `max_concurrent`, and `[roles.research]`.**
 - **Prior art → `context`** (a top-level key). List the error analyses and evaluation reports of the repo (where the
   current system loses to a reference). Every sweep that reads the research pack starts from them.
 - **Outside techniques → `[roles.scout]`**, only when the human wants them.
@@ -212,9 +212,9 @@ scores from the new one.
 - `piloop status` prints the head, the running agents, the last candidates and the items in the human's inbox.
 - `piloop watch` shows the same, live, in the human's terminal.
 - `piloop sql -` runs the SQL statement piped in from a quoted heredoc (`<<'EOF'`).
-- Workers run as background processes. With `runtime = "herdr"`, they run as tabs in the workspace of this campaign
-  in the `piloop` Herdr session, and `piloop attach <worker_id>` focuses one.
-- Every commit a worker makes becomes a candidate (a commit whose tree is already a candidate is that candidate). The
+- Agents run as background processes. With `runtime = "herdr"`, they run as tabs in the workspace of this campaign
+  in the `piloop` Herdr session, and `piloop attach <agent_session_id>` focuses one.
+- Every commit an implementer makes becomes a candidate (a commit whose tree is already a candidate is that candidate). The
   evaluate command measures it, unless the commit has a `Piloop-Eval: skip` trailer.
 - With `entire` installed, `entire checkpoint explain <id>` on the checkpoint of a session tells why a commit was made.
 - Escalations go to the human's inbox. The orchestrator (any harness that runs `piloop-operate` and wakes on

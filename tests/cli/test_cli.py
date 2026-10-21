@@ -28,6 +28,8 @@ from piloop.daemon.main import Daemon
 from piloop.daemon.serve import acquire, refuse_older_daemon, running_pid
 from piloop.db import sql
 from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
     Campaign,
     CampaignStatus,
     Candidate,
@@ -38,13 +40,11 @@ from piloop.db.models import (
     IdeaStatus,
     LinkKind,
     Measurement,
+    RoleName,
     Run,
     RunStatus,
     TargetKind,
     Verdict,
-    Worker,
-    WorkerKind,
-    WorkerState,
     utcnow,
 )
 from piloop.db.session import Database
@@ -129,7 +129,7 @@ def test_campaign_and_idea_lifecycle(campaign_path: Path, out) -> None:
     assert out().strip() == 'campaign demo #1 already registered; config re-read from piloop.toml'
 
 
-def test_every_role_but_the_worker_files_a_seed_and_only_research_the_orchestrator_and_humans_add_ideas(
+def test_every_role_but_the_implementer_files_a_seed_and_only_research_the_orchestrator_and_humans_add_ideas(
     campaign_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     research_files(campaign_path, 1)
@@ -155,8 +155,10 @@ def test_every_role_but_the_worker_files_a_seed_and_only_research_the_orchestrat
     with pytest.raises(SystemExit, match=r'watchdog#5 files seeds, not ideas: `piloop idea seed demo'):
         as_('watchdog#5', 'idea', 'add', 'demo', 'just do it')
     for verb in (['add', 'demo', 'just do it'], ['seed', 'demo', 'a hunch', '--from', 'run#2']):
-        with pytest.raises(SystemExit, match="worker#3 files no ideas or seeds: say the hunch in your run's finding"):
-            as_('worker#3', 'idea', *verb)
+        with pytest.raises(
+            SystemExit, match="implementer#3 files no ideas or seeds: say the hunch in your run's finding"
+        ):
+            as_('implementer#3', 'idea', *verb)
     with pytest.raises(SystemExit, match='a seed needs pointers'):
         as_('human', 'idea', 'seed', 'demo', 'a whim', '--from', ' ')
     with pytest.raises(SystemExit, match='no candidate#99 in campaign demo'):
@@ -173,8 +175,8 @@ def test_every_role_but_the_worker_files_a_seed_and_only_research_the_orchestrat
     define += ['--metric', 'score', '--effect', '+1']
     with pytest.raises(SystemExit, match='watchdog#5 files seeds; research develops them'):
         as_('watchdog#5', 'idea', 'develop', '1', *define)
-    with pytest.raises(SystemExit, match='worker#3 files no ideas or seeds'):
-        as_('worker#3', 'idea', 'develop', '1', *define)
+    with pytest.raises(SystemExit, match='implementer#3 files no ideas or seeds'):
+        as_('implementer#3', 'idea', 'develop', '1', *define)
     with pytest.raises(SystemExit, match='a defined idea needs effect'):
         as_('research#8', 'idea', 'develop', '1', *define[:-2], '--effect', ' ')
     with pytest.raises(SystemExit, match='no idea#99'):
@@ -874,8 +876,8 @@ def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_
         run_cli(['candidate', 'note', '2', ' '])
     with pytest.raises(SystemExit, match='no candidate#99'):
         run_cli(['candidate', 'note', '99', 'why'])
-    monkeypatch.setattr(common, 'settings', common.settings.model_copy(update={'actor': 'worker#3'}))
-    with pytest.raises(SystemExit, match='worker#3 files no ideas or seeds'):
+    monkeypatch.setattr(common, 'settings', common.settings.model_copy(update={'actor': 'implementer#3'}))
+    with pytest.raises(SystemExit, match='implementer#3 files no ideas or seeds'):
         run_cli(['candidate', 'note', '2', 'worth a look', '--follow-up', 'a hunch'])
 
 
@@ -896,25 +898,25 @@ def herdr_calls(log: Path) -> list[list[str]]:
     return [json.loads(line) for line in log.read_text().splitlines()]
 
 
-def test_attach_focuses_a_worker_tab(
+def test_attach_focuses_an_implementer_tab(
     campaign_path: Path, out, herdr_log: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_cli(['init', str(campaign_path)])
     db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
         for runtime, handle in (
-            ('herdr', {'workspace_id': 'w7', 'tab_id': 'w7:t3', 'pane_id': 'w7:p3', 'agent': 'worker-1'}),
+            ('herdr', {'workspace_id': 'w7', 'tab_id': 'w7:t3', 'pane_id': 'w7:p3', 'agent': 'implementer-1'}),
             ('subprocess', {'pid': 1, 'pgid': 1, 'start_time': 0, 'started_at': 0, 'log_dir': '/tmp/x'}),
         ):
             s.add(
-                Worker(
+                AgentSession(
                     kind='watchdog',
                     campaign_id=1,
                     harness='pi',
                     model='m',
                     runtime=runtime,
                     handle=handle,
-                    state=WorkerState.RUNNING,
+                    state=AgentSessionState.RUNNING,
                     log_dir='/tmp/x',
                 )
             )
@@ -942,10 +944,10 @@ def test_attach_focuses_a_worker_tab(
     with pytest.raises(SystemExit) as headless:
         run_cli(['attach', '2'])
     assert str(headless.value) == (
-        'worker#2: a background process has no terminal to show: read /tmp/x/worker.stdout; once it ends, its'
+        'agent_session#2: a background process has no terminal to show: read /tmp/x/agent_session.stdout; once it ends, its'
         ' transcript is /tmp/x/transcript.txt'
     )
-    with pytest.raises(SystemExit, match='worker#3 is not running'):
+    with pytest.raises(SystemExit, match='agent_session#3 is not running'):
         run_cli(['attach', '3'])
     gone = {'error': {'code': 'tab_not_found', 'message': 'tab w7:t3 is gone'}}
     monkeypatch.setenv('FAKE_HERDR_SCRIPT', json.dumps({'tab focus': [gone]}))
@@ -965,16 +967,17 @@ def test_prompt(campaign_path: Path, out, herdr_log: Path) -> None:
         s.add(
             Run(idea_id=idea.id, attempt=1, base_candidate_id=1, harness='script', model='m', status=RunStatus.RUNNING)
         )
+        s.flush()  # the run first: the unit of work orders unrelated mappers by name
         s.add(
-            Worker(
-                kind='worker',
+            AgentSession(
+                kind='implementer',
                 campaign_id=1,
                 run_id=1,
                 harness='script',
                 model='m',
                 runtime='herdr',
-                handle={'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': 'worker-1'},
-                state=WorkerState.RUNNING,
+                handle={'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': 'implementer-1'},
+                state=AgentSessionState.RUNNING,
                 log_dir='x',
             )
         )
@@ -982,9 +985,9 @@ def test_prompt(campaign_path: Path, out, herdr_log: Path) -> None:
     db.close()
     out()
     run_cli(['prompt', '1', 'try harder'])
-    assert out().strip() == 'prompted worker#1'
-    assert herdr_calls(herdr_log)[-1] == ['--session', 'piloop', 'agent', 'prompt', 'worker-1', 'try harder']
-    with pytest.raises(SystemExit, match='worker#2 is not running'):
+    assert out().strip() == 'prompted agent_session#1'
+    assert herdr_calls(herdr_log)[-1] == ['--session', 'piloop', 'agent', 'prompt', 'implementer-1', 'try harder']
+    with pytest.raises(SystemExit, match='agent_session#2 is not running'):
         run_cli(['prompt', '2', 'x'])
 
 
@@ -1003,9 +1006,9 @@ def test_campaign_stop_and_cancels_are_requests_that_the_daemon_acts_on(campaign
         s.flush()
         s.add_all(
             [
-                Worker(kind='worker', campaign_id=1, run_id=1, state=WorkerState.RUNNING),
-                Worker(kind='worker', campaign_id=1, run_id=1, state=WorkerState.EXITED),
-                Worker(kind='research', campaign_id=1, state=WorkerState.RUNNING),
+                AgentSession(kind='implementer', campaign_id=1, run_id=1, state=AgentSessionState.RUNNING),
+                AgentSession(kind='implementer', campaign_id=1, run_id=1, state=AgentSessionState.EXITED),
+                AgentSession(kind='research', campaign_id=1, state=AgentSessionState.RUNNING),
             ]
         )
         s.commit()
@@ -1016,47 +1019,50 @@ def test_campaign_stop_and_cancels_are_requests_that_the_daemon_acts_on(campaign
     run_cli(['campaign', 'stop', 'demo', '--reason', 'machine needed'])
     assert out().splitlines() == [
         'cancel requested for run#1: the daemon acts on its next tick',
-        'cancel requested for worker#3: the daemon acts on its next tick',
-        'cancel requested for worker#1: the daemon acts on its next tick',
-        'stop requested for demo: the daemon tells its workers to commit and stop on its next tick',
+        'cancel requested for agent_session#3: the daemon acts on its next tick',
+        'cancel requested for agent_session#1: the daemon acts on its next tick',
+        'stop requested for demo: the daemon tells its implementers to commit and stop on its next tick',
     ]
     with pytest.raises(SystemExit, match='run#9 is not queued or running'):
         run_cli(['run', 'cancel', '9'])
-    with pytest.raises(SystemExit, match='worker#2 is not requested, starting or running'):
+    with pytest.raises(SystemExit, match='agent_session#2 is not requested, starting or running'):
         run_cli(['agent', 'cancel', '2'])
     with db.session() as s:
         requests = [(e.kind, e.target_id, e.actor, e.payload) for e in s.scalars(select(Event).where(Event.id > 0))]
         assert [r for r in requests if r[0].endswith('_requested')] == [
             ('run.cancel_requested', 1, 'human', {'wrap_up': True}),
-            ('worker.cancel_requested', 3, 'human', {'wrap_up': False}),
-            ('worker.cancel_requested', 1, 'human', {'wrap_up': True}),
+            ('agent_session.cancel_requested', 3, 'human', {'wrap_up': False}),
+            ('agent_session.cancel_requested', 1, 'human', {'wrap_up': True}),
             ('campaign.stop_requested', 1, 'human', {'reason': 'machine needed', 'kill': False}),
         ]
         s.get_one(Campaign, 1).status, s.get_one(Campaign, 1).stopped_reason = CampaignStatus.STOPPED, 'by hand'
         s.commit()
     db.close()
-    with pytest.raises(SystemExit, match=r'demo is stopped already \(by hand\); --kill ends its workers at once'):
+    with pytest.raises(SystemExit, match=r'demo is stopped already \(by hand\); --kill ends its implementers at once'):
         run_cli(['campaign', 'stop', 'demo'])
     run_cli(['campaign', 'stop', 'demo', '--kill'])
-    assert out().strip() == 'stop requested for demo: the daemon ends its workers at once on its next tick'
+    assert out().strip() == 'stop requested for demo: the daemon ends its implementers at once on its next tick'
 
 
-def test_launch_requests_a_worker(campaign_path: Path, out) -> None:
+def test_launch_requests_an_implementer(campaign_path: Path, out) -> None:
     run_cli(['init', str(campaign_path)])
     out()
     run_cli(['launch', 'demo', 'research'])
     run_cli(['launch', str(campaign_path), 'watchdog', '--harness', 'pi', '--model', 'opus', '--reason', 'eyeball it'])
     assert out().splitlines() == [
-        'worker#1 research requested for demo: requested from the CLI',
-        'worker#2 watchdog requested for demo: eyeball it',
+        'agent_session#1 research requested for demo: requested from the CLI',
+        'agent_session#2 watchdog requested for demo: eyeball it',
     ]
     db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
-        rows = [(w.kind, w.state, w.harness, w.model, w.reason) for w in s.scalars(select(Worker).order_by(Worker.id))]
+        rows = [
+            (w.kind, w.state, w.harness, w.model, w.reason)
+            for w in s.scalars(select(AgentSession).order_by(AgentSession.id))
+        ]
     db.close()
     assert rows == [
-        (WorkerKind.RESEARCH, WorkerState.REQUESTED, None, None, 'requested from the CLI'),
-        (WorkerKind.WATCHDOG, WorkerState.REQUESTED, 'pi', 'opus', 'eyeball it'),
+        (RoleName.RESEARCH, AgentSessionState.REQUESTED, None, None, 'requested from the CLI'),
+        (RoleName.WATCHDOG, AgentSessionState.REQUESTED, 'pi', 'opus', 'eyeball it'),
     ]
     run_cli(['status', 'demo'])
     assert '- Agents live: none; requested: research#1, watchdog#2' in out(), (
@@ -1064,10 +1070,12 @@ def test_launch_requests_a_worker(campaign_path: Path, out) -> None:
     )
     with pytest.raises(SystemExit, match="demo has no sweeping role 'janitor'; it has watchdog, research, scout.$"):
         run_cli(['launch', 'demo', 'janitor'])
-    with pytest.raises(SystemExit, match='The daemon launches workers by itself, one for each queued run'):
-        run_cli(['launch', 'demo', 'worker'])
+    with pytest.raises(SystemExit, match='The daemon launches implementers by itself, one for each queued run'):
+        run_cli(['launch', 'demo', 'implementer'])
     run_cli(['launch', 'demo', 'scout', '--reason', 'look outside'])
-    assert out().strip() == 'worker#3 scout requested for demo: look outside', 'the scout is a role like any other'
+    assert out().strip() == 'agent_session#3 scout requested for demo: look outside', (
+        'the scout is a role like any other'
+    )
 
 
 def test_serve_builds_a_daemon(mocker: MockerFixture) -> None:
@@ -1197,27 +1205,30 @@ def test_status_without_results_and_prompt_not_steerable(campaign_path: Path, ou
                 started_at=utcnow() - timedelta(hours=2),  # quiet long enough that status asks for its jobs
             )
         )
+        s.flush()  # the run first: the unit of work orders unrelated mappers by name
         s.add(
-            Worker(
-                kind='worker',
+            AgentSession(
+                kind='implementer',
                 campaign_id=1,
                 run_id=1,
                 harness='script',
                 model='m',
                 runtime='subprocess',
                 handle={'pid': 1, 'pgid': 1, 'start_time': 0, 'started_at': 0, 'log_dir': '/tmp/x'},
-                state=WorkerState.RUNNING,
+                state=AgentSessionState.RUNNING,
                 log_dir='x',
             )
         )
-        s.add(Worker(kind='worker', campaign_id=1, run_id=1, harness='script', state=WorkerState.RUNNING))
+        s.add(
+            AgentSession(kind='implementer', campaign_id=1, run_id=1, harness='script', state=AgentSessionState.RUNNING)
+        )
         s.commit()
     db.close()
     out()
     run_cli(['status', 'demo'])
     text = out()
     assert 'demo · no trunk keep · 0 kept / 1 candidates' in text
-    assert '  - worker#1 script/m 0s, on idea#1 x: —' in text, 'a headless agent has no tab'
+    assert '  - implementer#1 script/m 0s, on idea#1 x: —' in text, 'a headless agent has no tab'
     assert 'silent' not in text, 'a one-shot process tracks no jobs; a row not launched yet has no runtime to ask'
 
     with pytest.raises(SystemExit, match='cannot take a message'):
@@ -1257,10 +1268,10 @@ def fake_bins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return install
 
 
-def add_candidate_with_worker(
+def add_candidate_with_agent_session(
     db: Database, checkpoint: str | None, *, harness: str = 'pi', session_id: str | None = 's', ended: bool = True
 ) -> int:
-    """Add a worker's run with one candidate, and return the candidate id. The checkpoint is on the worker."""
+    """Add an implementer's run with one candidate, and return the candidate id. The checkpoint is on the implementer."""
     with db.session() as s:
         idea = Idea(
             track='score',
@@ -1275,8 +1286,8 @@ def add_candidate_with_worker(
         s.add(run)
         s.flush()
         s.add(
-            Worker(
-                kind=WorkerKind.WORKER,
+            AgentSession(
+                kind=RoleName.IMPLEMENTER,
                 campaign_id=1,
                 run_id=run.id,
                 harness=harness,

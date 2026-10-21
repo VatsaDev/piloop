@@ -3,7 +3,7 @@
 You have direct SQL access to piloop's SQLite database through `piloop sql`.
 Any statement is allowed except schema changes and transactions. Every statement commits on its own.
 `PRAGMA table_info(<table>)` works.
-The database is the coordination layer: the daemon, the orchestrator, the watchdog and every worker read and write the
+The database is the coordination layer: the daemon, the orchestrator, the watchdog and every implementer read and write the
 same tables.
 Timestamps are UTC ISO-8601 strings.
 
@@ -27,19 +27,19 @@ piloop idea status 12 parked --reason 'waits for idea#9, see comment#31'
 
 - A **campaign** is a git repo with a `piloop.toml`.
 - **Ideas** are things worth trying. When an idea is `ready`, the scheduler creates a **run**: one attempt, on one
-  harness and model. It starts a **worker** process in a fresh git worktree at the run's base **candidate**.
+  harness and model. It starts an **implementer** process in a fresh git worktree at the run's base **candidate**.
 - **Idea links** (`idea_links`) relate ideas of one campaign:
   - `after`: the idea waits for its prerequisites. It stays `ready` but is not taken until all of them are `done`. Then
     it starts from the head, which has what they kept.
   - `supersedes`: the idea is a sharper version of older ideas. The daemon rejects the older ones that never ran.
-- The worker commits. Every new commit becomes a candidate: a distinct state of the code, identified by its git tree.
+- The implementer commits. Every new commit becomes a candidate: a distinct state of the code, identified by its git tree.
   A commit that reverts to a known state *is* that candidate.
 - The daemon scores each new candidate with the campaign's **evaluator** into a **measurement** (metrics, or an
   error). The evaluator is the evaluate command and the metric definitions as of the last config sync. A change makes
   a new evaluator row. A candidate can have many measurements: repeats, or a newer evaluator.
 - A candidate's **verdict** (`keep`, `interesting`, `discard` or `crash`) is the daemon's judgement of its mean score
   against its bar. The bar is the run's last keep, starting at its base. Anyone may override a verdict. A commit
-  marked `Piloop-Eval: skip` is `unmeasured`: no judgement at all. What a worker left uncommitted when it stopped
+  marked `Piloop-Eval: skip` is `unmeasured`: no judgement at all. What an implementer left uncommitted when it stopped
   is `recovered`: committed by the daemon, never measured; if the run did not finish, a new run starts from it.
 - Every run that pins no base starts from the **head**: the latest *trunk keep*, which is a keep that no branch run
   made. So the trunk is a chain of keeps.
@@ -160,7 +160,7 @@ ORDER BY bm25(ideas_fts) LIMIT 20;
 - An implementation to copy, from any campaign: drop the `p.repo` filter, keep what kept or was noted (`JOIN runs r ON
   r.idea_id = i.id JOIN candidates c ON c.run_id = r.id WHERE c.verdict IN ('keep', 'interesting')`) and select
   `p.path, c.commit_sha`. Then `git -C <path> show <commit_sha>`.
-- How a past idea was worked: `SELECT w.id, w.checkpoint_id, w.log_dir FROM workers w JOIN runs r ON r.id = w.run_id
+- How a past idea was worked: `SELECT w.id, w.checkpoint_id, w.log_dir FROM agent_sessions w JOIN runs r ON r.id = w.run_id
   WHERE r.idea_id = <idea>`. `entire checkpoint explain <checkpoint_id>`, run in that campaign's repo
   (`campaigns.path`), summarises the session. `<log_dir>/transcript.txt` is its screen. An archived workspace can be
   restored with `piloop restore`, once your piloop has it.
@@ -201,20 +201,20 @@ ORDER BY bm25(documents_fts) LIMIT 10;
 ### Steer
 
 - A comment on an idea, or on any of its runs, goes into the brief of the idea's next run.
-- A `note`, `finding` or `decision` on a running run, or on the idea of one, also reaches its worker within a tick.
-  The daemon prompts the worker with one line:
+- A `note`, `finding` or `decision` on a running run, or on the idea of one, also reaches its implementer within a tick.
+  The daemon prompts the implementer with one line:
   `[piloop] decision on idea#12 by human: <first line> — full text: SELECT body FROM comments WHERE id=<n>`.
-- The daemon then records `comment.delivered` on the worker. When it cannot reach the pane, it records
-  `comment.undelivered` with the error. This happens for a headless subprocess worker. The comment is still in the
+- The daemon then records `comment.delivered` on the implementer. When it cannot reach the pane, it records
+  `comment.undelivered` with the error. This happens for a headless subprocess agent. The comment is still in the
   next brief.
 - Nothing is delivered twice, and a daemon restart loses nothing: those two events are the record.
 - So put the instruction in the first line of the body, and the reasons below it.
-- Escalations are never pushed to a worker.
-- `piloop prompt <worker_id> '<text>'` steers any running agent directly, without a comment.
+- Escalations are never pushed to an implementer.
+- `piloop prompt <agent_session_id> '<text>'` steers any running agent directly, without a comment.
 
 ### Ask for an agent
 
-- `INSERT INTO workers (kind, campaign_id, state) VALUES ('research', <p>, 'requested')`. The daemon starts it on its
+- `INSERT INTO agent_sessions (kind, campaign_id, state) VALUES ('research', <p>, 'requested')`. The daemon starts it on its
   next tick.
 - Kinds: the sweeping roles that the Context lists. A role that does runs needs a run, so leave its agents to the
   scheduler.
@@ -236,7 +236,7 @@ Special reasons:
 - A reason that starts with `no-op:` means the primary and the guardrails equal the parent's exactly.
 - `not evaluated: Piloop-Eval: skip` is the reason of an `unmeasured` commit, one that asked not to be evaluated
   (scaffolding). It has no measurement and says nothing about the idea.
-- A reason that starts with `recovered:` is a `recovered` candidate: what a worker left uncommitted when it stopped.
+- A reason that starts with `recovered:` is a `recovered` candidate: what an implementer left uncommitted when it stopped.
   It has no measurement. If its run did not finish, the idea was requeued with it as the base.
 - A reason that starts with `keeps against its own bar, but the head moved on` is a keep that was rebased. The rest of
   the reason names the merged candidate or the conflict.
@@ -254,13 +254,13 @@ The daemon never overwrites a verdict that is not its own.
   `piloop candidate note <candidate> '<why>' --follow-up '<hunch>'`. `--follow-up` can repeat.
 - The result is an `interesting` whose reason starts with `note:`, plus one seed per follow-up, pinned to it. It is not
   a keep and not a bar.
-- A worker's candidates exist only after its commits are scored. So a worker ends the commit message with a
+- An implementer's candidates exist only after its commits are scored. So an implementer ends the commit message with a
   `Piloop-Note: <why>` trailer instead, and files no follow-ups.
 
 ### Measure again
 
 - A candidate's score is the mean of its successful measurements under the current evaluator.
-- To estimate noise, ask a worker, or run the evaluate command yourself, and record it:
+- To estimate noise, ask an implementer, or run the evaluate command yourself, and record it:
   `piloop measurement add <c> --report <file>`, with `{"metrics": {"<name>": <value>}, "seconds": <s>}` in the file.
   It counts under the current evaluator (`campaigns.evaluator_id`), with the metric names of `piloop.toml`. A `crash`,
   `discard` or `interesting` that the daemon judged is judged again with every measurement. Never insert into `measurements` by hand: nothing judges it.
@@ -316,12 +316,12 @@ Each command takes `--reason '<why>'`, signs the change with your actor and reco
 - When a `[stop]` condition in `piloop.toml` holds, or after `piloop campaign stop <campaign> [--kill]`, the daemon:
   - sets `campaigns.status='stopped'` (`stopped_reason` says which condition, or who stopped it);
   - drops the requests and queued runs pending at that moment (their ideas go back to `ready`);
-  - tells each running worker to commit and stop, and ends it 10 minutes later (`--kill`: at once); its commits are
+  - tells each running implementer to commit and stop, and ends it 10 minutes later (`--kill`: at once); its commits are
     scored;
   - checks the `stopped` triggers: by default, they request one closing watchdog sweep;
   - starts and files nothing more.
 - Stop a campaign with `piloop campaign stop`, not with an UPDATE of `campaigns.status`: an UPDATE gets no closing sweep.
-- `piloop run cancel <run> [--wrap-up]` and `piloop agent cancel <worker> [--wrap-up]` end one run or one agent,
+- `piloop run cancel <run> [--wrap-up]` and `piloop agent cancel <agent-session> [--wrap-up]` end one run or one agent,
   with every process that it started. A cancelled run's idea is parked.
 - To continue, raise or change the conditions in `piloop.toml` and run `piloop init <path>`.
 - Or by hand: `UPDATE campaigns SET status='active', stopped_reason=NULL WHERE id=<p>`. With the conditions unchanged, it
@@ -329,19 +329,19 @@ Each command takes `--reason '<why>'`, signs the change with your actor and reco
 
 ### Spend
 
-- `workers.usage` holds the tokens an agent spent. It is written when the agent ends:
+- `agent_sessions.usage` holds the tokens an agent spent. It is written when the agent ends:
   `{"input", "output", "cache_read", "cache_write", "total", "turns", "source"}`.
   - `total` is the harness's own count of the session's tokens.
   - `input` is the uncached input for every harness; `cache_read` and `cache_write` are the cached input.
   - `turns` is the number of model responses.
   - `source` is the session file that was read.
 - It is NULL while the agent runs, or when no file was found.
-- `json_extract(usage, '$.total')` sums the spend per idea (workers → runs → ideas) or per campaign. The queries below do
+- `json_extract(usage, '$.total')` sums the spend per idea (agent_sessions → runs → ideas) or per campaign. The queries below do
   both.
 
 ### What not to change
 
-- Never change `runs.status`, `events`, or `workers` rows, except to insert a request. The daemon owns those.
+- Never change `runs.status`, `events`, or `agent_sessions` rows, except to insert a request. The daemon owns those.
 - If they look wrong, write a comment of kind `escalation` on the run. The orchestrator reconciles.
 
 ### Provenance is automatic
@@ -396,12 +396,12 @@ SELECT author, kind, body, created_at FROM comments WHERE target_kind = 'idea' A
 -- the kept lineage
 SELECT id, parent_id, run_id, summary FROM candidates WHERE campaign_id = 1 AND verdict = 'keep' ORDER BY id;
 
--- tokens per idea: every worker run of it, summed (NULL usage counts nothing)
+-- tokens per idea: every implementer run of it, summed (NULL usage counts nothing)
 SELECT i.id, i.title, SUM(json_extract(w.usage, '$.total')) AS tokens, COUNT(w.id) AS agents
-FROM ideas i JOIN runs r ON r.idea_id = i.id JOIN workers w ON w.run_id = r.id
+FROM ideas i JOIN runs r ON r.idea_id = i.id JOIN agent_sessions w ON w.run_id = r.id
 WHERE i.campaign_id = 1 GROUP BY i.id ORDER BY tokens DESC;
 
 -- tokens per role, every agent of the campaign that ended (filter by campaign: that is what the index serves)
 SELECT kind, SUM(json_extract(usage, '$.total')) AS tokens, COUNT(*) AS agents
-FROM workers WHERE campaign_id = 1 AND ended_at IS NOT NULL GROUP BY kind;
+FROM agent_sessions WHERE campaign_id = 1 AND ended_at IS NOT NULL GROUP BY kind;
 ```

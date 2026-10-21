@@ -8,6 +8,8 @@ from sqlalchemy import func, select
 from piloop.campaign import inbox
 from piloop.db.events import ANOMALY_EVENT, emit
 from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
     Campaign,
     CampaignStatus,
     Comment,
@@ -16,11 +18,9 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Measurement,
+    RoleName,
     Run,
     TargetKind,
-    Worker,
-    WorkerKind,
-    WorkerState,
     utcnow,
 )
 from piloop.db.session import Database
@@ -42,7 +42,7 @@ def test_items_scope_to_the_campaign_through_every_target(db: Database, campaign
         theirs = idea(s, other, 'theirs', IdeaStatus.READY)
         run = Run(idea=mine, attempt=1, base_candidate_id=1, harness='h', model='m')
         s.add(run)
-        s.add(Worker(kind=WorkerKind.WATCHDOG, campaign_id=campaign.id, state=WorkerState.EXITED))
+        s.add(AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, state=AgentSessionState.EXITED))
         s.flush()
         s.add(Measurement(candidate_id=1, evaluator_id=1, metrics={'score': 1}))
         s.flush()
@@ -54,7 +54,7 @@ def test_items_scope_to_the_campaign_through_every_target(db: Database, campaign
                 Comment(target_kind=TargetKind.RUN, target_id=run.id, body='on run', **escalation),
                 Comment(target_kind=TargetKind.CANDIDATE, target_id=1, body='on candidate', **escalation),
                 Comment(target_kind=TargetKind.MEASUREMENT, target_id=1, body='on measurement', **escalation),
-                Comment(target_kind=TargetKind.WORKER, target_id=1, body='on worker', **escalation),
+                Comment(target_kind=TargetKind.AGENT_SESSION, target_id=1, body='on implementer', **escalation),
                 Comment(target_kind=TargetKind.IDEA, target_id=theirs.id, body='other campaign', **escalation),
                 Comment(target_kind=TargetKind.CAMPAIGN, target_id=other.id, body='other campaign too', **escalation),
                 Comment(target_kind=TargetKind.RUN, target_id=run.id, author='w', kind=CommentKind.FINDING, body='no'),
@@ -73,7 +73,7 @@ def test_items_scope_to_the_campaign_through_every_target(db: Database, campaign
             'on run',
             'on candidate',
             'on measurement',
-            'on worker',
+            'on implementer',
             'on a comment of the campaign',
         ], 'the forum (no priority) is not in it'
         assert bodies(inbox.items(s, campaign_id=other.id)) == [
@@ -174,7 +174,7 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
         s.commit()
         cursor = s.scalar(select(func.max(Event.id)))
         assert cursor is not None
-        watchdog = Worker(kind=WorkerKind.WATCHDOG, campaign_id=campaign.id)
+        watchdog = AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id)
         s.add(watchdog)
         s.flush()
         s.add_all(
@@ -207,7 +207,7 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
             )
             for n, (p, status, by) in enumerate(
                 [
-                    (campaign, IdeaStatus.SEED, 'worker#3'),
+                    (campaign, IdeaStatus.SEED, 'implementer#3'),
                     (campaign, IdeaStatus.SEED, 'orchestrator'),
                     (other, IdeaStatus.SEED, 'watchdog#1'),
                     (campaign, IdeaStatus.READY, 'human'),
@@ -218,7 +218,13 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
         s.flush()
         for idea in seeds:
             emit(s, 'idea.created', TargetKind.IDEA, idea.id, actor=idea.created_by)
-        emit(s, ANOMALY_EVENT, TargetKind.WORKER, watchdog.id, payload={'key': 'k', 'anomaly': 'run#3 failed: boom'})
+        emit(
+            s,
+            ANOMALY_EVENT,
+            TargetKind.AGENT_SESSION,
+            watchdog.id,
+            payload={'key': 'k', 'anomaly': 'run#3 failed: boom'},
+        )
         judged: dict[str, object] = {'verdict': 'keep', 'score': 2.0, 'reason': 'score +1 over candidate#1\nmore'}
         emit(s, 'candidate.judged', TargetKind.CANDIDATE, 1, payload=judged)
         emit(s, 'candidate.judged', TargetKind.CANDIDATE, 1, payload={'verdict': 'unmeasured', 'reason': SKIPPED})
@@ -230,7 +236,7 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
             [
                 'comment#6 escalation p0 on campaign#2 (other) by watchdog#5: theirs',
                 'comment#2 escalation p1 on campaign#1 (demo) by watchdog#1: SSO',
-                'seed idea#1 (demo) by worker#3: hunch 0 — run#1',
+                'seed idea#1 (demo) by implementer#3: hunch 0 — run#1',
                 'seed idea#3 (other) by watchdog#1: hunch 2 — run#1',
                 'anomaly, watchdog#1 requested: run#3 failed: boom',
                 'candidate#1 keep: score +1 over candidate#1',

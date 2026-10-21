@@ -9,7 +9,7 @@ repo when a research sweep or a progress review starts. ``piloop history`` print
   with an outline;
 - what was tried, by family (``ideas.family``), and the seeds that other roles filed for research to develop;
 - the history (``piloop.reports.history``);
-- the latest worker findings, the digests and decisions of the orchestrator and the human, and the open escalations.
+- the latest implementer findings, the digests and decisions of the orchestrator and the human, and the open escalations.
 
 The size is bounded. Each list keeps its latest rows, each body keeps a fixed number of characters, and files are
 pointers, not inlined content. On top of the history, the pack adds at most about 45 KB (about 11k tokens).
@@ -98,7 +98,7 @@ def renderables(
         *_seeds(s, campaign, heading),
         *history(s, campaign, cfg, table_box=table_box, heading=heading),
         Text(),
-        *_worker_findings(s, campaign, cfg, heading),
+        *_agent_session_findings(s, campaign, cfg, heading),
         *_digests(s, campaign, heading),
         *_escalations(s, campaign, heading),
     ]
@@ -324,7 +324,7 @@ def _seeds(s: Session, campaign: Campaign, heading: str) -> list[RenderableType]
     return [title, *lines, Text()]
 
 
-def _worker_findings(s: Session, campaign: Campaign, cfg: CampaignConfig, heading: str) -> list[RenderableType]:
+def _agent_session_findings(s: Session, campaign: Campaign, cfg: CampaignConfig, heading: str) -> list[RenderableType]:
     """List the latest findings of the agents that did runs, with more text than the ideas table shows."""
     by_runs = or_(*(Comment.author.startswith(f'{name}#', autoescape=True) for name in cfg.roles.doing_runs()))
     rows = s.scalars(
@@ -334,7 +334,7 @@ def _worker_findings(s: Session, campaign: Campaign, cfg: CampaignConfig, headin
         .order_by(Comment.id.desc())
         .limit(FINDINGS_SHOWN)
     ).all()
-    title = Text(f'{heading}Research pack: latest worker findings (newest first)', style='bold')
+    title = Text(f'{heading}Research pack: latest implementer findings (newest first)', style='bold')
     lines = [_body_line(f'comment#{c.id} {c.author} on idea#{c.target_id}', c.body, FINDING_CHARS) for c in rows]
     return [title, *(lines or [Text('- None yet.')]), Text()]
 

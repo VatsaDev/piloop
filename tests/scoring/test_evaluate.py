@@ -100,7 +100,7 @@ def test_no_units_file_written_or_asked_for_is_no_units(tmp_path: Path) -> None:
     assert (tmp_path / 'seen').read_text().strip() == str(tmp_path / 'u')
     r = run_evaluate(script, cwd=tmp_path, log_dir=tmp_path, timeout=5, required={'a'})
     assert (r.error, r.units) == (None, {})
-    assert (tmp_path / 'seen').read_text().strip() == 'unset', 'a worker running evaluate itself gets no path'
+    assert (tmp_path / 'seen').read_text().strip() == 'unset', 'an implementer running evaluate itself gets no path'
 
 
 @pytest.mark.parametrize(

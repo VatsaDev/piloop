@@ -9,7 +9,7 @@ here.
 ``yields`` measures each source by its keeps, not by the number of ideas it inserted. The overview and the research
 pack show it.
 
-Seeds: every role except the worker can file a hunch with pointers (``seed``). Research develops a seed into a
+Seeds: every role except the implementer can file a hunch with pointers (``seed``). Research develops a seed into a
 defined idea (``develop``) or rejects it. ``defined_by`` returns the agents that added a defined idea to the campaign.
 This is how piloop measures the work of a research sweep.
 """
@@ -180,7 +180,7 @@ def source(created_by: str) -> str:
 
 @dataclass(frozen=True)
 class Definition:
-    """The parts that turn a seed into an idea that a worker can run. The worker reads each part in its brief."""
+    """The parts that turn a seed into an idea that an implementer can run. The implementer reads each part in its brief."""
 
     hypothesis: str
     """The mechanism and why it should move the metric."""
@@ -193,7 +193,7 @@ class Definition:
     effect: str
     """The expected size of the effect in the metric's units, and why that much."""
     plan: str | None = None
-    """More steps for the worker, after the check."""
+    """More steps for the implementer, after the check."""
 
     def missing(self) -> list[str]:
         """Return the names of the required parts that are blank."""
@@ -219,7 +219,7 @@ def develop(
 
     The idea becomes ``ready``, or ``proposed`` if a human must approve it. The original hunch and its pointers are
     kept. The definition goes first in the hypothesis. The plan starts with the check, the metric and the expected
-    effect, so the worker's brief has all of it. The change log records the connection's actor on the status change
+    effect, so the implementer's brief has all of it. The change log records the connection's actor on the status change
     (``idea.status``). ``defined_by`` uses this to count a sweep's work.
     """
     if idea.status is not IdeaStatus.SEED:

@@ -12,9 +12,9 @@ claude = "claude-opus-5-5"
 codex = "gpt-6.1-sol"
 
 [stop]
-max_runs = 20                            # the campaign ends after 20 scored worker runs
+max_runs = 20                            # the campaign ends after 20 scored implementer runs
 
-[roles.worker]
+[roles.implementer]
 timeout = 1800
 max_concurrent = 2
 

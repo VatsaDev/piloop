@@ -19,6 +19,7 @@ from sqlalchemy.orm import Mapped, Session, aliased
 
 from piloop.db.events import ANOMALY_EVENT
 from piloop.db.models import (
+    AgentSession,
     Campaign,
     CampaignStatus,
     Candidate,
@@ -30,7 +31,6 @@ from piloop.db.models import (
     Measurement,
     Run,
     TargetKind,
-    Worker,
     utcnow,
 )
 from piloop.scoring.ledger import SKIPPED
@@ -110,9 +110,9 @@ def news(s: Session, after: int, *, campaign_id: int | None = None, me: str) -> 
             if campaign is not None and campaign_id in (None, campaign.id):
                 lines.append(f'campaign {campaign.name} stopped: {e.payload.get("stopped_reason")}')
         elif e.kind == ANOMALY_EVENT:
-            worker = s.get(Worker, e.target_id)
-            if worker is not None and campaign_id in (None, worker.campaign_id):
-                lines.append(f'anomaly, {worker.kind}#{worker.id} requested: {e.payload.get("anomaly")}')
+            agent_session = s.get(AgentSession, e.target_id)
+            if agent_session is not None and campaign_id in (None, agent_session.campaign_id):
+                lines.append(f'anomaly, {agent_session.kind}#{agent_session.id} requested: {e.payload.get("anomaly")}')
         elif e.kind == 'idea.created' and e.actor != me:
             idea = s.get(Idea, e.target_id)
             if idea is not None and idea.status is IdeaStatus.SEED and campaign_id in (None, idea.campaign_id):
@@ -229,5 +229,8 @@ def _owner_branches(
             .where(Measurement.id == target_id)
             .scalar_subquery(),
         ),
-        (target_kind == TargetKind.WORKER, select(Worker.campaign_id).where(Worker.id == target_id).scalar_subquery()),
+        (
+            target_kind == TargetKind.AGENT_SESSION,
+            select(AgentSession.campaign_id).where(AgentSession.id == target_id).scalar_subquery(),
+        ),
     ]

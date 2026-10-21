@@ -2,7 +2,7 @@
 
 piloop calls Entire once per agent session. ``entire session attach <id> --agent <name>`` reads the harness's session
 file, redacts it and writes the checkpoint ref ``refs/entire/checkpoints/<id[-2:]>/<id>`` into the repo. piloop keeps
-the id on the ``workers`` row. No hooks, no config in the tree, nothing per commit.
+the id on the ``agent_sessions`` row. No hooks, no config in the tree, nothing per commit.
 """
 
 import json
@@ -11,7 +11,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from piloop.db.models import Worker
+from piloop.db.models import AgentSession
 from piloop.harnesses import Harness
 from piloop.proc import STDERR_IN_ERROR, child_env
 from piloop.settings import settings
@@ -46,10 +46,10 @@ class AttachError(RuntimeError):
     """An ``entire`` call failed or gave no checkpoint. The message says why."""
 
 
-def attachable(worker: Worker, harness: Harness | None) -> tuple[str, str] | None:
-    """Return ``(session_id, entire agent)`` of a worker whose session Entire can attach, else None."""
+def attachable(agent_session: AgentSession, harness: Harness | None) -> tuple[str, str] | None:
+    """Return ``(session_id, entire agent)`` of an implementer whose session Entire can attach, else None."""
     agent = harness.entire_agent if harness is not None else None
-    return (worker.session_id, agent) if agent and worker.session_id else None
+    return (agent_session.session_id, agent) if agent and agent_session.session_id else None
 
 
 def attach_session(session_id: str, agent: str, cwd: Path) -> Attached:

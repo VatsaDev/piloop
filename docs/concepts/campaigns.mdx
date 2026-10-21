@@ -16,7 +16,7 @@ directory. One database holds every campaign, and one daemon serves them all.
 
 ## The evaluate command
 
-The evaluate command is the referee. piloop runs it in a clean worktree of each commit that a worker makes. Two
+The evaluate command is the referee. piloop runs it in a clean worktree of each commit that an implementer makes. Two
 commits are not measured: a commit marked `Piloop-Eval: skip`, and a commit whose tree the current evaluator has
 measured already. The command must:
 
@@ -33,9 +33,9 @@ METRIC bytes=3692731
 METRIC seconds=0.52
 ```
 
-Make the command deterministic: fix the seeds and the data splits. Make sure that a worker can change the score only
-through the code that it is supposed to change. Tell the workers in `brief.md` which files they must not edit, such as
-the evaluate command and the data. piloop runs the evaluate command from the commit that it measures, so a worker that
+Make the command deterministic: fix the seeds and the data splits. Make sure that an implementer can change the score only
+through the code that it is supposed to change. Tell the implementers in `brief.md` which files they must not edit, such as
+the evaluate command and the data. piloop runs the evaluate command from the commit that it measures, so an implementer that
 edits it changes its own score.
 
 ## Metrics
@@ -115,4 +115,4 @@ describes. An **evaluation** is one run of an evaluator on a candidate, and it p
   the worktree is gone.
 - The database holds the ideas, runs, candidates, measurements, comments and events. Read it with
   `piloop sql "<statement>"`. See the [database schema](/reference/schema).
-- The briefs, logs and screen transcripts of the agents are under `~/.piloop/runs/` and `~/.piloop/workers/`.
+- The briefs, logs and screen transcripts of the agents are under `~/.piloop/runs/` and `~/.piloop/agent_sessions/`.

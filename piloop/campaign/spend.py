@@ -18,13 +18,13 @@ from sqlalchemy.orm import Session
 
 from piloop.config import CampaignConfig, ClosingReview, Spend
 from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
     Campaign,
     CampaignStatus,
     Comment,
     CommentKind,
     TargetKind,
-    Worker,
-    WorkerState,
     utcnow,
 )
 from piloop.db.triggers import DAEMON_ACTOR
@@ -125,7 +125,9 @@ def review_waits(s: Session, campaign: Campaign, cfg: CampaignConfig) -> bool:
         return False
     if cfg.spend.closing_review is not ClosingReview.WAIT:
         return False
-    requested = select(Worker.id).where(Worker.campaign_id == campaign.id, Worker.state == WorkerState.REQUESTED)
+    requested = select(AgentSession.id).where(
+        AgentSession.campaign_id == campaign.id, AgentSession.state == AgentSessionState.REQUESTED
+    )
     return s.scalar(requested.limit(1)) is not None
 
 

@@ -3,6 +3,8 @@
 This module only assembles the commands. Each group of commands is its own module in this package.
 """
 
+import os
+
 import cyclopts
 
 from piloop import deprecated
@@ -24,6 +26,7 @@ from piloop.cli import (
     store,
 )
 from piloop.config import ConfigError
+from piloop.runtime.tags import OLD_TAG_ENV, TAG_ENV
 from piloop.version import installed
 
 app = cyclopts.App(name='piloop', help='Run autoresearch campaigns with coding agents.', version=installed)
@@ -68,6 +71,10 @@ app.command(install.install_skills, name='install-skills')
 def main() -> None:
     """Run the CLI. An error prints one message. PILOOP_DEBUG=1 shows the traceback of an unexpected error."""
     deprecated.show_in_cli()
+    # what an agent's piloop command starts, a daemon or an evaluation, must not die with the agent. The command itself
+    # does: a process's environment as the OS shows it, which the runtime's kill reads, is the one it started with.
+    for name in (TAG_ENV, OLD_TAG_ENV):
+        os.environ.pop(name, None)
     try:
         app()
     except ConfigError as e:

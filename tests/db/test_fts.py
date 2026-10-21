@@ -23,7 +23,7 @@ IDEAS = (
     "'Weighting each model by its fold accuracy before voting sharpens the ensemble vote', NULL, 'research#2', 'a')",
 )
 COMMENT = (
-    "INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES ('idea', 1, 'worker#3', 'finding', "
+    "INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES ('idea', 1, 'implementer#3', 'finding', "
     "'Voting gained nothing: the trees agree on every row, so target encoding is the direction left')"
 )
 
@@ -99,7 +99,7 @@ def test_the_documented_search_queries_rank_and_mark_the_hits(db: Database, tmp_
             'FROM comments_fts JOIN comments c ON c.id = comments_fts.rowid '
             'WHERE comments_fts MATCH \'"target encoding"\' ORDER BY c.id DESC LIMIT 10',
         )
-        assert comments.rows == [('idea', 1, 'worker#3', 'finding', '…the trees agree on every row, so [target]…')]
+        assert comments.rows == [('idea', 1, 'implementer#3', 'finding', '…the trees agree on every row, so [target]…')]
         with pytest.raises(sqlite3.OperationalError, match='no such column: hot'):
             sql.run(con, "SELECT rowid FROM ideas_fts WHERE ideas_fts MATCH 'one-hot'")
         assert hits(con, 'ideas', '"one-hot"') == [2], (

@@ -15,16 +15,16 @@ from piloop.config import load_campaign_config
 from piloop.daemon.main import ACTOR, Daemon
 from piloop.daemon.serve import RESTART_SIGNAL, SERVE_ARGV
 from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
     Campaign,
     Candidate,
     Idea,
     IdeaStatus,
+    RoleName,
     Run,
     RunStatus,
     Verdict,
-    Worker,
-    WorkerKind,
-    WorkerState,
 )
 from piloop.db.session import migrate
 from piloop.proc import Inherited, alive, started
@@ -35,7 +35,9 @@ from tests.conftest import HARNESS_NOOP, ScriptRuntime, console_lines, factory, 
 def test_daemon_end_to_end(
     campaign_path: Path, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr('piloop.agents.launcher.STARTUP_SECONDS', 0)  # the failing worker worked, then left nothing
+    monkeypatch.setattr(
+        'piloop.agents.launcher.STARTUP_SECONDS', 0
+    )  # the failing implementer worked, then left nothing
     home = tmp_path / 'home'
     runtime = ScriptRuntime()
     daemon = Daemon(Settings(home=home, tick_seconds=0.05))
@@ -63,15 +65,15 @@ def test_daemon_end_to_end(
     assert daemon.scheduler.tick() == [3], 'the failure requests a watchdog sweep, launched on the same tick'
     daemon.scheduler.wait(30)
     with daemon.db.session() as s:
-        watchdog = s.get_one(Worker, 3)
+        watchdog = s.get_one(AgentSession, 3)
         assert (watchdog.kind, watchdog.reason, watchdog.state, watchdog.harness) == (
-            WorkerKind.WATCHDOG,
+            RoleName.WATCHDOG,
             'anomaly: run#2 failed',
-            WorkerState.EXITED,
+            AgentSessionState.EXITED,
             'script',
         )
-        assert watchdog.log_dir == str(home / 'workers' / '3')
-    brief = (home / 'workers' / '3' / 'brief.md').read_text()
+        assert watchdog.log_dir == str(home / 'agent_sessions' / '3')
+    brief = (home / 'agent_sessions' / '3' / 'brief.md').read_text()
     assert 'Trigger: anomaly: run#2 failed' in brief and '## This sweep: an incident' in brief
     assert daemon.scheduler.tick() == [], 'one sweep per failure'
     daemon.shutdown(timeout=5)
@@ -130,7 +132,7 @@ def test_serve_checks_entire_once_and_the_launcher_learns_the_version(
     cfg = Settings(home=tmp_path / 'home', tick_seconds=0.01)
     daemon = serve(cfg)
     assert daemon.executor.launcher.entire_version == '0.10.6'
-    assert [c['argv'] for c in entire_log()] == [['version']], 'once per start, not per worker'
+    assert [c['argv'] for c in entire_log()] == [['version']], 'once per start, not per implementer'
     assert re.search(
         rf'piloop\.start \d+\.\ds db={re.escape(cfg.database_url)} entire=0\.10\.6', capsys.readouterr().err
     )
@@ -255,7 +257,7 @@ HARNESS_HELD = (
     '#!/bin/sh\necho a >> solve.txt\ngit commit -qam first\necho $$ > ../agent.pid\n'
     'while [ -f {hold} ]; do sleep 0.05; done\necho b >> solve.txt\ngit commit -qam second\n'
 )
-"""A worker that commits, says it is under way, waits while the test holds it, then commits again."""
+"""An implementer that commits, says it is under way, waits while the test holds it, then commits again."""
 
 
 def test_an_in_place_restart_leaves_the_agents_running_and_the_new_daemon_finishes_their_runs(
@@ -268,7 +270,7 @@ def test_an_in_place_restart_leaves_the_agents_running_and_the_new_daemon_finish
     """
     hold = tmp_path / 'hold'
     hold.touch()
-    write_toml(campaign_path, HARNESS_HELD.format(hold=hold), worker_timeout=60)
+    write_toml(campaign_path, HARNESS_HELD.format(hold=hold), implementer_timeout=60)
     cfg = Settings(home=tmp_path / 'home', tick_seconds=0.01)
     first = Daemon(cfg)
     campaign = register(first.db, campaign_path)
@@ -291,7 +293,10 @@ def test_an_in_place_restart_leaves_the_agents_running_and_the_new_daemon_finish
     start = started(agent)
     assert start is not None and alive(agent, start), 'the agent is still running'
     with first.db.session() as s:
-        assert (s.get_one(Run, 1).status, s.get_one(Worker, 1).state) == (RunStatus.RUNNING, WorkerState.RUNNING)
+        assert (s.get_one(Run, 1).status, s.get_one(AgentSession, 1).state) == (
+            RunStatus.RUNNING,
+            AgentSessionState.RUNNING,
+        )
     assert (cfg.home / 'runs' / '1' / 'worktree').is_dir()
 
     second = Daemon(cfg)
@@ -300,7 +305,11 @@ def test_an_in_place_restart_leaves_the_agents_running_and_the_new_daemon_finish
     second.scheduler.wait(30)
     with second.db.session() as s:
         run = s.get_one(Run, 1)
-        assert (run.status, run.error, s.get_one(Worker, 1).state) == (RunStatus.SUCCEEDED, None, WorkerState.EXITED)
+        assert (run.status, run.error, s.get_one(AgentSession, 1).state) == (
+            RunStatus.SUCCEEDED,
+            None,
+            AgentSessionState.EXITED,
+        )
         made = s.scalars(select(Candidate).where(Candidate.run_id == 1).order_by(Candidate.id)).all()
         assert [(c.summary, c.verdict) for c in made] == [('first', Verdict.KEEP), ('second', Verdict.KEEP)]
         assert s.get_one(Idea, 1).status is IdeaStatus.DONE
@@ -333,13 +342,14 @@ def test_shutdown_fails_open_runs(tmp_path: Path, capsys: pytest.CaptureFixture[
         s.add(Campaign(name='p', path='/p', config={}))
         s.add(Idea(track='score', campaign_id=1, title='x', hypothesis='x', created_by='t'))
         s.add(Run(idea_id=1, attempt=1, base_candidate_id=1, harness='h', model='m', status=RunStatus.RUNNING))
-        s.add(Worker(kind=WorkerKind.RESEARCH, campaign_id=1, reason='by hand'))
+        s.flush()  # the run first: the unit of work orders unrelated mappers by name
+        s.add(AgentSession(kind=RoleName.RESEARCH, campaign_id=1, reason='by hand'))
         s.commit()
     daemon.shutdown(timeout=1)
     with daemon.db.session() as s:
         assert (s.get_one(Run, 1).status, s.get_one(Run, 1).error) == (RunStatus.FAILED, STOPPED_ERROR)
-        [request] = s.scalars(select(Worker)).all()
-        assert request.state is WorkerState.REQUESTED, 'a request survives a restart'
+        [request] = s.scalars(select(AgentSession)).all()
+        assert request.state is AgentSessionState.REQUESTED, 'a request survives a restart'
     daemon.db.close()
     assert console_lines(capsys.readouterr().err) == snapshot(
         ['run.aborted run=1 error=daemon stopped', 'piloop.shutdown Ns']

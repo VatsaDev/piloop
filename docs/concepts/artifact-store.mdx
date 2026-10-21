@@ -15,7 +15,7 @@ the local copies later, and `piloop restore` brings them back.
 The daemon archives in the background, one job at a time. Its scheduling loop never waits for an archiving.
 
 - **When an idea is done** (its last run is judged), the entries that belong to it are archived:
-  `workspace/idea<id>…` (`idea12/`, `idea12-canary.log`). Workers are told to put their output there.
+  `workspace/idea<id>…` (`idea12/`, `idea12-canary.log`). Implementers are told to put their output there.
 - **When a campaign stops** and none of its agents is alive any more, everything left in its workspace is archived.
 - **Never archived**: `NOTES.md` and `research/` at the top of the workspace. These small knowledge files stay where
   research sweeps read them.
@@ -49,7 +49,7 @@ where it was when it starts again. Content that was already stored is found by i
 first daemon start after an upgrade archives every done idea and stopped campaign that is already there.
 `piloop store status` shows how many are still due.
 
-Workers are told to put their output under `workspace/idea<id>/`, so it is archived with their idea. They are also
+Implementers are told to put their output under `workspace/idea<id>/`, so it is archived with their idea. They are also
 told not to copy the code tree into the workspace (every candidate's tree is in git) and to leave evaluator output in
 the campaign's own cache.
 

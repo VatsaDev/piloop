@@ -64,21 +64,21 @@ def recreate(op: Operations, table: str) -> None:
     """Create the persistent triggers of ``table`` again, for example after a batch rebuild.
 
     A trigger that ``requires`` a table is created only when that table exists at this point of the migration chain,
-    so a batch migration does not need to know which indexes exist yet. Before revision 0016, a trigger has the names
-    of that schema (``legacy``).
+    so a batch migration does not need to know which indexes exist yet. Before a renaming of the schema, a trigger has
+    the names of that schema (``legacy``).
     """
-    old = legacy.before_renames(op)
+    old = legacy.stages(op)
     for trigger in PERSISTENT:
-        _, on, requires, sql = legacy.rendered(trigger, old=old)
+        _, on, requires, sql = legacy.rendered(trigger, old)
         if on == table and (requires is None or _exists(op, requires)):
             op.execute(sql)
 
 
 def install(op: Operations, names: Iterable[str]) -> None:
     """Create the persistent triggers that ``names`` lists, in the names of the schema at hand (``legacy``)."""
-    wanted, old = set(names), legacy.before_renames(op)
+    wanted, old = set(names), legacy.stages(op)
     for trigger in PERSISTENT:
-        name, _, _, sql = legacy.rendered(trigger, old=old)
+        name, _, _, sql = legacy.rendered(trigger, old)
         if name in wanted:
             op.execute(sql)
 
@@ -90,7 +90,7 @@ def _exists(op: Operations, table: str) -> bool:
 
 CHANGE_LOG = """
 -- The change log: decisions leave a record in the append-only events table, signed by the same actor. Every client
--- loads this file, so a raw UPDATE from the CLI or a worker is logged like an ORM write of the daemon.
+-- loads this file, so a raw UPDATE from the CLI or an implementer is logged like an ORM write of the daemon.
 -- `AFTER UPDATE OF <col>` fires only when a statement names that column, so the updated_at and updated_by triggers
 -- above (which SET their own column) never fire these. The WHEN clause ignores a SET to the value already there.
 -- Event kinds are `<table singular>.<column>`. Payloads have the old and new value, never a large body."""
@@ -100,7 +100,7 @@ TOMBSTONES = """
 COMMENTS = """
 -- Every comment is an event, with the same shape as the event of the persistent escalation trigger. That trigger
 -- stays persistent, because `comment.escalation` must be logged whatever connection wrote the comment. The rest of
--- the forum (`comment.note`, `comment.finding`, `comment.decision`) is what the daemon pushes to a running worker."""
+-- the forum (`comment.note`, `comment.finding`, `comment.decision`) is what the daemon pushes to a running implementer."""
 
 APPEND_ONLY = """
 -- The feed is append-only: an event takes the next id, because a reader's cursor is an event id. Its columns have the

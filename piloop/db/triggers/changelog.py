@@ -154,4 +154,4 @@ TOMBSTONES = (
 )
 """The deletes that are logged, with the key columns, so the feed can still say what was there."""
 COMMENTS = (comment_event(),)
-"""The forum (``comment.note``, ``comment.finding``, ``comment.decision``), which the daemon pushes to workers."""
+"""The forum (``comment.note``, ``comment.finding``, ``comment.decision``), which the daemon pushes to implementers."""

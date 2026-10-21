@@ -81,7 +81,7 @@ bootstrap = "piloop.plugins.builtin.verdict:BOOTSTRAP"
 limits = "piloop.plugins.builtin.stop:LIMITS"
 
 [project.entry-points."piloop.roles"]
-worker = "piloop.plugins.builtin.roles:WORKER"
+implementer = "piloop.plugins.builtin.roles:IMPLEMENTER"
 watchdog = "piloop.plugins.builtin.roles:WATCHDOG"
 research = "piloop.plugins.builtin.roles:RESEARCH"
 scout = "piloop.plugins.builtin.roles:SCOUT"

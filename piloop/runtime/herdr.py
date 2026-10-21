@@ -1,19 +1,19 @@
-"""Workers as Herdr agents: one Herdr session for piloop, one workspace per campaign, one tab per worker.
+"""Agents as Herdr agents: one Herdr session for piloop, one workspace per campaign, one tab per agent.
 
 Every ``herdr`` call targets the session that ``herdr_settings.session`` names (``--session``). piloop starts its
 headless server when it is not running. Nothing piloop starts lands in the session the human uses for other work.
 
 The workspace has the campaign name as its label and the campaign path as its ``root`` metadata token, because Herdr
 keeps no path on a workspace. Its first tab is ``home``: a shell on the left for the human and ``piloop watch`` on the
-right. Each agent gets its own tab after it, labelled with ``spec.label`` (``worker-12 idea#5 stacking``). The tab's
-root pane runs the agent. Tabs are used instead of splits, so every worker is equally readable and closing a worker
+right. Each agent gets its own tab after it, labelled with ``spec.label`` (``agent-12 idea#5 stacking``). The tab's
+root pane runs the agent. Tabs are used instead of splits, so every agent is equally readable and closing an agent
 removes exactly its tab. A human selects workspace and tab in the Herdr sidebar, or presses ``enter`` on an agent in
 ``piloop watch``. The daemon addresses agents by ``spec.name``.
 
 An agent is finished when it is idle, nothing it started still runs, and its first turn is past the startup grace
 (``startup_grace_seconds``), within which a quiet agent may still be starting. Harnesses run tool commands in
 sessions of their own (Claude Code's background shells, Codex's commands). The agent, its MCP servers and its helpers
-share the session of the pane's shell. Every process started in the pane inherits ``TOKEN_ENV``. So a tagged process
+share the session of the pane's shell. Every process started in the pane inherits ``TAG_ENV``. So a tagged process
 in another session is work that the agent started and still waits on, even after its parent shell exited.
 
 ``herdr`` prints ``{"result": …}`` JSON on stdout, and ``{"error": {"code", "message"}}`` on stderr with exit status
@@ -41,17 +41,18 @@ from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSett
 
 from piloop import settings as settings_module
 from piloop.harnesses import Harness, Invocation, QueueKey
-from piloop.proc import PILOOP_ARGV, TOKEN_ENV, kill_tagged, tagged
-from piloop.runtime import Check, Handle, NotSteerable, Outcome, RuntimeFailure, StartFailed, WorkerSpec, WorkerStatus
+from piloop.proc import PILOOP_ARGV
+from piloop.runtime import AgentSpec, AgentStatus, Check, Handle, NotSteerable, Outcome, RuntimeFailure, StartFailed
+from piloop.runtime.tags import TAG_ENV, kill_tagged, tagged
 from piloop.settings import runtime_settings
 
 HERDR = 'herdr'
 STATUS_MAP = {
-    'idle': WorkerStatus.IDLE,
-    'done': WorkerStatus.IDLE,
-    'working': WorkerStatus.WORKING,
-    'blocked': WorkerStatus.BLOCKED,
-    'unknown': WorkerStatus.WORKING,
+    'idle': AgentStatus.IDLE,
+    'done': AgentStatus.IDLE,
+    'working': AgentStatus.WORKING,
+    'blocked': AgentStatus.BLOCKED,
+    'unknown': AgentStatus.WORKING,
 }
 GONE_CODES = {'agent_not_found', 'agent_not_running', 'pane_not_found', 'tab_not_found', 'workspace_not_found'}
 BLOCKED_ERROR = 'agent is blocked waiting for input'
@@ -171,7 +172,7 @@ class HerdrSettings(BaseSettings):
     """The number of seconds to retry ``agent start`` while the shell of a new tab is still starting."""
 
     wait_chunk_seconds: float = 10
-    """The longest ``agent wait`` call, in seconds. piloop notices a worker whose tab was closed within this time."""
+    """The longest ``agent wait`` call, in seconds. piloop notices an agent whose tab was closed within this time."""
 
 
 herdr_settings = HerdrSettings()
@@ -228,7 +229,7 @@ TURN_FAILED_ERROR = 'the agent stopped on an API error and did not recover'
 PROMPTED_AT = 'prompted_at'
 """The handle key that holds when the first prompt was submitted (``time.time()``), for the startup grace.
 
-Wall-clock time, because the handle is stored in ``workers.handle`` and a daemon restarted in place re-attaches to it.
+Wall-clock time, because the handle is stored in ``agent_sessions.handle`` and a daemon restarted in place re-attaches to it.
 A handle from a daemon older than this key gets no grace."""
 
 
@@ -275,8 +276,8 @@ class HerdrRuntime:
         self._sleep = sleep
         """Used for every wait in this runtime's loops, so a test can count them without other threads' sleeps."""
 
-    def start(self, spec: WorkerSpec) -> Handle:
-        """Create the worker's tab, start the agent in its pane, then submit the first prompt."""
+    def start(self, spec: AgentSpec) -> Handle:
+        """Create the agent's tab, start the agent in its pane, then submit the first prompt."""
         workspace_id = self._workspace()
         token = uuid4().hex
         tab = _call(
@@ -290,7 +291,7 @@ class HerdrRuntime:
             spec.label,
             '--no-focus',
             '--env',
-            f'{TOKEN_ENV}={token}',
+            f'{TAG_ENV}={token}',
         )
         pane_id = tab['root_pane']['pane_id']
         handle = Handle(
@@ -492,7 +493,7 @@ class HerdrRuntime:
           composer, with no busy text, for seconds after its turn started.
 
         The wait is done in chunks. ``agent wait`` does not return when another thread closes the tab (``kill``), so
-        each chunk asks again and gets ``agent_not_found`` once the worker is gone.
+        each chunk asks again and gets ``agent_not_found`` once the agent is gone.
         """
         agent = _agent(handle)
         started = time.monotonic()
@@ -506,27 +507,27 @@ class HerdrRuntime:
             remaining = deadline - now
             if remaining <= 0:
                 self.kill(handle)
-                return Outcome(WorkerStatus.TIMED_OUT, timeout, error=f'worker timeout after {timeout:g}s')
+                return Outcome(AgentStatus.TIMED_OUT, timeout, error=f'agent timeout after {timeout:g}s')
             chunk = min(remaining, herdr_settings.wait_chunk_seconds)
             window = self._window(handle, block, now, chunk)
             if isinstance(window, str):
-                # the dialog is only on the visible screen, and the pane closes with the worker: keep it in the error
-                return Outcome(WorkerStatus.BLOCKED, now - started, error=f'{BLOCKED_ERROR}:\n{window.strip()}')
+                # the dialog is only on the visible screen, and the pane closes with the agent: keep it in the error
+                return Outcome(AgentStatus.BLOCKED, now - started, error=f'{BLOCKED_ERROR}:\n{window.strip()}')
             until, chunk = window
             try:
                 info = self._agent_wait(agent, until, chunk)['agent']
             except HerdrError as e:
                 if e.code in GONE_CODES:
-                    return Outcome(WorkerStatus.EXITED, time.monotonic() - started, error=None)
+                    return Outcome(AgentStatus.EXITED, time.monotonic() - started, error=None)
                 if e.code == 'timeout':
                     continue
                 raise
             status = STATUS_MAP[info['agent_status']]
-            if status is WorkerStatus.BLOCKED:
+            if status is AgentStatus.BLOCKED:
                 block = block or Block(time.monotonic(), self._visible(handle))
                 continue
             block = None
-            if status is WorkerStatus.WORKING:
+            if status is AgentStatus.WORKING:
                 continue
             seq = int(info['state_change_seq'])
             if self.jobs(handle):
@@ -542,12 +543,12 @@ class HerdrRuntime:
                 continue
             if says is Screen.FAILED_TURN:
                 if resumes == len(RESUME_BACKOFF_SECONDS):
-                    return Outcome(WorkerStatus.IDLE, time.monotonic() - started, error=f'{TURN_FAILED_ERROR}:\n{tail}')
+                    return Outcome(AgentStatus.IDLE, time.monotonic() - started, error=f'{TURN_FAILED_ERROR}:\n{tail}')
                 self._sleep(min(RESUME_BACKOFF_SECONDS[resumes], remaining))
                 resumes += 1
                 self._resume(agent, seq, RESUME_PROMPT)
                 continue
-            return Outcome(WorkerStatus.IDLE, time.monotonic() - started, error=None)
+            return Outcome(AgentStatus.IDLE, time.monotonic() - started, error=None)
 
     def _window(self, handle: Handle, block: Block | None, now: float, chunk: float) -> tuple[list[str], float] | str:
         """Return the states the next ``agent wait`` stops on and for how long, or the screen of a stuck agent.
@@ -629,7 +630,7 @@ class HerdrRuntime:
             raise
         except ProcessLookupError:
             return []
-        return [f'{pid} {cmd}' for pid, sid, cmd in tagged(f'{TOKEN_ENV}={token}') if sid != session]
+        return [f'{pid} {cmd}' for pid, sid, cmd in tagged(f'{TAG_ENV}={token}') if sid != session]
 
     def _agent_wait(self, agent: str, until: list[str], timeout: float) -> dict[str, Any]:
         flags = [flag for state in until for flag in ('--until', state)]
@@ -643,13 +644,13 @@ class HerdrRuntime:
             cli_timeout=timeout + herdr_settings.cli_timeout_seconds,
         )
 
-    def status(self, handle: Handle) -> WorkerStatus:
+    def status(self, handle: Handle) -> AgentStatus:
         """Return the state that Herdr detected."""
         try:
             result = _call('agent', 'get', _agent(handle))
         except HerdrError as e:
             if e.code in GONE_CODES:
-                return WorkerStatus.EXITED
+                return AgentStatus.EXITED
             raise
         return STATUS_MAP[result['agent']['agent_status']]
 
@@ -728,15 +729,15 @@ class HerdrRuntime:
         return _run('agent', 'read', _agent(handle), '--source', 'recent-unwrapped', '--lines', str(lines))
 
     def kill(self, handle: Handle) -> None:
-        """Close the worker's tab, which ends its process, then kill what it left running. A gone tab is no error.
+        """Close the agent's tab, which ends its process, then kill what it left running. A gone tab is no error.
 
-        A job in a session of its own does not get the pane's hangup signal, so it would outlive the worker.
+        A job in a session of its own does not get the pane's hangup signal, so it would outlive the agent.
         """
         _close_tab(str(handle.data['tab_id']))
         token = handle.data.get('token')
         if token is None:
             return
-        kill_tagged(f'{TOKEN_ENV}={token}')
+        kill_tagged(f'{TAG_ENV}={token}')
 
     def focus(self, handle: Handle) -> str:
         """Brings the agent's tab, and its workspace, to the front of the piloop Herdr session."""

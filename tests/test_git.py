@@ -88,7 +88,7 @@ def test_worktree_changes_hold_the_process_lock(
             return real.worktree(*args)
 
     monkeypatch.setattr(repo, 'git', Spy())
-    wt = tmp_path / 'workers' / '1' / 'worktree'
+    wt = tmp_path / 'agent_sessions' / '1' / 'worktree'
     git.add_worktree(repo, wt, repo.head.commit.hexsha, {})
     git.remove_worktree(repo, wt)
     assert held == [('prune', True), ('add', True), ('list', True), ('remove', True), ('prune', True)]
@@ -106,7 +106,7 @@ def test_worktree_changes_hold_the_process_lock(
     ids=['before-co-authored-by', 'before-generated-with', 'in-the-body'],
 )
 def test_piloop_trailers_count_on_any_line_after_the_subject(campaign_path: Path, message: str) -> None:
-    """hiloopai/piloop-dev#33: a harness puts its own trailers in a paragraph after the worker's, and git reads only
+    """hiloopai/piloop-dev#33: a harness puts its own trailers in a paragraph after the implementer's, and git reads only
     the last paragraph. A line that only mentions a trailer is not one."""
     repo = Repo(campaign_path)
     repo.git.commit('-q', '--allow-empty', '-m', message)

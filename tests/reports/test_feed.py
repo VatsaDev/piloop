@@ -11,6 +11,8 @@ from sqlalchemy import func, select, text, update
 from piloop.campaign import ops
 from piloop.db.events import emit
 from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
     Campaign,
     Candidate,
     Comment,
@@ -21,8 +23,6 @@ from piloop.db.models import (
     Run,
     TargetKind,
     Verdict,
-    Worker,
-    WorkerState,
 )
 from piloop.db.session import Database
 from piloop.reports import feed
@@ -168,15 +168,15 @@ def test_a_campaign_filter_follows_each_subject_to_its_campaign(
         run = Run(idea_id=mine.id, attempt=1, base_candidate_id=candidate.id, harness='script', model='m')
         s.add(run)
         s.flush()
-        worker = Worker(kind='worker', campaign_id=campaign.id, run_id=run.id)
-        s.add(worker)
+        agent_session = AgentSession(kind='implementer', campaign_id=campaign.id, run_id=run.id)
+        s.add(agent_session)
         s.flush()
         start = s.scalar(select(func.max(Event.id))) or 0
         for kind, target in (
             (TargetKind.IDEA, mine.id),
             (TargetKind.IDEA, theirs.id),
             (TargetKind.RUN, run.id),
-            (TargetKind.WORKER, worker.id),
+            (TargetKind.AGENT_SESSION, agent_session.id),
             (TargetKind.CANDIDATE, candidate.id),
             (TargetKind.CAMPAIGN, other.id),
         ):
@@ -186,7 +186,7 @@ def test_a_campaign_filter_follows_each_subject_to_its_campaign(
         assert [(e['subject']['kind'], e['subject']['campaign']) for e in batch['events']] == [
             ('idea', campaign.id),
             ('run', campaign.id),
-            ('worker', campaign.id),
+            ('agent_session', campaign.id),
             ('candidate', campaign.id),
         ]
         assert batch['next'] == start + 6, 'the events of the other campaign were examined, and passed over'
@@ -253,20 +253,26 @@ def test_snapshots_carry_the_cursor_they_were_read_at(db: Database, campaign: Ca
         run = Run(idea_id=idea.id, attempt=1, base_candidate_id=candidate.id, harness='script', model='m')
         s.add(run)
         s.flush()
-        worker = Worker(
-            kind='worker', campaign_id=campaign.id, run_id=run.id, state=WorkerState.RUNNING, harness='script'
+        agent_session = AgentSession(
+            kind='implementer',
+            campaign_id=campaign.id,
+            run_id=run.id,
+            state=AgentSessionState.RUNNING,
+            harness='script',
         )
-        s.add_all([worker, Worker(kind='watchdog', campaign_id=campaign.id, state=WorkerState.EXITED)])
+        s.add_all(
+            [agent_session, AgentSession(kind='watchdog', campaign_id=campaign.id, state=AgentSessionState.EXITED)]
+        )
         s.add(escalation(campaign.id, 'look'))
         s.commit()
-        ids = idea.id, seed.id, candidate.id, run.id, worker.id
+        ids = idea.id, seed.id, candidate.id, run.id, agent_session.id
         with feed.snapshot(s) as cursor:
             other.add(escalation(campaign.id, 'after the cursor'))
             other.commit()
             [state] = feed.status_view(s, [s.get_one(Campaign, campaign.id)])
             inbox = feed.inbox_view(s)
         assert feed.read(s, cursor)['events'][0]['kind'] == 'comment.escalation', 'what the snapshot missed follows it'
-    idea_id, seed_id, candidate_id, run_id, worker_id = ids
+    idea_id, seed_id, candidate_id, run_id, agent_session_id = ids
     assert state == {
         'id': campaign.id,
         'name': 'demo',
@@ -288,7 +294,14 @@ def test_snapshots_carry_the_cursor_they_were_read_at(db: Database, campaign: Ca
             {'id': run_id, 'idea': idea_id, 'title': 'queued', 'harness': 'script', 'model': 'm', 'status': 'queued'}
         ],
         'agents': [
-            {'id': worker_id, 'kind': 'worker', 'state': 'running', 'harness': 'script', 'model': None, 'run': run_id}
+            {
+                'id': agent_session_id,
+                'kind': 'implementer',
+                'state': 'running',
+                'harness': 'script',
+                'model': None,
+                'run': run_id,
+            }
         ],
         'inbox': 1,
         'tokens': 0,

@@ -12,7 +12,7 @@ import tomllib
 from pathlib import Path
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
 
 from piloop import deprecated
@@ -81,11 +81,16 @@ class Settings(BaseSettings):
 
     actor: str = 'human'
     """Who this process is. Every row it updates records this value in ``updated_by``. The daemon launches each agent
-    with ``<role>#<worker_id>``, for example ``worker#12`` or ``scout#7``."""
+    with ``<role>#<agent_session_id>``, for example ``implementer#12`` or ``scout#7``."""
+
+    @field_validator('actor')
+    @classmethod
+    def _actor(cls, actor: str) -> str:
+        return deprecated.old_actor(actor)
 
     tick_seconds: float = 2
     """The number of seconds between two ticks. On each tick, the daemon checks the triggers of every campaign and
-    launches the requested workers."""
+    launches the requested agents."""
 
     max_evaluations: int = Field(default=MAX_EVALUATIONS, ge=1)
     """The number of evaluate commands that the daemon runs at the same time, across all campaigns. The others wait in

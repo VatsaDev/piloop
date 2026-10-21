@@ -24,7 +24,7 @@ runs it for you.
     Start Claude Code, Codex, pi, Gemini CLI or Cursor in the repo that you want to improve. This agent is the only one
     that you talk to.
 
-    The workers run on Claude Code, Codex or pi, so at least one of these must be installed. The agent that you talk
+    The implementers run on Claude Code, Codex or pi, so at least one of these must be installed. The agent that you talk
     to can be any of the five.
   </Step>
   <Step title="Tell it what to improve">
@@ -53,7 +53,7 @@ The agent follows the `piloop-setup` skill. It runs every command itself and rep
    want to see and steer every agent in a terminal pane.
 2. **It reads your repo and interviews you.** It says what it learned from the repo, so you can correct it. Then it
    asks only what the repo does not answer. It writes no file before you answer or skip the interview.
-3. **It writes the campaign:** `brief.md` for the workers, `piloop.toml` with the metrics and limits, and the evaluate
+3. **It writes the campaign:** `brief.md` for the implementers, `piloop.toml` with the metrics and limits, and the evaluate
    command. It runs the evaluate command once and shows you both files. It asks you once more before it continues.
 4. **It registers the campaign** with `piloop init .`. This measures the baseline. The agent tells you the baseline
    value. A value that surprises you usually means that the evaluate command is wrong.
@@ -71,10 +71,10 @@ The questions fit your problem. A typical interview covers these topics:
 | Objective | The one metric to improve, its direction, and what "done" is: a target, a deadline or a budget. |
 | Measurement | The command that measures it, how long it takes, and how much the result changes between identical runs. |
 | Guardrails | What must not get worse, such as latency, size or cost, and by how much it may. |
-| Scope | The files that workers may edit, the files they must not touch, and forbidden techniques. |
-| Budget | The time per run, the number of workers at the same time, and the total runs, hours or dollars. |
+| Scope | The files that implementers may edit, the files they must not touch, and forbidden techniques. |
+| Budget | The time per run, the number of implementers at the same time, and the total runs, hours or dollars. |
 | Prior art | What you tried already and what you expect to work. |
-| Agents | Which coding agents and models run the workers and the research. |
+| Agents | Which coding agents and models run the implementers and the research. |
 | Escalation | What the agent must ask you about, and what it may decide alone. |
 
 The agent puts each limit in `piloop.toml`, so that the daemon enforces it. A limit that is only in `brief.md` is not
@@ -82,7 +82,7 @@ enforced.
 
 ## While the campaign runs
 
-Workers try ideas in their own git worktrees and commit. piloop scores every commit and keeps the ones that beat the
+Implementers try ideas in their own git worktrees and commit. piloop scores every commit and keeps the ones that beat the
 best result so far. Your agent waits on the inbox with `piloop inbox wait`, so it uses no tokens while nothing
 happens. When something needs it, it acts:
 
@@ -140,7 +140,7 @@ Set up the enwik8 example campaign from piloop.
 ```
 
 The agents compress the first 10 MB of Wikipedia, as in the Hutter Prize. The baseline is zlib at level 9. The example
-stops after 20 scored worker runs. To run it without an agent, see [Run a campaign by hand](/by-hand).
+stops after 20 scored implementer runs. To run it without an agent, see [Run a campaign by hand](/by-hand).
 
 ## Next steps
 

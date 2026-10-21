@@ -69,3 +69,14 @@ def test_a_runtimes_value_that_is_no_table_of_tables_is_refused_and_gives_the_ru
         with pytest.raises(ValidationError, match='runtimes'):
             Settings()
         assert HerdrSettings().session == 'piloop', text
+
+
+def test_the_signature_of_an_implementer_from_before_0_2_0_is_its_new_signature(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An agent that an older daemon started outlives an upgrade, signed ``worker#<id>``."""
+    monkeypatch.setenv('PILOOP_ACTOR', 'worker#12')
+    with pytest.warns(PiloopDeprecationWarning, match=r'PILOOP_ACTOR=worker#12 is deprecated; .* implementer#12'):
+        assert Settings(home=tmp_path).actor == 'implementer#12'
+    monkeypatch.setenv('PILOOP_ACTOR', 'scout#3')
+    assert Settings(home=tmp_path).actor == 'scout#3'

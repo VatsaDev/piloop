@@ -116,7 +116,7 @@ class Verdict(StrEnum):
     whose reason starts with ``note:`` is an agent's note (``piloop candidate note``, the ``Piloop-Note`` trailer): the
     result got worse, but the tree is worth starting from. ``unmeasured`` is not a judgement either: the commit asked not
     to be evaluated (``Piloop-Eval: skip``), so nothing was measured and it says nothing about the idea. ``recovered``
-    is not a judgement either: the daemon committed what a worker left uncommitted when it stopped, a tree the worker
+    is not a judgement either: the daemon committed what an implementer left uncommitted when it stopped, a tree the implementer
     never declared ready. It is not measured, and a new run of the idea starts from it to finish it.
     """
 
@@ -138,7 +138,7 @@ class TargetKind(StrEnum):
     RUN = 'run'
     CANDIDATE = 'candidate'
     MEASUREMENT = 'measurement'
-    WORKER = 'worker'
+    AGENT_SESSION = 'agent_session'
     COMMENT = 'comment'
 
 
@@ -159,19 +159,19 @@ class LessonStatus(StrEnum):
     UNTESTED = 'untested'
 
 
-class WorkerKind(StrEnum):
-    """The names of the built-in roles. ``workers.kind`` holds a role name: one of these, or a role of the campaign.
+class RoleName(StrEnum):
+    """The names of the built-in roles. ``agent_sessions.kind`` holds a role name: one of these, or a role of the campaign.
 
     A role's name is also its config table, CLI name, signature and pane prefix.
     """
 
-    WORKER = 'worker'
+    IMPLEMENTER = 'implementer'
     WATCHDOG = 'watchdog'
     RESEARCH = 'research'
     SCOUT = 'scout'
 
 
-class WorkerState(StrEnum):
+class AgentSessionState(StrEnum):
     """The process state of an agent, kept by the daemon. ``requested`` is a request to launch, not a process."""
 
     REQUESTED = 'requested'
@@ -181,8 +181,8 @@ class WorkerState(StrEnum):
     KILLED = 'killed'
 
 
-LIVE = (WorkerState.STARTING, WorkerState.RUNNING)
-ENDED = (WorkerState.EXITED, WorkerState.KILLED)
+LIVE = (AgentSessionState.STARTING, AgentSessionState.RUNNING)
+ENDED = (AgentSessionState.EXITED, AgentSessionState.KILLED)
 
 
 def _values[E: StrEnum](enum: type[E]) -> Enum:
@@ -216,7 +216,7 @@ def text_checks(table: str, *columns: str, nullable: tuple[str, ...] = ()) -> tu
 
 
 class UsageJson(TypedDict):
-    """The shape of ``workers.usage``, as ``piloop.usage.Usage.as_json`` writes it."""
+    """The shape of ``agent_sessions.usage``, as ``piloop.usage.Usage.as_json`` writes it."""
 
     input: int
     output: int
@@ -244,7 +244,7 @@ class Base(DeclarativeBase):
         TargetKind: _values(TargetKind),
         CommentKind: _values(CommentKind),
         LessonStatus: _values(LessonStatus),
-        WorkerState: _values(WorkerState),
+        AgentSessionState: _values(AgentSessionState),
     }
 
 
@@ -260,7 +260,7 @@ class Tracked:
     )
     """Set by a persistent trigger on every UPDATE, so an UPDATE in raw SQL sets it too."""
     updated_by: Mapped[str | None] = mapped_column(server_onupdate=FetchedValue(), sort_order=1)
-    """The actor of the connection that made the last UPDATE (``human``, ``daemon``, ``<kind>#<worker id>``). A TEMP
+    """The actor of the connection that made the last UPDATE (``human``, ``daemon``, ``<kind>#<agent session id>``). A TEMP
     trigger of each connection sets it (``piloop/db/actor_triggers.sql``, which also logs decisions in ``events``).
     NULL until the first UPDATE of the row."""
 
@@ -390,7 +390,7 @@ class Idea(Tracked, Base):
     and their brief has the track's addendum. The scheduler parks an idea whose track is not in ``piloop.toml``, with
     a note that says why."""
     plan: Mapped[str | None]
-    """Concrete steps for the worker. They are appended to the brief."""
+    """Concrete steps for the implementer. They are appended to the brief."""
     status: Mapped[IdeaStatus] = mapped_column(default=IdeaStatus.READY, server_default=IdeaStatus.READY.value)
     priority: Mapped[int] = mapped_column(default=2, server_default=text('2'))
     """0 (urgent) to 4 (someday). The scheduler takes the lowest number first."""
@@ -404,7 +404,7 @@ class Idea(Tracked, Base):
     max_runs: Mapped[int] = mapped_column(default=2, server_default=text('2'))
     """The number of attempts allowed. A crashed run is tried again until this number is reached."""
     created_by: Mapped[str]
-    """Who proposed it: ``human``, ``orchestrator``, or the agent's signature (``research#12``, ``worker#40``,
+    """Who proposed it: ``human``, ``orchestrator``, or the agent's signature (``research#12``, ``implementer#40``,
     ``watchdog#7``). The part before ``#`` is the idea's source in the count of keeps by source."""
     provenance: Mapped[str | None]
     """The finding that led to the idea, with ids or a URL. For example ``finding comment#81: timeouts lose the last
@@ -481,9 +481,9 @@ class Run(Tracked, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     idea_id: Mapped[int] = mapped_column(ForeignKey('ideas.id', ondelete='CASCADE'))
-    role: Mapped[str] = mapped_column(default=WorkerKind.WORKER.value, server_default=WorkerKind.WORKER.value)
-    """The role that does the run: ``worker``, or a role of the campaign with ``runs = true``. Its agents have this
-    ``workers.kind``."""
+    role: Mapped[str] = mapped_column(default=RoleName.IMPLEMENTER.value, server_default=RoleName.IMPLEMENTER.value)
+    """The role that does the run: ``implementer``, or a role of the campaign with ``runs = true``. Its agents have this
+    ``agent_sessions.kind``."""
     attempt: Mapped[int]
     base_candidate_id: Mapped[int]
     """The ``candidates.id`` that the worktree started from. The run's candidates descend from it. A plain integer,
@@ -496,11 +496,11 @@ class Run(Tracked, Base):
     model: Mapped[str]
     status: Mapped[RunStatus] = mapped_column(default=RunStatus.QUEUED, server_default=RunStatus.QUEUED.value)
     scoring: Mapped[bool] = mapped_column(default=False, server_default=text('0'))
-    """Whether the daemon scores the run's commits now. It is set when the worker ends and the run gets its final
+    """Whether the daemon scores the run's commits now. It is set when the implementer ends and the run gets its final
     ``status``, and cleared when the commits are judged and the idea moved on, whatever the idea's status. While it is
     set, the run keeps its place under ``[stop] max_runs``, and a restarted daemon resumes the scoring."""
     brief: Mapped[str | None]
-    """The exact prompt that the worker got."""
+    """The exact prompt that the implementer got."""
     started_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]
     error: Mapped[str | None]
@@ -524,16 +524,18 @@ def count[*Ts](s: Session, query: Select[*Ts]) -> int:
     return s.scalar(select(func.count()).select_from(query.subquery())) or 0
 
 
-def latest_worker(s: Session, run_id: int) -> Worker | None:
+def latest_agent_session(s: Session, run_id: int) -> AgentSession | None:
     """The latest agent row that did run ``run_id``. A relaunch after the agent failed to start is a second row."""
-    return s.scalars(select(Worker).where(Worker.run_id == run_id).order_by(Worker.id.desc()).limit(1)).first()
+    return s.scalars(
+        select(AgentSession).where(AgentSession.run_id == run_id).order_by(AgentSession.id.desc()).limit(1)
+    ).first()
 
 
 class Candidate(Tracked, Base):
     """A distinct state of the campaign's code. The git tree identifies it, so equal contents are one candidate.
 
     The baseline has no run and no parent. A reference has neither (``piloop candidate import`` makes one from the
-    tree of any commit, pinned at ``refs/piloop/<campaign>/reference/<id>``). A worker committed every other candidate,
+    tree of any commit, pinned at ``refs/piloop/<campaign>/reference/<id>``). An implementer committed every other candidate,
     and it descends from the candidate that its run started from. When the last commit of a run reverts to its base,
     the run produces nothing new: the commit resolves to the base candidate. Measurements score candidates, and the
     verdict judges them against a bar.
@@ -626,7 +628,7 @@ class Comment(Tracked, Base):
     A comment with a ``priority`` is for the human. It stays in the inbox (``piloop inbox``) until someone acknowledges
     it (``acked_at``, ``acked_by``). An escalation always has a priority (a CHECK makes sure). The orchestrator gives
     a priority to every decision it makes for the human, so that the human can review and change each one later. The
-    rest of the forum (workers that steer each other, research findings) has no priority.
+    rest of the forum (implementers that steer each other, research findings) has no priority.
     """
 
     __tablename__ = 'comments'
@@ -642,7 +644,7 @@ class Comment(Tracked, Base):
     target_kind: Mapped[TargetKind]
     target_id: Mapped[int]
     author: Mapped[str]
-    """Who wrote the comment, for example ``human``, ``orchestrator`` or ``worker#12``."""
+    """Who wrote the comment, for example ``human``, ``orchestrator`` or ``implementer#12``."""
     kind: Mapped[CommentKind] = mapped_column(default=CommentKind.NOTE, server_default=CommentKind.NOTE.value)
     body: Mapped[str]
     priority: Mapped[int | None]
@@ -677,7 +679,7 @@ class Technique(Base):
     url: Mapped[str]
     """The primary source: a post, repo or paper. Unique in a campaign, so the same link is never filed twice."""
     created_by: Mapped[str]
-    """Who filed it: the scout (``scout#<worker id>``) or someone else."""
+    """Who filed it: the scout (``scout#<agent session id>``) or someone else."""
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
 
@@ -710,7 +712,7 @@ class Lesson(Base):
     body: Mapped[str]
     """Why: what was tried, the evaluator that measured the effect, why it stopped. It cites idea and candidate ids."""
     created_by: Mapped[str]
-    """Who wrote it: the closing watchdog (``watchdog#<worker id>``), the orchestrator or a human."""
+    """Who wrote it: the closing watchdog (``watchdog#<agent session id>``), the orchestrator or a human."""
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
 
@@ -809,20 +811,20 @@ class Archive(Base):
     room, a failure, a stop of the daemon) has only incomplete rows, so it stays due."""
 
 
-class Worker(Tracked, Base):
+class AgentSession(Tracked, Base):
     """An agent process in one of the roles. While ``state`` is ``requested``, the row is a request to start one.
 
     A request needs only ``kind`` and ``campaign_id``. ``harness`` and ``model`` pin the rotation, and ``reason`` says
     why. The daemon fills in the rest when it launches the row, so the table is also the launch queue of every role.
     """
 
-    __tablename__ = 'workers'
+    __tablename__ = 'agent_sessions'
     __table_args__ = (
         # the launch queue of the tick: the requested and active rows of a campaign for each role, and its latest row
-        Index('ix_workers_campaign_kind_state', 'campaign_id', 'kind', 'state'),
+        Index('ix_agent_sessions_campaign_kind_state', 'campaign_id', 'kind', 'state'),
         # the session behind the candidates of a run (every kept-lineage row), and the FK action when a run is deleted
-        Index('ix_workers_run', 'run_id'),
-        *text_checks('workers', 'kind', nullable=('reason', 'harness', 'model')),
+        Index('ix_agent_sessions_run', 'run_id'),
+        *text_checks('agent_sessions', 'kind', nullable=('reason', 'harness', 'model')),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -839,8 +841,8 @@ class Worker(Tracked, Base):
     """The runtime of the agent (``runtime`` in ``piloop.toml``): how to reach the process."""
     handle: Mapped[dict[str, object]] = mapped_column(default=dict, server_default=EMPTY_JSON)
     """The address of the process in its runtime. Each runtime defines its keys, for example a pid or a pane."""
-    state: Mapped[WorkerState] = mapped_column(
-        default=WorkerState.REQUESTED, server_default=WorkerState.REQUESTED.value
+    state: Mapped[AgentSessionState] = mapped_column(
+        default=AgentSessionState.REQUESTED, server_default=AgentSessionState.REQUESTED.value
     )
     reason: Mapped[str | None]
     """Why it was requested: the trigger that fired, or what the requester wrote."""
@@ -861,15 +863,15 @@ class Worker(Tracked, Base):
     itself counts as the session's tokens (sum ``json_extract(usage, '$.total')`` for the spend). ``turns`` is the
     number of model responses, and ``source`` is the file that was read. For every harness, ``input`` is the uncached
     input, and ``cache_read`` and ``cache_write`` the input read from and written to the prompt cache. NULL while the
-    agent runs, or when no session file was found (``worker.usage_unknown``)."""
+    agent runs, or when no session file was found (``agent_session.usage_unknown``)."""
 
 
 class Event(Base):
-    """The append-only feed of what happened. The daemon pushes comments to workers from it, reading from a cursor.
+    """The append-only feed of what happened. The daemon pushes comments to implementers from it, reading from a cursor.
 
     It has two writers. The daemon writes what only it knows: ``run.started``, ``measurement.recorded``,
-    ``candidate.judged`` with the score, ``comment.delivered``, ``comment.undelivered``, ``worker.wrap_up`` and
-    ``worker.stop_ended`` on a worker, ``<role>.started`` and ``<role>.finished``, and ``anomaly.*`` for faults in the
+    ``candidate.judged`` with the score, ``comment.delivered``, ``comment.undelivered``, ``agent_session.wrap_up`` and
+    ``agent_session.stop_ended`` on an implementer, ``<role>.started`` and ``<role>.finished``, and ``anomaly.*`` for faults in the
     environment such as ``anomaly.startup``. Triggers write what any connection does to the rows. The persistent
     trigger writes ``comment.escalation``. The TEMP triggers of each connection (``piloop/db/actor_triggers.sql``,
     generated from ``piloop.db.triggers.TEMP``) write the change log, signed by the connection's actor:
@@ -877,7 +879,7 @@ class Event(Base):
     ``campaign.status`` and ``campaign.paused`` as ``{old, new}``, ``idea.linked`` and ``idea.unlinked`` with the target
     and the kind of an ``idea_links`` row, ``<kind>.deleted`` for deleted rows, and ``comment.<kind>``. The CLI also
     writes the requests that the daemon acts on: ``campaign.stop_requested`` (``piloop campaign stop``),
-    ``run.cancel_requested`` (``piloop run cancel``) and ``worker.cancel_requested`` (``piloop agent cancel``).
+    ``run.cancel_requested`` (``piloop run cancel``) and ``agent_session.cancel_requested`` (``piloop agent cancel``).
     """
 
     __tablename__ = 'events'

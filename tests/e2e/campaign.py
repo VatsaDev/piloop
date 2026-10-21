@@ -15,9 +15,9 @@ from typing import TypedDict
 import pytest
 from pydantic import TypeAdapter
 
-from piloop.proc import TOKEN_ENV, kill_tagged, tagged
 from piloop.reports.feed import Batch, CampaignState, Envelope
 from piloop.runtime.subprocess import STDOUT
+from piloop.runtime.tags import TAG_ENV, kill_tagged, tagged
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = ROOT / 'piloop' / 'campaign' / 'templates'
@@ -140,7 +140,7 @@ class Smoke:
         return self.sql('SELECT * FROM campaigns WHERE name = ?', self.name)[0]
 
     def stop_campaign(self, reason: str) -> None:
-        """Stop the campaign gracefully: the running workers commit and stop."""
+        """Stop the campaign gracefully: the running implementers commit and stop."""
         self.piloop('campaign', 'stop', self.name, '--reason', reason)
 
     def add_idea(self, key: str, title: str, plan: str, priority: int) -> int:
@@ -159,18 +159,18 @@ class Smoke:
         run = self.run_of(key)
         return run if run is not None and (run['status'] in statuses) == within else None
 
-    def worker_tokens(self, run_id: int | None = None) -> list[str]:
-        """The process tokens of the run's workers, or of every agent."""
+    def process_tags(self, run_id: int | None = None) -> list[str]:
+        """The process tags of the run's implementers, or of every agent."""
         rows = self.sql(
-            "SELECT json_extract(handle, '$.token') AS token FROM workers WHERE token IS NOT NULL"
+            "SELECT json_extract(handle, '$.token') AS token FROM agent_sessions WHERE token IS NOT NULL"
             + (' AND run_id = ?' if run_id is not None else ''),
             *([run_id] if run_id is not None else []),
         )
         return [r['token'] for r in rows]
 
     def processes(self) -> list[str]:
-        """Every live process of the campaign: with its ``PILOOP_HOME``, or with an agent's token."""
-        markers = [f'PILOOP_HOME={self.home}', *(f'{TOKEN_ENV}={t}' for t in self.worker_tokens())]
+        """Every live process of the campaign: with its ``PILOOP_HOME``, or with an agent's process tag."""
+        markers = [f'PILOOP_HOME={self.home}', *(f'{TAG_ENV}={t}' for t in self.process_tags())]
         return sorted({f'{pid} {cmd[:120]}' for m in markers for pid, _, cmd in tagged(m)})
 
     def start_readers(self) -> None:
@@ -209,7 +209,7 @@ class Smoke:
             self.queue_samples.append((int(found[1]), int(found[2]), int(found[3])))
 
     def shut_down(self) -> None:
-        """Stop the readers and the daemon, then end every process that carries the home or an agent's token."""
+        """Stop the readers and the daemon, then end every process that carries the home or an agent's process tag."""
         self.join_readers()
         try:
             if (self.home / 'serve.pid').exists():
@@ -217,8 +217,8 @@ class Smoke:
         finally:
             kill_tagged(f'PILOOP_HOME={self.home}')
             if self.db.is_file():
-                for token in self.worker_tokens():
-                    kill_tagged(f'{TOKEN_ENV}={token}')
+                for token in self.process_tags():
+                    kill_tagged(f'{TAG_ENV}={token}')
 
     def summary(self) -> list[str]:
         """Where the logs are, and one row per agent: its run, how it ended, its tokens and the printed cost."""
@@ -228,7 +228,7 @@ class Smoke:
         rows = self.sql(
             'SELECT w.id, w.kind, w.run_id, w.state, w.log_dir, w.usage, r.status, r.error, i.title,'
             ' (julianday(w.ended_at) - julianday(w.started_at)) * 86400 AS seconds'
-            ' FROM workers w LEFT JOIN runs r ON r.id = w.run_id LEFT JOIN ideas i ON i.id = r.idea_id ORDER BY w.id'
+            ' FROM agent_sessions w LEFT JOIN runs r ON r.id = w.run_id LEFT JOIN ideas i ON i.id = r.idea_id ORDER BY w.id'
         )
         lines += [
             '',

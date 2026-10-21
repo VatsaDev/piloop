@@ -1,6 +1,6 @@
 ---
 name: piloop-operate
-description: Operate a running piloop autoresearch campaign as its orchestrator, from any harness with a shell (Claude Code, Codex, pi, Gemini CLI, Cursor), by looping on piloop inbox wait to decide escalations, manage ideas, launch sweeps, steer workers and judge candidates. Use when the human asks you to orchestrate, watch, run or report on a campaign, when an escalation arrives, or when you take a decision for the human; do not use it in an agent that piloop launched (PILOOP_ACTOR is a worker, watchdog, research or scout id).
+description: Operate a running piloop autoresearch campaign as its orchestrator, from any harness with a shell (Claude Code, Codex, pi, Gemini CLI, Cursor), by looping on piloop inbox wait to decide escalations, manage ideas, launch sweeps, steer implementers and judge candidates. Use when the human asks you to orchestrate, watch, run or report on a campaign, when an escalation arrives, or when you take a decision for the human; do not use it in an agent that piloop launched (PILOOP_ACTOR is an implementer, watchdog, research or scout id).
 ---
 
 # Operate a piloop campaign
@@ -115,8 +115,8 @@ mechanism family, the waiting seeds, every idea, the kept lineage, the starting 
 
 `piloop watch` shows the same as `piloop status`, live, in the human's terminal.
 
-If the daemon is down, `requested` rows collect in `workers` and nothing runs.
-Check with `SELECT id, kind, reason FROM workers WHERE state = 'requested'`.
+If the daemon is down, `requested` rows collect in `agent_sessions` and nothing runs.
+Check with `SELECT id, kind, reason FROM agent_sessions WHERE state = 'requested'`.
 Start the daemon with `piloop serve --detach`.
 
 ## Ideas
@@ -153,7 +153,7 @@ PILOOP_ACTOR=orchestrator piloop idea seed <name> '<hunch, one line>' --from '<p
     metric, expected effect.
   - It rejects the seed with a `note` that names the evidence that settled it.
 - Watchdogs file seeds the same way, and only seeds.
-- Workers file no seeds. They put a hunch in their finding.
+- Implementers file no seeds. They put a hunch in their finding.
 - You may develop or reject a seed yourself when you get to it first.
 
 A link that the human pastes (a post, a repo, a paper) is a seed signed `human`, not signed by you:
@@ -175,7 +175,7 @@ PILOOP_ACTOR=human piloop idea seed <name> '<its mechanism, one line>' --from '<
 
 ### Point research at the evidence
 
-When you or a worker write an analysis of where the head loses (against the reference, per slice):
+When you or an implementer write an analysis of where the head loses (against the reference, per slice):
 
 1. Add its path to the top-level `context` of `piloop.toml`.
 2. Run `piloop init .`.
@@ -220,24 +220,24 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
 
 - A comment on the idea goes into its next brief.
 - With `runtime = "herdr"`, a `note`, `finding` or `decision` comment (any kind except an escalation) on the idea, or
-  on its *running* run, goes into that worker's pane on the next tick. The pane gets only the first line (up to 200
+  on its *running* run, goes into that implementer's pane on the next tick. The pane gets only the first line (up to 200
   characters) and a query for the full text, so put the instruction in the first line.
-- `comment.delivered` on the worker confirms that the comment arrived.
-- `piloop prompt <worker> '<text>'` sends text directly, when no comment is worth keeping. It needs
+- `comment.delivered` on the implementer confirms that the comment arrived.
+- `piloop prompt <agent-session> '<text>'` sends text directly, when no comment is worth keeping. It needs
   `runtime = "herdr"`.
-- A comment on the campaign reaches no worker. When a decision changes the work of a running worker, write it on its
+- A comment on the campaign reaches no implementer. When a decision changes the work of a running implementer, write it on its
   run, not on the campaign.
-- A worker asks for what it cannot do itself with an escalation. When its run ends before the answer, the run fails as
+- An implementer asks for what it cannot do itself with an escalation. When its run ends before the answer, the run fails as
   `blocked on escalation` and its idea is parked. Answer with a `decision` on the idea, then set it `ready`.
 
 ### Cancel a run, stop a campaign
 
-- A run that became redundant: `piloop run cancel <run> --wrap-up`. The worker is told to commit and stop, and ended
+- A run that became redundant: `piloop run cancel <run> --wrap-up`. The implementer is told to commit and stop, and ended
   10 minutes later, with every process it started. Its commits are scored and its idea is parked. Without `--wrap-up`,
-  it is ended at once. `piloop agent cancel <worker> [--wrap-up]` does the same for an agent of any role, a sweep too.
+  it is ended at once. `piloop agent cancel <agent-session> [--wrap-up]` does the same for an agent of any role, a sweep too.
 - A campaign: `piloop campaign stop <name> --reason '<why>'`. The daemon stops it as a `[stop]` condition does: it
-  drops queued work, winds the workers down, scores their commits and launches the closing review. `--kill` ends the
-  workers at once. Never `UPDATE campaigns SET status`: that gets no closing review.
+  drops queued work, winds the implementers down, scores their commits and launches the closing review. `--kill` ends the
+  implementers at once. Never `UPDATE campaigns SET status`: that gets no closing review.
 - Never `pkill` an agent: the cancel ends what it left running, in any session.
 
 ### Start from a tree outside the lineage
@@ -260,8 +260,8 @@ Branch runs:
   tree and is judged against the nearest keep. When that keep is the head, it is a trunk run.
 - A run pinned to a candidate that has the head's changes (a merge onto the head, or a compose that cherry-picked it)
   is a trunk run too: its keep can move the head.
-- So pin a follow-up to a lead. Do not tell its worker to reset onto the lead.
-- One run in `[roles.worker] explore_every` (default 4) takes the most urgent ready idea pinned to a base other than
+- So pin a follow-up to a lead. Do not tell its implementer to reset onto the lead.
+- One run in `[roles.implementer] explore_every` (default 4) takes the most urgent ready idea pinned to a base other than
   the head, whatever its priority.
 
 ### Keep a failed result as a lead
@@ -274,7 +274,7 @@ piloop candidate note <c> '<why>' --follow-up '<hunch>'
 - It changes a measured `discard` or `interesting` candidate to `interesting` with the reason `note: <why>`.
 - It files each follow-up as a seed pinned to the candidate. Research develops the seeds.
 - It is not a keep and not a bar.
-- Workers note a lead with a `Piloop-Note:` commit trailer, without follow-ups.
+- Implementers note a lead with a `Piloop-Note:` commit trailer, without follow-ups.
 
 ### Refill the backlog
 
@@ -311,7 +311,7 @@ writer gave it a priority.
 1. **Read** the thread and the target.
    - `piloop inbox show <id>`.
    - For a run: `SELECT status, error, log_dir FROM runs WHERE id = <t>`, and the end of `<log_dir>/transcript.txt`.
-   - With `entire` installed: `SELECT checkpoint_id FROM workers WHERE run_id = <t>`, then
+   - With `entire` installed: `SELECT checkpoint_id FROM agent_sessions WHERE run_id = <t>`, then
      `entire checkpoint explain <checkpoint_id>` for the agent's own session.
    - Verify before you build on a theory: the agent's own transcript, `ps`, a new query. Do not guess the mechanism.
 2. **Decide.**
@@ -371,20 +371,20 @@ without a priority), out of the inbox.
 ## Agents
 
 - The ids of the agents are in the status.
-- By default (`runtime = "subprocess"`), each agent is a background process. `piloop prompt <worker_id> '…'` queues a
+- By default (`runtime = "subprocess"`), each agent is a background process. `piloop prompt <agent_session_id> '…'` queues a
   message for it: when its turn ends, piloop resumes its session with the message.
 - With `runtime = "herdr"`, each agent runs as a tab in the workspace of the campaign in the `piloop` Herdr session:
-  - `piloop attach <worker_id>` focuses that tab. From a terminal outside that session, it also attaches to the
+  - `piloop attach <agent_session_id>` focuses that tab. From a terminal outside that session, it also attaches to the
     session. It takes over the terminal, so it is for the human, not for your shell tool.
-  - `piloop prompt <worker_id> '…'` steers a running agent of any role. The message waits for the end of the
+  - `piloop prompt <agent_session_id> '…'` steers a running agent of any role. The message waits for the end of the
     agent's current turn; an idle agent takes it at once.
 - To request one more sweep, run `piloop launch <name> <role> [--harness pi --model …] [--reason '…']`: `watchdog`,
   `research`, or a role that `piloop.toml` defines.
   Or insert a request:
-  `INSERT INTO workers (kind, campaign_id, state, reason) VALUES ('research', <p>, 'requested', '…')`.
+  `INSERT INTO agent_sessions (kind, campaign_id, state, reason) VALUES ('research', <p>, 'requested', '…')`.
   The daemon launches it on the next tick, within the `max_concurrent` of the role.
 - When an agent's process exits, or its Herdr tab closes, the agent ends. The daemon records the outcome on its
-  `workers` row.
+  `agent_sessions` row.
 
 ## Read a candidate or a session
 
@@ -393,9 +393,9 @@ without a priority), out of the inbox.
   - `git diff <parent commit_sha> <commit_sha>` compares it with its parent (`candidates.parent_id`).
   - `git cherry-pick <commit_sha>` takes it.
   - The kept lineage in `piloop history` lists the commit and checkpoint of each candidate.
-- Why it was made: run `entire checkpoint explain <id>` on the checkpoint of the worker session that made it. It shows
+- Why it was made: run `entire checkpoint explain <id>` on the checkpoint of the agent session that made it. It shows
   intent, prompts, files touched and tokens.
-  - The checkpoint id is in the kept lineage, or in `workers.checkpoint_id` of any agent, sweeps included.
+  - The checkpoint id is in the kept lineage, or in `agent_sessions.checkpoint_id` of any agent, sweeps included.
   - `git show refs/entire/checkpoints/<id[-2:]>/<id>:0/full.jsonl` is the full transcript. It is long: read it only
     for a specific question.
 - Every agent session is attached to Entire when the agent ends, if `entire` is installed
@@ -419,7 +419,7 @@ session that worked a past idea.
 - Documents: the reports and logs that `[memory] documents` in `piloop.toml` names, copied in on `piloop init` and
   when the campaign stops. Search them with `documents_fts MATCH '<words>'`. Point the globs at reports, never at
   anything derived from validation or test data.
-- Briefs of workers and research sweeps open with the current lessons of the repo, in `[memory] wake_budget` tokens
+- Briefs of implementers and research sweeps open with the current lessons of the repo, in `[memory] wake_budget` tokens
   (0 turns it off; `[roles.<kind>] wake_budget` changes it for one role).
 
 ## Judge candidates
@@ -466,7 +466,7 @@ PILOOP_ACTOR=orchestrator piloop candidate verdict <c> interesting --reason '<wh
 
 Rules:
 
-- Never change `runs.status` or `events`. Never change `workers`, except to insert a request.
+- Never change `runs.status` or `events`. Never change `agent_sessions`, except to insert a request.
 - If they look wrong, record what you see in a `finding` on the run, and fix it through a piloop command. When no
   command fixes it, escalate to the human.
 

@@ -37,10 +37,10 @@ CODEX_TOOL_ENV = [
     'shell_environment_policy.include_only=[]',
 ]
 """Give Codex's shell commands the agent's environment, as Claude and pi do, whatever the user's
-``shell_environment_policy`` says. piloop finds an agent's background jobs by ``PILOOP_WORKER_TOKEN``, and
-``PILOOP_ACTOR`` signs the agent's writes. ``inherit = "core"``, the default ``*TOKEN*`` exclude or an
-``include_only`` would drop them. The MCP renderer's ``shell_environment_policy.exclude`` keeps the role's API keys
-out."""
+``shell_environment_policy`` says. piloop finds an agent's background jobs by ``PILOOP_PROCESS_TAG``, and
+``PILOOP_ACTOR`` signs the agent's writes. ``inherit = "core"`` or an ``include_only`` would drop them, and the
+default excludes (``*KEY*``, ``*SECRET*``, ``*TOKEN*``) other variables that Claude and pi pass on. The MCP renderer's
+``shell_environment_policy.exclude`` keeps the role's API keys out."""
 
 
 class Invocation(StrEnum):
@@ -86,7 +86,7 @@ class Harness(BaseModel):
     piloop substitutes these placeholders in both argument lists: ``{model}``, ``{session_id}``, ``{cwd}`` (the
     agent's working directory), ``{log_dir}`` (the directory of the agent's brief and logs) and ``{prompt}`` (the first
     prompt, which names the file that holds the brief). An element that is exactly ``{mcp}`` expands to the role's MCP
-    servers, in the form that ``mcp`` names. The built-in harnesses run without permission prompts: workers run
+    servers, in the form that ``mcp`` names. The built-in harnesses run without permission prompts: agents run
     in worktrees that the daemon owns and throws away, and a sandbox that cannot reach the repo's ``.git`` cannot
     commit. The built-in Claude harness passes ``--settings`` that move a foreground Bash command to the background
     after 5 minutes.
@@ -141,7 +141,7 @@ class Harness(BaseModel):
     ``headless`` runtime for a harness that cannot take its id as an argument (``{session_id}``). For example, Codex
     ``exec --json`` prints ``{"type":"thread.started","thread_id":"<uuid>"}`` first."""
     usage: UsageSpec | None = None
-    """``[harness.<name>.usage]``: how to read the tokens an agent spent, when it ends, into ``workers.usage``. When
+    """``[harness.<name>.usage]``: how to read the tokens an agent spent, when it ends, into ``agent_sessions.usage``. When
     unset, token usage is not recorded."""
     mcp: str | None = None
     """The renderer that expands the ``{mcp}`` element of the argv into the role's ``[mcp.<name>]`` servers. Each
@@ -307,7 +307,7 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
     ),
     'codex': Harness(
         executable='codex',
-        # when a newer codex is released, codex opens an "Update available" dialog before the prompt; workers skip it
+        # when a newer codex is released, codex opens an "Update available" dialog before the prompt; agents skip it
         interactive=[
             '--model',
             '{model}',

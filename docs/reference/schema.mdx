@@ -57,7 +57,7 @@ CREATE TABLE comments (
 	CONSTRAINT escalation_needs_priority CHECK (kind != 'escalation' OR priority IS NOT NULL),
 	CONSTRAINT "comments.author must be a text value" CHECK (typeof(author) IN ('text')),
 	CONSTRAINT "comments.body must be a text value" CHECK (typeof(body) IN ('text')),
-	CONSTRAINT targetkind CHECK (target_kind IN ('campaign', 'idea', 'run', 'candidate', 'measurement', 'worker', 'comment')),
+	CONSTRAINT targetkind CHECK (target_kind IN ('campaign', 'idea', 'run', 'candidate', 'measurement', 'agent_session', 'comment')),
 	CONSTRAINT commentkind CHECK (kind IN ('note', 'finding', 'decision', 'escalation'))
 );
 CREATE INDEX ix_comments_inbox ON comments (priority, id) WHERE priority IS NOT NULL AND acked_at IS NULL;
@@ -71,7 +71,7 @@ CREATE TABLE events (
 	target_id INTEGER NOT NULL,
 	payload JSON DEFAULT '{}' NOT NULL,
 	PRIMARY KEY (id),
-	CONSTRAINT targetkind CHECK (target_kind IN ('campaign', 'idea', 'run', 'candidate', 'measurement', 'worker', 'comment'))
+	CONSTRAINT targetkind CHECK (target_kind IN ('campaign', 'idea', 'run', 'candidate', 'measurement', 'agent_session', 'comment'))
 );
 CREATE INDEX ix_events_target ON events (target_kind, target_id, id);
 CREATE TABLE journal (
@@ -213,7 +213,7 @@ CREATE INDEX ix_idea_links_target ON idea_links (target_id, kind);
 CREATE TABLE runs (
 	id INTEGER NOT NULL,
 	idea_id INTEGER NOT NULL,
-	role VARCHAR DEFAULT 'worker' NOT NULL,
+	role VARCHAR DEFAULT 'implementer' NOT NULL,
 	attempt INTEGER NOT NULL,
 	base_candidate_id INTEGER NOT NULL,
 	branch BOOLEAN DEFAULT 0 NOT NULL,
@@ -236,6 +236,37 @@ CREATE TABLE runs (
 	CONSTRAINT runstatus CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'timed_out'))
 );
 CREATE INDEX ix_runs_status ON runs (status);
+CREATE TABLE agent_sessions (
+	id INTEGER NOT NULL,
+	kind VARCHAR NOT NULL,
+	campaign_id INTEGER,
+	run_id INTEGER,
+	harness VARCHAR,
+	model VARCHAR,
+	runtime VARCHAR,
+	handle JSON DEFAULT '{}' NOT NULL,
+	state VARCHAR(16) DEFAULT 'requested' NOT NULL,
+	reason VARCHAR,
+	log_dir VARCHAR,
+	started_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	ended_at DATETIME,
+	error VARCHAR,
+	session_id VARCHAR,
+	checkpoint_id VARCHAR,
+	usage JSON,
+	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	updated_by VARCHAR,
+	PRIMARY KEY (id),
+	CONSTRAINT "agent_sessions.kind must be a text value" CHECK (typeof(kind) IN ('text')),
+	CONSTRAINT "agent_sessions.reason must be a text value" CHECK (typeof(reason) IN ('text', 'null')),
+	CONSTRAINT "agent_sessions.harness must be a text value" CHECK (typeof(harness) IN ('text', 'null')),
+	CONSTRAINT "agent_sessions.model must be a text value" CHECK (typeof(model) IN ('text', 'null')),
+	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE,
+	FOREIGN KEY(run_id) REFERENCES runs (id) ON DELETE SET NULL,
+	CONSTRAINT agentsessionstate CHECK (state IN ('requested', 'starting', 'running', 'exited', 'killed'))
+);
+CREATE INDEX ix_agent_sessions_campaign_kind_state ON agent_sessions (campaign_id, kind, state);
+CREATE INDEX ix_agent_sessions_run ON agent_sessions (run_id);
 CREATE TABLE candidates (
 	id INTEGER NOT NULL,
 	campaign_id INTEGER NOT NULL,
@@ -263,37 +294,6 @@ CREATE TABLE candidates (
 CREATE INDEX ix_candidates_campaign_verdict ON candidates (campaign_id, verdict);
 CREATE INDEX ix_candidates_parent ON candidates (parent_id);
 CREATE INDEX ix_candidates_run ON candidates (run_id);
-CREATE TABLE workers (
-	id INTEGER NOT NULL,
-	kind VARCHAR NOT NULL,
-	campaign_id INTEGER,
-	run_id INTEGER,
-	harness VARCHAR,
-	model VARCHAR,
-	runtime VARCHAR,
-	handle JSON DEFAULT '{}' NOT NULL,
-	state VARCHAR(16) DEFAULT 'requested' NOT NULL,
-	reason VARCHAR,
-	log_dir VARCHAR,
-	started_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	ended_at DATETIME,
-	error VARCHAR,
-	session_id VARCHAR,
-	checkpoint_id VARCHAR,
-	usage JSON,
-	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	updated_by VARCHAR,
-	PRIMARY KEY (id),
-	CONSTRAINT "workers.kind must be a text value" CHECK (typeof(kind) IN ('text')),
-	CONSTRAINT "workers.reason must be a text value" CHECK (typeof(reason) IN ('text', 'null')),
-	CONSTRAINT "workers.harness must be a text value" CHECK (typeof(harness) IN ('text', 'null')),
-	CONSTRAINT "workers.model must be a text value" CHECK (typeof(model) IN ('text', 'null')),
-	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE,
-	FOREIGN KEY(run_id) REFERENCES runs (id) ON DELETE SET NULL,
-	CONSTRAINT workerstate CHECK (state IN ('requested', 'starting', 'running', 'exited', 'killed'))
-);
-CREATE INDEX ix_workers_campaign_kind_state ON workers (campaign_id, kind, state);
-CREATE INDEX ix_workers_run ON workers (run_id);
 CREATE TABLE evaluations (
 	id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
 	candidate_id INTEGER NOT NULL,

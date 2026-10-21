@@ -15,7 +15,7 @@ from inline_snapshot import snapshot
 
 from piloop import settings as settings_module
 from piloop.harnesses import DEFAULT_HARNESSES
-from piloop.runtime import Handle, NotSteerable, StartFailed, WorkerSpec, WorkerStatus, herdr
+from piloop.runtime import AgentSpec, AgentStatus, Handle, NotSteerable, StartFailed, herdr
 from piloop.runtime.factory import make_runtime
 from piloop.runtime.herdr import HerdrError, HerdrRuntime, HerdrSettings
 from piloop.runtime.subprocess import SubprocessRuntime
@@ -61,8 +61,8 @@ def scripted(monkeypatch: pytest.MonkeyPatch, **responses: list[Response]) -> No
     monkeypatch.setenv('FAKE_HERDR_SCRIPT', json.dumps({k.replace('_', ' '): v for k, v in responses.items()}))
 
 
-def spec(tmp_path: Path) -> WorkerSpec:
-    return WorkerSpec(
+def spec(tmp_path: Path) -> AgentSpec:
+    return AgentSpec(
         name='w1',
         label='w1 idea#1 the thing',
         executable='pi',
@@ -74,12 +74,12 @@ def spec(tmp_path: Path) -> WorkerSpec:
     )
 
 
-def as_harness(worker: WorkerSpec, name: str, **changes: object) -> WorkerSpec:
-    """``worker`` as an agent of the built-in harness ``name``: its executable, its screens and its queue key."""
+def as_harness(agent_session: AgentSpec, name: str, **changes: object) -> AgentSpec:
+    """``implementer`` as an agent of the built-in harness ``name``: its executable, its screens and its queue key."""
     h = DEFAULT_HARNESSES[name]
     busy, failed, queue, composer = h.screens
     return replace(
-        worker,
+        agent_session,
         executable=h.executable,
         busy_screens=busy,
         failed_turn_screens=failed,
@@ -134,7 +134,7 @@ def test_start_creates_workspace_tab_agent_and_prompts(tmp_path: Path, herdr_log
                 'w1 idea#1 the thing',
                 '--no-focus',
                 '--env',
-                f'PILOOP_WORKER_TOKEN={handle.data["token"]}',
+                f'PILOOP_PROCESS_TAG={handle.data["token"]}',
             ],
             ['pane', 'run', 'w7:p2', f'eval "$(cat {tmp_path}/logs/env-{handle.data["token"]}.fifo)"'],
             ['agent', 'start', 'w1', '--kind', 'pi', '--pane', 'w7:p2', '--timeout', '60000', '--', '--model', 'm'],
@@ -411,7 +411,7 @@ def test_wait_maps_states(tmp_path: Path, herdr_log: Path, monkeypatch: pytest.M
     rt = HerdrRuntime('demo', tmp_path)
     handle = Handle('herdr', {'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': 'w1'})
     outcome = rt.wait(handle, timeout=2.5)
-    assert (outcome.status, outcome.error) == (WorkerStatus.IDLE, None)
+    assert (outcome.status, outcome.error) == (AgentStatus.IDLE, None)
     assert outcome.seconds == IsPositive()
     assert calls(herdr_log)[-3:] == snapshot(
         [
@@ -422,12 +422,12 @@ def test_wait_maps_states(tmp_path: Path, herdr_log: Path, monkeypatch: pytest.M
     ), 'idle, and the screen held still'
 
     scripted(monkeypatch, agent_wait=[{'error': {'code': 'agent_not_running', 'message': 'gone'}}])
-    assert rt.wait(handle, timeout=1).status is WorkerStatus.EXITED
+    assert rt.wait(handle, timeout=1).status is AgentStatus.EXITED
 
     scripted(monkeypatch, agent_wait=[{'error': {'code': 'timeout', 'message': 'timed out'}}])
     outcome = rt.wait(handle, timeout=1)
-    assert (outcome.status, outcome.error) == (WorkerStatus.TIMED_OUT, 'worker timeout after 1s')
-    assert calls(herdr_log)[-1] == ['tab', 'close', 'w7:t2'], 'timeout kills the worker'
+    assert (outcome.status, outcome.error) == (AgentStatus.TIMED_OUT, 'agent timeout after 1s')
+    assert calls(herdr_log)[-1] == ['tab', 'close', 'w7:t2'], 'timeout kills the agent'
 
     scripted(monkeypatch, agent_wait=[{'error': {'code': 'server_unreachable', 'message': 'no socket'}}])
     with pytest.raises(HerdrError, match='server_unreachable'):
@@ -445,7 +445,7 @@ def test_a_blocked_agent_is_waited_for_until_the_grace_runs_out_then_its_dialog_
     handle = Handle('herdr', {'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': 'w1'})
     scripted(monkeypatch, agent_wait=[seq(6, 'blocked'), seq(7, 'working'), seq(8, 'idle')])
     outcome = rt.wait(handle, timeout=5)
-    assert (outcome.status, outcome.error) == (WorkerStatus.IDLE, None)
+    assert (outcome.status, outcome.error) == (AgentStatus.IDLE, None)
     untils = [c[3:-2] for c in calls(herdr_log) if c[:2] == ['agent', 'wait']][:3]
     assert untils == [
         ['--until', 'idle', '--until', 'done', '--until', 'blocked'],
@@ -459,9 +459,9 @@ def test_a_blocked_agent_is_waited_for_until_the_grace_runs_out_then_its_dialog_
     scripted(monkeypatch, agent_wait=[seq(6, 'blocked'), timed_out], pane_read=[{'text': 'Do you want to proceed?\n'}])
     outcome = rt.wait(handle, timeout=5)
     assert (outcome.status, outcome.error) == (
-        WorkerStatus.BLOCKED,
+        AgentStatus.BLOCKED,
         'agent is blocked waiting for input:\nDo you want to proceed?',
-    ), 'still blocked after the grace: finished, with the question it was stuck on (the pane goes with the worker)'
+    ), 'still blocked after the grace: finished, with the question it was stuck on (the pane goes with the agent)'
     assert calls(herdr_log)[-1] == ['pane', 'read', 'w7:p2', '--source', 'visible']
 
 
@@ -495,11 +495,11 @@ def test_a_blocked_agent_whose_screen_moves_is_not_stuck_however_long_herdr_says
     monkeypatch.setattr(rt, '_screen', screen)
     outcome = rt.wait(Handle('herdr', {'pane_id': 'w7:p2', 'agent': 'w1'}), timeout=10 * grace)
     if works_on:
-        assert (outcome.status, outcome.error) == (WorkerStatus.IDLE, None), 'it worked on: it ends when it is done'
+        assert (outcome.status, outcome.error) == (AgentStatus.IDLE, None), 'it worked on: it ends when it is done'
         assert outcome.seconds == 2 * grace, 'it outlived two graces under a question Herdr reads as blocked'
     else:
         assert (outcome.status, outcome.error) == (
-            WorkerStatus.BLOCKED,
+            AgentStatus.BLOCKED,
             'agent is blocked waiting for input:\nDo you want to proceed?',
         )
         assert outcome.seconds == grace, 'a screen that held still for the whole grace is stuck'
@@ -527,7 +527,7 @@ def test_idle_with_jobs_in_flight_is_not_finished(
     scripted_jobs(monkeypatch, [['123 sleep 45'], ['123 sleep 45'], [], []], resumed=[True])
     scripted(monkeypatch, agent_wait=[seq(9), seq(9), seq(9), seq(11)])
     outcome = HerdrRuntime('demo', tmp_path).wait(jobs_handle(), timeout=5)
-    assert (outcome.status, outcome.error) == (WorkerStatus.IDLE, None)
+    assert (outcome.status, outcome.error) == (AgentStatus.IDLE, None)
     verbs = [c[:2] for c in calls(herdr_log)]
     assert verbs.count(['agent', 'wait']) == 4 and ['agent', 'prompt'] not in verbs, (
         'two looks with jobs, one once they ended (the agent resumed by itself), one after it finished'
@@ -541,19 +541,19 @@ def test_an_agent_left_idle_when_its_jobs_end_is_prompted_to_read_their_results(
     scripted_jobs(monkeypatch, [['77 sleep 50'], [], []], resumed=[False, True])
     scripted(monkeypatch, agent_wait=[seq(9), seq(9), seq(12)])
     outcome = HerdrRuntime('demo', tmp_path).wait(jobs_handle(), timeout=5)
-    assert (outcome.status, outcome.error) == (WorkerStatus.IDLE, None)
+    assert (outcome.status, outcome.error) == (AgentStatus.IDLE, None)
     prompts = [c for c in calls(herdr_log) if c[:2] == ['agent', 'prompt']]
     assert prompts == [['agent', 'prompt', 'w1', herdr.JOBS_DONE_PROMPT]]
 
     scripted_jobs(monkeypatch, [['77 sleep 50'], [], []], resumed=[False])
     scripted(monkeypatch, agent_wait=[seq(9)], agent_prompt=[ERR])
     outcome = HerdrRuntime('demo', tmp_path).wait(jobs_handle(), timeout=5)
-    assert outcome.status is WorkerStatus.IDLE, 'a refused prompt: the next look decides, and nothing is in flight'
+    assert outcome.status is AgentStatus.IDLE, 'a refused prompt: the next look decides, and nothing is in flight'
 
     scripted_jobs(monkeypatch, [['77 sleep 50'], []], resumed=[False, False])
     scripted(monkeypatch, agent_wait=[seq(9)])
     outcome = HerdrRuntime('demo', tmp_path).wait(jobs_handle(), timeout=5)
-    assert outcome.status is WorkerStatus.IDLE, 'prompted but never picked up: finished, not a loop'
+    assert outcome.status is AgentStatus.IDLE, 'prompted but never picked up: finished, not a loop'
 
 
 def process_info(monkeypatch: pytest.MonkeyPatch, response: Response) -> None:
@@ -561,7 +561,7 @@ def process_info(monkeypatch: pytest.MonkeyPatch, response: Response) -> None:
 
 
 def tagged_sleep(token: str, *, own_session: bool) -> subprocess.Popen[bytes]:
-    env = {**os.environ, herdr.TOKEN_ENV: token}
+    env = {**os.environ, herdr.TAG_ENV: token}
     return subprocess.Popen(['sleep', '30'], env=env, start_new_session=own_session)
 
 
@@ -594,12 +594,12 @@ UNAVAILABLE: Response = {
 def test_a_server_that_does_not_answer_for_a_moment_does_not_end_the_agent(
     tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One ``server_unavailable`` under load killed four healthy workers (comments #11239, #11244): a read is retried."""
+    """One ``server_unavailable`` under load killed four healthy agents (comments #11239, #11244): a read is retried."""
     monkeypatch.setattr(herdr, 'UNAVAILABLE_BACKOFF_SECONDS', 0.01)
     scripted(monkeypatch, agent_wait=[UNAVAILABLE, UNAVAILABLE, {'result': {'agent': AGENT}}])
     handle = Handle('herdr', {'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': 'w1'})
     outcome = HerdrRuntime('demo', tmp_path).wait(handle, timeout=60)
-    assert (outcome.status, outcome.error) == (WorkerStatus.IDLE, None)
+    assert (outcome.status, outcome.error) == (AgentStatus.IDLE, None)
     verbs = [c[:2] for c in calls(herdr_log)]
     assert verbs.count(['agent', 'wait']) == 3 and ['tab', 'close'] not in verbs, 'retried, and nothing was killed'
 
@@ -628,7 +628,7 @@ def test_a_call_that_changes_something_is_never_sent_twice(herdr_log: Path, monk
 
 
 def test_a_read_that_times_out_is_retried(herdr_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A screen read that times out under load lost the transcripts of the workers it then killed (comment #11244)."""
+    """A screen read that times out under load lost the transcripts of the agents it then killed (comment #11244)."""
     monkeypatch.setattr(herdr, 'UNAVAILABLE_BACKOFF_SECONDS', 0.01)
     real = subprocess.run
     timeouts = [subprocess.TimeoutExpired(['herdr'], 30)]
@@ -670,7 +670,7 @@ def test_jobs_are_tagged_processes_outside_the_agents_session(
         assert HerdrRuntime('demo', tmp_path).jobs(Handle('herdr', {'pane_id': 'w7:p2', 'agent': 'w1'})) == []
 
         rt.kill(handle)
-        assert job.wait(5) == -9 and helper.wait(5) == -9, 'kill ends what the worker left running, in any session'
+        assert job.wait(5) == -9 and helper.wait(5) == -9, 'kill ends what the agent left running, in any session'
         assert stranger.poll() is None
     finally:
         for proc in (helper, job, stranger):
@@ -695,7 +695,7 @@ def test_wait_is_chunked_so_a_tab_closed_from_outside_is_noticed(
     scripted(monkeypatch, agent_wait=[timed_out, gone])
     monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(wait_chunk_seconds=0.5))
     handle = Handle('herdr', {'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': 'w1'})
-    assert HerdrRuntime('demo', tmp_path).wait(handle, timeout=60).status is WorkerStatus.EXITED
+    assert HerdrRuntime('demo', tmp_path).wait(handle, timeout=60).status is AgentStatus.EXITED
     assert [c[-1] for c in calls(herdr_log)] == ['500', '500']
 
 
@@ -730,7 +730,7 @@ def test_session_id_is_what_herdr_detected_once_the_harness_started(
 def test_status_prompt_read_kill(tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     rt = HerdrRuntime('demo', tmp_path)
     handle = Handle('herdr', {'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': 'w1'})
-    assert rt.status(handle) is WorkerStatus.WORKING
+    assert rt.status(handle) is AgentStatus.WORKING
     rt.prompt(handle, 'try harder')
     assert rt.read(handle, lines=40) == 'hello from the agent\n'
     rt.kill(handle)
@@ -744,7 +744,7 @@ def test_status_prompt_read_kill(tmp_path: Path, herdr_log: Path, monkeypatch: p
     )
 
     scripted(monkeypatch, agent_get=[{'error': {'code': 'agent_not_found', 'message': 'gone'}}])
-    assert rt.status(handle) is WorkerStatus.EXITED
+    assert rt.status(handle) is AgentStatus.EXITED
     scripted(monkeypatch, agent_get=[{'error': {'code': 'io', 'message': 'boom'}}])
     with pytest.raises(HerdrError, match='io: boom'):
         rt.status(handle)
@@ -968,7 +968,7 @@ def test_idle_on_a_screen_that_still_works_is_not_finished(
     sleeps: list[float] = []
     scripted(monkeypatch, pane_read=[*busy, DONE_SCREEN])
     outcome = HerdrRuntime('demo', tmp_path, sleep=sleeps.append).wait(claude_handle(kind), timeout=5)
-    assert (outcome.status, outcome.error) == (WorkerStatus.IDLE, None)
+    assert (outcome.status, outcome.error) == (AgentStatus.IDLE, None)
     verbs = [c[:2] for c in calls(herdr_log)]
     assert (verbs.count(['pane', 'read']), verbs.count(['agent', 'wait'])) == (4, 2), 'two looks, two reads each'
     assert sleeps == [herdr.QUIET_SECONDS] * 2 and ['agent', 'prompt'] not in verbs
@@ -977,7 +977,7 @@ def test_idle_on_a_screen_that_still_works_is_not_finished(
     scripted(monkeypatch, pane_read=[QUEUED_SCREEN])
     assert (
         HerdrRuntime('demo', tmp_path, sleep=sleeps.append).wait(claude_handle('pi'), timeout=5).status
-        is WorkerStatus.IDLE
+        is AgentStatus.IDLE
     )
     assert [c[:2] for c in calls(herdr_log)].count(['agent', 'wait']) == 1, "another kind's text is just text"
 
@@ -994,7 +994,7 @@ def test_a_turn_that_ended_on_an_api_error_is_resumed_then_fails(
     resumed: Response = {'text': f'{CAPACITY_TEXT}› {herdr.RESUME_PROMPT}\n• Shards done; committed.\n›\n'}
     scripted(monkeypatch, pane_read=[CAPACITY_SCREEN, CAPACITY_SCREEN, resumed])
     outcome = HerdrRuntime('demo', tmp_path, sleep=sleeps.append).wait(claude_handle('codex'), timeout=1000)
-    assert (outcome.status, outcome.error) == (WorkerStatus.IDLE, None), 'the banner above the resume is an old one'
+    assert (outcome.status, outcome.error) == (AgentStatus.IDLE, None), 'the banner above the resume is an old one'
     prompts = [c for c in calls(herdr_log) if c[:2] == ['agent', 'prompt']]
     assert prompts == [['agent', 'prompt', 'w1', herdr.RESUME_PROMPT]]
     assert sleeps == [herdr.QUIET_SECONDS, 60, herdr.QUIET_SECONDS]
@@ -1003,7 +1003,7 @@ def test_a_turn_that_ended_on_an_api_error_is_resumed_then_fails(
     sleeps.clear()
     scripted(monkeypatch, pane_read=[CAPACITY_SCREEN])
     outcome = HerdrRuntime('demo', tmp_path, sleep=sleeps.append).wait(claude_handle('codex'), timeout=1000)
-    assert outcome.status is WorkerStatus.IDLE
+    assert outcome.status is AgentStatus.IDLE
     assert outcome.error == f'{herdr.TURN_FAILED_ERROR}:\n{CAPACITY_TEXT.strip()}'
     assert [s for s in sleeps if s != herdr.QUIET_SECONDS] == [60, 120, 240], 'resumed after each backoff, then failed'
     assert [c[:2] for c in calls(herdr_log)].count(['agent', 'prompt']) == 3
@@ -1023,7 +1023,7 @@ def test_a_claude_turn_that_stopped_on_a_quota_503_is_resumed(
 ) -> None:
     """A ``503 included_quota_unknown`` is transient.
 
-    Once Claude Code stops retrying it, the turn is resumed like any API error. The worker is not taken as finished.
+    Once Claude Code stops retrying it, the turn is resumed like any API error. The agent is not taken as finished.
     """
     sleeps: list[float] = []
     monkeypatch.setattr(HerdrRuntime, '_state_changed', lambda self, agent, before, timeout: False)
@@ -1031,7 +1031,7 @@ def test_a_claude_turn_that_stopped_on_a_quota_503_is_resumed(
     resumed: Response = {'text': f'{stopped}❯ {herdr.RESUME_PROMPT}\n● Committed.\n────\n❯ \n────\n'}
     scripted(monkeypatch, pane_read=[{'text': stopped}, {'text': stopped}, resumed])
     outcome = HerdrRuntime('demo', tmp_path, sleep=sleeps.append).wait(claude_handle(), timeout=1000)
-    assert (outcome.status, outcome.error) == (WorkerStatus.IDLE, None)
+    assert (outcome.status, outcome.error) == (AgentStatus.IDLE, None)
     assert [c for c in calls(herdr_log) if c[:2] == ['agent', 'prompt']] == [
         ['agent', 'prompt', 'w1', herdr.RESUME_PROMPT]
     ]
@@ -1045,7 +1045,7 @@ CODEX_FIRST_TURN_SCREEN: Response = {
     '  read comes back cut short, then follow it.\n\n\n\n'
     '› Ask Codex to do anything\n\n  GPT-6.1-Sol high · ~/.piloop-new/runs/1506/worktree                ⚠ 1 warning\n'
 }
-"""What worker#3042's pane showed when piloop closed it 3 s into its first turn: the brief submitted above an empty
+"""What implementer#3042's pane showed when piloop closed it 3 s into its first turn: the brief submitted above an empty
 composer, no busy text. Its Codex session had recorded ``task_started`` 6 s before the pane closed."""
 
 
@@ -1073,19 +1073,19 @@ def test_a_quiet_first_turn_is_not_finished_within_the_startup_grace(
     working: Response = {'text': '• Working (12s • esc to interrupt)\n› Ask Codex to do anything\n'}
     scripted(monkeypatch, pane_read=[CODEX_FIRST_TURN_SCREEN] * 4 + [working, DONE_SCREEN])
     outcome = HerdrRuntime('demo', tmp_path, sleep=sleep).wait(first_turn_handle(clock[0]), timeout=1000)
-    assert (outcome.status, outcome.error) == (WorkerStatus.IDLE, None)
+    assert (outcome.status, outcome.error) == (AgentStatus.IDLE, None)
     looks = [c[:2] for c in calls(herdr_log)].count(['agent', 'wait'])
     assert (looks, clock[0]) == (4, 1080), 'two quiet looks in the grace, one at work, then idle past the grace'
 
     herdr_log.write_text('')
     scripted(monkeypatch, pane_read=[CODEX_FIRST_TURN_SCREEN])
     outcome = HerdrRuntime('demo', tmp_path, sleep=sleep).wait(first_turn_handle(clock[0] - 61), timeout=1000)
-    assert outcome.status is WorkerStatus.IDLE and [c[:2] for c in calls(herdr_log)].count(['agent', 'wait']) == 1, (
+    assert outcome.status is AgentStatus.IDLE and [c[:2] for c in calls(herdr_log)].count(['agent', 'wait']) == 1, (
         'past the grace a quiet idle is finished, and the launcher judges whether it ever worked'
     )
     herdr_log.write_text('')
     outcome = HerdrRuntime('demo', tmp_path, sleep=sleep).wait(claude_handle('codex'), timeout=1000)
-    assert outcome.status is WorkerStatus.IDLE and [c[:2] for c in calls(herdr_log)].count(['agent', 'wait']) == 1, (
+    assert outcome.status is AgentStatus.IDLE and [c[:2] for c in calls(herdr_log)].count(['agent', 'wait']) == 1, (
         'no prompted_at: no grace'
     )
 
@@ -1139,7 +1139,7 @@ response.interrupt","type":"invalid_request_error"}}
 
   GPT-6.1-Sol high · ~/.piloop-new/runs/1483/worktree                ⚠ 1 warning · f2 to view
 """
-"""The end of a Codex worker's screen after a steering prompt was submitted mid-turn (run#1483): Codex sent
+"""The end of a Codex agent's screen after a steering prompt was submitted mid-turn (run#1483): Codex sent
 ``response.interrupt``, its backend refused it, and the turn ended with the work half done."""
 
 
@@ -1157,7 +1157,7 @@ def test_a_codex_turn_cut_by_a_refused_interrupt_is_a_failed_turn_not_the_end(
     herdr_log.write_text('')
     scripted(monkeypatch, pane_read=[cut, cut, resumed])
     outcome = rt.wait(claude_handle('codex'), timeout=1000)
-    assert (outcome.status, outcome.error) == (WorkerStatus.IDLE, None)
+    assert (outcome.status, outcome.error) == (AgentStatus.IDLE, None)
     assert [c for c in calls(herdr_log) if c[:2] == ['agent', 'prompt']] == [
         ['agent', 'prompt', 'w1', herdr.RESUME_PROMPT]
     ]
@@ -1254,14 +1254,14 @@ def test_the_screens_and_the_queue_key_come_from_the_handle_or_for_an_older_hand
 
 
 BRIEF_POINTER = (
-    'Your brief is in /srv/piloop/workers/7/brief.md. Read all of it, in parts if a read comes back'
+    'Your brief is in /srv/piloop/agent_sessions/7/brief.md. Read all of it, in parts if a read comes back'
     ' cut short, then follow it.'
 )
 CLAUDE_DRAFT_SCREEN: Response = {
     'text': ' ▐▛███▜▌   Claude Code\n\n' + '\n' * 18 + '─' * 94 + '\n'
-    '❯ Your brief is in /srv/piloop/workers/7/brief.md. Read all of it, in parts\n'
+    '❯ Your brief is in /srv/piloop/agent_sessions/7/brief.md. Read all of it, in parts\n'
     '  if a read comes back cut short, then follow it.\n' + '─' * 94 + '\n'
-    '  Opus 5.5 · /srv/piloop/workers/7/worktree ⎇ f26bd3a2 · ⧗ 9s · 06:53\n'
+    '  Opus 5.5 · /srv/piloop/agent_sessions/7/worktree ⎇ f26bd3a2 · ⧗ 9s · 06:53\n'
     '  ⏵⏵ bypass permissions on (shift+tab to cycle)\n'
 }
 """What a Claude pane showed when piloop closed it 60 s after its brief was pasted: the brief still in the
@@ -1307,9 +1307,9 @@ def test_a_brief_left_in_the_composer_is_submitted_with_enter_never_pasted_again
 @pytest.mark.parametrize(
     ('kind', 'screen', 'holds'),
     [
-        ('claude', '❯ Your brief is in /srv/piloop/workers/7/brief.md. Read all of it', True),
+        ('claude', '❯ Your brief is in /srv/piloop/agent_sessions/7/brief.md. Read all of it', True),
         ('claude', 'Welcome to Claude Code\n', False),
-        ('pi', '> Your brief is in /srv/piloop/workers/7/brief.md. Read all of it', False),
+        ('pi', '> Your brief is in /srv/piloop/agent_sessions/7/brief.md. Read all of it', False),
     ],
     ids=['composer-to-the-last-line', 'no-composer-drawn-yet', 'kind-without-a-known-composer'],
 )

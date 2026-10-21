@@ -30,13 +30,15 @@ from piloop.daemon.serve import (
     secrets,
     service_unit,
 )
-from piloop.db.models import Idea, Run, RunStatus, Worker, WorkerState
+from piloop.db.models import AgentSession, AgentSessionState, Idea, Run, RunStatus
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
-from piloop.proc import TOKEN_ENV, child_env
+from piloop.proc import child_env
+from piloop.runtime import tags
+from piloop.runtime.tags import TAG_ENV
 from piloop.settings import DEFAULT_HOME, Settings
 from piloop.usage import UsageSpec
-from tests.conftest import at_head, hold_lock, register, wait_for_worker_handle, wait_until, write_toml
+from tests.conftest import at_head, hold_lock, register, wait_for_agent_session_handle, wait_until, write_toml
 from tests.db.test_migrations import alembic
 
 PILOOP = [sys.executable, '-m', 'piloop']
@@ -72,7 +74,7 @@ def reap_daemons(tmp_path: Path) -> Iterator[None]:
 
 def reap(home: Path) -> None:
     """SIGKILL every live process whose environment has ``PILOOP_HOME=<home>``."""
-    for pid, _, _ in proc.tagged(f'PILOOP_HOME={home}'):
+    for pid, _, _ in tags.tagged(f'PILOOP_HOME={home}'):
         with contextlib.suppress(ProcessLookupError):
             os.kill(pid, signal.SIGKILL)
 
@@ -82,19 +84,19 @@ def test_a_daemon_that_a_failed_test_leaves_is_reaped(tmp_path: Path) -> None:
     cfg = Settings(home=tmp_path / 'home')
     assert piloop(cfg.home, 'serve', '--detach').returncode == 0
     pid = int(cfg.pid_file.read_text())
-    assert pid in [p for p, _, _ in proc.tagged(f'PILOOP_HOME={cfg.home}')], 'with its children, if any'
+    assert pid in [p for p, _, _ in tags.tagged(f'PILOOP_HOME={cfg.home}')], 'with its children, if any'
     reap(cfg.home)
     wait_until(lambda: not alive(pid))
 
 
-def test_sigterm_kills_workers_and_exits(campaign_path: Path, tmp_path: Path, schema: Path) -> None:
+def test_sigterm_kills_implementers_and_exits(campaign_path: Path, tmp_path: Path, schema: Path) -> None:
     """The agent ends, and times out, only in an hour: a daemon that exits within the minute killed it.
 
     The minute is no measure of the shutdown. After the shutdown, the interpreter's exit collects the garbage of every
     module that piloop imports. That is about half a second of CPU, and a loaded runner stretches it past 15 seconds.
     """
     cfg = Settings(home=tmp_path / 'home')
-    write_toml(campaign_path, '#!/bin/sh\nsleep 3600 &\necho $! > ../child.pid\nwait\n', worker_timeout=3600)
+    write_toml(campaign_path, '#!/bin/sh\nsleep 3600 &\necho $! > ../child.pid\nwait\n', implementer_timeout=3600)
     at_head(schema, cfg.home / 'piloop.db')
     db = Database(cfg.database_url, actor=cfg.actor)
     campaign = register(db, campaign_path)
@@ -105,7 +107,7 @@ def test_sigterm_kills_workers_and_exits(campaign_path: Path, tmp_path: Path, sc
     with (tmp_path / 'daemon.log').open('w') as log:
         daemon = subprocess.Popen(SERVE_ARGV, stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env_for(cfg.home))
     try:
-        handle = wait_for_worker_handle(db)
+        handle = wait_for_agent_session_handle(db)
         child_pid_file = cfg.home / 'runs' / '1' / 'child.pid'
         wait_until(child_pid_file.is_file)
         child_pid = int(child_pid_file.read_text())
@@ -117,11 +119,13 @@ def test_sigterm_kills_workers_and_exits(campaign_path: Path, tmp_path: Path, sc
         with db.session() as s:
             run = s.get_one(Run, 1)
             assert (run.status, run.error) == (RunStatus.FAILED, STOPPED_ERROR)
-            assert [(w.state, w.error) for w in s.scalars(select(Worker))] == [(WorkerState.KILLED, STOPPED_ERROR)]
+            assert [(w.state, w.error) for w in s.scalars(select(AgentSession))] == [
+                (AgentSessionState.KILLED, STOPPED_ERROR)
+            ]
         assert not cfg.pid_file.exists()
         assert 'piloop.shutdown' in (tmp_path / 'daemon.log').read_text()
     finally:
-        # Left to the garbage collector, both warn in whichever test of this worker runs next, and fail that one.
+        # Left to the garbage collector, both warn in whichever test of this implementer runs next, and fail that one.
         daemon.kill()
         daemon.wait()
         db.close()
@@ -130,14 +134,14 @@ def test_sigterm_kills_workers_and_exits(campaign_path: Path, tmp_path: Path, sc
 def test_detach_survives_the_cli_and_stop_ends_it(tmp_path: Path) -> None:
     """An agent's shell runs it here: the daemon must neither sign as the agent nor die when the agent is killed."""
     cfg = Settings(home=tmp_path / 'home')
-    agent = env_for(cfg.home) | {TOKEN_ENV: 'w-1', 'PILOOP_ACTOR': 'worker#1'}
+    agent = env_for(cfg.home) | {TAG_ENV: 'w-1', 'PILOOP_ACTOR': 'implementer#1'}
     started = subprocess.run([*PILOOP, 'serve', '--detach'], capture_output=True, text=True, env=agent, timeout=60)
     assert started.returncode == 0 and started.stdout.rstrip().endswith(f'log {cfg.log_file}')
     wait_until(cfg.pid_file.is_file)
     pid = int(cfg.pid_file.read_text())
     assert started.stdout.startswith(f'daemon started: pid {pid},') and alive(pid)
     assert os.getsid(pid) == pid, 'its own session: closing the terminal cannot reach it'
-    assert not {TOKEN_ENV, 'PILOOP_ACTOR'} & set(psutil.Process(pid).environ()), "not the agent's token or signature"
+    assert not {TAG_ENV, 'PILOOP_ACTOR'} & set(psutil.Process(pid).environ()), "not the agent's tag or signature"
 
     again = piloop(cfg.home, 'serve', '--detach')
     foreground = piloop(cfg.home, 'serve')
@@ -344,7 +348,6 @@ def test_the_service_unit_carries_the_settings_of_the_shell_and_no_other_variabl
     }
     dropped = {
         'PILOOP_ACTOR': 'orchestrator',
-        'PILOOP_WORKER_TOKEN': 'w-1',
         'PILOOP_UNITS_FILE': '/home/me/units.json',
         'ANTHROPIC_API_KEY': 'sk-secret',
         'HERDR_SOCKET_PATH': '/home/me/herdr.sock',

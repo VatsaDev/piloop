@@ -12,6 +12,8 @@ from piloop.agents.launcher import STARTUP_ANOMALY, STOPPED_ERROR
 from piloop.campaign.stop import BLOCKED
 from piloop.config import CampaignConfig, load_campaign_config
 from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
     Campaign,
     CampaignStatus,
     Candidate,
@@ -23,13 +25,11 @@ from piloop.db.models import (
     IdeaStatus,
     LinkKind,
     Measurement,
+    RoleName,
     Run,
     RunStatus,
     TargetKind,
     Verdict,
-    Worker,
-    WorkerKind,
-    WorkerState,
 )
 from piloop.db.session import Database
 from piloop.reports import overview as overview_module
@@ -40,7 +40,7 @@ T = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 NOW = T + timedelta(hours=2)
 
 
-def no_jobs(worker: Worker) -> list[str]:
+def no_jobs(agent_session: AgentSession) -> list[str]:
     return []
 
 
@@ -87,14 +87,14 @@ def run(s: Session, i: Idea, status: RunStatus, base: int, start: float, end: fl
 def agent(
     s: Session,
     campaign: Campaign,
-    kind: WorkerKind,
+    kind: RoleName,
     start: float,
     lived: float,
     *,
     run_id: int | None = None,
     **kw: object,
-) -> Worker:
-    row = Worker(
+) -> AgentSession:
+    row = AgentSession(
         kind=kind,
         campaign_id=campaign.id,
         run_id=run_id,
@@ -102,7 +102,7 @@ def agent(
         runtime='subprocess',
         started_at=at(start),
         ended_at=at(start) + timedelta(seconds=lived),
-        **{'state': WorkerState.EXITED, **kw},
+        **{'state': AgentSessionState.EXITED, **kw},
     )
     s.add(row)
     s.flush()
@@ -144,18 +144,20 @@ def live_campaign(db: Database, campaign: Campaign) -> None:
         baseline.measurements[0].created_at = T
         good = idea(s, p, 'longer lines', IdeaStatus.DONE)
         first = run(s, good, RunStatus.SUCCEEDED, 1, 5, 20)
-        agent(s, p, WorkerKind.WORKER, 5, 600, run_id=first.id, usage={'total': 1000})
+        agent(s, p, RoleName.IMPLEMENTER, 5, 600, run_id=first.id, usage={'total': 1000})
         kept = candidate(s, p, 1, Verdict.KEEP, 3, 18, run_id=first.id)
         candidate(s, p, kept.id, Verdict.DISCARD, 3, 19, run_id=first.id)
         bad = idea(s, p, 'crash it', IdeaStatus.REJECTED)
         failed = run(s, bad, RunStatus.FAILED, 1, 30, 40, error='boom\nand the rest')
-        dead = agent(s, p, WorkerKind.WORKER, 30, 5, run_id=failed.id, state=WorkerState.KILLED, error='dialog')
-        startup = {'kind': 'worker', 'harness': 'script', 'run': failed.id, 'seconds': 5.0, 'error': 'dialog'}
+        dead = agent(
+            s, p, RoleName.IMPLEMENTER, 30, 5, run_id=failed.id, state=AgentSessionState.KILLED, error='dialog'
+        )
+        startup = {'kind': 'implementer', 'harness': 'script', 'run': failed.id, 'seconds': 5.0, 'error': 'dialog'}
         s.add(
             Event(
                 kind=STARTUP_ANOMALY,
                 actor='daemon',
-                target_kind=TargetKind.WORKER,
+                target_kind=TargetKind.AGENT_SESSION,
                 target_id=dead.id,
                 payload=startup,
                 at=at(30) + timedelta(seconds=5),
@@ -163,9 +165,9 @@ def live_campaign(db: Database, campaign: Campaign) -> None:
         )
         pinned = idea(s, p, 'build on longer lines', IdeaStatus.SCHEDULED, after=(good.id,), base_candidate_id=1)
         stuck = run(s, pinned, RunStatus.RUNNING, 1, 50, None)
-        agent(s, p, WorkerKind.WORKER, 50, 300, run_id=stuck.id, usage={'total': 2000})
+        agent(s, p, RoleName.IMPLEMENTER, 50, 300, run_id=stuck.id, usage={'total': 2000})
         idea(s, p, 'after the crash', IdeaStatus.READY, after=(bad.id,))
-        agent(s, p, WorkerKind.RESEARCH, 60, 120, usage={'total': 500})
+        agent(s, p, RoleName.RESEARCH, 60, 120, usage={'total': 500})
         s.add_all(
             [
                 Comment(
@@ -186,7 +188,11 @@ def live_campaign(db: Database, campaign: Campaign) -> None:
                     created_at=at(46),
                 ),
                 Comment(
-                    target_kind=TargetKind.IDEA, target_id=good.id, author='worker#1', body='a note', created_at=at(47)
+                    target_kind=TargetKind.IDEA,
+                    target_id=good.id,
+                    author='implementer#1',
+                    body='a note',
+                    created_at=at(47),
                 ),
             ]
         )
@@ -217,13 +223,13 @@ demo · head score 3 (candidate#2, +2 vs baseline) · 2 kept / 3 candidates · 4
   - 10-01 12:00 candidate#1 1 (start): baseline
   - 10-01 12:18 candidate#2 3 (+2) idea#1: score 3
 ### Now
-- Worker slots: 1 of 1 busy.
-  - run#3 idea#3 "build on longer lines" (script): running 1h, worker#3 ended 1h ago
+- Implementer slots: 1 of 1 busy.
+  - run#3 idea#3 "build on longer lines" (script): running 1h, agent_session#3 ended 1h ago
 - Ideas: 0 runnable, 1 blocked (idea#4 on idea#2 (rejected)); 0 seed, 0 proposed, 1 scheduled, 1 done, 0 parked, 1 rejected.
 - Agents live: none
-- Agents so far: 3 worker (1 killed), 0 watchdog, 1 research, 0 scout; 0 of 1 ended research sweeps defined no idea.
+- Agents so far: 3 implementer (1 killed), 0 watchdog, 1 research, 0 scout; 0 of 1 ended research sweeps defined no idea.
 - Ideas by source: research 4 ideas, 3 ran → 1 keep, 0 interesting.
-- Tokens: 4k (worker 3k, watchdog 0, research 500, scout 0); 500 by agents that ended in the last hour.
+- Tokens: 4k (implementer 3k, watchdog 0, research 500, scout 0); 500 by agents that ended in the last hour.
 - Evaluations: 3 (0 crashed); median 3.0 min, first 5 3.0 min, latest 5 3.0 min; 6.0 min in all; 0 candidates waiting for a verdict.
 ### Recent candidates (3 of 3; score, vs parent)
 - candidate#1 keep 1 (—), no run, 0s ago: baseline
@@ -231,7 +237,7 @@ demo · head score 3 (candidate#2, +2 vs baseline) · 2 kept / 3 candidates · 4
 - candidate#3 discard 3 (+0), run#1, 0s ago: score 3
 ### Anomalies the daemon detected
 - [incident] run#2 failed, 1h ago: failed on script (idea#2): boom
-- [incident] worker#2 dead at startup, 1h ago: worker on script failed to start (5.0s): dialog
+- [incident] agent_session#2 dead at startup, 1h ago: implementer on script failed to start (5.0s): dialog
 - candidate#3 scored exactly its parent, 1h ago: scored what candidate#2 did on score and on 1 of 1 other metrics; 3.0 min of evaluation
 ### Inbox (1 unacknowledged), decisions and escalations
 - comment#2 decision on campaign#1 by pi, 1h ago: keep going
@@ -240,7 +246,7 @@ demo · head score 3 (candidate#2, +2 vs baseline) · 2 kept / 3 candidates · 4
 - comment.note comment#3 0s ago · comment.decision comment#2 0s ago · comment.escalation comment#1 0s ago · idea.linked idea#4 0s ago · idea.linked idea#3 0s ago
 """)
     assert tools.startswith('- `piloop sql "<one statement>"`')
-    assert '  - workers(id, kind, campaign_id, run_id,' in tools, (
+    assert '  - agent_sessions(id, kind, campaign_id, run_id,' in tools, (
         'the schema is listed, so an agent does not need PRAGMA table_info'
     )
 
@@ -273,9 +279,9 @@ def test_a_fresh_campaign_has_little_to_say(db: Database, campaign: Campaign) ->
     assert "- No trunk keep: the baseline's verdict was overridden and nothing was kept since." in text
     assert '- Evaluations: 1 (0 crashed); median' not in text, 'the baseline has no recorded seconds'
     assert '- Evaluations: 1 (0 crashed); 1 candidates waiting for a verdict.' in text
-    assert '- campaign#1 idle, 2h ago: 1 free worker slots and no runnable idea; no research sweep pending' in text, (
-        'not tagged: an idle queue is a cost for the progress review, not an incident'
-    )
+    assert (
+        '- campaign#1 idle, 2h ago: 1 free implementer slots and no runnable idea; no research sweep pending' in text
+    ), 'not tagged: an idle queue is a cost for the progress review, not an incident'
     assert '### Inbox (0 unacknowledged), decisions and escalations\n- None.\n' in text
 
 
@@ -291,21 +297,21 @@ def test_the_idle_queue_counts_from_the_last_run_and_names_pending_research(db: 
     with db.session() as s:
         s.get_one(Run, 3).status = RunStatus.SUCCEEDED
         s.get_one(Run, 3).finished_at = at(70)
-        s.add(Worker(kind=WorkerKind.RESEARCH, campaign_id=campaign.id, started_at=at(100)))
+        s.add(AgentSession(kind=RoleName.RESEARCH, campaign_id=campaign.id, started_at=at(100)))
         s.commit()
         [idle] = [a for a in found(s, campaign) if a.kind is AnomalyKind.IDLE_QUEUE]
-    assert (idle.at, idle.detail) == (at(70), '1 free worker slots and no runnable idea; research#5 requested')
+    assert (idle.at, idle.detail) == (at(70), '1 free implementer slots and no runnable idea; research#5 requested')
 
 
 def test_max_runs_reached_is_not_idle(db: Database, campaign: Campaign) -> None:
     """Two runs count toward ``max_runs``. The run that failed with no candidate does not count."""
     live_campaign(db, campaign)
-    cfg = load_campaign_config(Path(campaign.path), stop={'max_runs': 2}, roles={'worker': {'max_concurrent': 4}})
+    cfg = load_campaign_config(Path(campaign.path), stop={'max_runs': 2}, roles={'implementer': {'max_concurrent': 4}})
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         assert AnomalyKind.IDLE_QUEUE not in {a.kind for a in anomalies(s, p, cfg, NOW, no_jobs)}
         p.status = CampaignStatus.STOPPED
-        uncapped = load_campaign_config(Path(campaign.path), roles={'worker': {'max_concurrent': 4}})
+        uncapped = load_campaign_config(Path(campaign.path), roles={'implementer': {'max_concurrent': 4}})
         assert AnomalyKind.IDLE_QUEUE not in {a.kind for a in anomalies(s, p, uncapped, NOW, no_jobs)}, (
             'a stopped campaign'
         )
@@ -320,7 +326,7 @@ def test_a_run_that_the_daemon_stopped_is_not_a_failed_run(db: Database, campaig
         assert f'run#{run.id}' not in {a.ref for a in found(s, campaign) if a.kind is AnomalyKind.RUN_FAILED}
 
 
-def test_a_run_blocked_on_its_workers_escalation_is_not_a_failed_run(db: Database, campaign: Campaign) -> None:
+def test_a_run_blocked_on_its_implementers_escalation_is_not_a_failed_run(db: Database, campaign: Campaign) -> None:
     """The escalation is in the inbox already: an incident sweep would only find it again."""
     live_campaign(db, campaign)
     with db.session() as s:
@@ -338,7 +344,7 @@ def found(s: Session, campaign: Campaign, now: datetime = NOW) -> list[overview_
 def test_a_short_life_without_the_launcher_event_is_not_a_startup_death(db: Database, campaign: Campaign) -> None:
     """The launcher decides that an agent died at startup (``STARTUP_ANOMALY``). The overview only reports it."""
     with db.session() as s:
-        agent(s, s.get_one(Campaign, campaign.id), WorkerKind.WATCHDOG, 0, 5)
+        agent(s, s.get_one(Campaign, campaign.id), RoleName.WATCHDOG, 0, 5)
         s.commit()
         assert [a.key for a in found(s, campaign) if a.kind is AnomalyKind.DEAD_AT_STARTUP] == []
 
@@ -350,21 +356,21 @@ def test_an_agent_that_investigates_incidents_dead_at_startup_is_no_incident(db:
     trigger by default; research has not, so a research agent that died at startup is an incident.
     """
     with db.session() as s:
-        for kind in (WorkerKind.WATCHDOG, WorkerKind.RESEARCH):
-            dead = agent(s, s.get_one(Campaign, campaign.id), kind, 0, 35, state=WorkerState.KILLED)
+        for kind in (RoleName.WATCHDOG, RoleName.RESEARCH):
+            dead = agent(s, s.get_one(Campaign, campaign.id), kind, 0, 35, state=AgentSessionState.KILLED)
             payload = {'kind': kind.value, 'harness': 'script', 'run': None, 'seconds': 35.0, 'error': 'prompt_lost'}
             s.add(
                 Event(
                     kind=STARTUP_ANOMALY,
                     actor='daemon',
-                    target_kind=TargetKind.WORKER,
+                    target_kind=TargetKind.AGENT_SESSION,
                     target_id=dead.id,
                     payload=payload,
                 )
             )
         s.commit()
         dead_at_startup = {a.key: a.incident for a in found(s, campaign) if a.kind is AnomalyKind.DEAD_AT_STARTUP}
-        assert dead_at_startup == {'worker#1 dead at startup': False, 'worker#2 dead at startup': True}
+        assert dead_at_startup == {'agent_session#1 dead at startup': False, 'agent_session#2 dead at startup': True}
 
 
 def test_a_crashed_measurement_or_an_unmeasured_parent_is_not_same_as_parent(db: Database, campaign: Campaign) -> None:
@@ -420,29 +426,37 @@ def test_open_runs_say_how_far_they_got(db: Database, campaign: Campaign) -> Non
         waiting = run(s, idea(s, p, 'waiting', IdeaStatus.SCHEDULED), RunStatus.QUEUED, 1, 100, None)
         waiting.started_at = None
         going = run(s, idea(s, p, 'going', IdeaStatus.SCHEDULED), RunStatus.RUNNING, 1, 110, None)
-        s.add(Worker(kind=WorkerKind.WORKER, campaign_id=p.id, run_id=going.id, state=WorkerState.RUNNING))
+        s.add(
+            AgentSession(kind=RoleName.IMPLEMENTER, campaign_id=p.id, run_id=going.id, state=AgentSessionState.RUNNING)
+        )
         s.commit()
-    cfg = load_campaign_config(Path(campaign.path), roles={'worker': {'max_concurrent': 2}})
+    cfg = load_campaign_config(Path(campaign.path), roles={'implementer': {'max_concurrent': 2}})
     lines = render(db, campaign, cfg).splitlines()
-    start = lines.index('- Worker slots: 2 of 2 busy.')
+    start = lines.index('- Implementer slots: 2 of 2 busy.')
     assert lines[start + 1 : start + 3] == [
         '  - run#1 idea#1 "waiting" (script): queued',
         '  - run#2 idea#2 "going" (script): running 10m',
     ]
 
 
-def busy(s: Session, campaign: Campaign, log_dir: Path | None, *, said: float | None = None) -> Worker:
-    """A worker running since minute 0 on run#1, which comments at minute ``said``."""
+def busy(s: Session, campaign: Campaign, log_dir: Path | None, *, said: float | None = None) -> AgentSession:
+    """An implementer running since minute 0 on run#1, which comments at minute ``said``."""
     p = s.get_one(Campaign, campaign.id)
     r = run(s, idea(s, p, 'train', IdeaStatus.SCHEDULED), RunStatus.RUNNING, 1, 0, None)
     r.log_dir = str(log_dir) if log_dir is not None else None
-    w = Worker(kind=WorkerKind.WORKER, campaign_id=p.id, run_id=r.id, state=WorkerState.RUNNING, started_at=at(0))
+    w = AgentSession(
+        kind=RoleName.IMPLEMENTER, campaign_id=p.id, run_id=r.id, state=AgentSessionState.RUNNING, started_at=at(0)
+    )
     s.add(w)
     s.flush()
     if said is not None:
         s.add(
             Comment(
-                target_kind=TargetKind.RUN, target_id=r.id, author=f'worker#{w.id}', body='ETA', created_at=at(said)
+                target_kind=TargetKind.RUN,
+                target_id=r.id,
+                author=f'implementer#{w.id}',
+                body='ETA',
+                created_at=at(said),
             )
         )
     s.commit()
@@ -456,8 +470,8 @@ class Jobs:
         self.running = list(running)
         self.asked: list[int] = []
 
-    def __call__(self, worker: Worker) -> list[str]:
-        self.asked.append(worker.id)
+    def __call__(self, agent_session: AgentSession) -> list[str]:
+        self.asked.append(agent_session.id)
         return self.running
 
 
@@ -467,23 +481,23 @@ def silent(s: Session, campaign: Campaign, jobs: Jobs, now: datetime = NOW) -> l
     return [a for a in found if a.kind is AnomalyKind.SILENT]
 
 
-def test_a_worker_quiet_for_an_hour_with_jobs_in_flight_is_an_incident(
+def test_an_implementer_quiet_for_an_hour_with_jobs_in_flight_is_an_incident(
     db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
     jobs = Jobs('4242 python train.py --epochs 90', '4243 tee train.log')
     with db.session() as s:
         busy(s, campaign, tmp_path / 'run', said=30)
         [quiet] = silent(s, campaign, jobs)
-    assert (quiet.key, quiet.at, quiet.incident) == ('worker#1 silent while its jobs run', at(90), True)
+    assert (quiet.key, quiet.at, quiet.incident) == ('agent_session#1 silent while its jobs run', at(90), True)
     assert quiet.detail == snapshot(
         'run#1 idea#1: no comment or commit for 1h (its last comment); 2 jobs in flight, e.g. 4242 python train.py --epochs 90'
     )
     with db.session() as s:
         text = overview(s, s.get_one(Campaign, campaign.id), CampaignConfig.model_validate(campaign.config), NOW, jobs)
-    assert '- [incident] worker#1 silent while its jobs run, 30m ago: run#1 idea#1' in text
+    assert '- [incident] agent_session#1 silent while its jobs run, 30m ago: run#1 idea#1' in text
 
 
-def test_a_worker_that_spoke_or_committed_within_the_hour_is_not_asked_about_its_jobs(
+def test_an_implementer_that_spoke_or_committed_within_the_hour_is_not_asked_about_its_jobs(
     db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
     jobs = Jobs('4242 python train.py')
@@ -507,12 +521,12 @@ def test_a_worker_that_spoke_or_committed_within_the_hour_is_not_asked_about_its
         ]
 
 
-def test_a_quiet_worker_with_nothing_running_is_not_silent(db: Database, campaign: Campaign) -> None:
-    """A silent worker with no job in flight is not an anomaly. The anomaly is about jobs that nobody watches."""
+def test_a_quiet_implementer_with_nothing_running_is_not_silent(db: Database, campaign: Campaign) -> None:
+    """A silent implementer with no job in flight is not an anomaly. The anomaly is about jobs that nobody watches."""
     jobs = Jobs()
     with db.session() as s:
-        worker = busy(s, campaign, None)
-        assert silent(s, campaign, jobs) == [] and jobs.asked == [worker.id]
+        agent_session = busy(s, campaign, None)
+        assert silent(s, campaign, jobs) == [] and jobs.asked == [agent_session.id]
 
 
 def test_branches_and_notes_say_where_else_a_run_may_start(db: Database, campaign: Campaign) -> None:
@@ -561,18 +575,20 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, campai
         s.add(IdeaLink(idea_id=newer.id, target_id=4, kind=LinkKind.SUPERSEDES))
         s.add_all(
             [
-                Worker(
-                    kind=WorkerKind.RESEARCH,
+                AgentSession(
+                    kind=RoleName.RESEARCH,
                     campaign_id=p.id,
                     harness='script',
                     model='m',
                     runtime='subprocess',
-                    state=WorkerState.RUNNING,
+                    state=AgentSessionState.RUNNING,
                     started_at=at(115),
                     reason='low_water: 2 ready < 10',
                     log_dir=str(log_dir),
                 ),
-                Worker(kind=WorkerKind.WATCHDOG, campaign_id=p.id, state=WorkerState.REQUESTED, reason='cron'),
+                AgentSession(
+                    kind=RoleName.WATCHDOG, campaign_id=p.id, state=AgentSessionState.REQUESTED, reason='cron'
+                ),
             ]
         )
         s.add(Event(kind='idea.created', actor='cli', target_kind=TargetKind.IDEA, target_id=newer.id, at=at(110)))
@@ -581,17 +597,17 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, campai
     now = text[text.index('### Now') : text.index('### Anomalies')]
     assert now == snapshot("""\
 ### Now
-- Worker slots: 1 of 1 busy.
-  - run#3 idea#3 "build on longer lines" (script): running 1h, worker#3 ended 1h ago
+- Implementer slots: 1 of 1 busy.
+  - run#3 idea#3 "build on longer lines" (script): running 1h, agent_session#3 ended 1h ago
 - Ideas: 3 runnable, 0 blocked; 0 seed, 0 proposed, 1 scheduled, 2 done, 0 parked, 0 rejected.
   - idea#5 p0 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa…" by research#4, 20m ago
   - idea#6 p1 "even longer lines" by research#4, 10m ago; supersedes idea#4
   - idea#4 p2 "after the crash" by research#4, 0s ago; after idea#2; superseded by idea#6
 - Agents live: 1; requested: watchdog#6
   - research#5 script/m 5m, on low_water: 2 ready < 10: ran evaluate.py: METRIC score=3
-- Agents so far: 3 worker (1 killed), 1 watchdog, 2 research, 0 scout; 0 of 1 ended research sweeps defined no idea.
+- Agents so far: 3 implementer (1 killed), 1 watchdog, 2 research, 0 scout; 0 of 1 ended research sweeps defined no idea.
 - Ideas by source: research 6 ideas, 3 ran → 1 keep, 0 interesting.
-- Tokens: 4k (worker 3k, watchdog 0, research 500, scout 0); 500 by agents that ended in the last hour.
+- Tokens: 4k (implementer 3k, watchdog 0, research 500, scout 0); 500 by agents that ended in the last hour.
 - Evaluations: 3 (0 crashed); median 3.0 min, first 5 3.0 min, latest 5 3.0 min; 6.0 min in all; 0 candidates waiting for a verdict.
 ### Recent candidates (3 of 3; score, vs parent)
 - candidate#1 keep 1 (—), no run, 0s ago: baseline
@@ -631,7 +647,7 @@ CODEX_SCREEN = """\
 • Ran the evaluation; measurement pending.
   Worked for 7m 23s • 4:21 PM
 › Ask Codex to do anything
-  GPT-6.1-Sol high · ~/.piloop/runs/95/worktree · Test worker idea
+  GPT-6.1-Sol high · ~/.piloop/runs/95/worktree · Test implementer idea
   ? for shortcuts                                         ⚠ 3 warnings · f2 to view
 """
 PI_SCREEN = """\
@@ -668,10 +684,10 @@ def test_live_agents_say_their_last_words_from_the_session_file_else_the_screen_
             ('w5', None, None, None),
         ):
             s.add(
-                Worker(
-                    kind=WorkerKind.RESEARCH,
+                AgentSession(
+                    kind=RoleName.RESEARCH,
                     campaign_id=campaign.id,
-                    state=WorkerState.RUNNING,
+                    state=AgentSessionState.RUNNING,
                     harness=harness,
                     model='m' if harness else None,
                     session_id=session_id,

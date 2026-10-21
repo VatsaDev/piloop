@@ -6,7 +6,7 @@ description: A coding agent of your choice runs the campaign for you and records
 ## The orchestrator
 
 The **orchestrator** is a coding agent that runs the campaign for you. It answers what the other agents escalate,
-manages the ideas, asks for research and watchdog sweeps, steers workers and reports progress. It is not a role: the
+manages the ideas, asks for research and watchdog sweeps, steers implementers and reports progress. It is not a role: the
 daemon never starts it and works without one. It is any coding agent that you start in the repo, with the
 `piloop-operate` skill. When an agent sets up a campaign for you, it offers to be the orchestrator at the end of the
 setup.
@@ -54,8 +54,8 @@ Otherwise it returns at the timeout. Its last line, after `next: `, is the comma
 
 ## Comments
 
-Agents and humans talk through **comments** on a campaign, an idea, a run, a candidate, a measurement, a worker or
-another comment. A comment has a kind:
+Agents and humans talk through **comments** on a campaign, an idea, a run, a candidate, a measurement, an agent session
+or another comment. A comment has a kind:
 
 | Kind | Use |
 |---|---|

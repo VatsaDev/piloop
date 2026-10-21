@@ -18,7 +18,7 @@ The design optimizes three things, in this order:
 1. **The best final result.** A commit is kept only when its gain is statistically real and every guardrail metric
    holds.
 2. **Reaching that result fast.** The daemon runs the most urgent ideas first, several at a time.
-3. **A short experiment loop.** Each run starts in a fresh worktree of the head. The worker slot is free again as soon
+3. **A short experiment loop.** Each run starts in a fresh worktree of the head. The implementer slot is free again as soon
    as the agent ends, while the daemon measures the commits.
 
 The state is one SQLite file. Agents read and write it with plain SQL through `piloop sql`, and the skills use the
@@ -35,12 +35,12 @@ flowchart LR
     research["Research agent"] -->|ideas, developed seeds| queue
     watchdog["Watchdog agent"] -->|seeds| queue
     queue --> daemon["Daemon"]
-    daemon -->|one run per idea| worker["Worker agent<br/>in its own git worktree"]
-    worker -->|commits| evaluate["Evaluate command"]
-    worker -->|findings| research
+    daemon -->|one run per idea| implementer["Implementer agent<br/>in its own git worktree"]
+    implementer -->|commits| evaluate["Evaluate command"]
+    implementer -->|findings| research
     evaluate -->|metrics| verdict{"Verdict"}
     verdict -->|keep| head["Head"]
-    head -->|the next runs start here| worker
+    head -->|the next runs start here| implementer
 ```
 
 ## Who adds ideas
@@ -53,7 +53,7 @@ Anyone can add to the queue. Each actor sees different information, so each one 
 | Orchestrator | Ideas and seeds. The priority and status of any idea. | The inbox and the campaign status. |
 | Research | Develops each seed into an idea or rejects it. Adds ideas of its own, with a priority. | The campaign overview and the research pack: what was tried, by family, and every finding. |
 | Watchdog | Seeds, for example a retry that avoids a failure. Escalations for the orchestrator. | The campaign overview, and the research pack or the incidents to investigate. |
-| Worker | A hunch in its `finding` comment. Research reads it. A worker files no ideas or seeds. | Its brief: its idea, its starting point, the comments on the idea, and the history. |
+| Implementer | A hunch in its `finding` comment. Research reads it. An implementer files no ideas or seeds. | Its brief: its idea, its starting point, the comments on the idea, and the history. |
 | Daemon | Puts an idea back in the queue when its run failed and attempts are left. Files a seed when a rebase conflicts. Rejects an idea that a newer one supersedes before it ran. | The database. |
 
 Research and the watchdog do not change the priority or the status of ideas that they did not file. The orchestrator
@@ -74,7 +74,7 @@ flowchart LR
     end
     runtime{{"Runtime<br/>subprocess, herdr or a package's"}}
     subgraph agents["Agents: a harness in a git worktree"]
-        worker["worker"]
+        implementer["implementer"]
         research["research"]
         watchdog["watchdog"]
     end
@@ -85,7 +85,7 @@ flowchart LR
     orch --> cli
     cli -->|SQL| db
     daemon -->|SQL| db
-    scheduler -->|worker runs| executor
+    scheduler -->|implementer runs| executor
     scheduler -->|research and<br/>watchdog sweeps| launcher
     executor --> launcher
     launcher -->|harness argv, brief| runtime
@@ -107,7 +107,7 @@ flowchart LR
 - **The [runtime](/concepts/runtimes)** is where an agent process runs: a background process by default, or a
   [Herdr](https://herdr.dev) pane that you can watch and steer. A package can add others.
 - **The harness** is the coding agent CLI: Claude Code, Codex or pi. A `[harness.<name>]` table says how to start it.
-- **The agents** each work in their own git worktree. A worker tries one idea. Research, the watchdog and the roles that
+- **The agents** each work in their own git worktree. An implementer tries one idea. Research, the watchdog and the roles that
   you define are [sweeps](/concepts/roles) that read the state of the campaign and write ideas, seeds and comments.
 - **The evaluate command** is your program. The daemon runs it in a clean worktree of each commit and stores what it
   prints as a measurement.

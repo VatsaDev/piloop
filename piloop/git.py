@@ -195,7 +195,7 @@ def trailers(repo: Repo, sha: str, key: str) -> list[str]:
     """The values of the commit's own ``key`` trailers, in order. Keys are not case-sensitive, as in git.
 
     A trailer is a ``key: value`` line anywhere after the subject. Git reads trailers only in the last paragraph, but
-    a harness adds its own (``Co-Authored-By``, a "Generated with" line) in paragraphs after the worker's. A line that
+    a harness adds its own (``Co-Authored-By``, a "Generated with" line) in paragraphs after the implementer's. A line that
     starts with whitespace continues the value of the trailer above it, as in git.
     """
     line = re.compile(rf'{re.escape(key)}[ \t]*:(.*)', re.IGNORECASE)

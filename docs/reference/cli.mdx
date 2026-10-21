@@ -84,7 +84,7 @@ piloop stop [--timeout SECONDS]
 ```
 
 Sends SIGTERM to the daemon and waits up to `--timeout` seconds (default 30) for it to exit. The daemon stops the
-running agents, and their runs fail with `daemon stopped`. Their ideas go back to `ready`. A run whose worker already
+running agents, and their runs fail with `daemon stopped`. Their ideas go back to `ready`. A run whose implementer already
 left its finding is finished, not stopped: the next `piloop serve` scores its commits, and its idea does not run
 again. The campaigns stay active, and the next `piloop serve` continues them. A campaign ends only at its `[stop]`
 limits.
@@ -97,9 +97,9 @@ piloop campaign stop REF [--kill] [--reason TEXT]
 
 Stops a campaign. The daemon stops it on its next tick, as when a [`[stop]` condition](/concepts/cost) holds: it
 drops the queued runs and the requested agents, the `stopped` triggers request the closing review, and each running
-worker is told to commit and stop, then ended 10 minutes later. What the workers committed is scored. With `--kill`,
-the workers are ended at once, without the prompt, and their commits are still scored. On a stopped campaign, `--kill`
-ends the workers that are still winding down. `--reason` goes into `stopped_reason`, after who stopped it. It also stops a campaign that
+implementer is told to commit and stop, then ended 10 minutes later. What the implementers committed is scored. With `--kill`,
+the implementers are ended at once, without the prompt, and their commits are still scored. On a stopped campaign, `--kill`
+ends the implementers that are still winding down. `--reason` goes into `stopped_reason`, after who stopped it. It also stops a campaign that
 is paused or held at its `[spend]` limit. A paused campaign gets its closing review; a held one as `[spend]
 closing_review` says ([Cost and spend limits](/concepts/cost#spend-outside-piloop)).
 
@@ -154,12 +154,12 @@ Ends the pause. The daemon queues runs and requests roles again on its next tick
 piloop idea add REF TITLE [options]
 ```
 
-Adds a defined idea. A `ready` idea runs when a worker slot is free, in order of priority.
+Adds a defined idea. A `ready` idea runs when an implementer slot is free, in order of priority.
 
 | Option | Meaning |
 |---|---|
 | `--hypothesis` | Why the idea should help, and by how much. |
-| `--plan` | Concrete steps for the worker. |
+| `--plan` | Concrete steps for the implementer. |
 | `--from` | What prompted the idea, with ids or a URL. |
 | `--family` | The mechanism family. Ideas that try the same mechanism share it. |
 | `--priority` | 0 (urgent) to 4 (someday). Default 2. |
@@ -170,7 +170,7 @@ Adds a defined idea. A `ready` idea runs when a worker slot is free, in order of
 | `--after` | An idea to wait for. Repeat it for several. |
 | `--supersedes` | An idea that this one refines. Repeat it for several. |
 
-Research, the orchestrator and humans add ideas. A watchdog files a seed with `piloop idea seed` instead, and a worker
+Research, the orchestrator and humans add ideas. A watchdog files a seed with `piloop idea seed` instead, and an implementer
 files neither.
 
 ### piloop idea seed
@@ -449,12 +449,12 @@ piloop launch REF ROLE [--harness NAME] [--model MODEL] [--reason TEXT]
 Asks the daemon for one more agent of `ROLE`, a sweeping role: `watchdog`, `research`, `scout` or a
 [role that you defined](/concepts/roles#define-a-role). The daemon starts it on its next tick, within the role's
 `max_concurrent`.
-Only the daemon starts workers, because a worker needs a run.
+Only the daemon starts implementers, because an implementer needs a run.
 
 ### piloop attach
 
 ```text
-piloop attach WORKER_ID
+piloop attach AGENT_SESSION_ID
 ```
 
 Shows a running agent in this terminal. The [runtime](/concepts/runtimes) of the agent defines how. When the runtime
@@ -463,11 +463,11 @@ cannot, the command says so and tells you where to look instead.
 ### piloop prompt
 
 ```text
-piloop prompt WORKER_ID TEXT
+piloop prompt AGENT_SESSION_ID TEXT
 ```
 
 Queues `TEXT` for the next turn of a running agent of any role. The [runtime](/concepts/runtimes) of the agent
-defines how the message reaches it. When the runtime cannot deliver it, the command says why. The worker ids are in
+defines how the message reaches it. When the runtime cannot deliver it, the command says why. The agent session ids are in
 `piloop status`.
 
 ### piloop run cancel
@@ -476,19 +476,19 @@ defines how the message reaches it. When the runtime cannot deliver it, the comm
 piloop run cancel RUN_ID [--wrap-up]
 ```
 
-Cancels a queued or running run on the daemon's next tick. A queued run never starts, and a run whose worker fails to
-start is not launched again. A running worker is ended with
-[every process that it started](/concepts/runtimes#when-an-agent-ends), also those in sessions of their own. With `--wrap-up`, the worker is first told to
-commit and stop, and ended 10 minutes later. The run closes as `cancelled`, unless its worker left its finding.
+Cancels a queued or running run on the daemon's next tick. A queued run never starts, and a run whose implementer fails to
+start is not launched again. A running implementer is ended with
+[every process that it started](/concepts/runtimes#when-an-agent-ends), also those in sessions of their own. With `--wrap-up`, the implementer is first told to
+commit and stop, and ended 10 minutes later. The run closes as `cancelled`, unless its implementer left its finding.
 Its commits are scored, it counts toward no run limit, and its idea is parked: set the idea `ready` to run it again.
 
 ### piloop agent cancel
 
 ```text
-piloop agent cancel WORKER_ID [--wrap-up]
+piloop agent cancel AGENT_SESSION_ID [--wrap-up]
 ```
 
-Cancels an agent of any role on the daemon's next tick: a sweep, or a worker, whose run it cancels as
+Cancels an agent of any role on the daemon's next tick: a sweep, or an implementer, whose run it cancels as
 `piloop run cancel` does. A requested agent never starts. A running one is ended with every process that it started,
 at once or, with `--wrap-up`, after it was told to commit and stop.
 

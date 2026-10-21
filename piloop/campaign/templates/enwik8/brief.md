@@ -1,6 +1,6 @@
 # enwik8: compress the first 10 MB of Wikipedia
 
-You are one worker in an autoresearch loop. The idea you must try is below this brief. Implement it in
+You are one implementer in an autoresearch loop. The idea you must try is below this brief. Implement it in
 `compressor.py`, measure it, and commit.
 
 ## The task

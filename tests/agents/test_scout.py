@@ -12,26 +12,26 @@ from piloop.agents.scout import MIN_WINDOW, WATCH_RUNS, WINDOW, sources, watch_l
 from piloop.campaign.ideas import yields
 from piloop.config import ScoutRole, load_campaign_config
 from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
     Campaign,
     Candidate,
     Comment,
     CommentKind,
     Idea,
     IdeaStatus,
+    RoleName,
     Run,
     RunStatus,
     Technique,
     Verdict,
-    Worker,
-    WorkerKind,
-    WorkerState,
     utcnow,
 )
 from piloop.db.session import Database
 from piloop.reports.history import history
 from piloop.reports.overview import overview
 from tests.conftest import ScriptRuntime, write_toml
-from tests.daemon.test_triggers import add_ideas, backdate, configure, occupy, scheduler, workers
+from tests.daemon.test_triggers import add_ideas, agent_sessions, backdate, configure, occupy, scheduler
 
 PYTHON = shlex.quote(sys.executable)
 FAKE_SCOUT = f"""#!/bin/sh
@@ -71,8 +71,8 @@ def test_a_scout_sweep_fires_on_its_interval_as_a_row_of_its_own_beside_research
     scout_due(db, campaign, 61)
     add_ideas(db, campaign, 1, by='watchdog#9', status=IdeaStatus.SEED)
     assert sorted(sched.tick()) == [1, 2], 'a seed sweep and a scout sweep, each in a slot of its own role'
-    assert workers(db, WorkerKind.RESEARCH)[0][2] == '1 new seeds to develop'
-    assert workers(db, WorkerKind.SCOUT)[0][2] == 'timer: 60s'
+    assert agent_sessions(db, RoleName.RESEARCH)[0][2] == '1 new seeds to develop'
+    assert agent_sessions(db, RoleName.SCOUT)[0][2] == 'timer: 60s'
     sched.wait(10)
     assert sched.tick() == [], 'the last scout started a moment ago'
     backdate(db, 2, 61)
@@ -96,7 +96,7 @@ def test_a_scout_sweep_reads_its_context_signs_as_a_scout_and_files_only_seeds_a
     brief = (workspace / 'brief-seen.txt').read_text()
     assert brief.startswith('# Scout sweep\n')
     assert '# Research sweep' not in brief, 'the scout brief replaces the research brief'
-    assert "- Sign what you write as 'scout#1'" in brief and '- You are worker#1, the scout for campaign#1' in brief
+    assert "- Sign what you write as 'scout#1'" in brief and '- You are scout#1, the scout for campaign#1' in brief
     assert '- Seeds you may file: at most 2; every other technique worth keeping goes to the library.' in brief
     assert f'- Search window: since {(utcnow() - WINDOW).strftime("%Y-%m-%d")}' in brief
     assert '## Scout: watch list (sources whose seeds research developed; query each directly)\n- Empty' in brief
@@ -106,7 +106,7 @@ def test_a_scout_sweep_reads_its_context_signs_as_a_scout_and_files_only_seeds_a
     assert (workspace / 'actor.txt').read_text() == 'scout#1'
     assert 'scout#1 files seeds, not ideas' in (workspace / 'refused.txt').read_text()
     with db.session() as s:
-        assert s.get_one(Worker, 1).state is WorkerState.EXITED
+        assert s.get_one(AgentSession, 1).state is AgentSessionState.EXITED
         [seed] = s.scalars(select(Idea).where(Idea.status == IdeaStatus.SEED)).all()
         assert (seed.created_by, seed.title) == ('scout#1', 'CTC beam search with a digit lexicon')
         [technique] = s.scalars(select(Technique)).all()
@@ -169,7 +169,11 @@ def add_scouts(db: Database, campaign: Campaign, n: int) -> None:
     with db.session() as s:
         for _ in range(n):
             time.sleep(0.01)
-            s.add(Worker(kind=WorkerKind.SCOUT, campaign_id=campaign.id, state=WorkerState.EXITED, started_at=utcnow()))
+            s.add(
+                AgentSession(
+                    kind=RoleName.SCOUT, campaign_id=campaign.id, state=AgentSessionState.EXITED, started_at=utcnow()
+                )
+            )
         s.commit()
 
 
@@ -190,32 +194,32 @@ def test_a_developed_source_joins_the_watch_list_and_ages_out_unless_it_kept(db:
     developed = developed_seed(db, campaign, 'developed', 'https://x.com/a/status/1 https://github.com/o/r')
     kept = developed_seed(db, campaign, 'kept', 'https://x.com/b/status/2', kept=True)
     with db.session() as s:
-        assert [(w.source, w.ideas, w.kept) for w in watch_list(s, campaign.id, WorkerKind.SCOUT)] == [
+        assert [(w.source, w.ideas, w.kept) for w in watch_list(s, campaign.id, RoleName.SCOUT)] == [
             ('@b', [kept], True),
             ('@a', [developed], False),
             ('o/r', [developed], False),
         ]
-        assert watch_list(s, campaign.id, WorkerKind.SCOUT)[1].line() == (
+        assert watch_list(s, campaign.id, RoleName.SCOUT)[1].line() == (
             f'- @a (developed, {WATCH_RUNS} more scout sweeps unless one pays off; idea#{developed})'
         )
-        assert watch_list(s, campaign.id, WorkerKind.SCOUT)[0].line() == f'- @b (kept; idea#{kept})'
+        assert watch_list(s, campaign.id, RoleName.SCOUT)[0].line() == f'- @b (kept; idea#{kept})'
     add_scouts(db, campaign, WATCH_RUNS)
     with db.session() as s:
-        assert [w.source for w in watch_list(s, campaign.id, WorkerKind.SCOUT)] == ['@b'], 'what never kept ages out'
+        assert [w.source for w in watch_list(s, campaign.id, RoleName.SCOUT)] == ['@b'], 'what never kept ages out'
 
 
 def test_the_search_window_starts_at_the_previous_scout_at_least_a_week_back(db: Database, campaign: Campaign) -> None:
     now = utcnow()
     with db.session() as s:
-        assert window(s, campaign.id, WorkerKind.SCOUT, 99, now) == now - WINDOW
+        assert window(s, campaign.id, RoleName.SCOUT, 99, now) == now - WINDOW
     add_scouts(db, campaign, 1)
     with db.session() as s:
-        assert window(s, campaign.id, WorkerKind.SCOUT, 99, now) == now - MIN_WINDOW, (
+        assert window(s, campaign.id, RoleName.SCOUT, 99, now) == now - MIN_WINDOW, (
             'a scout an hour ago still looks a week back'
         )
-        started = s.get_one(Worker, 1).started_at = now - timedelta(days=12)
+        started = s.get_one(AgentSession, 1).started_at = now - timedelta(days=12)
         s.commit()
-        assert window(s, campaign.id, WorkerKind.SCOUT, 99, now) == started
+        assert window(s, campaign.id, RoleName.SCOUT, 99, now) == started
 
 
 def test_a_scout_requested_by_hand_while_its_timer_is_off_files_the_default_number_of_seeds(
@@ -225,7 +229,7 @@ def test_a_scout_requested_by_hand_while_its_timer_is_off_files_the_default_numb
     configure(db, campaign, '#!/bin/sh\ncat ../brief.md > workspace/brief-seen.txt\n', research={'max_ideas': 0})
     occupy(db, campaign)
     with db.session() as s:
-        s.add(Worker(kind=WorkerKind.SCOUT, campaign_id=campaign.id, reason='by hand'))
+        s.add(AgentSession(kind=RoleName.SCOUT, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     sched = scheduler(db, runtime, tmp_path)
     assert sched.tick() == [1]

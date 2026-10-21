@@ -153,7 +153,20 @@ def usage_dirs(toml: Path, raw: dict[str, object]) -> None:
         )
 
 
+def worker_role(toml: Path, raw: dict[str, object]) -> None:
+    """``[roles.worker]`` is ``[roles.implementer]``: the role that runs one idea in its own worktree.
+
+    A key that ``[roles.implementer]`` sets too keeps its value there.
+    """
+    roles = _table(raw, 'roles')
+    if roles is None or (old := roles.pop('worker', None)) is None:
+        return
+    roles['implementer'] = (old if isinstance(old, dict) else {}) | (_table(roles, 'implementer') or {})
+    warn(toml, 'roles.worker', '[roles.worker] is deprecated; write [roles.implementer]', removed_in=REMOVED_IN)
+
+
 BRIDGES: tuple[Bridge, ...] = (
+    worker_role,
     research_scout,
     scout_trigger,
     research_buffer,
@@ -194,6 +207,35 @@ def old_env(toml: Path, environ: Mapping[str, str]) -> None:
     for name in sorted(n for n in environ if n.upper().startswith(OLD_ENV_PREFIX)):
         new = 'PILOOP_CAMPAIGN_' + name[len(OLD_ENV_PREFIX) :]
         warn(toml, name, f'{name} is deprecated; set {new}', removed_in=REMOVED_IN)
+
+
+OLD_SIGNATURE = 'worker#'
+"""The signature of an implementer before 0.2.0, ``worker#<id>``. An agent that an older daemon started outlives an
+upgrade with it: in its ``PILOOP_ACTOR``, and in the SQL that its brief told it to write (``'<you>'``)."""
+
+
+def signatures(kind: str, agent_session_id: int) -> tuple[str, ...]:
+    """Return the signatures of an agent session's rows: ``<kind>#<id>``, and an implementer's ``worker#<id>`` too.
+
+    The checks that find an agent's own rows (its work at startup, its finding, its open escalation, its own comments,
+    its silence) match authors against these, so a row that a 0.1.0 agent signs after the upgrade still counts.
+    TODO(0.3.0): delete it, and match ``<kind>#<id>`` alone.
+    """
+    own = f'{kind}#{agent_session_id}'
+    return (own, f'{OLD_SIGNATURE}{agent_session_id}') if kind == 'implementer' else (own,)
+
+
+def old_actor(actor: str) -> str:
+    """Return ``actor`` with the implementer's signature for ``worker#<id>``, with a warning; else ``actor`` as it is."""
+    if not actor.startswith(OLD_SIGNATURE):
+        return actor
+    new = 'implementer#' + actor.removeprefix(OLD_SIGNATURE)
+    warnings.warn(
+        f'PILOOP_ACTOR={actor} is deprecated; the daemon signs an implementer {new}; removed in piloop {REMOVED_IN}',
+        PiloopDeprecationWarning,
+        stacklevel=2,
+    )
+    return new
 
 
 def show_in_cli() -> None:

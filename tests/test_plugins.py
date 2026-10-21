@@ -158,7 +158,7 @@ def test_a_failed_composition_unregisters_what_it_activated_and_keeps_what_was_a
     typed = EntryPoint('typed', f'{PLUGIN}:Typed', RUNTIMES.group)
     installed(monkeypatch, [typed, EntryPoint('auditor', f'{PLUGIN}:NOT_A_ROLE', ROLES.group)])
     REMOTES.providers()
-    with pytest.raises(PluginError, match='is not a piloop SweepRole or WorkerRole'):
+    with pytest.raises(PluginError, match='is not a piloop SweepRole or ImplementerRole'):
         compose(RUNTIMES, TRIGGERS, ROLES)
     assert [c.active for c in (RUNTIMES, TRIGGERS, ROLES, REMOTES)] == [False, False, False, True]
     installed(monkeypatch, [typed])

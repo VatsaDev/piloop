@@ -23,6 +23,8 @@ from textual.widgets import HelpPanel
 from piloop.campaign import inbox, ops
 from piloop.config import CampaignConfig
 from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
     Campaign,
     CampaignStatus,
     Candidate,
@@ -32,13 +34,11 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Measurement,
+    RoleName,
     Run,
     RunStatus,
     TargetKind,
     Verdict,
-    Worker,
-    WorkerKind,
-    WorkerState,
     utcnow,
 )
 from piloop.db.session import Database
@@ -141,31 +141,31 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Campaign:
         idea(s, p, 'soft voting', IdeaStatus.PROPOSED, priority=2, created_at=ago(minutes=4))
         s.add_all(
             [
-                Worker(
-                    kind=WorkerKind.WORKER,
+                AgentSession(
+                    kind=RoleName.IMPLEMENTER,
                     campaign_id=p.id,
                     run_id=live_run.id,
                     harness='pi',
                     model='m',
                     runtime='herdr',
-                    handle={'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': 'worker-1'},
-                    state=WorkerState.RUNNING,
+                    handle={'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': 'implementer-1'},
+                    state=AgentSessionState.RUNNING,
                     started_at=ago(minutes=3),
                 ),
-                Worker(
-                    kind=WorkerKind.RESEARCH,
+                AgentSession(
+                    kind=RoleName.RESEARCH,
                     campaign_id=p.id,
                     harness='claude',
                     model='opus',
-                    state=WorkerState.STARTING,
+                    state=AgentSessionState.STARTING,
                     reason='low_water: 1 ready < 10',
                     log_dir=str(log_dir),
                     started_at=ago(minutes=10, seconds=30),  # "10m" for 30 s: "40s" became "41s" on a loaded host
                 ),
-                Worker(
-                    kind=WorkerKind.WATCHDOG,
+                AgentSession(
+                    kind=RoleName.WATCHDOG,
                     campaign_id=p.id,
-                    state=WorkerState.EXITED,
+                    state=AgentSessionState.EXITED,
                     usage={'total': 1_234_567, 'turns': 9, 'source': '/x.jsonl'},
                 ),
             ]
@@ -230,7 +230,9 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Campaign:
     return campaign
 
 
-BLOCKED_AGENT: Response = {'result': {'type': 'agent_info', 'agent': {'name': 'worker-1', 'agent_status': 'blocked'}}}
+BLOCKED_AGENT: Response = {
+    'result': {'type': 'agent_info', 'agent': {'name': 'implementer-1', 'agent_status': 'blocked'}}
+}
 
 
 def comment(s: object, comment_id: int) -> Comment:
@@ -270,8 +272,8 @@ def test_the_campaigns_screen_opens_a_campaign_and_esc_comes_back(
 │ p2  decision    pi          20m  Keep #2: the floor holds.                           ││ unacknowledged                                                       │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯│                                                                      │
 ╭─ [2] Agents 2 ───────────────────────────────────────────────────────────────────────╮│ Codex cannot start: trust dialog. Environment or harness?            │
-│ ● #1  worker    working  pi/m         3m   idea#2 longer lines                       ││ Second line.                                                         │
-│ · #2  research  —        claude/opus  10m  low_water: 1 ready < 10                   ││                                                                      │
+│ ● #1  implementer  working  pi/m         3m   idea#2 longer lines                    ││ Second line.                                                         │
+│ · #2  research     —        claude/opus  10m  low_water: 1 ready < 10                ││                                                                      │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯│                                                                      │
 ╭─ [3] Ideas 1 proposed · 1 ready · 1 scheduled ───────────────────────────────────────╮│                                                                      │
 │ P2  proposed   #4  soft voting    —                                                  ││                                                                      │
@@ -428,12 +430,12 @@ def test_the_agents_panel_shows_the_selected_agents_output_and_its_state(
  demo · head score 4 (candidate#4, +3 vs baseline) · 3 kept / 4 candidates · 1.2M tok
  run 2/50 · 2.0h/12h · 1.2M/5.0M tok · 0/10 runs without a keep · target ≥ 10 (head 4)
 ╭─ [1] Inbox 2 ────────────────────────────────────────────────────────────────────────╮╭─ [0] agents ─────────────────────────────────────────────────────────╮
-│ p1  escalation  watchdog#3  30m  Codex cannot start: trust dialog. Environment or har││ worker-1 · pi/m · running 3m · herdr tab w7:t2                       │
+│ p1  escalation  watchdog#3  30m  Codex cannot start: trust dialog. Environment or har││ implementer-1 · pi/m · running 3m · herdr tab w7:t2                  │
 │ p2  decision    pi          20m  Keep #2: the floor holds.                           ││ on: idea#2 longer lines                                              │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯│ blocked on a dialog: steering is refused until it is answered; enter │
 ╭─ [2] Agents 2 · 1 blocked ───────────────────────────────────────────────────────────╮│ brings it to the front                                               │
-│ ◐ #1  worker    blocked  pi/m         3m   idea#2 longer lines                       ││                                                                      │
-│ · #2  research  —        claude/opus  10m  low_water: 1 ready < 10                   ││ the last 1 lines it wrote                                            │
+│ ◐ #1  implementer  blocked  pi/m         3m   idea#2 longer lines                    ││                                                                      │
+│ · #2  research     —        claude/opus  10m  low_water: 1 ready < 10                ││ the last 1 lines it wrote                                            │
 ╰──────────────────────────────────────────────────────────────────────────────────────╯│ hello from the agent                                                 │
 ╭─ [3] Ideas 1 proposed · 1 ready · 1 scheduled ───────────────────────────────────────╮│                                                                      │
 │ P2  proposed   #4  soft voting    —                                                  ││                                                                      │
@@ -492,7 +494,7 @@ def test_agents_keys_focus_the_tab_and_steer(
             monkeypatch,
             tab_focus=[{'error': {'code': 'tab_not_found', 'message': 'w7:t2 is gone'}}],
             agent_prompt=[
-                {'result': {'type': 'agent_prompted', 'agent': {'name': 'worker-1'}}},
+                {'result': {'type': 'agent_prompted', 'agent': {'name': 'implementer-1'}}},
                 {'error': {'code': 'agent_blocked', 'message': 'blocked'}},
                 {'error': {'code': 'agent_not_found', 'message': 'gone'}},
             ],
@@ -501,26 +503,26 @@ def test_agents_keys_focus_the_tab_and_steer(
         await note('s', *'go', 'enter')
         await note('s', *'go', 'enter')
         with db.session() as s:
-            headless = s.get_one(Worker, 2)
-            headless.state, headless.runtime = WorkerState.RUNNING, 'subprocess'
+            headless = s.get_one(AgentSession, 2)
+            headless.state, headless.runtime = AgentSessionState.RUNNING, 'subprocess'
             headless.handle = {'pid': 1, 'start_time': 0, 'log_dir': '/x'}
             s.commit()
         await note('down', 'enter')
 
     drive(db, 'demo', scenario)
     assert notes == [
-        'worker#1: focused tab w7:t2',
-        'steered worker#1',
-        'worker#2 is starting, not running: nothing to focus',
-        'worker#2 is starting, not running: nothing to steer',
-        'could not focus worker#1: tab_not_found: w7:t2 is gone',
-        'not steered: worker-1 is blocked on an approval or question; read it and answer with herdr agent send-keys',
-        'could not steer worker#1: agent_not_found: gone',
-        'worker#2: a background process has no terminal to show: read /x/worker.stdout',
+        'agent_session#1: focused tab w7:t2',
+        'steered agent_session#1',
+        'agent_session#2 is starting, not running: nothing to focus',
+        'agent_session#2 is starting, not running: nothing to steer',
+        'could not focus agent_session#1: tab_not_found: w7:t2 is gone',
+        'not steered: implementer-1 is blocked on an approval or question; read it and answer with herdr agent send-keys',
+        'could not steer agent_session#1: agent_not_found: gone',
+        'agent_session#2: a background process has no terminal to show: read /x/agent_session.stdout',
     ]
     assert [c for c in calls(herdr_log) if c[:2] in (['tab', 'focus'], ['agent', 'prompt'])][:2] == [
         ['tab', 'focus', 'w7:t2'],
-        ['agent', 'prompt', 'worker-1', 'try the cheaper model'],
+        ['agent', 'prompt', 'implementer-1', 'try the cheaper model'],
     ]
 
 

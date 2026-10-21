@@ -14,7 +14,7 @@ row and log each change in `events`.
   row when the evaluate command, the metrics or `link` change.
 - An **idea** is something to try. `idea_links` relates two ideas of one campaign: one runs `after` the other, or
   `supersedes` it. A track is not a table. `ideas.track` is the name of a track in `piloop.toml`.
-- A **run** is one attempt at an idea. A **worker** row is one agent process. A run's worker row has its `run_id`.
+- A **run** is one attempt at an idea. An **agent session** row is one agent process, in any role. A run's agent session row has its `run_id`.
 - A **candidate** is a distinct state of the code. Its git tree identifies it, and `parent_id` is its lineage. A
   **measurement** is one run of an evaluator on a candidate.
 - A **comment** or an **event** points at any row through `(target_kind, target_id)`, so it has no foreign key.

@@ -5,12 +5,12 @@ description: How piloop decides whether a commit is kept.
 
 ## Candidates
 
-A **candidate** is one state of the code, identified by its git tree. Each commit that a worker makes is a candidate.
+A **candidate** is one state of the code, identified by its git tree. Each commit that an implementer makes is a candidate.
 The baseline that `piloop init` measures is the first one.
 
 Because a candidate is a tree, a commit that goes back to a known state is that known candidate, and piloop does not
 measure it again. It keeps its verdict, unless another run reaches it: then the daemon's verdict, if it is not a keep,
-is judged again on that run's bar. A keep stays. A run's commits are its first-parent history, so a line that a worker
+is judged again on that run's bar. A keep stays. A run's commits are its first-parent history, so a line that an implementer
 merges in is not the run's, and a merge's parent is the commit it merged onto. A candidate can have several
 measurements. Its score is their mean under the current
 [evaluator](/concepts/campaigns#evaluators).
@@ -38,7 +38,7 @@ The daemon gives each measured candidate one verdict:
 | `crash` | The candidate has no successful measurement: the evaluate command failed or timed out, wrote a bad per-unit results file, or did not print every metric in `piloop.toml`. |
 | `reference` | A starting point imported with `piloop candidate import`. It is never judged. |
 | `unmeasured` | A commit marked `Piloop-Eval: skip`. It is never measured or judged, and says nothing about its idea. |
-| `recovered` | What a worker left uncommitted when it stopped, committed by the daemon (`Piloop-Recovered: run#<id>`). The worker never declared it ready, so it is never measured, judged or kept. If its run did not succeed, the idea goes back to the queue with it as the base, so a new worker finishes it, up to `[roles.worker] recovery_requeues` times per idea (2). |
+| `recovered` | What an implementer left uncommitted when it stopped, committed by the daemon (`Piloop-Recovered: run#<id>`). The implementer never declared it ready, so it is never measured, judged or kept. If its run did not succeed, the idea goes back to the queue with it as the base, so a new implementer finishes it, up to `[roles.implementer] recovery_requeues` times per idea (2). |
 
 The rule, in order:
 
@@ -203,5 +203,5 @@ piloop candidate note 42 "faster tokenizer, but loses accuracy on long inputs" -
 ```
 
 The candidate becomes `interesting`, with a reason that starts with `note:`, followed by its earlier reason. Each
-`--follow-up` files a seed pinned to the candidate. A note is not a keep, and it does not move a bar. A worker notes its
+`--follow-up` files a seed pinned to the candidate. A note is not a keep, and it does not move a bar. An implementer notes its
 own commit with a `Piloop-Note: <why>` trailer in the commit message.

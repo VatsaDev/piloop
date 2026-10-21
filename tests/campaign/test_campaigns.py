@@ -165,7 +165,7 @@ def test_the_campaign_template_names_every_key_of_the_config() -> None:
         without = without.replace(old, new)
     assert unnamed_keys(without) == [
         'harness.<name>.usage.tally',
-        'roles.worker.explore_every',
+        'roles.implementer.explore_every',
         'mcp.<name>.bearer_token_env',
         'stop.plateau',
     ], 'the check finds a key missing from a table, from a keys: comment, and from a nested table without a header'

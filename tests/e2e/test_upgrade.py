@@ -30,7 +30,7 @@ import psutil
 import pytest
 import tomli_w
 
-from piloop.proc import tagged
+from piloop.runtime.tags import tagged
 from tests.conftest import wait_until
 from tests.e2e.campaign import CHEAPEST_MODEL, OPEN, ROOT, Smoke, merged, needs
 from tests.e2e.conftest import DROPPED_ENV
@@ -40,10 +40,19 @@ pytestmark = pytest.mark.e2e
 
 RELEASE = '0.1.0'
 RENAMES = Renames(
-    tables={'projects': 'campaigns'},
+    tables={'projects': 'campaigns', 'workers': 'agent_sessions'},
     columns={'project_id': 'campaign_id'},
-    target_kinds={'project': 'campaign'},
-    event_prefixes={'project.': 'campaign.'},
+    target_kinds={'project': 'campaign', 'worker': 'agent_session'},
+    # a role's own events take the role's new name, a session's the new target kind
+    event_prefixes={
+        'project.': 'campaign.',
+        'worker.started': 'implementer.started',
+        'worker.finished': 'implementer.finished',
+        'worker.': 'agent_session.',
+    },
+    values={('agent_sessions', 'kind', 'worker'): 'implementer', ('runs', 'role', 'worker'): 'implementer'},
+    roles={'worker': 'implementer'},
+    payload_keys={'worker': 'agent_session'},
 )
 """The renames since ``RELEASE`` that the upgrading guide documents. A rename of a later release goes here."""
 CONFIG_REWRITES = {'roles.research.buffer', 'roles.research.context', 'roles.research.scout', 'context'}
@@ -366,12 +375,12 @@ def test_the_run_in_flight_is_scored_by_the_new_code(upgrade: Upgrade) -> None:
     assert run is not None and run['status'] == 'succeeded', run and dict(run)
     judged = smoke.sql('SELECT id, verdict FROM candidates WHERE run_id = ?', upgrade.in_flight)
     assert judged and all(r['verdict'] != 'pending' for r in judged), [dict(r) for r in judged]
-    # The agent signs with the PILOOP_ACTOR that the release gave it; what it wrote after the upgrade is signed in the
-    # names of today, like what it wrote before.
+    # What the agent wrote before the upgrade is renamed. What it writes after keeps the signature that the release
+    # gave it, `worker#<id>`, which piloop reads as the implementer's until 0.3.0 (piloop.deprecated.signatures).
     assert upgrade.before is not None
     [session] = [r['id'] for r in upgrade.before.tables['workers'] if r['run_id'] == upgrade.in_flight]
     signed = {r['author'] for r in smoke.sql('SELECT author FROM comments WHERE author LIKE ?', f'%#{session}')}
-    assert signed <= {RENAMES.value('comments', 'author', f'worker#{session}')}, signed
+    assert signed <= {RENAMES.value('comments', 'author', f'worker#{session}'), f'worker#{session}'}, signed
     print(
         f'run {upgrade.in_flight} {run["status"]}: '
         + ', '.join(f'candidate#{r["id"]} {r["verdict"]}' for r in judged)

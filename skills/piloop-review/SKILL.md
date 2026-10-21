@@ -35,18 +35,18 @@ Rules for the whole review:
 |---|---|
 | Coordination state | `sqlite3 'file:<PILOOP_HOME>/piloop.db?mode=ro'` (default `~/.piloop`); schema at https://piloop.autoresearch.inc/reference/schema (or `piloop schema`) |
 | Daemon log | `<PILOOP_HOME>/serve.log` (OTEL spans on stderr) |
-| Briefs the agents got | `<PILOOP_HOME>/runs/<run>/brief.md`, `<PILOOP_HOME>/workers/<worker>/brief.md` |
-| Agent screen | `<PILOOP_HOME>/workers/<worker>/transcript.txt`; `runs.log_dir` |
-| Agent session file | `workers.usage->>'$.source'` names it |
+| Briefs the agents got | `<PILOOP_HOME>/runs/<run>/brief.md`, `<PILOOP_HOME>/agent_sessions/<agent-session>/brief.md` |
+| Agent screen | `<PILOOP_HOME>/agent_sessions/<agent-session>/transcript.txt`; `runs.log_dir` |
+| Agent session file | `agent_sessions.usage->>'$.source'` names it |
 | Orchestrator | the harness that ran `piloop-operate`; its writes are signed `orchestrator`. pi: `~/.pi/agent/sessions/--<cwd>--/`, subagents in `~/.pi/agent/pi-subagents/` and `run-history.jsonl`. Claude Code: `$CLAUDE_CONFIG_DIR/projects/<cwd, non-alphanumerics as ->/*.jsonl`, subagents under `<session>/subagents/`. Codex: `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` |
 | What agents left in `./workspace/` | `<PILOOP_HOME>/projects/<id>/workspace` while an idea runs. A done idea's files, and what a stopped campaign left (except `NOTES.md` and `research/`), are archived (`archives`) and removed from the workspace later (`archives.pruned_at`): `piloop restore <campaign> [<idea>\|<path>]` writes them back |
-| Candidates | the campaign repo: `refs/piloop/<campaign>/r<run>/<n>`, `git show <commit_sha>`; `entire checkpoint explain <workers.checkpoint_id>` when Entire is on |
+| Candidates | the campaign repo: `refs/piloop/<campaign>/r<run>/<n>`, `git show <commit_sha>`; `entire checkpoint explain <agent_sessions.checkpoint_id>` when Entire is on |
 | Side effects outside piloop | `$CLAUDE_CONFIG_DIR/settings.json`, `$CODEX_HOME/config.toml`, `$CLAUDE_CONFIG_DIR/projects/*/memory/` |
 
 Token counts:
 
 - `input` (uncached), `cache_read` and `cache_write` mean the same for every harness, so they compare.
-- `workers.usage.total` is the harness's own count. Claude Code: input + output + cache read + cache write.
+- `agent_sessions.usage.total` is the harness's own count. Claude Code: input + output + cache read + cache write.
 - Codex records no price.
 
 ## Structure: fan out, then combine
@@ -66,7 +66,7 @@ The subagents:
 1. **Database numbers.** Trajectory with the global best so far, funnel, run outcomes and wall-clock time, tokens and
    cost per role, escalations, goalpost changes, statistical checks. This subagent owns the numbers that the others
    cite.
-2. **Workers, one subagent per campaign.** Read the transcripts and diffs of the kept lineage. Run the integrity checks
+2. **Implementers, one subagent per campaign.** Read the transcripts and diffs of the kept lineage. Run the integrity checks
    below.
 3. **Orchestrator.** Its session: decisions it took for the human, briefs, status reports compared with the database,
    spend.
@@ -134,12 +134,12 @@ WHERE c.campaign_id = <p> GROUP BY candidate_id HAVING COUNT(*) > 1;
 SELECT kind, harness, model, COUNT(*) agents, SUM(usage->>'$.total') tokens, SUM(usage->>'$.output') output,
        ROUND(SUM(julianday(ended_at) - julianday(started_at)) * 1440) minutes,
        SUM(usage IS NULL) no_usage, SUM(state = 'killed') killed
-FROM workers WHERE campaign_id = <p> GROUP BY kind, harness, model;
+FROM agent_sessions WHERE campaign_id = <p> GROUP BY kind, harness, model;
 
--- Runs left open after their worker exited
-SELECT r.id run, w.id worker, w.ended_at, r.finished_at,
+-- Runs left open after their implementer exited
+SELECT r.id run, w.id implementer, w.ended_at, r.finished_at,
        ROUND((julianday(COALESCE(r.finished_at, 'now')) - julianday(w.ended_at)) * 1440) open_min
-FROM runs r JOIN workers w ON w.run_id = r.id JOIN ideas i ON i.id = r.idea_id
+FROM runs r JOIN agent_sessions w ON w.run_id = r.id JOIN ideas i ON i.id = r.idea_id
 WHERE i.campaign_id = <p> AND w.ended_at IS NOT NULL ORDER BY open_min DESC LIMIT 10;
 
 -- Work after the last stop of the campaign (agents still running, measurements nobody used)
@@ -173,8 +173,8 @@ SELECT id, key, created_at FROM evaluators WHERE campaign_id = <p>;
 
 Orchestrator spend and cache churn:
 
-- A pi session records the cost per turn. For Claude Code or Codex, sum the usage the same way that piloop reads a
-  worker's session into `workers.usage`.
+- A pi session records the cost per turn. For Claude Code or Codex, sum the usage the same way that piloop reads an
+  implementer's session into `agent_sessions.usage`.
 - `jq -r 'select(.message.usage) | [.timestamp, .message.usage.cacheWrite, .message.usage.cost.total] | @tsv' <session>.jsonl`
 - Sum the cost.
 - Count the turns with a large `cacheWrite` after an idle gap. Each one is a full re-cache of the prompt.
@@ -194,7 +194,7 @@ Run all of them on every kept candidate. Cheating and honest overfitting both sh
     `git diff <base> <keep> | rg '<unit ids>'`.
   - Reading the per-unit correct flags of the scoring panel is oracle use, even without a training step.
 - **Tuning against the evaluation.**
-  - Count the evaluate calls per worker transcript: `rg -c '<evaluate command>'`.
+  - Count the evaluate calls per implementer transcript: `rg -c '<evaluate command>'`.
   - Look for grid searches, "best of N seeds", and thresholds set from a few named units.
   - Add the daemon's measurements. The total is the number of looks at the panel.
   - About 200 looks at a panel of 70 units is a screen, not a judge.
@@ -206,7 +206,7 @@ Run all of them on every kept candidate. Cheating and honest overfitting both sh
   - Join its units against everything that any candidate trained on or was tuned against.
   - Report the trained and the untrained slices separately.
 - **Report against measurement.**
-  - Compare every number that a worker, the research agent, the watchdog or the orchestrator reported with the
+  - Compare every number that an implementer, the research agent, the watchdog or the orchestrator reported with the
     `measurements` row it names.
   - Query again before you repeat any of them.
 - **Side channels.**
@@ -235,8 +235,8 @@ Make one table, measured where possible:
 - the tokens and dollars of each role,
 - the waste lines:
   - idle agents read as finished,
-  - runs open after their worker exited,
-  - double evaluation (worker and daemon),
+  - runs open after their implementer exited,
+  - double evaluation (implementer and daemon),
   - runs after the stop,
   - research sweeps that produced nothing,
   - killed agents, and agents that never started,

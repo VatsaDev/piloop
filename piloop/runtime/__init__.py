@@ -13,25 +13,25 @@ from typing import ClassVar, Protocol
 from piloop.harnesses import Invocation, QueueKey
 
 
-class WorkerStatus(StrEnum):
-    """The state a runtime can report for a worker."""
+class AgentStatus(StrEnum):
+    """The state a runtime can report for an agent."""
 
     WORKING = 'working'
     IDLE = 'idle'
     BLOCKED = 'blocked'
     EXITED = 'exited'
     TIMED_OUT = 'timed_out'
-    """The runtime killed the worker because ``wait`` ran out of time."""
+    """The runtime killed the agent because ``wait`` ran out of time."""
 
 
 @dataclass(frozen=True)
-class WorkerSpec:
-    """Everything needed to start one worker."""
+class AgentSpec:
+    """Everything needed to start one agent."""
 
     name: str
     """A unique name that matches ``[a-z][a-z0-9_-]{0,31}`` (Herdr's rule for agent names), e.g. ``r12-claude``."""
     label: str
-    """What a visible runtime shows for the worker (Herdr's tab label): its name and what it works on."""
+    """What a visible runtime shows for the agent (Herdr's tab label): its name and what it works on."""
     executable: str
     """The program to run (``Harness.executable``). Herdr also uses it as the agent's ``--kind``."""
     args: list[str]
@@ -64,7 +64,7 @@ class WorkerSpec:
 
 @dataclass(frozen=True)
 class Handle:
-    """The opaque address of a started worker. It is stored as JSON in ``workers.handle``."""
+    """The opaque address of a started agent. It is stored as JSON in ``agent_sessions.handle``."""
 
     runtime: str
     data: dict[str, object]
@@ -72,9 +72,9 @@ class Handle:
 
 @dataclass(frozen=True)
 class Outcome:
-    """How a worker finished."""
+    """How an agent finished."""
 
-    status: WorkerStatus
+    status: AgentStatus
     seconds: float
     exit_code: int | None = None
     error: str | None = None
@@ -101,7 +101,7 @@ class RuntimeFailure(RuntimeError):
 
 
 class StartFailed(RuntimeError):
-    """``Runtime.start`` failed. ``screen`` is what the worker's terminal showed, read before the terminal closed."""
+    """``Runtime.start`` failed. ``screen`` is what the agent's terminal showed, read before the terminal closed."""
 
     def __init__(self, error: str, screen: str) -> None:
         super().__init__(error)
@@ -117,14 +117,14 @@ class NotAttachable(RuntimeError):
 
 
 class Runtime(Protocol):
-    """Start, watch, steer, show and stop workers.
+    """Start, watch, steer, show and stop agents.
 
     The registry (``factory.RUNTIMES``) holds the classes. The class attributes say what the runtime is before it is
     constructed: config validation reads them, and a constructor can fail when the runtime is not installed.
     """
 
     kind: ClassVar[str]
-    """The name of the runtime: ``runtime`` in ``piloop.toml``, and ``workers.runtime``."""
+    """The name of the runtime: ``runtime`` in ``piloop.toml``, and ``agent_sessions.runtime``."""
     invocation: ClassVar[Invocation]
     """Which argument list of a harness the runtime starts: ``interactive`` or ``headless``."""
 
@@ -132,10 +132,10 @@ class Runtime(Protocol):
         """Make the runtime of one campaign. A runtime can name what it makes after the campaign."""
         ...
 
-    def start(self, spec: WorkerSpec) -> Handle:
-        """Start the agent from a ``WorkerSpec`` (argv, first prompt, working directory) and return once it runs.
+    def start(self, spec: AgentSpec) -> Handle:
+        """Start the agent from a ``AgentSpec`` (argv, first prompt, working directory) and return once it runs.
 
-        A failure leaves nothing running. A runtime that can show what the worker was stuck on raises ``StartFailed``.
+        A failure leaves nothing running. A runtime that can show what the agent was stuck on raises ``StartFailed``.
         """
         ...
 
@@ -143,7 +143,7 @@ class Runtime(Protocol):
         """Block until the agent is finished or gone. After ``timeout`` seconds, kill it and return ``timed_out``."""
         ...
 
-    def status(self, handle: Handle) -> WorkerStatus:
+    def status(self, handle: Handle) -> AgentStatus:
         """Return the current state without waiting."""
         ...
 
@@ -168,7 +168,11 @@ class Runtime(Protocol):
         ...
 
     def kill(self, handle: Handle) -> None:
-        """Stop the agent and what it left running, and release its resources."""
+        """Stop the agent and what it left running, and release its resources.
+
+        ``piloop.runtime.tags`` finds what the agent left, also in sessions of their own: start the agent with
+        ``TAG_ENV`` set to a value of its own, and end them with ``kill_tagged``.
+        """
         ...
 
     def focus(self, handle: Handle) -> str:
