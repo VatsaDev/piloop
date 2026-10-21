@@ -25,6 +25,26 @@ The command prints each step as it runs it:
 `piloop --version` prints the version, for example `piloop 0.1.0`. For an install from the GitHub repo, it also
 prints the commit, for example `piloop 0.1.0 (a1b2c3d)`.
 
+## Upgrade one release at a time
+
+Upgrade through every minor release in order: 0.1 to 0.2, then 0.2 to 0.3, never 0.1 straight to 0.3. Each minor
+release still reads what the one before it left behind, such as a deprecated key, a renamed table or an agent that
+the old daemon started, and the release after it deletes that code. So each release migrates a database only from the
+newest schema of the minor release before it, or from a newer one.
+
+When the database is older, the new piloop refuses it, and changes nothing: no migration, and no backup. `piloop
+upgrade`, `piloop migrate`, `piloop serve`, `piloop doctor` and every other command name the release the database is
+from, and each release to install first:
+
+```bash
+uv tool install 'piloop==0.2.*'
+piloop upgrade
+```
+
+Then install the next release in the same way, up to the one you want. `uv tool install piloop` drops the pin and
+installs the latest. Quote the requirement: `*` is a glob in zsh. A daemon keeps running on its old code when
+`piloop upgrade` refuses the database: it does not restart.
+
 ## Who upgrades during a campaign
 
 An upgrade migrates the database one way, and the runs after it are scored by the new code. So by default the
@@ -71,6 +91,8 @@ it knows, and what to run:
 - The database is older, and a daemon runs: the daemon runs an older piloop. Run `piloop restart` to restart it on
   this piloop, which migrates the database.
 - The database is newer: a newer piloop migrated it. Install that piloop, for example with `piloop upgrade`.
+- The database is older than the minor release before this piloop: see
+  [Upgrade one release at a time](#upgrade-one-release-at-a-time).
 
 `piloop init` creates the database when there is none. `piloop doctor` reports the same, and never migrates.
 

@@ -20,11 +20,25 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.exc import IntegrityError
 
 from piloop.config import CampaignConfig
+from piloop.db import session
 from piloop.db.models import Campaign, Idea
-from piloop.db.session import MIGRATIONS, BackupFailed, Database, SchemaAhead, migrate, revision
+from piloop.db.session import (
+    MIGRATIONS,
+    RELEASES,
+    BackupFailed,
+    Database,
+    Release,
+    Revision,
+    SchemaAhead,
+    SchemaTooOld,
+    migrate,
+    revision,
+    revisions,
+)
 from piloop.db.triggers import PERSISTENT, campaigns, legacy
 from piloop.db.triggers.roles import known_role
-from piloop.version import installed
+from piloop.version import Version, installed
+from tests.test_deprecated import piloop_version
 
 INBOX = 'ix_comments_inbox'
 SINCE_0015 = {t.name for t in campaigns.acyclic()}
@@ -129,6 +143,87 @@ def test_an_older_piloop_refuses_a_database_a_newer_one_migrated(tmp_path: Path)
     ):
         migrate(engine, backups=0, daemon=None)
     engine.dispose()
+
+
+TOO_OLD = tuple(Release(Version(0, minor, 0), Revision(f'000{minor}')) for minor in (1, 2, 3))
+"""Releases for a piloop 0.4 that migrates from 0.3.0's head, 0003: a database at 0001 is two releases behind it."""
+
+
+@pytest.mark.parametrize(
+    ('stamp', 'origin', 'stops'),
+    [
+        ('0001', 'piloop 0.1', ('0.2', '0.3')),
+        ('0002', 'piloop 0.2', ('0.3',)),
+    ],
+)
+def test_a_database_older_than_the_previous_release_is_refused_and_left_as_it_was(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stamp: str, origin: str, stops: tuple[str, ...]
+) -> None:
+    """Each release migrates only from the head of the one before it, so a database upgrades one release at a time."""
+    monkeypatch.setattr(session, 'RELEASES', TOO_OLD)
+    path = tmp_path / 'piloop.db'
+    command.upgrade(alembic(path), stamp)
+    before = path.read_bytes()
+    engine = create_engine(f'sqlite:///{path}')
+    this = re.escape(installed())
+    steps = ', then '.join(
+        rf"install piloop {m} \(`uv tool install 'piloop=={m}\.\*'`\) and run `piloop upgrade`" for m in stops
+    )
+    with pytest.raises(
+        SchemaTooOld,
+        match=rf'^{re.escape(str(path))} is from {origin} \(schema revision {stamp}\), and this {this} migrates from'
+        rf' piloop 0\.3 \(schema revision 0003\) or newer: upgrade one release at a time: {steps}, then install this'
+        r' piloop again and run `piloop upgrade`$',
+    ):
+        migrate(engine, backups=3, daemon=None)
+    engine.dispose()
+    assert path.read_bytes() == before, 'not migrated'
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['piloop.db', 'piloop.db.migrate.lock'], 'no backup, no WAL'
+
+
+def test_a_database_at_the_previous_release_or_newer_migrates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(session, 'RELEASES', TOO_OLD)
+    path = tmp_path / 'piloop.db'
+    command.upgrade(alembic(path), '0003')
+    engine = create_engine(f'sqlite:///{path}')
+    migrate(engine, backups=0, daemon=None)
+    engine.dispose()
+    assert revision(path) == session.head()
+
+
+def test_a_database_from_before_the_first_recorded_release_names_every_stop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(session, 'RELEASES', TOO_OLD[1:])
+    path = tmp_path / 'piloop.db'
+    command.upgrade(alembic(path), '0001')
+    engine = create_engine(f'sqlite:///{path}')
+    with pytest.raises(
+        SchemaTooOld,
+        match=r' is from a piloop before 0\.2 \(schema revision 0001\), .*: install piloop 0\.2 .*,'
+        r' then install piloop 0\.3 ',
+    ):
+        migrate(engine, backups=0, daemon=None)
+    engine.dispose()
+
+
+def test_the_floor_is_the_head_of_the_previous_minor_release() -> None:
+    """``RELEASES`` records each minor release's ``.0`` and its head, oldest first, and its newest is the floor.
+
+    The release of ``X.Y.0`` records ``X.(Y-1).0`` (CONTRIBUTING.md, Release): at the version bump, this fails until it
+    does. Until the next bump, the newest may be the version in ``pyproject.toml``, which is then released.
+    """
+    this = piloop_version()
+    versions = [r.version for r in RELEASES]
+    assert versions == sorted(versions) and all(v.patch == 0 for v in versions), 'X.Y.0 releases, oldest first'
+    chain = revisions()
+    assert all(r.head in chain for r in RELEASES), f'every head is a revision of {MIGRATIONS}'
+    positions = [chain.index(r.head) for r in RELEASES]
+    assert positions == sorted(positions), 'each head is after the head of the release before it'
+    previous = Version(this.major, this.minor - 1, 0)
+    assert previous <= versions[-1] <= this, (
+        f'piloop {this} migrates from the head of piloop {previous}: add {previous} and its head to RELEASES'
+    )
 
 
 def test_a_migration_first_backs_up_the_database_and_keeps_the_newest_backups(tmp_path: Path) -> None:

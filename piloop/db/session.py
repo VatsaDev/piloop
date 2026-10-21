@@ -11,13 +11,13 @@ import os
 import sqlite3
 from collections.abc import Generator
 from contextlib import closing, contextmanager
+from dataclasses import dataclass
 from pathlib import Path
+from typing import NewType
 
 from alembic import command
 from alembic.config import Config as AlembicConfig
 from alembic.script import ScriptDirectory
-from alembic.script.revision import ResolutionError
-from alembic.util.exc import CommandError
 from sqlalchemy import Engine, create_engine, event, make_url
 from sqlalchemy.engine import ExceptionContext
 from sqlalchemy.orm import Session, sessionmaker
@@ -25,10 +25,30 @@ from sqlalchemy.pool import ConnectionPoolEntry
 
 from piloop.db.models import utcnow
 from piloop.db.sql import CONNECTION_PRAGMAS, install_actor, install_functions, lock_holder, optimize
-from piloop.version import installed
+from piloop.version import Version, installed
 
 MIGRATIONS = Path(__file__).parent / 'migrations'
 BACKUP_INFIX = '.bak-'
+Revision = NewType('Revision', str)
+"""An Alembic revision id of ``MIGRATIONS``, such as ``0001``."""
+
+
+@dataclass(frozen=True)
+class Release:
+    """A minor release at its ``.0``, and the head revision that it shipped."""
+
+    version: Version
+    head: Revision
+
+
+RELEASES = (Release(Version(0, 1, 0), Revision('0001')),)
+"""Every minor release, oldest first. The newest is the floor: this piloop migrates a database from its head or from a
+newer revision, never from an older one, so a database upgrades one minor release at a time.
+
+The release of ``X.Y.0`` adds ``X.(Y-1).0`` (CONTRIBUTING.md, Release); ``tests/db/test_migrations.py`` fails at that
+version bump until it does, and checks that each head is in the chain, in order. Each minor release deletes the compat
+code that the one before it marked (``piloop.deprecated``), and a database that skipped that release still needs it.
+"""
 
 
 def _pragmas(conn: sqlite3.Connection) -> None:
@@ -87,6 +107,10 @@ class SchemaAhead(SchemaMismatch):
     """A newer version of piloop migrated the database. Downgrades are not supported."""
 
 
+class SchemaTooOld(SchemaMismatch):
+    """The database is older than the head of the previous minor release (``RELEASES``): upgrade through it first."""
+
+
 class OlderDaemon(RuntimeError):
     """A daemon of an older piloop runs, so this piloop must not migrate the database. The message says what to run."""
 
@@ -112,7 +136,8 @@ def migrate(engine: Engine, *, backups: int, daemon: int | None) -> Path | None:
 
     Raises:
         OlderDaemon: Another process holds the daemon's lock, and the database is behind this piloop.
-        SchemaAhead: The database is at a revision that this piloop does not know: an older CLI on a newer database.
+        SchemaMismatch: This piloop cannot migrate the database (``unmigratable``): it is ahead of this piloop, or
+            older than the previous minor release.
         BackupFailed: The copy could not be written, for example on a full disk.
     """
     path = Path(engine.url.database or '')
@@ -121,24 +146,54 @@ def migrate(engine: Engine, *, backups: int, daemon: int | None) -> Path | None:
     cfg.set_main_option('script_location', str(MIGRATIONS))
     cfg.set_main_option('sqlalchemy.url', engine.url.render_as_string(hide_password=False))
     copy = None
-    try:
-        with _migration_lock(path):
-            at = behind(path)
-            if at is not None and daemon not in {None, os.getpid()}:
-                raise OlderDaemon(
-                    f'the daemon (pid {daemon}) runs an older piloop: the database is at schema revision {at}, and'
-                    f' this {installed()} would migrate it to {head()} under the daemon. Run `piloop upgrade`, which'
-                    ' restarts the daemon on the new code, or `piloop restart` once its piloop is this one, or stop it'
-                    ' with `piloop stop`.'
-                )
-            if backups and at not in {None, 'none'}:
-                copy = _backup(path, at, backups)
-            command.upgrade(cfg, 'head')
-    except CommandError as e:
-        if not isinstance(e.__cause__, ResolutionError):  # pragma: no cover - alembic fails here for no other reason
-            raise
-        raise ahead(path, revision(path)) from e
+    with _migration_lock(path):
+        if (refused := unmigratable(path)) is not None:
+            raise refused
+        at = behind(path)
+        if at is not None and daemon not in {None, os.getpid()}:
+            raise OlderDaemon(
+                f'the daemon (pid {daemon}) runs an older piloop: the database is at schema revision {at}, and'
+                f' this {installed()} would migrate it to {head()} under the daemon. Run `piloop upgrade`, which'
+                ' restarts the daemon on the new code, or `piloop restart` once its piloop is this one, or stop it'
+                ' with `piloop stop`.'
+            )
+        if backups and at not in {None, 'none'}:
+            copy = _backup(path, at, backups)
+        command.upgrade(cfg, 'head')
     return copy
+
+
+def unmigratable(database: Path) -> SchemaMismatch | None:
+    """Return why ``migrate`` would refuse ``database``, read read-only, else None.
+
+    A newer piloop migrated it (``SchemaAhead``), or it is older than the floor, the newest of ``RELEASES``
+    (``SchemaTooOld``). A database that does not exist, or that was never migrated, can be.
+    """
+    stamp, chain = revision(database), revisions()
+    if stamp is None:
+        return None
+    at = next((r for r in chain if r == stamp), None)
+    if at is None:
+        return ahead(database, stamp)
+    position, floor = chain.index, RELEASES[-1]
+    if position(at) >= position(floor.head):
+        return None
+    before = [r.version.line for r in RELEASES if position(r.head) <= position(at)]
+    stops = [r.version.line for r in RELEASES if position(r.head) > position(at)]
+    origin = f'piloop {before[-1]}' if before else f'a piloop before {stops[0]}'
+    steps = ', then '.join(
+        f"install piloop {m} (`uv tool install 'piloop=={m}.*'`) and run `piloop upgrade`" for m in stops
+    )
+    return SchemaTooOld(
+        f'{database} is from {origin} (schema revision {at}), and this {installed()} migrates from piloop'
+        f' {floor.version.line} (schema revision {floor.head}) or newer',
+        f'upgrade one release at a time: {steps}, then install this piloop again and run `piloop upgrade`',
+    )
+
+
+def revisions() -> list[Revision]:
+    """Every schema revision that this piloop knows, oldest first."""
+    return [Revision(r.revision) for r in reversed(list(ScriptDirectory(str(MIGRATIONS)).walk_revisions()))]
 
 
 def schema_mismatch(database: Path, daemon: int | None) -> SchemaMismatch | None:
@@ -149,11 +204,11 @@ def schema_mismatch(database: Path, daemon: int | None) -> SchemaMismatch | None
     """
     if not database.is_file():
         return SchemaMismatch(f'{database} does not exist', '`piloop init <repo>` creates it with the first campaign')
-    at, script = revision(database), ScriptDirectory(str(MIGRATIONS))
-    if at == script.get_current_head():
+    if (refused := unmigratable(database)) is not None:
+        return refused
+    at = revision(database)
+    if at == head():
         return None
-    if at is not None and at not in {r.revision for r in script.walk_revisions()}:
-        return ahead(database, at)
     found = f'{database} is at schema revision {at or "none"}, and this {installed()} knows {head()}'
     if daemon is None:
         return SchemaMismatch(found, 'run `piloop migrate`, which backs it up first')

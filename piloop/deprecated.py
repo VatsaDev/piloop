@@ -17,6 +17,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Protocol
 
+from piloop.version import Version
+
 Bridge = Callable[[Path, dict[str, object]], None]
 
 
@@ -34,10 +36,15 @@ def until(version: str, reason: str) -> Marked:
     """Mark compat code that piloop keeps until release ``version``. ``reason`` says what to delete and what replaces it.
 
     Call it as a statement where the code is (a branch, an alias, a table entry), or put it on a function or a class as
-    a decorator. It does nothing at run time. ``tests/test_deprecated.py`` reads every call in ``piloop/`` and
-    fails once ``pyproject.toml`` is at ``version``. Write both arguments as literal strings, ``version`` as ``X.Y.Z``,
-    and call it as ``deprecated.until`` (here, ``until``), so that the test can read it.
+    a decorator. It only parses ``version`` (``Version.parse``), so a malformed one fails when the code runs.
+    ``tests/test_deprecated.py`` reads every call in ``piloop/`` and fails once ``pyproject.toml`` is at ``version``.
+    Write both arguments as literal strings, ``version`` as ``X.Y.Z``, and call it as ``deprecated.until`` (here,
+    ``until``), so that the test can read it.
+
+    Raises:
+        ValueError: ``version`` is not ``X.Y.Z``.
     """
+    Version.parse(version)
     return _same
 
 
@@ -49,7 +56,7 @@ class PiloopDeprecationWarning(DeprecationWarning):
     """A deprecated piloop key that still works until the release that removes it. The CLI shows each one once."""
 
 
-REMOVED_IN = '0.3.0'
+REMOVED_IN = Version(0, 3, 0)
 """The release that ``warn`` names for the keys that this release deprecates."""
 SCOUT_SHARED = ('runtime', 'harnesses', 'model', 'timeout', 'mcp', 'addendum', 'workdir')
 """The keys of ``[roles.research]`` that a scout sweep used before the scout was a role of its own."""
@@ -291,7 +298,7 @@ def show_in_cli() -> None:
     warnings.simplefilter('default', PiloopDeprecationWarning)
 
 
-def warn(toml: Path, key: str, message: str, *, removed_in: str, nth: int = 0) -> None:
+def warn(toml: Path, key: str, message: str, *, removed_in: Version, nth: int = 0) -> None:
     """Warn at the line of ``toml`` that sets ``key`` for the ``nth`` time, or at line 0 if no line sets it.
 
     A dotted ``key`` (``roles.research.scout``) is set by its table header, or by a line that sets its last part. The

@@ -18,7 +18,7 @@ from piloop.daemon.serve import (
     terminate,
 )
 from piloop.db.models import Campaign
-from piloop.db.session import BackupFailed, OlderDaemon, SchemaAhead
+from piloop.db.session import BackupFailed, OlderDaemon, SchemaMismatch, unmigratable
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.plugins.host import PluginError
 from piloop.proc import Inherited
@@ -53,7 +53,7 @@ def serve(
     inherited = Inherited.now()  # before the daemon starts a child of its own
     try:
         daemon = Daemon(common.settings, inherited)
-    except (OlderDaemon, SchemaAhead, BackupFailed) as e:
+    except (OlderDaemon, SchemaMismatch, BackupFailed) as e:
         raise SystemExit(str(e)) from e
     daemon.serve()
 
@@ -93,11 +93,17 @@ def restart(
 
 
 def can_start() -> None:
-    """Exit with why the daemon would not start on this code, before anything signals the running one."""
+    """Exit with why the daemon would not start on this code, before anything signals the running one.
+
+    A database that this code cannot migrate (``unmigratable``) would make the restarted daemon exit, with its agents
+    still running.
+    """
     try:
         preflight(common.settings)
     except PluginError as e:
         raise SystemExit(f'the daemon cannot start: {e}') from e
+    if (refused := unmigratable(common.settings.home / 'piloop.db')) is not None:
+        raise SystemExit(f'the daemon cannot start: {refused}') from refused
 
 
 def restarted(pid: int, timeout: float) -> int:

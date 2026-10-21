@@ -18,7 +18,7 @@ from piloop.daemon.serve import (
     running_pid,
     secrets,
 )
-from piloop.db.session import BackupFailed, Database, OlderDaemon, SchemaAhead, migrate
+from piloop.db.session import BackupFailed, Database, OlderDaemon, SchemaMismatch, migrate
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Span, tracer
 from piloop.plugins import host as plugins
@@ -87,7 +87,7 @@ class Daemon:
         self.db = Database(cfg.database_url, actor=ACTOR)
         try:
             self._backup = migrate(self.db.engine, backups=cfg.migration_backups, daemon=running_pid(cfg))
-        except OlderDaemon, SchemaAhead, BackupFailed:
+        except OlderDaemon, SchemaMismatch, BackupFailed:
             self.db.close()
             raise
         self._cfg = cfg

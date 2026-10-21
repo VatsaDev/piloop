@@ -19,6 +19,7 @@ import pytest
 from piloop import deprecated
 from piloop.config import ConfigError, load_campaign_config
 from piloop.deprecated import PiloopDeprecationWarning
+from piloop.version import Version
 from tests.conftest import HARNESS_APPEND, write_toml
 
 
@@ -26,7 +27,7 @@ def rename_size(toml: Path, raw: dict[str, object]) -> None:
     """``size = …`` is ``width = …``."""
     if 'size' in raw:
         raw['width'] = raw.pop('size')
-        deprecated.warn(toml, 'size', 'size is deprecated; write width instead', removed_in='9.0.0')
+        deprecated.warn(toml, 'size', 'size is deprecated; write width instead', removed_in=Version(9, 0, 0))
 
 
 def test_a_bridge_rewrites_the_key_and_warns_at_the_line_that_set_it(tmp_path: Path) -> None:
@@ -45,7 +46,7 @@ def test_a_key_no_line_sets_warns_at_line_0(tmp_path: Path) -> None:
     toml = tmp_path / 'piloop.toml'
     toml.write_text('box = { size = 3 }\n')
     with pytest.warns(PiloopDeprecationWarning) as record:
-        deprecated.warn(toml, 'size', 'size is deprecated', removed_in='9.0.0')
+        deprecated.warn(toml, 'size', 'size is deprecated', removed_in=Version(9, 0, 0))
     assert [w.lineno for w in record] == [0]
 
 
@@ -67,8 +68,8 @@ def test_a_dotted_key_warns_at_its_table_header_or_at_the_line_that_sets_its_las
     toml = tmp_path / 'piloop.toml'
     toml.write_text('[roles.research]\nbuffer = 3\n\n[roles.research.scout]\ninterval = 60\n')
     with pytest.warns(PiloopDeprecationWarning) as record:
-        deprecated.warn(toml, 'roles.research.scout', 'old', removed_in='9.0.0')
-        deprecated.warn(toml, 'roles.research.buffer', 'old', removed_in='9.0.0')
+        deprecated.warn(toml, 'roles.research.scout', 'old', removed_in=Version(9, 0, 0))
+        deprecated.warn(toml, 'roles.research.buffer', 'old', removed_in=Version(9, 0, 0))
     assert [w.lineno for w in record] == [4, 2]
 
 
@@ -225,7 +226,6 @@ def test_a_piloop_project_variable_still_overrides_after_its_campaign_one(
 
 
 ROOT = Path(__file__).parents[1]
-VERSION = re.compile(r'(\d+)\.(\d+)\.(\d+)')
 NOTE = re.compile(
     r'\b(?:TODO|FIXME|XXX)\b.*\d+\.\d+'  # a TODO tied to a version
     r'|\b(?:remov|delet|drop)\w*\b.*\b(?:release|\d+\.\d+)',  # "delete it in the release after 0.2.0"
@@ -240,7 +240,7 @@ deprecated key to the reader."""
 @dataclass(frozen=True)
 class Marker:
     where: str
-    version: str
+    version: Version
     reason: str
 
 
@@ -267,9 +267,10 @@ def _marker(node: ast.Call, where: str) -> Marker | str:
         return f'{where}: write deprecated.until(...), so that the scan finds it'
     match node.args, node.keywords:
         case [ast.Constant(value=str(version)), ast.Constant(value=str(reason))], [] if reason.strip():
-            if VERSION.fullmatch(version):
-                return Marker(where, version, reason)
-            return f'{where}: version {version!r} is not X.Y.Z'
+            try:
+                return Marker(where, Version.parse(version), reason)
+            except ValueError as e:
+                return f'{where}: {e}'
     return f'{where}: write deprecated.until(<"X.Y.Z">, <"reason">), with two literal strings'
 
 
@@ -317,16 +318,14 @@ def scan(root: Path) -> tuple[list[Marker], list[str]]:
     return markers, problems
 
 
-def expired(markers: list[Marker], version: str) -> list[Marker]:
-    """Return the markers whose release ``version`` has reached. A pre-release of a version counts as that version."""
-    current = VERSION.match(version)
-    assert current is not None, f'piloop version {version!r} does not start with X.Y.Z'
-    at = tuple(map(int, current.groups()))
-    return [m for m in markers if tuple(map(int, m.version.split('.'))) <= at]
+def expired(markers: list[Marker], version: Version) -> list[Marker]:
+    """Return the markers whose release ``version`` has reached."""
+    return [m for m in markers if m.version <= version]
 
 
-def piloop_version(root: Path = ROOT) -> str:
-    return tomllib.loads((root / 'pyproject.toml').read_text())['project']['version']
+def piloop_version(root: Path = ROOT) -> Version:
+    """The version in ``pyproject.toml``. A pre-release of a version counts as that version (``Version.parse``)."""
+    return Version.parse(tomllib.loads((root / 'pyproject.toml').read_text())['project']['version'])
 
 
 def test_no_marker_reached_its_release() -> None:
@@ -355,7 +354,10 @@ def test_the_scan_finds_a_marker_in_a_branch_and_on_a_function(tmp_path: Path) -
         "        deprecated.until('0.4.0', 'the old env' ' variable')\n",
     )
     assert scan(tmp_path) == (
-        [Marker('piloop/a.py:3', '0.3.0', 'the old key'), Marker('piloop/a.py:6', '0.4.0', 'the old env variable')],
+        [
+            Marker('piloop/a.py:3', Version(0, 3, 0), 'the old key'),
+            Marker('piloop/a.py:6', Version(0, 4, 0), 'the old env variable'),
+        ],
         [],
     )
 
@@ -395,7 +397,7 @@ def test_until_under_another_name_is_a_problem(tmp_path: Path, source: str) -> N
 
 def test_deprecated_py_calls_until_by_its_name(tmp_path: Path) -> None:
     write(tmp_path, 'deprecated.py', "until('0.3.0', 'r')\n")
-    assert scan(tmp_path) == ([Marker('piloop/deprecated.py:1', '0.3.0', 'r')], [])
+    assert scan(tmp_path) == ([Marker('piloop/deprecated.py:1', Version(0, 3, 0), 'r')], [])
 
 
 @pytest.mark.parametrize(
@@ -428,11 +430,19 @@ def test_other_comments_and_strings_are_not_problems(tmp_path: Path, text: str) 
 
 
 def test_a_marker_expires_at_its_release_and_its_pre_releases() -> None:
-    marker = Marker('piloop/a.py:1', '0.3.0', 'r')
-    assert expired([marker], '0.2.9') == []
-    assert expired([marker], '0.3.0') == [marker]
-    assert expired([marker], '0.3.0rc1') == [marker]
-    assert expired([marker], '1.0.0') == [marker]
+    marker = Marker('piloop/a.py:1', Version(0, 3, 0), 'r')
+    assert expired([marker], Version.parse('0.2.9')) == []
+    assert expired([marker], Version.parse('0.3.0')) == [marker]
+    assert expired([marker], Version.parse('0.3.0rc1')) == [marker]
+    assert expired([marker], Version.parse('1.0.0')) == [marker]
+
+
+@pytest.mark.parametrize('text', ['0.3', 'v0.3.0', '0.3.0.1', '0.3.0-dev', ''])
+def test_a_version_that_is_not_x_y_z_fails_to_parse_and_until_refuses_it(text: str) -> None:
+    with pytest.raises(ValueError, match=rf'^{re.escape(repr(text))} is not a version X\.Y\.Z$'):
+        Version.parse(text)
+    with pytest.raises(ValueError, match='is not a version X.Y.Z'):
+        deprecated.until(text, 'r')
 
 
 def test_until_leaves_what_it_marks_as_it_is() -> None:

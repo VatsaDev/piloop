@@ -363,6 +363,10 @@ Maintainers only.
 
 1. Fetch the tags (`git fetch --tags origin`). Set `version` in `pyproject.toml`, and run `uv lock`. The tests now
    fail on each [compat marker](#mark-compat-code) of this version: delete that code first.
+   For a minor release `X.Y.0`, add the release before it to `RELEASES` in `piloop/db/session.py`, with the head
+   revision that it shipped, the number of the last file that
+   `git ls-tree --name-only vX.(Y-1).0 piloop/db/migrations/versions/` lists. That head is the oldest schema that this
+   release migrates, so a database upgrades one minor release at a time. The test of `RELEASES` fails until it is there.
 2. Write the release notes:
 
    ```bash

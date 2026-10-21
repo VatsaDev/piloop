@@ -1,9 +1,41 @@
 """Build what ``piloop --version`` prints: the package version, and the git commit when the installer recorded one."""
 
 import json
+import re
 from importlib.metadata import distribution
+from typing import NamedTuple
 
 SHORT_SHA = 7
+_VERSION = re.compile(r'(\d+)\.(\d+)\.(\d+)(?:(?:a|b|rc)\d+)?')
+
+
+class Version(NamedTuple):
+    """A release, ``X.Y.Z``. Versions compare as tuples, so an older release sorts first."""
+
+    major: int
+    minor: int
+    patch: int
+
+    @classmethod
+    def parse(cls, text: str) -> Version:
+        """Parse ``X.Y.Z``. A pre-release, ``X.Y.Zrc1`` (``a``, ``b`` or ``rc``), counts as its release.
+
+        Raises:
+            ValueError: ``text`` is not such a version.
+        """
+        found = _VERSION.fullmatch(text)
+        if found is None:
+            raise ValueError(f'{text!r} is not a version X.Y.Z')
+        major, minor, patch = (int(n) for n in found.groups())
+        return cls(major, minor, patch)
+
+    def __str__(self) -> str:
+        return f'{self.major}.{self.minor}.{self.patch}'
+
+    @property
+    def line(self) -> str:
+        """The minor release line, ``X.Y``: what ``uv tool install 'piloop==X.Y.*'`` installs the newest of."""
+        return f'{self.major}.{self.minor}'
 
 
 def describe(version: str, direct_url: str | None) -> str:

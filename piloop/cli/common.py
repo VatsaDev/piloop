@@ -23,7 +23,7 @@ from piloop.db.session import (
     BackupFailed,
     Database,
     OlderDaemon,
-    SchemaAhead,
+    SchemaMismatch,
     migrate as migrate_schema,
     schema_mismatch,
 )
@@ -111,7 +111,7 @@ def migrate(db: Database) -> Path | None:
     """
     try:
         return migrate_schema(db.engine, backups=settings.migration_backups, daemon=running_pid(settings))
-    except (OlderDaemon, SchemaAhead, BackupFailed) as e:
+    except (OlderDaemon, SchemaMismatch, BackupFailed) as e:
         db.close()
         raise SystemExit(str(e)) from e
 

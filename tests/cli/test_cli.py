@@ -22,11 +22,11 @@ from sqlalchemy import create_engine, select
 
 from piloop.campaign import campaigns as campaign_module, inbox
 from piloop.campaign.ideas import defined_by, runnable
-from piloop.cli import campaign as campaign_cli, common, inbox as inbox_cli, main as cli
+from piloop.cli import campaign as campaign_cli, common, inbox as inbox_cli, install, main as cli
 from piloop.config import ConfigError
 from piloop.daemon.main import Daemon
 from piloop.daemon.serve import acquire, running_pid
-from piloop.db import sql
+from piloop.db import session, sql
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
@@ -55,7 +55,7 @@ from piloop.settings import Settings
 from piloop.version import direct_url, installed
 from tests.conftest import at_head, hold_lock, wait_until
 from tests.daemon.test_serve import alive
-from tests.db.test_migrations import alembic
+from tests.db.test_migrations import TOO_OLD, alembic
 from tests.fixtures.fake_herdr import SOCKET
 
 HEAD = ScriptDirectory.from_config(alembic(Path('unused.db'))).get_current_head()
@@ -1670,6 +1670,71 @@ def test_the_commands_that_read_refuse_a_database_that_a_newer_piloop_migrated(c
         rf'is at schema revision 9999_from_the_future, and this piloop .* knows up to {HEAD}: this database was'
         ' migrated by a newer piloop: install it',
     )
+
+
+def too_old(monkeypatch: pytest.MonkeyPatch, database: Path) -> str:
+    """Put ``database`` at 0001 under the releases of a piloop 0.4 (``TOO_OLD``), in this process and in the new code
+    that ``piloop upgrade`` runs, and return the start of the refusal."""
+    monkeypatch.setattr(session, 'RELEASES', TOO_OLD)
+    patched = (
+        'import runpy, piloop.db.session as s; from piloop.db.session import Release; from piloop.version import'
+        f' Version; s.RELEASES = {TOO_OLD!r}; runpy.run_module("piloop")'
+    )
+    monkeypatch.setattr(install, 'PILOOP_ARGV', (sys.executable, '-P', '-c', patched))
+    command.downgrade(alembic(database), '0001')
+    return (
+        rf'{re.escape(str(database))} is from piloop 0\.1 \(schema revision 0001\), and this piloop .* migrates from'
+        r' piloop 0\.3'
+    )
+
+
+def test_every_command_refuses_a_database_older_than_the_previous_release_and_changes_nothing(
+    campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch, mocker: MockerFixture
+) -> None:
+    run_cli(['init', str(campaign_path)])
+    database = common.settings.home / 'piloop.db'
+    found = too_old(monkeypatch, database)
+    fix = (
+        r'upgrade one release at a time: install piloop 0\.2 .*, then install this piloop again and run'
+        r' `piloop upgrade`'
+    )
+    mocker.patch('piloop.cli.campaign.sys.stdin').isatty.return_value = True
+    commands = (*READERS, ['init', str(campaign_path)], ['migrate'], ['serve'])
+    refuse_each(commands, database, rf'^{found}.*: {fix}$')
+    refuse_each((['serve', '--check'],), database, rf'^the daemon cannot start: {found}.*: {fix}$')
+    for daemon in hold_lock(common.settings.pid_file):  # an older daemon: the database is still too old for this one
+        refuse_each(READERS, database, rf'^{found}.*: {fix}$')
+        assert daemon.poll() is None
+    out()
+    with pytest.raises(SystemExit):
+        run_cli(['doctor'])
+    assert re.search(rf'^FAIL  database: {found}.*\n +fix: {fix}$', out(), re.MULTILINE), (
+        'doctor reports it the same way'
+    )
+    assert revision_of(database) == '0001' and not list(database.parent.glob('piloop.db.bak-*'))
+
+
+def test_upgrade_keeps_the_old_daemon_and_the_database_when_the_database_is_older_than_the_previous_release(
+    fake_bins, out, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``piloop upgrade`` runs ``serve --check`` on the new code before it restarts the daemon in place: a daemon that
+    execs code that refuses its database would exit and leave its agents without a daemon."""
+    database = common.settings.home / 'piloop.db'
+    found = too_old(monkeypatch, database)
+    before = database.read_bytes()
+    write_receipt(GIT_RECEIPT)
+    fake_bins('uv')
+    for daemon in hold_lock(common.settings.pid_file):
+        with pytest.raises(
+            SystemExit,
+            match=rf'^daemon: pid {daemon.pid} not restarted, and it keeps running the old code: the daemon cannot'
+            rf' start: {found}.*upgrade one release at a time',
+        ):
+            run_cli(['upgrade'])
+        assert daemon.poll() is None and running_pid(common.settings) == daemon.pid, 'the old daemon keeps running'
+    with pytest.raises(SystemExit, match=rf'^piloop migrate on the new code failed with exit 1: {found}'):
+        run_cli(['upgrade'])
+    assert database.read_bytes() == before and not list(database.parent.glob('piloop.db.bak-*'))
 
 
 @pytest.mark.usefixtures('no_database')
