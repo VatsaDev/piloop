@@ -136,6 +136,23 @@ def test_kill_ends_an_escaped_child_after_the_agent_itself_exited(tmp_path: Path
             os.kill(pid, signal.SIGKILL)
 
 
+def test_kill_ends_what_an_agent_without_a_tag_started_in_a_session_of_its_own(tmp_path: Path) -> None:
+    """0.1.0 gave an agent no process tag. After an upgrade, a cancel of such an agent reached only its group, and its Bash
+    calls, each in a session of its own, kept running (#140). The kill ends the agent's descendants as well."""
+    starter = SubprocessRuntime()
+    handle = starter.start(spec(tmp_path, script(tmp_path, f'{ESCAPE}sleep 30')))
+    pid, start = escaped(tmp_path)
+    legacy = Handle(handle.runtime, {k: v for k, v in handle.data.items() if k != 'token'})
+    try:
+        assert os.getsid(pid) != handle.data['pid'], 'the child left the group that killpg reaches'
+        SubprocessRuntime().kill(legacy)  # the daemon after the upgrade: another instance, the handle from its row
+        assert gone(pid, start), 'the escaped child dies with the agent'
+        assert starter.wait(handle, timeout=5).status is AgentStatus.EXITED
+    finally:
+        if alive(pid, start):
+            os.kill(pid, signal.SIGKILL)
+
+
 def test_session_id_is_read_from_stdout_while_the_process_still_runs(tmp_path: Path) -> None:
     rt = SubprocessRuntime()
     exe = script(tmp_path, 'sleep 0.3; echo \'{"type":"thread.started","thread_id":"abc-123"}\'; sleep 5')

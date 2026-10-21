@@ -17,7 +17,7 @@ from piloop import deprecated
 from piloop.harnesses import Invocation, fill
 from piloop.proc import alive, child_env, kill_group, started
 from piloop.runtime import AgentSpec, AgentStatus, Check, Handle, NotAttachable, NotSteerable, Outcome
-from piloop.runtime.tags import TAG_ENV, kill_tagged
+from piloop.runtime.tags import TAG_ENV, kill_tagged, kill_tree
 
 STDOUT = 'agent_session.stdout'
 STDERR = 'agent_session.stderr'
@@ -234,14 +234,18 @@ class SubprocessRuntime:
 
         Harnesses run tool commands in sessions of their own (Claude Code's Bash calls), outside the group, and those
         outlive the agent. A group or a process that is already gone is not an error. A handle from before the tag
-        reaches only the group.
+        (0.1.0's) has its agent's descendants killed instead, while the agent still lives to name them.
         """
+        token = handle.data.get('token')
+        if token is None:
+            deprecated.until('0.3.0', 'a handle that 0.1.0 started has no tag: delete this branch and kill_tree')
+            kill_tree(*_current(handle))
         if self._alive(handle):
             with suppress(ProcessLookupError):
                 os.killpg(_current(handle)[0], signal.SIGKILL)  # each process leads its own group: pgid = pid
                 while self._alive(handle):
                     time.sleep(POLL_SECONDS)
-        if (token := handle.data.get('token')) is not None:
+        if token is not None:
             kill_tagged(f'{TAG_ENV}={token}')
 
     def _alive(self, handle: Handle) -> bool:

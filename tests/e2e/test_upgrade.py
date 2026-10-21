@@ -354,7 +354,6 @@ def test_the_new_code_cancels_an_agent_of_the_release(upgrade: Upgrade) -> None:
 
 
 @needs(test_the_new_code_cancels_an_agent_of_the_release)
-@pytest.mark.xfail(strict=True, reason='#140: a handle without a token reaches only the process group')
 def test_the_cancel_ends_every_process_of_the_release_agent(upgrade: Upgrade) -> None:
     """Its tool calls run in sessions of their own (Claude Code's Bash), outside the process group of the agent."""
     assert upgrade.leftovers == []
