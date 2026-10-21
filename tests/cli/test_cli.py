@@ -1689,8 +1689,8 @@ def test_the_commands_that_read_refuse_a_database_that_a_newer_piloop_migrated(c
     refuse_each(
         (*READERS, ['init', str(campaign_path)], ['migrate'], ['serve']),
         database,
-        rf'is at schema revision 9999_from_the_future, and this piloop .* knows up to {HEAD}: this database was'
-        ' migrated by a newer piloop: install it',
+        rf'was migrated by a different piloop build \(revision 9999_from_the_future is not in the history of this'
+        rf' piloop .*, which knows up to {HEAD}\): install the piloop that migrated it',
     )
 
 

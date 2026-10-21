@@ -3,6 +3,7 @@
 import json
 import re
 import resource
+import shutil
 import signal
 import sqlite3
 import threading
@@ -31,9 +32,11 @@ from piloop.db.session import (
     Revision,
     SchemaAhead,
     SchemaTooOld,
+    fingerprints,
     migrate,
     revision,
     revisions,
+    schema_mismatch,
 )
 from piloop.db.triggers import PERSISTENT, campaigns, legacy
 from piloop.db.triggers.roles import known_role
@@ -119,6 +122,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
     command.check(cfg)
     command.downgrade(cfg, 'base')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('PRAGMA user_version').fetchone() == (0,)
         assert (
             con.execute(  # SQLite keeps sqlite_sequence, which AUTOINCREMENT made, and never drops it
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT IN ('alembic_version', 'sqlite_sequence')"
@@ -127,21 +131,30 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
         )
 
 
-def test_an_older_piloop_refuses_a_database_a_newer_one_migrated(tmp_path: Path) -> None:
+def schema(path: Path) -> list[tuple[str, ...]]:
+    with closing(sqlite3.connect(f'file:{path}?mode=ro', uri=True)) as con:
+        return con.execute('SELECT type, name, sql FROM sqlite_master ORDER BY name').fetchall()
+
+
+def test_a_database_at_a_revision_this_build_does_not_have_is_refused_and_left_as_it_was(tmp_path: Path) -> None:
     path = tmp_path / 'piloop.db'
     engine = create_engine(f'sqlite:///{path}')
     migrate(engine, backups=0, daemon=None)
     head = ScriptDirectory.from_config(alembic(path)).get_current_head()
     with closing(sqlite3.connect(path)) as con:
-        con.execute("UPDATE alembic_version SET version_num = '9999_from_the_future'")
+        con.execute("UPDATE alembic_version SET version_num = '0006_role_keys'")
         con.commit()
+    before = path.read_bytes()
     this = re.escape(installed())
     with pytest.raises(
         SchemaAhead,
-        match=rf'revision 9999_from_the_future, and this {this} knows up to {head}: this database was migrated by a'
-        r' newer piloop: install it \(`piloop upgrade` installs the latest\), or set PILOOP_HOME to another directory$',
+        match=rf'^{re.escape(str(path))} was migrated by a different piloop build \(revision 0006_role_keys is not in '
+        rf'the history of this {this}, which knows up to {head}\): install the piloop that migrated it \(`piloop '
+        r'upgrade` for a newer release\), or set PILOOP_HOME to another directory$',
     ):
-        migrate(engine, backups=0, daemon=None)
+        migrate(engine, backups=2, daemon=None)
+    assert schema_mismatch(path, None) is not None
+    assert path.read_bytes() == before and list(tmp_path.glob('piloop.db.bak-*')) == []
     engine.dispose()
 
 
@@ -224,6 +237,60 @@ def test_the_floor_is_the_head_of_the_previous_minor_release() -> None:
     assert previous <= versions[-1] <= this, (
         f'piloop {this} migrates from the head of piloop {previous}: add {previous} and its head to RELEASES'
     )
+
+
+def branch(tmp_path: Path) -> AlembicConfig:
+    """The migrations of a branch cut at 0005 that adds its own, different 0006."""
+    copy = tmp_path / 'branch'
+
+    def after_0005(_dir: str, names: list[str]) -> list[str]:
+        return [n for n in names if n == '__pycache__' or (n[:4].isdigit() and n[:4] > '0005')]
+
+    shutil.copytree(MIGRATIONS, copy, ignore=after_0005)
+    (copy / 'versions' / '0006_role_keys.py').write_text(
+        'from alembic import op\n\n'
+        "revision = '0006'\ndown_revision = '0005'\nbranch_labels = None\ndepends_on = None\n\n\n"
+        'def upgrade() -> None:\n    op.execute("UPDATE projects SET config = \'{}\'")\n\n\n'
+        'def downgrade() -> None:\n    pass\n'
+    )
+    cfg = alembic(tmp_path / 'piloop.db')
+    cfg.set_main_option('script_location', str(copy))
+    return cfg
+
+
+def test_a_database_that_another_branch_migrated_to_a_revision_of_the_same_id_is_refused_and_left_as_it_was(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    command.upgrade(branch(tmp_path), 'head')
+    engine = create_engine(f'sqlite:///{path}')
+    before, tables = path.read_bytes(), schema(path)
+    assert revision(path) == '0006'
+    refused = r'revision 0006 is not in the history of this .*: this build has a different 0006 or one before it\)'
+    with pytest.raises(SchemaAhead, match=refused):
+        migrate(engine, backups=2, daemon=None)
+    assert re.search(refused, str(schema_mismatch(path, None)))
+    assert path.read_bytes() == before and schema(path) == tables and list(tmp_path.glob('piloop.db.bak-*')) == []
+    engine.dispose()
+
+
+def test_a_database_that_a_build_before_fingerprints_migrated_is_trusted_at_a_known_revision_and_fingerprinted(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    command.upgrade(alembic(path), '0005')
+    with closing(sqlite3.connect(path)) as con:
+        con.execute('PRAGMA user_version = 0')
+    engine = create_engine(f'sqlite:///{path}')
+    migrate(engine, backups=0, daemon=None)
+    head = list(fingerprints(ScriptDirectory(str(MIGRATIONS))).values())[-1]
+    with closing(sqlite3.connect(path)) as con:
+        assert con.execute('PRAGMA user_version').fetchone() == (head,)
+    engine.dispose()
+
+
+def test_renaming_a_released_revision_changes_the_fingerprint_that_databases_carry() -> None:
+    assert fingerprints(ScriptDirectory(str(MIGRATIONS)))['0018'] == 1283307147
 
 
 def test_a_migration_first_backs_up_the_database_and_keeps_the_newest_backups(tmp_path: Path) -> None:

@@ -2,6 +2,7 @@ from alembic import context
 from sqlalchemy import engine_from_config, event, pool
 
 from piloop.db.models import Base
+from piloop.db.session import record
 from piloop.db.triggers.fts import is_fts_object
 
 config = context.config
@@ -36,6 +37,7 @@ def run_migrations_online() -> None:
         )
         with context.begin_transaction():
             context.run_migrations()
+            record(connection, context.script)
     connectable.dispose()
 
 

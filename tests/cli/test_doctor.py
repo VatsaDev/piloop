@@ -144,9 +144,10 @@ def test_a_database_missing_unmigrated_behind_or_ahead_says_which_command_brings
     ahead = by_name(cfg)['database']
     assert ahead == Check(
         'database',
-        f'{path} is at schema revision 9999_from_the_future, and this {installed()} knows up to {HEAD}',
-        'this database was migrated by a newer piloop: install it (`piloop upgrade` installs the latest), or set'
-        ' PILOOP_HOME to another directory',
+        f'{path} was migrated by a different piloop build (revision 9999_from_the_future is not in the history of'
+        f' this {installed()}, which knows up to {HEAD})',
+        'install the piloop that migrated it (`piloop upgrade` for a newer release), or set PILOOP_HOME to another'
+        ' directory',
     )
     assert path.read_bytes() == before and not (cfg.home / 'piloop.db-wal').exists(), 'opened read-only'
 

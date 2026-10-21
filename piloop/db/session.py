@@ -4,9 +4,15 @@ Migrations are append-only. Every schema change is a new revision
 (``uv run alembic revision --autogenerate -m "..."``), never an edit of an existing one. Only ``migrate`` changes the
 schema, and only ``piloop serve`` (when it starts) and ``piloop migrate`` (which ``piloop upgrade`` runs) call it. Every
 other command refuses a database at another revision (``schema_mismatch``) and changes nothing.
+
+Revision ids are bare numbers, so a branch's ``0006`` and ``main``'s share one. Each migration also records, in
+``PRAGMA user_version``, a fingerprint of the revision file names up to the one it stamps (``fingerprints``), and
+``unmigratable`` refuses a database whose stamp or fingerprint is not in this build's history (``foreign``). 0 marks a
+database that a build before fingerprints migrated: only its stamp is checked.
 """
 
 import fcntl
+import hashlib
 import os
 import sqlite3
 from collections.abc import Generator
@@ -18,7 +24,7 @@ from typing import NewType
 from alembic import command
 from alembic.config import Config as AlembicConfig
 from alembic.script import ScriptDirectory
-from sqlalchemy import Engine, create_engine, event, make_url
+from sqlalchemy import Connection, Engine, create_engine, event, make_url
 from sqlalchemy.engine import ExceptionContext
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import ConnectionPoolEntry
@@ -104,7 +110,7 @@ class SchemaMismatch(RuntimeError):
 
 
 class SchemaAhead(SchemaMismatch):
-    """A newer version of piloop migrated the database. Downgrades are not supported."""
+    """Another piloop build, newer or of another branch, migrated the database. Downgrades are not supported."""
 
 
 class SchemaTooOld(SchemaMismatch):
@@ -166,15 +172,15 @@ def migrate(engine: Engine, *, backups: int, daemon: int | None) -> Path | None:
 def unmigratable(database: Path) -> SchemaMismatch | None:
     """Return why ``migrate`` would refuse ``database``, read read-only, else None.
 
-    A newer piloop migrated it (``SchemaAhead``), or it is older than the floor, the newest of ``RELEASES``
+    Another piloop build migrated it (``foreign``), or it is older than the floor, the newest of ``RELEASES``
     (``SchemaTooOld``). A database that does not exist, or that was never migrated, can be.
     """
     stamp, chain = revision(database), revisions()
     if stamp is None:
         return None
-    at = next((r for r in chain if r == stamp), None)
-    if at is None:
-        return ahead(database, stamp)
+    if (refused := foreign(database, stamp)) is not None:
+        return refused
+    at = Revision(stamp)
     position, floor = chain.index, RELEASES[-1]
     if position(at) >= position(floor.head):
         return None
@@ -261,26 +267,47 @@ def head() -> str | None:
 
 
 def behind(database: Path) -> str | None:
-    """Return the revision of a database that this piloop would migrate, or None when it is at head or ahead of it.
+    """Return the revision of a database that this piloop would migrate, or None when it is at head.
 
-    A database that was never migrated is at revision ``none``.
+    A database that was never migrated is at revision ``none``. Check ``unmigratable`` first.
     """
-    at, script = revision(database), ScriptDirectory(str(MIGRATIONS))
-    if at == script.get_current_head() or (at is not None and at not in {r.revision for r in script.walk_revisions()}):
+    at = revision(database)
+    return None if at == head() else at or 'none'
+
+
+def fingerprints(script: ScriptDirectory) -> dict[str, int]:
+    """For each revision of ``script``, a hash of the file names of the revisions up to it: a positive int32, never 0.
+
+    Names, not contents: a refactor of a released revision's code must not refuse every database.
+    """
+    history, found = hashlib.sha256(), {}
+    for rev in reversed(list(script.walk_revisions())):
+        history.update(f'{Path(rev.path).stem}\n'.encode())
+        found[rev.revision] = int.from_bytes(history.digest()[:4]) >> 1 or 1
+    return found
+
+
+def record(connection: Connection, script: ScriptDirectory) -> None:
+    """Set ``PRAGMA user_version`` to the fingerprint of the database's revision, if it is not already. ``env.py``."""
+    at = connection.exec_driver_sql('SELECT version_num FROM alembic_version').scalar()
+    mark = fingerprints(script)[at] if at is not None else 0
+    if connection.exec_driver_sql('PRAGMA user_version').scalar() != mark:
+        connection.exec_driver_sql(f'PRAGMA user_version = {mark:d}')
+
+
+def foreign(database: Path, at: str) -> SchemaAhead | None:
+    """Return the refusal of ``database``, stamped ``at``, if another piloop build migrated it. Reads it read-only."""
+    with closing(sqlite3.connect(f'file:{database}?mode=ro', uri=True)) as con:
+        (mark,) = con.execute('PRAGMA user_version').fetchone()
+    known = fingerprints(ScriptDirectory(str(MIGRATIONS)))
+    if at in known and mark in {0, known[at]}:
         return None
-    return at or 'none'
-
-
-def ahead(database: Path, at: str | None) -> SchemaAhead:
-    """Return the error for ``database`` at revision ``at``, which a newer piloop wrote and this one does not know.
-
-    Only the newer piloop has the script of ``at``, so this one cannot name the version: it names its own and the
-    newest revision it knows.
-    """
+    why = f', which knows up to {head()}' if at not in known else f': this build has a different {at} or one before it'
     return SchemaAhead(
-        f'{database} is at schema revision {at}, and this {installed()} knows up to {head()}',
-        'this database was migrated by a newer piloop: install it (`piloop upgrade` installs the latest), or set'
-        ' PILOOP_HOME to another directory',
+        f'{database} was migrated by a different piloop build (revision {at} is not in the history of this'
+        f' {installed()}{why})',
+        'install the piloop that migrated it (`piloop upgrade` for a newer release), or set PILOOP_HOME to another'
+        ' directory',
     )
 
 
