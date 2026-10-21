@@ -37,6 +37,7 @@ from sqlalchemy import MetaData
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateIndex, CreateTable
 
+from piloop import deprecated
 from piloop.db.models import Base
 from piloop.db.triggers.fts import FTS_COLUMNS, FTS_TABLES, FTS_TRIGGER_NAMES, fts_table
 from piloop.db.triggers.immutable import APPEND_ONLY, IMMUTABLE, UNDELETABLE
@@ -269,14 +270,14 @@ class Result:
     truncated: bool
 
 
+deprecated.until('0.3.0', 'the hint for a 0.1.0 table or column name: delete RENAMED, with_renamed and their callers')
 RENAMED = {
     'projects': 'campaigns',
     'project_id': 'campaign_id',
     'workers': 'agent_sessions',
 }
-"""The names of the schema of 0.1.0 that 0.2.0 renamed, with the new ones. ``with_renamed`` names the new one in an error.
-
-TODO: delete it with the hint one minor release after 0.2.0, as a deprecated key."""
+"""The names of the schema of 0.1.0 that 0.2.0 renamed, with the new ones. ``with_renamed`` names the new one in an
+error."""
 UPGRADE_NOTES = 'https://piloop.autoresearch.inc/guides/upgrading#renamed-tables-columns-and-commands'
 MISSING = re.compile(r'no such (?:table|column): (?:\w+\.)?(?P<name>\w+)')
 

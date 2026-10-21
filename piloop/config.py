@@ -978,7 +978,9 @@ def load_campaign_config(campaign: Path, **overrides: object) -> CampaignConfig:
             dotenv_settings: PydanticBaseSettingsSource,
             file_secret_settings: PydanticBaseSettingsSource,
         ) -> tuple[PydanticBaseSettingsSource, ...]:
-            # a PILOOP_PROJECT_<KEY> variable still applies, after its PILOOP_CAMPAIGN_<KEY> (piloop.deprecated.old_env)
+            deprecated.until(
+                '0.3.0', 'PILOOP_PROJECT_<KEY> still applies after PILOOP_CAMPAIGN_<KEY>: delete this source'
+            )
             old = EnvSettingsSource(
                 settings_cls, env_prefix=deprecated.OLD_ENV_PREFIX, env_nested_delimiter='__', case_sensitive=False
             )

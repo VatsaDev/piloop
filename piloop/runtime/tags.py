@@ -11,11 +11,14 @@ import time
 
 import psutil
 
+from piloop import deprecated
+
 TAG_ENV = 'PILOOP_PROCESS_TAG'
 """The variable that holds an agent's process tag."""
+deprecated.until('0.3.0', 'PILOOP_WORKER_TOKEN of an agent that 0.1.0 started: delete OLD_TAG_ENV and its uses')
 OLD_TAG_ENV = 'PILOOP_WORKER_TOKEN'
 """``TAG_ENV`` before 0.2.0. ``tagged`` still finds the processes of an agent that an older daemon started: the agent
-outlives an upgrade. TODO(0.3.0): delete it, with its match in ``_tagged`` and its drop in ``piloop.proc.child_env``."""
+outlives an upgrade."""
 KILL_SCANS = 50
 """How many rounds ``kill_tagged`` makes, at most, to end the processes that a tree forks meanwhile."""
 KILL_POLL_SECONDS = 0.05

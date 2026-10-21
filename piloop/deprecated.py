@@ -1,19 +1,45 @@
-"""Deprecated ``piloop.toml`` keys. A deprecated key still loads, with a warning, until the release that removes it.
+"""Compat code that piloop keeps until a set release: deprecated ``piloop.toml`` keys, old names and old behavior.
 
-To deprecate a key, add a bridge to ``BRIDGES``. A bridge is a function that takes the file path and the parsed TOML,
-changes the old key to the new form in place and calls ``warn``. Its docstring is its entry under "Deprecated keys" in
-the generated configuration reference (``docs/reference/configuration.mdx``). The release notes list it under
-``Deprecated``.
+Mark each piece of compat code with ``until``: the release that deletes it and what to delete. A test finds every
+marker and fails once ``pyproject.toml`` reaches its release, so the code goes before that release ships.
 
-To remove a bridge, delete its function, its ``BRIDGES`` entry and its tests, and run ``make docs``. The release notes
-list the key under ``Removed``. The old key then fails as an unknown key.
+A deprecated key still loads, with a warning, until that release. To deprecate a key, add a bridge to ``BRIDGES``. A
+bridge is a function that takes the file path and the parsed TOML, changes the old key to the new form in place and
+calls ``warn``. Mark it with ``until``. Its docstring is its entry under "Deprecated keys" in the generated
+configuration reference (``docs/reference/configuration.mdx``). The release notes list it under ``Deprecated``.
+
+When its marker fails, delete the bridge's function, its ``BRIDGES`` entry and its tests, and run ``make docs``. The
+release notes list the key under ``Removed``. The old key then fails as an unknown key.
 """
 
 import warnings
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Protocol
 
 Bridge = Callable[[Path, dict[str, object]], None]
+
+
+class Marked(Protocol):
+    """What ``until`` returns: a decorator that returns what it decorates."""
+
+    def __call__[T](self, obj: T, /) -> T: ...
+
+
+def _same[T](obj: T, /) -> T:
+    return obj
+
+
+def until(version: str, reason: str) -> Marked:
+    """Mark compat code that piloop keeps until release ``version``. ``reason`` says what to delete and what replaces it.
+
+    Call it as a statement where the code is (a branch, an alias, a table entry), or put it on a function or a class as
+    a decorator. It does nothing at run time. ``tests/test_deprecated.py`` reads every call in ``piloop/`` and
+    fails once ``pyproject.toml`` is at ``version``. Write both arguments as literal strings, ``version`` as ``X.Y.Z``,
+    and call it as ``deprecated.until`` (here, ``until``), so that the test can read it.
+    """
+    return _same
+
 
 # Where the ``default`` action records the warnings it showed, so a file loaded twice in one process warns once.
 _shown: dict[str | tuple[str, type[Warning], int], int] = {}
@@ -24,7 +50,7 @@ class PiloopDeprecationWarning(DeprecationWarning):
 
 
 REMOVED_IN = '0.3.0'
-"""The release that removes the keys that this release deprecates."""
+"""The release that ``warn`` names for the keys that this release deprecates."""
 SCOUT_SHARED = ('runtime', 'harnesses', 'model', 'timeout', 'mcp', 'addendum', 'workdir')
 """The keys of ``[roles.research]`` that a scout sweep used before the scout was a role of its own."""
 
@@ -37,6 +63,7 @@ def _table(raw: dict[str, object], *path: str) -> dict[str, object] | None:
     return table if isinstance(table, dict) else None
 
 
+@until('0.3.0', '[roles.research.scout] is [roles.scout]: delete the research_scout bridge')
 def research_scout(toml: Path, raw: dict[str, object]) -> None:
     """``[roles.research.scout]`` is ``[roles.scout]``, a role of its own.
 
@@ -59,6 +86,7 @@ def research_scout(toml: Path, raw: dict[str, object]) -> None:
     )
 
 
+@until('0.3.0', 'the scout trigger of [roles.research] is gone: delete the scout_trigger bridge')
 def scout_trigger(toml: Path, raw: dict[str, object]) -> None:
     """The ``scout`` trigger of ``[roles.research] triggers`` is gone: the scout is a role with its own ``cron``."""
     research = _table(raw, 'roles', 'research')
@@ -86,6 +114,7 @@ RESEARCH_TRIGGERS = ({'kind': 'low_water'}, {'kind': 'seed'})
 """The default triggers of research when ``[roles.research] buffer`` was deprecated."""
 
 
+@until('0.3.0', '[roles.research] buffer is a low_water trigger buffer: delete the research_buffer bridge')
 def research_buffer(toml: Path, raw: dict[str, object]) -> None:
     """``[roles.research] buffer`` is the ``buffer`` of research's ``low_water`` trigger.
 
@@ -108,6 +137,7 @@ def research_buffer(toml: Path, raw: dict[str, object]) -> None:
     )
 
 
+@until('0.3.0', '[roles.research] context is the top-level context: delete the research_context bridge')
 def research_context(toml: Path, raw: dict[str, object]) -> None:
     """``[roles.research] context`` is the top-level ``context``: every sweep's research pack lists the files."""
     research = _table(raw, 'roles', 'research')
@@ -130,6 +160,7 @@ USAGE_PLACEHOLDERS = {
 }
 
 
+@until('0.3.0', '{claude_config_dir} and {codex_home} are {env:…} placeholders: delete the usage_dirs bridge')
 def usage_dirs(toml: Path, raw: dict[str, object]) -> None:
     """``{claude_config_dir}`` and ``{codex_home}`` in ``[harness.<name>.usage] file`` are ``{env:…}`` placeholders.
 
@@ -153,6 +184,7 @@ def usage_dirs(toml: Path, raw: dict[str, object]) -> None:
         )
 
 
+@until('0.3.0', '[roles.worker] is [roles.implementer]: delete the worker_role bridge')
 def worker_role(toml: Path, raw: dict[str, object]) -> None:
     """``[roles.worker]`` is ``[roles.implementer]``: the role that runs one idea in its own worktree.
 
@@ -175,6 +207,7 @@ BRIDGES: tuple[Bridge, ...] = (
 )
 
 
+@until('0.3.0', 'herdr_<key> in config.toml is [runtimes.herdr] <key>: delete the herdr_keys bridge')
 def herdr_keys(toml: Path, raw: dict[str, object]) -> None:
     """In ``config.toml``, ``herdr_<key> = …`` is ``<key> = …`` in its ``[runtimes.herdr]`` table.
 
@@ -202,6 +235,7 @@ OLD_ENV_PREFIX = 'PILOOP_PROJECT_'
 """The prefix of the environment variables that override ``piloop.toml`` before 0.2.0. ``PILOOP_CAMPAIGN_`` now."""
 
 
+@until('0.3.0', 'PILOOP_PROJECT_<KEY> is PILOOP_CAMPAIGN_<KEY>: delete old_env and OLD_ENV_PREFIX')
 def old_env(toml: Path, environ: Mapping[str, str]) -> None:
     """Warn for each ``PILOOP_PROJECT_<KEY>`` variable: it still overrides its key, after ``PILOOP_CAMPAIGN_<KEY>``."""
     for name in sorted(n for n in environ if n.upper().startswith(OLD_ENV_PREFIX)):
@@ -214,17 +248,18 @@ OLD_SIGNATURE = 'worker#'
 upgrade with it: in its ``PILOOP_ACTOR``, and in the SQL that its brief told it to write (``'<you>'``)."""
 
 
+@until('0.3.0', 'a 0.1.0 implementer signs worker#<id>: delete signatures and OLD_SIGNATURE, match <kind>#<id>')
 def signatures(kind: str, agent_session_id: int) -> tuple[str, ...]:
     """Return the signatures of an agent session's rows: ``<kind>#<id>``, and an implementer's ``worker#<id>`` too.
 
     The checks that find an agent's own rows (its work at startup, its finding, its open escalation, its own comments,
     its silence) match authors against these, so a row that a 0.1.0 agent signs after the upgrade still counts.
-    TODO(0.3.0): delete it, and match ``<kind>#<id>`` alone.
     """
     own = f'{kind}#{agent_session_id}'
     return (own, f'{OLD_SIGNATURE}{agent_session_id}') if kind == 'implementer' else (own,)
 
 
+@until('0.3.0', 'PILOOP_ACTOR=worker#<id> of a 0.1.0 agent: delete old_actor and its call in Settings.actor')
 def old_actor(actor: str) -> str:
     """Return ``actor`` with the implementer's signature for ``worker#<id>``, with a warning; else ``actor`` as it is."""
     if not actor.startswith(OLD_SIGNATURE):

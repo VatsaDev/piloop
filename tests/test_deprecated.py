@@ -1,6 +1,17 @@
-"""The deprecation framework, tested with a bridge defined here, and each bridge of ``BRIDGES``."""
+"""The deprecation framework: a bridge defined here, each bridge of ``BRIDGES``, and the ``deprecated.until`` markers.
 
+The marker scan reads the source, so a marker in a branch that never runs counts too. Once ``pyproject.toml`` is at or
+past a marker's version, ``test_no_marker_reached_its_release`` fails with the place and the reason of each one, so the
+release cannot ship until the code is deleted.
+"""
+
+import ast
+import io
+import re
+import tokenize
+import tomllib
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -211,3 +222,221 @@ def test_a_piloop_project_variable_still_overrides_after_its_campaign_one(
         'PILOOP_PROJECT_RUNTIME is deprecated',
     ]
     assert 'set PILOOP_CAMPAIGN_RUNTIME' in str(record[1].message)
+
+
+ROOT = Path(__file__).parents[1]
+VERSION = re.compile(r'(\d+)\.(\d+)\.(\d+)')
+NOTE = re.compile(
+    r'\b(?:TODO|FIXME|XXX)\b.*\d+\.\d+'  # a TODO tied to a version
+    r'|\b(?:remov|delet|drop)\w*\b.*\b(?:release|\d+\.\d+)',  # "delete it in the release after 0.2.0"
+    re.IGNORECASE,
+)
+"""A comment or docstring line that says to delete code at a release. That code takes a ``deprecated.until`` marker."""
+DEPRECATED = re.compile(r'(?<![\w.])deprecated(?![\w.])', re.IGNORECASE)
+"""A comment that calls code deprecated (but not one that names ``piloop.deprecated``). A docstring may: it describes a
+deprecated key to the reader."""
+
+
+@dataclass(frozen=True)
+class Marker:
+    where: str
+    version: str
+    reason: str
+
+
+def _is_marker(node: ast.Call, module: str) -> bool:
+    """Whether ``node`` calls ``until``: ``x.until(…)`` under any name ``x``, or ``until(…)`` in its own module."""
+    func = node.func
+    if isinstance(func, ast.Attribute):
+        return func.attr == 'until'
+    return module == 'piloop/deprecated.py' and isinstance(func, ast.Name) and func.id == 'until'
+
+
+def _hides_until(node: ast.ImportFrom, alias: ast.alias) -> bool:
+    """Whether the import gives ``until`` another name than ``deprecated.until``."""
+    if node.module == 'piloop.deprecated':
+        return alias.name == 'until'
+    return node.module == 'piloop' and alias.name == 'deprecated' and alias.asname not in (None, 'deprecated')
+
+
+def _marker(node: ast.Call, where: str) -> Marker | str:
+    """Return the marker that ``node`` calls, or why it is malformed."""
+    if isinstance(node.func, ast.Attribute) and not (
+        isinstance(node.func.value, ast.Name) and node.func.value.id == 'deprecated'
+    ):
+        return f'{where}: write deprecated.until(...), so that the scan finds it'
+    match node.args, node.keywords:
+        case [ast.Constant(value=str(version)), ast.Constant(value=str(reason))], [] if reason.strip():
+            if VERSION.fullmatch(version):
+                return Marker(where, version, reason)
+            return f'{where}: version {version!r} is not X.Y.Z'
+    return f'{where}: write deprecated.until(<"X.Y.Z">, <"reason">), with two literal strings'
+
+
+def _notes(source: str, tree: ast.Module) -> list[tuple[int, str]]:
+    """Return ``(line number, text)`` of each comment and docstring line of ``source`` that reads as a compat note."""
+    comments = [
+        (tok.start[0], tok.string.lstrip('#').strip())
+        for tok in tokenize.generate_tokens(io.StringIO(source).readline)
+        if tok.type == tokenize.COMMENT
+    ]
+    docstrings = [
+        (node.lineno + n, line.strip())
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str)
+        for n, line in enumerate(node.value.value.splitlines())
+    ]
+    return [(n, t) for n, t in comments if NOTE.search(t) or DEPRECATED.search(t)] + [
+        (n, t) for n, t in docstrings if NOTE.search(t)
+    ]
+
+
+def scan(root: Path) -> tuple[list[Marker], list[str]]:
+    """Return the markers under ``root / 'piloop'``, and the problems: a malformed marker, a free-text compat note."""
+    markers: list[Marker] = []
+    problems: list[str] = []
+    for path in sorted((root / 'piloop').rglob('*.py')):
+        module = path.relative_to(root).as_posix()
+        source = path.read_text()
+        tree = ast.parse(source, module)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and _is_marker(node, module):
+                found = _marker(node, f'{module}:{node.lineno}')
+                if isinstance(found, Marker):
+                    markers.append(found)
+                else:
+                    problems.append(found)
+            elif isinstance(node, ast.ImportFrom) and any(_hides_until(node, alias) for alias in node.names):
+                problems.append(
+                    f'{module}:{node.lineno}: write `from piloop import deprecated`, then deprecated.until(...)'
+                )
+        problems += [
+            f'{module}:{n}: mark this with deprecated.until(<"X.Y.Z">, <"reason">): {text}'
+            for n, text in _notes(source, tree)
+        ]
+    return markers, problems
+
+
+def expired(markers: list[Marker], version: str) -> list[Marker]:
+    """Return the markers whose release ``version`` has reached. A pre-release of a version counts as that version."""
+    current = VERSION.match(version)
+    assert current is not None, f'piloop version {version!r} does not start with X.Y.Z'
+    at = tuple(map(int, current.groups()))
+    return [m for m in markers if tuple(map(int, m.version.split('.'))) <= at]
+
+
+def piloop_version(root: Path = ROOT) -> str:
+    return tomllib.loads((root / 'pyproject.toml').read_text())['project']['version']
+
+
+def test_no_marker_reached_its_release() -> None:
+    markers, problems = scan(ROOT)
+    assert not problems, '\n'.join(problems)
+    version = piloop_version()
+    due = '\n'.join(f'{m.where}: {m.reason}' for m in expired(markers, version))
+    assert not due, f'piloop {version} removes this compat code; delete it and its tests:\n{due}'
+
+
+def write(root: Path, name: str, source: str) -> None:
+    path = root / 'piloop' / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(source)
+
+
+def test_the_scan_finds_a_marker_in_a_branch_and_on_a_function(tmp_path: Path) -> None:
+    write(
+        tmp_path,
+        'a.py',
+        'from piloop import deprecated\n'
+        '\n'
+        "@deprecated.until('0.3.0', 'the old key')\n"
+        'def f(x):\n'
+        '    if x:\n'
+        "        deprecated.until('0.4.0', 'the old env' ' variable')\n",
+    )
+    assert scan(tmp_path) == (
+        [Marker('piloop/a.py:3', '0.3.0', 'the old key'), Marker('piloop/a.py:6', '0.4.0', 'the old env variable')],
+        [],
+    )
+
+
+@pytest.mark.parametrize(
+    'call',
+    [
+        "deprecated.until('0.3', 'r')",
+        "deprecated.until('v0.3.0', 'r')",
+        "deprecated.until(V, 'r')",
+        "deprecated.until('0.3.0', '')",
+        "deprecated.until('0.3.0')",
+        "deprecated.until('0.3.0', reason='r')",
+    ],
+)
+def test_a_malformed_marker_is_a_problem(tmp_path: Path, call: str) -> None:
+    write(tmp_path, 'a.py', f'from piloop import deprecated\n{call}\n')
+    markers, problems = scan(tmp_path)
+    assert markers == []
+    assert len(problems) == 1 and problems[0].startswith('piloop/a.py:2: '), problems
+
+
+@pytest.mark.parametrize(
+    'source',
+    [
+        'from piloop.deprecated import until\n',
+        'from piloop import deprecated as d\n',
+        "import piloop.deprecated\npiloop.deprecated.until('0.3.0', 'r')\n",
+    ],
+)
+def test_until_under_another_name_is_a_problem(tmp_path: Path, source: str) -> None:
+    write(tmp_path, 'a.py', source)
+    markers, problems = scan(tmp_path)
+    assert markers == []
+    assert [p.partition(': ')[0] for p in problems] == [f'piloop/a.py:{len(source.splitlines())}'], problems
+
+
+def test_deprecated_py_calls_until_by_its_name(tmp_path: Path) -> None:
+    write(tmp_path, 'deprecated.py', "until('0.3.0', 'r')\n")
+    assert scan(tmp_path) == ([Marker('piloop/deprecated.py:1', '0.3.0', 'r')], [])
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        '# TODO(0.3.0): delete it',
+        '# TODO: delete this fallback in the release after 0.2.0',
+        '# removed in piloop 0.3.0',
+        '# the old key is deprecated',
+        '"""Return x.\n\nTODO: delete it with the hint one minor release after 0.2.0."""',
+    ],
+)
+def test_a_free_text_compat_note_is_a_problem(tmp_path: Path, text: str) -> None:
+    write(tmp_path, 'a.py', f'x = 1\n{text}\n')
+    assert [p.partition(': ')[0] for p in scan(tmp_path)[1]] == [f'piloop/a.py:{1 + len(text.splitlines())}']
+
+
+@pytest.mark.parametrize(
+    'text',
+    [
+        '# TODO: remove it once Herdr detects that state',
+        '# the directories keep their 0.1 name',
+        '# see piloop.deprecated.old_env',
+        "warn('the key is deprecated; removed in piloop 0.3.0')",
+    ],
+)
+def test_other_comments_and_strings_are_not_problems(tmp_path: Path, text: str) -> None:
+    write(tmp_path, 'a.py', f'{text}\n')
+    assert scan(tmp_path) == ([], [])
+
+
+def test_a_marker_expires_at_its_release_and_its_pre_releases() -> None:
+    marker = Marker('piloop/a.py:1', '0.3.0', 'r')
+    assert expired([marker], '0.2.9') == []
+    assert expired([marker], '0.3.0') == [marker]
+    assert expired([marker], '0.3.0rc1') == [marker]
+    assert expired([marker], '1.0.0') == [marker]
+
+
+def test_until_leaves_what_it_marks_as_it_is() -> None:
+    def f() -> int:
+        return 1
+
+    assert deprecated.until('0.3.0', 'r')(f) is f

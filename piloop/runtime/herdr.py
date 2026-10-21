@@ -39,7 +39,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
 
-from piloop import settings as settings_module
+from piloop import deprecated, settings as settings_module
 from piloop.harnesses import Harness, Invocation, QueueKey
 from piloop.proc import PILOOP_ARGV
 from piloop.runtime import AgentSpec, AgentStatus, Check, Handle, NotSteerable, Outcome, RuntimeFailure, StartFailed
@@ -196,11 +196,10 @@ class Screens(BaseModel):
         """Return the screens in ``handle``.
 
         A handle that an older daemon stored has none of them: it gets those of the built-in harness of its executable.
-        TODO: delete this fallback in the release after 0.2.0; an agent that a daemon before it started has ended by
-        then.
         """
         if 'busy_screens' in handle.data:
             return cls.model_validate(handle.data)
+        deprecated.until('0.3.0', 'a Herdr handle without screens, from a daemon before 0.2.0: delete this fallback')
         busy, failed, queue, composer = Harness(executable=str(handle.data.get('kind')), headless=['{prompt}']).screens
         return cls(busy_screens=busy, failed_turn_screens=failed, queue_key=queue, composer=composer)
 

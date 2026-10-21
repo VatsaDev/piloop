@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import ClassVar
 from uuid import uuid4
 
+from piloop import deprecated
 from piloop.harnesses import Invocation, fill
 from piloop.proc import alive, child_env, kill_group, started
 from piloop.runtime import AgentSpec, AgentStatus, Check, Handle, NotAttachable, NotSteerable, Outcome
@@ -34,9 +35,9 @@ on instead of queueing messages that no turn would take."""
 CURRENT = 'agent_session.current'
 """Under the agent's log directory: the pid and start time of the process of the agent's latest turn, once a resumed
 turn replaced the first process. Every instance reads it, so ``kill`` and ``status`` reach the agent's live process."""
+deprecated.until('0.3.0', 'worker.current of an agent that 0.1.0 resumed: delete OLD_CURRENT and its read in _current')
 OLD_CURRENT = 'worker.current'
-"""``CURRENT`` before 0.2.0: an agent that an older daemon resumed outlives an upgrade with it. TODO(0.3.0): delete it,
-with its read in ``_current``."""
+"""``CURRENT`` before 0.2.0: an agent that an older daemon resumed outlives an upgrade with it."""
 
 
 class SubprocessRuntime:

@@ -236,11 +236,35 @@ know.
 Never edit an existing revision. Users have databases at every revision, and piloop migrates them when it starts. A
 batch migration that rebuilds a table drops its triggers, so call `piloop.db.triggers.recreate` after it.
 
+## Mark compat code
+
+Code that keeps an old name or an old behavior working gets a marker with the release that deletes it. Put it on a
+function or a class, or call it where the code is:
+
+```python
+from piloop import deprecated
+
+
+@deprecated.until('0.3.0', '[roles.research] context is the top-level context: delete the research_context bridge')
+def research_context(toml, raw): ...
+
+
+if not handle.data.get('tag'):
+    deprecated.until('0.3.0', 'a handle that 0.1.0 started has no tag: delete this branch')
+```
+
+Write both arguments as literal strings, and the version as `X.Y.Z`. Mark the definition of an old name or constant:
+once it is deleted, the type checker finds each use. `tests/test_deprecated.py` reads every marker in `piloop/`, also
+in a branch that never runs. It fails once the version in `pyproject.toml` reaches a
+marker's release, and lists each marker's file, line and reason. So a release cannot ship until that code is deleted.
+The test also fails on a malformed marker, and on a comment or docstring that says to delete code at a release
+(`TODO(0.3.0)`, `remove in 0.3.0`) or a comment that calls code deprecated: mark that code instead.
+
 ## Deprecate a configuration key
 
-To rename or remove a key of `piloop.toml`, add a bridge in `piloop/deprecated.py`. The module docstring explains
-how. The old key then keeps working, with a warning, for at least one minor release. The release notes list it under
-`Deprecated` when the pull request title says that the key is deprecated.
+To rename or remove a key of `piloop.toml`, add a bridge in `piloop/deprecated.py` and mark it. The module docstring
+explains how. The old key then keeps working, with a warning, for at least one minor release. The release notes list it
+under `Deprecated` when the pull request title says that the key is deprecated.
 
 ## Code style
 
@@ -336,7 +360,8 @@ types are also in `cliff.toml`: change both together.
 
 Maintainers only.
 
-1. Fetch the tags (`git fetch --tags origin`). Set `version` in `pyproject.toml`, and run `uv lock`.
+1. Fetch the tags (`git fetch --tags origin`). Set `version` in `pyproject.toml`, and run `uv lock`. The tests now
+   fail on each [compat marker](#mark-compat-code) of this version: delete that code first.
 2. Write the release notes:
 
    ```bash
