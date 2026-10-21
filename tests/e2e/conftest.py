@@ -20,14 +20,22 @@ from typing import Protocol
 import pytest
 import tomli_w
 
+from piloop.settings import UNDER_TEST_ENV
 from tests.conftest import wait_until
 from tests.e2e.campaign import CHEAPEST_MODEL, ROOT, TEMPLATES, Smoke, Toml, merged
+from tests.isolation import CALLER_ENV
 
 PASSED = pytest.StashKey[set[str]]()
 SUMMARY = pytest.StashKey[list[str]]()
 DROPPED_ENV = re.compile(r'^(PILOOP_|CLAUDECODE$|CLAUDE_CODE_|CLAUDE_PID$|CLAUDE_EFFORT$|VIRTUAL_ENV$)')
 """Variables of the calling shell that must not reach the campaigns: a piloop setting of the real install, or the
 session of a Claude Code that runs the tests (its messaging socket would reach the agents)."""
+
+
+def caller_env() -> dict[str, str]:
+    """The environment the test session started with (``CALLER_ENV``), with its real HOME and CLAUDE_CONFIG_DIR, which
+    the agents need to log in, and without ``DROPPED_ENV``. Every piloop in it still refuses a real install's home."""
+    return {k: v for k, v in CALLER_ENV.items() if not DROPPED_ENV.match(k)} | {UNDER_TEST_ENV: '1'}
 
 
 @dataclass(frozen=True)
@@ -37,7 +45,7 @@ class Install:
     root: Path
     """The session's temporary directory: the venv, then one directory per campaign. It stays for the logs."""
     env: dict[str, str]
-    """The caller's environment without ``DROPPED_ENV``, with only this install's ``piloop`` first on PATH."""
+    """``caller_env()``, with only this install's ``piloop`` first on PATH."""
 
 
 class MakeCampaign(Protocol):
@@ -63,9 +71,7 @@ def piloop_install() -> Iterator[Install]:
     subprocess.run(['uv', 'pip', 'install', '--quiet', '--python', str(venv / 'bin' / 'python'), str(ROOT)], check=True)
     bin_dir.mkdir()
     (bin_dir / 'piloop').symlink_to(venv / 'bin' / 'piloop')
-    # Read before the function-scoped autouse fixtures of tests/conftest.py point CLAUDE_CONFIG_DIR at a temp dir: the
-    # agents need the real one, for their login.
-    base = {k: v for k, v in os.environ.items() if not DROPPED_ENV.match(k)}
+    base = caller_env()
     install = Install(root, base | {'PATH': f'{bin_dir}{os.pathsep}{base["PATH"]}'})
     version = subprocess.run(['piloop', '--version'], env=install.env, capture_output=True, text=True, check=True)
     expected = tomllib.loads((ROOT / 'pyproject.toml').read_text())['project']['version']

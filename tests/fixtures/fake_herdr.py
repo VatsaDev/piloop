@@ -10,7 +10,9 @@ Behaviour is driven by two environment variables so tests can script it:
   (``SESSION_ID``), so a scripted ``agent get`` without it is an agent whose session Herdr never saw.
 
 An unscripted ``pane run`` of a ``. <file>`` line runs it the way the pane's shell would, in the background, then writes
-that shell's environment to ``$FAKE_HERDR_LOG.pane-env``; other command lines are only logged.
+that shell's environment to ``$FAKE_HERDR_LOG.pane-env``; other command lines are only logged. With
+``FAKE_HERDR_SERVER_ENV`` (a JSON object) every unscripted ``pane run`` line runs, in that environment plus the
+``--env`` values of the call that created the pane, as Herdr runs it: a pane never inherits the caller's environment.
 """
 
 import json
@@ -86,6 +88,20 @@ def command(argv: list[str]) -> str:
     return ' '.join(argv[:2])
 
 
+CREATED_PANE = {'pane split': 'w7:p3', 'tab create': 'w7:p2'}
+"""The pane that the default response of each call that creates one creates."""
+
+
+def pane_env(log_path: str, pane_id: str) -> dict[str, str]:
+    """The ``--env`` values of the last logged call that created ``pane_id``."""
+    with open(log_path) as log:
+        argvs = [json.loads(line) for line in log]
+    for argv in reversed(argvs):
+        if CREATED_PANE.get(command(argv)) == pane_id:
+            return dict(value.split('=', 1) for flag, value in zip(argv, argv[1:], strict=False) if flag == '--env')
+    return {}
+
+
 def main() -> int:
     key = command(sys.argv[1:])
     log_path = os.environ['FAKE_HERDR_LOG']
@@ -110,6 +126,13 @@ def main() -> int:
                 },
             }
         }
+    elif key == 'pane run' and (server := os.environ.get('FAKE_HERDR_SERVER_ENV')) is not None:
+        env = json.loads(server) | pane_env(log_path, sys.argv[-2])
+        devnull = subprocess.DEVNULL  # piloop reads this fake's stdout to EOF; the shell must not hold it open
+        subprocess.Popen(
+            ['sh', '-c', sys.argv[-1]], env=env, stdin=devnull, stdout=devnull, stderr=devnull, start_new_session=True
+        )
+        response = DEFAULTS[key]
     elif key == 'pane run' and sys.argv[-1].startswith('eval '):
         dump = shlex.quote(f'{log_path}.pane-env')
         shell = f'{sys.argv[-1]} && env > {dump}.tmp && mv {dump}.tmp {dump}'

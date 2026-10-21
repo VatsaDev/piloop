@@ -19,6 +19,7 @@ from piloop.runtime import AgentSpec, AgentStatus, Handle, NotSteerable, StartFa
 from piloop.runtime.factory import make_runtime
 from piloop.runtime.herdr import HerdrError, HerdrRuntime, HerdrSettings
 from piloop.runtime.subprocess import SubprocessRuntime
+from tests.conftest import wait_until
 from tests.fixtures.fake_herdr import AGENT, AGENT_SESSION, SESSION_ID
 
 Response = dict[str, object]
@@ -93,7 +94,9 @@ def home_calls(tab_id: str, pane_id: str, cwd: Path) -> list[list[str]]:
     """What laying out a home tab sends: the rename (a workspace's first tab), the split, ``piloop watch`` in it."""
     watch = f'{shlex.quote(sys.executable)} -P -m piloop watch {shlex.quote(str(cwd))}'
     split = ['pane', 'split', pane_id, '--direction', 'right', '--ratio', '0.5', '--cwd', str(cwd)]
-    env = ['--env', f'PILOOP_HOME={settings_module.settings.home}', '--no-focus']
+    piloop = {k: v for k, v in os.environ.items() if k.startswith('PILOOP_')}
+    piloop['PILOOP_HOME'] = str(settings_module.settings.home)
+    env = [*(arg for k, v in piloop.items() for arg in ('--env', f'{k}={v}')), '--no-focus']
     return [['tab', 'rename', tab_id, 'home'], [*split, *env], ['pane', 'run', 'w7:p3', watch]]
 
 
@@ -165,6 +168,26 @@ def test_the_env_reaches_the_pane_shell_and_no_value_reaches_an_argv(tmp_path: P
     env = pane_env(herdr_log)
     assert (env['PROBE_KEY'], env['PILOOP_RUN']) == (secret, '7')
     assert list((tmp_path / 'logs').iterdir()) == [], 'the FIFO is gone'
+
+
+def test_the_watch_pane_opens_this_home_whatever_the_herdr_server_environment(
+    tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Herdr starts a pane with its server's environment, not the caller's: a server that a human started has their
+    real HOME and none of this process's piloop settings. The piloop that the pane runs still opens this home, and
+    under test it still refuses a real one (``UNDER_TEST_ENV``)."""
+    seen = tmp_path / 'seen.json'
+    probe = (
+        'import json, os; from piloop.settings import UNDER_TEST_ENV, settings;'
+        f' open({str(seen)!r} + ".tmp", "w").write(json.dumps([str(settings.home), os.environ.get(UNDER_TEST_ENV)]));'
+        f' os.replace({str(seen)!r} + ".tmp", {str(seen)!r})'
+    )
+    monkeypatch.setattr(herdr, 'PILOOP_ARGV', [sys.executable, '-P', '-c', probe])
+    server = {k: v for k, v in os.environ.items() if not k.startswith('PILOOP_')} | {'HOME': str(tmp_path / 'human')}
+    monkeypatch.setenv('FAKE_HERDR_SERVER_ENV', json.dumps(server))
+    HerdrRuntime('demo', tmp_path)._workspace()
+    wait_until(seen.exists)
+    assert json.loads(seen.read_text()) == [str(settings_module.settings.home), '1']
 
 
 def test_a_shell_that_never_reads_its_env_fails_the_start(

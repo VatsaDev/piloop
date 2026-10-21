@@ -33,7 +33,7 @@ import tomli_w
 from piloop.runtime.tags import tagged
 from tests.conftest import wait_until
 from tests.e2e.campaign import CHEAPEST_MODEL, OPEN, ROOT, Smoke, merged, needs
-from tests.e2e.conftest import DROPPED_ENV
+from tests.e2e.conftest import caller_env
 from tests.e2e.inventory import Changed, Inventory, Renames, differences, read_database, rows_differences, take
 
 pytestmark = pytest.mark.e2e
@@ -129,7 +129,9 @@ class Upgrade:
 
     def transcripts(self) -> list[Path]:
         """The Claude Code session directories of the agents of this campaign: Claude Code names each after its cwd."""
-        projects = Path(os.environ.get('CLAUDE_CONFIG_DIR', Path.home() / '.claude')) / 'projects'
+        projects = (
+            Path(self.smoke.env.get('CLAUDE_CONFIG_DIR') or Path(self.smoke.env['HOME']) / '.claude') / 'projects'
+        )
         return sorted(projects.glob(re.sub(r'[^A-Za-z0-9]', '-', str(self.root)) + '*'))
 
     def take(self) -> Inventory:
@@ -143,7 +145,7 @@ def upgrade(request: pytest.FixtureRequest, e2e_summary: list[str]) -> Iterator[
         pytest.skip(f'the release runs claude only, not {harness}')
     model = request.config.getoption('e2e_model') or CHEAPEST_MODEL['claude']
     root = Path(tempfile.mkdtemp(prefix='piloop-e2e-upgrade-'))
-    base = {k: v for k, v in os.environ.items() if not DROPPED_ENV.match(k)}
+    base = caller_env()
     env = base | {
         'PATH': f'{root / "bin"}{os.pathsep}{base["PATH"]}',
         'UV_TOOL_DIR': str(root / 'uv-tools'),

@@ -1,11 +1,38 @@
+import os
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from piloop import settings as settings_module
 from piloop.deprecated import PiloopDeprecationWarning
 from piloop.runtime.herdr import HerdrSettings
-from piloop.settings import BackendTable, Settings, StorageSettings, env_names, expand_env
+from piloop.settings import UNDER_TEST_ENV, BackendTable, Settings, StorageSettings, env_names, expand_env
+
+
+def test_the_test_session_runs_in_a_temporary_home() -> None:
+    """tests/conftest.py moves HOME and PILOOP_HOME before piloop is imported, so even the import-time ``settings``
+    names a temporary home."""
+    assert os.environ[UNDER_TEST_ENV] == '1'
+    assert Path.home() != settings_module.REAL_HOME
+    assert settings_module.settings.home == Path(os.environ['PILOOP_HOME'])
+    assert settings_module.settings.home.parent != settings_module.REAL_HOME
+
+
+def test_under_test_the_home_of_a_real_install_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``~/.piloop`` and its siblings in the user's passwd home directory, which a moved ``$HOME`` does not hide."""
+    me = tmp_path / 'me'
+    monkeypatch.setattr(settings_module, 'REAL_HOME', me)
+    for home in (me / '.piloop', me / '.piloop-new'):
+        with pytest.raises(ValidationError, match=f'{home} is the home of a real install'):
+            Settings(home=home)
+        monkeypatch.setenv('PILOOP_HOME', str(home))
+        with pytest.raises(ValidationError, match=f'{home} is the home of a real install'):
+            Settings()
+    assert Settings(home=me / 'scratch').home == me / 'scratch'
+    assert Settings(home=tmp_path / '.piloop').home == tmp_path / '.piloop', 'not in the real home directory'
+    monkeypatch.delenv(UNDER_TEST_ENV)
+    assert Settings().home == me / '.piloop-new', 'outside a test run it is just the home'
 
 
 def test_storage_is_read_from_config_toml_under_the_home_and_the_environment_wins(

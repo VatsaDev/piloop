@@ -41,7 +41,7 @@ from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSett
 
 from piloop import deprecated, settings as settings_module
 from piloop.harnesses import Harness, Invocation, QueueKey
-from piloop.proc import PILOOP_ARGV
+from piloop.proc import PILOOP_ARGV, child_env
 from piloop.runtime import AgentSpec, AgentStatus, Check, Handle, NotSteerable, Outcome, RuntimeFailure, StartFailed
 from piloop.runtime.tags import TAG_ENV, kill_tagged, tagged
 from piloop.settings import runtime_settings
@@ -787,8 +787,12 @@ class HerdrRuntime:
         """Run ``piloop watch`` on this campaign in a new pane to the right of ``pane_id``.
 
         The watch uses this process's interpreter and ``PILOOP_HOME``, so it reads the daemon's database, whatever
-        ``piloop`` the pane's shell finds first.
+        ``piloop`` the pane's shell finds first. Herdr starts a pane with its server's environment, not the caller's,
+        so every ``PILOOP_*`` setting of this process goes in with ``--env``: the server may have been started by a
+        human with other settings, or none.
         """
+        env = {k: v for k, v in child_env().items() if k.startswith('PILOOP_')}
+        env['PILOOP_HOME'] = str(settings_module.settings.home)
         split = _call(
             'pane',
             'split',
@@ -799,8 +803,7 @@ class HerdrRuntime:
             str(SHELL_SHARE),
             '--cwd',
             str(self._campaign_path),
-            '--env',
-            f'PILOOP_HOME={settings_module.settings.home}',
+            *(arg for k, v in env.items() for arg in ('--env', f'{k}={v}')),
             '--no-focus',
         )
         watch = [*PILOOP_ARGV, 'watch', str(self._campaign_path)]

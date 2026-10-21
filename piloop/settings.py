@@ -7,6 +7,7 @@ in (``expand_env``).
 """
 
 import os
+import pwd
 import re
 import tomllib
 from pathlib import Path
@@ -18,6 +19,11 @@ from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSett
 from piloop import deprecated
 
 DEFAULT_HOME = Path.home() / '.piloop'
+REAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
+"""The user's home directory from the passwd database: a test that moves ``$HOME`` does not move it."""
+UNDER_TEST_ENV = 'PILOOP_UNDER_TEST'
+"""Set by piloop's test suite, and inherited by every piloop it starts: ``Settings`` refuses the home of a real
+install, so a test can never open, let alone migrate, the database of a user's piloop."""
 CONFIG_FILE = 'config.toml'
 STORE_DIR = 'store'
 GB = 1024**3
@@ -163,6 +169,14 @@ class Settings(BaseSettings):
         given = init_settings.init_kwargs.get('home') if isinstance(init_settings, InitSettingsSource) else None
         home = Path(given) if given else home_of_env()
         return init_settings, env_settings, InitSettingsSource(settings_cls, config_file(home))
+
+    @model_validator(mode='after')
+    def _not_a_real_home_under_test(self) -> Self:
+        """Under test, refuse ``~/.piloop`` and its siblings (``~/.piloop-canary``) in the real home directory."""
+        home = self.home.resolve()
+        if UNDER_TEST_ENV in os.environ and home.parent == REAL_HOME.resolve() and home.name.startswith('.piloop'):
+            raise ValueError(f'{home} is the home of a real install, and {UNDER_TEST_ENV} is set: use a temporary home')
+        return self
 
     @property
     def store_dir(self) -> Path:

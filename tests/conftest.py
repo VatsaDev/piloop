@@ -1,3 +1,6 @@
+import tests.isolation  # noqa: F401  # first: piloop reads its home from the environment when it is imported
+
+# isort: split
 import json
 import os
 import re
@@ -396,7 +399,7 @@ def plenty_of_disk(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def isolated_campaigns_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``register`` measures the baseline under the global ``settings.home``: keep it out of ``~/.piloop``."""
+    """``register`` measures the baseline under the global ``settings.home``: give each test a home of its own."""
     monkeypatch.setattr(campaign_module, 'settings', Settings(home=tmp_path / 'home'))
 
 
