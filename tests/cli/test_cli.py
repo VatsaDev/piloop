@@ -794,10 +794,12 @@ def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_canc
         s.add(Candidate(campaign_id=1, tree_sha='u', commit_sha='d', summary='an older commit'))
         s.add(Candidate(campaign_id=1, tree_sha='v', commit_sha='e', summary='a merge'))
         s.flush()
-        s.add(Evaluation(candidate_id=4, evaluator_id=1, started_at=utcnow()))
-        s.add(Evaluation(candidate_id=2, evaluator_id=1))
-        s.add(Evaluation(candidate_id=3, evaluator_id=1))
-        s.add(Evaluation(candidate_id=1, evaluator_id=1, started_at=utcnow()))
+        # 2 hours ago: the ages print as 2h however slow the CLI calls below are on a loaded runner
+        then = utcnow() - timedelta(hours=2)
+        s.add(Evaluation(candidate_id=4, evaluator_id=1, created_at=then, started_at=then))
+        s.add(Evaluation(candidate_id=2, evaluator_id=1, created_at=then))
+        s.add(Evaluation(candidate_id=3, evaluator_id=1, created_at=then))
+        s.add(Evaluation(candidate_id=1, evaluator_id=1, created_at=then, started_at=then))
         s.commit()
     run_cli(['eval', 'cancel', '2'])
     run_cli(['eval', 'cancel', '1'])
@@ -809,9 +811,9 @@ def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_canc
     *table, summary = out().splitlines()
     assert [line.split()[:5] for line in table] == [
         ['candidate', 'campaign', 'state', 'summary'],
-        ['candidate#4', 'demo', 'running', '0s', 'a'],
+        ['candidate#4', 'demo', 'running', '2h', 'a'],
         ['candidate#1', 'demo', 'cancelled', 'by', 'human'],
-        ['candidate#3', 'demo', 'waiting', '0s', 'an'],
+        ['candidate#3', 'demo', 'waiting', '2h', 'an'],
     ]
     assert summary == '2 running, 1 waiting; 2 slot(s) (max_evaluations); `piloop eval cancel <candidate>`'
     with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
@@ -820,12 +822,16 @@ def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_canc
     out()
     run_cli(['eval', 'queue'])
     *table, summary = out().splitlines()
-    assert [line.split()[:4] for line in table[1:]] == [
-        ['candidate#4', 'demo', 'running', '0s'],
+    rows = [line.split()[:4] for line in table[1:]]
+    assert rows[:3] == [
+        ['candidate#4', 'demo', 'running', '2h'],
         ['candidate#1', 'demo', 'cancelled', 'by'],
-        ['candidate#3', 'demo', 'waiting', '0s'],
-        ['candidate#1', 'demo', 'waiting', '0s'],
-    ], 'a remeasure shows as soon as it is accepted, also while its cancelled evaluation stops'
+        ['candidate#3', 'demo', 'waiting', '2h'],
+    ]
+    assert rows[3][:3] == ['candidate#1', 'demo', 'waiting'], (
+        'a remeasure shows as soon as it is accepted, also while its cancelled evaluation stops'
+    )
+    assert re.fullmatch(r'\d+s', rows[3][3]), 'the request is seconds old: asked by the remeasure just above'
     assert summary == '2 running, 2 waiting; 2 slot(s) (max_evaluations); `piloop eval cancel <candidate>`'
     with pytest.raises(SystemExit, match=r'candidate#2 has no evaluation that waits or runs'):
         run_cli(['eval', 'cancel', '2'])
