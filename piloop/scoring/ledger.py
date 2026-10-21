@@ -14,6 +14,7 @@ from statistics import fmean
 from git import Repo
 from git.exc import BadName
 from sqlalchemy import Select, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from piloop import git
@@ -535,10 +536,12 @@ def resolve(
     """Return the candidate for the tree of ``sha``: the existing one, or a new row with ``parent`` as its parent.
 
     Returns ``(candidate, created)``. An existing candidate is returned unchanged: a commit that reverts to a known
-    state is that state, whatever run or commit reached it.
+    state is that state, whatever run or commit reached it. Two runs that reach one new tree at once share it: the
+    insert that loses the race on ``UNIQUE(campaign_id, tree_sha)`` returns the winner's row.
     """
     tree = git.tree_sha(repo, sha)
-    found = s.scalar(select(Candidate).where(Candidate.campaign_id == campaign_id, Candidate.tree_sha == tree))
+    known = select(Candidate).where(Candidate.campaign_id == campaign_id, Candidate.tree_sha == tree)
+    found = s.scalar(known)
     if found is not None:
         return found, False
     candidate = Candidate(
@@ -549,8 +552,11 @@ def resolve(
         commit_sha=sha,
         summary=git.subject_line(repo, sha),
     )
-    s.add(candidate)
-    s.flush()
+    try:
+        with s.begin_nested():
+            s.add(candidate)
+    except IntegrityError:
+        return s.scalars(known).one(), False
     return candidate, True
 
 
@@ -629,18 +635,19 @@ def follow_up(
     """File one seed per title on ``track``, pinned to ``candidate`` unless ``pin`` is False. Return the new seeds.
 
     A title that the campaign already has gets `` (from candidate#<id>)``. A follow-up already filed from this candidate
-    with that title is not filed twice. These are seeds, not ready ideas: research develops them before they run. A
+    with that title, under either name and in any status, is not filed again: a rejected compose seed stays rejected
+    when the candidate is judged again. These are seeds, not ready ideas: research develops them before they run. A
     pinned one runs as a branch run when its candidate is not the computed base (``[roles.worker] explore_every``). An
     unpinned one runs from the head, as a trunk run.
     """
     ideas: list[Idea] = []
     hypothesis = f'Follow-up of candidate#{candidate.id} ({candidate.summary or "no summary"})'
+    provenance = f'candidate#{candidate.id}'
     for title in titles:
-        free = (
-            n for n in (title, f'{title} (from candidate#{candidate.id})') if not _titled(s, candidate.campaign_id, n)
-        )
-        name = next(free, None)
-        if name is None:
+        names = (title, f'{title} (from {provenance})')
+        taken = s.scalars(select(Idea).where(Idea.campaign_id == candidate.campaign_id, Idea.title.in_(names))).all()
+        name = next((n for n in names if n not in {i.title for i in taken}), None)
+        if name is None or any(i.provenance == provenance for i in taken):
             continue
         idea = Idea(
             campaign_id=candidate.campaign_id,
@@ -649,7 +656,7 @@ def follow_up(
             status=IdeaStatus.SEED,
             track=track,
             base_candidate_id=candidate.id if pin else None,
-            provenance=f'candidate#{candidate.id}',
+            provenance=provenance,
             created_by=actor,
         )
         s.add(idea)
@@ -657,10 +664,6 @@ def follow_up(
         emit(s, 'idea.created', TargetKind.IDEA, idea.id, actor=actor)
         ideas.append(idea)
     return ideas
-
-
-def _titled(s: Session, campaign_id: int, title: str) -> bool:
-    return s.scalar(select(Idea.id).where(Idea.campaign_id == campaign_id, Idea.title == title)) is not None
 
 
 @dataclass(frozen=True)

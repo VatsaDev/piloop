@@ -122,8 +122,10 @@ Two runs can start from the same head. When the first one keeps, the head moves.
 bar, it is `interesting`, with a reason that starts with `keeps against its own bar, but the head moved on`.
 
 The daemon then merges the second candidate onto the new head, as a commit with two parents. The merge is a new
-candidate of the same run, and the daemon measures and judges it against the new head. If the merge has conflicts,
-the daemon files a seed `Compose candidate#N onto the head` instead.
+candidate of the same run, and the daemon measures and judges it against the new head. A run that started from a
+rebased copy of a head (the same tree under another commit) merges only its own changes. If the merge has conflicts,
+the daemon files a seed `Compose candidate#N onto the head` instead, once per candidate: a seed you rejected is not
+filed again when the candidate is judged again.
 
 ## Measure a candidate again
 

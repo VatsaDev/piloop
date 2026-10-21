@@ -20,7 +20,7 @@ from piloop.agents.launcher import STARTUP_ANOMALY
 from piloop.agents.roles import SQL_HINT
 from piloop.campaign import stop
 from piloop.campaign.campaigns import sync
-from piloop.campaign.ops import set_verdict
+from piloop.campaign.ops import Report, add_measurement, set_verdict
 from piloop.campaign.stop import NOT_STARTED
 from piloop.cli.plugins import selections
 from piloop.config import CampaignConfig, ConfigError, config_of, load_campaign_config
@@ -2175,6 +2175,55 @@ def test_a_conflicting_merge_in_a_stopped_campaign_files_no_seed(
     assert reason is not None and reason.endswith('its merge onto the head conflicts in solve.txt')
     with db.session() as s:
         assert s.scalars(select(Idea).where(Idea.status == IdeaStatus.SEED)).all() == []
+
+
+def test_a_rejudge_does_not_file_a_compose_seed_again_after_it_was_rejected(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """hiloopai/piloop-dev#59: a seed from this candidate with this title exists, whatever its status or name."""
+    run_id = make_run(db, campaign)
+    keep_elsewhere(db, campaign, 'other line', {'solve.txt': 'base\nother\n'}, {'score': 2.0, 'size': 11.0})
+    ex = executor(db, runtime, tmp_path)
+    execute(ex, db, run_id)
+    with db.session() as s:
+        [x] = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).all()
+        [seed] = s.scalars(select(Idea).where(Idea.status == IdeaStatus.SEED)).all()
+        seed.status = IdeaStatus.REJECTED
+        add_measurement(s, x.id, Report(metrics={'score': 2.0, 'size': 10.0}), actor='human')
+        s.commit()
+        x_id, seed_id = x.id, seed.id
+    ex.rejudge(x_id)
+    with db.session() as s:
+        filed = s.scalars(select(Idea.id).where(Idea.provenance == f'candidate#{x_id}')).all()
+        reason = s.get_one(Candidate, x_id).verdict_reason
+    assert filed == [seed_id], 'the rejected compose seed is filed again under another title'
+    assert reason is not None and reason.endswith('its merge onto the head conflicts in solve.txt')
+
+
+def test_two_sessions_that_register_one_new_tree_share_one_candidate(
+    db: Database, campaign: Campaign, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """hiloopai/piloop-dev#87: the second session looked before the first committed, so its insert conflicts."""
+    repo = Repo(campaign.path)
+    (Path(campaign.path) / 'solve.txt').write_text('base\nsame\n')
+    repo.git.commit('-qam', 'same')
+    sha = repo.head.commit.hexsha
+    parent = baseline(db, campaign.id)
+    with db.session() as a, db.session() as b:
+        looked = b.scalar
+
+        def stale(*args: object, **kwargs: object) -> object:
+            monkeypatch.setattr(b, 'scalar', looked)
+            return None
+
+        monkeypatch.setattr(b, 'scalar', stale)
+        first, _ = resolve(a, campaign.id, repo, sha, parent=parent, run_id=None)
+        a.commit()
+        found, created = resolve(b, campaign.id, repo, sha, parent=parent, run_id=None)
+        b.commit()
+        assert (found.id, created) == (first.id, False)
+    with db.session() as s:
+        assert s.scalar(select(func.count()).select_from(Candidate).where(Candidate.tree_sha == first.tree_sha)) == 1
 
 
 def test_a_keep_whose_merge_onto_the_head_is_the_head_already_changes_nothing(

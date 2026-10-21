@@ -38,6 +38,36 @@ def test_a_commit_contains_another_by_history_or_by_having_all_its_changes(campa
     assert (git.contains(repo, lead, head), git.contains(repo, head, picked)) == (False, False), 'a change is missing'
 
 
+def test_a_merge_starts_from_a_copy_of_the_head_in_the_commits_history(tmp_path: Path) -> None:
+    """hiloopai/piloop-dev#59: a run that started from a copy of the head (same tree, another sha) merges cleanly.
+
+    By history, the merge base is the commit before the head, so both sides add ``f.txt`` and conflict. By tree, the
+    copy is the head: only the run's change and the head's later change are merged.
+    """
+    repo = Repo.init(tmp_path / 'r', initial_branch='main')
+    root = Path(repo.working_dir)
+
+    def commit(name: str, text: str, message: str = 'change') -> str:
+        (root / name).write_text(text)
+        repo.git.add('-A')
+        repo.git.commit('-qm', message)
+        return repo.head.commit.hexsha
+
+    base = commit('a.txt', 'a\n')
+    head = commit('f.txt', 'x\n')
+    later = commit('g.txt', 'g\n')
+    repo.git.checkout('-q', '--detach', base)
+    copy = commit('f.txt', 'x\n', 'a rebased copy of the head')
+    assert copy != head and git.tree_sha(repo, copy) == git.tree_sha(repo, head)
+    run = commit('f.txt', 'y\n')
+    for onto in (head, later):
+        merged = git.merge(repo, onto, run, 'rebased')
+        assert isinstance(merged, str), f'onto {onto}: conflicts in {merged}'
+        files = {name: repo.git.show(f'{merged}:{name}') for name in repo.git.ls_tree('--name-only', merged).split()}
+        assert files == {'a.txt': 'a', 'f.txt': 'y'} | ({'g.txt': 'g'} if onto == later else {})
+        assert [p.hexsha for p in repo.commit(merged).parents] == [onto, run]
+
+
 def test_worktree_changes_hold_the_process_lock(
     campaign_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
