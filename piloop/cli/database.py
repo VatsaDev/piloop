@@ -85,9 +85,14 @@ def migrate_cmd() -> None:
         db.close()
     if old == new:
         newest = backups(common.settings.home / 'piloop.db')
-        common.console.print(f'schema: {new}, current' + (f'; the newest backup: {newest[-1]}' if newest else ''))
+        common.console.print(
+            f'schema: {new}, current' + (f'; the newest backup: {newest[-1]}' if newest else ''),
+            markup=False,
+            highlight=False,
+            soft_wrap=True,
+        )
     elif old is None:
         common.console.print(f'schema: none → {new}')
     else:
         done = f'backup of {old}: {backup}' if backup is not None else 'no backup (migration_backups = 0)'
-        common.console.print(f'schema: {old} → {new}; {done}')
+        common.console.print(f'schema: {old} → {new}; {done}', markup=False, highlight=False, soft_wrap=True)

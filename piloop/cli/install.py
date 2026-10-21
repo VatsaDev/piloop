@@ -51,7 +51,7 @@ def upgrade(
         )
         common.console.print(f'daemon: pid {restarted(pid, timeout)} runs the new code')
     # this process runs the old code and knows only the old migrations, so the new code (or daemon) migrates
-    common.console.print(_new_binary('migrate').stdout.rstrip())
+    common.console.print(_new_binary('migrate').stdout.rstrip(), markup=False, highlight=False, soft_wrap=True)
     if pid is None:
         common.console.print('daemon: not running, left stopped')
     checked = _new_binary('doctor', check=False)

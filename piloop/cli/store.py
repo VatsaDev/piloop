@@ -51,6 +51,8 @@ def restore(
     common.console.print(
         f'restored {done.written} file(s), {decimal(done.bytes)}, into {workspace}; {done.same} already there',
         markup=False,
+        highlight=False,
+        soft_wrap=True,
     )
     if done.kept:
         shown = ', '.join(done.kept[:10]) + (f' and {len(done.kept) - 10} more' if len(done.kept) > 10 else '')
@@ -74,6 +76,8 @@ def store_status() -> None:
     common.console.print(
         f'{store.root}: {usage.blobs} blob(s), {usage.local} local ({decimal(usage.local_bytes)}), {remote}',
         markup=False,
+        highlight=False,
+        soft_wrap=True,
     )
     table = Table('campaign', 'archives', 'files', 'archived', box=box.SIMPLE_HEAD)
     with common.session() as s:

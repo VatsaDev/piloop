@@ -46,7 +46,9 @@ def serve(
         return
     if detach:
         pid = spawn_detached(common.settings)
-        common.console.print(f'daemon started: pid {pid}, log {common.settings.log_file}')
+        common.console.print(
+            f'daemon started: pid {pid}, log {common.settings.log_file}', markup=False, highlight=False, soft_wrap=True
+        )
         return
     inherited = Inherited.now()  # before the daemon starts a child of its own
     try:

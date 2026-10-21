@@ -1329,6 +1329,21 @@ def test_migrate_backs_up_the_database_first_and_says_where(out, monkeypatch: py
     assert out().strip() == f'schema: 0016 → {HEAD}; no backup (migration_backups = 0)'
 
 
+def test_migrate_prints_a_backup_path_wider_than_the_console_on_one_line(out, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A home deeper than the console is wide (macOS's /private/var/folders/… temp dirs) is printed whole, not wrapped:
+    a path split across lines is no longer a path to copy."""
+    home = common.settings.home / ('deep' * 55)
+    home.mkdir()
+    (common.settings.home / 'piloop.db').rename(home / 'piloop.db')
+    monkeypatch.setattr(common, 'settings', common.settings.model_copy(update={'home': home}))
+    command.downgrade(alembic(home / 'piloop.db'), '0016')
+    run_cli(['migrate'])
+    [backup] = home.glob('piloop.db.bak-0016-*')
+    assert out().strip() == f'schema: 0016 → {HEAD}; backup of 0016: {backup}'
+    run_cli(['migrate'])
+    assert out().strip() == f'schema: {HEAD}, current; the newest backup: {backup}'
+
+
 def cli_check() -> str:
     """The doctor's line on the CLI of this checkout, which the test venv installs from its directory."""
     checkout = json.loads(direct_url() or '{}')['url']
