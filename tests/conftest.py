@@ -186,7 +186,7 @@ def schema(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """
     path = tmp_path_factory.mktemp('schema') / 'piloop.db'
     database = Database(f'sqlite:///{path}', actor=ACTOR)
-    migrate(database.engine)
+    migrate(database.engine, backups=0)
     database.close()
     return path
 
@@ -201,7 +201,7 @@ def at_head(schema: Path, path: Path) -> Path:
 @pytest.fixture
 def db(tmp_path: Path, schema: Path) -> Iterator[Database]:
     database = Database(f'sqlite:///{at_head(schema, tmp_path / "piloop.db")}', actor=ACTOR)
-    migrate(database.engine)  # a no-op at head, as when a client opens a database the daemon created
+    migrate(database.engine, backups=0)  # a no-op at head, as when a client opens a database the daemon created
     yield database
     database.close()
 

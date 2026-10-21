@@ -19,7 +19,7 @@ from piloop.daemon.serve import (
     terminate,
 )
 from piloop.db.models import Campaign
-from piloop.db.session import SchemaAhead
+from piloop.db.session import BackupFailed, SchemaAhead
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.plugins.host import PluginError
 from piloop.proc import Inherited
@@ -52,7 +52,7 @@ def serve(
     inherited = Inherited.now()  # before the daemon starts a child of its own
     try:
         daemon = Daemon(common.settings, inherited)
-    except (OlderDaemon, SchemaAhead) as e:
+    except (OlderDaemon, SchemaAhead, BackupFailed) as e:
         raise SystemExit(str(e)) from e
     daemon.serve()
 

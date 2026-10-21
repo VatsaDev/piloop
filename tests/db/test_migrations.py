@@ -2,6 +2,8 @@
 
 import json
 import re
+import resource
+import signal
 import sqlite3
 import threading
 import time
@@ -19,7 +21,7 @@ from sqlalchemy.exc import IntegrityError
 
 from piloop.config import CampaignConfig
 from piloop.db.models import Campaign, Idea
-from piloop.db.session import MIGRATIONS, Database, SchemaAhead, migrate, revision
+from piloop.db.session import MIGRATIONS, BackupFailed, Database, SchemaAhead, migrate, revision
 from piloop.db.triggers import PERSISTENT, campaigns, legacy
 from piloop.db.triggers.roles import known_role
 from piloop.version import installed
@@ -113,7 +115,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
 def test_an_older_piloop_refuses_a_database_a_newer_one_migrated(tmp_path: Path) -> None:
     path = tmp_path / 'piloop.db'
     engine = create_engine(f'sqlite:///{path}')
-    migrate(engine)
+    migrate(engine, backups=0)
     head = ScriptDirectory.from_config(alembic(path)).get_current_head()
     with closing(sqlite3.connect(path)) as con:
         con.execute("UPDATE alembic_version SET version_num = '9999_from_the_future'")
@@ -124,7 +126,54 @@ def test_an_older_piloop_refuses_a_database_a_newer_one_migrated(tmp_path: Path)
         match=rf'revision 9999_from_the_future, which this {this} does not know \(it knows up to {head}\): a newer '
         r'piloop migrated it\. Install a newer piloop \(`piloop upgrade`\), or set PILOOP_HOME to another directory\.$',
     ):
-        migrate(engine)
+        migrate(engine, backups=0)
+    engine.dispose()
+
+
+def test_a_migration_first_backs_up_the_database_and_keeps_the_newest_backups(tmp_path: Path) -> None:
+    """Before it applies a pending revision, ``migrate`` copies the database next to it, named after the revision it
+    is at, and removes the oldest copies beyond ``backups``. Nothing pending, a new database or ``backups=0``: none."""
+    path = tmp_path / 'piloop.db'
+    engine = create_engine(f'sqlite:///{path}')
+    assert migrate(engine, backups=2) is None, 'a new database has nothing to lose'
+    command.downgrade(alembic(path), '0016')
+    with closing(sqlite3.connect(path)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('kept', '/p', '{}')")
+        con.commit()
+    for old in ('0001-20250101T000000Z', '0002-20250102T000000Z'):
+        (tmp_path / f'piloop.db.bak-{old}').write_bytes(b'an older backup')
+    backup = migrate(engine, backups=2)
+    assert backup is not None and re.fullmatch(r'piloop\.db\.bak-0016-\d{8}T\d{6}Z', backup.name), backup
+    with closing(sqlite3.connect(f'file:{backup}?mode=ro', uri=True)) as con:
+        assert con.execute('SELECT version_num FROM alembic_version').fetchall() == [('0016',)]
+        assert con.execute('SELECT name FROM campaigns').fetchall() == [('kept',)]
+        assert con.execute('PRAGMA integrity_check').fetchone() == ('ok',)
+    assert sorted(p.name for p in tmp_path.glob('piloop.db.bak-*')) == [
+        'piloop.db.bak-0002-20250102T000000Z',
+        backup.name,
+    ]
+    assert migrate(engine, backups=2) is None, 'at head: nothing to back up'
+    command.downgrade(alembic(path), '0016')
+    assert migrate(engine, backups=0) is None and len(list(tmp_path.glob('piloop.db.bak-*'))) == 2
+    assert revision(engine) == ScriptDirectory.from_config(alembic(path)).get_current_head()
+    engine.dispose()
+
+
+def test_a_backup_that_fails_leaves_the_database_unmigrated_and_no_partial_copy(tmp_path: Path) -> None:
+    """A full disk, as a limit on the size of the files this process writes: the copy fails, nothing is migrated."""
+    path = tmp_path / 'piloop.db'
+    command.upgrade(alembic(path), '0016')
+    engine = create_engine(f'sqlite:///{path}')
+    limit = resource.getrlimit(resource.RLIMIT_FSIZE)
+    previous = signal.signal(signal.SIGXFSZ, signal.SIG_IGN)  # a write past the limit fails instead of killing
+    resource.setrlimit(resource.RLIMIT_FSIZE, (64 * 1024, limit[1]))
+    try:
+        with pytest.raises(BackupFailed, match=r'could not back up .*, so it was not migrated: free some space'):
+            migrate(engine, backups=3)
+    finally:
+        resource.setrlimit(resource.RLIMIT_FSIZE, limit)
+        signal.signal(signal.SIGXFSZ, previous)
+    assert revision(engine) == '0016' and list(tmp_path.glob('piloop.db.bak-*')) == []
     engine.dispose()
 
 
@@ -200,8 +249,8 @@ def test_concurrent_migrations_of_a_fresh_database_run_one_at_a_time(
 
     monkeypatch.setattr(command, 'upgrade', gated)
     engines = [create_engine(f'sqlite:///{path}') for _ in range(2)]
-    first = threading.Thread(target=migrate, args=(engines[0],), name='first')
-    second = threading.Thread(target=migrate, args=(engines[1],), name='second')
+    first = threading.Thread(target=migrate, args=(engines[0],), kwargs={'backups': 0}, name='first')
+    second = threading.Thread(target=migrate, args=(engines[1],), kwargs={'backups': 0}, name='second')
     first.start()
     assert inside.wait(5)
     second.start()

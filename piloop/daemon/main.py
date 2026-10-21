@@ -19,7 +19,7 @@ from piloop.daemon.serve import (
     refuse_older_daemon,
     secrets,
 )
-from piloop.db.session import Database, SchemaAhead, migrate
+from piloop.db.session import BackupFailed, Database, SchemaAhead, migrate
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Span, tracer
 from piloop.plugins import host as plugins
@@ -88,8 +88,8 @@ class Daemon:
         self.db = Database(cfg.database_url, actor=ACTOR)
         try:
             refuse_older_daemon(cfg, self.db.engine)
-            migrate(self.db.engine)
-        except OlderDaemon, SchemaAhead:
+            self._backup = migrate(self.db.engine, backups=cfg.migration_backups)
+        except OlderDaemon, SchemaAhead, BackupFailed:
             self.db.close()
             raise
         self._cfg = cfg
@@ -127,7 +127,12 @@ class Daemon:
         previous = signal.signal(signal.SIGTERM, self._on_sigterm)
         previous_restart = signal.signal(RESTART_SIGNAL, self._on_restart)
         try:
-            with self.tracer.span('piloop.start', db=self._cfg.database_url, secrets=self._supplied) as span:
+            with self.tracer.span(
+                'piloop.start',
+                db=self._cfg.database_url,
+                secrets=self._supplied,
+                backup=None if self._backup is None else str(self._backup),
+            ) as span:
                 self._check_entire(span)
                 self.scheduler.reap()
                 span.set(inherited_reaped=self._inherited.reap())

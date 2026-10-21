@@ -19,7 +19,7 @@ from piloop.campaign.campaigns import checked_out, find
 from piloop.campaign.ops import Refused
 from piloop.daemon.serve import OlderDaemon, refuse_older_daemon
 from piloop.db.models import Campaign, CampaignStatus
-from piloop.db.session import Database, SchemaAhead, migrate as migrate_schema
+from piloop.db.session import BackupFailed, Database, SchemaAhead, migrate as migrate_schema
 from piloop.reports.feed import PROTOCOL
 from piloop.settings import settings
 
@@ -80,10 +80,11 @@ def campaigns(s: Session, ref: str | None) -> list[Campaign]:
     return list(active) if len(active) == 1 else list(s.scalars(select(Campaign)).all())
 
 
-def migrate(db: Database) -> None:
+def migrate(db: Database) -> Path | None:
     """Migrate the database to head, or close it and exit when its schema is ahead of this piloop.
 
-    It also exits, without a change, under the running daemon of an older piloop (``refuse_older_daemon``).
+    It also exits, without a change, under the running daemon of an older piloop (``refuse_older_daemon``), and when
+    the backup before a migration fails. Returns that backup, if it wrote one.
     """
     try:
         refuse_older_daemon(settings, db.engine)
@@ -91,8 +92,8 @@ def migrate(db: Database) -> None:
         db.close()
         raise SystemExit(str(e)) from e
     try:
-        migrate_schema(db.engine)
-    except SchemaAhead as e:
+        return migrate_schema(db.engine, backups=settings.migration_backups)
+    except (SchemaAhead, BackupFailed) as e:
         db.close()
         raise SystemExit(str(e)) from e
 

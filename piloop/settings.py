@@ -92,6 +92,11 @@ class Settings(BaseSettings):
     the evaluation queue (``piloop eval queue``). A free slot goes to the campaign with the fewest running evaluations,
     and in it to its head first, then to the oldest request."""
 
+    migration_backups: int = Field(default=3, ge=0)
+    """The number of copies of the database to keep, one written before each migration: ``piloop.db.bak-<revision>-<UTC
+    time>`` next to it, the database as that revision left it. A new copy removes the oldest beyond this number. 0
+    writes none. Each copy is about the size of the database."""
+
     secrets_command: str | None = None
     """A shell command that prints ``NAME=value`` lines: the API keys that the ``[mcp.<name>]`` servers name, from
     wherever you keep them. The daemon runs it when it starts and on every ``piloop restart``. The keys go into the

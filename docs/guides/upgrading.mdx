@@ -62,12 +62,36 @@ The daemon, and every command that reads or writes campaigns (such as `init`, `s
 the database to its own schema when it starts. `piloop doctor` and `piloop sql` do not. You never recreate the
 database by hand. `piloop migrate` migrates it and prints what changed, for example `schema: 0001 → 0002`.
 
+Before it migrates, piloop writes a copy of the database next to it, as the old schema left it:
+`$PILOOP_HOME/piloop.db.bak-<revision>-<UTC time>`, for example `piloop.db.bak-0001-20261021T002254Z`. `piloop migrate`
+and `piloop upgrade` print where it is, and the daemon's log names it in its `piloop.start` line. piloop keeps the 3
+newest copies; `migration_backups` in `config.toml` sets how many, and `0` writes none. Each copy is about the size of
+the database. When the copy cannot be written, for example on a full disk, nothing is migrated, and the error says so.
+
 While a daemon of an older piloop runs, a newer piloop does not migrate the database, because the daemon would break
 on the new schema: it exits and says what to run. `piloop upgrade` restarts the daemon on the new code first, and the
 daemon migrates the database when it starts.
 
 An older piloop refuses to open a database that a newer one migrated, `piloop sql` included. The error names the
 database's schema revision and the newest one that this piloop knows: install a newer piloop (`piloop upgrade`).
+
+### Restore from the backup
+
+A backup brings the database back to the moment before the migration. What piloop wrote to the database after it is
+lost: the runs, measurements and comments since then. The git commits and the workspace files stay.
+
+1. Stop the daemon: `piloop stop`.
+2. Install the piloop that the backup's revision belongs to, for example `uv tool install --reinstall piloop==0.1.0`
+   for a `0001` copy. A newer piloop would migrate the copy again.
+3. Put the copy in place of the database, and remove the database's `-wal` and `-shm` files:
+
+   ```bash
+   cd "${PILOOP_HOME:-$HOME/.piloop}"
+   mv piloop.db piloop.db.failed && rm -f piloop.db-wal piloop.db-shm
+   cp piloop.db.bak-0001-20261021T002254Z piloop.db
+   ```
+
+4. Start the daemon: `piloop serve --detach`, and check with `piloop doctor`.
 
 ## Follow main
 

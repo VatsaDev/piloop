@@ -9,7 +9,7 @@ import fcntl
 import os
 import sqlite3
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from alembic import command
@@ -23,10 +23,12 @@ from sqlalchemy.engine import ExceptionContext
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import ConnectionPoolEntry
 
+from piloop.db.models import utcnow
 from piloop.db.sql import CONNECTION_PRAGMAS, install_actor, install_functions, lock_holder, optimize
 from piloop.version import installed
 
 MIGRATIONS = Path(__file__).parent / 'migrations'
+BACKUP_INFIX = '.bak-'
 
 
 def _pragmas(conn: sqlite3.Connection) -> None:
@@ -72,24 +74,66 @@ class SchemaAhead(RuntimeError):
     """A newer version of piloop migrated the database. Downgrades are not supported."""
 
 
-def migrate(engine: Engine) -> None:
+class BackupFailed(RuntimeError):
+    """The copy of the database before a migration could not be written, so nothing was migrated."""
+
+
+def migrate(engine: Engine, *, backups: int) -> Path | None:
     """Migrate the database to the latest Alembic revision. Create it if it does not exist.
+
+    Before it applies a revision to a database that has one, it writes a consistent copy of the database next to it,
+    ``<database>.bak-<revision>-<UTC time>`` (``VACUUM INTO``), then removes the oldest copies beyond the newest
+    ``backups``. ``backups=0`` writes none. A copy that fails stops the migration: nothing is applied.
+
+    Returns:
+        The copy, or None when nothing was applied or no copy was asked for.
 
     Raises:
         SchemaAhead: The database is at a revision that this piloop does not know: an older CLI on a newer database.
+        BackupFailed: The copy could not be written, for example on a full disk.
     """
     path = Path(engine.url.database or '')
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     cfg = AlembicConfig()
     cfg.set_main_option('script_location', str(MIGRATIONS))
     cfg.set_main_option('sqlalchemy.url', engine.url.render_as_string(hide_password=False))
+    copy = None
     try:
         with _migration_lock(path):
+            at = behind(engine)
+            if backups and at not in {None, 'none'}:
+                copy = _backup(path, at, backups)
             command.upgrade(cfg, 'head')
     except CommandError as e:
         if not isinstance(e.__cause__, ResolutionError):  # pragma: no cover - alembic fails here for no other reason
             raise
         raise ahead(path, revision(engine)) from e
+    return copy
+
+
+def backups(database: Path) -> list[Path]:
+    """The copies that ``migrate`` wrote of ``database``, oldest first."""
+    return sorted(database.parent.glob(f'{database.name}{BACKUP_INFIX}*'), key=lambda p: p.name.rpartition('-')[2])
+
+
+def _backup(database: Path, at: str, keep: int) -> Path:
+    """Copy ``database`` at revision ``at`` with ``VACUUM INTO``, then keep only the newest ``keep`` copies.
+
+    ``VACUUM INTO`` reads one snapshot, with what the WAL holds, so the copy is consistent while others write.
+    """
+    copy = database.with_name(f'{database.name}{BACKUP_INFIX}{at}-{utcnow():%Y%m%dT%H%M%SZ}')
+    try:
+        with closing(sqlite3.connect(database)) as con:
+            con.execute('VACUUM INTO ?', (str(copy),))
+    except sqlite3.Error as e:
+        copy.unlink(missing_ok=True)  # a partial copy, for example on a full disk
+        raise BackupFailed(
+            f'could not back up {database} to {copy} before migrating it ({e}), so it was not migrated: free some'
+            ' space there, or set migration_backups = 0 in config.toml to migrate without a backup'
+        ) from e
+    for old in backups(database)[:-keep]:
+        old.unlink()
+    return copy
 
 
 def head() -> str | None:

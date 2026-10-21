@@ -317,7 +317,7 @@ def test_serve_refuses_when_a_daemon_holds_the_pid_file(
 ) -> None:
     cfg = Settings(home=tmp_path)
     engine = create_engine(cfg.database_url)
-    migrate(engine)  # as the running daemon left it: under an older one, Daemon() refuses before it migrates
+    migrate(engine, backups=0)  # as the running daemon left it: under an older one, Daemon() refuses before it migrates
     engine.dispose()
     daemon = Daemon(cfg)
     shutdown = mocker.patch.object(daemon, 'shutdown')

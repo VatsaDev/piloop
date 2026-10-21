@@ -15,7 +15,7 @@ from piloop.agents.roles import PROCEDURES, PROMPTS
 from piloop.cli import common, doctor
 from piloop.daemon.serve import OlderDaemon, refuse_older_daemon
 from piloop.db import sql
-from piloop.db.session import Database, behind, head, revision
+from piloop.db.session import Database, backups, behind, head, revision
 from piloop.version import installed
 
 
@@ -87,16 +87,24 @@ def _cell(value: object) -> str:
 
 
 def migrate_cmd() -> None:
-    """Migrate the database to the schema of this piloop, and print what changed.
+    """Migrate the database to the schema of this piloop, and print what changed and where its backup is.
 
-    The daemon and the commands that read or change campaigns also migrate, without a message, when they start.
+    Before it migrates, it copies the database next to it (`migration_backups` in config.toml). The daemon and the
+    commands that read or change campaigns also migrate, with the same backup and without a message, when they start.
     `piloop sql` and `piloop doctor` do not migrate.
     """
     db = Database(common.settings.database_url, actor=common.settings.actor)
     try:
         old = revision(db.engine)
-        common.migrate(db)
+        backup = common.migrate(db)
         new = revision(db.engine)
     finally:
         db.close()
-    common.console.print(f'schema: {new}, current' if old == new else f'schema: {old or "none"} → {new}')
+    if old == new:
+        newest = backups(common.settings.home / 'piloop.db')
+        common.console.print(f'schema: {new}, current' + (f'; the newest backup: {newest[-1]}' if newest else ''))
+    elif old is None:
+        common.console.print(f'schema: none → {new}')
+    else:
+        done = f'backup of {old}: {backup}' if backup is not None else 'no backup (migration_backups = 0)'
+        common.console.print(f'schema: {old} → {new}; {done}')

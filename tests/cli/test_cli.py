@@ -1307,6 +1307,22 @@ def test_migrate_reports_the_schema_change_and_a_newer_database_is_refused(out) 
     assert running_pid(common.settings) is None, 'the daemon refused before taking the pid file'
 
 
+def test_migrate_backs_up_the_database_first_and_says_where(out, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``piloop migrate`` names the copy it wrote before it migrated, and the newest one when there is nothing to do.
+    ``migration_backups`` in config.toml (here its variable) sets how many it keeps."""
+    database = common.settings.home / 'piloop.db'
+    command.downgrade(alembic(database), '0016')
+    run_cli(['migrate'])
+    [backup] = database.parent.glob('piloop.db.bak-0016-*')
+    assert out().strip() == f'schema: 0016 → {HEAD}; backup of 0016: {backup}'
+    run_cli(['migrate'])
+    assert out().strip() == f'schema: {HEAD}, current; the newest backup: {backup}'
+    command.downgrade(alembic(database), '0016')
+    monkeypatch.setattr(common, 'settings', common.settings.model_copy(update={'migration_backups': 0}))
+    run_cli(['migrate'])
+    assert out().strip() == f'schema: 0016 → {HEAD}; no backup (migration_backups = 0)'
+
+
 def cli_check() -> str:
     """The doctor's line on the CLI of this checkout, which the test venv installs from its directory."""
     checkout = json.loads(direct_url() or '{}')['url']
@@ -1568,7 +1584,8 @@ def test_a_newer_cli_does_not_migrate_the_database_under_an_older_daemon(out) ->
         assert revision_of(database) == '0015', 'nothing changed'
     out()
     run_cli(['migrate'])
-    assert out().strip() == f'schema: 0015 → {HEAD}', 'without the daemon, the CLI migrates'
+    [backup] = database.parent.glob('piloop.db.bak-0015-*')
+    assert out().strip() == f'schema: 0015 → {HEAD}; backup of 0015: {backup}', 'without the daemon, the CLI migrates'
     for _ in hold_lock(common.settings.pid_file):
         run_cli(['status'])  # at head: a daemon of the same piloop is no reason to refuse
 
