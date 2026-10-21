@@ -1035,8 +1035,8 @@ class RunExecutor:
             f' your idea produces there under `./{WORKSPACE}/idea{idea.id}/`: it is archived when the idea is done, and'
             ' its local copy goes some days later. The files of a done idea come back with'
             f' `piloop restore {idea.campaign.name} <idea id>|<workspace path>`.',
-            f'- Leave a finding on your idea when you are done: INSERT INTO comments (target_kind, target_id, author,'
-            f" kind, body) VALUES ('idea', {idea.id}, '{author}', 'finding', '...').",
+            f'- Leave a finding on your idea when you are done, piped into the SQL tool: INSERT INTO comments'
+            f" (target_kind, target_id, author, kind, body) VALUES ('idea', {idea.id}, '{author}', 'finding', '...').",
             '- Ask for what you cannot do or decide yourself with an escalation, never a note: INSERT INTO comments'
             f" (target_kind, target_id, author, kind, priority, body) VALUES ('idea', {idea.id}, '{author}',"
             " 'escalation', 1, '...').",

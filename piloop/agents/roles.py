@@ -47,7 +47,7 @@ class Role:
 
 
 SEED_HINT = (
-    '- File a seed: `{piloop} idea seed {campaign} "<hunch, one line>" --from "<pointers: ids, paths, numbers>"`'
+    "- File a seed: `{piloop} idea seed {campaign} '<hunch, one line>' --from '<pointers: ids, paths, numbers>'`"
     ' (`--base <candidate>` when it is about that tree): research checks it against the existing work and develops it'
     ' into an idea, or rejects it with the reason.'
 )
@@ -58,12 +58,12 @@ IDEAS: dict[Files, str] = {
     ),
     Files.SEEDS: SEED_HINT,
     Files.IDEAS: (
-        '- Develop a seed: `{piloop} idea develop <seed id> --hypothesis "…" --evidence "<ids, paths>" --check'
-        ' "<cheapest measurement that kills it, and the result that stops the run>" --metric "<what decides'
-        ' success>" --effect "<expected size, in the metric\'s units, and why>" [--plan "…"] [--family "…"]'
-        ' [--title "…"] [--base <candidate>]`.\n'
-        '- Add an idea of your own: `{piloop} idea add {campaign} "<title>" --hypothesis "…" --plan "…" --family'
-        ' "<mechanism>" --from "<the evidence, with ids>"` (`--help` for links, a base, a priority).'
+        "- Develop a seed: `{piloop} idea develop <seed id> --hypothesis '…' --evidence '<ids, paths>' --check"
+        " '<cheapest measurement that kills it, and the result that stops the run>' --metric '<what decides"
+        " success>' --effect '<expected size, in the units of the metric, and why>' [--plan '…'] [--family '…']"
+        " [--title '…'] [--base <candidate>]`.\n"
+        "- Add an idea of your own: `{piloop} idea add {campaign} '<title>' --hypothesis '…' --plan '…' --family"
+        " '<mechanism>' --from '<the evidence, with ids>'` (`--help` for links, a base, a priority)."
     ),
 }
 """The ideas line of the brief for each value of ``files``."""
@@ -146,7 +146,7 @@ def compose_brief(
                 f"- Sign what you write as '{author}' (comments.author, ideas.created_by).",
                 f'- Trigger: {reason}',
                 f"- piloop: `{PILOOP_HINT}` is this daemon's piloop. Run every `piloop` command of this brief with it.",
-                f'- SQL tool: `{SQL_HINT} "<sql>"`',
+                f"- SQL tool: `{SQL_HINT} -`, with the statement on stdin from a quoted heredoc (`<<'EOF'`).",
                 f'- Sweeping roles (`workers.kind` of a request): {", ".join(cfg.roles.sweeping())}.',
                 *([tracks_line(cfg, track)] if cfg.multitrack else []),
                 role.ideas.format(piloop=PILOOP_HINT, campaign=campaign.name),

@@ -109,9 +109,9 @@ def test_brief_is_role_prompt_campaign_brief_procedures_then_context(campaign: C
 - Sign what you write as 'watchdog#7' (comments.author, ideas.created_by).
 - Trigger: timer
 - piloop: `{PILOOP_HINT}` is this daemon's piloop. Run every `piloop` command of this brief with it.
-- SQL tool: `{SQL_HINT} "<sql>"`
+- SQL tool: `{SQL_HINT} -`, with the statement on stdin from a quoted heredoc (`<<'EOF'`).
 - Sweeping roles (`workers.kind` of a request): watchdog, research, scout.
-- File a seed: `{PILOOP_HINT} idea seed demo "<hunch, one line>" --from "<pointers: ids, paths, numbers>"` (`--base\
+- File a seed: `{PILOOP_HINT} idea seed demo '<hunch, one line>' --from '<pointers: ids, paths, numbers>'` (`--base\
  <candidate>` when it is about that tree): research checks it against the existing work and develops it into an idea,\
  or rejects it with the reason.
 - You may write: comments(escalation, finding, note), lessons on the campaign once it stopped, seeds via idea seed.

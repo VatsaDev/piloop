@@ -497,12 +497,22 @@ at once or, with `--wrap-up`, after it was told to commit and stop.
 ### piloop sql
 
 ```text
-piloop sql STATEMENT
+piloop sql STATEMENT|-
 ```
 
 Runs one SQL statement against the piloop database. Schema changes, transactions, `ATTACH` and all but the read-only
 `PRAGMA`s are denied. So are writes to piloop's internal tables and to the full-text indexes. Everything else,
 including `DELETE`, is allowed. The output stops at 500 rows. See the [database schema](/reference/schema).
+
+With `-`, the statement is read from stdin, so a text with backticks, `$(…)` or `$VAR` reaches the database unchanged.
+Pipe it in from a quoted heredoc, which the shell does not expand:
+
+```bash
+piloop sql - <<'EOF'
+INSERT INTO comments (target_kind, target_id, author, kind, body)
+VALUES ('idea', 12, 'human', 'note', 'Run `make bench` first: it''s the slow step.');
+EOF
+```
 
 ### piloop schema
 

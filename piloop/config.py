@@ -386,12 +386,12 @@ class ScoutRole(SweepRole):
 
     PROMPT: ClassVar[str] = 'scout.md'
     IDEAS: ClassVar[str] = (
-        '- File a seed: `{piloop} idea seed {campaign} "<technique: its mechanism, one line>" --from "<link>; targets'
-        ' <the measured loss it might reduce, with its size>; <its substance: a number, code, an ablation>"`: research'
+        "- File a seed: `{piloop} idea seed {campaign} '<technique: its mechanism, one line>' --from '<link>; targets"
+        " <the measured loss it might reduce, with its size>; <its substance: a number, code, an ablation>'`: research"
         ' develops it into an idea or rejects it with the reason.'
-        '\n- File a technique into the library: `{piloop} sql "INSERT INTO techniques (campaign_id, title, mechanism,'
-        " url, created_by) VALUES (<campaign id>, '<technique>', '<mechanism and its substance, one line>', '<link>',"
-        " '<your signature>')\"`."
+        '\n- File a technique into the library: pipe `INSERT INTO techniques (campaign_id, title, mechanism, url,'
+        " created_by) VALUES (<campaign id>, '<technique>', '<mechanism and its substance, one line>', '<link>',"
+        " '<your signature>')` into `{piloop} sql -`."
     )
 
     triggers: list[TriggerEntry] = [CronTrigger()]

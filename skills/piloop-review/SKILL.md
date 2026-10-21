@@ -271,7 +271,8 @@ Separate harness faults and environment faults before you blame a model.
 3. **Inbox items for the human.** Decisions that only the human can make: goalposts, reverting an agent's config or
    memory writes, pausing a campaign whose evaluation is broken, keeps below a floor.
    - One item for each decision, with a recommendation and a priority.
-   - Post each one as an `escalation` comment on the campaign, with a `priority`.
+   - Post each one as an `escalation` comment on the campaign, with a `priority`: pipe the INSERT into
+     `piloop sql -` from a quoted heredoc (`<<'EOF'`), never in a double-quoted argument.
 
 ## Every review: check the surfacing policy of the inbox
 

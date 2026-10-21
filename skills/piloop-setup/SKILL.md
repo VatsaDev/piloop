@@ -187,7 +187,7 @@ Run `piloop status <name>`. It shows the pid of the daemon and the campaign.
 
 Do one of these:
 
-- Add two or three ideas with the human: `piloop idea add <name> "<title>" --hypothesis "…" --priority 1`.
+- Add two or three ideas with the human: `piloop idea add <name> '<title>' --hypothesis '…' --priority 1`.
 - Ask for a research sweep: `piloop launch <name> research`.
 
 ## 7. Choose the orchestrator
@@ -211,7 +211,7 @@ scores from the new one.
 
 - `piloop status` prints the head, the running agents, the last candidates and the items in the human's inbox.
 - `piloop watch` shows the same, live, in the human's terminal.
-- `piloop sql "<statement>"` runs SQL.
+- `piloop sql -` runs the SQL statement piped in from a quoted heredoc (`<<'EOF'`).
 - Workers run as background processes. With `runtime = "herdr"`, they run as tabs in the workspace of this campaign
   in the `piloop` Herdr session, and `piloop attach <worker_id>` focuses one.
 - Every commit a worker makes becomes a candidate (a commit whose tree is already a candidate is that candidate). The

@@ -1,4 +1,5 @@
-"""Every code block in the docs, the README, AGENTS.md, CONTRIBUTING.md and the skills is checked against the code.
+"""Every code block in the docs, the README, AGENTS.md, CONTRIBUTING.md, the skills and the agent prompts is checked
+against the code.
 
 The docs include the generated snippets in ``docs/snippets/generated/``, and every snippet that a page imports exists.
 
@@ -37,11 +38,13 @@ SOURCES = [
     ROOT / 'AGENTS.md',
     ROOT / 'CONTRIBUTING.md',
     *sorted((ROOT / 'skills').rglob('SKILL.md')),
+    *sorted((ROOT / 'piloop' / 'agents' / 'prompts').glob('*.md')),
 ]
 SNIPPET = re.compile(r"^import (?P<name>\w+) from '(?P<path>/snippets/[^']+)';$", re.MULTILINE)
 FENCE = re.compile(r'^(?P<indent>\s*)(?P<fence>`{3,}|~{3,})(?P<info>.*)$')
 PLACEHOLDER = re.compile(r'<[A-Za-z][^<>\n]*>|…')
 ASSIGNMENT = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*=')
+HEREDOC = re.compile(r"<<(['\"]?)(?P<word>\w+)\1")
 OPERATOR = re.compile(r'^[;&|()<>]+$')
 BASE_CONFIG: dict[str, object] = {
     'name': 'demo',
@@ -138,8 +141,11 @@ def table_paths(table: dict[str, object], path: tuple[str, ...] = ()) -> Iterato
             yield from table_paths(value, (*path, key))
 
 
-def commands(code: str) -> Iterator[tuple[int, list[str]]]:
-    """The simple commands of a shell block, as (line offset, argv without leading ``VAR=value`` assignments)."""
+def commands(code: str) -> Iterator[tuple[int, list[str], str]]:
+    """The simple commands of a shell block, as (line offset, argv without leading ``VAR=value`` assignments, stdin).
+
+    stdin is the body of the line's heredoc, with its last newline: what ``piloop sql -`` reads.
+    """
     lines = code.split('\n')
     n = 0
     while n < len(lines):
@@ -148,6 +154,10 @@ def commands(code: str) -> Iterator[tuple[int, list[str]]]:
             n += 1
             text = text[:-1] + lines[n]
         n += 1
+        stdin = ''
+        if (heredoc := HEREDOC.search(text)) is not None:
+            end = lines.index(heredoc['word'], n)
+            stdin, n = ''.join(f'{line}\n' for line in lines[n:end]), end + 1
         lexer = shlex.shlex(text, posix=True, punctuation_chars=True)
         lexer.whitespace_split = True
         argv: list[str] = []
@@ -156,18 +166,23 @@ def commands(code: str) -> Iterator[tuple[int, list[str]]]:
                 while argv and ASSIGNMENT.match(argv[0]):
                     argv.pop(0)
                 if argv:
-                    yield start, argv
+                    yield start, argv, stdin
                 argv = []
             else:
                 argv.append(token)
 
 
 def check_shell(block: Block, db: Path) -> None:
-    """The block is valid shell, and every ``piloop`` command parses against the CLI (nothing runs)."""
+    """The block is valid shell, and every ``piloop`` command parses against the CLI (nothing runs).
+
+    A heredoc is quoted (``<<'EOF'``): the shell expands nothing in it, so an agent's text reaches piloop unchanged.
+    """
     code = substituted(block.code)
+    unquoted = [m[0] for m in HEREDOC.finditer(code) if not m[1]]
+    assert not unquoted, f"{block.at()}: {unquoted[0]}: quote the heredoc word (<<'EOF'), or the shell expands the text"
     shell = subprocess.run([block.language, '-n'], input=code, capture_output=True, text=True, check=False)
     assert shell.returncode == 0, f'{block.at()}: {block.language} -n: {shell.stderr.strip()}'
-    for offset, argv in commands(code):
+    for offset, argv, stdin in commands(code):
         if argv[0] != 'piloop':
             continue
         try:
@@ -175,7 +190,9 @@ def check_shell(block: Block, db: Path) -> None:
         except CycloptsError as e:
             raise AssertionError(f'{block.at(offset)}: {shlex.join(argv)}: {e}') from e
         if command is sql_cmd:
-            explain(block.at(offset), bound.arguments['statement'], db)
+            statement = bound.arguments['statement']
+            assert statement != '-' or stdin, f'{block.at(offset)}: piloop sql - without a heredoc reads nothing'
+            explain(block.at(offset), stdin if statement == '-' else statement, db)
 
 
 def explain(where: str, statement: str, db: Path) -> None:

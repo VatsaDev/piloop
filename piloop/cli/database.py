@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+import sys
 from contextlib import closing
 from typing import Annotated
 
@@ -18,12 +19,28 @@ from piloop.db.session import Database, behind, head, revision
 from piloop.version import installed
 
 
-def sql_cmd(statement: Annotated[str, cyclopts.Parameter(help='One SQL statement.')], /) -> None:
+def sql_cmd(
+    statement: Annotated[
+        str,
+        # allow_leading_hyphen: cyclopts reads a bare `-` as an unknown option otherwise
+        cyclopts.Parameter(help='One SQL statement, or - to read it from stdin.', allow_leading_hyphen=True),
+    ],
+    /,
+) -> None:
     """Run one SQL statement on the piloop database.
 
     These are denied: schema changes, ATTACH, transactions, and writes to `alembic_version` and `session_actor`. Only
-    the PRAGMAs that describe the schema are allowed. A query prints at most 500 rows.
+    the PRAGMAs that describe the schema are allowed. A query prints at most 500 rows. With `-`, the statement is read
+    from stdin: piped in from a quoted heredoc (`<<'EOF'`), an agent's text reaches the database as written, where a
+    double-quoted argument would let the shell run what is in backticks or `$(…)` first.
     """
+    # TODO: remove `-` and the briefs' heredocs once agents write through typed write verbs and `piloop mcp`.
+    if statement == '-':
+        if sys.stdin.isatty():
+            raise SystemExit("piloop sql - reads the statement from stdin: pipe it in with a quoted heredoc (<<'EOF')")
+        statement = sys.stdin.read()
+        if not statement.strip():
+            raise SystemExit('piloop sql - read no statement from stdin')
     database = common.settings.home / 'piloop.db'
     if (newer := doctor.schema_ahead(database)) is not None:
         raise SystemExit(str(newer))

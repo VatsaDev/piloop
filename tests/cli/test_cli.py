@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import re
@@ -507,6 +508,40 @@ def test_sql(campaign_path: Path, out) -> None:
         ['sql', "SELECT snippet(ideas_fts, 0, '[', ']', '…', 8) AS hit FROM ideas_fts WHERE ideas_fts MATCH 'vote'"]
     )
     assert '[wip] Soft [voting]' in out(), 'cells are data: brackets are printed, not read as rich markup'
+
+
+PROSE = 'run `touch ran` or $(touch ran), with $HOME; it\'s "quoted" \\ and\n  indented\n'
+"""An agent's Markdown: what a shell runs or expands in a double-quoted argument, then a quote, a backslash, a line."""
+
+
+def test_text_piped_into_sql_from_a_quoted_heredoc_reaches_the_database_byte_for_byte(tmp_path: Path) -> None:
+    """The way the briefs write text: `piloop sql -` reads the statement from stdin, and a quoted heredoc expands
+    nothing on the way."""
+    literal = PROSE.replace("'", "''")
+    script = (
+        f'"$PILOOP_BIN" sql - <<\'EOF\'\n'
+        f"INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES ('campaign', 1, 'a', 'note', '{literal}')\n"
+        'EOF\n'
+    )
+    env = {**os.environ, 'PILOOP_HOME': str(tmp_path), 'PILOOP_BIN': str(Path(sys.executable).parent / 'piloop')}
+    subprocess.run(['sh', '-c', script], cwd=tmp_path, env=env, check=True, capture_output=True)
+    assert not (tmp_path / 'ran').exists()
+    with closing(sqlite3.connect(tmp_path / 'piloop.db')) as con:
+        assert con.execute('SELECT body FROM comments').fetchall() == [(PROSE,)]
+
+
+def test_sql_dash_reads_the_statement_from_stdin_and_never_waits_on_a_terminal(
+    out, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, 'stdin', io.StringIO("SELECT 'a `b` $c'\n"))
+    run_cli(['sql', '-'])
+    assert 'a `b` $c' in out()
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(' \n'))
+    with pytest.raises(SystemExit, match='read no statement from stdin'):
+        run_cli(['sql', '-'])
+    monkeypatch.setattr(sys.stdin, 'isatty', lambda: True)
+    with pytest.raises(SystemExit, match='pipe it in with a quoted heredoc'):
+        run_cli(['sql', '-'])
 
 
 def test_init_syncs_the_memory_documents_and_names_the_repo(campaign_path: Path, out) -> None:

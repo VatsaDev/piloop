@@ -7,6 +7,22 @@ The database is the coordination layer: the daemon, the orchestrator, the watchd
 same tables.
 Timestamps are UTC ISO-8601 strings.
 
+Never put your own text inside a double-quoted shell argument: pipe it in. In double quotes, the shell runs what is in
+backticks and `$(…)`, and expands `$VAR`, before piloop sees the text. `piloop sql -` reads the statement from stdin,
+and a quoted heredoc (`<<'EOF'`, with the quotes) expands nothing:
+
+```sh
+piloop sql - <<'EOF'
+INSERT INTO comments (target_kind, target_id, author, kind, body)
+VALUES ('idea', 12, '<you>', 'note', 'Run `make bench` first: it''s the slow step.');
+EOF
+piloop idea status 12 parked --reason 'waits for idea#9, see comment#31'
+```
+
+- In SQL, double each `'` of your text (`it''s`), as in any SQL string.
+- Give other commands short values in single quotes, without a `'` in them. Write anything longer (Markdown, quoted
+  commands) as a comment through `piloop sql -`, and point to it (`see comment#31`).
+
 ## The model
 
 - A **campaign** is a git repo with a `piloop.toml`.
@@ -49,7 +65,7 @@ Timestamps are UTC ISO-8601 strings.
 
 - A hunch is a *seed*. A defined experiment is an *idea*.
 - File a seed, when your brief says that you may, with
-  `piloop idea seed <campaign> "<hunch, one line>" --from "<pointers: ids, paths, numbers>"`.
+  `piloop idea seed <campaign> '<hunch, one line>' --from '<pointers: ids, paths, numbers>'`.
   Add `--base <candidate>` when it is about that tree.
 - A seed starts with status `seed`, and research develops it first. Research reads the existing work and checks for
   duplicates and earlier negative results. Then it either defines the seed or rejects it with a `note` that names the
@@ -57,7 +73,7 @@ Timestamps are UTC ISO-8601 strings.
 - To define a seed: `piloop idea develop <id> --hypothesis … --evidence … --check … --metric … --effect …`. This makes
   it `ready`.
 - An agent whose brief says so, the orchestrator and humans can also add defined ideas directly:
-  `piloop idea add <campaign> "<title>" --hypothesis … --plan … --family <mechanism> --from "<the evidence, with ids>"`.
+  `piloop idea add <campaign> '<title>' --hypothesis … --plan … --family <mechanism> --from '<the evidence, with ids>'`.
   The idea is `ready` ("schedule me"), or `proposed` with `--proposed` ("a human's approval first").
 - Both commands sign `created_by` with your actor and store `--from` in `provenance`. The full commands are under
   Context.
@@ -76,8 +92,8 @@ Timestamps are UTC ISO-8601 strings.
   - Then `new` starts from the head like any other run. A prerequisite's branch keep is reached only by a pin.
   - Meanwhile, `new` stays `ready`, and `piloop status` shows it as `blocked by idea#n (<status>)`.
   - A prerequisite that ends `rejected` or `parked` blocks until someone parks the dependent idea or deletes the link:
-    `piloop idea unlink <new> after <n> --reason "<why>"`.
-- To link an idea that exists already: `piloop idea link <new> after <n> --reason "<why>"`. The link is written in one
+    `piloop idea unlink <new> after <n> --reason '<why>'`.
+- To link an idea that exists already: `piloop idea link <new> after <n> --reason '<why>'`. The link is written in one
   transaction, so the daemon never takes the idea without it. It is refused while the idea's run is open (the daemon
   took it already), and when it would close a cycle.
 - `supersedes` says that `new` is a sharper version of n.
@@ -194,7 +210,7 @@ ORDER BY bm25(documents_fts) LIMIT 10;
 - Nothing is delivered twice, and a daemon restart loses nothing: those two events are the record.
 - So put the instruction in the first line of the body, and the reasons below it.
 - Escalations are never pushed to a worker.
-- `piloop prompt <worker_id> "..."` steers any running agent directly, without a comment.
+- `piloop prompt <worker_id> '<text>'` steers any running agent directly, without a comment.
 
 ### Ask for an agent
 
@@ -228,14 +244,14 @@ Special reasons:
 Roles, tracks, margins and floors are in `campaigns.config`.
 
 Override verdicts freely, and record why. A candidate can be `interesting` without winning:
-`piloop candidate verdict <c> interesting --reason "<why>"`. It signs the verdict with your actor. A keep must build
+`piloop candidate verdict <c> interesting --reason '<why>'`. It signs the verdict with your actor. A keep must build
 on the head, unless its run is a branch run.
 The daemon never overwrites a verdict that is not its own.
 
 ### Note a lead
 
 - To keep a result that regressed but is worth starting from in view:
-  `piloop candidate note <candidate> "<why>" --follow-up "<hunch>"`. `--follow-up` can repeat.
+  `piloop candidate note <candidate> '<why>' --follow-up '<hunch>'`. `--follow-up` can repeat.
 - The result is an `interesting` whose reason starts with `note:`, plus one seed per follow-up, pinned to it. It is not
   a keep and not a bar.
 - A worker's candidates exist only after its commits are scored. So a worker ends the commit message with a
@@ -251,7 +267,7 @@ The daemon never overwrites a verdict that is not its own.
 
 ### Talk
 
-- `INSERT INTO comments (target_kind, target_id, author, kind, body)`.
+- `INSERT INTO comments (target_kind, target_id, author, kind, body)`, piped into `piloop sql -`.
 - Refer to other rows in the body as `idea#12`, `run#7`, `candidate#30`.
 - Kinds: `note`, `finding`, `decision`, `escalation`. A lesson is a row of `lessons` ("Remember past campaigns").
 - Every comment also inserts a `comment.<kind>` event (a trigger).
@@ -274,7 +290,7 @@ The daemon never overwrites a verdict that is not its own.
 
 ### Change an idea
 
-Each command takes `--reason "<why>"`, signs the change with your actor and records it in `events`.
+Each command takes `--reason '<why>'`, signs the change with your actor and records it in `events`.
 
 - Park (for now) or reject (for good): `piloop idea status <id> parked` or `rejected`. Also `ready`, `proposed`, and
   `done`, which settles an idea without a run so that the ideas after it start. The reason becomes a `note` on the
@@ -286,7 +302,7 @@ Each command takes `--reason "<why>"`, signs the change with your actor and reco
 
 ### Pause a campaign
 
-- `piloop pause <campaign> --reason "<why>"` launches nothing more: no run, no sweep, no requested agent. Running work
+- `piloop pause <campaign> --reason '<why>'` launches nothing more: no run, no sweep, no requested agent. Running work
   finishes and is scored. It raises no escalation. A sweep that runs already files its ideas as `proposed`.
 - The daemon still measures what a new evaluator or a request needs. `--evals` holds that too.
 - No watchdog starts for an anomaly while paused; it gets the anomaly after the resume. Paused time does not count

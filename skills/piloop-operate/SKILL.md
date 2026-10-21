@@ -7,7 +7,10 @@ description: Operate a running piloop autoresearch campaign as its orchestrator,
 
 The database is the contract. Everything below is a `piloop` command in your shell, SQL included.
 
-- Run SQL with `piloop sql "<one statement>"`.
+- Run SQL with `piloop sql -`, the statement piped in from a quoted heredoc (`<<'EOF'`, with the quotes).
+- Never put your own text inside a double-quoted shell argument: the shell runs what is in backticks and `$(…)`, and
+  expands `$VAR`, before piloop sees it. Give other commands short values in single quotes, without a `'` in them,
+  and write anything longer as a comment through `piloop sql -`.
 - Read `piloop schema` once before your first write. It gives the conventions and every table.
 - Run every piloop command as `PILOOP_ACTOR=orchestrator piloop …`. When the human runs a second install under
   another command, such as `piloop-canary` next to a release, use that command wherever this skill says `piloop`.
@@ -73,7 +76,7 @@ Steps:
    when no command does it.
    Never raise `[spend] limit` yourself. A `Spend limit reached` escalation belongs to the human.
 7. **Journal** each decision, plan and result as you go, one line with its ids:
-   `PILOOP_ACTOR=orchestrator piloop journal "sync-r1: parked idea#412 (dup of #398); next: compose c#486+c#501"`.
+   `PILOOP_ACTOR=orchestrator piloop journal 'sync-r1: parked idea#412 (dup of #398); next: compose c#486+c#501'`.
    At most 280 bytes. A session that loses its context (a crash, a full window) starts again from `piloop wake`, so
    write what the next session needs, not what the database already says.
 8. **Report** when the human is present, at least every few waits or every hour. Then go back to step 2.
@@ -121,8 +124,8 @@ Start the daemon with `piloop serve --detach`.
 ### Add an idea
 
 ```bash
-PILOOP_ACTOR=orchestrator piloop idea add <name> "<title>" --hypothesis "…" --plan "…" --family "<mechanism>" \
-  --from "<what prompted it: comment#…, a digest, a loss table>" --priority 1
+PILOOP_ACTOR=orchestrator piloop idea add <name> '<title>' --hypothesis '…' --plan '…' --family '<mechanism>' \
+  --from '<what prompted it: comment#…, a digest, a loss table>' --priority 1
 ```
 
 - `--base <candidate>` sets the start. `--after` and `--supersedes` link it to other ideas, in the same write as the
@@ -139,7 +142,7 @@ combining, new data.
 Send it to research as soon as it comes up:
 
 ```bash
-PILOOP_ACTOR=orchestrator piloop idea seed <name> "<hunch, one line>" --from "<pointers: candidate#…, comment#…, a path>"
+PILOOP_ACTOR=orchestrator piloop idea seed <name> '<hunch, one line>' --from '<pointers: candidate#…, comment#…, a path>'
 ```
 
 - Add `--base <c>` when the hunch is about the tree of candidate `<c>`.
@@ -156,7 +159,7 @@ PILOOP_ACTOR=orchestrator piloop idea seed <name> "<hunch, one line>" --from "<p
 A link that the human pastes (a post, a repo, a paper) is a seed signed `human`, not signed by you:
 
 ```bash
-PILOOP_ACTOR=human piloop idea seed <name> "<its mechanism, one line>" --from "<link>; targets <the measured loss>"
+PILOOP_ACTOR=human piloop idea seed <name> '<its mechanism, one line>' --from '<link>; targets <the measured loss>'
 ```
 
 ### Scout for outside techniques
@@ -181,24 +184,24 @@ The research pack of every sweep then lists it under the analysis artifacts, new
 
 ### Change an idea
 
-Use these commands, not SQL. Each one validates, takes `--reason "<why, with ids>"`, signs the change as
+Use these commands, not SQL. Each one validates, takes `--reason '<why, with ids>'`, signs the change as
 `orchestrator` and records an event, so your decision's `Revert:` line is one more command.
 
 - Park (for now), reject (never), approve, or settle without a run:
-  `piloop idea status <id> parked|rejected|ready|proposed|done --reason "…"`. The reason becomes a `note` on the idea.
+  `piloop idea status <id> parked|rejected|ready|proposed|done --reason '…'`. The reason becomes a `note` on the idea.
   An idea whose run is open (queued, running or being scored) can only be parked or rejected: its run finishes. Set
   it ready again after the run, never during it: that would queue a second run.
-- Link an idea that exists: `piloop idea link <id> after|supersedes <target> --reason "…"`. It refuses a link that
+- Link an idea that exists: `piloop idea link <id> after|supersedes <target> --reason '…'`. It refuses a link that
   closes a cycle, and an `after` link to an idea that the daemon took already. `piloop idea unlink` deletes one, for
   example a prerequisite that was rejected and blocks.
-- Start it from another candidate: `piloop idea base <id> <candidate> --reason "…"`, or `head` to unpin it.
-- Move it to another track: `piloop idea track <id> <track> --reason "…"`.
+- Start it from another candidate: `piloop idea base <id> <candidate> --reason '…'`, or `head` to unpin it.
+- Move it to another track: `piloop idea track <id> <track> --reason '…'`.
 - Reprioritize: `UPDATE ideas SET priority = 0 WHERE id = …`, with a `note` that says why.
 
 ### Pause a campaign
 
 ```bash
-PILOOP_ACTOR=orchestrator piloop pause <name> --reason "<what the pause waits for>"
+PILOOP_ACTOR=orchestrator piloop pause <name> --reason '<what the pause waits for>'
 PILOOP_ACTOR=orchestrator piloop resume <name>
 ```
 
@@ -220,7 +223,8 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
   on its *running* run, goes into that worker's pane on the next tick. The pane gets only the first line (up to 200
   characters) and a query for the full text, so put the instruction in the first line.
 - `comment.delivered` on the worker confirms that the comment arrived.
-- `piloop prompt <worker> "<text>"` sends text directly, when no comment is worth keeping. It needs `runtime = "herdr"`.
+- `piloop prompt <worker> '<text>'` sends text directly, when no comment is worth keeping. It needs
+  `runtime = "herdr"`.
 - A comment on the campaign reaches no worker. When a decision changes the work of a running worker, write it on its
   run, not on the campaign.
 - A worker asks for what it cannot do itself with an escalation. When its run ends before the answer, the run fails as
@@ -231,7 +235,7 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
 - A run that became redundant: `piloop run cancel <run> --wrap-up`. The worker is told to commit and stop, and ended
   10 minutes later, with every process it started. Its commits are scored and its idea is parked. Without `--wrap-up`,
   it is ended at once. `piloop agent cancel <worker> [--wrap-up]` does the same for an agent of any role, a sweep too.
-- A campaign: `piloop campaign stop <name> --reason "<why>"`. The daemon stops it as a `[stop]` condition does: it
+- A campaign: `piloop campaign stop <name> --reason '<why>'`. The daemon stops it as a `[stop]` condition does: it
   drops queued work, winds the workers down, scores their commits and launches the closing review. `--kill` ends the
   workers at once. Never `UPDATE campaigns SET status`: that gets no closing review.
 - Never `pkill` an agent: the cancel ends what it left running, in any session.
@@ -240,10 +244,10 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
 
 Use this for a candidate of another campaign, or a branch.
 
-- Run `piloop candidate import <name> <commit-or-ref> --summary "…"`. It registers a `reference` candidate.
+- Run `piloop candidate import <name> <commit-or-ref> --summary '…'`. It registers a `reference` candidate.
   Never `INSERT INTO candidates`.
 - The daemon measures it.
-- Start an idea from it with `piloop idea add <name> "<title>" --base <c>`.
+- Start an idea from it with `piloop idea add <name> '<title>' --base <c>`.
 - A candidate of another campaign is its `commit_sha`. If it is in another repo, fetch it into this repo first.
 - A reference is never a keep and never the head. It is the bar only of a run that is pinned to it.
 
@@ -263,7 +267,7 @@ Branch runs:
 ### Keep a failed result as a lead
 
 ```bash
-piloop candidate note <c> "<why>" --follow-up "<hunch>"
+piloop candidate note <c> '<why>' --follow-up '<hunch>'
 ```
 
 - `--follow-up` is repeatable.
@@ -328,13 +332,15 @@ writer gave it a priority.
 Record every decision you take for the human, with or without an escalation: a guardrail, a merge, a global setting,
 a spend, a row you edited by hand. Record it when you apply it. Never record it only in the chat.
 
-```sql
+```bash
+PILOOP_ACTOR=orchestrator piloop sql - <<'EOF'
 INSERT INTO comments (target_kind, target_id, author, kind, priority, body) VALUES ('<k>', <t>, 'orchestrator', 'decision', <p>,
 '[<category>, reversible|irreversible] <what you decided, one line>
 Why: <the evidence, with ids>
 Changed: <exactly what: rows, files, settings, commits>
 Revert: <the SQL, command or edit that undoes it>
 Re: comment#<the escalation, if one>')
+EOF
 ```
 
 - Target the row that the decision is about: the target of the escalation, or the campaign for a campaign-wide decision.
@@ -365,14 +371,14 @@ without a priority), out of the inbox.
 ## Agents
 
 - The ids of the agents are in the status.
-- By default (`runtime = "subprocess"`), each agent is a background process. `piloop prompt <worker_id> "…"` queues a
+- By default (`runtime = "subprocess"`), each agent is a background process. `piloop prompt <worker_id> '…'` queues a
   message for it: when its turn ends, piloop resumes its session with the message.
 - With `runtime = "herdr"`, each agent runs as a tab in the workspace of the campaign in the `piloop` Herdr session:
   - `piloop attach <worker_id>` focuses that tab. From a terminal outside that session, it also attaches to the
     session. It takes over the terminal, so it is for the human, not for your shell tool.
-  - `piloop prompt <worker_id> "…"` steers a running agent of any role. The message waits for the end of the
+  - `piloop prompt <worker_id> '…'` steers a running agent of any role. The message waits for the end of the
     agent's current turn; an idle agent takes it at once.
-- To request one more sweep, run `piloop launch <name> <role> [--harness pi --model …] [--reason "…"]`: `watchdog`,
+- To request one more sweep, run `piloop launch <name> <role> [--harness pi --model …] [--reason '…']`: `watchdog`,
   `research`, or a role that `piloop.toml` defines.
   Or insert a request:
   `INSERT INTO workers (kind, campaign_id, state, reason) VALUES ('research', <p>, 'requested', '…')`.
@@ -437,7 +443,7 @@ The bar:
 Override the verdict when the number is not the full story:
 
 ```bash
-PILOOP_ACTOR=orchestrator piloop candidate verdict <c> interesting --reason "…"
+PILOOP_ACTOR=orchestrator piloop candidate verdict <c> interesting --reason '<what the number does not say, with ids>'
 ```
 
 - The daemon never overwrites a verdict that it did not set.
