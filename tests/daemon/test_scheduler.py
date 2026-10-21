@@ -630,8 +630,7 @@ def test_a_superseded_idea_that_never_ran_is_rejected_on_tick_and_one_that_ran_i
 def test_reap(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
-    store(tmp_path / 'home', 'pi', PI_ID, cwd=tmp_path / 'agent_sessions' / '2' / 'worktree')
+    store(tmp_path, 'pi', PI_ID, cwd=tmp_path / 'agent_sessions' / '2' / 'worktree')
     (idea,) = add_ideas(db, campaign, 'stale')
     repo = Repo(campaign.path)
     with db.session() as s:

@@ -25,6 +25,7 @@ These are the settings of the [`herdr` runtime](/concepts/runtimes). The default
 | `PILOOP_CAMPAIGN_<KEY>` | none | Overrides a key of `piloop.toml` when `piloop init` reads the file. `piloop init` stores the result, and the daemon uses it until the next `piloop init`. Set on `piloop serve`, it has no effect. Join nested keys with `__`, for example `PILOOP_CAMPAIGN_RUNTIME=herdr`. `piloop doctor` reads it too. |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's configuration directory. `piloop install-skills` writes Claude Code's skills to its `skills/` directory, unless `PILOOP_CLAUDE_SKILLS_DIR` names another one. The usage glob of the `claude` harness reads it (`{env:CLAUDE_CONFIG_DIR:~/.claude}`). |
 | `CODEX_HOME` | `~/.codex` | Codex's home directory. The usage glob of the `codex` harness reads it (`{env:CODEX_HOME:~/.codex}`). |
+| `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi's agent directory. The usage glob of the `pi` harness reads it (`{env:PI_CODING_AGENT_DIR:~/.pi/agent}`). |
 | `PILOOP_SRC` | PyPI | For `install.sh` only: install piloop from this checkout or pip-style URL instead of from PyPI. |
 
 A usage glob of a harness can read any variable with `{env:NAME:default}`. `piloop service-unit` carries each one that

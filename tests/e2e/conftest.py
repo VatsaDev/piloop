@@ -20,6 +20,7 @@ from typing import Protocol
 import pytest
 import tomli_w
 
+from piloop.harnesses import SESSION_ENV
 from piloop.settings import UNDER_TEST_ENV
 from tests.conftest import wait_until
 from tests.e2e.campaign import CHEAPEST_MODEL, ROOT, TEMPLATES, Smoke, Toml, merged
@@ -27,15 +28,16 @@ from tests.isolation import CALLER_ENV
 
 PASSED = pytest.StashKey[set[str]]()
 SUMMARY = pytest.StashKey[list[str]]()
-DROPPED_ENV = re.compile(r'^(PILOOP_|CLAUDECODE$|CLAUDE_CODE_|CLAUDE_PID$|CLAUDE_EFFORT$|VIRTUAL_ENV$)')
-"""Variables of the calling shell that must not reach the campaigns: a piloop setting of the real install, or the
-session of a Claude Code that runs the tests (its messaging socket would reach the agents)."""
+DROPPED_ENV = re.compile(r'^(PILOOP_|VIRTUAL_ENV$)')
+"""Variables of the calling shell that must not reach the campaigns: a piloop setting of the real install."""
 
 
 def caller_env() -> dict[str, str]:
-    """The environment the test session started with (``CALLER_ENV``), with its real HOME and CLAUDE_CONFIG_DIR, which
-    the agents need to log in, and without ``DROPPED_ENV``. Every piloop in it still refuses a real install's home."""
-    return {k: v for k, v in CALLER_ENV.items() if not DROPPED_ENV.match(k)} | {UNDER_TEST_ENV: '1'}
+    """The environment the test session started with (``CALLER_ENV``), with the real harness homes that the agents
+    need to log in, but without ``DROPPED_ENV`` and without the session of a harness that runs the tests (a Claude
+    Code's messaging socket would reach the agents). Every piloop in it still refuses a real install's home."""
+    kept = {k: v for k, v in CALLER_ENV.items() if not DROPPED_ENV.match(k) and k not in SESSION_ENV}
+    return kept | {UNDER_TEST_ENV: '1'}
 
 
 @dataclass(frozen=True)

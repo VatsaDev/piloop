@@ -57,6 +57,7 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.git import pin as git_pin
+from piloop.harnesses import SESSION_ENV
 from piloop.otel import Span, Tracer
 from piloop.plugins import host
 from piloop.plugins.contracts.verdict import VERDICT_RULES
@@ -1050,27 +1051,27 @@ def test_a_rejection_during_the_run_is_not_undone(
 def test_implementer_env_points_at_the_daemon_home(
     db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The implementer sees the daemon's home, its PATH after its own piloop, and not the child marker of Claude Code.
+    """The implementer sees the daemon's home, its PATH after its own piloop, and no harness session of the daemon.
 
-    A daemon started from a Claude Code session inherits that marker, and a Claude agent that has it saves no
-    transcript. The marker is cleared for every agent, whatever its harness definition: ``[harness.claude]`` replaces
-    the built-in one, and a custom harness can run the same CLI. This one is the ``script`` harness of the fixture.
+    A daemon started from a Claude Code session inherits its variables, and a Claude agent that has them acts as a
+    child of that session, which saves no transcript. They are cleared for every agent, whatever its harness
+    definition: ``[harness.claude]`` replaces the built-in one, and a custom harness can run the same CLI. This one is
+    the ``script`` harness of the fixture, with a session variable of its own.
     """
-    monkeypatch.setenv('CLAUDE_CODE_CHILD_SESSION', '1')
-    write_toml(
-        Path(campaign.path),
-        '#!/bin/sh\necho "$PILOOP_HOME" > home.txt\necho "$PATH" >> home.txt\n'
-        'echo "child=$CLAUDE_CODE_CHILD_SESSION" >> home.txt\ngit add home.txt\ngit commit -qm home\n',
-    )
+    cleared = {*SESSION_ENV, 'SCRIPT_SESSION'}
+    for name in cleared:
+        monkeypatch.setenv(name, '1')
+    write_toml(Path(campaign.path), '#!/bin/sh\nenv > env.txt\ngit add env.txt\ngit commit -qm env\n')
+    with (Path(campaign.path) / 'piloop.toml').open('a') as toml:  # [harness.script] is the last table
+        toml.write('session_env = ["SCRIPT_SESSION"]\n')
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
     execute(executor(db, ScriptRuntime(), tmp_path), db, run_id)
     [e] = candidates(db, run_id)
-    assert Repo(campaign.path).git.show(f'{e.commit_sha}:home.txt').splitlines() == [
-        str(tmp_path),
-        f'{tmp_path / "bin"}{os.pathsep}{os.environ["PATH"]}',
-        'child=',
-    ]
+    lines = Repo(campaign.path).git.show(f'{e.commit_sha}:env.txt').splitlines()
+    env = dict(line.split('=', 1) for line in lines if '=' in line)
+    assert (env['PILOOP_HOME'], env['PATH']) == (str(tmp_path), f'{tmp_path / "bin"}{os.pathsep}{os.environ["PATH"]}')
+    assert {name: env.get(name) for name in cleared} == dict.fromkeys(cleared, '')
 
 
 def test_lineage_follows_the_actual_predecessor(

@@ -43,6 +43,11 @@ default excludes (``*KEY*``, ``*SECRET*``, ``*TOKEN*``) other variables that Cla
 ``shell_environment_policy.exclude`` keeps the role's API keys out."""
 
 
+PI_HOME = '{env:PI_CODING_AGENT_DIR:~/.pi/agent}'
+CLAUDE_HOME = '{env:CLAUDE_CONFIG_DIR:~/.claude}'
+CODEX_HOME = '{env:CODEX_HOME:~/.codex}'
+
+
 class Invocation(StrEnum):
     """Which argument list of a harness a runtime starts (``Runtime.invocation``)."""
 
@@ -143,6 +148,12 @@ class Harness(BaseModel):
     usage: UsageSpec | None = None
     """``[harness.<name>.usage]``: how to read the tokens an agent spent, when it ends, into ``agent_sessions.usage``. When
     unset, token usage is not recorded."""
+    home: str | None = None
+    """The directory where the agent keeps its config and sessions, as ``{env:NAME:default}``. piloop's tests move it
+    to a temporary directory through ``NAME``."""
+    session_env: list[str] = []
+    """The variables the agent sets for the processes of its session. piloop clears them for every agent, so an agent
+    started from inside such a session is not its child."""
     mcp: str | None = None
     """The renderer that expands the ``{mcp}`` element of the argv into the role's ``[mcp.<name>]`` servers. Each
     renderer also keeps the user's own servers out, where its harness allows it.
@@ -238,8 +249,9 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
             '{prompt}',
         ],
         entire_agent='pi',
+        home=PI_HOME,
         usage=UsageSpec(
-            file='{home}/.pi/agent/sessions/{cwd}/*_{session_id}.jsonl', cwd='dash_separators_wrapped', tally='pi'
+            file=f'{PI_HOME}/sessions/{{cwd}}/*_{{session_id}}.jsonl', cwd='dash_separators_wrapped', tally='pi'
         ),
         mcp='pi',
     ),
@@ -298,8 +310,22 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
         failed_turn_screens=['API Error', 'included_quota_unknown'],
         composer='❯',
         entire_agent='claude-code',
+        home=CLAUDE_HOME,
+        # measured in the shell of a Claude Code 2.1 session; an agent with all of them empty still saves its transcript
+        session_env=[
+            'CLAUDECODE',
+            'CLAUDE_CODE_CHILD_SESSION',
+            'CLAUDE_CODE_ENTRYPOINT',
+            'CLAUDE_CODE_EXECPATH',
+            'CLAUDE_CODE_MESSAGING_SOCKET',
+            'CLAUDE_CODE_MESSAGING_TOKEN',
+            'CLAUDE_CODE_SESSION_ATTENDED',
+            'CLAUDE_CODE_SESSION_ID',
+            'CLAUDE_EFFORT',
+            'CLAUDE_PID',
+        ],
         usage=UsageSpec(
-            file='{env:CLAUDE_CONFIG_DIR:~/.claude}/projects/{cwd}/{session_id}.jsonl',
+            file=f'{CLAUDE_HOME}/projects/{{cwd}}/{{session_id}}.jsonl',
             cwd='dash_non_alnum',
             tally='claude',
         ),
@@ -383,7 +409,10 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
         entire_agent='codex',
         session_id_pattern=r'"thread_id":"([0-9a-f-]{36})"',
         # codex files its sessions by date, not by cwd; the thread id in the file name finds the file
-        usage=UsageSpec(file='{env:CODEX_HOME:~/.codex}/sessions/*/*/*/rollout-*-{session_id}.jsonl', tally='codex'),
+        home=CODEX_HOME,
+        usage=UsageSpec(file=f'{CODEX_HOME}/sessions/*/*/*/rollout-*-{{session_id}}.jsonl', tally='codex'),
         mcp='codex',
     ),
 }
+SESSION_ENV = frozenset(name for harness in DEFAULT_HARNESSES.values() for name in harness.session_env)
+"""The session variables of every built-in harness, which the launcher clears for every agent with those of its own."""

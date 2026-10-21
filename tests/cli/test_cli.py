@@ -1150,7 +1150,7 @@ def test_service_unit_prints_a_systemd_unit_on_linux(tmp_path: Path, out) -> Non
         f'ExecStart={sys.executable} -P -m piloop serve\nRestart=on-failure\nEnvironment="PILOOP_HOME={common.settings.home}"\n'
         in text
     )
-    assert f'Environment="CLAUDE_CONFIG_DIR={tmp_path / "claude-config"}"\n' in text, (
+    assert f'Environment="CLAUDE_CONFIG_DIR={tmp_path / "harnesses" / "claude"}"\n' in text, (
         'a setting of the shell reaches the daemon under the service manager'
     )
 

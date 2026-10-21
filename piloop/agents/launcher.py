@@ -33,7 +33,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.harnesses import SESSION_ID, Invocation, fill, takes_session_id
+from piloop.harnesses import SESSION_ENV, SESSION_ID, Invocation, fill, takes_session_id
 from piloop.mcp import RENDERERS, Launch, Rendered, expand, forwarded_env
 from piloop.otel import Span, Tracer
 from piloop.plugins.contracts.runtime import RUNTIMES
@@ -68,16 +68,6 @@ prompt. The scheduler commits the event before the kill, and the run closes with
 (``CAMPAIGN_STOPPED_ERROR`` or ``CANCELLED_ERROR``) unless its implementer left its finding."""
 ASKED_TO_END = (WRAP_UP, STOP_ENDED)
 """Events on an agent that the daemon told to stop or ended. Such an agent never counts as a failed start."""
-PARENT_SESSION_ENV = ('CLAUDE_CODE_CHILD_SESSION',)
-"""Variables that an agent CLI sets for the processes of its session, cleared in the environment of every agent.
-
-piloop itself may run inside an agent session: a daemon or a Herdr server started from one inherits these markers.
-An agent that inherits one acts as a child of that session. Claude Code then saves no transcript, so the agent has
-no token usage and no Entire checkpoint. This is a fact about the environment piloop runs in, not about one harness
-definition, so the launcher clears them for every agent: ``[harness.<name>]`` replaces a built-in definition, and a
-custom harness can run the same CLI. The value is set to empty, which Claude Code reads as unset, because a Herdr pane
-can only override what its server inherited.
-"""
 PROMPT = 'Your brief is in {path}. Read all of it, in parts if a read comes back cut short, then follow it.'
 """An agent's first prompt, on its argv or Herdr's (``agent prompt``).
 
@@ -358,7 +348,8 @@ class Launcher:
             'PILOOP_ACTOR': actor,
             'PILOOP_BIN': str(self.cli),
             'PATH': f'{self.cli.parent}{os.pathsep}{child_env()["PATH"]}',
-            **dict.fromkeys(PARENT_SESSION_ENV, ''),
+            # empty, not unset: a Herdr pane can only override what its server inherited
+            **dict.fromkeys(SESSION_ENV | {*definition.session_env}, ''),
             **forwarded_env(servers, child_env()),
         }
         argv = [

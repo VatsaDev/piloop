@@ -36,7 +36,7 @@ from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.proc import child_env
 from piloop.runtime import tags
 from piloop.runtime.tags import TAG_ENV
-from piloop.settings import DEFAULT_HOME, Settings
+from piloop.settings import DEFAULT_HOME, Settings, env_names
 from piloop.usage import UsageSpec
 from tests.conftest import at_head, hold_lock, register, wait_for_agent_session_handle, wait_until, write_toml
 from tests.db.test_migrations import alembic
@@ -293,8 +293,9 @@ BUILT_IN = list(DEFAULT_HARNESSES.values())
 
 def clear_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Remove the variables that a service unit carries, so that the shell of the test run does not leak in."""
+    homes = {name for harness in BUILT_IN for name in env_names(harness.home or '')}
     for key in os.environ:
-        if key.startswith('PILOOP_') or key in ('OTEL_EXPORTER_OTLP_ENDPOINT', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME'):
+        if key.startswith('PILOOP_') or key == 'OTEL_EXPORTER_OTLP_ENDPOINT' or key in homes:
             monkeypatch.delenv(key)
 
 

@@ -26,13 +26,14 @@ from piloop.config import load_campaign_config
 from piloop.daemon.main import ACTOR
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Measurement, Verdict
 from piloop.db.session import Database, migrate
+from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.otel import Tracer
 from piloop.runtime import Handle, Runtime
 from piloop.runtime.factory import RuntimeFactory
 from piloop.runtime.subprocess import SubprocessRuntime
 from piloop.scoring.evaluate import run_evaluate
 from piloop.scoring.ledger import DAEMON, current_evaluator
-from piloop.settings import Settings
+from piloop.settings import Settings, env_names
 from piloop.store import Store
 
 # Harness stand-ins: any argv that edits the worktree and commits.
@@ -158,8 +159,10 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 @pytest.fixture(autouse=True)
 def no_real_skill_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Every Settings built in a test, and every piloop it starts, installs and checks skills under tmp_path only."""
-    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path / 'claude-config'))
+    """Every built-in harness has its home under tmp_path, so every piloop a test starts installs skills there."""
+    for name, harness in DEFAULT_HARNESSES.items():
+        for variable in env_names(harness.home or ''):
+            monkeypatch.setenv(variable, str(tmp_path / 'harnesses' / name))
     monkeypatch.setenv('PILOOP_AGENT_SKILLS_DIR', str(tmp_path / 'agents-skills'))
 
 

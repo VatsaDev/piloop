@@ -24,6 +24,7 @@ codex = "gpt-6.1-sol"
 # executable = "my-agent"                 # keys: executable, interactive, headless, resume, startup_dialogs,
 # headless = ["--model", "{model}", "{prompt}"]  # entire_agent, session_id_pattern, mcp, busy_screens,
 #                                         # failed_turn_screens, queue_key (with key and pending), composer,
+#                                         # home, session_env,
 #                                         # and [harness.<name>.usage] with reader, file, cwd and tally; see the reference
 
 # [mcp.exa]                               # an MCP server that a role can list in its `mcp` key; see the MCP servers guide

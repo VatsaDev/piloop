@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from piloop import settings as settings_module
 from piloop.deprecated import PiloopDeprecationWarning
+from piloop.harnesses import DEFAULT_HARNESSES, SESSION_ENV
 from piloop.runtime.herdr import HerdrSettings
 from piloop.settings import UNDER_TEST_ENV, BackendTable, Settings, StorageSettings, env_names, expand_env
 
@@ -17,6 +18,23 @@ def test_the_test_session_runs_in_a_temporary_home() -> None:
     assert Path.home() != settings_module.REAL_HOME
     assert settings_module.settings.home == Path(os.environ['PILOOP_HOME'])
     assert settings_module.settings.home.parent != settings_module.REAL_HOME
+
+
+def test_each_test_has_a_home_of_its_own_for_every_built_in_harness(tmp_path: Path) -> None:
+    for name, harness in DEFAULT_HARNESSES.items():
+        assert harness.home is not None and Path(expand_env(harness.home)) == tmp_path / 'harnesses' / name
+    assert SESSION_ENV and not SESSION_ENV & set(os.environ), 'no harness session that runs the tests reaches them'
+
+
+def test_e2e_campaigns_get_the_real_harness_homes_without_the_harness_session_of_the_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from tests.e2e import conftest as e2e
+
+    real = {'PATH': '/bin', 'HOME': '/home/me', 'CLAUDE_CONFIG_DIR': '/home/me/claude', 'CODEX_HOME': '/home/me/codex'}
+    caller = real | dict.fromkeys(SESSION_ENV, '1') | {'PILOOP_HOME': '/home/me/.piloop', 'VIRTUAL_ENV': '/venv'}
+    monkeypatch.setattr(e2e, 'CALLER_ENV', caller)
+    assert e2e.caller_env() == real | {UNDER_TEST_ENV: '1'}
 
 
 def test_under_test_the_home_of_a_real_install_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -15,6 +15,7 @@ from piloop.config import ConfigError, load_campaign_config
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, RoleName, utcnow
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
+from piloop.settings import env_names, expand_env
 from piloop.usage import (
     READERS,
     Usage,
@@ -57,14 +58,15 @@ def store(
     name: str | None = None,
     fixtures: Path = SESSIONS,
 ) -> Path:
-    """Copy the fixture for ``harness`` to where its CLI would have written the session of ``session_id`` under ``home``."""
+    """Copy the fixture for ``harness`` to where its CLI would have written the session of ``session_id``: under the
+    harness's home, or at ``home / name``."""
     folder = JsonlReader(spec_of(harness)).encode_cwd(cwd) if cwd is not None else 'elsewhere'
     rel = {
-        'pi': f'.pi/agent/sessions/{folder}/2026-09-09T05-48-14-300Z_{session_id}.jsonl',
-        'claude': f'.claude/projects/{folder}/{session_id}.jsonl',
-        'codex': f'.codex/sessions/2026/09/11/rollout-2026-09-11T21-32-25-{session_id}.jsonl',
+        'pi': f'sessions/{folder}/2026-09-09T05-48-14-300Z_{session_id}.jsonl',
+        'claude': f'projects/{folder}/{session_id}.jsonl',
+        'codex': f'sessions/2026/09/11/rollout-2026-09-11T21-32-25-{session_id}.jsonl',
     }[harness]
-    path = home / (name or rel)
+    path = home / name if name else Path(expand_env(DEFAULT_HARNESSES[harness].home or '')) / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy(fixtures / f'{harness}.jsonl', path)
     return path
@@ -72,10 +74,11 @@ def store(
 
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """``{home}`` in every spec: a fresh directory. Claude Code and Codex keep their defaults, ``.claude`` and ``.codex``."""
+    """``{home}`` in every spec: a fresh directory, with every built-in harness at its default home under it."""
     monkeypatch.setenv('HOME', str(tmp_path))
-    monkeypatch.delenv('CLAUDE_CONFIG_DIR', raising=False)
-    monkeypatch.delenv('CODEX_HOME', raising=False)
+    for harness in DEFAULT_HARNESSES.values():
+        for variable in env_names(harness.home or ''):
+            monkeypatch.delenv(variable, raising=False)
     return tmp_path
 
 
@@ -89,7 +92,7 @@ def test_the_registries_hold_the_shipped_pieces() -> None:
         {
             'pi': UsageSpec(
                 reader='jsonl',
-                file='{home}/.pi/agent/sessions/{cwd}/*_{session_id}.jsonl',
+                file='{env:PI_CODING_AGENT_DIR:~/.pi/agent}/sessions/{cwd}/*_{session_id}.jsonl',
                 cwd='dash_separators_wrapped',
                 tally='pi',
             ),
@@ -142,21 +145,20 @@ def test_claude_tally_counts_each_api_response_once(home: Path) -> None:
     )
 
 
-def test_claude_sessions_are_found_under_claude_config_dir(
-    home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(('harness', 'session_id'), [('pi', PI_ID), ('claude', CLAUDE_ID), ('codex', CODEX_ID)])
+def test_sessions_are_found_under_the_home_that_the_harness_variable_names(
+    harness: str, session_id: str, home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    config_dir = tmp_path / 'elsewhere' / 'claude'
-    monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(config_dir))
-    store(home, 'claude', CLAUDE_ID)
+    [variable] = env_names(DEFAULT_HARNESSES[harness].home or '')
+    store(home, harness, session_id)
+    moved = tmp_path / 'elsewhere' / harness
+    monkeypatch.setenv(variable, str(moved))
     with pytest.raises(UsageError, match='no session file'):
-        read_usage(spec_of('claude'), CLAUDE_ID, CWD, None)
-    path = store(
-        config_dir, 'claude', CLAUDE_ID, name=f'projects/{CWD_ENCODERS["dash_non_alnum"](CWD)}/{CLAUDE_ID}.jsonl'
-    )
-    usage = read_usage(spec_of('claude'), CLAUDE_ID, CWD, None)
-    assert usage is not None and (usage.total, usage.source) == (110989, str(path)), (
-        'Claude Code writes its sessions under CLAUDE_CONFIG_DIR, not under the home directory'
-    )
+        read_usage(spec_of(harness), session_id, CWD, None)
+    path = store(home, harness, session_id)
+    assert path.is_relative_to(moved)
+    usage = read_usage(spec_of(harness), session_id, CWD, None)
+    assert usage is not None and usage.source == str(path)
 
 
 def test_codex_tally_takes_the_last_cumulative_token_count(home: Path) -> None:
@@ -166,21 +168,6 @@ def test_codex_tally_takes_the_last_cumulative_token_count(home: Path) -> None:
     ), (
         "input_tokens includes the cached part, which input leaves out as for every harness; total_tokens is Codex's"
         ' own input + output; a null info is not a turn'
-    )
-
-
-def test_codex_sessions_are_found_under_codex_home(home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    codex_home = tmp_path / 'elsewhere' / 'codex'
-    monkeypatch.setenv('CODEX_HOME', str(codex_home))
-    store(home, 'codex', CODEX_ID)
-    with pytest.raises(UsageError, match='no session file'):
-        read_usage(spec_of('codex'), CODEX_ID, CWD, None)
-    path = store(
-        codex_home, 'codex', CODEX_ID, name=f'sessions/2026/09/11/rollout-2026-09-11T21-32-25-{CODEX_ID}.jsonl'
-    )
-    usage = read_usage(spec_of('codex'), CODEX_ID, CWD, None)
-    assert usage is not None and (usage.total, usage.source) == (40353, str(path)), (
-        'Codex writes its sessions under CODEX_HOME, not under the home directory'
     )
 
 
