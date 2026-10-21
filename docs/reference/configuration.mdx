@@ -300,15 +300,16 @@ count either. `[spend]`, `max_tokens` and `max_hours` stay hard limits on what a
 
 Every `interval` seconds, the daemon runs `command` to read the spend from the campaign (`campaigns.spend_usd`,
 `spend_error`, `spend_at`). When the spend passes a `notices` threshold, the daemon posts one note to the
-inbox at priority 1. At `limit`, the daemon launches no agent and starts no evaluation (no request, no
-re-measure), and posts one escalation at priority 0. Work that already runs finishes and is scored. A command that
-fails stops launches in the same way, with one escalation for each series of failures: an unknown spend is never
-read as $0. To resume, raise `limit` and run `piloop init`.
+inbox at priority 1. At `limit`, the daemon posts one escalation at priority 0, and the stop rule holds the
+campaign: the daemon launches no agent and starts no evaluation (no request, no re-measure). Work that already
+runs finishes and is scored. A command that fails holds the campaign in the same way, with one escalation for each
+series of failures: an unknown spend is never read as $0. To resume, raise `limit` and run `piloop init`. The
+built-in stop rule `limits` holds; a stop rule of a plugin must read the spend, or `piloop.toml` is refused.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `command` | list\[string\] | required | The command (argv) that prints the campaign's spend so far in USD, as one number. It runs at the repo root with the daemon's environment, which is where its secrets come from. It must exit with code 0 within one minute. Example: `["uv", "run", "scripts/spend.py"]`. |
-| `limit` | number | required | The spend in USD at which launches and evaluations stop. |
+| `limit` | number | required | The spend in USD at which launches and evaluations hold. |
 | `notices` | list\[number\] | `[]` | Amounts in USD below `limit`. When the spend passes one, the daemon posts one note to the inbox. |
 | `interval` | number | `300` | The number of seconds between two runs of `command`. |
 | `closing_review` | `run` \| `skip` \| `wait` | `"run"` | What happens to the closing review when the campaign stops while launches are held (`piloop campaign stop`): `run` it anyway, `skip` it, or `wait` until the hold ends. |

@@ -25,10 +25,10 @@ from sqlalchemy.orm import Session
 
 from piloop import git
 from piloop.agents.launcher import STARTUP_ANOMALY, TRANSCRIPT
-from piloop.campaign import inbox, spend
+from piloop.campaign import inbox
 from piloop.campaign.ideas import defined_by, links, runnable, superseded_by, yields
 from piloop.campaign.inbox import campaign_of
-from piloop.campaign.stop import attempt, blocked, hours, runs, runs_without_keep
+from piloop.campaign.stop import attempt, blocked, held, hours, runs, runs_without_keep
 from piloop.config import CampaignConfig, Files, Metric, Track, harness_of
 from piloop.db.events import ANOMALY_EVENT
 from piloop.db.models import (
@@ -275,8 +275,8 @@ def paused(campaign: Campaign) -> str:
 def progress(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> str:
     """Return the runs and hours so far, with each ``[stop]`` condition against its limit: ``run 7/200 · 2.1h/12h``.
 
-    If there is a ``[spend]`` budget, the spend follows (``$412.30/$1,000.00 spend``), with the reason when launches
-    are held.
+    If there is a ``[spend]`` budget, the spend follows (``$412.30/$1,000.00 spend``). When the stop rule holds
+    launches, the line ends with why: `` (launches held: spend limit reached)``.
     """
     stop = cfg.stop
     parts = [
@@ -292,9 +292,11 @@ def progress(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime)
         value = at[1][0][1] if at is not None else None
         sign = '≥' if cfg.all_tracks[0].primary.direction is Direction.HIGHER else '≤'
         parts.append(f'target {sign} {metric(stop.target)} (head {_num(value)})')
-    if (budget := spend.progress(campaign, cfg)) is not None:
-        parts.append(budget)
-    return ' · '.join(parts)
+    if (budget := cfg.spend) is not None:
+        usd = '$?' if campaign.spend_usd is None else f'${campaign.spend_usd:,.2f}'
+        parts.append(f'{usd}/${budget.limit:,.2f} spend')
+    hold = held(s, campaign, cfg)
+    return ' · '.join(parts) + (f' (launches held: {hold})' if hold is not None else '')
 
 
 def produced(campaign: Campaign) -> Select[Candidate]:

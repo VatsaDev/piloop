@@ -72,7 +72,7 @@ def candidate_remeasure(
 
     Use it when a fault of the host spoiled a measurement (a full disk, a lost GPU), or for one more repeat. The daemon
     measures it soon, after the head and the bars that runs need, also when the campaign is stopped: not while it is
-    paused with `--evals`, or held by the spend guard. A `crash` that the daemon judged is judged again with the new
+    paused with `--evals`, or held by its stop rule. A `crash` that the daemon judged is judged again with the new
     measurement. Any other verdict stays. A pending, unmeasured or recovered candidate is never measured.
     """
     with common.session() as s:
@@ -85,7 +85,7 @@ def candidate_remeasure(
             raise SystemExit(str(e)) from e
         s.commit()
         campaign = s.get_one(Campaign, candidate.campaign_id)
-        later = ops.measuring_held(campaign, config_of(campaign))
+        later = ops.measuring_held(s, campaign, config_of(campaign))
         common.console.print(
             f'candidate#{candidate.id} {candidate.verdict}: the daemon measures it again with the current evaluator'
             f'{later}; a crash is judged again',

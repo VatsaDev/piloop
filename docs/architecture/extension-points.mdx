@@ -180,6 +180,50 @@ value, a case of a union of records. It does not raise an exception. The entry p
 instance, not a class. piloop checks that the instance has the methods of the contract, with the same argument
 names.
 
+### Data that costs queries
+
+Some data costs database queries to get. A pure provider that needs such data does not query. It names the data
+first, and piloop gets only that data. Then the provider decides from it.
+
+#### Example: a stop rule that names the facts it needs
+
+The example stop rule `after_keeps` stops the campaign after a number of keeps. It needs the fact `keeps`. It leaves
+the cost limits to the built-in rule `limits`, so it also names the facts that `limits` needs for them:
+
+```python
+class AfterKeeps:
+    def reads(self, limits: Limits, parameters: str) -> list[Fact]:
+        return [Fact.KEEPS, *LIMITS.reads(costs(limits), '{}')]  # 1. name the facts
+
+    def check(self, case: StopCase) -> Go | Hold | Stop:  # 3. decide from those facts
+        answer = LIMITS.check(replace(case, limits=costs(case.limits), parameters='{}'))
+        keeps = case.progress.keeps
+        if isinstance(answer, Hold) or keeps is None or keeps < Parameters(**json.loads(case.parameters)).keeps:
+            return answer
+        return Stop(f'after_keeps: {keeps} keeps')
+```
+
+`costs` keeps only `max_hours`, `max_tokens` and the `[spend]` limit. The full package is in
+[Stop conditions](#example-end-the-campaign-after-a-number-of-keeps). With this `piloop.toml`:
+
+```toml
+[plugins.stop_rule]
+provider = "after_keeps"
+keeps = 3
+
+[spend]
+command = ["uv", "run", "scripts/spend.py"]
+limit = 300
+```
+
+piloop does this on each tick:
+
+1. It calls `reads`. The rule returns `[Fact.KEEPS, Fact.SPEND]`. No `max_hours` or `max_tokens` is set, so `limits`
+   needs no other fact.
+2. It counts the keeps and reads the spend. It does not count the runs, the hours or the tokens: no query runs for
+   them, and they are `None` in `case.progress`.
+3. It calls `check` with the limits, those two facts and the parameters. The rule holds while the spend is unknown or
+   at its limit. Else it stops at 3 keeps. Else it goes on.
 ## Verdict rules
 
 After piloop measures a candidate, it asks the verdict rule whether to keep the candidate. piloop gives the rule a
@@ -493,16 +537,26 @@ today.
 
 ## Stop conditions
 
-On each tick (every 2 seconds by default), the daemon asks the stop rule whether the campaign ends. piloop gives the
-rule a `StopCase`: the limits of `[stop]`, the progress of the campaign, and the rule's parameters. The rule returns
-a reason to stop, or nothing. When it returns a reason, piloop stops the campaign.
-[Cost and spend limits](/concepts/cost#stop-conditions) says what a stop does.
+On each tick (every 2 seconds by default), the daemon asks the stop rule of each active campaign whether the campaign
+goes on, holds, or stops. piloop gives the rule a `StopCase`: the limits, the facts that the rule asked for, and the
+rule's parameters. The rule returns one of three answers:
 
-The built-in rule is `limits`. It stops the campaign at the first limit of `[stop]` that the campaign reaches.
+| Answer | What piloop does |
+|---|---|
+| `Go` | It starts what the campaign needs: runs, sweeps and evaluations. |
+| `Hold(reason)` | It starts no agent and no evaluation for the campaign. Work that runs finishes, and piloop scores it. `piloop status` shows `launches held: <reason>`. |
+| `Stop(reason)` | It stops the campaign. [Cost and spend limits](/concepts/cost#stop-conditions) says what a stop does. |
+
+A hold is not a pause. piloop asks the rule again on each tick, and the hold ends when the rule answers `Go`. piloop
+does not stop a paused campaign, but it holds one.
+
+The built-in rule is `limits`. It holds the campaign while the spend of `[spend]` is unknown or at its limit. Else it
+stops the campaign at the first limit of `[stop]` that the campaign reaches.
 
 ### Example: end the campaign after a number of keeps
 
-This rule stops the campaign after `keeps` candidates are kept. `max_hours` and `max_tokens` of `[stop]` still apply:
+This rule stops the campaign after `keeps` candidates are kept. It [calls the built-in rule](#call-a-built-in-provider)
+`limits` for `max_hours` and `max_tokens` of `[stop]`, and for `[spend]`, so these limits still apply:
 
 <ExampleStopAfterKeeps />
 
@@ -523,9 +577,9 @@ keeps = 3
 
 A stop rule is a [pure](#pure-plugins) provider with two methods. The types are in `piloop.plugins.contracts.stop`.
 
-- `reads(limits, parameters) -> list[Fact]`: the facts of the progress that the rule needs. Each fact costs database
-  queries on every tick, so piloop counts only these.
-- `check(case: StopCase) -> str | None`: the reason to stop, or `None` to go on.
+- `reads(limits, parameters) -> list[Fact]`: the facts that the rule needs. Most facts cost database queries on every
+  tick, so piloop gets only these.
+- `check(case: StopCase) -> Go | Hold | Stop`: the answer. `Hold` and `Stop` have a `reason`.
 
 The facts are:
 
@@ -535,15 +589,27 @@ The facts are:
 - `tokens`: the tokens that the agents spent.
 - `without_keep`: the runs since the last keep.
 - `keeps`: the candidates of runs that are kept.
+- `spend`: the spend in USD that the `[spend]` command printed last, and why its last run failed, if it failed.
 
-A `StopCase` has the name and direction of the primary metric, the limits of `[stop]`, the facts that the rule reads,
-and the rule's parameters as JSON text. A stop that a person requests (`piloop campaign stop`) comes first, whatever
-the rule.
+A `StopCase` has the name and direction of the primary metric, the limits, the facts that the rule asked for, and
+the rule's parameters as JSON text. The limits are the keys of `[stop]`, and `max_spend`, the `limit` of `[spend]`.
+
+A stop that a person requests (`piloop campaign stop`) stops the campaign whatever the rule answers, also when the
+rule holds it. The closing review of that stop then follows `closing_review` of `[spend]`
+([Cost and spend limits](/concepts/cost#spend-outside-piloop)).
+
+Only the stop rule holds the campaign at the `limit` of `[spend]`. When `piloop.toml` has a `[spend]` table, the
+rule must ask for `spend`. If it does not, piloop refuses the configuration.
 
 ### Built in
 
-`limits` is the rule of a campaign without `[plugins.stop_rule]`. It stops the campaign at the first limit of `[stop]`
-that the campaign reaches:
+`limits` is the rule of a campaign without `[plugins.stop_rule]`:
+
+1. It holds the campaign while the `[spend]` command has not printed a spend yet, while its last run failed, or while
+   the spend is at its `limit` or above.
+2. Else it stops the campaign at the first limit of `[stop]` that the campaign reaches.
+
+The hold comes first: a limit of `[stop]` does not stop a held campaign.
 
 ```toml
 [stop]

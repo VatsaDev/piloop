@@ -258,7 +258,7 @@ piloop candidate remeasure CANDIDATE_ID
 Asks the daemon to measure the candidate again with the current evaluator, for a measurement that a fault of the host
 spoiled, or for one more repeat, also on a stopped campaign. A `crash` that the daemon judged is judged again. Any
 other verdict stays. The command says when the daemon measures it: not while the campaign is paused with `--evals`, or
-held by the spend guard. See
+held by its stop rule. See
 [Measure a candidate again](/concepts/verdict#measure-a-candidate-again).
 
 ### piloop eval queue
@@ -323,7 +323,7 @@ under the campaign's current evaluator. `FILE` is JSON: `{"metrics": {"<name>": 
 evaluation failed. A `pending` candidate is refused: add the measurement once the daemon has judged it. When the
 candidate's verdict is the daemon's `crash`, `discard` or `interesting`, the daemon judges it again with every
 measurement under the current evaluator, the next time it measures the campaign, also when the campaign is stopped:
-not while it is paused with `--evals`, or held by the spend guard. Any other verdict stays, and a keep's mean, which the runs that
+not while it is paused with `--evals`, or held by its stop rule. Any other verdict stays, and a keep's mean, which the runs that
 start from it must beat, includes the new measurement. The command says which of these happens.
 
 ## Status and the inbox

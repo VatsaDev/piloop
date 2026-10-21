@@ -20,8 +20,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from piloop.agents.roles import files_of
-from piloop.campaign import campaign_types, spend
+from piloop.campaign import campaign_types
 from piloop.campaign.ideas import Definition, NotASeed, develop
+from piloop.campaign.stop import held
 from piloop.config import CampaignConfig, Files, config_of
 from piloop.db.events import emit
 from piloop.db.models import (
@@ -267,7 +268,7 @@ def add_measurement(s: Session, candidate_id: int, report: Report, *, actor: str
 
     The daemon judges the candidate again when its verdict is the daemon's ``crash``, ``discard`` or ``interesting`` on
     a run (``ledger.rejudgeable``), with every measurement under the current evaluator. It does that when it measures
-    the campaign again: not while the campaign is paused with its evaluations, or held by the spend guard. Any
+    the campaign again: not while the campaign is paused with its evaluations, or held by its stop rule. Any
     other verdict stays, and a keep's mean, which later runs from it must beat, includes the new measurement. Emits
     ``measurement.recorded``, shaped like the daemon's, and the request (``REJUDGE_REQUESTED``).
 
@@ -307,7 +308,7 @@ def add_measurement(s: Session, candidate_id: int, report: Report, *, actor: str
     if not rejudgeable(candidate):
         return Added(measurement, False, _stays(candidate))
     emit(s, REJUDGE_REQUESTED, TargetKind.CANDIDATE, candidate.id, actor=actor, payload={'measurement': measurement.id})
-    later = measuring_held(campaign, cfg)
+    later = measuring_held(s, campaign, cfg)
     return Added(measurement, True, f'the daemon judges it again with all its measurements{later}')
 
 
@@ -317,15 +318,15 @@ def _stays(candidate: Candidate) -> str:
     return f'its verdict stays: {candidate.verdict}, set by {candidate.verdict_by or "nobody"}'
 
 
-def measuring_held(campaign: Campaign, cfg: CampaignConfig) -> str:
+def measuring_held(s: Session, campaign: Campaign, cfg: CampaignConfig) -> str:
     """Return `` once …``: when the daemon measures the campaign, as the scheduler's tick decides, or '' for now.
 
     A stopped campaign is measured too, but only what someone asked for (``ledger.due``).
     """
     if campaign.paused is Pause.ALL:
         return f' once campaign {campaign.name} is resumed (its evaluations are paused)'
-    if (why := spend.held(campaign, cfg)) is not None:
-        return f' once the spend guard lets it ({why})'
+    if (why := held(s, campaign, cfg)) is not None:
+        return f' once the stop rule no longer holds it ({why})'
     return ''
 
 

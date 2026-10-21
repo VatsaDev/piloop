@@ -209,7 +209,7 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
   resume. Watch the running work yourself during a long pause. Paused time does not count toward `[stop] max_hours`.
 - The daemon still measures what a new evaluator or `piloop candidate remeasure` needs, so the pause ends on a measured
   head. `--evals` holds those measurements too.
-- Never pause with a `[spend]` command that reads a file, nor with a gate idea and `after` links: the spend guard
+- Never pause with a `[spend]` command that reads a file, nor with a gate idea and `after` links: the `[spend]` hold
   escalates p0 each time it holds and stops every measurement, and research files ideas without the link.
 - Pausing a campaign is a scope decision for the human: record it (see "Every decision you take for the human").
 

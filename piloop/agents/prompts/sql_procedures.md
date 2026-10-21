@@ -292,8 +292,8 @@ Each command takes `--reason "<why>"`, signs the change with your actor and reco
 - No watchdog starts for an anomaly while paused; it gets the anomaly after the resume. Paused time does not count
   toward `[stop] max_hours`.
 - `piloop resume <campaign>` ends it. `campaigns.paused` and `paused_reason` show it, and `campaign.paused` events log it.
-- Never pause with a `[spend]` command that reads a file: the spend guard escalates each time it holds, and it stops
-  every measurement.
+- Never pause with a `[spend]` command that reads a file: the `[spend]` hold escalates each time it holds, and it
+  stops every measurement.
 
 ### Stop, cancel, or resume a stopped campaign
 

@@ -11,6 +11,7 @@ from sqlalchemy import ColumnElement, exists, func, select
 from sqlalchemy.orm import Session
 
 from piloop.agents.launcher import STOPPED_ERROR
+from piloop.campaign.spend import review_waits
 from piloop.config import CampaignConfig
 from piloop.db.events import emit
 from piloop.db.models import (
@@ -36,7 +37,7 @@ from piloop.db.models import (
 )
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.plugins.contracts import stop as stop_contract
-from piloop.plugins.contracts.stop import STOP_RULES, Fact, Limits, Progress, StopCase
+from piloop.plugins.contracts.stop import STOP_RULES, Fact, Go, Hold, Progress, Stop, StopCase
 from piloop.scoring.ledger import head, keeps, score
 from piloop.usage import campaign_tokens
 
@@ -57,7 +58,7 @@ its idea. It does not count toward ``max_runs`` or ``plateau``, and it is not an
 STOP_REQUESTED = 'campaign.stop_requested'
 """Event on a campaign that someone asked to stop (``piloop campaign stop``), with ``reason`` and ``kill``.
 
-On its next tick, the daemon stops the campaign as for a ``[stop]`` condition (``stop_reason``). With ``kill``, it
+On its next tick, the daemon stops the campaign as for a ``[stop]`` condition (``check``). With ``kill``, it
 ends the campaign's workers at once, without the wrap-up prompt. A request made before the campaign was last set
 ``active`` is spent."""
 CANCELLABLE = (WorkerState.REQUESTED, *LIVE)
@@ -185,24 +186,21 @@ def park_cancelled(s: Session, run: Run) -> None:
     )
 
 
-def stop_reason(s: Session, campaign: Campaign, cfg: CampaignConfig) -> str | None:
-    """Return why ``campaign`` stops now, or None: a stop request (``requested_stop``), else its stop rule.
+def check(s: Session, campaign: Campaign, cfg: CampaignConfig) -> Go | Hold | Stop:
+    """Ask the campaign's stop rule whether ``campaign`` goes on, holds, or stops now.
 
-    The rule is ``[plugins.stop_rule]``, else ``limits``. Only the facts that it reads are counted
+    The rule is ``[plugins.stop_rule]``, else ``limits``. Only the facts that it reads are gathered
     (``StopRule.reads``). ``head`` is the first track's primary at the head: config validation rejects ``target`` for
-    a campaign with more than one track.
+    a campaign with more than one track. A stop request is not the rule's: see ``requested``.
     """
-    if (request := requested_stop(s, campaign)) is not None:
-        why = request.payload.get('reason')
-        return f'stopped by {request.actor}: {why}' if why else f'stopped by {request.actor}'
     table = cfg.plugins.get('stop_rule')
     rule = STOP_RULES.get(table.provider if table is not None else stop_contract.DEFAULT)
     parameters = table.parameters if table is not None else '{}'
-    primary, stop = cfg.all_tracks[0].primary, cfg.stop
-    limits = Limits(stop.target, stop.max_runs, stop.max_hours, stop.max_tokens, stop.plateau)
+    primary, limits = cfg.all_tracks[0].primary, cfg.limits()
     reads = set(rule.reads(limits, parameters))
     trunk = head(s, campaign) if Fact.HEAD in reads else None
     counting = Fact.RUNS in reads
+    spending = Fact.SPEND in reads
     progress = Progress(
         head=score(trunk, campaign.evaluator_id or 0, primary) if trunk is not None else None,
         runs=runs(s, campaign) if counting else None,
@@ -211,8 +209,38 @@ def stop_reason(s: Session, campaign: Campaign, cfg: CampaignConfig) -> str | No
         tokens=campaign_tokens(s, campaign.id) if Fact.TOKENS in reads else None,
         without_keep=runs_without_keep(s, campaign) if Fact.WITHOUT_KEEP in reads else None,
         keeps=kept(s, campaign) if Fact.KEEPS in reads else None,
+        spend=campaign.spend_usd if spending else None,
+        spend_error=campaign.spend_error if spending else None,
     )
     return rule.check(StopCase(primary.name, primary.direction, limits, progress, parameters))
+
+
+def requested(s: Session, campaign: Campaign) -> Stop | None:
+    """Return the stop that someone requested (``requested_stop``), or None. It wins over every answer of the rule."""
+    if (request := requested_stop(s, campaign)) is None:
+        return None
+    why = request.payload.get('reason')
+    return Stop(f'stopped by {request.actor}: {why}' if why else f'stopped by {request.actor}')
+
+
+def asked(s: Session, campaign: Campaign, cfg: CampaignConfig) -> bool:
+    """Whether piloop asks the campaign's stop rule now.
+
+    It asks about an active campaign, and about a stopped one whose closing review waits for the hold to end
+    (``spend.review_waits``). The daemon reads the spend of the same campaigns.
+    """
+    return campaign.status is CampaignStatus.ACTIVE or review_waits(s, campaign, cfg)
+
+
+def held(s: Session, campaign: Campaign, cfg: CampaignConfig) -> str | None:
+    """Return why the stop rule holds the campaign's launches and evaluations now, or None.
+
+    A campaign that piloop does not ask about (``asked``) is not held.
+    """
+    if not asked(s, campaign, cfg):
+        return None
+    answer = check(s, campaign, cfg)
+    return answer.reason if isinstance(answer, Hold) else None
 
 
 def kept(s: Session, campaign: Campaign) -> int:

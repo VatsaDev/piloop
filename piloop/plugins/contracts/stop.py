@@ -1,9 +1,14 @@
 """The contract of a stop rule: the types that piloop gives a stop rule, and the types that the rule returns.
 
-On each tick of the daemon, piloop asks the stop rule whether the campaign ends. First it calls ``reads``: the rule
-names the facts of the progress that it needs. piloop counts only those facts. Then it calls ``check`` with a
-``StopCase``: the limits of ``[stop]``, those facts, and the rule's parameters. The rule returns a reason to stop, or
-None. piloop stops the campaign when it gets a reason.
+On each tick of the daemon, piloop asks the stop rule of each active campaign whether the campaign goes on, holds, or
+stops. It asks in two steps. First it calls ``reads``: the rule names the facts that it needs. piloop gets only those
+facts. Then it calls ``check`` with a ``StopCase``: the limits, those facts, and the rule's parameters. The rule
+returns one answer:
+
+- ``Go``: piloop starts what the campaign needs.
+- ``Hold``: piloop starts no agent and no evaluation for the campaign. Work that runs finishes. The hold is not a
+  pause: on each tick piloop asks again, and the hold ends when the rule answers ``Go``.
+- ``Stop``: piloop stops the campaign.
 
 The rule reads nothing else: it is a pure provider. ``[plugins.stop_rule] provider`` in ``piloop.toml`` selects the
 rule. The other keys of that table are the rule's parameters. Without the table, the rule is ``limits``.
@@ -22,17 +27,19 @@ from piloop.plugins.host import PureCapability, Selection
 
 @dataclass(frozen=True)
 class Limits:
-    """``[stop]``: the limits that end the campaign. None is no limit."""
+    """The keys of ``[stop]``, and ``[spend] limit``. None is no limit."""
 
     target: float | None = None
     max_runs: int | None = None
     max_hours: float | None = None
     max_tokens: int | None = None
     plateau: int | None = None
+    max_spend: float | None = None
+    """``[spend] limit``: the spend in USD at which launches hold. None without ``[spend]``."""
 
 
 class Fact(StrEnum):
-    """A fact of the campaign's progress. Each fact costs queries on every tick, so a rule names the ones it reads."""
+    """A fact of the campaign. Most facts cost queries on every tick, so a rule names the ones it reads."""
 
     HEAD = 'head'
     RUNS = 'runs'
@@ -40,6 +47,7 @@ class Fact(StrEnum):
     TOKENS = 'tokens'
     WITHOUT_KEEP = 'without_keep'
     KEEPS = 'keeps'
+    SPEND = 'spend'
 
 
 @dataclass(frozen=True)
@@ -64,6 +72,11 @@ class Progress:
     active again."""
     keeps: int | None = None
     """``keeps``: the candidates of runs that are kept, on the trunk or on a branch. The baseline is not one."""
+    spend: float | None = None
+    """``spend``: the spend in USD that ``[spend] command`` printed last. Also None before its first reading, and
+    while its latest run failed."""
+    spend_error: str | None = None
+    """``spend`` too: why the latest run of ``[spend] command`` failed, or None after a run that printed a spend."""
 
 
 @dataclass(frozen=True)
@@ -80,15 +93,39 @@ class StopCase:
     against the rule's ``Parameters`` when it loaded the configuration."""
 
 
+@dataclass(frozen=True)
+class Go:
+    """The campaign goes on: piloop starts what it needs."""
+
+
+GO = Go()
+
+
+@dataclass(frozen=True)
+class Hold:
+    """piloop starts no agent and no evaluation for the campaign until a check answers ``Go`` again."""
+
+    reason: str
+    """Why, for ``piloop status`` (``launches held: <reason>``)."""
+
+
+@dataclass(frozen=True)
+class Stop:
+    """piloop stops the campaign."""
+
+    reason: str
+    """Why, for ``campaigns.stopped_reason`` and the closing review."""
+
+
 class StopRule(Protocol):
-    """The contract of a stop rule. A rule has no error: every case either ends the campaign or does not."""
+    """The contract of a stop rule. A rule has no error: it answers every case."""
 
     def reads(self, limits: Limits, parameters: str) -> list[Fact]:
-        """Return the facts that ``check`` reads with these limits and parameters. The daemon counts only those."""
+        """Return the facts that ``check`` reads with these limits and parameters. piloop gets only those."""
         ...
 
-    def check(self, case: StopCase) -> str | None:
-        """Return why the campaign ends now, or None to go on."""
+    def check(self, case: StopCase) -> Go | Hold | Stop:
+        """Return whether the campaign goes on, holds, or stops now."""
         ...
 
 

@@ -1,1 +1,1 @@
-"""The campaign's state and its verbs: campaigns, ideas, the inbox, the stop conditions, the spend guard."""
+"""The campaign's state and its verbs: campaigns, ideas, the inbox, the stop conditions, the spend reading."""

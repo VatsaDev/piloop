@@ -1,8 +1,10 @@
-"""The spend guard: the daemon polls a campaign's ``[spend] command``, posts notices and enforces a hard limit.
+"""The spend reading: the daemon polls a campaign's ``[spend] command`` and posts notices and escalations.
 
 piloop does not know any vendor. The campaign's command prints the total that the campaign has spent so far, in USD,
 for example a GPU cloud's bill for the campaign's environments. The daemon keeps the latest reading on the campaign
-row. The daemon enforces the limit, not an agent, so nothing launches past the limit even when no agent is active.
+row. The reading is a fact for the stop rule (``Fact.SPEND``), and the built-in rule ``limits`` holds launches while
+it is unknown or at ``[spend] limit``. The daemon holds, not an agent, so nothing launches past the limit even when no
+agent is active.
 """
 
 import math
@@ -130,7 +132,7 @@ def review_waits(s: Session, campaign: Campaign, cfg: CampaignConfig) -> bool:
 def review_skipped(s: Session, campaign: Campaign, held: str) -> None:
     """Post the escalation of a closing review that ``[spend] closing_review = "skip"`` dropped. The caller commits."""
     body = (
-        f'Closing review skipped: the campaign stopped while the spend guard held its launches ({held}), and'
+        f'Closing review skipped: the campaign stopped while the stop rule held its launches ({held}), and'
         ' [spend] closing_review = "skip".'
     )
     _post(s, campaign, CommentKind.ESCALATION, ESCALATION_PRIORITY, body)
@@ -147,30 +149,3 @@ def _post(s: Session, campaign: Campaign, kind: CommentKind, priority: int, body
             body=body,
         )
     )
-
-
-def held(campaign: Campaign, cfg: CampaignConfig) -> str | None:
-    """Return why the guard holds launches and evaluations now.
-
-    Returns None if there is no ``[spend]`` table, or if the spend is known and below the limit.
-    """
-    spend = cfg.spend
-    if spend is None:
-        return None
-    if campaign.spend_error is not None:
-        return f'spend unknown: {campaign.spend_error}'
-    if campaign.spend_usd is None:
-        return 'spend not read yet'
-    if campaign.spend_usd >= spend.limit:
-        return 'spend limit reached'
-    return None
-
-
-def progress(campaign: Campaign, cfg: CampaignConfig) -> str | None:
-    """Return ``$412.30/$1,000.00 spend`` and, if launches are held, why. Return None if there is no ``[spend]``."""
-    spend = cfg.spend
-    if spend is None:
-        return None
-    usd = '$?' if campaign.spend_usd is None else f'${campaign.spend_usd:,.2f}'
-    hold = held(campaign, cfg)
-    return f'{usd}/${spend.limit:,.2f} spend' + (f' (launches held: {hold})' if hold is not None else '')

@@ -22,13 +22,14 @@ from sqlalchemy.engine import Connection
 
 from piloop.campaign import inbox
 from piloop.campaign.campaigns import BLANK
-from piloop.campaign.stop import stop_reason
+from piloop.campaign.stop import check
 from piloop.config import CampaignConfig, config_of, load_campaign_config
 from piloop.daemon.run_executor import RunExecutor
 from piloop.daemon.scheduler import Scheduler
 from piloop.db.models import Campaign, utcnow
 from piloop.db.session import Database
 from piloop.otel import Tracer
+from piloop.plugins.contracts.stop import Hold
 from piloop.reports import history, overview
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -284,14 +285,16 @@ class HotPaths:
             return lambda: [body(p, cfg) for p, cfg in rows]
 
         def tick(p: Campaign, cfg: CampaignConfig) -> None:
-            scheduler._triggers(s, p, cfg, None)
+            answer = check(s, p, cfg)
+            if not isinstance(answer, Hold):
+                scheduler._triggers(s, p, cfg, answer, None)
             s.flush()
             scheduler._take(s, p, cfg)
             s.rollback()
 
         return {
             'scheduler.tick': each(tick),
-            'stop.stop_reason': each(lambda p, _cfg: stop_reason(s, p, stopping)),
+            'stop.check': each(lambda p, _cfg: check(s, p, stopping)),
             'overview.overview': each(lambda p, cfg: overview.overview(s, p, cfg, utcnow(), lambda _w: [])),
             'history.renderables': each(lambda p, cfg: history.renderables(s, p, cfg, table_box=box.SIMPLE)),
             'inbox.news': lambda: inbox.news(s, 0, me='orchestrator'),

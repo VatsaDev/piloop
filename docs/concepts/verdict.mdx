@@ -135,7 +135,7 @@ The daemon measures the candidate again with the current evaluator, after the he
 `crash` that the daemon judged is judged again with the new measurement, as its run would have judged it. Any other
 verdict stays, and the new measurement is one more repeat in the mean. A `pending`, `unmeasured` or `recovered`
 candidate is never measured this way. A stopped campaign is measured too, but only what someone asked for, so you can
-measure a result again when you review a campaign. A campaign paused with `--evals`, or held by the spend guard, is
+measure a result again when you review a campaign. A campaign paused with `--evals`, or held by its stop rule, is
 measured once the hold ends. The command says when.
 
 ## The evaluation queue

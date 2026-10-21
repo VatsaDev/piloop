@@ -1,10 +1,12 @@
-"""What a package can add to piloop through entry points: triggers, roles, a runtime, and objects of the wrong type."""
+"""What a package can add to piloop through entry points: triggers, roles, a runtime, a stop rule, and objects of the
+wrong type."""
 
 from pathlib import Path
 from typing import ClassVar, Literal
 
 from piloop.config import SweepRole, WorkerRole
 from piloop.harnesses import Invocation
+from piloop.plugins.contracts.stop import GO, Fact, Go, Hold, Limits, Stop, StopCase
 from piloop.runtime import Check, Handle
 from piloop.runtime.subprocess import SubprocessRuntime
 from piloop.triggers import Fire, Tick, Trigger
@@ -55,6 +57,19 @@ class Shown(SubprocessRuntime):
     @classmethod
     def checks(cls, executables: set[str]) -> list[Check]:
         return [Check('shown', f'ready for {", ".join(sorted(executables))}')]
+
+
+class GoesOn:
+    """``goes_on``: a stop rule that reads no fact, so it never holds or stops a campaign."""
+
+    def reads(self, limits: Limits, parameters: str) -> list[Fact]:
+        return []
+
+    def check(self, case: StopCase) -> Go | Hold | Stop:
+        return GO
+
+
+GOES_ON = GoesOn()
 
 
 class Unsure:

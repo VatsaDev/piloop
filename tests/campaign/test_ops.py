@@ -306,8 +306,12 @@ def test_a_measurement_by_hand_says_when_the_daemon_judges_again_and_waits_for_a
         ops.resume(s, 1)
         p.config = {**p.config, 'spend': {'command': ['true'], 'limit': 10.0}}
         assert ops.add_measurement(s, crashed, report, actor=ACTOR).effect.endswith(
-            'once the spend guard lets it (spend not read yet)'
+            'once the stop rule no longer holds it (spend not read yet)'
         )
+        p.status = CampaignStatus.STOPPED
+        assert ops.add_measurement(s, crashed, report, actor=ACTOR).effect == (
+            'the daemon judges it again with all its measurements'
+        ), 'the stop rule holds an active campaign only'
 
 
 def test_an_idea_status_takes_a_reason_in_a_note_and_refuses_what_is_not_set_by_hand(

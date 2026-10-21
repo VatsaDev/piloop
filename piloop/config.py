@@ -42,6 +42,7 @@ from piloop.db.models import Campaign, Worker, WorkerKind
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.mcp import McpServer, ServerName
 from piloop.plugins.contracts.runtime import RUNTIMES
+from piloop.plugins.contracts.stop import DEFAULT as DEFAULT_STOP_RULE, STOP_RULES, Fact, Limits
 from piloop.plugins.contracts.verdict import Direction
 from piloop.plugins.host import Capability, check_selection, declared
 from piloop.triggers import (
@@ -470,10 +471,11 @@ class Spend(BaseModel):
 
     Every ``interval`` seconds, the daemon runs ``command`` to read the spend from the campaign (``campaigns.spend_usd``,
     ``spend_error``, ``spend_at``). When the spend passes a ``notices`` threshold, the daemon posts one note to the
-    inbox at priority 1. At ``limit``, the daemon launches no agent and starts no evaluation (no request, no
-    re-measure), and posts one escalation at priority 0. Work that already runs finishes and is scored. A command that
-    fails stops launches in the same way, with one escalation for each series of failures: an unknown spend is never
-    read as $0. To resume, raise ``limit`` and run ``piloop init``.
+    inbox at priority 1. At ``limit``, the daemon posts one escalation at priority 0, and the stop rule holds the
+    campaign: the daemon launches no agent and starts no evaluation (no request, no re-measure). Work that already
+    runs finishes and is scored. A command that fails holds the campaign in the same way, with one escalation for each
+    series of failures: an unknown spend is never read as $0. To resume, raise ``limit`` and run ``piloop init``. The
+    built-in stop rule ``limits`` holds; a stop rule of a plugin must read the spend, or ``piloop.toml`` is refused.
     """
 
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
@@ -483,7 +485,7 @@ class Spend(BaseModel):
     the daemon's environment, which is where its secrets come from. It must exit with code 0 within one minute.
     Example: ``["uv", "run", "scripts/spend.py"]``."""
     limit: float = Field(gt=0)
-    """The spend in USD at which launches and evaluations stop."""
+    """The spend in USD at which launches and evaluations hold."""
     notices: list[Annotated[float, Field(gt=0)]] = []
     """Amounts in USD below ``limit``. When the spend passes one, the daemon posts one note to the inbox."""
     interval: float = Field(default=300, gt=0)
@@ -687,6 +689,7 @@ class CampaignConfig(BaseModel):
     def _check(self) -> Self:
         self._check_tracks()
         self._check_plugins()
+        self._check_spend()
         self._check_harnesses(self.harnesses, self.model, 'campaign')
         if unknown := [h for h in self.max_concurrent if h not in DEFAULT_HARNESSES and h not in self.harness]:
             raise ValueError(f'max_concurrent: unknown harnesses {unknown}; built-ins are {sorted(DEFAULT_HARNESSES)}')
@@ -713,6 +716,23 @@ class CampaignConfig(BaseModel):
                     f'[plugins.{name}]: no capability has that name; there is {", ".join(known) or "none"}'
                 )
             check_selection(capability, {'plugins': {name: table.model_dump()}}, 'campaign')
+
+    def _check_spend(self) -> None:
+        """``[spend] limit`` holds launches only through the stop rule, so the selected rule must read the spend."""
+        table = self.plugins.get('stop_rule')
+        if self.spend is None or table is None:
+            return
+        if Fact.SPEND not in STOP_RULES.get(table.provider).reads(self.limits(), table.parameters):
+            raise ValueError(
+                f'[spend] limit holds only through the stop rule, and {table.provider!r} does not read the spend: select'
+                f' a rule that does, for example {DEFAULT_STOP_RULE!r}, or remove [spend]'
+            )
+
+    def limits(self) -> Limits:
+        """The limits that the stop rule gets: the keys of ``[stop]``, and ``[spend] limit``."""
+        stop = self.stop
+        spend = self.spend.limit if self.spend is not None else None
+        return Limits(stop.target, stop.max_runs, stop.max_hours, stop.max_tokens, stop.plateau, spend)
 
     def _check_tracks(self) -> None:
         """Check that each track has one primary.

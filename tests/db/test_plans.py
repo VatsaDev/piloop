@@ -29,7 +29,7 @@ from tests.conftest import at_head
 
 HOT_PATHS = {
     'scheduler.tick',
-    'stop.stop_reason',
+    'stop.check',
     'overview.overview',
     'history.renderables',
     'sql_procedures.md #1',

@@ -1,7 +1,8 @@
-"""The ``[spend]`` guard.
+"""``[spend]``: the reading, its notices, and the hold of the built-in stop rule.
 
-The daemon reads the campaign's spend command and posts each notice once. At the limit, or after a failed reading, it
-launches nothing and starts no evaluation. This lasts until a human raises the limit or the command works again.
+The daemon reads the campaign's spend command and posts each notice once. At the limit, or after a failed reading, the
+stop rule ``limits`` holds the campaign: it launches nothing and starts no evaluation. The hold lasts until a human
+raises the limit or the command works again.
 """
 
 from pathlib import Path
@@ -13,9 +14,11 @@ from sqlalchemy import select
 from piloop.campaign import spend
 from piloop.campaign.campaigns import sync
 from piloop.campaign.spend import SpendError
+from piloop.campaign.stop import check
 from piloop.config import CampaignConfig, Spend
-from piloop.db.models import Campaign, Comment, Idea, IdeaStatus, Run, RunStatus
+from piloop.db.models import Campaign, CampaignStatus, Comment, Idea, IdeaStatus, Run, RunStatus, Worker, WorkerKind
 from piloop.db.session import Database
+from piloop.plugins.contracts.stop import Hold
 from piloop.reports.overview import progress
 from tests.conftest import ScriptRuntime, write_toml
 from tests.daemon.test_scheduler import add_ideas, make_scheduler, request_watchdog, set_config, stop_campaign
@@ -144,8 +147,8 @@ def test_a_failing_command_holds_launches_with_one_escalation_per_streak(
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         assert p.spend_error == "printed 'oops', not a number of USD"
-        assert spend.progress(p, CampaignConfig.model_validate(p.config)) == (
-            "$?/$300.00 spend (launches held: spend unknown: printed 'oops', not a number of USD)"
+        assert progress(s, p, CampaignConfig.model_validate(p.config), p.created_at).endswith(
+            " · $?/$300.00 spend (launches held: spend unknown: printed 'oops', not a number of USD)"
         )
 
     bill(db, campaign, file, '12')
@@ -156,11 +159,31 @@ def test_a_failing_command_holds_launches_with_one_escalation_per_streak(
     assert len(daemon_comments(db)) == 2, 'a new streak, a new escalation'
 
 
-def test_progress_says_when_a_campaign_has_no_reading_yet(campaign: Campaign) -> None:
-    cfg = CampaignConfig.model_validate(campaign.config)
-    assert spend.progress(campaign, cfg) is None, 'no [spend]: nothing to show'
-    budget = cfg.model_copy(update={'spend': Spend(command=['true'], limit=10)})
-    assert spend.progress(campaign, budget) == '$?/$10.00 spend (launches held: spend not read yet)'
+def test_progress_says_when_a_campaign_has_no_reading_yet(db: Database, campaign: Campaign) -> None:
+    with db.session() as s:
+        p = s.get_one(Campaign, campaign.id)
+        line = progress(s, p, CampaignConfig.model_validate(p.config), p.created_at)
+    assert 'spend' not in line and 'held' not in line, 'no [spend]: nothing to show'
+    set_config(db, campaign, spend={'command': ['true'], 'limit': 10})
+    with db.session() as s:
+        p = s.get_one(Campaign, campaign.id)
+        assert progress(s, p, CampaignConfig.model_validate(p.config), p.created_at).endswith(
+            ' · $?/$10.00 spend (launches held: spend not read yet)'
+        )
+
+
+def test_a_stopped_campaign_is_held_only_while_its_closing_review_waits(db: Database, campaign: Campaign) -> None:
+    """piloop asks the stop rule about a stopped campaign only while its review waits for the hold (``wait``)."""
+    set_config(db, campaign, spend={'command': ['true'], 'limit': 10, 'closing_review': 'wait'})
+    with db.session() as s:
+        p = s.get_one(Campaign, campaign.id)
+        cfg = CampaignConfig.model_validate(p.config)
+        assert check(s, p, cfg) == Hold('spend not read yet')
+        p.status = CampaignStatus.STOPPED
+        assert progress(s, p, cfg, p.created_at).endswith(' · $?/$10.00 spend'), 'stopped, no review waits'
+        s.add(Worker(kind=WorkerKind.WATCHDOG, campaign_id=p.id, reason='campaign stopped'))
+        s.flush()
+        assert progress(s, p, cfg, p.created_at).endswith(' (launches held: spend not read yet)'), 'its review waits'
 
 
 def test_a_closing_review_waits_only_on_a_stopped_campaign_with_wait_and_a_requested_agent(
