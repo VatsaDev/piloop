@@ -35,7 +35,7 @@ from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.proc import TOKEN_ENV, child_env
 from piloop.settings import DEFAULT_HOME, Settings
 from piloop.usage import UsageSpec
-from tests.conftest import HARNESS_SLEEPS, at_head, hold_lock, register, wait_for_worker_handle, wait_until, write_toml
+from tests.conftest import at_head, hold_lock, register, wait_for_worker_handle, wait_until, write_toml
 
 PILOOP = [sys.executable, '-m', 'piloop']
 
@@ -86,8 +86,13 @@ def test_a_daemon_that_a_failed_test_leaves_is_reaped(tmp_path: Path) -> None:
 
 
 def test_sigterm_kills_workers_and_exits(campaign_path: Path, tmp_path: Path, schema: Path) -> None:
+    """The agent ends, and times out, only in an hour: a daemon that exits within the minute killed it.
+
+    The minute is no measure of the shutdown. After the shutdown, the interpreter's exit collects the garbage of every
+    module that piloop imports. That is about half a second of CPU, and a loaded runner stretches it past 15 seconds.
+    """
     cfg = Settings(home=tmp_path / 'home')
-    write_toml(campaign_path, HARNESS_SLEEPS, worker_timeout=60)
+    write_toml(campaign_path, '#!/bin/sh\nsleep 3600 &\necho $! > ../child.pid\nwait\n', worker_timeout=3600)
     at_head(schema, cfg.home / 'piloop.db')
     db = Database(cfg.database_url, actor=cfg.actor)
     campaign = register(db, campaign_path)
@@ -97,24 +102,27 @@ def test_sigterm_kills_workers_and_exits(campaign_path: Path, tmp_path: Path, sc
 
     with (tmp_path / 'daemon.log').open('w') as log:
         daemon = subprocess.Popen(SERVE_ARGV, stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env_for(cfg.home))
-    handle = wait_for_worker_handle(db)
-    child_pid_file = cfg.home / 'runs' / '1' / 'child.pid'
-    wait_until(child_pid_file.is_file)
-    child_pid = int(child_pid_file.read_text())
-    assert int(cfg.pid_file.read_text()) == daemon.pid
+    try:
+        handle = wait_for_worker_handle(db)
+        child_pid_file = cfg.home / 'runs' / '1' / 'child.pid'
+        wait_until(child_pid_file.is_file)
+        child_pid = int(child_pid_file.read_text())
+        assert int(cfg.pid_file.read_text()) == daemon.pid
 
-    started = time.monotonic()
-    daemon.send_signal(signal.SIGTERM)
-    assert daemon.wait(timeout=15) == 0
-    assert time.monotonic() - started < 5, 'SIGTERM does not wait for the worker timeout'
-    assert proc.started(int(str(handle['pid']))) is None and proc.started(child_pid) is None
-    with db.session() as s:
-        run = s.get_one(Run, 1)
-        assert (run.status, run.error) == (RunStatus.FAILED, STOPPED_ERROR)
-        assert [(w.state, w.error) for w in s.scalars(select(Worker))] == [(WorkerState.KILLED, STOPPED_ERROR)]
-    db.close()
-    assert not cfg.pid_file.exists()
-    assert 'piloop.shutdown' in (tmp_path / 'daemon.log').read_text()
+        daemon.send_signal(signal.SIGTERM)
+        assert daemon.wait(timeout=60) == 0
+        assert proc.started(int(str(handle['pid']))) is None and proc.started(child_pid) is None
+        with db.session() as s:
+            run = s.get_one(Run, 1)
+            assert (run.status, run.error) == (RunStatus.FAILED, STOPPED_ERROR)
+            assert [(w.state, w.error) for w in s.scalars(select(Worker))] == [(WorkerState.KILLED, STOPPED_ERROR)]
+        assert not cfg.pid_file.exists()
+        assert 'piloop.shutdown' in (tmp_path / 'daemon.log').read_text()
+    finally:
+        # Left to the garbage collector, both warn in whichever test of this worker runs next, and fail that one.
+        daemon.kill()
+        daemon.wait()
+        db.close()
 
 
 def test_detach_survives_the_cli_and_stop_ends_it(tmp_path: Path) -> None:

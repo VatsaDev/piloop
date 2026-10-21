@@ -341,8 +341,12 @@ def wait_until(predicate: Callable[[], object], *, timeout: float = 30) -> None:
 
 
 def wait_for_worker_handle(db: Database) -> dict[str, object]:
-    """Poll until some worker is ``running`` with a published handle; returns the handle."""
-    deadline = time.monotonic() + 10
+    """Poll until some worker is ``running`` with a published handle; returns the handle.
+
+    As generous as ``wait_until``: with a daemon process, this waits for its start too. That takes about two seconds
+    alone, and more than ten on a loaded host.
+    """
+    deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         with db.session() as s:
             worker = s.scalars(select(Worker).where(Worker.state == WorkerState.RUNNING)).first()
