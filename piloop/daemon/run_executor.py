@@ -296,22 +296,17 @@ class RunExecutor:
                     )
                 )
                 cancelled = run_cancel(s, run_id) is not None
-            if stop_ended is not None and not finding:  # the stop cut it, whatever the kill left in the outcome
-                status, error = RunStatus.FAILED, str(stop_ended.get('error', CAMPAIGN_STOPPED_ERROR))
-            elif cancelled and not finding:  # a worker that ended by itself before the daemon could end it
-                status, error = RunStatus.FAILED, CANCELLED_ERROR
-            elif outcome.status is WorkerStatus.TIMED_OUT:
-                status, error = RunStatus.TIMED_OUT, outcome.error
-            elif outcome.error is not None:
-                status, error = RunStatus.FAILED, outcome.error
-            elif asked is not None:  # Its question is in the inbox. A finding or a commit does not make this a success.
-                status, error = RunStatus.FAILED, f'{BLOCKED} comment#{asked}'
-            elif not shas:  # A reported negative result is a result. No commit and no finding is a failure.
-                status, error = (RunStatus.SUCCEEDED, None) if finding else (RunStatus.FAILED, NO_CHANGES)
-            elif not finding and all(wt.commit(sha).summary == UNCOMMITTED_SUMMARY for sha in shas):
-                status, error = RunStatus.FAILED, INTERRUPTED
-            else:
-                status, error = RunStatus.SUCCEEDED, None
+            end = RunEnd(
+                finding=finding,
+                stop_error=None if stop_ended is None else str(stop_ended.get('error', CAMPAIGN_STOPPED_ERROR)),
+                cancelled=cancelled,
+                timed_out=outcome.status is WorkerStatus.TIMED_OUT,
+                error=outcome.error,
+                asked=asked,
+                commits=len(shas),
+                recovered_only=bool(shas) and all(wt.commit(sha).summary == UNCOMMITTED_SUMMARY for sha in shas),
+            )
+            status, error = run_outcome(end)
             self._close(span, run_id, status, error)
             # Score all commits, even if the worker then timed out or crashed.
             recovered = self._score(run_id, campaign_id, repo, shas, log_dir) if shas else None
@@ -1096,6 +1091,65 @@ def left_finding(s: Session, run: Run, worker: Worker) -> bool:
         .limit(1)
     )
     return found is not None
+
+
+@dataclass(frozen=True)
+class RunEnd:
+    """The facts that decide a finished run's status (``run_outcome``), gathered when its worker ends."""
+
+    finding: bool = False
+    """The worker left its own finding (``left_finding``): its report that it is done."""
+    stop_error: str | None = None
+    """The error of a stop that ended the worker (``STOP_ENDED``)."""
+    cancelled: bool = False
+    """Someone cancelled the run (``run_cancel``)."""
+    timed_out: bool = False
+    """The worker ran into its role's timeout."""
+    error: str | None = None
+    """How the worker's process failed, a timeout included."""
+    asked: int | None = None
+    """The worker's escalation that waits for an answer (``open_escalation``)."""
+    commits: int = 0
+    recovered_only: bool = False
+    """There are commits, and each is the daemon's commit of uncommitted work (``UNCOMMITTED_SUMMARY``)."""
+
+
+type RunOutcome = tuple[RunStatus, str | None]
+
+
+def run_outcome(end: RunEnd) -> RunOutcome:
+    """Return the status and error of a run that ``end`` describes: the first case that matches, in priority order."""
+    match end:
+        # A finding is the worker's report that it is done; nothing that ends its process after it undoes that. But a
+        # question it left open blocks the run, or a retry would stop on it and done would release the waiting ideas.
+        case RunEnd(finding=True, asked=int() as comment):
+            return RunStatus.FAILED, f'{BLOCKED} comment#{comment}'
+        case RunEnd(finding=True):
+            return RunStatus.SUCCEEDED, None
+        # A stop cut it, whatever the kill left in the outcome.
+        case RunEnd(stop_error=str() as error):
+            return RunStatus.FAILED, error
+        # A cancelled worker that ended by itself before the daemon could end it.
+        case RunEnd(cancelled=True):
+            return RunStatus.FAILED, CANCELLED_ERROR
+        # It ran into its role's timeout.
+        case RunEnd(timed_out=True, error=error):
+            return RunStatus.TIMED_OUT, error
+        # Its process failed.
+        case RunEnd(error=str() as error):
+            return RunStatus.FAILED, error
+        # Its question is in the inbox. A commit does not make this a success.
+        case RunEnd(asked=int() as comment):
+            return RunStatus.FAILED, f'{BLOCKED} comment#{comment}'
+        # No commit and no finding: nothing was tried.
+        case RunEnd(commits=0):
+            return RunStatus.FAILED, NO_CHANGES
+        # Only what the worker left uncommitted: it did not finish.
+        case RunEnd(recovered_only=True):
+            return RunStatus.FAILED, INTERRUPTED
+        # It committed and ended cleanly.
+        case _:
+            return RunStatus.SUCCEEDED, None
 
 
 def open_escalation(s: Session, run: Run) -> int | None:

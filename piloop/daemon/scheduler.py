@@ -43,7 +43,6 @@ from piloop.campaign.ideas import defined_by, runnable, supersede, waiting
 from piloop.campaign.memory import sync_documents
 from piloop.campaign.spend import SpendError
 from piloop.campaign.stop import (
-    BLOCKED,
     CAMPAIGN_STOPPED_ERROR,
     CANCEL_REQUESTED,
     CANCELLED_ERROR,
@@ -74,7 +73,7 @@ from piloop.config import (
     ideas_taken,
 )
 from piloop.daemon.archiver import Archiver, Archiving
-from piloop.daemon.run_executor import RunExecutor, left_finding, open_escalation
+from piloop.daemon.run_executor import RunEnd, RunExecutor, left_finding, open_escalation, run_outcome
 from piloop.db.events import ANOMALY_EVENT, emit
 from piloop.db.models import (
     LIVE,
@@ -278,12 +277,9 @@ class Scheduler:
         The worker reported that it is done. A job of its own may still keep the run open, but the run is not cut: its
         idea stays ``scheduled``, so no second run redoes the work. The run thread pins the commits
         (``RunExecutor._keep_cut_work``), and ``reap`` scores them and settles the idea (``runs.scoring``). Its status is
-        what the run's end would give: succeeded, or failed as blocked while its worker's escalation waits.
+        what the run's end would give (``run_outcome``).
         """
-        asked = open_escalation(s, run)
-        status, error = (
-            (RunStatus.SUCCEEDED, None) if asked is None else (RunStatus.FAILED, f'{BLOCKED} comment#{asked}')
-        )
+        status, error = run_outcome(RunEnd(finding=True, asked=open_escalation(s, run)))
         run.status, run.error, run.finished_at, run.scoring = status, error, utcnow(), True
         emit(s, 'run.finished', TargetKind.RUN, run.id, payload={'status': status, 'error': error})
         self._tracer.event('run.handed_off', run=run.id, status=status)

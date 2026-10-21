@@ -45,14 +45,16 @@ stateDiagram-v2
     queued --> running: the executor starts it
     running --> queued: its agent did not start, relaunch
     running --> succeeded: commits or a finding
-    running --> failed: an error, no commit and no finding, an open escalation, or the daemon stopped
-    running --> timed_out: the role timeout
+    running --> failed: no finding and an error, no commit, or the daemon stopped; or an open escalation
+    running --> timed_out: the role timeout, without a finding
     queued --> failed: the campaign or the daemon stopped
 ```
 
 A run that the daemon stopped is not counted as an attempt. Its idea goes back to `ready`. A run whose worker had
 left its finding before the stop is not stopped: it is finished. The stop closes it as `succeeded`, its idea stays
-`scheduled`, and the next daemon scores its commits and settles the idea.
+`scheduled`, and the next daemon scores its commits and settles the idea. The same holds when such a worker times
+out, because a job of its own keeps the run open, or exits with an error: the run `succeeded`, the idea is `done`,
+and the worker row keeps the error.
 
 A worker that stops while its own escalation waits for an answer ends its run `failed`, with an error that starts with
 `blocked on escalation`. Its idea is `parked` until someone answers and sets it `ready`.

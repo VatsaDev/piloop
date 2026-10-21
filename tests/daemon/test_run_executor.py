@@ -29,7 +29,10 @@ from piloop.daemon.run_executor import (
     NO_CHANGES,
     RECOVERED_REASON,
     UNCOMMITTED_SUMMARY,
+    RunEnd,
     RunExecutor,
+    RunOutcome,
+    run_outcome,
 )
 from piloop.db.models import (
     Campaign,
@@ -93,6 +96,7 @@ from tests.conftest import (
     example,
     factory,
     span_named,
+    wait_until,
     write_script,
     write_toml,
 )
@@ -1351,13 +1355,112 @@ def test_a_finding_without_a_commit_is_a_result(
         assert s.get_one(Idea, idea_id).status is IdeaStatus.DONE, 'not retried'
 
 
+TIMEOUT = 'worker timeout after 1s'
+STOPPED = 'stopped by the campaign stop'
+
+
+@pytest.mark.parametrize(
+    ('end', 'expected'),
+    [
+        # one case per case of run_outcome, in order
+        pytest.param(
+            RunEnd(finding=True, asked=7), (RunStatus.FAILED, f'{stop.BLOCKED} comment#7'), id='finding-asked'
+        ),
+        pytest.param(RunEnd(finding=True), (RunStatus.SUCCEEDED, None), id='finding'),
+        pytest.param(RunEnd(stop_error=STOPPED, commits=1), (RunStatus.FAILED, STOPPED), id='stop'),
+        pytest.param(RunEnd(cancelled=True), (RunStatus.FAILED, stop.CANCELLED_ERROR), id='cancel'),
+        pytest.param(RunEnd(timed_out=True, error=TIMEOUT), (RunStatus.TIMED_OUT, TIMEOUT), id='timeout'),
+        pytest.param(RunEnd(error='worker exit 1', commits=1), (RunStatus.FAILED, 'worker exit 1'), id='error'),
+        pytest.param(RunEnd(asked=7), (RunStatus.FAILED, f'{stop.BLOCKED} comment#7'), id='asked'),
+        pytest.param(RunEnd(), (RunStatus.FAILED, NO_CHANGES), id='nothing'),
+        pytest.param(RunEnd(commits=1, recovered_only=True), (RunStatus.FAILED, INTERRUPTED), id='recovered-only'),
+        pytest.param(RunEnd(commits=2), (RunStatus.SUCCEEDED, None), id='commits'),
+        # the overlaps that fix the order: each pair of neighbouring rows, and the #116 cases
+        pytest.param(
+            RunEnd(finding=True, asked=7, timed_out=True, error=TIMEOUT),
+            (RunStatus.FAILED, f'{stop.BLOCKED} comment#7'),
+            id='finding-asked-timeout',
+        ),
+        pytest.param(RunEnd(finding=True, stop_error=STOPPED), (RunStatus.SUCCEEDED, None), id='finding-stop'),
+        pytest.param(RunEnd(finding=True, cancelled=True), (RunStatus.SUCCEEDED, None), id='finding-cancel'),
+        pytest.param(
+            RunEnd(finding=True, timed_out=True, error=TIMEOUT, commits=1),
+            (RunStatus.SUCCEEDED, None),
+            id='finding-timeout',
+        ),
+        pytest.param(RunEnd(finding=True, error='worker exit 1'), (RunStatus.SUCCEEDED, None), id='finding-error'),
+        pytest.param(
+            RunEnd(finding=True, commits=1, recovered_only=True),
+            (RunStatus.SUCCEEDED, None),
+            id='finding-recovered-only',
+        ),
+        pytest.param(RunEnd(stop_error=STOPPED, cancelled=True), (RunStatus.FAILED, STOPPED), id='stop-cancel'),
+        pytest.param(
+            RunEnd(cancelled=True, timed_out=True, error=TIMEOUT),
+            (RunStatus.FAILED, stop.CANCELLED_ERROR),
+            id='cancel-timeout',
+        ),
+        pytest.param(RunEnd(cancelled=True, commits=1), (RunStatus.FAILED, stop.CANCELLED_ERROR), id='cancel-commits'),
+        pytest.param(
+            RunEnd(timed_out=True, error=TIMEOUT, asked=7, commits=1),
+            (RunStatus.TIMED_OUT, TIMEOUT),
+            id='timeout-asked',
+        ),
+        pytest.param(RunEnd(error='worker exit 1', asked=7), (RunStatus.FAILED, 'worker exit 1'), id='error-asked'),
+        pytest.param(RunEnd(asked=7, commits=1), (RunStatus.FAILED, f'{stop.BLOCKED} comment#7'), id='asked-commits'),
+    ],
+)
+def test_how_a_run_ended_decides_its_status_by_the_first_row_that_holds(end: RunEnd, expected: RunOutcome) -> None:
+    assert run_outcome(end) == expected
+
+
+@pytest.mark.parametrize('timed_out', [True, False])
+def test_a_worker_that_left_its_finding_has_finished_its_run_however_its_process_then_ends(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture, timed_out: bool
+) -> None:
+    """A worker that committed and left its finding, then timed out or exited non-zero, finished its idea.
+
+    The finding is its report that it is done, as on a daemon stop (``Scheduler._hand_off``): the run succeeds and the
+    idea is ``done``, so no second run redoes the work. A job that it forgot keeps the run open to the timeout. The
+    worker row keeps how its process ended.
+    """
+    run_id = make_run(db, campaign, max_runs=2)
+    with db.session() as s:
+        idea_id, worker_id = run_row(db, run_id).idea_id, s.scalars(select(Worker.id)).one()
+    finding = (
+        'INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES'
+        f" ('idea', {idea_id}, 'worker#{worker_id}', 'finding', 'DONE: added a line')"
+    )
+    end = 'touch ../found\nsleep 30 &\nwait' if timed_out else 'exit 1'
+    body = f'#!/bin/sh\necho line >> solve.txt\ngit commit -qam "a line"\n{SQL_HINT} "{finding}"\n{end}\n'
+    write_toml(Path(campaign.path), body)
+    reload_campaign(db, campaign)
+    wait = runtime.wait
+
+    def time_out_after_the_finding(handle: Handle, timeout: float) -> Outcome:
+        wait_until((tmp_path / 'runs' / str(run_id) / 'found').exists)
+        return wait(handle, 0.5)
+
+    if timed_out:  # a loaded host can take longer than any short timeout to write the finding
+        mocker.patch.object(runtime, 'wait', side_effect=time_out_after_the_finding)
+    execute(executor(db, runtime, tmp_path), db, run_id)
+    run = run_row(db, run_id)
+    assert (run.status, run.error) == (RunStatus.SUCCEEDED, None)
+    with db.session() as s:
+        assert s.get_one(Idea, idea_id).status is IdeaStatus.DONE, 'not retried'
+        assert s.get_one(Worker, worker_id).error == ('worker timeout after 0.5s' if timed_out else 'worker exit 1')
+        assert [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == run_id))] == [Verdict.KEEP]
+
+
+@pytest.mark.parametrize('reported', [True, False])
 def test_a_worker_that_stops_on_its_open_escalation_is_blocked_and_its_idea_waits_for_the_answer(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, reported: bool
 ) -> None:
     """A worker that asks for a decision and stops before it comes did not succeed, and its idea is not done.
 
     The run fails as blocked, which no incident sweep investigates, and the idea is parked with a note that names the
-    escalation. A retry would stop on the same question, and ``done`` would release the ideas that wait for it.
+    escalation. A retry would stop on the same question, and ``done`` would release the ideas that wait for it. A
+    finding or a commit does not make it a success.
     """
     run_id = make_run(db, campaign, max_runs=2)
     with db.session() as s:
@@ -1372,7 +1475,11 @@ def test_a_worker_that_stops_on_its_open_escalation_is_blocked_and_its_idea_wait
     )
     write_toml(
         Path(campaign.path),
-        (f'#!/bin/sh\n{SQL_HINT} "{ask}"\n{SQL_HINT} "{report}"\necho line >> solve.txt\ngit commit -qam "a line"\n'),
+        (
+            f'#!/bin/sh\n{SQL_HINT} "{ask}"\n'
+            + (f'{SQL_HINT} "{report}"\n' if reported else '')
+            + 'echo line >> solve.txt\ngit commit -qam "a line"\n'
+        ),
     )
     reload_campaign(db, campaign)
     execute(executor(db, runtime, tmp_path), db, run_id)
