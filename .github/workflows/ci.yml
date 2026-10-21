@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request: {}
   workflow_call: {}
+  workflow_dispatch: {}
 
 env:
   COLUMNS: 150
@@ -89,7 +90,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
         exclude:
-          - os: ${{ github.repository != 'hiloopai/piloop' && 'macos-latest' || 'none' }}
+          # macOS minutes are scarce in the private mirror: there it runs on demand and on release PRs only.
+          - os: ${{ (github.repository == 'hiloopai/piloop' || github.event_name == 'workflow_dispatch' || startsWith(github.head_ref, 'release-')) && 'none' || 'macos-latest' }}
         include:
           - os: ubuntu-latest
             make: testcov

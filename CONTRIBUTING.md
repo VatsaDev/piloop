@@ -389,8 +389,10 @@ Maintainers only.
    ```
 
 4. Run `make` and `make e2e`. Set the date in the heading of the section to the day that you tag.
-5. Merge that change. When you merge it in the private mirror, wait until the `Sync main` workflow has pushed it to
-   `main` here, and check that both repositories have the same commit on `main`. Then tag that commit:
+5. Open the pull request of that change from a branch named `release-<version>`, such as `release-0.2.0`, so CI
+   also runs the tests on macOS. Merge it. When you merge it in the private
+   mirror, wait until the `Sync main` workflow has pushed it to `main` here, and check that both repositories have the
+   same commit on `main`. Then tag that commit:
 
    ```bash
    git fetch origin
