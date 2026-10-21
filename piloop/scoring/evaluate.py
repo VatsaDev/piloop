@@ -1,6 +1,7 @@
 """Run the evaluate command in a worktree. A timeout kills the whole process group."""
 
 import math
+import signal
 import subprocess
 import time
 from collections.abc import Callable
@@ -11,6 +12,12 @@ from typing import Annotated
 from pydantic import Field, TypeAdapter, ValidationError
 
 from piloop.proc import STDERR_IN_ERROR, UNITS_ENV, child_env, kill_group
+
+SENT = frozenset({signal.SIGHUP, signal.SIGINT, signal.SIGTERM, signal.SIGKILL})
+"""The signals that another process sends, a ``pkill`` say: an evaluate that one ends measured nothing of the candidate.
+
+The others, SIGSEGV or SIGABRT, are the evaluate's own fault, and a measurement like a non-zero exit.
+"""
 
 UNITS_SUM_TOLERANCE = 1e-3
 """The allowed relative difference between a metric's per-unit sum and its METRIC line, which can be rounded."""
@@ -67,6 +74,8 @@ class EvalResult:
     error: str | None
     units: Units = field(default_factory=dict)
     """The per-unit results the evaluate wrote to ``UNITS_ENV``. Empty when it wrote none or was not asked to."""
+    signal: int | None = None
+    """The signal that ended the evaluate command, when one did. None after its own exit and after a timeout."""
 
 
 def run_evaluate(
@@ -91,7 +100,10 @@ def run_evaluate(
             return EvalResult({}, done.seconds, f'evaluate timeout after {timeout:g}s')
         if done.returncode != 0:
             stderr = (log_dir / 'eval.stderr').read_text(errors='replace').strip()[-STDERR_IN_ERROR:]
-            return EvalResult({}, done.seconds, f'evaluate exit {done.returncode}: {stderr}')
+            if done.returncode > 0:
+                return EvalResult({}, done.seconds, f'evaluate exit {done.returncode}: {stderr}')
+            how = f'evaluate killed by {_name(-done.returncode)} (exit {done.returncode}), not by its own exit'
+            return EvalResult({}, done.seconds, f'{how}: {stderr}', signal=-done.returncode)
         metrics = parse_metrics((log_dir / 'eval.stdout').read_text(errors='replace'))
         missing = required - metrics.keys()
         if missing:
@@ -107,6 +119,14 @@ def run_evaluate(
     finally:
         if units_file is not None:
             units_file.unlink(missing_ok=True)
+
+
+def _name(signum: int) -> str:
+    """``SIGTERM`` for 15. A number with no name, a real-time signal say, stays a number."""
+    try:
+        return signal.Signals(signum).name
+    except ValueError:
+        return f'signal {signum}'
 
 
 def read_units(path: Path, metrics: dict[str, float]) -> Units:

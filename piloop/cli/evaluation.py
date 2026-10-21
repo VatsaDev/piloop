@@ -7,7 +7,7 @@ from rich.table import Table
 from rich.text import Text
 
 from piloop.cli import common
-from piloop.db.models import Campaign, utcnow
+from piloop.db.models import Campaign, Candidate, utcnow
 from piloop.reports.overview import age
 from piloop.scoring import queue
 from piloop.text import cell
@@ -21,25 +21,26 @@ def eval_queue() -> None:
 
     The daemon runs `max_evaluations` evaluations at the same time, across all campaigns. A free slot goes to the
     campaign with the fewest running evaluations, and in that campaign to its head first, then to the oldest request.
+    A requested remeasure shows as waiting at once.
     """
     with common.session() as s:
-        rows = queue.listing(s)
         now = utcnow()
-        table = Table('candidate', 'campaign', 'state', 'summary', box=None)
-        for e in rows:
+        evaluations = queue.listing(s)
+        rows: list[tuple[Candidate, str]] = []
+        for e in evaluations:
             if e.cancelled_by is not None:
                 state = f'cancelled by {e.cancelled_by}'
             elif e.started_at is not None:
                 state = f'running {age(e.started_at, now)}'
             else:
                 state = f'waiting {age(e.created_at, now)}'
-            table.add_row(
-                f'candidate#{e.candidate_id}',
-                s.get_one(Campaign, e.candidate.campaign_id).name,
-                state,
-                Text(cell(e.candidate.summary or '')),
-            )
-        running = sum(e.started_at is not None for e in rows)
+            rows.append((e.candidate, state))
+        rows += [(c, f'waiting {age(asked, now)}') for c, asked in queue.requested(s)]
+        table = Table('candidate', 'campaign', 'state', 'summary', box=None)
+        for candidate, state in rows:
+            campaign = s.get_one(Campaign, candidate.campaign_id).name
+            table.add_row(f'candidate#{candidate.id}', campaign, state, Text(cell(candidate.summary or '')))
+        running = sum(e.started_at is not None for e in evaluations)
     if rows:
         common.console.print(table)
     common.console.print(
@@ -56,8 +57,9 @@ def eval_cancel(
 ) -> None:
     """Cancel the evaluation of a candidate: a waiting one never starts, and the daemon stops a running one.
 
-    The candidate gets a crashed measurement that names you, at once, so a run's candidate is judged a `crash`, and a
-    daemon restart does not run it again. It is evaluated again only when someone asks (`piloop candidate remeasure`).
+    It also cancels a requested remeasure. The candidate gets a crashed measurement that names you, at once, so a run's
+    candidate is judged a `crash`, and a daemon restart does not run it again. It is evaluated again only when someone
+    asks (`piloop candidate remeasure`).
     """
     with common.session() as s:
         if not queue.cancel(s, candidate_id, common.settings.actor):

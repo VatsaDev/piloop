@@ -13,7 +13,7 @@ from piloop.db.models import Campaign, Candidate, Evaluation, Run, RunStatus, Ve
 from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.scoring import queue
-from piloop.scoring.ledger import measured
+from piloop.scoring.ledger import measured, request_remeasure
 from tests.conftest import ScriptRuntime, baseline, factory, write_script
 from tests.daemon.test_run_executor import execute, make_run, set_config
 from tests.daemon.test_scheduler import add_ideas, make_scheduler
@@ -133,8 +133,8 @@ def test_a_cancelled_evaluation_is_a_crash_that_names_who_cancelled_it_at_once(
     [running] = run_candidates(db, first)
     [waiting] = run_candidates(db, second)
     with db.session() as s:
-        assert [e.candidate_id for e in queue.cancel(s, waiting.id, 'orchestrator')] == [waiting.id]
-        assert [e.candidate_id for e in queue.cancel(s, running.id, 'human')] == [running.id]
+        assert queue.cancel(s, waiting.id, 'orchestrator') == 1
+        assert queue.cancel(s, running.id, 'human') == 1
         s.commit()
     assert rows(db) == [(running.id, True, 'human')], 'the waiting one left the queue; the running one is stopping'
     two.join(30)
@@ -304,3 +304,75 @@ def test_a_remeasure_whose_repo_is_gone_is_a_crash(
     assert found[-1] is not None and found[-1].startswith('NoSuchPathError'), 'it cannot start: a crash, asked again'
     assert verdict is Verdict.KEEP, "a keep's verdict stays"
     assert rows(db) == []
+
+
+def killed_first(tmp_path: Path, times: int, sig: str = 'TERM') -> list[str]:
+    """An evaluate command that logs each try in ``tries`` and kills itself with ``sig`` on its first ``times`` tries."""
+    tries = tmp_path / 'tries'
+    return ['sh', '-c', f'echo x >> {tries}; [ $(wc -l < {tries}) -gt {times} ] || kill -{sig} $$; {SCORE}']
+
+
+def tries(tmp_path: Path) -> int:
+    return len((tmp_path / 'tries').read_text().split())
+
+
+def test_an_evaluation_that_another_process_kills_is_run_once_more(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """An implementer's ``pkill -f`` measures nothing of the candidate, so the daemon evaluates it again, once."""
+    set_config(db, campaign, evaluate=killed_first(tmp_path, times=1))
+    base = baseline(db, campaign.id).id
+    queued_executor(db, runtime, tmp_path, slots=1).remeasure(base)
+    assert tries(tmp_path) == 2
+    with db.session() as s:
+        last = s.get_one(Candidate, base).measurements[-1]
+        assert (last.error, last.metrics) == (None, {'score': 1.0, 'size': 5.0})
+    assert rows(db) == []
+
+
+def test_an_evaluation_killed_twice_is_a_crash_that_names_the_signal(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    set_config(db, campaign, evaluate=killed_first(tmp_path, times=2))
+    base = baseline(db, campaign.id).id
+    queued_executor(db, runtime, tmp_path, slots=1).remeasure(base)
+    assert tries(tmp_path) == 2, 'one more try, not a loop'
+    assert errors(db, base)[0][-1] == 'evaluate killed by SIGTERM (exit -15), not by its own exit: '
+
+
+def test_an_evaluate_that_crashes_on_a_signal_of_its_own_is_not_run_again(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """A segfault is the candidate's fault, and a measurement of it."""
+    set_config(db, campaign, evaluate=['sh', '-c', f'ulimit -c 0; {killed_first(tmp_path, 1, "SEGV")[2]}'])
+    base = baseline(db, campaign.id).id
+    queued_executor(db, runtime, tmp_path, slots=1).remeasure(base)
+    assert tries(tmp_path) == 1
+    assert errors(db, base)[0][-1] == 'evaluate killed by SIGSEGV (exit -11), not by its own exit: '
+
+
+def test_a_requested_remeasure_is_listed_as_waiting_before_the_daemon_queues_it(
+    db: Database, campaign: Campaign
+) -> None:
+    """The daemon queues one remeasure per campaign at a time, so the others would be invisible while they wait."""
+    with db.session() as s:
+        evaluator = s.get_one(Campaign, campaign.id).evaluator_id
+        assert evaluator is not None
+        base = s.get_one(Candidate, baseline(db, campaign.id).id)
+        assert queue.requested(s) == []
+        request_remeasure(s, base, 'human')
+        s.commit()
+        assert [c.id for c, _ in queue.requested(s)] == [base.id], 'listed from the moment it is accepted'
+        evaluation, _ = queue.request(s, base.id, evaluator)
+        assert queue.requested(s) == [], 'once queued, it is listed as its evaluation, not twice'
+        assert queue.start(s, evaluation, 1)
+        queue.cancel(s, base.id, 'human')
+        request_remeasure(s, base, 'human')
+        s.commit()
+        assert [c.id for c, _ in queue.requested(s)] == [base.id], 'a cancelled evaluation does not answer it'
+        s.delete(evaluation)
+        s.flush()
+        assert queue.cancel(s, base.id, 'orchestrator') == 1, 'a request that is not queued yet can be cancelled'
+        s.commit()
+        assert queue.requested(s) == []
+        assert base.measurements[-1].error == 'evaluation cancelled by orchestrator'

@@ -139,7 +139,8 @@ The daemon measures the candidate again with the current evaluator, after the he
 verdict stays, and the new measurement is one more repeat in the mean. A `pending`, `unmeasured` or `recovered`
 candidate is never measured this way. A stopped campaign is measured too, but only what someone asked for, so you can
 measure a result again when you review a campaign. A campaign paused with `--evals`, or held by its stop rule, is
-measured once the hold ends. The command says when.
+measured once the hold ends. The command says when. `piloop eval queue` shows the request as `waiting` at once, and
+`piloop eval cancel` cancels it.
 
 ## The evaluation queue
 
@@ -150,6 +151,9 @@ for its score), then to the oldest request. So a busy campaign never holds back 
 measures its own commits does not change.
 
 A tree is evaluated once: a second request for a candidate that waits or runs waits for that evaluation.
+
+If another process kills an evaluation, the daemon runs it once more. The error of a killed evaluation names the
+signal, for example `evaluate killed by SIGTERM`. To stop an evaluation, use `piloop eval cancel`, not `pkill -f`.
 
 ```bash
 piloop eval queue

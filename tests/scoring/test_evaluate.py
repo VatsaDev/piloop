@@ -1,4 +1,5 @@
 import os
+import signal
 import time
 from pathlib import Path
 
@@ -31,6 +32,26 @@ def test_evaluate_nonzero_exit_drops_metrics(tmp_path: Path) -> None:
     )
     assert r.metrics == {}
     assert r.error == snapshot('evaluate exit 2: boom')
+
+
+def test_evaluate_killed_by_a_signal_names_the_signal(tmp_path: Path) -> None:
+    """A ``pkill`` from another process ends the evaluate with a signal: the error says so, not just ``exit -15``."""
+    r = run_evaluate(
+        ['sh', '-c', 'echo METRIC a=1; echo boom >&2; kill -TERM $$'],
+        cwd=tmp_path,
+        log_dir=tmp_path,
+        timeout=5,
+        required={'a'},
+    )
+    assert (r.metrics, r.signal) == ({}, signal.SIGTERM)
+    assert r.error == snapshot('evaluate killed by SIGTERM (exit -15), not by its own exit: boom')
+
+
+@pytest.mark.skipif(not hasattr(signal, 'SIGRTMIN'), reason='macOS has no real-time signals: each signal has a name')
+def test_evaluate_killed_by_a_signal_with_no_name_gives_its_number(tmp_path: Path) -> None:
+    unnamed = signal.SIGRTMIN + 1
+    r = run_evaluate(['sh', '-c', f'kill -{unnamed} $$'], cwd=tmp_path, log_dir=tmp_path, timeout=5, required=set())
+    assert r.error == f'evaluate killed by signal {unnamed} (exit -{unnamed}), not by its own exit: '
 
 
 def test_evaluate_missing_metric(tmp_path: Path) -> None:

@@ -61,7 +61,7 @@ from piloop.reports.wake import lessons_overview
 from piloop.runtime import WorkerStatus
 from piloop.runtime.factory import RuntimeFactory, make_runtime
 from piloop.scoring import queue
-from piloop.scoring.evaluate import EvalResult, run_evaluate
+from piloop.scoring.evaluate import SENT, EvalResult, run_evaluate
 from piloop.scoring.ledger import (
     DAEMON,
     MOVED,
@@ -710,7 +710,27 @@ class RunExecutor:
     def _evaluate(
         self, evaluation_id: int, campaign_id: int, cfg: CampaignConfig, repo: Repo, sha: str, eval_dir: Path
     ) -> EvalResult:
-        """Run the evaluate command on ``sha`` in a clean worktree. Every evaluation of the daemon runs here."""
+        """Run the evaluate command on ``sha`` in a clean worktree. Every evaluation of the daemon runs here.
+
+        An evaluate that another process killed, an implementer's ``pkill -f`` say, measured nothing of the candidate,
+        so it runs once more, in a new worktree. The daemon's own kills (a stop, ``piloop eval cancel``) are not run
+        again. Its logs then hold the second try.
+        """
+        result = self._evaluate_once(evaluation_id, campaign_id, cfg, repo, sha, eval_dir)
+        if result.signal not in SENT or self._killed_by_daemon(evaluation_id):
+            return result
+        self._tracer.event('evaluation.retry', evaluation=evaluation_id, error=result.error)
+        return self._evaluate_once(evaluation_id, campaign_id, cfg, repo, sha, eval_dir)
+
+    def _killed_by_daemon(self, evaluation_id: int) -> bool:
+        """Whether the daemon stops the evaluation: it stops, or someone cancelled the evaluation."""
+        with self._db.session() as s:
+            return self.launcher.cancelled.is_set() or s.get_one(Evaluation, evaluation_id).cancelled_by is not None
+
+    def _evaluate_once(
+        self, evaluation_id: int, campaign_id: int, cfg: CampaignConfig, repo: Repo, sha: str, eval_dir: Path
+    ) -> EvalResult:
+        """Run the evaluate command on ``sha`` in a new worktree, which is removed after."""
         links = worktree_links(cfg, Path(repo.working_dir), campaign_dir(self._home, campaign_id))
         eval_dir.mkdir(parents=True, exist_ok=True)
         eval_wt = eval_dir / 'worktree'

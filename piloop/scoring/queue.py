@@ -4,15 +4,20 @@ The daemon runs at most ``max_evaluations`` evaluations at the same time, across
 campaign with the fewest running evaluations, and in that campaign to its head first, then to the oldest request. So a
 campaign with many requests never holds back the requests of another, and inside a campaign each request waits only
 for the ones before it. The queue is in the database, so ``piloop eval`` reads and cancels it without the daemon.
+
+A remeasure that someone asked for (``ledger.request_remeasure``) enters the queue only when the daemon gets to it, one
+per campaign at a time. Until then ``requested`` lists it, so ``piloop eval queue`` shows it from the moment it is asked.
 """
 
 from collections import Counter
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from piloop.db.events import emit
-from piloop.db.models import Campaign, Candidate, Evaluation, Measurement, TargetKind, utcnow
+from piloop.db.models import Campaign, Candidate, Evaluation, Event, Measurement, TargetKind, utcnow
+from piloop.scoring import ledger
 from piloop.scoring.ledger import head
 
 CANCELLED = 'evaluation cancelled by {actor}'
@@ -77,25 +82,54 @@ def listing(s: Session) -> list[Evaluation]:
     return [*s.scalars(running), *waiting(s)]
 
 
-def cancel(s: Session, candidate_id: int, actor: str) -> list[Evaluation]:
-    """Cancel the evaluations of the candidate that wait or run, signed by ``actor``. Return them. The caller commits.
+def requested(s: Session) -> list[tuple[Candidate, datetime]]:
+    """Return each remeasure that someone asked for and that has no evaluation in the queue yet, with when it was asked.
+
+    In campaign order, then oldest request first (``ledger.requested``). An evaluation that someone cancelled does not
+    answer a request that came after the cancel, so the request is listed while that evaluation stops.
+    """
+    queued = set(
+        s.execute(
+            select(Evaluation.candidate_id, Evaluation.evaluator_id).where(Evaluation.cancelled_by.is_(None))
+        ).all()
+    )
+    kind = (Event.kind == ledger.REMEASURE_REQUESTED, Event.target_kind == TargetKind.CANDIDATE)
+    asked = dict(s.execute(select(Event.target_id, func.max(Event.at)).where(*kind).group_by(Event.target_id)).all())
+    return [
+        (candidate, asked[candidate.id])
+        for campaign in s.scalars(select(Campaign).order_by(Campaign.id))
+        for candidate in ledger.requested(s, campaign)
+        if (candidate.id, campaign.evaluator_id or 0) not in queued
+    ]
+
+
+def cancel(s: Session, candidate_id: int, actor: str) -> int:
+    """Cancel what the candidate waits for: its evaluations that wait or run, or its remeasure that is not queued yet.
+
+    Signed by ``actor``. Return how many it cancelled. The caller commits.
 
     Each records its crashed measurement now (``CANCELLED``), so the candidate is not evaluated again unless someone
-    asks, even if the daemon restarts first. A waiting evaluation leaves the queue. A running one gets ``cancelled_by``,
-    and the daemon stops its evaluator and records nothing more.
+    asks, even if the daemon restarts first. That measurement also answers a remeasure request (``requested``). A
+    waiting evaluation leaves the queue. A running one gets ``cancelled_by``, and the daemon stops its evaluator and
+    records nothing more.
     """
     found = s.scalars(
         select(Evaluation).where(Evaluation.candidate_id == candidate_id, Evaluation.cancelled_by.is_(None))
     ).all()
-    for evaluation in found:
+    evaluators = [e.evaluator_id for e in found]
+    if not found and (asked := [c for c, _ in requested(s) if c.id == candidate_id]):
+        evaluator_id = s.get_one(Campaign, asked[0].campaign_id).evaluator_id
+        evaluators += [evaluator_id] if evaluator_id is not None else []
+    for evaluator_id in evaluators:
         error = CANCELLED.format(actor=actor)
-        measurement = Measurement(candidate_id=candidate_id, evaluator_id=evaluation.evaluator_id, error=error)
+        measurement = Measurement(candidate=s.get_one(Candidate, candidate_id), evaluator_id=evaluator_id, error=error)
         s.add(measurement)
         s.flush()
         payload: dict[str, object] = {'candidate': candidate_id, 'metrics': {}, 'error': error, 'run': None}
         emit(s, 'measurement.recorded', TargetKind.MEASUREMENT, measurement.id, payload=payload, actor=actor)
+    for evaluation in found:
         if evaluation.started_at is None:
             s.delete(evaluation)
         else:
             evaluation.cancelled_by = actor
-    return list(found)
+    return len(evaluators)

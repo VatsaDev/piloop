@@ -779,6 +779,17 @@ def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_canc
     assert summary == '2 running, 1 waiting; 2 slot(s) (max_evaluations); `piloop eval cancel <candidate>`'
     with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
         assert [m.error for m in s.get_one(Candidate, 2).measurements] == ['evaluation cancelled by human']
+    run_cli(['candidate', 'remeasure', '1'])
+    out()
+    run_cli(['eval', 'queue'])
+    *table, summary = out().splitlines()
+    assert [line.split()[:4] for line in table[1:]] == [
+        ['candidate#4', 'demo', 'running', '0s'],
+        ['candidate#1', 'demo', 'cancelled', 'by'],
+        ['candidate#3', 'demo', 'waiting', '0s'],
+        ['candidate#1', 'demo', 'waiting', '0s'],
+    ], 'a remeasure shows as soon as it is accepted, also while its cancelled evaluation stops'
+    assert summary == '2 running, 2 waiting; 2 slot(s) (max_evaluations); `piloop eval cancel <candidate>`'
     with pytest.raises(SystemExit, match=r'candidate#2 has no evaluation that waits or runs'):
         run_cli(['eval', 'cancel', '2'])
 

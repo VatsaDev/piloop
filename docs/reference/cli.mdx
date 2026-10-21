@@ -267,7 +267,8 @@ held by its stop rule. See
 piloop eval queue
 ```
 
-Lists the running evaluations, then the waiting ones in the order in which they get a slot. See
+Lists the running evaluations, then the waiting ones in the order in which they get a slot. A requested remeasure
+shows as `waiting` at once. See
 [The evaluation queue](/concepts/verdict#the-evaluation-queue).
 
 ### piloop eval cancel
@@ -276,8 +277,8 @@ Lists the running evaluations, then the waiting ones in the order in which they 
 piloop eval cancel CANDIDATE_ID
 ```
 
-Cancels the evaluation of a candidate. A waiting one never starts, and the daemon stops a running one. The candidate
-gets a crashed measurement that names you.
+Cancels the evaluation of a candidate. A waiting one never starts, and the daemon stops a running one. It also cancels
+a requested remeasure. The candidate gets a crashed measurement that names you.
 
 ### piloop candidate import
 
