@@ -8,8 +8,7 @@ provider of the capability ``verdict check``, which this plugin declares in ``co
 import json
 from dataclasses import dataclass
 
-from piloop.plugins.builtin.verdict import BOOTSTRAP
-from piloop.plugins.contracts.verdict import Case, Judgement, Outcome
+from piloop.capabilities import BOOTSTRAP, Case, Judgement, Outcome
 from piloop_verdict_checks.contract import VERDICT_CHECKS
 
 

@@ -145,6 +145,8 @@ convention = "google"
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["D"]
 "piloop/db/migrations/**/*.py" = ["D"]
+# the re-exports are grouped by capability, not sorted by module
+"piloop/capabilities.py" = ["I001"]
 
 [tool.ruff.format]
 quote-style = "single"

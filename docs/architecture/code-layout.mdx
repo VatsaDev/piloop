@@ -18,6 +18,9 @@ The `piloop` package has one subpackage for each concern. Imports only point dow
 8. `daemon/`: the process, the scheduler, the run executor.
 9. `watch/` and `cli/`.
 
+`capabilities.py` is not a layer: it re-exports what a plugin imports, every capability, its contract types and its
+built-in providers, and nothing in `piloop/` imports it.
+
 The rule is also in [CONTRIBUTING.md](https://github.com/hiloopai/piloop/blob/main/CONTRIBUTING.md#package-layout). When a
 module needs code from a higher layer, move that code down.
 

@@ -301,8 +301,10 @@ point group and where the configuration selects it. A host contract may import t
 imports only the standard library and the host. `plugins/builtin/` has the providers of piloop that live nowhere else:
 they are public, and a plugin may import one to call it. piloop declares its capabilities, and its own providers, with
 entry points in `pyproject.toml`, in the same groups that a plugin uses (`piloop.capabilities`, then each provider
-group). To add a capability: a contract module, a builtin module, an entry point in `piloop.capabilities`, and one in
-the provider group. The triggers and the roles declare their capability where they are defined (`triggers.py`,
+group). To add a capability: a contract module, a builtin module, an entry point in `piloop.capabilities`, one in
+the provider group, and a line in `piloop/capabilities.py`. That module re-exports every capability, its contract types
+and its built-in providers, so that a plugin imports from one place; nothing in `piloop/` imports it, and
+`tests/test_capabilities.py` fails until the new line is there. The triggers and the roles declare their capability where they are defined (`triggers.py`,
 `config.py`): their contract module would import them, and they import their capability. Run `uv sync` after you
 change an entry point: piloop finds its own capabilities and providers in its installed metadata.
 

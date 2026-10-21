@@ -35,6 +35,13 @@ These words have one meaning on this page:
 - A **built-in** provider is one that piloop includes. Each capability has at least one.
 - The configuration selects a provider by its name. A plugin adds providers.
 
+A plugin imports what it needs of piloop from one module, `piloop.capabilities`: each capability, the types of its
+contract, and its built-in providers. The names on this page are names in that module:
+
+```python
+from piloop.capabilities import BOOTSTRAP, Case, Judgement, Outcome
+```
+
 Each example plugin on this page is a package in
 [`examples/plugins/`](https://github.com/hiloopai/piloop/tree/main/examples/plugins). piloop's tests install each
 one and select it in the configuration.
@@ -126,8 +133,8 @@ root = "/mnt/archive/piloop"
 ### The contract
 
 The artifact store keeps its blobs in `$PILOOP_HOME/store` and can mirror them to a storage backend. A backend is a
-settings model, a subclass of `piloop.store.StorageBackendConfig`: its `kind` is the name of its entry point, its fields
-are the other keys of `[storage.backend]`, and its `open()` returns the `piloop.store.StorageBackend`. That one stores
+settings model, a subclass of `StorageBackendConfig`: its `kind` is the name of its entry point, its fields are the
+other keys of `[storage.backend]`, and its `open()` returns the `StorageBackend`. That one stores
 whole objects by key, and the store never lists, deletes or changes one:
 
 - `url`: where it puts objects, without a trailing `/`. The store records it at its first upload, and refuses to open
@@ -136,7 +143,7 @@ whole objects by key, and the store never lists, deletes or changes one:
 - `download(key, path) -> bool`: write the object to `path`; `False`, and no file, when there is none.
 - `has(key) -> bool`: whether an object is stored under `key`.
 
-`piloop.store.contract.check_storage_backend(backend, scratch)` runs the contract against a backend, as piloop's tests
+`check_storage_backend(backend, scratch)` runs the contract against a backend, as piloop's tests
 do with the example. It writes under `piloop-contract/<random>/` and never deletes, so point it at a folder that you can
 empty.
 
@@ -149,8 +156,9 @@ The [configuration reference](/reference/configuration) shows the store with eac
 ## Pure plugins
 
 A **pure** capability gets data and returns data. Its provider does not read the database, files or other parts of
-piloop: piloop gives it all that it needs as arguments. A pure provider imports only the Python standard library and
-the **contract** of its capability, the module that defines the types that the provider gets and returns. Because of
+piloop: piloop gives it all that it needs as arguments. A pure provider imports only the Python standard library and,
+from `piloop.capabilities`, the **contract** of its capability (the types that the provider gets and returns) and the
+built-in providers that it calls. Because of
 this, piloop can later run the same provider in another process, or as a WebAssembly component.
 
 The [verdict rules](#verdict-rules) and the [stop rules](#stop-conditions) are pure capabilities, and their examples
@@ -259,8 +267,8 @@ min_gain = 100
 
 ### The contract
 
-A verdict rule is a [pure](#pure-plugins) provider with one method: `decide(case: Case) -> Judgement`. The types are
-in `piloop.plugins.contracts.verdict`.
+A verdict rule is a [pure](#pure-plugins) provider with one method: `decide(case: Case) -> Judgement`. Import the
+types from `piloop.capabilities`.
 
 - `Case.primary`: the primary metric of the candidate's track, as a `Criterion` (name, direction, margin, floor).
 - `Case.guardrails`: the guardrail metrics, each a `Criterion`.
@@ -367,9 +375,8 @@ from typing import Literal
 
 from sqlalchemy import func, select
 
-from piloop.config import SweepRole
+from piloop.capabilities import Fire, SweepRole, Tick, Trigger
 from piloop.db.models import Candidate, Verdict, utcnow
-from piloop.triggers import Fire, Tick, Trigger
 
 
 class NoKeep(Trigger):
@@ -408,8 +415,7 @@ with its table in `piloop.toml` over the package's defaults, at its next `piloop
 A role is a table in `piloop.toml`: its prompt, when it starts (the run queue, or its triggers), where it works, how
 (harnesses, models, MCP servers, timeout, concurrency) and what it may file. A role that does runs (`runs = true`)
 takes ideas from the run queue, and its commits are scored and judged. A sweeping role starts on its triggers, and
-nothing it commits is scored. A plugin's role is a `piloop.config.SweepRole` or `piloop.config.ImplementerRole` with the
-defaults. [Roles](/concepts/roles) describes each key.
+nothing it commits is scored. A plugin's role is a `SweepRole` or an `ImplementerRole` with the defaults. [Roles](/concepts/roles) describes each key.
 
 ### Built in
 
@@ -427,10 +433,11 @@ code of its own comes from a plugin: see `no_keep` above.
 ### The contract
 
 A trigger is an entry of `[roles.<name>] triggers`: `{ kind = "<trigger>", <parameter> = <value> }`. A plugin's
-trigger is a subclass of `piloop.triggers.Trigger`: its fields are its parameters. On each tick, for each sweeping role
+trigger is a subclass of `Trigger`: its fields are its parameters. On each tick, for each sweeping role
 without a pending request, the daemon calls `fire(tick)` of each trigger of the role in order. It returns a `Fire`
-(the reason, how many agents) or None, and reads with `tick` (`piloop.triggers.Tick`: the session, the campaign, the
-role and the queries of the built-in triggers). A trigger with `ON_STOP` fires only on the tick that stops the
+(the reason, how many agents) or None, and reads with `tick` (a `Tick`: the session, the campaign, the role and the
+queries of the built-in triggers). The rows that it reads are the models of `piloop.db.models`, the
+[data model](/architecture/data-model). A trigger with `ON_STOP` fires only on the tick that stops the
 campaign.
 
 ### Built in
@@ -575,7 +582,7 @@ keeps = 3
 
 ### The contract
 
-A stop rule is a [pure](#pure-plugins) provider with two methods. The types are in `piloop.plugins.contracts.stop`.
+A stop rule is a [pure](#pure-plugins) provider with two methods. Import the types from `piloop.capabilities`.
 
 - `reads(limits, parameters) -> list[Fact]`: the facts that the rule needs. Most facts cost database queries on every
   tick, so piloop gets only these.
@@ -635,8 +642,7 @@ The verdict rule `min_gain` (in [Verdict rules](#verdict-rules)) does this:
    and a note. Otherwise it returns the `Judgement` of `bootstrap`.
 
 ```python
-from piloop.plugins.builtin.verdict import BOOTSTRAP
-from piloop.plugins.contracts.verdict import Case, Judgement, Outcome
+from piloop.capabilities import BOOTSTRAP, Case, Judgement, Outcome
 
 
 class MinGain:
@@ -651,9 +657,9 @@ class MinGain:
 
 ### Where to import the built-in providers
 
-You import a built-in provider from the path of its entry point. The table shows each capability of piloop, where
-the configuration selects its provider, and the path of each built-in provider. These paths do not change unless the
-contract of the capability changes.
+You import a built-in provider from `piloop.capabilities`, by the name of the attribute that its entry point names.
+The table shows each capability of piloop with its name in that module, where the configuration selects its provider,
+and the name of each built-in provider. These names do not change unless the contract of the capability changes.
 
 <Capabilities />
 
@@ -696,7 +702,7 @@ checks = ["no_unit_regression"]
 
 ### How to declare a capability
 
-1. Make a `Capability`, or a `PureCapability` with its contract. Both are in `piloop.plugins.host`. Give it a name
+1. Make a `Capability`, or a `PureCapability` with its contract. Import both from `piloop.capabilities`. Give it a name
    (`verdict check`) and an entry point group for its providers (`piloop_verdict_checks.checks`).
 2. Add an entry point in `piloop.capabilities` that names it. The name of the entry point is the name of the concept
    (`verdict_check`).

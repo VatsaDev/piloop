@@ -7,8 +7,7 @@ an entry point in ``piloop_verdict_checks.checks``, and import this module for t
 
 from typing import Protocol
 
-from piloop.plugins.contracts.verdict import Case
-from piloop.plugins.host import PureCapability
+from piloop.capabilities import Case, PureCapability
 
 
 class VerdictCheck(Protocol):

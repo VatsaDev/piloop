@@ -8,8 +8,7 @@ those of ``bootstrap``.
 import json
 from dataclasses import dataclass
 
-from piloop.plugins.builtin.verdict import BOOTSTRAP
-from piloop.plugins.contracts.verdict import Case, Judgement, Outcome, number
+from piloop.capabilities import BOOTSTRAP, Case, Judgement, Outcome, number
 
 
 @dataclass(frozen=True)

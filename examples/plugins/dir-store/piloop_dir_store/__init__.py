@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 from typing import Literal
 
-from piloop.store import StorageBackend, StorageBackendConfig
+from piloop.capabilities import StorageBackend, StorageBackendConfig
 
 
 class DirConfig(StorageBackendConfig):

@@ -8,7 +8,6 @@ from datetime import timedelta
 from importlib.metadata import EntryPoint
 from pathlib import Path
 
-import piloop_stop_after_keeps
 import pytest
 from git.exc import GitCommandError
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -815,14 +814,10 @@ def imports_outside_the_standard_library(module: object) -> set[str]:
     return {m for m in imported if m.split('.')[0] not in sys.stdlib_module_names}
 
 
-def test_a_stop_rule_imports_only_the_standard_library_and_its_contract() -> None:
-    """``limits`` and the example plugin are pure providers: they read nothing of piloop's state."""
+def test_the_built_in_stop_rule_imports_only_the_standard_library_and_its_contract() -> None:
+    """``limits`` is a pure provider: it reads nothing of piloop's state. test_capabilities checks the example."""
     contracts = {'piloop.plugins.contracts.stop', 'piloop.plugins.contracts.verdict'}
     assert imports_outside_the_standard_library(limits_module) == contracts
-    assert imports_outside_the_standard_library(piloop_stop_after_keeps) == {
-        'piloop.plugins.builtin.stop',
-        'piloop.plugins.contracts.stop',
-    }, 'the example calls the built-in rule, as a plugin may'
 
 
 def test_limits_holds_while_the_spend_is_unknown_or_at_its_limit_and_a_hold_comes_before_a_stop() -> None:

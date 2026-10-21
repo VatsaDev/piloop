@@ -9,7 +9,6 @@ import json
 import sys
 from pathlib import Path
 
-import piloop_min_gain
 from inline_snapshot import snapshot
 from piloop_min_gain import MIN_GAIN
 
@@ -378,9 +377,3 @@ def test_the_example_rule_min_gain_delegates_to_bootstrap_and_holds_back_a_small
         'against candidate#73: accuracy 11 vs 10 (+1; aggregate: no per-unit results); guardrails: coverage 1000 vs'
         ' 1000 (+0; aggregate: no per-unit results) within its margin 10; the gain is below min_gain 2',
     )
-    tree = ast.parse(Path(piloop_min_gain.__file__ or '').read_text())
-    imported = {n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module is not None}
-    assert {m for m in imported if m.split('.')[0] not in sys.stdlib_module_names} == {
-        'piloop.plugins.contracts.verdict',
-        'piloop.plugins.builtin.verdict',
-    }, 'a plugin imports only the standard library, its contract and the built-in provider that it calls'

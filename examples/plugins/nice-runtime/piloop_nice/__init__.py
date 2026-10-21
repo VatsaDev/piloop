@@ -7,10 +7,7 @@ The agents of a long campaign then leave the CPU to your own work first. ``[runt
 from dataclasses import replace
 from typing import ClassVar
 
-from piloop.harnesses import Invocation
-from piloop.runtime import AgentSpec, Handle
-from piloop.runtime.subprocess import SubprocessRuntime
-from piloop.settings import runtime_settings
+from piloop.capabilities import AgentSpec, Handle, Invocation, SubprocessRuntime, runtime_settings
 
 
 class NiceRuntime(SubprocessRuntime):

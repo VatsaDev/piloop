@@ -8,8 +8,7 @@ compiler". It stops when enough candidates are kept. The rule calls the built-in
 import json
 from dataclasses import dataclass, replace
 
-from piloop.plugins.builtin.stop import LIMITS
-from piloop.plugins.contracts.stop import Fact, Go, Hold, Limits, Stop, StopCase
+from piloop.capabilities import LIMITS, Fact, Go, Hold, Limits, Stop, StopCase
 
 
 @dataclass(frozen=True)
