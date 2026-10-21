@@ -116,7 +116,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
 def test_an_older_piloop_refuses_a_database_a_newer_one_migrated(tmp_path: Path) -> None:
     path = tmp_path / 'piloop.db'
     engine = create_engine(f'sqlite:///{path}')
-    migrate(engine, backups=0)
+    migrate(engine, backups=0, daemon=None)
     head = ScriptDirectory.from_config(alembic(path)).get_current_head()
     with closing(sqlite3.connect(path)) as con:
         con.execute("UPDATE alembic_version SET version_num = '9999_from_the_future'")
@@ -124,10 +124,10 @@ def test_an_older_piloop_refuses_a_database_a_newer_one_migrated(tmp_path: Path)
     this = re.escape(installed())
     with pytest.raises(
         SchemaAhead,
-        match=rf'revision 9999_from_the_future, which this {this} does not know \(it knows up to {head}\): a newer '
-        r'piloop migrated it\. Install a newer piloop \(`piloop upgrade`\), or set PILOOP_HOME to another directory\.$',
+        match=rf'revision 9999_from_the_future, and this {this} knows up to {head}: this database was migrated by a'
+        r' newer piloop: install it \(`piloop upgrade` installs the latest\), or set PILOOP_HOME to another directory$',
     ):
-        migrate(engine, backups=0)
+        migrate(engine, backups=0, daemon=None)
     engine.dispose()
 
 
@@ -136,14 +136,14 @@ def test_a_migration_first_backs_up_the_database_and_keeps_the_newest_backups(tm
     is at, and removes the oldest copies beyond ``backups``. Nothing pending, a new database or ``backups=0``: none."""
     path = tmp_path / 'piloop.db'
     engine = create_engine(f'sqlite:///{path}')
-    assert migrate(engine, backups=2) is None, 'a new database has nothing to lose'
+    assert migrate(engine, backups=2, daemon=None) is None, 'a new database has nothing to lose'
     command.downgrade(alembic(path), '0016')
     with closing(sqlite3.connect(path)) as con:
         con.execute("INSERT INTO campaigns (name, path, config) VALUES ('kept', '/p', '{}')")
         con.commit()
     for old in ('0001-20250101T000000Z', '0002-20250102T000000Z'):
         (tmp_path / f'piloop.db.bak-{old}').write_bytes(b'an older backup')
-    backup = migrate(engine, backups=2)
+    backup = migrate(engine, backups=2, daemon=None)
     assert backup is not None and re.fullmatch(r'piloop\.db\.bak-0016-\d{8}T\d{6}Z', backup.name), backup
     with closing(sqlite3.connect(f'file:{backup}?mode=ro', uri=True)) as con:
         assert con.execute('SELECT version_num FROM alembic_version').fetchall() == [('0016',)]
@@ -153,10 +153,10 @@ def test_a_migration_first_backs_up_the_database_and_keeps_the_newest_backups(tm
         'piloop.db.bak-0002-20250102T000000Z',
         backup.name,
     ]
-    assert migrate(engine, backups=2) is None, 'at head: nothing to back up'
+    assert migrate(engine, backups=2, daemon=None) is None, 'at head: nothing to back up'
     command.downgrade(alembic(path), '0016')
-    assert migrate(engine, backups=0) is None and len(list(tmp_path.glob('piloop.db.bak-*'))) == 2
-    assert revision(engine) == ScriptDirectory.from_config(alembic(path)).get_current_head()
+    assert migrate(engine, backups=0, daemon=None) is None and len(list(tmp_path.glob('piloop.db.bak-*'))) == 2
+    assert revision(path) == ScriptDirectory.from_config(alembic(path)).get_current_head()
     engine.dispose()
 
 
@@ -170,11 +170,11 @@ def test_a_backup_that_fails_leaves_the_database_unmigrated_and_no_partial_copy(
     resource.setrlimit(resource.RLIMIT_FSIZE, (64 * 1024, limit[1]))
     try:
         with pytest.raises(BackupFailed, match=r'could not back up .*, so it was not migrated: free some space'):
-            migrate(engine, backups=3)
+            migrate(engine, backups=3, daemon=None)
     finally:
         resource.setrlimit(resource.RLIMIT_FSIZE, limit)
         signal.signal(signal.SIGXFSZ, previous)
-    assert revision(engine) == '0016' and list(tmp_path.glob('piloop.db.bak-*')) == []
+    assert revision(path) == '0016' and list(tmp_path.glob('piloop.db.bak-*')) == []
     engine.dispose()
 
 
@@ -250,8 +250,8 @@ def test_concurrent_migrations_of_a_fresh_database_run_one_at_a_time(
 
     monkeypatch.setattr(command, 'upgrade', gated)
     engines = [create_engine(f'sqlite:///{path}') for _ in range(2)]
-    first = threading.Thread(target=migrate, args=(engines[0],), kwargs={'backups': 0}, name='first')
-    second = threading.Thread(target=migrate, args=(engines[1],), kwargs={'backups': 0}, name='second')
+    first = threading.Thread(target=migrate, args=(engines[0],), kwargs={'backups': 0, 'daemon': None}, name='first')
+    second = threading.Thread(target=migrate, args=(engines[1],), kwargs={'backups': 0, 'daemon': None}, name='second')
     first.start()
     assert inside.wait(5)
     second.start()
@@ -261,7 +261,7 @@ def test_concurrent_migrations_of_a_fresh_database_run_one_at_a_time(
     first.join(5)
     second.join(5)
     head = ScriptDirectory.from_config(alembic(path)).get_current_head()
-    assert entered == ['first', 'second'] and revision(engines[0]) == head
+    assert entered == ['first', 'second'] and revision(path) == head
     for engine in engines:
         engine.dispose()
 

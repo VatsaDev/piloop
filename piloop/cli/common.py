@@ -17,9 +17,16 @@ from sqlalchemy.orm import Session
 
 from piloop.campaign.campaigns import checked_out, find
 from piloop.campaign.ops import Refused
-from piloop.daemon.serve import OlderDaemon, refuse_older_daemon
+from piloop.daemon.serve import running_pid
 from piloop.db.models import Campaign, CampaignStatus
-from piloop.db.session import BackupFailed, Database, SchemaAhead, migrate as migrate_schema
+from piloop.db.session import (
+    BackupFailed,
+    Database,
+    OlderDaemon,
+    SchemaAhead,
+    migrate as migrate_schema,
+    schema_mismatch,
+)
 from piloop.reports.feed import PROTOCOL
 from piloop.settings import settings
 
@@ -51,11 +58,16 @@ def json_error(code: str, message: str) -> SystemExit:
 
 
 @contextmanager
-def session() -> Generator[Session]:
-    """Open and migrate the database, and yield one session for the command."""
+def session(*, create: bool = False) -> Generator[Session]:
+    """Open the database, which must be at the schema of this piloop (``refuse_other_schema``), and yield one session.
+
+    With ``create`` (``piloop init``), a database that does not exist yet is created at head first.
+    """
     db = Database(settings.database_url, actor=settings.actor)
-    migrate(db)
     try:
+        if create and not (settings.home / 'piloop.db').is_file():
+            migrate(db)
+        refuse_other_schema()
         with db.session() as s:
             yield s
     finally:
@@ -80,20 +92,26 @@ def campaigns(s: Session, ref: str | None) -> list[Campaign]:
     return list(active) if len(active) == 1 else list(s.scalars(select(Campaign)).all())
 
 
-def migrate(db: Database) -> Path | None:
-    """Migrate the database to head, or close it and exit when its schema is ahead of this piloop.
+def refuse_other_schema() -> None:
+    """Exit, without a change, unless the database exists and is at the schema of this piloop.
 
-    It also exits, without a change, under the running daemon of an older piloop (``refuse_older_daemon``), and when
-    the backup before a migration fails. Returns that backup, if it wrote one.
+    Only ``piloop serve``, ``piloop migrate`` and ``piloop upgrade`` migrate (``migrate``), and only ``piloop init``
+    creates a missing database. Every other command calls this before it opens the database. The message names the
+    revision found, the one this piloop knows, and what to run.
+    """
+    if (e := schema_mismatch(settings.home / 'piloop.db', running_pid(settings))) is not None:
+        raise SystemExit(str(e)) from e
+
+
+def migrate(db: Database) -> Path | None:
+    """Migrate the database to head, with a backup first, and return the backup. Create it when it does not exist.
+
+    It exits, without a change, under the running daemon of an older piloop, when the database is ahead of this piloop,
+    and when the backup fails.
     """
     try:
-        refuse_older_daemon(settings, db.engine)
-    except OlderDaemon as e:
-        db.close()
-        raise SystemExit(str(e)) from e
-    try:
-        return migrate_schema(db.engine, backups=settings.migration_backups)
-    except (SchemaAhead, BackupFailed) as e:
+        return migrate_schema(db.engine, backups=settings.migration_backups, daemon=running_pid(settings))
+    except (OlderDaemon, SchemaAhead, BackupFailed) as e:
         db.close()
         raise SystemExit(str(e)) from e
 

@@ -17,7 +17,6 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from alembic.script import ScriptDirectory
 from pydantic import ValidationError
 
 import piloop
@@ -27,7 +26,7 @@ from piloop.config import CampaignConfig, ConfigError, explain, load_campaign_co
 from piloop.daemon.main import preflight, unbound_failures
 from piloop.daemon.serve import SECRETS_COMMAND_ENV, SecretsError, running_pid, secrets
 from piloop.db.models import utcnow
-from piloop.db.session import MIGRATIONS, SchemaAhead, ahead
+from piloop.db.session import head, schema_mismatch
 from piloop.plugins.contracts.runtime import RUNTIMES
 from piloop.plugins.host import PluginError, declared
 from piloop.proc import child_env, environment
@@ -121,30 +120,10 @@ def _plugins(cfg: Settings) -> Check:
 
 
 def _database(path: Path, daemon: int | None) -> Check:
-    if not path.is_file():
-        return Check('database', f'none at {path}', '`piloop init <repo>` creates it with the first campaign')
-    if (newer := schema_ahead(path)) is not None:
-        return Check('database', str(newer), '`piloop upgrade`, or set PILOOP_HOME to the home of a newer piloop')
-    head, at = ScriptDirectory(str(MIGRATIONS)).get_current_head(), _revision(path)
-    if at == head:
-        return Check('database', f'{path} at schema {head}, current')
-    found = f'{path} at schema {at or "none"}, this piloop is at {head}; its campaigns are checked once it is migrated'
-    if daemon is not None:  # it runs an older piloop, which a migration would break: piloop migrate refuses
-        return Check(
-            'database', found, f'`piloop restart` restarts the daemon (pid {daemon}) on this piloop, which migrates'
-        )
-    return Check('database', found, '`piloop migrate`')
-
-
-def schema_ahead(path: Path) -> SchemaAhead | None:
-    """Return the error for a database that a newer piloop migrated, else None. Reads it read-only.
-
-    ``piloop sql`` checks this before it connects, because it does not migrate.
-    """
-    at = _revision(path) if path.is_file() else None
-    if at is None or at in {s.revision for s in ScriptDirectory(str(MIGRATIONS)).walk_revisions()}:
-        return None
-    return ahead(path, at)
+    """Report the schema as the commands that refuse it do (``schema_mismatch``). It never migrates."""
+    if (e := schema_mismatch(path, daemon)) is not None:
+        return Check('database', e.found, e.fix)
+    return Check('database', f'{path} at schema {head()}, current')
 
 
 def _campaign(name: str, path: str, stored: CampaignConfig | ValidationError) -> Check:
@@ -262,15 +241,6 @@ def _runtimes(configs: list[CampaignConfig]) -> list[Check]:
         for kind in c.runtimes:
             executables.setdefault(kind, set()).update(programs)
     return [check for kind, found in sorted(executables.items()) for check in RUNTIMES.get(kind).checks(found)]
-
-
-def _revision(path: Path) -> str | None:
-    with closing(_read_only(path)) as con:
-        try:
-            row = con.execute('SELECT version_num FROM alembic_version').fetchone()
-        except sqlite3.OperationalError:  # never migrated, so there is no alembic_version table
-            return None
-    return row[0] if row else None
 
 
 def stored_campaigns(path: Path) -> list[tuple[str, str, CampaignConfig | ValidationError]]:

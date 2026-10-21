@@ -11,7 +11,6 @@ from piloop.cli import common
 from piloop.config import config_of
 from piloop.daemon.main import Daemon, preflight
 from piloop.daemon.serve import (
-    OlderDaemon,
     restart as restart_in_place,
     running_pid,
     service_unit,
@@ -19,7 +18,7 @@ from piloop.daemon.serve import (
     terminate,
 )
 from piloop.db.models import Campaign
-from piloop.db.session import BackupFailed, SchemaAhead
+from piloop.db.session import BackupFailed, OlderDaemon, SchemaAhead
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.plugins.host import PluginError
 from piloop.proc import Inherited

@@ -35,7 +35,7 @@ def test_every_trigger_is_one_statement_named_table_what_and_references_real_col
     """sqlite3 executes one statement at a time, so each render must be exactly one; the names are the convention."""
     path = tmp_path / 'piloop.db'
     engine = create_engine(f'sqlite:///{path}')
-    migrate(engine, backups=0)
+    migrate(engine, backups=0, daemon=None)
     engine.dispose()
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         con.execute(provenance.SESSION_ACTOR_TABLE)
@@ -153,7 +153,7 @@ def test_recreate_is_a_filter_over_persistent_that_honours_requires(
     """
     path = tmp_path / 'piloop.db'
     engine = create_engine(f'sqlite:///{path}')
-    migrate(engine, backups=0)
+    migrate(engine, backups=0, daemon=None)
     with engine.begin() as conn:
         op = Operations(MigrationContext.configure(conn))
         for t in PERSISTENT:

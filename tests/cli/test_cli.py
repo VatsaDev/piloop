@@ -25,7 +25,7 @@ from piloop.campaign.ideas import defined_by, runnable
 from piloop.cli import campaign as campaign_cli, common, inbox as inbox_cli, main as cli
 from piloop.config import ConfigError
 from piloop.daemon.main import Daemon
-from piloop.daemon.serve import acquire, refuse_older_daemon, running_pid
+from piloop.daemon.serve import acquire, running_pid
 from piloop.db import sql
 from piloop.db.models import (
     AgentSession,
@@ -47,7 +47,7 @@ from piloop.db.models import (
     Verdict,
     utcnow,
 )
-from piloop.db.session import Database
+from piloop.db.session import Database, migrate
 from piloop.runtime import herdr
 from piloop.runtime.herdr import HerdrSettings
 from piloop.scoring.ledger import REMEASURE_REQUESTED
@@ -457,17 +457,6 @@ def test_sql_and_status_while_another_client_holds_the_write_lock(
     holder = rf' \(pid {writer.pid} holds the write lock: ' if sys.platform == 'linux' else ''  # from /proc/locks
     with pytest.raises(SystemExit, match=rf'^sql error: database is locked{holder}'):
         run_cli(['sql', "UPDATE campaigns SET name = 'x'"])
-
-
-def test_sql_refuses_a_database_that_a_newer_piloop_migrated(campaign_path: Path, out) -> None:
-    """An older CLI reads and writes nothing in a newer schema: it would write rows that the newer code misreads."""
-    run_cli(['init', str(campaign_path)])
-    database = common.settings.home / 'piloop.db'
-    with closing(sqlite3.connect(database)) as con:
-        con.execute("UPDATE alembic_version SET version_num = '9999_from_the_future'")
-        con.commit()
-    with pytest.raises(SystemExit, match=r'revision 9999_from_the_future, which this piloop .* does not know'):
-        run_cli(['sql', 'SELECT id FROM campaigns'])
 
 
 def test_sql(campaign_path: Path, out) -> None:
@@ -1448,7 +1437,7 @@ def test_doctor_exits_non_zero_on_a_failed_check_and_writes_nothing(fake_bins, o
     assert exited.value.code == 1
     assert out().splitlines()[1:3] == [
         'ok    daemon: not running',
-        f'FAIL  database: none at {common.settings.home}/piloop.db',
+        f'FAIL  database: {common.settings.home}/piloop.db does not exist',
     ]
     assert not common.settings.home.joinpath('piloop.db').exists(), 'no database appears'
     run_cli(['migrate'])
@@ -1586,53 +1575,109 @@ def test_restart_and_upgrade_keep_the_daemon_running_when_the_code_would_not_sta
     reaper.join()
 
 
-def test_a_newer_cli_does_not_migrate_the_database_under_an_older_daemon(out) -> None:
-    database = common.settings.home / 'piloop.db'
-    database.unlink()
-    command.upgrade(alembic(database), '0015')
-    for daemon in hold_lock(common.settings.pid_file):
-        for argv in (['status'], ['migrate']):
-            with pytest.raises(
-                SystemExit,
-                match=rf'the daemon \(pid {daemon.pid}\) runs an older piloop: .* at schema'
-                rf' revision 0015, .* to {HEAD} under the daemon\. Run `piloop upgrade`',
-            ):
-                run_cli(argv)
-        assert revision_of(database) == '0015', 'nothing changed'
-    out()
-    run_cli(['migrate'])
-    [backup] = database.parent.glob('piloop.db.bak-0015-*')
-    assert out().strip() == f'schema: 0015 → {HEAD}; backup of 0015: {backup}', 'without the daemon, the CLI migrates'
-    for _ in hold_lock(common.settings.pid_file):
-        run_cli(['status'])  # at head: a daemon of the same piloop is no reason to refuse
-
-
 def revision_of(database: Path) -> str:
     with closing(sqlite3.connect(database)) as con:
         return con.execute('SELECT version_num FROM alembic_version').fetchone()[0]
 
 
-def test_serve_and_sql_change_nothing_under_the_daemon_of_an_older_piloop(out) -> None:
+def test_an_in_place_restart_holds_the_lock_itself_and_migrates() -> None:
     database = common.settings.home / 'piloop.db'
-    database.unlink()
-    command.upgrade(alembic(database), '0001')  # what 0.1.0 leaves
-    with pytest.raises(SystemExit, match=r'at schema revision 0001, and this piloop .* run `piloop migrate` first$'):
-        run_cli(['sql', 'SELECT 1'])
-    for daemon in hold_lock(common.settings.pid_file):
-        for argv in (['serve'], ['sql', 'SELECT 1']):
-            with pytest.raises(SystemExit, match=rf'^the daemon \(pid {daemon.pid}\) runs an older piloop'):
-                run_cli(argv)
-        with pytest.raises(SystemExit, match=rf'a daemon is already running \(pid {daemon.pid}'):
-            run_cli(['serve', '--detach'])
-        assert revision_of(database) == '0001', 'neither the daemon nor the command migrated under it'
-
-
-def test_an_in_place_restart_holds_the_lock_itself_and_migrates(tmp_path: Path) -> None:
-    database = common.settings.home / 'piloop.db'
-    database.unlink()
-    command.upgrade(alembic(database), '0001')
+    command.downgrade(alembic(database), '0016')
     fd = acquire(common.settings)
     try:
-        refuse_older_daemon(common.settings, create_engine(f'sqlite:///{database}'))  # its own lock: no refusal
+        migrate(create_engine(f'sqlite:///{database}'), backups=0, daemon=running_pid(common.settings))
     finally:
         os.close(fd)
+    assert revision_of(database) == HEAD
+
+
+READERS = (
+    ['status'],
+    ['sql', 'SELECT 1'],
+    ['watch'],
+    ['inbox'],
+    ['events'],
+    ['campaign', 'tree'],
+    ['idea', 'add', 'demo', 'a title'],
+)
+"""Commands that open the database and must never migrate it: only serve, migrate and upgrade do."""
+
+
+def refuse_each(argv_list: tuple[list[str], ...], database: Path, match: str) -> None:
+    """Run each command, expect a refusal that ``match``es, and check that the database file did not change."""
+    before = database.read_bytes()
+    for argv in argv_list:
+        with pytest.raises(SystemExit, match=match):
+            run_cli(argv)
+        assert database.read_bytes() == before, f'piloop {" ".join(argv)} changed the database'
+
+
+def test_the_commands_that_read_refuse_a_database_behind_this_piloop_and_change_nothing(
+    campaign_path: Path, out, mocker: MockerFixture
+) -> None:
+    run_cli(['init', str(campaign_path)])
+    database = common.settings.home / 'piloop.db'
+    command.downgrade(alembic(database), '0016')
+    mocker.patch('piloop.cli.campaign.sys.stdin').isatty.return_value = True
+    behind = rf'^{re.escape(str(database))} is at schema revision 0016, and this piloop .* knows {HEAD}'
+    refuse_each(
+        (*READERS, ['init', str(campaign_path)]), database, rf'{behind}: run `piloop migrate`, which backs it up first$'
+    )
+    for daemon in hold_lock(common.settings.pid_file):  # a daemon of the older piloop, however it was started
+        refuse_each(
+            READERS,
+            database,
+            rf'{behind}: the daemon \(pid {daemon.pid}\) runs an older piloop. `piloop restart` restarts it on this'
+            ' piloop, which migrates it$',
+        )
+    assert revision_of(database) == '0016' and not list(database.parent.glob('piloop.db.bak-*'))
+
+
+def test_the_commands_that_read_refuse_a_database_that_a_newer_piloop_migrated(campaign_path: Path, mocker) -> None:
+    run_cli(['init', str(campaign_path)])
+    database = common.settings.home / 'piloop.db'
+    with closing(sqlite3.connect(database)) as con:
+        con.execute("UPDATE alembic_version SET version_num = '9999_from_the_future'")
+        con.commit()
+    mocker.patch('piloop.cli.campaign.sys.stdin').isatty.return_value = True
+    refuse_each(
+        (*READERS, ['init', str(campaign_path)], ['migrate'], ['serve']),
+        database,
+        rf'is at schema revision 9999_from_the_future, and this piloop .* knows up to {HEAD}: this database was'
+        ' migrated by a newer piloop: install it',
+    )
+
+
+@pytest.mark.usefixtures('no_database')
+def test_only_init_creates_a_missing_database_and_the_readers_say_so(campaign_path: Path, out) -> None:
+    database = common.settings.home / 'piloop.db'
+    for argv in READERS:
+        if argv != ['watch']:  # watch first needs a terminal
+            with pytest.raises(SystemExit, match=rf'^{re.escape(str(database))} does not exist: `piloop init <repo>`'):
+                run_cli(argv)
+    assert not database.exists(), 'no command but init, serve and migrate creates it'
+    run_cli(['init', str(campaign_path)])
+    assert revision_of(database) == HEAD
+
+
+def test_serve_and_migrate_refuse_under_a_daemon_that_a_service_manager_started(out) -> None:
+    """The lock is the daemon's, whoever started it: systemd and launchd run `piloop serve`, which takes it."""
+    database = common.settings.home / 'piloop.db'
+    command.downgrade(alembic(database), '0016')
+    for daemon in hold_lock(
+        common.settings.pid_file
+    ):  # not a child of `serve --detach`: as a service manager starts it
+        refuse_each(
+            (['serve'], ['migrate']),
+            database,
+            rf'^the daemon \(pid {daemon.pid}\) runs an older piloop: the database is at schema revision 0016, and'
+            rf' this piloop .* would migrate it to {HEAD} under the daemon\. Run `piloop upgrade`',
+        )
+        with pytest.raises(SystemExit, match=rf'a daemon is already running \(pid {daemon.pid}'):
+            run_cli(['serve', '--detach'])
+    assert revision_of(database) == '0016' and not list(database.parent.glob('piloop.db.bak-*'))
+    run_cli(['migrate'])
+    [backup] = database.parent.glob('piloop.db.bak-0016-*')
+    assert out().strip() == f'schema: 0016 → {HEAD}; backup of 0016: {backup}', 'without the daemon, it migrates'
+    for _ in hold_lock(common.settings.pid_file):
+        run_cli(['status'])  # at head: a daemon of the same piloop is no reason to refuse

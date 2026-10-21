@@ -115,6 +115,11 @@ A deprecated configuration key shows a warning for at least one minor release be
 
 ### Changed
 
+- Only `piloop serve` (when it starts), `piloop migrate` and `piloop upgrade` migrate the database. Every other
+  command, such as `status`, `sql`, `inbox` and `watch`, refuses a database at another schema revision without
+  changing it, and says what to run: `piloop migrate`, `piloop restart` under the daemon of an older piloop, or a
+  newer piloop when a newer one migrated it. `piloop init` still creates a missing database. **Breaking**: after an
+  install that changes the schema, run `piloop upgrade` or `piloop migrate` before other commands.
 - Events are append-only for every piloop connection, `piloop sql` included: an UPDATE or a DELETE of `events` is
   refused, and so is an insert that sets its own id, or whose kind, actor, target id, time or payload is not of its
   type. An event id is a reader's cursor, and SQLite reuses the ids of deleted newest rows.

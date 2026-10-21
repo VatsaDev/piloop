@@ -104,16 +104,17 @@ def test_a_daemon_started_before_the_code_changed_still_runs_the_old_code(cfg: S
 def test_a_database_missing_unmigrated_behind_or_ahead_says_which_command_brings_it_to_head(cfg: Settings) -> None:
     path = cfg.home / 'piloop.db'
     assert by_name(cfg)['database'] == Check(
-        'database', f'none at {path}', '`piloop init <repo>` creates it with the first campaign'
+        'database', f'{path} does not exist', '`piloop init <repo>` creates it with the first campaign'
     )
     path.touch()
-    behind = f'{path} at schema none, this piloop is at {HEAD}; its campaigns are checked once it is migrated'
-    assert by_name(cfg)['database'] == Check('database', behind, '`piloop migrate`')
+    behind = f'{path} is at schema revision none, and this {installed()} knows {HEAD}'
+    assert by_name(cfg)['database'] == Check('database', behind, 'run `piloop migrate`, which backs it up first')
     for daemon in hold_lock(cfg.pid_file):
         assert by_name(cfg)['database'] == Check(
             'database',
             behind,
-            f'`piloop restart` restarts the daemon (pid {daemon.pid}) on this piloop, which migrates',
+            f'the daemon (pid {daemon.pid}) runs an older piloop. `piloop restart` restarts it on this piloop, which'
+            ' migrates it',
         ), 'piloop migrate refuses under the daemon of an older piloop'
     command.upgrade(alembic(path), 'head')
     assert by_name(cfg)['database'] == Check('database', f'{path} at schema {HEAD}, current')
@@ -122,8 +123,12 @@ def test_a_database_missing_unmigrated_behind_or_ahead_says_which_command_brings
         con.commit()
     before = path.read_bytes()
     ahead = by_name(cfg)['database']
-    assert ahead.found.startswith(f'{path} is at schema revision 9999_from_the_future, which this {installed()}')
-    assert ahead.fix == '`piloop upgrade`, or set PILOOP_HOME to the home of a newer piloop'
+    assert ahead == Check(
+        'database',
+        f'{path} is at schema revision 9999_from_the_future, and this {installed()} knows up to {HEAD}',
+        'this database was migrated by a newer piloop: install it (`piloop upgrade` installs the latest), or set'
+        ' PILOOP_HOME to another directory',
+    )
     assert path.read_bytes() == before and not (cfg.home / 'piloop.db-wal').exists(), 'opened read-only'
 
 

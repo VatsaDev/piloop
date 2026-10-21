@@ -20,7 +20,8 @@ Commands that write sign their writes with `PILOOP_ACTOR` (`human` by default). 
 piloop init [PATH] [--example enwik8|titanic-tracks]
 ```
 
-Makes `PATH` (default `.`) a piloop campaign and registers it. It is safe to run again.
+Makes `PATH` (default `.`) a piloop campaign and registers it. It is safe to run again. When there is no database
+yet, it creates one with the schema of this CLI.
 
 - Runs `git init` and makes a baseline commit when necessary.
 - When there is no `piloop.toml`, writes `piloop.toml`, `brief.md` and `evaluate.py` from the template. It keeps
@@ -61,8 +62,9 @@ how long to wait for the daemon to come back. See [Upgrading](/guides/upgrading)
 
 ### piloop migrate
 
-Brings the database to the schema of this CLI and prints what changed. The daemon and every command that reads or
-writes campaigns do this silently when they start. `piloop doctor` and `piloop sql` do not.
+Brings the database to the schema of this CLI and prints what changed. It backs up the database first. Only this
+command, `piloop serve` when it starts, and `piloop upgrade` migrate the database. Every other command refuses a
+database at another schema revision and says what to run. See [Upgrading](/guides/upgrading#the-database).
 
 ## The daemon
 

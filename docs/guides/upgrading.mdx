@@ -58,9 +58,20 @@ Each failure says how to fix it, often with the command to run.
 
 ## The database
 
-The daemon, and every command that reads or writes campaigns (such as `init`, `status`, `inbox` and `watch`), migrates
-the database to its own schema when it starts. `piloop doctor` and `piloop sql` do not. You never recreate the
-database by hand. `piloop migrate` migrates it and prints what changed, for example `schema: 0001 → 0002`.
+Three commands migrate the database to the schema of their piloop: `piloop migrate`, `piloop upgrade`, and
+`piloop serve` when the daemon starts. `piloop migrate` prints what changed, for example `schema: 0001 → 0002`. You
+never recreate the database by hand.
+
+Every other command, such as `status`, `sql`, `inbox`, `watch` and `init`, opens the database only when its schema is
+the one that this piloop knows. Otherwise it changes nothing, and exits with the revision that it found, the one that
+it knows, and what to run:
+
+- The database is older, and no daemon runs: run `piloop migrate`.
+- The database is older, and a daemon runs: the daemon runs an older piloop. Run `piloop restart` to restart it on
+  this piloop, which migrates the database.
+- The database is newer: a newer piloop migrated it. Install that piloop, for example with `piloop upgrade`.
+
+`piloop init` creates the database when there is none. `piloop doctor` reports the same, and never migrates.
 
 Before it migrates, piloop writes a copy of the database next to it, as the old schema left it:
 `$PILOOP_HOME/piloop.db.bak-<revision>-<UTC time>`, for example `piloop.db.bak-0001-20261021T002254Z`. `piloop migrate`
@@ -68,12 +79,10 @@ and `piloop upgrade` print where it is, and the daemon's log names it in its `pi
 newest copies; `migration_backups` in `config.toml` sets how many, and `0` writes none. Each copy is about the size of
 the database. When the copy cannot be written, for example on a full disk, nothing is migrated, and the error says so.
 
-While a daemon of an older piloop runs, a newer piloop does not migrate the database, because the daemon would break
-on the new schema: it exits and says what to run. `piloop upgrade` restarts the daemon on the new code first, and the
-daemon migrates the database when it starts.
-
-An older piloop refuses to open a database that a newer one migrated, `piloop sql` included. The error names the
-database's schema revision and the newest one that this piloop knows: install a newer piloop (`piloop upgrade`).
+While a daemon of an older piloop runs, `piloop migrate` and `piloop serve` do not migrate the database, because the
+daemon would break on the new schema: they exit and say what to run. This holds for any daemon, whether a shell,
+systemd or launchd started it. `piloop upgrade` restarts the daemon on the new code first, and the daemon migrates the
+database when it starts.
 
 ### Restore from the backup
 
@@ -187,8 +196,7 @@ Before 1.0, a minor release may contain breaking changes. These interfaces chang
   See [Deprecated configuration keys](#deprecated-configuration-keys).
 - The contract of the [evaluate command](/concepts/campaigns#the-evaluate-command): the `METRIC <name>=<value>` lines,
   the exit status and the per-unit results file.
-- The [database schema](/reference/schema), as `piloop sql` shows it. Each release migrates the database forward
-  automatically.
+- The [database schema](/reference/schema), as `piloop sql` shows it. `piloop upgrade` migrates the database forward.
 
 The Python import API (the modules of the `piloop` package) is not stable. It can change in any release. To script
 piloop, use the CLI and `piloop sql`.

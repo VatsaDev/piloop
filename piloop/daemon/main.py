@@ -13,13 +13,12 @@ from piloop.daemon.serve import (
     RESTART_SIGNAL,
     SECRETS_COMMAND_ENV,
     SERVE_ARGV,
-    OlderDaemon,
     SecretsError,
     acquire,
-    refuse_older_daemon,
+    running_pid,
     secrets,
 )
-from piloop.db.session import BackupFailed, Database, SchemaAhead, migrate
+from piloop.db.session import BackupFailed, Database, OlderDaemon, SchemaAhead, migrate
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Span, tracer
 from piloop.plugins import host as plugins
@@ -87,8 +86,7 @@ class Daemon:
         """The children an in-place restart handed over (``piloop.proc.Inherited``): reaped on every tick."""
         self.db = Database(cfg.database_url, actor=ACTOR)
         try:
-            refuse_older_daemon(cfg, self.db.engine)
-            self._backup = migrate(self.db.engine, backups=cfg.migration_backups)
+            self._backup = migrate(self.db.engine, backups=cfg.migration_backups, daemon=running_pid(cfg))
         except OlderDaemon, SchemaAhead, BackupFailed:
             self.db.close()
             raise

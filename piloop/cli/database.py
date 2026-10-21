@@ -9,14 +9,11 @@ from typing import Annotated
 import cyclopts
 from rich.table import Table
 from rich.text import Text
-from sqlalchemy import create_engine
 
 from piloop.agents.roles import PROCEDURES, PROMPTS
-from piloop.cli import common, doctor
-from piloop.daemon.serve import OlderDaemon, refuse_older_daemon
+from piloop.cli import common
 from piloop.db import sql
-from piloop.db.session import Database, backups, behind, head, revision
-from piloop.version import installed
+from piloop.db.session import Database, backups, revision
 
 
 def sql_cmd(
@@ -41,22 +38,8 @@ def sql_cmd(
         statement = sys.stdin.read()
         if not statement.strip():
             raise SystemExit('piloop sql - read no statement from stdin')
+    common.refuse_other_schema()
     database = common.settings.home / 'piloop.db'
-    if (newer := doctor.schema_ahead(database)) is not None:
-        raise SystemExit(str(newer))
-    plain = create_engine(f'sqlite:///{database}')
-    try:
-        refuse_older_daemon(common.settings, plain)
-        at = behind(plain)
-    except OlderDaemon as e:
-        raise SystemExit(str(e)) from e
-    finally:
-        plain.dispose()
-    if at is not None:  # it does not migrate: its statements and the actor triggers expect this piloop's schema
-        raise SystemExit(
-            f'the database is at schema revision {at}, and this {installed()} reads revision {head()}:'
-            ' run `piloop migrate` first'
-        )
     with closing(sql.connect(database, actor=common.settings.actor)) as con:
         try:
             result = sql.run(con, statement)
@@ -89,15 +72,15 @@ def _cell(value: object) -> str:
 def migrate_cmd() -> None:
     """Migrate the database to the schema of this piloop, and print what changed and where its backup is.
 
-    Before it migrates, it copies the database next to it (`migration_backups` in config.toml). The daemon and the
-    commands that read or change campaigns also migrate, with the same backup and without a message, when they start.
-    `piloop sql` and `piloop doctor` do not migrate.
+    Before it migrates, it copies the database next to it (`migration_backups` in config.toml). Only this command,
+    `piloop serve` when it starts and `piloop upgrade` migrate. Every other command refuses a database at another
+    schema revision, and says what to run. It refuses to migrate under the running daemon of an older piloop.
     """
     db = Database(common.settings.database_url, actor=common.settings.actor)
     try:
-        old = revision(db.engine)
+        old = revision(common.settings.home / 'piloop.db')
         backup = common.migrate(db)
-        new = revision(db.engine)
+        new = revision(common.settings.home / 'piloop.db')
     finally:
         db.close()
     if old == new:

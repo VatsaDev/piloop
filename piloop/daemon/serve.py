@@ -13,13 +13,9 @@ import time
 import warnings
 from collections.abc import Iterable
 
-from sqlalchemy import Engine
-
-from piloop.db.session import behind, head
 from piloop.harnesses import Harness
 from piloop.proc import PILOOP_ARGV, child_env, kill_group
 from piloop.settings import DEFAULT_HOME, Settings, env_names
-from piloop.version import installed
 
 SERVE_ARGV = [*PILOOP_ARGV, 'serve']
 """The command that starts the daemon. It uses the current interpreter, however the CLI was invoked."""
@@ -113,27 +109,6 @@ def running_pid(cfg: Settings) -> int | None:
     finally:
         os.close(fd)
     return int(text) if text.isdigit() else None
-
-
-class OlderDaemon(RuntimeError):
-    """A daemon of an older piloop runs, so this piloop must not migrate the database. The message says what to run."""
-
-
-def refuse_older_daemon(cfg: Settings, engine: Engine) -> None:
-    """Raise ``OlderDaemon`` when the database is behind this piloop and another process holds the daemon's lock.
-
-    Every piloop that migrates calls this first: the commands and ``piloop serve``. A daemon migrates the database when
-    it starts, so a running daemon at an older revision runs an older piloop, and the new schema would break it. An
-    in-place restart holds the lock itself, and migrates.
-    """
-    pid = running_pid(cfg)
-    if pid is None or pid == os.getpid() or (at := behind(engine)) is None:
-        return
-    raise OlderDaemon(
-        f'the daemon (pid {pid}) runs an older piloop: the database is at schema revision {at}, and this'
-        f' {installed()} would migrate it to {head()} under the daemon. Run `piloop upgrade`, which restarts the'
-        ' daemon on the new code, or `piloop restart` once its piloop is this one, or stop it with `piloop stop`.'
-    )
 
 
 class SecretsError(Exception):

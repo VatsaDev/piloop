@@ -1,8 +1,9 @@
 """Engine, sessions and migrations for the database.
 
 Migrations are append-only. Every schema change is a new revision
-(``uv run alembic revision --autogenerate -m "..."``), never an edit of an existing one. A new version of piloop
-migrates an existing database when it first opens it.
+(``uv run alembic revision --autogenerate -m "..."``), never an edit of an existing one. Only ``migrate`` changes the
+schema, and only ``piloop serve`` (when it starts) and ``piloop migrate`` (which ``piloop upgrade`` runs) call it. Every
+other command refuses a database at another revision (``schema_mismatch``) and changes nothing.
 """
 
 import fcntl
@@ -14,7 +15,6 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config as AlembicConfig
-from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from alembic.script.revision import ResolutionError
 from alembic.util.exc import CommandError
@@ -70,16 +70,38 @@ def make_engine(url: str, actor: str) -> Engine:
     return engine
 
 
-class SchemaAhead(RuntimeError):
+class SchemaMismatch(RuntimeError):
+    """The database is missing, or at a schema revision other than this piloop's. Nothing was changed.
+
+    Args:
+        found: What is wrong, with the revision found and the one that this piloop knows.
+        fix: What to run.
+    """
+
+    def __init__(self, found: str, fix: str) -> None:
+        super().__init__(f'{found}: {fix}')
+        self.found, self.fix = found, fix
+
+
+class SchemaAhead(SchemaMismatch):
     """A newer version of piloop migrated the database. Downgrades are not supported."""
+
+
+class OlderDaemon(RuntimeError):
+    """A daemon of an older piloop runs, so this piloop must not migrate the database. The message says what to run."""
 
 
 class BackupFailed(RuntimeError):
     """The copy of the database before a migration could not be written, so nothing was migrated."""
 
 
-def migrate(engine: Engine, *, backups: int) -> Path | None:
+def migrate(engine: Engine, *, backups: int, daemon: int | None) -> Path | None:
     """Migrate the database to the latest Alembic revision. Create it if it does not exist.
+
+    This is the only function that changes the schema. ``daemon`` is the pid that holds the daemon's lock
+    (``piloop.daemon.serve.running_pid``), whoever started it: a shell, systemd or launchd. When it is another process
+    and the database is behind this piloop, that daemon runs an older piloop (a daemon migrates when it starts), and
+    the new schema would break it, so this refuses. An in-place restart holds the lock itself, and migrates.
 
     Before it applies a revision to a database that has one, it writes a consistent copy of the database next to it,
     ``<database>.bak-<revision>-<UTC time>`` (``VACUUM INTO``), then removes the oldest copies beyond the newest
@@ -89,6 +111,7 @@ def migrate(engine: Engine, *, backups: int) -> Path | None:
         The copy, or None when nothing was applied or no copy was asked for.
 
     Raises:
+        OlderDaemon: Another process holds the daemon's lock, and the database is behind this piloop.
         SchemaAhead: The database is at a revision that this piloop does not know: an older CLI on a newer database.
         BackupFailed: The copy could not be written, for example on a full disk.
     """
@@ -100,15 +123,56 @@ def migrate(engine: Engine, *, backups: int) -> Path | None:
     copy = None
     try:
         with _migration_lock(path):
-            at = behind(engine)
+            at = behind(path)
+            if at is not None and daemon not in {None, os.getpid()}:
+                raise OlderDaemon(
+                    f'the daemon (pid {daemon}) runs an older piloop: the database is at schema revision {at}, and'
+                    f' this {installed()} would migrate it to {head()} under the daemon. Run `piloop upgrade`, which'
+                    ' restarts the daemon on the new code, or `piloop restart` once its piloop is this one, or stop it'
+                    ' with `piloop stop`.'
+                )
             if backups and at not in {None, 'none'}:
                 copy = _backup(path, at, backups)
             command.upgrade(cfg, 'head')
     except CommandError as e:
         if not isinstance(e.__cause__, ResolutionError):  # pragma: no cover - alembic fails here for no other reason
             raise
-        raise ahead(path, revision(engine)) from e
+        raise ahead(path, revision(path)) from e
     return copy
+
+
+def schema_mismatch(database: Path, daemon: int | None) -> SchemaMismatch | None:
+    """Return why a command other than ``piloop serve`` and ``piloop migrate`` must not open ``database``, else None.
+
+    It reads the database read-only, and never creates it. ``daemon`` is the pid that holds the daemon's lock: a
+    daemon behind this piloop is an older one, and its restart on this piloop migrates.
+    """
+    if not database.is_file():
+        return SchemaMismatch(f'{database} does not exist', '`piloop init <repo>` creates it with the first campaign')
+    at, script = revision(database), ScriptDirectory(str(MIGRATIONS))
+    if at == script.get_current_head():
+        return None
+    if at is not None and at not in {r.revision for r in script.walk_revisions()}:
+        return ahead(database, at)
+    found = f'{database} is at schema revision {at or "none"}, and this {installed()} knows {head()}'
+    if daemon is None:
+        return SchemaMismatch(found, 'run `piloop migrate`, which backs it up first')
+    return SchemaMismatch(
+        found,
+        f'the daemon (pid {daemon}) runs an older piloop. `piloop restart` restarts it on this piloop, which migrates it',
+    )
+
+
+def revision(database: Path) -> str | None:
+    """The Alembic revision of ``database``, read read-only. None when it does not exist or was never migrated."""
+    if not database.is_file():
+        return None
+    with closing(sqlite3.connect(f'file:{database}?mode=ro', uri=True)) as con:
+        try:
+            row = con.execute('SELECT version_num FROM alembic_version').fetchone()
+        except sqlite3.OperationalError:  # never migrated, so there is no alembic_version table
+            return None
+    return row[0] if row else None
 
 
 def backups(database: Path) -> list[Path]:
@@ -141,12 +205,12 @@ def head() -> str | None:
     return ScriptDirectory(str(MIGRATIONS)).get_current_head()
 
 
-def behind(engine: Engine) -> str | None:
+def behind(database: Path) -> str | None:
     """Return the revision of a database that this piloop would migrate, or None when it is at head or ahead of it.
 
     A database that was never migrated is at revision ``none``.
     """
-    at, script = revision(engine), ScriptDirectory(str(MIGRATIONS))
+    at, script = revision(database), ScriptDirectory(str(MIGRATIONS))
     if at == script.get_current_head() or (at is not None and at not in {r.revision for r in script.walk_revisions()}):
         return None
     return at or 'none'
@@ -159,8 +223,9 @@ def ahead(database: Path, at: str | None) -> SchemaAhead:
     newest revision it knows.
     """
     return SchemaAhead(
-        f'{database} is at schema revision {at}, which this {installed()} does not know (it knows up to {head()}): '
-        'a newer piloop migrated it. Install a newer piloop (`piloop upgrade`), or set PILOOP_HOME to another directory.'
+        f'{database} is at schema revision {at}, and this {installed()} knows up to {head()}',
+        'this database was migrated by a newer piloop: install it (`piloop upgrade` installs the latest), or set'
+        ' PILOOP_HOME to another directory',
     )
 
 
@@ -169,7 +234,7 @@ def _migration_lock(database: Path) -> Generator[None]:
     """Hold an exclusive lock on ``<database>.migrate.lock`` while Alembic upgrades.
 
     An upgrade is several transactions: read the current revision, then apply each missing script. Two clients that
-    start on the same new home directory (``piloop serve --detach`` twice, or a daemon and ``piloop status``) can both
+    start on the same new home directory (``piloop serve --detach`` twice, or a daemon and ``piloop migrate``) can both
     read "no revision" and both run ``0001``, and then the second fails on ``CREATE TABLE``. SQLite puts statements in
     order, but not this read and the write after it, so the lock does. The second client waits, then finds the
     database at head and applies nothing. The kernel releases a ``flock`` when the descriptor closes or the process
@@ -181,22 +246,6 @@ def _migration_lock(database: Path) -> Generator[None]:
         yield
     finally:
         os.close(fd)
-
-
-def revision(engine: Engine) -> str | None:
-    """The Alembic revision of the database. None when it was never migrated or does not exist yet.
-
-    It reads on a plain engine. The connections of a piloop engine install the actor triggers, and those name tables
-    that a database behind this piloop's schema does not have yet.
-    """
-    if not Path(engine.url.database or '').is_file():
-        return None
-    plain = create_engine(engine.url)
-    try:
-        with plain.connect() as conn:
-            return MigrationContext.configure(conn).get_current_revision()
-    finally:
-        plain.dispose()
 
 
 @contextmanager

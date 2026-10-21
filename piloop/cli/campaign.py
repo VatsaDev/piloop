@@ -74,7 +74,7 @@ def init(
             f' METRIC lines that piloop.toml names. Describe the goal in brief.md. Then run `piloop init {path}` again.'
         )
         return
-    with common.session() as s:
+    with common.session(create=True) as s:
         campaign = registered(s, path)
         if campaign is None:
             try:
@@ -200,8 +200,8 @@ def watch_cmd(ref: CampaignRef | None = None, /) -> None:
     """
     if not sys.stdin.isatty():
         raise SystemExit('piloop watch reads keys from a terminal; `piloop status` prints the same once')
+    common.refuse_other_schema()
     db = Database(common.settings.database_url, actor=common.settings.actor)
-    common.migrate(db)
     try:
         Watch(db, common.settings.home / 'piloop.db', ref, common.settings.actor).run()
     finally:

@@ -23,8 +23,9 @@ PILOOP_SRC=. ./install.sh
 ## Run main next to a release
 
 To try `main`, or your checkout, without touching the campaigns of the piloop release that you use, install it as a
-second piloop, `piloop-canary`, with a home of its own. The home must be separate: a newer piloop migrates the
-database of its home when it opens it, and the release then refuses to open that database until it knows the schema.
+second piloop, `piloop-canary`, with a home of its own. The home must be separate: the canary's daemon and
+`piloop-canary migrate` migrate the database of its home, and the release then refuses to open that database until it
+knows the schema.
 
 ```bash
 C=~/.piloop-canary
@@ -233,7 +234,7 @@ know.
 3. Read the generated revision and fix what autogenerate missed.
 4. Run `make docs`.
 
-Never edit an existing revision. Users have databases at every revision, and piloop migrates them when it starts. A
+Never edit an existing revision. Users have databases at every revision, and the daemon migrates them when it starts. A
 batch migration that rebuilds a table drops its triggers, so call `piloop.db.triggers.recreate` after it.
 
 ## Mark compat code
