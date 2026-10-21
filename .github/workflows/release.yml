@@ -46,7 +46,7 @@ jobs:
     # PyPI trusted publishing: pypi.org trusts this repo, this workflow and this environment. No token.
     environment:
       name: release
-      url: https://pypi.org/campaign/piloop/
+      url: https://pypi.org/project/piloop/
     permissions:
       id-token: write
     steps:

@@ -21,6 +21,7 @@ from piloop.db.session import Database
 from piloop.runtime import Check
 from piloop.settings import Settings
 from piloop.version import installed
+from tests.cli.test_cli import git_check
 from tests.conftest import FAKE_HERDR, hold_lock
 from tests.db.test_migrations import alembic
 from tests.runtime.test_herdr import scripted
@@ -72,7 +73,25 @@ def test_a_healthy_install_passes_every_check(
         f'ok    campaign demo: {campaign.path}/piloop.toml loads',
         f'ok    skills (pi): current in {cfg.agent_skills_dir}',
         'ok    harnesses: on PATH: script',
+        git_check(),
     ], 'a subprocess-runtime campaign needs no Herdr check'
+
+
+def test_a_git_older_than_piloop_needs_or_one_that_does_not_run_fails_with_the_fix(
+    cfg: Settings, tmp_path: Path
+) -> None:
+    git = tmp_path / 'bin' / 'git'
+    git.unlink()
+    fix = 'install git 2.40 or later'
+    missing = by_name(cfg)['git']
+    assert missing.found.startswith('`git --version` failed: ') and missing.fix == fix
+    git.write_text('#!/bin/sh\nexit 3\n')
+    git.chmod(0o755)
+    assert by_name(cfg)['git'].fix == fix, 'a git that fails'
+    git.write_text('#!/bin/sh\n[ "$1" = --version ] && echo "git version 2.39.5 (Apple Git-154)"\n')
+    assert by_name(cfg)['git'] == Check('git', 'git version 2.39.5 (Apple Git-154); piloop needs 2.40 or later', fix)
+    git.write_text('#!/bin/sh\n[ "$1" = --version ] && echo "git version 2.40.0"\n')
+    assert by_name(cfg)['git'] == Check('git', 'git version 2.40.0')
 
 
 def test_skills_missing_or_stale_for_a_harness_on_path_fail_with_the_install_command(

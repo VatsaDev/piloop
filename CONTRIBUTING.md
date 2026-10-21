@@ -4,7 +4,7 @@ This file explains how to set up a development checkout, run the checks and send
 
 ## Set up
 
-You need git, [uv](https://docs.astral.sh/uv/) and `make`.
+You need git 2.40 or later, [uv](https://docs.astral.sh/uv/) and `make`.
 
 ```bash
 git clone https://github.com/hiloopai/piloop
@@ -127,9 +127,9 @@ make e2e
 These tests carry the `e2e` marker. The pytest configuration leaves this marker out (`-m "not e2e"`), so `make`,
 `make test` and CI never run them. They need `claude` on the `PATH`, logged in, and network access. The lifecycle
 scenario (`tests/e2e/test_lifecycle.py`) takes about 3 minutes on `claude-haiku-4-5-20251001`. Its three agents use
-about 1.5 million tokens, most of them cache reads. That is about 0.45 USD at API prices. The upgrade scenario
+about 1 million tokens, most of them cache reads. That is about 0.3 USD at API prices. The upgrade scenario
 (`tests/e2e/test_upgrade.py`) installs the last release from PyPI, runs a small campaign on it, upgrades to your
-checkout while an agent works, and checks that no row, ref, commit or file was lost. It takes about 6 minutes and
+checkout while an agent works, and checks that no row, ref, commit or file was lost. It takes about 13 minutes and
 0.5 USD, with Claude only. To pick another harness or model:
 
 ```bash
@@ -377,7 +377,27 @@ Maintainers only.
    Then edit the section by hand. Correct the wording, join the lines that describe one change, and move a line to a
    better group. If `CHANGELOG.md` still has an `[Unreleased]` section, move its entries into the new section, remove
    the generated lines that repeat them, and remove the heading and its link at the bottom.
-3. Merge that change, then tag the commit on `main`: `git tag v0.2.0 && git push origin v0.2.0`.
+
+   The section compares the release with the last release, not with each commit. git-cliff marks every `!` commit
+   **Breaking**, but a change to something that the last release did not have breaks no user of a release. Describe
+   that thing as it ships, without **Breaking**, and list its old names in the upgrading guide, for the users of
+   `main`. Each **Breaking** line needs its section in `docs/guides/upgrading.mdx`.
+3. Check that the `Release` workflow finds the section:
+
+   ```bash
+   awk -v v="$(uv version --short)" '$0 ~ "^## \\[" v "\\]" {on=1; next} on && /^## \[/ {exit} on' CHANGELOG.md
+   ```
+
+4. Run `make` and `make e2e`. Set the date in the heading of the section to the day that you tag.
+5. Merge that change. When you merge it in the private mirror, wait until the `Sync main` workflow has pushed it to
+   `main` here, and check that both repositories have the same commit on `main`. Then tag that commit:
+
+   ```bash
+   git fetch origin
+   git log -1 origin/main
+   git tag "v$(uv version --short)" origin/main
+   git push origin "v$(uv version --short)"
+   ```
 
 The `Release` workflow runs CI, checks that the tag matches the version, creates the GitHub release with the
 changelog section as its notes, and publishes the package to PyPI.

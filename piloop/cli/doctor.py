@@ -2,15 +2,17 @@
 
 The checks note a newer piloop at the source of the CLI, and find what can break after an upgrade: a daemon that still
 runs the old code, a database behind the code, a secrets command that fails, a ``piloop.toml`` that the new code refuses,
-an MCP server that cannot start, skills that are missing or out of date, a missing harness, and what each runtime in
-use checks itself (``Runtime.checks``). Nothing here writes: the database is opened read-only, and no runtime starts
+an MCP server that cannot start, skills that are missing or out of date, a missing harness, what each runtime in
+use checks itself (``Runtime.checks``), and a git older than piloop needs. Nothing here writes: the database is opened read-only, and no runtime starts
 anything. The check of the source asks the network (``git ls-remote`` or the package index). The commands that the
 lines name use ``Settings.cli``. ``piloop upgrade`` runs the checks last.
 """
 
 import json
+import re
 import shutil
 import sqlite3
+import subprocess
 from collections.abc import Iterator
 from contextlib import closing
 from dataclasses import replace
@@ -36,6 +38,8 @@ from piloop.settings import Settings
 from piloop.version import direct_url, installed
 
 CHANGELOG = 'https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md'
+GIT_NEEDED = (2, 40)
+"""The oldest git that piloop works with: it merges by tree with ``git merge-tree --merge-base``, new in git 2.40."""
 
 
 def checks(cfg: Settings) -> list[Check]:
@@ -62,7 +66,7 @@ def checks(cfg: Settings) -> list[Check]:
             *_runtimes(stored),
         ]
     # the commands that the lines name are this install's, which a second install (piloop-canary) runs under its name
-    return [replace(c, found=_named(c.found, cfg), fix=c.fix and _named(c.fix, cfg)) for c in found]
+    return [replace(c, found=_named(c.found, cfg), fix=c.fix and _named(c.fix, cfg)) for c in [*found, _git()]]
 
 
 def _named(text: str, cfg: Settings) -> str:
@@ -84,6 +88,21 @@ def _cli(cfg: Settings) -> Check:
         else f'ask the human before `piloop upgrade` (PILOOP_AUTO_UPGRADE is off); changes: {CHANGELOG}'
     )
     return Check('cli', f'{installed()}; {found} is out: {policy}')
+
+
+def _git() -> Check:
+    """The git on ``PATH``, which every campaign and the daemon run, is at least ``GIT_NEEDED``."""
+    fix = 'install git 2.40 or later'
+    try:
+        done = subprocess.run(
+            ['git', '--version'], capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=10, check=True
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        return Check('git', f'`git --version` failed: {e}', fix)
+    found = done.stdout.strip()
+    if tuple(int(n) for n in re.findall(r'\d+', found)[:2]) < GIT_NEEDED:
+        return Check('git', f'{found}; piloop needs 2.40 or later', fix)
+    return Check('git', found)
 
 
 def _daemon(cfg: Settings) -> Check:

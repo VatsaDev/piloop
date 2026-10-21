@@ -56,4 +56,6 @@ def test_attach_focus_view_and_doctor_use_the_methods_of_a_runtime_that_a_packag
     agents.attach(agent_session.id)
     assert printed == ['attached to pane 7']
     harness = str(tmp_path / 'harness.sh')
-    assert doctor.checks(Settings(home=tmp_path))[-1] == Check('shown', f'ready for {harness}')
+    assert {c.name: c for c in doctor.checks(Settings(home=tmp_path))}['shown'] == Check(
+        'shown', f'ready for {harness}'
+    )

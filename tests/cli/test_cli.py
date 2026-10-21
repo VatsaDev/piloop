@@ -1335,6 +1335,13 @@ def cli_check() -> str:
     return f'ok    cli: {installed()}; not checked for a newer one: installed from {checkout}: update that checkout'
 
 
+def git_check() -> str:
+    """The doctor's line on the git of this machine, which every test PATH keeps."""
+    return (
+        f'ok    git: {subprocess.run(["git", "--version"], capture_output=True, text=True, check=True).stdout.strip()}'
+    )
+
+
 @pytest.mark.usefixtures('no_database')
 def test_upgrade_refuses_a_checkout_that_is_not_a_uv_tool(fake_bins) -> None:
     calls = fake_bins('uv', 'pi')
@@ -1375,6 +1382,7 @@ def test_upgrade_reinstalls_migrates_and_restarts_the_daemon(
         f'ok    secrets: from the environment of the daemon (pid {pid}) only (PILOOP_SECRETS_COMMAND unset)',
         f'ok    skills (pi): current in {common.settings.agent_skills_dir}',
         'ok    harnesses: on PATH: none configured',
+        git_check(),
     ], 'the new code checks the install last'
     assert calls() == [['uv', 'tool', 'upgrade', '--reinstall-package', 'piloop', 'piloop']]
     terminal = capfd.readouterr().out.splitlines()
@@ -1402,6 +1410,7 @@ def test_upgrade_of_a_checkout_install_without_a_daemon_creates_the_schema(fake_
         'ok    secrets: from the environment of this shell only (PILOOP_SECRETS_COMMAND unset)',
         'ok    skills: none of claude, codex, pi, gemini, cursor-agent is on PATH: nothing to check',
         'ok    harnesses: on PATH: none configured',
+        git_check(),
     ]
     assert (
         calls() == [['uv', 'tool', 'upgrade', '--reinstall-package', 'piloop', 'piloop']]

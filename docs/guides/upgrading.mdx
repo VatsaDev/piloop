@@ -53,6 +53,7 @@ catches up with an upgrade that you already made.
 - The harnesses that your campaigns use are on your `PATH`.
 - Each runtime that a campaign uses runs its own checks. For example, for `runtime = "herdr"`: Herdr is installed, the
   piloop session answers, and Herdr's hooks are current for the harnesses of that campaign.
+- git on your `PATH` is 2.40 or later.
 
 Each failure says how to fix it, often with the command to run.
 
@@ -119,9 +120,23 @@ To try `main` next to the release that runs your campaigns instead, see
 
 When a release renames or removes a key of `piloop.toml`, the old key keeps working for at least one minor release.
 Each use shows a `PiloopDeprecationWarning` with the file, the line, the new key and the release that removes the old
-one. The [changelog](https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md) lists every deprecation.
+one. The [changelog](https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md) lists every deprecation, and
+[Deprecated keys and variables](#deprecated-keys-and-variables) lists those of 0.2.0.
 
-## Renamed tables, columns and commands
+## Upgrading to 0.2.0
+
+Read this before you upgrade from 0.1.0.
+
+1. Check that git is 2.40 or later: `git --version`. piloop 0.2.0 needs it to merge by tree, and `piloop doctor`
+   checks it.
+2. Run `piloop upgrade`. It installs 0.2.0 and migrates the database. Until the database is migrated, every other
+   command of 0.2.0 refuses it and says what to run. If you installed 0.2.0 another way, run `piloop migrate`, or
+   `piloop restart` when a daemon runs. Before it migrates the database, piloop writes a copy of it. To go back to
+   0.1.0, see [Restore from the backup](#restore-from-the-backup).
+3. Restart the running agents, so that they read the new names.
+4. Change your SQL, your keys and your scripts, as the sections below say.
+
+### Renamed tables, columns and commands
 
 piloop 0.2.0 renames three concepts: a **project** is a **campaign**, the **worker** role, which runs one idea in its
 own worktree, is the **implementer**, and the `workers` table, which has one row per agent session in any role, is
@@ -131,7 +146,7 @@ The upgrade migrates the database, with the queries of the stored configs. Chang
 
 - the SQL in your `piloop.toml`: the `takes` of a role and the `when` of an `sql` trigger. `piloop init` refuses an
   old name and names the new one.
-- the SQL in your own role prompt files and in the notes of an orchestrator.
+- the SQL in your own role prompt files, in your scripts and in the notes of an orchestrator.
 - the agents that run: restart them after `piloop upgrade`, so that they read the new names. An implementer that an
   older piloop started and that you leave running still signs its rows `worker#<id>`. Until 0.3.0, piloop counts
   those rows as the implementer's: its finding, its escalation and its own comments.
@@ -143,7 +158,7 @@ A query with an old name fails, and the error names the new one. A query on old 
 |---|---|---|
 | Table | `projects` | `campaigns` |
 | Table | `workers` | `agent_sessions` |
-| Column | `project_id` (of `ideas`, `candidates`, `workers`, `evaluators`) | `campaign_id` |
+| Column | `project_id` (of `ideas`, `candidates`, `workers`, `evaluators`, `techniques`) | `campaign_id` |
 | New column | none | `evaluators.runner`, `process` for every evaluator |
 | `target_kind` of comments and events | `project`, `worker` | `campaign`, `agent_session` |
 | Role, in `agent_sessions.kind` and `runs.role` | `worker` | `implementer` |
@@ -154,26 +169,58 @@ A query with an old name fails, and the error names the new one. A query on old 
 | Event kinds of the role | `worker.started`, `worker.finished` | `implementer.started`, `implementer.finished` |
 | Environment variable | `PILOOP_PROJECT_<KEY>` (still works, with a warning) | `PILOOP_CAMPAIGN_<KEY>` |
 | Environment variable of an agent, its process tag | `PILOOP_WORKER_TOKEN` (an agent that an older daemon started is still found) | `PILOOP_PROCESS_TAG` |
-
-If you ran piloop from its main branch after 0.1.0, the names that it added are renamed too, with no alias: the
-`project_id` of `techniques`, `documents`, `lessons` and `archives`, the events
-`project.paused`, `project.stop_requested`, `project.type` and `project.parent_id`, the events `worker.stop_ended`,
-`worker.cancel_requested` and `worker.jobs_left` (now `agent_session.*`), the parameter `:project` of an
-`sql` trigger (`@project`, `$project`), `workdir = "project"` (now `"repo"`), `piloop project stop` (now `piloop
-campaign stop`), the `--project` option of `piloop events`, and the `projects` and `subject.project` keys of the JSON
-output. The migration renames those that the database and its stored configs hold.
-
-The artifact store also came after 0.1.0, and its plugin capability is the **storage backend** now, not the remote
-backend. `[storage.remote]` in `config.toml` is `[storage.backend]`: the old table still works until 0.3.0, with a
-warning. A package that adds a backend subclasses `piloop.store.StorageBackendConfig` (was `RemoteConfig`), its
-`open()` returns a `piloop.store.StorageBackend` (was `Remote`), and its tests call
-`piloop.store.contract.check_storage_backend` (was `check_remote`). These have no alias. The entry point group stays
-`piloop.stores`.
+| Verdict of a `Piloop-Eval: skip` commit | `discard` | `unmeasured` (the upgrade converts the stored ones) |
 
 The payloads of old events keep their text, so an old payload may have `project` keys. A signature in a payload and
 the `worker` key of `run.relaunched` are renamed. The directories of the campaigns stay under
 `$PILOOP_HOME/projects/<id>`, the agent sessions that started before the upgrade keep theirs under
 `$PILOOP_HOME/workers/<id>`, and the git refs keep their names.
+
+### Deprecated keys and variables
+
+Each of these still works in 0.2.0, with a `PiloopDeprecationWarning`. piloop 0.3.0 removes them.
+
+| Deprecated | Write instead |
+|---|---|
+| `[roles.worker]` | `[roles.implementer]` |
+| `PILOOP_PROJECT_<KEY>` | `PILOOP_CAMPAIGN_<KEY>`. When both are set, `PILOOP_CAMPAIGN_<KEY>` wins. |
+| `[roles.research.scout]` | `[roles.scout]`. The keys of `[roles.research]` that the scout used (`runtime`, `harnesses`, `model`, `timeout`, `mcp`, `addendum`, `workdir`) move with it. |
+| `[roles.research] buffer` | `buffer` on research's `low_water` trigger: `triggers = [{ kind = "low_water", buffer = 2 }, { kind = "seed" }]` |
+| `[roles.research] context` | The top-level `context` |
+| `{claude_config_dir}` in `[harness.<name>.usage] file` | `{env:CLAUDE_CONFIG_DIR:~/.claude}` |
+| `{codex_home}` in `[harness.<name>.usage] file` | `{env:CODEX_HOME:~/.codex}` |
+| An agent that 0.1.0 started and that signs `worker#<id>` | Nothing: restart it. Until then, piloop counts its rows as the implementer's. |
+
+### Removed
+
+- `piloop launch <campaign> research --scout`. The scout is a role of its own: `piloop launch <campaign> scout`. It is
+  off until you set `[roles.scout] interval`.
+
+### If you ran main after 0.1.0
+
+The names that `main` added after 0.1.0 are renamed too, with no alias: the `campaign_id` of `documents`, `lessons`
+and `archives` (was `project_id`), the events `project.paused`, `project.stop_requested`, `project.type` and
+`project.parent_id`, the events `worker.stop_ended`, `worker.cancel_requested` and `worker.jobs_left` (now
+`agent_session.*`), the parameter `:project` of an `sql` trigger (`@project`, `$project`), `workdir = "project"`
+(now `"repo"`), `piloop project stop` (now `piloop campaign stop`), the `--project` option of `piloop events`, and the
+`projects` and `subject.project` keys of the JSON output. The migration renames those that the database and its
+stored configs hold.
+
+These keys of `main` still work until 0.3.0, with a warning:
+
+- `{ kind = "scout" }` in `[roles.research] triggers`: delete it. The scout has its own `cron` trigger.
+- `herdr_<key>` in `config.toml`: write `<key>` in its `[runtimes.herdr]` table. The `PILOOP_HERDR_<KEY>` variables
+  do not change.
+- `[storage.remote]` in `config.toml`: write `[storage.backend]`.
+
+The plugin contracts of `main` changed, with no alias:
+
+- A stop rule's `check` returns `Go()`, `Hold(reason)` or `Stop(reason)`, not a stop reason or none. With `[spend]`
+  set, a stop rule whose `reads` lacks `spend` is refused.
+- The artifact store's plugin capability is the **storage backend**, not the remote backend. A package that adds a
+  backend subclasses `piloop.store.StorageBackendConfig` (was `RemoteConfig`), its `open()` returns a
+  `piloop.store.StorageBackend` (was `Remote`), and its tests call `piloop.store.contract.check_storage_backend` (was
+  `check_remote`). The entry point group stays `piloop.stores`.
 
 ## Other install types
 

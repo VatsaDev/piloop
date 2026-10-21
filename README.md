@@ -86,7 +86,7 @@ The example uses Claude Code and stops after 20 scored implementer runs. See
 ## Requirements
 
 - Linux or macOS.
-- git, with a commit identity.
+- git 2.40 or later, with a commit identity.
 - [uv](https://docs.astral.sh/uv/). The installer installs it.
 - At least one implementer agent CLI, logged in: [Claude Code](https://code.claude.com),
   [Codex](https://github.com/openai/codex) or [pi](https://github.com/badlogic/pi-mono).
