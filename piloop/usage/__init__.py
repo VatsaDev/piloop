@@ -10,13 +10,12 @@ under ``piloop/usage/tallies/`` that register themselves.
 So the usage of a new harness is a spec in ``piloop.toml``. A new file format is one tally module. A new kind of
 source (a stdout log, an API) is one reader.
 
-The result always has the same shape and the same meaning for every harness, so one ``json_extract`` reads it in SQL
-and the harnesses compare. ``input`` is the uncached input, ``cache_read`` and ``cache_write`` are the input read
+The result is a ``Usage`` (``piloop.db.models``), with the same meaning for every harness, so one ``json_extract``
+reads it in SQL and the harnesses compare. ``input`` is the uncached input, ``cache_read`` and ``cache_write`` are the input read
 from and written to the prompt cache. ``total`` is what the harness itself counts as the session's tokens.
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from typing import Protocol, Self
@@ -25,38 +24,8 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from piloop.db.models import AgentSession, UsageJson
+from piloop.db.models import AgentSession, Usage
 from piloop.ids import CampaignId
-
-
-@dataclass(frozen=True)
-class Usage:
-    """The token usage of one session. ``as_json`` gives the value that ``agent_sessions.usage`` stores."""
-
-    input: int
-    """The input tokens that the prompt cache did not serve."""
-    output: int
-    cache_read: int
-    """The input tokens that the prompt cache served."""
-    cache_write: int
-    """The input tokens written to the prompt cache."""
-    total: int
-    """What the harness counts as the session's tokens."""
-    turns: int
-    """The number of model responses (API calls) in the session."""
-    source: str
-    """Where the numbers came from: the session file that was read."""
-
-    def as_json(self) -> UsageJson:
-        return UsageJson(
-            input=self.input,
-            output=self.output,
-            cache_read=self.cache_read,
-            cache_write=self.cache_write,
-            total=self.total,
-            turns=self.turns,
-            source=self.source,
-        )
 
 
 class UsageError(RuntimeError):

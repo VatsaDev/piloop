@@ -27,7 +27,7 @@ from piloop.campaign import campaigns as campaign_module
 from piloop.config import load_campaign_config
 from piloop.daemon.main import ACTOR
 from piloop.daemon.run_controller import RunController
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Measurement, Verdict
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Measurement, Usage, Verdict
 from piloop.db.session import Database, migrate
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.ids import CampaignId
@@ -105,6 +105,11 @@ executable = "{script}"
 headless = ["{{prompt}}"]
 interactive = []
 """
+
+
+def spent(total: int, turns: int = 1) -> Usage:
+    """The usage of a test's agent that spent ``total`` tokens in ``turns`` turns."""
+    return Usage(input=0, output=0, cache_read=0, cache_write=0, total=total, turns=turns, source='/x.jsonl')
 
 
 def write_script(path: Path, body: str) -> Path:

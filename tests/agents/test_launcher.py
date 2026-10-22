@@ -30,7 +30,7 @@ from piloop.agents.roles import PILOOP_HINT, PROMPTS, SQL_HINT, Role, compose_br
 from piloop.config import CampaignConfig, config_of, load_campaign_config
 from piloop.daemon.run_controller import RunController
 from piloop.db.events import emit
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, Event
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Event, Usage
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.ids import RESEARCH, WATCHDOG, AgentSessionId, RoleName, TargetKind
@@ -702,15 +702,15 @@ def test_the_agents_token_usage_is_summed_from_its_session_file_when_it_ends(
     launch(db, runtime, tmp_path, agent_session_id, tracer)
     w = agent_session(db, agent_session_id)
     assert w.session_id is not None, 'a usage spec alone mints the id: no Entire needed to know what an agent cost'
-    assert w.usage == {
-        'input': 4,
-        'output': 993,
-        'cache_read': 6763,
-        'cache_write': 8718,
-        'total': 16478,
-        'turns': 2,
-        'source': str(folder / f'2026-09-09T05-48-14-300Z_{w.session_id}.jsonl'),
-    }, "pi's store is keyed by the agent's cwd, the worktree; read before the caller removes it"
+    assert w.usage == Usage(
+        input=4,
+        output=993,
+        cache_read=6763,
+        cache_write=8718,
+        total=16478,
+        turns=2,
+        source=str(folder / f'2026-09-09T05-48-14-300Z_{w.session_id}.jsonl'),
+    ), "pi's store is keyed by the agent's cwd, the worktree; read before the caller removes it"
     assert span_attributes(spans, 'piloop.job', agent_session_id)['tokens'] == 16478
     assert events(spans, 'agent_session.usage_unknown') == []
     assert anomalies(db) == [], 'it spent tokens: it started, however fast it ended'
@@ -766,7 +766,7 @@ def test_a_killed_agents_usage_is_read_too(
         AgentSessionState.KILLED,
         'agent timeout after 0.5s',
     )
-    assert w.usage is not None and (w.usage['total'], w.usage['turns']) == (16478, 2)
+    assert w.usage is not None and (w.usage.total, w.usage.turns) == (16478, 2)
 
 
 def span_attributes(spans: InMemorySpanExporter, name: str, agent_session_id: AgentSessionId) -> dict[str, object]:

@@ -80,6 +80,7 @@ from piloop.db.models import (
     Pause,
     Run,
     RunStatus,
+    Usage,
     campaign_runs,
     count,
     utcnow,
@@ -102,7 +103,6 @@ from piloop.reports.wake import lessons_overview
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
 from piloop.scoring.ledger import bar_of, checkout_candidate, due, head, head_unmeasured, rejudges, score
 from piloop.text import cell
-from piloop.usage import Usage
 
 NO_RUN_ERROR = 'an implementer needs a run; the scheduler requests them from ready ideas'
 PUSHED_KINDS = tuple(kind for kind in CommentKind if kind is not CommentKind.ESCALATION)
@@ -326,7 +326,7 @@ class Scheduler:
             return
         found = usage_of(s, agent_session)
         if isinstance(found, Usage):
-            agent_session.usage = found.as_json()
+            agent_session.usage = found
         elif found is not None:
             self._tracer.event('agent_session.usage_unknown', agent_session=agent_session.id, error=str(found))
 

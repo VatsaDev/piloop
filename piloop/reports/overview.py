@@ -925,7 +925,7 @@ def defining(cfg: CampaignConfig) -> list[str]:
 
 
 def _tokens(w: AgentSession) -> int:
-    return w.usage['total'] if w.usage else 0
+    return w.usage.total if w.usage else 0
 
 
 def _minutes(seconds: float) -> str:

@@ -210,7 +210,7 @@ def _finish(job: AgentJob, outcome: AgentExit, session_id: str | None, control: 
     if job.usage is not None:
         try:
             usage = read_usage(job.usage, session_id, job.cwd, job.log_dir)
-            report.usage = usage.as_json() if usage is not None else None
+            report.usage = usage
             span.set(tokens=usage.total if usage is not None else None)
         except Exception as e:  # an unreadable file or a bug in a reader must not stop the report
             error = str(e) if isinstance(e, UsageError) else f'{type(e).__name__}: {e}'

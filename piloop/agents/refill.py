@@ -9,8 +9,8 @@ from pathlib import Path
 from sqlalchemy.orm import Session
 
 from piloop.config import harness_of
-from piloop.db.models import AgentSession
-from piloop.usage import Usage, UsageError, read_usage
+from piloop.db.models import AgentSession, Usage
+from piloop.usage import UsageError, read_usage
 
 
 def usage_of(s: Session, agent_session: AgentSession, cwd: Path | None = None) -> Usage | UsageError | None:

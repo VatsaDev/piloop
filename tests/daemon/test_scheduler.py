@@ -716,7 +716,7 @@ def test_reap(
         assert s.get_one(AgentSession, 1).state is AgentSessionState.KILLED
         sweep = s.get_one(AgentSession, 2)
         assert sweep.state is AgentSessionState.KILLED
-        assert sweep.usage is not None and sweep.usage['total'] == 16478, (
+        assert sweep.usage is not None and sweep.usage.total == 16478, (
             'a reaped agent spent tokens too: read from its session file as the row closes, so max_tokens sees them'
         )
         gone = s.get_one(AgentSession, 3)

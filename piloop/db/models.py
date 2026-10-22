@@ -7,8 +7,8 @@ timestamps or statuses. ``docs/reference/schema.mdx`` (the DDL) is generated fro
 import sys
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import TypedDict
 
+from pydantic import BaseModel, ConfigDict, TypeAdapter
 from sqlalchemy import (
     JSON,
     CheckConstraint,
@@ -53,6 +53,26 @@ from piloop.ids import (
 def utcnow() -> datetime:
     """The current time, with the UTC time zone."""
     return datetime.now(UTC)
+
+
+class PydanticJSON[T](TypeDecorator[T]):
+    """A JSON column that validates on load and on save, through one ``TypeAdapter``.
+
+    The values are frozen models, so a change in place cannot be lost: assign a new value. None is SQL NULL.
+    """
+
+    impl = JSON(none_as_null=True)
+    cache_ok = True
+
+    def __init__(self, adapter: TypeAdapter[T]) -> None:
+        super().__init__()
+        self.adapter = adapter
+
+    def process_bind_param(self, value: T | None, dialect: Dialect) -> object:
+        return None if value is None else self.adapter.dump_python(self.adapter.validate_python(value), mode='json')
+
+    def process_result_value(self, value: object, dialect: Dialect) -> T | None:
+        return None if value is None else self.adapter.validate_python(value)
 
 
 class UTCDateTime(TypeDecorator[datetime]):
@@ -240,16 +260,24 @@ def text_checks(table: str, *columns: str, nullable: tuple[str, ...] = ()) -> tu
     )
 
 
-class UsageJson(TypedDict):
-    """The shape of ``agent_sessions.usage``, as ``piloop.usage.Usage.as_json`` writes it."""
+class Usage(BaseModel):
+    """The token usage of one agent session, as ``agent_sessions.usage`` stores it. A usage reader returns it."""
+
+    model_config = ConfigDict(frozen=True, use_attribute_docstrings=True)
 
     input: int
+    """The input tokens that the prompt cache did not serve."""
     output: int
     cache_read: int
+    """The input tokens that the prompt cache served."""
     cache_write: int
+    """The input tokens written to the prompt cache."""
     total: int
+    """What the harness counts as the session's tokens."""
     turns: int
+    """The number of model responses (API calls) in the session."""
     source: str
+    """Where the numbers came from: the session file that was read."""
 
 
 class Base(DeclarativeBase):
@@ -269,7 +297,7 @@ class Base(DeclarativeBase):
         TrackName: String,
         dict[str, float]: JSON,
         dict[str, object]: JSON,
-        UsageJson: JSON,
+        Usage: PydanticJSON(TypeAdapter(Usage)),
         CampaignStatus: _values(CampaignStatus),
         Pause: _values(Pause),
         IdeaStatus: _values(IdeaStatus),
@@ -951,7 +979,7 @@ class AgentSession(Tracked, Base):
     checkpoint_id: Mapped[str | None]
     """The Entire checkpoint of this session (``refs/entire/checkpoints/``). ``entire session attach`` writes it when
     the session ends. NULL when Entire is not installed or the attach failed."""
-    usage: Mapped[UsageJson | None]
+    usage: Mapped[Usage | None]
     """The tokens the agent spent, added up from the harness's own session file when the agent ended:
     ``{"input", "output", "cache_read", "cache_write", "total", "turns", "source"}``. ``total`` is what the harness
     itself counts as the session's tokens (sum ``json_extract(usage, '$.total')`` for the spend). ``turns`` is the

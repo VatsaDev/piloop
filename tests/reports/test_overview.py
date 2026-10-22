@@ -33,6 +33,7 @@ from piloop.db.session import Database
 from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, RoleName, RunId, TargetKind, TargetRef
 from piloop.reports import overview as overview_module
 from piloop.reports.overview import AnomalyKind, anomalies, overview
+from tests.conftest import spent
 from tests.runtime.test_herdr import Response, calls, scripted
 
 T = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
@@ -143,7 +144,7 @@ def live_campaign(db: Database, campaign: Campaign) -> None:
         baseline.measurements[0].created_at = T
         good = idea(s, p, 'longer lines', IdeaStatus.DONE)
         first = run(s, good, RunStatus.SUCCEEDED, 1, 5, 20)
-        agent(s, p, IMPLEMENTER, 5, 600, run_id=first.id, usage={'total': 1000})
+        agent(s, p, IMPLEMENTER, 5, 600, run_id=first.id, usage=spent(1000))
         kept = candidate(s, p, 1, Verdict.KEEP, 3, 18, run_id=first.id)
         candidate(s, p, kept.id, Verdict.DISCARD, 3, 19, run_id=first.id)
         bad = idea(s, p, 'crash it', IdeaStatus.REJECTED)
@@ -161,9 +162,9 @@ def live_campaign(db: Database, campaign: Campaign) -> None:
         )
         pinned = idea(s, p, 'build on longer lines', IdeaStatus.SCHEDULED, after=(good.id,), base_candidate_id=1)
         stuck = run(s, pinned, RunStatus.RUNNING, 1, 50, None)
-        agent(s, p, IMPLEMENTER, 50, 300, run_id=stuck.id, usage={'total': 2000})
+        agent(s, p, IMPLEMENTER, 50, 300, run_id=stuck.id, usage=spent(2000))
         idea(s, p, 'after the crash', IdeaStatus.READY, after=(bad.id,))
-        agent(s, p, RESEARCH, 60, 120, usage={'total': 500})
+        agent(s, p, RESEARCH, 60, 120, usage=spent(500))
         s.add_all(
             [
                 Comment(

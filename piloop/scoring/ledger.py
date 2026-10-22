@@ -718,4 +718,4 @@ def session_checkpoint(s: Session, candidate: Candidate) -> str | None:
 def session_tokens(s: Session, candidate: Candidate) -> int | None:
     """Return the tokens that the session that made ``candidate`` spent (``agent_sessions.usage`` total). None when unknown."""
     agent_session = session_agent_session(s, candidate)
-    return agent_session.usage['total'] if agent_session is not None and agent_session.usage else None
+    return agent_session.usage.total if agent_session is not None and agent_session.usage else None

@@ -59,7 +59,16 @@ from piloop.plugins.stop_rule.contract import GO, STOP_RULES, Fact, Hold, Limits
 from piloop.plugins.stop_rule.limits import LIMITS
 from piloop.reports.overview import progress
 from piloop.scoring.ledger import SKIPPED
-from tests.conftest import HARNESS_APPEND, HARNESS_NOOP, HARNESS_WORSE, ScriptRuntime, example, span_named, write_toml
+from tests.conftest import (
+    HARNESS_APPEND,
+    HARNESS_NOOP,
+    HARNESS_WORSE,
+    ScriptRuntime,
+    example,
+    span_named,
+    spent,
+    write_toml,
+)
 from tests.daemon.test_roles import PLUGIN, installed
 from tests.daemon.test_scheduler import add_ideas, make_scheduler, set_config, stop_campaign
 
@@ -347,16 +356,16 @@ def test_max_tokens_sums_the_usage_of_every_ended_agent_of_the_campaign(db: Data
         ended = dict(state=AgentSessionState.EXITED, ended_at=utcnow())
         s.add_all(
             [
-                AgentSession(kind=IMPLEMENTER, campaign_id=campaign.id, usage={'total': 60_000, 'turns': 9}, **ended),
-                AgentSession(kind=RESEARCH, campaign_id=campaign.id, usage={'total': 30_000, 'turns': 2}, **ended),
+                AgentSession(kind=IMPLEMENTER, campaign_id=campaign.id, usage=spent(60_000, 9), **ended),
+                AgentSession(kind=RESEARCH, campaign_id=campaign.id, usage=spent(30_000, 2), **ended),
                 AgentSession(kind=WATCHDOG, campaign_id=campaign.id, usage=None, **ended),
-                AgentSession(kind=IMPLEMENTER, campaign_id=other.id, usage={'total': 50_000, 'turns': 1}, **ended),
+                AgentSession(kind=IMPLEMENTER, campaign_id=other.id, usage=spent(50_000, 1), **ended),
             ]
         )
         s.commit()
     assert reason(db, campaign) is None, "90k: every role counts, another campaign's agents do not, unknown usage is 0"
     with db.session() as s:
-        s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, usage={'total': 10_000, 'turns': 1}, **ended))
+        s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, usage=spent(10_000, 1), **ended))
         s.commit()
     assert reason(db, campaign) == 'max_tokens: 100000 tokens spent'
 

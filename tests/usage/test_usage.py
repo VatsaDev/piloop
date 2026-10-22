@@ -8,18 +8,18 @@ import pytest
 from inline_snapshot import snapshot
 from pydantic import ValidationError
 from pytest_mock import MockerFixture
+from sqlalchemy import select, text
 
 from piloop.agents import refill as refill_module
 from piloop.agents.refill import usage_of
 from piloop.config import ConfigError, load_campaign_config
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, utcnow
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Usage, utcnow
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.ids import IMPLEMENTER, WATCHDOG
 from piloop.settings import env_names, expand_env
 from piloop.usage import (
     READERS,
-    Usage,
     UsageError,
     UsageSpec,
     human,
@@ -306,7 +306,15 @@ def test_a_new_kind_of_source_is_one_reader_registered_by_name() -> None:
             self.spec = spec
 
         def read(self, session_id: str | None, cwd: Path | None, log_dir: Path | None) -> Usage:
-            return Usage(1, 2, 0, 0, 3, 1, f'{log_dir}/agent_session.stdout')
+            return Usage(
+                input=1,
+                output=2,
+                cache_read=0,
+                cache_write=0,
+                total=3,
+                turns=1,
+                source=f'{log_dir}/agent_session.stdout',
+            )
 
         def said(self, session_id: str | None, lines: int = 1) -> list[str]:
             return []
@@ -315,7 +323,7 @@ def test_a_new_kind_of_source_is_one_reader_registered_by_name() -> None:
     try:
         spec = UsageSpec(reader='test-stdout')
         assert read_usage(spec, None, None, Path('/logs/7')) == Usage(
-            1, 2, 0, 0, 3, 1, '/logs/7/agent_session.stdout'
+            input=1, output=2, cache_read=0, cache_write=0, total=3, turns=1, source='/logs/7/agent_session.stdout'
         ), 'no session id, no cwd: a reader decides what it needs'
     finally:
         del READERS['test-stdout']
@@ -341,9 +349,9 @@ def test_what_cannot_be_read_is_a_usage_error_or_nothing(home: Path) -> None:
         '{"type":"message","message":{"role":"assistant","usage":{"input":1.0,"output":2,"totalTokens":3}}}\n'
         '{"type":"message","message":{"role":"assistant","usage":{"input":100,"out'
     )
-    assert read_usage(pi, PI_ID, CWD, None) == Usage(2, 4, 0, 0, 3, 2, str(path)), (
-        'a message without usage is not a turn; a non-numeric field counts nothing; the cut last line is skipped'
-    )
+    assert read_usage(pi, PI_ID, CWD, None) == Usage(
+        input=2, output=4, cache_read=0, cache_write=0, total=3, turns=2, source=str(path)
+    ), 'a message without usage is not a turn; a non-numeric field counts nothing; the cut last line is skipped'
 
 
 def test_usage_of_an_implementer_never_raises(
@@ -373,3 +381,24 @@ def test_human_tokens() -> None:
     assert [human(n) for n in (0, 987, 1_000, 340_499, 999_999, 1_000_000, 1_234_567, 23_400_000)] == snapshot(
         ['0', '987', '1k', '340k', '1000k', '1.0M', '1.2M', '23.4M']
     )
+
+
+def test_the_usage_column_holds_a_usage_and_an_unknown_usage_is_null(db: Database) -> None:
+    """``agent_sessions.usage`` loads as a ``Usage`` and saves its JSON. None is SQL NULL, so ``usage IS NULL`` finds
+    the agents whose usage is unknown. A stored value of another shape fails the load of its row."""
+    usage = Usage(input=1, output=2, cache_read=3, cache_write=4, total=10, turns=1, source='s.jsonl')
+    with db.session() as s:
+        s.add(Campaign(name='p', path='/p', config={}))
+        s.flush()
+        s.add_all([AgentSession(kind=WATCHDOG, campaign_id=1, usage=usage), AgentSession(kind=WATCHDOG, campaign_id=1)])
+        s.flush()
+        s.get_one(AgentSession, 2).usage = None
+        s.commit()
+    with db.session() as s:
+        assert [w.usage for w in s.scalars(select(AgentSession).order_by(AgentSession.id))] == [usage, None]
+        raw = s.execute(text("SELECT json_extract(usage, '$.total'), usage IS NULL FROM agent_sessions ORDER BY id"))
+        assert [tuple(row) for row in raw] == [(10, 0), (None, 1)]
+        s.execute(text("""UPDATE agent_sessions SET usage = '{"total": "many"}' WHERE id = 1"""))
+        s.commit()
+    with db.session() as s, pytest.raises(ValidationError, match='input'):
+        s.get_one(AgentSession, 1)

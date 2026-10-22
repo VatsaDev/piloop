@@ -311,7 +311,7 @@ def _never_worked(s: Session, w: AgentSession, report: AgentFinished) -> bool:
         return False
     if w.run_id is None:
         definition = harness_of(s, w)
-        if definition is None or definition.usage is None or (report.usage is not None and report.usage['total'] > 0):
+        if definition is None or definition.usage is None or (report.usage is not None and report.usage.total > 0):
             return False
     signed = (
         select(Comment.id).where(Comment.author.in_(deprecated.signatures(Agent(role=w.kind, session=w.id)))).limit(1)

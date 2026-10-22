@@ -1217,7 +1217,7 @@ def test_an_implementer_that_spends_tokens_but_ends_at_once_with_nothing_did_not
         dead, relaunched = s.scalars(
             select(AgentSession).where(AgentSession.run_id == run_id).order_by(AgentSession.id)
         ).all()
-        assert (dead.state, (dead.usage or {}).get('total'), relaunched.state) == (
+        assert (dead.state, dead.usage.total if dead.usage else None, relaunched.state) == (
             AgentSessionState.EXITED,
             16478,
             AgentSessionState.REQUESTED,

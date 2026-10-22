@@ -22,7 +22,8 @@ is denied. From then on, every UPDATE sets ``updated_by``, and the tracked chang
 Rows of the orchestrator's ``journal`` and of ``lessons`` never change: an agent's UPDATE of them is denied, and so is
 a DELETE of the journal. ``events`` is append-only: an UPDATE or a DELETE of it is denied, and TEMP triggers refuse an
 insert that does not take the next id. A trigger refuses an ``INSERT OR REPLACE`` of a row
-(``piloop.db.triggers.immutable``). Every connection also has the
+(``piloop.db.triggers.immutable``). An UPDATE of a column that only the daemon writes (``DAEMON_COLUMNS``) is denied too.
+Every connection also has the
 SQL function ``blake3(text)`` (``install_functions``).
 """
 
@@ -115,6 +116,9 @@ OPTIMIZE = 'PRAGMA optimize'
 connection queried and whose statistics are missing or out of date, limited by ``analysis_limit`` (SQLite 3.46 and
 later set it). Otherwise it does nothing."""
 ROW_LIMIT = 500
+DAEMON_COLUMNS = frozenset({('agent_sessions', 'usage')})
+"""Columns that only the daemon writes: an agent's UPDATE of one is denied. ``agent_sessions.usage`` loads as a
+``Usage``, so a value of another shape would fail every load of its row, also the daemon's."""
 
 
 def _authorize(action: int, arg1: str | None, arg2: str | None, _db: str | None, source: str | None) -> int:
@@ -126,6 +130,8 @@ def _authorize(action: int, arg1: str | None, arg2: str | None, _db: str | None,
     if action in WRITES and arg1 in PROTECTED_TABLES:
         return sqlite3.SQLITE_DENY
     if action in WRITES and arg1 in FTS_TABLES and source not in FTS_TRIGGER_NAMES:
+        return sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_UPDATE and (arg1, arg2) in DAEMON_COLUMNS:
         return sqlite3.SQLITE_DENY
     if (action == sqlite3.SQLITE_UPDATE and (arg1 in IMMUTABLE or arg1 in APPEND_ONLY)) or (
         action == sqlite3.SQLITE_DELETE and (arg1 in UNDELETABLE or arg1 in APPEND_ONLY)

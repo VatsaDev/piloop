@@ -401,6 +401,16 @@ def test_an_agent_whose_session_has_ended_leaves_no_finding(db: Database, tmp_pa
     )
 
 
+def test_only_the_daemon_writes_an_agents_usage(con: sqlite3.Connection) -> None:
+    """``agent_sessions.usage`` loads as a ``Usage``: an agent's UPDATE of it is denied, its other columns are not."""
+    sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
+    sql.run(con, "INSERT INTO agent_sessions (kind, campaign_id) VALUES ('watchdog', 1)")
+    with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
+        sql.run(con, """UPDATE agent_sessions SET usage = '{"total": "many"}' WHERE id = 1""")
+    sql.run(con, "UPDATE agent_sessions SET reason = 'by hand' WHERE id = 1")
+    assert [tuple(r) for r in con.execute('SELECT reason, usage FROM agent_sessions')] == [('by hand', None)]
+
+
 def test_a_lesson_has_a_status_and_an_effect_only_with_its_metric(con: sqlite3.Connection) -> None:
     """Agents write lessons with raw SQL: a malformed one fails at insert, and the error names the rule."""
     sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")

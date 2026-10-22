@@ -25,7 +25,7 @@ from typing import Annotated, ClassVar, Literal, Protocol, TypeIs
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from sqlalchemy.orm import Session
 
-from piloop.db.models import UsageJson
+from piloop.db.models import Usage
 from piloop.db.session import Database
 from piloop.ids import AgentSessionId, CandidateId, RunId
 from piloop.mcp import McpServer
@@ -146,7 +146,7 @@ class AgentFinished(BaseModel):
     kind: Literal['agent_finished'] = 'agent_finished'
     process: AgentExit
     session_id: str | None = None
-    usage: UsageJson | None = None
+    usage: Usage | None = None
     checkpoint: str | None = None
     changed: bool = True
     """Whether the agent changed its checkout: a commit, or an uncommitted change outside the links."""

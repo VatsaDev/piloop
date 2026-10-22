@@ -29,6 +29,7 @@ from piloop.reports.history import (
     history,
 )
 from piloop.text import CELL_CHARS, cell
+from tests.conftest import spent
 
 
 def idea(
@@ -72,7 +73,7 @@ def scored(
     run.status = RunStatus.SUCCEEDED
     s.add(run)
     s.flush()
-    usage = {'total': tokens, 'turns': 3, 'source': '/x.jsonl'} if tokens is not None else None
+    usage = None if tokens is None else spent(tokens, 3)
     s.add(
         AgentSession(
             kind=IMPLEMENTER, campaign_id=row.campaign_id, run_id=run.id, checkpoint_id=checkpoint, usage=usage
