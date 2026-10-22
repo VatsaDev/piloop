@@ -29,6 +29,7 @@ from piloop.db.models import Usage
 from piloop.db.session import Database
 from piloop.ids import AgentSessionId, CandidateId, RunId
 from piloop.mcp import McpServer
+from piloop.net import Route
 from piloop.otel import Tracer
 from piloop.plugins.host import Capability, PluginTable, Selection
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec
@@ -322,6 +323,10 @@ class Executor(Protocol):
         """
         ...
 
+    def routes(self) -> Sequence[Route]:
+        """The routes that its workers on other machines call, under ``/v1/executor/`` (``piloop serve --listen``)."""
+        ...
+
     def tick(self, now: datetime) -> datetime | None:
         """The daemon's periodic call: do the executor's own housekeeping, and return when it next has some."""
         ...
@@ -340,7 +345,7 @@ class Executor(Protocol):
 
 
 def _is_executor(loaded: object) -> TypeIs[type[Executor]]:
-    methods = ('capacity', 'submit', 'cancel', 'adopt', 'tick', 'stop', 'hand_over', 'close')
+    methods = ('capacity', 'submit', 'cancel', 'adopt', 'routes', 'tick', 'stop', 'hand_over', 'close')
     parameters = getattr(loaded, 'Parameters', None)
     return (
         isinstance(loaded, type)

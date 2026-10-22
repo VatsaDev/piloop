@@ -12,6 +12,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
+import httpx2 as httpx
 import psutil
 import pytest
 from alembic import command
@@ -418,3 +419,33 @@ def test_a_secrets_command_that_cannot_start_or_hangs_is_refused(
     monkeypatch.setenv('PATH', str(tmp_path))
     with pytest.raises(SecretsError, match='^could not start: '):
         secrets('true')
+
+
+def _urls(cfg: Settings) -> list[str]:
+    return re.findall(r'piloop\.start .*listen=(\S+)', cfg.log_file.read_text())
+
+
+def test_listen_serves_while_the_daemon_runs_through_a_restart_and_stops_with_it(tmp_path: Path) -> None:
+    cfg = Settings(home=tmp_path / 'home')
+    started = piloop(cfg.home, 'serve', '--detach', '--listen', '127.0.0.1:0')
+    assert started.returncode == 0, started.stderr
+    pid = int(cfg.pid_file.read_text())
+    wait_until(lambda: len(_urls(cfg)) == 1)
+    unrouted = '/v1/executor/none'  # 404 from a server, a connection error from a closed port
+    assert httpx.post(_urls(cfg)[0] + unrouted).status_code == 404
+
+    assert piloop(cfg.home, 'restart').returncode == 0
+    wait_until(lambda: len(_urls(cfg)) == 2)
+    assert httpx.post(_urls(cfg)[1] + unrouted).status_code == 404, 'the exec keeps --listen'
+    assert piloop(cfg.home, 'stop').returncode == 0
+    wait_until(lambda: not alive(pid))
+    with pytest.raises(httpx.ConnectError):
+        httpx.post(_urls(cfg)[1] + unrouted)
+
+
+def test_a_listen_address_that_is_not_loopback_and_has_no_tls_stops_the_start(tmp_path: Path) -> None:
+    home = tmp_path / 'home'
+    for args in (['serve', '--check'], ['serve']):
+        refused = piloop(home, *args, '--listen', '0.0.0.0:0')
+        assert refused.returncode == 1
+        assert "listen = '0.0.0.0:0' is not loopback, and without tls" in refused.stderr

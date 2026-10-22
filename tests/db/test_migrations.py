@@ -107,6 +107,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
             'runs',
             'sqlite_sequence',
             'techniques',
+            'tokens',
         ], 'an external-content FTS5 index has no _content shadow: the text stays in the base table only'
         triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
         assert triggers == sorted(t.name for t in PERSISTENT), 'the package lists what the migrations install'

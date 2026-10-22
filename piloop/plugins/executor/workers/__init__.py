@@ -11,6 +11,7 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from piloop.net import Route
 from piloop.plugins.executor.contract import AgentJob, EvaluationJob, Host, JobKey, LeftJob
 from piloop.plugins.executor.kit.leases import Leases, Timing
 from piloop.plugins.executor.workers.worker import Worker
@@ -83,6 +84,10 @@ class WorkersExecutor:
         refused = self.leases.adopt(left, self.worker.id)
         self.worker.start()
         return refused
+
+    def routes(self) -> Sequence[Route]:
+        """None yet: its only worker is the one in ``piloop serve``."""
+        return []
 
     def tick(self, now: datetime) -> datetime | None:
         """Expire the leases of a silent worker (``Leases.expire``), and return the next expiry."""

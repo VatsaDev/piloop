@@ -533,6 +533,26 @@ With `provider = "workers"`:
 | `grace_seconds` | number | `50` | The silence after which the worker is unreachable (`lease.unreachable`) and gets no new lease until it is heard again. Kubernetes: `--node-monitor-grace-period`, 50 s since 1.32 (40 s before). |
 | `toleration_seconds` | number | `300` | The silence after which its leases expire and their jobs are queued again with a larger fencing token. The worker stops its own jobs two heartbeats before. Kubernetes: the `tolerationSeconds` of 300 that the `DefaultTolerationSeconds` admission plugin gives a pod for the unreachable taint. |
 
+#### `[plugins.network]`
+
+Selects the network.
+
+With `provider = "https"`:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `listen` | string \| null | `null` | Where the server listens, as `HOST:PORT`. None: no server. `piloop serve --listen` overrides it. |
+| `tls` | [Certificate](#certificate) \| string \| null | `null` | The server ends TLS with a certificate, or `"proxy"`: a reverse proxy or an SSH tunnel ends it. None: plain HTTP, which only a loopback `listen` may use. |
+
+##### Certificate
+
+The server's certificate chain and its private key, as PEM files.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `cert` | string | required | The certificate, then the chain of its issuers. |
+| `key` | string | required | The certificate's private key, unencrypted. |
+
 ### `[runtimes.<name>]`
 
 The settings of a runtime, which the runtime reads and checks. An environment variable wins over the file. The `herdr` runtime reads `[runtimes.herdr]`, and `PILOOP_HERDR_<KEY>` overrides a key:

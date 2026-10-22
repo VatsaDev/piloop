@@ -109,6 +109,7 @@ HOST_CONTRACTS = {
     'trigger': 'fire(tick) reads the database through the session of a Tick',
     'role': 'a role holds trigger objects and names a runtime',
     'executor': 'runs jobs on machines, and applies their results to the database through Results',
+    'network': 'binds a socket, and makes HTTP clients',
 }
 """The capabilities whose contract passes live objects of the host, and why. Every other one is pure."""
 

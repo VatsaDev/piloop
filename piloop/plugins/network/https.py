@@ -1,0 +1,92 @@
+"""``https``, the built-in network: bearer tokens (``piloop token``), over TLS that the server or a proxy ends.
+
+```toml
+[plugins.network]
+provider = "https"
+listen = "0.0.0.0:8443"
+tls = { cert = "/etc/piloop/cert.pem", key = "/etc/piloop/key.pem" }
+```
+
+A server that other machines can reach and that has no TLS would send its tokens in the clear: an address that is not
+loopback needs ``tls``. ``tls = "proxy"`` says that TLS ends in front of the server, at a reverse proxy or an SSH
+tunnel.
+"""
+
+import socket
+import ssl
+from collections.abc import Mapping
+from typing import ClassVar, Literal, Self, assert_never
+
+import httpx2 as httpx
+from pydantic import BaseModel, ConfigDict, FilePath, model_validator
+
+from piloop.net.tokens import Caller
+from piloop.plugins.network.contract import Listener, NetworkHost, NetworkParameters, Refused
+
+TIMEOUT = httpx.Timeout(30, connect=10)
+
+
+class Certificate(BaseModel):
+    """The server's certificate chain and its private key, as PEM files."""
+
+    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    cert: FilePath
+    """The certificate, then the chain of its issuers."""
+    key: FilePath
+    """The certificate's private key, unencrypted."""
+
+
+class HttpsParameters(NetworkParameters):
+    """The keys of ``[plugins.network]`` for ``https``."""
+
+    tls: Certificate | Literal['proxy'] | None = None
+    """The server ends TLS with a certificate, or ``"proxy"``: a reverse proxy or an SSH tunnel ends it. None: plain
+    HTTP, which only a loopback ``listen`` may use."""
+
+    @model_validator(mode='after')
+    def _secured(self) -> Self:
+        if self.listen is not None and not self.listen.loopback and self.tls is None:
+            raise ValueError(
+                f'listen = {str(self.listen)!r} is not loopback, and without tls its tokens would cross the network in'
+                ' the clear: set tls = { cert = …, key = … }, or tls = "proxy" when a proxy ends TLS in front of it'
+            )
+        return self
+
+
+class Https:
+    """``Network``: a TCP socket, with TLS when ``tls`` names a certificate, and a bearer token on every request."""
+
+    Parameters: ClassVar[type[NetworkParameters]] = HttpsParameters
+
+    def __init__(self, host: NetworkHost, parameters: NetworkParameters) -> None:
+        assert isinstance(parameters, HttpsParameters)
+        self.host = host
+        self.parameters = parameters
+
+    def listener(self) -> Listener | None:
+        listen = self.parameters.listen
+        if listen is None:
+            return None
+        family = socket.AF_INET6 if ':' in listen.host else socket.AF_INET
+        sock = socket.create_server((listen.host, listen.port), family=family)
+        match self.parameters.tls:
+            case Certificate(cert=cert, key=key):
+                tls = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+                tls.load_cert_chain(cert, key)
+                return Listener(sock, tls)
+            case 'proxy' | None:  # None only on loopback: plain HTTP
+                return Listener(sock, None)
+            case _:
+                assert_never(self.parameters.tls)
+
+    def identify(self, headers: Mapping[str, str]) -> Caller | Refused:
+        scheme, _, secret = headers.get('authorization', '').partition(' ')
+        if scheme.lower() != 'bearer' or not secret:
+            return Refused('no bearer token: send Authorization: Bearer <token> (piloop token create)')
+        caller = self.host.tokens.verify(secret)
+        return caller if caller is not None else Refused('the token is unknown or revoked')
+
+    def client(self, server: str, token: str) -> httpx.Client:
+        """A client that trusts the system's certificates, or those of ``SSL_CERT_FILE`` when it is set."""
+        return httpx.Client(base_url=server, headers={'Authorization': f'Bearer {token}'}, timeout=TIMEOUT)

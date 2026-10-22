@@ -23,6 +23,7 @@ from piloop.capabilities import (
     JobKey,
     LeftJob,
     NoParameters,
+    Route,
     Settled,
     key_of,
     kill_group,
@@ -66,6 +67,10 @@ class InlineExecutor:
     def adopt(self, left: Sequence[LeftJob]) -> list[JobKey]:
         """Take over nothing: a previous daemon's jobs died with its threads."""
         return [job.key for job in left]
+
+    def routes(self) -> Sequence[Route]:
+        """None: every job runs in the daemon."""
+        return []
 
     def tick(self, now: datetime) -> datetime | None:
         """Nothing to do: a thread reports its own job."""

@@ -14,11 +14,19 @@ import warnings
 from collections.abc import Iterable
 
 from piloop.harnesses import Harness
+from piloop.plugins.network.contract import Address
 from piloop.proc import PILOOP_ARGV, child_env, kill_group
 from piloop.settings import DEFAULT_HOME, Settings, env_names
 
 SERVE_ARGV = [*PILOOP_ARGV, 'serve']
 """The command that starts the daemon. It uses the current interpreter, however the CLI was invoked."""
+
+
+def serve_argv(listen: Address | None) -> list[str]:
+    """``SERVE_ARGV`` with ``--listen``: a detached start and an in-place restart keep the server listening."""
+    return [*SERVE_ARGV, *(['--listen', str(listen)] if listen is not None else [])]
+
+
 POLL_SECONDS = 0.1
 LAUNCHD_LABEL = 'dev.piloop.serve'
 RESTART_SIGNAL = signal.SIGUSR1
@@ -158,7 +166,7 @@ def secrets(command: str) -> dict[str, str]:
     return values
 
 
-def spawn_detached(cfg: Settings) -> int:
+def spawn_detached(cfg: Settings, listen: Address | None = None) -> int:
     """Start ``piloop serve`` in its own session, append its output to the log file, and return its pid.
 
     The child takes the lock itself (``acquire``). This function waits until the child holds the lock. If the child
@@ -168,7 +176,7 @@ def spawn_detached(cfg: Settings) -> int:
     cfg.home.mkdir(mode=0o700, parents=True, exist_ok=True)
     with cfg.log_file.open('ab') as log:
         daemon = subprocess.Popen(
-            SERVE_ARGV,
+            serve_argv(listen),
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=subprocess.STDOUT,

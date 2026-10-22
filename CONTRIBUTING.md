@@ -345,6 +345,7 @@ The package has one subpackage for each concern. Imports only point down this li
 
 1. `db/`: storage, the SQL gate for agents, the events feed. `store/`: the artifact store, its blobs and manifests.
 2. `mcp/`, `usage/`, and `config.py` with `harnesses.py`: MCP servers, token usage, the campaign configuration.
+   `net/`: the server of `piloop serve --listen` and its bearer tokens.
 3. `runtime/`: the runtime of an agent session. The runtimes themselves are plugins (`plugins/runtime/`).
 4. `scoring/`: the evaluate command, the ledger, the verdict.
 5. `agents/`: the roles and their prompts, the agent lifecycle, session capture.

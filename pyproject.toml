@@ -28,6 +28,7 @@ dependencies = [
     "blake3>=1.0.11",
     "boto3>=1.43.112",
     "cyclopts>=3.20",
+    "fastapi>=0.161",
     "gitpython>=3.1.45",
     "httpx2>=2.12.0",
     "opentelemetry-exporter-otlp-proto-http>=1.34",
@@ -38,6 +39,7 @@ dependencies = [
     "rich>=15.0.0",
     "sqlalchemy>=2.0.41",
     "textual>=8.2,<9",
+    "uvicorn>=0.54",
 ]
 
 [project.urls]
@@ -58,6 +60,7 @@ role = "piloop.plugins.role.contract:ROLES"
 verdict_rule = "piloop.plugins.verdict_rule.contract:VERDICT_RULES"
 stop_rule = "piloop.plugins.stop_rule.contract:STOP_RULES"
 executor = "piloop.plugins.executor.contract:EXECUTORS"
+network = "piloop.plugins.network.contract:NETWORKS"
 
 [project.entry-points."piloop.runtimes"]
 herdr = "piloop.plugins.runtime.herdr:HerdrRuntime"
@@ -84,6 +87,9 @@ limits = "piloop.plugins.stop_rule.limits:LIMITS"
 
 [project.entry-points."piloop.executors"]
 workers = "piloop.plugins.executor.workers:WorkersExecutor"
+
+[project.entry-points."piloop.networks"]
+https = "piloop.plugins.network.https:Https"
 
 [project.entry-points."piloop.roles"]
 implementer = "piloop.plugins.role.implementer:IMPLEMENTER"

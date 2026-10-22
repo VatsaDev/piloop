@@ -127,6 +127,13 @@ erDiagram
         varchar request_id
         json receipt
     }
+    tokens {
+        integer id PK
+        varchar name UK
+        TokenScope scope
+        varchar sha256 UK
+        datetime created_at
+    }
     comments {
         integer id PK
         TargetKind target_kind

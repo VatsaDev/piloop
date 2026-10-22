@@ -83,6 +83,17 @@ CREATE TABLE journal (
 	CONSTRAINT "journal.line is text of 1 to 280 bytes" CHECK (typeof(line) IN ('text') AND length(CAST(line AS BLOB)) BETWEEN 1 AND 280),
 	CONSTRAINT "journal.author must be a text value" CHECK (typeof(author) IN ('text'))
 );
+CREATE TABLE tokens (
+	id INTEGER NOT NULL,
+	name VARCHAR NOT NULL,
+	scope VARCHAR(16) NOT NULL,
+	sha256 VARCHAR NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	PRIMARY KEY (id),
+	UNIQUE (name),
+	CONSTRAINT tokenscope CHECK (scope IN ('worker', 'lease')),
+	UNIQUE (sha256)
+);
 CREATE TABLE archives (
 	id INTEGER NOT NULL,
 	campaign_id INTEGER NOT NULL,

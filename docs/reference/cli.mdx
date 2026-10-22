@@ -71,13 +71,26 @@ database at another schema revision and says what to run. See [Upgrading](/guide
 ### piloop serve
 
 ```text
-piloop serve [--detach] [--check]
+piloop serve [--detach] [--check] [--listen HOST:PORT]
 ```
 
 Runs the daemon in the foreground. `--detach` starts it in the background, with its output in
 `$PILOOP_HOME/serve.log`. Only one daemon runs for each `PILOOP_HOME`. `--check` starts nothing: it checks what the
 daemon checks when it starts, its plugins and what `config.toml` binds, and fails with the reason when it would not
 start. See [How piloop loads plugins](/architecture/extension-points#how-piloop-loads-plugins).
+
+`--listen` serves other machines on `HOST:PORT`, in place of `[plugins.network] listen` in `config.toml`. Each caller
+sends a token of `piloop token`. An address that is not loopback needs `tls` in `[plugins.network]`: see the
+[configuration](/reference/configuration#plugins).
+
+### piloop token
+
+```text
+piloop token create NAME | list | revoke NAME
+```
+
+`create` prints a new token for the worker `NAME`. Copy it then: piloop keeps only its hash. `list` shows the names,
+never the tokens. `revoke` deletes a token, and its next call gets 401.
 
 ### piloop stop
 

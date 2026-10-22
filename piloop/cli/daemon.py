@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import Annotated
 
 import cyclopts
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from piloop.cli import common
@@ -21,6 +22,7 @@ from piloop.db.models import Campaign
 from piloop.db.session import BackupFailed, OlderDaemon, SchemaMismatch, unmigratable
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.plugins.host import PluginError
+from piloop.plugins.network.contract import Address
 from piloop.proc import Inherited
 
 
@@ -35,24 +37,35 @@ def serve(
             help='Check that the daemon can start (its plugins, and what config.toml binds), and start nothing.'
         ),
     ] = False,
+    listen: Annotated[
+        str | None,
+        cyclopts.Parameter(
+            help='Serve other machines on HOST:PORT ([plugins.network] listen). An address that is not loopback needs'
+            ' TLS.'
+        ),
+    ] = None,
 ) -> None:
     """Run the daemon, which fires the triggers, launches the agents and reaps the agents that end.
 
     Only one daemon runs per PILOOP_HOME. The file serve.pid holds its lock.
     """
+    try:
+        address = Address.model_validate(listen) if listen is not None else None
+    except ValidationError as e:
+        raise SystemExit(f'--listen {listen}: {e}') from e
     if check:
-        can_start()
+        can_start(address)
         common.console.print('the daemon can start')
         return
     if detach:
-        pid = spawn_detached(common.settings)
+        pid = spawn_detached(common.settings, address)
         common.console.print(
             f'daemon started: pid {pid}, log {common.settings.log_file}', markup=False, highlight=False, soft_wrap=True
         )
         return
     inherited = Inherited.now()  # before the daemon starts a child of its own
     try:
-        daemon = Daemon(common.settings, inherited)
+        daemon = Daemon(common.settings, inherited, address)
     except (OlderDaemon, SchemaMismatch, BackupFailed) as e:
         raise SystemExit(str(e)) from e
     daemon.serve()
@@ -92,14 +105,14 @@ def restart(
     common.console.print(f'daemon pid {restarted(pid, timeout)} restarted')
 
 
-def can_start() -> None:
+def can_start(listen: Address | None = None) -> None:
     """Exit with why the daemon would not start on this code, before anything signals the running one.
 
     A database that this code cannot migrate (``unmigratable``) would make the restarted daemon exit, with its agents
     still running.
     """
     try:
-        preflight(common.settings)
+        preflight(common.settings, listen)
     except PluginError as e:
         raise SystemExit(f'the daemon cannot start: {e}') from e
     if (refused := unmigratable(common.settings.home / 'piloop.db')) is not None:

@@ -1,9 +1,9 @@
 """Raw SQL access for agents: any statement except a schema change.
 
 The same rules apply to every client (``piloop sql``, the watchdog, any agent). SQLite's authorizer denies DDL,
-ATTACH, transactions, writes to ``alembic_version`` and ``session_actor``, and all PRAGMAs except the read-only ones
-that describe the schema. The connection is in autocommit mode, because a forgotten BEGIN would lock the database.
-Everything else is allowed, DELETE included. The schema enforces the rules on the data.
+ATTACH, transactions, writes to ``alembic_version``, ``session_actor`` and ``tokens``, and all PRAGMAs except the
+read-only ones that describe the schema. The connection is in autocommit mode, because a forgotten BEGIN would lock
+the database. Everything else is allowed, DELETE included. The schema enforces the rules on the data.
 
 Anyone can read the full-text indexes (``ideas_fts``, ``comments_fts``, ``documents_fts``) with ``MATCH``,
 ``bm25()`` and ``snippet()``, but only their sync triggers write them. The authorizer sees the name of the trigger behind each
@@ -85,7 +85,9 @@ READ_ONLY_PRAGMAS = {
 }
 MIGRATION_TABLE = 'alembic_version'
 ACTOR_TABLE = 'session_actor'
-PROTECTED_TABLES = {MIGRATION_TABLE, ACTOR_TABLE}
+TOKENS_TABLE = 'tokens'
+"""An agent that could write a token could call the server as a worker."""
+PROTECTED_TABLES = {MIGRATION_TABLE, ACTOR_TABLE, TOKENS_TABLE}
 ACTOR_TRIGGERS = (Path(__file__).parent / 'actor_triggers.sql').read_text()
 WRITES = {sqlite3.SQLITE_INSERT, sqlite3.SQLITE_UPDATE, sqlite3.SQLITE_DELETE}
 BUSY_TIMEOUT_MS = 5000

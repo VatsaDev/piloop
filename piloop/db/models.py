@@ -251,6 +251,15 @@ class LeaseKind(StrEnum):
     EVALUATION = 'evaluation'
 
 
+class TokenScope(StrEnum):
+    """What a bearer token (``piloop token``) lets its caller do on the server of ``piloop serve --listen``."""
+
+    WORKER = 'worker'
+    """A worker's calls: take leases, heartbeat, report."""
+    LEASE = 'lease'
+    """One agent's calls, while its lease is live."""
+
+
 class LeaseState(StrEnum):
     """The lifecycle of a lease (``piloop.plugins.executor.kit.leases``).
 
@@ -358,6 +367,7 @@ class Base(DeclarativeBase):
         AgentSessionState: _values(AgentSessionState),
         LeaseKind: _values(LeaseKind),
         LeaseState: _values(LeaseState),
+        TokenScope: _values(TokenScope),
     }
 
 
@@ -797,6 +807,24 @@ class Lease(Base):
     """The request id of the report that applied. A report sent again with it gets the same ``receipt``."""
     receipt: Mapped[dict[str, object]] = mapped_column(default=dict, server_default=EMPTY_JSON)
     """What the report applied, or why the lease ended."""
+
+
+class Token(Base):
+    """A bearer token of the server that ``piloop serve --listen`` runs (``piloop.net.tokens``).
+
+    Only the SHA-256 of the secret is kept: the secret is shown once, when the token is created. ``piloop sql`` cannot
+    write this table, so an agent cannot add a token. Revoking a token deletes its row.
+    """
+
+    __tablename__ = 'tokens'
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(unique=True)
+    """The caller's name: a worker's id."""
+    scope: Mapped[TokenScope]
+    sha256: Mapped[str] = mapped_column(unique=True)
+    """The hex SHA-256 of the secret."""
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
 
 class Comment(Tracked, Base):

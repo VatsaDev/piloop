@@ -153,5 +153,9 @@ def home_plugins() -> str:
         for provider, source in capability.sources().items():
             parameters = getattr(capability.get(provider), 'Parameters', None) if source.built_in else None
             if isinstance(parameters, type) and issubclass(parameters, BaseModel):
-                out += f'\nWith `provider = "{provider}"`:\n\n{table(json_schema(parameters), {})}'
+                schema = json_schema(parameters)
+                out += f'\nWith `provider = "{provider}"`:\n\n{table(schema, schema.get("$defs", {}))}'
+                for model in [m for m in _nested(parameters, []) if m.__name__ in schema.get('$defs', {})]:
+                    nested = json_schema(model)
+                    out += f'\n##### {model.__name__}\n\n{mdx(nested.get("description", ""))}\n\n{table(nested, {})}'
     return out

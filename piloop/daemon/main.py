@@ -4,6 +4,7 @@ import os
 import signal
 import sys
 from types import FrameType
+from typing import TYPE_CHECKING
 
 from piloop.actor import System
 from piloop.agents.capture import MIN_ENTIRE, AttachError, entire_version, usable
@@ -13,18 +14,24 @@ from piloop.daemon.scheduler import Scheduler
 from piloop.daemon.serve import (
     RESTART_SIGNAL,
     SECRETS_COMMAND_ENV,
-    SERVE_ARGV,
     SecretsError,
     acquire,
     running_pid,
     secrets,
+    serve_argv,
 )
 from piloop.db.session import BackupFailed, Database, OlderDaemon, SchemaMismatch, migrate
+from piloop.net.tokens import Tokens
 from piloop.otel import Span, tracer
 from piloop.plugins import host as plugins
+from piloop.plugins.network import contract as network
+from piloop.plugins.network.contract import NetworkParameters
 from piloop.proc import Inherited
 from piloop.settings import CONFIG_FILE, Settings, settings
 from piloop.store.config import open_store
+
+if TYPE_CHECKING:
+    from piloop.net.server import Server
 
 ACTOR = System.DAEMON
 """The actor that the daemon's connections record in ``updated_by``. The change-log triggers use this name."""
@@ -55,15 +62,17 @@ def unbound_failures(cfg: Settings) -> dict[plugins.Activatable, str]:
     return failed
 
 
-def preflight(cfg: Settings) -> None:
-    """Compose the capabilities that the daemon uses (``bound``), then check what ``config.toml`` selects.
+def preflight(cfg: Settings, listen: network.Address | None = None) -> tuple[type[network.Network], NetworkParameters]:
+    """Compose the capabilities that the daemon uses (``bound``), check what ``config.toml`` selects, return the network.
+
+    The network comes with its parameters, ``listen`` (``piloop serve --listen``) in place of the table's.
 
     ``piloop serve --check`` runs this, and ``piloop restart`` and ``piloop upgrade`` run it before they restart the
     daemon. ``piloop.toml`` is checked when it loads (``piloop init``).
 
     Raises:
         PluginError: A provider does not compose, or ``config.toml`` selects a provider that there is not, or one
-            that refuses its parameters.
+            that refuses its parameters, or the network refuses ``listen``.
     """
     plugins.compose(*bound(cfg))
     home = cfg.model_dump(mode='json')
@@ -71,6 +80,7 @@ def preflight(cfg: Settings) -> None:
         plugins.check_plugins(home['plugins'], 'home')
         for capability in bound(cfg):
             plugins.check_selection(capability, home, 'home')
+        return network.selected(cfg.plugins.get('network'), listen)
     except ValueError as e:
         raise plugins.PluginError(f'{cfg.home / CONFIG_FILE}: {e}') from e
 
@@ -86,9 +96,12 @@ def _entire() -> str | AttachError:
 class Daemon:
     """Everything that a ``piloop serve`` process owns."""
 
-    def __init__(self, cfg: Settings = settings, inherited: Inherited | None = None) -> None:
+    def __init__(
+        self, cfg: Settings = settings, inherited: Inherited | None = None, listen: network.Address | None = None
+    ) -> None:
+        """``listen``: where the server listens (``piloop serve --listen``), in place of ``[plugins.network] listen``."""
         try:
-            preflight(cfg)
+            provider, parameters = preflight(cfg, listen)
         except plugins.PluginError as e:
             raise SystemExit(f'the daemon does not start: {e}') from e
         self._inherited = inherited or Inherited(set())
@@ -100,6 +113,10 @@ class Daemon:
             self.db.close()
             raise
         self._cfg = cfg
+        self._argv = serve_argv(listen)
+        """What an in-place restart execs."""
+        self.network = provider(network.NetworkHost(Tokens(self.db)), parameters)
+        self._server: Server | None = None
         try:
             # Before the remote opens: its credentials can come from the secrets. And before the lock, because
             # `serve --detach` reports a start when the child holds it, so a failing secrets command must fail first.
@@ -148,6 +165,7 @@ class Daemon:
                 backup=None if self._backup is None else str(self._backup),
             ) as span:
                 self._check_entire(span)
+                self._listen(span)
                 self.scheduler.reap()
                 span.set(inherited_reaped=self._inherited.reap())
             self.scheduler.serve_forever(self._cfg.tick_seconds, also=self._inherited.reap)
@@ -165,7 +183,7 @@ class Daemon:
                     # The exec releases the lock, because Python's descriptors are close-on-exec.
                     sys.stdout.flush()  # exec discards Python's buffers.
                     sys.stderr.flush()
-                    os.execv(SERVE_ARGV[0], SERVE_ARGV)
+                    os.execv(self._argv[0], self._argv)
             # Only for tidiness. The lock, not the file, tells which daemon runs.
             self._cfg.pid_file.unlink(missing_ok=True)
             os.close(lock)
@@ -197,6 +215,20 @@ class Daemon:
             return
         span.set(entire=version)
 
+    def _listen(self, span: Span) -> None:
+        """Start the server on the network's listener, when it has one, and record its URL on the start span."""
+        try:
+            listener = self.network.listener()
+        except OSError as e:
+            raise SystemExit(f'the daemon does not listen: {e}') from e
+        if listener is None:
+            return
+        from piloop.net.server import Server, app  # FastAPI takes a third of a second to import: only a server needs it
+
+        self._server = Server(app(self.network, self.controller.executor.routes()), listener)
+        self._server.start()
+        span.set(listen=self._server.url)
+
     def _on_sigterm(self, signum: int, frame: FrameType | None) -> None:
         """Treat a service manager's stop as Ctrl-C: the loop ends and ``shutdown`` kills the running agents."""
         self.scheduler.interrupt()
@@ -209,6 +241,8 @@ class Daemon:
         """Stop the scheduler and flush traces. An in-place restart hands the agents over. Any other stop kills them."""
         with self.tracer.span('piloop.shutdown'):
             (self.scheduler.hand_over if self._restart else self.scheduler.stop)(timeout)
+            if self._server is not None:
+                self._server.close()
         self.controller.close()
         self.tracer.shutdown()
         self.db.close()
