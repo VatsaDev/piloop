@@ -13,16 +13,17 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, select
 
-from piloop.agents.results import DaemonStopped, Ended, Ran
+from piloop.agents.results import SETTLED, DaemonStopped, Ended, Ran
 from piloop.daemon.main import Daemon
 from piloop.daemon.run_controller import RunController
-from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Candidate, Measurement, RunEnd
+from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Candidate, Event, Measurement, RunEnd
 from piloop.db.session import Database
-from piloop.ids import WATCHDOG, AgentSessionId
+from piloop.ids import WATCHDOG, AgentSessionId, CommentId
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins
-from piloop.plugins.executor.contract import EXECUTORS, AgentKey, Capacity, Checkout
+from piloop.plugins.executor.contract import EXECUTORS, AgentKey, Capacity, Checkout, Prompt
 from piloop.plugins.host import PluginTable
+from piloop.plugins.runtime.contract import Handle
 from piloop.settings import Settings
 from tests.conftest import (
     HARNESS_SLEEPS,
@@ -132,6 +133,44 @@ def test_a_stop_closes_a_running_agent_as_stopped(
     with db.session() as s:
         w = s.get_one(AgentSession, agent_session_id)
         assert (w.state, w.error) == (AgentSessionState.KILLED, RunEnd.DAEMON_STOPPED)
+
+
+class Steerable(ScriptRuntime):
+    """A subprocess runtime that takes prompts, and records them."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.prompts: list[str] = []
+
+    def prompt(self, handle: Handle, text: str) -> None:
+        self.prompts.append(text)
+
+
+def test_a_prompt_reaches_the_running_agent_and_its_outcome_is_recorded(
+    db: Database, campaign: Campaign, tmp_path: Path, provider: str
+) -> None:
+    runtime = Steerable()
+    write_toml(Path(campaign.path), HARNESS_SLEEPS)
+    reload_campaign(db, campaign)
+    ex = controller(db, runtime, tmp_path, provider)
+    agent_session_id, ended = launch_in_thread(ex, db, campaign, tmp_path)
+    wait_for_agent_session_handle_of(db, agent_session_id)
+    ex.executor.prompt(AgentKey(agent_session_id), Prompt(CommentId(41), 'try lzma'))
+    wait_until(lambda: outcomes(db, agent_session_id) == [('comment.delivered', {'comment': 41})])
+    assert runtime.prompts == ['try lzma']
+    ex.executor.cancel(AgentKey(agent_session_id))
+    wait_until(lambda: ended)
+    ex.executor.prompt(AgentKey(agent_session_id), Prompt(CommentId(42), 'too late'))
+    wait_until(lambda: len(outcomes(db, agent_session_id)) == 2)
+    assert outcomes(db, agent_session_id)[1][0] == 'comment.undelivered' and runtime.prompts == ['try lzma']
+
+
+def outcomes(db: Database, agent_session_id: AgentSessionId) -> list[tuple[str, dict[str, object]]]:
+    with db.session() as s:
+        rows = s.scalars(
+            select(Event).where(Event.target_id == agent_session_id, Event.kind.in_(SETTLED)).order_by(Event.id)
+        )
+        return [(e.kind, e.payload) for e in rows]
 
 
 def wait_for_agent_session_handle_of(db: Database, agent_session_id: AgentSessionId) -> None:

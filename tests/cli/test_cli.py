@@ -23,17 +23,20 @@ from sqlalchemy import create_engine, select
 from piloop.actor import Actor, Agent, System
 from piloop.campaign import campaigns as campaign_module, inbox
 from piloop.campaign.ideas import defined_by, runnable
-from piloop.cli import campaign as campaign_cli, common, inbox as inbox_cli, install, main as cli
+from piloop.cli import agents as agents_cli, campaign as campaign_cli, common, inbox as inbox_cli, install, main as cli
 from piloop.config import ConfigError
 from piloop.daemon.main import Daemon
 from piloop.daemon.serve import acquire, running_pid
 from piloop.db import session, sql
+from piloop.db.events import emit
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
     Campaign,
     CampaignStatus,
     Candidate,
+    Comment,
+    CommentKind,
     Evaluation,
     Event,
     Idea,
@@ -987,7 +990,10 @@ def test_attach_focuses_an_implementer_tab(
         run_cli(['attach', '1'])
 
 
-def test_prompt(campaign_path: Path, out, herdr_log: Path) -> None:
+def test_prompt_is_a_note_on_the_agent_and_says_whether_it_arrived(
+    campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The daemon delivers the note (``Executor.prompt``): the command waits for its outcome, and says it."""
     run_cli(['init', str(campaign_path)])
     db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
@@ -1014,11 +1020,28 @@ def test_prompt(campaign_path: Path, out, herdr_log: Path) -> None:
             )
         )
         s.commit()
+        for comment, kind, error in ((2, 'comment.delivered', None), (3, 'comment.undelivered', 'a dialog is open')):
+            payload: dict[str, object] = {'comment': comment} | ({'error': error} if error else {})
+            emit(s, kind, TargetKind.AGENT_SESSION, 1, payload=payload)  # the daemon's answers to the next notes
+        s.commit()
     db.close()
+    monkeypatch.setattr(agents_cli, 'DELIVERY_WAIT', 0.1)
     out()
+    run_cli(['prompt', '1', 'no answer'])
+    assert out().strip() == 'comment#1: queued for agent_session#1; the daemon delivers it once it runs'
     run_cli(['prompt', '1', 'try harder'])
-    assert out().strip() == 'prompted agent_session#1'
-    assert herdr_calls(herdr_log)[-1] == ['--session', 'piloop', 'agent', 'prompt', 'implementer-1', 'try harder']
+    assert out().strip() == 'prompted agent_session#1 (comment#2)'
+    with pytest.raises(SystemExit, match='agent_session#1 did not get comment#3: a dialog is open'):
+        run_cli(['prompt', '1', 'x'])
+    with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
+        note = s.get_one(Comment, 1)
+        assert (note.target_kind, note.target_id, note.kind, note.author, note.body) == (
+            TargetKind.AGENT_SESSION,
+            1,
+            CommentKind.NOTE,
+            'human',
+            'no answer',
+        )
     with pytest.raises(SystemExit, match='agent_session#2 is not running'):
         run_cli(['prompt', '2', 'x'])
 
@@ -1215,7 +1238,7 @@ def test_the_service_unit_carries_what_the_usage_globs_of_a_campaigns_harnesses_
     assert 'SCRIPT_HOME' in unit and '/somewhere/script' in unit, 'a harness of a registered campaign'
 
 
-def test_status_without_results_and_prompt_not_steerable(campaign_path: Path, out, mocker: MockerFixture) -> None:
+def test_status_without_results(campaign_path: Path, out, mocker: MockerFixture) -> None:
     run_cli(['init', str(campaign_path)])
     db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
@@ -1262,9 +1285,6 @@ def test_status_without_results_and_prompt_not_steerable(campaign_path: Path, ou
     assert 'demo · no trunk keep · 0 kept / 1 candidates' in text
     assert '  - implementer#1 script/m 0s, on idea#1 x: —' in text, 'a headless agent has no tab'
     assert 'silent' not in text, 'a one-shot process tracks no jobs; a row not launched yet has no runtime to ask'
-
-    with pytest.raises(SystemExit, match='cannot take a message'):
-        run_cli(['prompt', '1', 'x'])
 
 
 FAKE_BIN = Path(__file__).parent.parent / 'fixtures' / 'fake_bin.py'

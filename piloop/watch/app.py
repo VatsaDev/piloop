@@ -6,7 +6,7 @@ there. A campaign screen has a header (head, spend, progress against ``[stop]``)
 has its own keys, which the key bar and ``?`` show. ``/`` filters the focused panel.
 
 A key that writes calls the same functions as the CLI (``inbox.ack``, ``inbox.reply``, ``ops.set_idea_status``,
-``ideas.reprioritise``, the runtime's ``prompt``). Each write is one short session signed by the watcher's actor, so
+``ideas.reprioritise``, ``results.queue_prompt``). Each write is one short session signed by the watcher's actor, so
 the triggers stamp it and the events feed carries it like the write of any other client.
 
 ``piloop/watch/panels.py`` gives the data. This module draws it and maps the keys. It reads again when the database
@@ -29,6 +29,7 @@ from textual.screen import ModalScreen, Screen
 from textual.widgets import DataTable, Footer, HelpPanel, Input, Label, Select, Static
 
 from piloop.actor import Actor
+from piloop.agents.results import queue_prompt
 from piloop.campaign import inbox, ops
 from piloop.campaign.campaigns import find
 from piloop.campaign.ideas import reprioritise
@@ -36,7 +37,7 @@ from piloop.config import config_of
 from piloop.db.models import AgentSession, AgentSessionState, Idea, IdeaStatus, utcnow
 from piloop.db.session import Database
 from piloop.ids import AgentSessionId, CommentId, IdeaId
-from piloop.plugins.runtime.contract import Handle, NotAttachable, NotSteerable, Runtime, RuntimeFailure
+from piloop.plugins.runtime.contract import Handle, NotAttachable, Runtime, RuntimeFailure
 from piloop.runtime.factory import handle_for, runtime_for
 from piloop.watch.panels import CAMPAIGN_COLUMNS, PANELS, Cell, Context, Item, Panel, campaigns, header
 
@@ -216,7 +217,7 @@ class AgentsTable(PanelTable):
 
         def send(text: str | None) -> None:
             if text is not None:
-                self.campaign.say(steer(self.campaign.db, AgentSessionId(key), text, self.campaign.home))
+                self.campaign.act(lambda s: steer(s, AgentSessionId(key), text, self.campaign.actor))
 
         self.app.push_screen(Ask(f'steer agent_session#{key}: a message for its next turn'), send)
 
@@ -234,18 +235,13 @@ def focus(db: Database, agent_session_id: AgentSessionId, home: Path) -> str:
         return f'could not focus agent_session#{agent_session_id}: {e}'
 
 
-def steer(db: Database, agent_session_id: AgentSessionId, text: str, home: Path) -> str:
-    """Prompt a running agent as ``piloop prompt`` does, and return a note that says what happened."""
-    try:
-        runtime, handle = _running(db, agent_session_id, home, 'steer')
-        runtime.prompt(handle, text)
-    except NotRunning as e:
-        return str(e)
-    except NotSteerable as e:
-        return f'not steered: {e}'
-    except RuntimeFailure as e:
-        return f'could not steer agent_session#{agent_session_id}: {e}'
-    return f'steered agent_session#{agent_session_id}'
+def steer(s: Session, agent_session_id: AgentSessionId, text: str, actor: Actor) -> str:
+    """Queue a message for a running agent as ``piloop prompt`` does, and return a note that says so."""
+    comment_id = queue_prompt(s, agent_session_id, text, actor.signature)
+    if comment_id is None:
+        return f'agent_session#{agent_session_id} is not running: nothing to steer'
+    s.commit()
+    return f'comment#{comment_id}: queued for agent_session#{agent_session_id}'
 
 
 class NotRunning(Exception):

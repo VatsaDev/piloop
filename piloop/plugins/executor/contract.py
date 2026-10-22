@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 
 from piloop.db.models import Usage
 from piloop.db.session import Database
-from piloop.ids import AgentSessionId, CandidateId, RunId
+from piloop.ids import AgentSessionId, CandidateId, CommentId, RunId
 from piloop.mcp import McpServer
 from piloop.net import Route
 from piloop.otel import Tracer
@@ -220,6 +220,14 @@ class LeftJob:
     """When the agent started, which its timeout counts from."""
 
 
+@dataclass(frozen=True)
+class Prompt:
+    """A message for a running agent's next turn: a comment, by its id, and the text that the agent gets."""
+
+    id: CommentId
+    text: str
+
+
 class Settled(Exception):
     """A result for a job whose row is settled already: closed, measured, or gone. Core refused it; nothing changed."""
 
@@ -262,6 +270,10 @@ class Results(Protocol):
 
         An agent's run ends ``worker_lost``, and an evaluation waits again for a slot of the queue.
         """
+        ...
+
+    def delivered(self, key: AgentKey, prompt: CommentId, error: str | None) -> None:
+        """A prompt reached its agent, or ``error`` says why it did not. Its outcome is recorded once."""
         ...
 
 
@@ -319,6 +331,14 @@ class Executor(Protocol):
         """Run ``job``, now or when a slot is free. Every job ends with ``Results.finished`` or ``Results.lost``."""
         ...
 
+    def prompt(self, key: AgentKey, prompt: Prompt) -> None:
+        """Deliver ``prompt`` to the running agent at least once, then call ``Results.delivered``.
+
+        Core calls it once for each prompt in each daemon process, and again after a restart when no outcome was
+        recorded: an executor that may deliver it twice skips the ids that it has seen.
+        """
+        ...
+
     def cancel(self, key: JobKey) -> None:
         """Stop a job: a kill or a cancel. It still reports how it ended. Called again, it tries again."""
         ...
@@ -352,7 +372,7 @@ class Executor(Protocol):
 
 
 def _is_executor(loaded: object) -> TypeIs[type[Executor]]:
-    methods = ('capacity', 'submit', 'cancel', 'adopt', 'routes', 'tick', 'stop', 'hand_over', 'close')
+    methods = ('capacity', 'submit', 'prompt', 'cancel', 'adopt', 'routes', 'tick', 'stop', 'hand_over', 'close')
     parameters = getattr(loaded, 'Parameters', None)
     return (
         isinstance(loaded, type)

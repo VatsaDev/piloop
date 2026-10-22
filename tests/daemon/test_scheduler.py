@@ -6,6 +6,7 @@ import threading
 import time
 from collections import Counter
 from contextlib import closing
+from dataclasses import dataclass, field
 from datetime import timedelta
 from importlib.metadata import EntryPoints
 from pathlib import Path
@@ -18,10 +19,11 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from opentelemetry.trace import StatusCode
 from pytest_mock import MockerFixture
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 
 from piloop import git, proc
 from piloop.actor import System
-from piloop.agents.results import STARTUP_ANOMALY
+from piloop.agents.results import STARTUP_ANOMALY, CampaignResults
 from piloop.agents.roles import SQL_HINT, compose_brief
 from piloop.campaign.campaigns import sync
 from piloop.campaign.stop import request_cancel, request_stop, runs
@@ -61,6 +63,7 @@ from piloop.ids import (
     WATCHDOG,
     AgentSessionId,
     CandidateId,
+    CommentId,
     RoleName,
     RunId,
     TargetKind,
@@ -68,7 +71,7 @@ from piloop.ids import (
 )
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins
-from piloop.plugins.executor.contract import Capacity
+from piloop.plugins.executor.contract import AgentKey, Capacity, Prompt
 from piloop.plugins.executor.kit.capacity import Pool
 from piloop.plugins.executor.kit.leases import SERVE
 from piloop.plugins.runtime.contract import AgentStatus, Handle, NotSteerable
@@ -1606,18 +1609,20 @@ def revoked(db: Database) -> list[object]:
 
 def comment(
     db: Database, kind: str, target_kind: str, target_id: int, body: str, *, author: str = 'human', priority: int = 2
-) -> int:
+) -> CommentId:
     """Add a comment through the raw SQL path that agents use. ``created_at`` is CURRENT_TIMESTAMP, to the second.
 
     Each comment is addressed to the human at ``priority``. An escalation must have this, and other kinds may. The
     push to the implementer ignores it.
     """
     with closing(sql.connect(Path(db.engine.url.database or ''), actor=ACTORS.validate_python(author))) as con:
-        return sql.run(
-            con,
-            f"INSERT INTO comments (target_kind, target_id, author, kind, body, priority) VALUES ('{target_kind}',"
-            f" {target_id}, '{author}', '{kind}', '{body}', {priority})",
-        ).last_insert_rowid
+        return CommentId(
+            sql.run(
+                con,
+                f"INSERT INTO comments (target_kind, target_id, author, kind, body, priority) VALUES ('{target_kind}',"
+                f" {target_id}, '{author}', '{kind}', '{body}', {priority})",
+            ).last_insert_rowid
+        )
 
 
 def settled(db: Database, kind: str) -> list[tuple[int, dict[str, object]]]:
@@ -1625,8 +1630,29 @@ def settled(db: Database, kind: str) -> list[tuple[int, dict[str, object]]]:
         return [(e.target_id, e.payload) for e in s.scalars(select(Event).where(Event.kind == kind))]
 
 
-def test_comments_on_a_running_run_or_its_idea_reach_the_implementer_once_as_one_line(
-    db: Database, campaign: Campaign, tmp_path: Path, tracer: Tracer, spans: InMemorySpanExporter
+@dataclass
+class Prompted:
+    """``Executor.prompt`` that records each prompt and, when ``answers``, records it delivered at once."""
+
+    results: CampaignResults
+    answers: bool = True
+    prompts: list[tuple[int, Prompt]] = field(default_factory=list)
+
+    def __call__(self, key: AgentKey, prompt: Prompt) -> None:
+        self.prompts.append((key.agent_session, prompt))
+        if self.answers:
+            self.results.delivered(key, prompt.id, None)
+
+
+def prompted(db: Database, scheduler: Scheduler, mocker: MockerFixture, *, answers: bool = True) -> Prompted:
+    """Replace the executor's ``prompt`` of ``scheduler`` with a ``Prompted``."""
+    fake = Prompted(CampaignResults(db, Tracer(None), Path('units'), lambda: False), answers)
+    mocker.patch.object(scheduler._controller.executor, 'prompt', side_effect=fake)
+    return fake
+
+
+def test_comments_for_a_running_agent_go_to_its_executor_once_each_until_they_have_an_outcome(
+    db: Database, campaign: Campaign, tmp_path: Path, tracer: Tracer, spans: InMemorySpanExporter, mocker: MockerFixture
 ) -> None:
     runtime = PromptingRuntime()
     idea = running_agent_session(db, campaign, 'live')
@@ -1636,60 +1662,82 @@ def test_comments_on_a_running_run_or_its_idea_reach_the_implementer_once_as_one
         s.add(Comment(target=TargetRef(TargetKind.IDEA, idea), author='human', body='in the brief', created_at=before))
         s.commit()
     scheduler = make_scheduler(db, runtime, tmp_path, tracer)
-    assert scheduler.tick() == [] and runtime.prompts == [], 'a comment from before the run started is in its brief'
+    executor = prompted(db, scheduler, mocker)
+    assert scheduler.tick() == [] and executor.prompts == [], 'a comment from before the run started is in its brief'
 
     decision = comment(db, 'decision', 'idea', idea, 'keep solve.py under 120 lines\nthe rest is detail')
     note = comment(db, 'note', 'run', 1, 'x' * 250, author='orchestrator')
     comment(db, 'finding', 'campaign', campaign.id, 'not for any implementer')
     waiting = comment(db, 'note', 'idea', coming_up, 'its implementer is starting: waits for its pane')
     comment(db, 'escalation', 'idea', idea, 'for the human, not the pane')
+    direct = comment(db, 'note', 'agent_session', 1, 'piloop prompt: the text as written\nall of it')
     scheduler.tick()
-    assert runtime.prompts == [
+    assert executor.prompts == [
         (
-            'implementer-1',
-            '[piloop] decision on idea#1 by human: keep solve.py under 120 lines — full text: SELECT body FROM comments'
-            f' WHERE id=2\n[piloop] note on run#1 by orchestrator: {"x" * 199}… — full text: SELECT body FROM comments WHERE id=3',
-        )
-    ], 'one prompt with one line per comment: two prompts close together run into one another in the queue'
-    assert settled(db, 'comment.delivered') == [(1, {'comment': decision}), (1, {'comment': note})]
-    assert events(spans, 'comment.delivered') == [
-        {'comment': decision, 'agent_session': 1},
-        {'comment': note, 'agent_session': 1},
+            1,
+            Prompt(
+                decision,
+                '[piloop] decision on idea#1 by human: keep solve.py under 120 lines — full text: SELECT body FROM'
+                f' comments WHERE id={decision}',
+            ),
+        ),
+        (
+            1,
+            Prompt(
+                note,
+                f'[piloop] note on run#1 by orchestrator: {"x" * 199}… — full text: SELECT body FROM comments'
+                f' WHERE id={note}',
+            ),
+        ),
+        (1, Prompt(direct, 'piloop prompt: the text as written\nall of it')),
     ]
+    assert settled(db, 'comment.delivered') == [(1, {'comment': c}) for c in (decision, note, direct)]
+    assert events(spans, 'comment.delivered') == [{'comment': c, 'agent_session': 1} for c in (decision, note, direct)]
     scheduler.tick()
-    assert len(runtime.prompts) == 1, 'settled by the events: nothing is delivered twice'
+    assert len(executor.prompts) == 3, 'settled by the events: nothing is sent twice'
 
     with db.session() as s:
         s.get_one(AgentSession, 2).state = AgentSessionState.RUNNING
         s.commit()
     scheduler.tick()
-    assert runtime.prompts[-1] == (
-        'implementer-2',
-        '[piloop] note on idea#2 by human: its implementer is starting: waits for its pane — full text: SELECT body FROM'
-        ' comments WHERE id=5',
-    ), 'a comment that landed while the pane was coming up is delivered once the implementer runs'
-    assert settled(db, 'comment.delivered')[-1] == (2, {'comment': waiting})
+    assert executor.prompts[-1][0] == 2 and executor.prompts[-1][1].id == waiting, (
+        'a comment that landed while the pane was coming up is sent once the implementer runs'
+    )
 
     restarted = make_scheduler(db, runtime, tmp_path)
+    executor = prompted(db, restarted, mocker, answers=False)
     restarted.tick()
-    assert len(runtime.prompts) == 2, 'a new daemon replays nothing: the record is in the database'
+    assert executor.prompts == [], 'a new daemon replays nothing that has an outcome: the record is in the database'
     later = comment(db, 'decision', 'run', 1, 'and stop after the next commit')
     restarted.tick()
-    assert runtime.prompts[-1][0] == 'implementer-1' and settled(db, 'comment.delivered')[-1] == (1, {'comment': later})
+    restarted.tick()
+    assert [p.id for _, p in executor.prompts] == [later], 'once per daemon process, also without an outcome yet'
+    again = make_scheduler(db, runtime, tmp_path, tracer)
+    executor = prompted(db, again, mocker)
+    again.tick()
+    assert [p.id for _, p in executor.prompts] == [later], 'the next daemon sends what has no outcome again'
+    refused = comment(db, 'note', 'run', 1, 'the executor fails to take it once')
+    locked = OperationalError('SELECT', {}, Exception('locked'))
+    taking = mocker.patch.object(again._controller.executor, 'prompt', side_effect=[locked, None])
+    again.tick()
+    again.tick()
+    assert [c.args[1].id for c in taking.call_args_list] == [refused, refused], 'the next tick sends it again'
 
 
-def test_an_implementers_own_comments_are_not_echoed_back(db: Database, campaign: Campaign, tmp_path: Path) -> None:
-    runtime = PromptingRuntime()
+def test_an_implementers_own_comments_are_not_echoed_back(
+    db: Database, campaign: Campaign, tmp_path: Path, mocker: MockerFixture
+) -> None:
     idea = running_agent_session(db, campaign, 'live')
-    scheduler = make_scheduler(db, runtime, tmp_path)
+    scheduler = make_scheduler(db, PromptingRuntime(), tmp_path)
+    executor = prompted(db, scheduler, mocker)
     comment(db, 'finding', 'idea', idea, 'what I tried', author='implementer#1')
     comment(db, 'note', 'run', 1, 'signed the other documented way', author='run#1')
     comment(db, 'note', 'idea', idea, 'a 0.1.0 agent signs as before the upgrade', author='worker#1')
     scheduler.tick()
-    assert runtime.prompts == [] and settled(db, 'comment.delivered') == []
+    assert executor.prompts == [] and settled(db, 'comment.delivered') == []
     comment(db, 'note', 'idea', idea, 'a sibling implementer is not the author', author='implementer#2')
     scheduler.tick()
-    assert [text.split(' — ')[0] for _, text in runtime.prompts] == [
+    assert [p.text.split(' — ')[0] for _, p in executor.prompts] == [
         '[piloop] note on idea#1 by implementer#2: a sibling implementer is not the author'
     ]
 
@@ -1704,13 +1752,13 @@ def test_a_comment_that_cannot_be_delivered_is_settled_as_undelivered_and_never_
 ) -> None:
     """A comment that cannot reach the implementer is settled as undelivered, and the tick does not fail.
 
-    The subprocess runtime raises NotSteerable. The tick records this on the implementer and does not try again.
+    Here the row runs without a lease, so ``workers`` says why at once. The tick does not try again.
     """
     idea = running_agent_session(db, campaign, 'headless')
     scheduler = make_scheduler(db, runtime, tmp_path, tracer)
     stuck = comment(db, 'decision', 'idea', idea, 'a headless implementer has no input channel')
     assert scheduler.tick() == []
-    error = IsStr(regex='subprocess agent pid 4242 cannot take a message.*')
+    error = 'the agent has no live lease'
     assert settled(db, 'comment.delivered') == []
     assert settled(db, 'comment.undelivered') == [(1, {'comment': stuck, 'error': error})]
     assert events(spans, 'comment.undelivered') == [{'comment': stuck, 'agent_session': 1, 'error': error}]

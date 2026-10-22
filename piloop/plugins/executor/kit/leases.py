@@ -28,12 +28,17 @@ core's schema until the plugin host gives a plugin tables of its own: one schema
 """
 
 import contextlib
+import itertools
+import threading
+import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
+from typing import Annotated, Literal
 
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from sqlalchemy import ColumnElement, func, select, update
 from sqlalchemy.orm import Session
 
@@ -41,7 +46,7 @@ from piloop import deprecated
 from piloop.db.events import emit
 from piloop.db.models import LIVE_LEASES, OPEN_LEASES, Lease, LeaseKind, LeaseState, LeaseWorker, NoLease, utcnow
 from piloop.db.session import Database, write_transaction
-from piloop.ids import AgentSessionId, TargetKind
+from piloop.ids import AgentSessionId, CommentId, TargetKind
 from piloop.plugins.executor.contract import (
     JOB,
     REPORT,
@@ -55,8 +60,10 @@ from piloop.plugins.executor.contract import (
     EvaluationKey,
     EvaluationReport,
     Guard,
+    Job,
     JobKey,
     LeftJob,
+    Prompt,
     Results,
     Settled,
 )
@@ -113,15 +120,72 @@ class Answer(StrEnum):
     """The lease is no longer the worker's: stop the job. Its report will be refused."""
 
 
-@dataclass(frozen=True)
-class Grant:
+class AgentHandle(BaseModel):
+    """Where an agent runs: its runtime, and the runtime's handle (``Handle.data``)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    runtime: str
+    data: dict[str, object]
+
+
+class ProcessHandle(BaseModel):
+    """Where an evaluator runs: its process group, and the start time that tells it from a reused pid."""
+
+    model_config = ConfigDict(frozen=True)
+
+    pgid: int
+    start_time: float | None
+    """None when the evaluator was gone already at its start: its group is then never killed by its id alone."""
+
+
+type JobHandle = AgentHandle | ProcessHandle
+HANDLE: TypeAdapter[AgentHandle | ProcessHandle] = TypeAdapter(JobHandle)
+
+
+class Grant(BaseModel):
     """A lease that a worker holds: its id, which is its fencing token, and its job."""
 
+    model_config = ConfigDict(frozen=True)
+
     lease: int
-    job: AgentJob | EvaluationJob
-    handle: dict[str, object]
-    """What ``started`` recorded, for a worker that finds its job again after a restart. Empty before the start."""
-    started_at: datetime | None
+    job: Job
+    handle: JobHandle | None = None
+    """What ``started`` recorded, for a worker that finds its job again after a restart. None before the start."""
+    started_at: datetime | None = None
+
+    @classmethod
+    def of(cls, lease: Lease) -> Grant:
+        """The grant of a lease row."""
+        handle = HANDLE.validate_python(lease.handle) if lease.handle else None
+        return cls(lease=lease.id, job=_granted(lease), handle=handle, started_at=lease.started_at)
+
+
+class Work(BaseModel):
+    """A message: a job waits. The worker asks for leases until it gets none."""
+
+    kind: Literal['work'] = 'work'
+    id: int
+
+
+class PromptMessage(BaseModel):
+    """A message: deliver ``prompt`` to the agent of ``lease``, then answer ``delivered``."""
+
+    kind: Literal['prompt'] = 'prompt'
+    id: int
+    lease: int
+    prompt: Prompt
+
+
+class Revoke(BaseModel):
+    """A message: stop the job of ``lease`` now. It still reports. The heartbeat's ``REVOKED`` is the fallback."""
+
+    kind: Literal['revoke'] = 'revoke'
+    id: int
+    lease: int
+
+
+type Message = Annotated[Work | PromptMessage | Revoke, Field(discriminator='kind')]
 
 
 def _granted(lease: Lease) -> AgentJob | EvaluationJob:
@@ -145,7 +209,7 @@ def _granted(lease: Lease) -> AgentJob | EvaluationJob:
 
 
 def enqueue(s: Session, job: AgentJob | EvaluationJob) -> Lease:
-    """Insert the ``queued`` lease of ``job`` in the caller's transaction. The caller commits, then ``Leases.notify``."""
+    """Insert the ``queued`` lease of ``job`` in the caller's transaction. The caller commits."""
     lease = Lease(kind=LeaseKind(job.kind), job=JOB.dump_python(job, mode='json'))
     if isinstance(job, AgentJob):
         lease.agent_session_id = job.agent_session
@@ -222,16 +286,14 @@ class Leases:
         self.pools = pools
         self._expired_at: datetime | None = None
         """When ``expire`` last ran, to tell a gap in the scheduler's ticks (a suspend) from a silent worker."""
-        self._listeners: list[Callable[[], None]] = []
-
-    def listen(self, listener: Callable[[], None]) -> None:
-        """Call ``listener`` after every change of a lease made in this process: the worker wakes on it."""
-        self._listeners.append(listener)
-
-    def notify(self) -> None:
-        """Wake the listeners. Called after a commit that changed a lease."""
-        for listener in self._listeners:
-            listener()
+        self._mail = threading.Condition()
+        """Guards ``_mailboxes`` and ``_prompts``, and wakes the workers that wait in ``messages``."""
+        self._mailboxes: dict[str, list[Work | PromptMessage | Revoke]] = {}
+        """The messages that each worker that registered with this process has not read yet."""
+        self._prompts: dict[int, tuple[AgentKey, CommentId]] = {}
+        """The agent and the prompt of each ``PromptMessage`` that waits for its ``delivered``, by message id."""
+        self._ids = itertools.count(time.time_ns())
+        """Message ids. They start from the clock, so they grow across daemon restarts and a worker's cursor holds."""
 
     def register(self, worker: str, pool: str, version: str, runners: Sequence[str], host: HostSample) -> list[Grant]:
         """Record a worker that starts, and return its live leases: what a restarted worker finds again.
@@ -251,7 +313,10 @@ class Leases:
             rows = s.scalars(
                 select(Lease).where(Lease.worker == worker, Lease.state.in_(LIVE_LEASES)).order_by(Lease.id)
             ).all()
-            return [Grant(r.id, _granted(r), dict(r.handle), r.started_at) for r in rows]
+            held = [Grant.of(r) for r in rows]
+        with self._mail:
+            self._mailboxes.setdefault(worker, [])
+        return held
 
     @staticmethod
     def _heard(row: LeaseWorker, host: HostSample) -> None:
@@ -293,9 +358,7 @@ class Leases:
                         lease.renewed_at, lease.expires_at = now, now + timedelta(seconds=self.timing.toleration)
                         row.no_lease = None
                         s.commit()
-                        grant = Grant(lease.id, _granted(lease), {}, None)
-                        self.notify()
-                        return grant
+                        return Grant.of(lease)
             reason = row.no_lease = min(refused, key=list(NoLease).index)
             s.commit()
             return reason
@@ -354,28 +417,26 @@ class Leases:
 
         return fence
 
-    def started(self, lease_id: int, worker: str, handle: dict[str, object], session_id: str | None = None) -> None:
+    def started(self, lease_id: int, worker: str, handle: JobHandle, session_id: str | None = None) -> None:
         """Record that the job started, and where (``handle``). Raises ``StaleLease``: then stop the job."""
 
         def mark(s: Session) -> None:
             lease = self._live(s, lease_id, worker)
-            lease.state, lease.handle = LeaseState.RUNNING, handle
+            lease.state, lease.handle = LeaseState.RUNNING, handle.model_dump(mode='json')
             lease.started_at = lease.started_at or utcnow()
 
         agent_session = self._job(lease_id).agent_session_id
-        if agent_session is None:  # an evaluator: core needs nothing of its start
-            with self._db.session() as s:
-                write_transaction(s)
-                mark(s)
-                s.commit()
-        else:
-            data = handle['data']
-            assert isinstance(data, dict)
-            try:
-                self._results.started(AgentKey(agent_session), data, session_id, guard=mark)
-            except Settled as e:
-                raise StaleLease(f'stale_lease: {e}') from e
-        self.notify()
+        match handle:
+            case AgentHandle() if agent_session is not None:
+                try:
+                    self._results.started(AgentKey(agent_session), handle.data, session_id, guard=mark)
+                except Settled as e:
+                    raise StaleLease(f'stale_lease: {e}') from e
+            case _:  # an evaluator: core needs nothing of its start
+                with self._db.session() as s:
+                    write_transaction(s)
+                    mark(s)
+                    s.commit()
 
     def heartbeat(self, worker: str, sessions: dict[int, str | None], host: HostSample) -> dict[int, Answer]:
         """Renew the leases of ``worker`` that it still runs, by id, with the session id each agent reported.
@@ -436,7 +497,6 @@ class Leases:
             if isinstance(e, Settled):
                 raise StaleLease(f'stale_lease: {e}') from e
             raise
-        self.notify()
         return receipt
 
     def _keep_stale(self, lease: Lease, worker: str, report: AgentReport | EvaluationReport, reason: str) -> None:
@@ -458,7 +518,6 @@ class Leases:
     def lost(self, lease_id: int, worker: str, reason: str) -> None:
         """End the lease as lost: its worker restarted and cannot find its job. Raises ``StaleLease``."""
         self._lose(lease_id, reason, lambda s: self._live(s, lease_id, worker))
-        self.notify()
 
     def _lose(self, lease_id: int, reason: str, fence: Callable[[Session], Lease]) -> None:
         """End the lease as expired, and tell core that its job is lost, if ``fence`` still finds the lease its own.
@@ -528,11 +587,7 @@ class Leases:
             with contextlib.suppress(StaleLease):  # a report or a heartbeat came first, in the meantime
                 self._lose(lease_id, reason, lambda s, lease_id=lease_id: self._still_expired(s, lease_id, now))
         with self._db.session() as s:
-            following = s.scalar(select(func.min(Lease.expires_at)).where(live))
-        changed = bool(expiring)
-        if changed:
-            self.notify()
-        return following
+            return s.scalar(select(func.min(Lease.expires_at)).where(live))
 
     def _still_expired(self, s: Session, lease_id: int, now: datetime) -> Lease:
         """Return the lease if it is still live and past its expiry at ``now``, in the transaction that expires it."""
@@ -561,20 +616,70 @@ class Leases:
             s.commit()
 
     def submit(self, job: AgentJob | EvaluationJob) -> None:
-        """Queue ``job`` on a new lease, and wake the listeners."""
+        """Queue ``job`` on a new lease, and tell every worker (``Work``)."""
         with self._db.session() as s:
             enqueue(s, job)
             s.commit()
-        self.notify()
+        with self._mail:
+            for mailbox in self._mailboxes.values():
+                if not mailbox or not isinstance(mailbox[-1], Work):  # one waiting Work says it all
+                    mailbox.append(Work(id=next(self._ids)))
+            self._mail.notify_all()
 
     def revoke(self, key: JobKey) -> None:
-        """Ask the worker of the job's live lease to stop it (``revoke``). Its job still reports."""
+        """Ask the worker of the job's live lease to stop it (``revoke``, and a ``Revoke``). Its job still reports."""
         with self._db.session() as s:
             lease = lease_of(s, key)
-            if lease is not None:  # ``revoke`` changes a live lease only
-                revoke(s, lease)
-                s.commit()
-        self.notify()
+            if lease is None or lease.state not in LIVE_LEASES or lease.worker is None:
+                return
+            revoke(s, lease)
+            s.commit()
+            lease_id, worker = lease.id, lease.worker
+        self._post(worker, Revoke(id=next(self._ids), lease=lease_id))
+
+    def prompt(self, key: AgentKey, prompt: Prompt) -> None:
+        """Send ``prompt`` to the worker of the agent's live lease (``PromptMessage``). It answers ``delivered``.
+
+        An agent without a live lease never gets it: core records why at once.
+        """
+        with self._db.session() as s:
+            lease = of_agent(s, key.agent_session)
+            if lease is None or lease.state not in LIVE_LEASES or lease.worker is None:
+                live = None
+            else:
+                live = lease.id, lease.worker
+        if live is None:
+            self._results.delivered(key, prompt.id, 'the agent has no live lease')
+            return
+        message = PromptMessage(id=next(self._ids), lease=live[0], prompt=prompt)
+        with self._mail:
+            self._prompts[message.id] = key, prompt.id
+        self._post(live[1], message)
+
+    def _post(self, worker: str, message: Work | PromptMessage | Revoke) -> None:
+        with self._mail:
+            self._mailboxes.setdefault(worker, []).append(message)
+            self._mail.notify_all()
+
+    def messages(self, worker: str, after: int, wait: float) -> list[Work | PromptMessage | Revoke]:
+        """Return the messages of ``worker`` after the id ``after``, waiting up to ``wait`` seconds for one.
+
+        A long-poll, after the GitHub Actions runner: it returns at once when a message waits. The messages up to
+        ``after`` are read: they go.
+        """
+        with self._mail:
+            mailbox = self._mailboxes.setdefault(worker, [])
+            mailbox[:] = [m for m in mailbox if m.id > after]  # read: a ``Work`` that waits is then a new one
+            self._mail.wait_for(lambda: bool(mailbox), timeout=wait)
+            return list(mailbox)
+
+    def delivered(self, worker: str, message: int, error: str | None) -> None:
+        """The worker's answer to a ``PromptMessage``: core records the outcome. An answer sent again changes nothing."""
+        with self._mail:
+            prompted = self._prompts.pop(message, None)
+        if prompted is not None:
+            key, prompt = prompted
+            self._results.delivered(key, prompt, error)
 
     def adopt(self, left: Sequence[LeftJob], worker: str) -> list[JobKey]:
         """Give every live lease a full period, and return the jobs of ``left`` that have no open lease.
@@ -653,8 +758,8 @@ def _adopt_running(s: Session, left: LeftJob, worker: str, timing: Timing) -> bo
         return False
     lease = enqueue(s, left.job)
     now = utcnow()
-    handle: dict[str, object] = {'runtime': left.job.runtime, 'data': left.handle}
-    lease.state, lease.worker, lease.handle = LeaseState.RUNNING, worker, handle
+    handle = AgentHandle(runtime=left.job.runtime, data=left.handle)
+    lease.state, lease.worker, lease.handle = LeaseState.RUNNING, worker, handle.model_dump(mode='json')
     lease.acquired_at = lease.started_at = left.started_at or now
     lease.renewed_at, lease.expires_at = now, now + timedelta(seconds=timing.toleration)
     return True

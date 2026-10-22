@@ -25,7 +25,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database, write_transaction
-from piloop.ids import WATCHDOG, TargetKind
+from piloop.ids import WATCHDOG, CommentId, TargetKind
 from piloop.plugins.executor.contract import (
     AgentFinished,
     AgentJob,
@@ -39,19 +39,25 @@ from piloop.plugins.executor.contract import (
     GitTree,
     Guard,
     JobKey,
+    Prompt,
     Settled,
 )
 from piloop.plugins.executor.kit.capacity import GB, HostSample, Pool
+from piloop.plugins.executor.kit.client import Local, Registration, WorkerInfo
 from piloop.plugins.executor.kit.leases import (
     EXPIRED,
     NOT_TAKEN,
     STALE_REPORT,
     UNREACHABLE,
+    AgentHandle,
     Answer,
     Grant,
     Leases,
+    PromptMessage,
+    Revoke,
     StaleLease,
     Timing,
+    Work,
     cancel,
     enqueue,
     revoke,
@@ -60,17 +66,22 @@ from piloop.plugins.executor.workers import WorkersParameters
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
 from tests.conftest import baseline
 
-HANDLE: dict[str, object] = {'runtime': 'subprocess', 'data': {}}
+HANDLE = AgentHandle(runtime='subprocess', data={})
 TIMING = Timing(renew=10, grace=50, toleration=300)
 POOLS = {'test': Pool(evaluations=99)}
 """A pool whose slots no test fills, unless it says so."""
 HOST = HostSample(at=utcnow(), cpus=4, load1=0.5, memory_available=8 * GB, disk_free=100 * GB)
 
 
+def join(leases: Leases, worker: str, runners: list[str], pool: str = 'test') -> Registration:
+    """Register ``worker`` in ``pool`` with ``runners``, as its ``LeaseClient`` does."""
+    return Local(leases, worker).register(WorkerInfo(version='0.2.0', pool=pool, runners=runners, sample=HOST))
+
+
 def take(leases: Leases, worker: str, runners: list[str], pool: str = 'test') -> Grant | None:
     """Register ``worker`` in ``pool`` with ``runners``, then acquire: the grant, or None when it gets no lease."""
-    leases.register(worker, pool, '0.2.0', runners, HOST)
-    grant = leases.acquire(worker, HOST)
+    join(leases, worker, runners, pool)
+    grant = Local(leases, worker).acquire(HOST)
     return grant if isinstance(grant, Grant) else None
 
 
@@ -111,6 +122,9 @@ class Recorder:
 
         target = key.evaluation if isinstance(key, EvaluationKey) else key.agent_session
         self._apply(guard, ('lost', target, reason), change)
+
+    def delivered(self, key: AgentKey, prompt: CommentId, error: str | None) -> None:
+        self.calls.append(('delivered', key.agent_session, (prompt, error)))
 
 
 @pytest.fixture
@@ -210,20 +224,20 @@ def test_a_lease_is_acquired_started_renewed_and_reported_once_with_its_receipt(
     grant = take(leases, 'w1', ['process'])
     assert grant is not None and (grant.lease, grant.job) == (lease_id, job)
     assert take(leases, 'w2', ['process']) is None, 'a job goes to one worker'
-    handle: dict[str, object] = {'runtime': 'subprocess', 'data': {'pid': 7}}
-    leases.started(lease_id, 'w1', handle)
-    assert leases.heartbeat('w1', {lease_id: 'sid'}, HOST) == {lease_id: Answer.RENEWED}
-    assert leases.report(lease_id, 'w1', 'r1', DONE) == RECEIPT
-    assert leases.report(lease_id, 'w1', 'r1', DONE) == RECEIPT, 'a resent report gets its receipt'
+    handle = AgentHandle(runtime='subprocess', data={'pid': 7})
+    Local(leases, 'w1').started(lease_id, handle, None)
+    assert Local(leases, 'w1').heartbeat({lease_id: 'sid'}, HOST) == {lease_id: Answer.RENEWED}
+    assert Local(leases, 'w1').report(lease_id, 'r1', DONE) == RECEIPT
+    assert Local(leases, 'w1').report(lease_id, 'r1', DONE) == RECEIPT, 'a resent report gets its receipt'
     assert recorder.calls == [
         ('started', job.agent_session, {'pid': 7}),
         ('session', job.agent_session, 'sid'),
         ('finished', job.agent_session, DONE),
     ], "it applied once, with the runtime's handle"
     row = lease_row(db, lease_id)
-    assert (row.state, row.worker, row.handle, row.request_id) == (LeaseState.REPORTED, 'w1', handle, 'r1')
+    assert (row.state, row.worker, row.handle, row.request_id) == (LeaseState.REPORTED, 'w1', handle.model_dump(), 'r1')
     with pytest.raises(StaleLease, match=f'lease#{lease_id} is reported'):
-        leases.report(lease_id, 'w1', 'r2', DONE)
+        Local(leases, 'w1').report(lease_id, 'r2', DONE)
 
 
 def test_a_report_with_an_old_fencing_token_is_refused_and_kept_as_a_stale_report(
@@ -239,13 +253,13 @@ def test_a_report_with_an_old_fencing_token_is_refused_and_kept_as_a_stale_repor
     second = take(leases, 'w2', ['process'])
     assert second is not None and second.lease > first, 'the fencing token grows with each lease of the job'
     with pytest.raises(StaleLease, match=f'stale_lease: lease#{first} is expired'):
-        leases.report(first, 'w1', 'late', MEASURED)
-    assert leases.heartbeat('w1', {first: None}, HOST) == {first: Answer.STALE}
+        Local(leases, 'w1').report(first, 'late', MEASURED)
+    assert Local(leases, 'w1').heartbeat({first: None}, HOST) == {first: Answer.STALE}
     assert [c[0] for c in recorder.calls] == ['lost'], 'nothing of the late report applied'
     [(kind, target, payload)] = events(db, STALE_REPORT)
     assert (kind, target, payload['lease'], payload['worker']) == (TargetKind.CANDIDATE, job.candidate, first, 'w1')
     assert payload['report'] == MEASURED.model_dump(mode='json')
-    assert leases.report(second.lease, 'w2', 'r', MEASURED) == {'reported': 'evaluation'}
+    assert Local(leases, 'w2').report(second.lease, 'r', MEASURED) == {'reported': 'evaluation'}
 
 
 def test_only_the_newest_lease_of_a_job_is_live(
@@ -258,9 +272,9 @@ def test_only_the_newest_lease_of_a_job_is_live(
     new = queue(db, job)
     take(leases, 'w2', [])
     with pytest.raises(StaleLease, match=f'lease#{old} was replaced by lease#{new}'):
-        leases.started(old, 'w1', HANDLE)
+        Local(leases, 'w1').started(old, HANDLE, None)
     with pytest.raises(StaleLease, match='held by w2'):
-        leases.started(new, 'w1', HANDLE)
+        Local(leases, 'w1').started(new, HANDLE, None)
 
 
 def test_a_silent_worker_is_unreachable_after_the_grace_period_and_its_leases_expire_after_the_toleration(
@@ -279,7 +293,7 @@ def test_a_silent_worker_is_unreachable_after_the_grace_period_and_its_leases_ex
         (TargetKind.AGENT_SESSION, job.agent_session, {'lease': lease_id, 'worker': 'w1'})
     ], 'once per silence'
     assert worker_row(db, 'w1').no_lease == NoLease.UNREACHABLE
-    leases.heartbeat('w1', {lease_id: None}, HOST)
+    Local(leases, 'w1').heartbeat({lease_id: None}, HOST)
     assert worker_row(db, 'w1').no_lease is None, 'heard again'
     heard = utcnow()
     for seconds in range(10, 301, 10):  # the scheduler's ticks: no gap that looks like its own absence
@@ -312,8 +326,8 @@ def test_a_revoked_lease_is_answered_revoked_and_still_reports(
     with db.session() as s:
         revoke(s, s.get_one(Lease, lease_id))
         s.commit()
-    assert leases.heartbeat('w1', {lease_id: None}, HOST) == {lease_id: Answer.REVOKED}
-    assert leases.report(lease_id, 'w1', 'r', DONE) == RECEIPT
+    assert Local(leases, 'w1').heartbeat({lease_id: None}, HOST) == {lease_id: Answer.REVOKED}
+    assert Local(leases, 'w1').report(lease_id, 'r', DONE) == RECEIPT
 
 
 def test_an_evaluation_goes_to_a_worker_with_its_runner_in_the_order_in_which_it_was_submitted(
@@ -362,14 +376,12 @@ def test_a_worker_finds_its_live_leases_again_with_their_handles(
     job = agent_job(db, campaign, tmp_path)
     lease_id = queue(db, job)
     take(leases, 'w1', [])
-    leases.started(lease_id, 'w1', {'runtime': 'subprocess', 'data': {'pid': 1}})
-    [grant] = leases.register('w1', 'test', '0.2.0', [], HOST)
-    assert (grant.lease, grant.job, grant.handle) == (lease_id, job, {'runtime': 'subprocess', 'data': {'pid': 1}})
-    assert grant.started_at is not None and leases.register('w2', 'test', '0.2.0', [], HOST) == []
-    leases.lost(lease_id, 'w1', 'gone')
-    assert leases.register('w1', 'test', '0.2.0', [], HOST) == [] and lease_row(db, lease_id).receipt == {
-        'lost': 'gone'
-    }
+    Local(leases, 'w1').started(lease_id, AgentHandle(runtime='subprocess', data={'pid': 1}), None)
+    [grant] = join(leases, 'w1', []).held
+    assert (grant.lease, grant.job, grant.handle) == (lease_id, job, AgentHandle(runtime='subprocess', data={'pid': 1}))
+    assert grant.started_at is not None and join(leases, 'w2', []).held == []
+    Local(leases, 'w1').lost(lease_id, 'gone')
+    assert join(leases, 'w1', []).held == [] and lease_row(db, lease_id).receipt == {'lost': 'gone'}
 
 
 def test_a_revoke_or_a_cancel_changes_only_a_lease_it_applies_to(
@@ -382,7 +394,7 @@ def test_a_revoke_or_a_cancel_changes_only_a_lease_it_applies_to(
         s.commit()
     assert lease_row(db, queued).revoked_at is None
     take(leases, 'w1', [])
-    leases.report(queued, 'w1', 'r', DONE)
+    Local(leases, 'w1').report(queued, 'r', DONE)
     with db.session() as s:
         cancel(s, s.get_one(Lease, queued), 'daemon stopped')
         s.commit()
@@ -391,7 +403,7 @@ def test_a_revoke_or_a_cancel_changes_only_a_lease_it_applies_to(
 
 def test_a_report_on_a_lease_that_never_was_is_refused_and_kept_nowhere(db: Database, leases: Leases) -> None:
     with pytest.raises(StaleLease, match='there is no lease#9'):
-        leases.report(9, 'w1', 'r', DONE)
+        Local(leases, 'w1').report(9, 'r', DONE)
     assert events(db, STALE_REPORT) == []
 
 
@@ -421,7 +433,7 @@ def test_the_fence_and_the_write_are_one_transaction_so_an_expiry_cannot_slip_be
     job = evaluation_job(db, campaign, tmp_path)
     lease_id = queue(db, job)
     take(leases, 'w1', ['process'])
-    leases.report(lease_id, 'w1', 'r', MEASURED)
+    Local(leases, 'w1').report(lease_id, 'r', MEASURED)
     expiries[0].join(30)
     with db.session() as s:
         assert [lease.state for lease in s.scalars(select(Lease))] == [LeaseState.REPORTED], 'not queued again'
@@ -451,7 +463,7 @@ def test_an_unreachable_worker_counts_no_slot_until_it_is_heard_again(
         s.get_one(LeaseWorker, 'w1').seen_at = utcnow() - timedelta(seconds=51)
         s.commit()
     assert leases.capacity() == Capacity(0, 0), 'unreachable'
-    leases.heartbeat('w1', {held: None}, HOST)
+    Local(leases, 'w1').heartbeat({held: None}, HOST)
     assert leases.capacity() == Capacity(None, 99)
 
 
@@ -471,15 +483,15 @@ def test_a_job_whose_row_is_settled_is_refused_as_stale_and_its_lease_ends_all_t
     lease_id = queue(db, job)
     take(leases, 'w1', [])
     with pytest.raises(StaleLease, match='stale_lease: agent_session#1 is closed'):
-        leases.started(lease_id, 'w1', {'runtime': 'subprocess', 'data': {'pid': 1}})
-    assert leases.heartbeat('w1', {lease_id: 'sid'}, HOST) == {lease_id: Answer.RENEWED}, (
+        Local(leases, 'w1').started(lease_id, AgentHandle(runtime='subprocess', data={'pid': 1}), None)
+    assert Local(leases, 'w1').heartbeat({lease_id: 'sid'}, HOST) == {lease_id: Answer.RENEWED}, (
         'the session id waits for the end'
     )
     with pytest.raises(StaleLease, match='stale_lease: agent_session#1 is closed'):
-        leases.report(lease_id, 'w1', 'r', DONE)
+        Local(leases, 'w1').report(lease_id, 'r', DONE)
     [(_, _, payload)] = events(db, STALE_REPORT)
     assert payload['reason'] == 'agent_session#1 is closed'
-    leases.lost(lease_id, 'w1', 'gone')
+    Local(leases, 'w1').lost(lease_id, 'gone')
     assert lease_row(db, lease_id).receipt == {'lost': 'gone', 'settled': 'agent_session#1 is closed'}
 
 
@@ -528,3 +540,43 @@ def test_a_stop_leaves_an_agent_lease_that_a_worker_took_meanwhile_to_its_report
     lease_id = queue(db, agent_job(db, campaign, tmp_path))
     leases.stop_untaken()
     assert (lease_row(db, lease_id).state, recorder.calls) == (LeaseState.ACQUIRED, [])
+
+
+def test_a_worker_reads_its_messages_work_on_a_submit_a_revoke_and_a_prompt_that_it_answers(
+    db: Database, campaign: Campaign, tmp_path: Path, leases: Leases, recorder: Recorder
+) -> None:
+    """The GitHub Actions runner's long-poll: it returns at once when a message waits, and drops what was read."""
+    w1, w2 = Local(leases, 'w1'), Local(leases, 'w2')
+    join(leases, 'w1', [])
+    join(leases, 'w2', [])
+    assert w1.messages(0, 0.01) == [], 'nothing waits: it waits, then returns empty'
+    job = agent_job(db, campaign, tmp_path)
+    leases.submit(job)
+    leases.submit(agent_job(db, campaign, tmp_path))
+    [work] = w1.messages(0, 5)
+    assert isinstance(work, Work) and [type(m) for m in w2.messages(0, 5)] == [Work], 'one Work for two jobs, to each'
+    assert w1.messages(work.id, 0.01) == [], 'read: it goes'
+    grant = w1.acquire(HOST)
+    assert isinstance(grant, Grant)
+    w1.started(grant.lease, HANDLE, None)
+    leases.prompt(AgentKey(job.agent_session), Prompt(CommentId(7), 'try lzma'))
+    leases.revoke(AgentKey(job.agent_session))
+    prompt, stop = w1.messages(work.id, 5)
+    assert isinstance(prompt, PromptMessage) and (prompt.lease, prompt.prompt) == (
+        grant.lease,
+        Prompt(CommentId(7), 'try lzma'),
+    )
+    assert isinstance(stop, Revoke) and stop.lease == grant.lease
+    assert [type(m) for m in w2.messages(0, 0.01)] == [Work], "the other worker's messages are its own"
+    w1.delivered(prompt.id, None)
+    w1.delivered(prompt.id, None)
+    assert [c for c in recorder.calls if c[0] == 'delivered'] == [('delivered', job.agent_session, (7, None))], 'once'
+
+
+def test_a_prompt_for_an_agent_without_a_live_lease_is_undelivered_at_once(
+    db: Database, campaign: Campaign, tmp_path: Path, leases: Leases, recorder: Recorder
+) -> None:
+    job = agent_job(db, campaign, tmp_path)
+    queue(db, job)
+    leases.prompt(AgentKey(job.agent_session), Prompt(CommentId(3), 'x'))
+    assert recorder.calls == [('delivered', job.agent_session, (3, 'the agent has no live lease'))]

@@ -277,7 +277,7 @@ class LeaseState(StrEnum):
 
 
 class NoLease(StrEnum):
-    """Why a worker got no lease (``piloop.plugins.kit.executor.capacity.admits``). ``piloop worker list`` shows it.
+    """Why a worker got no lease (``piloop.plugins.executor.kit.capacity.admits``). ``piloop worker list`` shows it.
 
     Declared in order of precedence: of the reasons for each kind of job, the first one declared is the worker's.
     """

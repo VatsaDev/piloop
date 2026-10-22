@@ -37,7 +37,7 @@ SESSION_ID_SECONDS = 30
 unknown."""
 QUEUE = 'queued-messages'
 """Under the agent's log directory: the messages ``prompt`` queued for its next turn, one JSON string per line. A file,
-because ``prompt`` runs in another runtime instance, or another process (``piloop prompt``), than ``wait``."""
+because ``prompt`` can run in another runtime instance, or another process, than ``wait``."""
 RESUMER = 'agent_session.resumer'
 """Under the agent's log directory: present while the instance that started the agent waits on it and can resume it.
 ``wait`` in any other instance (a re-attach after an in-place restart) removes it, so ``prompt`` refuses from then

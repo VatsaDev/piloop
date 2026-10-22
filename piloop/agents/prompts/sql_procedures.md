@@ -213,7 +213,8 @@ ORDER BY bm25(documents_fts) LIMIT 10;
 - Nothing is delivered twice, and a daemon restart loses nothing: those two events are the record.
 - So put the instruction in the first line of the body, and the reasons below it.
 - Escalations are never pushed to an implementer.
-- `piloop prompt <agent_session_id> '<text>'` steers any running agent directly, without a comment.
+- `piloop prompt <agent_session_id> '<text>'` steers any running agent with a note on the agent itself, which it gets in
+  full.
 
 ### Ask for an agent
 

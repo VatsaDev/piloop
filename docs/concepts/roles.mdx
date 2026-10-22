@@ -172,7 +172,7 @@ is headless. A plugin can add a runtime. See [Extension points](/architecture/ex
 - `piloop attach <agent-session-id>` shows the agent in this terminal.
 - `piloop prompt <agent-session-id> "<text>"` queues a message for the agent's next turn.
 
-When the runtime of the agent cannot do this, the command says so, and where to look instead. The brief, log and
+When the runtime of the agent cannot do one of these, the command says why. The brief, log and
 transcript of an agent are in `~/.piloop/runs/<run>/` for a run, and in `~/.piloop/agent_sessions/<id>/` for a sweep.
 
 ## When an agent ends

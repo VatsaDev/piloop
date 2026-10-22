@@ -24,7 +24,9 @@ from piloop.capabilities import (
     JobKey,
     LeftJob,
     NoParameters,
+    Prompt,
     Route,
+    Runtime,
     Settled,
     key_of,
     kill_group,
@@ -57,6 +59,19 @@ class InlineExecutor:
             self._jobs[running.key] = running
         running.thread = threading.Thread(target=self._run, args=(job, running), daemon=True)
         running.thread.start()
+
+    def prompt(self, key: AgentKey, prompt: Prompt) -> None:
+        """Type the prompt into the agent's runtime at once, and say how that went."""
+        with self._lock:
+            running = self._jobs.get(key)
+        steer = running.steer if running is not None else None
+        error = None if steer is not None else 'the agent is not running'
+        if steer is not None:
+            try:
+                steer(prompt.text)
+            except Exception as e:  # the runtime refused it (a headless agent): core records why
+                error = str(e)
+        self.host.results.delivered(key, prompt.id, error)
 
     def cancel(self, key: JobKey) -> None:
         with self._lock:
@@ -100,6 +115,7 @@ class InlineExecutor:
             with self.host.tracer.span('piloop.job', job=job.kind) as span:
                 if isinstance(job, AgentJob):
                     runtime = self.host.runtimes(job.runtime, campaign=job.campaign, campaign_path=job.campaign_path)
+                    running.runtime = runtime
                     report: AgentReport | EvaluationReport | None = run_agent(job, runtime, running, span)
                 else:
                     report = run_evaluation(job, running, span)
@@ -123,6 +139,9 @@ class _Job:
         self._executor = executor
         self.key = key
         self.thread: threading.Thread | None = None
+        self.runtime: Runtime | None = None
+        self.steer: Callable[[str], None] | None = None
+        """How to prompt the agent, once it started."""
         self._kill: Callable[[], None] | None = None
         self._asked = False
 
@@ -144,6 +163,8 @@ class _Job:
             self._executor.host.results.started(self.key, handle.data, session_id)
         except Settled:  # its row closed meanwhile: nothing waits for the agent
             return False
+        if self.runtime is not None:
+            self.steer = partial(self.runtime.prompt, handle)
         return True
 
     def running(self, kill: Callable[[], None] | None) -> None:

@@ -13,6 +13,7 @@ from piloop.actor import System
 from piloop.agents.results import CampaignResults
 from piloop.db.session import Database
 from piloop.otel import Tracer
+from piloop.plugins.executor.kit.client import Local
 from piloop.plugins.executor.kit.leases import Leases, Timing
 from piloop.plugins.executor.workers.worker import Worker
 
@@ -22,7 +23,7 @@ def main() -> None:
     timing = Timing(*(float(a) for a in sys.argv[4:7]))
     db = Database(url, actor=System.DAEMON)
     results = CampaignResults(db, Tracer(None), home / 'units', lambda: False)
-    worker = Worker(Leases(db, results, timing), Tracer(None), home, worker_id=worker_id)
+    worker = Worker(Local(Leases(db, results, timing), worker_id), Tracer(None), home)
     worker.start()
     print('ready', flush=True)
     threading.Event().wait()  # the worker's loop looks for jobs on every heartbeat

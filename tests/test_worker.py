@@ -39,15 +39,25 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, AgentSessionId
+from piloop.ids import IMPLEMENTER, AgentSessionId, CommentId
 from piloop.otel import Tracer
-from piloop.plugins.executor.contract import AgentJob, AgentReport, Checkout, Commits, EvaluationReport, GitTree
-from piloop.plugins.executor.kit.capacity import sample
+from piloop.plugins.executor.contract import (
+    AgentJob,
+    AgentKey,
+    AgentReport,
+    Checkout,
+    Commits,
+    EvaluationReport,
+    GitTree,
+    Prompt,
+)
+from piloop.plugins.executor.kit.capacity import HostSample, sample
 from piloop.plugins.executor.kit.leases import (
     SERVE,
     STALE_REPORT,
     Grant,
     Leases,
+    PromptMessage,
     StaleLease,
     Timing,
     cancel,
@@ -61,7 +71,8 @@ from piloop.runtime.factory import RuntimeFactory, make_runtime
 from tests.conftest import Gate, ScriptRuntime, baseline, factory, serving, timed, wait_until, workers_of, write_toml
 from tests.daemon.test_evaluation_queue import held_evaluate
 from tests.daemon.test_run_controller import execute, make_run, reload_campaign, set_config
-from tests.test_lease import agent_job
+from tests.test_executors import Steerable
+from tests.test_lease import agent_job, evaluation_job
 
 NO_JOBS = {'error': {'code': 'pane_not_found', 'message': 'gone'}}
 """What the fake ``herdr`` answers for the agent's jobs: none, so an idle agent is finished."""
@@ -228,10 +239,7 @@ def test_a_revoked_agent_is_stopped_by_its_worker_and_still_reported(
     launching = threading.Thread(target=lambda: outcomes.append(launch(ex, agent_session_id, tmp_path)))
     launching.start()
     wait_until(lambda: lease_state(db, agent_session_id) is LeaseState.RUNNING)
-    with db.session() as s:
-        revoke(s, s.scalars(select(Lease)).one())
-        s.commit()
-    workers_of(ex).leases.notify()
+    workers_of(ex).leases.revoke(AgentKey(agent_session_id))  # a ``Revoke`` message: the worker stops it at once
     launching.join(30)
     [outcome] = outcomes
     assert isinstance(outcome, Ran)
@@ -535,7 +543,6 @@ def test_a_failing_turn_never_ends_the_loop_and_a_failing_streak_is_an_anomaly(
     mocker.patch.object(
         workers_of(ex).leases, 'acquire', side_effect=OperationalError('SELECT', {}, Exception('database is locked'))
     )
-    workers_of(ex).worker.kick()
     renewed_while(ex, db, agent_session_id, 2.5)
     names = [s.name for s in spans.get_finished_spans()]
     assert 'worker.turn_failed' in names and names.count(WORKER_ANOMALY) == 1, 'one anomaly for one failing streak'
@@ -558,10 +565,9 @@ def test_a_kill_that_fails_is_tried_again_on_the_next_heartbeat(
     use(db, campaign, Contract('subprocess', factory(runtime), monkeypatch), '#!/bin/sh\nsleep 600\n', timeout=600)
     ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST)))
     agent_session_id = running_agent(db, campaign, ex, tmp_path, 'stubborn', launched)
-    with db.session() as s:
+    with db.session() as s:  # no message: each heartbeat's ``REVOKED`` asks again
         revoke(s, s.scalars(select(Lease)).one())
         s.commit()
-    workers_of(ex).leases.notify()
     wait_until(lambda: lease_state(db, agent_session_id) is LeaseState.REPORTED, timeout=20)
     assert len(runtime.killed) >= 2
 
@@ -636,16 +642,16 @@ def test_a_worker_killed_between_the_start_and_its_record_leaves_no_worktree(
     assert not cwd.exists() and git.worktrees_under(git.open_repo(repo), cwd) == []
 
 
-def test_a_worker_that_cannot_read_its_leases_at_its_start_reads_them_on_the_next_kick(
+def test_a_worker_that_cannot_register_at_its_start_registers_on_its_next_turn(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
-    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST))
     register = mocker.patch.object(
         workers_of(ex).leases, 'register', side_effect=[OperationalError('SELECT', {}, Exception('locked')), []]
     )
     workers_of(ex).worker.start()
-    workers_of(ex).worker.kick()
-    assert register.call_count == 2
+    wait_until(lambda: register.call_count == 2)
+    assert workers_of(ex).worker.id == 'serve'
 
 
 def test_an_evaluator_whose_start_is_refused_by_the_fence_is_killed_at_once(
@@ -712,7 +718,7 @@ def test_a_stop_ends_a_queued_agent_lease_whose_row_is_settled_and_a_worker_star
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """The stop ends the lease all the same: core refused the stopped result of a row that was closed already."""
-    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime))  # not started: no turn may take the lease
     worker = workers_of(ex).worker
     worker.join(0)  # nothing started yet: no loop to wait for
     job = agent_job(db, campaign, tmp_path)  # its row is requested, not live: settled for core
@@ -730,7 +736,7 @@ def test_a_stop_ends_a_queued_agent_lease_whose_row_is_settled_and_a_worker_star
 def test_a_hand_over_of_a_worker_that_never_turned_has_no_loop_to_wait_for(
     db: Database, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    workers_of(serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))).worker.hand_over()
+    workers_of(RunController(db, Tracer(None), tmp_path, factory(runtime))).worker.hand_over()
 
 
 def test_a_join_while_a_job_thread_starts_waits_for_it(
@@ -755,37 +761,111 @@ def test_a_join_while_a_job_thread_starts_waits_for_it(
         start(thread)
 
     monkeypatch.setattr(threading.Thread, 'start', joined_while_it_starts)
-    worker._spawn(Grant(1, agent_job(db, campaign, tmp_path), {}, None), lambda: None)
+    worker._spawn(Grant(lease=1, job=agent_job(db, campaign, tmp_path)), lambda: None)
     worker.join(5)
     assert errors == []
 
 
-def test_an_idle_loop_turns_on_a_kick_and_only_a_stop_ends_it(
-    db: Database, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_prompts_read_together_reach_the_agent_in_one_turn_and_one_sent_again_is_answered_without_a_second(
+    db: Database, campaign: Campaign, tmp_path: Path, mocker: MockerFixture, launched: list[threading.Thread]
 ) -> None:
-    """The loop heartbeats with nothing to do, so a kick wakes it and never needs a second one; after a stop, none."""
-    worker = workers_of(serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))).worker
-    loops: list[threading.Thread] = []
-    turns: list[bool] = []
-    run_loop, guarded_turn = worker._run_loop, worker._guarded_turn
+    """Two prompts typed into a busy pane join in its input queue: one ``Runtime.prompt`` carries both. A prompt that a
+    restarted daemon sends again (no outcome was recorded) gets the first answer, and the agent never sees it twice."""
+    runtime = Steerable()
+    hold = tmp_path / 'hold'
+    hold.touch()
+    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), HOLD.format(hold=hold))
+    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    key = AgentKey(running_agent(db, campaign, ex, tmp_path, 'steered', launched))
+    leases = workers_of(ex).leases
+    answered = mocker.spy(leases, 'delivered')
+    with leases._mail:  # both wait before the worker reads
+        leases.prompt(key, Prompt(CommentId(1), 'one'))
+        leases.prompt(key, Prompt(CommentId(2), 'two'))
+    wait_until(lambda: answered.call_count == 2)
+    leases.prompt(key, Prompt(CommentId(1), 'one'))
+    wait_until(lambda: answered.call_count == 3)
+    assert runtime.prompts == ['one\ntwo']
+    assert [c.args[2] for c in answered.call_args_list] == [None, None, None]
+    hold.unlink()
 
-    def counted_loop() -> None:
-        loops.append(threading.current_thread())
-        run_loop()
 
-    def counted_turn() -> bool:
-        turns.append(ok := guarded_turn())
-        return ok
+def test_a_prompt_that_cannot_reach_its_agent_is_answered_with_why_and_the_worker_goes_on(
+    db: Database,
+    campaign: Campaign,
+    tmp_path: Path,
+    tracer: Tracer,
+    spans: InMemorySpanExporter,
+    mocker: MockerFixture,
+    launched: list[threading.Thread],
+) -> None:
+    """A runtime that refuses the prompt, a lease that the worker does not run, a lost answer, a lost long-poll."""
+    runtime = ScriptRuntime()  # a subprocess agent cannot take a message
+    hold = tmp_path / 'hold'
+    hold.touch()
+    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), HOLD.format(hold=hold))
+    ex = serving(RunController(db, tracer, tmp_path, factory(runtime), executor=timed(FAST)))
+    key = AgentKey(running_agent(db, campaign, ex, tmp_path, 'headless', launched))
+    leases = workers_of(ex).leases
+    answered = mocker.spy(leases, 'delivered')
+    leases.prompt(key, Prompt(CommentId(1), 'one'))
+    wait_until(lambda: answered.call_count == 1)
+    assert 'cannot take a message' in str(answered.call_args.args[2])
+    leases._post('serve', PromptMessage(id=time.time_ns(), lease=999, prompt=Prompt(CommentId(2), 'two')))
+    wait_until(lambda: answered.call_count == 2)
+    assert answered.call_args.args[2] == 'the agent does not run on this worker'
+    mocker.patch.object(leases, 'delivered', side_effect=OperationalError('INSERT', {}, Exception('locked')))
+    leases._post('serve', PromptMessage(id=time.time_ns(), lease=999, prompt=Prompt(CommentId(3), 'three')))
+    wait_until(lambda: 'worker.delivered_unsent' in span_names(spans))
+    mocker.patch.object(leases, 'messages', side_effect=OperationalError('SELECT', {}, Exception('locked')))
+    wait_until(lambda: 'worker.unheard' in span_names(spans))
+    hold.unlink()
 
-    monkeypatch.setattr(worker, '_run_loop', counted_loop)
-    monkeypatch.setattr(worker, '_guarded_turn', counted_turn)
-    worker.kick()
-    wait_until(lambda: len(turns) == 1)
-    worker.kick()
-    wait_until(lambda: len(turns) == 2)
-    assert len(loops) == 1 and loops[0].is_alive(), 'idle, and still turning'
-    worker.stop()
-    worker.join(5)
-    assert not loops[0].is_alive()
-    worker.kick()
-    assert len(loops) == 1, 'a stopped worker starts no loop: its database may be about to close'
+
+def span_names(spans: InMemorySpanExporter) -> list[str]:
+    return [s.name for s in spans.get_finished_spans()]
+
+
+def test_a_stop_that_comes_while_the_worker_registers_leaves_no_loop_behind(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """Else the loop would turn on a database that the daemon closes next."""
+    executor = workers_of(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    worker, register = executor.worker, executor.leases.register
+
+    def stopped_meanwhile(name: str, pool: str, version: str, runners: list[str], host: HostSample) -> list[Grant]:
+        worker.stop()
+        return register(name, pool, version, runners, host)
+
+    mocker.patch.object(executor.leases, 'register', side_effect=stopped_meanwhile)
+    worker.start()
+    assert worker._loop is None
+
+
+def test_a_job_that_arrives_while_the_loop_ends_its_turn_is_taken_at_once(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The long-poll's ``Work`` that lands after a turn found nothing, before the loop waits, is not lost.
+
+    The loop is held at the end of that turn, the job is submitted, and the loop goes on: it takes the job at once, not
+    one heartbeat (``renew_seconds``, 10 s) later.
+    """
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    worker, leases = workers_of(ex).worker, workers_of(ex).leases
+    turned, release = threading.Event(), threading.Event()
+    turn = worker._guarded_turn
+
+    def held_after_its_turn() -> bool:
+        went = turn()
+        if not turned.is_set():
+            turned.set()
+            assert release.wait(10)
+        return went
+
+    monkeypatch.setattr(worker, '_guarded_turn', held_after_its_turn)
+    serving(ex)  # its first turn finds nothing
+    assert turned.wait(10)
+    leases.submit(evaluation_job(db, campaign, tmp_path))
+    wait_until(lambda: worker._wanted.is_set(), timeout=5)  # the long-poll delivered its Work
+    release.set()
+    wait_until(lambda: lease_states(db) != [LeaseState.QUEUED], timeout=leases.timing.renew / 2)

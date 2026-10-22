@@ -489,8 +489,14 @@ cannot, the command says so and tells you where to look instead.
 piloop prompt AGENT_SESSION_ID TEXT
 ```
 
-Queues `TEXT` for the next turn of a running agent of any role. The [runtime](/concepts/runtimes) of the agent
-defines how the message reaches it. When the runtime cannot deliver it, the command says why. The agent session ids are in
+Queues `TEXT` for the next turn of a running agent of any role, as a `note` on the agent. The daemon delivers it, and
+the command waits up to 20 seconds to say whether it arrived:
+
+```text
+prompted agent_session#4 (comment#31)
+```
+
+When the [runtime](/concepts/runtimes) of the agent cannot take it, the command says why. The agent session ids are in
 `piloop status`.
 
 ### piloop run cancel

@@ -26,7 +26,8 @@ stateDiagram-v2
 | Pool | The slots and thresholds of each worker in it: `[plugins.executor.pools.<name>]`. |
 | Heartbeat | The worker renews its leases every `renew_seconds`. |
 | Fencing token | The lease id. It grows with each new lease of a job, and a report with an old one is refused. |
-| Revoke | A kill or a cancel: the heartbeat tells the worker to stop the job, and the job still reports. |
+| Revoke | A kill or a cancel: the worker stops the job, and the job still reports. |
+| Message | What a worker reads with a long-poll: a job waits, stop a job, or a prompt for an agent. The heartbeat is the fallback. |
 
 ## A silent worker
 

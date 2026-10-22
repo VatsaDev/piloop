@@ -57,7 +57,7 @@ from piloop.plugins.executor.contract import AgentJob, EvaluationJob, LeftJob
 from piloop.plugins.executor.contract import AgentReport, EvaluationReport
 from piloop.plugins.executor.contract import AgentFinished, AgentNotStarted
 from piloop.plugins.executor.contract import AgentKey, EvaluationKey, JobKey
-from piloop.plugins.executor.contract import key_of, Capacity
+from piloop.plugins.executor.contract import key_of, Capacity, Prompt
 from piloop.plugins.executor.contract import GitTree, Checkout, Commits
 from piloop.plugins.executor.kit.jobs import Control, run_agent, remove
 from piloop.plugins.executor.kit.jobs import run_evaluation

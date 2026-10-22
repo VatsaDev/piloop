@@ -25,6 +25,7 @@ from piloop.db.models import (
     AgentSessionState,
     Campaign,
     Comment,
+    CommentKind,
     Evaluation,
     Event,
     Idea,
@@ -37,6 +38,7 @@ from piloop.db.session import Database, write_transaction
 from piloop.ids import (
     AgentSessionId,
     CandidateId,
+    CommentId,
     EvaluatorId,
     IdeaId,
     MeasurementId,
@@ -88,6 +90,31 @@ ASKED_TO_END = (WRAP_UP, STOP_ENDED)
 """Events on an agent that the daemon told to stop or ended. Such an agent never counts as a failed start."""
 ENDED_EVENT = 'agent_session.job_ended'
 """The event on an agent's row that says how its job ended (``Ended``)."""
+DELIVERED = 'comment.delivered'
+UNDELIVERED = 'comment.undelivered'
+"""The event on an agent whose prompt did not reach it, with the ``error``."""
+SETTLED = (DELIVERED, UNDELIVERED)
+"""The outcomes of a prompt: events on the agent, with the comment id in the payload. Each comment gets one."""
+
+
+def queue_prompt(s: Session, agent_session_id: AgentSessionId, text: str, author: str) -> CommentId | None:
+    """Write ``text`` as a note on a running agent, which the daemon delivers (``Executor.prompt``). The caller commits.
+
+    Return the note's id, or None when the agent is not running.
+    """
+    agent = s.get(AgentSession, agent_session_id)
+    if agent is None or agent.state is not AgentSessionState.RUNNING:
+        return None
+    note = Comment(
+        target_kind=TargetKind.AGENT_SESSION,
+        target_id=agent_session_id,
+        author=author,
+        kind=CommentKind.NOTE,
+        body=text,
+    )
+    s.add(note)
+    s.flush()
+    return note.id
 
 
 @dataclass(frozen=True)
@@ -208,11 +235,7 @@ class CampaignResults:
     def started(
         self, key: AgentKey, handle: dict[str, object], session_id: str | None, *, guard: Guard | None = None
     ) -> None:
-        """The agent runs: its row is ``running`` with its handle, which the daemon steers it by.
-
-        Steering goes to the runtime by this handle, so it works for an agent on this machine only. It is replaced by
-        an ``Executor.prompt`` when an executor that runs agents elsewhere lands.
-        """
+        """The agent runs: its row is ``running`` with its handle in its runtime (``piloop attach`` shows it by it)."""
 
         def change(s: Session) -> None:
             w = _open(s, key)
@@ -257,6 +280,24 @@ class CampaignResults:
             _ended(s, w.id, Lost(reason))
 
         self._apply(guard, change)
+
+    def delivered(self, key: AgentKey, prompt: CommentId, error: str | None) -> None:
+        """Record ``DELIVERED`` or ``UNDELIVERED`` on the agent, unless the comment has its outcome already."""
+        kind = DELIVERED if error is None else UNDELIVERED
+        payload: dict[str, object] = {'comment': prompt} if error is None else {'comment': prompt, 'error': error}
+
+        def change(s: Session) -> None:
+            outcome = select(Event.id).where(
+                Event.target_kind == TargetKind.AGENT_SESSION,
+                Event.target_id == key.agent_session,
+                Event.kind.in_(SETTLED),
+                Event.payload['comment'].as_integer() == prompt,
+            )
+            if s.scalar(outcome.limit(1)) is None:
+                emit(s, kind, TargetKind.AGENT_SESSION, key.agent_session, payload=payload)
+
+        self._apply(None, change)
+        self._tracer.event(kind, comment=prompt, agent_session=key.agent_session, error=error)
 
     def _agent(self, s: Session, job: AgentJob, report: AgentReport) -> None:
         """Close the row from the report, and emit ``<kind>.finished``, ``ENDED_EVENT`` and ``STARTUP_ANOMALY``.

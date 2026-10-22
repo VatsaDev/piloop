@@ -1,17 +1,21 @@
 """The commands that act on agents: ``launch``, ``prompt``, ``attach``, ``agent cancel`` and ``run cancel``."""
 
+import time
 from typing import Annotated
 
 import cyclopts
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
+from piloop.agents import results
 from piloop.campaign.stop import CANCELLABLE, request_cancel
 from piloop.cli import common
 from piloop.cli.common import HARNESS_HELP, CampaignRef
 from piloop.config import TRANSCRIPT, config_of
-from piloop.db.models import OPEN_RUNS, AgentSession, AgentSessionState, Run
-from piloop.ids import AgentSessionId, RoleName, RunId
-from piloop.plugins.runtime.contract import Handle, NotAttachable, NotSteerable, Runtime, RuntimeFailure
+from piloop.db.models import OPEN_RUNS, AgentSession, AgentSessionState, Event, Run, TargetKind
+from piloop.db.session import Database
+from piloop.ids import AgentSessionId, CommentId, RoleName, RunId
+from piloop.plugins.runtime.contract import Handle, NotAttachable, Runtime, RuntimeFailure
 from piloop.runtime.factory import handle_for, runtime_for
 
 agent_app = cyclopts.App(name='agent', help='Act on one agent.')
@@ -58,6 +62,10 @@ def launch(
         common.console.print(f'agent_session#{agent_session.id} {role} requested for {campaign.name}: {reason}')
 
 
+DELIVERY_WAIT = 20.0
+"""How long ``piloop prompt`` waits for the outcome: two heartbeats of the ``workers`` executor."""
+
+
 def prompt(
     agent_session_id: Annotated[
         AgentSessionId, cyclopts.Parameter(help='The id of the agent, as `piloop status` lists it.')
@@ -65,16 +73,53 @@ def prompt(
     text: Annotated[str, cyclopts.Parameter(help='The message.')],
     /,
 ) -> None:
-    """Queue a message for the next turn of a running agent of any role.
+    """Queue a message for the next turn of a running agent of any role, and say whether it arrived.
 
-    The runtime of the agent defines how the message reaches it. When it cannot, the command says why.
+    The message is a note on the agent. The daemon delivers it through the agent's executor and its runtime. When it
+    cannot, the command says why. After 20 seconds without an outcome, the note stays queued.
     """
+    with common.session() as s:
+        comment_id = results.queue_prompt(s, agent_session_id, text, common.settings.actor.signature)
+        if comment_id is None:
+            raise SystemExit(f'agent_session#{agent_session_id} is not running')
+        s.commit()
+    outcome = _outcome(agent_session_id, comment_id)
+    match outcome:
+        case None:
+            common.console.print(
+                f'comment#{comment_id}: queued for agent_session#{agent_session_id}; the daemon delivers it once it runs',
+                markup=False,
+            )
+        case results.DELIVERED, _:
+            common.console.print(f'prompted agent_session#{agent_session_id} (comment#{comment_id})', markup=False)
+        case _:
+            raise SystemExit(f'agent_session#{agent_session_id} did not get comment#{comment_id}: {outcome[1]}')
+
+
+def _outcome(agent_session_id: AgentSessionId, comment_id: CommentId) -> tuple[str, object] | None:
+    """Wait up to ``DELIVERY_WAIT`` for the comment's outcome on the agent: its event kind and its error."""
+    found: list[tuple[str, object]] = []
+
+    def settled(s: Session) -> bool:
+        event = s.scalars(
+            select(Event).where(
+                Event.target_kind == TargetKind.AGENT_SESSION,
+                Event.target_id == agent_session_id,
+                Event.kind.in_(results.SETTLED),
+                Event.payload['comment'].as_integer() == comment_id,
+            )
+        ).first()
+        if event is not None:
+            found.append((event.kind, event.payload.get('error')))
+        return event is not None
+
+    db = Database(common.settings.database_url, actor=common.settings.actor)
+    deadline = time.monotonic() + DELIVERY_WAIT
     try:
-        runtime, handle, _ = _running(agent_session_id)
-        runtime.prompt(handle, text)
-    except (NotSteerable, RuntimeFailure) as e:
-        raise SystemExit(str(e)) from e
-    common.console.print(f'prompted agent_session#{agent_session_id}')
+        db.wait_until(settled, give_up=lambda: time.monotonic() > deadline)
+    finally:
+        db.close()
+    return found[0] if found else None
 
 
 def attach(agent_session_id: Annotated[AgentSessionId, cyclopts.Parameter(help='The id of the agent.')], /) -> None:

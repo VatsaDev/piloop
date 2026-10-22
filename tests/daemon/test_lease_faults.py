@@ -27,6 +27,7 @@ from sqlalchemy import delete, func, select
 from piloop.agents.launcher import AGENT_REFS
 from piloop.campaign.stop import attempts
 from piloop.daemon.run_controller import RunController
+from piloop.daemon.scheduler import Scheduler
 from piloop.daemon.serve import SERVE_ARGV
 from piloop.db.models import (
     AgentSession,
@@ -81,12 +82,15 @@ COMMIT_THEN_HOLD = (
 
 
 def control_plane(db: Database, runtime: ScriptRuntime, tmp_path: Path) -> RunController:
-    """The daemon's control plane, without its in-process worker: the jobs go to the worker process."""
-    ex = RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST))
-    workers_of(ex).leases._listeners.remove(
-        workers_of(ex).worker.kick
-    )  # the in-process worker is never woken, so it takes nothing
-    return ex
+    """The daemon's control plane, without its in-process worker, which never starts: the jobs go to the worker
+    process."""
+    return RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST))
+
+
+def next_daemon(db: Database, tmp_path: Path) -> Scheduler:
+    """The scheduler of a daemon that starts again: its ``reap`` starts its worker, which finds its leases again."""
+    runtime = factory(ScriptRuntime())
+    return Scheduler(db, RunController(db, Tracer(None), tmp_path, runtime), Tracer(None), tmp_path, runtime)
 
 
 @contextmanager
@@ -347,7 +351,6 @@ def test_a_partitioned_worker_stops_its_job_before_its_lease_expires_and_its_rep
     expire_until(ex, db, 1, LeaseState.EXPIRED)
     thread.join(30)
     partitioned.clear()
-    workers_of(ex).worker.kick()
 
     def stale() -> int:
         with db.session() as s:
@@ -374,7 +377,7 @@ def test_a_daemon_killed_during_a_run_keeps_the_lease_and_the_next_daemon_finish
         proc.wait()
     ex.launcher.handover.set()  # the killed daemon's control plane: its waiting thread goes with it
     thread.join(30)
-    scheduler = make_scheduler(db, ScriptRuntime(), tmp_path)
+    scheduler = next_daemon(db, tmp_path)
     scheduler.reap()
     hold.unlink()
     scheduler.wait(30)
@@ -467,7 +470,7 @@ def test_an_agent_that_a_daemon_before_leases_started_is_adopted_and_its_work_sc
     with db.session() as s:  # what a daemon before leases leaves
         s.execute(delete(Lease))
         s.commit()
-    second = make_scheduler(db, ScriptRuntime(), tmp_path)
+    second = next_daemon(db, tmp_path)
     second.reap()
     with db.session() as s:
         [adopted] = s.scalars(select(Lease)).all()
@@ -533,10 +536,7 @@ def test_the_daemons_worker_killed_during_an_evaluation_kills_its_evaluator_when
         proc.wait()
     pgid, start = handle['pgid'], handle['start_time']
     assert isinstance(pgid, int) and isinstance(start, float) and alive(pgid, start), 'the evaluator outlived it'
-    workers = workers_of(ex)
-    # as in the daemon, a queued job wakes the worker: the lease queued again after its loop went idle is taken too
-    workers.leases.listen(workers.worker.kick)
-    workers.worker.start()
+    workers_of(ex).worker.start()
     wait_until(lambda: not alive(pgid, start))
     (tmp_path / 'hold').unlink()
     measuring.join(30)

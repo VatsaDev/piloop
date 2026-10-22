@@ -17,9 +17,19 @@ from sqlalchemy.orm import Session
 
 from piloop.db.models import LIVE_LEASES, Lease, LeaseKind, LeaseWorker
 from piloop.net import Route
-from piloop.plugins.executor.contract import AgentJob, Capacity, EvaluationJob, Host, JobKey, LeftJob
+from piloop.plugins.executor.contract import (
+    AgentJob,
+    AgentKey,
+    Capacity,
+    EvaluationJob,
+    Host,
+    JobKey,
+    LeftJob,
+    Prompt,
+)
 from piloop.plugins.executor.kit.capacity import HostSample, Pool
-from piloop.plugins.executor.kit.leases import DEFAULT_POOLS, Leases, Timing
+from piloop.plugins.executor.kit.client import Local
+from piloop.plugins.executor.kit.leases import DEFAULT_POOLS, SERVE, Leases, Timing
 from piloop.plugins.executor.workers.worker import Worker
 
 
@@ -69,7 +79,7 @@ class WorkersExecutor:
         timing = Timing(parameters.renew_seconds, parameters.grace_seconds, parameters.toleration_seconds)
         self.leases = Leases(host.db, host.results, timing, parameters.pools)
         self.worker = Worker(
-            self.leases,
+            Local(self.leases, SERVE),
             host.tracer,
             host.home,
             runtime_factory=host.runtimes,
@@ -84,6 +94,10 @@ class WorkersExecutor:
     def submit(self, job: AgentJob | EvaluationJob) -> None:
         self.leases.submit(job)
 
+    def prompt(self, key: AgentKey, prompt: Prompt) -> None:
+        """Send ``prompt`` to the agent's worker (``Leases.prompt``). The worker answers once it reached the agent."""
+        self.leases.prompt(key, prompt)
+
     def cancel(self, key: JobKey) -> None:
         """Revoke the job's live lease: its worker stops it, and it still reports. A queued job is not touched."""
         self.leases.revoke(key)
@@ -94,7 +108,7 @@ class WorkersExecutor:
         The worker re-attaches to each agent that still has its worktree, and reports the rest gone. Core fails a
         returned agent, or asks again for a returned evaluation.
         """
-        refused = self.leases.adopt(left, self.worker.id)
+        refused = self.leases.adopt(left, SERVE)
         self.worker.start()
         return refused
 

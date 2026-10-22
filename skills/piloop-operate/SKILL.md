@@ -222,9 +222,9 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
 - With `runtime = "herdr"`, a `note`, `finding` or `decision` comment (any kind except an escalation) on the idea, or
   on its *running* run, goes into that implementer's pane on the next tick. The pane gets only the first line (up to 200
   characters) and a query for the full text, so put the instruction in the first line.
-- `comment.delivered` on the implementer confirms that the comment arrived.
-- `piloop prompt <agent-session> '<text>'` sends text directly, when no comment is worth keeping. It needs
-  `runtime = "herdr"`.
+- `comment.delivered` on the implementer confirms that the comment arrived. `comment.undelivered` says why it did not.
+- `piloop prompt <agent-session> '<text>'` writes a note on the agent itself, which it gets in full. It says whether
+  the note arrived.
 - A comment on the campaign reaches no implementer. When a decision changes the work of a running implementer, write it on its
   run, not on the campaign.
 - An implementer asks for what it cannot do itself with an escalation. When its run ends before the answer, the run ends

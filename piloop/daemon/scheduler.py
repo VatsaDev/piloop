@@ -6,11 +6,11 @@ slot (``Executor.capacity``). A free slot goes to the campaign with the fewest l
 gives its slots. Anyone can insert a requested row by hand, for example the CLI or an agent. Such a row launches in
 the same second phase.
 
-Before both phases, the tick sends new comments to the running implementers. For each running implementer, it collects the
-``note``, ``finding`` and ``decision`` comments on its run or its idea that were written since the run started. It
-sends them through the implementer's runtime in one prompt, one ``[piloop]`` line each (``steer_line``). An event on the
-implementer, ``comment.delivered`` or ``comment.undelivered``, records each delivery. A daemon restart does not send a
-comment again. An implementer that is still ``starting`` gets the comments on the next tick. A failed delivery is not
+Before both phases, the tick sends new comments to the running agents through the executor (``Executor.prompt``). An
+agent gets the ``note``, ``finding`` and ``decision`` comments on itself (``piloop prompt``), and an implementer also
+those on its run or its idea that were written since the run started, one ``[piloop]`` line each (``steer_line``). An
+event on the agent, ``comment.delivered`` or ``comment.undelivered``, records each outcome. A comment with an outcome
+is never sent again. An agent that is still ``starting`` gets the comments once it runs. A failed delivery is not
 retried.
 """
 
@@ -37,7 +37,7 @@ from piloop.actor import Agent
 from piloop.agents import scout
 from piloop.agents.launcher import rotate
 from piloop.agents.refill import usage_of
-from piloop.agents.results import STARTUP_ANOMALY, STOP_ENDED, WRAP_UP
+from piloop.agents.results import SETTLED, STARTUP_ANOMALY, STOP_ENDED, WRAP_UP
 from piloop.agents.roles import compose_brief, role_of
 from piloop.campaign import spend
 from piloop.campaign.campaigns import WORKSPACE, campaign_dir, workspace_dir, worktree_links
@@ -96,7 +96,7 @@ from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.ids import AgentSessionId, RoleName, RunId, TargetKind, TargetRef
 from piloop.otel import Tracer
-from piloop.plugins.executor.contract import AgentKey, Artifact, Checkout, GitTree, LeftJob
+from piloop.plugins.executor.contract import AgentKey, Artifact, Checkout, GitTree, LeftJob, Prompt
 from piloop.plugins.role.contract import Files, ImplementerRole, SweepRole, Workdir, ideas_taken
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.scout import ScoutRole
@@ -114,8 +114,6 @@ from piloop.text import cell
 NO_RUN_ERROR = 'an implementer needs a run; the scheduler requests them from ready ideas'
 PUSHED_KINDS = tuple(kind for kind in CommentKind if kind is not CommentKind.ESCALATION)
 """Comment kinds that are sent to a running implementer. Escalations are not sent, because they are for the human."""
-SETTLED = ('comment.delivered', 'comment.undelivered')
-"""Events on an implementer that record a comment as sent or failed. The comment id is in the payload."""
 STEER_LINE_CHARS = 200
 """The number of characters of a comment's first line that a ``[piloop]`` line quotes. The implementer can query the rest."""
 STOP_GRACE_SECONDS = 600
@@ -170,6 +168,8 @@ class Scheduler:
         self._pool = ThreadPoolExecutor(max_workers=sys.maxsize, thread_name_prefix='agent')
         self._futures: dict[AgentSessionId, Future[None]] = {}
         self._scoring: dict[tuple[TargetKind, int], Future[None]] = {}
+        self._prompted: set[int] = set()
+        """The comments that this daemon process handed to the executor (``_push_comments``)."""
         """Scoring outside an implementer: a run's resumed scoring by run id, or a campaign's re-measure by campaign id."""
         self._stop = threading.Event()
         self._archiver = (
@@ -472,22 +472,37 @@ class Scheduler:
         self._scoring[key] = self._pool.submit(self._controller.remeasure, todo[0].id)
 
     def _push_comments(self) -> None:
-        """Send each running implementer the comments on its run or its idea that it has not received yet.
+        """Hand each running agent's executor the comments that the agent has no outcome for (``Executor.prompt``).
 
-        The events table records what each implementer received: ``SETTLED`` events on the implementer, with the comment id in
-        the payload. Nothing depends on the daemon's memory. A restart sends nothing again. An implementer whose row is still
-        ``starting`` (brief composed, pane not yet up) is skipped and gets the comments on the next tick. A failed
-        delivery is also recorded and not retried. The comment is in the brief of the idea's next run anyway, and a
-        headless implementer would fail the same way on every tick. A tick that sends something makes one span.
+        The events table records each outcome: ``SETTLED`` events on the agent, with the comment id in the payload. A
+        comment is handed over once per daemon process (``_prompted``). One without an outcome after a restart goes
+        again, and the executor answers it as it did the first time. An agent whose row is still ``starting`` (brief
+        composed, pane not yet up) gets the comments once it runs. A failed delivery is recorded and not retried: the
+        comment is in the brief of the idea's next run anyway, and a headless agent would fail the same way each time.
+        A tick that sends something makes one span.
         """
         with self._db.session() as s:
-            pending = [(w, unseen) for w in self._running_agent_sessions(s) if (unseen := self._unseen(s, w))]
-            if not pending:
-                return
-            with self._tracer.span('piloop.push', comments=sum(len(c) for _, c in pending)):
-                for agent_session, comments in pending:
-                    self._push(s, agent_session, comments)
-                s.commit()
+            running = s.scalars(
+                select(AgentSession).where(AgentSession.state == AgentSessionState.RUNNING).order_by(AgentSession.id)
+            ).all()
+            pending = [
+                (w.id, Prompt(c.id, steer_line(c)))
+                for w in running
+                for c in self._unseen(s, w)
+                if c.id not in self._prompted
+            ]
+        if not pending:
+            return
+        with self._tracer.span('piloop.push', comments=len(pending)):
+            for agent_session_id, prompt in pending:
+                self._prompted.add(prompt.id)
+                try:
+                    self._controller.executor.prompt(AgentKey(agent_session_id), prompt)
+                except Exception as e:  # the executor did not take it (a locked database): the next tick tries again
+                    self._prompted.discard(prompt.id)
+                    self._tracer.event(
+                        'comment.unsent', comment=prompt.id, agent_session=agent_session_id, error=str(e)
+                    )
 
     def _running_agent_sessions(self, s: Session) -> Sequence[AgentSession]:
         return s.scalars(
@@ -497,16 +512,23 @@ class Scheduler:
         ).all()
 
     def _unseen(self, s: Session, agent_session: AgentSession) -> list[Comment]:
-        """Return the comments on the implementer's run or idea that are new since the run started and not yet sent.
+        """Return the comments for the agent that have no outcome yet: on the agent, or on an implementer's run or idea.
 
-        The brief cannot contain comments written after the run started, because the transaction that composes the
-        brief sets ``Run.started_at``. The comparison uses whole seconds. A raw INSERT sets ``created_at`` to
-        ``CURRENT_TIMESTAMP``, which has second precision, but ``started_at`` is a Python timestamp. So a comment
-        written in the same second as the brief can reach the implementer twice. That is better than never. The implementer's
+        For a run, only the comments since the run started: the brief has the older ones, because the transaction that
+        composes the brief sets ``Run.started_at``. The comparison uses whole seconds. A raw INSERT sets ``created_at``
+        to ``CURRENT_TIMESTAMP``, which has second precision, but ``started_at`` is a Python timestamp. So a comment
+        written in the same second as the brief can reach the implementer twice. That is better than never. The agent's
         own comments are not sent back. An implementer signs as ``implementer#<id>`` (its ``PILOOP_ACTOR``) or ``run#<id>``.
         """
-        run = s.get_one(Run, agent_session.run_id)
-        since = (run.started_at or agent_session.started_at).strftime('%Y-%m-%d %H:%M:%S')
+        on_agent = (Comment.target_kind == TargetKind.AGENT_SESSION) & (Comment.target_id == agent_session.id)
+        own = deprecated.signatures(Agent(role=agent_session.kind, session=agent_session.id))
+        since = agent_session.started_at
+        run = s.get(Run, agent_session.run_id) if agent_session.run_id is not None else None
+        if run is not None:
+            on_run = (Comment.target_kind == TargetKind.RUN) & (Comment.target_id == run.id)
+            on_idea = (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == run.idea_id)
+            on_agent = on_agent | on_run | on_idea
+            own, since = (*own, f'run#{run.id}'), run.started_at or since
         settled = {
             e.payload.get('comment')
             for e in s.scalars(
@@ -516,37 +538,13 @@ class Scheduler:
                 )
             )
         }
-        on_run = Comment.target == TargetRef(TargetKind.RUN, run.id)
-        on_idea = Comment.target == TargetRef(TargetKind.IDEA, run.idea_id)
         comments = s.scalars(
             select(Comment)
-            .where(on_run | on_idea, Comment.kind.in_(PUSHED_KINDS))
-            .where(func.strftime('%Y-%m-%d %H:%M:%S', Comment.created_at) >= since)
+            .where(on_agent, Comment.kind.in_(PUSHED_KINDS))
+            .where(func.strftime('%Y-%m-%d %H:%M:%S', Comment.created_at) >= since.strftime('%Y-%m-%d %H:%M:%S'))
             .order_by(Comment.id)
         ).all()
-        own = (*deprecated.signatures(Agent(role=agent_session.kind, session=agent_session.id)), f'run#{run.id}')
         return [c for c in comments if c.id not in settled and c.author not in own]
-
-    def _push(self, s: Session, agent_session: AgentSession, comments: list[Comment]) -> None:
-        """Send the comments in one ``runtime.prompt``, one line each, and record each as delivered or undelivered.
-
-        One prompt, because two prompts typed into a busy pane join in its input queue with nothing between them.
-        """
-        try:
-            runtime_for(s, agent_session, self._runs_dir, self._runtime_factory).prompt(
-                handle_for(agent_session), '\n'.join(steer_line(c) for c in comments)
-            )
-        except Exception as e:  # NotSteerable (subprocess), a blocked agent or a closed pane. The daemon goes on.
-            for comment in comments:
-                payload: dict[str, object] = {'comment': comment.id, 'error': str(e)}
-                emit(s, 'comment.undelivered', TargetKind.AGENT_SESSION, agent_session.id, payload=payload)
-                self._tracer.event(
-                    'comment.undelivered', comment=comment.id, agent_session=agent_session.id, error=str(e)
-                )
-            return
-        for comment in comments:
-            emit(s, 'comment.delivered', TargetKind.AGENT_SESSION, agent_session.id, payload={'comment': comment.id})
-            self._tracer.event('comment.delivered', comment=comment.id, agent_session=agent_session.id)
 
     def _report_jobs(self) -> None:
         """Tell each idle implementer that left its finding which of its jobs still keep its run open. Once per implementer.
@@ -1485,11 +1483,14 @@ def branches(campaign: Campaign, pinned: Candidate | None, computed: Candidate |
 
 
 def steer_line(comment: Comment) -> str:
-    """Format the one line that a running implementer gets for a comment: who wrote what, and how to read the rest.
+    """Format what a running agent gets for a comment. A comment on the agent itself is its text, as written.
 
-    The line quotes the first line of the body, cut at ``STEER_LINE_CHARS``. The implementer can read the full text with
-    the SQL tool that its brief names, so a long decision does not fill the pane.
+    Any other is one line: who wrote what, and how to read the rest. The line quotes the first line of the body, cut at
+    ``STEER_LINE_CHARS``. The implementer can read the full text with the SQL tool that its brief names, so a long
+    decision does not fill the pane.
     """
+    if comment.target_kind is TargetKind.AGENT_SESSION:
+        return comment.body
     body = comment.body.strip()
     first = body.splitlines()[0] if body else ''
     if len(first) > STEER_LINE_CHARS:

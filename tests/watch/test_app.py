@@ -489,18 +489,8 @@ def test_agents_keys_focus_the_tab_and_steer(
         await note('s', *'try the cheaper model', 'enter')
         await note('s', 'escape', 'down', 'enter')
         await note('s', *'go', 'enter')
-        scripted(
-            monkeypatch,
-            tab_focus=[{'error': {'code': 'tab_not_found', 'message': 'w7:t2 is gone'}}],
-            agent_prompt=[
-                {'result': {'type': 'agent_prompted', 'agent': {'name': 'implementer-1'}}},
-                {'error': {'code': 'agent_blocked', 'message': 'blocked'}},
-                {'error': {'code': 'agent_not_found', 'message': 'gone'}},
-            ],
-        )
+        scripted(monkeypatch, tab_focus=[{'error': {'code': 'tab_not_found', 'message': 'w7:t2 is gone'}}])
         await note('up', 'enter')
-        await note('s', *'go', 'enter')
-        await note('s', *'go', 'enter')
         with db.session() as s:
             headless = s.get_one(AgentSession, 2)
             headless.state, headless.runtime = AgentSessionState.RUNNING, 'subprocess'
@@ -509,20 +499,21 @@ def test_agents_keys_focus_the_tab_and_steer(
         await note('down', 'enter')
 
     drive(db, 'demo', scenario)
+    with db.session() as s:
+        steered = s.scalars(select(Comment).where(Comment.target_kind == TargetKind.AGENT_SESSION)).one()
+        assert (steered.target_id, steered.kind, steered.body) == (1, CommentKind.NOTE, 'try the cheaper model')
     assert notes == [
         'agent_session#1: focused tab w7:t2',
-        'steered agent_session#1',
+        f'comment#{steered.id}: queued for agent_session#1',
         'agent_session#2 is starting, not running: nothing to focus',
-        'agent_session#2 is starting, not running: nothing to steer',
+        'agent_session#2 is not running: nothing to steer',
         'could not focus agent_session#1: tab_not_found: w7:t2 is gone',
-        'not steered: implementer-1 is blocked on an approval or question; read it and answer with herdr agent send-keys',
-        'could not steer agent_session#1: agent_not_found: gone',
         'agent_session#2: a background process has no terminal to show: read /x/agent_session.stdout',
     ]
-    assert [c for c in calls(herdr_log) if c[:2] in (['tab', 'focus'], ['agent', 'prompt'])][:2] == [
+    assert [c for c in calls(herdr_log) if c[:2] in (['tab', 'focus'], ['agent', 'prompt'])] == [
         ['tab', 'focus', 'w7:t2'],
-        ['agent', 'prompt', 'implementer-1', 'try the cheaper model'],
-    ]
+        ['tab', 'focus', 'w7:t2'],
+    ], 'the daemon delivers the note: the watcher never types into the pane'
 
 
 def test_ideas_keys_approve_park_reject_with_a_reason_and_move_the_priority(

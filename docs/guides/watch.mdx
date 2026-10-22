@@ -63,8 +63,7 @@ other.
   applies it.
 - **Bring to the front** does what the [runtime](/concepts/roles#runtimes) of the agent defines, for example it focuses the
   agent's tab. When the runtime has no view of its own, a notification says where to look instead.
-- **Steer** queues text for the agent's next turn, as `piloop prompt` does. A runtime can refuse it, for example while
-  the agent waits on a dialog. A notification says why.
+- **Steer** queues text for the agent's next turn, as `piloop prompt` does.
 - **Approve, park and reject** ask why. Each one writes the status change and a `note` on the idea with the reason.
   A seed cannot be approved: research develops it into an idea first (`piloop idea develop`).
 

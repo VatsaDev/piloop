@@ -103,7 +103,7 @@ runtime's settings.
 A runtime is a class with the methods of the `Runtime` protocol, and two class attributes: `kind`, its name (the name
 of its entry point), and `invocation`, which argument list of a harness it starts (`headless` with the first prompt
 in it, or `interactive`, a terminal session that the runtime types the prompt into). Its constructor takes the
-campaign's name and path. It reports a failure as a `RuntimeFailure`. `piloop attach`, `prompt`, `doctor` and `watch`
+campaign's name and path. It reports a failure as a `RuntimeFailure`. The worker, `piloop attach`, `doctor` and `watch`
 call its methods, so a new runtime gets them at once. [Runtimes](/concepts/runtimes) says what a runtime does for
 you.
 
@@ -180,6 +180,7 @@ The daemon makes the class once, as `Executor(host, parameters)`. `Parameters` c
 - `cancel(key)` stops a job. It still reports.
 - `adopt(left)` takes over the jobs that the previous daemon left, and returns those it cannot.
 - `capacity()` is how many more agents and evaluations it can take now: its free slots. The daemon submits no more.
+- `prompt(key, prompt)` delivers a comment to a running agent, then calls `host.results.delivered`.
 - `tick`, `stop`, `hand_over` and `close` are the daemon's periodic call, its stop, its in-place restart and its end.
 
 A job's end goes to `host.results`: `finished` or `lost`, in a session that the executor commits. Core raises

@@ -42,7 +42,6 @@ from piloop.db.session import Database, migrate
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.ids import CampaignId
 from piloop.otel import Tracer
-from piloop.plugins.executor.kit.capacity import sample
 from piloop.plugins.executor.kit.leases import Timing
 from piloop.plugins.executor.workers import WorkersExecutor
 from piloop.plugins.executor.workers.worker import Worker
@@ -458,13 +457,8 @@ def timed(timing: Timing) -> PluginTable:
 
 
 def serving(controller: RunController) -> RunController:
-    """``controller`` with the worker of ``workers`` registered, as the daemon's ``reap`` leaves it: its slots count.
-
-    The worker starts on its first job, or on a ``reap``.
-    """
-    if isinstance(executor := controller.executor, WorkersExecutor):
-        worker = executor.worker
-        executor.leases.register(worker.id, worker.pool, '0.0.0', worker.runners, sample(worker.home))
+    """``controller`` with its executor's worker started, as the daemon's ``reap`` leaves it: its slots count."""
+    controller.executor.adopt([])
     return controller
 
 
