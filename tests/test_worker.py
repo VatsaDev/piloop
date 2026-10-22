@@ -44,6 +44,7 @@ from piloop.plugins.contracts.executor import AgentJob, AgentReport, Checkout, C
 from piloop.plugins.kit.executor.leases import (
     LOCAL_WORKER,
     STALE_REPORT,
+    Grant,
     Leases,
     StaleLease,
     Timing,
@@ -676,3 +677,30 @@ def test_a_hand_over_of_a_worker_that_never_turned_has_no_loop_to_wait_for(
     db: Database, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     workers_of(RunController(db, Tracer(None), tmp_path, factory(runtime))).worker.hand_over()
+
+
+def test_a_join_while_a_job_thread_starts_waits_for_it(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``stop`` joins the job threads while the loop may spawn one: it never finds a thread that is not started."""
+    worker = workers_of(RunController(db, Tracer(None), tmp_path, factory(runtime))).worker
+    errors: list[Exception] = []
+    start = threading.Thread.start
+
+    def join() -> None:
+        try:
+            worker.join(5)
+        except Exception as e:
+            errors.append(e)
+
+    def joined_while_it_starts(thread: threading.Thread) -> None:
+        if thread.name == 'agent-1':
+            joining = threading.Thread(target=join)
+            start(joining)
+            joining.join(0.2)  # the join of a stop, at the moment the job's thread is registered and not started
+        start(thread)
+
+    monkeypatch.setattr(threading.Thread, 'start', joined_while_it_starts)
+    worker._spawn(Grant(1, agent_job(db, campaign, tmp_path), {}, None), lambda: None)
+    worker.join(5)
+    assert errors == []

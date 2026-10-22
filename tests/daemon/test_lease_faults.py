@@ -522,7 +522,10 @@ def test_the_daemons_worker_killed_during_an_evaluation_kills_its_evaluator_when
         proc.wait()
     pgid, start = handle['pgid'], handle['start_time']
     assert isinstance(pgid, int) and isinstance(start, float) and alive(pgid, start), 'the evaluator outlived it'
-    workers_of(ex).worker.start()
+    workers = workers_of(ex)
+    # as in the daemon, a queued job wakes the worker: the lease queued again after its loop went idle is taken too
+    workers.leases.listen(workers.worker.kick)
+    workers.worker.start()
     wait_until(lambda: not alive(pgid, start))
     (tmp_path / 'hold').unlink()
     measuring.join(30)

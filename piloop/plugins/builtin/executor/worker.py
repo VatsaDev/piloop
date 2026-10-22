@@ -176,10 +176,12 @@ class Worker:
     def join(self, timeout: float) -> None:
         """Wait up to ``timeout`` seconds for the jobs' threads and the loop to end."""
         deadline = time.monotonic() + timeout
-        for thread in list(self._threads.values()):
+        with self._lock:  # a thread is registered and started under the lock: none of these is unstarted
+            threads, loop = list(self._threads.values()), self._loop
+        for thread in threads:
             thread.join(max(deadline - time.monotonic(), 0))
         self._wanted.set()  # the loop ends once the jobs are reported
-        if (loop := self._loop) is not None:
+        if loop is not None:
             loop.join(max(deadline - time.monotonic(), 0))
 
     def _run_loop(self) -> None:
@@ -269,7 +271,7 @@ class Worker:
         )
         with self._lock:
             self._threads[grant.lease] = thread
-        thread.start()
+            thread.start()
 
     def _guarded(self, lease_id: int, body: Callable[[], None]) -> None:
         """Run a job's thread. A fault of the worker itself loses the job, so that nothing waits for it forever."""
