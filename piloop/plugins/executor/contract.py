@@ -327,6 +327,10 @@ class Executor(Protocol):
         """
         ...
 
+    def configure(self, parameters: BaseModel) -> None:
+        """Take ``parameters``, its ``Parameters`` with the live limits applied. The daemon calls it when one changes."""
+        ...
+
     def submit(self, job: AgentJob | EvaluationJob) -> None:
         """Run ``job``, now or when a slot is free. Every job ends with ``Results.finished`` or ``Results.lost``."""
         ...
@@ -372,7 +376,19 @@ class Executor(Protocol):
 
 
 def _is_executor(loaded: object) -> TypeIs[type[Executor]]:
-    methods = ('capacity', 'submit', 'prompt', 'cancel', 'adopt', 'routes', 'tick', 'stop', 'hand_over', 'close')
+    methods = (
+        'capacity',
+        'configure',
+        'submit',
+        'prompt',
+        'cancel',
+        'adopt',
+        'routes',
+        'tick',
+        'stop',
+        'hand_over',
+        'close',
+    )
     parameters = getattr(loaded, 'Parameters', None)
     return (
         isinstance(loaded, type)
@@ -388,12 +404,15 @@ def _check(name: str, loaded: object) -> type[Executor]:
     raise TypeError('is not a piloop executor class: it needs Parameters and the methods of Executor')
 
 
-EXECUTORS = Capability(
-    'executor', group='piloop.executors', check=_check, selection=Selection('home', 'plugins.executor.provider')
-)
-"""Every executor by name. ``workers``, built in and the default, runs every job on a lease (``piloop.plugins.executor.kit.leases``)."""
 DEFAULT_EXECUTOR = 'workers'
 """The executor of a home whose ``config.toml`` has no ``[plugins.executor]``."""
+EXECUTORS = Capability(
+    'executor',
+    group='piloop.executors',
+    check=_check,
+    selection=Selection('home', 'plugins.executor.provider', default=DEFAULT_EXECUTOR),
+)
+"""Every executor by name. ``workers``, built in and the default, runs every job on a lease (``piloop.plugins.executor.kit.leases``)."""
 
 
 def selected(table: PluginTable | None) -> tuple[type[Executor], BaseModel]:

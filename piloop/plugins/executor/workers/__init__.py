@@ -87,6 +87,11 @@ class WorkersExecutor:
         )
         """The worker inside ``piloop serve``, in the pool ``serve``."""
 
+    def configure(self, parameters: BaseModel) -> None:
+        """Take the pools with the live limits applied: the next ``acquire`` and ``capacity`` read them."""
+        assert isinstance(parameters, WorkersParameters)
+        self.leases.pools = parameters.pools
+
     def capacity(self) -> Capacity:
         """The free slots of the reachable workers that their pools admit now (``Leases.capacity``)."""
         return self.leases.capacity()

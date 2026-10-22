@@ -97,6 +97,17 @@ CREATE TABLE lease_workers (
 	CONSTRAINT "lease_workers.version must be a text value" CHECK (typeof(version) IN ('text')),
 	CONSTRAINT nolease CHECK (no_lease IN ('memory', 'load', 'slots', 'nothing', 'unreachable'))
 );
+CREATE TABLE limits (
+	"key" VARCHAR NOT NULL,
+	value JSON NOT NULL,
+	reason VARCHAR NOT NULL,
+	actor VARCHAR NOT NULL,
+	at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	PRIMARY KEY ("key"),
+	CONSTRAINT "limits.key must be a text value" CHECK (typeof(key) IN ('text')),
+	CONSTRAINT "limits.reason must be a text value" CHECK (typeof(reason) IN ('text')),
+	CONSTRAINT "limits.actor must be a text value" CHECK (typeof(actor) IN ('text'))
+);
 CREATE TABLE tokens (
 	id INTEGER NOT NULL,
 	name VARCHAR NOT NULL,

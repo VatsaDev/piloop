@@ -295,6 +295,24 @@ piloop eval cancel CANDIDATE_ID
 Cancels the evaluation of a candidate. A waiting one never starts, and the daemon stops a running one. It also cancels
 a requested remeasure. The candidate gets a crashed measurement that names you.
 
+### piloop limits
+
+```text
+piloop limits
+piloop limits set KEY=VALUE --reason TEXT
+piloop limits unset KEY
+```
+
+Lists, sets or removes a **limit**: a value for a live key of a provider of the home, such as
+`executor.pools.serve.evaluations`, that wins over `config.toml` from the daemon's next tick. The value is JSON, or
+else text. `piloop status` shows each live key with its source:
+
+```text
+limit: executor.pools.serve.evaluations = 1  (limit by human: the GPU is busy)
+```
+
+See [Capacity](/architecture/leases#capacity).
+
 ### piloop worker list
 
 ```text

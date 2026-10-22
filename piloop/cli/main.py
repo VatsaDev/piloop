@@ -20,6 +20,7 @@ from piloop.cli import (
     idea,
     inbox,
     install,
+    limits,
     measurement,
     memory,
     plugins,
@@ -44,6 +45,7 @@ for group in (
     agents.agent_app,
     agents.run_app,
     worker.app,
+    limits.app,
 ):
     app.command(group)
 app.command(campaign.init)

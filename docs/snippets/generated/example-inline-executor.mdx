@@ -55,6 +55,9 @@ class InlineExecutor:
         self._jobs: dict[JobKey, _Job] = {}
         self.stopping = False
 
+    def configure(self, parameters: object) -> None:
+        """Nothing to change: it takes no parameters."""
+
     def capacity(self) -> Capacity:
         """No bound: every job runs as soon as it is submitted."""
         return Capacity(agents=None, evaluations=None)

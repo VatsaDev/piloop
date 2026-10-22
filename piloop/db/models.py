@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Final
 
-from pydantic import BaseModel, ConfigDict, TypeAdapter
+from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter
 from sqlalchemy import (
     JSON,
     CheckConstraint,
@@ -869,6 +869,25 @@ class LeaseWorker(Base):
     """When a call of it last came in."""
     no_lease: Mapped[NoLease | None]
     """Why its last request got no lease, or that it went silent. NULL after a grant."""
+
+
+class Limit(Base):
+    """A live limit (``piloop limits set``): a value for one ``Live`` key of a provider's parameters, over ``config.toml``.
+
+    The daemon applies the rows on its next tick, without a restart. The table is in core's schema, as the leases are.
+    """
+
+    __tablename__ = 'limits'
+    __table_args__ = (*text_checks('limits', 'key', 'reason', 'actor'),)
+
+    key: Mapped[str] = mapped_column(primary_key=True)
+    """The dotted key: the capability, then the path in its parameters, ``executor.pools.serve.evaluations``."""
+    value: Mapped[JsonValue] = mapped_column(JSON, nullable=False)
+    """JSON: a null is a value too, as ``agents = null``, no bound."""
+    reason: Mapped[str]
+    actor: Mapped[str]
+    """Who set it."""
+    at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
 
 class Comment(Tracked, Base):

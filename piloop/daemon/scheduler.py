@@ -370,9 +370,10 @@ class Scheduler:
         campaign launches its closing review, and what a human requests, whatever the pause; while the stop rule
         holds, as ``[spend] closing_review`` says (``launches``). The
         archiver starts the next archiving of a workspace that is due, or its upkeep, on a background thread
-        (``piloop.daemon.archiver``).
+        (``piloop.daemon.archiver``). First of all, the executor gets the live limits that changed (``RunController.configure``).
         """
         self._collect()
+        self._controller.configure()
         self._controller.executor.tick(utcnow())
         self._controller.stop_cancelled()
         self._controller.dispatch()

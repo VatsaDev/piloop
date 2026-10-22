@@ -142,6 +142,13 @@ erDiagram
         datetime seen_at
         NoLease no_lease
     }
+    limits {
+        varchar key PK
+        json value
+        varchar reason
+        varchar actor
+        datetime at
+    }
     comments {
         integer id PK
         TargetKind target_kind

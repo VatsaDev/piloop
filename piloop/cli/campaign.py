@@ -28,13 +28,14 @@ from piloop.campaign.campaigns import (
 )
 from piloop.campaign.memory import sync_documents
 from piloop.campaign.stop import request_stop
-from piloop.cli import common
+from piloop.cli import common, limits as limits_cli
 from piloop.cli.common import CampaignRef, JsonFlag
 from piloop.cli.daemon import daemon_line
 from piloop.config import config_of
 from piloop.daemon.serve import running_pid
 from piloop.db.models import AgentSession, Campaign, CampaignStatus, utcnow
 from piloop.db.session import Database
+from piloop.plugins.limits import Origin
 from piloop.reports import feed
 from piloop.reports.overview import overview, paused
 from piloop.reports.pack import renderables as pack_renderables
@@ -123,7 +124,7 @@ def history(ref: CampaignRef | None = None, /) -> None:
 
 
 def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> None:
-    """Print the state of the daemon, then an overview of each campaign.
+    """Print the state of the daemon and the live keys that `config.toml` or a limit sets, then each campaign.
 
     The overview is what a sweep reads in its brief, without the tool guide. It shows the head, the tracks, the
     trajectory, the progress against [stop], the open runs, the queue, the live agents with their last line, the
@@ -140,6 +141,8 @@ def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> Non
         return
     common.console.print(daemon_line())
     with common.session() as s:
+        for line in limits_cli.lines(s, (Origin.CONFIG, Origin.LIMIT)):
+            common.console.print(f'limit: {line}', markup=False)
         for campaign in common.campaigns(s, ref):
             parent = None if campaign.parent_id is None else s.get_one(Campaign, campaign.parent_id)
             under = '' if parent is None else f'  under {parent.name} #{parent.id}'

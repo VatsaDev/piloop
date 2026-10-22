@@ -33,6 +33,7 @@ from piloop.plugins.runtime.contract import NotAttachable, NotSteerable, Runtime
 
 HELPERS: set[object] = {
     capabilities.MissingProvider,
+    capabilities.Live,
     RuntimeFailure,
     StartFailed,
     NotSteerable,

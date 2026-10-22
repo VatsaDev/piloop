@@ -104,6 +104,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
             'lease_workers',
             'leases',
             'lessons',
+            'limits',
             'measurements',
             'runs',
             'sqlite_sequence',

@@ -4,14 +4,17 @@ The run closes when its implementer ends, so the implementer slot is free while 
 ``scheduled`` until its candidates are judged, because a dependent idea builds on the keeps of its prerequisites.
 """
 
+import json
 import re
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import assert_never
 
 from git import Repo
+from pydantic import ValidationError
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
@@ -45,6 +48,7 @@ from piloop.db.models import (
     Event,
     Idea,
     IdeaStatus,
+    Limit,
     Measurement,
     Run,
     RunEnd,
@@ -66,7 +70,17 @@ from piloop.ids import (
     TargetRef,
 )
 from piloop.otel import Span, Tracer
-from piloop.plugins.executor.contract import Commits, EvaluationJob, EvaluationKey, Executor, GitTree, Host, selected
+from piloop.plugins import limits
+from piloop.plugins.executor.contract import (
+    EXECUTORS,
+    Commits,
+    EvaluationJob,
+    EvaluationKey,
+    Executor,
+    GitTree,
+    Host,
+    selected,
+)
 from piloop.plugins.host import PluginTable
 from piloop.plugins.runtime.contract import ExitStatus
 from piloop.reports.history import history
@@ -138,13 +152,37 @@ class RunController:
         self._home = home
         self._units_dir = home / 'units'
         provider, parameters = selected(executor)
+        self._table, self._parameters = executor, type(parameters)
+        self._limits: tuple[tuple[str, str, datetime], ...] = ()
+        """The limits that the executor has, as read: ``configure`` hands it the parameters when they change."""
         results = CampaignResults(db, tracer, self._units_dir, lambda: self.launcher.cancelled.is_set())
         host = Host(db, results, tracer, home, runtime_factory, entire_version)
         self.executor: Executor = provider(host, parameters)
         self.launcher = Launcher(db, tracer, home, self.executor)
+        self.configure()
         self._jobs: dict[int, EvaluationJob] = {}
         """The job of each evaluation that this daemon asked for, by its queue row, until the row goes: a lost one is
         submitted again. A row without one is another daemon's: a reap drops it, and what needs it asks again."""
+
+    def configure(self) -> None:
+        """Hand the executor its parameters with the live limits applied (``Executor.configure``), when one changed.
+
+        The daemon calls it on each tick, so a limit holds from the next one. Limits that its parameters refuse (a
+        ``config.toml`` that changed under them) leave the parameters as they were, and the event says why.
+        """
+        with self._db.session() as s:
+            rows = s.scalars(select(Limit).order_by(Limit.key)).all()
+        seen = tuple((r.key, json.dumps(r.value), r.at) for r in rows)
+        if seen == self._limits:
+            return
+        self._limits = seen
+        try:
+            parameters = limits.applied(self._table, rows, self._parameters, limits.name(EXECUTORS))
+        except ValidationError as e:
+            self._tracer.event('limits.refused', error=str(e))
+            return
+        self.executor.configure(parameters)
+        self._tracer.event('limits.applied', limits=len(rows))
 
     def _wait(self, evaluation_id: int) -> bool:
         """Wait until the evaluation leaves the queue, and return True; False once the daemon stops.

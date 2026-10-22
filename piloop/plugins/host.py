@@ -119,6 +119,14 @@ class PythonSource:
         return self.release if self.built_in else f'{self.release}, entry point {self.entry_point}'
 
 
+class Live:
+    """Marks a key of a provider's ``Parameters`` that ``piloop limits set`` may change while the daemon runs.
+
+    ``agents: Annotated[int | None, Live] = None``. The daemon hands the provider its parameters with the limits
+    applied on its next tick (``piloop.plugins.limits``).
+    """
+
+
 @dataclass(frozen=True)
 class Selection:
     """Where the configuration names the provider of a capability.
@@ -135,6 +143,8 @@ class Selection:
     """A role's own table can set the key too, for its agents: ``[roles.<role>] runtime``."""
     settings: str | None = None
     """The table of ``config.toml`` with a table of settings for each provider, by its name: ``runtimes``."""
+    default: str | None = None
+    """The provider when the configuration names none."""
 
     @property
     def table(self) -> str | None:

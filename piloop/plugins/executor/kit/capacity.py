@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from piloop.db.models import LeaseKind, NoLease, utcnow
 from piloop.plugins.executor.contract import Capacity
+from piloop.plugins.host import Live
 
 GB = 10**9
 
@@ -50,13 +51,13 @@ class Pool(BaseModel):
 
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
 
-    agents: Annotated[int | None, Field(ge=0)] = None
+    agents: Annotated[int | None, Field(ge=0), Live] = None
     """How many agents a worker of the pool runs at the same time. No bound when unset."""
-    evaluations: Annotated[int, Field(ge=0)] = 2
+    evaluations: Annotated[int, Field(ge=0), Live] = 2
     """How many evaluations a worker of the pool runs at the same time."""
-    min_memory_gb: float | None = None
+    min_memory_gb: Annotated[float | None, Live] = None
     """A worker with less memory available takes no job, and its slots count zero."""
-    max_load: float | None = None
+    max_load: Annotated[float | None, Live] = None
     """The 1-minute load per CPU above which a worker takes no job, and its slots count zero."""
 
 

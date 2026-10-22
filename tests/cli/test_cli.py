@@ -814,6 +814,27 @@ def test_worker_list_says_when_another_executor_is_selected(
     assert out().splitlines()[0] == 'the executor is inline, not workers: these workers take no job'
 
 
+def test_limits_set_a_live_key_that_status_shows_with_its_source_and_unset_removes_it(campaign_path: Path, out) -> None:
+    run_cli(['init', str(campaign_path)])
+    out()
+    run_cli(['limits'])
+    assert 'executor.pools.serve.evaluations = 2  (default)' in out().splitlines()
+    run_cli(['limits', 'set', 'executor.pools.serve.evaluations=1', '--reason', 'the GPU is busy'])
+    assert out().strip() == 'executor.pools.serve.evaluations = 1: the daemon applies it on its next tick'
+    with pytest.raises(SystemExit, match='executor.renew_seconds is not a live key'):
+        run_cli(['limits', 'set', 'executor.renew_seconds=5', '--reason', 'r'])
+    with pytest.raises(SystemExit, match='write KEY=VALUE'):
+        run_cli(['limits', 'set', 'executor.pools.serve.evaluations', '--reason', 'r'])
+    run_cli(['status'])
+    assert 'limit: executor.pools.serve.evaluations = 1  (limit by human: the GPU is busy)' in out().splitlines()
+    with pytest.raises(SystemExit, match=r"max_load = 'high': Input should be a valid number"):
+        run_cli(['limits', 'set', 'executor.pools.serve.max_load=high', '--reason', 'not JSON: the text, refused'])
+    run_cli(['limits', 'unset', 'executor.pools.serve.evaluations'])
+    assert out().strip() == 'executor.pools.serve.evaluations: the limit is gone'
+    with pytest.raises(SystemExit, match='has no limit'):
+        run_cli(['limits', 'unset', 'executor.pools.serve.evaluations'])
+
+
 def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_cancel_cancels_one(
     campaign_path: Path, out
 ) -> None:
