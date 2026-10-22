@@ -11,12 +11,19 @@ import pwd
 import re
 import tomllib
 from pathlib import Path
-from typing import Self
+from typing import Annotated, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    InitSettingsSource,
+    NoDecode,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
 from piloop import deprecated
+from piloop.actor import Actor, System
 
 DEFAULT_HOME = Path.home() / '.piloop'
 REAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
@@ -85,14 +92,14 @@ class Settings(BaseSettings):
     """The directory that holds the database, the artifact store and the directories of each run (worktrees, logs,
     workspaces)."""
 
-    actor: str = 'human'
+    actor: Annotated[Actor, NoDecode] = System.HUMAN
     """Who this process is. Every row it updates records this value in ``updated_by``. The daemon launches each agent
     with ``<role>#<agent_session_id>``, for example ``implementer#12`` or ``scout#7``."""
 
-    @field_validator('actor')
+    @field_validator('actor', mode='before')
     @classmethod
-    def _actor(cls, actor: str) -> str:
-        return deprecated.old_actor(actor)
+    def _actor(cls, actor: object) -> object:
+        return deprecated.old_actor(actor) if isinstance(actor, str) else actor
 
     tick_seconds: float = 2
     """The number of seconds between two ticks. On each tick, the daemon checks the triggers of every campaign and

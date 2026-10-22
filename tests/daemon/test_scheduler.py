@@ -17,6 +17,7 @@ from pytest_mock import MockerFixture
 from sqlalchemy import func, select
 
 from piloop import git, proc
+from piloop.actor import System
 from piloop.agents.launcher import STARTUP_ANOMALY
 from piloop.agents.roles import SQL_HINT, compose_brief
 from piloop.campaign.campaigns import sync
@@ -77,6 +78,7 @@ from tests.conftest import (
     write_toml,
 )
 from tests.daemon.test_triggers import low_water
+from tests.test_actor import ACTORS
 from tests.usage.test_usage import PI_ID, store
 
 
@@ -1260,7 +1262,7 @@ def test_a_new_evaluator_measures_the_head_runs_wait_for_it_and_older_keeps_only
     with db.session() as s:
         assert s.get_one(Run, 2).base_candidate_id == kept.id
         assert s.get_one(Candidate, kept.id).verdict is Verdict.KEEP, 'measuring again judges nothing again'
-        request_remeasure(s, s.get_one(Candidate, 1), 'human')
+        request_remeasure(s, s.get_one(Candidate, 1), System.HUMAN)
         s.commit()
     sched.tick()
     sched.wait(30)
@@ -1360,7 +1362,7 @@ def test_an_imported_reference_is_measured_by_the_daemon_and_stays_a_reference(
     with db.session() as s:
         proj = s.get_one(Campaign, campaign.id)
         cfg = load_campaign_config(Path(campaign.path))
-        reference = import_reference(s, proj, cfg, repo, 'elsewhere', summary=None, actor='orchestrator').id
+        reference = import_reference(s, proj, cfg, repo, 'elsewhere', summary=None, actor=System.ORCHESTRATOR).id
         evaluator = proj.evaluator_id
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)
@@ -1514,7 +1516,7 @@ def comment(
     Each comment is addressed to the human at ``priority``. An escalation must have this, and other kinds may. The
     push to the implementer ignores it.
     """
-    with closing(sql.connect(Path(db.engine.url.database or ''), actor=author)) as con:
+    with closing(sql.connect(Path(db.engine.url.database or ''), actor=ACTORS.validate_python(author))) as con:
         return sql.run(
             con,
             f"INSERT INTO comments (target_kind, target_id, author, kind, body, priority) VALUES ('{target_kind}',"
@@ -1543,7 +1545,7 @@ def test_comments_on_a_running_run_or_its_idea_reach_the_implementer_once_as_one
     assert scheduler.tick() == [] and runtime.prompts == [], 'a comment from before the run started is in its brief'
 
     decision = comment(db, 'decision', 'idea', idea, 'keep solve.py under 120 lines\nthe rest is detail')
-    note = comment(db, 'note', 'run', 1, 'x' * 250, author='pi')
+    note = comment(db, 'note', 'run', 1, 'x' * 250, author='orchestrator')
     comment(db, 'finding', 'campaign', campaign.id, 'not for any implementer')
     waiting = comment(db, 'note', 'idea', coming_up, 'its implementer is starting: waits for its pane')
     comment(db, 'escalation', 'idea', idea, 'for the human, not the pane')
@@ -1552,7 +1554,7 @@ def test_comments_on_a_running_run_or_its_idea_reach_the_implementer_once_as_one
         (
             'implementer-1',
             '[piloop] decision on idea#1 by human: keep solve.py under 120 lines — full text: SELECT body FROM comments'
-            f' WHERE id=2\n[piloop] note on run#1 by pi: {"x" * 199}… — full text: SELECT body FROM comments WHERE id=3',
+            f' WHERE id=2\n[piloop] note on run#1 by orchestrator: {"x" * 199}… — full text: SELECT body FROM comments WHERE id=3',
         )
     ], 'one prompt with one line per comment: two prompts close together run into one another in the queue'
     assert settled(db, 'comment.delivered') == [(1, {'comment': decision}), (1, {'comment': note})]
@@ -1771,13 +1773,13 @@ def test_a_stop_with_kill_ends_the_implementers_at_once_and_a_graceful_one_can_b
     running_agent_session(db, campaign, 'in flight')
     scheduler = make_scheduler(db, runtime, tmp_path)
     with db.session() as s:
-        request_stop(s, s.get_one(Campaign, campaign.id), 'human', reason='machine needed', kill=False)
+        request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='machine needed', kill=False)
         s.commit()
     scheduler.tick()  # stops the campaign; its implementers wind down from the next tick, as for a [stop] condition
     scheduler.tick()
     assert (len(runtime.prompts), runtime.killed) == (1, []), 'graceful: told, and the grace runs'
     with db.session() as s:
-        request_stop(s, s.get_one(Campaign, campaign.id), 'human', reason='now', kill=True)
+        request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='now', kill=True)
         s.commit()
     scheduler.tick()
     assert [h.data['agent'] for h in runtime.killed] == ['implementer-1'], 'a stopped campaign can still be killed'
@@ -1804,8 +1806,8 @@ def test_a_cancelled_run_is_told_to_wrap_up_and_ended_after_the_grace(
         )
         s.add(sweep)
         s.flush()
-        request_cancel(s, s.get_one(Run, 1), 'human', wrap_up=True)
-        request_cancel(s, sweep, 'orchestrator', wrap_up=True)
+        request_cancel(s, s.get_one(Run, 1), System.HUMAN, wrap_up=True)
+        request_cancel(s, sweep, System.ORCHESTRATOR, wrap_up=True)
         s.commit()
     scheduler = make_scheduler(db, runtime, tmp_path)
     scheduler.tick()
@@ -1849,7 +1851,7 @@ def test_a_cancelled_implementer_closes_its_run_as_cancelled_scores_its_commits_
         assert time.monotonic() < deadline
         time.sleep(0.05)
     with db.session() as s:
-        request_cancel(s, s.get_one(AgentSession, 1), 'human', wrap_up=False)
+        request_cancel(s, s.get_one(AgentSession, 1), System.HUMAN, wrap_up=False)
         s.commit()
     assert scheduler.tick() == []
     scheduler.wait(20)
@@ -1877,7 +1879,7 @@ def test_an_implementer_cancelled_before_it_did_anything_is_not_a_failed_start(
     assert scheduler.tick() == [1]
     wait_for_agent_session_handle(db)
     with db.session() as s:
-        request_cancel(s, s.get_one(Run, 1), 'human', wrap_up=False)
+        request_cancel(s, s.get_one(Run, 1), System.HUMAN, wrap_up=False)
         s.commit()
     assert scheduler.tick() == []
     scheduler.wait(20)
@@ -1913,9 +1915,9 @@ def test_a_cancelled_request_never_launches_and_a_cancelled_sweep_is_ended(
         requested = AgentSession(kind=RoleName.RESEARCH, campaign_id=campaign.id, reason='low_water')
         s.add_all([queued, sweep, requested])
         s.flush()
-        request_cancel(s, queued, 'human', wrap_up=True)
-        request_cancel(s, sweep, 'human', wrap_up=False)
-        request_cancel(s, requested, 'human', wrap_up=False)
+        request_cancel(s, queued, System.HUMAN, wrap_up=True)
+        request_cancel(s, sweep, System.HUMAN, wrap_up=False)
+        request_cancel(s, requested, System.HUMAN, wrap_up=False)
         s.commit()
     scheduler = make_scheduler(db, runtime, tmp_path)
     assert scheduler.tick() == [], 'the queued run is cancelled before it launches'
@@ -2317,7 +2319,7 @@ def test_a_stopped_campaign_is_measured_again_only_on_request(
     scheduler.wait(5)
     measured.assert_not_called()
     with db.session() as s:
-        request_remeasure(s, s.get_one(Candidate, 1), 'human')
+        request_remeasure(s, s.get_one(Candidate, 1), System.HUMAN)
         s.commit()
     scheduler.tick()
     scheduler.wait(5)
@@ -2331,7 +2333,7 @@ def test_the_daemon_measures_a_candidate_again_when_someone_asks(
     scheduler = make_scheduler(db, runtime, tmp_path)
     measured = mocker.patch.object(scheduler._executor, 'remeasure')
     with db.session() as s:
-        request_remeasure(s, s.get_one(Candidate, 1), 'orchestrator')
+        request_remeasure(s, s.get_one(Candidate, 1), System.ORCHESTRATOR)
         s.commit()
     scheduler.tick()
     scheduler.wait(5)

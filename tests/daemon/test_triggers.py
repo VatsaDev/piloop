@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
+from piloop.actor import System
 from piloop.config import load_campaign_config
 from piloop.daemon.main import ACTOR
 from piloop.daemon.run_executor import RunExecutor
@@ -620,7 +621,7 @@ def test_ideas_updated_at_is_bumped_by_raw_sql_and_orm_updates_alike(
             return row.updated_at, row.updated_by
 
     time.sleep(0.01)
-    with closing(sql.connect(tmp_path / 'piloop.db', actor='human')) as con:
+    with closing(sql.connect(tmp_path / 'piloop.db', actor=System.HUMAN)) as con:
         sql.run(con, f"UPDATE ideas SET status = 'rejected' WHERE id = {idea.id}")
     raw, by = stamp()
     assert raw > created and by == 'human'
@@ -631,11 +632,13 @@ def test_ideas_updated_at_is_bumped_by_raw_sql_and_orm_updates_alike(
         same.priority = 0
         s.commit()
         orm, by = stamp()
-        assert orm > raw and by == ACTOR
-        assert (same.updated_at, same.updated_by) == (orm, ACTOR), 'the instance re-reads what the triggers wrote'
+        assert orm > raw and by == ACTOR.signature
+        assert (same.updated_at, same.updated_by) == (orm, ACTOR.signature), (
+            'the instance re-reads what the triggers wrote'
+        )
 
     pinned = created - timedelta(days=1)
-    with closing(sql.connect(tmp_path / 'piloop.db', actor='human')) as con:
+    with closing(sql.connect(tmp_path / 'piloop.db', actor=System.HUMAN)) as con:
         sql.run(
             con,
             f"UPDATE ideas SET status = 'parked', updated_at = '{pinned:%Y-%m-%d %H:%M:%S.%f}' WHERE id = {idea.id}",
@@ -679,7 +682,7 @@ def test_manual_requests_are_launched_under_max_concurrent(
 ) -> None:
     release = tmp_path / 'release'
     configure(db, campaign, BLOCKING.format(release=release))
-    with closing(sql.connect(tmp_path / 'piloop.db', actor='human')) as con:
+    with closing(sql.connect(tmp_path / 'piloop.db', actor=System.HUMAN)) as con:
         for _ in range(2):
             sql.run(
                 con,
@@ -720,7 +723,7 @@ def test_an_implementer_request_without_a_run_is_refused(
 
 def test_requests_go_through_the_agent_sql_path(db: Database, campaign: Campaign, tmp_path: Path) -> None:
     """The SQL statement that the roles docs give agents passes the authorizer and inserts a request."""
-    with closing(sql.connect(tmp_path / 'piloop.db', actor='human')) as con:
+    with closing(sql.connect(tmp_path / 'piloop.db', actor=System.HUMAN)) as con:
         result = sql.run(
             con,
             f"INSERT INTO agent_sessions (kind, campaign_id, state) VALUES ('research', {campaign.id}, 'requested')",
@@ -728,7 +731,10 @@ def test_requests_go_through_the_agent_sql_path(db: Database, campaign: Campaign
         assert result.last_insert_rowid == 1
         row = sql.run(con, 'SELECT kind, state, harness, reason FROM agent_sessions').rows
     assert row == [('research', 'requested', None, None)]
-    with closing(sql.connect(tmp_path / 'piloop.db', actor='human')) as con, pytest.raises(sqlite3.IntegrityError):
+    with (
+        closing(sql.connect(tmp_path / 'piloop.db', actor=System.HUMAN)) as con,
+        pytest.raises(sqlite3.IntegrityError),
+    ):
         sql.run(con, "INSERT INTO agent_sessions (kind, campaign_id, state) VALUES ('janitor', 1, 'requested')")
 
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from pytest_mock import MockerFixture
 from sqlalchemy import delete, select
 
+from piloop.actor import System
 from piloop.daemon.run_executor import RunExecutor
 from piloop.db.models import Campaign, Candidate, Evaluation, Run, RunStatus, Verdict
 from piloop.db.session import Database
@@ -133,8 +134,8 @@ def test_a_cancelled_evaluation_is_a_crash_that_names_who_cancelled_it_at_once(
     [running] = run_candidates(db, first)
     [waiting] = run_candidates(db, second)
     with db.session() as s:
-        assert queue.cancel(s, waiting.id, 'orchestrator') == 1
-        assert queue.cancel(s, running.id, 'human') == 1
+        assert queue.cancel(s, waiting.id, System.ORCHESTRATOR) == 1
+        assert queue.cancel(s, running.id, System.HUMAN) == 1
         s.commit()
     assert rows(db) == [(running.id, True, 'human')], 'the waiting one left the queue; the running one is stopping'
     two.join(30)
@@ -157,8 +158,8 @@ def test_a_cancel_holds_when_the_daemon_restarts_before_it_sees_it(db: Database,
         running, _ = queue.request(s, base, evaluator)
         assert queue.start(s, running, 2)
         queue.request(s, other.id, evaluator)
-        queue.cancel(s, base, 'human')
-        queue.cancel(s, other.id, 'human')
+        queue.cancel(s, base, System.HUMAN)
+        queue.cancel(s, other.id, System.HUMAN)
         s.commit()
         s.execute(delete(Evaluation))  # what the next daemon's reap does
         s.commit()
@@ -360,19 +361,19 @@ def test_a_requested_remeasure_is_listed_as_waiting_before_the_daemon_queues_it(
         assert evaluator is not None
         base = s.get_one(Candidate, baseline(db, campaign.id).id)
         assert queue.requested(s) == []
-        request_remeasure(s, base, 'human')
+        request_remeasure(s, base, System.HUMAN)
         s.commit()
         assert [c.id for c, _ in queue.requested(s)] == [base.id], 'listed from the moment it is accepted'
         evaluation, _ = queue.request(s, base.id, evaluator)
         assert queue.requested(s) == [], 'once queued, it is listed as its evaluation, not twice'
         assert queue.start(s, evaluation, 1)
-        queue.cancel(s, base.id, 'human')
-        request_remeasure(s, base, 'human')
+        queue.cancel(s, base.id, System.HUMAN)
+        request_remeasure(s, base, System.HUMAN)
         s.commit()
         assert [c.id for c, _ in queue.requested(s)] == [base.id], 'a cancelled evaluation does not answer it'
         s.delete(evaluation)
         s.flush()
-        assert queue.cancel(s, base.id, 'orchestrator') == 1, 'a request that is not queued yet can be cancelled'
+        assert queue.cancel(s, base.id, System.ORCHESTRATOR) == 1, 'a request that is not queued yet can be cancelled'
         s.commit()
         assert queue.requested(s) == []
         assert base.measurements[-1].error == 'evaluation cancelled by orchestrator'

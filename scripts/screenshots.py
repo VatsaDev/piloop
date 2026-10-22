@@ -10,6 +10,7 @@ import asyncio
 import sys
 from pathlib import Path
 
+from piloop.actor import System
 from piloop.db.session import Database
 from piloop.watch.app import Watch
 
@@ -24,7 +25,7 @@ SHOTS: tuple[tuple[str, tuple[str, ...]], ...] = (
 async def shoot(db: Database, db_file: Path, campaign: str, out: Path) -> None:
     """Open the campaign once per shot, press its keys, and save the screen."""
     for name, keys in SHOTS:
-        app = Watch(db, db_file, campaign, 'screenshots')
+        app = Watch(db, db_file, campaign, System.HUMAN)
         async with app.run_test(size=SIZE) as pilot:
             await pilot.pause(0.5)
             for key in keys:
@@ -39,7 +40,7 @@ def main() -> None:
     home, campaign, out = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
     out.mkdir(parents=True, exist_ok=True)
     db_file = home / 'piloop.db'
-    db = Database(f'sqlite:///{db_file}', actor='screenshots')
+    db = Database(f'sqlite:///{db_file}', actor=System.HUMAN)
     try:
         asyncio.run(shoot(db, db_file, campaign, out))
     finally:

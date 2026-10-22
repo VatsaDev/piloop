@@ -20,6 +20,7 @@ from rich import box
 from sqlalchemy import Engine, event, select
 from sqlalchemy.engine import Connection
 
+from piloop.actor import System
 from piloop.campaign import inbox
 from piloop.campaign.campaigns import BLANK
 from piloop.campaign.stop import check
@@ -306,7 +307,7 @@ class HotPaths:
             'stop.check': each(lambda p, _cfg: check(s, p, stopping)),
             'overview.overview': each(lambda p, cfg: overview.overview(s, p, cfg, utcnow(), lambda _w: [])),
             'history.renderables': each(lambda p, cfg: history.renderables(s, p, cfg, table_box=box.SIMPLE)),
-            'inbox.news': lambda: inbox.news(s, 0, me='orchestrator'),
+            'inbox.news': lambda: inbox.news(s, 0, me=System.ORCHESTRATOR),
         }
 
     def __exit__(self, *_: object) -> None:

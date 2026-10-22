@@ -13,6 +13,7 @@ from git.exc import InvalidGitRepositoryError, NoSuchPathError
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
+from piloop.actor import Actor
 from piloop.config import CampaignConfig
 from piloop.db.models import Campaign, Document
 from piloop.db.sql import digest
@@ -39,7 +40,7 @@ class Synced:
         return f'documents: {len(self.added)} added, {len(self.unchanged)} unchanged{skipped}'
 
 
-def sync_documents(s: Session, campaign: Campaign, cfg: CampaignConfig, actor: str) -> Synced:
+def sync_documents(s: Session, campaign: Campaign, cfg: CampaignConfig, actor: Actor) -> Synced:
     """Insert every file under the repo that ``cfg.memory.documents`` matches and that is not in yet. It only flushes."""
     root = Path(campaign.path).resolve()
     repo = _repo(root)
@@ -64,7 +65,7 @@ def sync_documents(s: Session, campaign: Campaign, cfg: CampaignConfig, actor: s
             'title': title_of(text, rel),
             'body': text,
             'commit_sha': _commit(repo, rel) if repo is not None else None,
-            'created_by': actor,
+            'created_by': actor.signature,
         }
         inserted = s.scalar(insert(Document).values(values).on_conflict_do_nothing().returning(Document.id))
         (synced.added if inserted is not None else synced.unchanged).append(rel)

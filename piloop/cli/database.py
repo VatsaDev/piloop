@@ -74,8 +74,10 @@ def migrate_cmd() -> None:
 
     Before it migrates, it copies the database next to it (`migration_backups` in config.toml). Only this command,
     `piloop serve` when it starts and `piloop upgrade` migrate. Every other command refuses a database at another
-    schema revision, and says what to run. It refuses to migrate under the running daemon of an older piloop.
+    schema revision, and says what to run. It refuses to migrate under the running daemon of an older piloop, and
+    refuses an agent that the daemon launched.
     """
+    common.refuse_agent('migrate')
     db = Database(common.settings.database_url, actor=common.settings.actor)
     try:
         old = revision(common.settings.home / 'piloop.db')

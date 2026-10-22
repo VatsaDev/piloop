@@ -9,6 +9,7 @@ from alembic.operations import Operations
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import text
 
+from piloop.actor import Agent, System
 from piloop.db import sql
 from piloop.db.session import Database
 from piloop.db.triggers import PERSISTENT, fts, recreate
@@ -46,7 +47,7 @@ def hits(con: sqlite3.Connection, table: str, query: str) -> list[object]:
 def test_the_index_follows_every_write_through_the_agent_connection(db: Database, tmp_path: Path) -> None:
     """The sync triggers fire under the authorizer (their bodies are authorized too) and under DEFENSIVE mode."""
     path = tmp_path / 'piloop.db'
-    with closing(sql.connect(path, actor='research#1')) as con:
+    with closing(sql.connect(path, actor=Agent(role='research', session=1))) as con:
         sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
         for statement in IDEAS:
             sql.run(con, statement)
@@ -75,7 +76,7 @@ def test_the_index_follows_every_write_through_the_agent_connection(db: Database
 
 def test_the_documented_search_queries_rank_and_mark_the_hits(db: Database, tmp_path: Path) -> None:
     """The two examples in sql_procedures.md, verbatim but for the campaign id."""
-    with closing(sql.connect(tmp_path / 'piloop.db', actor='human')) as con:
+    with closing(sql.connect(tmp_path / 'piloop.db', actor=System.HUMAN)) as con:
         sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
         for statement in IDEAS:
             sql.run(con, statement)
@@ -108,7 +109,7 @@ def test_the_documented_search_queries_rank_and_mark_the_hits(db: Database, tmp_
 
 
 def test_agents_cannot_write_the_indexes_or_their_shadow_tables(db: Database, tmp_path: Path) -> None:
-    with closing(sql.connect(tmp_path / 'piloop.db', actor='pi')) as con:
+    with closing(sql.connect(tmp_path / 'piloop.db', actor=System.HUMAN)) as con:
         for statement in (
             "INSERT INTO ideas_fts (rowid, title, hypothesis, plan) VALUES (1, 'x', 'y', NULL)",
             "INSERT INTO ideas_fts (ideas_fts) VALUES ('rebuild')",

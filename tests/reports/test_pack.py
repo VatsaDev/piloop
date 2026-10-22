@@ -22,6 +22,7 @@ from piloop.reports.pack import (
     pack,
 )
 from tests.reports.test_history import comment, compact, idea, scored
+from tests.test_actor import ACTORS
 
 JAN_1 = 1_767_225_600
 """A fixed modification time for artifacts (2026-01-01 00:00 UTC), so their order and dates are stable."""
@@ -240,4 +241,11 @@ def test_where_an_idea_comes_from_says_whether_it_may_be_more_than_a_seed(campai
     ]
     actors = ('implementer#3', 'watchdog#4', 'scout#6', 'research#5', 'orchestrator', 'human')
     cfg = load_campaign_config(campaign_path)
-    assert [files_of(cfg, a) for a in actors] == [Files.NOTHING, Files.SEEDS, Files.SEEDS, Files.IDEAS, None, None]
+    assert [files_of(cfg, ACTORS.validate_python(a)) for a in actors] == [
+        Files.NOTHING,
+        Files.SEEDS,
+        Files.SEEDS,
+        Files.IDEAS,
+        None,
+        None,
+    ]

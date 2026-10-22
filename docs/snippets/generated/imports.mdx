@@ -34,17 +34,18 @@ flowchart TB
     watch --> reports
 ```
 
-The graph leaves out the shared modules `deprecated.py`, `git.py`, `otel.py`, `proc.py`, `settings.py`, `text.py`, `version.py`. Every layer may import them.
+The graph leaves out the shared modules `actor.py`, `deprecated.py`, `git.py`, `otel.py`, `proc.py`, `settings.py`, `text.py`, `version.py`. Every layer may import them.
 
 | Subpackage or module | Imports directly |
 |---|---|
-| `agents/` | `config.py`, `db/`, `deprecated.py`, `git.py`, `harnesses.py`, `mcp/`, `otel.py`, `plugins/`, `proc.py`, `runtime/`, `settings.py`, `text.py`, `usage/` |
-| `campaign/` | `agents/`, `config.py`, `db/`, `deprecated.py`, `git.py`, `plugins/`, `proc.py`, `scoring/`, `settings.py`, `store/`, `text.py`, `usage/` |
+| `actor.py` | nothing |
+| `agents/` | `actor.py`, `config.py`, `db/`, `deprecated.py`, `git.py`, `harnesses.py`, `mcp/`, `otel.py`, `plugins/`, `proc.py`, `runtime/`, `settings.py`, `text.py`, `usage/` |
+| `campaign/` | `actor.py`, `agents/`, `config.py`, `db/`, `deprecated.py`, `git.py`, `plugins/`, `proc.py`, `scoring/`, `settings.py`, `store/`, `text.py`, `usage/` |
 | `capabilities.py` | `config.py`, `harnesses.py`, `plugins/`, `runtime/`, `settings.py`, `store/`, `triggers.py` |
-| `cli/` | `agents/`, `campaign/`, `config.py`, `daemon/`, `db/`, `deprecated.py`, `git.py`, `harnesses.py`, `mcp/`, `plugins/`, `proc.py`, `reports/`, `runtime/`, `scoring/`, `settings.py`, `store/`, `text.py`, `version.py`, `watch/` |
-| `config.py` | `db/`, `deprecated.py`, `harnesses.py`, `mcp/`, `plugins/`, `triggers.py` |
-| `daemon/` | `agents/`, `campaign/`, `config.py`, `db/`, `deprecated.py`, `git.py`, `harnesses.py`, `otel.py`, `plugins/`, `proc.py`, `reports/`, `runtime/`, `scoring/`, `settings.py`, `store/`, `text.py`, `triggers.py`, `usage/` |
-| `db/` | `deprecated.py`, `git.py`, `proc.py`, `version.py` |
+| `cli/` | `actor.py`, `agents/`, `campaign/`, `config.py`, `daemon/`, `db/`, `deprecated.py`, `git.py`, `harnesses.py`, `mcp/`, `plugins/`, `proc.py`, `reports/`, `runtime/`, `scoring/`, `settings.py`, `store/`, `text.py`, `version.py`, `watch/` |
+| `config.py` | `actor.py`, `db/`, `deprecated.py`, `harnesses.py`, `mcp/`, `plugins/`, `triggers.py` |
+| `daemon/` | `actor.py`, `agents/`, `campaign/`, `config.py`, `db/`, `deprecated.py`, `git.py`, `harnesses.py`, `otel.py`, `plugins/`, `proc.py`, `reports/`, `runtime/`, `scoring/`, `settings.py`, `store/`, `text.py`, `triggers.py`, `usage/` |
+| `db/` | `actor.py`, `deprecated.py`, `git.py`, `proc.py`, `version.py` |
 | `deprecated.py` | `version.py` |
 | `git.py` | nothing |
 | `harnesses.py` | `mcp/`, `usage/` |
@@ -54,11 +55,11 @@ The graph leaves out the shared modules `deprecated.py`, `git.py`, `otel.py`, `p
 | `proc.py` | nothing |
 | `reports/` | `agents/`, `campaign/`, `config.py`, `db/`, `deprecated.py`, `git.py`, `plugins/`, `runtime/`, `scoring/`, `text.py`, `usage/` |
 | `runtime/` | `db/`, `deprecated.py`, `harnesses.py`, `plugins/`, `proc.py`, `settings.py` |
-| `scoring/` | `config.py`, `db/`, `git.py`, `plugins/`, `proc.py`, `text.py` |
-| `settings.py` | `deprecated.py` |
+| `scoring/` | `actor.py`, `config.py`, `db/`, `git.py`, `plugins/`, `proc.py`, `text.py` |
+| `settings.py` | `actor.py`, `deprecated.py` |
 | `store/` | `plugins/`, `settings.py` |
 | `text.py` | nothing |
 | `triggers.py` | `db/`, `plugins/` |
 | `usage/` | `db/`, `settings.py` |
 | `version.py` | nothing |
-| `watch/` | `campaign/`, `config.py`, `db/`, `reports/`, `runtime/`, `scoring/`, `text.py`, `usage/` |
+| `watch/` | `actor.py`, `campaign/`, `config.py`, `db/`, `reports/`, `runtime/`, `scoring/`, `text.py`, `usage/` |

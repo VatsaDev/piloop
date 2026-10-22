@@ -106,7 +106,13 @@ def idea_seed(
     """
     with common.refused(), common.session() as s:
         idea = ops.file_seed(
-            s, common.campaign(s, ref).id, hunch, actor=common.settings.actor, provenance=from_, base=base, track=track
+            s,
+            common.campaign(s, ref).id,
+            hunch,
+            actor=common.settings.actor,
+            provenance=from_,
+            base=base,
+            track=track,
         )
         s.commit()
         common.console.print(f'idea#{idea.id} seed: {hunch}; research develops it next', markup=False)

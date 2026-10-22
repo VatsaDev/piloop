@@ -15,6 +15,7 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from piloop.actor import Actor
 from piloop.db.events import emit
 from piloop.db.models import Campaign, Candidate, Evaluation, Event, Measurement, TargetKind, utcnow
 from piloop.scoring import ledger
@@ -103,7 +104,7 @@ def requested(s: Session) -> list[tuple[Candidate, datetime]]:
     ]
 
 
-def cancel(s: Session, candidate_id: int, actor: str) -> int:
+def cancel(s: Session, candidate_id: int, actor: Actor) -> int:
     """Cancel what the candidate waits for: its evaluations that wait or run, or its remeasure that is not queued yet.
 
     Signed by ``actor``. Return how many it cancelled. The caller commits.
@@ -131,5 +132,5 @@ def cancel(s: Session, candidate_id: int, actor: str) -> int:
         if evaluation.started_at is None:
             s.delete(evaluation)
         else:
-            evaluation.cancelled_by = actor
+            evaluation.cancelled_by = actor.signature
     return len(evaluators)

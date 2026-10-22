@@ -2,6 +2,7 @@
 
 from sqlalchemy.orm import Session
 
+from piloop.actor import Actor, System
 from piloop.db.models import Event, TargetKind
 
 ANOMALY_EVENT = 'anomaly.reported'
@@ -14,10 +15,10 @@ def emit(
     target_kind: TargetKind,
     target_id: int,
     *,
-    actor: str = 'daemon',
+    actor: Actor = System.DAEMON,
     payload: dict[str, object] | None = None,
 ) -> Event:
     """Add an event to the session. The caller commits."""
-    event = Event(kind=kind, actor=actor, target_kind=target_kind, target_id=target_id, payload=payload or {})
+    event = Event(kind=kind, actor=actor.signature, target_kind=target_kind, target_id=target_id, payload=payload or {})
     s.add(event)
     return event

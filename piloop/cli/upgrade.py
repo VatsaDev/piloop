@@ -8,9 +8,11 @@ import os
 import re
 import subprocess
 import tomllib
+from importlib.metadata import distribution
 from pathlib import Path
 
 from piloop.proc import child_env
+from piloop.version import Version
 
 RECEIPT = 'uv-receipt.toml'
 """The file in which uv records a tool install, next to the venv of the tool: its requirement and its entry points."""
@@ -53,7 +55,8 @@ def newer(tool_dir: Path, direct_url: str | None) -> str | None:
 
     ``direct_url`` is the PEP 610 ``direct_url.json`` of the installed piloop (``piloop.version.direct_url``). A ``git+``
     install is behind when its branch has moved past the installed commit (``git ls-remote``). An install from a
-    package index has no ``direct_url.json``, and is behind when ``uv tool list --outdated`` lists it.
+    package index has no ``direct_url.json``, and is behind when ``uv tool list --outdated`` lists a release newer than
+    the running piloop.
 
     Raises:
         InstallError: piloop is not a uv tool; it was installed with a version constraint, or from a directory, a tag
@@ -63,8 +66,11 @@ def newer(tool_dir: Path, direct_url: str | None) -> str | None:
     if 'specifier' in req:  # uv tool list --outdated reports releases past it; uv tool upgrade keeps it
         raise InstallError(f'installed as piloop{req["specifier"]}, which `uv tool upgrade` keeps')
     if direct_url is None:
+        # uv reports the piloop of its tool dir, which can be another install than this one
         found = OUTDATED.search(_output(['uv', 'tool', 'list', '--outdated'], UV_TOOL_DIR=str(tool_dir)))
-        return None if found is None else f'piloop {found["latest"]}'
+        if found is None or Version.parse(found['latest']) <= Version.parse(distribution('piloop').version):
+            return None
+        return f'piloop {found["latest"]}'
     url = json.loads(direct_url)
     vcs = url.get('vcs_info')
     if vcs is None:

@@ -20,6 +20,7 @@ from git import Repo
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.exc import IntegrityError
 
+from piloop.actor import System
 from piloop.config import CampaignConfig
 from piloop.db import session
 from piloop.db.models import Campaign, Idea
@@ -153,7 +154,7 @@ def test_a_database_at_a_revision_this_build_does_not_have_is_refused_and_left_a
         r'upgrade` for a newer release\), or set PILOOP_HOME to another directory$',
     ):
         migrate(engine, backups=2, daemon=None)
-    assert schema_mismatch(path, None) is not None
+    assert schema_mismatch(path, None, System.HUMAN) is not None
     assert path.read_bytes() == before and list(tmp_path.glob('piloop.db.bak-*')) == []
     engine.dispose()
 
@@ -269,7 +270,7 @@ def test_a_database_that_another_branch_migrated_to_a_revision_of_the_same_id_is
     refused = r'revision 0006 is not in the history of this .*: this build has a different 0006 or one before it\)'
     with pytest.raises(SchemaAhead, match=refused):
         migrate(engine, backups=2, daemon=None)
-    assert re.search(refused, str(schema_mismatch(path, None)))
+    assert re.search(refused, str(schema_mismatch(path, None, System.HUMAN)))
     assert path.read_bytes() == before and schema(path) == tables and list(tmp_path.glob('piloop.db.bak-*')) == []
     engine.dispose()
 

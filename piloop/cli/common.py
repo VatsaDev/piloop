@@ -15,6 +15,7 @@ from rich.console import Console
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
+from piloop.actor import Agent
 from piloop.campaign.campaigns import checked_out, find
 from piloop.campaign.ops import Refused
 from piloop.daemon.serve import running_pid
@@ -118,8 +119,15 @@ def refuse_other_schema() -> None:
     creates a missing database. Every other command calls this before it opens the database. The message names the
     revision found, the one this piloop knows, and what to run.
     """
-    if (e := schema_mismatch(settings.home / 'piloop.db', running_pid(settings))) is not None:
+    if (e := schema_mismatch(settings.home / 'piloop.db', running_pid(settings), settings.actor)) is not None:
         raise SystemExit(str(e)) from e
+
+
+def refuse_agent(verb: str) -> None:
+    """Exit when an agent that the daemon launched runs ``piloop <verb>``, which changes the install under it."""
+    match settings.actor:
+        case Agent():
+            raise SystemExit(f'`piloop {verb}` is not for agents (PILOOP_ACTOR={settings.actor})')
 
 
 def migrate(db: Database) -> Path | None:

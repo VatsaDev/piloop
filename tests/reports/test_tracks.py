@@ -2,6 +2,7 @@
 
 from inline_snapshot import snapshot
 
+from piloop.actor import System
 from piloop.config import CampaignConfig
 from piloop.db.models import Campaign, Candidate, Run, Verdict
 from piloop.db.session import Database
@@ -105,9 +106,9 @@ run 3 · 1.9h
 - score: score 3 at the head (+2 on the start); floor 0.5, 2.5 to spare; 1 trunk keeps, the latest candidate#2 1h ago; share 0.75 of 1 slots, 0 running; 0 runnable ideas.
 - size: size 8 at the head (-4 on the start); floor 20, 12 to spare; 1 trunk keeps, the latest candidate#4 1h ago; share 0.25 of 1 slots, 2 running; 0 runnable ideas.\
 """)
-        [row] = campaigns(s, NOW, 'orchestrator')
+        [row] = campaigns(s, NOW, System.ORCHESTRATOR)
         assert row.cells[2:4] == snapshot(('3 score, 8 size', '+2, -4'))
-        ctx = Context(p, cfg, NOW, 'orchestrator')
+        ctx = Context(p, cfg, NOW, System.ORCHESTRATOR)
         panel = PANELS['candidates']
         items = panel.items(s, ctx)
         assert panel.title(s, ctx, items) == snapshot('Candidates score ▁██ 1 → 3 · size █▅▁ 12 → 8')

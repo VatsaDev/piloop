@@ -22,6 +22,7 @@ import pytest
 from cyclopts import CycloptsError
 from pydantic import BaseModel
 
+from piloop.actor import System
 from piloop.cli.database import sql_cmd
 from piloop.cli.main import app
 from piloop.config import CampaignConfig
@@ -197,7 +198,7 @@ def check_shell(block: Block, db: Path) -> None:
 
 def explain(where: str, statement: str, db: Path) -> None:
     """Compile ``statement`` with EXPLAIN on a migrated database, through the connection that ``piloop sql`` uses."""
-    with closing(sql.connect(db, actor='human')) as con:
+    with closing(sql.connect(db, actor=System.HUMAN)) as con:
         try:
             con.execute(f'EXPLAIN {statement}')
         except sqlite3.Error as e:

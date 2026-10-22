@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import sys
 from contextlib import closing
+from importlib.metadata import distribution
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,7 @@ from piloop.db.models import Campaign
 from piloop.db.session import Database
 from piloop.runtime import Check
 from piloop.settings import Settings
-from piloop.version import installed
+from piloop.version import Version, installed
 from tests.cli.test_cli import git_check
 from tests.conftest import FAKE_HERDR, hold_lock
 from tests.db.test_migrations import alembic
@@ -347,8 +348,8 @@ def test_a_git_install_is_behind_when_its_branch_has_moved(cfg: Settings, tmp_pa
 
 
 def test_an_index_install_is_behind_when_uv_lists_it_as_outdated(cfg: Settings, tmp_path: Path) -> None:
-    argv = fake(tmp_path, 'uv', "printf 'piloop v0.1.0 [latest: 0.2.0]\\n- piloop\\nruff v0.5.0 [latest: 0.17.1]\\n'")
-    assert upgrade.newer(cfg.uv_tool_dir, None) == 'piloop 0.2.0'
+    argv = fake(tmp_path, 'uv', "printf 'piloop v0.1.0 [latest: 99.0.0]\\n- piloop\\nruff v0.5.0 [latest: 0.17.1]\\n'")
+    assert upgrade.newer(cfg.uv_tool_dir, None) == 'piloop 99.0.0'
     assert argv.read_text().split() == ['tool', 'list', '--outdated']
     fake(tmp_path, 'uv', "printf 'ruff v0.5.0 [latest: 0.17.1]\\n'")
     assert upgrade.newer(cfg.uv_tool_dir, None) is None
@@ -357,6 +358,20 @@ def test_an_index_install_is_behind_when_uv_lists_it_as_outdated(cfg: Settings, 
         upgrade.InstallError, match=r"^uv tool list --outdated failed: .*No such file or directory: 'uv'$"
     ):
         upgrade.newer(cfg.uv_tool_dir, None)
+
+
+def test_an_index_install_is_behind_only_when_the_latest_release_is_newer_than_the_running_piloop(
+    cfg: Settings, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """uv reports the piloop of its tool dir, which can be another install than the one running, such as an older one."""
+    running = Version.parse(distribution('piloop').version)
+    mocker.patch.object(doctor, 'direct_url', return_value=None)
+    for latest in (running, Version(0, 1, 0)):
+        fake(tmp_path, 'uv', f"printf 'piloop v0.1.0 [latest: {latest}]\\n'")
+        assert by_name(cfg)['cli'] == Check('cli', f'{installed()}, the newest at its source')
+    ahead = Version(running.major, running.minor, running.patch + 1)
+    fake(tmp_path, 'uv', f"printf 'piloop v0.1.0 [latest: {ahead}]\\n'")
+    assert by_name(cfg)['cli'].found.startswith(f'{installed()}; piloop {ahead} is out:')
 
 
 def test_a_directory_install_or_no_uv_tool_is_not_checked_and_says_why(cfg: Settings, tmp_path: Path) -> None:

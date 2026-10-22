@@ -28,6 +28,7 @@ from textual.markup import escape
 from textual.screen import ModalScreen, Screen
 from textual.widgets import DataTable, Footer, HelpPanel, Input, Label, Select, Static
 
+from piloop.actor import Actor
 from piloop.campaign import inbox, ops
 from piloop.campaign.campaigns import find
 from piloop.campaign.ideas import reprioritise
@@ -402,7 +403,7 @@ class CampaignScreen(Screen[None]):
         return self.main_app.db
 
     @property
-    def actor(self) -> str:
+    def actor(self) -> Actor:
         return self.main_app.actor
 
     @property
@@ -529,7 +530,7 @@ class Watch(App[None]):
         Binding('question_mark', 'keys', 'keys'),
     ]
 
-    def __init__(self, db: Database, db_file: Path, ref: str | None, actor: str) -> None:
+    def __init__(self, db: Database, db_file: Path, ref: str | None, actor: Actor) -> None:
         super().__init__()
         self.db, self.db_file, self.ref, self.actor = db, db_file, ref, actor
         self._stamp: tuple[int, ...] | None = None

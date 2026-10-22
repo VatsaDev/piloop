@@ -7,6 +7,7 @@ from git import Repo
 from pytest_mock import MockerFixture
 from sqlalchemy import select
 
+from piloop.actor import System
 from piloop.campaign import ops
 from piloop.config import load_campaign_config
 from piloop.daemon.run_executor import RunExecutor
@@ -68,7 +69,7 @@ def test_a_pause_still_measures_what_the_evaluator_needs_unless_it_holds_the_eva
     with db.session() as s:
         proj = s.get_one(Campaign, campaign.id)
         cfg = load_campaign_config(Path(campaign.path))
-        reference = import_reference(s, proj, cfg, repo, 'elsewhere', summary=None, actor='orchestrator').id
+        reference = import_reference(s, proj, cfg, repo, 'elsewhere', summary=None, actor=System.ORCHESTRATOR).id
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)
     pause(db, evals=True)
@@ -97,7 +98,7 @@ def test_the_daemon_judges_a_discard_again_with_a_measurement_by_hand(
     assert worse.verdict is Verdict.DISCARD
     with db.session() as s:
         again = ops.add_measurement(
-            s, worse.id, ops.Report(metrics={'score': 5.0, 'size': 1.0}), actor='orchestrator'
+            s, worse.id, ops.Report(metrics={'score': 5.0, 'size': 1.0}), actor=System.ORCHESTRATOR
         ).rejudged
         s.commit()
     assert again
@@ -129,7 +130,7 @@ def test_a_judgement_again_that_fails_answers_the_request_with_the_error(
     execute(ex, db, run_id)
     [worse] = candidates(db, run_id)
     with db.session() as s:
-        ops.add_measurement(s, worse.id, ops.Report(metrics={'score': 5.0, 'size': 1.0}), actor='orchestrator')
+        ops.add_measurement(s, worse.id, ops.Report(metrics={'score': 5.0, 'size': 1.0}), actor=System.ORCHESTRATOR)
         s.commit()
     mocker.patch('piloop.daemon.run_executor.git.open_repo', side_effect=OSError('the repo is gone'))
     ex.rejudge(worse.id)

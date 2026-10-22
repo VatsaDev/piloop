@@ -5,6 +5,7 @@ import re
 from inline_snapshot import snapshot
 from sqlalchemy import func, select
 
+from piloop.actor import System
 from piloop.campaign import inbox
 from piloop.db.events import ANOMALY_EVENT, emit
 from piloop.db.models import (
@@ -27,6 +28,7 @@ from piloop.db.session import Database
 from piloop.scoring.ledger import SKIPPED
 from tests.reports.test_history import idea
 from tests.reports.test_overview import render
+from tests.test_actor import ACTORS
 
 
 def bodies(rows: list[tuple[Comment, Campaign | None]]) -> list[str]:
@@ -113,7 +115,7 @@ def test_most_urgent_first_narrowed_by_kind_until_acknowledged(db: Database, cam
             'half the sweeps add nothing',
         ]
         assert bodies(inbox.items(s, kinds=[CommentKind.DECISION])) == ['lowered the floor', 'requeued idea#4']
-        assert inbox.ack(s, [3, 1, 3, 99], 'human') == [
+        assert inbox.ack(s, [3, 1, 3, 99], System.HUMAN) == [
             'comment#3 acknowledged',
             'comment#1 acknowledged',
             'comment#3 was acknowledged already, by human',
@@ -217,7 +219,7 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
         s.add_all(seeds)
         s.flush()
         for idea in seeds:
-            emit(s, 'idea.created', TargetKind.IDEA, idea.id, actor=idea.created_by)
+            emit(s, 'idea.created', TargetKind.IDEA, idea.id, actor=ACTORS.validate_python(idea.created_by))
         emit(
             s,
             ANOMALY_EVENT,
@@ -231,7 +233,7 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
         s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
         s.get_one(Campaign, campaign.id).stopped_reason = 'max_tokens 100 reached'
         s.commit()
-        last, lines = inbox.news(s, cursor, me='orchestrator')
+        last, lines = inbox.news(s, cursor, me=System.ORCHESTRATOR)
         assert lines == snapshot(
             [
                 'comment#6 escalation p0 on campaign#2 (other) by watchdog#5: theirs',
@@ -243,8 +245,8 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
                 'campaign demo stopped: max_tokens 100 reached',
             ]
         )
-        assert inbox.news(s, last, me='orchestrator') == (last, []), 'the cursor moved past all of it'
-        assert inbox.news(s, cursor, campaign_id=other.id, me='orchestrator')[1] == snapshot(
+        assert inbox.news(s, last, me=System.ORCHESTRATOR) == (last, []), 'the cursor moved past all of it'
+        assert inbox.news(s, cursor, campaign_id=other.id, me=System.ORCHESTRATOR)[1] == snapshot(
             [
                 'comment#6 escalation p0 on campaign#2 (other) by watchdog#5: theirs',
                 'seed idea#3 (other) by watchdog#1: hunch 2 — run#1',
@@ -275,7 +277,7 @@ def test_a_reply_answers_the_root_of_the_thread_and_wakes_the_orchestrator_but_n
         s.add(follow_up)
         s.commit()
         cursor = s.scalar(select(func.max(Event.id))) or 0
-        answer = inbox.reply(s, follow_up.id, '  Revert it: the floor moved.\n', author='human', priority=2)
+        answer = inbox.reply(s, follow_up.id, '  Revert it: the floor moved.\n', author=System.HUMAN, priority=2)
         assert (answer.target_kind, answer.target_id, answer.kind, answer.priority, answer.body) == (
             TargetKind.COMMENT,
             item.id,
@@ -285,7 +287,7 @@ def test_a_reply_answers_the_root_of_the_thread_and_wakes_the_orchestrator_but_n
         ), 'a reply to a reply goes to the root: one level from a campaign'
         assert [c.id for c in inbox.thread(s, item)] == [follow_up.id, answer.id]
         assert [c.id for c, _ in inbox.items(s, campaign_id=campaign.id)] == [item.id, answer.id, follow_up.id]
-        assert inbox.news(s, cursor, campaign_id=campaign.id, me='orchestrator')[1] == [
+        assert inbox.news(s, cursor, campaign_id=campaign.id, me=System.ORCHESTRATOR)[1] == [
             'comment#3 decision p2 on comment#1 (demo) by human: Revert it: the floor moved.'
         ]
-        assert inbox.news(s, cursor, me='human')[1] == [], 'not news to whoever wrote it'
+        assert inbox.news(s, cursor, me=System.HUMAN)[1] == [], 'not news to whoever wrote it'

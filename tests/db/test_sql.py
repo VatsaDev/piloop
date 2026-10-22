@@ -14,6 +14,7 @@ from inline_snapshot import snapshot
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 
+from piloop.actor import Agent, System
 from piloop.daemon.main import ACTOR
 from piloop.db import sql
 from piloop.db.models import JOURNAL_LINE_BYTES, Base, Campaign, CommentKind
@@ -23,7 +24,7 @@ from tests.conftest import WRITER
 
 @pytest.fixture
 def con(db: Database, tmp_path: Path) -> Iterator[sqlite3.Connection]:
-    connection = sql.connect(tmp_path / 'piloop.db', actor='human')
+    connection = sql.connect(tmp_path / 'piloop.db', actor=System.HUMAN)
     yield connection
     connection.close()
 
@@ -120,14 +121,14 @@ def test_documented_procedures_work_verbatim(con: sqlite3.Connection) -> None:
 
 
 def test_every_update_is_stamped_with_the_connection_actor(db: Database, tmp_path: Path) -> None:
-    with closing(sql.connect(tmp_path / 'piloop.db', actor='research#3')) as con:
+    with closing(sql.connect(tmp_path / 'piloop.db', actor=Agent(role='research', session=3))) as con:
         sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
         assert sql.run(con, 'SELECT updated_at = created_at, updated_by FROM campaigns').rows == [(1, None)]
         sql.run(con, "UPDATE campaigns SET name = 'q'")
         assert sql.run(con, 'SELECT updated_by FROM campaigns').rows == [('research#3',)]
         sql.run(con, "UPDATE campaigns SET name = 'r', updated_by = 'someone else'")
         assert sql.run(con, 'SELECT updated_by FROM campaigns').rows == [('research#3',)], 'callers cannot pick'
-    with closing(sql.connect(tmp_path / 'piloop.db', actor='human')) as con:
+    with closing(sql.connect(tmp_path / 'piloop.db', actor=System.HUMAN)) as con:
         sql.run(con, "UPDATE campaigns SET name = 's'")
         assert sql.run(con, 'SELECT updated_by FROM campaigns').rows == [('human',)]
 
@@ -153,7 +154,7 @@ def test_every_client_connection_has_the_same_pragmas_and_optimizes_on_close(db:
     def pragmas(con: sqlite3.Connection) -> dict[str, object]:
         return {name: con.execute(f'PRAGMA {name}').fetchone()[0] for name in expected}
 
-    agent = sql.connect(tmp_path / 'piloop.db', actor='human')
+    agent = sql.connect(tmp_path / 'piloop.db', actor=System.HUMAN)
     with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
         sql.run(agent, 'PRAGMA synchronous=FULL')
     agent.set_authorizer(None)
@@ -192,7 +193,7 @@ def test_a_write_the_lock_refuses_names_the_holder(db: Database, tmp_path: Path,
         s.connection().exec_driver_sql('SELECT * FROM no_such_table')
     assert str(other.value).splitlines()[0] == '(sqlite3.OperationalError) no such table: no_such_table'
 
-    agent = sql.connect(tmp_path / 'piloop.db', actor='human')
+    agent = sql.connect(tmp_path / 'piloop.db', actor=System.HUMAN)
     agent.set_authorizer(None)
     agent.execute('PRAGMA busy_timeout=0')
     with pytest.raises(sqlite3.OperationalError) as agent_error:
@@ -206,7 +207,7 @@ def test_reads_close_while_another_client_holds_the_write_lock(db: Database, tmp
     with db.session() as s:
         assert s.scalars(select(Campaign)).all() == []
     db.close()
-    agent = sql.connect(tmp_path / 'piloop.db', actor='human')
+    agent = sql.connect(tmp_path / 'piloop.db', actor=System.HUMAN)
     assert sql.run(agent, 'SELECT count(*) FROM campaigns').rows == [(0,)]
     agent.close()
 
@@ -246,7 +247,7 @@ def test_the_holder_is_the_write_lock_line_in_proc_locks(tmp_path: Path, monkeyp
 
 def test_connect_requires_an_existing_database(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError, match='run `piloop serve` first'):
-        sql.connect(tmp_path / 'missing.db', actor='human')
+        sql.connect(tmp_path / 'missing.db', actor=System.HUMAN)
 
 
 def events(con: sqlite3.Connection, since: int = 0) -> list[tuple[object, ...]]:
@@ -519,6 +520,6 @@ def test_a_connection_whose_setup_fails_is_closed(
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter('always')
         with pytest.raises(sqlite3.OperationalError, match='database is locked'):
-            sql.connect(tmp_path / 'piloop.db', actor='human')
+            sql.connect(tmp_path / 'piloop.db', actor=System.HUMAN)
         gc.collect()
     assert [str(w.message) for w in caught if issubclass(w.category, ResourceWarning)] == []

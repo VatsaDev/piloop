@@ -9,6 +9,7 @@ import pytest
 from rich.console import Console
 from sqlalchemy import select
 
+from piloop.actor import System
 from piloop.campaign import campaigns as campaign_module
 from piloop.cli import common
 from piloop.db.models import Campaign, Candidate, Event, Idea, IdeaLink, IdeaStatus, Measurement, Run, Verdict
@@ -38,7 +39,7 @@ def out(isolated_home: Console):
 
 
 def database() -> closing[Database]:
-    return closing(Database(common.settings.database_url, actor='test'))
+    return closing(Database(common.settings.database_url, actor=System.HUMAN))
 
 
 def test_pause_and_resume_hold_the_campaign_say_so_in_status_and_refuse_twice(campaign_path: Path, out) -> None:
@@ -220,7 +221,7 @@ def test_a_seed_developed_with_a_link_that_closes_a_cycle_is_refused_whole(campa
     define = ['--hypothesis', 'h', '--evidence', 'e', '--check', 'c', '--metric', 'score', '--effect', '+1']
     with pytest.raises(SystemExit, match='a cycle: idea#2 already links after idea#1'):
         run_cli(['idea', 'develop', '1', *define, '--after', '2'])
-    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
+    with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
         assert s.get_one(Idea, 1).status is IdeaStatus.SEED, 'nothing was written'
     with pytest.raises(SystemExit, match='no idea#9'):
         run_cli(['idea', 'add', 'demo', 'after nothing', '--after', '9'])

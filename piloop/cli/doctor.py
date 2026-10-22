@@ -23,6 +23,7 @@ from pydantic import ValidationError
 
 import piloop
 from piloop import mcp
+from piloop.actor import Actor
 from piloop.cli import skills, upgrade
 from piloop.config import CampaignConfig, ConfigError, explain, load_campaign_config
 from piloop.daemon.main import preflight, unbound_failures
@@ -50,7 +51,13 @@ def checks(cfg: Settings) -> list[Check]:
     composed = _plugins(cfg)
     whose, names, command = _daemon_env(cfg)
     found_secrets, supplied = _secrets(whose, command)
-    first = [_cli(cfg), _daemon(cfg), _database(cfg.home / 'piloop.db', running_pid(cfg)), composed, found_secrets]
+    first = [
+        _cli(cfg),
+        _daemon(cfg),
+        _database(cfg.home / 'piloop.db', running_pid(cfg), cfg.actor),
+        composed,
+        found_secrets,
+    ]
     if composed.fix is not None:
         found = [*first, *_skills(cfg)]
     else:
@@ -138,9 +145,9 @@ def _plugins(cfg: Settings) -> Check:
     return Check('plugins', found + warnings)
 
 
-def _database(path: Path, daemon: int | None) -> Check:
+def _database(path: Path, daemon: int | None, actor: Actor) -> Check:
     """Report the schema as the commands that refuse it do (``schema_mismatch``). It never migrates."""
-    if (e := schema_mismatch(path, daemon)) is not None:
+    if (e := schema_mismatch(path, daemon, actor)) is not None:
         return Check('database', e.found, e.fix)
     return Check('database', f'{path} at schema {head()}, current')
 

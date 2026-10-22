@@ -78,7 +78,7 @@ def init(
         campaign = registered(s, path)
         if campaign is None:
             try:
-                campaign, measurement = register(s, path)
+                campaign, measurement = register(s, path, common.settings.actor)
             except CampaignError as e:
                 raise SystemExit(str(e)) from e
             common.console.print(

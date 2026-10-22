@@ -90,6 +90,8 @@ it knows, and what to run:
 - The database is older, and no daemon runs: run `piloop migrate`.
 - The database is older, and a daemon runs: the daemon runs an older piloop. Run `piloop restart` to restart it on
   this piloop, which migrates the database.
+- The database is older, and an agent that the daemon started runs the command: the daemon is being upgraded, so the
+  agent retries in a minute. `piloop migrate` and `piloop upgrade` refuse an agent.
 - Another piloop build migrated it: a newer one, or one built from another branch. Install that piloop, for
   example with `piloop upgrade`.
 - The database is older than the minor release before this piloop: see

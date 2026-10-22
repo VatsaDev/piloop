@@ -23,8 +23,10 @@ def upgrade(
     `uv tool upgrade --reinstall-package piloop piloop`. Then the new code runs `piloop install-skills`. A running
     daemon restarts in place, as with `piloop restart`: its agents keep running, and the new code migrates the
     database and re-attaches to them. When no daemon runs, the new code migrates the database and the daemon stays
-    stopped. A checkout installed with `uv sync` is not a uv tool: upgrade it with `git pull`.
+    stopped. A checkout installed with `uv sync` is not a uv tool: upgrade it with `git pull`. It refuses an agent that
+    the daemon launched.
     """
+    common.refuse_agent('upgrade')
     try:
         req = requirement(common.settings.uv_tool_dir)
     except InstallError as e:

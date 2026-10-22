@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from sqlalchemy import ColumnElement, exists, func, select
 from sqlalchemy.orm import Session
 
+from piloop.actor import Actor
 from piloop.agents.launcher import STOPPED_ERROR
 from piloop.campaign.spend import review_waits
 from piloop.config import CampaignConfig
@@ -117,7 +118,7 @@ def attempts(idea: Idea) -> int:
     return sum(run.error not in NOT_ATTEMPTS for run in idea.runs)
 
 
-def request_stop(s: Session, campaign: Campaign, actor: str, *, reason: str, kill: bool) -> None:
+def request_stop(s: Session, campaign: Campaign, actor: Actor, *, reason: str, kill: bool) -> None:
     """Ask the daemon to stop ``campaign`` (``STOP_REQUESTED``). The caller commits."""
     emit(s, STOP_REQUESTED, TargetKind.CAMPAIGN, campaign.id, actor=actor, payload={'reason': reason, 'kill': kill})
 
@@ -141,7 +142,7 @@ def requested_stop(s: Session, campaign: Campaign) -> Event | None:
     ).first()
 
 
-def request_cancel(s: Session, target: Run | AgentSession, actor: str, *, wrap_up: bool) -> None:
+def request_cancel(s: Session, target: Run | AgentSession, actor: Actor, *, wrap_up: bool) -> None:
     """Ask the daemon to cancel a run or an agent (``CANCEL_REQUESTED``). The caller commits."""
     kind, on = (
         (CANCEL_REQUESTED[0], TargetKind.RUN)

@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from piloop import git
+from piloop.actor import Actor, System
 from piloop.config import CampaignConfig, Metric, Track
 from piloop.db.events import emit
 from piloop.db.models import (
@@ -41,7 +42,7 @@ from piloop.plugins.contracts.verdict import VERDICT_RULES, Case, Criterion, Sid
 from piloop.scoring.evaluate import UNITS, Units
 from piloop.text import metric
 
-DAEMON = 'daemon'
+DAEMON = System.DAEMON
 """The ``verdict_by`` of a verdict that the daemon set. The daemon never overwrites a verdict by anyone else."""
 SKIPPED = 'not evaluated: Piloop-Eval: skip'
 """The ``verdict_reason`` of the daemon's ``unmeasured`` verdict on a commit that asked not to be evaluated.
@@ -210,7 +211,7 @@ class RemeasureRefused(Exception):
     """``request_remeasure`` cannot ask for the candidate. The message says why."""
 
 
-def request_remeasure(s: Session, candidate: Candidate, actor: str) -> None:
+def request_remeasure(s: Session, candidate: Candidate, actor: Actor) -> None:
     """Ask the daemon to measure ``candidate`` again with the current evaluator. The caller commits.
 
     Use it for a measurement that a fault of the host spoiled (a full disk, a lost GPU), or for one more repeat. The
@@ -565,7 +566,7 @@ class ImportRefused(Exception):
 
 
 def import_reference(
-    s: Session, campaign: Campaign, cfg: CampaignConfig, repo: Repo, ref: str, *, summary: str | None, actor: str
+    s: Session, campaign: Campaign, cfg: CampaignConfig, repo: Repo, ref: str, *, summary: str | None, actor: Actor
 ) -> Candidate:
     """Register the tree of ``ref`` (a commit, branch or tag in the campaign's repo) as a ``reference`` candidate.
 
@@ -583,7 +584,7 @@ def import_reference(
     if not created:
         raise ImportRefused(f'the tree of {ref!r} already is candidate#{candidate.id} ({candidate.verdict})')
     candidate.summary = summary or candidate.summary
-    candidate.verdict, candidate.verdict_by = Verdict.REFERENCE, actor
+    candidate.verdict, candidate.verdict_by = Verdict.REFERENCE, actor.signature
     candidate.verdict_reason = f'imported from {ref} ({sha[:7]})'
     git.pin(repo, f'refs/piloop/{cfg.name}/reference/{candidate.id}', sha)
     emit(s, 'candidate.imported', TargetKind.CANDIDATE, candidate.id, actor=actor, payload={'ref': ref, 'commit': sha})
@@ -627,7 +628,7 @@ def follow_up(
     candidate: Candidate,
     titles: Sequence[str],
     why: str,
-    actor: str,
+    actor: Actor,
     *,
     track: str,
     pin: bool = True,
@@ -657,7 +658,7 @@ def follow_up(
             track=track,
             base_candidate_id=candidate.id if pin else None,
             provenance=provenance,
-            created_by=actor,
+            created_by=actor.signature,
         )
         s.add(idea)
         s.flush()

@@ -8,6 +8,7 @@ from git import Repo
 from pydantic import BaseModel
 from pytest_mock import MockerFixture
 
+from piloop.actor import System
 from piloop.agents.capture import ENTIRE_DIR
 from piloop.campaign import campaigns as campaign_module
 from piloop.campaign.campaigns import BLANK, TEMPLATES, create_campaign_repo, register, registered, stub_untouched
@@ -178,7 +179,7 @@ def test_the_baseline_keeps_its_per_unit_results_under_the_daemon_home(db: Datab
     )
     write_toml(campaign_path, HARNESS_APPEND, evaluate=['sh', str(script)])
     with db.session() as s:
-        _, measurement = register(s, campaign_path)
+        _, measurement = register(s, campaign_path, System.HUMAN)
     units_dir = campaign_module.settings.units_dir
     assert units_dir == campaign_module.settings.home / 'units'
     assert [p.name for p in units_dir.iterdir()] == [f'{measurement.id}.json']
@@ -198,7 +199,7 @@ def test_the_baseline_is_scored_without_locking_the_database(db: Database, campa
     write_toml(campaign_path, HARNESS_APPEND, evaluate=['python3', str(script)])
     with db.session() as s:
         assert registered(s, campaign_path) is None, 'the CLI reads first, in the same session'
-        campaign, measurement = register(s, campaign_path)
+        campaign, measurement = register(s, campaign_path, System.HUMAN)
         assert measurement.metrics == {'score': 1.0, 'size': 5.0}, 'another client could write meanwhile'
     campaigns_dir = campaign_module.campaigns_dir(campaign_module.settings.home)
     assert [p.name for p in campaigns_dir.iterdir()] == [str(campaign.id)], 'the staging directory became the campaign'

@@ -354,7 +354,7 @@ The package has one subpackage for each concern. Imports only point down this li
 8. `daemon/`: the process, the scheduler, the run executor.
 9. `watch/` and `cli/`.
 
-The top-level modules `settings`, `otel`, `git`, `proc`, `text`, `version` and `deprecated` are leaves that every
+The top-level modules `actor`, `settings`, `otel`, `git`, `proc`, `text`, `version` and `deprecated` are leaves that every
 subpackage may use.
 
 `plugins/` is everything about plugins. `plugins/host.py` loads, checks and shows them, and imports nothing else of

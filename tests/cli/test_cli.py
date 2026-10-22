@@ -20,6 +20,7 @@ from pytest_mock import MockerFixture
 from rich.console import Console
 from sqlalchemy import create_engine, select
 
+from piloop.actor import Actor, Agent, System
 from piloop.campaign import campaigns as campaign_module, inbox
 from piloop.campaign.ideas import defined_by, runnable
 from piloop.cli import campaign as campaign_cli, common, inbox as inbox_cli, install, main as cli
@@ -189,7 +190,7 @@ def test_every_role_but_the_implementer_files_a_seed_and_only_research_the_orche
     with pytest.raises(SystemExit, match='idea#1 is ready, not a seed: someone took it already'):
         as_('research#9', 'idea', 'develop', '1', *define)
 
-    db = Database(common.settings.database_url, actor='test')
+    db = Database(common.settings.database_url, actor=System.HUMAN)
     with db.session() as s:
         rows = [(i.created_by, i.provenance, i.family, i.base_candidate_id) for i in s.scalars(select(Idea))]
         assert rows == [
@@ -233,7 +234,7 @@ def test_a_seed_developed_with_its_links_is_never_runnable_without_them(
     run_cli(['idea', 'seed', 'demo', 'refit after it', '--from', 'run#2'])
     define = ['--hypothesis', 'h', '--evidence', 'e', '--check', 'c', '--metric', 'score', '--effect', '+1']
     run_cli(['idea', 'develop', '3', *define, '--after', '1', '--supersedes', '2'])
-    db = Database(common.settings.database_url, actor='test')
+    db = Database(common.settings.database_url, actor=System.HUMAN)
     with db.session() as s:
         links = s.execute(select(IdeaLink.idea_id, IdeaLink.target_id, IdeaLink.kind).order_by(IdeaLink.kind)).all()
         assert [tuple(r) for r in links] == [(3, 1, LinkKind.AFTER), (3, 2, LinkKind.SUPERSEDES)]
@@ -277,7 +278,7 @@ def test_a_sweep_files_its_new_ideas_as_proposed_while_its_role_may_file_none(
         'idea#4 seed: a hunch; research develops it next',
         'idea#4 ready p2: a hunch',
     ]
-    db = Database(common.settings.database_url, actor='test')
+    db = Database(common.settings.database_url, actor=System.HUMAN)
     with db.session() as s:
         assert [i.status for i in s.scalars(select(Idea).order_by(Idea.id))] == [
             IdeaStatus.READY,
@@ -330,7 +331,7 @@ def test_status_shows_why_a_campaign_stopped_and_init_resumes_it_when_the_stop_t
             (e.kind, e.actor, e.payload)
             for e in s.scalars(select(Event).where(Event.target_kind == TargetKind.CAMPAIGN))
         ] == [
-            ('campaign.added', 'cli', {'baseline': 1}),
+            ('campaign.added', 'human', {'baseline': 1}),
             (
                 'campaign.status',
                 'human',
@@ -709,7 +710,7 @@ def test_candidate_import_registers_a_reference_shown_apart_and_refuses_a_bad_re
         'candidate#2 reference: from another campaign; the daemon measures it; start an idea from it with'
         ' `piloop idea add demo "<title>" --base 2`'
     )
-    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
+    with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
         c = s.get_one(Candidate, 2)
         assert (c.verdict, c.verdict_by, c.verdict_reason) == (
             Verdict.REFERENCE,
@@ -753,7 +754,7 @@ def test_candidate_remeasure_asks_the_daemon_to_measure_a_candidate_again_and_re
         out().strip()
         == 'candidate#1 keep: the daemon measures it again with the current evaluator; a crash is judged again'
     )
-    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
+    with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
         [event] = s.scalars(select(Event).where(Event.kind == REMEASURE_REQUESTED)).all()
         assert (event.actor, event.target_kind, event.target_id) == ('human', TargetKind.CANDIDATE, 1)
         s.add(Candidate(campaign_id=1, commit_sha='0' * 40, tree_sha='1' * 40, verdict=Verdict.UNMEASURED))
@@ -778,7 +779,7 @@ def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_canc
     out()
     run_cli(['eval', 'queue'])
     assert out().strip() == '0 running, 0 waiting; 2 slot(s) (max_evaluations); `piloop eval cancel <candidate>`'
-    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
+    with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
         s.add(Candidate(campaign_id=1, tree_sha='t', commit_sha='c', summary='a newer commit'))
         s.add(Candidate(campaign_id=1, tree_sha='u', commit_sha='d', summary='an older commit'))
         s.add(Candidate(campaign_id=1, tree_sha='v', commit_sha='e', summary='a merge'))
@@ -805,7 +806,7 @@ def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_canc
         ['candidate#3', 'demo', 'waiting', '2h', 'an'],
     ]
     assert summary == '2 running, 1 waiting; 2 slot(s) (max_evaluations); `piloop eval cancel <candidate>`'
-    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
+    with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
         assert [m.error for m in s.get_one(Candidate, 2).measurements] == ['evaluation cancelled by human']
     run_cli(['candidate', 'remeasure', '1'])
     out()
@@ -832,7 +833,7 @@ def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_
     run_cli(['init', str(campaign_path)])
     run_cli(['idea', 'add', 'demo', 'try again'])
     out()
-    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
+    with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
         for tree, verdict in (('worse', Verdict.DISCARD), ('waiting', Verdict.PENDING)):
             c = Candidate(
                 campaign_id=1, tree_sha=tree, commit_sha=tree, summary=tree, verdict=verdict, verdict_by='daemon'
@@ -849,7 +850,7 @@ def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_
         'idea#2 seed, pinned to candidate#2: try again (from candidate#2)',
         'idea#3 seed, pinned to candidate#2: cache it',
     ]
-    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
+    with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
         assert s.get_one(Candidate, 2).verdict_by == 'human'
         idea = s.get_one(Idea, 3)
         assert (idea.status, idea.base_candidate_id, idea.created_by, idea.hypothesis) == (
@@ -871,7 +872,9 @@ def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_
         run_cli(['candidate', 'note', '2', ' '])
     with pytest.raises(SystemExit, match='no candidate#99'):
         run_cli(['candidate', 'note', '99', 'why'])
-    monkeypatch.setattr(common, 'settings', common.settings.model_copy(update={'actor': 'implementer#3'}))
+    monkeypatch.setattr(
+        common, 'settings', common.settings.model_copy(update={'actor': Agent(role='implementer', session=3)})
+    )
     with pytest.raises(SystemExit, match='implementer#3 files no ideas or seeds'):
         run_cli(['candidate', 'note', '2', 'worth a look', '--follow-up', 'a hunch'])
 
@@ -1519,12 +1522,14 @@ def test_watch_needs_a_terminal_and_runs_the_app_as_the_actor(campaign_path: Pat
     ):
         run_cli(['watch'])
     mocker.patch('piloop.cli.campaign.sys.stdin').isatty.return_value = True
-    ran: list[tuple[str | None, str, Path]] = []
+    ran: list[tuple[str | None, Actor, Path]] = []
     mocker.patch.object(campaign_cli.Watch, 'run', lambda app: ran.append((app.ref, app.actor, app.db_file)))
     run_cli(['watch', 'demo'])
     run_cli(['watch'])
     database = common.settings.home / 'piloop.db'
-    assert ran == [('demo', 'human', database), (None, 'human', database)], 'without a campaign, every campaign'
+    assert ran == [('demo', System.HUMAN, database), (None, System.HUMAN, database)], (
+        'without a campaign, every campaign'
+    )
 
 
 def test_watch_refuses_a_campaign_that_the_home_does_not_have_before_it_opens_the_database(
@@ -1573,13 +1578,13 @@ def test_with_several_tracks_every_idea_and_seed_names_its_track(campaign_path: 
         run_cli(['idea', 'seed', 'demo', 'faster', '--from', 'x', '--track', 'speed'])
     run_cli(['idea', 'add', 'demo', 'shorter lines', '--track', 'size'])
     run_cli(['idea', 'seed', 'demo', 'more lines', '--from', 'run#1', '--track', 'score'])
-    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
+    with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
         worse = Candidate(campaign_id=1, tree_sha='w', commit_sha='w', summary='w', verdict=Verdict.DISCARD)
         s.add(worse)
         s.commit()
     run_cli(['candidate', 'note', '2', 'cheaper', '--follow-up', 'trim it', '--track', 'size'])
     run_cli(['candidate', 'note', '2', 'and', '--follow-up', 'pad it'])
-    with closing(Database(common.settings.database_url, actor='test')) as db, db.session() as s:
+    with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
         rows = [(i.title, i.track) for i in s.scalars(select(Idea).order_by(Idea.id))]
     assert rows == [('shorter lines', 'size'), ('more lines', 'score'), ('trim it', 'size'), ('pad it', 'score')], (
         'a follow-up of a candidate no run made is on the first track unless it says otherwise'
@@ -1677,6 +1682,31 @@ def test_the_commands_that_read_refuse_a_database_behind_this_piloop_and_change_
             ' piloop, which migrates it$',
         )
     assert revision_of(database) == '0016' and not list(database.parent.glob('piloop.db.bak-*'))
+
+
+def test_an_agent_is_told_to_retry_while_the_daemon_upgrades_and_never_migrates_or_upgrades(
+    campaign_path: Path, monkeypatch: pytest.MonkeyPatch, fake_bins
+) -> None:
+    """An agent acts on what a refusal says to run, so the refusal tells it to wait, and the commands refuse it."""
+    run_cli(['init', str(campaign_path)])
+    database = common.settings.home / 'piloop.db'
+    command.downgrade(alembic(database), '0016')
+    home, tools = common.settings.home, common.settings.uv_tool_dir
+    monkeypatch.setattr(common, 'settings', Settings(home=home, uv_tool_dir=tools, actor='implementer#3'))
+    behind = rf'^{re.escape(str(database))} is at schema revision 0016, and this piloop .* knows {HEAD}'
+    retry = rf'{behind}: the daemon is being upgraded; retry in a minute$'
+    refuse_each((['sql', 'SELECT 1'], ['status']), database, retry)
+    for _ in hold_lock(common.settings.pid_file):
+        refuse_each((['sql', 'SELECT 1'],), database, retry)
+    calls = fake_bins('uv')
+    for verb in ('migrate', 'upgrade'):
+        refuse_each(([verb],), database, rf'^`piloop {verb}` is not for agents \(PILOOP_ACTOR=implementer#3\)$')
+    assert calls() == [] and revision_of(database) == '0016'
+    monkeypatch.setattr(common, 'settings', Settings(home=home, uv_tool_dir=tools, actor='orchestrator'))
+    with pytest.raises(SystemExit, match='^piloop is not installed as a uv tool'):
+        run_cli(['upgrade'])  # past the refusal of an agent
+    run_cli(['migrate'])
+    assert revision_of(database) == HEAD, 'the orchestrator is not a launched agent: it migrates'
 
 
 def test_the_commands_that_read_refuse_a_database_that_a_newer_piloop_migrated(campaign_path: Path, mocker) -> None:

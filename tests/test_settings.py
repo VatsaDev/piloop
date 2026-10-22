@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from piloop import settings as settings_module
+from piloop.actor import Agent, System
 from piloop.deprecated import PiloopDeprecationWarning
 from piloop.harnesses import DEFAULT_HARNESSES, SESSION_ENV
 from piloop.runtime.herdr import HerdrSettings
@@ -149,6 +150,11 @@ def test_the_signature_of_an_implementer_from_before_0_2_0_is_its_new_signature(
     """An agent that an older daemon started outlives an upgrade, signed ``worker#<id>``."""
     monkeypatch.setenv('PILOOP_ACTOR', 'worker#12')
     with pytest.warns(PiloopDeprecationWarning, match=r'PILOOP_ACTOR=worker#12 is deprecated; .* implementer#12'):
-        assert Settings(home=tmp_path).actor == 'implementer#12'
+        assert Settings(home=tmp_path).actor == Agent(role='implementer', session=12)
     monkeypatch.setenv('PILOOP_ACTOR', 'scout#3')
-    assert Settings(home=tmp_path).actor == 'scout#3'
+    assert Settings(home=tmp_path).actor == Agent(role='scout', session=3)
+    monkeypatch.setenv('PILOOP_ACTOR', 'scout#')
+    with pytest.raises(ValidationError, match=r'actor\.Agent\.session'):
+        Settings(home=tmp_path)
+    monkeypatch.delenv('PILOOP_ACTOR')
+    assert Settings(home=tmp_path).actor == System.HUMAN

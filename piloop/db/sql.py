@@ -38,6 +38,7 @@ from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from piloop import deprecated
+from piloop.actor import Actor
 from piloop.db.models import Base
 from piloop.db.triggers.fts import FTS_COLUMNS, FTS_TABLES, FTS_TRIGGER_NAMES, fts_table
 from piloop.db.triggers.immutable import APPEND_ONLY, IMMUTABLE, UNDELETABLE
@@ -153,13 +154,13 @@ def install_functions(con: sqlite3.Connection) -> None:
     con.create_function('blake3', 1, _blake3, deterministic=True)
 
 
-def install_actor(con: sqlite3.Connection, actor: str) -> None:
+def install_actor(con: sqlite3.Connection, actor: Actor) -> None:
     """Make every UPDATE through ``con`` record ``actor`` in ``updated_by``, and log tracked changes in ``events``.
 
     It creates a TEMP table and TEMP triggers, for this connection only.
     """
     con.executescript(ACTOR_TRIGGERS)
-    con.execute(f'INSERT INTO {ACTOR_TABLE} (actor) VALUES (?)', (actor,))
+    con.execute(f'INSERT INTO {ACTOR_TABLE} (actor) VALUES (?)', (actor.signature,))
     con.commit()
 
 
@@ -230,7 +231,7 @@ class Connection(sqlite3.Connection):
         super().close()
 
 
-def connect(path: Path, *, actor: str) -> sqlite3.Connection:
+def connect(path: Path, *, actor: Actor) -> sqlite3.Connection:
     """A connection for agents to an existing database: no DDL, and the same pragmas as the daemon's engine.
 
     The pragmas and the actor's TEMP objects are set before the authorizer is turned on. After that, every statement

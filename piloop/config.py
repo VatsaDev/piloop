@@ -38,6 +38,7 @@ from pydantic_settings import (
 from sqlalchemy.orm import Session
 
 from piloop import deprecated
+from piloop.actor import ROLE_NAME
 from piloop.db.models import AgentSession, Campaign, RoleName
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.mcp import McpServer, ServerName
@@ -166,7 +167,6 @@ class Track:
     with its margin and floor."""
 
 
-ROLE_NAME = r'[a-z][a-z0-9_-]{0,19}'
 """The form of a role name: the agents' signature, ``agent_sessions.kind``, and the start of their Herdr agent name."""
 RESERVED_NAMES = frozenset({'run', 'orchestrator', 'human', 'daemon'})
 """Names that already sign writes: a run, and the actors that are not roles."""

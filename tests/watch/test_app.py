@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from textual.pilot import Pilot
 from textual.widgets import HelpPanel
 
+from piloop.actor import Actor, System
 from piloop.campaign import inbox, ops
 from piloop.config import CampaignConfig
 from piloop.db.models import (
@@ -68,7 +69,10 @@ def screen_text(app: Watch) -> str:
 
 
 def drive(
-    db: Database, ref: str | None, scenario: Callable[[Pilot[None], Watch], Awaitable[None]], actor: str = 'human'
+    db: Database,
+    ref: str | None,
+    scenario: Callable[[Pilot[None], Watch], Awaitable[None]],
+    actor: Actor = System.HUMAN,
 ) -> Watch:
     """Run the app headless on the fixture database and play ``scenario`` against it."""
     mine = Database(str(db.engine.url), actor=actor)
@@ -388,7 +392,7 @@ def test_r_replies_to_the_thread_root_with_a_priority_that_wakes_the_orchestrato
             3,
             'Revert it',
         )
-        assert inbox.news(s, cursor, campaign_id=live_campaign.id, me='orchestrator')[1] == [
+        assert inbox.news(s, cursor, campaign_id=live_campaign.id, me=System.ORCHESTRATOR)[1] == [
             'comment#6 decision p3 on comment#2 (demo) by human: Revert it'
         ]
 
@@ -574,7 +578,7 @@ def test_a_review_that_another_client_made_meanwhile_is_refused_with_why(
         await pilot.press('3', 'y')
         await pilot.pause()
         with db.session() as s:
-            ops.set_idea_status(s, 4, IdeaStatus.READY, reason='approved from the CLI', actor='orchestrator')
+            ops.set_idea_status(s, 4, IdeaStatus.READY, reason='approved from the CLI', actor=System.ORCHESTRATOR)
             s.commit()
         await pilot.press(*'worth a run', 'enter')
         await pilot.pause()
@@ -779,7 +783,7 @@ def test_the_screen_follows_the_database_and_a_dialog_holds_it_still(
 def test_details_of_rows_gone_or_bare(db: Database, live_campaign: Campaign) -> None:
     with db.session() as s:
         other = s.get_one(Campaign, 2)
-        ctx = Context(other, CampaignConfig.model_validate(other.config), utcnow(), 'human')
+        ctx = Context(other, CampaignConfig.model_validate(other.config), utcnow(), System.HUMAN)
         s.add(
             Idea(
                 track='score',

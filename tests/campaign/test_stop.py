@@ -14,6 +14,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from piloop_stop_after_keeps import AFTER_KEEPS
 from sqlalchemy import func, select
 
+from piloop.actor import Agent, System
 from piloop.agents.launcher import STOPPED_ERROR
 from piloop.campaign.ops import pause
 from piloop.campaign.stop import (
@@ -553,7 +554,7 @@ def test_a_requested_stop_ends_the_campaign_as_a_stop_condition_does(
         s.add(
             AgentSession(kind=RoleName.IMPLEMENTER, campaign_id=campaign.id, run_id=run.id, harness='script', model='m')
         )
-        request_stop(s, s.get_one(Campaign, campaign.id), 'human', reason='machine needed', kill=False)
+        request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='machine needed', kill=False)
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)
     assert sched.tick() == [2], 'only the closing watchdog launches'
@@ -569,7 +570,7 @@ def test_a_requested_stop_ends_the_campaign_as_a_stop_condition_does(
     sched.stop(timeout=5)
     assert campaign_state(db, campaign)[0] is CampaignStatus.ACTIVE
     with db.session() as s:
-        request_stop(s, s.get_one(Campaign, campaign.id), 'implementer#3', reason='', kill=True)
+        request_stop(s, s.get_one(Campaign, campaign.id), Agent(role='implementer', session=3), reason='', kill=True)
         s.commit()
         assert requested(s, s.get_one(Campaign, campaign.id)) == (Stop('stopped by implementer#3'))
         event = requested_stop(s, s.get_one(Campaign, campaign.id))
@@ -591,7 +592,7 @@ def stop_while_held(db: Database, campaign: Campaign, hold: str, review: str | N
         s.add(Run(idea_id=idea, attempt=1, base_candidate_id=1, harness='script', model='m'))
         if hold == 'pause':
             pause(s, campaign.id, evals=False, reason='too expensive')
-        request_stop(s, s.get_one(Campaign, campaign.id), 'human', reason='over budget', kill=False)
+        request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='over budget', kill=False)
         s.commit()
     return idea
 

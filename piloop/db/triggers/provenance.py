@@ -1,10 +1,11 @@
 """Who changed a row and when: ``updated_at`` (persistent) and ``updated_by`` (TEMP, from the connection's actor)."""
 
+from piloop.actor import System
 from piloop.db.triggers.ddl import Trigger
 
 TRACKED_TABLES = ('campaigns', 'ideas', 'runs', 'candidates', 'comments', 'agent_sessions', 'documents')
 """Every table with ``updated_at`` and ``updated_by`` (``models.Tracked``). Each one gets both triggers."""
-DAEMON_ACTOR = 'daemon'
+DAEMON_ACTOR = System.DAEMON
 """What the daemon's connections record in ``updated_by``. ``piloop.daemon.main.ACTOR`` has this value."""
 SESSION_ACTOR = '(SELECT actor FROM temp.session_actor)'
 """The actor of the connection, as a SQL expression that a TEMP trigger can read."""

@@ -5,6 +5,7 @@ import signal
 import sys
 from types import FrameType
 
+from piloop.actor import System
 from piloop.agents.capture import MIN_ENTIRE, AttachError, entire_version, usable
 from piloop.daemon.archiver import ArchivePolicy, Archiving
 from piloop.daemon.run_executor import RunExecutor
@@ -19,14 +20,13 @@ from piloop.daemon.serve import (
     secrets,
 )
 from piloop.db.session import BackupFailed, Database, OlderDaemon, SchemaMismatch, migrate
-from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Span, tracer
 from piloop.plugins import host as plugins
 from piloop.proc import Inherited
 from piloop.settings import CONFIG_FILE, Settings, settings
 from piloop.store.config import open_store
 
-ACTOR = DAEMON_ACTOR
+ACTOR = System.DAEMON
 """The actor that the daemon's connections record in ``updated_by``. The change-log triggers use this name."""
 
 

@@ -9,6 +9,7 @@ import pytest
 from git import Repo
 from sqlalchemy import select
 
+from piloop.actor import Agent, System
 from piloop.campaign.memory import sync_documents, title_of
 from piloop.config import ConfigError, load_campaign_config
 from piloop.db import sql
@@ -22,7 +23,7 @@ REPORT = '# Sync acquisition report\n\nThe clock recovery gained +0.4 gen_frame_
 def sync(db: Database, campaign: Campaign, *globs: str, config_from: Path | None = None) -> str:
     cfg = load_campaign_config(config_from or Path(campaign.path), memory={'documents': list(globs)})
     with db.session() as s:
-        line = sync_documents(s, s.get_one(Campaign, campaign.id), cfg, 'human').line()
+        line = sync_documents(s, s.get_one(Campaign, campaign.id), cfg, System.HUMAN).line()
         s.commit()
     return line
 
@@ -97,7 +98,7 @@ def test_unreadable_files_files_outside_the_repo_and_a_repo_without_git_are_skip
 
 
 def test_an_agent_inserts_a_document_with_the_blake3_function_and_searches_it(db: Database, tmp_path: Path) -> None:
-    with closing(sql.connect(tmp_path / 'piloop.db', actor='research#4')) as con:
+    with closing(sql.connect(tmp_path / 'piloop.db', actor=Agent(role='research', session=4))) as con:
         sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
         sql.run(
             con,

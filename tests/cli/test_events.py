@@ -201,7 +201,7 @@ def controller(home: Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Run ``piloop`` as a separate process on ``home``, as an external controller would."""
     return subprocess.run(
         [sys.executable, '-m', 'piloop', *args],
-        env={**os.environ, 'PILOOP_HOME': str(home), 'PILOOP_ACTOR': 'controller'},
+        env={**os.environ, 'PILOOP_HOME': str(home)},
         capture_output=True,
         text=True,
         timeout=60,

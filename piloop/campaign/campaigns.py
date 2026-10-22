@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop import deprecated, git
+from piloop.actor import Actor
 from piloop.agents.capture import ENTIRE_DIR
 from piloop.config import CONFIG_FILE, CampaignConfig, load_campaign_config
 from piloop.db.events import emit
@@ -156,12 +157,13 @@ def stub_untouched(path: Path) -> bool:
     )
 
 
-def register(s: Session, path: Path) -> tuple[Campaign, Measurement]:
+def register(s: Session, path: Path, actor: Actor) -> tuple[Campaign, Measurement]:
     """Score HEAD in a clean worktree, then insert the campaign row and its baseline measurement.
 
     The evaluation runs before any write, in a staging directory under ``campaigns_dir``, with no transaction open.
     An evaluation can take an hour, and an open write transaction locks all other clients out of the database.
     The rows are inserted afterwards in one short transaction, and the staging directory becomes the campaign's.
+    ``actor`` signs the ``campaign.added`` event.
 
     Raises:
         CampaignError: Another repo uses the name, or the evaluate command failed on HEAD.
@@ -210,7 +212,14 @@ def register(s: Session, path: Path) -> tuple[Campaign, Measurement]:
     s.add(measurement)
     s.flush()
     save_units(settings.units_dir, measurement.id, result.units)
-    emit(s, 'campaign.added', TargetKind.CAMPAIGN, campaign.id, actor='cli', payload={'baseline': baseline.id})
+    emit(
+        s,
+        'campaign.added',
+        TargetKind.CAMPAIGN,
+        campaign.id,
+        actor=actor,
+        payload={'baseline': baseline.id},
+    )
     s.commit()
     return campaign, measurement
 

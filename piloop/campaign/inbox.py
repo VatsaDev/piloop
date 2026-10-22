@@ -17,6 +17,7 @@ from collections.abc import Collection, Sequence
 from sqlalchemy import ColumnElement, ScalarSelect, case, select
 from sqlalchemy.orm import Mapped, Session, aliased
 
+from piloop.actor import Actor
 from piloop.db.events import ANOMALY_EVENT
 from piloop.db.models import (
     AgentSession,
@@ -81,7 +82,7 @@ def seed_line(idea: Idea, campaign: Campaign) -> str:
     return f'seed idea#{idea.id} ({campaign.name}) by {idea.created_by}: {cell(idea.title)} — {cell(idea.provenance or "")}'
 
 
-def news(s: Session, after: int, *, campaign_id: int | None = None, me: str) -> tuple[int, list[str]]:
+def news(s: Session, after: int, *, campaign_id: int | None = None, me: Actor) -> tuple[int, list[str]]:
     """Return the events after event#``after`` that the orchestrator must look at, one line each, and the last id.
 
     The lines report:
@@ -102,7 +103,7 @@ def news(s: Session, after: int, *, campaign_id: int | None = None, me: str) -> 
         f'comment#{c.id} {c.kind} p{c.priority} on {c.target_kind}#{c.target_id}'
         f' ({campaign.name if campaign else "—"}) by {c.author}: {cell(c.body)}'
         for c, campaign in items(s, campaign_id=campaign_id)
-        if c.id in fresh and c.author != me
+        if c.id in fresh and c.author != me.signature
     ]
     for e in events:
         if e.kind == 'campaign.status' and e.payload.get('new') == CampaignStatus.STOPPED:
@@ -113,7 +114,7 @@ def news(s: Session, after: int, *, campaign_id: int | None = None, me: str) -> 
             agent_session = s.get(AgentSession, e.target_id)
             if agent_session is not None and campaign_id in (None, agent_session.campaign_id):
                 lines.append(f'anomaly, {agent_session.kind}#{agent_session.id} requested: {e.payload.get("anomaly")}')
-        elif e.kind == 'idea.created' and e.actor != me:
+        elif e.kind == 'idea.created' and e.actor != me.signature:
             idea = s.get(Idea, e.target_id)
             if idea is not None and idea.status is IdeaStatus.SEED and campaign_id in (None, idea.campaign_id):
                 lines.append(seed_line(idea, idea.campaign))
@@ -126,7 +127,7 @@ def news(s: Session, after: int, *, campaign_id: int | None = None, me: str) -> 
     return events[-1].id, lines
 
 
-def ack(s: Session, ids: Sequence[int], actor: str) -> list[str]:
+def ack(s: Session, ids: Sequence[int], actor: Actor) -> list[str]:
     """Acknowledge the inbox items ``ids`` as ``actor`` and commit. Return one line per id that says what happened.
 
     An id that is not an inbox item, or that is already acknowledged, is reported and not changed.
@@ -140,13 +141,13 @@ def ack(s: Session, ids: Sequence[int], actor: str) -> list[str]:
         elif comment.acked_at is not None:
             lines.append(f'comment#{comment_id} was acknowledged already, by {comment.acked_by}')
         else:
-            comment.acked_at, comment.acked_by = now, actor
+            comment.acked_at, comment.acked_by = now, actor.signature
             lines.append(f'comment#{comment_id} acknowledged')
     s.commit()
     return lines
 
 
-def reply(s: Session, comment_id: int, body: str, *, author: str, priority: int) -> Comment:
+def reply(s: Session, comment_id: int, body: str, *, author: Actor, priority: int) -> Comment:
     """Answer inbox item ``comment_id`` as ``author`` with a ``decision`` on the root of its thread, and commit.
 
     The root is the first comment up the reply chain that is not a reply. A reply to a reply has no campaign, because
@@ -159,7 +160,7 @@ def reply(s: Session, comment_id: int, body: str, *, author: str, priority: int)
     answer = Comment(
         target_kind=TargetKind.COMMENT,
         target_id=root.id,
-        author=author,
+        author=author.signature,
         kind=CommentKind.DECISION,
         priority=priority,
         body=body.strip(),

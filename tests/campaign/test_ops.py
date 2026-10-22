@@ -12,6 +12,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from piloop.actor import Agent, System
 from piloop.campaign import ops
 from piloop.config import load_campaign_config
 from piloop.db.events import emit
@@ -36,7 +37,7 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.scoring.ledger import DAEMON, REJUDGE_FAILED, REJUDGE_REQUESTED, head, rejudges
 
-ACTOR = 'orchestrator'
+ACTOR = System.ORCHESTRATOR
 
 
 @pytest.fixture
@@ -124,9 +125,17 @@ def test_a_pause_holds_launches_or_everything_with_its_reason_and_a_resume_clear
         s.commit()
         assert (s.get_one(Campaign, 1).paused, s.get_one(Campaign, 1).paused_reason) == (None, None)
     assert [e for e in kinds(me, TargetKind.CAMPAIGN, 1) if e[0] == 'campaign.paused'] == [
-        ('campaign.paused', ACTOR, {'old': None, 'new': 'launches', 'paused_reason': 'wait for evaluator v2'}),
-        ('campaign.paused', ACTOR, {'old': 'launches', 'new': 'all', 'paused_reason': 'and the evaluations'}),
-        ('campaign.paused', ACTOR, {'old': 'all', 'new': None, 'paused_reason': None}),
+        (
+            'campaign.paused',
+            ACTOR.signature,
+            {'old': None, 'new': 'launches', 'paused_reason': 'wait for evaluator v2'},
+        ),
+        (
+            'campaign.paused',
+            ACTOR.signature,
+            {'old': 'launches', 'new': 'all', 'paused_reason': 'and the evaluations'},
+        ),
+        ('campaign.paused', ACTOR.signature, {'old': 'all', 'new': None, 'paused_reason': None}),
     ], 'the trigger logs each change, signed by the connection, and nothing else does'
     with me.session() as s:
         assert s.scalars(select(Comment)).all() == [], 'a pause is not an escalation'
@@ -153,15 +162,19 @@ def test_a_raw_pause_needs_a_reason_and_a_known_scope(me: Database, tmp_path: Pa
 def test_only_a_sweeping_agent_files_its_ideas_for_review_while_the_campaign_is_paused(me: Database) -> None:
     with me.session() as s:
         campaign = s.get_one(Campaign, 1)
-        assert ops.review_first(campaign, 'research#4', new=False) is None, 'not paused'
-        assert ops.review_first(campaign, 'research#4', new=True) == '[roles.research] max_ideas = 0', 'the test file'
+        assert ops.review_first(campaign, Agent(role='research', session=4), new=False) is None, 'not paused'
+        assert (
+            ops.review_first(campaign, Agent(role='research', session=4), new=True) == '[roles.research] max_ideas = 0'
+        ), 'the test file'
         ops.pause(s, 1, evals=False, reason='why')
-        assert ops.review_first(campaign, 'watchdog#5', new=False) == 'campaign demo is paused'
+        assert ops.review_first(campaign, Agent(role='watchdog', session=5), new=False) == 'campaign demo is paused'
         assert (
             ops.review_first(campaign, ACTOR, new=True) is None
-            and ops.review_first(campaign, 'human', new=True) is None
+            and ops.review_first(campaign, System.HUMAN, new=True) is None
         )
-        assert ops.review_first(campaign, 'implementer#6', new=True) is None, 'an implementer files no ideas anyway'
+        assert ops.review_first(campaign, Agent(role='implementer', session=6), new=True) is None, (
+            'an implementer files no ideas anyway'
+        )
 
 
 def test_a_verdict_override_is_the_actors_with_the_reason_in_its_event(me: Database, campaign: Campaign) -> None:
@@ -172,11 +185,16 @@ def test_a_verdict_override_is_the_actors_with_the_reason_in_its_event(me: Datab
         candidate = s.get_one(Candidate, c)
         assert (candidate.verdict, candidate.verdict_by, candidate.verdict_reason) == (
             Verdict.KEEP,
-            ACTOR,
+            ACTOR.signature,
             'measured by hand: +3',
         )
-    payload = {'old': 'discard', 'new': 'keep', 'verdict_by': ACTOR, 'verdict_reason': 'measured by hand: +3'}
-    assert kinds(me, TargetKind.CANDIDATE, c) == [('candidate.verdict', ACTOR, payload)]
+    payload = {
+        'old': 'discard',
+        'new': 'keep',
+        'verdict_by': ACTOR.signature,
+        'verdict_reason': 'measured by hand: +3',
+    }
+    assert kinds(me, TargetKind.CANDIDATE, c) == [('candidate.verdict', ACTOR.signature, payload)]
     pending = run_candidate(me, campaign, Verdict.PENDING, by=None)
     with me.session() as s:
         with pytest.raises(ops.Refused, match=r'candidate#\d+ is keep already \(measured by hand: \+3\)'):
@@ -268,11 +286,11 @@ def test_a_measurement_by_hand_is_recorded_and_asks_the_daemon_to_judge_its_cand
     assert kinds(me, TargetKind.MEASUREMENT, measurement.id) == [
         (
             'measurement.recorded',
-            ACTOR,
+            ACTOR.signature,
             {'candidate': c, 'metrics': {'score': 3.0, 'size': 9.0}, 'error': None, 'run': None},
         )
     ], 'shaped like the daemon event'
-    assert kinds(me, TargetKind.CANDIDATE, c) == [(REJUDGE_REQUESTED, ACTOR, {'measurement': measurement.id})]
+    assert kinds(me, TargetKind.CANDIDATE, c) == [(REJUDGE_REQUESTED, ACTOR.signature, {'measurement': measurement.id})]
     with me.session() as s:
         emit(s, 'candidate.judged', TargetKind.CANDIDATE, c)
         s.commit()
@@ -373,11 +391,11 @@ def test_an_idea_status_takes_a_reason_in_a_note_and_refuses_what_is_not_set_by_
         s.commit()
         notes = s.scalars(select(Comment).order_by(Comment.id)).all()
         assert [(n.target_id, n.author, n.kind, n.body) for n in notes] == [
-            (idea, ACTOR, CommentKind.NOTE, 'ready → parked: after the v2 evaluator'),
-            (seed, ACTOR, CommentKind.NOTE, 'seed → rejected: dup of idea#1'),
-            (running, ACTOR, CommentKind.NOTE, 'scheduled → parked: redundant'),
+            (idea, ACTOR.signature, CommentKind.NOTE, 'ready → parked: after the v2 evaluator'),
+            (seed, ACTOR.signature, CommentKind.NOTE, 'seed → rejected: dup of idea#1'),
+            (running, ACTOR.signature, CommentKind.NOTE, 'scheduled → parked: redundant'),
         ]
-    assert [e[:2] for e in kinds(me, TargetKind.IDEA, idea)] == [('idea.status', ACTOR)], 'the trigger, once'
+    assert [e[:2] for e in kinds(me, TargetKind.IDEA, idea)] == [('idea.status', ACTOR.signature)], 'the trigger, once'
     other = add_idea(me, 1, 'other', IdeaStatus.SEED)
     busy = add_idea(me, 1, 'busy', IdeaStatus.SCHEDULED)
     parked = run_idea(me, IdeaStatus.PARKED, RunStatus.RUNNING)
@@ -414,7 +432,9 @@ def test_links_are_validated_kept_acyclic_and_leave_events(me: Database, campaig
             (b, LinkKind.AFTER, c),
             (running, LinkKind.SUPERSEDES, c),
         ]
-    assert kinds(me, TargetKind.IDEA, a) == [('idea.linked', ACTOR, {'target': b, 'kind': 'after'})], 'a trigger'
+    assert kinds(me, TargetKind.IDEA, a) == [('idea.linked', ACTOR.signature, {'target': b, 'kind': 'after'})], (
+        'a trigger'
+    )
     with me.session() as s:
         assert [c.body for c in s.scalars(select(Comment).where(Comment.target_id == a))] == [
             f'after idea#{b}: b lands the parser'
@@ -445,7 +465,7 @@ def test_links_are_validated_kept_acyclic_and_leave_events(me: Database, campaig
             ops.unlink(s, a, LinkKind.AFTER, b, reason='again', actor=ACTOR)
         with pytest.raises(ops.Refused, match='a reason is required'):
             ops.unlink(s, b, LinkKind.AFTER, c, reason='', actor=ACTOR)
-    assert kinds(me, TargetKind.IDEA, a)[-1] == ('idea.unlinked', ACTOR, {'target': b, 'kind': 'after'})
+    assert kinds(me, TargetKind.IDEA, a)[-1] == ('idea.unlinked', ACTOR.signature, {'target': b, 'kind': 'after'})
 
 
 def test_a_raw_sql_link_or_base_change_is_logged_like_the_commands(me: Database, campaign: Campaign) -> None:
@@ -456,9 +476,9 @@ def test_a_raw_sql_link_or_base_change_is_logged_like_the_commands(me: Database,
         s.execute(text(f'UPDATE ideas SET base_candidate_id = 1 WHERE id = {a}'))
         s.commit()
     assert kinds(me, TargetKind.IDEA, a) == [
-        ('idea.linked', ACTOR, {'target': b, 'kind': 'after'}),
-        ('idea.unlinked', ACTOR, {'target': b, 'kind': 'after'}),
-        ('idea.base_candidate_id', ACTOR, {'old': None, 'new': 1}),
+        ('idea.linked', ACTOR.signature, {'target': b, 'kind': 'after'}),
+        ('idea.unlinked', ACTOR.signature, {'target': b, 'kind': 'after'}),
+        ('idea.base_candidate_id', ACTOR.signature, {'old': None, 'new': 1}),
     ]
 
 
@@ -480,8 +500,8 @@ def test_a_base_pins_a_candidate_of_the_campaign_or_clears_the_pin(me: Database,
         with pytest.raises(ops.Refused, match='a reason is required'):
             ops.set_base(s, idea, None, reason='', actor=ACTOR)
     assert kinds(me, TargetKind.IDEA, idea) == [
-        ('idea.base_candidate_id', ACTOR, {'old': None, 'new': 1}),
-        ('idea.base_candidate_id', ACTOR, {'old': 1, 'new': None}),
+        ('idea.base_candidate_id', ACTOR.signature, {'old': None, 'new': 1}),
+        ('idea.base_candidate_id', ACTOR.signature, {'old': 1, 'new': None}),
     ]
     with me.session() as s:
         assert [c.body for c in s.scalars(select(Comment).order_by(Comment.id))][:2] == [
@@ -522,7 +542,7 @@ def test_a_track_must_be_in_the_config_and_its_move_says_why(me: Database, campa
         with pytest.raises(ops.Refused, match='demo has tracks score, size: name one with --track'):
             ops.track_for(s.get_one(Campaign, 1), None)
     assert [(k, a, p) for k, a, p in kinds(me, TargetKind.IDEA, idea) if k == 'idea.track'] == [
-        ('idea.track', ACTOR, {'old': 'score', 'new': 'size'})
+        ('idea.track', ACTOR.signature, {'old': 'score', 'new': 'size'})
     ]
 
 
@@ -558,10 +578,10 @@ def test_a_campaign_has_one_parent_never_itself_or_a_descendant_and_each_change_
         assert parents(s) == {'demo': None, 'b': 'demo', 'c': None, 'd': 'demo'}
         changes = s.scalars(select(Event).where(Event.kind == 'campaign.parent_id').order_by(Event.id)).all()
         assert [(e.target_id, e.actor, e.payload) for e in changes] == [
-            (b.id, ACTOR, {'old': None, 'new': a.id}),
-            (c.id, ACTOR, {'old': None, 'new': b.id}),
-            (d.id, ACTOR, {'old': None, 'new': a.id}),
-            (c.id, ACTOR, {'old': b.id, 'new': None}),
+            (b.id, ACTOR.signature, {'old': None, 'new': a.id}),
+            (c.id, ACTOR.signature, {'old': None, 'new': b.id}),
+            (d.id, ACTOR.signature, {'old': None, 'new': a.id}),
+            (c.id, ACTOR.signature, {'old': b.id, 'new': None}),
         ], 'the trigger logs each change, and a refused one leaves no event'
         with pytest.raises(IntegrityError, match='FOREIGN KEY'):
             s.execute(text('DELETE FROM campaigns WHERE id = :id'), {'id': a.id})

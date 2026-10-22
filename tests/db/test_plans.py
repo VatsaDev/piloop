@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from piloop.actor import System
 from piloop.db.models import Base
 from piloop.db.session import Database
 from scripts.db_volume import (
@@ -50,7 +51,7 @@ def allowed(st: Statement, table: str) -> bool:
 def populated(tmp_path_factory: pytest.TempPathFactory, schema: Path) -> tuple[Path, list[Statement]]:
     home = tmp_path_factory.mktemp('plans')
     path = at_head(schema, home / 'piloop.db')
-    db = Database(f'sqlite:///{path}', actor='daemon')
+    db = Database(f'sqlite:///{path}', actor=System.DAEMON)
     populate(path, SMALL)
     try:
         return path, hot_statements(db, home)

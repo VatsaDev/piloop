@@ -17,6 +17,7 @@ from rich.text import Text
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from piloop.actor import Actor
 from piloop.campaign import inbox
 from piloop.campaign.ideas import links, superseded_by
 from piloop.config import CampaignConfig, config_of
@@ -89,7 +90,7 @@ class Context:
     campaign: Campaign
     cfg: CampaignConfig
     now: datetime
-    me: str
+    me: Actor
     """The watcher's actor. The inbox leaves out what it wrote: a reply waits for the orchestrator, not its author."""
 
 
@@ -118,7 +119,7 @@ def header(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -
     return text
 
 
-def campaigns(s: Session, now: datetime, me: str) -> list[Item]:
+def campaigns(s: Session, now: datetime, me: Actor) -> list[Item]:
     """Return one row per campaign, active ones first: status, head, delta to baseline, agents, queue, inbox, spend."""
     rows = []
     every = sorted(s.scalars(select(Campaign)).all(), key=lambda p: (p.status is not CampaignStatus.ACTIVE, p.id))
@@ -155,9 +156,9 @@ def campaigns(s: Session, now: datetime, me: str) -> list[Item]:
 CAMPAIGN_COLUMNS = ('campaign', 'status', 'head', 'vs baseline', 'agents', 'ready', 'inbox', 'tokens', 'last event')
 
 
-def waiting(s: Session, campaign_id: int, me: str) -> list[Comment]:
+def waiting(s: Session, campaign_id: int, me: Actor) -> list[Comment]:
     """Return the campaign's unacknowledged inbox items that someone other than ``me`` wrote, most urgent first."""
-    return [c for c, _ in inbox.items(s, campaign_id=campaign_id) if c.author != me]
+    return [c for c, _ in inbox.items(s, campaign_id=campaign_id) if c.author != me.signature]
 
 
 def lines(*parts: str) -> Group:

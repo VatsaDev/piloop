@@ -15,6 +15,7 @@ from opentelemetry.trace import StatusCode
 from pytest_mock import MockerFixture
 from sqlalchemy import func, insert, select
 
+from piloop.actor import System
 from piloop.agents.capture import ENTIRE_DIR
 from piloop.agents.launcher import STARTUP_ANOMALY
 from piloop.agents.roles import SQL_HINT
@@ -680,7 +681,7 @@ def test_a_crash_from_a_fault_of_the_host_is_measured_again_on_request_and_judge
     [crashed] = candidates(db, run_id)
     assert crashed.verdict is Verdict.CRASH
     with db.session() as s:
-        request_remeasure(s, s.get_one(Candidate, crashed.id), 'orchestrator')
+        request_remeasure(s, s.get_one(Candidate, crashed.id), System.ORCHESTRATOR)
         s.commit()
     ex.remeasure(crashed.id)
     with db.session() as s:
@@ -697,7 +698,7 @@ def test_a_crash_from_a_fault_of_the_host_is_measured_again_on_request_and_judge
         moved = head(s, p)
         assert moved is not None and moved.summary == 'other', 'the head moved on meanwhile'
         assert requested(s, p) == [], 'nobody asked'
-        request_remeasure(s, s.get_one(Candidate, crashed.id), 'orchestrator')
+        request_remeasure(s, s.get_one(Candidate, crashed.id), System.ORCHESTRATOR)
         s.commit()
         assert [c.id for c in requested(s, p)] == [crashed.id]
 
@@ -718,7 +719,7 @@ def test_a_crash_from_a_fault_of_the_host_is_measured_again_on_request_and_judge
             Verdict.KEEP,
         )
 
-        request_remeasure(s, merged, 'orchestrator')
+        request_remeasure(s, merged, System.ORCHESTRATOR)
         s.commit()
         merged_id = merged.id
     ex.remeasure(merged_id)
@@ -749,7 +750,7 @@ def test_a_crash_on_the_evaluate_timeout_is_measured_again_on_request_once_the_t
     toml.write_text(toml.read_text().replace('evaluate_timeout = 0.2', 'evaluate_timeout = 30'))
     reload_campaign(db, campaign)
     with db.session() as s:
-        request_remeasure(s, s.get_one(Candidate, crashed.id), 'orchestrator')
+        request_remeasure(s, s.get_one(Candidate, crashed.id), System.ORCHESTRATOR)
         s.commit()
     ex.remeasure(crashed.id)
     with db.session() as s:
@@ -1004,7 +1005,7 @@ def test_a_new_evaluator_measures_what_a_verdict_needs_then_what_someone_asked_f
             )
         )
         for asked in ('crash', 'repeat'):
-            request_remeasure(s, rows[asked], 'orchestrator')
+            request_remeasure(s, rows[asked], System.ORCHESTRATOR)
         proj.evaluator_id = new = s.scalar(
             insert(Evaluator).values(campaign_id=campaign.id, key='next', definition={}).returning(Evaluator.id)
         )
@@ -1227,9 +1228,9 @@ def test_a_cancel_made_while_the_implementer_starts_survives_a_failed_start(
             run = s.get_one(Run, run_id)
             [agent_session] = s.scalars(select(AgentSession).where(AgentSession.run_id == run_id)).all()
             if on == 'run':
-                stop.request_cancel(s, run, 'human', wrap_up=False)
+                stop.request_cancel(s, run, System.HUMAN, wrap_up=False)
             else:
-                stop.request_cancel(s, agent_session, 'human', wrap_up=False)
+                stop.request_cancel(s, agent_session, System.HUMAN, wrap_up=False)
             s.commit()
         raise StartFailed('HerdrError: prompt_lost: no pickup', 'Welcome\n')
 
@@ -1250,7 +1251,7 @@ def test_a_cancelled_run_whose_implementer_ends_by_itself_first_closes_as_cancel
     """The daemon ends a cancelled implementer on its next tick; one that ends before that does not requeue its idea."""
     run_id = make_run(db, campaign)
     with db.session() as s:
-        stop.request_cancel(s, s.get_one(Run, run_id), 'human', wrap_up=False)
+        stop.request_cancel(s, s.get_one(Run, run_id), System.HUMAN, wrap_up=False)
         s.commit()
     execute(executor(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
@@ -2025,7 +2026,7 @@ def import_empty_solution(db: Database, campaign: Campaign) -> int:
     with db.session() as s:
         proj = s.get_one(Campaign, campaign.id)
         cfg = load_campaign_config(Path(campaign.path))
-        reference = import_reference(s, proj, cfg, repo, 'elsewhere', summary=None, actor='orchestrator').id
+        reference = import_reference(s, proj, cfg, repo, 'elsewhere', summary=None, actor=System.ORCHESTRATOR).id
         s.commit()
     return reference
 
@@ -2334,7 +2335,7 @@ def test_a_rejudge_does_not_file_a_compose_seed_again_after_it_was_rejected(
         [x] = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).all()
         [seed] = s.scalars(select(Idea).where(Idea.status == IdeaStatus.SEED)).all()
         seed.status = IdeaStatus.REJECTED
-        add_measurement(s, x.id, Report(metrics={'score': 2.0, 'size': 10.0}), actor='human')
+        add_measurement(s, x.id, Report(metrics={'score': 2.0, 'size': 10.0}), actor=System.HUMAN)
         s.commit()
         x_id, seed_id = x.id, seed.id
     ex.rejudge(x_id)
@@ -2489,7 +2490,10 @@ def test_a_merge_commit_descends_from_its_first_parent_the_runs_base(
     assert (verdict, measurements, parent) == (Verdict.DISCARD, 1, trunk)
     with db.session() as s:
         [merge] = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).all()
-        assert set_verdict(s, merge.id, Verdict.KEEP, reason='the notes are worth it', actor='human') is Verdict.DISCARD
+        assert (
+            set_verdict(s, merge.id, Verdict.KEEP, reason='the notes are worth it', actor=System.HUMAN)
+            is Verdict.DISCARD
+        )
         assert len(s.get_one(Candidate, side).measurements) == 1, 'the merged line is not measured again'
 
 

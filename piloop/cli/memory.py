@@ -21,7 +21,7 @@ def journal(line: Annotated[str, cyclopts.Parameter(help=f'At most {JOURNAL_LINE
     if not 0 < len(line.encode()) <= JOURNAL_LINE_BYTES:
         raise SystemExit(f'a journal line is 1 to {JOURNAL_LINE_BYTES} bytes, not {len(line.encode())}: say less')
     with common.session() as s:
-        entry = Journal(author=common.settings.actor, line=line)
+        entry = Journal(author=common.settings.actor.signature, line=line)
         s.add(entry)
         s.commit()
         common.console.print(f'journal#{entry.id}', markup=False)

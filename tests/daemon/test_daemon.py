@@ -52,7 +52,7 @@ def test_daemon_end_to_end(
     daemon.scheduler.wait(30)
     with daemon.db.session() as s:
         run = s.get_one(Run, 1)
-        assert (run.status, run.updated_by) == (RunStatus.SUCCEEDED, ACTOR)
+        assert (run.status, run.updated_by) == (RunStatus.SUCCEEDED, ACTOR.signature)
     assert daemon.scheduler.tick() == [], 'a successful run does not wake the watchdog'
 
     write_toml(campaign_path, HARNESS_NOOP)
