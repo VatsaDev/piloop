@@ -434,6 +434,7 @@ def test_a_plugin_declares_a_capability_calls_its_providers_and_another_package_
     example(tmp_path / 'site', 'verdict-checks')
     example(tmp_path / 'site', 'no-unit-regression')
     monkeypatch.syspath_prepend(tmp_path / 'site')
+    plugins.close()  # the campaign's config read the entry points before the packages were installed
     checks = next(c for c in plugins.declared() if c.noun == 'verdict check')
     assert (checks.tier, checks.group, checks.selection) == (Tier.PURE, 'piloop_verdict_checks.checks', None)
     assert checks.sources()['no_unit_regression'].release == 'piloop-no-unit-regression 0.1.0'

@@ -44,6 +44,7 @@ from collections.abc import Callable, Iterator
 from contextlib import ExitStack
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import cache
 from importlib.metadata import EntryPoint, entry_points
 from threading import RLock
 from typing import Literal, Protocol, TypeIs, get_type_hints
@@ -448,11 +449,15 @@ def _loaded(offer: Offer) -> object:
         raise PluginError(f'{offer.where} does not load: {type(e).__name__}: {e}') from e
 
 
-def declared() -> list[Activatable]:
+@cache
+def declared() -> tuple[Activatable, ...]:
     """Every capability that an installed package declares in ``CAPABILITIES``, piloop included, by provider group.
 
     A plugin declares a capability for a seam of its own the same way that piloop declares its own: an entry point
     that names the ``Capability``. Other packages provide it, and piloop lists, checks and selects it as any other.
+
+    The installed packages do not change while a process runs, so the entry points are read once, until ``close``.
+    Every validation of a ``piloop.toml`` asks for these, and the daemon validates each campaign's on every tick.
 
     Raises:
         PluginError: An entry point does not load, does not name a capability, or names a capability whose provider
@@ -466,7 +471,7 @@ def declared() -> list[Activatable]:
         if (other := found.get(loaded.group)) is not None and other is not loaded:
             raise PluginError(f'{offer.where}: the {other.noun}s have the provider group {loaded.group} already')
         found[loaded.group] = loaded
-    return sorted(found.values(), key=lambda c: c.group)
+    return tuple(sorted(found.values(), key=lambda c: c.group))
 
 
 def lookup(data: object, key: str) -> object | None:
@@ -540,6 +545,7 @@ def _activate(capability: Activatable, stack: ExitStack) -> None:
 
 
 def close() -> None:
-    """Unregister every capability of the process, newest first. Closing twice is harmless."""
+    """Unregister every capability of the process, newest first, and forget ``declared``. Closing twice is harmless."""
     with _lock:
         _process.close()
+        declared.cache_clear()
