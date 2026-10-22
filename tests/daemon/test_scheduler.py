@@ -22,18 +22,10 @@ from piloop.actor import System
 from piloop.agents.results import STARTUP_ANOMALY
 from piloop.agents.roles import SQL_HINT, compose_brief
 from piloop.campaign.campaigns import sync
-from piloop.campaign.stop import (
-    BLOCKED,
-    CAMPAIGN_STOPPED_ERROR,
-    CANCELLED_ERROR,
-    STALE_ERROR,
-    request_cancel,
-    request_stop,
-    runs,
-)
+from piloop.campaign.stop import request_cancel, request_stop, runs
 from piloop.config import CampaignConfig, load_campaign_config
 from piloop.daemon.run_controller import UNCOMMITTED_SUMMARY, RunController
-from piloop.daemon.scheduler import STARTUP_BREAKER, STARTUP_WINDOW, STOPPED_ERROR, Scheduler
+from piloop.daemon.scheduler import STARTUP_BREAKER, STARTUP_WINDOW, Scheduler
 from piloop.db import sql
 from piloop.db.models import (
     AgentSession,
@@ -54,6 +46,7 @@ from piloop.db.models import (
     LinkKind,
     Measurement,
     Run,
+    RunEnd,
     RunStatus,
     Verdict,
     utcnow,
@@ -603,7 +596,17 @@ def test_a_superseded_idea_that_never_ran_is_rejected_on_tick_and_one_that_ran_i
     (parked,) = add_ideas(db, campaign, 'parked', status=IdeaStatus.PARKED)
     (retrying,) = add_ideas(db, campaign, 'failed once, one attempt left')
     with db.session() as s:
-        s.add(Run(idea_id=retrying, attempt=1, base_candidate_id=1, harness='h', model='m', status=RunStatus.FAILED))
+        s.add(
+            Run(
+                idea_id=retrying,
+                attempt=1,
+                base_candidate_id=1,
+                harness='h',
+                model='m',
+                status=RunStatus.FAILED,
+                end=RunEnd.FAILED,
+            )
+        )
         p = s.get_one(Campaign, campaign.id)
         p.status, p.stopped_reason = CampaignStatus.STOPPED, 'by the test'  # bookkeeping happens, nothing launches
         s.commit()
@@ -711,7 +714,7 @@ def test_reap(
 
     with db.session() as s:
         run = s.get_one(Run, 1)
-        assert (run.status, run.error) == (RunStatus.FAILED, STALE_ERROR)
+        assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.STALE)
         assert s.get_one(Idea, idea).status is IdeaStatus.READY, 'a crash is not an attempt: its only one remains'
         assert s.get_one(AgentSession, 1).state is AgentSessionState.KILLED
         sweep = s.get_one(AgentSession, 2)
@@ -883,15 +886,15 @@ def test_stop_kills_in_flight_implementers_and_fails_their_runs(
     assert scheduler.active() == []
     with db.session() as s:
         run = s.get_one(Run, 1)
-        assert (run.status, run.error) == (RunStatus.FAILED, STOPPED_ERROR)
+        assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.DAEMON_STOPPED)
         assert s.get_one(Idea, idea).status is IdeaStatus.READY
         assert (s.get_one(AgentSession, 1).state, s.get_one(AgentSession, 1).error) == (
             AgentSessionState.KILLED,
-            STOPPED_ERROR,
+            RunEnd.DAEMON_STOPPED,
         )
         assert s.scalars(select(Candidate).where(Candidate.run_id == 1)).all() == [], 'no scoring after stop'
     assert not (tmp_path / 'runs' / '1' / 'worktree').exists()
-    assert dict(span_named(spans, 'run.aborted').attributes or {}) == {'run': 1, 'error': STOPPED_ERROR}
+    assert dict(span_named(spans, 'run.aborted').attributes or {}) == {'run': 1, 'end': RunEnd.DAEMON_STOPPED}
     assert dict(span_named(spans, 'piloop.run').attributes or {})['status'] == 'cancelled'
 
 
@@ -963,8 +966,8 @@ def test_a_stop_after_the_implementer_left_its_finding_scores_its_run_on_the_nex
 
     with db.session() as s:
         run = s.get_one(Run, 1)
-        ended = (RunStatus.FAILED, f'{BLOCKED} comment#2') if escalated else (RunStatus.SUCCEEDED, None)
-        assert (run.status, run.error, run.scoring) == (*ended, True)
+        ended = (RunEnd.AWAITING_ANSWER, 'comment#2') if escalated else (RunEnd.FINISHED, None)
+        assert (run.end, run.error, run.scoring) == (*ended, True)
         assert s.get_one(Idea, idea).status is IdeaStatus.SCHEDULED, 'not ready: a second run would redo the work'
         notes = s.scalars(select(Comment).where(Comment.author == DAEMON_ACTOR)).all()
         assert notes == [], 'its commits are scored, so no note sends the next run to them'
@@ -1062,12 +1065,12 @@ def test_stop_before_the_implementer_starts_never_starts_it(
     scheduler.wait(10)
     with db.session() as s:
         run = s.get_one(Run, 1)
-        assert (run.status, run.error) == (RunStatus.FAILED, STOPPED_ERROR)
+        assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.DAEMON_STOPPED)
         assert s.get_one(Idea, idea).status is IdeaStatus.READY
         agent_session = s.get_one(AgentSession, 1)
         assert (agent_session.state, agent_session.error, agent_session.handle) == (
             AgentSessionState.KILLED,
-            STOPPED_ERROR,
+            RunEnd.DAEMON_STOPPED,
             {},
         ), 'closed by stop(); nothing was started'
         assert s.scalars(select(Lease.state)).all() == [LeaseState.CANCELLED], 'no worker reports it'
@@ -1100,10 +1103,10 @@ def test_stop_waits_for_a_start_in_flight_then_kills_the_implementer(
     assert not stopper.is_alive()
     with db.session() as s:
         agent_session = s.get_one(AgentSession, 1)
-        assert (agent_session.state, agent_session.error) == (AgentSessionState.KILLED, STOPPED_ERROR)
+        assert (agent_session.state, agent_session.error) == (AgentSessionState.KILLED, RunEnd.DAEMON_STOPPED)
         assert proc.started(int(str(agent_session.handle['pid']))) is None
         run = s.get_one(Run, 1)
-        assert (run.status, run.error) == (RunStatus.FAILED, STOPPED_ERROR)
+        assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.DAEMON_STOPPED)
     assert scheduler.active() == []
 
 
@@ -1215,6 +1218,7 @@ def test_a_run_whose_scoring_cannot_resume_returns_its_idea_to_the_queue(
                 harness='script',
                 model='m',
                 status=RunStatus.SUCCEEDED,
+                end=RunEnd.FINISHED,
                 scoring=True,
             )
         )
@@ -1435,7 +1439,7 @@ def test_stop_before_a_sweep_starts_never_starts_it(
         agent_session = s.get_one(AgentSession, agent_session_id)
         assert (agent_session.state, agent_session.error, agent_session.harness, agent_session.handle) == (
             AgentSessionState.KILLED,
-            STOPPED_ERROR,
+            RunEnd.DAEMON_STOPPED,
             'script',
             {},
         )
@@ -1470,7 +1474,7 @@ def test_stop_waits_for_a_sweep_start_in_flight_then_kills_it(
     assert not stopper.is_alive()
     with db.session() as s:
         agent_session = s.get_one(AgentSession, agent_session_id)
-        assert (agent_session.state, agent_session.error) == (AgentSessionState.KILLED, STOPPED_ERROR)
+        assert (agent_session.state, agent_session.error) == (AgentSessionState.KILLED, RunEnd.DAEMON_STOPPED)
         assert proc.started(int(str(agent_session.handle['pid']))) is None
     assert scheduler.active() == []
 
@@ -1803,11 +1807,11 @@ def test_an_implementer_that_the_stop_ends_mid_turn_closes_its_run_as_cut_by_the
     scheduler.stop(timeout=5)
     with db.session() as s:
         run = s.get_one(Run, 1)
-        assert (run.status, run.error) == (RunStatus.FAILED, CAMPAIGN_STOPPED_ERROR)
+        assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.CAMPAIGN_STOPPED)
         [ended] = s.scalars(select(Event).where(Event.kind == 'agent_session.stop_ended')).all()
         assert (ended.target_id, ended.payload) == (
             1,
-            {'reason': 'plateau: 5 runs without a keep', 'error': CAMPAIGN_STOPPED_ERROR},
+            {'reason': 'plateau: 5 runs without a keep', 'end': RunEnd.CAMPAIGN_STOPPED},
         )
         verdicts = [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == 1).order_by(Candidate.id))]
         assert verdicts == [Verdict.KEEP, Verdict.RECOVERED], 'its commit is scored, its draft recovered'
@@ -1836,7 +1840,7 @@ def test_a_stop_with_kill_ends_the_implementers_at_once_and_a_graceful_one_can_b
     assert revoked(db) == ['implementer-1'], 'a stopped campaign can still be killed'
     scheduler.tick()
     assert settled(db, 'agent_session.stop_ended') == [
-        (1, {'reason': 'stopped by human: machine needed', 'error': CAMPAIGN_STOPPED_ERROR})
+        (1, {'reason': 'stopped by human: machine needed', 'end': RunEnd.CAMPAIGN_STOPPED})
     ], 'one event, however many ticks the kill takes to land'
     scheduler.stop(timeout=5)
 
@@ -1881,8 +1885,8 @@ def test_a_cancelled_run_is_told_to_wrap_up_and_ended_after_the_grace(
     scheduler.tick()
     assert revoked(db) == ['implementer-1', 'research-3']
     assert settled(db, 'agent_session.stop_ended') == [
-        (1, {'reason': 'cancelled by human', 'error': CANCELLED_ERROR}),
-        (3, {'reason': 'cancelled by orchestrator', 'error': CANCELLED_ERROR}),
+        (1, {'reason': 'cancelled by human', 'end': RunEnd.CANCELLED}),
+        (3, {'reason': 'cancelled by orchestrator', 'end': RunEnd.CANCELLED}),
     ]
     scheduler.stop(timeout=5)
 
@@ -1910,7 +1914,7 @@ def test_a_cancelled_implementer_closes_its_run_as_cancelled_scores_its_commits_
     scheduler.stop(timeout=5)
     with db.session() as s:
         run = s.get_one(Run, 1)
-        assert (run.status, run.error) == (RunStatus.FAILED, CANCELLED_ERROR)
+        assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.CANCELLED)
         verdicts = [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == 1))]
         assert verdicts == [Verdict.KEEP], 'what it committed is scored'
         assert s.get_one(Idea, idea).status is IdeaStatus.PARKED
@@ -1941,7 +1945,7 @@ def test_a_finding_that_lands_after_a_cancel_ended_the_implementer_is_refused_an
     scheduler.stop(timeout=5)
     with db.session() as s:
         run = s.get_one(Run, 1)
-        assert (run.status, run.error) == (RunStatus.FAILED, CANCELLED_ERROR)
+        assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.CANCELLED)
         assert s.get_one(AgentSession, 1).state is AgentSessionState.KILLED
 
 
@@ -1966,7 +1970,7 @@ def test_an_implementer_cancelled_before_it_did_anything_is_not_a_failed_start(
         assert s.scalars(select(Event).where(Event.kind == STARTUP_ANOMALY)).all() == []
         assert s.get_one(AgentSession, 1).state is AgentSessionState.KILLED
         run = s.get_one(Run, 1)
-        assert (run.status, run.error) == (RunStatus.FAILED, CANCELLED_ERROR)
+        assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.CANCELLED)
         assert s.scalar(select(func.count()).select_from(AgentSession)) == 1, 'not launched again'
 
 
@@ -2001,14 +2005,14 @@ def test_a_cancelled_request_never_launches_and_a_cancelled_sweep_is_ended(
     assert revoked(db) == ['research-2']
     with db.session() as s:
         w = s.get_one(AgentSession, 1)
-        assert (w.state, w.error, s.get_one(Run, 1).error) == (
+        assert (w.state, w.error, s.get_one(Run, 1).end) == (
             AgentSessionState.KILLED,
-            CANCELLED_ERROR,
-            CANCELLED_ERROR,
+            RunEnd.CANCELLED,
+            RunEnd.CANCELLED,
         )
         assert (s.get_one(AgentSession, 3).state, s.get_one(AgentSession, 3).error) == (
             AgentSessionState.KILLED,
-            CANCELLED_ERROR,
+            RunEnd.CANCELLED,
         )
         assert s.get_one(Idea, idea).status is IdeaStatus.PARKED
     scheduler.stop(timeout=5)
@@ -2175,6 +2179,7 @@ def explore_setup(db: Database, campaign: Campaign, explore_every: int) -> tuple
                     harness='h',
                     model='m',
                     status=RunStatus.SUCCEEDED,
+                    end=RunEnd.FINISHED,
                 )
             )
         s.commit()
@@ -2192,7 +2197,7 @@ def queue_one(db: Database, scheduler: Scheduler) -> tuple[int, bool]:
         scheduler._queue(s, p, CampaignConfig.model_validate(p.config))
         run = s.scalars(select(Run).order_by(Run.id.desc())).first()
         assert run is not None
-        run.status = RunStatus.SUCCEEDED
+        run.status, run.end = RunStatus.SUCCEEDED, RunEnd.FINISHED
         s.commit()
         return run.idea_id, run.branch
 

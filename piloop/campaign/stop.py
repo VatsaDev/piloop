@@ -11,11 +11,11 @@ from sqlalchemy import ColumnElement, exists, func, select
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor
-from piloop.agents.results import STOPPED_ERROR
 from piloop.campaign.spend import review_waits
 from piloop.config import CampaignConfig
 from piloop.db.events import emit
 from piloop.db.models import (
+    ATTEMPTS,
     FINISHED_RUNS,
     LIVE,
     OPEN_RUNS,
@@ -42,31 +42,6 @@ from piloop.plugins.stop_rule.contract import STOP_RULES, Fact, Go, Hold, Progre
 from piloop.scoring.ledger import head, keeps, score
 from piloop.usage import campaign_tokens
 
-STALE_ERROR = 'daemon exited while the run was in progress'
-CAMPAIGN_STOPPED_ERROR = 'campaign stopped'
-ROLE_REMOVED = 'its role is no longer in piloop.toml'
-NOT_STARTED = 'no agent of the run started to work'
-"""The error of a run whose every agent failed to start (``launcher.STARTUP_ANOMALY`` on each): a fault of the host or
-the harness. The errors of its implementers say what failed."""
-CANCELLED_ERROR = 'cancelled'
-"""The error of a run, and of an agent, that someone cancelled (``CANCEL_REQUESTED``). The run's idea is parked."""
-WORKER_LOST = 'worker lost'
-"""The error of a run whose agent's worker went silent past ``toleration_seconds`` (``[plugins.executor]``), or restarted and could not
-find the agent (``piloop.plugins.executor.kit.leases``). A fault of the host, not an attempt: the idea goes back to ``ready``."""
-NOT_ATTEMPTS = (
-    STOPPED_ERROR,
-    STALE_ERROR,
-    CAMPAIGN_STOPPED_ERROR,
-    ROLE_REMOVED,
-    NOT_STARTED,
-    CANCELLED_ERROR,
-    WORKER_LOST,
-)
-"""Run errors that mean the run was stopped, or that no agent started to work on it, not that the idea was tried.
-
-The causes are a daemon stop or restart (``piloop upgrade``), a daemon crash, a campaign stop, a ``piloop init`` that
-removed the role of a queued run, agents that failed to start, or a cancel. Such a run is not counted as an attempt at
-its idea. It does not count toward ``max_runs`` or ``plateau``, and it is not an anomaly: the failed starts are."""
 STOP_REQUESTED = 'campaign.stop_requested'
 """Event on a campaign that someone asked to stop (``piloop campaign stop``), with ``reason`` and ``kill``.
 
@@ -81,23 +56,13 @@ CANCEL_REQUESTED = ('run.cancel_requested', 'agent_session.cancel_requested')
 
 The daemon closes a requested row with its queued run. It ends a running agent with everything it started, at once,
 or with ``wrap_up`` after the wrap-up prompt and its grace period. A starting agent waits until it runs, and a run
-whose agent then fails to start is not launched again. The run closes with ``CANCELLED_ERROR`` unless its implementer left
-its finding, and its commits are scored."""
-BLOCKED = 'blocked on escalation'
-"""How the error of a run starts when its implementer stopped while its own escalation waited for an answer.
-
-The run is an attempt that failed, but not an anomaly: the escalation is in the inbox already. Its idea is parked
-until someone answers the escalation and sets the idea ``ready``."""
+whose agent then fails to start is not launched again. The run ends ``cancelled`` unless its implementer left its
+finding, and its commits are scored."""
 
 
 def attempt() -> ColumnElement[bool]:
-    """Select the runs that were an attempt at their idea: all runs except those with a ``NOT_ATTEMPTS`` error."""
-    return Run.error.is_(None) | Run.error.not_in(NOT_ATTEMPTS)
-
-
-def blocked() -> ColumnElement[bool]:
-    """Select the runs that ended blocked on their implementer's escalation (``BLOCKED``)."""
-    return Run.error.is_not(None) & Run.error.startswith(BLOCKED, autoescape=True)
+    """Select the runs that were an attempt at their idea: the open runs, and those whose end is an attempt."""
+    return Run.end.is_(None) | Run.end.in_(ATTEMPTS)
 
 
 def scored() -> ColumnElement[bool]:
@@ -126,7 +91,7 @@ def counted() -> ColumnElement[bool]:
 
 def attempts(idea: Idea) -> int:
     """Count the runs of ``idea`` that were an attempt at it. ``ideas.max_runs`` caps this number."""
-    return sum(run.error not in NOT_ATTEMPTS for run in idea.runs)
+    return sum(run.end is None or run.end.attempt for run in idea.runs)
 
 
 def request_stop(s: Session, campaign: Campaign, actor: Actor, *, reason: str, kill: bool) -> None:

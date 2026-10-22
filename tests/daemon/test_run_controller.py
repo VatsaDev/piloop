@@ -24,7 +24,6 @@ from piloop.agents.roles import SQL_HINT
 from piloop.campaign import stop
 from piloop.campaign.campaigns import sync
 from piloop.campaign.ops import Report, add_measurement, set_verdict
-from piloop.campaign.stop import NOT_STARTED
 from piloop.cli.plugins import selections
 from piloop.config import CampaignConfig, ConfigError, config_of, load_campaign_config
 from piloop.daemon.run_controller import (
@@ -33,8 +32,7 @@ from piloop.daemon.run_controller import (
     RECOVERED_REASON,
     UNCOMMITTED_SUMMARY,
     RunController,
-    RunEnd,
-    RunOutcome,
+    RunFacts,
     run_outcome,
 )
 from piloop.db.models import (
@@ -52,6 +50,7 @@ from piloop.db.models import (
     LessonStatus,
     Measurement,
     Run,
+    RunEnd,
     RunStatus,
     Verdict,
     utcnow,
@@ -248,7 +247,15 @@ def test_successful_run_scores_the_commit(
         }
     )
     assert dict(run_span.attributes or {}) == snapshot(
-        {'run': 1, 'idea': 1, 'agent_session': 1, 'harness': 'script', 'model': 'test-model', 'status': 'succeeded'}
+        {
+            'run': 1,
+            'idea': 1,
+            'agent_session': 1,
+            'harness': 'script',
+            'model': 'test-model',
+            'status': 'succeeded',
+            'end': 'finished',
+        }
     )
     assert candidate.parent is not None and candidate.parent.span_id == run_span.context.span_id
     assert measure.parent is not None and measure.parent.span_id == candidate.context.span_id
@@ -373,8 +380,8 @@ def test_a_run_counts_toward_max_runs_from_its_close_to_its_verdict(
     close = ex._close
     counted: list[tuple[int, bool]] = []
 
-    def close_and_count(span: Span, run_id: RunId, status: RunStatus, error: str | None) -> None:
-        close(span, run_id, status, error)
+    def close_and_count(span: Span, run_id: RunId, end: RunEnd, error: str | None) -> None:
+        close(span, run_id, end, error)
         with db.session() as s:
             if moved_to is not None:
                 s.get_one(Run, run_id).idea.status = moved_to
@@ -926,7 +933,7 @@ def test_the_head_is_the_latest_trunk_keep_whatever_it_scores(db: Database, camp
         s.add(idea)
         s.flush()
         branch = Run(idea_id=idea.id, attempt=1, base_candidate_id=1, harness='h', model='m', branch=True)
-        branch.status = RunStatus.SUCCEEDED
+        branch.status, branch.end = RunStatus.SUCCEEDED, RunEnd.FINISHED
         s.add(branch)
         s.flush()
         rows = {}
@@ -1000,7 +1007,7 @@ def test_a_new_evaluator_measures_what_a_verdict_needs_then_what_someone_asked_f
         add('lead', Verdict.INTERESTING, parent='k1')
         add('ref', Verdict.REFERENCE)
         done = Run(idea_id=idea.id, attempt=1, base_candidate_id=rows['k2'].id, harness='h', model='m')
-        done.status = RunStatus.SUCCEEDED
+        done.status, done.end = RunStatus.SUCCEEDED, RunEnd.FINISHED
         s.add_all([done, Run(idea_id=idea.id, attempt=2, base_candidate_id=rows['lead'].id, harness='h', model='m')])
         s.flush()
         add('crash', Verdict.CRASH, parent='k2', run=done)
@@ -1141,7 +1148,7 @@ def test_an_implementer_that_never_got_going_is_relaunched_on_its_run_then_the_r
             ' anomaly.startup events), then set it ready',
         )
     run = run_row(db, run_id)
-    assert (run.status, run.error) == (RunStatus.FAILED, NOT_STARTED)
+    assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.NOT_STARTED)
     with db.session() as s:
         errors = s.scalars(select(AgentSession.error).where(AgentSession.run_id == run_id)).all()
         assert all((e or '').startswith('HerdrError: prompt_lost') for e in errors), 'each start says why it failed'
@@ -1173,7 +1180,7 @@ def test_a_worktree_that_cannot_be_made_is_a_failed_start_that_frees_the_slot(
         assert all('Could not write new index file' in (w.error or '') for w in rows)
         assert s.scalars(select(Event.target_id).where(Event.kind == STARTUP_ANOMALY)).all() == [w.id for w in rows]
         run = s.get_one(Run, run_id)
-        assert (run.status, run.error, run.idea.status) == (RunStatus.FAILED, NOT_STARTED, IdeaStatus.PARKED)
+        assert (run.status, run.end, run.idea.status) == (RunStatus.FAILED, RunEnd.NOT_STARTED, IdeaStatus.PARKED)
 
 
 def test_a_run_that_fails_before_its_agent_starts_closes_its_implementer(
@@ -1252,7 +1259,7 @@ def test_a_cancel_made_while_the_implementer_starts_survives_a_failed_start(
     execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         run = s.get_one(Run, run_id)
-        assert (run.status, run.error, run.idea.status) == (RunStatus.FAILED, stop.CANCELLED_ERROR, IdeaStatus.PARKED)
+        assert (run.status, run.end, run.idea.status) == (RunStatus.FAILED, RunEnd.CANCELLED, IdeaStatus.PARKED)
         assert [w.state for w in s.scalars(select(AgentSession).where(AgentSession.run_id == run_id))] == [
             AgentSessionState.KILLED
         ]
@@ -1270,7 +1277,7 @@ def test_a_cancelled_run_whose_implementer_ends_by_itself_first_closes_as_cancel
     execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         run = s.get_one(Run, run_id)
-        assert (run.status, run.error, run.idea.status) == (RunStatus.FAILED, stop.CANCELLED_ERROR, IdeaStatus.PARKED)
+        assert (run.status, run.end, run.idea.status) == (RunStatus.FAILED, RunEnd.CANCELLED, IdeaStatus.PARKED)
         assert [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == run_id))] == [Verdict.KEEP]
 
 
@@ -1398,72 +1405,78 @@ def test_a_finding_without_a_commit_is_a_result(
 
 
 TIMEOUT = 'implementer timeout after 1s'
-STOPPED = 'stopped by the campaign stop'
 
 
 @pytest.mark.parametrize(
-    ('end', 'expected'),
+    ('facts', 'expected'),
     [
         # one case per case of run_outcome, in order
         pytest.param(
-            RunEnd(finding=True, asked=CommentId(7)),
-            (RunStatus.FAILED, f'{stop.BLOCKED} comment#7'),
-            id='finding-asked',
+            RunFacts(finding=True, asked=CommentId(7)), (RunEnd.AWAITING_ANSWER, 'comment#7'), id='finding-asked'
         ),
-        pytest.param(RunEnd(finding=True), (RunStatus.SUCCEEDED, None), id='finding'),
-        pytest.param(RunEnd(stop_error=STOPPED, commits=1), (RunStatus.FAILED, STOPPED), id='stop'),
-        pytest.param(RunEnd(cancelled=True), (RunStatus.FAILED, stop.CANCELLED_ERROR), id='cancel'),
-        pytest.param(RunEnd(timed_out=True, error=TIMEOUT), (RunStatus.TIMED_OUT, TIMEOUT), id='timeout'),
+        pytest.param(RunFacts(finding=True), (RunEnd.FINISHED, None), id='finding'),
+        pytest.param(RunFacts(cancelled=True), (RunEnd.CANCELLED, None), id='cancel'),
+        pytest.param(RunFacts(ended=True, commits=1), (RunEnd.CAMPAIGN_STOPPED, None), id='stop'),
+        pytest.param(RunFacts(timed_out=True, error=TIMEOUT), (RunEnd.TIMED_OUT, TIMEOUT), id='timeout'),
         pytest.param(
-            RunEnd(error='implementer exit 1', commits=1), (RunStatus.FAILED, 'implementer exit 1'), id='error'
+            RunFacts(error='implementer exit 1', commits=1), (RunEnd.FAILED, 'implementer exit 1'), id='error'
         ),
-        pytest.param(RunEnd(asked=CommentId(7)), (RunStatus.FAILED, f'{stop.BLOCKED} comment#7'), id='asked'),
-        pytest.param(RunEnd(), (RunStatus.FAILED, NO_CHANGES), id='nothing'),
-        pytest.param(RunEnd(commits=1, recovered_only=True), (RunStatus.FAILED, INTERRUPTED), id='recovered-only'),
-        pytest.param(RunEnd(commits=2), (RunStatus.SUCCEEDED, None), id='commits'),
+        pytest.param(RunFacts(asked=CommentId(7)), (RunEnd.AWAITING_ANSWER, 'comment#7'), id='asked'),
+        pytest.param(RunFacts(), (RunEnd.FAILED, NO_CHANGES), id='nothing'),
+        pytest.param(RunFacts(commits=1, recovered_only=True), (RunEnd.FAILED, INTERRUPTED), id='recovered-only'),
+        pytest.param(RunFacts(commits=2), (RunEnd.FINISHED, None), id='commits'),
         # the overlaps that fix the order: each pair of neighbouring rows, and the #116 cases
         pytest.param(
-            RunEnd(finding=True, asked=CommentId(7), timed_out=True, error=TIMEOUT),
-            (RunStatus.FAILED, f'{stop.BLOCKED} comment#7'),
+            RunFacts(finding=True, asked=CommentId(7), timed_out=True, error=TIMEOUT),
+            (RunEnd.AWAITING_ANSWER, 'comment#7'),
             id='finding-asked-timeout',
         ),
-        pytest.param(RunEnd(finding=True, stop_error=STOPPED), (RunStatus.SUCCEEDED, None), id='finding-stop'),
-        pytest.param(RunEnd(finding=True, cancelled=True), (RunStatus.SUCCEEDED, None), id='finding-cancel'),
+        pytest.param(RunFacts(finding=True, ended=True), (RunEnd.FINISHED, None), id='finding-stop'),
+        pytest.param(RunFacts(finding=True, cancelled=True), (RunEnd.FINISHED, None), id='finding-cancel'),
         pytest.param(
-            RunEnd(finding=True, timed_out=True, error=TIMEOUT, commits=1),
-            (RunStatus.SUCCEEDED, None),
+            RunFacts(finding=True, timed_out=True, error=TIMEOUT, commits=1),
+            (RunEnd.FINISHED, None),
             id='finding-timeout',
         ),
-        pytest.param(RunEnd(finding=True, error='implementer exit 1'), (RunStatus.SUCCEEDED, None), id='finding-error'),
+        pytest.param(RunFacts(finding=True, error='implementer exit 1'), (RunEnd.FINISHED, None), id='finding-error'),
         pytest.param(
-            RunEnd(finding=True, commits=1, recovered_only=True),
-            (RunStatus.SUCCEEDED, None),
+            RunFacts(finding=True, commits=1, recovered_only=True),
+            (RunEnd.FINISHED, None),
             id='finding-recovered-only',
         ),
-        pytest.param(RunEnd(stop_error=STOPPED, cancelled=True), (RunStatus.FAILED, STOPPED), id='stop-cancel'),
         pytest.param(
-            RunEnd(cancelled=True, timed_out=True, error=TIMEOUT),
-            (RunStatus.FAILED, stop.CANCELLED_ERROR),
+            RunFacts(ended=True, cancelled=True),
+            (RunEnd.CANCELLED, None),
+            id='cancel-stop',
+        ),
+        pytest.param(
+            RunFacts(ended=True, timed_out=True, error=TIMEOUT),
+            (RunEnd.CAMPAIGN_STOPPED, None),
+            id='stop-timeout',
+        ),
+        pytest.param(
+            RunFacts(cancelled=True, timed_out=True, error=TIMEOUT),
+            (RunEnd.CANCELLED, None),
             id='cancel-timeout',
         ),
-        pytest.param(RunEnd(cancelled=True, commits=1), (RunStatus.FAILED, stop.CANCELLED_ERROR), id='cancel-commits'),
+        pytest.param(RunFacts(cancelled=True, commits=1), (RunEnd.CANCELLED, None), id='cancel-commits'),
         pytest.param(
-            RunEnd(timed_out=True, error=TIMEOUT, asked=CommentId(7), commits=1),
-            (RunStatus.TIMED_OUT, TIMEOUT),
+            RunFacts(timed_out=True, error=TIMEOUT, asked=CommentId(7), commits=1),
+            (RunEnd.TIMED_OUT, TIMEOUT),
             id='timeout-asked',
         ),
         pytest.param(
-            RunEnd(error='implementer exit 1', asked=CommentId(7)),
-            (RunStatus.FAILED, 'implementer exit 1'),
+            RunFacts(error='implementer exit 1', asked=CommentId(7)),
+            (RunEnd.FAILED, 'implementer exit 1'),
             id='error-asked',
         ),
         pytest.param(
-            RunEnd(asked=CommentId(7), commits=1), (RunStatus.FAILED, f'{stop.BLOCKED} comment#7'), id='asked-commits'
+            RunFacts(asked=CommentId(7), commits=1), (RunEnd.AWAITING_ANSWER, 'comment#7'), id='asked-commits'
         ),
     ],
 )
-def test_how_a_run_ended_decides_its_status_by_the_first_row_that_holds(end: RunEnd, expected: RunOutcome) -> None:
-    assert run_outcome(end) == expected
+def test_how_a_run_ended_is_the_first_row_that_holds(facts: RunFacts, expected: tuple[RunEnd, str | None]) -> None:
+    assert run_outcome(facts) == expected
 
 
 @pytest.mark.parametrize('ended', [NotStarted('no server'), Lost('worker lost')], ids=['not-started', 'lost'])
@@ -1558,7 +1571,7 @@ def test_an_implementer_that_stops_on_its_open_escalation_is_blocked_and_its_ide
     with db.session() as s:
         escalation = s.scalars(select(Comment.id).where(Comment.kind == 'escalation')).one()
         run = s.get_one(Run, run_id)
-        assert (run.status, run.error) == (RunStatus.FAILED, f'{stop.BLOCKED} comment#{escalation}')
+        assert (run.status, run.end, run.error) == (RunStatus.FAILED, RunEnd.AWAITING_ANSWER, f'comment#{escalation}')
         assert s.get_one(Idea, idea_id).status is IdeaStatus.PARKED
         note = s.scalars(select(Comment).where(Comment.author == 'daemon', Comment.target_id == idea_id)).one()
         assert f'escalation comment#{escalation}' in note.body and 'set the idea ready' in note.body

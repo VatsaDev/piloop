@@ -7,6 +7,7 @@ timestamps or statuses. ``docs/reference/schema.mdx`` (the DDL) is generated fro
 import sys
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Final
 
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 from sqlalchemy import (
@@ -143,6 +144,46 @@ FAILED_RUNS = (RunStatus.FAILED, RunStatus.TIMED_OUT)
 FINISHED_RUNS = (RunStatus.SUCCEEDED, *FAILED_RUNS)
 
 
+class RunEnd(StrEnum):
+    """How a run ended. ``runs.error`` adds the detail, when there is one.
+
+    ``finished``: its implementer left its finding, or committed and exited cleanly. ``failed``: its process failed, it
+    made no commit, or only the daemon's commit of what it left uncommitted (the error says which). ``timed_out``: its
+    role's timeout. ``awaiting_answer``: its implementer's escalation waits for an answer (the error names it).
+    ``cancelled``: someone cancelled it. ``campaign_stopped``, ``daemon_stopped``, ``stale`` (a daemon died while it
+    ran) and ``worker_lost``: something else ended it. ``role_removed``: ``piloop init`` removed its role while it was
+    queued. ``not_started``: no agent of it started to work. Only the first four are attempts at the idea.
+    """
+
+    FINISHED = 'finished'
+    FAILED = 'failed'
+    TIMED_OUT = 'timed_out'
+    AWAITING_ANSWER = 'awaiting_answer'
+    CANCELLED = 'cancelled'
+    CAMPAIGN_STOPPED = 'campaign_stopped'
+    DAEMON_STOPPED = 'daemon_stopped'
+    STALE = 'stale'
+    ROLE_REMOVED = 'role_removed'
+    NOT_STARTED = 'not_started'
+    WORKER_LOST = 'worker_lost'
+
+    @property
+    def attempt(self) -> bool:
+        """Whether a run that ended so was an attempt at its idea: it counts toward ``max_runs`` and ``plateau``."""
+        return self in ATTEMPTS
+
+    @property
+    def status(self) -> RunStatus:
+        """The ``runs.status`` of a run that ended so."""
+        return END_STATUS.get(self, RunStatus.FAILED)
+
+
+ATTEMPTS: Final = frozenset({RunEnd.FINISHED, RunEnd.FAILED, RunEnd.TIMED_OUT, RunEnd.AWAITING_ANSWER})
+"""The ends of a run that tried its idea. The others say that the run was stopped, or that no agent started to work."""
+END_STATUS: Final = {RunEnd.FINISHED: RunStatus.SUCCEEDED, RunEnd.TIMED_OUT: RunStatus.TIMED_OUT}
+"""The status of a run by its end, where it is not ``failed``."""
+
+
 class Verdict(StrEnum):
     """The judgement on a candidate, made from its measurements against its bar (see https://piloop.autoresearch.inc/concepts/verdict).
 
@@ -237,6 +278,12 @@ def _values[E: StrEnum](enum: type[E]) -> Enum:
     )
 
 
+def _end_status() -> str:
+    """``runs.status`` as a SQL expression of ``runs.end`` (``RunEnd.status``), for the CHECK that keeps them together."""
+    cases = ' '.join(f"WHEN '{end}' THEN '{status}'" for end, status in END_STATUS.items())
+    return f'CASE "end" {cases} ELSE \'{RunStatus.FAILED}\' END'
+
+
 NOW = func.now()
 OPTIMIZATION = 'optimization'
 """The built-in campaign type: improve the code against its evaluate command, candidate by candidate."""
@@ -303,6 +350,7 @@ class Base(DeclarativeBase):
         IdeaStatus: _values(IdeaStatus),
         LinkKind: _values(LinkKind),
         RunStatus: _values(RunStatus),
+        RunEnd: _values(RunEnd),
         Verdict: _values(Verdict),
         TargetKind: _values(TargetKind),
         CommentKind: _values(CommentKind),
@@ -541,6 +589,11 @@ class Run(Tracked, Base):
             f'scoring = 0 OR status IN ({", ".join(repr(s.value) for s in FINISHED_RUNS)})',
             name='runs.scoring needs a finished status',
         ),
+        CheckConstraint(
+            f'("end" IS NULL) = (status IN ({", ".join(repr(s.value) for s in OPEN_RUNS)}))',
+            name='runs.end is set once a run is finished',
+        ),
+        CheckConstraint(f'"end" IS NULL OR status = {_end_status()}', name='runs.status follows from runs.end'),
     )
 
     id: Mapped[RunId] = mapped_column(primary_key=True)
@@ -567,7 +620,10 @@ class Run(Tracked, Base):
     """The exact prompt that the implementer got."""
     started_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]
+    end: Mapped[RunEnd | None]
+    """How the run ended. NULL while it is queued or running. ``status`` follows from it."""
     error: Mapped[str | None]
+    """The detail of the end, for a human: the process error, the escalation that waits, or why it failed."""
     log_dir: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 

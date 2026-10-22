@@ -29,12 +29,11 @@ from piloop.agents.results import STARTUP_ANOMALY
 from piloop.campaign import inbox
 from piloop.campaign.ideas import defined_by, links, runnable, superseded_by, yields
 from piloop.campaign.inbox import campaign_of
-from piloop.campaign.stop import attempt, blocked, held, hours, runs, runs_without_keep
+from piloop.campaign.stop import attempt, held, hours, runs, runs_without_keep
 from piloop.config import TRANSCRIPT, CampaignConfig, Metric, Track, harness_of
 from piloop.db.events import ANOMALY_EVENT
 from piloop.db.models import (
     ENDED,
-    FAILED_RUNS,
     FINISHED_RUNS,
     LIVE,
     OPEN_RUNS,
@@ -52,6 +51,7 @@ from piloop.db.models import (
     Measurement,
     Pause,
     Run,
+    RunEnd,
     Verdict,
     campaign_runs,
     count,
@@ -795,9 +795,9 @@ def _failed_runs(s: Session, campaign: Campaign) -> list[Anomaly]:
             AnomalyKind.RUN_FAILED,
             f'run#{run.id}',
             run.finished_at or run.created_at,
-            f'{run.status} on {run.harness} (idea#{run.idea_id}): {cell(run.error or "no error recorded", DETAIL_CHARS)}',
+            f'{run.end} on {run.harness} (idea#{run.idea_id}): {cell(run.error or "no error recorded", DETAIL_CHARS)}',
         )
-        for run in s.scalars(campaign_runs(campaign.id).where(Run.status.in_(FAILED_RUNS), attempt(), ~blocked()))
+        for run in s.scalars(campaign_runs(campaign.id).where(Run.end.in_((RunEnd.FAILED, RunEnd.TIMED_OUT))))
     ]
 
 

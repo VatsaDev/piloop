@@ -27,7 +27,17 @@ from piloop.campaign import campaigns as campaign_module
 from piloop.config import load_campaign_config
 from piloop.daemon.main import ACTOR
 from piloop.daemon.run_controller import RunController
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Measurement, Usage, Verdict
+from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
+    Campaign,
+    Candidate,
+    Measurement,
+    RunEnd,
+    RunStatus,
+    Usage,
+    Verdict,
+)
 from piloop.db.session import Database, migrate
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.ids import CampaignId
@@ -110,6 +120,19 @@ interactive = []
 def spent(total: int, turns: int = 1) -> Usage:
     """The usage of a test's agent that spent ``total`` tokens in ``turns`` turns."""
     return Usage(input=0, output=0, cache_read=0, cache_write=0, total=total, turns=turns, source='/x.jsonl')
+
+
+def end_of(status: RunStatus) -> RunEnd | None:
+    """The end of a test's run in ``status``: none while it is open, else the plain end of a run of that status."""
+    match status:
+        case RunStatus.QUEUED | RunStatus.RUNNING:
+            return None
+        case RunStatus.SUCCEEDED:
+            return RunEnd.FINISHED
+        case RunStatus.TIMED_OUT:
+            return RunEnd.TIMED_OUT
+        case RunStatus.FAILED:
+            return RunEnd.FAILED
 
 
 def write_script(path: Path, body: str) -> Path:

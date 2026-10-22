@@ -30,16 +30,7 @@ from piloop.agents.results import (
 )
 from piloop.agents.roles import compose_brief, role
 from piloop.campaign.campaigns import WORKSPACE, campaign_dir, worktree_links
-from piloop.campaign.stop import (
-    BLOCKED,
-    CAMPAIGN_STOPPED_ERROR,
-    CANCELLED_ERROR,
-    NOT_STARTED,
-    WORKER_LOST,
-    attempts,
-    park_cancelled,
-    run_cancel,
-)
+from piloop.campaign.stop import attempts, park_cancelled, run_cancel
 from piloop.config import TRANSCRIPT, CampaignConfig, Track, config_of
 from piloop.db.events import emit
 from piloop.db.models import (
@@ -56,6 +47,7 @@ from piloop.db.models import (
     IdeaStatus,
     Measurement,
     Run,
+    RunEnd,
     RunStatus,
     Verdict,
     utcnow,
@@ -262,8 +254,8 @@ class RunController:
                         .values(state=AgentSessionState.KILLED, ended_at=utcnow(), error=error)
                     )
                     s.commit()
-                self._close(span, run_id, RunStatus.FAILED, error)
-                self._settle(span, run_id, idea_id, RunStatus.FAILED, startup_failed=False, recovered=None)
+                self._close(span, run_id, RunEnd.FAILED, error)
+                self._settle(span, run_id, idea_id, RunEnd.FAILED, startup_failed=False, recovered=None)
 
     def _execute(self, run_id: RunId, agent_session_id: AgentSessionId, span: Span) -> None:
         with self.launcher.lock:
@@ -346,15 +338,15 @@ class RunController:
                 self._cut(span, run_id, idea_id, agent_session_id, cfg.name, repo, base_sha, head)
             case NotStarted() | Lost() if stopping:
                 self._cut(span, run_id, idea_id, agent_session_id, cfg.name, repo, base_sha, None)
-            case Lost():
-                self._close(span, run_id, RunStatus.FAILED, WORKER_LOST)
-                self._settle(span, run_id, idea_id, RunStatus.FAILED, startup_failed=False, recovered=None)
+            case Lost(reason=reason):
+                self._close(span, run_id, RunEnd.WORKER_LOST, reason)
+                self._settle(span, run_id, idea_id, RunEnd.WORKER_LOST, startup_failed=False, recovered=None)
             case NotStarted():
                 if not self._relaunch(span, run_id, agent_session_id, log_dir):
                     with self._db.session() as s:
-                        error = CANCELLED_ERROR if run_cancel(s, run_id) is not None else NOT_STARTED
-                    self._close(span, run_id, RunStatus.FAILED, error)
-                    self._settle(span, run_id, idea_id, RunStatus.FAILED, startup_failed=True, recovered=None)
+                        end = RunEnd.CANCELLED if run_cancel(s, run_id) is not None else RunEnd.NOT_STARTED
+                    self._close(span, run_id, end, None)
+                    self._settle(span, run_id, idea_id, end, startup_failed=True, recovered=None)
             case Ran():
                 self._ran(span, run_id, idea_id, campaign_id, agent_session_id, repo, base_sha, ended, log_dir)
             case _:
@@ -396,15 +388,15 @@ class RunController:
         with self._db.session() as s:
             asked = open_escalation(s, s.get_one(Run, run_id))
             stop_ended = s.scalar(
-                select(Event.payload).where(
+                select(Event.id).where(
                     Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id),
                     Event.kind == STOP_ENDED,
                 )
             )
             cancelled = run_cancel(s, run_id) is not None
-        end = RunEnd(
+        facts = RunFacts(
             finding=finding,
-            stop_error=None if stop_ended is None else str(stop_ended.get('error', CAMPAIGN_STOPPED_ERROR)),
+            ended=stop_ended is not None,
             cancelled=cancelled,
             timed_out=outcome.status is ExitStatus.TIMED_OUT,
             error=outcome.error,
@@ -412,12 +404,12 @@ class RunController:
             commits=len(shas),
             recovered_only=bool(shas) and all(repo.commit(sha).summary == UNCOMMITTED_SUMMARY for sha in shas),
         )
-        status, error = run_outcome(end)
-        self._close(span, run_id, status, error)
+        end, error = run_outcome(facts)
+        self._close(span, run_id, end, error)
         # Score all commits, even if the implementer then timed out or crashed.
         recovered = self._score(run_id, campaign_id, repo, shas, log_dir) if shas else None
         self._release(repo, agent_session_id, ended.head)
-        self._settle(span, run_id, idea_id, status, startup_failed=False, recovered=recovered)
+        self._settle(span, run_id, idea_id, end, startup_failed=False, recovered=recovered)
 
     def _relaunch(self, span: Span, run_id: RunId, agent_session_id: AgentSessionId, log_dir: Path) -> bool:
         """Queue the run again with a new implementer, up to ``STARTUP_RELAUNCHES`` times, after its implementer failed to start.
@@ -471,7 +463,7 @@ class RunController:
 
         What the agent left uncommitted was committed, and ``head`` pinned (``commits_of``).
 
-        The stop owns the rows. A run that the stop cut is not an attempt (``stop.NOT_ATTEMPTS``): its work is not
+        The stop owns the rows. A run that the stop cut is not an attempt (``RunEnd.attempt``): its work is not
         scored, and the note (``noted``) goes into the brief of the idea's next run, which can start from those
         commits. A run whose implementer had left its finding was handed off: the stop closed it as finished, and the next
         daemon scores the pinned commits (``resume``), so no note sends a new run to them.
@@ -516,7 +508,7 @@ class RunController:
             with self._db.session() as s:
                 run = s.get_one(Run, run_id)
                 campaign = run.idea.campaign
-                status, idea_id, campaign_id = run.status, run.idea_id, campaign.id
+                end, idea_id, campaign_id = run.end, run.idea_id, campaign.id
                 name, campaign_path = config_of(campaign).name, Path(campaign.path)
             recovered = None
             try:
@@ -526,8 +518,9 @@ class RunController:
                 recovered = self._score(run_id, campaign_id, repo, shas, self._runs_dir / str(run_id))
             except Exception as e:
                 span.error(e)
-                status = RunStatus.FAILED
-            self._settle(span, run_id, idea_id, status, startup_failed=False, recovered=recovered)
+                end = RunEnd.FAILED
+            assert end is not None  # a run whose commits are scored is closed
+            self._settle(span, run_id, idea_id, end, startup_failed=False, recovered=recovered)
 
     def remeasure(self, candidate_id: CandidateId) -> None:
         """Measure a candidate with the campaign's current evaluator. Its verdict does not change, unless it is a crash.
@@ -907,25 +900,23 @@ class RunController:
             return verdict, f'the head candidate#{trunk.id} is in its history: {reason}', None
         return Verdict.INTERESTING, MOVED.format(head=trunk.id) + reason, trunk
 
-    def _close(self, span: Span, run_id: RunId, status: RunStatus, error: str | None) -> None:
-        """Record the run's outcome when its implementer ends, so the slot is free while the commits are scored (``scoring``)."""
+    def _close(self, span: Span, run_id: RunId, end: RunEnd, error: str | None) -> None:
+        """Record the run's end when its implementer ends, so the slot is free while the commits are scored (``scoring``)."""
         with self.launcher.lock:
             if self.launcher.cancelled.is_set():  # stop() failed the row. Do not open it again.
                 span.set(status='cancelled')
                 return
             with self._db.session() as s:
-                run = s.get_one(Run, run_id)
-                run.status, run.error, run.finished_at, run.scoring = status, error, utcnow(), True
-                emit(s, 'run.finished', TargetKind.RUN, run_id, payload={'status': status, 'error': error})
+                close_run(s, s.get_one(Run, run_id), end, error).scoring = True
                 s.commit()
-        span.set(status=status, error=error)
+        span.set(status=end.status, end=end, error=error)
 
     def _settle(
         self,
         span: Span,
         run_id: RunId,
         idea_id: IdeaId,
-        status: RunStatus,
+        end: RunEnd,
         *,
         startup_failed: bool,
         recovered: CandidateId | None,
@@ -954,7 +945,7 @@ class RunController:
                 # a role that piloop init removed while the run ran requeues nothing
                 role = config_of(idea.campaign).roles.doing_runs().get(run.role)
                 if idea.status is IdeaStatus.SCHEDULED:  # A human may have parked or rejected it meanwhile.
-                    if run.error == CANCELLED_ERROR:
+                    if run.end is RunEnd.CANCELLED:
                         park_cancelled(s, run)
                     elif (asked := open_escalation(s, run)) is not None:
                         idea.status = IdeaStatus.PARKED
@@ -970,7 +961,7 @@ class RunController:
                         )
                     elif (
                         recovered is not None
-                        and status is not RunStatus.SUCCEEDED
+                        and end is not RunEnd.FINISHED
                         and role is not None
                         and _requeues(s, idea) < role.recovery_requeues
                     ):
@@ -982,7 +973,7 @@ class RunController:
                                 target=TargetRef(TargetKind.IDEA, idea.id),
                                 author=DAEMON_ACTOR,
                                 kind=CommentKind.NOTE,
-                                body=f'requeued from candidate#{recovered}: run#{run_id} ended {status} with work its'
+                                body=f'requeued from candidate#{recovered}: run#{run_id} ended {end} with work its'
                                 f' implementer never committed, recovered as candidate#{recovered}; the next run starts'
                                 ' from it to finish it',
                             )
@@ -998,7 +989,7 @@ class RunController:
                                 ' errors of its implementers, their anomaly.startup events), then set it ready',
                             )
                         )
-                    elif status is not RunStatus.SUCCEEDED and attempts(idea) < idea.max_runs:
+                    elif end is not RunEnd.FINISHED and attempts(idea) < idea.max_runs:
                         idea.status = IdeaStatus.READY
                     else:
                         idea.status = IdeaStatus.DONE
@@ -1118,13 +1109,13 @@ def left_finding(s: Session, run: Run, agent_session: AgentSession) -> bool:
 
 
 @dataclass(frozen=True)
-class RunEnd:
-    """The facts that decide a finished run's status (``run_outcome``), gathered when its implementer ends."""
+class RunFacts:
+    """The facts that decide how a run ended (``run_outcome``), gathered when its implementer ends."""
 
     finding: bool = False
     """The implementer left its own finding (``left_finding``): its report that it is done."""
-    stop_error: str | None = None
-    """The error of a stop that ended the implementer (``STOP_ENDED``)."""
+    ended: bool = False
+    """The daemon ended the implementer for a stop or a cancel (``STOP_ENDED``)."""
     cancelled: bool = False
     """Someone cancelled the run (``run_cancel``)."""
     timed_out: bool = False
@@ -1138,42 +1129,49 @@ class RunEnd:
     """There are commits, and each is the daemon's commit of uncommitted work (``UNCOMMITTED_SUMMARY``)."""
 
 
-type RunOutcome = tuple[RunStatus, str | None]
-
-
-def run_outcome(end: RunEnd) -> RunOutcome:
-    """Return the status and error of a run that ``end`` describes: the first case that matches, in priority order."""
-    match end:
+def run_outcome(facts: RunFacts) -> tuple[RunEnd, str | None]:
+    """Return how a run that ``facts`` describe ended, and the error that details it: the first case that matches."""
+    match facts:
         # A finding is the implementer's report that it is done; nothing that ends its process after it undoes that. But a
         # question it left open blocks the run, or a retry would stop on it and done would release the waiting ideas.
-        case RunEnd(finding=True, asked=int() as comment):
-            return RunStatus.FAILED, f'{BLOCKED} comment#{comment}'
-        case RunEnd(finding=True):
-            return RunStatus.SUCCEEDED, None
-        # A stop cut it, whatever the kill left in the outcome.
-        case RunEnd(stop_error=str() as error):
-            return RunStatus.FAILED, error
-        # A cancelled implementer that ended by itself before the daemon could end it.
-        case RunEnd(cancelled=True):
-            return RunStatus.FAILED, CANCELLED_ERROR
+        case RunFacts(finding=True, asked=int() as comment):
+            return RunEnd.AWAITING_ANSWER, f'comment#{comment}'
+        case RunFacts(finding=True):
+            return RunEnd.FINISHED, None
+        # A cancel, whether the daemon ended the implementer or it ended by itself first.
+        case RunFacts(cancelled=True):
+            return RunEnd.CANCELLED, None
+        # A stop ended it, whatever the kill left in the outcome.
+        case RunFacts(ended=True):
+            return RunEnd.CAMPAIGN_STOPPED, None
         # It ran into its role's timeout.
-        case RunEnd(timed_out=True, error=error):
-            return RunStatus.TIMED_OUT, error
+        case RunFacts(timed_out=True, error=error):
+            return RunEnd.TIMED_OUT, error
         # Its process failed.
-        case RunEnd(error=str() as error):
-            return RunStatus.FAILED, error
+        case RunFacts(error=str() as error):
+            return RunEnd.FAILED, error
         # Its question is in the inbox. A commit does not make this a success.
-        case RunEnd(asked=int() as comment):
-            return RunStatus.FAILED, f'{BLOCKED} comment#{comment}'
+        case RunFacts(asked=int() as comment):
+            return RunEnd.AWAITING_ANSWER, f'comment#{comment}'
         # No commit and no finding: nothing was tried.
-        case RunEnd(commits=0):
-            return RunStatus.FAILED, NO_CHANGES
+        case RunFacts(commits=0):
+            return RunEnd.FAILED, NO_CHANGES
         # Only what the implementer left uncommitted: it did not finish.
-        case RunEnd(recovered_only=True):
-            return RunStatus.FAILED, INTERRUPTED
+        case RunFacts(recovered_only=True):
+            return RunEnd.FAILED, INTERRUPTED
         # It committed and ended cleanly.
         case _:
-            return RunStatus.SUCCEEDED, None
+            return RunEnd.FINISHED, None
+
+
+def close_run(s: Session, run: Run, end: RunEnd, error: str | None) -> Run:
+    """Close ``run`` as ``end``: its status, end, error and finish time, and the ``run.finished`` event. The caller commits.
+
+    Every writer of a run's end goes through here.
+    """
+    run.status, run.end, run.error, run.finished_at = end.status, end, error, utcnow()
+    emit(s, 'run.finished', TargetKind.RUN, run.id, payload={'status': run.status, 'end': end, 'error': error})
+    return run
 
 
 def open_escalation(s: Session, run: Run) -> CommentId | None:

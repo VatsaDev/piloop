@@ -40,6 +40,7 @@ from piloop.db.session import Database
 from piloop.ids import IMPLEMENTER, WATCHDOG, AgentSessionId, CampaignId, IdeaId, RoleName
 from piloop.store import Store, hash_file, key
 from piloop.store.tree import Removed, Stored, Walk
+from tests.conftest import end_of
 
 LIVE = frozenset({'NOTES.md', 'research'})
 
@@ -66,6 +67,7 @@ def add_run(
             harness='script',
             model='m',
             status=status,
+            end=end_of(status),
             finished_at=finished,
         )
         s.add(run)

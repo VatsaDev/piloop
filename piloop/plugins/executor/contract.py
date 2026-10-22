@@ -259,7 +259,7 @@ class Results(Protocol):
     def lost(self, key: JobKey, reason: str, *, guard: Guard | None = None) -> None:
         """Nothing came back from a job. Raises ``Settled``.
 
-        An agent's run fails as ``worker lost``, and an evaluation waits again for a slot of the queue.
+        An agent's run ends ``worker_lost``, and an evaluation waits again for a slot of the queue.
         """
         ...
 

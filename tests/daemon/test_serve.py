@@ -18,7 +18,6 @@ from alembic import command
 from sqlalchemy import select
 
 from piloop import proc
-from piloop.agents.results import STOPPED_ERROR
 from piloop.daemon.serve import (
     SERVE_ARGV,
     SecretsError,
@@ -30,7 +29,7 @@ from piloop.daemon.serve import (
     secrets,
     service_unit,
 )
-from piloop.db.models import AgentSession, AgentSessionState, Idea, Run, RunStatus
+from piloop.db.models import AgentSession, AgentSessionState, Idea, Run, RunEnd, RunStatus
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.plugins.runtime.contract import TAG_ENV
@@ -118,9 +117,9 @@ def test_sigterm_kills_implementers_and_exits(campaign_path: Path, tmp_path: Pat
         assert proc.started(int(str(handle['pid']))) is None and proc.started(child_pid) is None
         with db.session() as s:
             run = s.get_one(Run, 1)
-            assert (run.status, run.error) == (RunStatus.FAILED, STOPPED_ERROR)
+            assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.DAEMON_STOPPED)
             assert [(w.state, w.error) for w in s.scalars(select(AgentSession))] == [
-                (AgentSessionState.KILLED, STOPPED_ERROR)
+                (AgentSessionState.KILLED, RunEnd.DAEMON_STOPPED)
             ]
         assert not cfg.pid_file.exists()
         assert 'piloop.shutdown' in (tmp_path / 'daemon.log').read_text()

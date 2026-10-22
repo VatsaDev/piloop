@@ -70,7 +70,7 @@ class Launcher:
         self.executor = executor
         self.cancelled = threading.Event()
         """Set when the daemon stops. No job is submitted after it, and the results that come in then close their rows
-        as stopped (``STOPPED_ERROR``)."""
+        as stopped (``RunEnd.DAEMON_STOPPED``)."""
         self.lock = threading.Lock()
         """Held from the ``cancelled`` check to the job's submit, and by ``cancel``.
 

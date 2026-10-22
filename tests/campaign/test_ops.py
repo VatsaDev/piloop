@@ -36,6 +36,7 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TrackName
 from piloop.scoring.ledger import DAEMON, REJUDGE_FAILED, REJUDGE_REQUESTED, head, rejudges
+from tests.conftest import end_of
 
 ACTOR = System.ORCHESTRATOR
 
@@ -70,7 +71,18 @@ def run_idea(db: Database, status: IdeaStatus, run: RunStatus, *, scoring: bool 
     """An idea in ``status`` with one run in ``run``: a status set by hand while the run is open, or scored."""
     idea_id = add_idea(db, CampaignId(1), f'{status} with a {run} run {scoring}', status)
     with db.session() as s:
-        s.add(Run(idea_id=idea_id, attempt=1, base_candidate_id=1, harness='h', model='m', status=run, scoring=scoring))
+        s.add(
+            Run(
+                idea_id=idea_id,
+                attempt=1,
+                base_candidate_id=1,
+                harness='h',
+                model='m',
+                status=run,
+                end=end_of(run),
+                scoring=scoring,
+            )
+        )
         s.commit()
     return idea_id
 

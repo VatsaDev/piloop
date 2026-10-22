@@ -50,14 +50,16 @@ stateDiagram-v2
     queued --> failed: the campaign or the daemon stopped
 ```
 
-A run that the daemon stopped is not counted as an attempt. Its idea goes back to `ready`. A run whose implementer had
+`runs.end` says how a finished run ended, and `runs.error` gives the detail. Only `finished`, `failed`, `timed_out`
+and `awaiting_answer` are attempts at the idea: a run that the daemon, a stop or a cancel ended is not. Its idea goes
+back to `ready`. A run whose implementer had
 left its finding before the stop is not stopped: it is finished. The stop closes it as `succeeded`, its idea stays
 `scheduled`, and the next daemon scores its commits and settles the idea. The same holds when such an implementer times
 out, because a job of its own keeps the run open, or exits with an error: the run `succeeded`, the idea is `done`,
 and the agent session row keeps the error.
 
-An implementer that stops while its own escalation waits for an answer ends its run `failed`, with an error that starts with
-`blocked on escalation`. Its idea is `parked` until someone answers and sets it `ready`.
+An implementer that stops while its own escalation waits for an answer ends its run `awaiting_answer`, and the error
+names the escalation. Its idea is `parked` until someone answers and sets it `ready`.
 
 ## Agent
 

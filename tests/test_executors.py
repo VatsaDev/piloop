@@ -13,11 +13,11 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, select
 
-from piloop.agents.results import STOPPED_ERROR, DaemonStopped, Ended, Ran
+from piloop.agents.results import DaemonStopped, Ended, Ran
 from piloop.cli import common, evaluation
 from piloop.daemon.main import Daemon
 from piloop.daemon.run_controller import RunController
-from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Candidate, Measurement
+from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Candidate, Measurement, RunEnd
 from piloop.db.session import Database
 from piloop.ids import WATCHDOG, AgentSessionId
 from piloop.otel import Tracer
@@ -131,7 +131,7 @@ def test_a_stop_closes_a_running_agent_as_stopped(
     assert ended[0] == DaemonStopped()
     with db.session() as s:
         w = s.get_one(AgentSession, agent_session_id)
-        assert (w.state, w.error) == (AgentSessionState.KILLED, STOPPED_ERROR)
+        assert (w.state, w.error) == (AgentSessionState.KILLED, RunEnd.DAEMON_STOPPED)
 
 
 def wait_for_agent_session_handle_of(db: Database, agent_session_id: AgentSessionId) -> None:

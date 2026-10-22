@@ -224,6 +224,7 @@ CREATE TABLE runs (
 	brief VARCHAR,
 	started_at DATETIME,
 	finished_at DATETIME,
+	"end" VARCHAR(16),
 	error VARCHAR,
 	log_dir VARCHAR,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -232,8 +233,11 @@ CREATE TABLE runs (
 	PRIMARY KEY (id),
 	UNIQUE (idea_id, attempt),
 	CONSTRAINT "runs.scoring needs a finished status" CHECK (scoring = 0 OR status IN ('succeeded', 'failed', 'timed_out')),
+	CONSTRAINT "runs.end is set once a run is finished" CHECK (("end" IS NULL) = (status IN ('queued', 'running'))),
+	CONSTRAINT "runs.status follows from runs.end" CHECK ("end" IS NULL OR status = CASE "end" WHEN 'finished' THEN 'succeeded' WHEN 'timed_out' THEN 'timed_out' ELSE 'failed' END),
 	FOREIGN KEY(idea_id) REFERENCES ideas (id) ON DELETE CASCADE,
-	CONSTRAINT runstatus CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'timed_out'))
+	CONSTRAINT runstatus CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'timed_out')),
+	CONSTRAINT runend CHECK ("end" IN ('finished', 'failed', 'timed_out', 'awaiting_answer', 'cancelled', 'campaign_stopped', 'daemon_stopped', 'stale', 'role_removed', 'not_started', 'worker_lost'))
 );
 CREATE INDEX ix_runs_status ON runs (status);
 CREATE TABLE agent_sessions (

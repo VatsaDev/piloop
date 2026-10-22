@@ -10,7 +10,7 @@ its worker in ``piloop serve``; remote workers take leases through the same oper
   ``lease.stale_report`` event on the job's row, with what it brought back.
 - The **grace period** (``Timing.grace``, 50 s) is the silence after which a worker is unreachable: its leases are
   marked so, and it gets no new lease until it is heard again. After the **toleration** (``Timing.toleration``,
-  300 s) its leases **expire**: a run fails as ``worker lost``, which is not an attempt, and an evaluation is queued
+  300 s) its leases **expire**: a run ends ``worker_lost``, which is not an attempt, and an evaluation is queued
   again on a new lease. A worker that hears nothing for that long, less two heartbeats, stops its own jobs first, so a
   job never runs twice.
 

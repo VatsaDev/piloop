@@ -28,6 +28,9 @@ piloop idea status 12 parked --reason 'waits for idea#9, see comment#31'
 - A **campaign** is a git repo with a `piloop.toml`.
 - **Ideas** are things worth trying. When an idea is `ready`, the scheduler creates a **run**: one attempt, on one
   harness and model. It starts an **implementer** process in a fresh git worktree at the run's base **candidate**.
+  `runs.end` says how a finished run ended, and `runs.error` gives the detail. Only `finished`, `failed`, `timed_out`
+  and `awaiting_answer` count as attempts: `cancelled`, `campaign_stopped`, `daemon_stopped`, `stale`, `worker_lost`,
+  `role_removed` and `not_started` say that something else ended the run.
 - **Idea links** (`idea_links`) relate ideas of one campaign:
   - `after`: the idea waits for its prerequisites. It stays `ready` but is not taken until all of them are `done`. Then
     it starts from the head, which has what they kept.

@@ -15,11 +15,8 @@ from piloop_stop_after_keeps import AFTER_KEEPS
 from sqlalchemy import func, select
 
 from piloop.actor import Agent, System
-from piloop.agents.results import STOPPED_ERROR
 from piloop.campaign.ops import pause
 from piloop.campaign.stop import (
-    CAMPAIGN_STOPPED_ERROR,
-    STALE_ERROR,
     check as check_campaign,
     hours,
     request_stop,
@@ -44,6 +41,7 @@ from piloop.db.models import (
     IdeaStatus,
     Measurement,
     Run,
+    RunEnd,
     RunStatus,
     Verdict,
     utcnow,
@@ -64,6 +62,7 @@ from tests.conftest import (
     HARNESS_NOOP,
     HARNESS_WORSE,
     ScriptRuntime,
+    end_of,
     example,
     span_named,
     spent,
@@ -99,6 +98,7 @@ def add_run(
     started_at: timedelta = timedelta(0),
     finished_at: timedelta = timedelta(0),
     keep_score: float | None = None,
+    end: RunEnd | None = None,
     error: str | None = None,
     measured: bool = True,
 ) -> RunId:
@@ -127,6 +127,7 @@ def add_run(
             harness='h',
             model='m',
             status=status,
+            end=end or end_of(status),
             error=error,
             started_at=utcnow() - started_at,
             finished_at=None if in_flight else utcnow() - finished_at,
@@ -244,7 +245,8 @@ def test_a_campaign_that_max_runs_stopped_shows_all_its_runs_in_the_progress_lin
     )
     with db.session() as s:
         run = s.get_one(Run, in_flight)
-        run.status, run.error, run.finished_at = RunStatus.FAILED, 'implementer produced no commits', utcnow()
+        run.status, run.end, run.error = RunStatus.FAILED, RunEnd.FAILED, 'implementer produced no commits'
+        run.finished_at = utcnow()
         s.commit()
     assert (reason(db, campaign), progress_line(db, campaign, cfg)) == (None, 'run 1/2'), 'a run without a commit'
     add_run(db, campaign)
@@ -474,8 +476,8 @@ def test_the_stall_mark_is_half_the_plateau_else_two_rounds_of_the_implementer_s
 
 def test_runs_that_the_daemon_stopped_count_toward_no_budget(db: Database, campaign: Campaign) -> None:
     configure(db, campaign, plateau=1, max_runs=2)
-    for error in (STOPPED_ERROR, STALE_ERROR, CAMPAIGN_STOPPED_ERROR):
-        add_run(db, campaign, status=RunStatus.FAILED, error=error)
+    for end in (RunEnd.DAEMON_STOPPED, RunEnd.STALE, RunEnd.CAMPAIGN_STOPPED):
+        add_run(db, campaign, status=RunStatus.FAILED, end=end)
     assert reason(db, campaign) is None, 'a stop, a crash or a campaign stop is not an attempt'
     add_run(db, campaign, status=RunStatus.FAILED, error='evaluate timed out')
     assert reason(db, campaign) == 'plateau: 1 runs without a keep'
@@ -519,15 +521,15 @@ def test_stopping_drains_the_requests_and_queued_runs_pending_at_that_moment(
     sched.wait(10)
     with db.session() as s:
         assert [(w.kind, w.state, w.error, w.ended_at is not None) for w in s.scalars(select(AgentSession))] == [
-            (IMPLEMENTER, AgentSessionState.KILLED, CAMPAIGN_STOPPED_ERROR, True),
-            (RESEARCH, AgentSessionState.KILLED, CAMPAIGN_STOPPED_ERROR, True),
+            (IMPLEMENTER, AgentSessionState.KILLED, RunEnd.CAMPAIGN_STOPPED, True),
+            (RESEARCH, AgentSessionState.KILLED, RunEnd.CAMPAIGN_STOPPED, True),
             (WATCHDOG, AgentSessionState.EXITED, None, True),
         ]
         run = s.get_one(Run, 2)
-        assert (run.status, run.error, run.finished_at is not None) == (RunStatus.FAILED, CAMPAIGN_STOPPED_ERROR, True)
+        assert (run.status, run.end, run.finished_at is not None) == (RunStatus.FAILED, RunEnd.CAMPAIGN_STOPPED, True)
         assert s.get_one(Idea, idea).status is IdeaStatus.READY
         [event] = s.scalars(select(Event).where(Event.kind == 'run.finished')).all()
-        assert (event.target_id, event.payload) == (2, {'status': 'failed', 'error': CAMPAIGN_STOPPED_ERROR})
+        assert (event.target_id, event.payload) == (2, {'status': 'failed', 'end': 'campaign_stopped', 'error': None})
         s.add(AgentSession(kind=RESEARCH, campaign_id=campaign.id, reason='by hand, after the stop'))
         s.commit()
     assert sched.tick() == [4], 'a request made after the stop is explicit and launches'
@@ -558,7 +560,7 @@ def test_a_requested_stop_ends_the_campaign_as_a_stop_condition_does(
     sched.wait(10)
     assert campaign_state(db, campaign) == (CampaignStatus.STOPPED, 'stopped by human: machine needed')
     with db.session() as s:
-        assert (s.get_one(Run, 2).error, s.get_one(Idea, idea).status) == (CAMPAIGN_STOPPED_ERROR, IdeaStatus.READY)
+        assert (s.get_one(Run, 2).end, s.get_one(Idea, idea).status) == (RunEnd.CAMPAIGN_STOPPED, IdeaStatus.READY)
         assert s.get_one(AgentSession, 2).reason == 'campaign stopped: stopped by human: machine needed'
         s.get_one(Campaign, campaign.id).status = CampaignStatus.ACTIVE
         s.commit()
@@ -616,7 +618,7 @@ def test_a_requested_stop_ends_a_held_campaign_and_by_default_its_closing_review
     assert sched.tick() == [1], 'only the closing review launches'
     assert campaign_state(db, campaign) == (CampaignStatus.STOPPED, 'stopped by human: over budget')
     with db.session() as s:
-        assert (s.get_one(Run, 1).error, s.get_one(Idea, idea).status) == (CAMPAIGN_STOPPED_ERROR, IdeaStatus.READY)
+        assert (s.get_one(Run, 1).end, s.get_one(Idea, idea).status) == (RunEnd.CAMPAIGN_STOPPED, IdeaStatus.READY)
     sched.wait(10)
     sched.stop(timeout=5)
 

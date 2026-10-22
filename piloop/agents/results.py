@@ -19,7 +19,17 @@ from piloop import deprecated
 from piloop.actor import Agent
 from piloop.config import harness_of
 from piloop.db.events import emit
-from piloop.db.models import LIVE, AgentSession, AgentSessionState, Comment, Evaluation, Event, Measurement, utcnow
+from piloop.db.models import (
+    LIVE,
+    AgentSession,
+    AgentSessionState,
+    Comment,
+    Evaluation,
+    Event,
+    Measurement,
+    RunEnd,
+    utcnow,
+)
 from piloop.db.session import Database, write_transaction
 from piloop.ids import AgentSessionId, CandidateId, EvaluatorId, MeasurementId, RunId, TargetKind, TargetRef
 from piloop.otel import Tracer
@@ -40,7 +50,6 @@ from piloop.plugins.runtime.contract import AgentExit, ExitStatus
 from piloop.scoring.evaluate import EvalResult
 from piloop.scoring.ledger import save_units
 
-STOPPED_ERROR = 'daemon stopped'
 STARTUP_SECONDS = 120
 """An agent that ends sooner than this and leaves nothing did not start to work: a dialog, a crash, broken tools.
 
@@ -60,8 +69,8 @@ STOP_ENDED = 'agent_session.stop_ended'
 An implementer of a stopped campaign is ended when the grace period after its wrap-up prompt is over, or at once for a stop
 that kills. An implementer in the middle of a turn takes a message only when the turn ends, so it may never have read the
 prompt. The scheduler sets the row ``ending`` and commits it with the event before the kill, so a finding that the
-agent writes after it is refused. The run closes with the ``error`` (``CAMPAIGN_STOPPED_ERROR`` or ``CANCELLED_ERROR``)
-unless its implementer left its finding before."""
+agent writes after it is refused. The run ends ``campaign_stopped`` or ``cancelled`` unless its implementer left its
+finding before."""
 ASKED_TO_END = (WRAP_UP, STOP_ENDED)
 """Events on an agent that the daemon told to stop or ended. Such an agent never counts as a failed start."""
 ENDED_EVENT = 'agent_session.job_ended'
@@ -199,7 +208,7 @@ class CampaignResults:
 
         The anomaly only when the agent did not start to work (``NotStarted``): its job did not start, or it ended
         within ``STARTUP_SECONDS`` and left nothing (``_never_worked``), unless the daemon told it to stop or ended it.
-        While the daemon stops, the row closes as killed by the stop (``STOPPED_ERROR``), with the usage that was read.
+        While the daemon stops, the row closes as killed by the stop (``RunEnd.DAEMON_STOPPED``), with the usage that was read.
         """
         w = _open(s, AgentKey(job.agent_session))
         w.ended_at = utcnow()
@@ -243,7 +252,7 @@ class CampaignResults:
 
     @staticmethod
     def _stopped(s: Session, w: AgentSession, head: str | None) -> None:
-        w.state, w.error = AgentSessionState.KILLED, STOPPED_ERROR
+        w.state, w.error = AgentSessionState.KILLED, RunEnd.DAEMON_STOPPED
         _ended(s, w.id, DaemonStopped(head))
 
     def _measured(self, s: Session, job: EvaluationJob, report: EvaluationReport) -> None:

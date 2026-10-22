@@ -137,17 +137,24 @@ def _ideas(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
 
 
 def _runs(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
-    statuses = ['succeeded'] * 70 + ['failed'] * 18 + ['timed_out'] * 8 + ['running'] * 3 + ['queued'] * 1
+    ends = (
+        [('succeeded', 'finished')] * 70
+        + [('failed', 'failed')] * 12
+        + [('failed', 'cancelled'), ('failed', 'campaign_stopped'), ('failed', 'daemon_stopped')] * 2
+        + [('timed_out', 'timed_out')] * 8
+        + [('running', None)] * 3
+        + [('queued', None)]
+    )
     rows = []
     for r in range(1, v.runs + 1):
         idea = (r - 1) % v.ideas + 1
         attempt = (r - 1) // v.ideas + 1
-        st = rng.choice(statuses)
-        finished = None if st in ('running', 'queued') else f'2026-01-{1 + r % 28:02d} 12:00:00'
-        rows.append((r, idea, attempt, _campaign_of(idea, v), 'pi', 'm', st, finished))
+        st, end = rng.choice(ends)
+        finished = None if end is None else f'2026-01-{1 + r % 28:02d} 12:00:00'
+        rows.append((r, idea, attempt, _campaign_of(idea, v), 'pi', 'm', st, end, finished))
     con.executemany(
-        'INSERT INTO runs (id, idea_id, attempt, base_candidate_id, harness, model, status, finished_at)'
-        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO runs (id, idea_id, attempt, base_candidate_id, harness, model, status, "end", finished_at)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         rows,
     )
 

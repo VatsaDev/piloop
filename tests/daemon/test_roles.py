@@ -12,7 +12,6 @@ import pytest
 from piloop_dir_store import Dir
 from sqlalchemy import select
 
-from piloop.campaign.stop import ROLE_REMOVED
 from piloop.cli import common, main as cli
 from piloop.cli.plugins import selections
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
@@ -30,6 +29,7 @@ from piloop.db.models import (
     IdeaStatus,
     Measurement,
     Run,
+    RunEnd,
     RunStatus,
     Verdict,
     utcnow,
@@ -296,7 +296,7 @@ def test_a_queued_run_of_a_role_that_piloop_toml_no_longer_has_fails_and_its_ide
     assert sched.tick() == []
     with db.session() as s:
         run, agent_session, idea = s.get_one(Run, 1), s.get_one(AgentSession, 1), s.get_one(Idea, cheap)
-        assert (run.status, run.error) == (RunStatus.FAILED, ROLE_REMOVED)
+        assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.ROLE_REMOVED)
         assert (agent_session.state, agent_session.error) == (
             AgentSessionState.KILLED,
             'no [roles.quick] in piloop.toml',

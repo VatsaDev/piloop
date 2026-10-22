@@ -25,7 +25,7 @@ from pytest_mock import MockerFixture
 from sqlalchemy import delete, func, select
 
 from piloop.agents.launcher import AGENT_REFS
-from piloop.campaign.stop import STALE_ERROR, WORKER_LOST, attempts
+from piloop.campaign.stop import attempts
 from piloop.daemon.run_controller import RunController
 from piloop.daemon.serve import SERVE_ARGV
 from piloop.db.models import (
@@ -41,6 +41,7 @@ from piloop.db.models import (
     LeaseState,
     Measurement,
     Run,
+    RunEnd,
     RunStatus,
 )
 from piloop.db.session import Database
@@ -187,7 +188,7 @@ def test_a_worker_killed_during_a_run_loses_its_lease_and_the_run_is_no_attempt(
     expire_until(ex, db, 1, LeaseState.EXPIRED)
     thread.join(30)
     run = run_row(db, run_id)
-    assert (run.status, run.error) == (RunStatus.FAILED, WORKER_LOST)
+    assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.WORKER_LOST)
     with db.session() as s:
         idea = s.get_one(Idea, run.idea_id)
         assert (idea.status, attempts(idea)) == (IdeaStatus.READY, 0), 'a fault of the host, not an attempt'
@@ -254,7 +255,7 @@ def test_a_late_report_of_a_frozen_worker_is_refused_and_kept_as_a_stale_report(
     report = payload['report']
     assert isinstance(report, dict) and report['head'] is not None
     run = run_row(db, run_id)
-    assert (run.status, run.error) == (RunStatus.FAILED, WORKER_LOST), 'the late report changed nothing'
+    assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.WORKER_LOST), 'the late report changed nothing'
     with db.session() as s:
         assert s.scalars(select(Candidate).where(Candidate.run_id == run_id)).all() == []
     repo_ref = subprocess.run(
@@ -353,7 +354,7 @@ def test_a_partitioned_worker_stops_its_job_before_its_lease_expires_and_its_rep
 
     wait_until(stale)
     run = run_row(db, run_id)
-    assert (run.status, run.error) == (RunStatus.FAILED, WORKER_LOST)
+    assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.WORKER_LOST)
 
 
 def test_a_daemon_killed_during_a_run_keeps_the_lease_and_the_next_daemon_finishes_the_run(
@@ -508,9 +509,9 @@ def test_a_running_agent_without_a_lease_or_a_worktree_is_not_adopted_and_fails_
     make_scheduler(db, runtime, tmp_path).reap()
     with db.session() as s:
         assert s.scalars(select(Lease)).all() == [], 'its worktree is gone: nothing to adopt'
-        assert (s.get_one(AgentSession, 1).state, s.get_one(Run, run_id).error) == (
+        assert (s.get_one(AgentSession, 1).state, s.get_one(Run, run_id).end) == (
             AgentSessionState.KILLED,
-            STALE_ERROR,
+            RunEnd.STALE,
         )
 
 

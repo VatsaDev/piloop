@@ -8,8 +8,7 @@ from git import Repo
 from inline_snapshot import snapshot
 from sqlalchemy.orm import Session
 
-from piloop.agents.results import STARTUP_ANOMALY, STOPPED_ERROR
-from piloop.campaign.stop import BLOCKED
+from piloop.agents.results import STARTUP_ANOMALY
 from piloop.config import CampaignConfig, load_campaign_config
 from piloop.db.models import (
     AgentSession,
@@ -26,6 +25,7 @@ from piloop.db.models import (
     LinkKind,
     Measurement,
     Run,
+    RunEnd,
     RunStatus,
     Verdict,
 )
@@ -33,7 +33,7 @@ from piloop.db.session import Database
 from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, RoleName, RunId, TargetKind, TargetRef
 from piloop.reports import overview as overview_module
 from piloop.reports.overview import AnomalyKind, anomalies, overview
-from tests.conftest import spent
+from tests.conftest import end_of, spent
 from tests.runtime.test_herdr import Response, calls, scripted
 
 T = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
@@ -74,6 +74,7 @@ def run(s: Session, i: Idea, status: RunStatus, base: int, start: float, end: fl
         harness='script',
         model='m',
         status=status,
+        end=end_of(status),
         created_at=at(start),
         started_at=at(start),
         finished_at=at(end) if end is not None else None,
@@ -289,7 +290,7 @@ def test_no_anomaly_reads_none(db: Database, campaign: Campaign) -> None:
 def test_the_idle_queue_counts_from_the_last_run_and_names_pending_research(db: Database, campaign: Campaign) -> None:
     live_campaign(db, campaign)
     with db.session() as s:
-        s.get_one(Run, 3).status = RunStatus.SUCCEEDED
+        s.get_one(Run, 3).status, s.get_one(Run, 3).end = RunStatus.SUCCEEDED, RunEnd.FINISHED
         s.get_one(Run, 3).finished_at = at(70)
         s.add(AgentSession(kind=RESEARCH, campaign_id=campaign.id, started_at=at(100)))
         s.commit()
@@ -315,7 +316,7 @@ def test_a_run_that_the_daemon_stopped_is_not_a_failed_run(db: Database, campaig
     live_campaign(db, campaign)
     with db.session() as s:
         run = s.get_one(Run, 3)
-        run.status, run.error, run.finished_at = RunStatus.FAILED, STOPPED_ERROR, at(70)
+        run.status, run.end, run.finished_at = RunStatus.FAILED, RunEnd.DAEMON_STOPPED, at(70)
         s.commit()
         assert f'run#{run.id}' not in {a.ref for a in found(s, campaign) if a.kind is AnomalyKind.RUN_FAILED}
 
@@ -325,7 +326,7 @@ def test_a_run_blocked_on_its_implementers_escalation_is_not_a_failed_run(db: Da
     live_campaign(db, campaign)
     with db.session() as s:
         run = s.get_one(Run, 3)
-        run.status, run.error, run.finished_at = RunStatus.FAILED, f'{BLOCKED} comment#9', at(70)
+        run.status, run.end, run.error, run.finished_at = RunStatus.FAILED, RunEnd.AWAITING_ANSWER, 'comment#9', at(70)
         s.commit()
         assert f'run#{run.id}' not in {a.ref for a in found(s, campaign) if a.kind is AnomalyKind.RUN_FAILED}
 

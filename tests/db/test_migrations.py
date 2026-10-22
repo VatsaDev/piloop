@@ -1146,3 +1146,54 @@ def test_0020_makes_each_live_agent_that_the_daemon_ended_ending_and_downgrades(
         ]
         with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: agentsessionstate'):
             con.execute("UPDATE agent_sessions SET state = 'ending' WHERE id = 1")
+
+
+def test_0021_gives_every_finished_run_its_end_from_its_status_and_error_and_downgrades(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0020')
+    rows = [
+        ('queued', None, None),
+        ('running', None, None),
+        ('succeeded', None, 'finished'),
+        ('timed_out', 'agent timeout after 60s', 'timed_out'),
+        ('failed', 'daemon stopped', 'daemon_stopped'),
+        ('failed', 'daemon exited while the run was in progress', 'stale'),
+        ('failed', 'campaign stopped', 'campaign_stopped'),
+        ('failed', 'its role is no longer in piloop.toml', 'role_removed'),
+        ('failed', 'no agent of the run started to work', 'not_started'),
+        ('failed', 'cancelled', 'cancelled'),
+        ('failed', 'worker lost', 'worker_lost'),
+        ('failed', 'blocked on escalation comment#7', 'awaiting_answer'),
+        ('failed', 'implementer produced no commits', 'failed'),
+        ('failed', None, 'failed'),
+    ]
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
+        con.execute(
+            "INSERT INTO ideas (campaign_id, title, hypothesis, track, created_by) VALUES (1, 'i', 'h', 't', 'h')"
+        )
+        for attempt, (status, error, _) in enumerate(rows, start=1):
+            con.execute(
+                'INSERT INTO runs (idea_id, attempt, base_candidate_id, harness, model, status, error)'
+                " VALUES (1, ?, 1, 'pi', 'm', ?, ?)",
+                (attempt, status, error),
+            )
+        before = con.execute('SELECT id, updated_at FROM runs ORDER BY id').fetchall()
+    command.upgrade(cfg, '0021')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT status, error, "end" FROM runs ORDER BY id').fetchall() == rows, (
+            'error keeps its text'
+        )
+        assert con.execute('SELECT id, updated_at FROM runs ORDER BY id').fetchall() == before, 'no run was updated'
+        with pytest.raises(sqlite3.IntegrityError, match='runs.end is set once a run is finished'):
+            con.execute("UPDATE runs SET status = 'failed' WHERE id = 1")
+        with pytest.raises(sqlite3.IntegrityError, match='runs.status follows from runs.end'):
+            con.execute("UPDATE runs SET status = 'succeeded' WHERE id = 5")
+        with pytest.raises(sqlite3.IntegrityError, match='runend'):
+            con.execute('UPDATE runs SET "end" = \'gone\' WHERE id = 5')
+        triggers = "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'runs'"
+        assert {t for (t,) in con.execute(triggers)} == {t.name for t in PERSISTENT if t.table == 'runs'}
+    command.downgrade(cfg, '0020')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT status, error FROM runs ORDER BY id').fetchall() == [(s, e) for s, e, _ in rows]

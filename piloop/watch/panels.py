@@ -272,7 +272,8 @@ class IdeasPanel:
             body += ['', 'plan:', *idea.plan.strip().splitlines()]
         body += ['', f'runs ({len(idea.runs)}):']
         body += [
-            f'- run#{r.id} {r.status} {r.harness}/{r.model}{f": {cell(r.error)}" if r.error else ""}' for r in idea.runs
+            f'- run#{r.id} {r.end or r.status} {r.harness}/{r.model}{f": {cell(r.error)}" if r.error else ""}'
+            for r in idea.runs
         ]
         body += ['', f'comments ({len(comments)}):']
         body += [f'- comment#{c.id} {c.kind} by {c.author}: {cell(c.body)}' for c in comments]

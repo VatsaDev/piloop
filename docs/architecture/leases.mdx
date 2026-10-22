@@ -43,7 +43,7 @@ twice.
 
 | What happens | What piloop does |
 |---|---|
-| A worker dies during a run | The run fails as `worker lost`. It is not an attempt. |
+| A worker dies during a run | The run ends `worker_lost`. It is not an attempt. |
 | A worker dies during an evaluation | The evaluation is queued again. Partial output is never scored. |
 | A late report | It is refused, and kept as a `lease.stale_report` event with the ref of its commits. |
 | The same report twice | The second gets the first's answer. |

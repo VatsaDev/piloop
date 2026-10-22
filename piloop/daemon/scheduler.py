@@ -35,7 +35,7 @@ from piloop.actor import Agent
 from piloop.agents import scout
 from piloop.agents.launcher import rotate
 from piloop.agents.refill import usage_of
-from piloop.agents.results import STARTUP_ANOMALY, STOP_ENDED, STOPPED_ERROR, WRAP_UP
+from piloop.agents.results import STARTUP_ANOMALY, STOP_ENDED, WRAP_UP
 from piloop.agents.roles import compose_brief, role_of
 from piloop.campaign import spend
 from piloop.campaign.campaigns import WORKSPACE, campaign_dir, workspace_dir, worktree_links
@@ -43,11 +43,7 @@ from piloop.campaign.ideas import defined_by, runnable, supersede, waiting
 from piloop.campaign.memory import sync_documents
 from piloop.campaign.spend import SpendError
 from piloop.campaign.stop import (
-    CAMPAIGN_STOPPED_ERROR,
     CANCEL_REQUESTED,
-    CANCELLED_ERROR,
-    ROLE_REMOVED,
-    STALE_ERROR,
     agent_cancel,
     asked,
     attempts,
@@ -61,7 +57,15 @@ from piloop.campaign.stop import (
 )
 from piloop.config import CampaignConfig, ClosingReview, Spend, config_of
 from piloop.daemon.archiver import Archiver, Archiving
-from piloop.daemon.run_controller import RunController, RunEnd, commits_of, left_finding, open_escalation, run_outcome
+from piloop.daemon.run_controller import (
+    RunController,
+    RunFacts,
+    close_run,
+    commits_of,
+    left_finding,
+    open_escalation,
+    run_outcome,
+)
 from piloop.db.events import ANOMALY_EVENT, emit
 from piloop.db.models import (
     LIVE,
@@ -79,6 +83,7 @@ from piloop.db.models import (
     IdeaStatus,
     Pause,
     Run,
+    RunEnd,
     RunStatus,
     Usage,
     campaign_runs,
@@ -178,7 +183,7 @@ class Scheduler:
 
         The executor takes over what it can find: ``workers`` gives every live lease a full period, so nothing is queued
         again only because of the restart, and its worker re-attaches to each agent that still has its worktree, and
-        reports the rest gone, which fails their runs as ``worker lost``, not as attempts. For each agent it adopts,
+        reports the rest gone, which ends their runs ``worker_lost``, not as attempts. For each agent it adopts,
         the daemon waits for its end as if no daemon had stopped (``RunController.reattach``, or ``_reattach_sweep`` for
         a sweep). Both an in-place restart (``hand_over``) and a crash leave agents for this. An agent that it does not
         adopt is killed, and its row and its run fail. A closed run whose commits were not all scored
@@ -198,7 +203,7 @@ class Scheduler:
             adopted = [
                 job.key.agent_session for job in left if isinstance(job.key, AgentKey) and job.key not in refused
             ]
-            self._fail_open(STALE_ERROR, reaped=True, sparing=adopted)
+            self._fail_open(RunEnd.STALE, reaped=True, sparing=adopted)
             for agent_session_id in adopted:
                 run_id = runs[agent_session_id]
                 self._tracer.event('agent_session.reattached', agent_session=agent_session_id, run=run_id)
@@ -249,8 +254,8 @@ class Scheduler:
         artifact = Checkout(path=cwd) if checkout else GitTree(repo=Path(campaign.path), commit=head, links=links)
         return self._controller.launcher.left(s, w, artifact, cwd, None)
 
-    def _fail_open(self, error: str, *, reaped: bool, sparing: Collection[AgentSessionId] = ()) -> None:
-        """Fail each run in flight and queue its idea again. Close each live agent except ``sparing``.
+    def _fail_open(self, end: RunEnd, *, reaped: bool, sparing: Collection[AgentSessionId] = ()) -> None:
+        """End each run in flight as ``end`` and queue its idea again. Close each live agent except ``sparing``.
 
         Requested implementers and their queued runs are not changed, because they are requests, not processes. An idea
         that is ``scheduled`` without an open run stays so. Its run finished and only its scoring stopped, which
@@ -267,7 +272,7 @@ class Scheduler:
             kept = select(AgentSession.run_id).where(spared, AgentSession.run_id.is_not(None))
             in_flight = (Run.status == RunStatus.RUNNING) & Run.id.not_in(kept)
             for run in s.scalars(select(Run).where(in_flight | Run.id.in_(launched))).all():
-                self._fail_run(s, run, error)
+                self._fail_run(s, run, end)
                 if reaped:
                     self._remove_worktrees(self._runs_dir / str(run.id), Path(run.idea.campaign.path))
             for agent_session in s.scalars(select(AgentSession).where(AgentSession.state.in_(LIVE), ~spared)):
@@ -277,13 +282,13 @@ class Scheduler:
                 if reaped and agent_session.run_id is None and agent_session.campaign_id is not None:
                     campaign_path = Path(s.get_one(Campaign, agent_session.campaign_id).path)
                     self._remove_worktrees(self._agent_sessions_dir / str(agent_session.id), campaign_path)
-                self._close(s, agent_session, error)
+                self._close(s, agent_session, end)
             s.commit()
 
-    def _fail_run(self, s: Session, run: Run, error: str) -> None:
-        """Fail ``run`` and return its idea to the queue, unless a human parked or rejected it meanwhile.
+    def _fail_run(self, s: Session, run: Run, end: RunEnd) -> None:
+        """End ``run`` as ``end`` and return its idea to the queue, unless a human parked or rejected it meanwhile.
 
-        A run that the daemon stopped (``stop.NOT_ATTEMPTS``) is not an attempt, so its idea always goes back to
+        A run that the daemon stopped (``RunEnd.attempt``) is not an attempt, so its idea always goes back to
         ``ready``. A running run whose implementer left its finding is not failed: it is handed off (``_hand_off``).
         """
         agent_session = s.scalars(
@@ -292,14 +297,13 @@ class Scheduler:
         if run.status is RunStatus.RUNNING and agent_session is not None and left_finding(s, run, agent_session):
             self._hand_off(s, run)
             return
-        run.status, run.error, run.finished_at = RunStatus.FAILED, error, utcnow()
-        emit(s, 'run.finished', TargetKind.RUN, run.id, payload={'status': run.status, 'error': error})
+        close_run(s, run, end, None)
         idea = run.idea
-        if idea.status is IdeaStatus.SCHEDULED and error == CANCELLED_ERROR:
+        if idea.status is IdeaStatus.SCHEDULED and end is RunEnd.CANCELLED:
             park_cancelled(s, run)
         elif idea.status is IdeaStatus.SCHEDULED:
             idea.status = IdeaStatus.READY if attempts(idea) < idea.max_runs else IdeaStatus.DONE
-        self._tracer.event('run.aborted', run=run.id, error=error)
+        self._tracer.event('run.aborted', run=run.id, end=end)
 
     def _hand_off(self, s: Session, run: Run) -> None:
         """Close a run whose implementer left its finding as finished, and leave its commits to be scored on the next start.
@@ -309,10 +313,9 @@ class Scheduler:
         (``RunController._keep_cut_work``), and ``reap`` scores them and settles the idea (``runs.scoring``). Its status is
         what the run's end would give (``run_outcome``).
         """
-        status, error = run_outcome(RunEnd(finding=True, asked=open_escalation(s, run)))
-        run.status, run.error, run.finished_at, run.scoring = status, error, utcnow(), True
-        emit(s, 'run.finished', TargetKind.RUN, run.id, payload={'status': status, 'error': error})
-        self._tracer.event('run.handed_off', run=run.id, status=status)
+        end, error = run_outcome(RunFacts(finding=True, asked=open_escalation(s, run)))
+        close_run(s, run, end, error).scoring = True
+        self._tracer.event('run.handed_off', run=run.id, end=end)
 
     def _close(self, s: Session, agent_session: AgentSession, error: str) -> None:
         """Close an agent session row that the launcher does not close (after a stop or a reap), and read its usage.
@@ -582,11 +585,11 @@ class Scheduler:
         (``STOP_GRACE_SECONDS``), or at once when the stop request asked to ``kill``. The runs then close and their
         commits are scored. An implementer in the middle of a turn takes the prompt only when the turn ends, which can be
         after the grace period. An implementer that the daemon ends (``STOP_ENDED``) without its finding closes its run as
-        cut by the stop (``CAMPAIGN_STOPPED_ERROR``), not as a failed attempt. Sweeps of a stopped campaign are not
+        cut by the stop (``RunEnd.CAMPAIGN_STOPPED``), not as a failed attempt. Sweeps of a stopped campaign are not
         changed, because their timeouts limit them and the closing review is one of them.
 
         A cancelled run or agent of any role (``agent_cancel``) is ended at once, or after the wrap-up prompt and the
-        grace period when the cancel asked for it. Its run closes with ``CANCELLED_ERROR``. A cancelled request never
+        grace period when the cancel asked for it. Its run ends ``RunEnd.CANCELLED``. A cancelled request never
         starts, and its queued run fails. Both park the run's idea. A starting agent is left for a later tick, once it
         runs; if its start fails, the run is not launched again (``RunController._relaunch``).
         """
@@ -614,18 +617,18 @@ class Scheduler:
             ).all()
             for agent_session in agent_sessions:
                 if (cancel := agent_cancel(s, agent_session)) is not None:
-                    reason, error = f'cancelled by {cancel.actor}', CANCELLED_ERROR
+                    reason, end = f'cancelled by {cancel.actor}', RunEnd.CANCELLED
                     what = 'Your run was cancelled' if agent_session.run_id is not None else 'This sweep was cancelled'
                     cause, wrap_up = f'by {cancel.actor}', bool(cancel.payload.get('wrap_up'))
                 else:
                     campaign = s.get_one(Campaign, agent_session.campaign_id)
-                    reason, error = campaign.stopped_reason or CAMPAIGN_STOPPED_ERROR, CAMPAIGN_STOPPED_ERROR
+                    reason, end = campaign.stopped_reason or 'campaign stopped', RunEnd.CAMPAIGN_STOPPED
                     what, cause, request = 'The campaign stopped', reason, requested_stop(s, campaign)
                     wrap_up = request is None or not request.payload.get('kill')
                 if agent_session.state is AgentSessionState.REQUESTED:
-                    self._close(s, agent_session, error)
+                    self._close(s, agent_session, end)
                     if agent_session.run_id is not None:
-                        self._fail_run(s, s.get_one(Run, agent_session.run_id), error)
+                        self._fail_run(s, s.get_one(Run, agent_session.run_id), end)
                     continue
                 told = s.scalar(
                     select(Event.at).where(
@@ -634,12 +637,12 @@ class Scheduler:
                     )
                 )
                 if not wrap_up or agent_session.state is AgentSessionState.ENDING:
-                    self._end(s, agent_session, reason, error)
+                    self._end(s, agent_session, reason, end)
                 elif told is None:
                     text = WRAP_UP_PROMPT.format(what=what, cause=cause, minutes=STOP_GRACE_SECONDS / 60)
                     self._wrap_up(s, agent_session, reason, text)
                 elif utcnow() - told >= timedelta(seconds=STOP_GRACE_SECONDS):
-                    self._end(s, agent_session, reason, error)
+                    self._end(s, agent_session, reason, end)
             s.commit()
 
     def _wrap_up(self, s: Session, agent_session: AgentSession, reason: str, text: str) -> None:
@@ -652,7 +655,7 @@ class Scheduler:
         emit(s, WRAP_UP, TargetKind.AGENT_SESSION, agent_session.id, payload=payload)
         self._tracer.event(WRAP_UP, agent_session=agent_session.id, **{k: str(v) for k, v in payload.items()})
 
-    def _end(self, s: Session, agent_session: AgentSession, reason: str, error: str) -> None:
+    def _end(self, s: Session, agent_session: AgentSession, reason: str, end: RunEnd) -> None:
         """Kill a wound-down agent, once ``ending``: its executor stops it, and it reports.
 
         The row is ``ending``, with ``STOP_ENDED``, in a commit before the first kill. SQLite has one writer at a time,
@@ -660,7 +663,7 @@ class Scheduler:
         """
         if agent_session.state is not AgentSessionState.ENDING:
             agent_session.state = AgentSessionState.ENDING
-            emit(s, STOP_ENDED, TargetKind.AGENT_SESSION, agent_session.id, payload={'reason': reason, 'error': error})
+            emit(s, STOP_ENDED, TargetKind.AGENT_SESSION, agent_session.id, payload={'reason': reason, 'end': end})
             self._tracer.event('agent_session.ended', agent_session=agent_session.id, reason=reason)
         # before the kill: the run that the kill ends reads it when it closes, and the executor writes in a session of
         # its own, which waits for this one's write lock
@@ -676,7 +679,7 @@ class Scheduler:
         = "skip"`` then requests no closing review and posts an escalation instead.
 
         Triggers requested everything that is pending when the campaign stops, so it is all cancelled. Requested rows
-        are closed and queued runs fail with ``CAMPAIGN_STOPPED_ERROR``. Their ideas go back to ``ready``. The
+        are closed and queued runs end ``RunEnd.CAMPAIGN_STOPPED``. Their ideas go back to ``ready``. The
         ``[memory]`` documents are synced, so that the closing sweep can search the campaign's reports. Then the
         ``stopped`` triggers fire once (``Trigger.ON_STOP``): by default, the watchdog's closing review. A stopped
         campaign gets nothing more from the triggers. Rows that a human inserts after the stop still launch. Implementers in
@@ -707,13 +710,13 @@ class Scheduler:
     def _drain(self, s: Session, campaign: Campaign) -> None:
         mine = Idea.campaign_id == campaign.id
         for run in s.scalars(select(Run).join(Idea).where(mine, Run.status == RunStatus.QUEUED)):
-            self._fail_run(s, run, CAMPAIGN_STOPPED_ERROR)
+            self._fail_run(s, run, RunEnd.CAMPAIGN_STOPPED)
         for agent_session in s.scalars(
             select(AgentSession).where(
                 AgentSession.campaign_id == campaign.id, AgentSession.state == AgentSessionState.REQUESTED
             )
         ):
-            self._close(s, agent_session, CAMPAIGN_STOPPED_ERROR)
+            self._close(s, agent_session, RunEnd.CAMPAIGN_STOPPED)
 
     def _request(
         self,
@@ -1059,7 +1062,7 @@ class Scheduler:
         A sweep's harness is chosen here. A harness at its cap (``_full``) is skipped for the next one in the rotation.
         A sweep pinned to that harness stays requested. A run's harness was chosen when it was queued (``_reroute``).
         A request for a role that ``piloop.toml`` no longer has is refused, and its queued run fails
-        (``ROLE_REMOVED``), so that its idea goes back to the queue.
+        (``RunEnd.ROLE_REMOVED``), so that its idea goes back to the queue.
 
         Returns ``(agent_session_id, run_id)`` pairs. The run is what an implementer executes. Nothing is taken while the startup
         breaker holds (``_paused``).
@@ -1076,7 +1079,7 @@ class Scheduler:
         for agent_session in s.scalars(unknown):
             self._close(s, agent_session, f'no [roles.{agent_session.kind}] in piloop.toml')
             if agent_session.run_id is not None:
-                self._fail_run(s, s.get_one(Run, agent_session.run_id), ROLE_REMOVED)
+                self._fail_run(s, s.get_one(Run, agent_session.run_id), RunEnd.ROLE_REMOVED)
         full = self._full(s, campaign, cfg)
         for kind, rc in roles.items():
             mine = (AgentSession.campaign_id == campaign.id, AgentSession.kind == kind)
@@ -1371,7 +1374,7 @@ class Scheduler:
         self._stop.set()
         self._controller.stop(timeout)
         self.wait(timeout)
-        self._fail_open(STOPPED_ERROR, reaped=False)
+        self._fail_open(RunEnd.DAEMON_STOPPED, reaped=False)
         wait(self._archiving(), timeout=timeout)
         self._pool.shutdown(wait=False, cancel_futures=True)
 

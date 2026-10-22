@@ -16,6 +16,7 @@ from piloop.db.models import (
     LinkKind,
     Measurement,
     Run,
+    RunEnd,
     RunStatus,
     Verdict,
 )
@@ -70,7 +71,7 @@ def scored(
 ) -> Candidate:
     """Add one run of ``row`` from candidate ``base`` with one measured candidate per outcome. Return the last."""
     run = Run(idea=row, attempt=len(row.runs) + 1, base_candidate_id=base, harness='h', model='m')
-    run.status = RunStatus.SUCCEEDED
+    run.status, run.end = RunStatus.SUCCEEDED, RunEnd.FINISHED
     s.add(run)
     s.flush()
     usage = None if tokens is None else spent(tokens, 3)

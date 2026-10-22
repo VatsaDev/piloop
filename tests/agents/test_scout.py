@@ -21,6 +21,7 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Run,
+    RunEnd,
     RunStatus,
     Technique,
     Verdict,
@@ -148,7 +149,13 @@ def developed_seed(db: Database, campaign: Campaign, title: str, pointers: str, 
         s.commit()
         if kept:
             run = Run(
-                idea_id=idea.id, attempt=1, base_candidate_id=1, harness='h', model='m', status=RunStatus.SUCCEEDED
+                idea_id=idea.id,
+                attempt=1,
+                base_candidate_id=1,
+                harness='h',
+                model='m',
+                status=RunStatus.SUCCEEDED,
+                end=RunEnd.FINISHED,
             )
             s.add(run)
             s.flush()

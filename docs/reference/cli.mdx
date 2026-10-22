@@ -86,7 +86,7 @@ piloop stop [--timeout SECONDS]
 ```
 
 Sends SIGTERM to the daemon and waits up to `--timeout` seconds (default 30) for it to exit. The daemon stops the
-running agents, and their runs fail with `daemon stopped`. Their ideas go back to `ready`. A run whose implementer already
+running agents, and their runs end `daemon_stopped`. Their ideas go back to `ready`. A run whose implementer already
 left its finding is finished, not stopped: the next `piloop serve` scores its commits, and its idea does not run
 again. The campaigns stay active, and the next `piloop serve` continues them. A campaign ends only at its `[stop]`
 limits.

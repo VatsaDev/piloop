@@ -148,6 +148,25 @@ Each use shows a `PiloopDeprecationWarning` with the file, the line, the new key
 one. The [changelog](https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md) lists every deprecation, and
 [Deprecated keys and variables](#deprecated-keys-and-variables) lists those of 0.2.0.
 
+## Upgrading to 0.3.0
+
+### How a run ended
+
+`runs.end` says how a run ended, and `runs.error` only gives the detail. A new run no longer writes the texts below
+into `error`. The upgrade gives every old run its `end` and keeps its `error`. A query that compares `error` to one
+of these texts does not fail, but it finds only old runs: compare `end` instead.
+
+| Before 0.3.0 | Since 0.3.0 |
+|---|---|
+| `error = 'cancelled'` | `end = 'cancelled'` |
+| `error = 'campaign stopped'` | `end = 'campaign_stopped'` |
+| `error = 'daemon stopped'` | `end = 'daemon_stopped'` |
+| `error = 'daemon exited while the run was in progress'` | `end = 'stale'` |
+| `error = 'worker lost'` | `end = 'worker_lost'` |
+| `error = 'its role is no longer in piloop.toml'` | `end = 'role_removed'` |
+| `error = 'no agent of the run started to work'` | `end = 'not_started'` |
+| `error LIKE 'blocked on escalation%'` | `end = 'awaiting_answer'` |
+
 ## Upgrading to 0.2.0
 
 Read this before you upgrade from 0.1.0.

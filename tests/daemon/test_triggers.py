@@ -28,6 +28,7 @@ from piloop.db.models import (
     LinkKind,
     Measurement,
     Run,
+    RunEnd,
     RunStatus,
     Verdict,
     utcnow,
@@ -36,7 +37,7 @@ from piloop.db.session import Database
 from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, AgentSessionId, IdeaId, RunId
 from piloop.otel import Tracer
 from piloop.reports.overview import ANOMALY_EVENT, anomalies
-from tests.conftest import HARNESS_NOOP, HARNESS_PROMPT_TO_FILE, ScriptRuntime, factory, wait_until, write_toml
+from tests.conftest import HARNESS_NOOP, HARNESS_PROMPT_TO_FILE, ScriptRuntime, end_of, factory, wait_until, write_toml
 
 BLOCKING = '#!/bin/sh\nwhile [ ! -f {release} ]; do sleep 0.05; done\n'
 
@@ -85,6 +86,7 @@ def fail_a_run(db: Database, campaign: Campaign, title: str, status: RunStatus =
             harness='h',
             model='m',
             status=status,
+            end=end_of(status),
             finished_at=utcnow(),
         )
         s.add(run)
@@ -490,7 +492,7 @@ def test_a_killed_sweep_s_seeds_are_retried_once_and_a_new_seed_waits_for_a_free
 def finish(db: Database, run_id: RunId) -> None:
     with db.session() as s:
         run = s.get_one(Run, run_id)
-        run.status, run.finished_at = RunStatus.SUCCEEDED, utcnow()
+        run.status, run.end, run.finished_at = RunStatus.SUCCEEDED, RunEnd.FINISHED, utcnow()
         s.commit()
 
 

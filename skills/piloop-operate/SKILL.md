@@ -227,8 +227,8 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
   `runtime = "herdr"`.
 - A comment on the campaign reaches no implementer. When a decision changes the work of a running implementer, write it on its
   run, not on the campaign.
-- An implementer asks for what it cannot do itself with an escalation. When its run ends before the answer, the run fails as
-  `blocked on escalation` and its idea is parked. Answer with a `decision` on the idea, then set it `ready`.
+- An implementer asks for what it cannot do itself with an escalation. When its run ends before the answer, the run ends
+  `awaiting_answer` and its idea is parked. Answer with a `decision` on the idea, then set it `ready`.
 
 ### Cancel a run, stop a campaign
 
@@ -310,7 +310,7 @@ writer gave it a priority.
 
 1. **Read** the thread and the target.
    - `piloop inbox show <id>`.
-   - For a run: `SELECT status, error, log_dir FROM runs WHERE id = <t>`, and the end of `<log_dir>/transcript.txt`.
+   - For a run: `SELECT status, end, error, log_dir FROM runs WHERE id = <t>`, and the end of `<log_dir>/transcript.txt`.
    - With `entire` installed: `SELECT checkpoint_id FROM agent_sessions WHERE run_id = <t>`, then
      `entire checkpoint explain <checkpoint_id>` for the agent's own session.
    - Verify before you build on a theory: the agent's own transcript, `ps`, a new query. Do not guess the mechanism.

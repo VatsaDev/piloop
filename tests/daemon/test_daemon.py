@@ -11,7 +11,6 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.exc import OperationalError
 
 from piloop.actor import System
-from piloop.agents.results import STOPPED_ERROR
 from piloop.config import load_campaign_config
 from piloop.daemon.main import ACTOR, Daemon
 from piloop.daemon.serve import RESTART_SIGNAL, SERVE_ARGV
@@ -23,6 +22,7 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Run,
+    RunEnd,
     RunStatus,
     Verdict,
 )
@@ -367,10 +367,10 @@ def test_shutdown_fails_open_runs(tmp_path: Path, capsys: pytest.CaptureFixture[
     daemon.shutdown(timeout=1)
     after = Database(daemon.db.engine.url.render_as_string(hide_password=False), actor=System.HUMAN)
     with after.session() as s:
-        assert (s.get_one(Run, 1).status, s.get_one(Run, 1).error) == (RunStatus.FAILED, STOPPED_ERROR)
+        assert (s.get_one(Run, 1).status, s.get_one(Run, 1).end) == (RunStatus.FAILED, RunEnd.DAEMON_STOPPED)
         [request] = s.scalars(select(AgentSession)).all()
         assert request.state is AgentSessionState.REQUESTED, 'a request survives a restart'
     after.close()
     assert console_lines(capsys.readouterr().err) == snapshot(
-        ['run.aborted run=1 error=daemon stopped', 'piloop.shutdown Ns']
+        ['run.aborted run=1 end=daemon_stopped', 'piloop.shutdown Ns']
     )

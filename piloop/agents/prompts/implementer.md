@@ -80,7 +80,7 @@ A `note` is a log entry. It goes to no inbox, and nobody acts on it. Never ask f
 - The escalation goes to the inbox of the orchestrator and the human. Its answer is a `decision` on your idea.
 - Do not wait in a loop for the answer. Work on what does not need it. If you cannot go on without it, commit what you
   have, leave your finding and stop.
-- A run that ends while its escalation waits for an answer is blocked, not finished. Its idea is parked until someone
+- A run that ends while its escalation waits for an answer ends `awaiting_answer`, not `finished`. Its idea is parked until someone
   answers. The next run of the idea reads the answer in its brief.
 
 ## Earlier candidates

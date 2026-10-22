@@ -36,6 +36,7 @@ from piloop.db.models import (
     IdeaStatus,
     Measurement,
     Run,
+    RunEnd,
     RunStatus,
     Verdict,
     utcnow,
@@ -113,6 +114,7 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Campaign:
             harness='pi',
             model='m',
             status=RunStatus.SUCCEEDED,
+            end=RunEnd.FINISHED,
             started_at=ago(hours=2),
             finished_at=ago(hours=1),
         )
