@@ -33,6 +33,7 @@
         "pages": [
           "architecture/overview",
           "architecture/run-lifecycle",
+          "architecture/leases",
           "architecture/data-model",
           "architecture/state-machines",
           "architecture/code-layout",

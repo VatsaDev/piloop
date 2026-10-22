@@ -1,4 +1,4 @@
-"""Assemble and run the daemon: the database, the run executor and the scheduler."""
+"""Assemble and run the daemon: the database, the run controller and the scheduler."""
 
 import os
 import signal
@@ -8,7 +8,7 @@ from types import FrameType
 from piloop.actor import System
 from piloop.agents.capture import MIN_ENTIRE, AttachError, entire_version, usable
 from piloop.daemon.archiver import ArchivePolicy, Archiving
-from piloop.daemon.run_executor import RunExecutor
+from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
 from piloop.daemon.serve import (
     RESTART_SIGNAL,
@@ -67,11 +67,20 @@ def preflight(cfg: Settings) -> None:
     """
     plugins.compose(*bound(cfg))
     home = cfg.model_dump(mode='json')
-    for capability in bound(cfg):
-        try:
+    try:
+        plugins.check_plugins(home['plugins'], 'home')
+        for capability in bound(cfg):
             plugins.check_selection(capability, home, 'home')
-        except ValueError as e:
-            raise plugins.PluginError(f'{cfg.home / CONFIG_FILE}: {e}') from e
+    except ValueError as e:
+        raise plugins.PluginError(f'{cfg.home / CONFIG_FILE}: {e}') from e
+
+
+def _entire() -> str | AttachError:
+    """What ``entire version`` prints on this machine, or why it cannot be run."""
+    try:
+        return entire_version()
+    except AttachError as e:
+        return e
 
 
 class Daemon:
@@ -99,10 +108,17 @@ class Daemon:
             self.db.close()
             raise
         self.tracer = tracer()
-        self.executor = RunExecutor(self.db, self.tracer, cfg.home, max_evaluations=cfg.max_evaluations)
+        self._entire = _entire()
+        self.controller = RunController(
+            self.db,
+            self.tracer,
+            cfg.home,
+            executor=cfg.plugins.get('executor'),
+            entire_version=self._entire if isinstance(self._entire, str) else None,
+        )
         self.scheduler = Scheduler(
             self.db,
-            self.executor,
+            self.controller,
             self.tracer,
             cfg.home,
             archiving=Archiving(open_store(cfg), ArchivePolicy.of(cfg.storage)),
@@ -172,12 +188,10 @@ class Daemon:
 
     def _check_entire(self, span: Span) -> None:
         """Record Entire's version on the start span, or an event that says why no session will be attached."""
-        try:
-            version = entire_version()
-        except AttachError as e:
-            span.event('entire.missing', error=str(e))
+        version = self._entire
+        if isinstance(version, AttachError):
+            span.event('entire.missing', error=str(version))
             return
-        self.executor.launcher.entire_version = version
         if not usable(version):
             span.event('entire.too_old', version=version, min=MIN_ENTIRE)
             return
@@ -195,6 +209,7 @@ class Daemon:
         """Stop the scheduler and flush traces. An in-place restart hands the agents over. Any other stop kills them."""
         with self.tracer.span('piloop.shutdown'):
             (self.scheduler.hand_over if self._restart else self.scheduler.stop)(timeout)
+        self.controller.close()
         self.tracer.shutdown()
         self.db.close()
         plugins.close()

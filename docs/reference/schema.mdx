@@ -306,6 +306,35 @@ CREATE TABLE evaluations (
 	FOREIGN KEY(candidate_id) REFERENCES candidates (id) ON DELETE CASCADE,
 	FOREIGN KEY(evaluator_id) REFERENCES evaluators (id)
 );
+CREATE TABLE leases (
+	id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+	kind VARCHAR(16) NOT NULL,
+	agent_session_id INTEGER,
+	evaluation_id INTEGER,
+	state VARCHAR(16) DEFAULT 'queued' NOT NULL,
+	worker VARCHAR,
+	job JSON DEFAULT '{}' NOT NULL,
+	handle JSON DEFAULT '{}' NOT NULL,
+	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	acquired_at DATETIME,
+	started_at DATETIME,
+	renewed_at DATETIME,
+	expires_at DATETIME,
+	unreachable_at DATETIME,
+	revoked_at DATETIME,
+	ended_at DATETIME,
+	request_id VARCHAR,
+	receipt JSON DEFAULT '{}' NOT NULL,
+	CONSTRAINT "leases.a lease has the job of its kind" CHECK ((kind = 'agent') = (agent_session_id IS NOT NULL) AND (kind = 'evaluation') = (evaluation_id IS NOT NULL)),
+	CONSTRAINT "leases.worker must be a text value" CHECK (typeof(worker) IN ('text', 'null')),
+	CONSTRAINT "leases.request_id must be a text value" CHECK (typeof(request_id) IN ('text', 'null')),
+	CONSTRAINT leasekind CHECK (kind IN ('agent', 'evaluation')),
+	FOREIGN KEY(agent_session_id) REFERENCES agent_sessions (id) ON DELETE CASCADE,
+	CONSTRAINT leasestate CHECK (state IN ('queued', 'acquired', 'running', 'reported', 'expired', 'cancelled'))
+);
+CREATE INDEX ix_leases_agent_session ON leases (agent_session_id);
+CREATE INDEX ix_leases_evaluation ON leases (evaluation_id);
+CREATE INDEX ix_leases_state ON leases (state);
 CREATE TABLE measurements (
 	id INTEGER NOT NULL,
 	candidate_id INTEGER NOT NULL,

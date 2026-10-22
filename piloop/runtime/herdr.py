@@ -42,7 +42,7 @@ from pydantic_settings import BaseSettings, InitSettingsSource, PydanticBaseSett
 from piloop import deprecated, settings as settings_module
 from piloop.harnesses import Harness, Invocation, QueueKey
 from piloop.proc import PILOOP_ARGV, child_env
-from piloop.runtime import AgentSpec, AgentStatus, Check, Handle, NotSteerable, Outcome, RuntimeFailure, StartFailed
+from piloop.runtime import AgentExit, AgentSpec, AgentStatus, Check, Handle, NotSteerable, RuntimeFailure, StartFailed
 from piloop.runtime.tags import TAG_ENV, kill_tagged, tagged
 from piloop.settings import runtime_settings
 
@@ -473,7 +473,7 @@ class HerdrRuntime:
     def _screen(self, pane_id: str) -> str:
         return _run('pane', 'read', pane_id, '--source', 'visible')
 
-    def wait(self, handle: Handle, timeout: float) -> Outcome:
+    def wait(self, handle: Handle, timeout: float) -> AgentExit:
         """Wait until the agent is finished, or kill it at ``timeout``.
 
         The agent is finished when it is idle with no jobs running, or blocked on a still screen for
@@ -506,18 +506,18 @@ class HerdrRuntime:
             remaining = deadline - now
             if remaining <= 0:
                 self.kill(handle)
-                return Outcome(AgentStatus.TIMED_OUT, timeout, error=f'agent timeout after {timeout:g}s')
+                return AgentExit(AgentStatus.TIMED_OUT, timeout, error=f'agent timeout after {timeout:g}s')
             chunk = min(remaining, herdr_settings.wait_chunk_seconds)
             window = self._window(handle, block, now, chunk)
             if isinstance(window, str):
                 # the dialog is only on the visible screen, and the pane closes with the agent: keep it in the error
-                return Outcome(AgentStatus.BLOCKED, now - started, error=f'{BLOCKED_ERROR}:\n{window.strip()}')
+                return AgentExit(AgentStatus.BLOCKED, now - started, error=f'{BLOCKED_ERROR}:\n{window.strip()}')
             until, chunk = window
             try:
                 info = self._agent_wait(agent, until, chunk)['agent']
             except HerdrError as e:
                 if e.code in GONE_CODES:
-                    return Outcome(AgentStatus.EXITED, time.monotonic() - started, error=None)
+                    return AgentExit(AgentStatus.EXITED, time.monotonic() - started, error=None)
                 if e.code == 'timeout':
                     continue
                 raise
@@ -542,12 +542,14 @@ class HerdrRuntime:
                 continue
             if says is Screen.FAILED_TURN:
                 if resumes == len(RESUME_BACKOFF_SECONDS):
-                    return Outcome(AgentStatus.IDLE, time.monotonic() - started, error=f'{TURN_FAILED_ERROR}:\n{tail}')
+                    return AgentExit(
+                        AgentStatus.IDLE, time.monotonic() - started, error=f'{TURN_FAILED_ERROR}:\n{tail}'
+                    )
                 self._sleep(min(RESUME_BACKOFF_SECONDS[resumes], remaining))
                 resumes += 1
                 self._resume(agent, seq, RESUME_PROMPT)
                 continue
-            return Outcome(AgentStatus.IDLE, time.monotonic() - started, error=None)
+            return AgentExit(AgentStatus.IDLE, time.monotonic() - started, error=None)
 
     def _window(self, handle: Handle, block: Block | None, now: float, chunk: float) -> tuple[list[str], float] | str:
         """Return the states the next ``agent wait`` stops on and for how long, or the screen of a stuck agent.

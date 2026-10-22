@@ -11,9 +11,11 @@ import sys
 import threading
 import time
 import tomllib
+import weakref
 from collections.abc import Callable, Iterator
 from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
+from typing import Concatenate
 
 import pytest
 from git import Repo
@@ -24,10 +26,15 @@ from sqlalchemy import select
 from piloop.campaign import campaigns as campaign_module
 from piloop.config import load_campaign_config
 from piloop.daemon.main import ACTOR
+from piloop.daemon.run_controller import RunController
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Measurement, Verdict
 from piloop.db.session import Database, migrate
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.otel import Tracer
+from piloop.plugins.builtin.executor.worker import Worker
+from piloop.plugins.builtin.executor.workers import WorkersExecutor
+from piloop.plugins.host import PluginTable
+from piloop.plugins.kit.executor.leases import Timing
 from piloop.runtime import Handle, Runtime
 from piloop.runtime.factory import RuntimeFactory
 from piloop.runtime.subprocess import SubprocessRuntime
@@ -205,13 +212,32 @@ def at_head(schema: Path, path: Path) -> Path:
 
 
 @pytest.fixture
-def db(tmp_path: Path, schema: Path) -> Iterator[Database]:
+def workers(monkeypatch: pytest.MonkeyPatch) -> weakref.WeakSet[Worker]:
+    """Every worker that the test makes."""
+    made: weakref.WeakSet[Worker] = weakref.WeakSet()
+
+    def tracking[**P](init: Callable[Concatenate[Worker, P], None]) -> Callable[Concatenate[Worker, P], None]:
+        def tracked(self: Worker, *args: P.args, **kwargs: P.kwargs) -> None:
+            init(self, *args, **kwargs)
+            made.add(self)
+
+        return tracked
+
+    monkeypatch.setattr(Worker, '__init__', tracking(Worker.__init__))
+    return made
+
+
+@pytest.fixture
+def db(tmp_path: Path, schema: Path, workers: weakref.WeakSet[Worker]) -> Iterator[Database]:
     database = Database(f'sqlite:///{at_head(schema, tmp_path / "piloop.db")}', actor=ACTOR)
     migrate(
         database.engine, backups=0, daemon=None
     )  # a no-op at head, as when a client opens a database the daemon created
     yield database
-    database.close()
+    for worker in list(workers):  # a job that the test left running ends before its database closes
+        worker.stop()
+        worker.join(10)
+    database.close()  # and what waits for one gives up
 
 
 @pytest.fixture
@@ -385,6 +411,24 @@ def events(spans: InMemorySpanExporter, name: str) -> list[dict[str, object]]:
 def span_named(spans: InMemorySpanExporter, name: str) -> ReadableSpan:
     [span] = [s for s in spans.get_finished_spans() if s.name == name]
     return span
+
+
+def timed(timing: Timing) -> PluginTable:
+    """``[plugins.executor]`` for ``workers`` with the lease timing ``timing``."""
+    return PluginTable.model_validate(
+        {
+            'provider': 'workers',
+            'renew_seconds': timing.renew,
+            'grace_seconds': timing.grace,
+            'toleration_seconds': timing.toleration,
+        }
+    )
+
+
+def workers_of(controller: RunController) -> WorkersExecutor:
+    """The ``workers`` executor of ``controller``: its worker and its leases."""
+    assert isinstance(controller.executor, WorkersExecutor)
+    return controller.executor
 
 
 def factory(rt: Runtime) -> RuntimeFactory:

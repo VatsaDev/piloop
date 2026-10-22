@@ -1,7 +1,7 @@
 """What the ledger means: the current evaluator, a candidate's score under it, the head, the verdict and the rebase.
 
 All code that reads candidates and measurements to answer "how good is this" uses this module. So the CLI, the
-scheduler, the run executor and the history block agree.
+scheduler, the run controller and the history block agree.
 """
 
 import json
@@ -103,7 +103,7 @@ def head(s: Session, campaign: Campaign, *, excluding: Candidate | None = None) 
     """Return the head: the latest trunk keep, a kept candidate that no branch run made. The baseline is the first.
 
     Every run that pins no base starts from the head. Research and the watchdog get the head checked out, and
-    ``target`` is read on it. "Latest" is by id: the run executor keeps a run's candidate only while its bar is the head, and
+    ``target`` is read on it. "Latest" is by id: the run controller keeps a run's candidate only while its bar is the head, and
     a candidate is always newer than its bar. So each trunk keep is newer than the one before. Scores do not matter:
     after an evaluator change, the head stays where it was.
 
@@ -216,7 +216,7 @@ def request_remeasure(s: Session, candidate: Candidate, actor: Actor) -> None:
 
     Use it for a measurement that a fault of the host spoiled (a full disk, a lost GPU), or for one more repeat. The
     request is the ``REMEASURE_REQUESTED`` event, and ``requested`` lists it until a newer measurement exists. The
-    daemon judges a ``crash`` again (``RunExecutor.remeasure``). Any other verdict stays.
+    daemon judges a ``crash`` again (``RunController.remeasure``). Any other verdict stays.
 
     Raises:
         RemeasureRefused: the daemon never measures the candidate (``pending``, ``unmeasured`` or ``recovered``).
@@ -370,7 +370,7 @@ def judge(
     """Return the daemon's verdict on ``candidate``, a candidate of ``track``, against ``own``, and the reason.
 
     ``own`` is the run's bar: its last keep, or its last candidate that kept against its bar and was rebased. It
-    starts as the run's base. The run executor keeps a run's candidate on the trunk only while ``own`` is the head. A keep
+    starts as the run's base. The run controller keeps a run's candidate on the trunk only while ``own`` is the head. A keep
     against an ``own`` that the head has moved past is rebased onto the head instead (``rebase``).
 
     A branch run (``runs.branch``: its idea pinned another starting point) keeps what beats ``own``: a branch keep.
@@ -599,7 +599,7 @@ class NoteRefused(Exception):
     """``note`` cannot mark the candidate. The message says why."""
 
 
-def note(candidate: Candidate, reason: str, actor: str) -> None:
+def note(candidate: Candidate, reason: str, actor: Actor) -> None:
     """Mark a measured ``discard`` or ``interesting`` as a lead: ``interesting``, with ``reason`` before the daemon's.
 
     The result regressed, but the tree is worth starting from. It stays pinnable and in view. Like any
@@ -617,7 +617,7 @@ def note(candidate: Candidate, reason: str, actor: str) -> None:
             f'candidate#{candidate.id} is {candidate.verdict} ({candidate.verdict_reason or "no reason"}):'
             ' only a measured discard or interesting takes a note'
         )
-    candidate.verdict, candidate.verdict_by = Verdict.INTERESTING, actor
+    candidate.verdict, candidate.verdict_by = Verdict.INTERESTING, actor.signature
     candidate.verdict_reason = (
         NOTE + reason.strip() + (f'; {candidate.verdict_reason}' if candidate.verdict_reason else '')
     )

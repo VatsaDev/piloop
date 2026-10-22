@@ -80,6 +80,11 @@ def pin(repo: Repo, ref: str, sha: str) -> None:
     repo.git.update_ref(ref, sha)
 
 
+def unpin(repo: Repo, ref: str) -> None:
+    """Delete ``ref``, which ``pin`` made. Do nothing when it is gone already."""
+    repo.git.update_ref('-d', ref)
+
+
 def pinned(repo: Repo, prefix: str) -> list[str]:
     """The commits pinned as ``<prefix><n>``, in ``n`` order."""
     lines = repo.git.for_each_ref('--format=%(refname) %(objectname)', prefix).splitlines()

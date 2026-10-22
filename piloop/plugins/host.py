@@ -49,7 +49,7 @@ from importlib.metadata import EntryPoint, entry_points
 from threading import RLock
 from typing import Literal, Protocol, TypeIs, get_type_hints
 
-from pydantic import BaseModel, PydanticSchemaGenerationError, PydanticUserError, TypeAdapter
+from pydantic import BaseModel, ConfigDict, PydanticSchemaGenerationError, PydanticUserError, TypeAdapter
 from pydantic.errors import PydanticInvalidForJsonSchema
 
 BUILT_IN = 'piloop'
@@ -481,6 +481,50 @@ def lookup(data: object, key: str) -> object | None:
             return None
         data = data.get(part)
     return data
+
+
+class PluginTable(BaseModel):
+    """``[plugins.<capability>]``: which provider of a capability to use, and its parameters.
+
+    In ``piloop.toml`` for a capability of the campaign, in ``config.toml`` for one of the home. The capability declares
+    the table (``Selection``), and the provider checks the parameters (``check_plugins``).
+    """
+
+    model_config = ConfigDict(extra='allow', frozen=True, use_attribute_docstrings=True)
+
+    provider: str
+    """The name of the provider: the name of its entry point. The other keys of the table are its parameters."""
+
+    @property
+    def keys(self) -> dict[str, object]:
+        """The other keys of the table: the provider's parameters."""
+        return dict(self.model_extra or {})
+
+    @property
+    def parameters(self) -> str:
+        """The provider's parameters as a JSON object: what a pure provider gets."""
+        return json.dumps(self.keys, sort_keys=True)
+
+
+def check_plugins(tables: dict[str, object], scope: Literal['campaign', 'home']) -> None:
+    """Check each ``[plugins.<name>]`` of a file of ``scope``: a capability, one of its providers, and its parameters.
+
+    ``check_selection`` checks the provider and its parameters.
+
+    Raises:
+        ValueError: A table names no capability of ``scope``, or ``check_selection`` refuses it.
+    """
+    known = {
+        c.selection.key.split('.')[1]: c
+        for c in declared()
+        if c.selection is not None and c.selection.scope == scope and c.selection.key.startswith('plugins.')
+    }
+    for name, table in tables.items():
+        if (capability := known.get(name)) is None:
+            raise ValueError(
+                f'[plugins.{name}]: no capability has that name; there is {", ".join(sorted(known)) or "none"}'
+            )
+        check_selection(capability, {'plugins': {name: table}}, scope)
 
 
 def check_selection(capability: Activatable, data: dict[str, object], scope: Literal['campaign', 'home']) -> None:

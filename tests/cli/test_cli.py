@@ -778,7 +778,7 @@ def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_canc
     run_cli(['init', str(campaign_path)])
     out()
     run_cli(['eval', 'queue'])
-    assert out().strip() == '0 running, 0 waiting; 2 slot(s) (max_evaluations); `piloop eval cancel <candidate>`'
+    assert out().strip() == '0 running, 0 waiting; 2 slot(s) (workers evaluations); `piloop eval cancel <candidate>`'
     with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
         s.add(Candidate(campaign_id=1, tree_sha='t', commit_sha='c', summary='a newer commit'))
         s.add(Candidate(campaign_id=1, tree_sha='u', commit_sha='d', summary='an older commit'))
@@ -805,7 +805,7 @@ def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_canc
         ['candidate#1', 'demo', 'cancelled', 'by', 'human'],
         ['candidate#3', 'demo', 'waiting', '2h', 'an'],
     ]
-    assert summary == '2 running, 1 waiting; 2 slot(s) (max_evaluations); `piloop eval cancel <candidate>`'
+    assert summary == '2 running, 1 waiting; 2 slot(s) (workers evaluations); `piloop eval cancel <candidate>`'
     with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
         assert [m.error for m in s.get_one(Candidate, 2).measurements] == ['evaluation cancelled by human']
     run_cli(['candidate', 'remeasure', '1'])
@@ -822,7 +822,7 @@ def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_canc
         'a remeasure shows as soon as it is accepted, also while its cancelled evaluation stops'
     )
     assert re.fullmatch(r'\d+s', rows[3][3]), 'the request is seconds old: asked by the remeasure just above'
-    assert summary == '2 running, 2 waiting; 2 slot(s) (max_evaluations); `piloop eval cancel <candidate>`'
+    assert summary == '2 running, 2 waiting; 2 slot(s) (workers evaluations); `piloop eval cancel <candidate>`'
     with pytest.raises(SystemExit, match=r'candidate#2 has no evaluation that waits or runs'):
         run_cli(['eval', 'cancel', '2'])
 
@@ -1391,7 +1391,7 @@ def test_upgrade_reinstalls_migrates_and_restarts_the_daemon(
         cli_check(),
         f'ok    daemon: pid {pid} runs the installed {installed()}',
         f'ok    database: {common.settings.home}/piloop.db at schema {HEAD}, current',
-        'ok    plugins: 4 roles, 2 runtimes, 1 stop rule, 2 storage backends, 6 triggers, 1 verdict rule; all built in',
+        'ok    plugins: 1 executor, 4 roles, 2 runtimes, 1 stop rule, 2 storage backends, 6 triggers, 1 verdict rule; all built in',
         f'ok    secrets: from the environment of the daemon (pid {pid}) only (PILOOP_SECRETS_COMMAND unset)',
         f'ok    skills (pi): current in {common.settings.agent_skills_dir}',
         'ok    harnesses: on PATH: none configured',
@@ -1419,7 +1419,7 @@ def test_upgrade_of_a_checkout_install_without_a_daemon_creates_the_schema(fake_
         cli_check(),
         'ok    daemon: not running',
         f'ok    database: {common.settings.home}/piloop.db at schema {HEAD}, current',
-        'ok    plugins: 4 roles, 2 runtimes, 1 stop rule, 2 storage backends, 6 triggers, 1 verdict rule; all built in',
+        'ok    plugins: 1 executor, 4 roles, 2 runtimes, 1 stop rule, 2 storage backends, 6 triggers, 1 verdict rule; all built in',
         'ok    secrets: from the environment of this shell only (PILOOP_SECRETS_COMMAND unset)',
         'ok    skills: none of claude, codex, pi, gemini, cursor-agent is on PATH: nothing to check',
         'ok    harnesses: on PATH: none configured',

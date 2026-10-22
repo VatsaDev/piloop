@@ -8,7 +8,7 @@ from git import Repo
 from inline_snapshot import snapshot
 from sqlalchemy.orm import Session
 
-from piloop.agents.launcher import STARTUP_ANOMALY, STOPPED_ERROR
+from piloop.agents.results import STARTUP_ANOMALY, STOPPED_ERROR
 from piloop.campaign.stop import BLOCKED
 from piloop.config import CampaignConfig, load_campaign_config
 from piloop.db.models import (

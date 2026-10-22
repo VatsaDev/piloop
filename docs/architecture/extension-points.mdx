@@ -5,6 +5,7 @@ description: Each place where you can change what piloop does, with an example f
 
 import ExampleNiceRuntime from '/snippets/generated/example-nice-runtime.mdx';
 import ExampleDirStore from '/snippets/generated/example-dir-store.mdx';
+import ExampleInlineExecutor from '/snippets/generated/example-inline-executor.mdx';
 import ExampleMinGain from '/snippets/generated/example-min-gain.mdx';
 import ExampleStopAfterKeeps from '/snippets/generated/example-stop-after-keeps.mdx';
 import ExampleVerdictChecks from '/snippets/generated/example-verdict-checks.mdx';
@@ -60,6 +61,7 @@ A plugin can also do two more things:
 |---|---|---|
 | [Runtimes](#runtimes) | `runtime`, `[roles.<name>] runtime` | a plugin: `piloop.runtimes` |
 | [Storage backends](#storage-backends) | `[storage.backend] kind` in `config.toml` | a plugin: `piloop.stores` |
+| [Executors](#executors) | `[plugins.executor] provider` in `config.toml` | a plugin: `piloop.executors` |
 | [Pure plugins](#pure-plugins) | `[plugins.<capability>] provider` | a plugin: data in, data out |
 | [Verdict rules](#verdict-rules) | `[plugins.verdict_rule] provider` | a plugin: `piloop.verdict_rules` |
 | [Roles](#roles) | `[roles.<name>]` | configuration, or a plugin: `piloop.roles` |
@@ -152,6 +154,43 @@ empty.
 <StorageBackends />
 
 The [configuration reference](/reference/configuration) shows the store with each backend.
+
+## Executors
+
+An **executor** decides where each job runs: an agent session or an evaluation. The daemon submits the job, and the
+executor reports how it ended.
+
+### Example: run each job in a thread of the daemon
+
+<ExampleInlineExecutor />
+
+Select it in `$PILOOP_HOME/config.toml`, then run `piloop restart`:
+
+```toml
+[plugins.executor]
+provider = "inline"
+```
+
+### The contract
+
+The daemon makes the class once, as `Executor(host, parameters)`. `Parameters` checks the other keys of
+`[plugins.executor]`.
+
+- `submit(job)` runs an `AgentJob` or an `EvaluationJob`.
+- `cancel(key)` stops a job. It still reports.
+- `adopt(left)` takes over the jobs that the previous daemon left, and returns those it cannot.
+- `evaluation_slots(parameters)` is how many evaluations run at once, for `piloop eval queue`.
+- `tick`, `stop`, `hand_over` and `close` are the daemon's periodic call, its stop, its in-place restart and its end.
+
+A job's end goes to `host.results`: `finished` or `lost`, in a session that the executor commits. Core raises
+`Settled` for a job whose row is closed already. An executor whose workers can report late uses
+[leases](/architecture/leases) to refuse those reports; `inline` needs none. `run_agent` and `run_evaluation` run one
+job on this machine.
+
+### Built in
+
+`workers`, the default, runs every job on a [lease](/architecture/leases), taken by its worker in `piloop serve`.
+Remote workers are to join it later. Its keys are in the [configuration reference](/reference/configuration#plugins).
 
 ## Pure plugins
 

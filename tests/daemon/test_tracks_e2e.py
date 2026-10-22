@@ -13,7 +13,7 @@ from piloop.daemon.main import Daemon
 from piloop.db.models import Campaign, Candidate, Event, Idea, Verdict
 from piloop.scoring.ledger import REBASED, head
 from piloop.settings import Settings
-from tests.conftest import ScriptRuntime, factory, register, write_script
+from tests.conftest import ScriptRuntime, factory, register, workers_of, write_script
 
 TOML = """
 name = "tracks"
@@ -85,7 +85,7 @@ def test_two_tracks_rebase_a_keep_that_lost_the_race_and_refuse_one_past_the_oth
     repo.git.commit('-qm', 'baseline')
     runtime = ScriptRuntime()
     daemon = Daemon(Settings(home=tmp_path / 'home', tick_seconds=0.05))
-    daemon.executor.launcher.runtime_factory = factory(runtime)
+    workers_of(daemon.controller).worker.runtime_factory = factory(runtime)
     campaign = register(daemon.db, path)
     with daemon.db.session() as s:
         for title, track in (('slow accuracy', 'accuracy'), ('trim cost', 'cost')):

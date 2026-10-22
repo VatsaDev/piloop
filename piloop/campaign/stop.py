@@ -11,7 +11,7 @@ from sqlalchemy import ColumnElement, exists, func, select
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor
-from piloop.agents.launcher import STOPPED_ERROR
+from piloop.agents.results import STOPPED_ERROR
 from piloop.campaign.spend import review_waits
 from piloop.config import CampaignConfig
 from piloop.db.events import emit
@@ -50,7 +50,18 @@ NOT_STARTED = 'no agent of the run started to work'
 the harness. The errors of its implementers say what failed."""
 CANCELLED_ERROR = 'cancelled'
 """The error of a run, and of an agent, that someone cancelled (``CANCEL_REQUESTED``). The run's idea is parked."""
-NOT_ATTEMPTS = (STOPPED_ERROR, STALE_ERROR, CAMPAIGN_STOPPED_ERROR, ROLE_REMOVED, NOT_STARTED, CANCELLED_ERROR)
+WORKER_LOST = 'worker lost'
+"""The error of a run whose agent's worker went silent past ``toleration_seconds`` (``[plugins.executor]``), or restarted and could not
+find the agent (``piloop.plugins.kit.executor.leases``). A fault of the host, not an attempt: the idea goes back to ``ready``."""
+NOT_ATTEMPTS = (
+    STOPPED_ERROR,
+    STALE_ERROR,
+    CAMPAIGN_STOPPED_ERROR,
+    ROLE_REMOVED,
+    NOT_STARTED,
+    CANCELLED_ERROR,
+    WORKER_LOST,
+)
 """Run errors that mean the run was stopped, or that no agent started to work on it, not that the idea was tried.
 
 The causes are a daemon stop or restart (``piloop upgrade``), a daemon crash, a campaign stop, a ``piloop init`` that

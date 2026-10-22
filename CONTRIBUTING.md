@@ -351,7 +351,7 @@ The package has one subpackage for each concern. Imports only point down this li
 5. `agents/`: the roles and their prompts, the agent lifecycle, session capture.
 6. `campaign/`: campaigns, ideas, the inbox, stop conditions, the spend limit.
 7. `reports/`: status, history, the research pack.
-8. `daemon/`: the process, the scheduler, the run executor.
+8. `daemon/`: the process, the scheduler, the run controller.
 9. `watch/` and `cli/`.
 
 The top-level modules `actor`, `settings`, `otel`, `git`, `proc`, `text`, `version` and `deprecated` are leaves that every

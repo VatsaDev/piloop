@@ -17,7 +17,7 @@ from piloop.cli import common, main as cli
 from piloop.cli.plugins import selections
 from piloop.config import ROLES, CampaignConfig, ConfigError, load_campaign_config
 from piloop.daemon.main import Daemon
-from piloop.daemon.run_executor import RunExecutor
+from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
 from piloop.db.models import (
     AgentSession,
@@ -76,7 +76,7 @@ def recording(runtime: ScriptRuntime, kinds: list[str]) -> RuntimeFactory:
 
 def scheduler(db: Database, make: RuntimeFactory, tmp_path: Path) -> Scheduler:
     tracer = Tracer(None)
-    return Scheduler(db, RunExecutor(db, tracer, tmp_path, make), tracer, tmp_path, make)
+    return Scheduler(db, RunController(db, tracer, tmp_path, make), tracer, tmp_path, make)
 
 
 def configure(db: Database, campaign: Campaign, harness_body: str, **roles: dict[str, object]) -> None:

@@ -69,8 +69,9 @@ flowchart LR
     db[("SQLite database<br/>$PILOOP_HOME/piloop.db")]
     subgraph daemon["Daemon: piloop serve"]
         scheduler["Scheduler<br/>one tick every 2 seconds"]
-        executor["Run executor"]
+        controller["Run controller"]
         launcher["Launcher"]
+        worker["Executor: workers<br/>a worker on leases"]
     end
     runtime{{"Runtime<br/>subprocess, herdr or a package's"}}
     subgraph agents["Agents: a harness in a git worktree"]
@@ -85,15 +86,17 @@ flowchart LR
     orch --> cli
     cli -->|SQL| db
     daemon -->|SQL| db
-    scheduler -->|implementer runs| executor
+    scheduler -->|implementer runs| controller
     scheduler -->|research and<br/>watchdog sweeps| launcher
-    executor --> launcher
-    launcher -->|harness argv, brief| runtime
+    controller --> launcher
+    launcher -->|agent jobs| worker
+    controller -->|evaluation jobs| worker
+    worker -->|harness argv, brief| runtime
     runtime --> agents
     agents -->|piloop sql| cli
     agents -->|commits| repo
-    executor -->|a clean worktree<br/>per commit| evaluate
-    executor -->|pins, rebases| repo
+    worker -->|a clean worktree<br/>per commit| evaluate
+    controller -->|pins, rebases| repo
 ```
 
 - **The CLI** (`piloop`) is how people and agents act: `piloop idea add`, `piloop sql`, `piloop inbox wait`,
@@ -102,8 +105,13 @@ flowchart LR
   the allowed values, who changed a row last, a log of every change, and full-text search. An authorizer refuses
   schema changes and transactions from `piloop sql`. See the [data model](/architecture/data-model).
 - **The daemon** (`piloop serve`) is one process for each piloop home. On each tick, the **scheduler** checks the
-  triggers of every campaign, queues runs of ready ideas and launches the requested agents. The **run executor** runs
-  one run: the worktree, the agent, the scores, the verdict. The **launcher** starts, watches and closes every agent.
+  triggers of every campaign, queues runs of ready ideas and launches the requested agents. The **run controller** runs
+  one run: the agent, the scores, the verdict. The **launcher** hands every agent's job to the executor.
+- **The executor** runs the jobs, in three layers:
+  1. The executor itself is a [capability](/architecture/extension-points#executors) that you can swap.
+  2. [Leases](/architecture/leases) are a library that an executor can use to hand jobs to workers.
+  3. The built-in executor, `workers`, runs its worker on leases: in `piloop serve` now, on other machines later. The
+     worker makes the worktree, runs the agent or the evaluate command, and reports.
 - **The [runtime](/concepts/runtimes)** is where an agent process runs: a background process by default, or a
   [Herdr](https://herdr.dev) pane that you can watch and steer. A package can add others.
 - **The harness** is the coding agent CLI: Claude Code, Codex or pi. A `[harness.<name>]` table says how to start it.
@@ -127,7 +135,8 @@ the configuration, or add one with a plugin, a Python package that you install n
 | The SQLite database and its log of events | No. |
 | The plugin host: the part of piloop that loads plugins | No. |
 | The interface of the artifact store | No. A storage backend can change where its files go. |
-| Each capability: runtime, storage backend, role, trigger, verdict rule, stop rule | Yes. |
+| The operations that apply a job's result | No. An executor calls them. |
+| Each capability: executor, runtime, storage backend, role, trigger, verdict rule, stop rule | Yes. |
 
 The parts that you cannot replace make piloop run, and keep its data correct. Each capability has the name of a thing
 that you know from piloop, for example "verdict rule". piloop has few capabilities, and each one keeps the same

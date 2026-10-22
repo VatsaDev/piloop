@@ -20,22 +20,22 @@ import threading
 from collections import Counter
 from collections.abc import Callable, Collection, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
-from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
 
-from git import Repo
 from git.exc import GitError, InvalidGitRepositoryError, NoSuchPathError
 from pydantic import ValidationError
 from sqlalchemy import Boolean, ColumnElement, Select, delete, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from piloop import deprecated, git
+from piloop.actor import Agent
 from piloop.agents import scout
-from piloop.agents.launcher import STARTUP_ANOMALY, STOP_ENDED, STOPPED_ERROR, WRAP_UP, rotate
+from piloop.agents.launcher import rotate
 from piloop.agents.refill import usage_of
+from piloop.agents.results import STARTUP_ANOMALY, STOP_ENDED, STOPPED_ERROR, WRAP_UP
 from piloop.agents.roles import compose_brief, role_of
 from piloop.campaign import spend
 from piloop.campaign.campaigns import WORKSPACE, campaign_dir, workspace_dir, worktree_links
@@ -73,7 +73,7 @@ from piloop.config import (
     ideas_taken,
 )
 from piloop.daemon.archiver import Archiver, Archiving
-from piloop.daemon.run_executor import RunEnd, RunExecutor, left_finding, open_escalation, run_outcome
+from piloop.daemon.run_controller import RunController, RunEnd, commits_of, left_finding, open_escalation, run_outcome
 from piloop.db.events import ANOMALY_EVENT, emit
 from piloop.db.models import (
     LIVE,
@@ -100,11 +100,12 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Tracer
+from piloop.plugins.contracts.executor import AgentKey, Artifact, Checkout, GitTree, LeftJob
 from piloop.plugins.contracts.stop import GO, Go, Hold, Stop
 from piloop.reports.overview import anomalies, assigned, overview, reported
 from piloop.reports.pack import pack
 from piloop.reports.wake import lessons_overview
-from piloop.runtime import AgentStatus, Outcome
+from piloop.runtime import AgentStatus
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
 from piloop.scoring.ledger import bar_of, checkout_candidate, due, head, head_unmeasured, rejudges, score
 from piloop.text import cell
@@ -152,21 +153,21 @@ class Scheduler:
     def __init__(
         self,
         db: Database,
-        executor: RunExecutor,
+        controller: RunController,
         tracer: Tracer,
         home: Path,
         runtime_factory: RuntimeFactory = make_runtime,
         archiving: Archiving | None = None,
     ) -> None:
         self._db = db
-        self._executor = executor
+        self._controller = controller
         self._tracer = tracer
         self._home = home
         self._runs_dir = home / 'runs'
         self._agent_sessions_dir = home / 'agent_sessions'
         self._runtime_factory = runtime_factory
         # No bound: a run's thread waits in the evaluation queue while it scores, and a bound would let those waits
-        # hold back agent launches. The roles' max_concurrent and max_evaluations bound the work itself.
+        # hold back agent launches. The roles' max_concurrent and the executor's slots bound the work itself.
         self._pool = ThreadPoolExecutor(max_workers=sys.maxsize, thread_name_prefix='agent')
         self._futures: dict[int, Future[None]] = {}
         self._scoring: dict[tuple[TargetKind, int], Future[None]] = {}
@@ -181,59 +182,90 @@ class Scheduler:
         archives nothing."""
 
     def reap(self) -> None:
-        """Re-attach the agents that a previous daemon process left. Fail everything else it left in flight.
+        """Hand the jobs that a previous daemon process left to the executor (``Executor.adopt``). Fail the rest.
 
-        The daemon watches a ``running`` agent whose worktree still exists until it ends, even if it ended already. Then
-        it finishes the run as if no daemon had stopped (``RunExecutor.reattach``, or ``_reattach_sweep`` for a sweep).
-        Both an in-place restart (``hand_over``) and a crash leave agents for this. A closed run whose commits were not
-        all scored (``runs.scoring``) is scored now (``RunExecutor.resume``), whatever its idea's status. An idea that
-        stayed ``scheduled`` does not run again, and no dependent idea takes it before its keeps are known. The
-        worktrees of failed runs and sweeps are removed. The evaluation queue starts empty: what still needs a
-        measurement asks for it again.
+        The executor takes over what it can find: ``workers`` gives every live lease a full period, so nothing is queued
+        again only because of the restart, and its worker re-attaches to each agent that still has its worktree, and
+        reports the rest gone, which fails their runs as ``worker lost``, not as attempts. For each agent it adopts,
+        the daemon waits for its end as if no daemon had stopped (``RunController.reattach``, or ``_reattach_sweep`` for
+        a sweep). Both an in-place restart (``hand_over``) and a crash leave agents for this. An agent that it does not
+        adopt is killed, and its row and its run fail. A closed run whose commits were not all scored
+        (``runs.scoring``) is scored now (``RunController.resume``), whatever its idea's status. An idea that stayed
+        ``scheduled`` does not run again, and no dependent idea takes it before its keeps are known. The worktrees of
+        failed runs and sweeps are removed. The evaluation queue starts empty: its jobs were the previous daemon's, and
+        what still needs a measurement asks again.
         """
         with self._tracer.span('piloop.reap'):
-            with self._db.session() as s:  # their evaluators died with the daemon that ran them
+            with self._db.session() as s:
                 s.execute(delete(Evaluation))
+                live = s.scalars(select(AgentSession).where(AgentSession.state.in_(LIVE))).all()
+                runs = {w.id: w.run_id for w in live}
+                left = [self._left(s, w) for w in live]
                 s.commit()
-            left = self._left_running()
-            self._fail_open(
-                STALE_ERROR, remove_worktrees=True, sparing=[agent_session_id for agent_session_id, _ in left]
-            )
-            for agent_session_id, run_id in left:
+            refused = set(self._controller.executor.adopt(left))
+            adopted = [
+                job.key.agent_session for job in left if isinstance(job.key, AgentKey) and job.key not in refused
+            ]
+            self._fail_open(STALE_ERROR, reaped=True, sparing=adopted)
+            for agent_session_id in adopted:
+                run_id = runs[agent_session_id]
                 self._tracer.event('agent_session.reattached', agent_session=agent_session_id, run=run_id)
                 body = (
                     partial(self._reattach_sweep, agent_session_id)
                     if run_id is None
-                    else partial(self._executor.reattach, run_id, agent_session_id)
+                    else partial(self._controller.reattach, run_id, agent_session_id)
                 )
                 self._futures[agent_session_id] = self._pool.submit(body)
             with self._db.session() as s:
                 unscored = s.scalars(select(Run.id).where(Run.scoring).order_by(Run.id)).all()
             for run_id in unscored:
                 self._tracer.event('run.unscored', run=run_id)
-                self._scoring[TargetKind.RUN, run_id] = self._pool.submit(self._executor.resume, run_id)
+                self._scoring[TargetKind.RUN, run_id] = self._pool.submit(self._controller.resume, run_id)
 
-    def _left_running(self) -> list[tuple[int, int | None]]:
-        """Return ``(implementer, run)`` for each ``running`` agent whose worktree exists and whose run, if any, is open."""
-        with self._db.session() as s:
-            rows = s.scalars(select(AgentSession).where(AgentSession.state == AgentSessionState.RUNNING)).all()
-            return [(w.id, w.run_id) for w in rows if self._reattachable(s, w)]
+    def _left(self, s: Session, w: AgentSession) -> LeftJob:
+        """The ``LeftJob`` of an agent that a previous daemon left in flight: its key, and the job of a running one."""
+        if w.state is AgentSessionState.RUNNING and (job := self._running(s, w)) is not None:
+            return job
+        return LeftJob(AgentKey(w.id))
 
-    def _reattachable(self, s: Session, agent_session: AgentSession) -> bool:
-        if agent_session.run_id is None:
-            checkout = self._in_campaign(s, agent_session)
-            return (checkout or self._agent_sessions_dir / str(agent_session.id) / 'worktree').is_dir()
-        wt = self._runs_dir / str(agent_session.run_id) / 'worktree'
-        return wt.is_dir() and s.get_one(Run, agent_session.run_id).status is RunStatus.RUNNING
+    @deprecated.until(
+        '0.3.0', 'an agent that a daemon before leases started: delete _running with Launcher.left and LeftJob.job'
+    )
+    def _running(self, s: Session, w: AgentSession) -> LeftJob | None:
+        """The ``LeftJob`` of a running agent with its job, if its worktree exists, for an executor to adopt it.
 
-    def _fail_open(self, error: str, *, remove_worktrees: bool, sparing: Collection[int] = ()) -> None:
-        """Fail each run in flight and queue its idea again. Kill and close each live implementer except ``sparing``.
+        Only an agent that a daemon before leases started needs it: so an upgrade does not lose its work, it keeps
+        running, and its run is scored when it ends.
+        """
+        campaign = s.get(Campaign, w.campaign_id) if w.campaign_id is not None else None
+        if campaign is None:
+            return None
+        cfg = config_of(campaign)
+        links = worktree_links(cfg, Path(campaign.path), campaign_dir(self._home, campaign.id))
+        if w.run_id is not None:
+            run = s.get_one(Run, w.run_id)
+            cwd = self._runs_dir / str(w.run_id) / 'worktree'
+            if run.status is not RunStatus.RUNNING or not cwd.is_dir():
+                return None
+            artifact: Artifact = GitTree(repo=Path(campaign.path), commit=run.base.commit_sha, links=links)
+            return self._controller.launcher.left(s, w, artifact, cwd, commits_of(w.run_id, w.id))
+        checkout = Path(campaign.path) if self._in_campaign(campaign, w.kind) else None
+        cwd = checkout or self._agent_sessions_dir / str(w.id) / 'worktree'
+        if not cwd.is_dir():
+            return None
+        head = checkout_candidate(s, campaign).commit_sha
+        artifact = Checkout(path=cwd) if checkout else GitTree(repo=Path(campaign.path), commit=head, links=links)
+        return self._controller.launcher.left(s, w, artifact, cwd, None)
+
+    def _fail_open(self, error: str, *, reaped: bool, sparing: Collection[int] = ()) -> None:
+        """Fail each run in flight and queue its idea again. Close each live agent except ``sparing``.
 
         Requested implementers and their queued runs are not changed, because they are requests, not processes. An idea
         that is ``scheduled`` without an open run stays so. Its run finished and only its scoring stopped, which
-        ``reap`` resumes. Only ``reap`` sets ``remove_worktrees``. A live run thread removes its own worktrees in its
-        ``finally`` block. Removing a worktree while an evaluator still runs in it is worse than leaving it a moment
-        longer.
+        ``reap`` resumes. With ``reaped``, the rows are those that a previous daemon left and its executor did not
+        adopt: their agents are killed (``_kill_stale``), and their worktrees removed. Otherwise the executor stopped
+        its jobs, and a live run thread removes its own worktrees in its ``finally`` block: removing a worktree while
+        an evaluator still runs in it is worse than leaving it a moment longer.
         """
         with self._db.session() as s:
             spared = AgentSession.id.in_(sparing)
@@ -244,13 +276,13 @@ class Scheduler:
             in_flight = (Run.status == RunStatus.RUNNING) & Run.id.not_in(kept)
             for run in s.scalars(select(Run).where(in_flight | Run.id.in_(launched))).all():
                 self._fail_run(s, run, error)
-                if remove_worktrees:
+                if reaped:
                     self._remove_worktrees(self._runs_dir / str(run.id), Path(run.idea.campaign.path))
             for agent_session in s.scalars(select(AgentSession).where(AgentSession.state.in_(LIVE), ~spared)):
-                # A ``starting`` row that stop() reached before its start window has no process.
-                if agent_session.runtime is not None:
+                # a ``starting`` row that its daemon left before its start window has no process
+                if reaped and agent_session.runtime is not None:
                     self._kill_stale(s, agent_session)
-                if remove_worktrees and agent_session.run_id is None and agent_session.campaign_id is not None:
+                if reaped and agent_session.run_id is None and agent_session.campaign_id is not None:
                     campaign_path = Path(s.get_one(Campaign, agent_session.campaign_id).path)
                     self._remove_worktrees(self._agent_sessions_dir / str(agent_session.id), campaign_path)
                 self._close(s, agent_session, error)
@@ -282,7 +314,7 @@ class Scheduler:
 
         The implementer reported that it is done. A job of its own may still keep the run open, but the run is not cut: its
         idea stays ``scheduled``, so no second run redoes the work. The run thread pins the commits
-        (``RunExecutor._keep_cut_work``), and ``reap`` scores them and settles the idea (``runs.scoring``). Its status is
+        (``RunController._keep_cut_work``), and ``reap`` scores them and settles the idea (``runs.scoring``). Its status is
         what the run's end would give (``run_outcome``).
         """
         status, error = run_outcome(RunEnd(finding=True, asked=open_escalation(s, run)))
@@ -316,8 +348,13 @@ class Scheduler:
         for wt in git.worktrees_under(repo, agent_dir):
             git.remove_worktree(repo, wt)
 
+    @deprecated.until('0.3.0', 'a kill of an agent that no executor holds: delete _kill_stale with _running')
     def _kill_stale(self, s: Session, agent_session: AgentSession) -> None:
-        """Ask the runtime to close the implementer's Herdr pane, which outlives the daemon. Best effort."""
+        """Ask the runtime to close the pane of an agent that no executor adopted, which outlives its daemon. Best effort.
+
+        Such an agent was started before leases, or its job ended with no report. Once every agent is an executor's,
+        its executor stops it.
+        """
         try:
             runtime_for(s, agent_session, self._runs_dir, self._runtime_factory).kill(handle_for(agent_session))
         except Exception as e:  # The pane can be gone already. The database row is what matters.
@@ -339,7 +376,9 @@ class Scheduler:
         (``piloop.daemon.archiver``).
         """
         self._collect()
-        self._executor.stop_cancelled()
+        self._controller.executor.tick(utcnow())
+        self._controller.stop_cancelled()
+        self._controller.dispatch()
         self._push_comments()
         self._report_jobs()
         self._wind_down()
@@ -372,7 +411,7 @@ class Scheduler:
             s.commit()
         for agent_session_id, run_id in launched:
             body = (
-                partial(self._executor.execute, run_id, agent_session_id)
+                partial(self._controller.execute, run_id, agent_session_id)
                 if run_id
                 else partial(self._sweep, agent_session_id)
             )
@@ -423,12 +462,12 @@ class Scheduler:
             return
         if again := rejudges(s, campaign):
             self._tracer.event('candidate.rejudge', campaign=campaign.name, candidate=again[0].id, left=len(again))
-            self._scoring[key] = self._pool.submit(self._executor.rejudge, again[0].id)
+            self._scoring[key] = self._pool.submit(self._controller.rejudge, again[0].id)
             return
         if not (todo := due(s, campaign)):
             return
         self._tracer.event('candidate.remeasure', campaign=campaign.name, candidate=todo[0].id, left=len(todo))
-        self._scoring[key] = self._pool.submit(self._executor.remeasure, todo[0].id)
+        self._scoring[key] = self._pool.submit(self._controller.remeasure, todo[0].id)
 
     def _push_comments(self) -> None:
         """Send each running implementer the comments on its run or its idea that it has not received yet.
@@ -484,7 +523,7 @@ class Scheduler:
             .where(func.strftime('%Y-%m-%d %H:%M:%S', Comment.created_at) >= since)
             .order_by(Comment.id)
         ).all()
-        own = (*deprecated.signatures(agent_session.kind, agent_session.id), f'run#{run.id}')
+        own = (*deprecated.signatures(Agent(role=agent_session.kind, session=agent_session.id)), f'run#{run.id}')
         return [c for c in comments if c.id not in settled and c.author not in own]
 
     def _push(self, s: Session, agent_session: AgentSession, comments: list[Comment]) -> None:
@@ -559,7 +598,7 @@ class Scheduler:
         A cancelled run or agent of any role (``agent_cancel``) is ended at once, or after the wrap-up prompt and the
         grace period when the cancel asked for it. Its run closes with ``CANCELLED_ERROR``. A cancelled request never
         starts, and its queued run fails. Both park the run's idea. A starting agent is left for a later tick, once it
-        runs; if its start fails, the run is not launched again (``RunExecutor._relaunch``).
+        runs; if its start fails, the run is not launched again (``RunController._relaunch``).
         """
         with self._db.session() as s:
             requested = select(Event.target_id).where(Event.kind.in_(CANCEL_REQUESTED))
@@ -624,15 +663,17 @@ class Scheduler:
         self._tracer.event(WRAP_UP, agent_session=agent_session.id, **{k: str(v) for k, v in payload.items()})
 
     def _end(self, s: Session, agent_session: AgentSession, reason: str, error: str) -> None:
-        """Kill a wound-down agent, after ``STOP_ENDED``. The kill is tried again on each tick until the agent is gone."""
+        """Kill a wound-down agent, after ``STOP_ENDED``: its executor stops it, and it reports."""
         ended = select(Event.id).where(
             Event.target_kind == TargetKind.AGENT_SESSION, Event.target_id == agent_session.id, Event.kind == STOP_ENDED
         )
         if s.scalar(ended) is None:
             emit(s, STOP_ENDED, TargetKind.AGENT_SESSION, agent_session.id, payload={'reason': reason, 'error': error})
-            s.commit()  # before the kill: the run that the kill ends reads it when it closes
             self._tracer.event('agent_session.ended', agent_session=agent_session.id, reason=reason)
-        self._kill_stale(s, agent_session)
+        # before the kill: the run that the kill ends reads it when it closes, and the executor writes in a session of
+        # its own, which waits for this one's write lock
+        s.commit()
+        self._controller.executor.cancel(AgentKey(agent_session.id))  # on each tick until it ends: a kill can fail
 
     def _triggers(
         self, s: Session, campaign: Campaign, cfg: CampaignConfig, answer: Go | Stop, held: str | None
@@ -1154,7 +1195,7 @@ class Scheduler:
             campaign = s.get_one(Campaign, agent_session.campaign_id)
             cfg = config_of(campaign)
             role = role_of(s, agent_session)
-            in_campaign = self._in_campaign(s, agent_session) is not None
+            in_campaign = self._in_campaign(campaign, agent_session.kind)
             base = checkout_candidate(s, campaign)
             values = ', '.join(
                 f'{t.primary.name}={"unmeasured" if (v := score(base, campaign.evaluator_id or 0, t.primary)) is None else v}'
@@ -1185,31 +1226,21 @@ class Scheduler:
             brief = compose_brief(
                 role,
                 campaign,
-                agent_session_id,
+                Agent(role=agent_session.kind, session=agent_session_id),
                 reason=agent_session.reason or 'requested',
                 context='\n'.join(sections),
                 incident=bool(incidents),
                 wake=lessons_overview(s, campaign, cfg.wake_budget(role.kind)),
             )
             campaign_path, campaign_id, base_sha = Path(campaign.path), campaign.id, base.commit_sha
-        if self._executor.launcher.cancelled.is_set():  # stop() closed the row, so do not create a worktree.
-            return
         log_dir = self._agent_sessions_dir / str(agent_session_id)
         if in_campaign:
-            self._executor.launcher.launch(agent_session_id, brief=brief, cwd=campaign_path, log_dir=log_dir)
-            return
-        repo = git.open_repo(campaign_path)
-        wt_path = log_dir / 'worktree'
-        links = worktree_links(cfg, campaign_path, campaign_dir(self._home, campaign_id))
-        make_cwd = partial(git.add_worktree, repo, wt_path, base_sha, links)
-        launch = self._executor.launcher.launch
-        _in_worktree(
-            repo,
-            wt_path,
-            partial(
-                launch, agent_session_id, brief=brief, cwd=wt_path, log_dir=log_dir, make_cwd=make_cwd, links=links
-            ),
-        )
+            artifact: Artifact = Checkout(path=campaign_path)
+            cwd = campaign_path
+        else:
+            links = worktree_links(cfg, campaign_path, campaign_dir(self._home, campaign_id))
+            artifact, cwd = GitTree(repo=campaign_path, commit=base_sha, links=links), log_dir / 'worktree'
+        self._controller.launcher.launch(agent_session_id, brief=brief, cwd=cwd, log_dir=log_dir, artifact=artifact)
 
     def _context(
         self, s: Session, campaign: Campaign, cfg: CampaignConfig, agent_session: AgentSession, now: datetime
@@ -1263,27 +1294,14 @@ class Scheduler:
             f'- Sweep started at: {now.strftime("%Y-%m-%d %H:%M:%S")} (UTC; the research pack below is as of then).',
         ]
 
-    def _in_campaign(self, s: Session, agent_session: AgentSession) -> Path | None:
-        """Return the campaign checkout if a sweep works in it (``workdir = "repo"``), else None."""
-        if agent_session.campaign_id is None or (campaign := s.get(Campaign, agent_session.campaign_id)) is None:
-            return None
-        role = config_of(campaign).roles.sweeping().get(agent_session.kind)
-        return Path(campaign.path) if role is not None and role.workdir is Workdir.REPO else None
+    def _in_campaign(self, campaign: Campaign, kind: str) -> bool:
+        """Return whether a sweep of ``kind`` works in the campaign checkout (``workdir = "repo"``)."""
+        role = config_of(campaign).roles.sweeping().get(kind)
+        return role is not None and role.workdir is Workdir.REPO
 
     def _reattach_sweep(self, agent_session_id: int) -> None:
-        """Watch the agent of a sweep that a previous daemon process started, in its workdir, until it ends."""
-        log_dir = self._agent_sessions_dir / str(agent_session_id)
-        with self._db.session() as s:
-            agent_session = s.get_one(AgentSession, agent_session_id)
-            checkout = self._in_campaign(s, agent_session)
-            repo = git.open_repo(Path(s.get_one(Campaign, agent_session.campaign_id).path))
-        if checkout is not None:
-            self._executor.launcher.reattach(agent_session_id, cwd=checkout, log_dir=log_dir)
-            return
-        reattach = partial(
-            self._executor.launcher.reattach, agent_session_id, cwd=log_dir / 'worktree', log_dir=log_dir
-        )
-        _in_worktree(repo, log_dir / 'worktree', reattach)
+        """Wait for the agent of a sweep that a previous daemon process started, until it ends."""
+        self._controller.launcher.reattach(agent_session_id)
 
     def _collect(self) -> None:
         """Forget finished threads. If a thread died before its launch recorded anything, close its row here."""
@@ -1330,10 +1348,8 @@ class Scheduler:
         also handles it.
         """
         self._stop.set()
-        self._executor.hand_over()
-        watching = set(self._executor.launcher.watching)
-        rest = [future for agent_session_id, future in self._futures.items() if agent_session_id not in watching]
-        wait([*rest, *self._scoring.values(), *self._archiving()], timeout=timeout)
+        self._controller.hand_over()
+        wait([*self._futures.values(), *self._scoring.values(), *self._archiving()], timeout=timeout)
         self._pool.shutdown(wait=False, cancel_futures=True)
 
     def _archiving(self) -> list[Future[None]]:
@@ -1341,16 +1357,16 @@ class Scheduler:
         return self._archiver.running() if self._archiver is not None else []
 
     def stop(self, timeout: float) -> None:
-        """Stop ticking, kill the implementers in flight, fail their runs and release the thread pool.
+        """Stop ticking, kill the agents in flight, fail their runs and release the thread pool.
 
-        The executor is cancelled first. After that, every agent is either recorded or never starts, and the evaluator
-        child processes are dead. The rows are written here, as ``reap`` does for a crashed daemon. The threads remove
-        their own worktrees. ``timeout`` limits the wait for them.
+        The executor stops first: no job is submitted after it, and it stops every job. Each job still reports, which
+        closes its agent's row as stopped and lets its run keep what it made. ``timeout`` limits the wait for them.
+        Then the rows that are still open are written here, as ``reap`` does for a crashed daemon.
         """
         self._stop.set()
-        self._executor.cancel()
-        self._fail_open(STOPPED_ERROR, remove_worktrees=False)
+        self._controller.stop(timeout)
         self.wait(timeout)
+        self._fail_open(STOPPED_ERROR, reaped=False)
         wait(self._archiving(), timeout=timeout)
         self._pool.shutdown(wait=False, cancel_futures=True)
 
@@ -1396,14 +1412,6 @@ class RoleTick:
             Event.target_id == AgentSession.id,
         )
         return self.s.scalars(self._mine().where(~given).order_by(AgentSession.id.desc()).limit(1)).first()
-
-
-def _in_worktree(repo: Repo, wt_path: Path, agent: Callable[[], Outcome]) -> None:
-    """Run a sweep's agent in its worktree, then remove the worktree, unless the agent was handed over."""
-    with ExitStack() as cleanup:
-        cleanup.callback(git.remove_worktree, repo, wt_path)
-        if agent().handed_over:
-            cleanup.pop_all()
 
 
 def done_by(role: str) -> ColumnElement[bool]:

@@ -10,7 +10,8 @@ from pytest_mock import MockerFixture
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.exc import OperationalError
 
-from piloop.agents.launcher import STOPPED_ERROR
+from piloop.actor import System
+from piloop.agents.results import STOPPED_ERROR
 from piloop.config import load_campaign_config
 from piloop.daemon.main import ACTOR, Daemon
 from piloop.daemon.serve import RESTART_SIGNAL, SERVE_ARGV
@@ -26,22 +27,29 @@ from piloop.db.models import (
     RunStatus,
     Verdict,
 )
-from piloop.db.session import migrate
+from piloop.db.session import Database, migrate
 from piloop.proc import Inherited, alive, started
 from piloop.settings import Settings
-from tests.conftest import HARNESS_NOOP, ScriptRuntime, console_lines, factory, register, write_toml
+from tests.conftest import (
+    HARNESS_NOOP,
+    ScriptRuntime,
+    console_lines,
+    factory,
+    register,
+    wait_until,
+    workers_of,
+    write_toml,
+)
 
 
 def test_daemon_end_to_end(
     campaign_path: Path, tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(
-        'piloop.agents.launcher.STARTUP_SECONDS', 0
-    )  # the failing implementer worked, then left nothing
+    monkeypatch.setattr('piloop.agents.results.STARTUP_SECONDS', 0)  # the failing implementer worked, then left nothing
     home = tmp_path / 'home'
     runtime = ScriptRuntime()
     daemon = Daemon(Settings(home=home, tick_seconds=0.05))
-    mocker.patch.object(daemon.executor.launcher, 'runtime_factory', factory(runtime))
+    mocker.patch.object(workers_of(daemon.controller).worker, 'runtime_factory', factory(runtime))
     campaign = register(daemon.db, campaign_path)
     with daemon.db.session() as s:
         s.add(Idea(track='score', campaign_id=campaign.id, title='ok', hypothesis='ok', created_by='t'))
@@ -116,7 +124,7 @@ def test_serve_reaps_the_children_an_in_place_restart_handed_over_on_every_tick(
             os.waitpid(pid, os.WNOHANG)  # already reaped by the daemon
 
 
-def test_serve_checks_entire_once_and_the_launcher_learns_the_version(
+def test_serve_checks_entire_once_and_the_worker_learns_the_version(
     tmp_path: Path,
     mocker: MockerFixture,
     entire_log,
@@ -131,16 +139,18 @@ def test_serve_checks_entire_once_and_the_launcher_learns_the_version(
 
     cfg = Settings(home=tmp_path / 'home', tick_seconds=0.01)
     daemon = serve(cfg)
-    assert daemon.executor.launcher.entire_version == '0.10.6'
+    assert workers_of(daemon.controller).worker.entire_version == '0.10.6'
     assert [c['argv'] for c in entire_log()] == [['version']], 'once per start, not per implementer'
     assert re.search(
         rf'piloop\.start \d+\.\ds db={re.escape(cfg.database_url)} entire=0\.10\.6', capsys.readouterr().err
     )
     monkeypatch.setenv('FAKE_ENTIRE_VERSION', '0.10.5')
-    assert serve(cfg).executor.launcher.entire_version == '0.10.5', 'the launcher skips attach below the floor'
+    assert workers_of(serve(cfg).controller).worker.entire_version == '0.10.5', (
+        'the launcher skips attach below the floor'
+    )
     assert 'entire.too_old version=0.10.5 min=0.10.6' in capsys.readouterr().err
     monkeypatch.setenv('PATH', str(tmp_path))
-    assert serve(cfg).executor.launcher.entire_version is None
+    assert workers_of(serve(cfg).controller).worker.entire_version is None
     assert (
         'entire.missing error=entire is not on PATH; install it: curl -fsSL https://entire.io/install.sh | bash'
         in capsys.readouterr().err
@@ -237,6 +247,7 @@ def test_a_restart_whose_shutdown_fails_still_execs(tmp_path: Path, mocker: Mock
     mocker.patch.object(daemon.scheduler, 'hand_over', side_effect=OperationalError('SELECT', {}, Exception('locked')))
     with pytest.raises(OperationalError):
         daemon.serve()
+    workers_of(daemon.controller).worker.join(5)  # its first look for jobs, which the reap started
     daemon.db.close()
     assert execv.call_args.args == (SERVE_ARGV[0], SERVE_ARGV)
 
@@ -248,6 +259,7 @@ def test_a_restart_whose_shutdown_fails_still_execs(tmp_path: Path, mocker: Mock
     mocker.patch.object(daemon.scheduler, 'stop', side_effect=OperationalError('INSERT', {}, Exception('locked')))
     with pytest.raises(OperationalError):
         daemon.serve()
+    workers_of(daemon.controller).worker.join(5)  # its first look for jobs, which the reap started
     daemon.db.close()
     assert not execv.called and cfg.pid_file.exists(), 'a stop keeps the lock while its run threads may live on'
     assert signal.getsignal(signal.SIGTERM) is previous, 'a second SIGTERM ends what is left'
@@ -292,13 +304,15 @@ def test_an_in_place_restart_leaves_the_agents_running_and_the_new_daemon_finish
     agent = int(under_way.read_text())
     start = started(agent)
     assert start is not None and alive(agent, start), 'the agent is still running'
-    with first.db.session() as s:
+    after = Database(cfg.database_url, actor=System.HUMAN)  # the first daemon closed its own
+    with after.session() as s:
         assert (s.get_one(Run, 1).status, s.get_one(AgentSession, 1).state) == (
             RunStatus.RUNNING,
             AgentSessionState.RUNNING,
         )
     assert (cfg.home / 'runs' / '1' / 'worktree').is_dir()
 
+    after.close()
     second = Daemon(cfg)
     second.scheduler.reap()
     hold.unlink()
@@ -314,11 +328,10 @@ def test_an_in_place_restart_leaves_the_agents_running_and_the_new_daemon_finish
         assert [(c.summary, c.verdict) for c in made] == [('first', Verdict.KEEP), ('second', Verdict.KEEP)]
         assert s.get_one(Idea, 1).status is IdeaStatus.DONE
         assert s.scalar(select(func.count()).select_from(Run)) == 1, 'the idea never ran again'
-    assert not (cfg.home / 'runs' / '1' / 'worktree').exists()
+    wait_until(lambda: not (cfg.home / 'runs' / '1' / 'worktree').exists())  # once the agent's result is in
     second.shutdown(timeout=5)
     # In a real restart the exec ends the old thread. Here it lives on, sees its agent end, and leaves the run alone.
     first.scheduler.wait(10)
-    first.db.close()
 
 
 def test_serve_refuses_when_a_daemon_holds_the_pid_file(
@@ -348,11 +361,12 @@ def test_shutdown_fails_open_runs(tmp_path: Path, capsys: pytest.CaptureFixture[
         s.add(AgentSession(kind=RoleName.RESEARCH, campaign_id=1, reason='by hand'))
         s.commit()
     daemon.shutdown(timeout=1)
-    with daemon.db.session() as s:
+    after = Database(daemon.db.engine.url.render_as_string(hide_password=False), actor=System.HUMAN)
+    with after.session() as s:
         assert (s.get_one(Run, 1).status, s.get_one(Run, 1).error) == (RunStatus.FAILED, STOPPED_ERROR)
         [request] = s.scalars(select(AgentSession)).all()
         assert request.state is AgentSessionState.REQUESTED, 'a request survives a restart'
-    daemon.db.close()
+    after.close()
     assert console_lines(capsys.readouterr().err) == snapshot(
         ['run.aborted run=1 error=daemon stopped', 'piloop.shutdown Ns']
     )

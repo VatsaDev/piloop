@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import get_type_hints
 
 import piloop_dir_store
+import piloop_inline
 import piloop_min_gain
 import piloop_nice
 import piloop_no_unit_regression
@@ -38,6 +39,20 @@ HELPERS: set[object] = {
     capabilities.check_storage_backend,
     capabilities.number,
     capabilities.GO,
+    capabilities.key_of,
+    capabilities.Settled,
+    capabilities.JobKey,  # a type alias, which the search of classes does not find by itself
+    capabilities.Control,
+    capabilities.run_agent,
+    capabilities.run_evaluation,
+    capabilities.remove,
+    capabilities.kill_group,
+    capabilities.Leases,  # the kit: helpers that an executor may use
+    capabilities.Timing,
+    capabilities.Grant,
+    capabilities.Answer,
+    capabilities.StaleLease,
+    capabilities.NoParameters,
 }
 """What a provider raises, calls or returns that no signature of a contract names."""
 
@@ -55,6 +70,8 @@ def _declared() -> list[Capability[object]]:
 
 def _types(hint: object) -> set[type]:
     """The classes of piloop that a type hint names, outside ``piloop.db``."""
+    if isinstance(hint, typing.TypeAliasType):  # ``type Artifact = ...``: what it stands for
+        return _types(hint.__value__)
     if isinstance(hint, type):
         ours = hint.__module__.startswith('piloop.') and not hint.__module__.startswith('piloop.db')
         return {hint} if ours else set()
@@ -135,9 +152,21 @@ def _imports(path: Path) -> set[str]:
     }
 
 
+def test_core_imports_no_helper_of_the_kit() -> None:
+    """``piloop.plugins.kit`` holds helpers that providers may use: only providers, and this module, import it."""
+    root = Path(capabilities.__file__).parent
+    providers = (root / 'plugins' / 'kit', root / 'plugins' / 'builtin')
+    core = [p for p in root.rglob('*.py') if not p.is_relative_to(providers[0]) and not p.is_relative_to(providers[1])]
+    importers = [
+        p for p in core if any(m.startswith('piloop.plugins.kit') for m in _imports(p)) and p.stem != 'capabilities'
+    ]
+    assert importers == []
+
+
 def test_the_example_plugins_import_piloop_only_from_the_module() -> None:
     plugins = [
         piloop_dir_store,
+        piloop_inline,
         piloop_min_gain,
         piloop_nice,
         piloop_no_unit_regression,

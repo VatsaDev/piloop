@@ -17,6 +17,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Protocol
 
+from piloop.actor import Agent
 from piloop.version import Version
 
 Bridge = Callable[[Path, dict[str, object]], None]
@@ -247,7 +248,60 @@ def storage_remote(toml: Path, raw: dict[str, object]) -> None:
     warn(toml, 'storage.remote', '[storage.remote] is deprecated; write [storage.backend]', removed_in=REMOVED_IN)
 
 
-CONFIG_BRIDGES: tuple[Bridge, ...] = (herdr_keys, storage_remote)
+@until('0.3.0', 'max_evaluations in config.toml is [plugins.executor] evaluations: delete the max_evaluations bridge')
+def max_evaluations(toml: Path, raw: dict[str, object]) -> None:
+    """In ``config.toml``, ``max_evaluations`` is ``evaluations`` in ``[plugins.executor]``: the slots of ``workers``.
+
+    A value that ``[plugins.executor]`` sets too wins.
+    """
+    if (old := raw.pop('max_evaluations', None)) is None:
+        return
+    _slots(raw, old)
+    warn(
+        toml,
+        'max_evaluations',
+        'max_evaluations is deprecated; write evaluations in [plugins.executor]',
+        removed_in=REMOVED_IN,
+    )
+
+
+OLD_MAX_EVALUATIONS_ENV = 'PILOOP_MAX_EVALUATIONS'
+
+
+@until('0.3.0', 'PILOOP_MAX_EVALUATIONS is PILOOP_PLUGINS__EXECUTOR__EVALUATIONS: delete max_evaluations_env')
+def max_evaluations_env(environ: Mapping[str, str], raw: dict[str, object]) -> dict[str, object]:
+    """Return ``raw``, the parsed ``config.toml``, with ``PILOOP_MAX_EVALUATIONS`` in it, with a warning.
+
+    It becomes ``[plugins.executor] evaluations``, unless the file sets that.
+    """
+    if (old := environ.get(OLD_MAX_EVALUATIONS_ENV)) is None:
+        return raw
+    _slots(raw, old)
+    warnings.warn(
+        f'{OLD_MAX_EVALUATIONS_ENV} is deprecated; set PILOOP_PLUGINS__EXECUTOR__EVALUATIONS; removed in piloop'
+        f' {REMOVED_IN}',
+        PiloopDeprecationWarning,
+        stacklevel=2,
+    )
+    return raw
+
+
+WORKERS = 'workers'
+"""The executor whose slots ``max_evaluations`` was in 0.2.0, the only one there was."""
+
+
+def _slots(raw: dict[str, object], old: object) -> None:
+    """Put ``old`` in ``raw`` as ``evaluations`` of ``[plugins.executor]``, if that selects ``workers`` or nothing.
+
+    Another executor has no such key: the old one goes, with its warning, and changes nothing.
+    """
+    plugins = raw.setdefault('plugins', {})
+    executor = plugins.setdefault('executor', {'provider': WORKERS}) if isinstance(plugins, dict) else None
+    if isinstance(executor, dict) and executor.setdefault('provider', WORKERS) == WORKERS:
+        executor.setdefault('evaluations', old)
+
+
+CONFIG_BRIDGES: tuple[Bridge, ...] = (herdr_keys, storage_remote, max_evaluations)
 """The bridges of ``config.toml``, the global settings file (``piloop.settings.config_file``)."""
 
 
@@ -269,14 +323,13 @@ upgrade with it: in its ``PILOOP_ACTOR``, and in the SQL that its brief told it 
 
 
 @until('0.3.0', 'a 0.1.0 implementer signs worker#<id>: delete signatures and OLD_SIGNATURE, match <kind>#<id>')
-def signatures(kind: str, agent_session_id: int) -> tuple[str, ...]:
+def signatures(agent: Agent) -> tuple[str, ...]:
     """Return the signatures of an agent session's rows: ``<kind>#<id>``, and an implementer's ``worker#<id>`` too.
 
     The checks that find an agent's own rows (its work at startup, its finding, its open escalation, its own comments,
     its silence) match authors against these, so a row that a 0.1.0 agent signs after the upgrade still counts.
     """
-    own = f'{kind}#{agent_session_id}'
-    return (own, f'{OLD_SIGNATURE}{agent_session_id}') if kind == 'implementer' else (own,)
+    return (agent.signature, f'{OLD_SIGNATURE}{agent.session}') if agent.role == 'implementer' else (agent.signature,)
 
 
 @until('0.3.0', 'PILOOP_ACTOR=worker#<id> of a 0.1.0 agent: delete old_actor and its call in Settings.actor')

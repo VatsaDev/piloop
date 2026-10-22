@@ -11,7 +11,7 @@ from piloop.campaign.archive import Pruned
 from piloop.campaign.campaigns import workspace_dir
 from piloop.daemon import archiver as archiver_module
 from piloop.daemon.archiver import ArchivePolicy, Archiving
-from piloop.daemon.run_executor import RunExecutor
+from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
 from piloop.db.models import Archive, Campaign, utcnow
 from piloop.db.session import Database
@@ -35,7 +35,7 @@ def test_the_tick_archives_an_idea_once_its_run_is_judged_and_leaves_its_files_f
     store = Store(tmp_path / 'store')
     scheduler = Scheduler(
         db,
-        RunExecutor(db, tracer, tmp_path, factory(runtime)),
+        RunController(db, tracer, tmp_path, factory(runtime)),
         tracer,
         tmp_path,
         factory(runtime),
@@ -69,7 +69,7 @@ def test_a_stopping_scheduler_waits_for_the_archivers_job(
     store = Store(tmp_path / 'store')
     scheduler = Scheduler(
         db,
-        RunExecutor(db, tracer, tmp_path, factory(runtime)),
+        RunController(db, tracer, tmp_path, factory(runtime)),
         tracer,
         tmp_path,
         factory(runtime),

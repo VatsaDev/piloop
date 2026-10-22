@@ -119,7 +119,7 @@ def files_of(cfg: CampaignConfig, actor: Actor) -> Files | None:
 def compose_brief(
     role: Role,
     campaign: Campaign,
-    agent_session_id: int,
+    agent: Agent,
     *,
     reason: str,
     context: str,
@@ -133,7 +133,7 @@ def compose_brief(
     anomalies (``incident``). ``wake``, the lessons overview of the repo (``piloop.reports.wake``), follows them. An
     implementer also gets its track's addendum after the role's addendum. With several tracks, the context lists them.
     """
-    author = f'{role.kind}#{agent_session_id}'
+    author = agent.signature
     repo = Path(campaign.path)
     cfg = config_of(campaign)
     addendum = cfg.role(role.kind).addendum

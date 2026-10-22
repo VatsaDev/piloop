@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from piloop.config import CampaignConfig
 from piloop.deprecated import BRIDGES, CONFIG_BRIDGES
 from piloop.plugins.contracts.store import STORAGE_BACKENDS
+from piloop.plugins.host import declared
 from piloop.runtime.herdr import HerdrSettings
 from piloop.settings import StorageSettings
 from piloop.triggers import TRIGGERS
@@ -116,6 +117,7 @@ def global_section() -> str:
         schema = json_schema(backend)
         out += f'\n### `[storage.backend]` with `kind = "{kind}"`\n\n{mdx(schema.get("description", ""))}\n\n'
         out += table(schema, schema.get('$defs', {}))
+    out += home_plugins()
     herdr = json_schema(HerdrSettings)
     out += (
         '\n### `[runtimes.<name>]`\n\nThe settings of a runtime, which the runtime reads and checks. An environment'
@@ -134,3 +136,22 @@ def deprecated_section() -> str:
         ' the key, its replacement and the release that removes it. The changelog lists them too.\n\n'
         f'{bullets}\n'
     )
+
+
+def home_plugins() -> str:
+    """Return ``[plugins]`` of ``config.toml``: a table for each capability of the home, with its providers' keys."""
+    out = (
+        '\n### `[plugins]`\n\n`[plugins.<capability>]` selects the provider of a capability of the home: `provider`, the'
+        " name of its entry point, and the provider's own keys, which the daemon checks before it starts.\n"
+    )
+    for capability in declared():
+        selection = capability.selection
+        if selection is None or selection.scope != 'home' or not selection.key.startswith('plugins.'):
+            continue
+        name = selection.key.split('.')[1]
+        out += f'\n#### `[plugins.{name}]`\n\nSelects the {capability.noun}.\n'
+        for provider, source in capability.sources().items():
+            parameters = getattr(capability.get(provider), 'Parameters', None) if source.built_in else None
+            if isinstance(parameters, type) and issubclass(parameters, BaseModel):
+                out += f'\nWith `provider = "{provider}"`:\n\n{table(json_schema(parameters), {})}'
+    return out

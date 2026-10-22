@@ -185,6 +185,33 @@ LIVE = (AgentSessionState.STARTING, AgentSessionState.RUNNING)
 ENDED = (AgentSessionState.EXITED, AgentSessionState.KILLED)
 
 
+class LeaseKind(StrEnum):
+    """What a lease's job is: an agent session, or an evaluation of the evaluation queue."""
+
+    AGENT = 'agent'
+    EVALUATION = 'evaluation'
+
+
+class LeaseState(StrEnum):
+    """The lifecycle of a lease (``piloop.plugins.kit.executor.leases``).
+
+    ``queued`` waits for a worker. ``acquired`` is taken, ``running`` is started. Then ``reported`` (the worker's report
+    applied), ``expired`` (the worker went silent past ``toleration_seconds``, or reported its job gone), or
+    ``cancelled`` (the job ended before a worker reported it, at a daemon stop for example).
+    """
+
+    QUEUED = 'queued'
+    ACQUIRED = 'acquired'
+    RUNNING = 'running'
+    REPORTED = 'reported'
+    EXPIRED = 'expired'
+    CANCELLED = 'cancelled'
+
+
+LIVE_LEASES = (LeaseState.ACQUIRED, LeaseState.RUNNING)
+OPEN_LEASES = (LeaseState.QUEUED, *LIVE_LEASES)
+
+
 def _values[E: StrEnum](enum: type[E]) -> Enum:
     """Store enum values, not member names, with a CHECK constraint, so that raw SQL cannot write other values."""
     return Enum(
@@ -245,6 +272,8 @@ class Base(DeclarativeBase):
         CommentKind: _values(CommentKind),
         LessonStatus: _values(LessonStatus),
         AgentSessionState: _values(AgentSessionState),
+        LeaseKind: _values(LeaseKind),
+        LeaseState: _values(LeaseState),
     }
 
 
@@ -592,7 +621,7 @@ class Measurement(Base):
 
 
 class Evaluation(Base):
-    """An evaluation that the daemon needs: it waits for a slot (``max_evaluations``) or runs. The evaluation queue.
+    """An evaluation that the daemon needs: it waits for a slot of the executor or runs. The evaluation queue.
 
     The daemon inserts a row when it needs a measurement, and deletes it when the measurement is recorded, so the table
     holds only what waits or runs. A free slot goes to the campaign with the fewest running rows, and in it to its head
@@ -619,6 +648,63 @@ class Evaluation(Base):
     """Who cancelled it while it ran. Their crashed measurement is recorded; the daemon stops the evaluator."""
 
     candidate: Mapped[Candidate] = relationship()
+
+
+class Lease(Base):
+    """A lease (``piloop.plugins.kit.executor.leases``): a time-limited claim on one job by one worker (``piloop.plugins.kit.executor.leases``).
+
+    The table is in core's schema until a plugin can own tables. ``WorkersExecutor.submit`` inserts a ``queued`` lease with its job description (``job``). A worker acquires it, starts the job and
+    renews the lease with a heartbeat every ``renew_seconds``. The id is the **fencing token**: it only grows, and
+    a job's next lease always has a larger one. A report applies only on the live, newest lease of its job, so a worker
+    that was presumed dead cannot overwrite newer work. Rows are kept: a refused report stays as a
+    ``lease.stale_report`` event on the job's row.
+    """
+
+    __tablename__ = 'leases'
+    __table_args__ = (
+        CheckConstraint(
+            "(kind = 'agent') = (agent_session_id IS NOT NULL) AND (kind = 'evaluation') = (evaluation_id IS NOT NULL)",
+            name='leases.a lease has the job of its kind',
+        ),
+        Index('ix_leases_state', 'state'),
+        Index('ix_leases_agent_session', 'agent_session_id'),
+        Index('ix_leases_evaluation', 'evaluation_id'),
+        *text_checks('leases', nullable=('worker', 'request_id')),
+        {'sqlite_autoincrement': True},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    """The fencing token. AUTOINCREMENT: an id is never used again, so a newer lease always has a larger one."""
+    kind: Mapped[LeaseKind]
+    agent_session_id: Mapped[int | None] = mapped_column(ForeignKey('agent_sessions.id', ondelete='CASCADE'))
+    """The job of an ``agent`` lease."""
+    evaluation_id: Mapped[int | None]
+    """The job of an ``evaluation`` lease: an ``evaluations`` id. No foreign key: the queue row goes when it is
+    measured, and the lease stays."""
+    state: Mapped[LeaseState] = mapped_column(default=LeaseState.QUEUED, server_default=LeaseState.QUEUED.value)
+    worker: Mapped[str | None]
+    """The worker that acquired it. NULL while it is queued."""
+    job: Mapped[dict[str, object]] = mapped_column(default=dict, server_default=EMPTY_JSON)
+    """The job description (``AgentJob``, ``EvaluationJob``): what to materialize, what to run, and what to return."""
+    handle: Mapped[dict[str, object]] = mapped_column(default=dict, server_default=EMPTY_JSON)
+    """What the worker needs to find its job again after a restart: the runtime's handle of an agent, or the process
+    group of an evaluator."""
+    created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
+    acquired_at: Mapped[datetime | None]
+    started_at: Mapped[datetime | None]
+    renewed_at: Mapped[datetime | None]
+    """The last heartbeat, or the acquire."""
+    expires_at: Mapped[datetime | None]
+    """``renewed_at`` plus ``toleration_seconds``. Past it, the scheduler expires the lease."""
+    unreachable_at: Mapped[datetime | None]
+    """When the scheduler found the worker silent past ``grace_seconds``. A heartbeat clears it."""
+    revoked_at: Mapped[datetime | None]
+    """When the daemon asked the worker to stop the job: a kill or a cancel. The worker still reports it."""
+    ended_at: Mapped[datetime | None]
+    request_id: Mapped[str | None]
+    """The request id of the report that applied. A report sent again with it gets the same ``receipt``."""
+    receipt: Mapped[dict[str, object]] = mapped_column(default=dict, server_default=EMPTY_JSON)
+    """What the report applied, or why the lease ended."""
 
 
 class Comment(Tracked, Base):

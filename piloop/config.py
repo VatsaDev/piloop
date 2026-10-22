@@ -45,7 +45,7 @@ from piloop.mcp import McpServer, ServerName
 from piloop.plugins.contracts.runtime import RUNTIMES
 from piloop.plugins.contracts.stop import DEFAULT as DEFAULT_STOP_RULE, STOP_RULES, Fact, Limits
 from piloop.plugins.contracts.verdict import Direction
-from piloop.plugins.host import Capability, check_selection, declared
+from piloop.plugins.host import Capability, PluginTable, check_plugins
 from piloop.triggers import (
     AnomalyTrigger,
     CronTrigger,
@@ -58,6 +58,8 @@ from piloop.triggers import (
 
 CONFIG_FILE = 'piloop.toml'
 BRIEF_FILE = 'brief.md'
+TRANSCRIPT = 'transcript.txt'
+"""The file in an agent's log directory with the end of its screen or output, written when it ends."""
 
 
 def _registered_runtime(name: str) -> str:
@@ -611,23 +613,6 @@ group names a ``SweepRole`` or a ``ImplementerRole``. A role whose runtime or tr
 looks them up, which activates the runtimes or the triggers first."""
 
 
-class PluginTable(BaseModel):
-    """``[plugins.<capability>]``: which provider of a capability the campaign uses, and its parameters.
-
-    The capability declares the table (``piloop.plugins.host.Selection``), and the provider checks the parameters.
-    """
-
-    model_config = ConfigDict(extra='allow', frozen=True, use_attribute_docstrings=True)
-
-    provider: str
-    """The name of the provider: the name of its entry point. The other keys of the table are its parameters."""
-
-    @property
-    def parameters(self) -> str:
-        """The other keys of the table, the provider's parameters, as a JSON object: what a pure provider gets."""
-        return json.dumps(self.model_extra or {}, sort_keys=True)
-
-
 class CampaignConfig(BaseModel):
     """Everything piloop needs to know about a campaign repo."""
 
@@ -707,15 +692,7 @@ class CampaignConfig(BaseModel):
 
     def _check_plugins(self) -> None:
         """Each ``[plugins.<name>]`` names a capability, one of its providers, and the parameters that it takes."""
-        tables = {c.selection.key: c for c in declared() if c.selection is not None and c.selection.scope == 'campaign'}
-        for name, table in self.plugins.items():
-            capability = tables.get(f'plugins.{name}.provider')
-            if capability is None:
-                known = sorted(k.split('.')[1] for k in tables if k.startswith('plugins.'))
-                raise ValueError(
-                    f'[plugins.{name}]: no capability has that name; there is {", ".join(known) or "none"}'
-                )
-            check_selection(capability, {'plugins': {name: table.model_dump()}}, 'campaign')
+        check_plugins({name: table.model_dump() for name, table in self.plugins.items()}, 'campaign')
 
     def _check_spend(self) -> None:
         """``[spend] limit`` holds launches only through the stop rule, so the selected rule must read the spend."""

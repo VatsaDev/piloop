@@ -7,7 +7,7 @@ from piloop.plugins.host import Selection as Selection, Source as Source
 from piloop.plugins.contracts.runtime import RUNTIMES as RUNTIMES
 from piloop.runtime import AgentSpec as AgentSpec, AgentStatus as AgentStatus, Check as Check, Handle as Handle
 from piloop.runtime import NotAttachable as NotAttachable, NotSteerable as NotSteerable
-from piloop.runtime import Outcome as AgentOutcome  # noqa: F401  renamed: the verdict's Outcome has the name
+from piloop.runtime import AgentExit as AgentExit
 from piloop.runtime import Runtime as Runtime, RuntimeFailure as RuntimeFailure, StartFailed as StartFailed
 from piloop.harnesses import Invocation as Invocation, QueueKey as QueueKey
 from piloop.settings import runtime_settings as runtime_settings
@@ -40,3 +40,21 @@ from piloop.plugins.contracts.stop import STOP_RULES as STOP_RULES, StopRule as 
 from piloop.plugins.contracts.stop import Limits as Limits, Progress as Progress, Fact as Fact
 from piloop.plugins.contracts.stop import Go as Go, GO as GO, Hold as Hold, Stop as Stop
 from piloop.plugins.builtin.stop import LIMITS as LIMITS
+
+from piloop.plugins.contracts.executor import EXECUTORS as EXECUTORS, Executor as Executor, Host as Host
+from piloop.plugins.contracts.executor import Results as Results, Settled as Settled, NoParameters as NoParameters
+from piloop.plugins.contracts.executor import AgentJob as AgentJob, EvaluationJob as EvaluationJob, LeftJob as LeftJob
+from piloop.plugins.contracts.executor import AgentReport as AgentReport, EvaluationReport as EvaluationReport
+from piloop.plugins.contracts.executor import AgentKey as AgentKey, EvaluationKey as EvaluationKey, JobKey as JobKey
+from piloop.plugins.contracts.executor import key_of as key_of
+from piloop.plugins.contracts.executor import GitTree as GitTree, Checkout as Checkout, Commits as Commits
+from piloop.plugins.kit.executor.jobs import Control as Control, run_agent as run_agent, remove as remove
+from piloop.plugins.kit.executor.jobs import run_evaluation as run_evaluation
+from piloop.plugins.kit.executor.leases import Leases as Leases, Timing as Timing, Grant as Grant, Answer as Answer
+from piloop.plugins.kit.executor.leases import StaleLease as StaleLease
+from piloop.proc import kill_group as kill_group
+from piloop.plugins.builtin.executor.workers import WorkersExecutor as WorkersExecutor
+from piloop.otel import Tracer as Tracer, Span as Span, ConsoleProcessor as ConsoleProcessor
+from piloop.runtime.factory import RuntimeFactory as RuntimeFactory
+from piloop.mcp import McpServer as McpServer
+from piloop.usage import Usage as Usage, UsageSpec as UsageSpec, UsageReader as UsageReader

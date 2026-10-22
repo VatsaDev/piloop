@@ -101,6 +101,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
             'ideas_fts_docsize',
             'ideas_fts_idx',
             'journal',
+            'leases',
             'lessons',
             'measurements',
             'runs',
@@ -1003,6 +1004,7 @@ def test_0018_renames_workers_agent_sessions_and_the_worker_role_implementer_wit
             assert sql + ';' == t.sql(), f'{t.name}: the migration installs what the package renders'
         con.execute('DELETE FROM agent_sessions WHERE id = 3')
         con.execute('DELETE FROM runs WHERE id = 3')
+    command.upgrade(cfg, 'head')
     command.check(cfg)
     command.downgrade(cfg, '0017')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
@@ -1090,3 +1092,20 @@ def test_an_upgrade_that_fails_halfway_leaves_the_database_as_it_was(tmp_path: P
     command.upgrade(cfg, 'head')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert con.execute('SELECT target_kind FROM comments').fetchall() == [('campaign',)]
+
+
+def test_0019_adds_the_leases_whose_job_is_of_their_kind_and_downgrades(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0019')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO leases (kind, evaluation_id) VALUES ('evaluation', 7)")
+        assert con.execute('SELECT id, state, job, receipt FROM leases').fetchall() == [(1, 'queued', '{}', '{}')]
+        with pytest.raises(sqlite3.IntegrityError, match='a lease has the job of its kind'):
+            con.execute("INSERT INTO leases (kind, evaluation_id) VALUES ('agent', 7)")
+        con.execute('DELETE FROM leases')
+        con.execute("INSERT INTO leases (kind, evaluation_id) VALUES ('evaluation', 7)")
+        assert con.execute('SELECT id FROM leases').fetchall() == [(2,)], 'a fencing token is never used again'
+    command.downgrade(cfg, '0018')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute("SELECT name FROM sqlite_master WHERE name = 'leases'").fetchall() == []

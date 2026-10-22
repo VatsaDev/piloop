@@ -327,9 +327,10 @@ built-in stop rule `limits` holds; a stop rule of a plugin must read the spend, 
 
 ## PluginTable
 
-`[plugins.<capability>]`: which provider of a capability the campaign uses, and its parameters.
+`[plugins.<capability>]`: which provider of a capability to use, and its parameters.
 
-The capability declares the table (`piloop.plugins.host.Selection`), and the provider checks the parameters.
+In `piloop.toml` for a capability of the campaign, in `config.toml` for one of the home. The capability declares
+the table (`Selection`), and the provider checks the parameters (`check_plugins`).
 
 | Key | Type | Default | Description |
 |---|---|---|---|
@@ -500,6 +501,23 @@ A package adds a backend with an entry point in the `piloop.stores` group: see [
 | `storage_class` | string | `"GLACIER_IR"` | The S3 storage class of a blob of at least `standard_below` compressed bytes. |
 | `standard_below` | integer | `131072` | Compressed size under which a blob is stored as `STANDARD`: Glacier IR bills every object as at least 128 KB. |
 
+### `[plugins]`
+
+`[plugins.<capability>]` selects the provider of a capability of the home: `provider`, the name of its entry point, and the provider's own keys, which the daemon checks before it starts.
+
+#### `[plugins.executor]`
+
+Selects the executor.
+
+With `provider = "workers"`:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `evaluations` | integer | `2` | How many evaluations run at the same time, across all campaigns (`capacity`). The others wait in the evaluation queue (`piloop eval queue`). |
+| `renew_seconds` | number | `10` | How often the worker renews its leases with a heartbeat. Kubernetes: the kubelet renews its node Lease every 10 s. |
+| `grace_seconds` | number | `50` | The silence after which the worker is unreachable (`lease.unreachable`) and gets no new lease until it is heard again. Kubernetes: `--node-monitor-grace-period`, 50 s since 1.32 (40 s before). |
+| `toleration_seconds` | number | `300` | The silence after which its leases expire and their jobs are queued again with a larger fencing token. The worker stops its own jobs two heartbeats before. Kubernetes: the `tolerationSeconds` of 300 that the `DefaultTolerationSeconds` admission plugin gives a pod for the unreachable taint. |
+
 ### `[runtimes.<name>]`
 
 The settings of a runtime, which the runtime reads and checks. An environment variable wins over the file. The `herdr` runtime reads `[runtimes.herdr]`, and `PILOOP_HERDR_<KEY>` overrides a key:
@@ -528,3 +546,4 @@ These keys still work. Each one shows a `PiloopDeprecationWarning` that names th
 - `{claude_config_dir}` and `{codex_home}` in `[harness.<name>.usage] file` are `{env:…}` placeholders. `{claude_config_dir}` is `{env:CLAUDE_CONFIG_DIR:~/.claude}`, and `{codex_home}` is `{env:CODEX_HOME:~/.codex}`.
 - In `config.toml`, `herdr_<key> = …` is `<key> = …` in its `[runtimes.herdr]` table. The Herdr settings are the Herdr runtime's own. Their environment variables (`PILOOP_HERDR_<KEY>`) do not change.
 - In `config.toml`, `[storage.remote]` is `[storage.backend]`: the storage backend that mirrors the store. A key that `[storage.backend]` sets too keeps its value there.
+- In `config.toml`, `max_evaluations` is `evaluations` in `[plugins.executor]`: the slots of `workers`. A value that `[plugins.executor]` sets too wins.

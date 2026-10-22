@@ -106,6 +106,26 @@ erDiagram
         datetime started_at
         varchar cancelled_by
     }
+    leases {
+        integer id PK
+        LeaseKind kind
+        integer agent_session_id FK
+        integer evaluation_id
+        LeaseState state
+        varchar worker
+        json job
+        json handle
+        datetime created_at
+        datetime acquired_at
+        datetime started_at
+        datetime renewed_at
+        datetime expires_at
+        datetime unreachable_at
+        datetime revoked_at
+        datetime ended_at
+        varchar request_id
+        json receipt
+    }
     comments {
         integer id PK
         TargetKind target_kind
@@ -213,6 +233,7 @@ erDiagram
     evaluators ||--o{ measurements : "evaluator_id"
     candidates ||--o{ evaluations : "candidate_id"
     evaluators ||--o{ evaluations : "evaluator_id"
+    agent_sessions |o--o{ leases : "agent_session_id"
     campaigns ||--o{ techniques : "campaign_id"
     campaigns ||--o{ lessons : "campaign_id"
     campaigns ||--o{ documents : "campaign_id"

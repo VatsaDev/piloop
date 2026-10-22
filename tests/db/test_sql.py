@@ -82,6 +82,7 @@ def test_schema_ddl_lists_every_table_with_its_indexes_and_runs(tmp_path: Path) 
             'idea_links',
             'ideas',
             'journal',
+            'leases',
             'lessons',
             'measurements',
             'runs',

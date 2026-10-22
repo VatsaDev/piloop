@@ -11,8 +11,6 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from piloop.db.models import AgentSession
-from piloop.harnesses import Harness
 from piloop.proc import STDERR_IN_ERROR, child_env
 from piloop.settings import settings
 
@@ -44,12 +42,6 @@ class Attached:
 
 class AttachError(RuntimeError):
     """An ``entire`` call failed or gave no checkpoint. The message says why."""
-
-
-def attachable(agent_session: AgentSession, harness: Harness | None) -> tuple[str, str] | None:
-    """Return ``(session_id, entire agent)`` of an implementer whose session Entire can attach, else None."""
-    agent = harness.entire_agent if harness is not None else None
-    return (agent_session.session_id, agent) if agent and agent_session.session_id else None
 
 
 def attach_session(session_id: str, agent: str, cwd: Path) -> Attached:

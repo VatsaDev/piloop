@@ -18,7 +18,7 @@ from alembic import command
 from sqlalchemy import select
 
 from piloop import proc
-from piloop.agents.launcher import STOPPED_ERROR
+from piloop.agents.results import STOPPED_ERROR
 from piloop.daemon.serve import (
     SERVE_ARGV,
     SecretsError,

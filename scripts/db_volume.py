@@ -25,7 +25,7 @@ from piloop.campaign import inbox
 from piloop.campaign.campaigns import BLANK
 from piloop.campaign.stop import check
 from piloop.config import CampaignConfig, config_of, load_campaign_config
-from piloop.daemon.run_executor import RunExecutor
+from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
 from piloop.db.models import Campaign, utcnow
 from piloop.db.session import Database
@@ -280,7 +280,7 @@ class HotPaths:
 
     def __init__(self, db: Database, home: Path) -> None:
         tracer = Tracer(None)
-        self._scheduler = Scheduler(db, RunExecutor(db, tracer, home), tracer, home)
+        self._scheduler = Scheduler(db, RunController(db, tracer, home), tracer, home)
         self._session = db.session()
 
     def __enter__(self) -> dict[str, Callable[[], object]]:

@@ -17,6 +17,7 @@ from scripts.generate import (
     emit,
     evaluate_examples,
     example_dir_store,
+    example_inline_executor,
     example_min_gain,
     example_nice_runtime,
     example_no_unit_regression,
@@ -68,6 +69,7 @@ GENERATORS = (
     example_stop_after_keeps,
     example_verdict_checks,
     example_no_unit_regression,
+    example_inline_executor,
     capabilities,
 )
 

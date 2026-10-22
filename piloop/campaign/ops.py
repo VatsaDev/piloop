@@ -472,7 +472,7 @@ def note_candidate(
     if follow_ups:
         files(campaign, actor)
     try:
-        note(candidate, reason, actor.signature)  # TODO: an Actor once the run executor passes one (#147)
+        note(candidate, reason, actor)
     except NoteRefused as e:
         raise Refused(str(e)) from e
     on = track_for(campaign, track) if track is not None else track_of(config_of(campaign), candidate).name

@@ -12,7 +12,7 @@ from sqlalchemy import select
 from piloop.actor import System
 from piloop.config import load_campaign_config
 from piloop.daemon.main import ACTOR
-from piloop.daemon.run_executor import RunExecutor
+from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import NO_RUN_ERROR, Scheduler
 from piloop.db import sql
 from piloop.db.models import (
@@ -42,8 +42,8 @@ BLOCKING = '#!/bin/sh\nwhile [ ! -f {release} ]; do sleep 0.05; done\n'
 
 
 def scheduler(db: Database, runtime: ScriptRuntime, tmp_path: Path) -> Scheduler:
-    executor = RunExecutor(db, Tracer(None), tmp_path, factory(runtime))
-    return Scheduler(db, executor, Tracer(None), tmp_path, factory(runtime))
+    controller = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    return Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))
 
 
 def low_water(buffer: int) -> list[dict[str, object]]:

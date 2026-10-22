@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 
 from piloop import git, proc
 from piloop.actor import System
-from piloop.agents.launcher import STARTUP_ANOMALY
+from piloop.agents.results import STARTUP_ANOMALY
 from piloop.agents.roles import SQL_HINT, compose_brief
 from piloop.campaign.campaigns import sync
 from piloop.campaign.stop import (
@@ -31,7 +31,7 @@ from piloop.campaign.stop import (
     runs,
 )
 from piloop.config import CampaignConfig, load_campaign_config
-from piloop.daemon.run_executor import UNCOMMITTED_SUMMARY, RunExecutor
+from piloop.daemon.run_controller import UNCOMMITTED_SUMMARY, RunController
 from piloop.daemon.scheduler import STARTUP_BREAKER, STARTUP_WINDOW, STOPPED_ERROR, Scheduler
 from piloop.db import sql
 from piloop.db.models import (
@@ -47,6 +47,9 @@ from piloop.db.models import (
     Idea,
     IdeaLink,
     IdeaStatus,
+    Lease,
+    LeaseKind,
+    LeaseState,
     LinkKind,
     Measurement,
     RoleName,
@@ -84,8 +87,8 @@ from tests.usage.test_usage import PI_ID, store
 
 def make_scheduler(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer | None = None) -> Scheduler:
     tracer = tracer or Tracer(None)
-    executor = RunExecutor(db, tracer, tmp_path, factory(runtime))
-    return Scheduler(db, executor, tracer, tmp_path, factory(runtime))
+    controller = RunController(db, tracer, tmp_path, factory(runtime))
+    return Scheduler(db, controller, tracer, tmp_path, factory(runtime))
 
 
 def request_watchdog(db: Database, campaign: Campaign) -> int:
@@ -206,7 +209,8 @@ def test_a_sweep_checks_out_the_head(db: Database, campaign: Campaign, runtime: 
         'detached checkout of candidate#2, the head (score=2.0)'
         in (tmp_path / 'agent_sessions' / str(agent_session_id) / 'brief.md').read_text()
     )
-    assert git.worktrees_under(Repo(campaign.path), tmp_path / 'agent_sessions') == [], 'removed with the sweep'
+    # the executor removes it once the sweep's result is in, after what waits for the sweep returned
+    wait_until(lambda: git.worktrees_under(Repo(campaign.path), tmp_path / 'agent_sessions') == [])
     hold = tmp_path / 'hold'
     hold.touch()  # The tick measures the head again under the new evaluator: held until the sweep has its brief.
     evaluate = f'while [ -f {hold} ]; do sleep 0.05; done; echo METRIC score=9; echo METRIC size=9'
@@ -785,7 +789,7 @@ def test_a_dead_thread_is_traced_and_its_row_closed(
     mocker: MockerFixture,
 ) -> None:
     scheduler = make_scheduler(db, runtime, tmp_path, tracer)
-    mocker.patch.object(scheduler._executor, 'execute', side_effect=RuntimeError('thread broke'))
+    mocker.patch.object(scheduler._controller, 'execute', side_effect=RuntimeError('thread broke'))
     add_ideas(db, campaign, 'x')
     scheduler.tick()
     scheduler.wait(30)
@@ -967,9 +971,10 @@ def test_a_stop_after_the_implementer_left_its_finding_scores_its_run_on_the_nex
         assert s.get_one(Run, 1).scoring is False
 
 
-def test_stop_closes_herdr_tabs(
+def test_reap_closes_the_herdr_tab_of_an_agent_that_no_executor_adopts(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, herdr_log: Path
 ) -> None:
+    """A running agent that a previous daemon left with no job (no lease, no worktree) outlives it: the reap kills it."""
     with db.session() as s:
         s.add(
             AgentSession(
@@ -984,8 +989,10 @@ def test_stop_closes_herdr_tabs(
             )
         )
         s.commit()
-    executor = RunExecutor(db, Tracer(None), tmp_path, factory(runtime))
-    Scheduler(db, executor, Tracer(None), tmp_path).stop(timeout=5)
+    controller = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    scheduler = Scheduler(db, controller, Tracer(None), tmp_path)
+    scheduler.reap()
+    scheduler.stop(timeout=5)
     assert [json.loads(line) for line in herdr_log.read_text().splitlines()] == [
         ['--session', 'piloop', 'tab', 'close', 'w7:t2']
     ]
@@ -1019,7 +1026,7 @@ def test_a_hand_over_leaves_a_sweep_running_and_the_next_scheduler_re_attaches_t
     with db.session() as s:
         sweep = s.get_one(AgentSession, agent_session_id)
         assert (sweep.state, sweep.error) == (AgentSessionState.EXITED, None)
-    assert not (sweep_dir / 'worktree').exists()
+    wait_until(lambda: not (sweep_dir / 'worktree').exists())  # once its result is in
     second.stop(timeout=5)
 
 
@@ -1033,13 +1040,13 @@ def test_stop_before_the_implementer_starts_never_starts_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gate = Gate()
-    monkeypatch.setattr('piloop.daemon.run_executor.git.add_worktree', gate.wrap(git.add_worktree))
+    monkeypatch.setattr('piloop.plugins.kit.executor.jobs.git.add_worktree', gate.wrap(git.add_worktree))
     scheduler = make_scheduler(db, runtime, tmp_path, tracer)
     (idea,) = add_ideas(db, campaign, 'x')
     scheduler.tick()
     assert gate.entered.wait(10)
     started = time.monotonic()
-    scheduler.stop(timeout=0.5)  # the run thread is past its run-row write, before its start window
+    scheduler.stop(timeout=0.5)  # the worker makes the worktree, before it starts the agent
     assert time.monotonic() - started < 3
     gate.release.set()
     scheduler.wait(10)
@@ -1048,20 +1055,17 @@ def test_stop_before_the_implementer_starts_never_starts_it(
         assert (run.status, run.error) == (RunStatus.FAILED, STOPPED_ERROR)
         assert s.get_one(Idea, idea).status is IdeaStatus.READY
         agent_session = s.get_one(AgentSession, 1)
-        assert (agent_session.state, agent_session.error, agent_session.runtime, agent_session.handle) == (
+        assert (agent_session.state, agent_session.error, agent_session.handle) == (
             AgentSessionState.KILLED,
             STOPPED_ERROR,
-            None,
             {},
         ), 'closed by stop(); nothing was started'
-    assert not (tmp_path / 'runs' / '1' / 'worktree').exists()
+        assert s.scalars(select(Lease.state)).all() == [LeaseState.CANCELLED], 'no worker reports it'
+
+    wait_until(lambda: not (tmp_path / 'runs' / '1' / 'worktree').exists())  # the worker's, once its start returns
     assert events(spans, 'agent_session.kill_failed') == [], 'a row without a process is not asked to die'
     assert dict(span_named(spans, 'piloop.run').attributes or {})['status'] == 'cancelled'
-    assert dict(span_named(spans, 'piloop.agent').attributes or {}) == {
-        'agent_session': 1,
-        'state': 'killed',
-        'error': STOPPED_ERROR,
-    }
+    assert dict(span_named(spans, 'piloop.agent').attributes or {})['state'] == 'killed'
 
 
 def test_stop_waits_for_a_start_in_flight_then_kills_the_implementer(
@@ -1508,6 +1512,40 @@ def running_agent_session(
     return idea
 
 
+def lease_running(db: Database) -> None:
+    """Put each running agent session on a live lease of a worker elsewhere, as the daemon's are."""
+    with db.session() as s:
+        leased = select(Lease.agent_session_id).where(Lease.agent_session_id.is_not(None))
+        rows = s.scalars(
+            select(AgentSession).where(AgentSession.state == AgentSessionState.RUNNING, AgentSession.id.not_in(leased))
+        ).all()
+        for w in rows:
+            now = utcnow()
+            job = {'kind': 'agent', 'agent_session': w.id}
+            handle: dict[str, object] = {'runtime': w.runtime, 'data': w.handle}
+            s.add(
+                Lease(
+                    kind=LeaseKind.AGENT,
+                    agent_session_id=w.id,
+                    state=LeaseState.RUNNING,
+                    worker='elsewhere',
+                    job=job,
+                    handle=handle,
+                    renewed_at=now,
+                    expires_at=now + timedelta(hours=1),
+                )
+            )
+        s.commit()
+
+
+def revoked(db: Database) -> list[object]:
+    """The agents whose leases the daemon revoked: what it asked their workers to kill."""
+    with db.session() as s:
+        leases = s.scalars(select(Lease).where(Lease.revoked_at.is_not(None)).order_by(Lease.id)).all()
+        handles = [lease.handle['data'] for lease in leases]
+        return [data['agent'] for data in handles if isinstance(data, dict)]
+
+
 def comment(
     db: Database, kind: str, target_kind: str, target_id: int, body: str, *, author: str = 'human', priority: int = 2
 ) -> int:
@@ -1684,6 +1722,7 @@ def test_implementers_of_a_stopped_campaign_are_told_to_wrap_up_then_ended_after
             )
         )
         s.commit()
+    lease_running(db)
     scheduler = make_scheduler(db, runtime, tmp_path)
     scheduler.tick()
     assert runtime.prompts == [], 'an active campaign is left alone'
@@ -1700,11 +1739,11 @@ def test_implementers_of_a_stopped_campaign_are_told_to_wrap_up_then_ended_after
     ), 'a sweep is bounded by its timeout and the closing watchdog is one: only implementers are wound down'
     assert settled(db, 'agent_session.wrap_up') == [(1, {'reason': 'max_runs: 2 runs'})]
     scheduler.tick()
-    assert (len(runtime.prompts), runtime.killed) == (1, []), 'told once; ended only when the grace is over'
+    assert (len(runtime.prompts), revoked(db)) == (1, []), 'told once; ended only when the grace is over'
 
     monkeypatch.setattr('piloop.daemon.scheduler.STOP_GRACE_SECONDS', 0)
     scheduler.tick()
-    assert [h.data['agent'] for h in runtime.killed] == ['implementer-1']
+    assert revoked(db) == ['implementer-1']
 
 
 def test_a_headless_implementer_of_a_stopped_campaign_cannot_be_told_and_is_just_ended(
@@ -1713,13 +1752,14 @@ def test_a_headless_implementer_of_a_stopped_campaign_cannot_be_told_and_is_just
     running_agent_session(db, campaign, 'headless')
     stop_campaign(db, campaign, 'plateau: 5 runs without a keep')
     monkeypatch.setattr('piloop.daemon.scheduler.STOP_GRACE_SECONDS', 0)
+    lease_running(db)
     scheduler = make_scheduler(db, runtime, tmp_path)
     scheduler.tick()
     assert settled(db, 'agent_session.wrap_up') == [
         (1, {'reason': 'plateau: 5 runs without a keep', 'error': IsStr(regex='subprocess agent pid 4242 cannot.*')})
     ]
     scheduler.tick()
-    assert [h.data['agent'] for h in runtime.killed] == ['implementer-1']
+    assert revoked(db) == ['implementer-1']
 
 
 def test_an_implementer_that_the_stop_ends_mid_turn_closes_its_run_as_cut_by_the_campaign_stop(
@@ -1771,18 +1811,19 @@ def test_a_stop_with_kill_ends_the_implementers_at_once_and_a_graceful_one_can_b
     """``piloop campaign stop --kill``: no wrap-up prompt and no grace. A sweep keeps its timeout."""
     runtime = PromptingRuntime()
     running_agent_session(db, campaign, 'in flight')
+    lease_running(db)
     scheduler = make_scheduler(db, runtime, tmp_path)
     with db.session() as s:
         request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='machine needed', kill=False)
         s.commit()
     scheduler.tick()  # stops the campaign; its implementers wind down from the next tick, as for a [stop] condition
     scheduler.tick()
-    assert (len(runtime.prompts), runtime.killed) == (1, []), 'graceful: told, and the grace runs'
+    assert (len(runtime.prompts), revoked(db)) == (1, []), 'graceful: told, and the grace runs'
     with db.session() as s:
         request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='now', kill=True)
         s.commit()
     scheduler.tick()
-    assert [h.data['agent'] for h in runtime.killed] == ['implementer-1'], 'a stopped campaign can still be killed'
+    assert revoked(db) == ['implementer-1'], 'a stopped campaign can still be killed'
     scheduler.tick()
     assert settled(db, 'agent_session.stop_ended') == [
         (1, {'reason': 'stopped by human: machine needed', 'error': CAMPAIGN_STOPPED_ERROR})
@@ -1809,6 +1850,7 @@ def test_a_cancelled_run_is_told_to_wrap_up_and_ended_after_the_grace(
         request_cancel(s, s.get_one(Run, 1), System.HUMAN, wrap_up=True)
         request_cancel(s, sweep, System.ORCHESTRATOR, wrap_up=True)
         s.commit()
+    lease_running(db)
     scheduler = make_scheduler(db, runtime, tmp_path)
     scheduler.tick()
     assert runtime.prompts == snapshot(
@@ -1824,10 +1866,10 @@ def test_a_cancelled_run_is_told_to_wrap_up_and_ended_after_the_grace(
         ]
     ), 'only the cancelled run and the cancelled sweep are told'
     scheduler.tick()
-    assert runtime.killed == []
+    assert revoked(db) == []
     monkeypatch.setattr('piloop.daemon.scheduler.STOP_GRACE_SECONDS', 0)
     scheduler.tick()
-    assert [h.data['agent'] for h in runtime.killed] == ['implementer-1', 'research-3']
+    assert revoked(db) == ['implementer-1', 'research-3']
     assert settled(db, 'agent_session.stop_ended') == [
         (1, {'reason': 'cancelled by human', 'error': CANCELLED_ERROR}),
         (3, {'reason': 'cancelled by orchestrator', 'error': CANCELLED_ERROR}),
@@ -1919,9 +1961,10 @@ def test_a_cancelled_request_never_launches_and_a_cancelled_sweep_is_ended(
         request_cancel(s, sweep, System.HUMAN, wrap_up=False)
         request_cancel(s, requested, System.HUMAN, wrap_up=False)
         s.commit()
+    lease_running(db)
     scheduler = make_scheduler(db, runtime, tmp_path)
     assert scheduler.tick() == [], 'the queued run is cancelled before it launches'
-    assert [h.data['agent'] for h in runtime.killed] == ['research-2']
+    assert revoked(db) == ['research-2']
     with db.session() as s:
         w = s.get_one(AgentSession, 1)
         assert (w.state, w.error, s.get_one(Run, 1).error) == (
@@ -2314,7 +2357,7 @@ def test_a_stopped_campaign_is_measured_again_only_on_request(
         s.commit()
     stop_campaign(db, campaign, 'plateau: 5 runs without a keep')
     scheduler = make_scheduler(db, runtime, tmp_path)
-    measured = mocker.patch.object(scheduler._executor, 'remeasure')
+    measured = mocker.patch.object(scheduler._controller, 'remeasure')
     scheduler.tick()
     scheduler.wait(5)
     measured.assert_not_called()
@@ -2331,7 +2374,7 @@ def test_the_daemon_measures_a_candidate_again_when_someone_asks(
 ) -> None:
     """A requested re-measure goes through the queue of re-measures, after the head and the bars that runs need."""
     scheduler = make_scheduler(db, runtime, tmp_path)
-    measured = mocker.patch.object(scheduler._executor, 'remeasure')
+    measured = mocker.patch.object(scheduler._controller, 'remeasure')
     with db.session() as s:
         request_remeasure(s, s.get_one(Candidate, 1), System.ORCHESTRATOR)
         s.commit()

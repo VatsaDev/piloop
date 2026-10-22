@@ -4,6 +4,7 @@ import re
 import subprocess
 import threading
 from pathlib import Path
+from typing import Any
 from unittest.mock import DEFAULT
 
 import pytest
@@ -15,9 +16,10 @@ from opentelemetry.trace import StatusCode
 from pytest_mock import MockerFixture
 from sqlalchemy import func, insert, select
 
+from piloop import git
 from piloop.actor import System
 from piloop.agents.capture import ENTIRE_DIR
-from piloop.agents.launcher import STARTUP_ANOMALY
+from piloop.agents.results import STARTUP_ANOMALY, Ended
 from piloop.agents.roles import SQL_HINT
 from piloop.campaign import stop
 from piloop.campaign.campaigns import sync
@@ -25,13 +27,13 @@ from piloop.campaign.ops import Report, add_measurement, set_verdict
 from piloop.campaign.stop import NOT_STARTED
 from piloop.cli.plugins import selections
 from piloop.config import CampaignConfig, ConfigError, config_of, load_campaign_config
-from piloop.daemon.run_executor import (
+from piloop.daemon.run_controller import (
     INTERRUPTED,
     NO_CHANGES,
     RECOVERED_REASON,
     UNCOMMITTED_SUMMARY,
+    RunController,
     RunEnd,
-    RunExecutor,
     RunOutcome,
     run_outcome,
 )
@@ -61,8 +63,10 @@ from piloop.git import pin as git_pin
 from piloop.harnesses import SESSION_ENV
 from piloop.otel import Span, Tracer
 from piloop.plugins import host
+from piloop.plugins.builtin.executor.worker import _Control
 from piloop.plugins.contracts.verdict import VERDICT_RULES
-from piloop.runtime import Handle, Outcome, StartFailed
+from piloop.plugins.kit.executor import jobs
+from piloop.runtime import AgentExit, Handle, StartFailed
 from piloop.scoring.ledger import (
     DAEMON,
     REBASED,
@@ -99,6 +103,7 @@ from tests.conftest import (
     factory,
     span_named,
     wait_until,
+    workers_of,
     write_script,
     write_toml,
 )
@@ -159,7 +164,7 @@ def make_run(
         return run.id
 
 
-def execute(ex: RunExecutor, db: Database, run_id: int) -> None:
+def execute(ex: RunController, db: Database, run_id: int) -> None:
     """Run ``run_id`` through its requested agent session row, the way the scheduler does: it takes the row, then executes."""
     with db.session() as s:
         requested = select(AgentSession).where(
@@ -172,8 +177,8 @@ def execute(ex: RunExecutor, db: Database, run_id: int) -> None:
     ex.execute(run_id, agent_session_id)
 
 
-def executor(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer | None = None) -> RunExecutor:
-    return RunExecutor(db, tracer or Tracer(None), tmp_path, factory(runtime))
+def controller(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer | None = None) -> RunController:
+    return RunController(db, tracer or Tracer(None), tmp_path, factory(runtime))
 
 
 def reload_campaign(db: Database, campaign: Campaign) -> None:
@@ -221,8 +226,8 @@ def test_successful_run_scores_the_commit(
     spans: InMemorySpanExporter,
 ) -> None:
     run_id = make_run(db, campaign, plan='append one line', provenance='finding comment#3: short files lose')
-    execute(executor(db, runtime, tmp_path, tracer), db, run_id)
-    agent, measure, candidate, run_span = spans.get_finished_spans()
+    execute(controller(db, runtime, tmp_path, tracer), db, run_id)
+    agent, measure, candidate, run_span = [s for s in spans.get_finished_spans() if s.name != 'piloop.job']
     assert dict(agent.attributes or {}) == snapshot(
         {
             'agent_session': 1,
@@ -244,6 +249,7 @@ def test_successful_run_scores_the_commit(
             'commit': IsStr(),
             'candidate': 2,
             'evaluation': 1,
+            'joined': False,
             'measurement': 2,
             'metric.score': 2.0,
             'metric.size': IsPositive(),
@@ -270,6 +276,7 @@ def test_successful_run_scores_the_commit(
             'run.started',
             'implementer.started',
             'implementer.finished',
+            'agent_session.job_ended',
             'run.finished',
             'measurement.recorded',
             'candidate.judged',
@@ -297,7 +304,7 @@ def test_every_commit_is_scored_and_lineage_follows_keeps(
     write_toml(Path(campaign.path), HARNESS_TWO_COMMITS)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     first, second = candidates(db, run_id)
     assert (first.summary, first.verdict, first.metrics['score']) == ('first', Verdict.KEEP, 2.0)
     assert (second.summary, second.verdict, second.metrics['score'], second.parent_id) == (
@@ -316,7 +323,7 @@ def test_every_commit_of_a_run_is_a_candidate_before_the_first_is_measured(
     write_toml(Path(campaign.path), HARNESS_TWO_COMMITS)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     measure = ex._measure
     seen: list[list[tuple[str | None, Verdict, int | None]]] = []
 
@@ -353,7 +360,7 @@ def test_a_run_counts_toward_max_runs_from_its_close_to_its_verdict(
 ) -> None:
     """A run keeps its place under ``max_runs`` from its close until its commits are scored, before its candidates
     exist, and also when a human parks or rejects its idea meanwhile (``piloop watch`` allows it)."""
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     close = ex._close
     counted: list[tuple[int, bool]] = []
 
@@ -378,7 +385,7 @@ def test_worse_commit_is_discarded(db: Database, campaign: Campaign, runtime: Sc
     write_toml(Path(campaign.path), HARNESS_WORSE)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     [e] = candidates(db, run_id)
     assert (e.verdict, e.verdict_by) == (Verdict.DISCARD, DAEMON)
     assert run_row(db, run_id).status is RunStatus.SUCCEEDED
@@ -409,7 +416,7 @@ def test_a_verdict_rule_from_a_plugin_replaces_the_built_in_one_through_piloop_t
             s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
             s.commit()
         run_id = make_run(db, campaign)
-        execute(executor(db, runtime, tmp_path), db, run_id)
+        execute(controller(db, runtime, tmp_path), db, run_id)
         [e] = candidates(db, run_id)
         with db.session() as s:
             reason = s.get_one(Candidate, e.id).verdict_reason
@@ -438,7 +445,7 @@ def test_work_a_stopped_implementer_left_uncommitted_is_recovered_and_a_new_run_
     write_toml(Path(campaign.path), HARNESS_FORGETS_COMMIT)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign, max_runs=1)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     assert (run_row(db, run_id).status, run_row(db, run_id).error) == (RunStatus.FAILED, INTERRUPTED)
     [(summary, verdict, reason, measurements, _)] = scored(db, run_id)
     assert (summary, verdict, reason, measurements) == (
@@ -476,7 +483,7 @@ def test_work_a_stopped_implementer_left_uncommitted_is_recovered_and_a_new_run_
         )
         s.commit()
         finishing = run.id
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     execute(ex, db, finishing)
     with db.session() as s:
         assert '- candidate#' in (
@@ -499,7 +506,7 @@ def test_dirt_after_a_commit_is_recovered_on_its_own_and_the_commit_is_scored_as
     write_toml(Path(campaign.path), HARNESS_COMMITS_AND_LEAVES_DIRT)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     assert [(c[0], c[1], c[3]) for c in scored(db, run_id)] == [
         ('the idea', Verdict.KEEP, 1),
         (UNCOMMITTED_SUMMARY, Verdict.RECOVERED, 0),
@@ -520,7 +527,7 @@ def test_an_idea_whose_implementers_keep_dying_is_requeued_from_its_recovered_wo
     write_toml(Path(campaign.path), toggles)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign, max_runs=1)
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     execute(ex, db, run_id)
     for attempt in range(2, 10):
         with db.session() as s:
@@ -567,7 +574,7 @@ def test_recovery_requeues_0_leaves_recovered_work_to_the_orchestrator(
         ).model_dump(mode='json')
         s.commit()
     run_id = make_run(db, campaign, max_runs=1)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         idea = s.get_one(Idea, run_row(db, run_id).idea_id)
         assert (idea.status, idea.base_candidate_id) == (IdeaStatus.DONE, None)
@@ -588,7 +595,7 @@ def test_the_role_of_the_run_caps_its_recovery_requeues(
     with db.session() as s:
         s.get_one(Run, run_id).role = 'quick'
         s.commit()
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         idea = s.get_one(Idea, run_row(db, run_id).idea_id)
         assert idea.status is IdeaStatus.READY and idea.base_candidate_id is not None, (
@@ -599,11 +606,11 @@ def test_the_role_of_the_run_caps_its_recovery_requeues(
 def test_no_changes_fails_the_run_and_retries_the_idea(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr('piloop.agents.launcher.STARTUP_SECONDS', 0)  # an implementer that worked, then left nothing
+    monkeypatch.setattr('piloop.agents.results.STARTUP_SECONDS', 0)  # an implementer that worked, then left nothing
     write_toml(Path(campaign.path), HARNESS_NOOP)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign, max_runs=2)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     run = run_row(db, run_id)
     assert (run.status, run.error) == (RunStatus.FAILED, NO_CHANGES)
     with db.session() as s:
@@ -613,11 +620,11 @@ def test_no_changes_fails_the_run_and_retries_the_idea(
 def test_implementer_failure_after_max_runs_finishes_the_idea(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr('piloop.agents.launcher.STARTUP_SECONDS', 0)  # an implementer that worked, then left nothing
+    monkeypatch.setattr('piloop.agents.results.STARTUP_SECONDS', 0)  # an implementer that worked, then left nothing
     write_toml(Path(campaign.path), HARNESS_FAILS)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign, max_runs=1)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     run = run_row(db, run_id)
     assert (run.status, run.error) == (RunStatus.FAILED, 'agent exit 3')
     with db.session() as s:
@@ -628,7 +635,7 @@ def test_timeout(db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_p
     write_toml(Path(campaign.path), HARNESS_SLEEPS, implementer_timeout=0.5)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign, max_runs=1)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     run = run_row(db, run_id)
     assert (run.status, run.error) == (RunStatus.TIMED_OUT, 'agent timeout after 0.5s')
     with db.session() as s:
@@ -648,7 +655,7 @@ def test_evaluate_failure_is_a_crash_verdict(
         s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
         s.commit()
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     [e] = candidates(db, run_id)
     assert (e.verdict, e.metrics) == (Verdict.CRASH, {})
     assert e.error is not None and e.error.startswith('evaluate exit 9')
@@ -673,7 +680,7 @@ def test_a_crash_from_a_fault_of_the_host_is_measured_again_on_request_and_judge
     )
     write_toml(Path(campaign.path), HARNESS_APPEND, evaluate=['sh', '-c', measure])
     reload_campaign(db, campaign)
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     ex.remeasure(baseline(db, campaign.id).id)  # the new evaluator measures the head first, as the daemon does
     run_id = make_run(db, campaign)
     fault.touch()
@@ -739,7 +746,7 @@ def test_a_crash_on_the_evaluate_timeout_is_measured_again_on_request_once_the_t
     toml = Path(campaign.path) / 'piloop.toml'
     toml.write_text(toml.read_text().replace('evaluate_timeout = 30', 'evaluate_timeout = 0.2'))
     reload_campaign(db, campaign)
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     ex.remeasure(baseline(db, campaign.id).id)
     run_id = make_run(db, campaign)
     execute(ex, db, run_id)
@@ -767,7 +774,7 @@ def test_a_crash_on_the_evaluate_timeout_is_measured_again_on_request_once_the_t
 def test_a_remeasure_that_a_stop_cancels_records_and_judges_nothing(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     ex.launcher.cancel()
     ex.remeasure(baseline(db, campaign.id).id)
     with db.session() as s:
@@ -781,7 +788,7 @@ def test_brief_carries_history_and_comments(
     write_toml(Path(campaign.path), HARNESS_PROMPT_TO_FILE)
     reload_campaign(db, campaign)
     first = make_run(db, campaign, title='first idea')
-    execute(executor(db, runtime, tmp_path), db, first)  # produces an uncommitted prompt.txt → scored as a commit
+    execute(controller(db, runtime, tmp_path), db, first)  # produces an uncommitted prompt.txt → scored as a commit
     second = make_run(db, campaign, title='second idea')
     with db.session() as s:
         idea_id = s.get_one(Run, second).idea_id
@@ -789,7 +796,7 @@ def test_brief_carries_history_and_comments(
         s.add(Comment(target_kind=TargetKind.RUN, target_id=second, author='pi', kind='decision', body='and faster'))
         s.add(Comment(target_kind=TargetKind.RUN, target_id=first, author='pi', body='about another idea'))
         s.commit()
-    execute(executor(db, runtime, tmp_path), db, second)
+    execute(controller(db, runtime, tmp_path), db, second)
     brief = run_row(db, second).brief or ''
     order = [
         '# Implementer',
@@ -825,7 +832,7 @@ def test_an_implementer_brief_names_its_worktree_as_the_place_to_work_and_the_ca
     write_toml(Path(campaign.path), HARNESS_APPEND.replace('\n', '\npwd > ../cwd.txt\n', 1))
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     cwd = (tmp_path / 'runs' / str(run_id) / 'cwd.txt').read_text().strip()
     brief = run_row(db, run_id).brief or ''
     assert (
@@ -858,7 +865,7 @@ def test_an_implementer_brief_opens_with_the_current_lessons_of_the_repo_within_
         )
         s.commit()
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     brief = run_row(db, run_id).brief or ''
     line = '- [demo] voting | dead | +0 score (lesson#1)'
     if budget:
@@ -878,7 +885,7 @@ def test_pre_written_brief_is_used_verbatim(
     with db.session() as s:
         s.get_one(Run, run_id).brief = 'custom brief'
         s.commit()
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     assert (tmp_path / 'runs' / str(run_id) / 'brief.md').read_text() == 'custom brief'
 
 
@@ -894,7 +901,7 @@ def test_exception_in_run_is_recorded(
     with db.session() as s:
         s.get_one(Run, run_id).base_candidate_id = 999
         s.commit()
-    execute(executor(db, runtime, tmp_path, tracer), db, run_id)
+    execute(controller(db, runtime, tmp_path, tracer), db, run_id)
     run = run_row(db, run_id)
     assert run.status is RunStatus.FAILED and run.error is not None and run.error.startswith('NoResultFound')
     with db.session() as s:
@@ -1032,7 +1039,7 @@ def test_transcript_failure_is_only_an_event(
 ) -> None:
     mocker.patch.object(runtime, 'read', side_effect=OSError('pane gone'))
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path, tracer), db, run_id)
+    execute(controller(db, runtime, tmp_path, tracer), db, run_id)
     assert run_row(db, run_id).status is RunStatus.SUCCEEDED
     assert events(spans, 'agent_session.transcript_lost') == [{'error': 'pane gone'}]
 
@@ -1044,7 +1051,7 @@ def test_a_rejection_during_the_run_is_not_undone(
     with db.session() as s:
         s.get_one(Idea, s.get_one(Run, run_id).idea_id).status = IdeaStatus.REJECTED
         s.commit()
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         assert s.get_one(Idea, 1).status is IdeaStatus.REJECTED
 
@@ -1067,7 +1074,7 @@ def test_implementer_env_points_at_the_daemon_home(
         toml.write('session_env = ["SCRIPT_SESSION"]\n')
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    execute(executor(db, ScriptRuntime(), tmp_path), db, run_id)
+    execute(controller(db, ScriptRuntime(), tmp_path), db, run_id)
     [e] = candidates(db, run_id)
     lines = Repo(campaign.path).git.show(f'{e.commit_sha}:env.txt').splitlines()
     env = dict(line.split('=', 1) for line in lines if '=' in line)
@@ -1084,7 +1091,7 @@ def test_lineage_follows_the_actual_predecessor(
     )
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     worse, better = candidates(db, run_id)
     assert (worse.verdict, better.verdict) == (Verdict.DISCARD, Verdict.KEEP)
     assert better.parent_id == worse.id, 'built on the discarded commit, judged against the last keep'
@@ -1100,7 +1107,7 @@ def test_an_implementer_that_never_got_going_is_relaunched_on_its_run_then_the_r
     """
     mocker.patch.object(runtime, 'start', side_effect=StartFailed('HerdrError: prompt_lost: no pickup', 'Welcome\n'))
     run_id = make_run(db, campaign, max_runs=1)
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     for launches in (1, 2):
         execute(ex, db, run_id)
         with db.session() as s:
@@ -1150,7 +1157,7 @@ def test_a_worktree_that_cannot_be_made_is_a_failed_start_that_frees_the_slot(
     full = GitCommandError(['git', 'worktree', 'add'], 128, b'fatal: Could not write new index file')
     mocker.patch('piloop.git.add_worktree', side_effect=full)
     run_id = make_run(db, campaign, max_runs=1)
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     for _ in range(3):
         execute(ex, db, run_id)
     with db.session() as s:
@@ -1168,7 +1175,7 @@ def test_a_run_that_fails_before_its_agent_starts_closes_its_implementer(
     """A fault of the daemon before the launch fails the run and closes its implementer, which then holds no slot."""
     mocker.patch('piloop.git.open_repo', side_effect=RuntimeError('repo gone'))
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         [w] = s.scalars(select(AgentSession).where(AgentSession.run_id == run_id)).all()
         assert (w.state, w.error, w.ended_at is not None) == (AgentSessionState.KILLED, 'RuntimeError: repo gone', True)
@@ -1198,7 +1205,7 @@ def test_an_implementer_that_spends_tokens_but_ends_at_once_with_nothing_did_not
     script = load_campaign_config(Path(campaign.path)).harness['script'].model_dump(mode='json')
     counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], 'usage': PI_SPEC}
     set_config(db, campaign, harness={'script': {**script, **counted}})
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         dead, relaunched = s.scalars(
             select(AgentSession).where(AgentSession.run_id == run_id).order_by(AgentSession.id)
@@ -1235,7 +1242,7 @@ def test_a_cancel_made_while_the_implementer_starts_survives_a_failed_start(
         raise StartFailed('HerdrError: prompt_lost: no pickup', 'Welcome\n')
 
     mocker.patch.object(runtime, 'start', side_effect=cancel_then_fail)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         run = s.get_one(Run, run_id)
         assert (run.status, run.error, run.idea.status) == (RunStatus.FAILED, stop.CANCELLED_ERROR, IdeaStatus.PARKED)
@@ -1253,7 +1260,7 @@ def test_a_cancelled_run_whose_implementer_ends_by_itself_first_closes_as_cancel
     with db.session() as s:
         stop.request_cancel(s, s.get_one(Run, run_id), System.HUMAN, wrap_up=False)
         s.commit()
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         run = s.get_one(Run, run_id)
         assert (run.status, run.error, run.idea.status) == (RunStatus.FAILED, stop.CANCELLED_ERROR, IdeaStatus.PARKED)
@@ -1272,7 +1279,7 @@ def test_a_relaunched_implementer_signs_as_itself_and_its_finding_without_a_comm
     reload_campaign(db, campaign)
     start = mocker.patch.object(runtime, 'start', wraps=runtime.start)
     start.side_effect = [StartFailed('HerdrError: prompt_lost: no pickup', ''), DEFAULT]
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     execute(ex, db, run_id)
     execute(ex, db, run_id)
     run = run_row(db, run_id)
@@ -1308,7 +1315,7 @@ def test_a_fast_implementer_whose_tokens_are_unknown_is_no_startup_death_when_it
     script = load_campaign_config(Path(campaign.path)).harness['script'].model_dump(mode='json')
     counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], 'usage': PI_SPEC}
     set_config(db, campaign, harness={'script': {**script, **counted}})
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     run = run_row(db, run_id)
     assert (run.status, run.error) == (RunStatus.SUCCEEDED, None)
     with db.session() as s:
@@ -1332,7 +1339,7 @@ def test_a_fast_implementer_that_left_uncommitted_work_started_and_its_work_is_r
     counted = {'headless': ['--session-id', '{session_id}', '{prompt}'], 'usage': PI_SPEC}
     set_config(db, campaign, harness={'script': {**script, **counted}})
     run_id = make_run(db, campaign, max_runs=1)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     assert (run_row(db, run_id).status, run_row(db, run_id).error) == (RunStatus.FAILED, INTERRUPTED)
     [(summary, verdict, *_)] = scored(db, run_id)
     assert (summary, verdict) == (UNCOMMITTED_SUMMARY, Verdict.RECOVERED)
@@ -1347,7 +1354,7 @@ def test_a_startup_death_during_a_stop_leaves_the_run_to_the_stop(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
     """A startup death during a stop does not relaunch the run, because the stop fails the open runs itself."""
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
 
     def stopped_meanwhile(spec: object) -> Handle:
         ex.launcher.cancelled.set()  # what ``cancel`` sets; it takes the lock this start holds
@@ -1376,7 +1383,7 @@ def test_a_finding_without_a_commit_is_a_result(
     finding = f"INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES ('idea', {idea_id}, '{role}#{agent_session_id}', 'finding', 'arm B: no effect')"
     write_toml(Path(campaign.path), f'#!/bin/sh\n{SQL_HINT} "{finding}"\n')
     reload_campaign(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     run = run_row(db, run_id)
     assert (run.status, run.error) == (RunStatus.SUCCEEDED, None)
     with db.session() as s:
@@ -1469,13 +1476,13 @@ def test_an_implementer_that_left_its_finding_has_finished_its_run_however_its_p
     reload_campaign(db, campaign)
     wait = runtime.wait
 
-    def time_out_after_the_finding(handle: Handle, timeout: float) -> Outcome:
+    def time_out_after_the_finding(handle: Handle, timeout: float) -> AgentExit:
         wait_until((tmp_path / 'runs' / str(run_id) / 'found').exists)
         return wait(handle, 0.5)
 
     if timed_out:  # a loaded host can take longer than any short timeout to write the finding
         mocker.patch.object(runtime, 'wait', side_effect=time_out_after_the_finding)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     run = run_row(db, run_id)
     assert (run.status, run.error) == (RunStatus.SUCCEEDED, None)
     with db.session() as s:
@@ -1517,7 +1524,7 @@ def test_an_implementer_that_stops_on_its_open_escalation_is_blocked_and_its_ide
         ),
     )
     reload_campaign(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         escalation = s.scalars(select(Comment.id).where(Comment.kind == 'escalation')).one()
         run = s.get_one(Run, run_id)
@@ -1559,7 +1566,7 @@ def test_an_escalation_answered_before_the_implementer_stops_does_not_block_its_
             )
         )
         s.commit()
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     assert (run_row(db, run_id).status, run_row(db, run_id).error) == (RunStatus.SUCCEEDED, None)
     with db.session() as s:
         assert s.get_one(Idea, idea_id).status is IdeaStatus.DONE
@@ -1576,7 +1583,7 @@ def test_uncommitted_changes_without_a_finding_are_scored_but_not_an_attempt_tha
     write_toml(Path(campaign.path), HARNESS_FORGETS_COMMIT)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign, max_runs=2)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     run = run_row(db, run_id)
     assert (run.status, run.error) == (RunStatus.FAILED, INTERRUPTED)
     [(summary, verdict, *_)] = scored(db, run_id)
@@ -1603,7 +1610,7 @@ def test_uncommitted_changes_without_a_finding_are_scored_but_not_an_attempt_tha
         s.commit()
     write_toml(Path(campaign.path), '#!/bin/sh\necho other >> solve.txt\n')
     reload_campaign(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     assert run_row(db, run_id).status is RunStatus.SUCCEEDED, 'it reported where it stands'
 
 
@@ -1615,7 +1622,7 @@ def test_a_cancelled_executor_leaves_the_bookkeeping_to_the_scheduler(
     tracer: Tracer,
     spans: InMemorySpanExporter,
 ) -> None:
-    ex = executor(db, runtime, tmp_path, tracer)
+    ex = controller(db, runtime, tmp_path, tracer)
     queued = make_run(db, campaign)
     ex.launcher.cancel()
     execute(ex, db, queued)
@@ -1626,9 +1633,9 @@ def test_a_cancelled_executor_leaves_the_bookkeeping_to_the_scheduler(
 def test_an_implementer_dying_after_cancel_is_not_a_run_failure(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
 
-    def tab_closed(handle: Handle, timeout: float) -> Outcome:
+    def tab_closed(handle: Handle, timeout: float) -> AgentExit:
         ex.launcher.cancel()
         raise RuntimeError('agent_not_found')
 
@@ -1637,19 +1644,20 @@ def test_an_implementer_dying_after_cancel_is_not_a_run_failure(
     execute(ex, db, run_id)
     run = run_row(db, run_id)
     assert (run.status, run.error) == (RunStatus.RUNNING, None), 'stop() writes the row, not the dying thread'
+    workers_of(ex).worker.join(10)  # it removes the worktree once its report is out
     assert not (tmp_path / 'runs' / str(run_id) / 'worktree').exists()
 
 
 def test_a_stop_between_the_implementers_end_and_the_runs_close_leaves_the_row_to_the_scheduler(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
 
     def stopped_meanwhile(*args: object) -> list[str]:
         ex.launcher.cancel()
         raise RuntimeError('worktree pulled away')
 
-    mocker.patch.object(RunExecutor, '_commits', side_effect=stopped_meanwhile)
+    mocker.patch('piloop.daemon.run_controller._commits', side_effect=stopped_meanwhile)
     run_id = make_run(db, campaign)
     execute(ex, db, run_id)
     run = run_row(db, run_id)
@@ -1661,10 +1669,12 @@ def test_a_stop_between_the_implementers_end_and_the_runs_close_leaves_the_row_t
 def test_an_evaluator_spawned_after_cancel_is_killed_at_once(
     db: Database, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    ex = executor(db, runtime, tmp_path)
-    ex.cancel()
+    ex = controller(db, runtime, tmp_path)
+    ex.stop(0)
     proc = subprocess.Popen(['sleep', '30'], start_new_session=True)
-    ex._track_evaluation(1, proc)  # what run_evaluate calls right after Popen: cancel() may have won meanwhile
+    worker = workers_of(ex).worker
+    worker._register(1, None, evaluation=True)  # the evaluation's job, before its evaluator starts
+    jobs._track(_Control(worker, 1), proc)  # what run_evaluate calls right after Popen: the stop may have won meanwhile
     assert proc.wait(timeout=2) == -9
 
 
@@ -1679,7 +1689,7 @@ def test_a_commit_that_reverts_to_a_known_tree_is_that_candidate_and_is_not_meas
     write_toml(Path(campaign.path), HARNESS_TRY_AND_REVERT)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path, tracer), db, run_id)
+    execute(controller(db, runtime, tmp_path, tracer), db, run_id)
     [tried] = candidates(db, run_id)
     assert (tried.summary, tried.verdict, tried.metrics['score']) == ('try', Verdict.KEEP, 2.0)
     base = baseline(db, campaign.id)
@@ -1698,7 +1708,7 @@ def test_a_changed_evaluator_measures_again_and_old_numbers_do_not_count(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     [added] = candidates(db, run_id)
     assert added.metrics['score'] == 2.0
     doubled = ['sh', '-c', 'echo METRIC score=$(( 2 * $(wc -l < solve.txt) )); echo METRIC size=1']
@@ -1717,7 +1727,7 @@ def test_a_changed_evaluator_measures_again_and_old_numbers_do_not_count(
     with db.session() as s:
         s.get_one(Run, second).base_candidate_id = added.id
         s.commit()
-    execute(executor(db, runtime, tmp_path), db, second)
+    execute(controller(db, runtime, tmp_path), db, second)
     with db.session() as s:
         proj = s.get_one(Campaign, campaign.id)
         tried = s.scalars(select(Candidate).where(Candidate.run_id == second)).one()
@@ -1739,7 +1749,7 @@ def test_a_config_change_during_a_run_scores_it_under_the_new_evaluator(
     gate = Gate()
     monkeypatch.setattr(runtime, 'start', gate.wrap(runtime.start))
     run_id = make_run(db, campaign)
-    thread = threading.Thread(target=execute, args=(executor(db, runtime, tmp_path), db, run_id))
+    thread = threading.Thread(target=execute, args=(controller(db, runtime, tmp_path), db, run_id))
     thread.start()
     assert gate.entered.wait(10), 'the implementer is about to start; the run holds the old config'
     doubled = ['sh', '-c', 'echo METRIC score=$(( 2 * $(wc -l < solve.txt) )); echo METRIC size=1']
@@ -1767,7 +1777,7 @@ def test_entire_settings_reach_a_worktree_whose_tree_lacks_them_without_being_co
     write_toml(Path(campaign.path), HARNESS_READS_ENTIRE)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         sha = s.scalars(select(Candidate.commit_sha).where(Candidate.run_id == run_id)).one()
     assert repo.git.show(f'{sha}:seen.json') == '{"enabled":true}', 'the worktree saw the campaign settings'
@@ -1775,7 +1785,7 @@ def test_entire_settings_reach_a_worktree_whose_tree_lacks_them_without_being_co
     write_toml(Path(campaign.path), HARNESS_COMMITS_ENTIRE)
     reload_campaign(db, campaign)
     second = make_run(db, campaign, title='commit the settings')
-    execute(executor(db, runtime, tmp_path), db, second)
+    execute(controller(db, runtime, tmp_path), db, second)
     [e] = candidates_measured(db, second)
     assert e.summary == 'entire settings' and e.metrics['score'] == 1.0, 'the dirt after it is recovered on its own'
     assert repo.git.show(f'{e.commit_sha}:.entire/settings.json') == '{}', 'a tracked .entire stays in the commit'
@@ -1798,7 +1808,7 @@ def test_the_implementer_session_is_attached_inside_the_worktree_before_it_is_re
         ).model_dump(mode='json')
         s.commit()
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path, tracer), db, run_id)
+    execute(controller(db, runtime, tmp_path, tracer), db, run_id)
     with db.session() as s:
         w = s.scalars(select(AgentSession).where(AgentSession.run_id == run_id)).one()
         assert (w.checkpoint_id, run_row(db, run_id).status) == (CHECKPOINT, RunStatus.SUCCEEDED)
@@ -1851,7 +1861,7 @@ def test_per_unit_results_decide_the_verdict_and_live_outside_the_database(
         base_measurement = bar.id
     save_units(units_dir, base_measurement, {'score': {'a': 1.0, 'b': 0.0}})
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         c = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).one()
         [m] = c.measurements
@@ -1872,7 +1882,7 @@ def test_without_per_unit_results_the_aggregate_decides_and_the_reason_says_so(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         c = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).one()
         assert (c.verdict, c.verdict_reason) == snapshot(
@@ -1895,7 +1905,7 @@ def test_guardrails_are_enforced_by_the_daemon_even_after_the_campaign_stopped(
         proj = s.get_one(Campaign, campaign.id)
         proj.status, proj.stopped_reason = CampaignStatus.STOPPED, 'max_runs: 1'
         s.commit()
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         c = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).one()
         assert (c.verdict, c.verdict_reason) == snapshot((Verdict.DISCARD, 'floor: size 10 past its floor 8'))
@@ -1943,7 +1953,7 @@ def test_a_commit_marked_skip_is_a_candidate_without_an_evaluation_and_moves_no_
     write_toml(Path(campaign.path), HARNESS_SCAFFOLD_THEN_WORK)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         first = s.scalars(select(Candidate).where(Candidate.run_id == run_id).order_by(Candidate.id)).first()
         assert first is not None
@@ -1967,7 +1977,7 @@ def test_a_skipped_tree_reached_again_without_the_trailer_is_measured_and_judged
     write_toml(Path(campaign.path), HARNESS_SCAFFOLD_THEN_WORK + 'git revert --no-edit HEAD >/dev/null\n')
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     [scaffold, work] = scored(db, run_id)
     assert scaffold[1:4] == (Verdict.DISCARD, IsStr(regex=r'against candidate#\d+: score 2 vs 3 .*'), 1)
     assert work[1] is Verdict.KEEP
@@ -1980,7 +1990,7 @@ def test_a_skip_commit_on_a_known_tree_keeps_its_verdict_unmeasured(
     write_toml(Path(campaign.path), harness)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         base = s.get_one(Candidate, baseline(db, campaign.id).id)
         assert (base.verdict, base.verdict_reason, len(base.measurements)) == (Verdict.KEEP, None, 1)
@@ -1993,7 +2003,7 @@ def test_dirt_after_a_skip_commit_is_committed_on_its_own_and_evaluated(
     write_toml(Path(campaign.path), harness)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     assert [(c[0], c[1], c[3]) for c in scored(db, run_id)] == [
         ('scaffold', Verdict.UNMEASURED, 0),
         (UNCOMMITTED_SUMMARY, Verdict.RECOVERED, 0),
@@ -2006,7 +2016,7 @@ def test_a_commit_that_moves_no_deciding_metric_says_no_op(
     write_toml(Path(campaign.path), '#!/bin/sh\necho x > notes.txt\ngit add notes.txt\ngit commit -qm notes\n')
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, verdict, reason, _, _)] = scored(db, run_id)
     assert (verdict, reason) == (
         Verdict.DISCARD,
@@ -2038,7 +2048,7 @@ def test_a_run_whose_history_holds_the_head_is_judged_against_the_head_itself(
     reference = import_empty_solution(db, campaign)
     write_toml(Path(campaign.path), HARNESS_TWO_COMMITS)
     reload_campaign(db, campaign)
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     ex.remeasure(reference)
     run_id = make_run(db, campaign)
     with db.session() as s:
@@ -2073,7 +2083,7 @@ def test_a_branch_run_is_judged_against_its_own_base_and_its_keep_never_moves_th
     reference = import_empty_solution(db, campaign)
     write_toml(Path(campaign.path), HARNESS_TWO_COMMITS)
     reload_campaign(db, campaign)
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     ex.remeasure(reference)
     run_id = make_run(db, campaign)
     with db.session() as s:
@@ -2169,7 +2179,7 @@ def test_a_trunk_run_that_merges_a_branch_keep_is_judged_against_the_head_not_th
     with db.session() as s:
         s.get_one(Run, run_id).base_candidate_id = trunk
         s.commit()
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, verdict, reason, _, parent)] = scored(db, run_id)
     assert (verdict, reason, parent) == (
         Verdict.KEEP,
@@ -2197,7 +2207,7 @@ def test_a_run_pinned_to_a_non_keep_is_judged_against_its_nearest_keep_on_every_
     with db.session() as s:
         s.get_one(Run, run_id).base_candidate_id = lead
         s.commit()
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     execute(ex, db, run_id)
     [(_, verdict, reason, _, parent)] = scored(db, run_id)
     assert (verdict, reason, parent) == (
@@ -2222,18 +2232,18 @@ def test_a_keep_that_lost_the_race_to_the_head_is_merged_onto_it_and_judged_ther
     """
     run_id = make_run(db, campaign)
     h2 = keep_elsewhere(db, campaign, 'notes', {'notes.txt': 'n\n'}, {'score': 1.0, 'size': 5.0})
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     ended: list[None] = []
-    track = ex._track_evaluation
+    track = jobs._track
 
-    def h3_kept_while_the_merge_is_measured(evaluation_id: int, proc: subprocess.Popen[bytes] | None) -> None:
-        track(evaluation_id, proc)
+    def h3_kept_while_the_merge_is_measured(control: jobs.Control, proc: subprocess.Popen[bytes] | None) -> None:
+        track(control, proc)
         if proc is None:
             ended.append(None)
             if len(ended) == 2:
                 keep_elsewhere(db, campaign, 'docs', {'docs.txt': 'd\n'}, {'score': 1.0, 'size': 5.0}, on=h2)
 
-    monkeypatch.setattr(ex, '_track_evaluation', h3_kept_while_the_merge_is_measured)
+    monkeypatch.setattr(jobs, '_track', h3_kept_while_the_merge_is_measured)
     execute(ex, db, run_id)
     repo = Repo(campaign.path)
     with db.session() as s:
@@ -2278,7 +2288,7 @@ def test_a_keep_whose_merge_onto_the_head_conflicts_stays_interesting_and_files_
 ) -> None:
     run_id = make_run(db, campaign)
     h2 = keep_elsewhere(db, campaign, 'other line', {'solve.txt': 'base\nother\n'}, {'score': 2.0, 'size': 11.0})
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, verdict, reason, _, _)] = scored(db, run_id)
     assert (verdict, reason) == (
         Verdict.INTERESTING,
@@ -2315,7 +2325,7 @@ def test_a_conflicting_merge_in_a_stopped_campaign_files_no_seed(
     with db.session() as s:
         s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
         s.commit()
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, verdict, reason, _, _)] = scored(db, run_id)
     assert verdict is Verdict.INTERESTING
     assert reason is not None and reason.endswith('its merge onto the head conflicts in solve.txt')
@@ -2329,7 +2339,7 @@ def test_a_rejudge_does_not_file_a_compose_seed_again_after_it_was_rejected(
     """hiloopai/piloop-dev#59: a seed from this candidate with this title exists, whatever its status or name."""
     run_id = make_run(db, campaign)
     keep_elsewhere(db, campaign, 'other line', {'solve.txt': 'base\nother\n'}, {'score': 2.0, 'size': 11.0})
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     execute(ex, db, run_id)
     with db.session() as s:
         [x] = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).all()
@@ -2378,7 +2388,7 @@ def test_a_keep_whose_merge_onto_the_head_is_the_head_already_changes_nothing(
     run_id = make_run(db, campaign)
     files = {'solve.txt': 'base\nline\n', 'notes.txt': 'n\n'}
     h2 = keep_elsewhere(db, campaign, 'line and notes', files, {'score': 2.0, 'size': 10.0})
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, verdict, reason, _, _)] = scored(db, run_id)
     assert (verdict, reason) == (
         Verdict.INTERESTING,
@@ -2407,7 +2417,7 @@ def test_a_keep_that_lands_while_another_run_measures_its_tree_is_not_judged_aga
         'tracks': {'accuracy': {'share': 0.5}, 'cost': {'share': 0.5}},
     }
     set_config(db, campaign, **tracks)
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     first = make_run(db, campaign, track='accuracy')
     execute(ex, db, first)
     [kept] = candidates(db, first)
@@ -2419,10 +2429,10 @@ def test_a_keep_that_lands_while_another_run_measures_its_tree_is_not_judged_aga
         s.delete(measurement)
         candidate.verdict = Verdict.PENDING
         s.commit()
-    track = ex._track_evaluation
+    track = jobs._track
 
-    def kept_meanwhile(evaluation_id: int, proc: subprocess.Popen[bytes] | None) -> None:
-        track(evaluation_id, proc)
+    def kept_meanwhile(control: jobs.Control, proc: subprocess.Popen[bytes] | None) -> None:
+        track(control, proc)
         if proc is None:  # the first run's measurement and keep land while the second run measures the same tree
             with db.session() as s:
                 s.add(Measurement(candidate_id=kept.id, evaluator_id=evaluator_id, metrics=kept.metrics))
@@ -2430,7 +2440,7 @@ def test_a_keep_that_lands_while_another_run_measures_its_tree_is_not_judged_aga
                 c.verdict, c.verdict_reason = Verdict.KEEP, 'kept on accuracy'
                 s.commit()
 
-    monkeypatch.setattr(ex, '_track_evaluation', kept_meanwhile)
+    monkeypatch.setattr(jobs, '_track', kept_meanwhile)
     execute(ex, db, make_run(db, campaign, title='the same line, on the cost track', track='cost'))
     with db.session() as s:
         again = s.get_one(Candidate, kept.id)
@@ -2445,7 +2455,7 @@ def test_a_known_non_keep_that_another_run_reaches_again_is_judged_again_on_that
     The daemon's old verdict judged the tree against another bar, or a merge that conflicted. A compose that reproduces
     the tree on the head must be able to land.
     """
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     first = make_run(db, campaign)
     execute(ex, db, first)
     [known] = candidates(db, first)
@@ -2485,7 +2495,7 @@ def test_a_merge_commit_descends_from_its_first_parent_the_runs_base(
     with db.session() as s:
         s.get_one(Run, run_id).base_candidate_id = trunk
         s.commit()
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, verdict, _, measurements, parent)] = scored(db, run_id)
     assert (verdict, measurements, parent) == (Verdict.DISCARD, 1, trunk)
     with db.session() as s:
@@ -2511,7 +2521,7 @@ def test_a_keep_that_has_the_heads_changes_without_its_history_is_judged_against
     pick = f'#!/bin/sh\ngit cherry-pick -n {h2_sha}\necho line >> solve.txt\ngit commit -qam "the head and a line"\n'
     write_toml(Path(campaign.path), pick)
     reload_campaign(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, verdict, reason, _, _)] = scored(db, run_id)
     assert (verdict, reason) == (
         Verdict.KEEP,
@@ -2528,7 +2538,7 @@ def test_a_merge_a_stop_left_unjudged_is_measured_and_judged_when_the_run_resume
 ) -> None:
     run_id = make_run(db, campaign)
     keep_elsewhere(db, campaign, 'notes', {'notes.txt': 'n\n'}, {'score': 1.0, 'size': 5.0})
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     measure = ex._measure
 
     merged_id = 4
@@ -2570,7 +2580,7 @@ def test_a_tree_two_runs_reach_is_never_judged_against_itself(
     The second run reaches the tree while the first run's evaluation is pending. The first keep then makes the tree the
     head, but the second run must not judge it level with itself.
     """
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     first = make_run(db, campaign)
     execute(ex, db, first)
     [kept] = candidates(db, first)
@@ -2582,18 +2592,18 @@ def test_a_tree_two_runs_reach_is_never_judged_against_itself(
         s.delete(measurement)
         candidate.verdict = Verdict.PENDING
         s.commit()
-    track = ex._track_evaluation
+    track = jobs._track
 
-    def kept_meanwhile(evaluation_id: int, proc: subprocess.Popen[bytes] | None) -> None:
+    def kept_meanwhile(control: jobs.Control, proc: subprocess.Popen[bytes] | None) -> None:
         """Land the first run's measurement and keep while the second run evaluates the same tree."""
-        track(evaluation_id, proc)
+        track(control, proc)
         if proc is None:
             with db.session() as s:
                 s.add(Measurement(candidate_id=kept.id, evaluator_id=evaluator_id, metrics=kept.metrics))
                 s.get_one(Candidate, kept.id).verdict = Verdict.KEEP
                 s.commit()
 
-    monkeypatch.setattr(ex, '_track_evaluation', kept_meanwhile)
+    monkeypatch.setattr(jobs, '_track', kept_meanwhile)
     execute(ex, db, make_run(db, campaign, title='same lines'))
     with db.session() as s:
         again = s.get_one(Candidate, kept.id)
@@ -2618,7 +2628,7 @@ def test_a_piloop_note_keeps_a_regressed_commit_in_view_files_no_follow_up_and_m
     write_toml(Path(campaign.path), HARNESS_NOTED)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, wipe, wipe_reason, _, _), (_, refill, refill_reason, _, _)] = scored(db, run_id)
     assert (wipe, wipe_reason) == (
         Verdict.INTERESTING,
@@ -2632,7 +2642,9 @@ def test_a_piloop_note_keeps_a_regressed_commit_in_view_files_no_follow_up_and_m
     ), 'judged against the baseline: the note moved no bar, and a keep keeps its verdict'
     with db.session() as s:
         noted = s.scalars(select(Candidate).where(Candidate.run_id == run_id).order_by(Candidate.id)).first()
-        assert noted is not None and noted.verdict_by == f'run#{run_id}', 'the daemon never judges a noted commit again'
+        assert noted is not None and noted.verdict_by == 'implementer#1', (
+            "the note is its implementer's: the daemon never judges a noted commit again"
+        )
         follow_ups = s.scalars(select(Idea).where(Idea.base_candidate_id.is_not(None))).all()
         assert follow_ups == [], 'a Piloop-Follow-Up trailer files no seed: an implementer files none'
 
@@ -2658,7 +2670,7 @@ def test_a_keep_on_one_track_must_hold_the_other_track_primaries_and_its_brief_c
         s.get_one(Campaign, campaign.id).config = load_campaign_config(path, **tracks).model_dump(mode='json')
         s.commit()
     run_id = make_run(db, campaign, track='accuracy')
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, verdict, reason, _, _)] = scored(db, run_id)
     assert (verdict, reason) == (Verdict.DISCARD, 'floor: size 10 past its floor 8'), 'score 2 > 1, but size 10 > 8'
     brief = run_row(db, run_id).brief or ''
@@ -2679,12 +2691,12 @@ def test_recovered_work_whose_tree_is_already_a_candidate_still_requeues_its_ide
     write_toml(Path(campaign.path), HARNESS_APPEND)
     reload_campaign(db, campaign)
     first = make_run(db, campaign, title='commits the line')
-    execute(executor(db, runtime, tmp_path), db, first)
+    execute(controller(db, runtime, tmp_path), db, first)
     [known] = candidates(db, first)
     write_toml(Path(campaign.path), HARNESS_FORGETS_COMMIT)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign, title='leaves the same line', max_runs=1)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         idea = s.get_one(Idea, run_row(db, run_id).idea_id)
         assert (idea.status, idea.base_candidate_id) == (IdeaStatus.READY, known.id)
@@ -2702,3 +2714,24 @@ def test_every_evaluator_has_the_process_runner_and_an_uninstalled_runner_is_ref
         s.flush()
         with pytest.raises(ValueError, match=r"has the evaluator runner 'lean', which is not installed: process$"):
             current_evaluator(s, row, config_of(row))
+
+
+def test_a_stop_that_comes_just_after_the_report_leaves_the_run_to_the_stop(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """The report applied before the stop, but the run had not read it yet: the stop owns the rows, as for a cut run."""
+    ex = controller(db, runtime, tmp_path)
+    launch = ex.launcher.launch
+
+    def stopped_just_after(*args: Any, **kwargs: Any) -> Ended:
+        ended = launch(*args, **kwargs)
+        ex.launcher.cancel()
+        return ended
+
+    mocker.patch.object(ex.launcher, 'launch', side_effect=stopped_just_after)
+    run_id = make_run(db, campaign)
+    execute(ex, db, run_id)
+    assert run_row(db, run_id).status is RunStatus.RUNNING, 'stop() writes the row, not the run thread'
+    assert git.pinned(git.open_repo(Path(campaign.path)), f'refs/piloop/{config_of(campaign).name}/r{run_id}/'), (
+        'its commit is kept'
+    )

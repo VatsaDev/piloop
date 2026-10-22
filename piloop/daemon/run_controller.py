@@ -5,22 +5,19 @@ The run closes when its implementer ends, so the implementer slot is free while 
 """
 
 import re
-import subprocess
-import threading
 import uuid
 from collections.abc import Callable
-from contextlib import ExitStack
 from dataclasses import dataclass
-from enum import Enum, auto
-from functools import partial
 from pathlib import Path
 
 from git import Repo
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from piloop import deprecated, git
-from piloop.agents.launcher import STOP_ENDED, TRANSCRIPT, Launcher
+from piloop.actor import Actor, Agent, System
+from piloop.agents.launcher import AGENT_REFS, Launcher
+from piloop.agents.results import STOP_ENDED, CampaignResults, End, Ended, record
 from piloop.agents.roles import compose_brief, role
 from piloop.campaign.campaigns import WORKSPACE, campaign_dir, worktree_links
 from piloop.campaign.stop import (
@@ -28,11 +25,12 @@ from piloop.campaign.stop import (
     CAMPAIGN_STOPPED_ERROR,
     CANCELLED_ERROR,
     NOT_STARTED,
+    WORKER_LOST,
     attempts,
     park_cancelled,
     run_cancel,
 )
-from piloop.config import CampaignConfig, Track, config_of
+from piloop.config import TRANSCRIPT, CampaignConfig, Track, config_of
 from piloop.db.events import emit
 from piloop.db.models import (
     AgentSession,
@@ -42,6 +40,7 @@ from piloop.db.models import (
     Comment,
     CommentKind,
     Evaluation,
+    Evaluator,
     Event,
     Idea,
     IdeaStatus,
@@ -52,16 +51,17 @@ from piloop.db.models import (
     Verdict,
     utcnow,
 )
-from piloop.db.session import Database
+from piloop.db.session import Database, write_transaction
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Span, Tracer
-from piloop.proc import kill_group
+from piloop.plugins.contracts.executor import Commits, EvaluationJob, EvaluationKey, Executor, GitTree, Host, selected
+from piloop.plugins.host import PluginTable
 from piloop.reports.history import history
 from piloop.reports.wake import lessons_overview
 from piloop.runtime import AgentStatus
 from piloop.runtime.factory import RuntimeFactory, make_runtime
 from piloop.scoring import queue
-from piloop.scoring.evaluate import SENT, EvalResult, run_evaluate
+from piloop.scoring.evaluate import EvalResult
 from piloop.scoring.ledger import (
     DAEMON,
     MOVED,
@@ -80,11 +80,9 @@ from piloop.scoring.ledger import (
     rejudgeable,
     reproposed,
     resolve,
-    save_units,
     score,
     skipped,
 )
-from piloop.settings import MAX_EVALUATIONS
 
 UNCOMMITTED_SUMMARY = 'piloop: uncommitted implementer changes'
 RECOVERED_TRAILER = 'Piloop-Recovered'
@@ -105,23 +103,12 @@ A failure at startup is a fault of the host or the harness, not an attempt at th
 attempt or toward ``max_runs``."""
 
 
-QUEUE_POLL_SECONDS = 1.0
-"""How often a waiting evaluation looks at the queue again for a change that another process made: a cancel."""
+class RunController:
+    """Run one ``Run`` to completion on the calling thread. ``Launcher.launch`` runs the agent.
 
-
-class Turn(Enum):
-    """How a wait in the evaluation queue ended (``RunExecutor._wait``)."""
-
-    STARTED = auto()
-    """This request got a slot: it runs the evaluation."""
-    JOINED = auto()
-    """The evaluation left the queue: another request recorded its measurement, or a cancel recorded a crash."""
-    STOPPED = auto()
-    """The daemon stops."""
-
-
-class RunExecutor:
-    """Run one ``Run`` to completion on the calling thread. ``Launcher.launch`` runs the agent."""
+    It owns the daemon's executor (``[plugins.executor]``), which runs every agent and every evaluation, and the core
+    operations that apply their results (``CampaignResults``).
+    """
 
     def __init__(
         self,
@@ -130,51 +117,99 @@ class RunExecutor:
         home: Path,
         runtime_factory: RuntimeFactory = make_runtime,
         *,
-        max_evaluations: int = MAX_EVALUATIONS,
+        executor: PluginTable | None = None,
+        entire_version: str | None = None,
     ) -> None:
         self._db = db
         self._tracer = tracer
         self._runs_dir = home / 'runs'
         self._home = home
         self._units_dir = home / 'units'
-        self.launcher = Launcher(db, tracer, home, runtime_factory)
-        self._evaluating: dict[int, subprocess.Popen[bytes]] = {}
-        """The evaluator child of each running evaluation, by its id in the evaluation queue."""
-        self._max_evaluations = max_evaluations
-        """The slots of the evaluation queue (``Settings.max_evaluations``)."""
-        self._queue_changed = threading.Condition()
-        """Notified when an evaluation leaves the queue or the daemon stops, so the waiting ones look again."""
+        provider, parameters = selected(executor)
+        results = CampaignResults(db, tracer, self._units_dir, lambda: self.launcher.cancelled.is_set())
+        host = Host(db, results, tracer, home, runtime_factory, entire_version)
+        self.executor: Executor = provider(host, parameters)
+        self.launcher = Launcher(db, tracer, home, self.executor)
+        self._capacity = provider.capacity(parameters)
+        """How many evaluations the executor runs at once, or None for no bound (``dispatch``)."""
+        self._jobs: dict[int, EvaluationJob] = {}
+        """The job of each evaluation that this daemon asked for, by its queue row, until the row goes: a lost one is
+        submitted again. A row without one is another daemon's: a reap drops it, and what needs it asks again."""
 
-    def cancel(self) -> None:
-        """Cancel the launcher and kill the evaluators. After this, every child is dead or dies when it is spawned.
+    def _wait(self, evaluation_id: int) -> bool:
+        """Wait until the evaluation leaves the queue, and return True; False once the daemon stops.
 
-        Both happen under ``launcher.lock``. ``_track_evaluation`` and the writes to run rows hold the same lock.
+        While it waits for a slot, and one is free, it submits the next ones (``dispatch``): a lost evaluation waits
+        again, and nothing else may end to free a slot for it.
+        """
+
+        def done_or_dispatchable(s: Session) -> bool:
+            evaluation = s.get(Evaluation, evaluation_id)
+            if evaluation is None or evaluation.started_at is not None:
+                return evaluation is None
+            running = s.scalar(select(func.count()).where(Evaluation.started_at.is_not(None))) or 0
+            return self._capacity is None or running < self._capacity
+
+        while self._db.wait_until(done_or_dispatchable, give_up=self.launcher.cancelled.is_set):
+            with self._db.session() as s:
+                if s.get(Evaluation, evaluation_id) is None:
+                    return True
+            self.dispatch()
+        return False
+
+    def dispatch(self) -> None:
+        """Submit the next evaluations of the queue while the executor has free slots, in the queue's order.
+
+        The order and the fairness are the queue's (``queue.waiting``), whichever the executor. Called after each
+        request, after each evaluation that ends, and on each tick.
         """
         with self.launcher.lock:
-            self.launcher.cancelled.set()
-            for proc in self._evaluating.values():
-                kill_group(proc)
-        with self._queue_changed:
-            self._queue_changed.notify_all()
+            if self.launcher.cancelled.is_set():
+                return
+            with self._db.session() as s:
+                write_transaction(s)
+                running = s.scalar(select(func.count()).where(Evaluation.started_at.is_not(None))) or 0
+                free = None if self._capacity is None else self._capacity - running
+                starting: list[EvaluationJob] = []
+                for evaluation in queue.waiting(s):
+                    if free is not None and len(starting) >= free:
+                        break
+                    if (job := self._jobs.get(evaluation.id)) is not None:
+                        evaluation.started_at = utcnow()
+                        starting.append(job)
+                s.commit()
+            for job in starting:
+                self.executor.submit(job)
+
+    def stop(self, timeout: float) -> None:
+        """Submit no more jobs, and stop the executor's: each still reports. Waits up to ``timeout`` for them.
+
+        Nothing submits a job after this (``launcher.lock``).
+        """
+        self.launcher.cancel()
+        self.executor.stop(timeout)
 
     def stop_cancelled(self) -> None:
-        """Stop the evaluator of each running evaluation that someone cancelled (``piloop eval cancel``)."""
+        """Cancel each running evaluation that someone cancelled (``piloop eval cancel``).
+
+        Its executor stops the evaluator, and the result records nothing (``queue.cancel`` recorded the crash).
+        """
         with self._db.session() as s:
-            ids = set(
-                s.scalars(
-                    select(Evaluation.id).where(
-                        Evaluation.started_at.is_not(None), Evaluation.cancelled_by.is_not(None)
-                    )
-                )
-            )
-        with self.launcher.lock:
-            for proc in [proc for evaluation_id, proc in self._evaluating.items() if evaluation_id in ids]:
-                kill_group(proc)
+            cancelled = s.scalars(
+                select(Evaluation.id).where(Evaluation.cancelled_by.is_not(None), Evaluation.started_at.is_not(None))
+            ).all()
+        for evaluation_id in cancelled:
+            self.executor.cancel(EvaluationKey(evaluation_id))
 
     def hand_over(self) -> None:
-        """Cancel for an in-place restart. The agents keep running for the next daemon (``Launcher.handover``)."""
+        """Stop for an in-place restart. The agents keep running for the next daemon, whose executor adopts them."""
         self.launcher.handover.set()
-        self.cancel()
+        self.launcher.cancel()
+        self.executor.hand_over()
+
+    def close(self) -> None:
+        """Release the executor. The daemon calls it last, before it closes the database."""
+        self.executor.close()
 
     def execute(self, run_id: int, agent_session_id: int) -> None:
         """Make the worktree, run the implementer, evaluate and record. Never raises: failures are recorded on the run."""
@@ -224,10 +259,15 @@ class RunExecutor:
                 brief = run.brief or compose_brief(
                     role(cfg, run.role, Path(campaign.path)),
                     campaign,
-                    agent_session_id,
+                    Agent(role=run.role, session=agent_session_id),
                     reason=f'idea#{idea.id} is ready',
                     context=self._context(
-                        s, cfg, idea, base, f'{run.role}#{agent_session_id}', self._runs_dir / str(run_id) / 'worktree'
+                        s,
+                        cfg,
+                        idea,
+                        base,
+                        Agent(role=run.role, session=agent_session_id).signature,
+                        self._runs_dir / str(run_id) / 'worktree',
                     ),
                     track=cfg.track(idea.track),
                     wake=lessons_overview(s, campaign, cfg.wake_budget(run.role)),
@@ -264,58 +304,95 @@ class RunExecutor:
         wt_path = log_dir / 'worktree'
         links = worktree_links(cfg, campaign_path, campaign_dir(self._home, campaign_id))
         span.set(idea=idea_id, agent_session=agent_session_id, harness=harness, model=model)
-        with ExitStack() as cleanup:
-            cleanup.callback(git.remove_worktree, repo, wt_path)
-            if brief is None:
-                outcome = self.launcher.reattach(agent_session_id, cwd=wt_path, log_dir=log_dir, links=links)
-            else:
-                make_cwd = partial(git.add_worktree, repo, wt_path, base_sha, links)
-                outcome = self.launcher.launch(
-                    agent_session_id, brief=brief, cwd=wt_path, log_dir=log_dir, make_cwd=make_cwd, links=links
-                )
-            if outcome.handed_over:  # The next daemon re-attaches to the agent in the worktree.
-                cleanup.pop_all()
-                span.set(status='handed_over')
-                return
-            if outcome.startup_failed:
+        if brief is None:
+            ended = self.launcher.reattach(agent_session_id)
+        else:
+            ended = self.launcher.launch(
+                agent_session_id,
+                brief=brief,
+                cwd=wt_path,
+                log_dir=log_dir,
+                artifact=GitTree(repo=campaign_path, commit=base_sha, links=links),
+                commits=commits_of(run_id, agent_session_id),
+            )
+        if ended.end is End.HANDED_OVER:  # the next daemon waits for the agent again
+            span.set(status='handed_over')
+            return
+        # a daemon stop owns the rows, also when it came just after the report applied
+        if ended.end is End.STOPPED or self.launcher.cancelled.is_set():
+            self._cut(span, run_id, idea_id, agent_session_id, cfg.name, repo, base_sha, ended.head)
+            return
+        match ended.end:
+            case End.LOST:
+                self._close(span, run_id, RunStatus.FAILED, WORKER_LOST)
+                self._settle(span, run_id, idea_id, RunStatus.FAILED, startup_failed=False, recovered=None)
+            case End.NOT_STARTED:
                 if not self._relaunch(span, run_id, agent_session_id, log_dir):
                     with self._db.session() as s:
                         error = CANCELLED_ERROR if run_cancel(s, run_id) is not None else NOT_STARTED
                     self._close(span, run_id, RunStatus.FAILED, error)
                     self._settle(span, run_id, idea_id, RunStatus.FAILED, startup_failed=True, recovered=None)
-                return
-            wt = Repo(wt_path)
-            if self.launcher.cancelled.is_set():
-                cut = not self._left_finding(run_id, idea_id, agent_session_id)  # else the stop closed it as handed off
-                self._keep_cut_work(run_id, cfg.name, repo, wt, base_sha, git.linked(wt_path, links), noted=cut)
-                span.set(status='cancelled')
-                return
-            shas = self._commits(wt, base_sha, git.linked(wt_path, links), run_id)
-            finding = self._left_finding(run_id, idea_id, agent_session_id)
-            with self._db.session() as s:
-                asked = open_escalation(s, s.get_one(Run, run_id))
-                stop_ended = s.scalar(
-                    select(Event.payload).where(
-                        Event.target_kind == TargetKind.AGENT_SESSION,
-                        Event.target_id == agent_session_id,
-                        Event.kind == STOP_ENDED,
-                    )
+            case _:  # End.RAN
+                self._ran(span, run_id, idea_id, campaign_id, agent_session_id, repo, base_sha, ended, log_dir)
+
+    def _cut(
+        self,
+        span: Span,
+        run_id: int,
+        idea_id: int,
+        agent_session_id: int,
+        name: str,
+        repo: Repo,
+        base_sha: str,
+        head: str | None,
+    ) -> None:
+        """Keep the work of a run that a daemon stop cut (``_keep_cut_work``). The stop writes the rows."""
+        cut = not self._left_finding(run_id, idea_id, agent_session_id)  # else the stop closed it as handed off
+        self._keep_cut_work(run_id, name, repo, base_sha, head, noted=cut)
+        self._release(repo, agent_session_id, head)
+        span.set(status='cancelled')
+
+    def _ran(
+        self,
+        span: Span,
+        run_id: int,
+        idea_id: int,
+        campaign_id: int,
+        agent_session_id: int,
+        repo: Repo,
+        base_sha: str,
+        ended: Ended,
+        log_dir: Path,
+    ) -> None:
+        """Close the run of an agent that worked (``run_outcome``), score its commits and settle its idea."""
+        outcome = ended.process
+        shas = _commits(repo, base_sha, ended.head)
+        finding = self._left_finding(run_id, idea_id, agent_session_id)
+        with self._db.session() as s:
+            asked = open_escalation(s, s.get_one(Run, run_id))
+            stop_ended = s.scalar(
+                select(Event.payload).where(
+                    Event.target_kind == TargetKind.AGENT_SESSION,
+                    Event.target_id == agent_session_id,
+                    Event.kind == STOP_ENDED,
                 )
-                cancelled = run_cancel(s, run_id) is not None
-            end = RunEnd(
-                finding=finding,
-                stop_error=None if stop_ended is None else str(stop_ended.get('error', CAMPAIGN_STOPPED_ERROR)),
-                cancelled=cancelled,
-                timed_out=outcome.status is AgentStatus.TIMED_OUT,
-                error=outcome.error,
-                asked=asked,
-                commits=len(shas),
-                recovered_only=bool(shas) and all(wt.commit(sha).summary == UNCOMMITTED_SUMMARY for sha in shas),
             )
-            status, error = run_outcome(end)
-            self._close(span, run_id, status, error)
-            # Score all commits, even if the implementer then timed out or crashed.
-            recovered = self._score(run_id, campaign_id, repo, shas, log_dir) if shas else None
+            cancelled = run_cancel(s, run_id) is not None
+        end = RunEnd(
+            finding=finding,
+            stop_error=None if stop_ended is None else str(stop_ended.get('error', CAMPAIGN_STOPPED_ERROR)),
+            cancelled=cancelled,
+            timed_out=outcome.status is AgentStatus.TIMED_OUT,
+            error=outcome.error,
+            asked=asked,
+            commits=len(shas),
+            recovered_only=bool(shas) and all(repo.commit(sha).summary == UNCOMMITTED_SUMMARY for sha in shas),
+        )
+        status, error = run_outcome(end)
+        self._close(span, run_id, status, error)
+        # Score all commits, even if the implementer then timed out or crashed.
+        recovered = self._score(run_id, campaign_id, repo, shas, log_dir) if shas else None
+        self._release(repo, agent_session_id, ended.head)
         self._settle(span, run_id, idea_id, status, startup_failed=False, recovered=recovered)
 
     def _relaunch(self, span: Span, run_id: int, agent_session_id: int, log_dir: Path) -> bool:
@@ -324,13 +401,10 @@ class RunExecutor:
         The run stays open, so it keeps its slot, attempt number and brief. The ``implementer#<id>`` in the brief becomes the
         new implementer's id. The new implementer signs its notes and finding with its own id, and only its own finding counts
         (``_left_finding``). The scheduler launches the new agent session row like any other. The old implementer's transcript is
-        renamed so that the new one does not overwrite it. Also returns True if the daemon stopped meanwhile, because
-        the stop then owns the rows. A cancelled run (``run_cancel``) is not queued again.
+        renamed so that the new one does not overwrite it. A request made while the daemon stops waits for the next
+        daemon, as every request does. A cancelled run (``run_cancel``) is not queued again.
         """
         with self.launcher.lock:
-            if self.launcher.cancelled.is_set():
-                span.set(status='cancelled')
-                return True
             with self._db.session() as s:
                 run = s.get_one(Run, run_id)
                 launches = (
@@ -367,16 +441,18 @@ class RunExecutor:
         return True
 
     def _keep_cut_work(
-        self, run_id: int, name: str, repo: Repo, wt: Repo, base_sha: str, ignore: list[str], *, noted: bool
+        self, run_id: int, name: str, repo: Repo, base_sha: str, head: str | None, *, noted: bool
     ) -> None:
         """Pin the work of a run that a daemon stop interrupted, uncommitted work included, and add a note on the run.
+
+        What the agent left uncommitted was committed, and ``head`` pinned (``commits_of``).
 
         The stop owns the rows. A run that the stop cut is not an attempt (``stop.NOT_ATTEMPTS``): its work is not
         scored, and the note (``noted``) goes into the brief of the idea's next run, which can start from those
         commits. A run whose implementer had left its finding was handed off: the stop closed it as finished, and the next
         daemon scores the pinned commits (``resume``), so no note sends a new run to them.
         """
-        shas = self._commits(wt, base_sha, ignore, run_id)
+        shas = _commits(repo, base_sha, head)
         if not shas:
             return
         prefix = f'refs/piloop/{name}/r{run_id}/'
@@ -397,22 +473,15 @@ class RunExecutor:
             )
             s.commit()
 
+    def _release(self, repo: Repo, agent_session_id: int, head: str | None) -> None:
+        """Delete the ref at which the agent's head was pinned (``commits_of``), now that the run's refs pin its commits."""
+        if head is not None:
+            git.unpin(repo, f'{AGENT_REFS}{agent_session_id}')
+
     def _left_finding(self, run_id: int, idea_id: int, agent_session_id: int) -> bool:
         """Return True if the agent signed a ``finding`` on its idea or its run (``left_finding``)."""
         with self._db.session() as s:
             return left_finding(s, s.get_one(Run, run_id), s.get_one(AgentSession, agent_session_id))
-
-    def _commits(self, wt: Repo, base_sha: str, ignore: list[str], run_id: int) -> list[str]:
-        """Return the new commits in the worktree, oldest first. Uncommitted work is committed first, on its own.
-
-        It is never amended into the implementer's last commit, which is scored as the implementer made it. Its commit has the
-        ``RECOVERED_TRAILER``, so its candidate is ``recovered`` (``_score``). The commits are the first-parent history
-        from the base: a line that the implementer merges in is not the run's, so a merge's parent is the commit that it
-        merged onto, and the merged line's commits are not scored again.
-        """
-        if git.is_dirty(wt, ignore):
-            git.commit_all(wt, f'{UNCOMMITTED_SUMMARY}\n\n{RECOVERED_TRAILER}: run#{run_id}', ignore)
-        return [c.hexsha for c in wt.iter_commits(f'{base_sha}..HEAD', first_parent=True)][::-1]
 
     def resume(self, run_id: int) -> None:
         """Score the commits of a closed run and settle its idea, after a daemon stopped while it scored them.
@@ -458,7 +527,10 @@ class RunExecutor:
             if not self._measure(None, campaign_id, cfg, repo, sha, candidate_id, evaluator_id, eval_dir):
                 return  # a stop killed the evaluator: there is nothing new to judge
         except Exception as e:
-            self._record(None, candidate_id, evaluator_id, EvalResult({}, 0.0, f'{type(e).__name__}: {e}'))
+            with self._db.session() as s:
+                error = EvalResult({}, 0.0, f'{type(e).__name__}: {e}')
+                record(s, self._units_dir, None, candidate_id, evaluator_id, error)
+                s.commit()
             return
         self._rejudge(candidate_id, repo, eval_dir)
 
@@ -655,139 +727,61 @@ class RunExecutor:
         evaluator_id: int,
         eval_dir: Path,
     ) -> bool:
-        """Measure ``sha`` when the evaluation queue gives it a slot, and record the measurement. False if cancelled.
+        """Measure ``sha`` on the executor, and wait until its measurement is recorded. False if the daemon stopped.
 
-        A request for a candidate that already waits or runs under the evaluator waits for that evaluation and records
-        nothing of its own (``queue.request``). An evaluation that cannot start, because the commit cannot be checked
-        out say, is a crash like one that fails, so every request ends with a measurement. A cancelled evaluation
-        records nothing here: ``queue.cancel`` recorded its crash.
+        A request for a candidate that already waits or runs under the evaluator waits for that evaluation and submits
+        nothing of its own (``queue.request``). It is submitted when the queue gives it a slot (``dispatch``), and its
+        result records the measurement (``CampaignResults``). An evaluation that cannot start, because the commit cannot
+        be checked out say, is a crash like one that fails, so every request ends with a measurement. A cancelled
+        evaluation records nothing: ``queue.cancel`` recorded its crash.
         """
-        with self._queue_changed, self._db.session() as s:  # two requests for one tree must not both insert it
-            evaluation, mine = queue.request(s, candidate_id, evaluator_id)
-            s.commit()
-            evaluation_id = evaluation.id
-        with self._tracer.span('piloop.measure', run=run_id, commit=sha, candidate=candidate_id) as span:
-            span.set(evaluation=evaluation_id)
-            try:
-                turn = self._wait(evaluation_id, mine=mine)
-                if turn is Turn.STOPPED:
-                    span.set(status='cancelled')
-                    return False
-                if turn is Turn.JOINED:
-                    span.set(status='joined')
-                    return True
-                try:
-                    result = self._evaluate(evaluation_id, campaign_id, cfg, repo, sha, eval_dir)
-                except Exception as e:
-                    span.error(e)
-                    result = EvalResult({}, 0.0, f'{type(e).__name__}: {e}')
-                if self.launcher.cancelled.is_set():  # The evaluator was killed, so there is nothing to record.
-                    span.set(status='cancelled')
-                    return False
-                with self._db.session() as s:
-                    cancelled_by = s.get_one(Evaluation, evaluation_id).cancelled_by
-                if cancelled_by is not None:
-                    span.set(status='cancelled', cancelled_by=cancelled_by)
-                    return True
-                span.set(
-                    measurement=self._record(run_id, candidate_id, evaluator_id, result),
-                    error=result.error,
-                    **{f'metric.{k}': v for k, v in result.metrics.items()},
-                )
-            finally:
+        with self.launcher.lock:
+            if self.launcher.cancelled.is_set():
+                return False
+            with self._db.session() as s:  # two requests for one tree must not both insert it
+                evaluation, mine = queue.request(s, candidate_id, evaluator_id)
+                job = None
                 if mine:
-                    self._leave(evaluation_id)
-        return True
-
-    def _wait(self, evaluation_id: int, *, mine: bool) -> Turn:
-        """Wait in the evaluation queue until the evaluation starts, or until it leaves the queue (``Turn``).
-
-        Only the request that queued the evaluation (``mine``) starts it. Every other one waits until it leaves.
-        """
-        with self._queue_changed:
-            while not self.launcher.cancelled.is_set():
-                with self._db.session() as s:
-                    evaluation = s.get(Evaluation, evaluation_id)
-                    if evaluation is None:
-                        return Turn.JOINED
-                    if mine and queue.start(s, evaluation, self._max_evaluations):
-                        s.commit()
-                        return Turn.STARTED
-                self._queue_changed.wait(QUEUE_POLL_SECONDS)
-        return Turn.STOPPED
-
-    def _evaluate(
-        self, evaluation_id: int, campaign_id: int, cfg: CampaignConfig, repo: Repo, sha: str, eval_dir: Path
-    ) -> EvalResult:
-        """Run the evaluate command on ``sha`` in a clean worktree. Every evaluation of the daemon runs here.
-
-        An evaluate that another process killed, an implementer's ``pkill -f`` say, measured nothing of the candidate,
-        so it runs once more, in a new worktree. The daemon's own kills (a stop, ``piloop eval cancel``) are not run
-        again. Its logs then hold the second try.
-        """
-        result = self._evaluate_once(evaluation_id, campaign_id, cfg, repo, sha, eval_dir)
-        if result.signal not in SENT or self._killed_by_daemon(evaluation_id):
-            return result
-        self._tracer.event('evaluation.retry', evaluation=evaluation_id, error=result.error)
-        return self._evaluate_once(evaluation_id, campaign_id, cfg, repo, sha, eval_dir)
-
-    def _killed_by_daemon(self, evaluation_id: int) -> bool:
-        """Whether the daemon stops the evaluation: it stops, or someone cancelled the evaluation."""
-        with self._db.session() as s:
-            return self.launcher.cancelled.is_set() or s.get_one(Evaluation, evaluation_id).cancelled_by is not None
-
-    def _evaluate_once(
-        self, evaluation_id: int, campaign_id: int, cfg: CampaignConfig, repo: Repo, sha: str, eval_dir: Path
-    ) -> EvalResult:
-        """Run the evaluate command on ``sha`` in a new worktree, which is removed after."""
-        links = worktree_links(cfg, Path(repo.working_dir), campaign_dir(self._home, campaign_id))
-        eval_dir.mkdir(parents=True, exist_ok=True)
-        eval_wt = eval_dir / 'worktree'
-        self._units_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            git.add_worktree(repo, eval_wt, sha, links)
-            return run_evaluate(
-                cfg.evaluate,
-                cwd=eval_wt,
-                log_dir=eval_dir,
-                timeout=cfg.evaluate_timeout,
-                required={m.name for m in cfg.metrics},
-                track=partial(self._track_evaluation, evaluation_id),
-                units_file=self._units_dir / f'{uuid.uuid4().hex}.pending',
-            )
-        finally:
-            git.remove_worktree(repo, eval_wt)
-
-    def _leave(self, evaluation_id: int) -> None:
-        """Remove the evaluation from the queue, which frees its slot, and wake the requests that wait."""
-        with self._queue_changed:
-            with self._db.session() as s:
-                s.execute(delete(Evaluation).where(Evaluation.id == evaluation_id))
+                    links = worktree_links(cfg, Path(repo.working_dir), campaign_dir(self._home, campaign_id))
+                    job = EvaluationJob(
+                        evaluation=evaluation.id,
+                        candidate=candidate_id,
+                        run=run_id,
+                        runner=s.get_one(Evaluator, evaluator_id).runner,
+                        artifact=GitTree(repo=Path(repo.working_dir), commit=sha, links=links),
+                        cwd=eval_dir / 'worktree',
+                        log_dir=eval_dir,
+                        command=cfg.evaluate,
+                        timeout=cfg.evaluate_timeout,
+                        required=[m.name for m in cfg.metrics],
+                        units_file=self._units_dir / f'{uuid.uuid4().hex}.pending',
+                    )
                 s.commit()
-            self._queue_changed.notify_all()
-
-    def _record(self, run_id: int | None, candidate_id: int, evaluator_id: int, result: EvalResult) -> int:
-        """Store one evaluation as a measurement, with its per-unit results, and return its id."""
-        with self._db.session() as s:
-            measurement = Measurement(
-                candidate_id=candidate_id,
-                evaluator_id=evaluator_id,
-                metrics=result.metrics,
-                error=result.error,
-                seconds=result.seconds,
-            )
-            s.add(measurement)
-            s.flush()
-            save_units(self._units_dir, measurement.id, result.units)
-            payload: dict[str, object] = {
-                'candidate': candidate_id,
-                'metrics': result.metrics,
-                'error': result.error,
-                'run': run_id,
-            }
-            emit(s, 'measurement.recorded', TargetKind.MEASUREMENT, measurement.id, payload=payload)
-            s.commit()
-            return measurement.id
+                evaluation_id = evaluation.id
+            if job is not None:
+                self._jobs[evaluation_id] = job
+        self.dispatch()
+        with self._tracer.span('piloop.measure', run=run_id, commit=sha, candidate=candidate_id) as span:
+            span.set(evaluation=evaluation_id, joined=not mine)
+            measured = self._wait(evaluation_id)
+            self._jobs.pop(evaluation_id, None)
+            self.dispatch()  # its slot is free
+            if not measured or self.launcher.cancelled.is_set():  # a stop's evaluation records nothing
+                span.set(status='cancelled')
+                return False
+            with self._db.session() as s:
+                measurement = s.scalars(
+                    select(Measurement)
+                    .where(Measurement.candidate_id == candidate_id, Measurement.evaluator_id == evaluator_id)
+                    .order_by(Measurement.id.desc())
+                    .limit(1)
+                ).one()  # what it measured, or the crash that a cancel recorded
+                span.set(
+                    measurement=measurement.id,
+                    error=measurement.error,
+                    **{f'metric.{k}': v for k, v in measurement.metrics.items()},
+                )
+        return True
 
     def _judge(
         self,
@@ -850,7 +844,7 @@ class RunExecutor:
                 if not (skip or recovered):
                     why = '; '.join(notes)
                     if why and not moved and candidate.verdict in (Verdict.DISCARD, Verdict.INTERESTING):
-                        note(candidate, why, f'run#{candidate.run_id}')
+                        note(candidate, why, implementer_of(s, scope.run_id))
                 s.commit()
             verdict, advanced = candidate.verdict, raises_bar(candidate, branch=scope.branch) or moved
             span.set(
@@ -887,19 +881,6 @@ class RunExecutor:
             )
             return verdict, f'the head candidate#{trunk.id} is in its history: {reason}', None
         return Verdict.INTERESTING, MOVED.format(head=trunk.id) + reason, trunk
-
-    def _track_evaluation(self, evaluation_id: int, proc: subprocess.Popen[bytes] | None) -> None:
-        """Remember an evaluation's evaluator child, so that ``cancel`` and ``stop_cancelled`` can kill it.
-
-        A child that starts after ``cancel`` is killed at once.
-        """
-        with self.launcher.lock:
-            if proc is None:
-                self._evaluating.pop(evaluation_id, None)
-                return
-            self._evaluating[evaluation_id] = proc
-            if self.launcher.cancelled.is_set():
-                kill_group(proc)
 
     def _close(self, span: Span, run_id: int, status: RunStatus, error: str | None) -> None:
         """Record the run's outcome when its implementer ends, so the slot is free while the commits are scored (``scoring``)."""
@@ -1098,7 +1079,7 @@ def left_finding(s: Session, run: Run, agent_session: AgentSession) -> bool:
     """
     on_idea = (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == run.idea_id)
     on_run = (Comment.target_kind == TargetKind.RUN) & (Comment.target_id == run.id)
-    signed = (*deprecated.signatures(agent_session.kind, agent_session.id), f'run#{run.id}')
+    signed = (*deprecated.signatures(Agent(role=agent_session.kind, session=agent_session.id)), f'run#{run.id}')
     found = s.scalar(
         select(Comment.id)
         .where(on_idea | on_run, Comment.kind == CommentKind.FINDING, Comment.author.in_(signed))
@@ -1173,7 +1154,7 @@ def open_escalation(s: Session, run: Run) -> int | None:
     ``<role>#<id>`` or ``run#<id>``. Escalations of other agents on the same idea do not block the run.
     """
     sessions = s.scalars(select(AgentSession).where(AgentSession.run_id == run.id))
-    signed = [name for w in sessions for name in deprecated.signatures(w.kind, w.id)]
+    signed = [name for w in sessions for name in deprecated.signatures(Agent(role=w.kind, session=w.id))]
     on_idea = (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == run.idea_id)
     on_run = (Comment.target_kind == TargetKind.RUN) & (Comment.target_id == run.id)
     return s.scalar(
@@ -1195,3 +1176,35 @@ def _requeues(s: Session, idea: Idea) -> int:
         Event.target_kind == TargetKind.IDEA, Event.target_id == idea.id, Event.kind == RECOVERY_REQUEUED
     )
     return s.scalar(query) or 0
+
+
+def commits_of(run_id: int, agent_session_id: int) -> Commits:
+    """How a run's implementer's commits come back: the uncommitted work on a commit of its own, the head pinned.
+
+    The commit has the ``RECOVERED_TRAILER``, and the head is pinned at ``AGENT_REFS``.
+    """
+    return Commits(
+        message=f'{UNCOMMITTED_SUMMARY}\n\n{RECOVERED_TRAILER}: run#{run_id}', ref=f'{AGENT_REFS}{agent_session_id}'
+    )
+
+
+def _commits(repo: Repo, base_sha: str, head: str | None) -> list[str]:
+    """Return the run's commits up to the ``head`` its worker returned, oldest first: none without a head.
+
+    The worker committed the uncommitted work first, on its own commit, never amended into the implementer's last
+    commit, which is scored as the implementer made it. That commit has the ``RECOVERED_TRAILER``, so its candidate is
+    ``recovered`` (``_score``). The commits are the first-parent history from the base: a line that the implementer
+    merges in is not the run's, so a merge's parent is the commit that it merged onto, and the merged line's commits
+    are not scored again.
+    """
+    if head is None:
+        return []
+    return [c.hexsha for c in repo.iter_commits(f'{base_sha}..{head}', first_parent=True)][::-1]
+
+
+def implementer_of(s: Session, run_id: int) -> Actor:
+    """The run's newest implementer, which a note from its finding is by; the daemon for a run that has none."""
+    w = s.scalars(
+        select(AgentSession).where(AgentSession.run_id == run_id).order_by(AgentSession.id.desc()).limit(1)
+    ).first()
+    return Agent(role=w.kind, session=w.id) if w is not None else System.DAEMON

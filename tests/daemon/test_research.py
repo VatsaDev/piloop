@@ -11,7 +11,7 @@ from sqlalchemy import select
 from piloop.agents.roles import PILOOP_HINT as PYTHON_HINT
 from piloop.campaign.ideas import defined_by
 from piloop.config import load_campaign_config
-from piloop.daemon.run_executor import RunExecutor
+from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
 from piloop.db.models import (
     AgentSession,
@@ -50,8 +50,8 @@ def test_research_sweep_inserts_ideas_signed_with_its_implementer_id(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     configure(db, campaign, FAKE_RESEARCHER, research={'max_ideas': 2})
-    executor = RunExecutor(db, Tracer(None), tmp_path, factory(runtime))
-    scheduler = Scheduler(db, executor, Tracer(None), tmp_path, factory(runtime))
+    controller = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    scheduler = Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))
 
     assert scheduler.tick() == [1], 'a free implementer slot, no idea for it: low water requests a research sweep'
     scheduler.wait(30)
@@ -158,8 +158,8 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
     add_ideas(db, campaign, 1)
     finish_a_run(db, campaign, 'tried once')
     finish_a_run(db, campaign, 'tried twice')
-    executor = RunExecutor(db, Tracer(None), tmp_path, factory(runtime))
-    scheduler = Scheduler(db, executor, Tracer(None), tmp_path, factory(runtime))
+    controller = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    scheduler = Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))
 
     assert scheduler.tick() == [1], 'the one slot is busy and the backlog is at its target, but two seeds wait'
     assert last_reason(db) == '2 new seeds to develop'
@@ -206,8 +206,8 @@ def test_with_several_tracks_research_reads_them_and_which_are_short_of_their_sh
             mode='json'
         )
         s.commit()
-    executor = RunExecutor(db, Tracer(None), tmp_path, factory(runtime))
-    scheduler = Scheduler(db, executor, Tracer(None), tmp_path, factory(runtime))
+    controller = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    scheduler = Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))
     assert scheduler.tick() == [1]
     scheduler.wait(30)
     scheduler.stop(timeout=5)

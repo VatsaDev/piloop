@@ -96,7 +96,9 @@ lzma uses preset 1 (about 1 s) to keep the scenario short."""
 
 @pytest.fixture(scope='module')
 def live_campaign(make_campaign: MakeCampaign) -> Iterator[Smoke]:
-    live_campaign = make_campaign(config=CONFIG, home_config={'max_evaluations': MAX_EVALUATIONS})
+    live_campaign = make_campaign(
+        config=CONFIG, home_config={'plugins': {'executor': {'provider': 'workers', 'evaluations': MAX_EVALUATIONS}}}
+    )
     live_campaign.start_readers()
     yield live_campaign
 

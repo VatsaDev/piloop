@@ -10,6 +10,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar, Protocol
 
+from piloop import deprecated
 from piloop.harnesses import Invocation, QueueKey
 
 
@@ -71,19 +72,13 @@ class Handle:
 
 
 @dataclass(frozen=True)
-class Outcome:
-    """How an agent finished."""
+class AgentExit:
+    """How an agent process ended: what ``Runtime.wait`` returns."""
 
     status: AgentStatus
     seconds: float
     exit_code: int | None = None
     error: str | None = None
-    startup_failed: bool = False
-    """The agent did not start to work: its start failed, or it ended within ``launcher.STARTUP_SECONDS`` and left
-    nothing (``Launcher._never_worked``). Only the launcher sets it."""
-    handed_over: bool = False
-    """The daemon restarted in place before it closed this agent's row. The next daemon re-attaches to the agent and
-    finishes its run in its worktree. Only the launcher sets it."""
 
 
 @dataclass(frozen=True)
@@ -139,7 +134,7 @@ class Runtime(Protocol):
         """
         ...
 
-    def wait(self, handle: Handle, timeout: float) -> Outcome:
+    def wait(self, handle: Handle, timeout: float) -> AgentExit:
         """Block until the agent is finished or gone. After ``timeout`` seconds, kill it and return ``timed_out``."""
         ...
 
@@ -206,3 +201,8 @@ class Runtime(Protocol):
         nothing.
         """
         ...
+
+
+deprecated.until('0.3.0', 'Outcome of piloop.runtime is AgentExit: delete the Outcome alias')
+Outcome = AgentExit
+"""The name of ``AgentExit`` in 0.2.0."""

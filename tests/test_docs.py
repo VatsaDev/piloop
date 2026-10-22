@@ -20,7 +20,6 @@ from pathlib import Path
 
 import pytest
 from cyclopts import CycloptsError
-from pydantic import BaseModel
 
 from piloop.actor import System
 from piloop.cli.database import sql_cmd
@@ -102,8 +101,17 @@ def merged(base: dict[str, object], over: dict[str, object]) -> dict[str, object
     return out
 
 
-GLOBAL_TABLES: dict[str, type[BaseModel]] = {'storage': StorageSettings}
-"""The tables of ``$PILOOP_HOME/config.toml``, the global settings file. Every other TOML block is ``piloop.toml``."""
+GLOBAL_TABLES = ('storage', 'plugins')
+"""The tables of ``$PILOOP_HOME/config.toml``, the global settings file. Every other TOML block is ``piloop.toml``.
+
+``[plugins]`` is in both files: a block whose ``[plugins.<name>]`` are all capabilities of the home is ``config.toml``."""
+
+
+def is_global(data: dict[str, object]) -> bool:
+    """Whether a TOML block holds tables of ``config.toml`` only."""
+    plugins = data.get('plugins', {})
+    of_home = {c.selection.key.split('.')[1] for c in host.declared() if c.selection and c.selection.scope == 'home'}
+    return bool(data) and data.keys() <= set(GLOBAL_TABLES) and isinstance(plugins, dict) and plugins.keys() <= of_home
 
 
 PYPROJECT_MARKS = ('[project', '[build-system]', 'entry-points')
@@ -123,9 +131,10 @@ def check_toml(block: Block, _db: Path) -> None:
         ]
         assert not misplaced, f'{block.at()}: {", ".join(".".join(p) for p in misplaced)} is not project.entry-points'
         return
-    if data.keys() <= GLOBAL_TABLES.keys() and data:
-        for table, values in data.items():
-            GLOBAL_TABLES[table].model_validate(values)
+    if is_global(data):
+        plugins = data.get('plugins', {})
+        assert isinstance(plugins, dict)
+        host.check_plugins(plugins, 'home')  # as the daemon checks them before it starts
         if (storage := data.get('storage')) is not None:
             settings = StorageSettings.model_validate(storage)
             if settings.backend is not None:
@@ -268,7 +277,7 @@ def db(tmp_path_factory: pytest.TempPathFactory, schema: Path) -> Path:
 def examples(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     """The example plugins installed, so that a page that selects one (``runtime = "nice"``) validates."""
     site = tmp_path_factory.mktemp('site')
-    for name in ('nice-runtime', 'dir-store', 'min-gain', 'stop-after-keeps'):
+    for name in ('nice-runtime', 'dir-store', 'min-gain', 'stop-after-keeps', 'inline-executor'):
         example(site, name)
     with pytest.MonkeyPatch.context() as patch:
         patch.syspath_prepend(str(site))

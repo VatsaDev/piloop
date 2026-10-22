@@ -269,8 +269,9 @@ held by its stop rule. See
 piloop eval queue
 ```
 
-Lists the running evaluations, then the waiting ones in the order in which they get a slot. A requested remeasure
-shows as `waiting` at once. See
+Lists the running evaluations, then the waiting ones in the order in which they get a slot. The last line counts them
+and the executor's slots: `2 running, 1 waiting; 2 slot(s) (workers evaluations)`. A requested remeasure shows as
+`waiting` at once. See
 [The evaluation queue](/concepts/verdict#the-evaluation-queue).
 
 ### piloop eval cancel

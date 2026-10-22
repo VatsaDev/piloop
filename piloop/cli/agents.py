@@ -5,11 +5,10 @@ from typing import Annotated
 import cyclopts
 from sqlalchemy import select
 
-from piloop.agents.launcher import TRANSCRIPT
 from piloop.campaign.stop import CANCELLABLE, request_cancel
 from piloop.cli import common
 from piloop.cli.common import HARNESS_HELP, CampaignRef
-from piloop.config import config_of
+from piloop.config import TRANSCRIPT, config_of
 from piloop.db.models import OPEN_RUNS, AgentSession, AgentSessionState, Run
 from piloop.runtime import Handle, NotAttachable, NotSteerable, Runtime, RuntimeFailure
 from piloop.runtime.factory import handle_for, runtime_for

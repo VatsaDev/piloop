@@ -16,7 +16,7 @@ from uuid import uuid4
 from piloop import deprecated
 from piloop.harnesses import Invocation, fill
 from piloop.proc import alive, child_env, kill_group, started
-from piloop.runtime import AgentSpec, AgentStatus, Check, Handle, NotAttachable, NotSteerable, Outcome
+from piloop.runtime import AgentExit, AgentSpec, AgentStatus, Check, Handle, NotAttachable, NotSteerable
 from piloop.runtime.tags import TAG_ENV, kill_tagged, kill_tree
 
 STDOUT = 'agent_session.stdout'
@@ -100,7 +100,7 @@ class SubprocessRuntime:
             self._specs[proc.pid] = spec
         return handle
 
-    def wait(self, handle: Handle, timeout: float) -> Outcome:
+    def wait(self, handle: Handle, timeout: float) -> AgentExit:
         """Poll until the agent is gone, resuming it while messages wait for it. On timeout, kill its process group.
 
         A turn that ends with messages in the queue, exit status 0 and a known session starts the next turn
@@ -114,12 +114,12 @@ class SubprocessRuntime:
                 if time.monotonic() - started > timeout:
                     self.kill(handle)
                     seconds = time.monotonic() - started
-                    return Outcome(AgentStatus.TIMED_OUT, seconds, None, f'agent timeout after {timeout:g}s')
+                    return AgentExit(AgentStatus.TIMED_OUT, seconds, None, f'agent timeout after {timeout:g}s')
                 time.sleep(POLL_SECONDS)
             if not self._resume(handle):
                 break
         rc = self._exit_code(handle)
-        return Outcome(
+        return AgentExit(
             AgentStatus.EXITED, time.monotonic() - started, rc, None if rc in (0, None) else f'agent exit {rc}'
         )
 

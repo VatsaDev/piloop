@@ -1,0 +1,678 @@
+"""The runtime contract behind the worker: every runtime runs an agent's job on a lease the same way.
+
+Each case runs on ``subprocess`` (a real process) and on ``herdr`` (the real runtime against the fake ``herdr`` CLI):
+an agent that ends, one that runs out of time, a start that fails, and a worker that restarts and re-attaches.
+"""
+
+import json
+import shutil
+import threading
+import time
+from collections.abc import Iterator
+from dataclasses import dataclass
+from datetime import timedelta
+from pathlib import Path
+
+import pytest
+from git import Repo
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from pytest_mock import MockerFixture
+from sqlalchemy import delete, select
+from sqlalchemy.exc import OperationalError
+
+from piloop import git
+from piloop.agents.results import CampaignResults, End, Ended
+from piloop.daemon.run_controller import RunController
+from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
+    Campaign,
+    Candidate,
+    Evaluation,
+    Event,
+    Lease,
+    LeaseState,
+    RoleName,
+    Run,
+    RunStatus,
+    utcnow,
+)
+from piloop.db.session import Database
+from piloop.otel import Tracer
+from piloop.plugins.builtin.executor.worker import WORKER_ANOMALY, Unsent, Worker
+from piloop.plugins.contracts.executor import AgentJob, AgentReport, Checkout, Commits, EvaluationReport, GitTree
+from piloop.plugins.kit.executor.leases import (
+    LOCAL_WORKER,
+    STALE_REPORT,
+    Leases,
+    StaleLease,
+    Timing,
+    cancel,
+    enqueue,
+    revoke,
+)
+from piloop.runtime import AgentStatus, Handle
+from piloop.runtime.factory import RuntimeFactory, make_runtime
+from piloop.runtime.herdr import HerdrSettings
+from tests.conftest import Gate, ScriptRuntime, baseline, factory, timed, wait_until, workers_of, write_toml
+from tests.daemon.test_evaluation_queue import held_evaluate
+from tests.daemon.test_run_controller import execute, make_run, reload_campaign, set_config
+from tests.test_lease import agent_job
+
+NO_JOBS = {'error': {'code': 'pane_not_found', 'message': 'gone'}}
+"""What the fake ``herdr`` answers for the agent's jobs: none, so an idle agent is finished."""
+HOLD = '#!/bin/sh\nwhile [ -f {hold} ]; do sleep 0.05; done\n'
+
+
+@dataclass(frozen=True)
+class Contract:
+    """One runtime under the contract: how to make it, and how to make it fail a start or time out."""
+
+    kind: str
+    runtime_factory: RuntimeFactory
+    monkeypatch: pytest.MonkeyPatch
+
+    def script(self, **responses: list[dict[str, object]]) -> None:
+        """Answer the fake ``herdr`` CLI's calls with ``responses``. Nothing for the subprocess runtime."""
+        if self.kind == 'herdr':
+            scripts = {'pane process-info': [NO_JOBS], **{k.replace('_', ' '): v for k, v in responses.items()}}
+            self.monkeypatch.setenv('FAKE_HERDR_SCRIPT', json.dumps(scripts))
+
+
+@pytest.fixture(params=['subprocess', 'herdr'])
+def contract(
+    request: pytest.FixtureRequest, runtime: ScriptRuntime, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> Iterator[Contract]:
+    if request.param == 'herdr':
+        request.getfixturevalue('herdr_log')
+        monkeypatch.setattr('piloop.runtime.herdr.QUIET_SECONDS', 0)
+        # the fake's agent is idle at once: past the grace, that is the end of its turn, not a slow start
+        monkeypatch.setattr('piloop.runtime.herdr.herdr_settings', HerdrSettings(startup_grace_seconds=0.05))
+        herdr = Contract('herdr', make_runtime, monkeypatch)
+        herdr.script()
+        yield herdr
+    else:
+        yield Contract('subprocess', factory(runtime), monkeypatch)
+
+
+def use(db: Database, campaign: Campaign, contract: Contract, body: str, timeout: float = 20) -> None:
+    write_toml(Path(campaign.path), body, implementer_timeout=timeout)
+    reload_campaign(db, campaign)
+    with db.session() as s:
+        row = s.get_one(Campaign, campaign.id)
+        row.config = {**row.config, 'runtime': contract.kind}
+        s.commit()
+
+
+def request_agent(db: Database, campaign: Campaign) -> int:
+    with db.session() as s:
+        w = AgentSession(kind=RoleName.IMPLEMENTER, campaign_id=campaign.id, reason='contract')
+        s.add(w)
+        s.commit()
+        return w.id
+
+
+def launch(ex: RunController, agent_session_id: int, tmp_path: Path) -> Ended:
+    cwd = tmp_path / 'cwd'
+    cwd.mkdir(exist_ok=True)
+    return ex.launcher.launch(
+        agent_session_id, brief='b', cwd=cwd, log_dir=tmp_path / 'logs', artifact=Checkout(path=cwd)
+    )
+
+
+def lease_state(db: Database, agent_session_id: int) -> LeaseState | None:
+    with db.session() as s:
+        lease = s.scalars(select(Lease).where(Lease.agent_session_id == agent_session_id)).first()
+        return lease.state if lease is not None else None
+
+
+def lease_states(db: Database) -> list[LeaseState]:
+    with db.session() as s:
+        return list(s.scalars(select(Lease.state).order_by(Lease.id)))
+
+
+def rows(db: Database, agent_session_id: int) -> tuple[AgentSession, Lease]:
+    with db.session() as s:
+        lease = s.scalars(select(Lease).where(Lease.agent_session_id == agent_session_id)).one()
+        return s.get_one(AgentSession, agent_session_id), lease
+
+
+def test_an_agent_that_ends_is_reported_on_its_lease(
+    db: Database, campaign: Campaign, contract: Contract, tmp_path: Path
+) -> None:
+    use(db, campaign, contract, '#!/bin/sh\necho done\n')
+    ex = RunController(db, Tracer(None), tmp_path, contract.runtime_factory)
+    agent_session_id = request_agent(db, campaign)
+    outcome = launch(ex, agent_session_id, tmp_path)
+    assert outcome.process.status in (AgentStatus.EXITED, AgentStatus.IDLE) and outcome.process.error is None
+    w, lease = rows(db, agent_session_id)
+    assert (w.state, w.runtime, lease.state, lease.worker) == (
+        AgentSessionState.EXITED,
+        contract.kind,
+        LeaseState.REPORTED,
+        'local',
+    )
+    assert lease.handle['runtime'] == contract.kind and w.handle == lease.handle['data'], 'steered by its handle'
+    assert (tmp_path / 'logs' / 'transcript.txt').is_file() and (tmp_path / 'logs' / 'brief.md').read_text() == 'b'
+
+
+def test_an_agent_that_runs_out_of_time_is_reported_timed_out(
+    db: Database, campaign: Campaign, contract: Contract, tmp_path: Path
+) -> None:
+    use(db, campaign, contract, '#!/bin/sh\nsleep 30\n', timeout=0.5)
+    contract.script(agent_wait=[{'error': {'code': 'timeout', 'message': 'timed out'}}])
+    ex = RunController(db, Tracer(None), tmp_path, contract.runtime_factory)
+    agent_session_id = request_agent(db, campaign)
+    outcome = launch(ex, agent_session_id, tmp_path)
+    assert (outcome.process.status, outcome.process.error) == (AgentStatus.TIMED_OUT, 'agent timeout after 0.5s')
+    w, lease = rows(db, agent_session_id)
+    assert (w.state, lease.state) == (AgentSessionState.KILLED, LeaseState.REPORTED)
+
+
+def test_a_start_that_fails_is_reported_as_a_failed_start(
+    db: Database, campaign: Campaign, contract: Contract, tmp_path: Path, runtime: ScriptRuntime, mocker: MockerFixture
+) -> None:
+    use(db, campaign, contract, '#!/bin/sh\necho done\n')
+    contract.script(agent_start=[{'error': {'code': 'spawn_failed', 'message': 'no such harness'}}])
+    if contract.kind == 'subprocess':
+        mocker.patch.object(runtime, 'start', side_effect=RuntimeError('spawn_failed: no such harness'))
+    ex = RunController(db, Tracer(None), tmp_path, contract.runtime_factory)
+    agent_session_id = request_agent(db, campaign)
+    outcome = launch(ex, agent_session_id, tmp_path)
+    assert (outcome.end is End.NOT_STARTED) and 'spawn_failed' in str(outcome.process.error)
+    w, lease = rows(db, agent_session_id)
+    assert (w.state, lease.state, w.handle) == (AgentSessionState.KILLED, LeaseState.REPORTED, {})
+
+
+def test_a_restarted_worker_re_attaches_to_its_agent_and_reports_it(
+    db: Database, campaign: Campaign, contract: Contract, tmp_path: Path
+) -> None:
+    """The worker of an in-place restart leaves its agent running. The next one finds it on its lease, by its handle."""
+    hold = tmp_path / 'hold'
+    hold.touch()
+    use(db, campaign, contract, HOLD.format(hold=hold))
+    contract.script(agent_wait=[{'result': {'type': 'agent_info', 'agent': {'agent_status': 'working'}}}])
+    first = RunController(db, Tracer(None), tmp_path, contract.runtime_factory)
+    agent_session_id = request_agent(db, campaign)
+    launching = threading.Thread(target=launch, args=(first, agent_session_id, tmp_path))
+    launching.start()
+    wait_until(lambda: lease_state(db, agent_session_id) is LeaseState.RUNNING)
+    first.hand_over()
+    launching.join(30)
+    second = RunController(db, Tracer(None), tmp_path, contract.runtime_factory)
+    workers_of(second).leases.renew_all()
+    workers_of(second).worker.start()
+    contract.script()  # herdr's agent is now idle
+    hold.unlink()
+    outcome = second.launcher.reattach(agent_session_id)
+    assert outcome.process.status in (AgentStatus.EXITED, AgentStatus.IDLE) and outcome.process.error is None
+    w, lease = rows(db, agent_session_id)
+    assert (w.state, lease.id, lease.state) == (AgentSessionState.EXITED, 1, LeaseState.REPORTED), 'the same lease'
+
+
+def test_a_revoked_agent_is_stopped_by_its_worker_and_still_reported(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """A kill is a revoke: the worker stops the agent and reports it, so its run keeps what it made."""
+    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), '#!/bin/sh\nsleep 30\n')
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    agent_session_id = request_agent(db, campaign)
+    outcomes: list[Ended] = []
+    launching = threading.Thread(target=lambda: outcomes.append(launch(ex, agent_session_id, tmp_path)))
+    launching.start()
+    wait_until(lambda: lease_state(db, agent_session_id) is LeaseState.RUNNING)
+    with db.session() as s:
+        revoke(s, s.scalars(select(Lease)).one())
+        s.commit()
+    workers_of(ex).leases.notify()
+    launching.join(30)
+    [outcome] = outcomes
+    assert runtime.killed and outcome.process.exit_code is not None and outcome.process.exit_code < 0, (
+        'killed by the worker'
+    )
+    assert rows(db, agent_session_id)[1].state is LeaseState.REPORTED
+
+
+def test_a_worker_whose_own_code_fails_loses_the_job_so_that_nothing_waits_for_ever(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), '#!/bin/sh\necho done\n')
+    mocker.patch('piloop.plugins.builtin.executor.worker.Worker._agent', side_effect=RuntimeError('a bug'))
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    agent_session_id = request_agent(db, campaign)
+    outcome = launch(ex, agent_session_id, tmp_path)
+    assert ((outcome.end is End.LOST), outcome.process.error) == (True, 'worker lost: RuntimeError: a bug')
+    assert rows(db, agent_session_id)[1].state is LeaseState.EXPIRED
+    workers_of(ex).worker._lost(
+        99, 'nothing'
+    )  # a lease that is no longer the worker's: refused, and the worker goes on
+
+
+def test_a_restarted_worker_reports_an_agent_whose_worktree_is_gone(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    hold = tmp_path / 'hold'
+    hold.touch()
+    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), HOLD.format(hold=hold))
+    first = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    agent_session_id = request_agent(db, campaign)
+    launching = threading.Thread(target=launch, args=(first, agent_session_id, tmp_path))
+    launching.start()
+    wait_until(lambda: lease_state(db, agent_session_id) is LeaseState.RUNNING)
+    first.hand_over()
+    launching.join(30)
+    shutil.rmtree(tmp_path / 'cwd')
+    second = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    workers_of(second).worker.start()
+    outcome = second.launcher.reattach(agent_session_id)
+    assert (
+        outcome.end is End.LOST
+    ) and outcome.process.error == 'worker lost: the worker restarted and could not find its agent'
+    hold.unlink()
+
+
+def test_a_hand_over_twice_leaves_a_re_attached_agent_to_the_third_daemon(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    hold = tmp_path / 'hold'
+    hold.touch()
+    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), HOLD.format(hold=hold))
+    agent_session_id = request_agent(db, campaign)
+    first = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    threading.Thread(target=launch, args=(first, agent_session_id, tmp_path)).start()
+    wait_until(lambda: lease_state(db, agent_session_id) is LeaseState.RUNNING)
+    first.hand_over()
+    second = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    workers_of(second).worker.start()
+    wait_until(lambda: workers_of(second).worker._jobs)  # it re-attached
+    second.hand_over()
+    third = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    workers_of(third).worker.start()
+    hold.unlink()
+    assert third.launcher.reattach(agent_session_id).process.error is None
+    assert rows(db, agent_session_id)[1].state is LeaseState.REPORTED
+
+
+def test_an_agent_whose_lease_ends_while_it_starts_is_ended_and_not_reported(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A daemon stop ended the lease and closed the row while the runtime started the agent: nothing waits for it, so
+    it is killed."""
+    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), '#!/bin/sh\nsleep 30\n')
+    gate = Gate()
+    monkeypatch.setattr(runtime, 'start', gate.wrap(runtime.start))
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    agent_session_id = request_agent(db, campaign)
+    outcomes: list[Ended] = []
+    launching = threading.Thread(target=lambda: outcomes.append(launch(ex, agent_session_id, tmp_path)))
+    launching.start()
+    assert gate.entered.wait(10)
+    with db.session() as s:  # as a stop does for a job that did not report in time
+        cancel(s, s.scalars(select(Lease)).one(), 'daemon stopped')
+        w = s.get_one(AgentSession, agent_session_id)
+        w.state, w.ended_at = AgentSessionState.KILLED, utcnow()
+        s.commit()
+    gate.release.set()
+    launching.join(30)
+    wait_until(lambda: runtime.killed)
+    assert outcomes[0].process.error == 'daemon stopped' and rows(db, agent_session_id)[1].state is LeaseState.CANCELLED
+
+
+def test_an_agent_that_removes_its_own_worktree_is_still_reported(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), '#!/bin/sh\nrm -rf "$PWD"\n')
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    agent_session_id = request_agent(db, campaign)
+    with db.session() as s:
+        base = s.get_one(Campaign, campaign.id)
+        repo, commit = Path(base.path), Repo(base.path).head.commit.hexsha
+    outcome = ex.launcher.launch(
+        agent_session_id,
+        brief='b',
+        cwd=tmp_path / 'wt',
+        log_dir=tmp_path / 'logs',
+        artifact=GitTree(repo=repo, commit=commit),
+        commits=Commits(message='leftovers', ref='refs/piloop/agents/1'),
+    )
+    assert outcome.process.error is not None and outcome.head is None, 'the report says what is known'
+    assert rows(db, agent_session_id)[1].state is LeaseState.REPORTED
+
+
+def test_an_evaluation_at_a_hand_over_is_stopped_and_measured_again_by_the_next_worker(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """The next worker cannot watch an evaluator again: it finds the lease, reports it gone, and it is queued again."""
+    (tmp_path / 'hold').touch()
+    set_config(db, campaign, evaluate=held_evaluate(tmp_path))
+    first = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    candidate = baseline(db, campaign.id).id
+    threading.Thread(target=first.remeasure, args=(candidate,)).start()
+    wait_until(lambda: lease_states(db) == [LeaseState.RUNNING])
+    first.hand_over()
+    second = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    with db.session() as s:  # the next daemon's reap: the queue starts empty
+        s.execute(delete(Evaluation))
+        s.commit()
+    (tmp_path / 'hold').unlink()
+    workers_of(second).worker.start()
+    measuring = threading.Thread(target=second.remeasure, args=(candidate,))  # the next daemon's resumed scoring
+    measuring.start()
+    measuring.join(30)
+    assert not measuring.is_alive(), 'measured on its new lease'
+    with db.session() as s:
+        assert [lease.state for lease in s.scalars(select(Lease).order_by(Lease.id))] == [
+            LeaseState.EXPIRED,
+            LeaseState.REPORTED,
+        ]
+        assert len(s.get_one(Candidate, candidate).measurements) == 2
+
+
+def test_an_evaluation_whose_lease_expired_before_its_evaluator_started_kills_it(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = Gate()
+    monkeypatch.setattr('piloop.plugins.kit.executor.jobs.git.add_worktree', gate.wrap(git.add_worktree))
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    measuring = threading.Thread(target=ex.remeasure, args=(baseline(db, campaign.id).id,))
+    measuring.start()
+    assert gate.entered.wait(10)
+    workers_of(ex).leases.expire(utcnow() + timedelta(seconds=workers_of(ex).leases.timing.toleration + 1))
+    gate.release.set()
+    measuring.join(30)
+    assert not measuring.is_alive(), 'measured on its new lease'
+
+    def stale() -> list[object]:
+        with db.session() as s:
+            return [e.payload['lease'] for e in s.scalars(select(Event).where(Event.kind == STALE_REPORT))]
+
+    wait_until(stale)
+    assert stale() == [1], 'its evaluator was killed at once; its report is refused'
+
+
+FAST = Timing(renew=0.1, grace=0.3, toleration=1.0)
+
+
+def renewed_while(ex: RunController, db: Database, agent_session_id: int, seconds: float) -> None:
+    """Tick the scheduler's expiry for ``seconds``, and check that the agent's lease stays live meanwhile."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        workers_of(ex).leases.expire()
+        assert lease_state(db, agent_session_id) is LeaseState.RUNNING, 'its heartbeat renewed it'
+        time.sleep(0.05)
+
+
+@pytest.fixture
+def launched(db: Database) -> Iterator[list[threading.Thread]]:
+    """The threads that launch agents in the test: they end, as their agents do, before the database closes."""
+    threads: list[threading.Thread] = []
+    yield threads
+    for thread in threads:
+        thread.join(30)
+
+
+def launching(
+    db: Database, campaign: Campaign, ex: RunController, tmp_path: Path, name: str, threads: list[threading.Thread]
+) -> int:
+    """Launch an agent on a thread, and return its row."""
+    agent_session_id = request_agent(db, campaign)
+    cwd = tmp_path / name
+    cwd.mkdir()
+    thread = threading.Thread(
+        target=ex.launcher.launch,
+        args=(agent_session_id,),
+        kwargs={'brief': 'b', 'cwd': cwd, 'log_dir': tmp_path / f'{name}-logs', 'artifact': Checkout(path=cwd)},
+    )
+    threads.append(thread)
+    thread.start()
+    return agent_session_id
+
+
+def running_agent(
+    db: Database, campaign: Campaign, ex: RunController, tmp_path: Path, name: str, threads: list[threading.Thread]
+) -> int:
+    """Launch an agent on a thread, and return its row once it runs."""
+    agent_session_id = launching(db, campaign, ex, tmp_path, name, threads)
+    wait_until(lambda: lease_state(db, agent_session_id) is LeaseState.RUNNING)
+    return agent_session_id
+
+
+def test_a_slow_start_holds_back_no_heartbeat(
+    db: Database,
+    campaign: Campaign,
+    runtime: ScriptRuntime,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    launched: list[threading.Thread],
+) -> None:
+    """A Herdr start can take minutes; meanwhile the worker's other agents are renewed."""
+    hold = tmp_path / 'hold'
+    hold.touch()
+    use(db, campaign, Contract('subprocess', factory(runtime), monkeypatch), HOLD.format(hold=hold), timeout=600)
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST))
+    first = running_agent(db, campaign, ex, tmp_path, 'first', launched)
+    start = runtime.start
+    monkeypatch.setattr(runtime, 'start', lambda spec: time.sleep(2) or start(spec))
+    launching(db, campaign, ex, tmp_path, 'second', launched)
+    renewed_while(ex, db, first, 2.5)
+    hold.unlink()
+
+
+def test_a_failing_turn_never_ends_the_loop_and_a_failing_streak_is_an_anomaly(
+    db: Database,
+    campaign: Campaign,
+    runtime: ScriptRuntime,
+    tmp_path: Path,
+    mocker: MockerFixture,
+    tracer: Tracer,
+    spans: InMemorySpanExporter,
+    launched: list[threading.Thread],
+) -> None:
+    hold = tmp_path / 'hold'
+    hold.touch()
+    use(
+        db,
+        campaign,
+        Contract('subprocess', factory(runtime), pytest.MonkeyPatch()),
+        HOLD.format(hold=hold),
+        timeout=600,
+    )
+    ex = RunController(db, tracer, tmp_path, factory(runtime), executor=timed(FAST))
+    agent_session_id = running_agent(db, campaign, ex, tmp_path, 'held', launched)
+    mocker.patch.object(
+        workers_of(ex).leases, 'acquire', side_effect=OperationalError('SELECT', {}, Exception('database is locked'))
+    )
+    workers_of(ex).worker.kick()
+    renewed_while(ex, db, agent_session_id, 2.5)
+    names = [s.name for s in spans.get_finished_spans()]
+    assert 'worker.turn_failed' in names and names.count(WORKER_ANOMALY) == 1, 'one anomaly for one failing streak'
+    hold.unlink()
+
+
+def test_a_kill_that_fails_is_tried_again_on_the_next_heartbeat(
+    db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, launched: list[threading.Thread]
+) -> None:
+    """A revoke whose kill fails (a Herdr server that does not answer) is not forgotten: the next answer asks again."""
+
+    class Flaky(ScriptRuntime):
+        def kill(self, handle: Handle) -> None:
+            if not self.killed:
+                self.killed.append(handle)
+                raise RuntimeError('server_unavailable')
+            super().kill(handle)
+
+    runtime = Flaky()
+    use(db, campaign, Contract('subprocess', factory(runtime), monkeypatch), '#!/bin/sh\nsleep 600\n', timeout=600)
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST))
+    agent_session_id = running_agent(db, campaign, ex, tmp_path, 'stubborn', launched)
+    with db.session() as s:
+        revoke(s, s.scalars(select(Lease)).one())
+        s.commit()
+    workers_of(ex).leases.notify()
+    wait_until(lambda: lease_state(db, agent_session_id) is LeaseState.REPORTED, timeout=20)
+    assert len(runtime.killed) >= 2
+
+
+def test_a_worker_killed_after_its_agent_ended_but_before_it_reported_reports_on_its_restart(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """``kill -9`` between the end of the agent and its report: the worktree and the pinned commits are still there,
+    so the next worker reports them, and the run is scored."""
+    write_toml(Path(campaign.path), '#!/bin/sh\necho line >> solve.txt\ngit commit -qam "a line"\n')
+    reload_campaign(db, campaign)
+    run_id = make_run(db, campaign)
+    first = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    send = Worker._send
+
+    def gone_before_the_report(self: Worker, lease_id: int, unsent: Unsent) -> None:
+        if self is workers_of(first).worker:  # the process goes here: nothing after this line runs in it
+            first.hand_over()
+            return
+        send(self, lease_id, unsent)
+
+    mocker.patch.object(Worker, '_send', gone_before_the_report)
+    thread = threading.Thread(target=execute, args=(first, db, run_id))
+    thread.start()
+    thread.join(30)
+    second = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    workers_of(second).leases.renew_all()
+    workers_of(second).worker.start()
+    with db.session() as s:
+        agent_session_id = s.scalars(select(AgentSession.id)).one()
+    second.reattach(run_id, agent_session_id)
+    with db.session() as s:
+        run = s.get_one(Run, run_id)
+        assert (run.status, run.error) == (RunStatus.SUCCEEDED, None)
+        [candidate] = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).all()
+        assert candidate.summary == 'a line'
+
+
+def test_a_worker_killed_between_the_start_and_its_record_leaves_no_worktree(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """The lease is acquired and the worktree made, but the start was never recorded: the next worker removes it."""
+    agent_session_id = request_agent(db, campaign)
+    with db.session() as s:
+        base = s.get_one(Campaign, campaign.id)
+        repo, commit = Path(base.path), Repo(base.path).head.commit.hexsha
+    cwd = tmp_path / 'wt'
+    job = AgentJob(
+        agent_session=agent_session_id,
+        runtime='subprocess',
+        campaign=campaign.name,
+        campaign_path=repo,
+        artifact=GitTree(repo=repo, commit=commit),
+        cwd=cwd,
+        log_dir=tmp_path / 'logs',
+        timeout=60,
+        brief=None,
+        spec=None,
+    )
+    git.add_worktree(git.open_repo(repo), cwd, commit, {})
+    with db.session() as s:
+        enqueue(s, job)
+        s.commit()
+    results = CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False)
+    Leases(db, results).acquire(LOCAL_WORKER, runners=[])  # the killed worker's, which no worker watches
+    second = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    workers_of(second).worker.start()
+    wait_until(lambda: lease_state(db, agent_session_id) is LeaseState.EXPIRED)
+    workers_of(second).worker.join(10)
+    assert not cwd.exists() and git.worktrees_under(git.open_repo(repo), cwd) == []
+
+
+def test_a_worker_that_cannot_read_its_leases_at_its_start_reads_them_on_the_next_kick(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    held = mocker.patch.object(
+        workers_of(ex).leases, 'held', side_effect=[OperationalError('SELECT', {}, Exception('locked')), []]
+    )
+    workers_of(ex).worker.start()
+    workers_of(ex).worker.kick()
+    assert held.call_count == 2
+
+
+def test_an_evaluator_whose_start_is_refused_by_the_fence_is_killed_at_once(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """The fence refused the record of the evaluator's start: its lease is no longer the worker's, so it stops."""
+    (tmp_path / 'hold').touch()
+    set_config(db, campaign, evaluate=held_evaluate(tmp_path))
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    mocker.patch.object(workers_of(ex).leases, 'started', side_effect=StaleLease('stale_lease: lease#1 was replaced'))
+    measuring = threading.Thread(target=ex.remeasure, args=(baseline(db, campaign.id).id,))
+    measuring.start()
+    measuring.join(30)
+    assert not measuring.is_alive(), 'its evaluator was killed, though the hold is still there'
+
+
+def test_a_report_that_cannot_be_sent_keeps_the_worktree_and_a_restarted_worker_scores_the_run(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """The database stays locked past the busy timeout: the report waits in memory, so the worktree must outlive it.
+
+    The worker sends the report again on each heartbeat. Killed meanwhile, its successor finds the agent ended in
+    its worktree, and reports it: the run is scored, not lost.
+    """
+    write_toml(Path(campaign.path), '#!/bin/sh\necho line >> solve.txt\ngit commit -qam "a line"\n')
+    reload_campaign(db, campaign)
+    run_id = make_run(db, campaign)
+    first = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    report = Leases.report
+    tried: list[int] = []
+
+    def locked_for_the_first(
+        self: Leases, lease_id: int, worker: str, request_id: str, result: AgentReport | EvaluationReport
+    ) -> dict[str, object]:
+        if self is workers_of(first).leases:
+            tried.append(lease_id)
+            raise OperationalError('BEGIN IMMEDIATE', {}, Exception('database is locked'))
+        return report(self, lease_id, worker, request_id, result)
+
+    mocker.patch.object(Leases, 'report', locked_for_the_first)
+    thread = threading.Thread(target=execute, args=(first, db, run_id))
+    thread.start()
+    wait_until(lambda: len(tried) >= 2)  # sent again on a later turn
+    worktree = tmp_path / 'runs' / str(run_id) / 'worktree'
+    assert worktree.is_dir(), 'the worktree outlives a report that is not out'
+    first.hand_over()  # the process goes
+    thread.join(30)
+    second = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    workers_of(second).leases.renew_all()
+    workers_of(second).worker.start()
+    with db.session() as s:
+        agent_session_id = s.scalars(select(AgentSession.id)).one()
+    second.reattach(run_id, agent_session_id)
+    with db.session() as s:
+        run = s.get_one(Run, run_id)
+        assert (run.status, run.error) == (RunStatus.SUCCEEDED, None)
+        [candidate] = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).all()
+        assert candidate.summary == 'a line'
+    workers_of(second).worker.join(10)
+    assert not worktree.exists(), 'removed once the report is out'
+
+
+def test_a_stop_ends_a_queued_agent_lease_whose_row_is_settled_and_a_worker_starts_once(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """The stop ends the lease all the same: core refused the stopped result of a row that was closed already."""
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    worker = workers_of(ex).worker
+    worker.join(0)  # nothing started yet: no loop to wait for
+    job = agent_job(db, campaign, tmp_path)  # its row is requested, not live: settled for core
+    with db.session() as s:
+        lease_id = enqueue(s, job).id
+        s.commit()
+    ex.stop(5)
+    with db.session() as s:
+        assert s.get_one(Lease, lease_id).state is LeaseState.CANCELLED
+    worker.start()
+    worker.start()  # a later call only wakes it
+    worker.join(5)
+
+
+def test_a_hand_over_of_a_worker_that_never_turned_has_no_loop_to_wait_for(
+    db: Database, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    workers_of(RunController(db, Tracer(None), tmp_path, factory(runtime))).worker.hand_over()

@@ -15,7 +15,8 @@ import fcntl
 import hashlib
 import os
 import sqlite3
-from collections.abc import Generator
+import threading
+from collections.abc import Callable, Generator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -361,6 +362,30 @@ def read_transaction(s: Session) -> Generator[None]:
         s.rollback()
 
 
+WAIT_POLL_SECONDS = 1.0
+"""How often ``Database.wait_until`` reads again for a commit of another process (the CLI, an agent's ``piloop sql``).
+
+It goes when the daemon wakes on the commits of every process: those then notify it, as this process's do."""
+
+
+CLOSE_WAIT_SECONDS = 5.0
+"""How long ``Database.close`` waits for the reads of its waiters, which are short."""
+
+
+def write_transaction(s: Session) -> None:
+    """Begin the write transaction of ``s`` now (``BEGIN IMMEDIATE``): it holds the write lock until the commit.
+
+    So a check that a later write depends on, a lease's fence say, reads the state that the write changes: no other
+    writer commits between them. pysqlite would otherwise begin the transaction only at the first write. The session
+    must have no open transaction, and the caller commits or rolls back.
+    """
+    s.connection().exec_driver_sql('BEGIN IMMEDIATE')
+
+
+class DatabaseClosed(RuntimeError):
+    """A session asked of a ``Database`` after its ``close``: the caller outlived the daemon's database."""
+
+
 class Database:
     """One engine and a session factory. Modules get the database only through this class.
 
@@ -372,11 +397,61 @@ class Database:
     def __init__(self, url: str, *, actor: Actor) -> None:
         self.engine = make_engine(url, actor)
         self._sessions = sessionmaker(self.engine, expire_on_commit=False)
+        self._committed = threading.Condition()
+        self._commits = 0
+        """How many sessions of this process committed: a waiter that saw this number waits only for a later one."""
+        self._closed = False
+        self._reading = 0
+        """How many waiters read now: ``close`` lets them end before it closes the connections that they hold."""
+        event.listen(self._sessions, 'after_commit', lambda _s: self._wake())
 
     def session(self) -> Session:
-        """A new session. Use it as a context manager."""
+        """A new session. Use it as a context manager.
+
+        Raises:
+            DatabaseClosed: ``close`` came first. A session then would open a connection that nothing closes.
+        """
+        if self._closed:
+            raise DatabaseClosed('the database is closed')
         return self._sessions()
 
+    def _wake(self) -> None:
+        with self._committed:
+            self._commits += 1
+            self._committed.notify_all()
+
+    def wait_until(self, done: Callable[[Session], bool], give_up: Callable[[], bool] = lambda: False) -> bool:
+        """Block until ``done`` holds in a new session, and return True. False once ``give_up`` or ``close`` comes.
+
+        It reads again after every commit of this process, and every ``WAIT_POLL_SECONDS`` for one of another. The
+        read happens outside the condition, so no commit waits for it.
+        """
+        while True:
+            with self._committed:
+                if self._closed:
+                    return False
+                seen, self._reading = self._commits, self._reading + 1
+            try:
+                with self._sessions() as s:  # registered in _reading: close waits for it
+                    found = done(s)
+            finally:
+                with self._committed:
+                    self._reading -= 1
+                    self._committed.notify_all()
+            if found:
+                return True
+            if give_up():
+                return False
+            with self._committed:
+                self._committed.wait_for(lambda seen=seen: self._commits != seen or self._closed, WAIT_POLL_SECONDS)
+
     def close(self) -> None:
-        """Close the pooled connections."""
+        """Make every waiter give up, let the reads in flight end, then close the pooled connections.
+
+        A connection that a read holds while the pool goes is never closed: Python warns when it collects it.
+        """
+        with self._committed:
+            self._closed = True
+            self._committed.notify_all()
+            self._committed.wait_for(lambda: self._reading == 0, CLOSE_WAIT_SECONDS)
         self.engine.dispose()

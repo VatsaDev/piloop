@@ -1,6 +1,7 @@
 """The evaluation queue (``evaluations``): the evaluations that the daemon runs now or next, one row each.
 
-The daemon runs at most ``max_evaluations`` evaluations at the same time, across all campaigns. A free slot goes to the
+The daemon submits each evaluation to its executor when one of the executor's slots is free (``Executor.capacity``),
+in this order (``waiting``), whichever the executor. A free slot goes to the
 campaign with the fewest running evaluations, and in that campaign to its head first, then to the oldest request. So a
 campaign with many requests never holds back the requests of another, and inside a campaign each request waits only
 for the ones before it. The queue is in the database, so ``piloop eval`` reads and cancels it without the daemon.
@@ -17,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from piloop.actor import Actor
 from piloop.db.events import emit
-from piloop.db.models import Campaign, Candidate, Evaluation, Event, Measurement, TargetKind, utcnow
+from piloop.db.models import Campaign, Candidate, Evaluation, Event, Measurement, TargetKind
 from piloop.scoring import ledger
 from piloop.scoring.ledger import head
 
@@ -63,18 +64,6 @@ def waiting(s: Session) -> list[Evaluation]:
         rows.remove(nxt)
         running[campaign[nxt.id]] += 1
     return order
-
-
-def start(s: Session, evaluation: Evaluation, capacity: int) -> bool:
-    """Start the waiting ``evaluation`` if a slot is free and it is the next one. Return whether it started.
-
-    The caller commits.
-    """
-    running = s.scalar(select(func.count()).select_from(Evaluation).where(Evaluation.started_at.is_not(None))) or 0
-    if running >= capacity or waiting(s)[0].id != evaluation.id:
-        return False
-    evaluation.started_at = utcnow()
-    return True
 
 
 def listing(s: Session) -> list[Evaluation]:
@@ -129,7 +118,7 @@ def cancel(s: Session, candidate_id: int, actor: Actor) -> int:
         payload: dict[str, object] = {'candidate': candidate_id, 'metrics': {}, 'error': error, 'run': None}
         emit(s, 'measurement.recorded', TargetKind.MEASUREMENT, measurement.id, payload=payload, actor=actor)
     for evaluation in found:
-        if evaluation.started_at is None:
+        if evaluation.started_at is None:  # its executor finds it gone when a slot comes (``Results.started``)
             s.delete(evaluation)
         else:
             evaluation.cancelled_by = actor.signature

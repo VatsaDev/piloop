@@ -15,7 +15,7 @@ from piloop_stop_after_keeps import AFTER_KEEPS
 from sqlalchemy import func, select
 
 from piloop.actor import Agent, System
-from piloop.agents.launcher import STOPPED_ERROR
+from piloop.agents.results import STOPPED_ERROR
 from piloop.campaign.ops import pause
 from piloop.campaign.stop import (
     CAMPAIGN_STOPPED_ERROR,

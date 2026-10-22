@@ -24,6 +24,7 @@ from pydantic_settings import (
 
 from piloop import deprecated
 from piloop.actor import Actor, System
+from piloop.plugins.host import PluginTable
 
 DEFAULT_HOME = Path.home() / '.piloop'
 REAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
@@ -34,8 +35,6 @@ install, so a test can never open, let alone migrate, the database of a user's p
 CONFIG_FILE = 'config.toml'
 STORE_DIR = 'store'
 GB = 1024**3
-MAX_EVALUATIONS = 2
-"""The default of ``Settings.max_evaluations``."""
 
 
 class BackendTable(BaseModel):
@@ -105,10 +104,9 @@ class Settings(BaseSettings):
     """The number of seconds between two ticks. On each tick, the daemon checks the triggers of every campaign and
     launches the requested agents."""
 
-    max_evaluations: int = Field(default=MAX_EVALUATIONS, ge=1)
-    """The number of evaluate commands that the daemon runs at the same time, across all campaigns. The others wait in
-    the evaluation queue (``piloop eval queue``). A free slot goes to the campaign with the fewest running evaluations,
-    and in it to its head first, then to the oldest request."""
+    plugins: dict[str, PluginTable] = {}
+    """``[plugins.<capability>]``: the provider of each capability of this home that ``config.toml`` selects, and its
+    parameters. The daemon checks them before it starts (``piloop.plugins.host.check_plugins``)."""
 
     migration_backups: int = Field(default=3, ge=0)
     """The number of copies of the database to keep, one written before each migration: ``piloop.db.bak-<revision>-<UTC
@@ -175,7 +173,8 @@ class Settings(BaseSettings):
         """Arguments, then the environment, then ``config.toml`` under the home the arguments or environment name."""
         given = init_settings.init_kwargs.get('home') if isinstance(init_settings, InitSettingsSource) else None
         home = Path(given) if given else home_of_env()
-        return init_settings, env_settings, InitSettingsSource(settings_cls, config_file(home))
+        file = deprecated.max_evaluations_env(os.environ, config_file(home))
+        return init_settings, env_settings, InitSettingsSource(settings_cls, file)
 
     @model_validator(mode='after')
     def _not_a_real_home_under_test(self) -> Self:

@@ -8,6 +8,7 @@ from rich.text import Text
 
 from piloop.cli import common
 from piloop.db.models import Campaign, Candidate, utcnow
+from piloop.plugins.contracts.executor import DEFAULT_EXECUTOR, selected
 from piloop.reports.overview import age
 from piloop.scoring import queue
 from piloop.text import cell
@@ -19,9 +20,9 @@ app = cyclopts.App(name='eval', help='List or cancel the evaluations that the da
 def eval_queue() -> None:
     """List the running evaluations, then the waiting ones in the order in which they get a slot.
 
-    The daemon runs `max_evaluations` evaluations at the same time, across all campaigns. A free slot goes to the
-    campaign with the fewest running evaluations, and in that campaign to its head first, then to the oldest request.
-    A requested remeasure shows as waiting at once.
+    The last line counts them and the executor's slots (`evaluations` in `[plugins.executor]`, 2 by default). A free
+    slot goes to the campaign with the fewest running evaluations, and in that campaign to its head first, then to the
+    oldest request. A requested remeasure shows as waiting at once.
     """
     with common.session() as s:
         now = utcnow()
@@ -44,8 +45,7 @@ def eval_queue() -> None:
     if rows:
         common.console.print(table)
     common.console.print(
-        f'{running} running, {len(rows) - running} waiting; {common.settings.max_evaluations} slot(s)'
-        ' (max_evaluations); `piloop eval cancel <candidate>`',
+        f'{running} running, {len(rows) - running} waiting; {_slots()}; `piloop eval cancel <candidate>`',
         markup=False,
     )
 
@@ -66,3 +66,12 @@ def eval_cancel(
             raise SystemExit(f'candidate#{candidate_id} has no evaluation that waits or runs: see `piloop eval queue`')
         s.commit()
     common.console.print(f'candidate#{candidate_id}: its evaluation is cancelled', markup=False)
+
+
+def _slots() -> str:
+    """The executor's slots for evaluations, from ``config.toml``: ``2 slot(s) (workers evaluations)``."""
+    table = common.settings.plugins.get('executor')
+    provider, parameters = selected(table)
+    name = table.provider if table is not None else DEFAULT_EXECUTOR
+    slots = provider.capacity(parameters)
+    return f'no slot limit ({name})' if slots is None else f'{slots} slot(s) ({name} evaluations)'

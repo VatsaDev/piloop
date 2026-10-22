@@ -1,0 +1,13 @@
+[project]
+name = "piloop-inline"
+version = "0.1.0"
+description = "A piloop executor that runs each job at once, in a thread of the daemon, with no leases"
+requires-python = ">=3.14"
+dependencies = ["piloop"]
+
+[project.entry-points."piloop.executors"]
+inline = "piloop_inline:InlineExecutor"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

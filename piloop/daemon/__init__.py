@@ -1,1 +1,1 @@
-"""The daemon: its process, the scheduler loop and the run executor."""
+"""The daemon: its process, the scheduler loop and the run controller."""

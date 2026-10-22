@@ -24,12 +24,13 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from piloop import deprecated, git
-from piloop.agents.launcher import STARTUP_ANOMALY, TRANSCRIPT
+from piloop.actor import Agent
+from piloop.agents.results import STARTUP_ANOMALY
 from piloop.campaign import inbox
 from piloop.campaign.ideas import defined_by, links, runnable, superseded_by, yields
 from piloop.campaign.inbox import campaign_of
 from piloop.campaign.stop import attempt, blocked, held, hours, runs, runs_without_keep
-from piloop.config import CampaignConfig, Files, Metric, Track, harness_of
+from piloop.config import TRANSCRIPT, CampaignConfig, Files, Metric, Track, harness_of
 from piloop.db.events import ANOMALY_EVENT
 from piloop.db.models import (
     ENDED,
@@ -900,7 +901,7 @@ def _silent(s: Session, campaign: Campaign, now: datetime, jobs: JobsProbe) -> l
     found: list[Anomaly] = []
     for agent_session in rows:
         run = s.get_one(Run, agent_session.run_id)
-        signed = (*deprecated.signatures(agent_session.kind, agent_session.id), f'run#{run.id}')
+        signed = (*deprecated.signatures(Agent(role=agent_session.kind, session=agent_session.id)), f'run#{run.id}')
         moments = [
             ('its run started', run.started_at or agent_session.started_at),
             ('its last comment', s.scalar(select(func.max(Comment.created_at)).where(Comment.author.in_(signed)))),

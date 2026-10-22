@@ -12,17 +12,21 @@ from opentelemetry.trace import StatusCode
 from pytest_mock import MockerFixture
 from sqlalchemy import select
 
+from piloop.actor import Agent
 from piloop.agents import capture
 from piloop.agents.capture import ENTIRE_INSTALL, MIN_ENTIRE
-from piloop.agents.launcher import PROMPT, STARTUP_ANOMALY, STOPPED_ERROR, WRAP_UP, Launcher, fill
+from piloop.agents.launcher import PROMPT, Launcher, fill
+from piloop.agents.results import ENDED_EVENT, STARTUP_ANOMALY, STOPPED_ERROR, WRAP_UP, End
 from piloop.agents.roles import PILOOP_HINT, PROMPTS, SQL_HINT, Role, compose_brief, role
 from piloop.config import CampaignConfig, config_of, load_campaign_config
+from piloop.daemon.run_controller import RunController
 from piloop.db.events import emit
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, Event, RoleName, TargetKind
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.mcp import MCP
 from piloop.otel import Tracer
+from piloop.plugins.contracts.executor import Checkout, GitTree
 from piloop.runtime import AgentSpec, AgentStatus, StartFailed
 from piloop.settings import Settings
 from piloop.usage.jsonl import CWD_ENCODERS
@@ -33,6 +37,7 @@ from tests.conftest import (
     ScriptRuntime,
     events,
     factory,
+    workers_of,
     write_toml,
 )
 from tests.fixtures.fake_entire import CHECKPOINT, TOKENS
@@ -62,18 +67,25 @@ def request(db: Database, campaign: Campaign, kind: RoleName = RoleName.WATCHDOG
         return agent_session.id
 
 
+def controller(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer | None = None) -> RunController:
+    """The launcher and the in-process worker that takes its leases, as the daemon makes them."""
+    return RunController(db, tracer or Tracer(None), tmp_path, factory(runtime))
+
+
 def launcher(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer | None = None) -> Launcher:
-    return Launcher(db, tracer or Tracer(None), tmp_path, factory(runtime))
+    return controller(db, runtime, tmp_path, tracer).launcher
 
 
 def launch(db: Database, runtime: ScriptRuntime, tmp_path: Path, agent_session_id: int, tracer: Tracer | None = None):
     with db.session() as s:
         campaign = s.get_one(Campaign, s.get_one(AgentSession, agent_session_id).campaign_id)
-        brief = compose_brief(role_in(campaign), campaign, agent_session_id, reason='test', context='')
+        brief = compose_brief(
+            role_in(campaign), campaign, Agent(role='watchdog', session=agent_session_id), reason='test', context=''
+        )
     cwd = tmp_path / 'cwd'
     cwd.mkdir(exist_ok=True)
     return launcher(db, runtime, tmp_path, tracer).launch(
-        agent_session_id, brief=brief, cwd=cwd, log_dir=tmp_path / 'w'
+        agent_session_id, brief=brief, cwd=cwd, log_dir=tmp_path / 'w', artifact=Checkout(path=cwd)
     )
 
 
@@ -96,7 +108,7 @@ def use_harness(db: Database, campaign: Campaign, body: str, **definition: objec
 def test_brief_is_role_prompt_campaign_brief_procedures_then_context(campaign: Campaign, db: Database) -> None:
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        brief = compose_brief(role_in(p), p, 7, reason='timer', context='- extra line')
+        brief = compose_brief(role_in(p), p, Agent(role='watchdog', session=7), reason='timer', context='- extra line')
     assert brief.startswith((PROMPTS / 'watchdog.md').read_text()[:40])
     assert (
         brief.index('# Watchdog')
@@ -131,8 +143,10 @@ def test_a_roles_addendum_follows_the_campaign_brief_in_that_roles_briefs_only(
         p.config = load_campaign_config(
             Path(campaign.path), roles={'research': {'addendum': 'research.md'}}
         ).model_dump(mode='json')
-        research = compose_brief(role_in(p, RoleName.RESEARCH), p, 7, reason='timer', context='')
-        watchdog = compose_brief(role_in(p), p, 8, reason='timer', context='')
+        research = compose_brief(
+            role_in(p, RoleName.RESEARCH), p, Agent(role='research', session=7), reason='timer', context=''
+        )
+        watchdog = compose_brief(role_in(p), p, Agent(role='watchdog', session=8), reason='timer', context='')
     assert (
         research.index('# Demo') < research.index('# Search wide first') < research.index('# Working with the piloop')
     )
@@ -150,7 +164,7 @@ def test_launch_runs_the_row_through_its_lifecycle(
     use_harness(db, campaign, HARNESS_PROMPT_TO_FILE)
     agent_session_id = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, agent_session_id, tracer)
-    assert (outcome.status, outcome.exit_code, outcome.error) == (AgentStatus.EXITED, 0, None)
+    assert (outcome.process.status, outcome.process.exit_code, outcome.process.error) == (AgentStatus.EXITED, 0, None)
     w = agent_session(db, agent_session_id)
     assert (w.state, w.harness, w.model, w.runtime, w.log_dir, w.error) == (
         AgentSessionState.EXITED,
@@ -167,24 +181,25 @@ def test_launch_runs_the_row_through_its_lifecycle(
     assert runtime.killed, 'the runtime is told to release the implementer'
     with db.session() as s:
         events = [(e.kind, e.target_id, e.payload) for e in s.scalars(select(Event).order_by(Event.id))]
-    assert events == snapshot(
+    assert [e for e in events if e[0] != ENDED_EVENT] == snapshot(
         [
             ('watchdog.started', 1, {'harness': 'script', 'model': 'watchdog-model', 'reason': 'test'}),
             ('watchdog.finished', 1, {'reason': 'test', 'status': 'exited', 'error': None}),
         ]
     )
-    [span] = spans.get_finished_spans()
-    assert (span.name, dict(span.attributes or {})) == (
-        'piloop.agent',
-        {
-            'agent_session': 1,
-            'kind': 'watchdog',
-            'harness': 'script',
-            'model': 'watchdog-model',
-            'reason': 'test',
-            'state': 'exited',
-        },
-    )
+    [ended] = [payload for kind, _, payload in events if kind == ENDED_EVENT]
+    assert (ended['end'], ended['head']) == ('ran', None), 'how it ended, for what waits for it'
+    [span] = [span for span in spans.get_finished_spans() if span.name == 'piloop.agent']
+    assert dict(span.attributes or {}) == {
+        'agent_session': 1,
+        'kind': 'watchdog',
+        'harness': 'script',
+        'model': 'watchdog-model',
+        'reason': 'test',
+        'state': 'exited',
+    }
+    [job] = [span for span in spans.get_finished_spans() if span.name == 'piloop.job']
+    assert dict(job.attributes or {}) == {'lease': 1, 'agent_session': 1, 'status': 'exited'}, "the worker's span"
 
 
 def test_rotation_over_the_role_harnesses_unless_pinned(
@@ -219,7 +234,7 @@ def test_an_agent_writes_through_piloop_sql_as_its_own_actor(
     )
     agent_session_id = request(db, campaign, kind=RoleName.RESEARCH)
     outcome = launch(db, runtime, tmp_path, agent_session_id)
-    assert outcome.error is None, (tmp_path / 'w' / 'agent_session.stderr').read_text()
+    assert outcome.process.error is None, (tmp_path / 'w' / 'agent_session.stderr').read_text()
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
         assert (row.name, row.updated_by) == ('renamed', f'research#{agent_session_id}')
@@ -249,7 +264,7 @@ def test_an_agents_piloop_is_the_daemons_whatever_comes_first_on_path_or_sits_in
 
     agent_session_id = request(db, campaign, kind=RoleName.RESEARCH)
     outcome = launch(db, runtime, tmp_path, agent_session_id)
-    assert outcome.error is None, (tmp_path / 'w' / 'agent_session.stderr').read_text()
+    assert outcome.process.error is None, (tmp_path / 'w' / 'agent_session.stderr').read_text()
     with db.session() as s:
         assert s.get_one(Campaign, campaign.id).name == 'renamed'
 
@@ -261,7 +276,7 @@ def test_harness_exit_code_is_recorded_not_raised(
     agent_session_id = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, agent_session_id)
     w = agent_session(db, agent_session_id)
-    assert (outcome.error, outcome.exit_code, w.state, w.error) == (
+    assert (outcome.process.error, outcome.process.exit_code, w.state, w.error) == (
         'agent exit 3',
         3,
         AgentSessionState.EXITED,
@@ -278,7 +293,7 @@ def test_timeout_kills_and_records(campaign: Campaign, db: Database, runtime: Sc
     agent_session_id = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, agent_session_id)
     w = agent_session(db, agent_session_id)
-    assert (outcome.status, w.state, w.error) == (
+    assert (outcome.process.status, w.state, w.error) == (
         AgentStatus.TIMED_OUT,
         AgentSessionState.KILLED,
         'agent timeout after 0.3s',
@@ -298,14 +313,15 @@ def test_runtime_failure_is_isolated(
     agent_session_id = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, agent_session_id, tracer)
     w = agent_session(db, agent_session_id)
-    assert (outcome.error, w.state, w.handle, w.error) == (
+    assert (outcome.process.error, w.state, w.handle, w.error) == (
         'RuntimeError: no server',
         AgentSessionState.KILLED,
         {},
         'RuntimeError: no server',
     )
-    [span] = spans.get_finished_spans()
-    assert span.status.status_code is StatusCode.ERROR and dict(span.attributes or {})['state'] == 'killed'
+    [job] = [span for span in spans.get_finished_spans() if span.name == 'piloop.job']
+    assert job.status.status_code is StatusCode.ERROR, "the worker's span has the error"
+    assert span_attributes(spans, 'piloop.agent', agent_session_id)['state'] == 'killed'
     with db.session() as s:
         [finished] = s.scalars(select(Event).where(Event.kind == 'watchdog.finished')).all()
     assert finished.payload['error'] == 'RuntimeError: no server'
@@ -322,11 +338,13 @@ def test_a_failed_start_leaves_its_screen_as_the_transcript_and_its_last_lines_i
     outcome = launch(db, runtime, tmp_path, agent_session_id)
     assert (tmp_path / 'w' / 'transcript.txt').read_text() == screen
     tail = '\n'.join([*(f'line {i}' for i in range(9, 20)), '> do the thing'])
-    assert outcome.error == agent_session(db, agent_session_id).error == f'{error}\nIts screen ended with:\n{tail}'
-    assert outcome.startup_failed
+    assert (
+        outcome.process.error == agent_session(db, agent_session_id).error == f'{error}\nIts screen ended with:\n{tail}'
+    )
+    assert outcome.end is End.NOT_STARTED
 
     mocker.patch.object(runtime, 'start', side_effect=StartFailed(error, '\n'))
-    assert launch(db, runtime, tmp_path, request(db, campaign)).error == error, 'a blank screen adds nothing'
+    assert launch(db, runtime, tmp_path, request(db, campaign)).process.error == error, 'a blank screen adds nothing'
 
 
 def anomalies(db: Database) -> list[tuple[int, dict[str, object]]]:
@@ -350,7 +368,7 @@ def test_an_agent_that_never_got_going_is_an_anomaly(
     mocker.patch.object(runtime, 'start', side_effect=RuntimeError('agent_not_ready: Trust this folder?'))
     dialog = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, dialog)
-    assert (outcome.startup_failed, agent_session(db, dialog).state) == (True, AgentSessionState.KILLED)
+    assert ((outcome.end is End.NOT_STARTED), agent_session(db, dialog).state) == (True, AgentSessionState.KILLED)
     assert anomalies(db) == [
         (
             dialog,
@@ -370,18 +388,18 @@ def test_an_agent_that_never_got_going_is_an_anomaly(
     use_harness(db, campaign, HARNESS_PROMPT_TO_FILE, **counted)
     idle_at_once = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, idle_at_once)
-    assert (outcome.startup_failed, outcome.error, agent_session(db, idle_at_once).state) == (
+    assert ((outcome.end is End.NOT_STARTED), outcome.process.error, agent_session(db, idle_at_once).state) == (
         True,
         None,
         AgentSessionState.EXITED,
     )
     assert [w for w, _ in anomalies(db)] == [dialog, idle_at_once], 'ended within a minute without a token'
 
-    monkeypatch.setattr('piloop.agents.launcher.STARTUP_SECONDS', 0)
-    assert not launch(db, runtime, tmp_path, request(db, campaign)).startup_failed, 'past the startup window'
+    monkeypatch.setattr('piloop.agents.results.STARTUP_SECONDS', 0)
+    assert launch(db, runtime, tmp_path, request(db, campaign)).end is not End.NOT_STARTED, 'past the startup window'
     monkeypatch.undo()
     use_harness(db, campaign, HARNESS_PROMPT_TO_FILE)
-    assert not launch(db, runtime, tmp_path, request(db, campaign)).startup_failed, (
+    assert launch(db, runtime, tmp_path, request(db, campaign)).end is not End.NOT_STARTED, (
         'a harness whose usage is not read cannot tell "spent nothing" from "unknown"'
     )
     assert len(anomalies(db)) == 2
@@ -399,7 +417,7 @@ def test_an_agent_told_to_wrap_up_that_stops_with_nothing_is_not_a_failed_start(
         emit(s, WRAP_UP, TargetKind.AGENT_SESSION, told)
         s.commit()
     outcome = launch(db, runtime, tmp_path, told)
-    assert (outcome.startup_failed, agent_session(db, told).state, anomalies(db)) == (
+    assert ((outcome.end is End.NOT_STARTED), agent_session(db, told).state, anomalies(db)) == (
         False,
         AgentSessionState.EXITED,
         [],
@@ -409,19 +427,24 @@ def test_an_agent_told_to_wrap_up_that_stops_with_nothing_is_not_a_failed_start(
 def test_a_cwd_that_cannot_be_made_is_a_failed_start(
     campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
-    """The caller's ``make_cwd`` (a worktree) is part of the start: when it fails, the agent did not start to work."""
+    """The worker makes the artifact (a worktree) as part of the start: when it fails, the agent did not start to work."""
     start = mocker.spy(runtime, 'start')
     agent_session_id = request(db, campaign)
-    brief = compose_brief(role_in(campaign), campaign, agent_session_id, reason='test', context='')
-
-    def no_space() -> None:
-        raise OSError(28, 'No space left on device')
-
+    brief = compose_brief(
+        role_in(campaign), campaign, Agent(role='watchdog', session=agent_session_id), reason='test', context=''
+    )
+    mocker.patch(
+        'piloop.plugins.kit.executor.jobs.git.add_worktree', side_effect=OSError(28, 'No space left on device')
+    )
     outcome = launcher(db, runtime, tmp_path).launch(
-        agent_session_id, brief=brief, cwd=tmp_path / 'wt', log_dir=tmp_path / 'w', make_cwd=no_space
+        agent_session_id,
+        brief=brief,
+        cwd=tmp_path / 'wt',
+        log_dir=tmp_path / 'w',
+        artifact=GitTree(repo=Path(campaign.path), commit='HEAD'),
     )
     w = agent_session(db, agent_session_id)
-    assert (outcome.startup_failed, w.state, w.error) == (
+    assert ((outcome.end is End.NOT_STARTED), w.state, w.error) == (
         True,
         AgentSessionState.KILLED,
         'OSError: [Errno 28] No space left on device',
@@ -433,9 +456,11 @@ def test_nothing_starts_after_cancel(campaign: Campaign, db: Database, runtime: 
     agent_session_id = request(db, campaign)
     lc = launcher(db, runtime, tmp_path)
     lc.cancel()
-    outcome = lc.launch(agent_session_id, brief='x', cwd=tmp_path, log_dir=tmp_path / 'w')
+    outcome = lc.launch(
+        agent_session_id, brief='x', cwd=tmp_path, log_dir=tmp_path / 'w', artifact=Checkout(path=tmp_path)
+    )
     w = agent_session(db, agent_session_id)
-    assert (outcome.error, w.state, w.harness) == (STOPPED_ERROR, AgentSessionState.REQUESTED, None), (
+    assert (outcome.process.error, w.state, w.harness) == (STOPPED_ERROR, AgentSessionState.REQUESTED, None), (
         'stop() closes rows'
     )
     assert not (tmp_path / 'w').exists()
@@ -475,7 +500,7 @@ def test_a_harness_that_prints_its_session_id_has_it_read_back_by_the_runtime(
     agent_session_id = request(db, campaign)
     launch(db, runtime, tmp_path, agent_session_id, tracer)
     assert agent_session(db, agent_session_id).session_id == CODEX_ID
-    assert span_attributes(spans, 'piloop.agent', agent_session_id)['session_id'] == CODEX_ID
+    assert span_attributes(spans, 'piloop.job', agent_session_id)['session_id'] == CODEX_ID
     use_harness(db, campaign, HARNESS_PROMPT_TO_FILE, entire_agent='codex', session_id_pattern=codex.session_id_pattern)
     silent = request(db, campaign)
     launch(db, runtime, tmp_path, silent, tracer)
@@ -549,7 +574,7 @@ def test_the_session_is_attached_to_entire_from_the_cwd_when_the_agent_ends(
             'tokens': TOKENS,
         }
     ]
-    assert span_attributes(spans, 'piloop.agent', agent_session_id)['checkpoint'] == CHECKPOINT
+    assert span_attributes(spans, 'piloop.job', agent_session_id)['checkpoint'] == CHECKPOINT
     with db.session() as s:
         [finished] = s.scalars(
             select(Event).where(Event.kind == 'watchdog.finished', Event.target_id == agent_session_id)
@@ -587,11 +612,14 @@ def test_the_daemons_entire_version_gates_attach_and_is_on_the_event(
     entire_log,
 ) -> None:
     use_harness(db, campaign, HARNESS_PROMPT_TO_FILE, **MINTED_HARNESS)
-    gated = launcher(db, runtime, tmp_path, tracer)
-    gated.entire_version = '0.10.5'
+    run = controller(db, runtime, tmp_path, tracer)
+    gated = run.launcher
+    workers_of(run).worker.entire_version = '0.10.5'
     (tmp_path / 'cwd').mkdir()
     old = request(db, campaign)
-    gated.launch(old, brief='b', cwd=tmp_path / 'cwd', log_dir=tmp_path / 'logs')
+    gated.launch(
+        old, brief='b', cwd=tmp_path / 'cwd', log_dir=tmp_path / 'logs', artifact=Checkout(path=tmp_path / 'cwd')
+    )
     assert entire_log() == [] and agent_session(db, old).checkpoint_id is None, 'an untested entire is not asked'
     w = agent_session(db, old)
     assert events(spans, 'agent_session.session_unattached') == [
@@ -601,9 +629,11 @@ def test_the_daemons_entire_version_gates_attach_and_is_on_the_event(
             'error': f'entire 0.10.5 is older than {MIN_ENTIRE}; upgrade it: {ENTIRE_INSTALL}',
         }
     ], 'nothing is attached until entire is upgraded'
-    gated.entire_version = '0.11.0'
+    workers_of(run).worker.entire_version = '0.11.0'
     new = request(db, campaign)
-    gated.launch(new, brief='b', cwd=tmp_path / 'cwd', log_dir=tmp_path / 'logs')
+    gated.launch(
+        new, brief='b', cwd=tmp_path / 'cwd', log_dir=tmp_path / 'logs', artifact=Checkout(path=tmp_path / 'cwd')
+    )
     assert agent_session(db, new).checkpoint_id == CHECKPOINT
     assert events(spans, 'agent_session.session_attached')[0]['entire'] == '0.11.0'
 
@@ -672,7 +702,7 @@ def test_the_agents_token_usage_is_summed_from_its_session_file_when_it_ends(
         'turns': 2,
         'source': str(folder / f'2026-09-09T05-48-14-300Z_{w.session_id}.jsonl'),
     }, "pi's store is keyed by the agent's cwd, the worktree; read before the caller removes it"
-    assert span_attributes(spans, 'piloop.agent', agent_session_id)['tokens'] == 16478
+    assert span_attributes(spans, 'piloop.job', agent_session_id)['tokens'] == 16478
     assert events(spans, 'agent_session.usage_unknown') == []
     assert anomalies(db) == [], 'it spent tokens: it started, however fast it ended'
 
@@ -722,7 +752,7 @@ def test_a_killed_agents_usage_is_read_too(
     agent_session_id = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, agent_session_id)
     w = agent_session(db, agent_session_id)
-    assert (outcome.status, w.state, w.error) == (
+    assert (outcome.process.status, w.state, w.error) == (
         AgentStatus.TIMED_OUT,
         AgentSessionState.KILLED,
         'agent timeout after 0.5s',
@@ -777,9 +807,13 @@ def test_a_brief_past_the_limit_of_one_argument_reaches_the_agent_as_a_file(
     cwd = tmp_path / 'cwd'
     cwd.mkdir()
     outcome = launcher(db, runtime, tmp_path).launch(
-        request(db, campaign), brief=brief, cwd=cwd, log_dir=tmp_path / 'w'
+        request(db, campaign), brief=brief, cwd=cwd, log_dir=tmp_path / 'w', artifact=Checkout(path=cwd)
     )
-    assert (outcome.status, outcome.error, outcome.startup_failed) == (AgentStatus.EXITED, None, False)
+    assert (outcome.process.status, outcome.process.error, (outcome.end is End.NOT_STARTED)) == (
+        AgentStatus.EXITED,
+        None,
+        False,
+    )
     assert (cwd / 'argv.txt').read_text().splitlines() == [PROMPT.format(path=tmp_path / 'w' / 'brief.md')]
     assert (tmp_path / 'w' / 'brief.md').read_text() == brief
 
@@ -796,7 +830,11 @@ def test_a_herdr_agent_is_prompted_with_where_its_brief_is(
     start = runtime.start
     monkeypatch.setattr(runtime, 'start', lambda spec: specs.append(spec) or start(spec))
     launcher(db, runtime, tmp_path).launch(
-        request(db, campaign), brief='y' * 200 * 1024, cwd=tmp_path, log_dir=tmp_path / 'w'
+        request(db, campaign),
+        brief='y' * 200 * 1024,
+        cwd=tmp_path,
+        log_dir=tmp_path / 'w',
+        artifact=Checkout(path=tmp_path),
     )
     [spec] = specs
     assert (spec.prompt, spec.args) == (PROMPT.format(path=tmp_path / 'w' / 'brief.md'), [])
@@ -885,19 +923,13 @@ def test_a_subprocess_agent_gets_the_arguments_that_resume_its_session(
 def test_an_agent_whose_start_cannot_be_recorded_is_killed_and_waited_for(
     campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
-    """When the write of the handle failed after the start, the agent ran on with nothing that watched it, and nothing
-    waited for its process. Python then warned ``subprocess N is still running`` when it collected the ``Popen``."""
+    """When the record of the start failed, the agent ran on with nothing that watched it, and nothing waited for its
+    process. Python then warned ``subprocess N is still running`` when it collected the ``Popen``. The worker ends
+    it, and reports a failed start."""
     use_harness(db, campaign, '#!/bin/sh\nsleep 30\n')
     agent_session_id = request(db, campaign)
-    real, calls = db.session, [0]
-
-    def session() -> object:
-        calls[0] += 1
-        if calls[0] == 3:  # _prepare, the runtime, then the write of the handle
-            raise RuntimeError('database closed')
-        return real()
-
-    mocker.patch.object(db, 'session', side_effect=session)
-    launch(db, runtime, tmp_path, agent_session_id, Tracer(None))
+    mocker.patch('piloop.agents.results.CampaignResults.started', side_effect=RuntimeError('database closed'))
+    outcome = launch(db, runtime, tmp_path, agent_session_id, Tracer(None))
     [proc] = runtime._procs.values()
     assert proc.returncode is not None, 'killed and waited for, not left running unwatched'
+    assert ((outcome.end is End.NOT_STARTED), outcome.process.error) == (True, 'RuntimeError: database closed')

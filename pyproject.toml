@@ -57,6 +57,7 @@ trigger = "piloop.triggers:TRIGGERS"
 role = "piloop.config:ROLES"
 verdict_rule = "piloop.plugins.contracts.verdict:VERDICT_RULES"
 stop_rule = "piloop.plugins.contracts.stop:STOP_RULES"
+executor = "piloop.plugins.contracts.executor:EXECUTORS"
 
 [project.entry-points."piloop.runtimes"]
 herdr = "piloop.runtime.herdr:HerdrRuntime"
@@ -79,6 +80,9 @@ bootstrap = "piloop.plugins.builtin.verdict:BOOTSTRAP"
 
 [project.entry-points."piloop.stop_rules"]
 limits = "piloop.plugins.builtin.stop:LIMITS"
+
+[project.entry-points."piloop.executors"]
+workers = "piloop.plugins.builtin.executor.workers:WorkersExecutor"
 
 [project.entry-points."piloop.roles"]
 implementer = "piloop.plugins.builtin.roles:IMPLEMENTER"
@@ -153,7 +157,7 @@ quote-style = "single"
 
 [tool.ty.environment]
 python-version = "3.14"
-extra-paths = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/verdict-checks", "examples/plugins/no-unit-regression"]
+extra-paths = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/verdict-checks", "examples/plugins/no-unit-regression", "examples/plugins/inline-executor"]
 
 [tool.ty.src]
 include = ["piloop", "tests", "scripts", "examples"]
@@ -162,7 +166,7 @@ exclude = ["piloop/db/migrations/versions", "piloop/campaign/templates"]  # temp
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The example plugins import as packages; their entry points register only where a test installs them.
-pythonpath = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/verdict-checks", "examples/plugins/no-unit-regression"]
+pythonpath = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/verdict-checks", "examples/plugins/no-unit-regression", "examples/plugins/inline-executor"]
 # The e2e tests run real agents and cost money: only `make e2e` (`-m e2e`, which overrides this) selects them.
 addopts = ["-m", "not e2e"]
 markers = [

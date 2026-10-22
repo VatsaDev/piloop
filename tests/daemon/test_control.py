@@ -10,7 +10,7 @@ from sqlalchemy import select
 from piloop.actor import System
 from piloop.campaign import ops
 from piloop.config import load_campaign_config
-from piloop.daemon.run_executor import RunExecutor
+from piloop.daemon.run_controller import RunController
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
@@ -25,7 +25,7 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.scoring.ledger import DAEMON, REJUDGE_FAILED, head, import_reference, rejudges
 from tests.conftest import HARNESS_WORSE, Gate, ScriptRuntime, write_script
-from tests.daemon.test_run_executor import candidates, execute, executor, make_run
+from tests.daemon.test_run_controller import candidates, controller, execute, make_run
 from tests.daemon.test_scheduler import add_ideas, make_scheduler, measured_by, request_watchdog, statuses
 
 
@@ -93,7 +93,7 @@ def test_the_daemon_judges_a_discard_again_with_a_measurement_by_hand(
 ) -> None:
     write_script(Path(campaign.path).parent / 'harness.sh', HARNESS_WORSE)
     run_id = make_run(db, campaign)
-    execute(executor(db, runtime, tmp_path), db, run_id)
+    execute(controller(db, runtime, tmp_path), db, run_id)
     [worse] = candidates(db, run_id)
     assert worse.verdict is Verdict.DISCARD
     with db.session() as s:
@@ -103,8 +103,8 @@ def test_the_daemon_judges_a_discard_again_with_a_measurement_by_hand(
         s.commit()
     assert again
     sched = make_scheduler(db, runtime, tmp_path)
-    gate, asked = Gate(), mocker.spy(RunExecutor, 'rejudge')
-    monkeypatch.setattr(sched._executor, 'rejudge', gate.wrap(sched._executor.rejudge))
+    gate, asked = Gate(), mocker.spy(RunController, 'rejudge')
+    monkeypatch.setattr(sched._controller, 'rejudge', gate.wrap(sched._controller.rejudge))
     sched.tick()
     assert gate.entered.wait(10)
     sched.tick()
@@ -126,13 +126,13 @@ def test_a_judgement_again_that_fails_answers_the_request_with_the_error(
 ) -> None:
     write_script(Path(campaign.path).parent / 'harness.sh', HARNESS_WORSE)
     run_id = make_run(db, campaign)
-    ex = executor(db, runtime, tmp_path)
+    ex = controller(db, runtime, tmp_path)
     execute(ex, db, run_id)
     [worse] = candidates(db, run_id)
     with db.session() as s:
         ops.add_measurement(s, worse.id, ops.Report(metrics={'score': 5.0, 'size': 1.0}), actor=System.ORCHESTRATOR)
         s.commit()
-    mocker.patch('piloop.daemon.run_executor.git.open_repo', side_effect=OSError('the repo is gone'))
+    mocker.patch('piloop.daemon.run_controller.git.open_repo', side_effect=OSError('the repo is gone'))
     ex.rejudge(worse.id)
     with db.session() as s:
         [failed] = s.scalars(select(Event).where(Event.kind == REJUDGE_FAILED)).all()
