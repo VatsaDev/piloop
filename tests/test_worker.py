@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
+import psutil
 import pytest
 from git import Repo
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -32,6 +33,7 @@ from piloop.db.models import (
     Event,
     Lease,
     LeaseState,
+    Measurement,
     Run,
     RunStatus,
     utcnow,
@@ -366,6 +368,7 @@ def test_an_evaluation_at_a_hand_over_is_stopped_and_measured_again_by_the_next_
     measuring.start()
     measuring.join(30)
     assert not measuring.is_alive(), 'measured on its new lease'
+    workers_of(second).worker.join(10)  # the first lease is reported gone by a thread of its own
     with db.session() as s:
         assert [lease.state for lease in s.scalars(select(Lease).order_by(Lease.id))] == [
             LeaseState.EXPIRED,
@@ -394,6 +397,49 @@ def test_an_evaluation_whose_lease_expired_before_its_evaluator_started_kills_it
 
     wait_until(stale)
     assert stale() == [1], 'its evaluator was killed at once; its report is refused'
+
+
+def test_a_stale_evaluation_never_touches_the_files_of_the_lease_that_replaced_it(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lease 1's job makes its worktree only after lease 2 replaced it and runs: each keeps a tree of its own."""
+    (tmp_path / 'hold').touch()
+    set_config(db, campaign, evaluate=held_evaluate(tmp_path))
+    entered, release = threading.Event(), threading.Event()
+    add_worktree = git.add_worktree
+
+    def first_held(repo: Repo, path: Path, sha: str, links: dict[str, Path]) -> Repo:
+        if not entered.is_set():
+            entered.set()
+            release.wait(10)
+        return add_worktree(repo, path, sha, links)
+
+    monkeypatch.setattr('piloop.plugins.executor.kit.jobs.git.add_worktree', first_held)
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    candidate = baseline(db, campaign.id).id
+    measuring = threading.Thread(target=ex.remeasure, args=(candidate,))
+    measuring.start()
+    assert entered.wait(10)
+    workers_of(ex).leases.expire(utcnow() + timedelta(seconds=workers_of(ex).leases.timing.toleration + 1))
+    wait_until(lambda: lease_states(db) == [LeaseState.EXPIRED, LeaseState.RUNNING])
+    with db.session() as s:
+        pgid = s.get_one(Lease, 2).handle['pgid']
+    assert isinstance(pgid, int)
+    tree = Path(psutil.Process(pgid).cwd())
+    release.set()
+
+    def stale() -> list[object]:
+        with db.session() as s:
+            return [e.payload['lease'] for e in s.scalars(select(Event).where(Event.kind == STALE_REPORT))]
+
+    wait_until(stale)
+    assert tree.is_dir(), 'the stale job left the tree of the lease that replaced it'
+    (tmp_path / 'hold').unlink()
+    measuring.join(30)
+    assert not measuring.is_alive()
+    with db.session() as s:
+        measurement = s.scalars(select(Measurement).order_by(Measurement.id.desc()).limit(1)).one()
+        assert (measurement.candidate_id, measurement.error) == (candidate, None)
 
 
 FAST = Timing(renew=0.1, grace=0.3, toleration=1.0)

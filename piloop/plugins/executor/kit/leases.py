@@ -113,6 +113,26 @@ class Grant:
     started_at: datetime | None
 
 
+def _granted(lease: Lease) -> AgentJob | EvaluationJob:
+    """The lease's job, as its worker runs it. An evaluation gets files of this lease's own, under ``lease-<id>``.
+
+    Its job is queued again on a new lease while the old one's may still run (a lease that expired before its
+    evaluator started): with the same worktree, log and units file, the stale job would remove, overwrite or read the
+    replacement's. An agent's job is never queued again: a re-attached agent goes on in its worktree.
+    """
+    job = JOB.validate_python(lease.job)
+    if isinstance(job, AgentJob):
+        return job
+    own = f'lease-{lease.id}'
+    return job.model_copy(
+        update={
+            'cwd': job.cwd.parent / own / job.cwd.name,
+            'log_dir': job.log_dir / own,
+            'units_file': job.units_file.with_stem(f'{job.units_file.stem}.{own}'),
+        }
+    )
+
+
 def enqueue(s: Session, job: AgentJob | EvaluationJob) -> Lease:
     """Insert the ``queued`` lease of ``job`` in the caller's transaction. The caller commits, then ``Leases.notify``."""
     lease = Lease(kind=LeaseKind(job.kind), job=JOB.dump_python(job, mode='json'))
@@ -229,7 +249,7 @@ class Leases:
             lease.state, lease.worker, lease.acquired_at = LeaseState.ACQUIRED, worker, now
             lease.renewed_at, lease.expires_at = now, now + timedelta(seconds=self.timing.toleration)
             s.commit()
-            grant = Grant(lease.id, JOB.validate_python(lease.job), {}, None)
+            grant = Grant(lease.id, _granted(lease), {}, None)
         self.notify()
         return grant
 
@@ -239,7 +259,7 @@ class Leases:
             rows = s.scalars(
                 select(Lease).where(Lease.worker == worker, Lease.state.in_(LIVE_LEASES)).order_by(Lease.id)
             ).all()
-            return [Grant(r.id, JOB.validate_python(r.job), dict(r.handle), r.started_at) for r in rows]
+            return [Grant(r.id, _granted(r), dict(r.handle), r.started_at) for r in rows]
 
     def _live(self, s: Session, lease_id: int, worker: str) -> Lease:
         """Return the lease if it is ``worker``'s, live and the newest of its job: the fence. Else raise.

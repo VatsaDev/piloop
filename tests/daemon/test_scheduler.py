@@ -1151,7 +1151,7 @@ def test_stop_kills_the_evaluator_and_scores_nothing_more(
     assert dict(measured[0].attributes or {})['status'] == 'cancelled'
     assert dict(span_named(spans, 'piloop.run').attributes or {})['status'] == 'cancelled'
     assert not (tmp_path / 'runs' / '1' / 'worktree').exists()
-    assert not (tmp_path / 'runs' / '1' / 'eval-0' / 'worktree').exists()
+    assert list((tmp_path / 'runs' / '1' / 'eval-0').glob('lease-*/worktree')) == []
 
 
 def test_a_restart_during_an_evaluation_scores_the_run_on_start_and_never_runs_its_idea_again(
@@ -1169,7 +1169,7 @@ def test_a_restart_during_an_evaluation_scores_the_run_on_start_and_never_runs_i
     first = make_scheduler(db, runtime, tmp_path)
     add_ideas(db, campaign, 'two commits')
     first.tick()
-    wait_until((tmp_path / 'runs' / '1' / 'eval-0' / 'eval.stdout').exists)
+    wait_until(lambda: list((tmp_path / 'runs' / '1' / 'eval-0').glob('lease-*/eval.stdout')))
     first.stop(timeout=10)
     with db.session() as s:
         assert s.get_one(Idea, 1).status is IdeaStatus.SCHEDULED

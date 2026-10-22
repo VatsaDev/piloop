@@ -297,9 +297,9 @@ def test_an_evaluation_goes_to_a_worker_with_its_runner_in_the_order_in_which_it
     job = evaluation_job_for_another_candidate(db, campaign, tmp_path)
     queue(db, job)
     grant = leases.acquire('w1', runners=['process'])
-    assert grant is not None and grant.job == job
+    assert grant is not None and isinstance(grant.job, EvaluationJob) and grant.job.evaluation == job.evaluation
     second = leases.acquire('w2', runners=['process', 'gpu-runner'])
-    assert second is not None and second.job == other
+    assert second is not None and isinstance(second.job, EvaluationJob) and second.job.evaluation == other.evaluation
 
 
 def evaluation_job_for_another_candidate(db: Database, campaign: Campaign, tmp_path: Path) -> EvaluationJob:

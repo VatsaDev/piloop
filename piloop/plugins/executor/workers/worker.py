@@ -334,6 +334,7 @@ class Worker:
                 with suppress(ProcessLookupError):
                     os.killpg(pid, signal.SIGKILL)
             self._lost(grant.lease, GONE.format(what='evaluator'))
+            jobs.remove(job)  # its worktree is this lease's own: no later lease removes it
             return
         data = grant.handle.get('data')
         if grant.started_at is None or not isinstance(data, dict):  # it never started, or its start went unrecorded

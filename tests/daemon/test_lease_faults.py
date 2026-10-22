@@ -543,3 +543,4 @@ def test_the_daemons_worker_killed_during_an_evaluation_kills_its_evaluator_when
     assert [lease_of(db, 1).state, lease_of(db, 2).state] == [LeaseState.EXPIRED, LeaseState.REPORTED]
     with db.session() as s:
         assert len(s.scalars(select(Measurement).where(Measurement.candidate_id == candidate)).all()) == 2
+    assert list(tmp_path.glob('projects/*/measure/*/lease-*/worktree')) == [], 'each lease removed its worktree'
