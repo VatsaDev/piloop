@@ -31,13 +31,13 @@ from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidat
 from piloop.db.session import Database, migrate
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.otel import Tracer
-from piloop.plugins.builtin.executor.worker import Worker
-from piloop.plugins.builtin.executor.workers import WorkersExecutor
+from piloop.plugins.executor.kit.leases import Timing
+from piloop.plugins.executor.workers import WorkersExecutor
+from piloop.plugins.executor.workers.worker import Worker
 from piloop.plugins.host import PluginTable
-from piloop.plugins.kit.executor.leases import Timing
-from piloop.runtime import Handle, Runtime
+from piloop.plugins.runtime.contract import Handle, Runtime
+from piloop.plugins.runtime.subprocess import SubprocessRuntime
 from piloop.runtime.factory import RuntimeFactory
-from piloop.runtime.subprocess import SubprocessRuntime
 from piloop.scoring.evaluate import run_evaluate
 from piloop.scoring.ledger import DAEMON, current_evaluator
 from piloop.settings import Settings, env_names

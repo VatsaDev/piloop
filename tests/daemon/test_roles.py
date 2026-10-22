@@ -15,7 +15,7 @@ from sqlalchemy import select
 from piloop.campaign.stop import ROLE_REMOVED
 from piloop.cli import common, main as cli
 from piloop.cli.plugins import selections
-from piloop.config import ROLES, CampaignConfig, ConfigError, load_campaign_config
+from piloop.config import CampaignConfig, ConfigError, load_campaign_config
 from piloop.daemon.main import Daemon
 from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
@@ -39,13 +39,13 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins_module
-from piloop.plugins.contracts.runtime import RUNTIMES
 from piloop.plugins.host import PluginError, compose
-from piloop.runtime import Runtime
+from piloop.plugins.role.contract import ROLES
+from piloop.plugins.runtime.contract import RUNTIMES, Runtime
+from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.runtime.factory import RuntimeFactory
 from piloop.settings import Settings
 from piloop.store.config import open_store
-from piloop.triggers import TRIGGERS
 from tests.conftest import (
     HARNESS_APPEND,
     ScriptRuntime,

@@ -53,11 +53,11 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.plugins import host
-from piloop.plugins.builtin import stop as limits_module
-from piloop.plugins.builtin.stop import LIMITS
-from piloop.plugins.contracts.stop import GO, STOP_RULES, Fact, Hold, Limits, Progress, Stop, StopCase, StopRule
-from piloop.plugins.contracts.verdict import Direction
 from piloop.plugins.host import data_errors
+from piloop.plugins.metric import Direction
+from piloop.plugins.stop_rule import limits as limits_module
+from piloop.plugins.stop_rule.contract import GO, STOP_RULES, Fact, Hold, Limits, Progress, Stop, StopCase, StopRule
+from piloop.plugins.stop_rule.limits import LIMITS
 from piloop.reports.overview import progress
 from piloop.scoring.ledger import SKIPPED
 from tests.conftest import HARNESS_APPEND, HARNESS_NOOP, HARNESS_WORSE, ScriptRuntime, example, span_named, write_toml
@@ -815,9 +815,9 @@ def imports_outside_the_standard_library(module: object) -> set[str]:
     return {m for m in imported if m.split('.')[0] not in sys.stdlib_module_names}
 
 
-def test_the_built_in_stop_rule_imports_only_the_standard_library_and_its_contract() -> None:
+def test_the_built_in_stop_rule_imports_only_the_standard_library_its_contract_and_the_metric_types() -> None:
     """``limits`` is a pure provider: it reads nothing of piloop's state. test_capabilities checks the example."""
-    contracts = {'piloop.plugins.contracts.stop', 'piloop.plugins.contracts.verdict'}
+    contracts = {'piloop.plugins.stop_rule.contract', 'piloop.plugins.metric'}
     assert imports_outside_the_standard_library(limits_module) == contracts
 
 

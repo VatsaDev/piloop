@@ -54,11 +54,11 @@ from piloop.db.models import (
 from piloop.db.session import Database, write_transaction
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Span, Tracer
-from piloop.plugins.contracts.executor import Commits, EvaluationJob, EvaluationKey, Executor, GitTree, Host, selected
+from piloop.plugins.executor.contract import Commits, EvaluationJob, EvaluationKey, Executor, GitTree, Host, selected
 from piloop.plugins.host import PluginTable
+from piloop.plugins.runtime.contract import AgentStatus
 from piloop.reports.history import history
 from piloop.reports.wake import lessons_overview
-from piloop.runtime import AgentStatus
 from piloop.runtime.factory import RuntimeFactory, make_runtime
 from piloop.scoring import queue
 from piloop.scoring.evaluate import EvalResult

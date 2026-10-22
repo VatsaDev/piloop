@@ -51,44 +51,44 @@ piloop = "piloop.cli.main:main"
 
 # The providers of piloop itself, in the groups that a plugin package uses (piloop.plugins.host).
 [project.entry-points."piloop.capabilities"]
-runtime = "piloop.plugins.contracts.runtime:RUNTIMES"
-storage_backend = "piloop.plugins.contracts.store:STORAGE_BACKENDS"
-trigger = "piloop.triggers:TRIGGERS"
-role = "piloop.config:ROLES"
-verdict_rule = "piloop.plugins.contracts.verdict:VERDICT_RULES"
-stop_rule = "piloop.plugins.contracts.stop:STOP_RULES"
-executor = "piloop.plugins.contracts.executor:EXECUTORS"
+runtime = "piloop.plugins.runtime.contract:RUNTIMES"
+storage_backend = "piloop.plugins.storage_backend.contract:STORAGE_BACKENDS"
+trigger = "piloop.plugins.trigger.contract:TRIGGERS"
+role = "piloop.plugins.role.contract:ROLES"
+verdict_rule = "piloop.plugins.verdict_rule.contract:VERDICT_RULES"
+stop_rule = "piloop.plugins.stop_rule.contract:STOP_RULES"
+executor = "piloop.plugins.executor.contract:EXECUTORS"
 
 [project.entry-points."piloop.runtimes"]
-herdr = "piloop.runtime.herdr:HerdrRuntime"
-subprocess = "piloop.runtime.subprocess:SubprocessRuntime"
+herdr = "piloop.plugins.runtime.herdr:HerdrRuntime"
+subprocess = "piloop.plugins.runtime.subprocess:SubprocessRuntime"
 
 [project.entry-points."piloop.stores"]
-s3 = "piloop.store.s3:S3Config"
-gcs = "piloop.store.gcs:GcsConfig"
+s3 = "piloop.plugins.storage_backend.s3:S3Config"
+gcs = "piloop.plugins.storage_backend.gcs:GcsConfig"
 
 [project.entry-points."piloop.triggers"]
-anomaly = "piloop.triggers:AnomalyTrigger"
-cron = "piloop.triggers:CronTrigger"
-seed = "piloop.triggers:SeedTrigger"
-low_water = "piloop.triggers:LowWaterTrigger"
-stopped = "piloop.triggers:StoppedTrigger"
-sql = "piloop.triggers:SqlTrigger"
+anomaly = "piloop.plugins.trigger.anomaly:AnomalyTrigger"
+cron = "piloop.plugins.trigger.cron:CronTrigger"
+seed = "piloop.plugins.trigger.seed:SeedTrigger"
+low_water = "piloop.plugins.trigger.low_water:LowWaterTrigger"
+stopped = "piloop.plugins.trigger.stopped:StoppedTrigger"
+sql = "piloop.plugins.trigger.sql:SqlTrigger"
 
 [project.entry-points."piloop.verdict_rules"]
-bootstrap = "piloop.plugins.builtin.verdict:BOOTSTRAP"
+bootstrap = "piloop.plugins.verdict_rule.bootstrap:BOOTSTRAP"
 
 [project.entry-points."piloop.stop_rules"]
-limits = "piloop.plugins.builtin.stop:LIMITS"
+limits = "piloop.plugins.stop_rule.limits:LIMITS"
 
 [project.entry-points."piloop.executors"]
-workers = "piloop.plugins.builtin.executor.workers:WorkersExecutor"
+workers = "piloop.plugins.executor.workers:WorkersExecutor"
 
 [project.entry-points."piloop.roles"]
-implementer = "piloop.plugins.builtin.roles:IMPLEMENTER"
-watchdog = "piloop.plugins.builtin.roles:WATCHDOG"
-research = "piloop.plugins.builtin.roles:RESEARCH"
-scout = "piloop.plugins.builtin.roles:SCOUT"
+implementer = "piloop.plugins.role.implementer:IMPLEMENTER"
+watchdog = "piloop.plugins.role.watchdog:WATCHDOG"
+research = "piloop.plugins.role.research:RESEARCH"
+scout = "piloop.plugins.role.scout:SCOUT"
 
 [tool.hatch.build.targets.wheel]
 packages = ["piloop"]

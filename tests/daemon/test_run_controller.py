@@ -63,10 +63,10 @@ from piloop.git import pin as git_pin
 from piloop.harnesses import SESSION_ENV
 from piloop.otel import Span, Tracer
 from piloop.plugins import host
-from piloop.plugins.builtin.executor.worker import _Control
-from piloop.plugins.contracts.verdict import VERDICT_RULES
-from piloop.plugins.kit.executor import jobs
-from piloop.runtime import AgentExit, Handle, StartFailed
+from piloop.plugins.executor.kit import jobs
+from piloop.plugins.executor.workers.worker import _Control
+from piloop.plugins.runtime.contract import AgentExit, Handle, StartFailed
+from piloop.plugins.verdict_rule.contract import VERDICT_RULES
 from piloop.scoring.ledger import (
     DAEMON,
     REBASED,

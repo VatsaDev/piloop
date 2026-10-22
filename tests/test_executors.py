@@ -21,7 +21,7 @@ from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Ca
 from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins
-from piloop.plugins.contracts.executor import EXECUTORS, AgentKey, Checkout
+from piloop.plugins.executor.contract import EXECUTORS, AgentKey, Checkout
 from piloop.plugins.host import PluginTable
 from piloop.settings import Settings
 from tests.conftest import (

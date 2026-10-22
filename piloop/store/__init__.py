@@ -10,14 +10,14 @@ The contract callers use is ``Store``'s: ``put``/``put_path``, ``open``/``get``/
 blobs in one pack file (a hash → pack, offset, length index) fits behind it without changing a caller. Reads and
 writes stream in ``CHUNK``-sized pieces: a blob of any size is never held in memory.
 
-The store's own directory always holds what is local; its remote, a ``StorageBackend`` (``piloop.store.s3``), mirrors
+The store's own directory always holds what is local; its remote, a ``StorageBackend`` (``piloop.plugins.storage_backend.s3``), mirrors
 it. Every blob put while a remote is set is uploaded and marked ``blake3/<hash>/remote``; ``evict`` uploads what is
 still unmarked, then drops the local bytes of marked blobs by age and by the store's local size. Evicting at age 0 makes the directory a
 staging area: a blob's bytes are dropped as soon as they are uploaded, and a read fetches them back.
 
 Append-only: there is no delete and no garbage collection.
 
-Retirement: this package (this module, ``tree`` and ``s3``) is deleted once piloop can depend on covalence
+Retirement: this package (this module and ``tree``) and the ``s3`` backend is deleted once piloop can depend on covalence
 (github.com/hiloopai/covalence) for the same contract: a local-disk backend, streaming (multipart) reads and writes,
 list and delete, and its S3 store, all reachable from Python. ``Store``'s methods map onto its CAS trait (``has``,
 ``missing``, ``put``, ranged ``get``), and its ``KvCas`` keeps a block under ``blake3/<digest>/bytes`` with the same
@@ -32,7 +32,6 @@ import shutil
 import tempfile
 import threading
 import time
-from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable, Iterator
 from compression.zstd import ZstdCompressor, ZstdError, ZstdFile
 from contextlib import contextmanager, suppress
@@ -42,7 +41,8 @@ from pathlib import Path
 from typing import Protocol
 
 from blake3 import blake3
-from pydantic import BaseModel, ConfigDict
+
+from piloop.plugins.storage_backend.contract import StorageBackend
 
 CHUNK = 1 << 20
 """Bytes read, hashed and compressed at a time."""
@@ -87,42 +87,6 @@ class Writer(Protocol):
     def write(self, data: bytes, /) -> int:
         """Write ``data``; how many bytes were written."""
         ...
-
-
-class StorageBackend(Protocol):
-    """Where blobs are mirrored: whole compressed objects by key. ``StorageBackendConfig.open`` makes one."""
-
-    url: str
-
-    def upload(self, key: str, path: Path) -> None:
-        """Store the file at ``path`` under ``key``, streaming it."""
-        ...
-
-    def download(self, key: str, path: Path) -> bool:
-        """Write the object under ``key`` to ``path``, streaming it; False when there is none."""
-        ...
-
-    def has(self, key: str) -> bool:
-        """Whether an object is stored under ``key``."""
-        ...
-
-
-class StorageBackendConfig(BaseModel, ABC):
-    """The settings of a storage backend, ``[storage.backend]``: each backend subclasses it with its own keys.
-
-    ``kind`` names the backend (``piloop.plugins.contracts.store.STORAGE_BACKENDS``). ``open`` makes the
-    ``StorageBackend`` that the settings describe. ``piloop.store.s3.S3Config`` and ``piloop.store.gcs.GcsConfig`` are
-    the built-in ones.
-    """
-
-    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
-
-    kind: str
-    """The backend: the name it is registered under."""
-
-    @abstractmethod
-    def open(self) -> StorageBackend:
-        """The remote these settings describe."""
 
 
 @dataclass(frozen=True)

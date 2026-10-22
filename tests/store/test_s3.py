@@ -10,8 +10,8 @@ from moto import mock_aws
 from mypy_boto3_s3 import S3Client
 from pydantic import ValidationError
 
+from piloop.plugins.storage_backend.s3 import S3, S3Config
 from piloop.store import Store, key
-from piloop.store.s3 import S3, S3Config
 
 BUCKET = 'piloop-test'
 

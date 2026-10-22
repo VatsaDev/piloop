@@ -2,7 +2,7 @@
 
 import inspect
 
-from piloop.runtime import Runtime
+from piloop.plugins.runtime.contract import Runtime
 from scripts.generate import SNIPPETS, header
 from scripts.generate.markdown import cell, told
 

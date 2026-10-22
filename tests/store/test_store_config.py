@@ -9,13 +9,13 @@ from piloop_dir_store import Dir, DirConfig
 from pydantic import ValidationError
 
 from piloop.plugins import host as plugins
-from piloop.plugins.contracts.store import STORAGE_BACKENDS
 from piloop.plugins.host import PluginError
+from piloop.plugins.storage_backend.contract import STORAGE_BACKENDS
+from piloop.plugins.storage_backend.gcs import GcsConfig
+from piloop.plugins.storage_backend.kit.conformance import check_storage_backend
+from piloop.plugins.storage_backend.s3 import S3, S3Config
 from piloop.settings import BackendTable, Settings, StorageSettings
 from piloop.store.config import backend_config, open_store
-from piloop.store.contract import check_storage_backend
-from piloop.store.gcs import GcsConfig
-from piloop.store.s3 import S3, S3Config
 from tests.conftest import piloop_entry_points
 
 
@@ -69,7 +69,8 @@ def test_an_entry_point_must_name_a_new_backend_settings_class(registered: list[
         STORAGE_BACKENDS.providers()
     registered[:] = [EntryPoint('odd', 'piloop.store:Store', STORAGE_BACKENDS.group)]
     with pytest.raises(
-        PluginError, match='odd = piloop.store:Store in piloop.stores is not a piloop.store.StorageBackendConfig'
+        PluginError,
+        match='odd = piloop.store:Store in piloop.stores is not a piloop.plugins.storage_backend.contract.StorageBackendConfig',
     ):
         STORAGE_BACKENDS.providers()
 

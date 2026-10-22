@@ -15,10 +15,11 @@ from inline_snapshot import snapshot
 
 from piloop import settings as settings_module
 from piloop.harnesses import DEFAULT_HARNESSES
-from piloop.runtime import AgentSpec, AgentStatus, Handle, NotSteerable, StartFailed, herdr
+from piloop.plugins.runtime import herdr
+from piloop.plugins.runtime.contract import AgentSpec, AgentStatus, Handle, NotSteerable, StartFailed
+from piloop.plugins.runtime.herdr import HerdrError, HerdrRuntime, HerdrSettings
+from piloop.plugins.runtime.subprocess import SubprocessRuntime
 from piloop.runtime.factory import make_runtime
-from piloop.runtime.herdr import HerdrError, HerdrRuntime, HerdrSettings
-from piloop.runtime.subprocess import SubprocessRuntime
 from tests.conftest import wait_until
 from tests.fixtures.fake_herdr import AGENT, AGENT_SESSION, SESSION_ID
 
@@ -32,7 +33,7 @@ SESSION = ['--session', 'piloop']
 @pytest.fixture(autouse=True)
 def no_quiet_wait(monkeypatch: pytest.MonkeyPatch) -> None:
     """A still screen is still at once: the fake's screens do not move unless a test scripts them to."""
-    monkeypatch.setattr('piloop.runtime.herdr.QUIET_SECONDS', 0)
+    monkeypatch.setattr('piloop.plugins.runtime.herdr.QUIET_SECONDS', 0)
 
 
 def calls(log: Path) -> list[list[str]]:
@@ -43,7 +44,7 @@ def calls(log: Path) -> list[list[str]]:
 
 
 class FakeClock:
-    """Stands in for the ``time`` module of ``piloop.runtime.herdr`` alone: a sleep moves the clock, nothing waits.
+    """Stands in for the ``time`` module of ``piloop.plugins.runtime.herdr`` alone: a sleep moves the clock, nothing waits.
 
     Patching ``time.sleep`` itself would also move this clock for every other thread of the process.
     """
@@ -193,7 +194,7 @@ def test_the_watch_pane_opens_this_home_whatever_the_herdr_server_environment(
 def test_a_shell_that_never_reads_its_env_fails_the_start(
     tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr('piloop.runtime.herdr.SHELL_READY_POLL_SECONDS', 0.01)
+    monkeypatch.setattr('piloop.plugins.runtime.herdr.SHELL_READY_POLL_SECONDS', 0.01)
     monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(shell_ready_seconds=0.05))
     scripted(monkeypatch, pane_run=[{'text': ''}])
     with pytest.raises(StartFailed, match='HerdrError: shell_not_ready: the pane shell did not read its environment'):
@@ -215,7 +216,7 @@ def test_a_brief_is_submitted_once_and_picked_up_by_a_state_change(
     brief. No pickup and no screen text that shows the brief was taken is a lost brief. The brief is never pasted
     again, because a second paste lands beside the first in the composer.
     """
-    monkeypatch.setattr('piloop.runtime.herdr.PICKUP_POLL_SECONDS', 0.01)
+    monkeypatch.setattr('piloop.plugins.runtime.herdr.PICKUP_POLL_SECONDS', 0.01)
     monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(startup_grace_seconds=5))
     scripted(monkeypatch, agent_get=[seq(5), seq(5), seq(7, 'working')])
     HerdrRuntime('demo', tmp_path).start(spec(tmp_path))
@@ -298,7 +299,7 @@ def test_start_retries_while_the_shell_is_starting(
     scripted(
         monkeypatch, agent_start=[busy, busy, {'result': {'type': 'agent_started', 'agent': {'agent_status': 'idle'}}}]
     )
-    monkeypatch.setattr('piloop.runtime.herdr.SHELL_READY_POLL_SECONDS', 0.01)
+    monkeypatch.setattr('piloop.plugins.runtime.herdr.SHELL_READY_POLL_SECONDS', 0.01)
     HerdrRuntime('demo', tmp_path).start(spec(tmp_path))
     assert [c[:2] for c in calls(herdr_log)].count(['agent', 'start']) == 3
 
@@ -364,7 +365,7 @@ def test_a_stale_redraw_of_an_answered_dialog_does_not_skip_the_next_one(
 ) -> None:
     """Herdr reports ``idle`` while the dialog is up, so ``agent wait`` returns before the TUI redraws."""
     scripted(monkeypatch, pane_read=[TRUST_SCREEN, TRUST_SCREEN, HOOKS_SCREEN, WELCOME_SCREEN])
-    monkeypatch.setattr('piloop.runtime.herdr.DIALOG_REDRAW_POLL_SECONDS', 0.01)
+    monkeypatch.setattr('piloop.plugins.runtime.herdr.DIALOG_REDRAW_POLL_SECONDS', 0.01)
     HerdrRuntime('demo', tmp_path).start(as_harness(spec(tmp_path), 'codex', startup_dialogs=CODEX_DIALOGS))
     assert sent_keys(herdr_log) == ['enter', 't']
     assert [c[:2] for c in calls(herdr_log)].count(['pane', 'read']) == 4
@@ -374,7 +375,7 @@ def test_a_dialog_that_never_leaves_the_screen_fails_the_start(
     tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     scripted(monkeypatch, pane_read=[TRUST_SCREEN])
-    monkeypatch.setattr('piloop.runtime.herdr.DIALOG_REDRAW_POLL_SECONDS', 0.01)
+    monkeypatch.setattr('piloop.plugins.runtime.herdr.DIALOG_REDRAW_POLL_SECONDS', 0.01)
     monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(start_timeout_seconds=0.1))
     with pytest.raises(StartFailed, match='still shows a startup dialog after it was answered$'):
         HerdrRuntime('demo', tmp_path).start(as_harness(spec(tmp_path), 'codex', startup_dialogs=CODEX_DIALOGS))
@@ -476,7 +477,7 @@ def test_a_blocked_agent_is_waited_for_until_the_grace_runs_out_then_its_dialog_
         ['--until', 'idle', '--until', 'done', '--until', 'blocked'],
     ], 'blocked: wait for it to leave that state, then for the agent to finish'
 
-    monkeypatch.setattr('piloop.runtime.herdr.BLOCKED_GRACE_SECONDS', 0.2)
+    monkeypatch.setattr('piloop.plugins.runtime.herdr.BLOCKED_GRACE_SECONDS', 0.2)
     herdr_log.write_text('')  # the fake indexes its script by the calls in the log
     timed_out: Response = {'error': {'code': 'timeout', 'message': 'timed out'}}
     scripted(monkeypatch, agent_wait=[seq(6, 'blocked'), timed_out], pane_read=[{'text': 'Do you want to proceed?\n'}])
@@ -499,7 +500,9 @@ def test_a_blocked_agent_whose_screen_moves_is_not_stuck_however_long_herdr_says
     dialog that nobody answers still ends at the grace.
     """
     clock = [0.0]
-    monkeypatch.setattr('piloop.runtime.herdr.time', type('Clock', (), {'monotonic': staticmethod(lambda: clock[0])}))
+    monkeypatch.setattr(
+        'piloop.plugins.runtime.herdr.time', type('Clock', (), {'monotonic': staticmethod(lambda: clock[0])})
+    )
     grace = herdr.BLOCKED_GRACE_SECONDS
     states = ['blocked'] + [None] * int(2 * grace / herdr.herdr_settings.wait_chunk_seconds) + ['idle']
 
@@ -537,7 +540,7 @@ def scripted_jobs(monkeypatch: pytest.MonkeyPatch, jobs: list[list[str]], resume
     looks, changes = iter(jobs), iter(resumed)
     monkeypatch.setattr(HerdrRuntime, 'jobs', lambda self, handle: next(looks))
     monkeypatch.setattr(HerdrRuntime, '_state_changed', lambda self, agent, before, timeout: next(changes))
-    monkeypatch.setattr('piloop.runtime.herdr.JOBS_POLL_SECONDS', 0.01)
+    monkeypatch.setattr('piloop.plugins.runtime.herdr.JOBS_POLL_SECONDS', 0.01)
 
 
 def test_idle_with_jobs_in_flight_is_not_finished(
@@ -727,7 +730,7 @@ def test_session_id_is_what_herdr_detected_once_the_harness_started(
 ) -> None:
     clock = FakeClock()
     monkeypatch.setattr(herdr, 'time', clock)
-    monkeypatch.setattr('piloop.runtime.herdr.PICKUP_POLL_SECONDS', 1)
+    monkeypatch.setattr('piloop.plugins.runtime.herdr.PICKUP_POLL_SECONDS', 1)
     monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(prompt_pickup_seconds=5))
     rt = HerdrRuntime('demo', tmp_path, sleep=clock.sleep)
     handle = Handle('herdr', {'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': 'w1'})
@@ -875,7 +878,7 @@ def test_a_failed_start_keeps_what_its_screen_showed_before_the_tab_closes(
     tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A failed start reads the pane's screen before it closes the tab, so the screen is not lost with the pane."""
-    monkeypatch.setattr('piloop.runtime.herdr.PICKUP_POLL_SECONDS', 0.01)
+    monkeypatch.setattr('piloop.plugins.runtime.herdr.PICKUP_POLL_SECONDS', 0.01)
     monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(startup_grace_seconds=0.02))
     scripted(monkeypatch, agent_get=[seq(5)], pane_read=[{'text': 'Welcome to Claude Code\n> do the thing\n'}])
     with pytest.raises(StartFailed) as raised:
@@ -950,7 +953,7 @@ def test_a_brief_taken_by_an_agent_still_starting_or_retrying_is_delivered(
     Herdr's state does not change within the pickup window in these cases. The start succeeds, and ``wait`` judges
     what follows.
     """
-    monkeypatch.setattr('piloop.runtime.herdr.PICKUP_POLL_SECONDS', 0.01)
+    monkeypatch.setattr('piloop.plugins.runtime.herdr.PICKUP_POLL_SECONDS', 0.01)
     monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings(startup_grace_seconds=0.05))
     scripted(monkeypatch, agent_get=[seq(5)], pane_read=[screen])
     HerdrRuntime('demo', tmp_path).start(as_harness(spec(tmp_path), kind))

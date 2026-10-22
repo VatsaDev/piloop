@@ -1,7 +1,7 @@
 """The briefs of the roles: the prompt, the context and what the agent may write (https://piloop.autoresearch.inc/concepts/roles).
 
 Every role shares one lifecycle (``piloop.agents.launcher``). A role differs in its ``[roles.<name>]`` table
-(``piloop.config``), its triggers (``piloop.triggers``) and the content of its brief, which this module composes.
+(``piloop.plugins.role``), its triggers (``piloop.plugins.trigger``) and the content of its brief, which this module composes.
 """
 
 from dataclasses import dataclass
@@ -11,8 +11,9 @@ from typing import assert_never
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor, Agent, System
-from piloop.config import BRIEF_FILE, CampaignConfig, Files, SweepRole, Track, config_of
+from piloop.config import BRIEF_FILE, CampaignConfig, Track, config_of
 from piloop.db.models import AgentSession, Campaign
+from piloop.plugins.role.contract import Files, SweepRole
 
 PROMPTS = Path(__file__).resolve().parent / 'prompts'
 PROCEDURES = 'sql_procedures.md'

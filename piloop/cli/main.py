@@ -26,7 +26,7 @@ from piloop.cli import (
     store,
 )
 from piloop.config import ConfigError
-from piloop.runtime.tags import OLD_TAG_ENV, TAG_ENV
+from piloop.plugins.runtime.contract import OLD_TAG_ENV, TAG_ENV
 from piloop.version import installed
 
 app = cyclopts.App(name='piloop', help='Run autoresearch campaigns with coding agents.', version=installed)

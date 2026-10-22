@@ -25,8 +25,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database, write_transaction
-from piloop.plugins.builtin.executor.workers import WorkersParameters
-from piloop.plugins.contracts.executor import (
+from piloop.plugins.executor.contract import (
     AgentJob,
     AgentKey,
     AgentReport,
@@ -39,7 +38,7 @@ from piloop.plugins.contracts.executor import (
     JobKey,
     Settled,
 )
-from piloop.plugins.kit.executor.leases import (
+from piloop.plugins.executor.kit.leases import (
     EXPIRED,
     NOT_TAKEN,
     STALE_REPORT,
@@ -52,7 +51,8 @@ from piloop.plugins.kit.executor.leases import (
     enqueue,
     revoke,
 )
-from piloop.runtime import AgentStatus
+from piloop.plugins.executor.workers import WorkersParameters
+from piloop.plugins.runtime.contract import AgentStatus
 from tests.conftest import baseline
 
 HANDLE: dict[str, object] = {'runtime': 'subprocess', 'data': {}}

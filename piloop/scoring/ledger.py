@@ -37,8 +37,8 @@ from piloop.db.models import (
     Verdict,
     latest_agent_session,
 )
-from piloop.plugins.contracts import verdict as rules
-from piloop.plugins.contracts.verdict import VERDICT_RULES, Case, Criterion, Side, VerdictRule
+from piloop.plugins.verdict_rule import contract as rules
+from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Case, Criterion, Side, VerdictRule
 from piloop.scoring.evaluate import UNITS, Units
 from piloop.text import metric
 
@@ -413,7 +413,7 @@ def decide(
 ) -> tuple[Verdict, str]:
     """Return ``rule``'s verdict on ``candidate``, a candidate of ``track``, against ``bar``, and the reason.
 
-    The rule gets the case as data (``piloop.plugins.contracts.verdict.Case``): the track's primary and guardrails,
+    The rule gets the case as data (``piloop.plugins.verdict_rule.contract.Case``): the track's primary and guardrails,
     the confidence, both sides' results and its own parameters. Its outcome is the ``Verdict`` of the same value.
     """
     guardrails = tuple(map(criterion, track.guardrails))

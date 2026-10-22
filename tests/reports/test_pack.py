@@ -8,9 +8,10 @@ from sqlalchemy.orm import Session
 
 from piloop.agents.roles import files_of
 from piloop.campaign.ideas import Yield, source, yields
-from piloop.config import CampaignConfig, Files, load_campaign_config
+from piloop.config import CampaignConfig, load_campaign_config
 from piloop.db.models import Campaign, Comment, CommentKind, IdeaStatus, TargetKind, Verdict
 from piloop.db.session import Database
+from piloop.plugins.role.contract import Files
 from piloop.reports.pack import (
     ARTIFACTS_SHOWN,
     DIGESTS_SHOWN,

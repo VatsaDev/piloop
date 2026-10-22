@@ -243,8 +243,8 @@ The plugin contracts of `main` changed, with no alias:
 - A stop rule's `check` returns `Go()`, `Hold(reason)` or `Stop(reason)`, not a stop reason or none. With `[spend]`
   set, a stop rule whose `reads` lacks `spend` is refused.
 - The artifact store's plugin capability is the **storage backend**, not the remote backend. A package that adds a
-  backend subclasses `piloop.store.StorageBackendConfig` (was `RemoteConfig`), its `open()` returns a
-  `piloop.store.StorageBackend` (was `Remote`), and its tests call `piloop.store.contract.check_storage_backend` (was
+  backend subclasses `piloop.capabilities.StorageBackendConfig` (was `RemoteConfig`), its `open()` returns a
+  `StorageBackend` (was `Remote`), and its tests call `check_storage_backend` (was
   `check_remote`). The entry point group stays `piloop.stores`.
 
 ## Other install types

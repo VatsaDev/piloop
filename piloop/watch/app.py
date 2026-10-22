@@ -35,7 +35,7 @@ from piloop.campaign.ideas import reprioritise
 from piloop.config import config_of
 from piloop.db.models import AgentSession, AgentSessionState, Idea, IdeaStatus, utcnow
 from piloop.db.session import Database
-from piloop.runtime import Handle, NotAttachable, NotSteerable, Runtime, RuntimeFailure
+from piloop.plugins.runtime.contract import Handle, NotAttachable, NotSteerable, Runtime, RuntimeFailure
 from piloop.runtime.factory import handle_for, runtime_for
 from piloop.watch.panels import CAMPAIGN_COLUMNS, PANELS, Cell, Context, Item, Panel, campaigns, header
 

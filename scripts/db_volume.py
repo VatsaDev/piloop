@@ -30,7 +30,7 @@ from piloop.daemon.scheduler import Scheduler
 from piloop.db.models import Campaign, utcnow
 from piloop.db.session import Database
 from piloop.otel import Tracer
-from piloop.plugins.contracts.stop import Hold
+from piloop.plugins.stop_rule.contract import Hold
 from piloop.reports import history, overview
 
 ROOT = Path(__file__).resolve().parent.parent

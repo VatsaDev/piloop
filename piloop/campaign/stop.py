@@ -37,8 +37,8 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.triggers import DAEMON_ACTOR
-from piloop.plugins.contracts import stop as stop_contract
-from piloop.plugins.contracts.stop import STOP_RULES, Fact, Go, Hold, Progress, Stop, StopCase
+from piloop.plugins.stop_rule import contract as stop_contract
+from piloop.plugins.stop_rule.contract import STOP_RULES, Fact, Go, Hold, Progress, Stop, StopCase
 from piloop.scoring.ledger import head, keeps, score
 from piloop.usage import campaign_tokens
 
@@ -52,7 +52,7 @@ CANCELLED_ERROR = 'cancelled'
 """The error of a run, and of an agent, that someone cancelled (``CANCEL_REQUESTED``). The run's idea is parked."""
 WORKER_LOST = 'worker lost'
 """The error of a run whose agent's worker went silent past ``toleration_seconds`` (``[plugins.executor]``), or restarted and could not
-find the agent (``piloop.plugins.kit.executor.leases``). A fault of the host, not an attempt: the idea goes back to ``ready``."""
+find the agent (``piloop.plugins.executor.kit.leases``). A fault of the host, not an attempt: the idea goes back to ``ready``."""
 NOT_ATTEMPTS = (
     STOPPED_ERROR,
     STALE_ERROR,

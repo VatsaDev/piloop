@@ -19,7 +19,7 @@ from piloop.cli.doctor import checks, report
 from piloop.config import CampaignConfig
 from piloop.db.models import Campaign
 from piloop.db.session import Database
-from piloop.runtime import Check
+from piloop.plugins.runtime.contract import Check
 from piloop.settings import Settings
 from piloop.version import Version, installed
 from tests.cli.test_cli import git_check

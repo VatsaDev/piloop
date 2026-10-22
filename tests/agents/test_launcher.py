@@ -26,8 +26,8 @@ from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.mcp import MCP
 from piloop.otel import Tracer
-from piloop.plugins.contracts.executor import Checkout, GitTree
-from piloop.runtime import AgentSpec, AgentStatus, StartFailed
+from piloop.plugins.executor.contract import Checkout, GitTree
+from piloop.plugins.runtime.contract import AgentSpec, AgentStatus, StartFailed
 from piloop.settings import Settings
 from piloop.usage.jsonl import CWD_ENCODERS
 from tests.conftest import (
@@ -434,7 +434,7 @@ def test_a_cwd_that_cannot_be_made_is_a_failed_start(
         role_in(campaign), campaign, Agent(role='watchdog', session=agent_session_id), reason='test', context=''
     )
     mocker.patch(
-        'piloop.plugins.kit.executor.jobs.git.add_worktree', side_effect=OSError(28, 'No space left on device')
+        'piloop.plugins.executor.kit.jobs.git.add_worktree', side_effect=OSError(28, 'No space left on device')
     )
     outcome = launcher(db, runtime, tmp_path).launch(
         agent_session_id,

@@ -13,8 +13,8 @@ from piloop.actor import System
 from piloop.agents.results import CampaignResults
 from piloop.db.session import Database
 from piloop.otel import Tracer
-from piloop.plugins.builtin.executor.worker import Worker
-from piloop.plugins.kit.executor.leases import Leases, Timing
+from piloop.plugins.executor.kit.leases import Leases, Timing
+from piloop.plugins.executor.workers.worker import Worker
 
 
 def main() -> None:

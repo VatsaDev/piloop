@@ -10,9 +10,10 @@ from pathlib import Path
 import pytest
 from dirty_equals import IsPositive, IsStr
 
+from piloop.plugins.runtime import subprocess as subprocess_runtime
+from piloop.plugins.runtime.contract import AgentSpec, AgentStatus, Handle, NotSteerable
+from piloop.plugins.runtime.subprocess import SubprocessRuntime
 from piloop.proc import alive, started
-from piloop.runtime import AgentSpec, AgentStatus, Handle, NotSteerable, subprocess as subprocess_runtime
-from piloop.runtime.subprocess import SubprocessRuntime
 
 
 def script(tmp_path: Path, body: str) -> Path:

@@ -63,10 +63,10 @@ from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins
+from piloop.plugins.runtime.contract import AgentStatus, Handle, NotSteerable
+from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.reports.overview import SILENT_SECONDS
-from piloop.runtime import AgentStatus, Handle, NotSteerable
 from piloop.scoring.ledger import current_evaluator, due, head, import_reference, request_remeasure
-from piloop.triggers import LowWaterTrigger
 from tests.conftest import (
     HARNESS_APPEND,
     HARNESS_SLEEPS,
@@ -1040,7 +1040,7 @@ def test_stop_before_the_implementer_starts_never_starts_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gate = Gate()
-    monkeypatch.setattr('piloop.plugins.kit.executor.jobs.git.add_worktree', gate.wrap(git.add_worktree))
+    monkeypatch.setattr('piloop.plugins.executor.kit.jobs.git.add_worktree', gate.wrap(git.add_worktree))
     scheduler = make_scheduler(db, runtime, tmp_path, tracer)
     (idea,) = add_ideas(db, campaign, 'x')
     scheduler.tick()

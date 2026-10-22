@@ -17,23 +17,11 @@ from sqlalchemy.orm import Session
 from piloop.cli import common, doctor
 from piloop.cli.main import app
 from piloop.cli.plugins import selections
-from piloop.config import ROLES, ConfigError, load_campaign_config
+from piloop.config import ConfigError, load_campaign_config
 from piloop.daemon.main import Daemon
 from piloop.db.models import Campaign
 from piloop.db.session import Database
 from piloop.plugins import host as plugins
-from piloop.plugins.contracts.runtime import RUNTIMES
-from piloop.plugins.contracts.store import STORAGE_BACKENDS
-from piloop.plugins.contracts.verdict import (
-    VERDICT_RULES,
-    Case,
-    Criterion,
-    Direction,
-    Judgement,
-    Outcome,
-    Side,
-    VerdictRule,
-)
 from piloop.plugins.host import (
     MissingProvider,
     PluginError,
@@ -45,9 +33,14 @@ from piloop.plugins.host import (
     compose,
     data_errors,
 )
+from piloop.plugins.metric import Direction
+from piloop.plugins.role.contract import ROLES
+from piloop.plugins.runtime.contract import RUNTIMES
+from piloop.plugins.storage_backend.contract import STORAGE_BACKENDS
+from piloop.plugins.trigger.contract import TRIGGERS
+from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Case, Criterion, Judgement, Outcome, Side, VerdictRule
 from piloop.runtime.factory import make_runtime
 from piloop.settings import Settings
-from piloop.triggers import TRIGGERS
 from tests.conftest import example, package
 from tests.daemon.test_roles import PLUGIN, installed
 from tests.fixtures.plugin import Typed

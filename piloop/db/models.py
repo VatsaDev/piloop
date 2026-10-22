@@ -193,7 +193,7 @@ class LeaseKind(StrEnum):
 
 
 class LeaseState(StrEnum):
-    """The lifecycle of a lease (``piloop.plugins.kit.executor.leases``).
+    """The lifecycle of a lease (``piloop.plugins.executor.kit.leases``).
 
     ``queued`` waits for a worker. ``acquired`` is taken, ``running`` is started. Then ``reported`` (the worker's report
     applied), ``expired`` (the worker went silent past ``toleration_seconds``, or reported its job gone), or
@@ -651,7 +651,7 @@ class Evaluation(Base):
 
 
 class Lease(Base):
-    """A lease (``piloop.plugins.kit.executor.leases``): a time-limited claim on one job by one worker (``piloop.plugins.kit.executor.leases``).
+    """A lease (``piloop.plugins.executor.kit.leases``): a time-limited claim on one job by one worker (``piloop.plugins.executor.kit.leases``).
 
     The table is in core's schema until a plugin can own tables. ``WorkersExecutor.submit`` inserts a ``queued`` lease with its job description (``job``). A worker acquires it, starts the job and
     renews the lease with a heartbeat every ``renew_seconds``. The id is the **fencing token**: it only grows, and

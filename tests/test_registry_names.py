@@ -12,9 +12,9 @@ from pathlib import Path
 from piloop.config import Roles
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.mcp import RENDERERS
-from piloop.plugins.contracts.runtime import RUNTIMES
 from piloop.plugins.host import PureCapability, Tier, data_errors, declared
-from piloop.triggers import TRIGGERS
+from piloop.plugins.runtime.contract import RUNTIMES
+from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.usage import READERS
 from piloop.usage.jsonl import TALLIES
 
@@ -30,7 +30,7 @@ NAMES = {
 }
 LEAVES: dict[str, frozenset[str] | None] = {
     'harnesses.py': None,
-    'triggers.py': None,
+    'plugins/trigger/*.py': None,
     'db/models.py': None,
     'db/migrations/versions/*.py': None,
     'mcp/claude.py': None,
@@ -39,8 +39,8 @@ LEAVES: dict[str, frozenset[str] | None] = {
     'usage/__init__.py': frozenset({'jsonl'}),
     'usage/jsonl.py': frozenset({'jsonl'}),
     'usage/tallies/*.py': None,
-    'runtime/subprocess.py': frozenset({'subprocess'}),
-    'runtime/herdr.py': frozenset({'herdr'}),
+    'plugins/runtime/subprocess.py': frozenset({'subprocess'}),
+    'plugins/runtime/herdr.py': frozenset({'herdr'}),
     'config.py': frozenset({'subprocess', 'pi'}),
     'deprecated.py': None,
     'cli/skills.py': frozenset({'claude', 'codex', 'pi'}),
@@ -52,9 +52,9 @@ LEAVES: dict[str, frozenset[str] | None] = {
 }
 """The files that may name entries, and which ones (None: any). The reasons:
 
-- ``harnesses.py``, ``triggers.py``, ``db/models.py`` (``RoleName``), the MCP renderers and the usage readers and
-  tallies define the entries. The migrations are history.
-- ``runtime/subprocess.py`` and ``runtime/herdr.py`` define their runtime.
+- ``harnesses.py``, the triggers (``plugins/trigger/``), ``db/models.py`` (``RoleName``), the MCP renderers and the
+  usage readers and tallies define the entries. The migrations are history.
+- ``plugins/runtime/subprocess.py`` and ``plugins/runtime/herdr.py`` define their runtime.
 - ``config.py``: the defaults of ``runtime`` and ``harnesses``.
 - ``deprecated.py``: the bridges rewrite the keys of earlier releases, which named built-in roles and triggers.
 - ``cli/skills.py``: the skill folder of each agent CLI, which is not the harness registry.

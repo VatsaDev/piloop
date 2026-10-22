@@ -6,8 +6,7 @@ from typing import Protocol
 from sqlalchemy.orm import Session
 
 from piloop.db.models import AgentSession, Campaign
-from piloop.plugins.contracts.runtime import RUNTIMES
-from piloop.runtime import Handle, Runtime
+from piloop.plugins.runtime.contract import RUNTIMES, Handle, Runtime
 
 
 def make_runtime(kind: str, *, campaign: str, campaign_path: Path) -> Runtime:

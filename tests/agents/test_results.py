@@ -12,7 +12,7 @@ from piloop.agents.results import CampaignResults
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, Evaluation, Event, Measurement, RoleName, utcnow
 from piloop.db.session import Database
 from piloop.otel import Tracer
-from piloop.plugins.contracts.executor import (
+from piloop.plugins.executor.contract import (
     AgentJob,
     AgentReport,
     Checkout,
@@ -22,7 +22,7 @@ from piloop.plugins.contracts.executor import (
     GitTree,
     Settled,
 )
-from piloop.runtime import AgentStatus
+from piloop.plugins.runtime.contract import AgentStatus
 from tests.conftest import baseline
 
 

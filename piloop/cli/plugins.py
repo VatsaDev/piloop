@@ -4,9 +4,10 @@ from pathlib import Path
 
 from piloop.cli import common
 from piloop.cli.doctor import stored_campaigns
-from piloop.config import ROLES, CampaignConfig
+from piloop.config import CampaignConfig
 from piloop.daemon.main import preflight, unbound_failures
 from piloop.plugins.host import Activatable, PluginError, Selection, declared, lookup
+from piloop.plugins.role.contract import ROLES
 from piloop.settings import CONFIG_FILE, Settings
 
 

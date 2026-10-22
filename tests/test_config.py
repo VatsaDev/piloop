@@ -4,23 +4,14 @@ from pathlib import Path
 import pytest
 from inline_snapshot import snapshot
 
-from piloop.config import (
-    CampaignConfig,
-    ConfigError,
-    Files,
-    ImplementerRole,
-    Metric,
-    MetricRole,
-    ResearchRole,
-    Roles,
-    Stop,
-    WatchdogRole,
-    load_campaign_config,
-)
+from piloop.config import CampaignConfig, ConfigError, Metric, MetricRole, Roles, Stop, load_campaign_config
 from piloop.db.models import RoleName
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
-from piloop.plugins.contracts.verdict import Direction
-from piloop.triggers import TRIGGERS
+from piloop.plugins.metric import Direction
+from piloop.plugins.role.contract import Files, ImplementerRole
+from piloop.plugins.role.research import ResearchRole
+from piloop.plugins.role.watchdog import WatchdogRole
+from piloop.plugins.trigger.contract import TRIGGERS
 
 
 def test_load_precedence(campaign_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

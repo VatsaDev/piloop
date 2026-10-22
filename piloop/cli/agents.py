@@ -10,7 +10,7 @@ from piloop.cli import common
 from piloop.cli.common import HARNESS_HELP, CampaignRef
 from piloop.config import TRANSCRIPT, config_of
 from piloop.db.models import OPEN_RUNS, AgentSession, AgentSessionState, Run
-from piloop.runtime import Handle, NotAttachable, NotSteerable, Runtime, RuntimeFailure
+from piloop.plugins.runtime.contract import Handle, NotAttachable, NotSteerable, Runtime, RuntimeFailure
 from piloop.runtime.factory import handle_for, runtime_for
 
 agent_app = cyclopts.App(name='agent', help='Act on one agent.')

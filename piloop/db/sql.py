@@ -30,6 +30,7 @@ import os
 import re
 import sqlite3
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 
 from blake3 import blake3
@@ -313,3 +314,29 @@ def schema_ddl(metadata: MetaData = Base.metadata) -> str:
             statements.append(str(CreateIndex(index).compile(dialect=sqlite.dialect())).strip() + ';')
     statements += [fts_table(t) for t in FTS_COLUMNS]
     return '\n'.join(line.rstrip() for statement in statements for line in statement.splitlines())
+
+
+READS = (sqlite3.SQLITE_SELECT, sqlite3.SQLITE_READ, sqlite3.SQLITE_FUNCTION, sqlite3.SQLITE_RECURSIVE)
+
+
+@cache
+def sql_error(statement: str, parameters: tuple[str, ...] = ()) -> str | None:
+    """Return why ``statement`` is not one query that reads the piloop schema, or None when it is.
+
+    The statement is prepared on an empty copy of the schema, under an authorizer that denies every write. It may use
+    the named ``parameters`` and no others.
+    """
+
+    def authorize(action: int, *_: str | None) -> int:
+        return sqlite3.SQLITE_OK if action in READS else sqlite3.SQLITE_DENY
+
+    con = sqlite3.connect(':memory:')
+    try:
+        con.executescript(schema_ddl())
+        con.set_authorizer(authorize)
+        con.execute(f'EXPLAIN {statement}', dict.fromkeys(parameters, 0))
+    except sqlite3.Error as e:
+        return with_renamed(str(e))
+    finally:
+        con.close()
+    return None

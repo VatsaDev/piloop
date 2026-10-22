@@ -19,7 +19,8 @@ from dataclasses import dataclass
 
 import pytest
 
-from piloop.runtime.tags import TAG_ENV, tagged
+from piloop.plugins.runtime.contract import TAG_ENV
+from piloop.plugins.runtime.kit.tags import tagged
 from tests.conftest import wait_until
 from tests.e2e.campaign import OPEN, Smoke, needs
 from tests.e2e.conftest import MakeCampaign

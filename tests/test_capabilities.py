@@ -7,6 +7,7 @@ names. A host capability's contract is the return type of its check, a pure one'
 
 import ast
 import inspect
+import re
 import subprocess
 import sys
 import types
@@ -26,8 +27,9 @@ import piloop_verdict_checks
 import piloop_verdict_checks.contract
 
 from piloop import capabilities
+from piloop.plugins import metric
 from piloop.plugins.host import BUILT_IN, CAPABILITIES, Capability, PureCapability
-from piloop.runtime import NotAttachable, NotSteerable, RuntimeFailure, StartFailed
+from piloop.plugins.runtime.contract import NotAttachable, NotSteerable, RuntimeFailure, StartFailed
 
 HELPERS: set[object] = {
     capabilities.MissingProvider,
@@ -152,13 +154,31 @@ def _imports(path: Path) -> set[str]:
     }
 
 
-def test_core_imports_no_helper_of_the_kit() -> None:
-    """``piloop.plugins.kit`` holds helpers that providers may use: only providers, and this module, import it."""
+def test_each_capability_is_a_package_of_its_contract_its_built_in_providers_and_its_kit() -> None:
+    """``plugins/<capability>/``: ``contract.py`` declares the capability, every other module is a built-in provider
+    by the name of its entry point, and ``kit/`` holds what any provider of the capability may use."""
+    plugins = Path(capabilities.__file__).parent / 'plugins'
+    declared = _own(CAPABILITIES)
+    assert {p.name for p in plugins.iterdir() if p.is_dir() and p.name != '__pycache__'} == {c.name for c in declared}
+    for capability in declared:
+        assert capability.module == f'piloop.plugins.{capability.name}.contract'
+        providers = _own(capability.load().group)
+        assert [p.module for p in providers] == [f'piloop.plugins.{capability.name}.{p.name}' for p in providers]
+        others = {'__init__.py', '__pycache__', 'contract.py', 'kit'}
+        modules = {p.name.removesuffix('.py') for p in (plugins / capability.name).iterdir() if p.name not in others}
+        assert modules == {p.name for p in providers}, capability.name
+
+
+def test_core_imports_no_helper_of_a_kit() -> None:
+    """``plugins/<capability>/kit`` holds helpers that providers may use: only providers, and this module, import it."""
     root = Path(capabilities.__file__).parent
-    providers = (root / 'plugins' / 'kit', root / 'plugins' / 'builtin')
-    core = [p for p in root.rglob('*.py') if not p.is_relative_to(providers[0]) and not p.is_relative_to(providers[1])]
+    plugins = root / 'plugins'
+    providers = [p for p in plugins.glob('*/*') if p.name not in {'__init__.py', 'contract.py'}]
+    core = [p for p in root.rglob('*.py') if not any(p.is_relative_to(provider) for provider in providers)]
     importers = [
-        p for p in core if any(m.startswith('piloop.plugins.kit') for m in _imports(p)) and p.stem != 'capabilities'
+        p
+        for p in core
+        if any(re.match(r'piloop\.plugins\.\w+\.kit\b', m) for m in _imports(p)) and p.stem != 'capabilities'
     ]
     assert importers == []
 
@@ -181,10 +201,11 @@ def test_the_example_plugins_import_piloop_only_from_the_module() -> None:
 
 
 def test_a_pure_example_plugin_uses_only_pure_contracts_and_pure_providers() -> None:
-    """A pure provider still imports only data and other pure providers through the one module."""
+    """A pure provider still imports only data and other pure providers through the one module: a pure contract, the
+    metric types, or a pure built-in provider."""
     pure = [c for c in _declared() if isinstance(c, PureCapability)]
     modules = {c.contract.__module__ for c in pure} | {p.__module__ for c in pure for p in c.builtins().values()}
-    modules.add(PureCapability.__module__)
+    modules |= {PureCapability.__module__, metric.__name__}
     plugins = [
         piloop_min_gain,
         piloop_no_unit_regression,

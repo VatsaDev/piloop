@@ -1,4 +1,4 @@
-"""Every built-in storage backend passes the one contract (``piloop.store.contract``), and the check catches one that does
+"""Every built-in storage backend passes the one contract (``piloop.plugins.storage_backend.kit.conformance``), and the check catches one that does
 not."""
 
 from collections.abc import Iterator
@@ -9,10 +9,10 @@ import pytest
 from google.cloud import storage
 from moto import mock_aws
 
-from piloop.store import StorageBackend
-from piloop.store.contract import ContractBroken, check_storage_backend
-from piloop.store.gcs import GcsConfig
-from piloop.store.s3 import S3, S3Config
+from piloop.plugins.storage_backend.contract import StorageBackend
+from piloop.plugins.storage_backend.gcs import GcsConfig
+from piloop.plugins.storage_backend.kit.conformance import ContractBroken, check_storage_backend
+from piloop.plugins.storage_backend.s3 import S3, S3Config
 from tests.store.test_gcs import FakeClient
 from tests.store.test_store import DirRemote
 

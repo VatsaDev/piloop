@@ -26,7 +26,7 @@ from piloop.actor import Actor, Agent, System
 from piloop.agents.roles import files_of
 from piloop.campaign.ideas import Definition, NotASeed, develop
 from piloop.campaign.stop import held
-from piloop.config import CampaignConfig, Files, config_of
+from piloop.config import CampaignConfig, config_of
 from piloop.db.events import emit
 from piloop.db.models import (
     OPEN_RUNS,
@@ -45,6 +45,7 @@ from piloop.db.models import (
     TargetKind,
     Verdict,
 )
+from piloop.plugins.role.contract import Files
 from piloop.scoring.ledger import REJUDGE_REQUESTED, NoteRefused, follow_up, head, note, rejudgeable, track_of
 
 

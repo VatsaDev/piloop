@@ -30,7 +30,7 @@ import psutil
 import pytest
 import tomli_w
 
-from piloop.runtime.tags import tagged
+from piloop.plugins.runtime.kit.tags import tagged
 from tests.conftest import wait_until
 from tests.e2e.campaign import CHEAPEST_MODEL, OPEN, ROOT, Smoke, merged, needs
 from tests.e2e.conftest import caller_env

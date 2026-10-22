@@ -22,10 +22,9 @@ from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Ru
 from piloop.db.session import Database
 from piloop.harnesses import SESSION_ENV, SESSION_ID, Invocation, fill, takes_session_id
 from piloop.otel import Span, Tracer
-from piloop.plugins.contracts.executor import AgentJob, AgentKey, Artifact, Commits, Executor, LeftJob
-from piloop.plugins.contracts.runtime import RUNTIMES
+from piloop.plugins.executor.contract import AgentJob, AgentKey, Artifact, Commits, Executor, LeftJob
+from piloop.plugins.runtime.contract import RUNTIMES, AgentExit, AgentSpec, AgentStatus
 from piloop.proc import PILOOP_ARGV, child_env
-from piloop.runtime import AgentExit, AgentSpec, AgentStatus
 from piloop.text import cell
 
 AGENT_REFS = 'refs/piloop/agents/'

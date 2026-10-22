@@ -343,10 +343,9 @@ what that review said.
 
 The package has one subpackage for each concern. Imports only point down this list:
 
-1. `db/`: storage, the SQL gate for agents, the events feed. `store/`: the artifact store, its blobs, manifests
-   and storage backends.
+1. `db/`: storage, the SQL gate for agents, the events feed. `store/`: the artifact store, its blobs and manifests.
 2. `mcp/`, `usage/`, and `config.py` with `harnesses.py`: MCP servers, token usage, the campaign configuration.
-3. `runtime/`: where the agent processes run (a background process, or a Herdr pane).
+3. `runtime/`: the runtime of an agent session. The runtimes themselves are plugins (`plugins/runtime/`).
 4. `scoring/`: the evaluate command, the ledger, the verdict.
 5. `agents/`: the roles and their prompts, the agent lifecycle, session capture.
 6. `campaign/`: campaigns, ideas, the inbox, stop conditions, the spend limit.
@@ -358,17 +357,21 @@ The top-level modules `actor`, `settings`, `otel`, `git`, `proc`, `text`, `versi
 subpackage may use.
 
 `plugins/` is everything about plugins. `plugins/host.py` loads, checks and shows them, and imports nothing else of
-piloop, so every layer may use it. `plugins/contracts/` has one module for each capability: its contract, its entry
-point group and where the configuration selects it. A host contract may import the types that it passes; a pure one
-imports only the standard library and the host. `plugins/builtin/` has the providers of piloop that live nowhere else:
-they are public, and a plugin may import one to call it. piloop declares its capabilities, and its own providers, with
-entry points in `pyproject.toml`, in the same groups that a plugin uses (`piloop.capabilities`, then each provider
-group). To add a capability: a contract module, a builtin module, an entry point in `piloop.capabilities`, one in
-the provider group, and an import in `piloop/capabilities.py`. That module re-exports every capability, its contract types
-and its built-in providers, so that a plugin imports from one place; nothing in `piloop/` imports it, and
-`tests/test_capabilities.py` fails until the new line is there. The triggers and the roles declare their capability where they are defined (`triggers.py`,
-`config.py`): their contract module would import them, and they import their capability. Run `uv sync` after you
-change an entry point: piloop finds its own capabilities and providers in its installed metadata.
+piloop, so every layer may use it. `plugins/metric.py` has the metric types that the verdict and stop contracts share.
+Each capability is one package, `plugins/<capability>/`, with the name of its entry point in `piloop.capabilities`:
+- `contract.py` declares the capability, its entry point group, where the configuration selects it, and its types. A
+  host contract may import the types that it passes; a pure one imports only the standard library, `host` and `metric`.
+- Every other module is a built-in provider, with the name of its entry point. Providers are public: a plugin may
+  import one to call it.
+- `kit/` has helpers that any provider of the capability may use. Core imports none of them.
+
+piloop declares its capabilities, and its own providers, with entry points in `pyproject.toml`, in the same groups that
+a plugin uses (`piloop.capabilities`, then each provider group). To add a capability: its package, an entry point in
+`piloop.capabilities`, one in the provider group for each provider, and an import in `piloop/capabilities.py`. That
+module re-exports every capability, its contract types and its built-in providers, so that a plugin imports from one
+place; nothing in `piloop/` imports it. `tests/test_capabilities.py` checks the layout, and fails until the new import
+is there. Run `uv sync` after you change an entry point: piloop finds its own capabilities and providers in its
+installed metadata.
 
 ## Send a change
 

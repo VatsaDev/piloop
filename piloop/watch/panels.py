@@ -32,6 +32,7 @@ from piloop.db.models import (
     TargetKind,
     Verdict,
 )
+from piloop.plugins.runtime.contract import AgentStatus
 from piloop.reports.overview import (
     age,
     agent_output,
@@ -48,7 +49,6 @@ from piloop.reports.overview import (
     summary,
     tracks_lines,
 )
-from piloop.runtime import AgentStatus
 from piloop.runtime.factory import handle_for, runtime_for, view_of
 from piloop.scoring.ledger import metrics, references, score, track_of, trunk_keeps
 from piloop.text import NONE, cell, metric

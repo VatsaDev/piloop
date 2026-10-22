@@ -17,8 +17,8 @@ from pydantic_settings import BaseSettings
 
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.mcp import RENDERERS
-from piloop.plugins.contracts.runtime import RUNTIMES
-from piloop.triggers import TRIGGERS
+from piloop.plugins.runtime.contract import RUNTIMES
+from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.usage import READERS
 from piloop.usage.jsonl import TALLIES
 

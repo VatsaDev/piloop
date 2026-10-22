@@ -47,8 +47,8 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.otel import Tracer
-from piloop.plugins.contracts.executor import AgentReport, EvaluationReport
-from piloop.plugins.kit.executor.leases import NOT_TAKEN, STALE_REPORT, Leases, Timing
+from piloop.plugins.executor.contract import AgentReport, EvaluationReport
+from piloop.plugins.executor.kit.leases import NOT_TAKEN, STALE_REPORT, Leases, Timing
 from piloop.proc import alive, started
 from piloop.settings import Settings
 from tests.conftest import (

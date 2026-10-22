@@ -4,12 +4,12 @@ wrong type."""
 from pathlib import Path
 from typing import ClassVar, Literal
 
-from piloop.config import ImplementerRole, SweepRole
 from piloop.harnesses import Invocation
-from piloop.plugins.contracts.stop import GO, Fact, Go, Hold, Limits, Stop, StopCase
-from piloop.runtime import Check, Handle
-from piloop.runtime.subprocess import SubprocessRuntime
-from piloop.triggers import Fire, Tick, Trigger
+from piloop.plugins.role.contract import ImplementerRole, SweepRole
+from piloop.plugins.runtime.contract import Check, Handle
+from piloop.plugins.runtime.subprocess import SubprocessRuntime
+from piloop.plugins.stop_rule.contract import GO, Fact, Go, Hold, Limits, Stop, StopCase
+from piloop.plugins.trigger.contract import Fire, Tick, Trigger
 
 
 class EveryTick(Trigger):

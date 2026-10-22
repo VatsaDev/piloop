@@ -33,9 +33,9 @@ from piloop.daemon.serve import (
 from piloop.db.models import AgentSession, AgentSessionState, Idea, Run, RunStatus
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
+from piloop.plugins.runtime.contract import TAG_ENV
+from piloop.plugins.runtime.kit import tags
 from piloop.proc import child_env
-from piloop.runtime import tags
-from piloop.runtime.tags import TAG_ENV
 from piloop.settings import DEFAULT_HOME, Settings, env_names
 from piloop.usage import UsageSpec
 from tests.conftest import at_head, hold_lock, register, wait_for_agent_session_handle, wait_until, write_toml

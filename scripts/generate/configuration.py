@@ -7,11 +7,11 @@ from pydantic import BaseModel
 
 from piloop.config import CampaignConfig
 from piloop.deprecated import BRIDGES, CONFIG_BRIDGES
-from piloop.plugins.contracts.store import STORAGE_BACKENDS
 from piloop.plugins.host import declared
-from piloop.runtime.herdr import HerdrSettings
+from piloop.plugins.runtime.herdr import HerdrSettings
+from piloop.plugins.storage_backend.contract import STORAGE_BACKENDS
+from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.settings import StorageSettings
-from piloop.triggers import TRIGGERS
 from scripts.generate import ROOT, header
 from scripts.generate.markdown import JsonSchema, json_schema, mdx, table
 

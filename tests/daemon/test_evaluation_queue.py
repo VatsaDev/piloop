@@ -116,7 +116,7 @@ def test_a_shared_evaluation_that_cannot_start_is_a_crash_for_every_request(
         until(lambda: waits.call_count == 2, 'the second request')
         raise RuntimeError('cannot check out the commit')
 
-    mocker.patch('piloop.plugins.kit.executor.jobs.git.add_worktree', side_effect=cannot_check_out)
+    mocker.patch('piloop.plugins.executor.kit.jobs.git.add_worktree', side_effect=cannot_check_out)
     first, second = make_run(db, campaign), make_run(db, campaign, title='the same line')
     one = in_thread(lambda: execute(ex, db, first))
     until(lambda: len(rows(db)) == 1, 'the first request')

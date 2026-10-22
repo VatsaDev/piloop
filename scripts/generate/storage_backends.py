@@ -1,6 +1,6 @@
 """Generate ``docs/snippets/generated/storage-backends.mdx``: the built-in storage backends."""
 
-from piloop.plugins.contracts.store import STORAGE_BACKENDS
+from piloop.plugins.storage_backend.contract import STORAGE_BACKENDS
 from scripts.generate import SNIPPETS, header
 from scripts.generate.markdown import cell, lead
 

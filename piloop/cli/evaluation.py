@@ -8,7 +8,7 @@ from rich.text import Text
 
 from piloop.cli import common
 from piloop.db.models import Campaign, Candidate, utcnow
-from piloop.plugins.contracts.executor import DEFAULT_EXECUTOR, selected
+from piloop.plugins.executor.contract import DEFAULT_EXECUTOR, selected
 from piloop.reports.overview import age
 from piloop.scoring import queue
 from piloop.text import cell

@@ -9,8 +9,9 @@ from pathlib import Path
 
 import pytest
 
-from piloop.plugins.builtin.verdict import RESAMPLES, SEED, compare, lower_bound
-from piloop.plugins.contracts.verdict import Criterion, Direction
+from piloop.plugins.metric import Direction
+from piloop.plugins.verdict_rule.bootstrap import RESAMPLES, SEED, compare, lower_bound
+from piloop.plugins.verdict_rule.contract import Criterion
 from piloop.scoring.evaluate import UNITS_SUM_TOLERANCE, parse_metrics, read_units, run_evaluate
 
 DIFFS = [0.137, -0.052, 0.311, 0.009, -0.274, 0.198, 0.066, -0.013, 0.245, 0.102, -0.087, 0.029]

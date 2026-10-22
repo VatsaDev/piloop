@@ -2,7 +2,7 @@
 
 Each checks the domain only: a job's row closes once (``Settled``). Each holds the write lock from its check to the
 commit, in a write transaction of its own, so two calls for one job never both pass the check. Fencing a result that comes late, or twice, is
-the executor's (``piloop.plugins.contracts.executor``). An agent's end is an ``ENDED`` event on its row: what waits for
+the executor's (``piloop.plugins.executor.contract``). An agent's end is an ``ENDED`` event on its row: what waits for
 the agent reads it there (``Launcher.launch``), whichever process applied it.
 """
 
@@ -32,7 +32,7 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database, write_transaction
 from piloop.otel import Tracer
-from piloop.plugins.contracts.executor import (
+from piloop.plugins.executor.contract import (
     AgentJob,
     AgentKey,
     AgentReport,
@@ -43,7 +43,7 @@ from piloop.plugins.contracts.executor import (
     JobKey,
     Settled,
 )
-from piloop.runtime import AgentExit, AgentStatus
+from piloop.plugins.runtime.contract import AgentExit, AgentStatus
 from piloop.scoring.evaluate import EvalResult
 from piloop.scoring.ledger import save_units
 

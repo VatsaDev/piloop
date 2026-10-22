@@ -1,6 +1,6 @@
 """Generate ``docs/snippets/generated/runtimes.mdx``: the built-in runtimes."""
 
-from piloop.plugins.contracts.runtime import RUNTIMES
+from piloop.plugins.runtime.contract import RUNTIMES
 from scripts.generate import SNIPPETS, header
 from scripts.generate.markdown import cell, lead, own, told
 

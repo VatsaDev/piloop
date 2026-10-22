@@ -159,7 +159,7 @@ class Settings(BaseSettings):
 
     runtimes: dict[str, dict[str, object]] = {}
     """``[runtimes.<name>]`` in ``config.toml``: the settings of a runtime, which the runtime's own settings class
-    reads and checks (``piloop.runtime.herdr.HerdrSettings``, say)."""
+    reads and checks (``piloop.plugins.runtime.herdr.HerdrSettings``, say)."""
 
     @classmethod
     def settings_customise_sources(

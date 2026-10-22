@@ -9,7 +9,7 @@ from piloop import settings as settings_module
 from piloop.actor import Agent, System
 from piloop.deprecated import PiloopDeprecationWarning
 from piloop.harnesses import DEFAULT_HARNESSES, SESSION_ENV
-from piloop.runtime.herdr import HerdrSettings
+from piloop.plugins.runtime.herdr import HerdrSettings
 from piloop.settings import UNDER_TEST_ENV, BackendTable, Settings, StorageSettings, env_names, expand_env
 
 

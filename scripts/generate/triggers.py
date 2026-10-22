@@ -1,6 +1,6 @@
 """Generate ``docs/snippets/generated/triggers.mdx``: the built-in triggers."""
 
-from piloop.triggers import TRIGGERS
+from piloop.plugins.trigger.contract import TRIGGERS
 from scripts.generate import SNIPPETS, header
 from scripts.generate.markdown import cell, lead
 
@@ -13,7 +13,5 @@ def generate() -> str:
     for kind, trigger in TRIGGERS.builtins().items():
         params = ', '.join(f'`{name}`' for name in trigger.model_fields if name != 'kind') or 'none'
         rows.append(f'| `{kind}` | {cell(lead(trigger, trigger.__name__))} | {params} |')
-    source = (
-        'the docstrings of the triggers of the `piloop.triggers` entry points in `pyproject.toml`, `piloop/triggers.py`'
-    )
+    source = 'the docstrings of the triggers of the `piloop.triggers` entry points in `pyproject.toml`, `piloop/plugins/trigger/`'
     return header(source) + '\n' + '\n'.join(rows) + '\n'

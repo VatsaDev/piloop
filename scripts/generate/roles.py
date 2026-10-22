@@ -1,6 +1,7 @@
 """Generate ``docs/snippets/generated/roles.mdx``: the built-in roles."""
 
-from piloop.config import ImplementerRole, Roles
+from piloop.config import Roles
+from piloop.plugins.role.contract import ImplementerRole
 from scripts.generate import SNIPPETS, header
 from scripts.generate.markdown import cell, lead
 

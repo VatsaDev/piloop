@@ -10,9 +10,8 @@ from piloop.cli import agents, common, doctor
 from piloop.config import config_of
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, RoleName, utcnow
 from piloop.db.session import Database
-from piloop.plugins.contracts.runtime import RUNTIMES
+from piloop.plugins.runtime.contract import RUNTIMES, Check
 from piloop.reports.overview import overview
-from piloop.runtime import Check
 from piloop.runtime.factory import view_of
 from piloop.settings import Settings
 from piloop.watch.app import focus

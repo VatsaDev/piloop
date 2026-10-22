@@ -49,8 +49,8 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database, migrate
-from piloop.runtime import herdr
-from piloop.runtime.herdr import HerdrSettings
+from piloop.plugins.runtime import herdr
+from piloop.plugins.runtime.herdr import HerdrSettings
 from piloop.scoring.ledger import REMEASURE_REQUESTED
 from piloop.settings import Settings
 from piloop.version import direct_url, installed
@@ -916,15 +916,15 @@ def test_attach_focuses_an_implementer_tab(
         s.commit()
     db.close()
     out()
-    execvp = mocker.patch('piloop.runtime.herdr.os.execvp')
-    mocker.patch('piloop.runtime.herdr.sys.stdout').isatty.return_value = True
+    execvp = mocker.patch('piloop.plugins.runtime.herdr.os.execvp')
+    mocker.patch('piloop.plugins.runtime.herdr.sys.stdout').isatty.return_value = True
     run_cli(['attach', '1'])
     assert herdr_calls(herdr_log) == [
         ['--session', 'piloop', 'tab', 'focus', 'w7:t3'],
         ['--session', 'piloop', 'session', 'list', '--json'],
     ]
     assert execvp.call_args.args == ('herdr', ['herdr', '--session', 'piloop'])
-    tty = mocker.patch('piloop.runtime.herdr.sys.stdout')
+    tty = mocker.patch('piloop.plugins.runtime.herdr.sys.stdout')
     tty.isatty.return_value = False
     out()
     run_cli(['attach', '1'])

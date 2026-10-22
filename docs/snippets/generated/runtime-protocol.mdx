@@ -9,7 +9,7 @@
 | `jobs(handle)` | Return `<pid> <command line>` for each job the agent started that still runs. Empty when unknown. |
 | `prompt(handle, text)` | Queue a message for the agent's next turn. It never cuts the turn in progress short. An idle agent takes it at once. Raise `NotSteerable` when the runtime cannot deliver it (a harness that cannot continue its session, an ended agent, a dialog). |
 | `read(handle, lines)` | Return the recent output as plain text. |
-| `kill(handle)` | Stop the agent and what it left running, and release its resources. `piloop.runtime.tags` finds what the agent left, also in sessions of their own: start the agent with `TAG_ENV` set to a value of its own, and end them with `kill_tagged`. |
+| `kill(handle)` | Stop the agent and what it left running, and release its resources. `piloop.plugins.runtime.kit.tags` finds what the agent left, also in sessions of their own: start the agent with `TAG_ENV` set to a value of its own, and end them with `kill_tagged`. |
 | `focus(handle)` | Bring the agent to the front of the runtime's own view, and return what was done. `enter` in `piloop watch` calls it. Raise `NotAttachable` when the runtime has no view of its own, and `RuntimeFailure` when it fails. |
 | `attach(handle)` | Show the agent in this terminal, and return what was done. `piloop attach` calls it. It may replace this process, for example with the client of a terminal multiplexer. Raise `NotAttachable` when the runtime cannot show the agent, and `RuntimeFailure` when it fails. |
 | `view(handle)` (class method) | Return where you can see the agent, in a few words (`tab w7:t3`), or None when there is no such place. `piloop status` and `piloop watch` show it. It reads only the handle, so it runs nothing. |

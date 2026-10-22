@@ -10,7 +10,7 @@ from sqlalchemy import select
 
 from piloop.agents.scout import MIN_WINDOW, WATCH_RUNS, WINDOW, sources, watch_list, window
 from piloop.campaign.ideas import yields
-from piloop.config import ScoutRole, load_campaign_config
+from piloop.config import load_campaign_config
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
@@ -28,6 +28,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
+from piloop.plugins.role.scout import ScoutRole
 from piloop.reports.history import history
 from piloop.reports.overview import overview
 from tests.conftest import ScriptRuntime, write_toml

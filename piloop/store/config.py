@@ -1,17 +1,17 @@
 """The store of a PILOOP_HOME as ``[storage]`` configures it, and the registry of storage backends.
 
 ``[storage.backend]`` picks its backend by ``kind``. The backend's settings model (a ``StorageBackendConfig``) owns the
-other keys of the table and checks them when the store opens. ``s3`` and ``gcs`` are built in (``piloop.store.s3``,
-``piloop.store.gcs``). A package adds a backend with an entry point in the ``piloop.stores`` group: its name is the
+other keys of the table and checks them when the store opens. ``s3`` and ``gcs`` are built in (``piloop.plugins.storage_backend.s3``,
+``piloop.plugins.storage_backend.gcs``). A package adds a backend with an entry point in the ``piloop.stores`` group: its name is the
 ``kind``, and it names the ``StorageBackendConfig`` subclass.
 """
 
 from datetime import timedelta
 
-from piloop.plugins.contracts.store import STORAGE_BACKENDS
 from piloop.plugins.host import MissingProvider
+from piloop.plugins.storage_backend.contract import STORAGE_BACKENDS, StorageBackendConfig
 from piloop.settings import GB, BackendTable, Settings
-from piloop.store import StorageBackendConfig, Store
+from piloop.store import Store
 
 
 def backend_config(table: BackendTable) -> StorageBackendConfig:

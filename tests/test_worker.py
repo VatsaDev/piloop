@@ -39,9 +39,8 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.otel import Tracer
-from piloop.plugins.builtin.executor.worker import WORKER_ANOMALY, Unsent, Worker
-from piloop.plugins.contracts.executor import AgentJob, AgentReport, Checkout, Commits, EvaluationReport, GitTree
-from piloop.plugins.kit.executor.leases import (
+from piloop.plugins.executor.contract import AgentJob, AgentReport, Checkout, Commits, EvaluationReport, GitTree
+from piloop.plugins.executor.kit.leases import (
     LOCAL_WORKER,
     STALE_REPORT,
     Grant,
@@ -52,9 +51,10 @@ from piloop.plugins.kit.executor.leases import (
     enqueue,
     revoke,
 )
-from piloop.runtime import AgentStatus, Handle
+from piloop.plugins.executor.workers.worker import WORKER_ANOMALY, Unsent, Worker
+from piloop.plugins.runtime.contract import AgentStatus, Handle
+from piloop.plugins.runtime.herdr import HerdrSettings
 from piloop.runtime.factory import RuntimeFactory, make_runtime
-from piloop.runtime.herdr import HerdrSettings
 from tests.conftest import Gate, ScriptRuntime, baseline, factory, timed, wait_until, workers_of, write_toml
 from tests.daemon.test_evaluation_queue import held_evaluate
 from tests.daemon.test_run_controller import execute, make_run, reload_campaign, set_config
@@ -86,9 +86,9 @@ def contract(
 ) -> Iterator[Contract]:
     if request.param == 'herdr':
         request.getfixturevalue('herdr_log')
-        monkeypatch.setattr('piloop.runtime.herdr.QUIET_SECONDS', 0)
+        monkeypatch.setattr('piloop.plugins.runtime.herdr.QUIET_SECONDS', 0)
         # the fake's agent is idle at once: past the grace, that is the end of its turn, not a slow start
-        monkeypatch.setattr('piloop.runtime.herdr.herdr_settings', HerdrSettings(startup_grace_seconds=0.05))
+        monkeypatch.setattr('piloop.plugins.runtime.herdr.herdr_settings', HerdrSettings(startup_grace_seconds=0.05))
         herdr = Contract('herdr', make_runtime, monkeypatch)
         herdr.script()
         yield herdr
@@ -238,7 +238,7 @@ def test_a_worker_whose_own_code_fails_loses_the_job_so_that_nothing_waits_for_e
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
     use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), '#!/bin/sh\necho done\n')
-    mocker.patch('piloop.plugins.builtin.executor.worker.Worker._agent', side_effect=RuntimeError('a bug'))
+    mocker.patch('piloop.plugins.executor.workers.worker.Worker._agent', side_effect=RuntimeError('a bug'))
     ex = RunController(db, Tracer(None), tmp_path, factory(runtime))
     agent_session_id = request_agent(db, campaign)
     outcome = launch(ex, agent_session_id, tmp_path)
@@ -373,7 +373,7 @@ def test_an_evaluation_whose_lease_expired_before_its_evaluator_started_kills_it
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     gate = Gate()
-    monkeypatch.setattr('piloop.plugins.kit.executor.jobs.git.add_worktree', gate.wrap(git.add_worktree))
+    monkeypatch.setattr('piloop.plugins.executor.kit.jobs.git.add_worktree', gate.wrap(git.add_worktree))
     ex = RunController(db, Tracer(None), tmp_path, factory(runtime))
     measuring = threading.Thread(target=ex.remeasure, args=(baseline(db, campaign.id).id,))
     measuring.start()

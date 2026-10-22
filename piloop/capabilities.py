@@ -6,56 +6,63 @@ from piloop.plugins.host import Capability, PureCapability, Tier
 from piloop.plugins.host import MissingProvider, Provider
 from piloop.plugins.host import Selection, Source
 
-from piloop.plugins.contracts.runtime import RUNTIMES
-from piloop.runtime import AgentSpec, AgentStatus, Check, Handle
-from piloop.runtime import NotAttachable, NotSteerable
-from piloop.runtime import AgentExit
-from piloop.runtime import Runtime, RuntimeFailure, StartFailed
+from piloop.plugins.runtime.contract import RUNTIMES
+from piloop.plugins.runtime.contract import AgentSpec, AgentStatus, Check, Handle
+from piloop.plugins.runtime.contract import NotAttachable, NotSteerable
+from piloop.plugins.runtime.contract import AgentExit
+from piloop.plugins.runtime.contract import Runtime, RuntimeFailure, StartFailed
 from piloop.harnesses import Invocation, QueueKey
 from piloop.settings import runtime_settings
-from piloop.runtime.herdr import HerdrRuntime
-from piloop.runtime.subprocess import SubprocessRuntime
+from piloop.plugins.runtime.herdr import HerdrRuntime
+from piloop.plugins.runtime.subprocess import SubprocessRuntime
 
-from piloop.plugins.contracts.store import STORAGE_BACKENDS
-from piloop.store import StorageBackend, StorageBackendConfig
-from piloop.store.contract import check_storage_backend
-from piloop.store.gcs import GcsConfig
-from piloop.store.s3 import S3Config
+from piloop.plugins.storage_backend.contract import STORAGE_BACKENDS
+from piloop.plugins.storage_backend.contract import StorageBackend, StorageBackendConfig
+from piloop.plugins.storage_backend.kit.conformance import check_storage_backend
+from piloop.plugins.storage_backend.gcs import GcsConfig
+from piloop.plugins.storage_backend.s3 import S3Config
 
-from piloop.triggers import TRIGGERS, Trigger, Tick, Fire
-from piloop.triggers import Backlog, TrackBacklog, Incident
-from piloop.triggers import AnomalyTrigger, CronTrigger, SeedTrigger
-from piloop.triggers import LowWaterTrigger, SqlTrigger
-from piloop.triggers import StoppedTrigger
+from piloop.plugins.trigger.contract import TRIGGERS, Trigger, Tick, Fire
+from piloop.plugins.trigger.contract import Backlog, TrackBacklog, Incident
+from piloop.plugins.trigger.anomaly import AnomalyTrigger
+from piloop.plugins.trigger.cron import CronTrigger
+from piloop.plugins.trigger.seed import SeedTrigger
+from piloop.plugins.trigger.low_water import LowWaterTrigger
+from piloop.plugins.trigger.sql import SqlTrigger
+from piloop.plugins.trigger.stopped import StoppedTrigger
 
-from piloop.config import ROLES, ImplementerRole, SweepRole
-from piloop.config import Files, Workdir
-from piloop.plugins.builtin.roles import IMPLEMENTER, RESEARCH
-from piloop.plugins.builtin.roles import SCOUT, WATCHDOG
+from piloop.plugins.role.contract import ROLES, ImplementerRole, SweepRole
+from piloop.plugins.role.contract import Files, Workdir
+from piloop.plugins.role.implementer import IMPLEMENTER
+from piloop.plugins.role.research import RESEARCH
+from piloop.plugins.role.scout import SCOUT
+from piloop.plugins.role.watchdog import WATCHDOG
 
-from piloop.plugins.contracts.verdict import VERDICT_RULES, VerdictRule, Case
-from piloop.plugins.contracts.verdict import Criterion, Direction, Side
-from piloop.plugins.contracts.verdict import Judgement, Outcome, number
-from piloop.plugins.builtin.verdict import BOOTSTRAP
+from piloop.plugins.verdict_rule.contract import VERDICT_RULES, VerdictRule, Case
+from piloop.plugins.verdict_rule.contract import Criterion, Side
+from piloop.plugins.metric import Direction
+from piloop.plugins.verdict_rule.contract import Judgement, Outcome
+from piloop.plugins.metric import number
+from piloop.plugins.verdict_rule.bootstrap import BOOTSTRAP
 
-from piloop.plugins.contracts.stop import STOP_RULES, StopRule, StopCase
-from piloop.plugins.contracts.stop import Limits, Progress, Fact
-from piloop.plugins.contracts.stop import Go, GO, Hold, Stop
-from piloop.plugins.builtin.stop import LIMITS
+from piloop.plugins.stop_rule.contract import STOP_RULES, StopRule, StopCase
+from piloop.plugins.stop_rule.contract import Limits, Progress, Fact
+from piloop.plugins.stop_rule.contract import Go, GO, Hold, Stop
+from piloop.plugins.stop_rule.limits import LIMITS
 
-from piloop.plugins.contracts.executor import EXECUTORS, Executor, Host
-from piloop.plugins.contracts.executor import Results, Settled, NoParameters
-from piloop.plugins.contracts.executor import AgentJob, EvaluationJob, LeftJob
-from piloop.plugins.contracts.executor import AgentReport, EvaluationReport
-from piloop.plugins.contracts.executor import AgentKey, EvaluationKey, JobKey
-from piloop.plugins.contracts.executor import key_of
-from piloop.plugins.contracts.executor import GitTree, Checkout, Commits
-from piloop.plugins.kit.executor.jobs import Control, run_agent, remove
-from piloop.plugins.kit.executor.jobs import run_evaluation
-from piloop.plugins.kit.executor.leases import Leases, Timing, Grant, Answer
-from piloop.plugins.kit.executor.leases import StaleLease
+from piloop.plugins.executor.contract import EXECUTORS, Executor, Host
+from piloop.plugins.executor.contract import Results, Settled, NoParameters
+from piloop.plugins.executor.contract import AgentJob, EvaluationJob, LeftJob
+from piloop.plugins.executor.contract import AgentReport, EvaluationReport
+from piloop.plugins.executor.contract import AgentKey, EvaluationKey, JobKey
+from piloop.plugins.executor.contract import key_of
+from piloop.plugins.executor.contract import GitTree, Checkout, Commits
+from piloop.plugins.executor.kit.jobs import Control, run_agent, remove
+from piloop.plugins.executor.kit.jobs import run_evaluation
+from piloop.plugins.executor.kit.leases import Leases, Timing, Grant, Answer
+from piloop.plugins.executor.kit.leases import StaleLease
 from piloop.proc import kill_group
-from piloop.plugins.builtin.executor.workers import WorkersExecutor
+from piloop.plugins.executor.workers import WorkersExecutor
 from piloop.otel import Tracer, Span, ConsoleProcessor
 from piloop.runtime.factory import RuntimeFactory
 from piloop.mcp import McpServer

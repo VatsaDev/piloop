@@ -30,11 +30,10 @@ from piloop.daemon.main import preflight, unbound_failures
 from piloop.daemon.serve import SECRETS_COMMAND_ENV, SecretsError, running_pid, secrets
 from piloop.db.models import utcnow
 from piloop.db.session import head, schema_mismatch
-from piloop.plugins.contracts.runtime import RUNTIMES
 from piloop.plugins.host import PluginError, declared
+from piloop.plugins.runtime.contract import RUNTIMES, Check
 from piloop.proc import child_env, environment
 from piloop.reports.overview import age
-from piloop.runtime import Check
 from piloop.settings import Settings
 from piloop.version import direct_url, installed
 

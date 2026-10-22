@@ -10,10 +10,10 @@ from google.api_core.exceptions import NotFound
 from google.cloud import storage
 from pydantic import ValidationError
 
+from piloop.plugins.storage_backend.gcs import Gcs, GcsConfig
 from piloop.settings import BackendTable
 from piloop.store import Store, key
 from piloop.store.config import backend_config
-from piloop.store.gcs import Gcs, GcsConfig
 
 
 class FakeBlob:

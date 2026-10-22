@@ -16,12 +16,10 @@ import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, ClassVar, Literal, Self, cast
+from typing import Annotated, Any, Self, cast
 
 from pydantic import (
-    AfterValidator,
     BaseModel,
-    BeforeValidator,
     ConfigDict,
     Field,
     ValidationError,
@@ -42,34 +40,19 @@ from piloop.actor import ROLE_NAME
 from piloop.db.models import AgentSession, Campaign, RoleName
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.mcp import McpServer, ServerName
-from piloop.plugins.contracts.runtime import RUNTIMES
-from piloop.plugins.contracts.stop import DEFAULT as DEFAULT_STOP_RULE, STOP_RULES, Fact, Limits
-from piloop.plugins.contracts.verdict import Direction
-from piloop.plugins.host import Capability, PluginTable, check_plugins
-from piloop.triggers import (
-    AnomalyTrigger,
-    CronTrigger,
-    LowWaterTrigger,
-    SeedTrigger,
-    StoppedTrigger,
-    TriggerEntry,
-    sql_error,
-)
+from piloop.plugins.host import PluginTable, check_plugins
+from piloop.plugins.metric import Direction
+from piloop.plugins.role.contract import ROLES, ImplementerRole, RoleConfig, RoleEntry, SweepRole
+from piloop.plugins.role.research import ResearchRole
+from piloop.plugins.role.scout import ScoutRole
+from piloop.plugins.role.watchdog import WatchdogRole
+from piloop.plugins.runtime.contract import RUNTIMES, RuntimeName
+from piloop.plugins.stop_rule.contract import DEFAULT as DEFAULT_STOP_RULE, STOP_RULES, Fact, Limits
 
 CONFIG_FILE = 'piloop.toml'
 BRIEF_FILE = 'brief.md'
 TRANSCRIPT = 'transcript.txt'
 """The file in an agent's log directory with the end of its screen or output, written when it ends."""
-
-
-def _registered_runtime(name: str) -> str:
-    RUNTIMES.get(name)
-    return name
-
-
-RuntimeName = Annotated[str, AfterValidator(_registered_runtime)]
-"""The name of a registered runtime (``piloop.runtime.factory.RUNTIMES``): ``subprocess``, ``herdr``, or one that a
-package adds."""
 
 
 class MetricRole(StrEnum):
@@ -172,245 +155,6 @@ class Track:
 """The form of a role name: the agents' signature, ``agent_sessions.kind``, and the start of their Herdr agent name."""
 RESERVED_NAMES = frozenset({'run', 'orchestrator', 'human', 'daemon'})
 """Names that already sign writes: a run, and the actors that are not roles."""
-
-
-class Workdir(StrEnum):
-    """Where the agent of a sweeping role works. An agent that does a run works in a new worktree at its run's base."""
-
-    HEAD = 'head'
-    """A detached worktree at the head. It is removed when the agent ends, and nothing committed in it is scored."""
-    REPO = 'repo'
-    """The campaign's repository checkout itself, shared with you. piloop does not reset or remove it."""
-
-
-class Files(StrEnum):
-    """What the agents of a role may file with ``piloop idea``. The CLI refuses the rest."""
-
-    NOTHING = 'nothing'
-    """No ideas and no seeds. A hunch goes in a finding."""
-    SEEDS = 'seeds'
-    """Seeds (``piloop idea seed``), for research to develop."""
-    IDEAS = 'ideas'
-    """Defined ideas (``piloop idea add``, ``piloop idea develop``) and seeds."""
-
-
-class RoleConfig(BaseModel):
-    """The keys that every ``[roles.<name>]`` table accepts. Each role's table below adds keys and sets defaults."""
-
-    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
-
-    PROMPT: ClassVar[str] = ''
-    """The built-in prompt of a built-in role, a file under ``piloop/agents/prompts/``. Empty for other roles."""
-    IDEAS: ClassVar[str] = ''
-    """The ideas line of a built-in role's brief when the line for its ``files`` does not fit it. ``{piloop}`` is the CLI
-    and ``{campaign}`` is the campaign's name. Empty: the line for ``files`` (``piloop.agents.roles.IDEAS``)."""
-
-    prompt: str | None = None
-    """The file that starts the brief of this role: a path relative to the repo root, or an absolute path. When unset,
-    a built-in role uses its built-in prompt. A new role needs it."""
-    runtime: RuntimeName | None = None
-    """Where the agents of this role run. When unset, the role uses the campaign's ``runtime``."""
-    harnesses: list[str] | None = Field(default=None, min_length=1)
-    """The harness rotation of this role. When unset, the role uses the campaign's ``harnesses``."""
-    model: dict[str, str] | None = None
-    """The model for each harness in this role. It is merged over the campaign's ``model``."""
-    timeout: float = 600
-    """The number of seconds one agent may run before it is stopped."""
-    max_concurrent: int = Field(default=1, ge=1)
-    """The maximum number of agents of this role that run at the same time. More requests stay ``requested`` until a
-    slot is free."""
-    addendum: str | None = None
-    """A repo-relative file that is appended to ``brief.md`` in the briefs of this role only. Use it for instructions
-    that only this role needs, for example how the research agent searches."""
-    mcp: list[str] = []
-    """The MCP servers that the agents of this role get, by the name of their ``[mcp.<name>]`` table. Every harness in
-    the role's rotation must be able to take them in the invocation of the role's runtime (``[harness.<name>] mcp``)."""
-    writes: list[str] = []
-    """What the agents of this role may write, as their brief states it. Only ``files`` is enforced."""
-    files: Files = Files.SEEDS
-    """What the agents of this role may file with ``piloop idea``: ``nothing``, ``seeds`` or ``ideas``. The CLI
-    refuses the rest."""
-    wake_budget: int | None = Field(default=None, ge=0)
-    """The size in tokens of the lessons overview that opens this role's briefs. When unset, ``[memory]
-    wake_budget``. 0 turns it off for this role."""
-
-
-class ImplementerRole(RoleConfig):
-    """``[roles.implementer]``, and every ``[roles.<name>]`` table with ``runs = true``: a role that does runs.
-
-    The run queue starts its agents. Each agent does one idea in a new worktree at its run's base, and its commits are
-    scored and judged when it ends. A new role of this kind takes the implementer's defaults, its prompt included.
-    """
-
-    PROMPT: ClassVar[str] = 'implementer.md'
-
-    runs: Literal[True] = True
-    """The agents of this role do runs. A table without ``runs = true`` is a sweeping role."""
-    takes: str | None = None
-    """The ideas that this role takes: an SQL condition on the ``ideas`` table, without parameters, for example
-    ``priority >= 3`` or ``track = 'speed'``. When unset, the role takes every runnable idea. A free slot of a role
-    that you define is filled before a slot of the implementer, so the implementer takes what the other roles leave."""
-
-    timeout: float = 1800
-    """The number of seconds one implementer may run before it is stopped."""
-    max_concurrent: int = Field(default=4, ge=1)
-    """The maximum number of implementers that run at the same time. Each implementer is one harness process on this machine. A
-    run that is being scored after its implementer ended does not count."""
-    writes: list[str] = ['commits', 'comments(finding) on your idea', 'comments(note) on your run']
-    """What an implementer may write, as its brief states it."""
-    files: Files = Files.NOTHING
-    """An implementer files no ideas and no seeds. Its hunches go in its finding, which research reads."""
-    recovery_requeues: int = Field(default=2, ge=0)
-    """How many times one idea goes back to the queue from the work its implementer left uncommitted, when the run did not
-    succeed (``recovered``): a new implementer then starts from that work to finish it. After that, the idea settles as
-    after any failed run, so an idea whose implementers keep dying is not run forever. 0 never requeues: the recovered
-    candidate waits for you or the orchestrator."""
-    explore_every: int = Field(default=4, ge=0)
-    """At least one run of this role in this many starts from an alternative starting point. When none of the role's
-    last ``explore_every - 1`` runs did, the next slot goes to the most urgent ready idea that is pinned to a base
-    other than the head (a reference, an older keep or a note), whatever its priority. Nothing changes while no such
-    idea is ready. 0 turns this off."""
-
-    @field_validator('takes')
-    @classmethod
-    def _reads_ideas(cls, takes: str | None) -> str | None:
-        if takes is not None and (error := sql_error(ideas_taken(takes))) is not None:
-            raise ValueError(f'the condition does not run on the ideas table: {error}')
-        return takes
-
-
-def ideas_taken(takes: str) -> str:
-    """Return the query that selects the ids of the ideas that ``[roles.<name>] takes`` selects."""
-    return f'SELECT id FROM ideas WHERE {takes}'
-
-
-class SweepRole(RoleConfig):
-    """``[roles.<name>]`` of a sweeping role: the watchdog, research, the scout, or a new role that you define.
-
-    A sweep is an agent without a run. Its triggers request it, and nothing is scored when it ends. A table with a new
-    name defines a new role, and needs ``prompt`` and ``triggers``.
-    """
-
-    INCIDENT_PROMPT: ClassVar[str] = ''
-    """The built-in ``incident_prompt`` of a built-in role, a file under ``piloop/agents/prompts/``. Empty: none."""
-    ROUTINE_PROMPT: ClassVar[str] = ''
-    """The built-in ``routine_prompt`` of a built-in role, a file under ``piloop/agents/prompts/``. Empty: none."""
-
-    runs: Literal[False] = False
-    """The agents of this role do no runs. Set ``runs = true`` in a new table to define a role that does runs."""
-    triggers: list[TriggerEntry]
-    """When the daemon requests an agent of this role: a list of ``{ kind = "<trigger>", ... }`` entries, checked in
-    order on each tick. A package can add triggers. An empty list means that agents start only on request
-    (``piloop launch``)."""
-    workdir: Workdir = Workdir.HEAD
-    """Where the agent works: ``head``, a detached worktree at the head, or ``campaign``, the campaign checkout."""
-    interval: float = Field(default=0, ge=0)
-    """The number of seconds between two routine sweeps of the ``cron`` trigger, counted from the start of the last
-    one. A sweep that investigates an anomaly is not a routine sweep. 0 turns the timer off."""
-    max_ideas: int = Field(default=1, ge=0)
-    """The maximum number of new ideas one sweep may insert, as its brief states it. The seeds it develops do not
-    count. ``low_water`` requests enough sweeps to fill the backlog at this many ideas each. 0 pauses the role's new
-    ideas: ``low_water`` is off, and an idea that a sweep of the role adds (``piloop idea add``) is ``proposed``, so it
-    waits for a review, also from a sweep that started before the change."""
-    incident_prompt: str | None = None
-    """A file that follows ``prompt`` in the brief of an incident sweep, a sweep that got anomalies (the ``anomaly``
-    trigger): a path relative to the repo root, or an absolute path. When unset, a built-in role uses its built-in
-    file (the watchdog's ``watchdog_incident.md``), and another role adds nothing."""
-    routine_prompt: str | None = None
-    """A file that follows ``prompt`` in the brief of every other sweep. When unset, a built-in role uses its built-in
-    file (the watchdog's ``watchdog_progress.md``), and another role adds nothing."""
-
-    @model_validator(mode='after')
-    def _check(self) -> Self:
-        if self.prompt is None and not self.PROMPT:
-            raise ValueError('a new role needs a prompt: the file that starts its brief')
-        return self
-
-
-class WatchdogRole(SweepRole):
-    """``[roles.watchdog]``: the watchdog investigates the anomalies that the daemon detects and reviews progress."""
-
-    PROMPT: ClassVar[str] = 'watchdog.md'
-    INCIDENT_PROMPT: ClassVar[str] = 'watchdog_incident.md'
-    ROUTINE_PROMPT: ClassVar[str] = 'watchdog_progress.md'
-
-    triggers: list[TriggerEntry] = [AnomalyTrigger(), CronTrigger(), StoppedTrigger()]
-    """An anomaly requests an incident sweep, the timer requests a progress review, and the campaign's stop requests
-    the closing review."""
-    interval: float = Field(default=1800, ge=0)
-    """The number of seconds between two progress reviews, counted from the last review. A sweep that investigates an
-    anomaly is not a review. 0 turns the reviews off."""
-    writes: list[str] = [
-        'comments(escalation, finding, note)',
-        'lessons on the campaign once it stopped',
-        'seeds via idea seed',
-    ]
-    """What a watchdog may write, as its brief states it."""
-    wake_budget: int | None = Field(default=0, ge=0)
-    """The size in tokens of the lessons overview that opens a watchdog's brief. Off by default: the closing review
-    reads the lessons itself before it writes its own."""
-
-
-class ResearchRole(SweepRole):
-    """``[roles.research]``: research develops seeds and keeps ideas ready for the implementers."""
-
-    PROMPT: ClassVar[str] = 'research.md'
-
-    triggers: list[TriggerEntry] = [LowWaterTrigger(), SeedTrigger()]
-    """A short backlog, and a new seed."""
-    writes: list[str] = [
-        'seeds via idea develop, or their status to rejected with a note',
-        'ideas via idea add',
-        'comments(finding, escalation) on the campaign',
-        'comments(note) on an idea',
-    ]
-    """What a research sweep may write, as its brief states it."""
-    files: Files = Files.IDEAS
-    """Research develops seeds into ideas and adds ideas of its own."""
-    timeout: float = 900
-    """The number of seconds one sweep may run before it is stopped."""
-    max_concurrent: int = Field(default=1, ge=1)
-    """The maximum number of sweeps that run at the same time, each on the next harness of the rotation. The default
-    is 1: sweeps that run at the same time read the same evidence and often duplicate each other, and two of them can
-    race to develop the same seed."""
-
-
-class ScoutRole(SweepRole):
-    """``[roles.scout]``: the scout files outside techniques as seeds for the measured losses. It is off by default.
-
-    Every ``interval`` seconds, a scout sweep states the open problems of the campaign from the evidence, and searches
-    X, GitHub and arXiv for outside techniques that address them. It files at most ``seeds`` of them as seeds, signed
-    ``scout#<agent session id>``, and puts the rest in the technique library (the ``techniques`` table). It never files a
-    defined idea. The search tool limits what one sweep spends on xAI (``scripts/xai_search_mcp.py --max-usd``).
-
-    Experimental: the scout.
-    """
-
-    PROMPT: ClassVar[str] = 'scout.md'
-    IDEAS: ClassVar[str] = (
-        "- File a seed: `{piloop} idea seed {campaign} '<technique: its mechanism, one line>' --from '<link>; targets"
-        " <the measured loss it might reduce, with its size>; <its substance: a number, code, an ablation>'`: research"
-        ' develops it into an idea or rejects it with the reason.'
-        '\n- File a technique into the library: pipe `INSERT INTO techniques (campaign_id, title, mechanism, url,'
-        " created_by) VALUES (<campaign id>, '<technique>', '<mechanism and its substance, one line>', '<link>',"
-        " '<your signature>')` into `{piloop} sql -`."
-    )
-
-    triggers: list[TriggerEntry] = [CronTrigger()]
-    """The timer: a scout sweep every ``interval`` seconds."""
-    interval: float = Field(default=0, ge=0)
-    """The number of seconds between two scout sweeps, counted from the start of the last one. The first sweep counts
-    from the registration of the campaign. 0 (the default) turns the scout off."""
-    seeds: int = Field(default=3, ge=1)
-    """The maximum number of seeds one scout sweep may file. The other techniques it finds go to the library."""
-    writes: list[str] = [
-        'seeds via idea seed (at most the count under Context)',
-        'techniques (the library), by INSERT',
-        'one comments(finding) on the campaign',
-    ]
-    """What a scout sweep may write, as its brief states it."""
-    timeout: float = 900
-    """The number of seconds one sweep may run before it is stopped."""
 
 
 class Stop(BaseModel):
@@ -532,16 +276,6 @@ class Memory(BaseModel):
         return globs
 
 
-def _role(table: object) -> object:
-    """Validate a ``[roles.<name>]`` table with a new name: a role that does runs with ``runs = true``, else a sweep."""
-    does_runs = isinstance(table, ImplementerRole) or (isinstance(table, dict) and bool(table.get('runs')))
-    return (ImplementerRole if does_runs else SweepRole).model_validate(table)
-
-
-RoleEntry = Annotated[ImplementerRole | SweepRole, BeforeValidator(_role)]
-"""The type of a ``[roles.<name>]`` table with a new name."""
-
-
 class Roles(BaseModel):
     """One table for each role. A built-in role without a table uses its defaults.
 
@@ -599,18 +333,6 @@ class Roles(BaseModel):
             RoleName.SCOUT: self.scout,
             **self.__pydantic_extra__,
         }
-
-
-def _check_role(name: str, loaded: object) -> SweepRole | ImplementerRole:
-    if isinstance(loaded, SweepRole | ImplementerRole):
-        return loaded
-    raise TypeError('is not a piloop SweepRole or ImplementerRole')
-
-
-ROLES = Capability('role', group='piloop.roles', check=_check_role)
-"""Every role by name, with its defaults: the built-in ones, then the ones that packages add. Each entry point of the
-group names a ``SweepRole`` or a ``ImplementerRole``. A role whose runtime or triggers are checked when it is defined
-looks them up, which activates the runtimes or the triggers first."""
 
 
 class CampaignConfig(BaseModel):

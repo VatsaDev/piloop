@@ -8,8 +8,9 @@ import psutil
 import pytest
 
 from piloop.cli import main as cli_main
+from piloop.plugins.runtime.contract import OLD_TAG_ENV, TAG_ENV
+from piloop.plugins.runtime.kit.tags import kill_tagged, kill_tree, tagged
 from piloop.proc import child_env, started
-from piloop.runtime.tags import OLD_TAG_ENV, TAG_ENV, kill_tagged, kill_tree, tagged
 
 
 def test_nothing_that_an_agents_piloop_command_starts_carries_its_tag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -56,16 +57,16 @@ def test_kill_tagged_tolerates_a_process_that_ends_after_the_scan(monkeypatch: p
     child.kill()
     child.wait()
     scans = iter([[scanned]])
-    monkeypatch.setattr('piloop.runtime.tags._tagged', lambda marker: next(scans, []))
+    monkeypatch.setattr('piloop.plugins.runtime.kit.tags._tagged', lambda marker: next(scans, []))
     kill_tagged('X=1')
-    monkeypatch.setattr('piloop.runtime.tags._tagged', lambda marker: [scanned])
+    monkeypatch.setattr('piloop.plugins.runtime.kit.tags._tagged', lambda marker: [scanned])
     assert tagged('X=1') == [], 'gone before its session and command line were read'
 
 
 def test_kill_tagged_ends_what_it_found_in_its_last_round(monkeypatch: pytest.MonkeyPatch) -> None:
     token = os.urandom(8).hex()
     child = subprocess.Popen(['sleep', '30'], env={**os.environ, TAG_ENV: token})
-    monkeypatch.setattr('piloop.runtime.tags.KILL_SCANS', 1)
+    monkeypatch.setattr('piloop.plugins.runtime.kit.tags.KILL_SCANS', 1)
     kill_tagged(f'{TAG_ENV}={token}')
     assert child.wait(5) == -9
 

@@ -59,19 +59,7 @@ from piloop.campaign.stop import (
     runs_without_keep,
     stall,
 )
-from piloop.config import (
-    CampaignConfig,
-    ClosingReview,
-    Files,
-    ImplementerRole,
-    ResearchRole,
-    ScoutRole,
-    Spend,
-    SweepRole,
-    Workdir,
-    config_of,
-    ideas_taken,
-)
+from piloop.config import CampaignConfig, ClosingReview, Spend, config_of
 from piloop.daemon.archiver import Archiver, Archiving
 from piloop.daemon.run_controller import RunController, RunEnd, commits_of, left_finding, open_escalation, run_outcome
 from piloop.db.events import ANOMALY_EVENT, emit
@@ -100,16 +88,20 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Tracer
-from piloop.plugins.contracts.executor import AgentKey, Artifact, Checkout, GitTree, LeftJob
-from piloop.plugins.contracts.stop import GO, Go, Hold, Stop
+from piloop.plugins.executor.contract import AgentKey, Artifact, Checkout, GitTree, LeftJob
+from piloop.plugins.role.contract import Files, ImplementerRole, SweepRole, Workdir, ideas_taken
+from piloop.plugins.role.research import ResearchRole
+from piloop.plugins.role.scout import ScoutRole
+from piloop.plugins.runtime.contract import AgentStatus
+from piloop.plugins.stop_rule.contract import GO, Go, Hold, Stop
+from piloop.plugins.trigger.contract import Backlog, Fire, Incident, TrackBacklog
+from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.reports.overview import anomalies, assigned, overview, reported
 from piloop.reports.pack import pack
 from piloop.reports.wake import lessons_overview
-from piloop.runtime import AgentStatus
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
 from piloop.scoring.ledger import bar_of, checkout_candidate, due, head, head_unmeasured, rejudges, score
 from piloop.text import cell
-from piloop.triggers import Backlog, Fire, Incident, LowWaterTrigger, TrackBacklog
 from piloop.usage import Usage
 
 NO_RUN_ERROR = 'an implementer needs a run; the scheduler requests them from ready ideas'
@@ -728,7 +720,7 @@ class Scheduler:
     ) -> None:
         """Insert requested rows when the role's triggers fire. One batch per call, however many triggers fire.
 
-        The triggers fire in the order of the role's list (``piloop.triggers``): those with ``ON_STOP`` when the
+        The triggers fire in the order of the role's list (``piloop.plugins.trigger``): those with ``ON_STOP`` when the
         campaign is ``stopping``, else the others. A fire that needs a row of its
         own (``Fire.alone``) is requested alone when it comes first, and otherwise waits for a later tick. The others
         share one batch: the largest count of rows, with every reason. The first row gets the events of the fires. A
