@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -34,7 +35,17 @@ def test_e2e_campaigns_get_the_real_harness_homes_without_the_harness_session_of
     real = {'PATH': '/bin', 'HOME': '/home/me', 'CLAUDE_CONFIG_DIR': '/home/me/claude', 'CODEX_HOME': '/home/me/codex'}
     caller = real | dict.fromkeys(SESSION_ENV, '1') | {'PILOOP_HOME': '/home/me/.piloop', 'VIRTUAL_ENV': '/venv'}
     monkeypatch.setattr(e2e, 'CALLER_ENV', caller)
-    assert e2e.caller_env() == real | {UNDER_TEST_ENV: '1'}
+    assert e2e.caller_env(Path('/tmp/home')) == real | {UNDER_TEST_ENV: '1', 'PILOOP_HOME': '/tmp/home'}
+
+
+def test_the_e2e_install_check_runs_in_a_temporary_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``make e2e`` runs with the user's own ``HOME``, whose ``.piloop`` the guard refuses: the check names another."""
+    from tests.e2e import conftest as e2e
+
+    monkeypatch.setitem(e2e.CALLER_ENV, 'HOME', str(settings_module.REAL_HOME))
+    (tmp_path / 'bin').mkdir()
+    (tmp_path / 'bin' / 'piloop').symlink_to(Path(sys.executable).parent / 'piloop')
+    assert e2e.Install(tmp_path, tmp_path / 'bin').version().startswith('piloop ')
 
 
 def test_under_test_the_home_of_a_real_install_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

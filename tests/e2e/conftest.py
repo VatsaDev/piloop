@@ -32,12 +32,13 @@ DROPPED_ENV = re.compile(r'^(PILOOP_|VIRTUAL_ENV$)')
 """Variables of the calling shell that must not reach the campaigns: a piloop setting of the real install."""
 
 
-def caller_env() -> dict[str, str]:
+def caller_env(home: Path) -> dict[str, str]:
     """The environment the test session started with (``CALLER_ENV``), with the real harness homes that the agents
     need to log in, but without ``DROPPED_ENV`` and without the session of a harness that runs the tests (a Claude
-    Code's messaging socket would reach the agents). Every piloop in it still refuses a real install's home."""
+    Code's messaging socket would reach the agents), and with ``home`` as ``PILOOP_HOME``. ``HOME`` is the real one
+    here, so without a ``PILOOP_HOME`` every piloop in it would refuse its default, the real install's home."""
     kept = {k: v for k, v in CALLER_ENV.items() if not DROPPED_ENV.match(k) and k not in SESSION_ENV}
-    return kept | {UNDER_TEST_ENV: '1'}
+    return kept | {UNDER_TEST_ENV: '1', 'PILOOP_HOME': str(home)}
 
 
 @dataclass(frozen=True)
@@ -46,8 +47,18 @@ class Install:
 
     root: Path
     """The session's temporary directory: the venv, then one directory per campaign. It stays for the logs."""
-    env: dict[str, str]
-    """``caller_env()``, with only this install's ``piloop`` first on PATH."""
+    bin_dir: Path
+    """The directory with only this install's ``piloop``."""
+
+    def env(self, home: Path) -> dict[str, str]:
+        """``caller_env(home)``, with this install's ``piloop`` first on PATH."""
+        base = caller_env(home)
+        return base | {'PATH': f'{self.bin_dir}{os.pathsep}{base["PATH"]}'}
+
+    def version(self) -> str:
+        """What ``piloop --version`` of this install prints, in a home of its own."""
+        env = self.env(self.root / 'version-home')
+        return subprocess.run(['piloop', '--version'], env=env, capture_output=True, text=True, check=True).stdout
 
 
 class MakeCampaign(Protocol):
@@ -73,12 +84,11 @@ def piloop_install() -> Iterator[Install]:
     subprocess.run(['uv', 'pip', 'install', '--quiet', '--python', str(venv / 'bin' / 'python'), str(ROOT)], check=True)
     bin_dir.mkdir()
     (bin_dir / 'piloop').symlink_to(venv / 'bin' / 'piloop')
-    base = caller_env()
-    install = Install(root, base | {'PATH': f'{bin_dir}{os.pathsep}{base["PATH"]}'})
-    version = subprocess.run(['piloop', '--version'], env=install.env, capture_output=True, text=True, check=True)
+    install = Install(root, bin_dir)
+    version = install.version()
     expected = tomllib.loads((ROOT / 'pyproject.toml').read_text())['project']['version']
-    if expected not in version.stdout:
-        raise RuntimeError(f'installed piloop says {version.stdout.strip()!r}, the checkout is {expected}')
+    if expected not in version:
+        raise RuntimeError(f'installed piloop says {version.strip()!r}, the checkout is {expected}')
     previous = signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         yield install
@@ -120,10 +130,10 @@ def make_campaign(request: pytest.FixtureRequest, piloop_install: Install) -> It
         model = model or request.config.getoption('e2e_model') or CHEAPEST_MODEL.get(harness)
         if model is None:
             raise pytest.UsageError(f'pass --e2e-model for the harness {harness}')
-        if not shutil.which(harness, path=piloop_install.env['PATH']):
-            raise RuntimeError(f'{harness} is not on PATH')
         directory = piloop_install.root / f'{module}-{len(made)}'
         repo, home = directory / 'repo', directory / 'home'
+        if not shutil.which(harness, path=piloop_install.env(home)['PATH']):
+            raise RuntimeError(f'{harness} is not on PATH')
         shutil.copytree(TEMPLATES / template, repo, ignore=shutil.ignore_patterns('data', '.venv', '__pycache__'))
         toml = merged(
             merged(tomllib.loads((repo / 'piloop.toml').read_text()), config or {}),
@@ -133,8 +143,7 @@ def make_campaign(request: pytest.FixtureRequest, piloop_install: Install) -> It
         home.mkdir()
         if home_config:
             (home / 'config.toml').write_text(tomli_w.dumps(home_config))
-        env = piloop_install.env | {
-            'PILOOP_HOME': str(home),
+        env = piloop_install.env(home) | {
             'PILOOP_AGENT_SKILLS_DIR': str(directory / 'skills' / 'agents'),
             'PILOOP_CLAUDE_SKILLS_DIR': str(directory / 'skills' / 'claude'),
         }

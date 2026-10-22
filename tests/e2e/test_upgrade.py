@@ -145,12 +145,11 @@ def upgrade(request: pytest.FixtureRequest, e2e_summary: list[str]) -> Iterator[
         pytest.skip(f'the release runs claude only, not {harness}')
     model = request.config.getoption('e2e_model') or CHEAPEST_MODEL['claude']
     root = Path(tempfile.mkdtemp(prefix='piloop-e2e-upgrade-'))
-    base = caller_env()
+    base = caller_env(root / 'home')
     env = base | {
         'PATH': f'{root / "bin"}{os.pathsep}{base["PATH"]}',
         'UV_TOOL_DIR': str(root / 'uv-tools'),
         'UV_TOOL_BIN_DIR': str(root / 'bin'),
-        'PILOOP_HOME': str(root / 'home'),
         'PILOOP_AGENT_SKILLS_DIR': str(root / 'skills' / 'agents'),
         'PILOOP_CLAUDE_SKILLS_DIR': str(root / 'skills' / 'claude'),
     }
