@@ -51,6 +51,9 @@ class RoleConfig(BaseModel):
     """The harness rotation of this role. When unset, the role uses the campaign's ``harnesses``."""
     model: dict[str, str] | None = None
     """The model for each harness in this role. It is merged over the campaign's ``model``."""
+    effort: str = 'high'
+    """How hard the agents of this role think, as the harness names it, for example ``high``. It fills ``{effort}`` in
+    the harness's argv, and the harness checks it."""
     timeout: float = 600
     """The number of seconds one agent may run before it is stopped."""
     max_concurrent: int = Field(default=1, ge=1)

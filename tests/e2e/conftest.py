@@ -113,7 +113,7 @@ def make_campaign(request: pytest.FixtureRequest, piloop_install: Install) -> It
     key by key), and writes ``home_config`` as the ``config.toml`` of a new ``PILOOP_HOME``. Then it runs
     ``piloop init <repo> --example <template>`` (which keeps that ``piloop.toml`` and fetches the example's data),
     ``piloop install-skills`` into temporary skills directories, and ``piloop serve --detach``. ``harness`` and
-    ``model`` default to ``--e2e-harness`` and ``--e2e-model``; the campaign uses that harness only.
+    ``model`` default to ``--e2e-harness`` and ``--e2e-model``; every role of the campaign uses that harness and model.
     """
     made: list[tuple[Smoke, str, float]] = []
     module = request.module.__name__.rpartition('.')[2]
@@ -137,7 +137,7 @@ def make_campaign(request: pytest.FixtureRequest, piloop_install: Install) -> It
         shutil.copytree(TEMPLATES / template, repo, ignore=shutil.ignore_patterns('data', '.venv', '__pycache__'))
         toml = merged(
             merged(tomllib.loads((repo / 'piloop.toml').read_text()), config or {}),
-            {'harnesses': [harness], 'model': {harness: model}},
+            {'harnesses': [harness], 'model': {harness: model}, 'roles': {'research': {'model': {harness: model}}}},
         )
         (repo / 'piloop.toml').write_text(tomli_w.dumps(toml))
         home.mkdir()

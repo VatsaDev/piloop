@@ -10,6 +10,7 @@ from piloop.usage import UsageSpec
 
 SESSION_ID = '{session_id}'
 PROMPT = '{prompt}'
+EFFORT = '{effort}'
 CLAUDE_SETTINGS = (
     '{"autoMemoryEnabled":false,"env":{"BASH_DEFAULT_TIMEOUT_MS":"300000","BASH_MAX_TIMEOUT_MS":"600000"}}'
 )
@@ -88,9 +89,9 @@ class QueueKey(BaseModel):
 class Harness(BaseModel):
     """``[harness.<name>]``: how to launch one coding agent.
 
-    piloop substitutes these placeholders in both argument lists: ``{model}``, ``{session_id}``, ``{cwd}`` (the
-    agent's working directory), ``{log_dir}`` (the directory of the agent's brief and logs) and ``{prompt}`` (the first
-    prompt, which names the file that holds the brief). An element that is exactly ``{mcp}`` expands to the role's MCP
+    piloop substitutes these placeholders in both argument lists: ``{model}``, ``{effort}`` (the role's ``effort``),
+    ``{session_id}``, ``{cwd}`` (the agent's working directory), ``{log_dir}`` (the directory of the agent's brief and
+    logs) and ``{prompt}`` (the first prompt, which names the file that holds the brief). An element that is exactly ``{mcp}`` expands to the role's MCP
     servers, in the form that ``mcp`` names. The built-in harnesses run without permission prompts: agents run
     in worktrees that the daemon owns and throws away, and a sandbox that cannot reach the repo's ``.git`` cannot
     commit. The built-in Claude harness passes ``--settings`` that move a foreground Bash command to the background
@@ -211,7 +212,7 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
     'pi': Harness(
         executable='pi',
         # the user's extensions stay on: Herdr detects whether pi is working or idle through one of them
-        interactive=['--session-id', SESSION_ID, '--model', '{model}', '--thinking', 'high', MCP],
+        interactive=['--session-id', SESSION_ID, '--model', '{model}', '--thinking', EFFORT, MCP],
         # no --session-dir: entire finds the session only in pi's own store (~/.pi/agent/sessions/<cwd>)
         headless=[
             '-p',
@@ -226,7 +227,7 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
             '--model',
             '{model}',
             '--thinking',
-            'high',
+            EFFORT,
             MCP,
             '{prompt}',
         ],
@@ -244,7 +245,7 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
             '--model',
             '{model}',
             '--thinking',
-            'high',
+            EFFORT,
             MCP,
             '{prompt}',
         ],
@@ -263,7 +264,7 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
             '--model',
             '{model}',
             '--effort',
-            'high',
+            EFFORT,
             '--dangerously-skip-permissions',
             MCP,
             '--settings',
@@ -278,7 +279,7 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
             '--model',
             '{model}',
             '--effort',
-            'high',
+            EFFORT,
             '--dangerously-skip-permissions',
             MCP,
             '--settings',
@@ -294,7 +295,7 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
             '--model',
             '{model}',
             '--effort',
-            'high',
+            EFFORT,
             '--dangerously-skip-permissions',
             MCP,
             '--settings',
@@ -338,7 +339,7 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
             '--model',
             '{model}',
             '-c',
-            'model_reasoning_effort="high"',
+            f'model_reasoning_effort="{EFFORT}"',
             '-c',
             'check_for_update_on_startup=false',
             '-c',
@@ -359,7 +360,7 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
             '--model',
             '{model}',
             '-c',
-            'model_reasoning_effort="high"',
+            f'model_reasoning_effort="{EFFORT}"',
             '-c',
             NO_CODEX_MEMORY,
             *CODEX_TRUST,
@@ -376,7 +377,7 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
             '--model',
             '{model}',
             '-c',
-            'model_reasoning_effort="high"',
+            f'model_reasoning_effort="{EFFORT}"',
             '-c',
             NO_CODEX_MEMORY,
             *CODEX_TRUST,

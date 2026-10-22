@@ -500,7 +500,7 @@ headless = ["--model", "{model}", "{prompt}"]
 
 A harness is a coding agent CLI, and a `[harness.<name>]` table says how to start it: the executable, the argv with
 a terminal (`interactive`) and without one (`headless`), and the startup dialogs to accept. piloop fills in
-`{model}`, `{session_id}`, `{cwd}` and `{prompt}`. To record its tokens and give it MCP servers, it names one of the
+`{model}`, `{effort}`, `{session_id}`, `{cwd}` and `{prompt}`. To record its tokens and give it MCP servers, it names one of the
 [built-in readers and renderers](#usage-readers-and-mcp-renderers). The
 [configuration reference](/reference/configuration#harness) has every key.
 

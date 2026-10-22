@@ -43,6 +43,7 @@ LEAVES: dict[str, frozenset[str] | None] = {
     'plugins/runtime/subprocess.py': frozenset({'subprocess'}),
     'plugins/runtime/herdr.py': frozenset({'herdr'}),
     'config.py': frozenset({'subprocess', 'pi'}),
+    'plugins/role/research.py': frozenset({'claude', 'codex'}),
     'deprecated.py': None,
     'cli/skills.py': frozenset({'claude', 'codex', 'pi'}),
     'cli/idea.py': frozenset({'seed'}),
@@ -58,6 +59,7 @@ LEAVES: dict[str, frozenset[str] | None] = {
 - ``db/models.py``: the states ``seed`` and ``stopped``, which share a name with a trigger.
 - ``plugins/runtime/subprocess.py`` and ``plugins/runtime/herdr.py`` define their runtime.
 - ``config.py``: the defaults of ``runtime`` and ``harnesses``.
+- ``plugins/role/research.py``: the default ``model`` of research.
 - ``deprecated.py``: the bridges rewrite the keys of earlier releases, which named built-in roles and triggers.
 - ``cli/skills.py``: the skill folder of each agent CLI, which is not the harness registry.
 - ``cli/idea.py`` and ``cli/main.py``: the commands ``piloop idea seed`` and ``piloop sql``.

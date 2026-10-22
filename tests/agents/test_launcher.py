@@ -33,7 +33,7 @@ from piloop.db.events import emit
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, Event, Usage
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES
-from piloop.ids import RESEARCH, WATCHDOG, AgentSessionId, RoleName, TargetKind
+from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, AgentSessionId, RoleName, TargetKind
 from piloop.mcp import MCP
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import Checkout, GitTree
@@ -943,3 +943,64 @@ def test_an_agent_whose_start_cannot_be_recorded_is_killed_and_waited_for(
     [proc] = runtime._procs.values()
     assert proc.returncode is not None, 'killed and waited for, not left running unwatched'
     assert outcome == NotStarted('RuntimeError: database closed')
+
+
+EFFORT_FLAG = {'claude': ('--effort', '{}'), 'codex': ('-c', 'model_reasoning_effort="{}"')}
+"""How each built-in harness takes the role's ``effort``."""
+
+
+def research_argv(
+    db: Database,
+    campaign: Campaign,
+    runtime: ScriptRuntime,
+    tmp_path: Path,
+    mocker: MockerFixture,
+    harness: str,
+    **research: object,
+) -> list[str]:
+    """The argv that a research agent starts on the built-in ``harness``, with ``research`` over its role's table."""
+    write_toml(Path(campaign.path), HARNESS_PROMPT_TO_FILE)
+    cfg = load_campaign_config(
+        Path(campaign.path),
+        harnesses=[harness],
+        model={'script': 'm', harness: 'the-campaigns-model'},
+        harness={
+            harness: {
+                'executable': str(Path(campaign.path).parent / 'harness.sh'),
+                'headless': [a for a in DEFAULT_HARNESSES[harness].headless if a != MCP],
+            }
+        },
+        roles={'research': research},
+    )
+    assert cfg.role_models(IMPLEMENTER)[harness] == 'the-campaigns-model'
+    with db.session() as s:
+        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.commit()
+    start = mocker.spy(runtime, 'start')
+    launch(db, runtime, tmp_path, request(db, campaign, kind=RESEARCH))
+    [spec] = [c.args[0] for c in start.call_args_list]
+    return spec.args
+
+
+@pytest.mark.parametrize(('harness', 'model'), [('claude', 'claude-opus-5-5'), ('codex', 'gpt-6.1-sol')])
+def test_research_defaults_to_its_models_at_high_effort(
+    campaign: Campaign,
+    db: Database,
+    runtime: ScriptRuntime,
+    tmp_path: Path,
+    mocker: MockerFixture,
+    harness: str,
+    model: str,
+) -> None:
+    args = research_argv(db, campaign, runtime, tmp_path, mocker, harness)
+    flag, value = EFFORT_FLAG[harness]
+    assert {('--model', model), (flag, value.format('high'))} <= set(zip(args, args[1:], strict=False))
+
+
+@pytest.mark.parametrize('harness', ['claude', 'codex'])
+def test_the_research_table_overrides_its_model_and_effort(
+    campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture, harness: str
+) -> None:
+    args = research_argv(db, campaign, runtime, tmp_path, mocker, harness, model={harness: 'mine'}, effort='low')
+    flag, value = EFFORT_FLAG[harness]
+    assert {('--model', 'mine'), (flag, value.format('low'))} <= set(zip(args, args[1:], strict=False))

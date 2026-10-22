@@ -203,15 +203,15 @@ def test_interactive_pi_keeps_the_users_extensions() -> None:
     assert '--no-extensions' not in pi.interactive and '--no-extensions' in pi.headless
 
 
-def test_default_harnesses_raise_the_thinking_level() -> None:
+def test_default_harnesses_take_the_roles_effort_in_every_argv() -> None:
     thinking = {
-        'pi': ['--thinking', 'high'],
-        'claude': ['--effort', 'high'],
-        'codex': ['-c', 'model_reasoning_effort="high"'],
+        'pi': '--thinking {effort}',
+        'claude': '--effort {effort}',
+        'codex': '-c model_reasoning_effort="{effort}"',
     }
     for name, flags in thinking.items():
         h = DEFAULT_HARNESSES[name]
-        assert ' '.join(flags) in ' '.join(h.interactive) and ' '.join(flags) in ' '.join(h.headless), name
+        assert all(flags in ' '.join(argv) for argv in (h.interactive, h.headless, h.resume)), name
     assert '-c check_for_update_on_startup=false' in ' '.join(DEFAULT_HARNESSES['codex'].interactive), (
         'an update dialog before the prompt is a dialog nobody answers'
     )

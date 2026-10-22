@@ -23,6 +23,9 @@ class ResearchRole(SweepRole):
         'comments(note) on an idea',
     ]
     """What a research sweep may write, as its brief states it."""
+    model: dict[str, str] | None = {'claude': 'claude-opus-5-5', 'codex': 'gpt-6.1-sol'}
+    """The model for each harness in this role, merged over the campaign's ``model``. A table that you set replaces
+    this one."""
     files: Files = Files.IDEAS
     """Research develops seeds into ideas and adds ideas of its own."""
     timeout: float = 900

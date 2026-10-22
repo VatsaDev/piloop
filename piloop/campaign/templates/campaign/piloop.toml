@@ -38,6 +38,7 @@ runs = true                               # its agents do runs; a sweeping role 
 # takes = "priority < 3"                  # the ideas it takes: an SQL condition on the ideas table; if not set: every one
 # harnesses = ["pi", "claude", "codex"]   # if not set: the campaign's harnesses
 # model = { pi = "..." }                  # merged over [model]
+# effort = "high"                         # how hard its agents think, as the harness names it
 # addendum = "briefs/implementer.md"           # a file appended to brief.md in this role's briefs only
 # mcp = ["exa"]                           # the [mcp.<name>] servers that this role's agents get; none by default
 # prompt = "briefs/my-implementer.md"          # a file that replaces the built-in start of this role's brief
@@ -53,6 +54,7 @@ recovery_requeues = 2                     # times an idea is requeued from work 
 [roles.watchdog]                          # a watchdog investigates anomalies and reviews progress every `interval` seconds
 # harnesses = ["pi", "claude", "codex"]   # if not set: the campaign's harnesses
 # model = { pi = "..." }                  # merged over [model]
+# effort = "high"                         # how hard its agents think, as the harness names it
 # addendum = "briefs/watchdog.md"         # a file appended to brief.md in this role's briefs only
 # mcp = []                                # the [mcp.<name>] servers that this role's agents get; none by default
 # prompt = "briefs/my-watchdog.md"        # a file that replaces the built-in start of this role's brief
@@ -72,7 +74,8 @@ max_concurrent = 1
 
 [roles.research]                          # research keeps one runnable idea per run slot, plus the `buffer` of low_water
 # harnesses = ["pi", "claude", "codex"]   # if not set: the campaign's harnesses
-# model = { pi = "..." }                  # merged over [model]
+# model = { claude = "claude-opus-5-5", codex = "gpt-6.1-sol" }  # merged over [model]; a table replaces it
+# effort = "high"                         # how hard its agents think, as the harness names it
 # addendum = "briefs/research.md"         # a file appended to brief.md in this role's briefs only
 # mcp = ["exa"]                           # the [mcp.<name>] servers that this role's agents get; none by default
 # prompt = "briefs/my-research.md"        # a file that replaces the built-in start of this role's brief
@@ -93,6 +96,7 @@ max_concurrent = 1                        # sweeps at the same time; more than o
 [roles.scout]                             # experimental: sweeps that search X, GitHub and arXiv for outside techniques
 # harnesses = ["pi", "claude", "codex"]   # if not set: the campaign's harnesses
 # model = { pi = "..." }                  # merged over [model]
+# effort = "high"                         # how hard its agents think, as the harness names it
 # addendum = "briefs/scout.md"            # a file appended to brief.md in this role's briefs only
 # mcp = ["xai"]                           # its search tools: an X search server, for example; none by default
 # prompt = "briefs/my-scout.md"           # a file that replaces the built-in start of this role's brief

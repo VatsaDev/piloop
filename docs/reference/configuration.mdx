@@ -72,9 +72,9 @@ Experimental: campaigns with more than one track.
 
 `[harness.<name>]`: how to launch one coding agent.
 
-piloop substitutes these placeholders in both argument lists: `{model}`, `{session_id}`, `{cwd}` (the
-agent's working directory), `{log_dir}` (the directory of the agent's brief and logs) and `{prompt}` (the first
-prompt, which names the file that holds the brief). An element that is exactly `{mcp}` expands to the role's MCP
+piloop substitutes these placeholders in both argument lists: `{model}`, `{effort}` (the role's `effort`),
+`{session_id}`, `{cwd}` (the agent's working directory), `{log_dir}` (the directory of the agent's brief and
+logs) and `{prompt}` (the first prompt, which names the file that holds the brief). An element that is exactly `{mcp}` expands to the role's MCP
 servers, in the form that `mcp` names. The built-in harnesses run without permission prompts: agents run
 in worktrees that the daemon owns and throws away, and a sandbox that cannot reach the repo's `.git` cannot
 commit. The built-in Claude harness passes `--settings` that move a foreground Bash command to the background
@@ -156,6 +156,7 @@ The keys that every `[roles.<name>]` table accepts. Each role's table below adds
 | `runtime` | string \| null | `null` | Where the agents of this role run. When unset, the role uses the campaign's `runtime`. Built in: `herdr`, `subprocess`. |
 | `harnesses` | list\[string\] \| null | `null` | The harness rotation of this role. When unset, the role uses the campaign's `harnesses`. |
 | `model` | dict\[string, string\] \| null | `null` | The model for each harness in this role. It is merged over the campaign's `model`. |
+| `effort` | string | `"high"` | How hard the agents of this role think, as the harness names it, for example `high`. It fills `{effort}` in the harness's argv, and the harness checks it. |
 | `timeout` | number | `600` | The number of seconds one agent may run before it is stopped. |
 | `max_concurrent` | integer | `1` | The maximum number of agents of this role that run at the same time. More requests stay `requested` until a slot is free. |
 | `addendum` | string \| null | `null` | A repo-relative file that is appended to `brief.md` in the briefs of this role only. Use it for instructions that only this role needs, for example how the research agent searches. |
@@ -226,6 +227,7 @@ The daemon checks the entries in the order of the list.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
+| `model` | dict\[string, string\] \| null | `{"claude": "claude-opus-5-5", "codex": "gpt-6.1-sol"}` | The model for each harness in this role, merged over the campaign's `model`. A table that you set replaces this one. |
 | `timeout` | number | `900` | The number of seconds one sweep may run before it is stopped. |
 | `max_concurrent` | integer | `1` | The maximum number of sweeps that run at the same time, each on the next harness of the rotation. The default is 1: sweeps that run at the same time read the same evidence and often duplicate each other, and two of them can race to develop the same seed. |
 | `writes` | list\[string\] | `["seeds via idea develop, or their status to rejected with a note", "ideas via idea add", "comments(finding, escalation) on the campaign", "comments(note) on an idea"]` | What a research sweep may write, as its brief states it. |

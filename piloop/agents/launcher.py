@@ -172,6 +172,7 @@ class Launcher:
             cfg = config_of(campaign)
             harness = w.harness or rotate(s, w, cfg.role_harnesses(w.kind))
             model = w.model or cfg.role_models(w.kind)[harness]
+            effort = cfg.role(w.kind).effort
             definition = cfg.harness_for(harness)
             runtime_kind = cfg.role_runtime(w.kind)
             invocation = RUNTIMES.get(runtime_kind).invocation
@@ -193,12 +194,27 @@ class Launcher:
                 **dict.fromkeys(SESSION_ENV | {*definition.session_env}, ''),
             }
             argv = [
-                fill(a, model=model, prompt=prompt, log_dir=str(log_dir), session_id=session_id or '', cwd=str(cwd))
+                fill(
+                    a,
+                    model=model,
+                    effort=effort,
+                    prompt=prompt,
+                    log_dir=str(log_dir),
+                    session_id=session_id or '',
+                    cwd=str(cwd),
+                )
                 for a in template
             ]
             # {prompt} stays for the queued messages, and {session_id} for the id that a harness reports while it runs
             resume = [
-                fill(a, model=model, log_dir=str(log_dir), session_id=session_id or SESSION_ID, cwd=str(cwd))
+                fill(
+                    a,
+                    model=model,
+                    effort=effort,
+                    log_dir=str(log_dir),
+                    session_id=session_id or SESSION_ID,
+                    cwd=str(cwd),
+                )
                 for a in (definition.resume if invocation is Invocation.HEADLESS else [])
             ]
             busy, failed, queue, composer = definition.screens
