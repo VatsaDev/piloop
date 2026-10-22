@@ -179,7 +179,7 @@ The daemon makes the class once, as `Executor(host, parameters)`. `Parameters` c
 - `submit(job)` runs an `AgentJob` or an `EvaluationJob`.
 - `cancel(key)` stops a job. It still reports.
 - `adopt(left)` takes over the jobs that the previous daemon left, and returns those it cannot.
-- `evaluation_slots(parameters)` is how many evaluations run at once, for `piloop eval queue`.
+- `capacity()` is how many more agents and evaluations it can take now: its free slots. The daemon submits no more.
 - `tick`, `stop`, `hand_over` and `close` are the daemon's periodic call, its stop, its in-place restart and its end.
 
 A job's end goes to `host.results`: `finished` or `lost`, in a session that the executor commits. Core raises

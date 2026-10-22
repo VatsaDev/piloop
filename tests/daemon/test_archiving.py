@@ -18,7 +18,7 @@ from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.store import Store
 from tests.campaign.test_archive import files
-from tests.conftest import ScriptRuntime, factory, wait_until, write_toml
+from tests.conftest import ScriptRuntime, factory, serving, wait_until, write_toml
 from tests.daemon.test_scheduler import add_ideas
 
 HARNESS_LEAVES_AN_ARRAY = (
@@ -35,7 +35,7 @@ def test_the_tick_archives_an_idea_once_its_run_is_judged_and_leaves_its_files_f
     store = Store(tmp_path / 'store')
     scheduler = Scheduler(
         db,
-        RunController(db, tracer, tmp_path, factory(runtime)),
+        serving(RunController(db, tracer, tmp_path, factory(runtime))),
         tracer,
         tmp_path,
         factory(runtime),
@@ -69,7 +69,7 @@ def test_a_stopping_scheduler_waits_for_the_archivers_job(
     store = Store(tmp_path / 'store')
     scheduler = Scheduler(
         db,
-        RunController(db, tracer, tmp_path, factory(runtime)),
+        serving(RunController(db, tracer, tmp_path, factory(runtime))),
         tracer,
         tmp_path,
         factory(runtime),

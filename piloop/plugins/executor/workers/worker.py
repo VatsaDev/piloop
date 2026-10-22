@@ -1,10 +1,11 @@
 """A worker of the ``workers`` executor: takes leases (``piloop.plugins.executor.kit.leases``) and runs their jobs on this machine (``piloop.plugins.executor.kit.jobs``).
 
-``piloop serve`` runs one (``LOCAL_WORKER``). It reports each job when it ends. It reads no campaign table: everything
+``piloop serve`` runs one (``SERVE``). It reports each job when it ends. It reads no campaign table: everything
 comes in the job's description, and everything goes back in the report.
 
-One thread renews the leases (``Timing.renew``), takes new jobs and resends unsent reports; it stops when the worker
-has nothing to do, and the next change of a lease in this process starts it again. Each job has a thread of its own.
+One thread sends a heartbeat with a host sample (``Timing.renew``), takes new jobs and resends unsent reports, from
+``start`` until the worker stops; a change of a lease in this process wakes it at once. Each job has a thread of its
+own.
 A worker that hears nothing back for ``Timing.self_stop`` stops its jobs and keeps their reports until it is heard
 again: by then the fence refuses them, and a person can still import what they made (``leases.STALE_REPORT``).
 """
@@ -19,11 +20,14 @@ from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from functools import partial
+from importlib.metadata import version
+from pathlib import Path
 
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentJob, AgentReport, EvaluationJob, EvaluationReport
 from piloop.plugins.executor.kit import jobs
-from piloop.plugins.executor.kit.leases import LOCAL_WORKER, Answer, Grant, Leases, StaleLease
+from piloop.plugins.executor.kit.capacity import sample
+from piloop.plugins.executor.kit.leases import SERVE, Answer, Grant, Leases, StaleLease
 from piloop.plugins.runtime.contract import Handle, Runtime
 from piloop.proc import alive, kill_group, started
 from piloop.runtime.factory import RuntimeFactory, make_runtime
@@ -69,18 +73,23 @@ class Worker:
         self,
         leases: Leases,
         tracer: Tracer,
+        home: Path,
         *,
-        worker_id: str = LOCAL_WORKER,
+        worker_id: str = SERVE,
+        pool: str = SERVE,
         runtime_factory: RuntimeFactory = make_runtime,
         runners: tuple[str, ...] | None = None,
         entire_version: str | None = None,
     ) -> None:
         self.id = worker_id
+        self.pool = pool
+        self.home = home
+        """Where the worker's host sample reads the free disk."""
         self.leases = leases
         """The worker's seam to its control plane: in process today."""
         self._tracer = tracer
         self.runtime_factory = runtime_factory
-        self._runners = runners if runners is not None else evaluator_runners()
+        self.runners = runners if runners is not None else evaluator_runners()
         self.entire_version = entire_version
         """What ``entire version`` printed on this machine (``Host.entire_version``)."""
         self._lock = threading.RLock()
@@ -109,7 +118,9 @@ class Worker:
         leases.listen(self.kick)
 
     def start(self) -> None:
-        """Find this worker's leases again, then take jobs. Only the first call finds them; later calls only wake it.
+        """Register, find this worker's leases again, then take jobs. Only the first call registers.
+
+        Later calls only wake it.
 
         A job that a restarted worker cannot find again is reported gone (``Leases.lost``): an agent whose worktree is
         gone, an evaluation (its evaluator cannot be watched again, so it is stopped and queued again).
@@ -118,7 +129,7 @@ class Worker:
             first, self._started = not self._started, True
         if first:
             try:
-                held = self.leases.held(self.id)
+                held = self.leases.register(self.id, self.pool, version('piloop'), self.runners, sample(self.home))
             except Exception as e:  # the database is locked, say: the next kick finds them
                 self._tracer.event('worker.turn_failed', worker=self.id, error=f'{type(e).__name__}: {e}')
                 with self._lock:
@@ -140,7 +151,8 @@ class Worker:
             if self._handover:  # the next daemon's worker has the leases, and this daemon's database may be closed
                 return
             self._wanted.set()
-            if self._loop is None:
+            # a stopped worker's loop ended once its jobs reported: a new one would call a database about to close
+            if not self._stopping and self._loop is None:
                 self._loop = threading.Thread(target=self._run_loop, name=f'worker-{self.id}', daemon=True)
                 self._loop.start()
 
@@ -185,7 +197,7 @@ class Worker:
             loop.join(max(deadline - time.monotonic(), 0))
 
     def _run_loop(self) -> None:
-        """Turn until there is nothing to do.
+        """Turn every ``Timing.renew``, or at once on a change, until the worker stopped and its jobs reported.
 
         A turn that fails is tried again after ``Timing.renew``: it never ends the loop, which would let every lease of
         the worker expire.
@@ -195,8 +207,7 @@ class Worker:
             self._wanted.clear()  # before the turn: a change during it makes another turn at once
             failed = not self._guarded_turn()
             with self._lock:
-                idle = not self._threads and not self._unsent and (self._stopping or not self._wanted.is_set())
-                if idle and not failed:
+                if self._stopping and not self._threads and not self._unsent and not failed:
                     # under the lock: a kick from here on starts a new loop. This thread is alive until it returns,
                     # so a kick that looked at it would wake nothing
                     self._loop = None
@@ -218,7 +229,8 @@ class Worker:
         return True
 
     def _turn(self) -> None:
-        """Send the heartbeat, act on its answers, send what is unsent, and take new jobs."""
+        """Send the heartbeat with a host sample, act on its answers, send what is unsent, and take new jobs."""
+        host = sample(self.home)
         try:
             with self._lock:  # every lease it holds, a job that is still starting too
                 sessions = {
@@ -226,7 +238,7 @@ class Worker:
                     for lease_id in self._threads
                 }
             sent = time.monotonic()
-            answers = self.leases.heartbeat(self.id, sessions) if sessions else {}
+            answers = self.leases.heartbeat(self.id, sessions, host)
             # the renewal is stamped inside the call, after ``sent``: a call that waited for the write lock must not
             # move the worker's own deadline past the lease's
             self._heard = sent
@@ -240,7 +252,7 @@ class Worker:
                 self._stop_job(lease_id, answer)
         for lease_id, unsent in list(self._unsent.items()):
             self._send(lease_id, unsent)
-        while not self._stopping and (grant := self.leases.acquire(self.id, runners=self._runners)):
+        while not self._stopping and isinstance(grant := self.leases.acquire(self.id, host), Grant):
             body = self._agent if isinstance(grant.job, AgentJob) else self._evaluation
             self._spawn(grant, partial(body, grant))
 

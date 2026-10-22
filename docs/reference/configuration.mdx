@@ -528,10 +528,21 @@ With `provider = "workers"`:
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `evaluations` | integer | `2` | How many evaluations run at the same time, across all campaigns (`capacity`). The others wait in the evaluation queue (`piloop eval queue`). |
+| `pools` | dict\[string, [Pool](#pool)\] | `{"serve": {"agents": null, "evaluations": 2, "max_load": null, "min_memory_gb": null}}` | `[plugins.executor.pools.<name>]`: the slots and thresholds of each worker of a pool. `serve` is the worker inside `piloop serve`, there with its defaults unless the table names it. Its `agents = 0` and `evaluations = 0` run nothing on the server. The jobs over the slots wait: agents as requested, evaluations in the evaluation queue (`piloop eval queue`). |
 | `renew_seconds` | number | `10` | How often the worker renews its leases with a heartbeat. Kubernetes: the kubelet renews its node Lease every 10 s. |
-| `grace_seconds` | number | `50` | The silence after which the worker is unreachable (`lease.unreachable`) and gets no new lease until it is heard again. Kubernetes: `--node-monitor-grace-period`, 50 s since 1.32 (40 s before). |
+| `grace_seconds` | number | `50` | The silence after which the worker is unreachable (`lease.unreachable`): its slots count zero until it is heard again. Kubernetes: `--node-monitor-grace-period`, 50 s since 1.32 (40 s before). |
 | `toleration_seconds` | number | `300` | The silence after which its leases expire and their jobs are queued again with a larger fencing token. The worker stops its own jobs two heartbeats before. Kubernetes: the `tolerationSeconds` of 300 that the `DefaultTolerationSeconds` admission plugin gives a pod for the unreachable taint. |
+
+##### Pool
+
+The capacity of each worker in a pool. Kubernetes: a node pool's allocatable, and its eviction thresholds.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `agents` | integer \| null | `null` | How many agents a worker of the pool runs at the same time. No bound when unset. |
+| `evaluations` | integer | `2` | How many evaluations a worker of the pool runs at the same time. |
+| `min_memory_gb` | number \| null | `null` | A worker with less memory available takes no job, and its slots count zero. |
+| `max_load` | number \| null | `null` | The 1-minute load per CPU above which a worker takes no job, and its slots count zero. |
 
 #### `[plugins.network]`
 
@@ -581,4 +592,4 @@ These keys still work. Each one shows a `PiloopDeprecationWarning` that names th
 - `{claude_config_dir}` and `{codex_home}` in `[harness.<name>.usage] file` are `{env:…}` placeholders. `{claude_config_dir}` is `{env:CLAUDE_CONFIG_DIR:~/.claude}`, and `{codex_home}` is `{env:CODEX_HOME:~/.codex}`.
 - In `config.toml`, `herdr_<key> = …` is `<key> = …` in its `[runtimes.herdr]` table. The Herdr settings are the Herdr runtime's own. Their environment variables (`PILOOP_HERDR_<KEY>`) do not change.
 - In `config.toml`, `[storage.remote]` is `[storage.backend]`: the storage backend that mirrors the store. A key that `[storage.backend]` sets too keeps its value there.
-- In `config.toml`, `max_evaluations` is `evaluations` in `[plugins.executor]`: the slots of `workers`. A value that `[plugins.executor]` sets too wins.
+- In `config.toml`, `max_evaluations` is `evaluations` in `[plugins.executor.pools.serve]`. A value that `[plugins.executor.pools.serve]` sets too wins.

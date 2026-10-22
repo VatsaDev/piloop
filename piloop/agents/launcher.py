@@ -77,6 +77,9 @@ class Launcher:
         So after ``cancel`` returns, every agent either is the executor's (and its stop ends it) or never gets to it.
         ``RunController`` shares the lock for the run row and the evaluation queue.
         """
+        self.unsubmitted: set[AgentSessionId] = set()
+        """The agent sessions that the scheduler took for a free slot and that ``launch`` has not submitted yet. The
+        executor's ``capacity`` does not count them, so the scheduler does."""
         self.handover = threading.Event()
         """Set before ``cancelled`` by an in-place restart (``RunController.hand_over``). The agents keep running, and the
         next daemon process waits for them again (``reattach``)."""
@@ -104,9 +107,9 @@ class Launcher:
         """
         with self.tracer.span('piloop.agent', agent_session=agent_session_id) as span:
             with self.lock:
-                if self.cancelled.is_set():
-                    return DaemonStopped()
                 try:
+                    if self.cancelled.is_set():
+                        return DaemonStopped()
                     job = self._prepare(agent_session_id, span, brief, cwd, log_dir, artifact, commits)
                     self.executor.submit(job)
                 except Exception as e:  # a harness or a runtime that piloop.toml no longer has, an executor's refusal
@@ -114,6 +117,8 @@ class Launcher:
                     error = f'{type(e).__name__}: {e}'
                     self._fail(agent_session_id, error)
                     return NotStarted(error)
+                finally:  # after the submit: the executor counts the job from there
+                    self.unsubmitted.discard(agent_session_id)
             return self._await(agent_session_id, span)
 
     def reattach(self, agent_session_id: AgentSessionId) -> Ended:

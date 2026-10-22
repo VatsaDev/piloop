@@ -14,7 +14,6 @@ import pytest
 from sqlalchemy import func, select
 
 from piloop.agents.results import DaemonStopped, Ended, Ran
-from piloop.cli import common, evaluation
 from piloop.daemon.main import Daemon
 from piloop.daemon.run_controller import RunController
 from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Candidate, Measurement, RunEnd
@@ -22,7 +21,7 @@ from piloop.db.session import Database
 from piloop.ids import WATCHDOG, AgentSessionId
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins
-from piloop.plugins.executor.contract import EXECUTORS, AgentKey, Checkout
+from piloop.plugins.executor.contract import EXECUTORS, AgentKey, Capacity, Checkout
 from piloop.plugins.host import PluginTable
 from piloop.settings import Settings
 from tests.conftest import (
@@ -32,6 +31,7 @@ from tests.conftest import (
     example,
     factory,
     package,
+    serving,
     wait_until,
     write_toml,
 )
@@ -50,7 +50,7 @@ def provider(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest
 
 
 def controller(db: Database, runtime: ScriptRuntime, tmp_path: Path, provider: str) -> RunController:
-    return RunController(db, Tracer(None), tmp_path, factory(runtime), executor=PluginTable(provider=provider))
+    return serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=PluginTable(provider=provider)))
 
 
 def launch_in_thread(
@@ -179,13 +179,12 @@ def test_an_entry_point_that_is_not_an_executor_class_is_refused(
         plugins.close()
 
 
-def test_eval_queue_shows_the_slots_of_the_selected_executor(
-    tmp_path: Path, provider: str, monkeypatch: pytest.MonkeyPatch
+def test_the_capacity_is_the_slots_of_the_executor_now(
+    db: Database, runtime: ScriptRuntime, tmp_path: Path, provider: str
 ) -> None:
-    (tmp_path / 'config.toml').write_text(f'[plugins.executor]\nprovider = "{provider}"\n')
-    monkeypatch.setattr(common, 'settings', Settings(home=tmp_path))
-    expected = {'workers': '2 slot(s) (workers evaluations)', 'inline': 'no slot limit (inline)'}
-    assert evaluation._slots() == expected[provider]
+    """``workers``: the defaults of the pool ``serve``, once its worker registered. ``inline``: no bound."""
+    expected = {'workers': Capacity(agents=None, evaluations=2), 'inline': Capacity(agents=None, evaluations=None)}
+    assert controller(db, runtime, tmp_path, provider).executor.capacity() == expected[provider]
 
 
 def test_config_toml_refuses_a_plugins_table_that_no_capability_of_the_home_declares(tmp_path: Path) -> None:

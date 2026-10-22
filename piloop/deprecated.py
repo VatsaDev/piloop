@@ -249,11 +249,14 @@ def storage_remote(toml: Path, raw: dict[str, object]) -> None:
     warn(toml, 'storage.remote', '[storage.remote] is deprecated; write [storage.backend]', removed_in=REMOVED_IN)
 
 
-@until('0.3.0', 'max_evaluations in config.toml is [plugins.executor] evaluations: delete the max_evaluations bridge')
+@until(
+    '0.3.0',
+    'max_evaluations in config.toml is [plugins.executor.pools.serve] evaluations: delete the max_evaluations bridge',
+)
 def max_evaluations(toml: Path, raw: dict[str, object]) -> None:
-    """In ``config.toml``, ``max_evaluations`` is ``evaluations`` in ``[plugins.executor]``: the slots of ``workers``.
+    """In ``config.toml``, ``max_evaluations`` is ``evaluations`` in ``[plugins.executor.pools.serve]``.
 
-    A value that ``[plugins.executor]`` sets too wins.
+    A value that ``[plugins.executor.pools.serve]`` sets too wins.
     """
     if (old := raw.pop('max_evaluations', None)) is None:
         return
@@ -261,7 +264,7 @@ def max_evaluations(toml: Path, raw: dict[str, object]) -> None:
     warn(
         toml,
         'max_evaluations',
-        'max_evaluations is deprecated; write evaluations in [plugins.executor]',
+        'max_evaluations is deprecated; write evaluations in [plugins.executor.pools.serve]',
         removed_in=REMOVED_IN,
     )
 
@@ -269,18 +272,21 @@ def max_evaluations(toml: Path, raw: dict[str, object]) -> None:
 OLD_MAX_EVALUATIONS_ENV = 'PILOOP_MAX_EVALUATIONS'
 
 
-@until('0.3.0', 'PILOOP_MAX_EVALUATIONS is PILOOP_PLUGINS__EXECUTOR__EVALUATIONS: delete max_evaluations_env')
+@until(
+    '0.3.0',
+    'PILOOP_MAX_EVALUATIONS is PILOOP_PLUGINS__EXECUTOR__POOLS__SERVE__EVALUATIONS: delete max_evaluations_env',
+)
 def max_evaluations_env(environ: Mapping[str, str], raw: dict[str, object]) -> dict[str, object]:
     """Return ``raw``, the parsed ``config.toml``, with ``PILOOP_MAX_EVALUATIONS`` in it, with a warning.
 
-    It becomes ``[plugins.executor] evaluations``, unless the file sets that.
+    It becomes ``[plugins.executor.pools.serve] evaluations``, unless the file sets that.
     """
     if (old := environ.get(OLD_MAX_EVALUATIONS_ENV)) is None:
         return raw
     _slots(raw, old)
     warnings.warn(
-        f'{OLD_MAX_EVALUATIONS_ENV} is deprecated; set PILOOP_PLUGINS__EXECUTOR__EVALUATIONS; removed in piloop'
-        f' {REMOVED_IN}',
+        f'{OLD_MAX_EVALUATIONS_ENV} is deprecated; set PILOOP_PLUGINS__EXECUTOR__POOLS__SERVE__EVALUATIONS;'
+        f' removed in piloop {REMOVED_IN}',
         PiloopDeprecationWarning,
         stacklevel=2,
     )
@@ -292,14 +298,17 @@ WORKERS = 'workers'
 
 
 def _slots(raw: dict[str, object], old: object) -> None:
-    """Put ``old`` in ``raw`` as ``evaluations`` of ``[plugins.executor]``, if that selects ``workers`` or nothing.
+    """Put ``old`` in ``raw`` as ``[plugins.executor.pools.serve] evaluations``, if it selects ``workers`` or nothing.
 
     Another executor has no such key: the old one goes, with its warning, and changes nothing.
     """
     plugins = raw.setdefault('plugins', {})
     executor = plugins.setdefault('executor', {'provider': WORKERS}) if isinstance(plugins, dict) else None
     if isinstance(executor, dict) and executor.setdefault('provider', WORKERS) == WORKERS:
-        executor.setdefault('evaluations', old)
+        pools = executor.setdefault('pools', {})
+        serve = pools.setdefault('serve', {}) if isinstance(pools, dict) else None
+        if isinstance(serve, dict):
+            serve.setdefault('evaluations', old)
 
 
 CONFIG_BRIDGES: tuple[Bridge, ...] = (herdr_keys, storage_remote, max_evaluations)

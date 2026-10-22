@@ -19,7 +19,7 @@ from piloop.otel import Tracer
 from piloop.plugins.host import PluginTable
 from piloop.scoring import queue
 from piloop.scoring.ledger import measured, request_remeasure
-from tests.conftest import ScriptRuntime, baseline, factory, workers_of, write_script
+from tests.conftest import ScriptRuntime, baseline, factory, serving, workers_of, write_script
 from tests.daemon.test_run_controller import execute, make_run, set_config
 from tests.daemon.test_scheduler import add_ideas, make_scheduler
 
@@ -65,12 +65,9 @@ def run_candidates(db: Database, run_id: RunId) -> list[Candidate]:
 
 
 def queued_executor(db: Database, runtime: ScriptRuntime, tmp_path: Path, slots: int) -> RunController:
-    return RunController(
-        db,
-        Tracer(None),
-        tmp_path,
-        factory(runtime),
-        executor=PluginTable.model_validate({'provider': 'workers', 'evaluations': slots}),
+    executor = {'provider': 'workers', 'pools': {'serve': {'evaluations': slots}}}
+    return serving(
+        RunController(db, Tracer(None), tmp_path, factory(runtime), executor=PluginTable.model_validate(executor))
     )
 
 

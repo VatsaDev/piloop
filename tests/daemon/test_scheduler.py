@@ -1,8 +1,10 @@
 import json
 import re
+import shutil
 import sqlite3
 import threading
 import time
+from collections import Counter
 from contextlib import closing
 from datetime import timedelta
 from importlib.metadata import EntryPoints
@@ -66,6 +68,9 @@ from piloop.ids import (
 )
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins
+from piloop.plugins.executor.contract import Capacity
+from piloop.plugins.executor.kit.capacity import Pool
+from piloop.plugins.executor.kit.leases import SERVE
 from piloop.plugins.runtime.contract import AgentStatus, Handle, NotSteerable
 from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.reports.overview import SILENT_SECONDS
@@ -78,11 +83,15 @@ from tests.conftest import (
     ScriptRuntime,
     events,
     factory,
+    register,
+    serving,
     span_named,
     wait_for_agent_session_handle,
     wait_until,
+    workers_of,
     write_toml,
 )
+from tests.daemon.test_run_controller import reload_campaign
 from tests.daemon.test_triggers import low_water
 from tests.test_actor import ACTORS
 from tests.usage.test_usage import PI_ID, store
@@ -90,7 +99,7 @@ from tests.usage.test_usage import PI_ID, store
 
 def make_scheduler(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer | None = None) -> Scheduler:
     tracer = tracer or Tracer(None)
-    controller = RunController(db, tracer, tmp_path, factory(runtime))
+    controller = serving(RunController(db, tracer, tmp_path, factory(runtime)))
     return Scheduler(db, controller, tracer, tmp_path, factory(runtime))
 
 
@@ -147,6 +156,39 @@ def set_config(db: Database, campaign: Campaign, **overrides: object) -> None:
             mode='json'
         )
         s.commit()
+
+
+def test_agents_launch_across_campaigns_within_the_executors_agent_slots_fewest_live_first(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """Two campaigns of four implementers each, and three agent slots: two go to one campaign, one to the other.
+
+    The slots are free slots: core subtracts only what it took and has not submitted yet, never what the executor runs.
+    """
+    other_path = tmp_path / 'other' / 'campaign'
+    shutil.copytree(campaign.path, other_path)
+    for path in (Path(campaign.path), other_path):
+        write_toml(path, HARNESS_SLEEPS, max_implementers=4)
+    toml = other_path / 'piloop.toml'
+    toml.write_text(toml.read_text().replace('name = "demo"', 'name = "other"'))
+    Repo(other_path).git.commit('-qam', 'other')
+    other = register(db, other_path)
+    reload_campaign(db, campaign)
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    workers_of(scheduler._controller).leases.pools = {SERVE: Pool(agents=3)}
+    add_ideas(db, campaign, 'a1', 'a2', 'a3')
+    add_ideas(db, other, 'b1', 'b2', 'b3')
+
+    launched = scheduler.tick()
+    with db.session() as s:
+        by = Counter(s.get_one(AgentSession, i).campaign_id for i in launched)
+    assert sorted(by.values()) == [1, 2], by
+    assert scheduler.tick() == [], 'every slot is taken, by agents not submitted yet or by their leases'
+    wait_until(lambda: not scheduler._controller.launcher.unsubmitted)
+    assert scheduler.tick() == [], 'the executor counts them once submitted'
+    mocker.patch.object(scheduler._controller.executor, 'capacity', return_value=Capacity(agents=1, evaluations=None))
+    assert len(scheduler.tick()) == 1, 'one free slot: core subtracts nothing that the executor counts'
+    scheduler.stop(timeout=5)
 
 
 def test_ready_ideas_become_runs_in_priority_order(

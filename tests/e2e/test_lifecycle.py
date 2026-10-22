@@ -98,7 +98,10 @@ lzma uses preset 1 (about 1 s) to keep the scenario short."""
 @pytest.fixture(scope='module')
 def live_campaign(make_campaign: MakeCampaign) -> Iterator[Smoke]:
     live_campaign = make_campaign(
-        config=CONFIG, home_config={'plugins': {'executor': {'provider': 'workers', 'evaluations': MAX_EVALUATIONS}}}
+        config=CONFIG,
+        home_config={
+            'plugins': {'executor': {'provider': 'workers', 'pools': {'serve': {'evaluations': MAX_EVALUATIONS}}}}
+        },
     )
     live_campaign.start_readers()
     yield live_campaign
@@ -287,7 +290,6 @@ def test_eval_queue_stayed_within_its_slot(live_campaign: Smoke) -> None:
     assert samples, f'no sample; reader errors {live_campaign.errors[-3:]}'
     busiest = max(r for r, _, _ in samples)
     assert 1 <= busiest <= MAX_EVALUATIONS, samples
-    assert {s for _, _, s in samples} == {MAX_EVALUATIONS}
     assert samples[-1][:2] == (0, 0)
     waited = max(w for _, w, _ in samples)
     print(f'{len(samples)} samples: at most {busiest} running and {waited} waiting in {MAX_EVALUATIONS} slot')

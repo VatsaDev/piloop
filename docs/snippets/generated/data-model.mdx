@@ -121,7 +121,6 @@ erDiagram
         datetime started_at
         datetime renewed_at
         datetime expires_at
-        datetime unreachable_at
         datetime revoked_at
         datetime ended_at
         varchar request_id
@@ -133,6 +132,15 @@ erDiagram
         TokenScope scope
         varchar sha256 UK
         datetime created_at
+    }
+    lease_workers {
+        varchar id PK
+        varchar pool
+        varchar version
+        json runners
+        json sample
+        datetime seen_at
+        NoLease no_lease
     }
     comments {
         integer id PK

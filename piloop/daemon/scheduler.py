@@ -1,8 +1,10 @@
 """The daemon loop: check each role's triggers for each campaign, launch requested agents and reap stale state.
 
 A tick has two phases. First, the triggers (https://piloop.autoresearch.inc/concepts/roles) insert ``agent_sessions`` rows in state ``requested``. Then the
-requested rows launch in id order, as far as the role's ``max_concurrent`` allows. Anyone can insert a requested row
-by hand, for example the CLI or an agent. Such a row launches in the same second phase.
+requested rows launch in id order, as far as the role's ``max_concurrent`` allows, while the executor has a free agent
+slot (``Executor.capacity``). A free slot goes to the campaign with the fewest live agents, as the evaluation queue
+gives its slots. Anyone can insert a requested row by hand, for example the CLI or an agent. Such a row launches in
+the same second phase.
 
 Before both phases, the tick sends new comments to the running implementers. For each running implementer, it collects the
 ``note``, ``finding`` and ``decision`` comments on its run or its idea that were written since the run started. It
@@ -380,7 +382,7 @@ class Scheduler:
         self._read_spend()
         if self._archiver is not None:
             self._archiver.tick()
-        launched: list[tuple[AgentSessionId, RunId | None]] = []
+        launching: list[tuple[Campaign, CampaignConfig]] = []
         with self._db.session() as s:
             for campaign in s.scalars(select(Campaign)).all():
                 try:
@@ -402,15 +404,20 @@ class Scheduler:
                         self._triggers(s, campaign, cfg, answer, None)
                 s.flush()
                 if launches(campaign, cfg, held):
-                    launched += self._take(s, campaign, cfg)
+                    launching.append((campaign, cfg))
+            launched = self._launch(s, launching)
             s.commit()
+        unsubmitted = self._controller.launcher.unsubmitted
         for agent_session_id, run_id in launched:
+            unsubmitted.add(agent_session_id)
             body = (
                 partial(self._controller.execute, run_id, agent_session_id)
                 if run_id
                 else partial(self._sweep, agent_session_id)
             )
-            self._futures[agent_session_id] = self._pool.submit(body)
+            future = self._futures[agent_session_id] = self._pool.submit(body)
+            # a body that ends before it submits (a run that fails first) must not hold the slot
+            future.add_done_callback(lambda _, i=agent_session_id: unsubmitted.discard(i))
         return [agent_session_id for agent_session_id, _ in launched]
 
     def _read_spend(self) -> None:
@@ -1056,8 +1063,37 @@ class Scheduler:
         agents = Counter(s.scalars(on))
         return {harness for harness, cap in cfg.max_concurrent.items() if agents[harness] >= cap}
 
-    def _take(self, s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[tuple[AgentSessionId, RunId | None]]:
-        """Mark requested rows ``starting``, up to each role's ``max_concurrent``. Refuse a run role's row without a run.
+    def _launch(
+        self, s: Session, launching: Sequence[tuple[Campaign, CampaignConfig]]
+    ) -> list[tuple[AgentSessionId, RunId | None]]:
+        """Take the requested agents of ``launching`` while the executor has a free agent slot (``_take``).
+
+        Each slot goes to the campaign with the fewest live agents, so that a campaign with many requests never holds
+        back another. Returns ``(agent_session_id, run_id)`` pairs.
+        """
+        free = self._controller.executor.capacity().agents
+        if free is not None:
+            free -= len(self._controller.launcher.unsubmitted)
+        live = Counter(s.scalars(select(AgentSession.campaign_id).where(AgentSession.state.in_(LIVE))).all())
+        left = list(launching)
+        taken: list[tuple[AgentSessionId, RunId | None]] = []
+        while left and (free is None or free > 0):
+            campaign, cfg = nxt = min(left, key=lambda entry: (live[entry[0].id], entry[0].id))
+            got = self._take(s, campaign, cfg, most=None if free is None else 1)
+            if free is None or not got:
+                left.remove(nxt)
+            else:
+                free -= len(got)
+            live[campaign.id] += len(got)
+            taken += got
+        return taken
+
+    def _take(
+        self, s: Session, campaign: Campaign, cfg: CampaignConfig, *, most: int | None = None
+    ) -> list[tuple[AgentSessionId, RunId | None]]:
+        """Mark requested rows ``starting``, up to each role's ``max_concurrent``, and ``most`` in all.
+
+        A run role's row without a run is refused.
 
         A sweep's harness is chosen here. A harness at its cap (``_full``) is skipped for the next one in the rotation.
         A sweep pinned to that harness stays requested. A run's harness was chosen when it was queued (``_reroute``).
@@ -1092,6 +1128,8 @@ class Scheduler:
             ).all()
             rotation = cfg.role_harnesses(kind)
             for agent_session in requested:
+                if most is not None and len(taken) >= most:
+                    return taken
                 if isinstance(rc, ImplementerRole):
                     if agent_session.run_id is None:
                         self._close(s, agent_session, NO_RUN_ERROR)

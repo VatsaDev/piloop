@@ -48,6 +48,8 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database, migrate
 from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, CampaignId, CandidateId, TargetKind
+from piloop.plugins.executor.kit.capacity import GB, HostSample
+from piloop.plugins.executor.kit.leases import Leases
 from piloop.plugins.runtime import herdr
 from piloop.plugins.runtime.herdr import HerdrSettings
 from piloop.scoring.ledger import REMEASURE_REQUESTED
@@ -57,6 +59,7 @@ from tests.conftest import at_head, hold_lock, wait_until
 from tests.daemon.test_serve import alive
 from tests.db.test_migrations import TOO_OLD, alembic
 from tests.fixtures.fake_herdr import SOCKET
+from tests.test_lease import Recorder
 
 HEAD = ScriptDirectory.from_config(alembic(Path('unused.db'))).get_current_head()
 """The schema revision every command migrates to; the migrations, not this file, say which."""
@@ -769,13 +772,52 @@ def test_candidate_remeasure_asks_the_daemon_to_measure_a_candidate_again_and_re
         run_cli(['candidate', 'remeasure', '99'])
 
 
+def test_worker_list_shows_each_worker_its_sample_its_jobs_and_why_it_got_no_lease(campaign_path: Path, out) -> None:
+    run_cli(['init', str(campaign_path)])
+    out()
+    run_cli(['worker', 'list'])
+    assert out().strip() == 'no worker yet: `piloop serve` starts one'
+    with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db:
+        leases = Leases(db, Recorder(db))
+        host = HostSample(at=utcnow(), cpus=4, load1=2.0, memory_available=8 * GB, disk_free=100 * GB)
+        leases.register('serve', 'serve', '0.2.0', ['process'], host)
+        leases.acquire('serve', host)
+    run_cli(['worker', 'list'])
+    lines = out().splitlines()
+    assert lines[0].split() == [
+        'worker',
+        'pool',
+        'seen',
+        'load',
+        'memory',
+        'disk',
+        'agents',
+        'evaluations',
+        'no',
+        'lease',
+    ]
+    assert re.fullmatch(r'serve serve \d+s ago 2\.0/4 8\.0 GB 100\.0 GB 0 0 nothing', ' '.join(lines[1].split()))
+
+
+def test_worker_list_says_when_another_executor_is_selected(
+    campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_cli(['init', str(campaign_path)])
+    out()
+    home = common.settings.home
+    (home / 'config.toml').write_text('[plugins.executor]\nprovider = "inline"\n')
+    monkeypatch.setattr(common, 'settings', Settings(home=home))
+    run_cli(['worker', 'list'])
+    assert out().splitlines()[0] == 'the executor is inline, not workers: these workers take no job'
+
+
 def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_cancel_cancels_one(
     campaign_path: Path, out
 ) -> None:
     run_cli(['init', str(campaign_path)])
     out()
     run_cli(['eval', 'queue'])
-    assert out().strip() == '0 running, 0 waiting; 2 slot(s) (workers evaluations); `piloop eval cancel <candidate>`'
+    assert out().strip() == '0 running, 0 waiting; `piloop eval cancel <candidate>`'
     with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
         s.add(Candidate(campaign_id=1, tree_sha='t', commit_sha='c', summary='a newer commit'))
         s.add(Candidate(campaign_id=1, tree_sha='u', commit_sha='d', summary='an older commit'))
@@ -802,7 +844,7 @@ def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_canc
         ['candidate#1', 'demo', 'cancelled', 'by', 'human'],
         ['candidate#3', 'demo', 'waiting', '2h', 'an'],
     ]
-    assert summary == '2 running, 1 waiting; 2 slot(s) (workers evaluations); `piloop eval cancel <candidate>`'
+    assert summary == '2 running, 1 waiting; `piloop eval cancel <candidate>`'
     with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
         assert [m.error for m in s.get_one(Candidate, 2).measurements] == ['evaluation cancelled by human']
     run_cli(['candidate', 'remeasure', '1'])
@@ -819,7 +861,7 @@ def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_canc
         'a remeasure shows as soon as it is accepted, also while its cancelled evaluation stops'
     )
     assert re.fullmatch(r'\d+s', rows[3][3]), 'the request is seconds old: asked by the remeasure just above'
-    assert summary == '2 running, 2 waiting; 2 slot(s) (workers evaluations); `piloop eval cancel <candidate>`'
+    assert summary == '2 running, 2 waiting; `piloop eval cancel <candidate>`'
     with pytest.raises(SystemExit, match=r'candidate#2 has no evaluation that waits or runs'):
         run_cli(['eval', 'cancel', '2'])
 

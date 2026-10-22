@@ -280,6 +280,14 @@ class Host:
     attach is still tried then, and the event says why it failed. Below ``MIN_ENTIRE``, no session is attached."""
 
 
+@dataclass(frozen=True)
+class Capacity:
+    """How many more jobs of each kind an executor can take now: its free slots. None: no bound."""
+
+    agents: int | None
+    evaluations: int | None
+
+
 class NoParameters(BaseModel):
     """The ``Parameters`` of an executor that takes no keys in ``[plugins.executor]`` besides ``provider``."""
 
@@ -299,12 +307,11 @@ class Executor(Protocol):
         """Made once, when the daemon starts, with ``parameters`` checked against ``Parameters``."""
         ...
 
-    @classmethod
-    def capacity(cls, parameters: BaseModel) -> int | None:
-        """How many evaluations it runs at the same time with ``parameters``, or None for no bound.
+    def capacity(self) -> Capacity:
+        """How many more jobs of each kind it can take now: its free slots, less the jobs it has and has not started.
 
-        Core submits an evaluation only when one of these slots is free, in the order of its queue: the order and the
-        fairness are core's. ``piloop eval queue`` shows the number, without a daemon: it takes no instance.
+        Core submits no more than that, in its own order: it launches agents across campaigns, and evaluations in the
+        order of the evaluation queue. The order and the fairness are core's.
         """
         ...
 

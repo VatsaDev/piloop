@@ -6,7 +6,7 @@ server. It prints ``ready`` once it takes jobs.
 """
 
 import sys
-import time
+import threading
 from pathlib import Path
 
 from piloop.actor import System
@@ -22,12 +22,10 @@ def main() -> None:
     timing = Timing(*(float(a) for a in sys.argv[4:7]))
     db = Database(url, actor=System.DAEMON)
     results = CampaignResults(db, Tracer(None), home / 'units', lambda: False)
-    worker = Worker(Leases(db, results, timing), Tracer(None), worker_id=worker_id)
+    worker = Worker(Leases(db, results, timing), Tracer(None), home, worker_id=worker_id)
     worker.start()
     print('ready', flush=True)
-    while True:
-        worker.kick()  # nothing in this process enqueues: look for jobs on every heartbeat
-        time.sleep(timing.renew)
+    threading.Event().wait()  # the worker's loop looks for jobs on every heartbeat
 
 
 if __name__ == '__main__':

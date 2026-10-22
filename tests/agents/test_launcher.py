@@ -47,6 +47,7 @@ from tests.conftest import (
     ScriptRuntime,
     events,
     factory,
+    serving,
     workers_of,
     write_toml,
 )
@@ -79,7 +80,7 @@ def request(db: Database, campaign: Campaign, kind: RoleName = WATCHDOG, **field
 
 def controller(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer | None = None) -> RunController:
     """The launcher and the in-process worker that takes its leases, as the daemon makes them."""
-    return RunController(db, tracer or Tracer(None), tmp_path, factory(runtime))
+    return serving(RunController(db, tracer or Tracer(None), tmp_path, factory(runtime)))
 
 
 def launcher(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer | None = None) -> Launcher:
@@ -96,9 +97,13 @@ def launch(
         )
     cwd = tmp_path / 'cwd'
     cwd.mkdir(exist_ok=True)
-    return launcher(db, runtime, tmp_path, tracer).launch(
+    ctl = controller(db, runtime, tmp_path, tracer)
+    ended = ctl.launcher.launch(
         agent_session_id, brief=brief, cwd=cwd, log_dir=tmp_path / 'w', artifact=Checkout(path=cwd)
     )
+    # its worker heartbeats until it stops: left running, it takes the next launch's job, with this host's entire
+    ctl.stop(5)
+    return ended
 
 
 def exit_of(ended: Ended) -> AgentExit:

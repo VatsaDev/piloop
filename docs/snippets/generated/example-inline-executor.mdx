@@ -24,6 +24,7 @@ from piloop.capabilities import (
     AgentJob,
     AgentKey,
     AgentReport,
+    Capacity,
     EvaluationJob,
     EvaluationReport,
     Handle,
@@ -52,10 +53,9 @@ class InlineExecutor:
         self._jobs: dict[JobKey, _Job] = {}
         self.stopping = False
 
-    @classmethod
-    def capacity(cls, parameters: object) -> int | None:
-        """No bound: every evaluation runs as soon as it is submitted."""
-        return None
+    def capacity(self) -> Capacity:
+        """No bound: every job runs as soon as it is submitted."""
+        return Capacity(agents=None, evaluations=None)
 
     def submit(self, job: AgentJob | EvaluationJob) -> None:
         running = _Job(self, key_of(job))

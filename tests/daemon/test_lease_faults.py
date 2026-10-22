@@ -48,7 +48,7 @@ from piloop.db.session import Database
 from piloop.ids import RunId, TargetKind
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentReport, EvaluationReport
-from piloop.plugins.executor.kit.leases import NOT_TAKEN, STALE_REPORT, Leases, Timing
+from piloop.plugins.executor.kit.leases import NOT_TAKEN, SERVE, STALE_REPORT, Leases, Timing
 from piloop.proc import alive, started
 from piloop.settings import Settings
 from tests.conftest import (
@@ -58,6 +58,7 @@ from tests.conftest import (
     baseline,
     factory,
     register,
+    serving,
     timed,
     wait_until,
     workers_of,
@@ -215,9 +216,9 @@ def test_a_worker_killed_during_an_evaluation_is_measured_again_on_a_newer_lease
         proc.wait()
     os.killpg(pgid, signal.SIGKILL)  # the dead worker's evaluator; a restarted worker kills it (``Worker._recover``)
     expire_until(ex, db, 1, LeaseState.EXPIRED)
-    wait_until(lambda: state(db, 2) is LeaseState.QUEUED)  # core submits it again, with a larger token
     (tmp_path / 'hold').unlink()
-    workers_of(ex).worker.start()  # a live worker takes it
+    # a live worker: its slots count, so core submits the evaluation again, with a larger token, and the worker takes it
+    workers_of(ex).worker.start()
     measuring.join(30)
     assert not measuring.is_alive(), 'measured on its new lease'
     assert lease_of(db, 2).state is LeaseState.REPORTED
@@ -269,7 +270,7 @@ def test_a_report_whose_answer_was_lost_is_sent_again_and_applies_once(
 ) -> None:
     """A duplicate report: the control plane applied it but its answer was lost, so the worker sends it again with
     its request id. The second gets the first's receipt, and nothing applies twice."""
-    ex = RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST))
+    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST)))
     report = Leases.report
     sent: list[str] = []
     receipts: list[dict[str, object]] = []
@@ -314,7 +315,7 @@ def test_a_partitioned_worker_stops_its_job_before_its_lease_expires_and_its_rep
     write_toml(Path(campaign.path), COMMIT_THEN_HOLD.format(hold=hold), implementer_timeout=600)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    ex = RunController(db, tracer, tmp_path, factory(runtime), executor=timed(SLACK))
+    ex = serving(RunController(db, tracer, tmp_path, factory(runtime), executor=timed(SLACK)))
     partitioned = threading.Event()
     heartbeat, report = Leases.heartbeat, Leases.report
 
@@ -366,7 +367,7 @@ def test_a_daemon_killed_during_a_run_keeps_the_lease_and_the_next_daemon_finish
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
     ex = control_plane(db, runtime, tmp_path)
-    with worker_process(tmp_path, 'local') as proc:  # the daemon's own worker, in the process that is killed
+    with worker_process(tmp_path, SERVE) as proc:  # the daemon's own worker, in the process that is killed
         thread = in_thread(execute, ex, db, run_id)
         wait_until(lambda: state(db, 1) is LeaseState.RUNNING)
         os.kill(proc.pid, signal.SIGKILL)
@@ -470,7 +471,7 @@ def test_an_agent_that_a_daemon_before_leases_started_is_adopted_and_its_work_sc
     second.reap()
     with db.session() as s:
         [adopted] = s.scalars(select(Lease)).all()
-        assert (adopted.agent_session_id, adopted.state, adopted.worker) == (1, LeaseState.RUNNING, 'local')
+        assert (adopted.agent_session_id, adopted.state, adopted.worker) == (1, LeaseState.RUNNING, SERVE)
     hold.unlink()
     second.wait(30)
     with db.session() as s:
@@ -525,7 +526,7 @@ def test_the_daemons_worker_killed_during_an_evaluation_kills_its_evaluator_when
     ex = control_plane(db, runtime, tmp_path)
     candidate = baseline(db, campaign.id).id
     measuring = in_thread(ex.remeasure, candidate)
-    with worker_process(tmp_path, 'local') as proc:
+    with worker_process(tmp_path, SERVE) as proc:
         wait_until(lambda: state(db, 1) is LeaseState.RUNNING)
         handle = lease_of(db, 1).handle
         os.kill(proc.pid, signal.SIGKILL)

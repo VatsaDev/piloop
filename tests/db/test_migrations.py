@@ -101,6 +101,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
             'ideas_fts_docsize',
             'ideas_fts_idx',
             'journal',
+            'lease_workers',
             'leases',
             'lessons',
             'measurements',
@@ -1198,3 +1199,24 @@ def test_0021_gives_every_finished_run_its_end_from_its_status_and_error_and_dow
     command.downgrade(cfg, '0020')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert con.execute('SELECT status, error FROM runs ORDER BY id').fetchall() == [(s, e) for s, e, _ in rows]
+
+
+def test_0023_adds_the_lease_workers_and_keeps_the_fencing_tokens_of_the_leases(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0022')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO leases (kind, evaluation_id, unreachable_at) VALUES ('evaluation', 7, '2026-01-01')")
+        con.execute('DELETE FROM leases')
+    command.upgrade(cfg, '0023')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO leases (kind, evaluation_id) VALUES ('evaluation', 7)")
+        assert con.execute('SELECT id FROM leases').fetchall() == [(2,)], 'a fencing token is never used again'
+        con.execute(
+            "INSERT INTO lease_workers (id, pool, version, seen_at) VALUES ('serve', 'serve', '0.2.0', '2026-01-01')"
+        )
+        assert con.execute('SELECT runners, sample, no_lease FROM lease_workers').fetchall() == [('[]', '{}', None)]
+    command.downgrade(cfg, '0022')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute("SELECT name FROM sqlite_master WHERE name = 'lease_workers'").fetchall() == []
+        assert con.execute('SELECT unreachable_at FROM leases').fetchall() == [(None,)]

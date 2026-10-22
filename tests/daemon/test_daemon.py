@@ -251,7 +251,9 @@ def test_a_restart_whose_shutdown_fails_still_execs(tmp_path: Path, mocker: Mock
     mocker.patch.object(daemon.scheduler, 'hand_over', side_effect=OperationalError('SELECT', {}, Exception('locked')))
     with pytest.raises(OperationalError):
         daemon.serve()
-    workers_of(daemon.controller).worker.join(5)  # its first look for jobs, which the reap started
+    worker = workers_of(daemon.controller).worker
+    worker.stop()  # the failed shutdown left the worker that the reap started: its loop ends before the database
+    worker.join(5)
     daemon.db.close()
     assert execv.call_args.args == (SERVE_ARGV[0], SERVE_ARGV)
 
@@ -263,7 +265,9 @@ def test_a_restart_whose_shutdown_fails_still_execs(tmp_path: Path, mocker: Mock
     mocker.patch.object(daemon.scheduler, 'stop', side_effect=OperationalError('INSERT', {}, Exception('locked')))
     with pytest.raises(OperationalError):
         daemon.serve()
-    workers_of(daemon.controller).worker.join(5)  # its first look for jobs, which the reap started
+    worker = workers_of(daemon.controller).worker
+    worker.stop()  # the failed shutdown left the worker that the reap started: its loop ends before the database
+    worker.join(5)
     daemon.db.close()
     assert not execv.called and cfg.pid_file.exists(), 'a stop keeps the lock while its run threads may live on'
     assert signal.getsignal(signal.SIGTERM) is previous, 'a second SIGTERM ends what is left'

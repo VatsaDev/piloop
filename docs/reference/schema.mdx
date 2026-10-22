@@ -83,6 +83,20 @@ CREATE TABLE journal (
 	CONSTRAINT "journal.line is text of 1 to 280 bytes" CHECK (typeof(line) IN ('text') AND length(CAST(line AS BLOB)) BETWEEN 1 AND 280),
 	CONSTRAINT "journal.author must be a text value" CHECK (typeof(author) IN ('text'))
 );
+CREATE TABLE lease_workers (
+	id VARCHAR NOT NULL,
+	pool VARCHAR NOT NULL,
+	version VARCHAR NOT NULL,
+	runners JSON DEFAULT '[]' NOT NULL,
+	sample JSON DEFAULT '{}' NOT NULL,
+	seen_at DATETIME NOT NULL,
+	no_lease VARCHAR(16),
+	PRIMARY KEY (id),
+	CONSTRAINT "lease_workers.id must be a text value" CHECK (typeof(id) IN ('text')),
+	CONSTRAINT "lease_workers.pool must be a text value" CHECK (typeof(pool) IN ('text')),
+	CONSTRAINT "lease_workers.version must be a text value" CHECK (typeof(version) IN ('text')),
+	CONSTRAINT nolease CHECK (no_lease IN ('memory', 'load', 'slots', 'nothing', 'unreachable'))
+);
 CREATE TABLE tokens (
 	id INTEGER NOT NULL,
 	name VARCHAR NOT NULL,
@@ -335,7 +349,6 @@ CREATE TABLE leases (
 	started_at DATETIME,
 	renewed_at DATETIME,
 	expires_at DATETIME,
-	unreachable_at DATETIME,
 	revoked_at DATETIME,
 	ended_at DATETIME,
 	request_id VARCHAR,

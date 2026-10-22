@@ -25,6 +25,7 @@ from piloop.cli import (
     plugins,
     store,
     token,
+    worker,
 )
 from piloop.config import ConfigError
 from piloop.plugins.runtime.contract import OLD_TAG_ENV, TAG_ENV
@@ -42,6 +43,7 @@ for group in (
     campaign.app,
     agents.agent_app,
     agents.run_app,
+    worker.app,
 ):
     app.command(group)
 app.command(campaign.init)

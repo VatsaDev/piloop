@@ -52,6 +52,7 @@ from tests.conftest import (
     example,
     package,
     piloop_entry_points,
+    serving,
     wait_until,
     write_toml,
 )
@@ -75,7 +76,7 @@ def recording(runtime: ScriptRuntime, kinds: list[str]) -> RuntimeFactory:
 
 def scheduler(db: Database, make: RuntimeFactory, tmp_path: Path) -> Scheduler:
     tracer = Tracer(None)
-    return Scheduler(db, RunController(db, tracer, tmp_path, make), tracer, tmp_path, make)
+    return Scheduler(db, serving(RunController(db, tracer, tmp_path, make)), tracer, tmp_path, make)
 
 
 def configure(db: Database, campaign: Campaign, harness_body: str, **roles: dict[str, object]) -> None:
@@ -536,6 +537,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
     assert isinstance(open_store(home).remote, Dir)
     daemon = Daemon(home)
     try:
+        daemon.scheduler.reap()
         assert daemon.scheduler.tick() == [1]
         daemon.scheduler.wait(30)
     finally:

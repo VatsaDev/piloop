@@ -12,7 +12,18 @@ from pytest_mock import MockerFixture
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop.db.models import AgentSession, Campaign, Candidate, Evaluation, Event, Lease, LeaseState, utcnow
+from piloop.db.models import (
+    AgentSession,
+    Campaign,
+    Candidate,
+    Evaluation,
+    Event,
+    Lease,
+    LeaseState,
+    LeaseWorker,
+    NoLease,
+    utcnow,
+)
 from piloop.db.session import Database, write_transaction
 from piloop.ids import WATCHDOG, TargetKind
 from piloop.plugins.executor.contract import (
@@ -20,6 +31,7 @@ from piloop.plugins.executor.contract import (
     AgentJob,
     AgentKey,
     AgentReport,
+    Capacity,
     Checkout,
     EvaluationJob,
     EvaluationKey,
@@ -29,12 +41,14 @@ from piloop.plugins.executor.contract import (
     JobKey,
     Settled,
 )
+from piloop.plugins.executor.kit.capacity import GB, HostSample, Pool
 from piloop.plugins.executor.kit.leases import (
     EXPIRED,
     NOT_TAKEN,
     STALE_REPORT,
     UNREACHABLE,
     Answer,
+    Grant,
     Leases,
     StaleLease,
     Timing,
@@ -48,6 +62,16 @@ from tests.conftest import baseline
 
 HANDLE: dict[str, object] = {'runtime': 'subprocess', 'data': {}}
 TIMING = Timing(renew=10, grace=50, toleration=300)
+POOLS = {'test': Pool(evaluations=99)}
+"""A pool whose slots no test fills, unless it says so."""
+HOST = HostSample(at=utcnow(), cpus=4, load1=0.5, memory_available=8 * GB, disk_free=100 * GB)
+
+
+def take(leases: Leases, worker: str, runners: list[str], pool: str = 'test') -> Grant | None:
+    """Register ``worker`` in ``pool`` with ``runners``, then acquire: the grant, or None when it gets no lease."""
+    leases.register(worker, pool, '0.2.0', runners, HOST)
+    grant = leases.acquire(worker, HOST)
+    return grant if isinstance(grant, Grant) else None
 
 
 @dataclass
@@ -96,7 +120,7 @@ def recorder(db: Database) -> Recorder:
 
 @pytest.fixture
 def leases(db: Database, recorder: Recorder) -> Leases:
-    return Leases(db, recorder, TIMING)
+    return Leases(db, recorder, TIMING, POOLS)
 
 
 def agent_job(db: Database, campaign: Campaign, tmp_path: Path) -> AgentJob:
@@ -147,6 +171,11 @@ def queue(db: Database, job: AgentJob | EvaluationJob) -> int:
         return lease.id
 
 
+def worker_row(db: Database, worker: str) -> LeaseWorker:
+    with db.session() as s:
+        return s.get_one(LeaseWorker, worker)
+
+
 def lease_row(db: Database, lease_id: int) -> Lease:
     with db.session() as s:
         return s.get_one(Lease, lease_id)
@@ -178,12 +207,12 @@ def test_a_lease_is_acquired_started_renewed_and_reported_once_with_its_receipt(
 ) -> None:
     job = agent_job(db, campaign, tmp_path)
     lease_id = queue(db, job)
-    grant = leases.acquire('w1', runners=['process'])
+    grant = take(leases, 'w1', ['process'])
     assert grant is not None and (grant.lease, grant.job) == (lease_id, job)
-    assert leases.acquire('w2', runners=['process']) is None, 'a job goes to one worker'
+    assert take(leases, 'w2', ['process']) is None, 'a job goes to one worker'
     handle: dict[str, object] = {'runtime': 'subprocess', 'data': {'pid': 7}}
     leases.started(lease_id, 'w1', handle)
-    assert leases.heartbeat('w1', {lease_id: 'sid'}) == {lease_id: Answer.RENEWED}
+    assert leases.heartbeat('w1', {lease_id: 'sid'}, HOST) == {lease_id: Answer.RENEWED}
     assert leases.report(lease_id, 'w1', 'r1', DONE) == RECEIPT
     assert leases.report(lease_id, 'w1', 'r1', DONE) == RECEIPT, 'a resent report gets its receipt'
     assert recorder.calls == [
@@ -203,15 +232,15 @@ def test_a_report_with_an_old_fencing_token_is_refused_and_kept_as_a_stale_repor
     """A worker presumed dead comes back after its lease expired and its job went to another: its report is refused."""
     job = evaluation_job(db, campaign, tmp_path)
     first = queue(db, job)
-    assert leases.acquire('w1', runners=['process']) is not None
+    assert take(leases, 'w1', ['process']) is not None
     leases.expire(utcnow() + timedelta(seconds=301))
     assert lease_row(db, first).state is LeaseState.EXPIRED
     queue(db, job)  # core submits the lost evaluation again
-    second = leases.acquire('w2', runners=['process'])
+    second = take(leases, 'w2', ['process'])
     assert second is not None and second.lease > first, 'the fencing token grows with each lease of the job'
     with pytest.raises(StaleLease, match=f'stale_lease: lease#{first} is expired'):
         leases.report(first, 'w1', 'late', MEASURED)
-    assert leases.heartbeat('w1', {first: None}) == {first: Answer.STALE}
+    assert leases.heartbeat('w1', {first: None}, HOST) == {first: Answer.STALE}
     assert [c[0] for c in recorder.calls] == ['lost'], 'nothing of the late report applied'
     [(kind, target, payload)] = events(db, STALE_REPORT)
     assert (kind, target, payload['lease'], payload['worker']) == (TargetKind.CANDIDATE, job.candidate, first, 'w1')
@@ -225,9 +254,9 @@ def test_only_the_newest_lease_of_a_job_is_live(
     """The fence checks the token, not only the state: two live leases of one job cannot both report."""
     job = agent_job(db, campaign, tmp_path)
     old = queue(db, job)
-    leases.acquire('w1', runners=[])
+    take(leases, 'w1', [])
     new = queue(db, job)
-    leases.acquire('w2', runners=[])
+    take(leases, 'w2', [])
     with pytest.raises(StaleLease, match=f'lease#{old} was replaced by lease#{new}'):
         leases.started(old, 'w1', HANDLE)
     with pytest.raises(StaleLease, match='held by w2'):
@@ -239,7 +268,7 @@ def test_a_silent_worker_is_unreachable_after_the_grace_period_and_its_leases_ex
 ) -> None:
     job = agent_job(db, campaign, tmp_path)
     lease_id = queue(db, job)
-    leases.acquire('w1', runners=[])
+    take(leases, 'w1', [])
     now = utcnow()
     expiry = leases.expire(now + timedelta(seconds=49))
     assert expiry is not None and timedelta(seconds=299) < expiry - now < timedelta(seconds=301), 'the next deadline'
@@ -249,9 +278,9 @@ def test_a_silent_worker_is_unreachable_after_the_grace_period_and_its_leases_ex
     assert events(db, UNREACHABLE) == [
         (TargetKind.AGENT_SESSION, job.agent_session, {'lease': lease_id, 'worker': 'w1'})
     ], 'once per silence'
-    assert lease_row(db, lease_id).unreachable_at is not None
-    leases.heartbeat('w1', {lease_id: None})
-    assert lease_row(db, lease_id).unreachable_at is None, 'heard again'
+    assert worker_row(db, 'w1').no_lease == NoLease.UNREACHABLE
+    leases.heartbeat('w1', {lease_id: None}, HOST)
+    assert worker_row(db, 'w1').no_lease is None, 'heard again'
     heard = utcnow()
     for seconds in range(10, 301, 10):  # the scheduler's ticks: no gap that looks like its own absence
         leases.expire(heard + timedelta(seconds=seconds))
@@ -266,7 +295,7 @@ def test_a_restarted_daemon_gives_every_live_lease_a_full_period(
     db: Database, campaign: Campaign, tmp_path: Path, leases: Leases
 ) -> None:
     lease_id = queue(db, agent_job(db, campaign, tmp_path))
-    leases.acquire('w1', runners=[])
+    take(leases, 'w1', [])
     with db.session() as s:
         s.get_one(Lease, lease_id).expires_at = utcnow() - timedelta(seconds=1)
         s.commit()
@@ -279,11 +308,11 @@ def test_a_revoked_lease_is_answered_revoked_and_still_reports(
     db: Database, campaign: Campaign, tmp_path: Path, leases: Leases, recorder: Recorder
 ) -> None:
     lease_id = queue(db, agent_job(db, campaign, tmp_path))
-    leases.acquire('w1', runners=[])
+    take(leases, 'w1', [])
     with db.session() as s:
         revoke(s, s.get_one(Lease, lease_id))
         s.commit()
-    assert leases.heartbeat('w1', {lease_id: None}) == {lease_id: Answer.REVOKED}
+    assert leases.heartbeat('w1', {lease_id: None}, HOST) == {lease_id: Answer.REVOKED}
     assert leases.report(lease_id, 'w1', 'r', DONE) == RECEIPT
 
 
@@ -293,12 +322,12 @@ def test_an_evaluation_goes_to_a_worker_with_its_runner_in_the_order_in_which_it
     """Core submits an evaluation when it has a slot, in the queue's order: the leases keep that order."""
     other = evaluation_job(db, campaign, tmp_path, runner='gpu-runner')
     queue(db, other)
-    assert leases.acquire('w1', runners=['process']) is None, 'no worker has the runner'
+    assert take(leases, 'w1', ['process']) is None, 'no worker has the runner'
     job = evaluation_job_for_another_candidate(db, campaign, tmp_path)
     queue(db, job)
-    grant = leases.acquire('w1', runners=['process'])
+    grant = take(leases, 'w1', ['process'])
     assert grant is not None and isinstance(grant.job, EvaluationJob) and grant.job.evaluation == job.evaluation
-    second = leases.acquire('w2', runners=['process', 'gpu-runner'])
+    second = take(leases, 'w2', ['process', 'gpu-runner'])
     assert second is not None and isinstance(second.job, EvaluationJob) and second.job.evaluation == other.evaluation
 
 
@@ -332,13 +361,15 @@ def test_a_worker_finds_its_live_leases_again_with_their_handles(
 ) -> None:
     job = agent_job(db, campaign, tmp_path)
     lease_id = queue(db, job)
-    leases.acquire('w1', runners=[])
+    take(leases, 'w1', [])
     leases.started(lease_id, 'w1', {'runtime': 'subprocess', 'data': {'pid': 1}})
-    [grant] = leases.held('w1')
+    [grant] = leases.register('w1', 'test', '0.2.0', [], HOST)
     assert (grant.lease, grant.job, grant.handle) == (lease_id, job, {'runtime': 'subprocess', 'data': {'pid': 1}})
-    assert grant.started_at is not None and leases.held('w2') == []
+    assert grant.started_at is not None and leases.register('w2', 'test', '0.2.0', [], HOST) == []
     leases.lost(lease_id, 'w1', 'gone')
-    assert leases.held('w1') == [] and lease_row(db, lease_id).receipt == {'lost': 'gone'}
+    assert leases.register('w1', 'test', '0.2.0', [], HOST) == [] and lease_row(db, lease_id).receipt == {
+        'lost': 'gone'
+    }
 
 
 def test_a_revoke_or_a_cancel_changes_only_a_lease_it_applies_to(
@@ -350,7 +381,7 @@ def test_a_revoke_or_a_cancel_changes_only_a_lease_it_applies_to(
         revoke(s, s.get_one(Lease, queued))
         s.commit()
     assert lease_row(db, queued).revoked_at is None
-    leases.acquire('w1', runners=[])
+    take(leases, 'w1', [])
     leases.report(queued, 'w1', 'r', DONE)
     with db.session() as s:
         cancel(s, s.get_one(Lease, queued), 'daemon stopped')
@@ -369,7 +400,7 @@ def test_the_fence_and_the_write_are_one_transaction_so_an_expiry_cannot_slip_be
 ) -> None:
     """An expiry that comes while a report applies waits for it, then finds the lease reported: one of them applies."""
     other = Recorder(db)
-    expiring = Leases(db, other, TIMING)
+    expiring = Leases(db, other, TIMING, POOLS)
     expiries: list[threading.Thread] = []
 
     class Slow(Recorder):
@@ -386,10 +417,10 @@ def test_the_fence_and_the_write_are_one_transaction_so_an_expiry_cannot_slip_be
 
             super().finished(job, report, guard=slow)
 
-    leases = Leases(db, Slow(db), TIMING)
+    leases = Leases(db, Slow(db), TIMING, POOLS)
     job = evaluation_job(db, campaign, tmp_path)
     lease_id = queue(db, job)
-    leases.acquire('w1', runners=['process'])
+    take(leases, 'w1', ['process'])
     leases.report(lease_id, 'w1', 'r', MEASURED)
     expiries[0].join(30)
     with db.session() as s:
@@ -402,7 +433,7 @@ def test_a_daemon_that_was_away_longer_than_the_grace_period_renews_the_leases_b
 ) -> None:
     """A laptop asleep for an hour: no tick ran, and the daemon's own absence is no worker's silence."""
     lease_id = queue(db, agent_job(db, campaign, tmp_path))
-    leases.acquire('w1', runners=[])
+    take(leases, 'w1', [])
     now = utcnow()
     leases.expire(now)
     leases.expire(now + timedelta(hours=1))  # the first tick after the resume
@@ -410,19 +441,18 @@ def test_a_daemon_that_was_away_longer_than_the_grace_period_renews_the_leases_b
     assert events(db, UNREACHABLE) == [], 'and not unreachable either'
 
 
-def test_an_unreachable_worker_gets_no_new_lease_until_it_is_heard_again(
+def test_an_unreachable_worker_counts_no_slot_until_it_is_heard_again(
     db: Database, campaign: Campaign, tmp_path: Path, leases: Leases
 ) -> None:
     held = queue(db, agent_job(db, campaign, tmp_path))
-    leases.acquire('w1', runners=[])
-    now = utcnow()
-    leases.expire(now)
-    leases.expire(now + timedelta(seconds=40))
-    leases.expire(now + timedelta(seconds=51))
-    queue(db, agent_job(db, campaign, tmp_path))
-    assert leases.acquire('w1', runners=[]) is None, 'unreachable'
-    leases.heartbeat('w1', {held: None})
-    assert leases.acquire('w1', runners=[]) is not None
+    take(leases, 'w1', [])
+    assert leases.capacity() == Capacity(None, 99)
+    with db.session() as s:
+        s.get_one(LeaseWorker, 'w1').seen_at = utcnow() - timedelta(seconds=51)
+        s.commit()
+    assert leases.capacity() == Capacity(0, 0), 'unreachable'
+    leases.heartbeat('w1', {held: None}, HOST)
+    assert leases.capacity() == Capacity(None, 99)
 
 
 class Settles(Recorder):
@@ -436,13 +466,15 @@ def test_a_job_whose_row_is_settled_is_refused_as_stale_and_its_lease_ends_all_t
     db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
     """Core refuses a result for a closed row (``Settled``): the fence treats it as stale, and nothing else changes."""
-    leases = Leases(db, Settles(db), TIMING)
+    leases = Leases(db, Settles(db), TIMING, POOLS)
     job = agent_job(db, campaign, tmp_path)
     lease_id = queue(db, job)
-    leases.acquire('w1', runners=[])
+    take(leases, 'w1', [])
     with pytest.raises(StaleLease, match='stale_lease: agent_session#1 is closed'):
         leases.started(lease_id, 'w1', {'runtime': 'subprocess', 'data': {'pid': 1}})
-    assert leases.heartbeat('w1', {lease_id: 'sid'}) == {lease_id: Answer.RENEWED}, 'the session id waits for the end'
+    assert leases.heartbeat('w1', {lease_id: 'sid'}, HOST) == {lease_id: Answer.RENEWED}, (
+        'the session id waits for the end'
+    )
     with pytest.raises(StaleLease, match='stale_lease: agent_session#1 is closed'):
         leases.report(lease_id, 'w1', 'r', DONE)
     [(_, _, payload)] = events(db, STALE_REPORT)
@@ -469,7 +501,7 @@ def test_an_expiry_that_a_report_overtakes_expires_nothing(
 ) -> None:
     """The report comes between the expiry's look for silent leases and its write: one of them applies, the report."""
     lease_id = queue(db, agent_job(db, campaign, tmp_path))
-    leases.acquire('w1', runners=[])
+    take(leases, 'w1', [])
     lose = Leases._lose
 
     def heard_first(self: Leases, lease_id: int, reason: str, fence: Callable[[Session], Lease]) -> None:
@@ -488,11 +520,11 @@ def test_a_stop_leaves_an_agent_lease_that_a_worker_took_meanwhile_to_its_report
         def finished(
             self, job: AgentJob | EvaluationJob, report: AgentReport | EvaluationReport, *, guard: Guard | None = None
         ) -> None:
-            leases.acquire('w1', runners=[])  # between the stop's look for untaken leases and its write
+            take(leases, 'w1', [])  # between the stop's look for untaken leases and its write
             super().finished(job, report, guard=guard)
 
     recorder = TakenFirst(db)
-    leases = Leases(db, recorder, TIMING)
+    leases = Leases(db, recorder, TIMING, POOLS)
     lease_id = queue(db, agent_job(db, campaign, tmp_path))
     leases.stop_untaken()
     assert (lease_row(db, lease_id).state, recorder.calls) == (LeaseState.ACQUIRED, [])

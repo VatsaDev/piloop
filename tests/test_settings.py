@@ -166,18 +166,24 @@ def test_max_evaluations_of_config_toml_or_the_environment_is_the_evaluations_of
     """0.2.0 had ``max_evaluations`` (``PILOOP_MAX_EVALUATIONS``), the slots that ``workers`` now takes."""
     monkeypatch.delenv('PILOOP_MAX_EVALUATIONS', raising=False)
     (tmp_path / 'config.toml').write_text('max_evaluations = 3\n')
-    with pytest.warns(PiloopDeprecationWarning, match=r'max_evaluations is deprecated; write evaluations in'):
+    with pytest.warns(
+        PiloopDeprecationWarning,
+        match=r'max_evaluations is deprecated; write evaluations in \[plugins.executor.pools.serve\]',
+    ):
         settings = Settings(home=tmp_path)
-    assert (settings.plugins['executor'].provider, settings.plugins['executor'].keys) == ('workers', {'evaluations': 3})
-    (tmp_path / 'config.toml').write_text('max_evaluations = 3\n\n[plugins.executor]\nevaluations = 4\n')
+    assert (settings.plugins['executor'].provider, settings.plugins['executor'].keys) == (
+        'workers',
+        {'pools': {'serve': {'evaluations': 3}}},
+    )
+    (tmp_path / 'config.toml').write_text('max_evaluations = 3\n\n[plugins.executor.pools.serve]\nevaluations = 4\n')
     with pytest.warns(PiloopDeprecationWarning):
         settings = Settings(home=tmp_path)
-    assert settings.plugins['executor'].keys == {'evaluations': 4}
+    assert settings.plugins['executor'].keys == {'pools': {'serve': {'evaluations': 4}}}
     (tmp_path / 'config.toml').unlink()
     monkeypatch.setenv('PILOOP_MAX_EVALUATIONS', '5')
     with pytest.warns(PiloopDeprecationWarning, match='PILOOP_MAX_EVALUATIONS is deprecated'):
         settings = Settings(home=tmp_path)
-    assert settings.plugins['executor'].keys == {'evaluations': '5'}
+    assert settings.plugins['executor'].keys == {'pools': {'serve': {'evaluations': '5'}}}
 
 
 def test_max_evaluations_changes_nothing_for_an_executor_without_slots(tmp_path: Path) -> None:
@@ -188,3 +194,10 @@ def test_max_evaluations_changes_nothing_for_an_executor_without_slots(tmp_path:
     (tmp_path / 'config.toml').write_text('max_evaluations = 3\nplugins = 1\n')
     with pytest.raises(ValueError), pytest.warns(PiloopDeprecationWarning):
         Settings(home=tmp_path)  # not a table: the validation refuses it
+    (tmp_path / 'config.toml').write_text(
+        'max_evaluations = 3\n\n[plugins.executor]\nprovider = "workers"\npools = 1\n'
+    )
+    with pytest.warns(PiloopDeprecationWarning):
+        assert Settings(home=tmp_path).plugins['executor'].keys == {'pools': 1}, (
+            'the executor refuses it when it starts'
+        )

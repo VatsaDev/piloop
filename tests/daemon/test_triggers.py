@@ -37,13 +37,22 @@ from piloop.db.session import Database
 from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, AgentSessionId, IdeaId, RunId
 from piloop.otel import Tracer
 from piloop.reports.overview import ANOMALY_EVENT, anomalies
-from tests.conftest import HARNESS_NOOP, HARNESS_PROMPT_TO_FILE, ScriptRuntime, end_of, factory, wait_until, write_toml
+from tests.conftest import (
+    HARNESS_NOOP,
+    HARNESS_PROMPT_TO_FILE,
+    ScriptRuntime,
+    end_of,
+    factory,
+    serving,
+    wait_until,
+    write_toml,
+)
 
 BLOCKING = '#!/bin/sh\nwhile [ ! -f {release} ]; do sleep 0.05; done\n'
 
 
 def scheduler(db: Database, runtime: ScriptRuntime, tmp_path: Path) -> Scheduler:
-    controller = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    controller = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
     return Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))
 
 

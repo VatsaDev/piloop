@@ -276,6 +276,24 @@ class LeaseState(StrEnum):
     CANCELLED = 'cancelled'
 
 
+class NoLease(StrEnum):
+    """Why a worker got no lease (``piloop.plugins.kit.executor.capacity.admits``). ``piloop worker list`` shows it.
+
+    Declared in order of precedence: of the reasons for each kind of job, the first one declared is the worker's.
+    """
+
+    MEMORY = 'memory'
+    """Its memory available is below ``min_memory_gb``."""
+    LOAD = 'load'
+    """Its load per CPU is above ``max_load``."""
+    SLOTS = 'slots'
+    """Its slots of the waiting job's kind are full."""
+    NOTHING = 'nothing'
+    """Nothing is queued that it can run."""
+    UNREACHABLE = 'unreachable'
+    """It was silent past ``grace_seconds``."""
+
+
 LIVE_LEASES = (LeaseState.ACQUIRED, LeaseState.RUNNING)
 OPEN_LEASES = (LeaseState.QUEUED, *LIVE_LEASES)
 
@@ -354,6 +372,7 @@ class Base(DeclarativeBase):
         dict[str, float]: JSON,
         dict[str, object]: JSON,
         Usage: PydanticJSON(TypeAdapter(Usage)),
+        list[str]: JSON,
         CampaignStatus: _values(CampaignStatus),
         Pause: _values(Pause),
         IdeaStatus: _values(IdeaStatus),
@@ -368,6 +387,7 @@ class Base(DeclarativeBase):
         LeaseKind: _values(LeaseKind),
         LeaseState: _values(LeaseState),
         TokenScope: _values(TokenScope),
+        NoLease: _values(NoLease),
     }
 
 
@@ -798,8 +818,6 @@ class Lease(Base):
     """The last heartbeat, or the acquire."""
     expires_at: Mapped[datetime | None]
     """``renewed_at`` plus ``toleration_seconds``. Past it, the scheduler expires the lease."""
-    unreachable_at: Mapped[datetime | None]
-    """When the scheduler found the worker silent past ``grace_seconds``. A heartbeat clears it."""
     revoked_at: Mapped[datetime | None]
     """When the daemon asked the worker to stop the job: a kill or a cancel. The worker still reports it."""
     ended_at: Mapped[datetime | None]
@@ -825,6 +843,32 @@ class Token(Base):
     sha256: Mapped[str] = mapped_column(unique=True)
     """The hex SHA-256 of the secret."""
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
+
+
+class LeaseWorker(Base):
+    """A worker that takes leases (``piloop.plugins.executor.kit.leases``): its pool, and what it last sent.
+
+    The table is in core's schema until a plugin can own tables. A worker's row is written when it starts, and on each
+    heartbeat. A worker whose ``seen_at`` is older than ``grace_seconds`` is unreachable: its slots count zero.
+    """
+
+    __tablename__ = 'lease_workers'
+    __table_args__ = (*text_checks('lease_workers', 'id', 'pool', 'version'),)
+
+    id: Mapped[str] = mapped_column(primary_key=True)
+    """The worker's name. ``serve`` is the worker inside ``piloop serve``."""
+    pool: Mapped[str]
+    """Its pool: ``[plugins.executor.pools.<pool>]`` gives its slots and thresholds."""
+    version: Mapped[str]
+    """The piloop version it runs."""
+    runners: Mapped[list[str]] = mapped_column(default=list, server_default=text("'[]'"))
+    """The evaluator runners it has. It takes only the evaluations of these."""
+    sample: Mapped[dict[str, object]] = mapped_column(default=dict, server_default=EMPTY_JSON)
+    """Its last host sample (``HostSample``): load, CPUs, memory available and disk free."""
+    seen_at: Mapped[datetime]
+    """When a call of it last came in."""
+    no_lease: Mapped[NoLease | None]
+    """Why its last request got no lease, or that it went silent. NULL after a grant."""
 
 
 class Comment(Tracked, Base):

@@ -84,7 +84,7 @@ class Smoke:
     events: list[Envelope] = field(default_factory=list)
     event_reads: int = 0
     queue_samples: list[tuple[int, int, int]] = field(default_factory=list)
-    """``(running, waiting, slots)`` from each ``piloop eval queue``."""
+    """``(running, waiting)`` from each ``piloop eval queue``, and the live agent leases at that moment."""
     errors: list[str] = field(default_factory=list)
     """What the background readers raised, as evidence for the tests that read their results."""
     stop_readers: threading.Event = field(default_factory=threading.Event)
@@ -204,10 +204,11 @@ class Smoke:
         self.cursor = batch['next']
 
     def sample_queue(self) -> None:
-        """Record what ``piloop eval queue`` shows."""
+        """Record what ``piloop eval queue`` shows, and how many agent leases are live."""
         out = self.piloop('eval', 'queue')
-        if found := re.search(r'(\d+) running, (\d+) waiting; (\d+) slot', out):
-            self.queue_samples.append((int(found[1]), int(found[2]), int(found[3])))
+        agents = self.sql("SELECT count(*) FROM leases WHERE kind = 'agent' AND state IN ('acquired', 'running')")[0][0]
+        if found := re.search(r'(\d+) running, (\d+) waiting', out):
+            self.queue_samples.append((int(found[1]), int(found[2]), agents))
 
     def shut_down(self) -> None:
         """Stop the readers and the daemon, then end every process that carries the home or an agent's process tag."""

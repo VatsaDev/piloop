@@ -8,8 +8,8 @@ its worker in ``piloop serve``; remote workers take leases through the same oper
 - A **fencing token** is a number that grows with each new lease of a job: the lease id. A report with an old token
   is refused (``StaleLease``), so a worker that was presumed dead can't overwrite newer work. Its report stays as a
   ``lease.stale_report`` event on the job's row, with what it brought back.
-- The **grace period** (``Timing.grace``, 50 s) is the silence after which a worker is unreachable: its leases are
-  marked so, and it gets no new lease until it is heard again. After the **toleration** (``Timing.toleration``,
+- The **grace period** (``Timing.grace``, 50 s) is the silence after which a worker is unreachable: its slots count
+  zero until it is heard again. After the **toleration** (``Timing.toleration``,
   300 s) its leases **expire**: a run ends ``worker_lost``, which is not an attempt, and an evaluation is queued
   again on a new lease. A worker that hears nothing for that long, less two heartbeats, stops its own jobs first, so a
   job never runs twice.
@@ -17,14 +17,19 @@ its worker in ``piloop serve``; remote workers take leases through the same oper
 The timing is the two stages of Kubernetes: node leases (the kubelet renews every 10 s), the unreachable taint after
 ``--node-monitor-grace-period``, and eviction after the taint's ``tolerationSeconds`` of 300.
 
+Each worker has a row in ``lease_workers``: its pool (``capacity.Pool``) and the host sample of its last call. A worker
+takes a job only while ``capacity.admits`` it, and ``Leases.capacity`` sums the slots of the reachable workers that
+are not under pressure.
+
 The fence is the executor's, not core's: core checks only the domain (``Settled``). Every operation that checks it
 runs in one write transaction with the core operation that it guards (``Results``), so a report, a heartbeat and an
-expiry never both apply. The ``leases`` table belongs here, but its model and migration stay in core's schema until
-the plugin host gives a plugin tables of its own: one schema, one migration chain.
+expiry never both apply. The ``leases`` and ``lease_workers`` tables belong here, but their models and migrations stay in
+core's schema until the plugin host gives a plugin tables of its own: one schema, one migration chain.
 """
 
 import contextlib
-from collections.abc import Callable, Sequence
+from collections import Counter
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -34,7 +39,7 @@ from sqlalchemy.orm import Session
 
 from piloop import deprecated
 from piloop.db.events import emit
-from piloop.db.models import LIVE_LEASES, OPEN_LEASES, Lease, LeaseKind, LeaseState, utcnow
+from piloop.db.models import LIVE_LEASES, OPEN_LEASES, Lease, LeaseKind, LeaseState, LeaseWorker, NoLease, utcnow
 from piloop.db.session import Database, write_transaction
 from piloop.ids import AgentSessionId, TargetKind
 from piloop.plugins.executor.contract import (
@@ -45,6 +50,7 @@ from piloop.plugins.executor.contract import (
     AgentKey,
     AgentNotStarted,
     AgentReport,
+    Capacity,
     EvaluationJob,
     EvaluationKey,
     EvaluationReport,
@@ -54,15 +60,20 @@ from piloop.plugins.executor.contract import (
     Results,
     Settled,
 )
+from piloop.plugins.executor.kit.capacity import HostSample, Pool, admits, slots
 
-LOCAL_WORKER = 'local'
-"""The id of the worker inside ``piloop serve``. It is stable, so the next daemon's worker finds its leases again."""
+SERVE = 'serve'
+"""The id of the worker inside ``piloop serve``, and its pool. The id is stable, so the next daemon's worker finds its
+leases again."""
+DEFAULT_POOLS: Mapping[str, Pool] = {SERVE: Pool()}
 UNREPORTED = 'the daemon stopped, and the job did not report in time'
 NOT_TAKEN = 'the daemon stopped before a worker took the job'
 STALE_REPORT = 'lease.stale_report'
 """An event on the job's row (the agent session, or the evaluated candidate): a report that the fence refused."""
 UNREACHABLE = 'lease.unreachable'
 """An event on the job's row: its worker was silent past ``grace_seconds``."""
+KINDS = (LeaseKind.AGENT, LeaseKind.EVALUATION)
+"""The order in which a worker takes jobs: agents first."""
 EXPIRED = 'lease.expired'
 """An event on the job's row: the lease expired, or its worker reported the job gone. ``reason`` says which."""
 
@@ -198,10 +209,17 @@ class Leases:
     result that core refuses (``Settled``) is refused as stale.
     """
 
-    def __init__(self, db: Database, results: Results, timing: Timing = DEFAULT_TIMING) -> None:
+    def __init__(
+        self,
+        db: Database,
+        results: Results,
+        timing: Timing = DEFAULT_TIMING,
+        pools: Mapping[str, Pool] = DEFAULT_POOLS,
+    ) -> None:
         self._db = db
         self._results = results
         self.timing = timing
+        self.pools = pools
         self._expired_at: datetime | None = None
         """When ``expire`` last ran, to tell a gap in the scheduler's ticks (a suspend) from a silent worker."""
         self._listeners: list[Callable[[], None]] = []
@@ -215,58 +233,104 @@ class Leases:
         for listener in self._listeners:
             listener()
 
-    def acquire(self, worker: str, *, runners: Sequence[str]) -> Grant | None:
-        """Take the oldest queued job that ``worker`` can run, or return None.
+    def register(self, worker: str, pool: str, version: str, runners: Sequence[str], host: HostSample) -> list[Grant]:
+        """Record a worker that starts, and return its live leases: what a restarted worker finds again.
 
-        Agent jobs go first. An evaluation job goes only to a worker with its runner. Core submits an evaluation only
-        when it has a slot, in the order of its queue, so the order of the leases is that order. An unreachable worker
-        gets nothing until a heartbeat of it is heard.
+        Raises:
+            ValueError: no ``[plugins.executor.pools.<pool>]``.
         """
+        if pool not in self.pools:
+            raise ValueError(f'no pool {pool!r}: the pools are {", ".join(sorted(self.pools))}')
         with self._db.session() as s:
             write_transaction(s)
-            unreachable = select(Lease.id).where(
-                Lease.worker == worker, Lease.state.in_(LIVE_LEASES), Lease.unreachable_at.is_not(None)
-            )
-            if s.scalar(unreachable.limit(1)) is not None:
-                return None
-            lease = s.scalars(
-                select(Lease)
-                .where(Lease.kind == LeaseKind.AGENT, Lease.state == LeaseState.QUEUED)
-                .order_by(Lease.id)
-                .limit(1)
-            ).first()
-            if lease is None:
-                lease = s.scalars(
-                    select(Lease)
-                    .where(Lease.kind == LeaseKind.EVALUATION, Lease.state == LeaseState.QUEUED)
-                    .where(Lease.job['runner'].as_string().in_(runners))
-                    .order_by(Lease.id)
-                    .limit(1)
-                ).first()
-            if lease is None:
-                return None
-            now = utcnow()
-            lease.state, lease.worker, lease.acquired_at = LeaseState.ACQUIRED, worker, now
-            lease.renewed_at, lease.expires_at = now, now + timedelta(seconds=self.timing.toleration)
+            row = s.get(LeaseWorker, worker) or LeaseWorker(id=worker)
+            row.pool, row.version, row.runners, row.no_lease = pool, version, list(runners), None
+            self._heard(row, host)
+            s.add(row)
             s.commit()
-            grant = Grant(lease.id, _granted(lease), {}, None)
-        self.notify()
-        return grant
-
-    def held(self, worker: str) -> list[Grant]:
-        """Return the live leases of ``worker``: what a restarted worker finds again."""
-        with self._db.session() as s:
             rows = s.scalars(
                 select(Lease).where(Lease.worker == worker, Lease.state.in_(LIVE_LEASES)).order_by(Lease.id)
             ).all()
             return [Grant(r.id, _granted(r), dict(r.handle), r.started_at) for r in rows]
+
+    @staticmethod
+    def _heard(row: LeaseWorker, host: HostSample) -> None:
+        row.sample, row.seen_at = host.model_dump(mode='json'), utcnow()
+        if row.no_lease == NoLease.UNREACHABLE:
+            row.no_lease = None
+
+    def acquire(self, worker: str, host: HostSample) -> Grant | NoLease:
+        """Take the oldest queued job that ``worker`` can run and that its pool admits, or say why there is none.
+
+        Agent jobs go first. An evaluation job goes only to a worker with its runner. Core submits an evaluation only
+        when it has a slot, in the order of its queue, so the order of the leases is that order. ``host`` is the
+        worker's sample now, which the gates read (``capacity.admits``).
+        """
+        with self._db.session() as s:
+            write_transaction(s)
+            row = s.get_one(LeaseWorker, worker)  # ``register`` wrote it
+            self._heard(row, host)
+            pool = self.pools[row.pool]
+            counts = Counter(
+                s.scalars(select(Lease.kind).where(Lease.worker == worker, Lease.state.in_(LIVE_LEASES))).all()
+            )
+            running = Capacity(counts[LeaseKind.AGENT], counts[LeaseKind.EVALUATION])
+            refused: list[NoLease] = []
+            for kind in KINDS:
+                queued = select(Lease).where(Lease.kind == kind, Lease.state == LeaseState.QUEUED)
+                if kind is LeaseKind.EVALUATION:
+                    queued = queued.where(Lease.job['runner'].as_string().in_(row.runners))
+                lease = s.scalars(queued.order_by(Lease.id).limit(1)).first()
+                match lease, admits(pool, host, running, kind):
+                    case None, None | NoLease.SLOTS:  # full slots hold back nothing when nothing waits
+                        refused.append(NoLease.NOTHING)
+                    case _, NoLease() as refusal:
+                        refused.append(refusal)
+                    case _:
+                        assert lease is not None  # the cases above take every other pair
+                        now = utcnow()
+                        lease.state, lease.worker, lease.acquired_at = LeaseState.ACQUIRED, worker, now
+                        lease.renewed_at, lease.expires_at = now, now + timedelta(seconds=self.timing.toleration)
+                        row.no_lease = None
+                        s.commit()
+                        grant = Grant(lease.id, _granted(lease), {}, None)
+                        self.notify()
+                        return grant
+            reason = row.no_lease = min(refused, key=list(NoLease).index)
+            s.commit()
+            return reason
+
+    def capacity(self) -> Capacity:
+        """The free slots of the reachable workers that their pools admit now, less the queued leases.
+
+        A worker under pressure counts zero, and its live leases take nothing from another worker's slots.
+        """
+        since = utcnow() - timedelta(seconds=self.timing.grace)
+        with self._db.session() as s:
+            rows = s.scalars(select(LeaseWorker).where(LeaseWorker.seen_at > since)).all()
+            leased = s.execute(select(Lease.worker, Lease.kind).where(Lease.state.in_(LIVE_LEASES))).all()
+            live = Counter((worker, kind) for worker, kind in leased)
+            queued = Counter(s.scalars(select(Lease.kind).where(Lease.state == LeaseState.QUEUED)))
+        free: dict[LeaseKind, int | None] = dict.fromkeys(KINDS, 0)
+        for row in rows:
+            if (pool := self.pools.get(row.pool)) is None:
+                continue
+            running = Capacity(live[row.id, LeaseKind.AGENT], live[row.id, LeaseKind.EVALUATION])
+            host = HostSample.model_validate(row.sample)
+            for kind in KINDS:
+                if admits(pool, host, running, kind) is None:
+                    bound = slots(pool, kind)
+                    left = None if bound is None else bound - (slots(running, kind) or 0)
+                    free[kind] = _sum(free[kind], left)
+        agent, evaluation = LeaseKind.AGENT, LeaseKind.EVALUATION
+        return Capacity(_less(free[agent], queued[agent]), _less(free[evaluation], queued[evaluation]))
 
     def _live(self, s: Session, lease_id: int, worker: str) -> Lease:
         """Return the lease if it is ``worker``'s, live and the newest of its job: the fence. Else raise.
 
         The caller holds the write transaction (``write_transaction``) in which it then writes.
         """
-        lease = s.get_one(Lease, lease_id)  # no lease is deleted: ``_job`` or ``held`` found it
+        lease = s.get_one(Lease, lease_id)  # no lease is deleted: ``_job`` or ``register`` found it
         if lease.worker != worker or lease.state not in LIVE_LEASES:
             raise StaleLease(f'stale_lease: lease#{lease_id} is {lease.state}, held by {lease.worker}')
         newest = s.scalar(select(func.max(Lease.id)).where(_job_of(lease)))
@@ -313,23 +377,25 @@ class Leases:
                 raise StaleLease(f'stale_lease: {e}') from e
         self.notify()
 
-    def heartbeat(self, worker: str, sessions: dict[int, str | None]) -> dict[int, Answer]:
+    def heartbeat(self, worker: str, sessions: dict[int, str | None], host: HostSample) -> dict[int, Answer]:
         """Renew the leases of ``worker`` that it still runs, by id, with the session id each agent reported.
 
         The answer for each says go on, stop (``REVOKED``, and report), or the lease is no longer yours (``STALE``).
+        ``host`` is the worker's sample now: it goes on its row.
         """
         answers: dict[int, Answer] = {}
         reported: list[tuple[int, AgentSessionId, str]] = []
         now = utcnow()
         with self._db.session() as s:
             write_transaction(s)
+            self._heard(s.get_one(LeaseWorker, worker), host)
             for lease_id, session_id in sessions.items():
                 try:
                     lease = self._live(s, lease_id, worker)
                 except StaleLease:
                     answers[lease_id] = Answer.STALE
                     continue
-                lease.renewed_at, lease.unreachable_at = now, None
+                lease.renewed_at = now
                 lease.expires_at = now + timedelta(seconds=self.timing.toleration)
                 if session_id is not None and lease.agent_session_id is not None:
                     reported.append((lease_id, lease.agent_session_id, session_id))
@@ -425,7 +491,7 @@ class Leases:
                 s.commit()
 
     def expire(self, now: datetime | None = None) -> datetime | None:
-        """Mark the leases of silent workers unreachable, and expire those past their time. Return the next expiry.
+        """Mark silent workers unreachable, and expire the leases past their time. Return the next expiry.
 
         The scheduler runs this on every tick. The returned time is when it next has something to do, for a daemon
         that wakes on deadlines. A gap since the last tick longer than ``Timing.grace`` is the daemon's own absence (a
@@ -437,22 +503,26 @@ class Leases:
         if last is not None and now - last > timedelta(seconds=self.timing.grace):
             self.renew_all(now)
             return now + timedelta(seconds=self.timing.toleration)
-        grace = timedelta(seconds=self.timing.grace)
-        silent = (Lease.expires_at <= now) | (Lease.unreachable_at.is_(None) & (Lease.renewed_at <= now - grace))
         live = Lease.state.in_(LIVE_LEASES)
+        newly_silent = (LeaseWorker.seen_at <= now - timedelta(seconds=self.timing.grace)) & (
+            LeaseWorker.no_lease.is_distinct_from(NoLease.UNREACHABLE)
+        )
         expiring: list[tuple[int, str]] = []
         with self._db.session() as s:
-            if s.scalar(select(Lease.id).where(live, silent).limit(1)) is not None:  # the write lock only when needed
+            due = s.scalar(select(Lease.id).where(live, Lease.expires_at <= now).limit(1)) is not None
+            if (
+                due or s.scalar(select(LeaseWorker.id).where(newly_silent).limit(1)) is not None
+            ):  # the write lock if needed
                 write_transaction(s)
-                for lease in s.scalars(select(Lease).where(live, silent).order_by(Lease.id)).all():
-                    assert lease.expires_at is not None and lease.renewed_at is not None  # set by acquire
-                    if lease.expires_at <= now:
-                        silence = round((now - lease.renewed_at).total_seconds())
-                        expiring.append((lease.id, f'worker lost: {lease.worker} was silent for {silence} s'))
-                    else:
-                        lease.unreachable_at = now
+                for worker in s.scalars(select(LeaseWorker).where(newly_silent)).all():
+                    worker.no_lease = NoLease.UNREACHABLE
+                    for lease in s.scalars(select(Lease).where(live, Lease.worker == worker.id).order_by(Lease.id)):
                         kind, target = _target(lease)
                         emit(s, UNREACHABLE, kind, target, payload={'lease': lease.id, 'worker': lease.worker})
+                for lease in s.scalars(select(Lease).where(live, Lease.expires_at <= now).order_by(Lease.id)).all():
+                    assert lease.renewed_at is not None  # set by acquire
+                    silence = round((now - lease.renewed_at).total_seconds())
+                    expiring.append((lease.id, f'worker lost: {lease.worker} was silent for {silence} s'))
                 s.commit()
         for lease_id, reason in expiring:
             with contextlib.suppress(StaleLease):  # a report or a heartbeat came first, in the meantime
@@ -472,14 +542,21 @@ class Leases:
         return lease
 
     def renew_all(self, now: datetime | None = None) -> None:
-        """Give every live lease a full period: a daemon that starts again does not expire work for its own absence."""
+        """Give every live lease, and its worker, a full period.
+
+        A daemon that starts again does not expire work for its own absence.
+        """
         now = now or utcnow()
+        live = Lease.state.in_(LIVE_LEASES)
         with self._db.session() as s:
             write_transaction(s)
             s.execute(
                 update(Lease)
-                .where(Lease.state.in_(LIVE_LEASES))
-                .values(renewed_at=now, unreachable_at=None, expires_at=now + timedelta(seconds=self.timing.toleration))
+                .where(live)
+                .values(renewed_at=now, expires_at=now + timedelta(seconds=self.timing.toleration))
+            )
+            s.execute(
+                update(LeaseWorker).where(LeaseWorker.id.in_(select(Lease.worker).where(live))).values(seen_at=now)
             )
             s.commit()
 
@@ -502,7 +579,7 @@ class Leases:
     def adopt(self, left: Sequence[LeftJob], worker: str) -> list[JobKey]:
         """Give every live lease a full period, and return the jobs of ``left`` that have no open lease.
 
-        A job on an open lease goes on: its worker finds it again (``held``). A running agent that a daemon before
+        A job on an open lease goes on: its worker finds it again (``register``). A running agent that a daemon before
         leases started goes on a live lease of ``worker`` (``_adopt_running``).
         """
         self.renew_all()
@@ -554,6 +631,16 @@ class Leases:
             for lease in s.scalars(select(Lease).where(live)).all():
                 cancel(s, lease, UNREPORTED)
             s.commit()
+
+
+def _sum(a: int | None, b: int | None) -> int | None:
+    """Add two numbers of slots. None, no bound, absorbs."""
+    return None if a is None or b is None else a + b
+
+
+def _less(free: int | None, taken: int) -> int | None:
+    """``free`` slots less ``taken``, never below zero. None, no bound, stays None."""
+    return None if free is None else max(free - taken, 0)
 
 
 @deprecated.until('0.3.0', 'an agent that a daemon before leases started: delete _adopt_running')

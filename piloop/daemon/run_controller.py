@@ -142,8 +142,6 @@ class RunController:
         host = Host(db, results, tracer, home, runtime_factory, entire_version)
         self.executor: Executor = provider(host, parameters)
         self.launcher = Launcher(db, tracer, home, self.executor)
-        self._capacity = provider.capacity(parameters)
-        """How many evaluations the executor runs at once, or None for no bound (``dispatch``)."""
         self._jobs: dict[int, EvaluationJob] = {}
         """The job of each evaluation that this daemon asked for, by its queue row, until the row goes: a lost one is
         submitted again. A row without one is another daemon's: a reap drops it, and what needs it asks again."""
@@ -159,8 +157,7 @@ class RunController:
             evaluation = s.get(Evaluation, evaluation_id)
             if evaluation is None or evaluation.started_at is not None:
                 return evaluation is None
-            running = s.scalar(select(func.count()).where(Evaluation.started_at.is_not(None))) or 0
-            return self._capacity is None or running < self._capacity
+            return (free := self.executor.capacity().evaluations) is None or free > 0
 
         while self._db.wait_until(done_or_dispatchable, give_up=self.launcher.cancelled.is_set):
             with self._db.session() as s:
@@ -178,10 +175,9 @@ class RunController:
         with self.launcher.lock:
             if self.launcher.cancelled.is_set():
                 return
+            free = self.executor.capacity().evaluations
             with self._db.session() as s:
                 write_transaction(s)
-                running = s.scalar(select(func.count()).where(Evaluation.started_at.is_not(None))) or 0
-                free = None if self._capacity is None else self._capacity - running
                 starting: list[EvaluationJob] = []
                 for evaluation in queue.waiting(s):
                     if free is not None and len(starting) >= free:

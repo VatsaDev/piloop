@@ -109,6 +109,7 @@ from tests.conftest import (
     events,
     example,
     factory,
+    serving,
     span_named,
     wait_until,
     workers_of,
@@ -186,7 +187,7 @@ def execute(ex: RunController, db: Database, run_id: RunId) -> None:
 
 
 def controller(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer | None = None) -> RunController:
-    return RunController(db, tracer or Tracer(None), tmp_path, factory(runtime))
+    return serving(RunController(db, tracer or Tracer(None), tmp_path, factory(runtime)))
 
 
 def reload_campaign(db: Database, campaign: Campaign) -> None:
