@@ -4,8 +4,7 @@
 chosen by its compressed size: ``storage_class`` (Glacier Instant Retrieval by default: millisecond reads at a fraction
 of STANDARD's price), except below ``standard_below`` bytes, where Glacier IR would bill a 128 KB minimum for each and
 STANDARD is cheaper. Uploads and downloads stream through boto3's transfer manager (multipart past its threshold).
-Credentials are boto3's own chain: the environment, a profile, an instance role. GCS fits as the same class pointed at
-its S3-compatible endpoint.
+Credentials are boto3's own chain: the environment, a profile, an instance role.
 
 boto3 is imported when an ``S3`` is made, not with this module: it takes ~0.5 s, and the settings that name this
 backend are read by every command. Retired with ``piloop.store`` (its module docstring has the condition).

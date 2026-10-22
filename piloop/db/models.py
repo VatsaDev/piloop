@@ -310,9 +310,8 @@ class Campaign(Tracked, Base):
     (else of its first remote) as ``host/owner/name``, else ``path``. ``piloop init`` sets it. Past work on the same
     code is ``WHERE repo = (SELECT repo FROM campaigns WHERE id = <p>)``."""
     type: Mapped[str] = mapped_column(default=OPTIMIZATION, server_default=OPTIMIZATION)
-    """What the campaign does: a campaign type, by its name. ``optimization`` is built in, and is the type of every
-    campaign for now. ``piloop.campaign.ops.set_type`` refuses a name that no installed campaign type has. Each
-    change is a ``campaign.type`` event."""
+    """What the campaign does: a campaign type, by its name. Every campaign is ``optimization``. Each change is a
+    ``campaign.type`` event."""
     parent_id: Mapped[int | None] = mapped_column(ForeignKey('campaigns.id'))
     """The campaign that this one is under, for example the one that spawned it, NULL for a root. It makes a tree of
     the campaigns of one piloop home. ``piloop.campaign.ops.set_parent`` sets it, and each change is a

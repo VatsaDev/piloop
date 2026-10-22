@@ -220,8 +220,8 @@ def parent(
 ) -> None:
     """Put a campaign under another, or make it a root with --clear.
 
-    A campaign has at most one parent, in the same piloop home, and never itself or one of its descendants. The types
-    of the two campaigns must allow it: a leaf-only type has no children. `piloop campaign tree` shows the tree.
+    A campaign has at most one parent, in the same piloop home, and never itself or one of its descendants.
+    `piloop campaign tree` shows the tree.
     """
     if (parent_ref is None) is not clear:
         raise SystemExit('name the parent or --clear, not both' if clear else 'name the parent, or --clear')

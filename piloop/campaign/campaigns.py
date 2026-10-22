@@ -14,7 +14,7 @@ from rich.console import Console
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop import git
+from piloop import deprecated, git
 from piloop.agents.capture import ENTIRE_DIR
 from piloop.config import CONFIG_FILE, CampaignConfig, load_campaign_config
 from piloop.db.events import emit
@@ -28,6 +28,9 @@ console = Console(stderr=True)
 
 WORKSPACE = 'workspace'
 """A per-campaign directory, linked into every worktree, for files that runs share. It is never committed."""
+deprecated.until('0.3.0', 'campaign directories keep their 0.1.0 name: move projects/ to campaigns/, delete PROJECTS')
+PROJECTS = 'projects'
+"""The directory under the piloop home that holds each campaign's directory."""
 GITIGNORE = 'data\n.venv\nworkspace\n__pycache__/\n'
 TEMPLATES = Path(__file__).parent / 'templates'
 BLANK = TEMPLATES / 'campaign'
@@ -279,7 +282,7 @@ def tree(s: Session) -> list[tuple[int, Campaign]]:
 
 def campaigns_dir(home: Path) -> Path:
     """The parent of the directory of each campaign under the piloop home ``home``."""
-    return home / 'projects'  # the directories keep their 0.1 name
+    return home / PROJECTS
 
 
 def campaign_dir(home: Path, campaign_id: int) -> Path:

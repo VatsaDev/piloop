@@ -13,7 +13,10 @@ from dataclasses import dataclass, field
 from alembic.operations import Operations
 from sqlalchemy import text
 
+from piloop import deprecated
 from piloop.db.triggers.ddl import Trigger
+
+deprecated.until('0.3.0', 'old migrations need the old trigger names: squash 0001-0018 at a 0.2.0 floor, delete legacy')
 
 
 @dataclass(frozen=True)

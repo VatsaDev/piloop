@@ -1,7 +1,7 @@
 """The runtime registry, and the runtime of a campaign or of a launched agent session row."""
 
-from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol
 
 from sqlalchemy.orm import Session
 
@@ -18,8 +18,12 @@ def make_runtime(kind: str, *, campaign: str, campaign_path: Path) -> Runtime:
     return RUNTIMES.get(kind)(campaign, campaign_path)
 
 
-type RuntimeFactory = Callable[..., Runtime]
-"""The signature of ``make_runtime``: ``(kind, *, campaign, campaign_path) -> Runtime``. Tests substitute their own."""
+class RuntimeFactory(Protocol):
+    """The signature of ``make_runtime``. Tests substitute their own."""
+
+    def __call__(self, kind: str, /, *, campaign: str, campaign_path: Path) -> Runtime:
+        """Create the runtime called ``kind`` for the campaign."""
+        ...
 
 
 def handle_for(agent_session: AgentSession) -> Handle:

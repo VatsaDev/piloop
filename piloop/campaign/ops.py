@@ -23,7 +23,6 @@ from sqlalchemy.orm import Session
 
 from piloop import git
 from piloop.agents.roles import files_of
-from piloop.campaign import campaign_types
 from piloop.campaign.ideas import Definition, NotASeed, develop
 from piloop.campaign.stop import held
 from piloop.config import CampaignConfig, Files, config_of
@@ -99,44 +98,6 @@ def resume(s: Session, campaign_id: int) -> Pause:
     return held
 
 
-def set_type(s: Session, campaign_id: int, type_name: str) -> Campaign:
-    """Make ``type_name`` the campaign type of the campaign, and return it. The ``campaign.type`` event is the trigger's.
-
-    Raises:
-        Refused: the campaign is missing, it has that type already, no installed campaign type has that name, or the
-            new type does not fit the campaign's parent or children (``campaign_types.misplaced``).
-    """
-    campaign = _get(s, Campaign, campaign_id, 'campaign')
-    types = campaign_types.installed()
-    new = types.get(type_name)
-    if new is None:
-        raise Refused(f'no campaign type {type_name!r}: the installed types are {", ".join(types)}')
-    if campaign.type == type_name:
-        raise Refused(f'{campaign.name} has the campaign type {type_name} already')
-    parent = None if campaign.parent_id is None else s.get_one(Campaign, campaign.parent_id)
-    pairs = [(_type(parent), new)] if parent is not None else []
-    pairs += [(new, _type(child)) for child in s.scalars(select(Campaign).where(Campaign.parent_id == campaign.id))]
-    for above, below in pairs:
-        if (why := campaign_types.misplaced(above, below)) is not None:
-            raise Refused(f'{campaign.name} cannot have the campaign type {type_name}: {why}')
-    campaign.type = type_name
-    return campaign
-
-
-def _type(campaign: Campaign) -> campaign_types.CampaignType:
-    """Return the type of ``campaign``.
-
-    Raises:
-        Refused: no installed campaign type has its name, for example after its plugin was removed.
-    """
-    types = campaign_types.installed()
-    if campaign.type not in types:
-        raise Refused(
-            f'{campaign.name} has the campaign type {campaign.type!r}, which is not installed: {", ".join(types)}'
-        )
-    return types[campaign.type]
-
-
 def set_parent(s: Session, campaign_id: int, parent_id: int | None) -> Campaign:
     """Put the campaign under ``parent_id`` in the tree of campaigns, or make it a root with None, and return it.
 
@@ -144,12 +105,9 @@ def set_parent(s: Session, campaign_id: int, parent_id: int | None) -> Campaign:
     about how either campaign runs. The ``campaigns_parent`` triggers refuse a cycle, whoever writes the column, and
     the ``campaign.parent_id`` event is the trigger's.
 
-    The two campaign types must allow it (``campaign_types.misplaced``): a leaf-only parent has no children, and a type
-    may restrict the types of its children or of its parent.
-
     Raises:
-        Refused: a campaign is missing, the parent is the campaign's already, the types do not allow it, or the parent is
-            the campaign itself or one of its descendants.
+        Refused: a campaign is missing, the parent is the campaign's already, or the parent is the campaign itself or
+            one of its descendants.
     """
     campaign = _get(s, Campaign, campaign_id, 'campaign')
     parent = None if parent_id is None else _get(s, Campaign, parent_id, 'campaign')
@@ -159,8 +117,6 @@ def set_parent(s: Session, campaign_id: int, parent_id: int | None) -> Campaign:
     if parent is None:
         campaign.parent_id = None
         return campaign
-    if (why := campaign_types.misplaced(_type(parent), _type(campaign))) is not None:
-        raise Refused(f'{campaign.name} cannot be under {parent.name}: {why}')
     try:
         with s.begin_nested():
             campaign.parent_id = parent.id

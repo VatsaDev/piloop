@@ -12,8 +12,7 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from piloop.campaign import campaign_types, ops
-from piloop.campaign.campaign_types import CampaignType
+from piloop.campaign import ops
 from piloop.config import load_campaign_config
 from piloop.db.events import emit
 from piloop.db.models import (
@@ -566,63 +565,6 @@ def test_a_campaign_has_one_parent_never_itself_or_a_descendant_and_each_change_
         ], 'the trigger logs each change, and a refused one leaves no event'
         with pytest.raises(IntegrityError, match='FOREIGN KEY'):
             s.execute(text('DELETE FROM campaigns WHERE id = :id'), {'id': a.id})
-
-
-PROOF = CampaignType(name='proof', leaf=True, parent_types=['optimization'])
-"""A test-only leaf type that goes only under an optimization campaign."""
-SURVEY = CampaignType(name='survey', child_types=['proof'])
-"""A test-only type whose children are proofs only."""
-
-
-@pytest.fixture
-def test_types(monkeypatch: pytest.MonkeyPatch) -> None:
-    types = {t.name: t for t in (*campaign_types.BUILT_IN, PROOF, SURVEY)}
-    monkeypatch.setattr(campaign_types, 'installed', lambda: types)
-
-
-def test_a_campaign_type_is_an_installed_one_that_fits_its_parent_and_children(me: Database, test_types: None) -> None:
-    with me.session() as s:
-        top = s.get_one(Campaign, 1)
-        child, other = (Campaign(name=name, path=f'/{name}', config=top.config) for name in ('child', 'other'))
-        s.add_all([child, other])
-        s.flush()
-        with pytest.raises(ops.Refused, match="^no campaign type 'nope': the installed types are optimization, proof"):
-            ops.set_type(s, child.id, 'nope')
-        with pytest.raises(ops.Refused, match='^child has the campaign type optimization already'):
-            ops.set_type(s, child.id, 'optimization')
-        ops.set_parent(s, child.id, top.id)
-        assert ops.set_type(s, child.id, 'proof').type == 'proof'
-        with pytest.raises(ops.Refused, match='^other cannot be under child: campaign type proof is leaf-only$'):
-            ops.set_parent(s, other.id, child.id)
-        with pytest.raises(
-            ops.Refused, match='^demo cannot have the campaign type proof: campaign type proof is leaf-only'
-        ):
-            ops.set_type(s, top.id, 'proof')
-        with pytest.raises(
-            ops.Refused, match="^demo cannot have the campaign type survey: type proof can't be under type su"
-        ):
-            ops.set_type(s, top.id, 'survey')
-        ops.set_type(s, other.id, 'survey')
-        with pytest.raises(
-            ops.Refused,
-            match="^child cannot be under other: type proof can't be under type survey: it goes under optimization$",
-        ):
-            ops.set_parent(s, child.id, other.id)
-        with pytest.raises(
-            ops.Refused,
-            match="^demo cannot be under other: type optimization can't be under type survey: it takes proof$",
-        ):
-            ops.set_parent(s, top.id, other.id)
-        s.commit()
-        changes = s.scalars(select(Event).where(Event.kind == 'campaign.type').order_by(Event.id)).all()
-        assert [(e.target_id, e.payload) for e in changes] == [
-            (child.id, {'old': 'optimization', 'new': 'proof'}),
-            (other.id, {'old': 'optimization', 'new': 'survey'}),
-        ]
-        s.execute(text("UPDATE campaigns SET type = 'gone' WHERE id = :id"), {'id': other.id})
-        s.expire_all()
-        with pytest.raises(ops.Refused, match="^other has the campaign type 'gone', which is not installed"):
-            ops.set_parent(s, other.id, top.id)
 
 
 def test_the_database_refuses_a_cycle_of_parents(me: Database, tmp_path: Path) -> None:
