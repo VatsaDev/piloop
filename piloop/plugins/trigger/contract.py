@@ -8,6 +8,7 @@ trigger of the role, in the order of the list. On the tick that stops the campai
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Annotated, ClassVar, NamedTuple, Protocol
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, SerializeAsAny
@@ -147,6 +148,14 @@ class Tick(Protocol):
 
     def backlog(self, buffer: int, /) -> Backlog:
         """The campaign's backlog of ideas, with ``buffer`` ideas beyond one per run slot, as the role's sweeps fill it."""
+        ...
+
+    def stall_step(self, before: datetime | None, /) -> int:
+        """The runs without a keep over the stall mark (``piloop.campaign.stop.stall``), rounded down.
+
+        It is 0 until the campaign stalls, 1 from the mark, 2 from twice the mark, and so on. A keep resets it. With
+        ``before``, only the runs that finished by then count.
+        """
         ...
 
     def incidents(self) -> list[Incident]:

@@ -6,6 +6,7 @@ from piloop.plugins.role.contract import Files, SweepRole
 from piloop.plugins.trigger.contract import TriggerEntry
 from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.trigger.seed import SeedTrigger
+from piloop.plugins.trigger.stalled import StalledTrigger
 
 
 class ResearchRole(SweepRole):
@@ -13,8 +14,8 @@ class ResearchRole(SweepRole):
 
     PROMPT: ClassVar[str] = 'research.md'
 
-    triggers: list[TriggerEntry] = [LowWaterTrigger(), SeedTrigger()]
-    """A short backlog, and a new seed."""
+    triggers: list[TriggerEntry] = [LowWaterTrigger(), SeedTrigger(), StalledTrigger()]
+    """A short backlog, a new seed, and a stall."""
     writes: list[str] = [
         'seeds via idea develop, or their status to rejected with a note',
         'ideas via idea add',

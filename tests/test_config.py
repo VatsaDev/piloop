@@ -66,6 +66,7 @@ def test_roles_are_typed_per_kind(campaign_path: Path) -> None:
     assert [t.model_dump() for t in defaults.research.triggers] == [
         {'kind': 'low_water', 'buffer': 2},
         {'kind': 'seed'},
+        {'kind': 'stalled'},
     ]
     assert defaults.research.max_concurrent == 1, 'concurrent sweeps duplicate each other and race on seeds'
 

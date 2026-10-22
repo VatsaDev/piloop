@@ -47,7 +47,7 @@ def scheduler(db: Database, runtime: ScriptRuntime, tmp_path: Path) -> Scheduler
 
 
 def low_water(buffer: int) -> list[dict[str, object]]:
-    """Research's default triggers, with ``buffer`` on its ``low_water``."""
+    """Research's ``low_water`` trigger, with ``buffer``, and its ``seed`` trigger."""
     return [{'kind': 'low_water', 'buffer': buffer}, {'kind': 'seed'}]
 
 
@@ -92,8 +92,8 @@ def fail_a_run(db: Database, campaign: Campaign, title: str, status: RunStatus =
         return run.id
 
 
-def finish_a_run(db: Database, campaign: Campaign, title: str) -> int:
-    """Add a run that succeeded just now with a measured discard.
+def finish_a_run(db: Database, campaign: Campaign, title: str, verdict: Verdict = Verdict.DISCARD) -> int:
+    """Add a run that succeeded just now with a measured candidate, a discard by default.
 
     The research trigger sees a new result. The watchdog trigger sees no failure.
     """
@@ -106,7 +106,7 @@ def finish_a_run(db: Database, campaign: Campaign, title: str) -> int:
             parent_id=1,
             tree_sha=f'tree{run_id}',
             commit_sha=f'commit{run_id}',
-            verdict=Verdict.DISCARD,
+            verdict=verdict,
         )
         s.add(candidate)
         s.flush()
@@ -397,6 +397,62 @@ def test_a_seed_fires_one_research_sweep_however_full_the_backlog_once(
     assert sched.tick() == [2]
     assert last_reason(db) == '1 new seeds to develop'
     sched.wait(10)
+    sched.stop(timeout=5)
+
+
+def test_stalled_sweeps_on_new_results_however_full_the_backlog(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """A stall needs a pivot, so ``stalled`` sweeps while the backlog is at its target or above it.
+
+    The next sweep waits for the next stall step, and for the new results that the back-off of empty sweeps wants.
+    """
+    triggers = [*low_water(0), {'kind': 'stalled'}]
+    configure(db, campaign, implementer={'max_concurrent': 1}, research={'max_ideas': 1, 'triggers': triggers})
+    sched = scheduler(db, runtime, tmp_path)
+    occupy(db, campaign)
+    add_ideas(db, campaign, 2)
+    finish_a_run(db, campaign, 'tried once')
+    assert sched.tick() == [], 'one run without a keep, of the two that mark a stall: the full backlog wants nothing'
+
+    finish_a_run(db, campaign, 'tried twice')
+    assert sched.tick() == [1], 'stalled: the backlog holds no pivot'
+    assert last_reason(db) == 'stalled, step 1'
+    sched.wait(10)
+    assert sched.tick() == [], 'research read every result'
+
+    finish_a_run(db, campaign, 'tried again')
+    assert sched.tick() == [], 'still the first stall step'
+    finish_a_run(db, campaign, 'tried once more')
+    assert sched.tick() == [2]
+    assert last_reason(db) == (
+        'stalled, step 2; 2 runs finished since agent_session#1 started (after 1 sweeps that defined no idea)'
+    )
+    sched.wait(10)
+    sched.stop(timeout=5)
+
+
+def test_a_long_stall_gets_one_stalled_sweep_per_stall_step_and_a_keep_ends_it(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """A stall of N runs gets N / mark sweeps of ``stalled``, not N: one at each mark of runs without a keep."""
+    triggers = [{'kind': 'stalled'}]
+    configure(db, campaign, implementer={'max_concurrent': 2}, research={'max_ideas': 1, 'triggers': triggers})
+    sched = scheduler(db, runtime, tmp_path)  # The stall mark is two rounds of 2 run slots: 4 runs.
+    for n in range(12):
+        finish_a_run(db, campaign, f'tried {n}')
+        sched.tick()
+        sched.wait(10)
+    reasons = [reason or '' for _, _, reason in agent_sessions(db, RoleName.RESEARCH)]
+    assert [r.split(';')[0] for r in reasons] == ['stalled, step 1', 'stalled, step 2', 'stalled, step 3']
+
+    finish_a_run(db, campaign, 'kept', Verdict.KEEP)
+    for n in range(4):
+        finish_a_run(db, campaign, f'after the keep {n}')
+        sched.tick()
+        sched.wait(10)
+    assert len(agent_sessions(db, RoleName.RESEARCH)) == 4, 'the keep ended the stall: four runs mark a new one'
+    assert (last_reason(db) or '').startswith('stalled, step 1; 5 runs finished since agent_session#3 started')
     sched.stop(timeout=5)
 
 

@@ -118,8 +118,8 @@ def _is_scout(trigger: object) -> bool:
     return isinstance(trigger, dict) and trigger.get('kind') == 'scout'
 
 
-RESEARCH_TRIGGERS = ({'kind': 'low_water'}, {'kind': 'seed'})
-"""The default triggers of research when ``[roles.research] buffer`` was deprecated."""
+RESEARCH_TRIGGERS = ({'kind': 'low_water'}, {'kind': 'seed'}, {'kind': 'stalled'})
+"""The default triggers of research."""
 
 
 @until('0.3.0', '[roles.research] buffer is a low_water trigger buffer: delete the research_buffer bridge')
@@ -140,7 +140,8 @@ def research_buffer(toml: Path, raw: dict[str, object]) -> None:
     warn(
         toml,
         'roles.research.buffer',
-        '[roles.research] buffer is deprecated; write triggers = [{ kind = "low_water", buffer = … }, { kind = "seed" }]',
+        '[roles.research] buffer is deprecated; write triggers ='
+        ' [{ kind = "low_water", buffer = … }, { kind = "seed" }, { kind = "stalled" }]',
         removed_in=REMOVED_IN,
     )
 

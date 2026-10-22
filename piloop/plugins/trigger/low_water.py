@@ -2,8 +2,9 @@ from typing import Literal
 
 from pydantic import Field
 
-from piloop.db.models import OPEN_RUNS, AgentSessionState, Run, campaign_runs, count, utcnow
+from piloop.db.models import AgentSessionState, utcnow
 from piloop.plugins.trigger.contract import Backlog, Fire, Tick, Trigger
+from piloop.plugins.trigger.kit.reasons import futile, news
 
 
 class LowWaterTrigger(Trigger):
@@ -42,27 +43,16 @@ class LowWaterTrigger(Trigger):
 
     def fire(self, tick: Tick) -> Fire | None:
         backlog = tick.backlog(self.buffer)
-        if backlog.per_sweep == 0 or backlog.short <= 0 or backlog.sweeps >= tick.max_concurrent:
-            return None
-        if backlog.on_hold and backlog.runnable:
+        if backlog.short <= 0 or futile(tick, backlog):
             return None
         batch = min(-(-backlog.short // backlog.per_sweep), tick.max_concurrent - backlog.sweeps)
         reason = self._reason(tick, backlog)
         return None if reason is None else Fire(reason, count=batch)
 
     def _reason(self, tick: Tick, backlog: Backlog) -> str | None:
-        last = tick.last
-        if last is None:
-            return str(backlog)
-        if last.state is AgentSessionState.KILLED and tick.killed_streak() <= tick.max_concurrent:
-            return f'{backlog}; retrying after agent_session#{last.id} was killed: {last.error}'
-        mine = campaign_runs(tick.campaign.id)
-        finished = count(tick.s, mine.where(Run.finished_at > last.started_at))
-        in_flight = count(tick.s, mine.where(Run.status.in_(OPEN_RUNS)))
-        barren = len(tick.empty_sweeps((AgentSessionState.EXITED,)))
-        if finished >= max(min(2**barren, finished + in_flight), 1):
-            backoff = f' (after {barren} sweeps that defined no idea)' if barren else ''
-            return f'{backlog}; {finished} runs finished since agent_session#{last.id} started{backoff}'
+        if (reason := news(tick, str(backlog))) is not None:
+            return reason
+        assert tick.last is not None  # Without a row, every backlog is news.
         empty = tick.empty_sweeps((AgentSessionState.EXITED, AgentSessionState.KILLED))
         if not empty:
             return str(backlog)

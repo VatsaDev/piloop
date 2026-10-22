@@ -80,7 +80,7 @@ max_concurrent = 1
 # writes = ["ideas via idea add"]         # what the brief says the role may write; default: what piloop expects of it
 # files = "ideas"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role
-triggers = [{ kind = "low_water", buffer = 2 }, { kind = "seed" }]  # a short backlog (buffer: ideas beyond one per run slot), a new seed
+triggers = [{ kind = "low_water", buffer = 2 }, { kind = "seed" }, { kind = "stalled" }]  # a short backlog (buffer: ideas beyond one per run slot), a new seed, a stall
 # workdir = "repo"                         # head (the default): a worktree at the head · repo: the campaign checkout
 # interval = 0                            # seconds between two sweeps of a cron trigger, if you add one
 # wake_budget = 400                       # tokens of the lessons overview that opens the brief; if not set: [memory]'s

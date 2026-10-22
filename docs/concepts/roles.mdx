@@ -121,7 +121,8 @@ of an idea and the verdict count every run of the campaign. A keep of any role m
 - The **research** agent reads the **research pack**: the metrics, what was tried for each mechanism, the recent ideas
   and their outcomes, the kept lineage, and the findings of every role. `piloop history enwik8` prints it. Research
   develops each waiting seed, adds ideas where the head loses the most, and writes one `finding`. It starts on a new
-  seed, or when the backlog has fewer ready ideas than one for each run slot, plus a buffer (`low_water`).
+  seed, when the backlog has fewer ready ideas than one for each run slot, plus a buffer (`low_water`), and once per
+  stall mark of runs without a keep (`stalled`).
 
 ## Scout
 

@@ -306,8 +306,10 @@ def paused_for(s: Session, campaign: Campaign, since: datetime, now: datetime) -
     return total
 
 
-def runs_without_keep(s: Session, campaign: Campaign) -> int:
+def runs_without_keep(s: Session, campaign: Campaign, before: datetime | None = None) -> int:
     """Count the finished runs that count (``counted``) since the latest keep or reactivation. ``plateau`` uses this.
+
+    With ``before``, only the runs of that window that finished by then count: 0 if the window opened later.
 
     The window starts when the run of the latest keep finished, or when the campaign was last set ``active`` again
     after a stop (``piloop init``, or an UPDATE), whichever is later. A reactivated campaign gets a fresh window, so
@@ -326,7 +328,8 @@ def runs_without_keep(s: Session, campaign: Campaign) -> int:
     )
     since = max((t for t in (last_keep, reactivated) if t is not None), default=None)
     after = (Run.finished_at > since,) if since is not None else ()
-    return _over_runs(s, campaign, func.count(Run.id), Run.status.in_(FINISHED_RUNS), counted(), *after) or 0
+    by = (Run.finished_at <= before,) if before is not None else ()
+    return _over_runs(s, campaign, func.count(Run.id), Run.status.in_(FINISHED_RUNS), counted(), *after, *by) or 0
 
 
 def stall(cfg: CampaignConfig) -> tuple[int, str]:

@@ -779,6 +779,7 @@ class Scheduler:
             interval=role.interval,
             backlog=partial(self._backlog, s, campaign, cfg, name),
             incidents=partial(self._incidents, s, campaign, cfg),
+            stall_step=lambda before: runs_without_keep(s, campaign, before) // stall(cfg)[0],
         )
 
     def _incidents(self, s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Incident]:
@@ -1265,10 +1266,11 @@ class Scheduler:
         buffer = next((t.buffer for t in role.triggers if isinstance(t, LowWaterTrigger)), 0)
         backlog = self._backlog(s, campaign, cfg, name, buffer)
         most = role.max_ideas
-        own = max(min(backlog.short + most, most), 0)  # This sweep's share of the shortfall.
-        seeds = count(s, select(Idea).where(Idea.campaign_id == campaign.id, Idea.status == IdeaStatus.SEED))
         without, (mark, why) = runs_without_keep(s, campaign), stall(cfg)
-        stalled = ': stalled, so one of your own ideas pivots (section 3)' if without >= mark else ''
+        pivot = min(most, 1) if without >= mark else 0  # A stall gets its pivot whatever the backlog holds.
+        own = max(min(backlog.short + most, most), pivot)  # This sweep's share of the shortfall.
+        seeds = count(s, select(Idea).where(Idea.campaign_id == campaign.id, Idea.status == IdeaStatus.SEED))
+        stalled = ': stalled, so one of your own ideas pivots (section 3)' if pivot else ''
         short = [
             '- Tracks short of their share of the backlog: '
             + (
@@ -1378,6 +1380,7 @@ class RoleTick:
     interval: float
     backlog: Callable[[int], Backlog]
     incidents: Callable[[], list[Incident]]
+    stall_step: Callable[[datetime | None], int]
 
     def _mine(self) -> Select[AgentSession]:
         return select(AgentSession).where(AgentSession.campaign_id == self.campaign.id, AgentSession.kind == self.role)

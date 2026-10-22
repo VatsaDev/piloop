@@ -72,6 +72,7 @@ anomaly = "piloop.plugins.trigger.anomaly:AnomalyTrigger"
 cron = "piloop.plugins.trigger.cron:CronTrigger"
 seed = "piloop.plugins.trigger.seed:SeedTrigger"
 low_water = "piloop.plugins.trigger.low_water:LowWaterTrigger"
+stalled = "piloop.plugins.trigger.stalled:StalledTrigger"
 stopped = "piloop.plugins.trigger.stopped:StoppedTrigger"
 sql = "piloop.plugins.trigger.sql:SqlTrigger"
 

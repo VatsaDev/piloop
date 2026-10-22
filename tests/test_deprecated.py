@@ -136,6 +136,7 @@ def test_research_buffer_is_the_buffer_of_its_low_water_triggers(campaign_path: 
     assert [t.model_dump() for t in cfg.roles.research.triggers] == [
         {'kind': 'low_water', 'buffer': 5},
         {'kind': 'seed'},
+        {'kind': 'stalled'},
     ], 'the default triggers, with the buffer'
     deprecated_config(
         campaign_path, '[roles.research]\nbuffer = 0\ntriggers = [{ kind = "low_water" }, { kind = "cron" }]\n'
@@ -187,14 +188,21 @@ TEMPLATES = Path(__file__).parent / 'fixtures' / 'templates'
 
 
 @pytest.mark.parametrize(
-    ('template', 'scout_table'),
-    [('piloop-0.1.0.toml', False), ('piloop-0.2.0.dev.toml', False), ('piloop-0.2.0.dev.toml', True)],
+    ('template', 'scout_table', 'triggers'),
+    [
+        ('piloop-0.1.0.toml', False, ['low_water', 'seed', 'stalled']),
+        ('piloop-0.2.0.dev.toml', False, ['low_water', 'seed']),
+        ('piloop-0.2.0.dev.toml', True, ['low_water', 'seed']),
+    ],
     ids=['0.1.0', 'dev', 'dev-with-its-scout-table'],
 )
 def test_a_piloop_toml_that_an_earlier_template_wrote_still_loads(
-    template: str, scout_table: bool, tmp_path: Path
+    template: str, scout_table: bool, triggers: list[str], tmp_path: Path
 ) -> None:
-    """Every form of the deprecated keys that the earlier templates wrote, the scout table uncommented included."""
+    """Every form of the deprecated keys that the earlier templates wrote, the scout table uncommented included.
+
+    0.1.0 wrote no research triggers, so research gets the default ones. The dev template listed them.
+    """
     text = (TEMPLATES / template).read_text()
     if scout_table:
         text = text.replace('# [roles.research.scout]', '[roles.research.scout]')
@@ -203,7 +211,8 @@ def test_a_piloop_toml_that_an_earlier_template_wrote_still_loads(
     with pytest.warns(PiloopDeprecationWarning):
         cfg = load_campaign_config(tmp_path)
     research = cfg.roles.research
-    assert [t.model_dump() for t in research.triggers] == [{'kind': 'low_water', 'buffer': 2}, {'kind': 'seed'}]
+    assert [t.kind for t in research.triggers] == triggers
+    assert research.triggers[0].model_dump() == {'kind': 'low_water', 'buffer': 2}
     assert (cfg.context, research.max_ideas) == ([], 1)
     assert (cfg.roles.scout.interval, cfg.roles.scout.seeds) == ((86400, 3) if scout_table else (0, 3))
 

@@ -29,6 +29,7 @@ from piloop.plugins.trigger.cron import CronTrigger
 from piloop.plugins.trigger.seed import SeedTrigger
 from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.trigger.sql import SqlTrigger
+from piloop.plugins.trigger.stalled import StalledTrigger
 from piloop.plugins.trigger.stopped import StoppedTrigger
 
 from piloop.plugins.role.contract import ROLES, ImplementerRole, SweepRole

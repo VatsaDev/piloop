@@ -69,7 +69,7 @@ def test_a_healthy_install_passes_every_check(
         f'ok    cli: {installed()}; not checked for a newer one: installed from file:///src/piloop: update that checkout',
         'ok    daemon: not running',
         f'ok    database: {tmp_path}/piloop.db at schema {HEAD}, current',
-        'ok    plugins: 1 executor, 4 roles, 2 runtimes, 1 stop rule, 2 storage backends, 6 triggers, 1 verdict rule; all built in',
+        'ok    plugins: 1 executor, 4 roles, 2 runtimes, 1 stop rule, 2 storage backends, 7 triggers, 1 verdict rule; all built in',
         'ok    secrets: from the environment of this shell only (PILOOP_SECRETS_COMMAND unset)',
         f'ok    campaign demo: {campaign.path}/piloop.toml loads',
         f'ok    skills (pi): current in {cfg.agent_skills_dir}',

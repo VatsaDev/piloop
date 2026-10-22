@@ -192,7 +192,7 @@ name defines a new role, and needs `prompt` and `triggers`.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `runs` | boolean | `false` | The agents of this role do no runs. Set `runs = true` in a new table to define a role that does runs. |
-| `triggers` | list\[[Trigger](#trigger)\] | required | When the daemon requests an agent of this role: a list of `{ kind = "<trigger>", ... }` entries, checked in order on each tick. A package can add triggers. An empty list means that agents start only on request (`piloop launch`). Built in: `anomaly`, `cron`, `low_water`, `seed`, `sql`, `stopped`. |
+| `triggers` | list\[[Trigger](#trigger)\] | required | When the daemon requests an agent of this role: a list of `{ kind = "<trigger>", ... }` entries, checked in order on each tick. A package can add triggers. An empty list means that agents start only on request (`piloop launch`). Built in: `anomaly`, `cron`, `low_water`, `seed`, `sql`, `stalled`, `stopped`. |
 | `workdir` | `head` \| `repo` | `"head"` | Where the agent works: `head`, a detached worktree at the head, or `campaign`, the campaign checkout. |
 | `interval` | number | `0` | The number of seconds between two routine sweeps of the `cron` trigger, counted from the start of the last one. A sweep that investigates an anomaly is not a routine sweep. 0 turns the timer off. |
 | `max_ideas` | integer | `1` | The maximum number of new ideas one sweep may insert, as its brief states it. The seeds it develops do not count. `low_water` requests enough sweeps to fill the backlog at this many ideas each. 0 pauses the role's new ideas: `low_water` is off, and an idea that a sweep of the role adds (`piloop idea add`) is `proposed`, so it waits for a review, also from a sweep that started before the change. |
@@ -218,7 +218,7 @@ The daemon checks the entries in the order of the list.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | required | The name of the trigger. A package can add triggers. Built in: `anomaly`, `cron`, `low_water`, `seed`, `sql`, `stopped`. |
+| `kind` | string | required | The name of the trigger. A package can add triggers. Built in: `anomaly`, `cron`, `low_water`, `seed`, `sql`, `stalled`, `stopped`. |
 
 ## ResearchRole
 
@@ -230,7 +230,7 @@ The daemon checks the entries in the order of the list.
 | `max_concurrent` | integer | `1` | The maximum number of sweeps that run at the same time, each on the next harness of the rotation. The default is 1: sweeps that run at the same time read the same evidence and often duplicate each other, and two of them can race to develop the same seed. |
 | `writes` | list\[string\] | `["seeds via idea develop, or their status to rejected with a note", "ideas via idea add", "comments(finding, escalation) on the campaign", "comments(note) on an idea"]` | What a research sweep may write, as its brief states it. |
 | `files` | `nothing` \| `seeds` \| `ideas` | `"ideas"` | Research develops seeds into ideas and adds ideas of its own. |
-| `triggers` | list\[[Trigger](#trigger)\] | `[{"kind": "low_water", "buffer": 2}, {"kind": "seed"}]` | A short backlog, and a new seed. |
+| `triggers` | list\[[Trigger](#trigger)\] | `[{"kind": "low_water", "buffer": 2}, {"kind": "seed"}, {"kind": "stalled"}]` | A short backlog, a new seed, and a stall. |
 
 ## ScoutRole
 
@@ -416,6 +416,21 @@ one statement that only reads.
 |---|---|---|---|
 | `kind` | string | `"sql"` |  |
 | `when` | string | required | The query, for example `SELECT 1 FROM candidates WHERE campaign_id = :campaign AND verdict = 'keep' AND created_at > :since`. |
+
+## StalledTrigger
+
+The campaign reached a new stall step, and no sweep of the role started in it, however full the backlog is.
+
+The campaign has stalled when the runs since the last keep reach the stall mark (`piloop.campaign.stop.stall`).
+Each further mark of runs without a keep is a new step, and a keep ends the stall. The backlog may hold no idea
+that pivots, and the brief of a sweep on a stall allows one idea of the role's own. So a stall of N runs gets
+about N / mark sweeps, not one per result. The back-off of `low_water` for new results still applies, and a
+killed sweep is retried at the next step. As with `low_water`, nothing is requested while every slot of the role
+is busy, while its `max_ideas` is 0, or while the queue holds its ideas for the head (`Backlog.on_hold`).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `"stalled"` |  |
 
 ## StoppedTrigger
 

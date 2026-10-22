@@ -210,7 +210,7 @@ Each of these still works in 0.2.0, with a `PiloopDeprecationWarning`. piloop 0.
 | `[roles.worker]` | `[roles.implementer]` |
 | `PILOOP_PROJECT_<KEY>` | `PILOOP_CAMPAIGN_<KEY>`. When both are set, `PILOOP_CAMPAIGN_<KEY>` wins. |
 | `[roles.research.scout]` | `[roles.scout]`. The keys of `[roles.research]` that the scout used (`runtime`, `harnesses`, `model`, `timeout`, `mcp`, `addendum`, `workdir`) move with it. |
-| `[roles.research] buffer` | `buffer` on research's `low_water` trigger: `triggers = [{ kind = "low_water", buffer = 2 }, { kind = "seed" }]` |
+| `[roles.research] buffer` | `buffer` on research's `low_water` trigger: `triggers = [{ kind = "low_water", buffer = 2 }, { kind = "seed" }, { kind = "stalled" }]` |
 | `[roles.research] context` | The top-level `context` |
 | `{claude_config_dir}` in `[harness.<name>.usage] file` | `{env:CLAUDE_CONFIG_DIR:~/.claude}` |
 | `{codex_home}` in `[harness.<name>.usage] file` | `{env:CODEX_HOME:~/.codex}` |

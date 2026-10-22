@@ -174,7 +174,7 @@ def test_a_broken_package_of_a_capability_that_nothing_binds_is_a_warning(
     found = next(c for c in doctor.checks(home) if c.name == 'plugins')
     assert found.fix is None
     assert found.found == (
-        '1 executor, 4 roles, 2 runtimes, 1 stop rule, 6 triggers, 1 verdict rule; all built in; warning: nothing selects a storage backend, and they do not load:'
+        '1 executor, 4 roles, 2 runtimes, 1 stop rule, 7 triggers, 1 verdict rule; all built in; warning: nothing selects a storage backend, and they do not load:'
         ' entry point gone = tests.fixtures.no_such_module:Gone in piloop.stores does not load: ModuleNotFoundError:'
         " No module named 'tests.fixtures.no_such_module'"
     )

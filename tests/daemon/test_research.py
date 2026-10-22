@@ -126,8 +126,8 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
 ) -> None:
     """A seed starts a research sweep even when the backlog is at its target.
 
-    The brief lists the seeds and asks for no new ideas. The developed seed is ready with its definition, and the
-    sweep counts as one that defined an idea.
+    The brief lists the seeds. The backlog is full but the campaign has stalled, so it asks for one idea of research's
+    own, the pivot. The developed seed is ready with its definition, and the sweep counts as one that defined an idea.
     """
     configure(
         db,
@@ -168,7 +168,7 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
 
     brief = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
     assert '- Seeds to develop first: 2, listed in the research pack oldest first.' in brief
-    assert '- Ideas of your own after the seeds: propose 0 (the backlog holds 1 of 1 runnable ideas' in brief
+    assert '- Ideas of your own after the seeds: propose 1 (the backlog holds 1 of 1 runnable ideas' in brief
     assert (
         '- Measured runs since the last keep: 2, of the 2 that mark a stall (two rounds of [roles.implementer]'
         ' max_concurrent = 1): stalled, so one of your own ideas pivots (section 3).' in brief
