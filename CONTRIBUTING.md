@@ -207,12 +207,33 @@ npx mint dev
 npx mint broken-links --check-anchors
 ```
 
-Write docs, skills and agent prompts in Simplified Technical English: one idea per sentence, most sentences 20 words or
-fewer, active voice, present tense, and the imperative for instructions. Use piloop's own terms with one meaning each.
-Write no history: no "used to", no PR numbers, no dates.
+Write docs, skills and agent prompts in Simplified Technical English. Less is more: cut each sentence that the reader
+can infer, and each mechanism that the reader does not act on. These rules apply, each with an example:
 
-The docs describe what piloop does now. A design proposal is not a page: it is discussed in an issue, and the change
-that builds it documents it here.
+1. Open a page with one sentence that says what it is for, then an example. Before: "A campaign costs money in two
+   ways: …". After: "`[stop] max_tokens` and `[spend]` limit what a campaign costs.", then the TOML.
+2. Show what a command prints, copied from a real run. Before: "To see the progress, run `piloop status enwik8`."
+   After: the command, then the lines of its output that the reader looks at.
+3. Use one example on a page, and grow it. Before: `my-campaign`, Titanic and enwik8 on one page. After: enwik8 in
+   each block.
+4. Define a term in bold where it first appears, in the same sentence. Link to its page after that. Before: "on each
+   tick", with no definition. After: "on each **tick**, a pass of the daemon's loop every 2 seconds".
+5. Use one word for one thing. Before: "worker", "worker agent" and "agent" for one role. After: "implementer".
+6. Write one idea for each sentence, in most sentences 20 words or fewer, in the active voice and the present tense.
+   Use the imperative for instructions. Before: "A run whose agent could not be launched, or that ended within two
+   minutes without a commit, is not an attempt." After: "Sometimes an agent never starts to work. Then the run is not
+   an attempt."
+7. Put each fact on one page, and link to it from the others. Before: "`piloop stop` stops the daemon, not the
+   campaign" on five pages. After: on one page, with a link from the others.
+8. Explain on concept pages, and list on reference pages. Before: the reference entry of `piloop init` repeats the
+   by-hand steps. After: its synopsis, one line and a link.
+9. Describe what piloop does now: no history, no plans, no PR numbers, no dates. Before: "piloop can later run the
+   provider as a WebAssembly component." After: delete the sentence.
+10. Use a `<Warning>` only for a loss of work, a leaked secret or a wrong score. Use at most two admonitions on a page.
+    Before: a `<Note>` that repeats the step above it. After: one sentence in the step.
+
+A design proposal is not a page: it is discussed in an issue, and the
+change that builds it documents it here.
 
 In `.mdx` files, `{`, `}`, `<` and `>` in text are syntax. Put them in code spans, or escape them.
 
