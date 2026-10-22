@@ -52,6 +52,7 @@ from piloop.plugins.executor.kit.leases import NOT_TAKEN, STALE_REPORT, Leases, 
 from piloop.proc import alive, started
 from piloop.settings import Settings
 from tests.conftest import (
+    WRITE_PID,
     ScriptRuntime,
     at_head,
     baseline,
@@ -70,7 +71,7 @@ from tests.daemon.test_serve import env_for, reap
 FAST = Timing(renew=0.1, grace=0.5, toleration=2.0)
 WORKER_PROCESS = Path(__file__).parent.parent / 'fixtures' / 'worker_process.py'
 COMMIT_THEN_HOLD = (
-    '#!/bin/sh\necho $$ > ../agent.pid\necho line >> solve.txt\ngit commit -qam "a line"\n'
+    f'#!/bin/sh\n{WRITE_PID}echo line >> solve.txt\ngit commit -qam "a line"\n'
     'while [ -f {hold} ]; do sleep 0.05; done\n'
 )
 
@@ -163,7 +164,7 @@ def hold(tmp_path: Path) -> Iterator[Path]:
     yield path
     path.unlink(missing_ok=True)
     for pid_file in tmp_path.glob('runs/*/agent.pid'):
-        with contextlib.suppress(ProcessLookupError, ValueError):
+        with contextlib.suppress(ProcessLookupError):
             os.kill(int(pid_file.read_text()), signal.SIGKILL)
 
 
@@ -326,7 +327,9 @@ def test_a_partitioned_worker_stops_its_job_before_its_lease_expires_and_its_rep
     mocker.patch.object(Leases, 'report', cut(report))
     thread = in_thread(execute, ex, db, run_id)
     wait_until(lambda: state(db, 1) is LeaseState.RUNNING)
-    agent_pid = int((tmp_path / 'runs' / str(run_id) / 'agent.pid').read_text())
+    pid_file = tmp_path / 'runs' / str(run_id) / 'agent.pid'
+    wait_until(pid_file.exists)  # the lease runs once the agent's process started, before its script wrote the file
+    agent_pid = int(pid_file.read_text())
     start = started(agent_pid)
     assert start is not None
     partitioned.set()

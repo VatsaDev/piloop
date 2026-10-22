@@ -60,6 +60,8 @@ HARNESS_TRY_AND_REVERT = (
     '#!/bin/sh\necho line >> solve.txt\ngit commit -qam "try"\ngit revert --no-edit HEAD >/dev/null\n'
 )
 HARNESS_PROMPT_TO_FILE = '#!/bin/sh\nprintf %s "$1" > prompt.txt\n'
+WRITE_PID = 'echo $$ > ../agent.pid.part\nmv ../agent.pid.part ../agent.pid\n'
+"""The agent's pid, by a rename: a test that finds the file never reads it empty."""
 
 EVALUATE = ['sh', '-c', 'echo METRIC score=$(wc -l < solve.txt); echo METRIC size=$(wc -c < solve.txt)']
 

@@ -704,3 +704,28 @@ def test_a_join_while_a_job_thread_starts_waits_for_it(
     worker._spawn(Grant(1, agent_job(db, campaign, tmp_path), {}, None), lambda: None)
     worker.join(5)
     assert errors == []
+
+
+def test_a_kick_while_the_loop_ends_starts_it_again(
+    db: Database, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A lease that changes after the loop found nothing to do, before its thread ended, gets a loop of its own."""
+    worker = workers_of(RunController(db, Tracer(None), tmp_path, factory(runtime))).worker
+    loops: list[threading.Thread] = []
+    ending, ended = threading.Event(), threading.Event()
+    run_loop = worker._run_loop
+
+    def held_at_its_end() -> None:
+        loops.append(threading.current_thread())
+        run_loop()
+        if len(loops) == 1:
+            ending.set()
+            ended.wait(5)
+
+    monkeypatch.setattr(worker, '_run_loop', held_at_its_end)
+    worker.kick()
+    assert ending.wait(5)
+    worker.kick()  # the first loop is still alive: idle, and about to end
+    ended.set()
+    worker.join(5)
+    assert len(loops) == 2

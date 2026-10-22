@@ -140,7 +140,7 @@ class Worker:
             if self._handover:  # the next daemon's worker has the leases, and this daemon's database may be closed
                 return
             self._wanted.set()
-            if self._loop is None or not self._loop.is_alive():
+            if self._loop is None:
                 self._loop = threading.Thread(target=self._run_loop, name=f'worker-{self.id}', daemon=True)
                 self._loop.start()
 
@@ -197,6 +197,9 @@ class Worker:
             with self._lock:
                 idle = not self._threads and not self._unsent and (self._stopping or not self._wanted.is_set())
                 if idle and not failed:
+                    # under the lock: a kick from here on starts a new loop. This thread is alive until it returns,
+                    # so a kick that looked at it would wake nothing
+                    self._loop = None
                     return
             self._wanted.wait(self.leases.timing.renew)
 

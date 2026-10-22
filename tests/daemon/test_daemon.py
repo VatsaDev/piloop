@@ -32,6 +32,7 @@ from piloop.proc import Inherited, alive, started
 from piloop.settings import Settings
 from tests.conftest import (
     HARNESS_NOOP,
+    WRITE_PID,
     ScriptRuntime,
     console_lines,
     factory,
@@ -269,7 +270,7 @@ def test_a_restart_whose_shutdown_fails_still_execs(tmp_path: Path, mocker: Mock
 
 
 HARNESS_HELD = (
-    '#!/bin/sh\necho a >> solve.txt\ngit commit -qam first\necho $$ > ../agent.pid\n'
+    f'#!/bin/sh\necho a >> solve.txt\ngit commit -qam first\n{WRITE_PID}'
     'while [ -f {hold} ]; do sleep 0.05; done\necho b >> solve.txt\ngit commit -qam second\n'
 )
 """An implementer that commits, says it is under way, waits while the test holds it, then commits again."""
