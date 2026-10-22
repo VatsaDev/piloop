@@ -61,7 +61,7 @@ other.
 - **Reply** asks for the text and a priority (default 2). It writes a `decision` comment that replies to the first
   item of the thread. The orchestrator's next wait returns with it, and the orchestrator acknowledges it after it
   applies it.
-- **Bring to the front** does what the [runtime](/concepts/runtimes) of the agent defines, for example it focuses the
+- **Bring to the front** does what the [runtime](/concepts/roles#runtimes) of the agent defines, for example it focuses the
   agent's tab. When the runtime has no view of its own, a notification says where to look instead.
 - **Steer** queues text for the agent's next turn, as `piloop prompt` does. A runtime can refuse it, for example while
   the agent waits on a dialog. A notification says why.

@@ -175,10 +175,10 @@ renames a table, a column or a value, add the rename to `RENAMES` in that module
 - `docs/reference/schema.mdx`, from `piloop/db/models.py`.
 - `piloop/db/actor_triggers.sql`, from `piloop/db/triggers/`.
 - `docs/snippets/generated/`: the generated parts of other pages. These are the diagram of the tables, the values of
-  the state enums and the graph of the imports, and the tables of the built-in runtimes, triggers, harnesses, role
-  keys and defaults, `Runtime` methods and `[stop]` keys. They also include the environment variables of the settings
-  classes, and how each harness takes a message under Herdr. They come from the docstrings and the built-in
-  registries, so write those docstrings for the reader of the page. A missing docstring stops `make docs`.
+  the state enums and the graph of the imports, and the tables of the built-in runtimes, triggers, harnesses,
+  `Runtime` methods and `[stop]` keys. They also include the environment variables of the settings classes. They come
+  from the docstrings and the built-in registries, so write those docstrings for the reader of the page. A missing
+  docstring stops `make docs`.
 
 Each file starts with a comment that names the command and the source to change. A page shows a generated part as a
 [Mintlify snippet](https://www.mintlify.com/docs/create/reusable-snippets): it imports the file, then uses it as a component.

@@ -1,86 +1,92 @@
 ---
-title: Research memory
-description: What past campaigns found, for every agent and for the next orchestrator session.
+title: Memory and sessions
+description: What past campaigns learned, the orchestrator's journal, and the session of every agent, for the next agent to read.
 ---
 
-Every campaign that piloop ever ran is in one database. Research memory makes it easy to find, so that a new campaign
-does not pay again for what an old one learned. Agents find it with SQL: there is no search command.
+One database holds every campaign that piloop ran. So a new campaign does not pay again for what an old one learned.
+Agents read this memory with SQL. The procedures in every brief (`piloop schema`) have the queries.
 
 ## Lessons
 
-A **lesson** is the standing conclusion about one mechanism family (`ideas.family`) of a campaign: a row of the
-`lessons` table. It replaces the findings on that family. The newest lesson for a campaign and family is the current
-one, so a new conclusion is a new row: a lesson is never changed.
+A **lesson** is the conclusion about one mechanism family (`ideas.family`) of a campaign:
 
 ```sql
 INSERT INTO lessons (campaign_id, family, status, effect, metric, body, created_by)
-VALUES (3, 'confidence calibration', 'dead', 0.002, 'accuracy',
-        'Three attempts (idea#41, #57, #63) on evaluator#3 calibrated well on the panel and moved nothing.', 'orchestrator');
+VALUES (1, 'stronger generic compressor', 'promising', -976922, 'bytes',
+        'LZMA1 at preset 9 extreme (idea#1, candidate#2) beat zlib by 976922 bytes; the time guardrail held.', 'orchestrator');
 ```
 
-The status is `dead`, `promising` or `untested`. `effect` is the best effect measured, in the units of `metric`, with
-its sign: a gain can be a lower time. Both are NULL when nothing was measured. The body says why, citing idea and
-candidate ids.
+- `status` is `dead`, `promising` or `untested`.
+- `effect` is the best effect measured, in the units of `metric`, with its sign. It is NULL when nothing was measured.
+- `body` says why, with idea and candidate ids.
 
-When a `[stop]` condition ends a campaign, the closing watchdog writes one lesson for each family that the campaign
-tried: what was tried, the best effect and on which evaluator, why it stopped, and its status. The orchestrator can
-write lessons too.
+A lesson is never changed: a newer one for the same family replaces it. When a `[stop]` condition ends a campaign, the
+closing watchdog writes a lesson for each family that the campaign tried.
 
-## The same code, in every clone
-
-`campaigns.repo` names the repository that a campaign works on: the URL of its `origin` remote, as
-`host/owner/name`, or else its path. Two campaigns in two clones of one repository have the same `repo`. So "what was
-tried on this code" is one condition, `p.repo = (SELECT repo FROM campaigns WHERE id = <p>)`, whatever directory each
-campaign ran in.
+The briefs of implementers and research sweeps open with the current lessons on the same repository, also from
+campaigns in other clones of it. Each family gets one line, ranked by metric, status and size of the effect.
+`[memory] wake_budget` (400 tokens by default) limits these lines, and 0 turns them off.
 
 ## Documents
 
-Campaign reports, orchestrator logs and design notes live outside the database. Name them in `piloop.toml`:
+Name the reports and notes that agents should be able to search:
 
 ```toml
 [memory]
 documents = ["docs/evidence/**/*.md"]
 ```
 
-`piloop init` and the stop of a campaign copy them into the `documents` table. Each distinct content of a file is one
-row, so a second sync of unchanged files does nothing, and an edited file is a new version. Agents search them with
-`documents_fts`, and may add their own. Never name a document that is derived from validation or test data: every
-agent of every campaign can read it.
+`piloop init` and the stop of a campaign copy them into the `documents` table. An edited file is a new version.
 
-## What agents read
-
-The briefs of implementers and research sweeps open with the current lessons of the repo. Each mechanism family gets one
-line, from the newest campaign that tried it. The lines are ranked in this order:
-
-1. The metric of the lesson (`lessons.metric`). The campaign's primary metric comes first. Its other metrics come
-   next. Then come metrics that share a word with them, for example `rep_correct_at_b` with `val_correct_at_b`. Then
-   come lessons with no effect. The rest come last.
-2. The status. A dead or promising lesson comes before an untested one.
-3. The size of the effect, whatever its sign. Only lessons in the same metric are compared, so seconds never outrank
-   words.
-4. The age of the campaign. A newer campaign comes first.
-
-The overview is `[memory] wake_budget` tokens (default 400). `[roles.<kind>] wake_budget` changes it for one role. 0
-turns it off. Watchdogs do not get it by default.
-
-- The database procedures that every brief carries (`piloop schema`, "Remember past campaigns") have the queries:
-  prior attempts at a mechanism on this repo, labelled with the campaign, what they came to and the metric that judged
-  them; implementations to copy from any campaign; the current lessons; the documents; and how to read the session that
-  worked a past idea.
-- Research checks this before it develops a seed or proposes an idea. An implementer checks it before it builds a mechanism
-  from scratch.
-
-A discard under one campaign's evaluator is not a dead end under another's, so every query shows what judged a result.
+<Warning>
+  Every agent of every campaign can read the documents. Never name one that comes from validation or test data.
+</Warning>
 
 ## The orchestrator's journal
 
-An orchestrator session can lose its context: a crash, or a full context window. The journal lets the next session
-pick up the work.
+An orchestrator session can lose its context. The **journal** lets the next session continue the work:
 
-- `piloop journal "<line>"` adds one line, at most 280 bytes: a decision, a plan or a result, with its ids. The
-  journal is append-only: no agent can change, delete or replace a line.
-- `piloop wake` prints, in a fixed budget (`--budget`, default 2000 tokens, headings included), the latest journal
-  lines, the open inbox, the head of each active campaign and the current lessons on their repos. Each section says
-  how to read what did not fit.
+```bash
+piloop journal "lesson on lzma recorded; idea#2 (context mixer) is next, p1"
+```
 
-The `piloop-operate` skill runs `piloop wake` first and journals as it goes.
+A line has at most 280 bytes, and no agent can change it later. `piloop wake` prints what a new session needs first,
+in a fixed budget: the latest journal lines, the open inbox, the head of each active campaign and the current lessons.
+
+```text
+## Journal, oldest to newest (1 lines in all)
+- 2026-10-22 05:02 orchestrator: lesson on lzma recorded; idea#2 (context mixer) is next, p1
+
+## Inbox (0 open)
+- none
+
+## Active campaigns (1)
+- enwik8 · head bytes 2711853 (candidate#2, -976922 vs baseline) · 2 kept / 2 candidates · 356k tok
+
+## Current lessons on their repos (1)
+- [enwik8] stronger generic compressor | promising | -976922 bytes (lesson#1)
+```
+
+The `piloop-operate` skill runs `piloop wake` first, and writes to the journal as it goes.
+
+## Sessions
+
+The candidates show what the code was. The **sessions** show what the agents did: their prompts, tool calls and
+reasoning. When [Entire](https://github.com/entireio/cli) 0.10.6 or later is installed (the piloop installer installs
+it), piloop keeps the session of every agent in your repo, as a local git ref. You configure nothing, and no data
+leaves your machine.
+
+To read the session that made candidate 2:
+
+```bash
+piloop sql "SELECT s.checkpoint_id FROM agent_sessions s JOIN candidates c ON c.run_id = s.run_id WHERE c.id = 2"
+entire checkpoint explain <checkpoint-id>
+```
+
+`entire checkpoint explain` prints the session's first prompt, its tokens, and its transcript: each prompt, tool call
+and answer.
+
+<Warning>
+  A session holds the whole brief and the absolute paths under your home directory. Entire redacts only strings that
+  look like keys. Check a session before you push its ref to a shared remote.
+</Warning>

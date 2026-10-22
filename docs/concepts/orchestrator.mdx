@@ -1,65 +1,45 @@
 ---
 title: The orchestrator and the inbox
-description: A coding agent of your choice runs the campaign for you and records every decision in your inbox.
+sidebarTitle: Orchestrator and inbox
+description: A coding agent of your choice runs the campaign for you, and records each decision that it takes for you in your inbox.
 ---
 
-## The orchestrator
-
 The **orchestrator** is a coding agent that runs the campaign for you. It answers what the other agents escalate,
-manages the ideas, asks for research and watchdog sweeps, steers implementers and reports progress. It is not a role: the
-daemon never starts it and works without one. It is any coding agent that you start in the repo, with the
-`piloop-operate` skill. When an agent sets up a campaign for you, it offers to be the orchestrator at the end of the
-setup.
+manages the ideas, steers the implementers and reports. It is any coding agent with the `piloop-operate` skill: the
+daemon never starts it, and works without one. To start one, open your agent in the campaign repo and ask it to
+"orchestrate the piloop campaign".
 
-To start one for a campaign that runs already, open your agent in the campaign repo and ask:
-
-```text
-orchestrate the piloop campaign
-```
-
-The skills come with the CLI. `piloop install-skills` copies them into the skill directory of every harness on your
-`PATH`. The installer and `piloop upgrade` run it for you, so the skills always match the installed CLI.
-
-| Harness | Skill directory |
-|---|---|
-| Claude Code | `~/.claude/skills/` (or `$CLAUDE_CONFIG_DIR/skills/`) |
-| Codex, pi, Gemini CLI, Cursor | `~/.agents/skills/` |
-
-The skills use only the `piloop` CLI, so no harness needs an extension. Claude Code can also give the loop to a
-background subagent, so that your session stays free.
-
-Run one orchestrator for each campaign. Two orchestrators answer the same escalation twice. One orchestrator can
-run [several campaigns](/several-campaigns).
+The skills come with the CLI: the installer and `piloop upgrade` run `piloop install-skills`, so they always match it.
 
 ## The loop
 
-The orchestrator waits on one command. The command blocks until something needs the orchestrator, so the model uses
-no tokens while nothing happens:
+The orchestrator waits on one command, so its model uses no tokens while nothing happens:
 
 ```bash
-PILOOP_ACTOR=orchestrator piloop inbox wait my-campaign --timeout 1800
+PILOOP_ACTOR=orchestrator piloop inbox wait enwik8 --timeout 1800
 ```
 
-It returns, with one line for each event, when one of these happens:
+```text
+candidate#2 keep: against candidate#1: bytes 2711853 vs 3688775 (-976922; aggregate: no per-unit results); guardrails…
+campaign enwik8 stopped: max_runs: 1 runs
+seed idea#3 (enwik8) by human: Combine the lzma preset of candidate#2 with a preprocessed dictionary — candidate#2
+next: piloop inbox wait enwik8 --after 17
+```
 
-- A new inbox item that someone else wrote.
-- A new seed that someone else filed.
-- The daemon stops the campaign.
-- The daemon gives an anomaly to a watchdog.
-- The daemon gives a verdict on a measured candidate.
+The wait returns on a new inbox item, a new seed, a verdict, an anomaly or a stop, or at the timeout. Its last line is
+the next wait, with a cursor, so nothing is lost between two waits. `PILOOP_ACTOR=orchestrator` signs the
+orchestrator's writes, and the wait skips them.
 
-Otherwise it returns at the timeout. Its last line, after `next: `, is the command for the next wait, with a cursor
-(`--after <event-id>`), so nothing is lost between two waits. Without a campaign name, the wait covers every campaign.
-`PILOOP_ACTOR=orchestrator` signs the orchestrator's writes, and the wait skips what the orchestrator wrote itself.
+Run one orchestrator for each campaign. Two orchestrators answer the same escalation twice.
 
 ## Comments
 
-Agents and humans talk through **comments** on a campaign, an idea, a run, a candidate, a measurement, an agent session
-or another comment. A comment has a kind:
+Agents and humans talk through **comments** on a campaign, an idea, a run, a candidate or another comment. A comment
+has a kind:
 
 | Kind | Use |
 |---|---|
-| `note` | Context or a short remark. |
+| `note` | Context, or a short remark. |
 | `finding` | A result: what an agent tried and learned. |
 | `decision` | A decision, with the reason and how to revert it. |
 | `escalation` | A question that needs a decision. |
@@ -68,28 +48,19 @@ A comment on an idea goes into the brief of the idea's next run.
 
 ## The inbox
 
-The **inbox** is every comment that has a priority. These comments are addressed to you, the human. A comment without
-a priority is part of the forum, not of the inbox.
-
-| Priority | Meaning |
-|---|---|
-| 0 to 1 | Urgent. |
-| 2 to 4 | Can wait. |
-| none | Not in the inbox. |
+The **inbox** is every comment that has a priority: 0 and 1 are urgent, 2 to 4 can wait. An escalation always has a
+priority. A comment without one is not in the inbox.
 
 ```bash
-piloop inbox                 # the unacknowledged items, most urgent first
+piloop inbox                 # the open items, most urgent first, and the seeds
 piloop inbox show 812        # one item and its thread
 piloop inbox ack 812         # mark it as seen
 ```
 
-An escalation always has a priority.
-
 ## Decisions
 
-You are often away, and work should not wait for you. So the orchestrator decides the questions that come up, and
-records each decision that it takes for you as a `decision` comment with a priority. You review the decisions in your
-inbox and revise the ones you disagree with. A decision says:
+Work should not wait for you, so the orchestrator decides what comes up. It records each decision that it takes for you
+as a `decision` comment in your inbox:
 
 ```text
 [<category>, reversible|irreversible] <what it decided, in one line>
@@ -98,15 +69,23 @@ Changed: <the rows, files, settings or commits>
 Revert: <the command or edit that undoes it>
 ```
 
-The `piloop-operate` skill has a table that sets the priority of each kind of decision. A change to a goal, a metric,
-a guardrail, the evaluate command or a stop condition is priority 0. A routine fix is priority 3 or 4. The
-When a decision cannot be undone and can wait for you, the orchestrator does not take it: it leaves the escalation in
-your inbox.
+A change to a goal, a metric, a guardrail, the evaluate command or a stop condition has priority 0. A routine fix has
+priority 3 or 4. A decision that cannot be undone and can wait, the orchestrator leaves to you as an escalation.
 
-To revise a decision, reply to it in `piloop watch` (key `r`), or write a `decision` comment on the same target. The
-orchestrator's next wait returns with it, and it applies your decision first.
+To revise a decision, reply to it in `piloop watch` (key `r`). The orchestrator's next wait returns your reply, and it
+applies your reply first.
 
-## Without an orchestrator
+## Several campaigns
 
-Nothing in the daemon needs an orchestrator. Without one, escalations wait in the inbox until you read them with
-`piloop inbox` or `piloop watch`.
+A campaign is one repo with its own `piloop.toml`. To improve two repos, set up two campaigns: open your agent in each
+repo, or name the repo. One daemon serves every campaign of a `PILOOP_HOME`.
+
+```text
+Use piloop on ~/projects/search to cut the p95 latency of the query endpoint.
+```
+
+Two goals for the same code, such as the accuracy and the cost of one model, are [tracks](/concepts/tracks) of one
+campaign, not two campaigns.
+
+One agent can orchestrate every campaign. Ask it to "orchestrate all my piloop campaigns". Without a campaign name,
+`piloop inbox wait`, `piloop inbox` and `piloop watch` cover every campaign, and each item names its campaign.

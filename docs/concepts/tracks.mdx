@@ -3,19 +3,13 @@ title: Tracks
 description: Several objectives for one piece of code, on one trunk.
 ---
 
-<Note>Experimental: tracks.</Note>
+<Note>Tracks are experimental.</Note>
 
-Sometimes you want to improve two things about the same code, for example the accuracy of a model and its cost to
-run. Run them as **tracks** of one campaign, not as two campaigns. Each track has its own primary metric. A keep on one
-track must hold the primary of every other track within a margin.
+A **track** is one objective of a campaign with several, such as the accuracy of a model and its cost to run. Each
+track has its own primary metric. A keep on one track must hold the primary of every other track within its margin.
 
-## The example
-
-`piloop init --example titanic-tracks` creates a campaign with two tracks on Kaggle's Titanic data. Implementers edit
-`solve.py`, which trains a model and predicts survival. One evaluate command prints two metrics:
-
-- `accuracy`: the accuracy on a fixed holdout. Higher is better.
-- `cost_seconds`: the CPU seconds that `solve.py` takes to train and predict. Lower is better.
+`piloop init --example titanic-tracks` makes a campaign with two tracks on Kaggle's Titanic data. Its evaluate command
+prints `accuracy`, on a fixed holdout, and `cost_seconds`, the CPU time to train and predict:
 
 ```toml
 [[metrics]]
@@ -23,19 +17,19 @@ name = "accuracy"
 direction = "higher"
 role = "primary"
 track = "accuracy"
-margin = 0.02          # what a cost keep may give up per step
-floor = 0.74           # a cost candidate may never push accuracy below this
+margin = 0.02          # what a cost keep may give up for each keep
+floor = 0.74           # and never below this
 
 [[metrics]]
 name = "cost_seconds"
 direction = "lower"
 role = "primary"
 track = "cost"
-margin = 0.3           # what an accuracy keep may add per step
-floor = 2.0            # an accuracy keep may not push the cost past this
+margin = 0.3           # what an accuracy keep may add for each keep
+floor = 2.0            # and never past this
 
 [tracks.accuracy]
-share = 0.75           # of [roles.implementer] max_concurrent
+share = 0.75           # of the implementer slots
 addendum = "briefs/accuracy.md"
 
 [tracks.cost]
@@ -45,32 +39,24 @@ addendum = "briefs/cost.md"
 
 ## How tracks work
 
-- Each primary metric names its `track`. With several primaries, each one needs a `margin` and may have a `floor`.
-- Each track has a `[tracks.<name>]` table. `share` is the part of the implementer slots that the track gets. The shares
-  sum to 1. `addendum` is a file that is added to the brief of the track's runs.
-- Every idea names its track: `piloop idea add <campaign> "<title>" --track cost`. With several tracks, piloop refuses
-  an idea without one.
-- A candidate is judged on the track of its idea. The primary of that track must beat the bar. The primary of every
-  other track is one more guardrail, with its own margin and floor.
-- All tracks share one trunk and one head. A keep on any track moves the head.
+- Each primary metric names its `track`, and needs a `margin`.
+- `share` is the part of the implementer slots that the track gets. The shares sum to 1, and a share of 0 stops a
+  track. `addendum` is a file that piloop adds to the brief of the track's runs.
+- Every idea names its track: `piloop idea add titanic-tracks "Add a family-size feature" --track accuracy`.
+- A candidate is judged on the track of its idea. The primaries of the other tracks are its guardrails, each with its
+  own margin and floor.
+- All tracks share one head. A keep on any track moves it.
+- A free slot goes to the track that is furthest below its share and has a ready idea.
 
-A campaign with one primary metric is one track, named after the metric. It needs no `[tracks]` table.
+A campaign with one primary metric has one track, and needs no `[tracks]` table. `[stop] target` is not allowed with
+several tracks.
 
 ## What you see
 
-- `piloop status` and `piloop watch` show the head with the primary of every track. Then one line for each track: its
-  primary at the head and at the start, the distance to its floor, its keeps, and its share next to the number of runs
-  it has running.
-- A free implementer slot goes to the track that is furthest below its share and has a ready idea. A track with no ready
-  idea gives its slot to the others. A share of 0 stops a track.
-- A candidate on one track that makes another track's primary worse by more than its margin is `interesting`, not
-  `keep`. For example:
-  `guardrails: cost_seconds 0.49 vs 0.09 (+0.4; …) beyond its margin 0.3`.
-- A candidate on one track that pushes another track's primary past its floor is a `discard`. For example:
-  `floor: cost_seconds 2.3 past its floor 2`.
-- The research agent fills the backlog of each track by its share, and names the tracks that are short.
+`piloop status` and `piloop watch` show one line for each track: its primary at the head and at the start, the
+distance to its floor, its keeps, and its running runs against its share. A verdict reason names the other track's
+primary when it decides:
 
-## What is the same for every track
-
-The evaluate command, the `[stop]` conditions, the `[spend]` limit and the watchdog's timer are for the whole
-campaign. `[stop] target` is not allowed with several tracks.
+```text
+guardrails: cost_seconds 0.49 vs 0.09 (+0.4; …) beyond its margin 0.3
+```

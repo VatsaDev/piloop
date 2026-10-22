@@ -12,7 +12,7 @@
     "groups": [
       {
         "group": "Get started",
-        "pages": ["index", "quickstart", "several-campaigns", "by-hand"]
+        "pages": ["index", "quickstart", "by-hand"]
       },
       {
         "group": "Concepts",
@@ -21,11 +21,9 @@
           "concepts/ideas-and-runs",
           "concepts/verdict",
           "concepts/roles",
-          "concepts/runtimes",
           "concepts/orchestrator",
           "concepts/tracks",
           "concepts/research-memory",
-          "concepts/session-capture",
           "concepts/cost",
           "concepts/artifact-store"
         ]
@@ -68,6 +66,18 @@
     {
       "source": "/setup",
       "destination": "/by-hand"
+    },
+    {
+      "source": "/several-campaigns",
+      "destination": "/concepts/orchestrator#several-campaigns"
+    },
+    {
+      "source": "/concepts/runtimes",
+      "destination": "/concepts/roles"
+    },
+    {
+      "source": "/concepts/session-capture",
+      "destination": "/concepts/research-memory#sessions"
     }
   ],
   "navbar": {
