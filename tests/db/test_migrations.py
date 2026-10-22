@@ -1109,3 +1109,40 @@ def test_0019_adds_the_leases_whose_job_is_of_their_kind_and_downgrades(tmp_path
     command.downgrade(cfg, '0018')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert con.execute("SELECT name FROM sqlite_master WHERE name = 'leases'").fetchall() == []
+
+
+def test_0020_makes_each_live_agent_that_the_daemon_ended_ending_and_downgrades(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0019')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
+        for state in ('running', 'running', 'starting', 'killed'):
+            con.execute(f"INSERT INTO agent_sessions (kind, campaign_id, state) VALUES ('implementer', 1, '{state}')")
+        for agent_session in (1, 3, 4):
+            con.execute(
+                'INSERT INTO events (kind, actor, target_kind, target_id) VALUES'
+                f" ('agent_session.stop_ended', 'daemon', 'agent_session', {agent_session})"
+            )
+        con.execute("INSERT INTO leases (kind, agent_session_id) VALUES ('agent', 1)")
+    command.upgrade(cfg, '0020')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT id, state FROM agent_sessions ORDER BY id').fetchall() == [
+            (1, 'ending'),
+            (2, 'running'),
+            (3, 'ending'),
+            (4, 'killed'),
+        ], 'only a live row that the daemon ended'
+        assert con.execute('SELECT agent_session_id FROM leases').fetchall() == [(1,)], 'the rebuild keeps the leases'
+        triggers = "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'agent_sessions'"
+        assert {t for (t,) in con.execute(triggers)} == {t.name for t in PERSISTENT if t.table == 'agent_sessions'}
+    command.downgrade(cfg, '0019')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT id, state FROM agent_sessions ORDER BY id').fetchall() == [
+            (1, 'running'),
+            (2, 'running'),
+            (3, 'running'),
+            (4, 'killed'),
+        ]
+        with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: agentsessionstate'):
+            con.execute("UPDATE agent_sessions SET state = 'ending' WHERE id = 1")

@@ -16,7 +16,8 @@ SESSION_ACTOR_TABLE = """\
 -- through this connection sets updated_by, and the caller does not need to name itself. The WHEN clause stops the
 -- trigger's own UPDATE from firing it again, and replaces any actor that a statement tries to set.
 -- WITHOUT ROWID keeps the actor row out of last_insert_rowid, which clients report for the caller's statement.
-CREATE TEMP TABLE session_actor (actor TEXT NOT NULL PRIMARY KEY) WITHOUT ROWID;"""
+-- agent_session is the agent session of an agent's connection, and NULL for every other actor.
+CREATE TEMP TABLE session_actor (actor TEXT NOT NULL PRIMARY KEY, agent_session INTEGER) WITHOUT ROWID;"""
 
 
 def updated_at(table: str) -> Trigger:

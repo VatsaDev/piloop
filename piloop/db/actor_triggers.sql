@@ -4,7 +4,8 @@
 -- through this connection sets updated_by, and the caller does not need to name itself. The WHEN clause stops the
 -- trigger's own UPDATE from firing it again, and replaces any actor that a statement tries to set.
 -- WITHOUT ROWID keeps the actor row out of last_insert_rowid, which clients report for the caller's statement.
-CREATE TEMP TABLE session_actor (actor TEXT NOT NULL PRIMARY KEY) WITHOUT ROWID;
+-- agent_session is the agent session of an agent's connection, and NULL for every other actor.
+CREATE TEMP TABLE session_actor (actor TEXT NOT NULL PRIMARY KEY, agent_session INTEGER) WITHOUT ROWID;
 CREATE TEMP TRIGGER campaigns_updated_by AFTER UPDATE ON campaigns
 WHEN NEW.updated_by IS NOT (SELECT actor FROM temp.session_actor)
 BEGIN
@@ -149,6 +150,14 @@ WHEN NEW.kind != 'escalation'
 BEGIN
   INSERT INTO events (kind, actor, target_kind, target_id, payload)
   VALUES ('comment.' || NEW.kind, NEW.author, 'comment', NEW.id, json_object('target_kind', NEW.target_kind, 'target_id', NEW.target_id));
+END;
+
+-- An agent whose session has ended leaves no finding. session_actor holds the agent session of an agent's connection,
+-- and the daemon sets the row ending in a commit before it kills the agent.
+CREATE TEMP TRIGGER comments_no_late_finding BEFORE INSERT ON comments
+WHEN NEW.kind = 'finding' AND EXISTS (SELECT 1 FROM agent_sessions WHERE id = (SELECT agent_session FROM temp.session_actor) AND state IN ('ending', 'exited', 'killed'))
+BEGIN
+  SELECT RAISE(ABORT, 'the agent session of this connection has ended: its finding is refused');
 END;
 
 -- The feed is append-only: an event takes the next id, because a reader's cursor is an event id. Its columns have the

@@ -32,6 +32,7 @@ import sqlite3
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
+from typing import assert_never
 
 from blake3 import blake3
 from sqlalchemy import MetaData
@@ -39,7 +40,7 @@ from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from piloop import deprecated
-from piloop.actor import Actor
+from piloop.actor import Actor, Agent, System
 from piloop.db.models import Base
 from piloop.db.triggers.fts import FTS_COLUMNS, FTS_TABLES, FTS_TRIGGER_NAMES, fts_table
 from piloop.db.triggers.immutable import APPEND_ONLY, IMMUTABLE, UNDELETABLE
@@ -158,10 +159,18 @@ def install_functions(con: sqlite3.Connection) -> None:
 def install_actor(con: sqlite3.Connection, actor: Actor) -> None:
     """Make every UPDATE through ``con`` record ``actor`` in ``updated_by``, and log tracked changes in ``events``.
 
-    It creates a TEMP table and TEMP triggers, for this connection only.
+    It creates a TEMP table and TEMP triggers, for this connection only. An agent's connection also records its agent
+    session, so that a finding after its end is refused (``piloop.db.triggers.ended``).
     """
+    match actor:
+        case Agent(session=session):
+            agent_session: int | None = session
+        case System():
+            agent_session = None
+        case _:
+            assert_never(actor)
     con.executescript(ACTOR_TRIGGERS)
-    con.execute(f'INSERT INTO {ACTOR_TABLE} (actor) VALUES (?)', (actor.signature,))
+    con.execute(f'INSERT INTO {ACTOR_TABLE} (actor, agent_session) VALUES (?, ?)', (actor.signature, agent_session))
     con.commit()
 
 

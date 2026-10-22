@@ -64,8 +64,9 @@ STOP_ENDED = 'agent_session.stop_ended'
 
 An implementer of a stopped campaign is ended when the grace period after its wrap-up prompt is over, or at once for a stop
 that kills. An implementer in the middle of a turn takes a message only when the turn ends, so it may never have read the
-prompt. The scheduler commits the event before the kill, and the run closes with the ``error``
-(``CAMPAIGN_STOPPED_ERROR`` or ``CANCELLED_ERROR``) unless its implementer left its finding."""
+prompt. The scheduler sets the row ``ending`` and commits it with the event before the kill, so a finding that the
+agent writes after it is refused. The run closes with the ``error`` (``CAMPAIGN_STOPPED_ERROR`` or ``CANCELLED_ERROR``)
+unless its implementer left its finding before."""
 ASKED_TO_END = (WRAP_UP, STOP_ENDED)
 """Events on an agent that the daemon told to stop or ended. Such an agent never counts as a failed start."""
 ENDED_EVENT = 'agent_session.job_ended'
@@ -133,7 +134,9 @@ class CampaignResults:
 
         def change(s: Session) -> None:
             w = _open(s, key)
-            w.handle, w.state = handle, AgentSessionState.RUNNING
+            w.handle = handle
+            if w.state is AgentSessionState.STARTING:  # a row that the daemon ended meanwhile stays ending
+                w.state = AgentSessionState.RUNNING
             if session_id is not None:
                 w.session_id = session_id
 
@@ -191,7 +194,7 @@ class CampaignResults:
             _ended(s, w.id, Ended(End.STOPPED, stopped, report.head))
             return
         asked = _asked_to_end(s, w.id)
-        killed = report.status is AgentStatus.TIMED_OUT or report.startup_failed or STOP_ENDED in asked
+        killed = report.status is AgentStatus.TIMED_OUT or report.startup_failed or w.state is AgentSessionState.ENDING
         startup_failed = report.startup_failed or (not asked and _never_worked(s, w, report))
         w.state = AgentSessionState.KILLED if killed else AgentSessionState.EXITED
         w.error, w.checkpoint_id = report.error, report.checkpoint
@@ -232,7 +235,7 @@ class CampaignResults:
 
 
 def _open(s: Session, key: AgentKey) -> AgentSession:
-    """Return the agent's row while it is starting or running. Raises ``Settled`` once it is closed."""
+    """Return the agent's row while it is starting, running or ending. Raises ``Settled`` once it is closed."""
     w = s.get(AgentSession, key.agent_session)
     if w is None or w.state not in LIVE:
         raise Settled(f'agent_session#{key.agent_session} is closed')

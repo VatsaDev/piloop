@@ -263,7 +263,7 @@ CREATE TABLE agent_sessions (
 	CONSTRAINT "agent_sessions.model must be a text value" CHECK (typeof(model) IN ('text', 'null')),
 	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE,
 	FOREIGN KEY(run_id) REFERENCES runs (id) ON DELETE SET NULL,
-	CONSTRAINT agentsessionstate CHECK (state IN ('requested', 'starting', 'running', 'exited', 'killed'))
+	CONSTRAINT agentsessionstate CHECK (state IN ('requested', 'starting', 'running', 'ending', 'exited', 'killed'))
 );
 CREATE INDEX ix_agent_sessions_campaign_kind_state ON agent_sessions (campaign_id, kind, state);
 CREATE INDEX ix_agent_sessions_run ON agent_sessions (run_id);

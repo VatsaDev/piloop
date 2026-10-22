@@ -172,16 +172,21 @@ class RoleName(StrEnum):
 
 
 class AgentSessionState(StrEnum):
-    """The process state of an agent, kept by the daemon. ``requested`` is a request to launch, not a process."""
+    """The process state of an agent, kept by the daemon. ``requested`` is a request to launch, not a process.
+
+    ``ending``: the daemon ended the agent, for a stop or a cancel, and its process is not gone yet. From then on, a
+    finding that the agent writes is refused.
+    """
 
     REQUESTED = 'requested'
     STARTING = 'starting'
     RUNNING = 'running'
+    ENDING = 'ending'
     EXITED = 'exited'
     KILLED = 'killed'
 
 
-LIVE = (AgentSessionState.STARTING, AgentSessionState.RUNNING)
+LIVE = (AgentSessionState.STARTING, AgentSessionState.RUNNING, AgentSessionState.ENDING)
 ENDED = (AgentSessionState.EXITED, AgentSessionState.KILLED)
 
 

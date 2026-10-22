@@ -137,8 +137,8 @@ def run_cancel(
 
     A queued run never starts, and a run whose implementer fails to start is not launched again. A running implementer is ended
     with every process that it started, at once or, with `--wrap-up`, after it was told to commit and stop. The run
-    closes as `cancelled`, unless the implementer left its finding. Its commits are scored, and its idea is parked: set it
-    `ready` to run it again.
+    closes as `cancelled`, unless the implementer left its finding before the daemon ended it: a later finding is
+    refused. Its commits are scored, and its idea is parked: set it `ready` to run it again.
     """
     with common.session() as s:
         run = s.get(Run, run_id)

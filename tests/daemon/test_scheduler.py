@@ -1,5 +1,6 @@
 import json
 import re
+import sqlite3
 import threading
 import time
 from contextlib import closing
@@ -1907,6 +1908,32 @@ def test_a_cancelled_implementer_closes_its_run_as_cancelled_scores_its_commits_
         [note] = s.scalars(select(Comment).where(Comment.target_kind == TargetKind.IDEA)).all()
         assert note.body == 'parked: run#1 was cancelled by human; set the idea ready to run it again'
         assert runs(s, s.get_one(Campaign, campaign.id)) == 0, 'not an attempt: no run limit counts it'
+
+
+def test_a_finding_that_lands_after_a_cancel_ended_the_implementer_is_refused_and_the_run_is_cancelled(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """A ``piloop sql`` that was in flight when the daemon ended a cancelled implementer wrote its finding after the end,
+    and the finding settled the run as ``succeeded``. The row is ``ending`` in a commit before the kill, so the late
+    finding is refused and the run closes as cancelled."""
+    write_toml(Path(campaign.path), '#!/bin/sh\nexec sleep 30\n', implementer_timeout=60)
+    set_config(db, campaign)
+    (idea,) = add_ideas(db, campaign, 'redundant')
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    assert scheduler.tick() == [1]
+    wait_for_agent_session_handle(db)
+    with db.session() as s:
+        request_cancel(s, s.get_one(Run, 1), System.HUMAN, wrap_up=False)
+        s.commit()
+    scheduler.tick()
+    with pytest.raises(sqlite3.IntegrityError, match='the agent session of this connection has ended'):
+        comment(db, 'finding', 'idea', idea, 'done after all', author='implementer#1')
+    scheduler.wait(20)
+    scheduler.stop(timeout=5)
+    with db.session() as s:
+        run = s.get_one(Run, 1)
+        assert (run.status, run.error) == (RunStatus.FAILED, CANCELLED_ERROR)
+        assert s.get_one(AgentSession, 1).state is AgentSessionState.KILLED
 
 
 def test_an_implementer_cancelled_before_it_did_anything_is_not_a_failed_start(

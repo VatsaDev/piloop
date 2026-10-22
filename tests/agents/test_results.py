@@ -14,6 +14,7 @@ from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import (
     AgentJob,
+    AgentKey,
     AgentReport,
     Checkout,
     EvaluationJob,
@@ -53,6 +54,31 @@ def test_an_evaluation_that_left_the_queue_or_never_started_is_settled(
         results.finished(job, report)  # it waits: no executor started it
     with pytest.raises(Settled, match='left the queue'):
         results.lost(EvaluationKey(waiting + 1), 'gone')
+
+
+def test_a_start_report_moves_a_starting_agent_to_running_and_leaves_an_ending_one_ending(
+    db: Database, campaign: Campaign, tmp_path: Path
+) -> None:
+    """A start that the executor reports after the daemon ended the agent does not undo the end: its finding stays
+    refused. The report still updates the handle and the session id."""
+    results = CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False)
+    with db.session() as s:
+        rows = [
+            AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, state=state)
+            for state in (AgentSessionState.STARTING, AgentSessionState.ENDING)
+        ]
+        s.add_all(rows)
+        s.commit()
+        keys = [AgentKey(w.id) for w in rows]
+    for key in keys:
+        results.started(key, {'pid': key.agent_session}, f's{key.agent_session}')
+    with db.session() as s:
+        assert [
+            (w.state, w.handle, w.session_id) for w in s.scalars(select(AgentSession).order_by(AgentSession.id))
+        ] == [
+            (AgentSessionState.RUNNING, {'pid': 1}, 's1'),
+            (AgentSessionState.ENDING, {'pid': 2}, 's2'),
+        ]
 
 
 def test_two_results_for_one_job_in_plain_sessions_close_its_row_once_and_measure_it_once(

@@ -599,7 +599,8 @@ class Scheduler:
             runs_of_agents = select(AgentSession.run_id).where(
                 AgentSession.id.in_(on_agents), AgentSession.run_id.is_not(None)
             )
-            cancelled = AgentSession.state.in_((AgentSessionState.REQUESTED, AgentSessionState.RUNNING)) & (
+            winding = (AgentSessionState.RUNNING, AgentSessionState.ENDING)  # ending: its kill is sent on each tick
+            cancelled = AgentSession.state.in_((AgentSessionState.REQUESTED, *winding)) & (
                 AgentSession.id.in_(on_agents)
                 | AgentSession.run_id.in_(on_runs)
                 | AgentSession.run_id.in_(runs_of_agents)
@@ -607,7 +608,7 @@ class Scheduler:
             stopping = (
                 select(AgentSession.id)
                 .join(Campaign, AgentSession.campaign_id == Campaign.id)
-                .where(AgentSession.run_id.is_not(None), AgentSession.state == AgentSessionState.RUNNING)
+                .where(AgentSession.run_id.is_not(None), AgentSession.state.in_(winding))
                 .where(Campaign.status == CampaignStatus.STOPPED)
             )
             agent_sessions = s.scalars(
@@ -635,7 +636,7 @@ class Scheduler:
                         Event.kind == WRAP_UP,
                     )
                 )
-                if not wrap_up:
+                if not wrap_up or agent_session.state is AgentSessionState.ENDING:
                     self._end(s, agent_session, reason, error)
                 elif told is None:
                     text = WRAP_UP_PROMPT.format(what=what, cause=cause, minutes=STOP_GRACE_SECONDS / 60)
@@ -655,11 +656,13 @@ class Scheduler:
         self._tracer.event(WRAP_UP, agent_session=agent_session.id, **{k: str(v) for k, v in payload.items()})
 
     def _end(self, s: Session, agent_session: AgentSession, reason: str, error: str) -> None:
-        """Kill a wound-down agent, after ``STOP_ENDED``: its executor stops it, and it reports."""
-        ended = select(Event.id).where(
-            Event.target_kind == TargetKind.AGENT_SESSION, Event.target_id == agent_session.id, Event.kind == STOP_ENDED
-        )
-        if s.scalar(ended) is None:
+        """Kill a wound-down agent, once ``ending``: its executor stops it, and it reports.
+
+        The row is ``ending``, with ``STOP_ENDED``, in a commit before the first kill. SQLite has one writer at a time,
+        so a finding that the agent writes either committed before, and the agent finished first, or is refused.
+        """
+        if agent_session.state is not AgentSessionState.ENDING:
+            agent_session.state = AgentSessionState.ENDING
             emit(s, STOP_ENDED, TargetKind.AGENT_SESSION, agent_session.id, payload={'reason': reason, 'error': error})
             self._tracer.event('agent_session.ended', agent_session=agent_session.id, reason=reason)
         # before the kill: the run that the kill ends reads it when it closes, and the executor writes in a session of

@@ -482,8 +482,8 @@ piloop run cancel RUN_ID [--wrap-up]
 Cancels a queued or running run on the daemon's next tick. A queued run never starts, and a run whose implementer fails to
 start is not launched again. A running implementer is ended with
 [every process that it started](/concepts/runtimes#when-an-agent-ends), also those in sessions of their own. With `--wrap-up`, the implementer is first told to
-commit and stop, and ended 10 minutes later. The run closes as `cancelled`, unless its implementer left its finding.
-Its commits are scored, it counts toward no run limit, and its idea is parked: set the idea `ready` to run it again.
+commit and stop, and ended 10 minutes later. The run closes as `cancelled`, unless its implementer left its finding
+before the daemon ended it: a later finding is refused. Its commits are scored, it counts toward no run limit, and its idea is parked: set the idea `ready` to run it again.
 
 ### piloop agent cancel
 

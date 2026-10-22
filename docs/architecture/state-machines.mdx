@@ -73,7 +73,11 @@ stateDiagram-v2
     starting --> killed: the start failed
     running --> exited: the agent ended
     running --> killed: timeout, or the daemon stopped
+    running --> ending: a stop or a cancel ended it
+    ending --> killed: its process is gone
 ```
+
+From `ending` on, a finding that the agent writes is refused, so it cannot settle a run that a stop or a cancel ended.
 
 ## Candidate verdict
 

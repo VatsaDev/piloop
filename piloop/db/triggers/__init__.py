@@ -19,7 +19,7 @@ from collections.abc import Iterable
 from alembic.operations import Operations
 from sqlalchemy import text
 
-from piloop.db.triggers import campaigns, changelog, fts, immutable, legacy, links, provenance, roles
+from piloop.db.triggers import campaigns, changelog, ended, fts, immutable, legacy, links, provenance, roles
 from piloop.db.triggers.ddl import Event, Trigger
 from piloop.db.triggers.provenance import DAEMON_ACTOR, TRACKED_TABLES
 
@@ -55,6 +55,7 @@ TEMP: tuple[Trigger, ...] = (
     *changelog.CHANGES,
     *changelog.TOMBSTONES,
     *changelog.COMMENTS,
+    *ended.ENDED_AGENTS,
     *immutable.EVENTS,
 )
 """The triggers in ``sqlite_temp_master`` of every connection, in the order that ``actor_triggers.sql`` creates them."""
@@ -101,19 +102,22 @@ COMMENTS = """
 -- Every comment is an event, with the same shape as the event of the persistent escalation trigger. That trigger
 -- stays persistent, because `comment.escalation` must be logged whatever connection wrote the comment. The rest of
 -- the forum (`comment.note`, `comment.finding`, `comment.decision`) is what the daemon pushes to a running implementer."""
-
+ENDED_AGENTS = """
+-- An agent whose session has ended leaves no finding. session_actor holds the agent session of an agent's connection,
+-- and the daemon sets the row ending in a commit before it kills the agent."""
 APPEND_ONLY = """
 -- The feed is append-only: an event takes the next id, because a reader's cursor is an event id. Its columns have the
 -- types that a reader reads. The authorizer of `piloop sql` denies an UPDATE or a DELETE of events."""
 
 
 def temp_sql() -> str:
-    """The text of ``piloop/db/actor_triggers.sql``: actor, ``updated_by``, change log, tombstones, comments, feed."""
+    """The text of ``piloop/db/actor_triggers.sql``: the actor table, then each tuple of ``TEMP`` under its comment."""
     sections = (
         (provenance.SESSION_ACTOR_TABLE, provenance.UPDATED_BY),
         (CHANGE_LOG, changelog.CHANGES),
         (TOMBSTONES, changelog.TOMBSTONES),
         (COMMENTS, changelog.COMMENTS),
+        (ENDED_AGENTS, ended.ENDED_AGENTS),
         (APPEND_ONLY, immutable.EVENTS),
     )
     return GENERATED + '\n'.join('\n'.join([lead, *(t.sql() for t in triggers)]) for lead, triggers in sections) + '\n'
