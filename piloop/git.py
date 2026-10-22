@@ -56,7 +56,7 @@ def remove_worktree(repo: Repo, path: Path) -> None:
 
 def _remove_worktree(repo: Repo, path: Path) -> None:
     if path.exists():
-        if path.resolve() in worktrees_under(repo, path.parent):
+        if path.resolve() in _worktrees_under(repo, path.parent):
             repo.git.worktree('remove', '--force', str(path))
         else:
             shutil.rmtree(path)
@@ -64,7 +64,16 @@ def _remove_worktree(repo: Repo, path: Path) -> None:
 
 
 def worktrees_under(repo: Repo, root: Path) -> list[Path]:
-    """The registered worktrees whose path is inside ``root``."""
+    """The registered worktrees whose path is inside ``root``.
+
+    Gotcha: in a recent git, a ``git worktree list`` that overlaps a removal can fail (``Invalid path``), so it
+    takes ``WORKTREE_LOCK`` too.
+    """
+    with WORKTREE_LOCK:
+        return _worktrees_under(repo, root)
+
+
+def _worktrees_under(repo: Repo, root: Path) -> list[Path]:
     root = root.resolve()  # git records realpaths
     out: list[Path] = []
     for line in repo.git.worktree('list', '--porcelain').splitlines():

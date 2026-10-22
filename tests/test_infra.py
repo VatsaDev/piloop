@@ -1,5 +1,6 @@
 """Settings, tracing, git helpers, database session."""
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -71,6 +72,19 @@ def test_git_links_and_worktree_listing(campaign_path: Path, tmp_path: Path) -> 
     git.remove_worktree(repo, wt)
     git.remove_worktree(repo, wt)  # idempotent
     assert git.worktrees_under(repo, tmp_path / 'wt') == [tmp_path / 'wt' / 'b']
+
+
+def test_a_worktree_listing_waits_for_a_change_of_the_worktrees(campaign_path: Path, tmp_path: Path) -> None:
+    """A ``git worktree list`` that overlaps a removal can fail in a recent git (``Invalid path``), so the listing
+    takes the lock that every change of the worktrees holds."""
+    repo = Repo(campaign_path)
+    with git.WORKTREE_LOCK:  # a removal in flight
+        listing = threading.Thread(target=git.worktrees_under, args=(repo, tmp_path))
+        listing.start()
+        listing.join(0.2)
+        assert listing.is_alive(), 'the listing waits for the removal'
+    listing.join(5)
+    assert not listing.is_alive()
 
 
 def test_worktrees_under_a_symlinked_root(campaign_path: Path, tmp_path: Path) -> None:
