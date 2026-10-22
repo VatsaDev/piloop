@@ -249,7 +249,7 @@ def test_a_hand_keep_must_build_on_the_head_unless_its_run_is_a_branch(me: Datab
 
 
 def test_a_hand_keep_builds_on_the_head_by_git_where_the_parent_links_miss_it(me: Database, campaign: Campaign) -> None:
-    """hiloopai/piloop-dev#106: git decides what a candidate builds on when piloop's parent links do not reach the head.
+    """Git decides what a candidate builds on when piloop's parent links do not reach the head.
 
     The merge's parent is the merged-in line, as piloop recorded merges before, but its commit merges the head.
     """

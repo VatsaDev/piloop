@@ -265,7 +265,7 @@ def test_staging_keeps_nothing_local_once_uploaded_and_reads_through_a_temporary
 
 
 def test_a_store_stays_bound_to_the_remote_it_uploaded_to(tmp_path: Path) -> None:
-    """Greptile on hiloopai/piloop-dev#11: a new bucket in the settings left the old markers saying 'uploaded'."""
+    """A new bucket in the settings left the old markers saying 'uploaded'."""
     root = tmp_path / 'store'
     Store(root, DirRemote(tmp_path / 'a'))  # nothing uploaded yet: not bound
     Store(root, DirRemote(tmp_path / 'b')).put(io.BytesIO(b'x'))
@@ -280,7 +280,7 @@ def test_a_store_stays_bound_to_the_remote_it_uploaded_to(tmp_path: Path) -> Non
 def test_a_fetched_blob_evicted_as_it_is_put_back_is_still_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Greptile on hiloopai/piloop-dev#11: an eviction between the put-back and the read raised FileNotFoundError."""
+    """An eviction between the put-back and the read raised FileNotFoundError."""
     store = Store(tmp_path / 'store', DirRemote(tmp_path / 'remote'), max_local_bytes=0)
     blob = store.put(io.BytesIO(b'archived'))
     store.evict()

@@ -171,7 +171,7 @@ def test_remove_leaves_a_file_it_cannot_read(tmp_path: Path, workspace: Path) ->
 
 
 def test_a_file_gone_between_the_walk_and_its_put_is_left_out(tmp_path: Path, workspace: Path) -> None:
-    """Greptile on hiloopai/piloop-dev#11: a prune between the walk and the put raised FileNotFoundError."""
+    """A prune between the walk and the put raised FileNotFoundError."""
     found = walk(workspace, ['idea7'])
     (workspace / 'idea7' / 'copy.npy').unlink()
     stored = put_walk(Store(tmp_path / 'store'), workspace, found)
@@ -180,7 +180,7 @@ def test_a_file_gone_between_the_walk_and_its_put_is_left_out(tmp_path: Path, wo
 
 
 def test_nothing_is_removed_or_written_through_a_symlinked_directory(tmp_path: Path, workspace: Path) -> None:
-    """Greptile on hiloopai/piloop-dev#11: an archived directory moved away and replaced by a symlink to it."""
+    """An archived directory moved away and replaced by a symlink to it."""
     store = Store(tmp_path / 'store')
     stored = put_tree(store, workspace, ['idea7'])
     outside = tmp_path / 'outside'
@@ -196,7 +196,7 @@ def test_nothing_is_removed_or_written_through_a_symlinked_directory(tmp_path: P
 def test_a_restore_never_replaces_what_someone_wrote_while_the_blob_was_read(
     tmp_path: Path, workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Greptile on hiloopai/piloop-dev#11: a file an agent wrote during the download was overwritten."""
+    """A file an agent wrote during the download was overwritten."""
     store = Store(tmp_path / 'store')
     stored = put_tree(store, workspace, ['idea7'])
     remove(workspace, stored.manifest)
@@ -218,7 +218,7 @@ def test_a_restore_never_replaces_what_someone_wrote_while_the_blob_was_read(
 def test_each_path_of_a_shared_blob_gets_the_checked_bytes_whatever_an_agent_does_to_another(
     tmp_path: Path, workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Greptile on hiloopai/piloop-dev#11: later copies were made from the first restored path, which an agent edited."""
+    """Later copies were made from the first restored path, which an agent edited."""
     store = Store(tmp_path / 'store')
     stored = put_tree(store, workspace, ['idea7'])
     original = (workspace / 'idea7' / 'copy.npy').read_bytes()
@@ -239,7 +239,7 @@ def test_each_path_of_a_shared_blob_gets_the_checked_bytes_whatever_an_agent_doe
 def test_a_file_where_the_manifest_has_a_directory_keeps_its_entries_and_the_rest_is_restored(
     tmp_path: Path, workspace: Path
 ) -> None:
-    """Greptile on hiloopai/piloop-dev#11: NotADirectoryError ended the restore."""
+    """NotADirectoryError ended the restore."""
     store = Store(tmp_path / 'store')
     stored = put_tree(store, workspace, ['idea7', 'idea7.log'])
     remove(workspace, stored.manifest)
@@ -252,7 +252,7 @@ def test_a_file_where_the_manifest_has_a_directory_keeps_its_entries_and_the_res
 
 
 def test_remove_leaves_a_path_below_a_file_that_replaced_its_directory(tmp_path: Path, workspace: Path) -> None:
-    """Greptile on hiloopai/piloop-dev#11: NotADirectoryError ended the whole prune."""
+    """NotADirectoryError ended the whole prune."""
     stored = put_tree(Store(tmp_path / 'store'), workspace, ['idea7', 'idea7.log'])
     shutil.rmtree(workspace / 'idea7')
     (workspace / 'idea7').write_text('a file now')

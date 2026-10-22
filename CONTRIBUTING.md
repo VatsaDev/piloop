@@ -364,7 +364,7 @@ imports only the standard library and the host. `plugins/builtin/` has the provi
 they are public, and a plugin may import one to call it. piloop declares its capabilities, and its own providers, with
 entry points in `pyproject.toml`, in the same groups that a plugin uses (`piloop.capabilities`, then each provider
 group). To add a capability: a contract module, a builtin module, an entry point in `piloop.capabilities`, one in
-the provider group, and a line in `piloop/capabilities.py`. That module re-exports every capability, its contract types
+the provider group, and an import in `piloop/capabilities.py`. That module re-exports every capability, its contract types
 and its built-in providers, so that a plugin imports from one place; nothing in `piloop/` imports it, and
 `tests/test_capabilities.py` fails until the new line is there. The triggers and the roles declare their capability where they are defined (`triggers.py`,
 `config.py`): their contract module would import them, and they import their capability. Run `uv sync` after you

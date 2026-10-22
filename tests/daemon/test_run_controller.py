@@ -318,7 +318,7 @@ def test_every_commit_is_scored_and_lineage_follows_keeps(
 def test_every_commit_of_a_run_is_a_candidate_before_the_first_is_measured(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """hiloopai/piloop-dev#62: a commit became a candidate only when the evaluations of the commits before it were
+    """A commit became a candidate only when the evaluations of the commits before it were
     done, 33 minutes after its run, so it looked lost. Each commit is a pending candidate when its run closes."""
     write_toml(Path(campaign.path), HARNESS_TWO_COMMITS)
     reload_campaign(db, campaign)
@@ -2154,10 +2154,10 @@ def keep_elsewhere(
 def test_a_trunk_run_that_merges_a_branch_keep_is_judged_against_the_head_not_the_branch(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    """hiloopai/piloop-dev#35: a trunk run that merges a branch keep onto the head must beat the head.
+    """A trunk run that merges a branch keep onto the head must beat the head.
 
     A branch's numbers are never a trunk run's bar. Judged against the branch keep, the merge was a no-op discard,
-    though it beats the head. The merge's parent is the head it merged onto, not the branch (hiloopai/piloop-dev#106).
+    though it beats the head. The merge's parent is the head it merged onto, not the branch.
     """
     with db.session() as s:
         idea = Idea(track='score', campaign_id=campaign.id, title='a branch', hypothesis='h', created_by='t')
@@ -2336,7 +2336,7 @@ def test_a_conflicting_merge_in_a_stopped_campaign_files_no_seed(
 def test_a_rejudge_does_not_file_a_compose_seed_again_after_it_was_rejected(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    """hiloopai/piloop-dev#59: a seed from this candidate with this title exists, whatever its status or name."""
+    """A seed from this candidate with this title exists, whatever its status or name."""
     run_id = make_run(db, campaign)
     keep_elsewhere(db, campaign, 'other line', {'solve.txt': 'base\nother\n'}, {'score': 2.0, 'size': 11.0})
     ex = controller(db, runtime, tmp_path)
@@ -2359,7 +2359,7 @@ def test_a_rejudge_does_not_file_a_compose_seed_again_after_it_was_rejected(
 def test_two_sessions_that_register_one_new_tree_share_one_candidate(
     db: Database, campaign: Campaign, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """hiloopai/piloop-dev#87: the second session looked before the first committed, so its insert conflicts."""
+    """The second session looked before the first committed, so its insert conflicts."""
     repo = Repo(campaign.path)
     (Path(campaign.path) / 'solve.txt').write_text('base\nsame\n')
     repo.git.commit('-qam', 'same')
@@ -2404,7 +2404,7 @@ def test_a_keep_whose_merge_onto_the_head_is_the_head_already_changes_nothing(
 def test_a_keep_that_lands_while_another_run_measures_its_tree_is_not_judged_again(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """hiloopai/piloop-dev#106: a run that reaches a pending tree of another run judges it only while it is pending.
+    """A run that reaches a pending tree of another run judges it only while it is pending.
 
     The other run's keep lands while this run measures the same tree on another track. Judged again on this track's
     primary, the keep would become a discard and miss the head.
@@ -2450,7 +2450,7 @@ def test_a_keep_that_lands_while_another_run_measures_its_tree_is_not_judged_aga
 def test_a_known_non_keep_that_another_run_reaches_again_is_judged_again_on_that_runs_bar(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    """hiloopai/piloop-dev#55: a tree that another run proposes again is judged again, unless it is a keep.
+    """A tree that another run proposes again is judged again, unless it is a keep.
 
     The daemon's old verdict judged the tree against another bar, or a merge that conflicted. A compose that reproduces
     the tree on the head must be able to land.
@@ -2479,7 +2479,7 @@ def test_a_known_non_keep_that_another_run_reaches_again_is_judged_again_on_that
 def test_a_merge_commit_descends_from_its_first_parent_the_runs_base(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    """hiloopai/piloop-dev#106: a run's commits are its first-parent history, so a merge's parent is the run's base.
+    """A run's commits are its first-parent history, so a merge's parent is the run's base.
 
     The merged-in line is not the run's, and its commits are known candidates already. With the merged line's last
     candidate as its parent, the merge did not build on the head, and a keep by hand was refused.
@@ -2510,7 +2510,7 @@ def test_a_merge_commit_descends_from_its_first_parent_the_runs_base(
 def test_a_keep_that_has_the_heads_changes_without_its_history_is_judged_against_the_head(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    """hiloopai/piloop-dev#55: a commit that cherry-picked the head needs no merge onto it.
+    """A commit that cherry-picked the head needs no merge onto it.
 
     The merge would give the candidate's own tree, a known candidate, so the keep stayed ``interesting`` for good.
     """

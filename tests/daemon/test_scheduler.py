@@ -467,7 +467,7 @@ def test_a_run_pinned_to_a_non_keep_is_a_branch_run_only_when_its_nearest_keep_i
     (``ledger.bar_of``). When the pin is a noted candidate on top of the head, that ancestor is the head. The run is
     then a trunk run, and its keep moves the head.
 
-    hiloopai/piloop-dev#60: a pin that has the head's changes builds on the head too, whatever its nearest keep. Here
+    A pin that has the head's changes builds on the head too, whatever its nearest keep. Here
     a compose off the baseline repeats the head's change. Its run is a trunk run, so its keep can move the head.
     """
     set_config(db, campaign, roles={'implementer': {'max_concurrent': 3}})

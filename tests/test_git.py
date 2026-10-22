@@ -19,7 +19,7 @@ def test_merge_and_contains_raise_on_a_commit_the_repo_does_not_have(campaign_pa
 
 
 def test_a_commit_contains_another_by_history_or_by_having_all_its_changes(campaign_path: Path) -> None:
-    """hiloopai/piloop-dev#60: a commit that cherry-picked the head has the head's changes, though not its history."""
+    """A commit that cherry-picked the head has the head's changes, though not its history."""
     repo = Repo(campaign_path)
     base = repo.head.commit.hexsha
     (campaign_path / 'other.txt').write_text('x\n')
@@ -39,7 +39,7 @@ def test_a_commit_contains_another_by_history_or_by_having_all_its_changes(campa
 
 
 def test_a_merge_starts_from_a_copy_of_the_head_in_the_commits_history(tmp_path: Path) -> None:
-    """hiloopai/piloop-dev#59: a run that started from a copy of the head (same tree, another sha) merges cleanly.
+    """A run that started from a copy of the head (same tree, another sha) merges cleanly.
 
     By history, the merge base is the commit before the head, so both sides add ``f.txt`` and conflict. By tree, the
     copy is the head: only the run's change and the head's later change are merged.
@@ -106,7 +106,7 @@ def test_worktree_changes_hold_the_process_lock(
     ids=['before-co-authored-by', 'before-generated-with', 'in-the-body'],
 )
 def test_piloop_trailers_count_on_any_line_after_the_subject(campaign_path: Path, message: str) -> None:
-    """hiloopai/piloop-dev#33: a harness puts its own trailers in a paragraph after the implementer's, and git reads only
+    """A harness puts its own trailers in a paragraph after the implementer's, and git reads only
     the last paragraph. A line that only mentions a trailer is not one."""
     repo = Repo(campaign_path)
     repo.git.commit('-q', '--allow-empty', '-m', message)

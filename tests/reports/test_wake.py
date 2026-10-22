@@ -267,7 +267,7 @@ def test_wake_reads_only_the_journal_lines_that_can_fit(db: Database, campaign: 
 
 
 def test_a_value_with_newlines_counts_every_line_it_prints(db: Database, campaign: Campaign) -> None:
-    """Greptile on hiloopai/piloop-dev#10: a family of 600 newlines printed 712 tokens in a 400-token brief."""
+    """A family of 600 newlines printed 712 tokens in a 400-token brief."""
     with db.session() as s:
         s.get_one(Campaign, campaign.id).repo = 'github.com/o/r'
         lesson(s, campaign.id, 'multi\n' * 600, 'dead', 1, 'score\n' * 50)

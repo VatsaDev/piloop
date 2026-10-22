@@ -260,7 +260,7 @@ def test_a_job_the_disk_is_too_full_for_writes_one_disk_anomaly_and_pauses(
 def test_what_an_archiving_leaves_out_is_on_its_span_with_why(
     db: Database, campaign: Campaign, home: Path, store: Store, tracer: Tracer, spans: InMemorySpanExporter, pool
 ) -> None:
-    """Greptile on hiloopai/piloop-dev#11: a skipped path went unreported."""
+    """A skipped path went unreported."""
     idea = add_idea(db, campaign.id, 'idea')
     add_run(db, idea)
     write(workspace_dir(home, campaign.id) / f'idea{idea}' / 'a.txt', 'a')
@@ -284,7 +284,7 @@ def test_the_upkeep_reports_a_file_it_cannot_read_and_counts_from_its_end(
     pool: ThreadPoolExecutor,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Greptile on hiloopai/piloop-dev#11: an upkeep slower than its period kept the archive jobs waiting."""
+    """An upkeep slower than its period kept the archive jobs waiting."""
     idea = add_idea(db, campaign.id, 'locked')
     add_run(db, idea)
     path = write(workspace_dir(home, campaign.id) / f'idea{idea}' / 'x.npy', 'x')
@@ -321,7 +321,7 @@ def test_an_upkeep_slower_than_its_period_still_leaves_the_next_tick_to_a_due_jo
     pool: ThreadPoolExecutor,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Greptile on hiloopai/piloop-dev#11: with the period counted from the start, a 2-hour upkeep ran again at once."""
+    """With the period counted from the start, a 2-hour upkeep ran again at once."""
     clock = Clock()
     monkeypatch.setattr(archiver_module, 'time', clock)
     idea = add_idea(db, campaign.id, 'waiting')
@@ -350,7 +350,7 @@ def test_a_stopping_daemon_ends_the_upkeep_between_steps(
     pool: ThreadPoolExecutor,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Greptile on hiloopai/piloop-dev#11: an upkeep went on pruning and evicting after the daemon had stopped."""
+    """An upkeep went on pruning and evicting after the daemon had stopped."""
     stop = threading.Event()
     store = Store(home / 'store', DirRemote(home / 'remote'))
     evicted: list[bool] = []

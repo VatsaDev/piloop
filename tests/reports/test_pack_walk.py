@@ -71,7 +71,7 @@ def test_a_directory_archived_between_the_listing_and_its_stat_is_skipped(
 def test_the_walk_reads_a_large_directory_only_up_to_its_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Greptile on hiloopai/piloop-dev#11: a directory of 120,000 entries was read whole for a budget of seven."""
+    """A directory of 120,000 entries was read whole for a budget of seven."""
     workspace = tmp_path / 'workspace'
     for n in range(50):
         write(workspace / f'f{n:02}.md', '# f\n', n)
@@ -106,7 +106,7 @@ def test_the_pack_says_when_its_listing_was_cut(
 def test_a_markdown_file_pruned_between_its_stat_and_its_read_is_left_out(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Greptile on hiloopai/piloop-dev#11: the read of the outline raised and closed the sweep before it started."""
+    """The read of the outline raised and closed the sweep before it started."""
     workspace = tmp_path / 'workspace'
     gone, kept = workspace / 'gone.md', workspace / 'kept.md'
     write(gone, '# a\n', 1)

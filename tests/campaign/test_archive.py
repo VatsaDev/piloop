@@ -355,7 +355,7 @@ def test_what_does_not_fit_with_nothing_left_to_prune_is_short_and_stays_for_the
 def test_a_job_cut_after_some_batches_stays_due_and_its_next_run_stores_the_rest(
     db: Database, campaign: Campaign, home: Path, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Greptile on hiloopai/piloop-dev#11: the first batch of a job marked the whole job as done."""
+    """The first batch of a job marked the whole job as done."""
     idea, before = big_idea(db, campaign, home)
     taken: list[int] = []  # what other programs write meanwhile, in bytes
     monkeypatch.setattr(Store, 'free', lambda self: disk(home, 12_000 + 1000 + 9000) - sum(taken))
@@ -384,7 +384,7 @@ def test_a_job_cut_after_some_batches_stays_due_and_its_next_run_stores_the_rest
 def test_an_idea_deleted_since_its_archiving_is_still_restored_by_its_id(
     db: Database, campaign: Campaign, home: Path, store: Store
 ) -> None:
-    """Greptile on hiloopai/piloop-dev#11: restore by id asked for a live idea row, and wrote nothing."""
+    """Restore by id asked for a live idea row, and wrote nothing."""
     idea, row = archived_idea(db, campaign, home, store, 'short-lived')
     prune(db, store, home, row)
     with db.session() as s:
@@ -397,7 +397,7 @@ def test_an_idea_deleted_since_its_archiving_is_still_restored_by_its_id(
 def test_a_newer_archiving_displaces_an_older_file_or_directory_at_the_same_path(
     db: Database, campaign: Campaign, home: Path, store: Store
 ) -> None:
-    """Greptile on hiloopai/piloop-dev#11: `results` a file in one archiving and a directory in a later one."""
+    """`results` a file in one archiving and a directory in a later one."""
     workspace = workspace_dir(home, campaign.id)
     for body in ('a file', None):
         if body is not None:
@@ -423,7 +423,7 @@ def test_a_newer_archiving_displaces_an_older_file_or_directory_at_the_same_path
 def test_a_file_a_prune_cannot_read_keeps_its_archiving_unpruned(
     db: Database, campaign: Campaign, home: Path, store: Store
 ) -> None:
-    """Greptile on hiloopai/piloop-dev#11: the archiving was marked pruned, and never pruned again."""
+    """The archiving was marked pruned, and never pruned again."""
     _, row = archived_idea(db, campaign, home, store, 'locked')
     [path] = workspace_dir(home, campaign.id).rglob('*.npy')
     path.chmod(0)
@@ -441,7 +441,7 @@ def test_a_file_a_prune_cannot_read_keeps_its_archiving_unpruned(
 def test_content_the_store_holds_already_is_archived_even_when_nothing_else_fits(
     db: Database, campaign: Campaign, home: Path, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Greptile on hiloopai/piloop-dev#11: a copy of a stored blob was budgeted by its full size and stayed short."""
+    """A copy of a stored blob was budgeted by its full size and stayed short."""
     idea, _ = big_idea(db, campaign, home)
     workspace = workspace_dir(home, campaign.id)
     for path in workspace.rglob('*.npy'):
@@ -454,7 +454,7 @@ def test_content_the_store_holds_already_is_archived_even_when_nothing_else_fits
 def test_a_workspace_copy_of_a_blob_that_went_bad_in_the_store_is_not_pruned(
     db: Database, campaign: Campaign, home: Path, store: Store
 ) -> None:
-    """Greptile on hiloopai/piloop-dev#11: the intact workspace copy was deleted, leaving only a corrupt blob."""
+    """The intact workspace copy was deleted, leaving only a corrupt blob."""
     _, row = archived_idea(db, campaign, home, store, 'rotting')
     [path] = workspace_dir(home, campaign.id).rglob('*.npy')
     (store.root / key(hash_file(path).hash)).write_bytes(b'rot')

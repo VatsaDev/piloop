@@ -64,7 +64,7 @@ def test_the_tick_archives_an_idea_once_its_run_is_judged_and_leaves_its_files_f
 def test_a_stopping_scheduler_waits_for_the_archivers_job(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Greptile on hiloopai/piloop-dev#11: the daemon released its lock while an upkeep still pruned."""
+    """The daemon released its lock while an upkeep still pruned."""
     tracer = Tracer(None)
     store = Store(tmp_path / 'store')
     scheduler = Scheduler(
