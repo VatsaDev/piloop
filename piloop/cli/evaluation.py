@@ -8,6 +8,7 @@ from rich.text import Text
 
 from piloop.cli import common
 from piloop.db.models import Campaign, Candidate, utcnow
+from piloop.ids import CandidateId
 from piloop.plugins.executor.contract import DEFAULT_EXECUTOR, selected
 from piloop.reports.overview import age
 from piloop.scoring import queue
@@ -52,7 +53,7 @@ def eval_queue() -> None:
 
 @app.command(name='cancel')
 def eval_cancel(
-    candidate_id: Annotated[int, cyclopts.Parameter(help='The candidate whose evaluation to cancel.')],
+    candidate_id: Annotated[CandidateId, cyclopts.Parameter(help='The candidate whose evaluation to cancel.')],
     /,
 ) -> None:
     """Cancel the evaluation of a candidate: a waiting one never starts, and the daemon stops a running one.

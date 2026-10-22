@@ -13,9 +13,10 @@ from inline_snapshot import snapshot
 from sqlalchemy import create_engine
 
 from piloop.db import sql, triggers
-from piloop.db.models import Base, TargetKind
+from piloop.db.models import Base
 from piloop.db.session import migrate
 from piloop.db.triggers import PERSISTENT, TEMP, Trigger, changelog, provenance
+from piloop.ids import TargetKind
 
 
 def trigger_names(con: sqlite3.Connection, schema: str = 'main') -> list[str]:

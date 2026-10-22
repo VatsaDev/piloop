@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from piloop.actor import Actor, Agent, System
 from piloop.config import BRIEF_FILE, CampaignConfig, Track, config_of
 from piloop.db.models import AgentSession, Campaign
+from piloop.ids import RoleName
 from piloop.plugins.role.contract import Files, SweepRole
 
 PROMPTS = Path(__file__).resolve().parent / 'prompts'
@@ -29,7 +30,7 @@ class Role:
     It comes from the role's ``[roles.<kind>]`` table (``role``).
     """
 
-    kind: str
+    kind: RoleName
     """The role's name in ``piloop.toml``, and so ``agent_sessions.kind``, the signature of its agents
     (``<kind>#<agent session id>``) and the source of the ideas they file."""
     prompt: Path
@@ -72,7 +73,7 @@ IDEAS: dict[Files, str] = {
 """The ideas line of the brief for each value of ``files``."""
 
 
-def role(cfg: CampaignConfig, kind: str, repo: Path) -> Role:
+def role(cfg: CampaignConfig, kind: RoleName, repo: Path) -> Role:
     """Return the role of ``[roles.<kind>]`` in a campaign at ``repo``.
 
     Raises:

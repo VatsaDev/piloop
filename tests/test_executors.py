@@ -17,8 +17,9 @@ from piloop.agents.results import STOPPED_ERROR, DaemonStopped, Ended, Ran
 from piloop.cli import common, evaluation
 from piloop.daemon.main import Daemon
 from piloop.daemon.run_controller import RunController
-from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Candidate, Measurement, RoleName
+from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Candidate, Measurement
 from piloop.db.session import Database
+from piloop.ids import WATCHDOG, AgentSessionId
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins
 from piloop.plugins.executor.contract import EXECUTORS, AgentKey, Checkout
@@ -52,9 +53,11 @@ def controller(db: Database, runtime: ScriptRuntime, tmp_path: Path, provider: s
     return RunController(db, Tracer(None), tmp_path, factory(runtime), executor=PluginTable(provider=provider))
 
 
-def launch_in_thread(ex: RunController, db: Database, campaign: Campaign, tmp_path: Path) -> tuple[int, list[Ended]]:
+def launch_in_thread(
+    ex: RunController, db: Database, campaign: Campaign, tmp_path: Path
+) -> tuple[AgentSessionId, list[Ended]]:
     with db.session() as s:
-        w = AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, reason='contract')
+        w = AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='contract')
         s.add(w)
         s.commit()
         agent_session_id = w.id
@@ -131,7 +134,7 @@ def test_a_stop_closes_a_running_agent_as_stopped(
         assert (w.state, w.error) == (AgentSessionState.KILLED, STOPPED_ERROR)
 
 
-def wait_for_agent_session_handle_of(db: Database, agent_session_id: int) -> None:
+def wait_for_agent_session_handle_of(db: Database, agent_session_id: AgentSessionId) -> None:
     def running() -> bool:
         with db.session() as s:
             w = s.get_one(AgentSession, agent_session_id)
@@ -160,7 +163,7 @@ def test_config_toml_selects_the_executor_and_the_daemon_refuses_a_parameter_it_
 def test_a_cancel_of_a_job_that_the_executor_does_not_have_changes_nothing(
     db: Database, runtime: ScriptRuntime, tmp_path: Path, provider: str
 ) -> None:
-    controller(db, runtime, tmp_path, provider).executor.cancel(AgentKey(999))
+    controller(db, runtime, tmp_path, provider).executor.cancel(AgentKey(AgentSessionId(999)))
 
 
 def test_an_entry_point_that_is_not_an_executor_class_is_refused(

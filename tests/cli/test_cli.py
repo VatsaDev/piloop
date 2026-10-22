@@ -41,14 +41,13 @@ from piloop.db.models import (
     IdeaStatus,
     LinkKind,
     Measurement,
-    RoleName,
     Run,
     RunStatus,
-    TargetKind,
     Verdict,
     utcnow,
 )
 from piloop.db.session import Database, migrate
+from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, CampaignId, CandidateId, TargetKind
 from piloop.plugins.runtime import herdr
 from piloop.plugins.runtime.herdr import HerdrSettings
 from piloop.scoring.ledger import REMEASURE_REQUESTED
@@ -209,7 +208,7 @@ def test_every_role_but_the_implementer_files_a_seed_and_only_research_the_orche
             'orchestrator',
             'human',
         ]
-        assert defined_by(s, 1) == {'research#7', 'research#8', 'orchestrator', 'human'}
+        assert defined_by(s, CampaignId(1)) == {'research#7', 'research#8', 'orchestrator', 'human'}
     db.close()
     with pytest.raises(SystemExit, match='no candidate#99 in campaign demo'):
         as_('human', 'idea', 'add', 'demo', 'from nowhere', '--base', '99')
@@ -1052,8 +1051,8 @@ def test_launch_requests_an_implementer(campaign_path: Path, out) -> None:
         ]
     db.close()
     assert rows == [
-        (RoleName.RESEARCH, AgentSessionState.REQUESTED, None, None, 'requested from the CLI'),
-        (RoleName.WATCHDOG, AgentSessionState.REQUESTED, 'pi', 'opus', 'eyeball it'),
+        (RESEARCH, AgentSessionState.REQUESTED, None, None, 'requested from the CLI'),
+        (WATCHDOG, AgentSessionState.REQUESTED, 'pi', 'opus', 'eyeball it'),
     ]
     run_cli(['status', 'demo'])
     assert '- Agents live: none; requested: research#1, watchdog#2' in out(), (
@@ -1261,7 +1260,7 @@ def fake_bins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def add_candidate_with_agent_session(
     db: Database, checkpoint: str | None, *, harness: str = 'pi', session_id: str | None = 's', ended: bool = True
-) -> int:
+) -> CandidateId:
     """Add an implementer's run with one candidate, and return the candidate id. The checkpoint is on the implementer."""
     with db.session() as s:
         idea = Idea(
@@ -1278,7 +1277,7 @@ def add_candidate_with_agent_session(
         s.flush()
         s.add(
             AgentSession(
-                kind=RoleName.IMPLEMENTER,
+                kind=IMPLEMENTER,
                 campaign_id=1,
                 run_id=run.id,
                 harness=harness,

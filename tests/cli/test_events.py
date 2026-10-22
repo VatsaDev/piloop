@@ -18,8 +18,9 @@ from sqlalchemy import select, text
 
 from piloop.campaign import campaigns as campaign_module, ops
 from piloop.cli import common, main as cli
-from piloop.db.models import Campaign, Comment, CommentKind, Event, Idea, IdeaStatus, TargetKind
+from piloop.db.models import Campaign, Comment, CommentKind, Event, Idea, IdeaStatus
 from piloop.db.session import Database
+from piloop.ids import CampaignId, IdeaId, TargetKind, TargetRef
 from piloop.reports import feed
 from piloop.settings import Settings
 
@@ -96,7 +97,7 @@ def write(db: Database, statement: str) -> None:
         conn.execute(text(statement))
 
 
-def add_idea(db: Database, campaign_id: int, title: str) -> int:
+def add_idea(db: Database, campaign_id: CampaignId, title: str) -> IdeaId:
     with db.session() as s:
         idea = Idea(campaign_id=campaign_id, title=title, hypothesis='it helps', track='score', created_by='human')
         s.add(idea)
@@ -115,8 +116,7 @@ def test_status_and_inbox_print_one_json_document_with_the_cursor_they_were_read
     with db.session() as s:
         s.add(
             Comment(
-                target_kind=TargetKind.CAMPAIGN,
-                target_id=campaign.id,
+                target=TargetRef(TargetKind.CAMPAIGN, campaign.id),
                 author='watchdog#2',
                 kind=CommentKind.ESCALATION,
                 priority=0,

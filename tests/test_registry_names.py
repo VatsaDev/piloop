@@ -32,6 +32,7 @@ LEAVES: dict[str, frozenset[str] | None] = {
     'harnesses.py': None,
     'plugins/trigger/*.py': None,
     'db/models.py': None,
+    'ids.py': None,
     'db/migrations/versions/*.py': None,
     'mcp/claude.py': None,
     'mcp/codex.py': None,
@@ -52,8 +53,9 @@ LEAVES: dict[str, frozenset[str] | None] = {
 }
 """The files that may name entries, and which ones (None: any). The reasons:
 
-- ``harnesses.py``, the triggers (``plugins/trigger/``), ``db/models.py`` (``RoleName``), the MCP renderers and the
+- ``harnesses.py``, the triggers (``plugins/trigger/``), ``ids.py`` (the built-in roles), the MCP renderers and the
   usage readers and tallies define the entries. The migrations are history.
+- ``db/models.py``: the states ``seed`` and ``stopped``, which share a name with a trigger.
 - ``plugins/runtime/subprocess.py`` and ``plugins/runtime/herdr.py`` define their runtime.
 - ``config.py``: the defaults of ``runtime`` and ``harnesses``.
 - ``deprecated.py``: the bridges rewrite the keys of earlier releases, which named built-in roles and triggers.

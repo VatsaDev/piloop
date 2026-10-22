@@ -10,6 +10,7 @@ from piloop.cli import common
 from piloop.cli.common import HARNESS_HELP, CampaignRef
 from piloop.config import TRANSCRIPT, config_of
 from piloop.db.models import OPEN_RUNS, AgentSession, AgentSessionState, Run
+from piloop.ids import AgentSessionId, RoleName, RunId
 from piloop.plugins.runtime.contract import Handle, NotAttachable, NotSteerable, Runtime, RuntimeFailure
 from piloop.runtime.factory import handle_for, runtime_for
 
@@ -20,7 +21,7 @@ run_app = cyclopts.App(name='run', help='Act on one run.')
 def launch(
     ref: CampaignRef,
     role: Annotated[
-        str,
+        RoleName,
         cyclopts.Parameter(
             help='The role of the agent: a sweeping role of the campaign (`[roles.<name>]`). The daemon launches the'
             ' agents of a role that does runs by itself, one for each queued run.'
@@ -58,7 +59,9 @@ def launch(
 
 
 def prompt(
-    agent_session_id: Annotated[int, cyclopts.Parameter(help='The id of the agent, as `piloop status` lists it.')],
+    agent_session_id: Annotated[
+        AgentSessionId, cyclopts.Parameter(help='The id of the agent, as `piloop status` lists it.')
+    ],
     text: Annotated[str, cyclopts.Parameter(help='The message.')],
     /,
 ) -> None:
@@ -74,7 +77,7 @@ def prompt(
     common.console.print(f'prompted agent_session#{agent_session_id}')
 
 
-def attach(agent_session_id: Annotated[int, cyclopts.Parameter(help='The id of the agent.')], /) -> None:
+def attach(agent_session_id: Annotated[AgentSessionId, cyclopts.Parameter(help='The id of the agent.')], /) -> None:
     """Show a running agent in this terminal.
 
     The runtime of the agent defines how. When it cannot, the command says so and where to look instead.
@@ -90,7 +93,7 @@ def attach(agent_session_id: Annotated[int, cyclopts.Parameter(help='The id of t
         raise SystemExit(str(e)) from e
 
 
-def _running(agent_session_id: int) -> tuple[Runtime, Handle, str | None]:
+def _running(agent_session_id: AgentSessionId) -> tuple[Runtime, Handle, str | None]:
     """Return the runtime, the handle and the log directory of a running agent."""
     with common.session() as s:
         agent_session = s.scalars(
@@ -113,7 +116,10 @@ WrapUp = Annotated[
 
 @agent_app.command(name='cancel')
 def agent_cancel(
-    agent_session_id: Annotated[int, cyclopts.Parameter(help='The id of the agent.')], /, *, wrap_up: WrapUp = False
+    agent_session_id: Annotated[AgentSessionId, cyclopts.Parameter(help='The id of the agent.')],
+    /,
+    *,
+    wrap_up: WrapUp = False,
 ) -> None:
     """Cancel an agent of any role. The daemon acts on its next tick.
 
@@ -131,7 +137,7 @@ def agent_cancel(
 
 @run_app.command(name='cancel')
 def run_cancel(
-    run_id: Annotated[int, cyclopts.Parameter(help='The id of the run.')], /, *, wrap_up: WrapUp = False
+    run_id: Annotated[RunId, cyclopts.Parameter(help='The id of the run.')], /, *, wrap_up: WrapUp = False
 ) -> None:
     """Cancel a queued or running run. The daemon acts on its next tick.
 

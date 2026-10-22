@@ -18,9 +18,10 @@ from piloop.actor import Agent
 from piloop.agents.results import DaemonStopped, Ended, HandedOver, NotStarted, ended_of
 from piloop.config import BRIEF_FILE, config_of, harness_of
 from piloop.db.events import emit
-from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Run, TargetKind, utcnow
+from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Run, utcnow
 from piloop.db.session import Database
 from piloop.harnesses import SESSION_ENV, SESSION_ID, Invocation, fill, takes_session_id
+from piloop.ids import AgentSessionId, TargetKind
 from piloop.otel import Span, Tracer
 from piloop.plugins.executor.contract import AgentJob, AgentKey, Artifact, Commits, Executor, LeftJob
 from piloop.plugins.runtime.contract import RUNTIMES, AgentSpec
@@ -87,7 +88,7 @@ class Launcher:
 
     def launch(
         self,
-        agent_session_id: int,
+        agent_session_id: AgentSessionId,
         *,
         brief: str,
         cwd: Path,
@@ -115,7 +116,7 @@ class Launcher:
                     return NotStarted(error)
             return self._await(agent_session_id, span)
 
-    def reattach(self, agent_session_id: int) -> Ended:
+    def reattach(self, agent_session_id: AgentSessionId) -> Ended:
         """Like ``launch``, for an agent that an earlier daemon process started and the executor adopted.
 
         The agent can still run, or it can have ended while no daemon watched.
@@ -123,7 +124,7 @@ class Launcher:
         with self.tracer.span('piloop.agent', agent_session=agent_session_id, reattached=True) as span:
             return self._await(agent_session_id, span)
 
-    def _await(self, agent_session_id: int, span: Span) -> Ended:
+    def _await(self, agent_session_id: AgentSessionId, span: Span) -> Ended:
         """Wait for the row to close, and return how its job ended (``ended_of``). A close without one is a stop's."""
 
         def closed(s: Session) -> bool:
@@ -137,7 +138,7 @@ class Launcher:
             ended = ended_of(s, agent_session_id)
         return ended or DaemonStopped()
 
-    def _fail(self, agent_session_id: int, error: str) -> None:
+    def _fail(self, agent_session_id: AgentSessionId, error: str) -> None:
         """Close a row whose job could not be described or submitted: no executor has it."""
         with self.db.session() as s:
             w = s.get_one(AgentSession, agent_session_id)
@@ -148,7 +149,7 @@ class Launcher:
 
     def _prepare(
         self,
-        agent_session_id: int,
+        agent_session_id: AgentSessionId,
         span: Span,
         brief: str,
         cwd: Path,

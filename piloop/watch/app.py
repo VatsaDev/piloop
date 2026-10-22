@@ -35,6 +35,7 @@ from piloop.campaign.ideas import reprioritise
 from piloop.config import config_of
 from piloop.db.models import AgentSession, AgentSessionState, Idea, IdeaStatus, utcnow
 from piloop.db.session import Database
+from piloop.ids import AgentSessionId, CommentId, IdeaId
 from piloop.plugins.runtime.contract import Handle, NotAttachable, NotSteerable, Runtime, RuntimeFailure
 from piloop.runtime.factory import handle_for, runtime_for
 from piloop.watch.panels import CAMPAIGN_COLUMNS, PANELS, Cell, Context, Item, Panel, campaigns, header
@@ -172,11 +173,11 @@ class InboxTable(PanelTable):
 
     def action_ack(self) -> None:
         if (key := self.key()) is not None:
-            self.campaign.act(lambda s: '; '.join(inbox.ack(s, [key], self.campaign.actor)))
+            self.campaign.act(lambda s: '; '.join(inbox.ack(s, [CommentId(key)], self.campaign.actor)))
 
     def action_ack_shown(self) -> None:
         if keys := self.keys():
-            self.campaign.act(lambda s: '; '.join(inbox.ack(s, keys, self.campaign.actor)))
+            self.campaign.act(lambda s: '; '.join(inbox.ack(s, [CommentId(k) for k in keys], self.campaign.actor)))
 
     def action_reply(self) -> None:
         if (key := self.key()) is None:
@@ -189,7 +190,7 @@ class InboxTable(PanelTable):
             text, priority = answer
 
             def write(s: Session) -> str:
-                sent = inbox.reply(s, key, text, author=self.campaign.actor, priority=priority)
+                sent = inbox.reply(s, CommentId(key), text, author=self.campaign.actor, priority=priority)
                 return f'sent comment#{sent.id} (p{priority}) in reply to comment#{sent.target_id}'
 
             self.campaign.act(write)
@@ -207,7 +208,7 @@ class AgentsTable(PanelTable):
 
     def action_focus(self) -> None:
         if (key := self.key()) is not None:
-            self.campaign.say(focus(self.campaign.db, key, self.campaign.home))
+            self.campaign.say(focus(self.campaign.db, AgentSessionId(key), self.campaign.home))
 
     def action_steer(self) -> None:
         if (key := self.key()) is None:
@@ -215,12 +216,12 @@ class AgentsTable(PanelTable):
 
         def send(text: str | None) -> None:
             if text is not None:
-                self.campaign.say(steer(self.campaign.db, key, text, self.campaign.home))
+                self.campaign.say(steer(self.campaign.db, AgentSessionId(key), text, self.campaign.home))
 
         self.app.push_screen(Ask(f'steer agent_session#{key}: a message for its next turn'), send)
 
 
-def focus(db: Database, agent_session_id: int, home: Path) -> str:
+def focus(db: Database, agent_session_id: AgentSessionId, home: Path) -> str:
     """Bring a running agent to the front of its runtime's view, and return a note that says what happened."""
     try:
         runtime, handle = _running(db, agent_session_id, home, 'focus')
@@ -233,7 +234,7 @@ def focus(db: Database, agent_session_id: int, home: Path) -> str:
         return f'could not focus agent_session#{agent_session_id}: {e}'
 
 
-def steer(db: Database, agent_session_id: int, text: str, home: Path) -> str:
+def steer(db: Database, agent_session_id: AgentSessionId, text: str, home: Path) -> str:
     """Prompt a running agent as ``piloop prompt`` does, and return a note that says what happened."""
     try:
         runtime, handle = _running(db, agent_session_id, home, 'steer')
@@ -251,7 +252,7 @@ class NotRunning(Exception):
     """The agent is not running, so there is nothing to act on. The message says so."""
 
 
-def _running(db: Database, agent_session_id: int, home: Path, verb: str) -> tuple[Runtime, Handle]:
+def _running(db: Database, agent_session_id: AgentSessionId, home: Path, verb: str) -> tuple[Runtime, Handle]:
     """Return the runtime and the handle of a running agent.
 
     Raises:
@@ -300,7 +301,7 @@ class IdeasTable(PanelTable):
                 return
 
             def write(s: Session) -> str:
-                old = ops.set_idea_status(s, key, to, reason=reason, actor=self.campaign.actor)
+                old = ops.set_idea_status(s, IdeaId(key), to, reason=reason, actor=self.campaign.actor)
                 s.commit()
                 return f'idea#{key} {old} → {to}'
 
@@ -310,7 +311,7 @@ class IdeasTable(PanelTable):
 
     def action_priority(self, by: int) -> None:
         if (key := self.key()) is not None:
-            self.campaign.act(lambda s: f'idea#{key} priority {reprioritise(s, key, by).priority}')
+            self.campaign.act(lambda s: f'idea#{key} priority {reprioritise(s, IdeaId(key), by).priority}')
 
 
 class CandidatesTable(PanelTable):

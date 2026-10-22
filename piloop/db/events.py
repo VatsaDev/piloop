@@ -3,7 +3,8 @@
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor, System
-from piloop.db.models import Event, TargetKind
+from piloop.db.models import Event
+from piloop.ids import TargetKind, TargetRef
 
 ANOMALY_EVENT = 'anomaly.reported'
 """An event on an agent's row, one for each anomaly it was requested for, with ``{key, anomaly}`` as payload."""
@@ -19,6 +20,6 @@ def emit(
     payload: dict[str, object] | None = None,
 ) -> Event:
     """Add an event to the session. The caller commits."""
-    event = Event(kind=kind, actor=actor.signature, target_kind=target_kind, target_id=target_id, payload=payload or {})
+    event = Event(kind=kind, actor=actor.signature, target=TargetRef(target_kind, target_id), payload=payload or {})
     s.add(event)
     return event

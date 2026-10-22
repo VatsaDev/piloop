@@ -218,7 +218,7 @@ def orchestrator_overview(s: Session, budget: int, now: datetime) -> str:
     inbox_title = f'## Inbox ({len(items)} open)'
     inbox_lines = fitted(
         [
-            f'- p{c.priority} comment#{c.id} {c.kind} on {c.target_kind}#{c.target_id} by {c.author}'
+            f'- p{c.priority} comment#{c.id} {c.kind} on {c.target} by {c.author}'
             f'{f" ({p.name})" if p else ""}: {_first_line(c.body)[:160]}'
             for c, p in items
         ],

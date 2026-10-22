@@ -15,13 +15,12 @@ from piloop.db.models import (
     IdeaStatus,
     LinkKind,
     Measurement,
-    RoleName,
     Run,
     RunStatus,
-    TargetKind,
     Verdict,
 )
 from piloop.db.session import Database
+from piloop.ids import IMPLEMENTER, TargetKind, TargetRef
 from piloop.reports.history import (
     FINDING_CHARS,
     FINDINGS_IN_HISTORY,
@@ -76,7 +75,7 @@ def scored(
     usage = {'total': tokens, 'turns': 3, 'source': '/x.jsonl'} if tokens is not None else None
     s.add(
         AgentSession(
-            kind=RoleName.IMPLEMENTER, campaign_id=row.campaign_id, run_id=run.id, checkpoint_id=checkpoint, usage=usage
+            kind=IMPLEMENTER, campaign_id=row.campaign_id, run_id=run.id, checkpoint_id=checkpoint, usage=usage
         )
     )
     evaluator_id = row.campaign.evaluator_id
@@ -100,7 +99,7 @@ def scored(
 
 
 def comment(s: Session, kind: TargetKind, target: int, body: str, author: str = 'implementer#1') -> None:
-    s.add(Comment(target_kind=kind, target_id=target, author=author, kind=CommentKind.FINDING, body=body))
+    s.add(Comment(target=TargetRef(kind, target), author=author, kind=CommentKind.FINDING, body=body))
 
 
 def render(db: Database, campaign: Campaign) -> str:

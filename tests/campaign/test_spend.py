@@ -16,8 +16,9 @@ from piloop.campaign.campaigns import sync
 from piloop.campaign.spend import SpendError
 from piloop.campaign.stop import check
 from piloop.config import CampaignConfig, Spend
-from piloop.db.models import AgentSession, Campaign, CampaignStatus, Comment, Idea, IdeaStatus, RoleName, Run, RunStatus
+from piloop.db.models import AgentSession, Campaign, CampaignStatus, Comment, Idea, IdeaStatus, Run, RunStatus
 from piloop.db.session import Database
+from piloop.ids import WATCHDOG
 from piloop.plugins.stop_rule.contract import Hold
 from piloop.reports.overview import progress
 from tests.conftest import ScriptRuntime, write_toml
@@ -181,7 +182,7 @@ def test_a_stopped_campaign_is_held_only_while_its_closing_review_waits(db: Data
         assert check(s, p, cfg) == Hold('spend not read yet')
         p.status = CampaignStatus.STOPPED
         assert progress(s, p, cfg, p.created_at).endswith(' · $?/$10.00 spend'), 'stopped, no review waits'
-        s.add(AgentSession(kind=RoleName.WATCHDOG, campaign_id=p.id, reason='campaign stopped'))
+        s.add(AgentSession(kind=WATCHDOG, campaign_id=p.id, reason='campaign stopped'))
         s.flush()
         assert progress(s, p, cfg, p.created_at).endswith(' (launches held: spend not read yet)'), 'its review waits'
 

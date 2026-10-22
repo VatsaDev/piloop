@@ -11,6 +11,7 @@ from piloop.cli import common
 from piloop.cli.common import CampaignRef
 from piloop.config import config_of
 from piloop.db.models import Campaign, Candidate, Verdict
+from piloop.ids import CandidateId, TrackName
 from piloop.scoring.ledger import (
     ImportRefused,
     RemeasureRefused,
@@ -65,7 +66,7 @@ def candidate_import(
 
 @app.command(name='remeasure')
 def candidate_remeasure(
-    candidate_id: Annotated[int, cyclopts.Parameter(help='The candidate to measure again.')],
+    candidate_id: Annotated[CandidateId, cyclopts.Parameter(help='The candidate to measure again.')],
     /,
 ) -> None:
     """Ask the daemon to measure a candidate again with the current evaluator.
@@ -96,7 +97,7 @@ def candidate_remeasure(
 @app.command(name='note')
 def candidate_note(
     candidate_id: Annotated[
-        int, cyclopts.Parameter(help='The candidate: a measured discard, or one marked interesting already.')
+        CandidateId, cyclopts.Parameter(help='The candidate: a measured discard, or one marked interesting already.')
     ],
     reason: Annotated[str, cyclopts.Parameter(help='Why the tree is worth starting from although it regressed.')],
     /,
@@ -108,7 +109,7 @@ def candidate_note(
         ),
     ] = (),
     track: Annotated[
-        str | None,
+        TrackName | None,
         cyclopts.Parameter(
             help="The track of the follow-ups. Default: the track of the candidate's run, else the first track."
         ),
@@ -133,7 +134,7 @@ def candidate_note(
 
 @app.command(name='verdict')
 def candidate_verdict(
-    candidate_id: Annotated[int, cyclopts.Parameter(help='The candidate.')],
+    candidate_id: Annotated[CandidateId, cyclopts.Parameter(help='The candidate.')],
     verdict: Annotated[Verdict, cyclopts.Parameter(help='keep, interesting, discard or crash.')],
     /,
     *,

@@ -57,12 +57,22 @@ from piloop.db.models import (
     Measurement,
     Run,
     RunStatus,
-    TargetKind,
     Verdict,
     utcnow,
 )
 from piloop.db.session import Database, write_transaction
 from piloop.db.triggers import DAEMON_ACTOR
+from piloop.ids import (
+    AgentSessionId,
+    CampaignId,
+    CandidateId,
+    CommentId,
+    EvaluatorId,
+    IdeaId,
+    RunId,
+    TargetKind,
+    TargetRef,
+)
 from piloop.otel import Span, Tracer
 from piloop.plugins.executor.contract import Commits, EvaluationJob, EvaluationKey, Executor, GitTree, Host, selected
 from piloop.plugins.host import PluginTable
@@ -221,11 +231,11 @@ class RunController:
         """Release the executor. The daemon calls it last, before it closes the database."""
         self.executor.close()
 
-    def execute(self, run_id: int, agent_session_id: int) -> None:
+    def execute(self, run_id: RunId, agent_session_id: AgentSessionId) -> None:
         """Make the worktree, run the implementer, evaluate and record. Never raises: failures are recorded on the run."""
         self._guarded(run_id, agent_session_id, lambda span: self._execute(run_id, agent_session_id, span))
 
-    def reattach(self, run_id: int, agent_session_id: int) -> None:
+    def reattach(self, run_id: RunId, agent_session_id: AgentSessionId) -> None:
         """Finish a run whose agent a previous daemon process started (``Launcher.reattach``). Never raises.
 
         The daemon watches the agent in the run's worktree until it ends. Then it scores and settles the run as
@@ -233,7 +243,7 @@ class RunController:
         """
         self._guarded(run_id, agent_session_id, lambda span: self._finish(run_id, agent_session_id, None, span))
 
-    def _guarded(self, run_id: int, agent_session_id: int, body: Callable[[Span], None]) -> None:
+    def _guarded(self, run_id: RunId, agent_session_id: AgentSessionId, body: Callable[[Span], None]) -> None:
         """Run ``body``. A failure fails the run, and closes its implementer if the failure came before the launch."""
         with self._tracer.span('piloop.run', run=run_id) as span:
             try:
@@ -255,7 +265,7 @@ class RunController:
                 self._close(span, run_id, RunStatus.FAILED, error)
                 self._settle(span, run_id, idea_id, RunStatus.FAILED, startup_failed=False, recovered=None)
 
-    def _execute(self, run_id: int, agent_session_id: int, span: Span) -> None:
+    def _execute(self, run_id: RunId, agent_session_id: AgentSessionId, span: Span) -> None:
         with self.launcher.lock:
             if self.launcher.cancelled.is_set():  # Queued after stop(). The scheduler already failed the row.
                 span.set(status='cancelled')
@@ -291,7 +301,7 @@ class RunController:
                 s.commit()
         self._finish(run_id, agent_session_id, brief, span)
 
-    def _finish(self, run_id: int, agent_session_id: int, brief: str | None, span: Span) -> None:
+    def _finish(self, run_id: RunId, agent_session_id: AgentSessionId, brief: str | None, span: Span) -> None:
         """Run the agent, then record the outcome, score the commits and settle the idea.
 
         With a ``brief``, a new agent starts in a new worktree. With None, the daemon re-attaches to the agent that is
@@ -353,9 +363,9 @@ class RunController:
     def _cut(
         self,
         span: Span,
-        run_id: int,
-        idea_id: int,
-        agent_session_id: int,
+        run_id: RunId,
+        idea_id: IdeaId,
+        agent_session_id: AgentSessionId,
         name: str,
         repo: Repo,
         base_sha: str,
@@ -370,10 +380,10 @@ class RunController:
     def _ran(
         self,
         span: Span,
-        run_id: int,
-        idea_id: int,
-        campaign_id: int,
-        agent_session_id: int,
+        run_id: RunId,
+        idea_id: IdeaId,
+        campaign_id: CampaignId,
+        agent_session_id: AgentSessionId,
         repo: Repo,
         base_sha: str,
         ended: Ran,
@@ -387,8 +397,7 @@ class RunController:
             asked = open_escalation(s, s.get_one(Run, run_id))
             stop_ended = s.scalar(
                 select(Event.payload).where(
-                    Event.target_kind == TargetKind.AGENT_SESSION,
-                    Event.target_id == agent_session_id,
+                    Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id),
                     Event.kind == STOP_ENDED,
                 )
             )
@@ -410,7 +419,7 @@ class RunController:
         self._release(repo, agent_session_id, ended.head)
         self._settle(span, run_id, idea_id, status, startup_failed=False, recovered=recovered)
 
-    def _relaunch(self, span: Span, run_id: int, agent_session_id: int, log_dir: Path) -> bool:
+    def _relaunch(self, span: Span, run_id: RunId, agent_session_id: AgentSessionId, log_dir: Path) -> bool:
         """Queue the run again with a new implementer, up to ``STARTUP_RELAUNCHES`` times, after its implementer failed to start.
 
         The run stays open, so it keeps its slot, attempt number and brief. The ``implementer#<id>`` in the brief becomes the
@@ -456,7 +465,7 @@ class RunController:
         return True
 
     def _keep_cut_work(
-        self, run_id: int, name: str, repo: Repo, base_sha: str, head: str | None, *, noted: bool
+        self, run_id: RunId, name: str, repo: Repo, base_sha: str, head: str | None, *, noted: bool
     ) -> None:
         """Pin the work of a run that a daemon stop interrupted, uncommitted work included, and add a note on the run.
 
@@ -478,8 +487,7 @@ class RunController:
         with self._db.session() as s:
             s.add(
                 Comment(
-                    target_kind=TargetKind.RUN,
-                    target_id=run_id,
+                    target=TargetRef(TargetKind.RUN, run_id),
                     author=DAEMON_ACTOR,
                     kind=CommentKind.NOTE,
                     body=f'interrupted by a daemon stop: its {len(shas)} commits are pinned, unscored, at {prefix}<n>'
@@ -488,17 +496,17 @@ class RunController:
             )
             s.commit()
 
-    def _release(self, repo: Repo, agent_session_id: int, head: str | None) -> None:
+    def _release(self, repo: Repo, agent_session_id: AgentSessionId, head: str | None) -> None:
         """Delete the ref at which the agent's head was pinned (``commits_of``), now that the run's refs pin its commits."""
         if head is not None:
             git.unpin(repo, f'{AGENT_REFS}{agent_session_id}')
 
-    def _left_finding(self, run_id: int, idea_id: int, agent_session_id: int) -> bool:
+    def _left_finding(self, run_id: RunId, idea_id: IdeaId, agent_session_id: AgentSessionId) -> bool:
         """Return True if the agent signed a ``finding`` on its idea or its run (``left_finding``)."""
         with self._db.session() as s:
             return left_finding(s, s.get_one(Run, run_id), s.get_one(AgentSession, agent_session_id))
 
-    def resume(self, run_id: int) -> None:
+    def resume(self, run_id: RunId) -> None:
         """Score the commits of a closed run and settle its idea, after a daemon stopped while it scored them.
 
         The commits are the ones that ``_score`` pinned. Never raises. If scoring cannot resume, for example because
@@ -521,7 +529,7 @@ class RunController:
                 status = RunStatus.FAILED
             self._settle(span, run_id, idea_id, status, startup_failed=False, recovered=recovered)
 
-    def remeasure(self, candidate_id: int) -> None:
+    def remeasure(self, candidate_id: CandidateId) -> None:
         """Measure a candidate with the campaign's current evaluator. Its verdict does not change, unless it is a crash.
 
         Never raises. If the evaluation cannot start, for example because the commit is gone, a crashed measurement is
@@ -549,7 +557,7 @@ class RunController:
             return
         self._rejudge(candidate_id, repo, eval_dir)
 
-    def rejudge(self, candidate_id: int) -> None:
+    def rejudge(self, candidate_id: CandidateId) -> None:
         """Judge again a candidate that someone measured by hand (``ledger.rejudges``), with all its measurements.
 
         Never raises. When the judgement fails, for example because the repo is gone, a ``REJUDGE_FAILED`` event with
@@ -569,7 +577,7 @@ class RunController:
             self._tracer.event(REJUDGE_FAILED, candidate=candidate_id, error=str(e))
 
     def _rejudge(
-        self, candidate_id: int, repo: Repo, log_dir: Path, again: Callable[[Candidate], bool] = judged_again
+        self, candidate_id: CandidateId, repo: Repo, log_dir: Path, again: Callable[[Candidate], bool] = judged_again
     ) -> None:
         """Judge again a run's candidate that ``again`` selects, now that it has a new measurement.
 
@@ -603,7 +611,9 @@ class RunController:
         if judged.merged is not None:
             self._follow(scope, judged.merged, log_dir)
 
-    def _score(self, run_id: int, campaign_id: int, repo: Repo, shas: list[str], log_dir: Path) -> int | None:
+    def _score(
+        self, run_id: RunId, campaign_id: CampaignId, repo: Repo, shas: list[str], log_dir: Path
+    ) -> CandidateId | None:
         """Turn each new commit into a candidate, or find its existing candidate, then measure and judge it.
 
         Return the id of the candidate of the run's recovery commit (``RECOVERED_TRAILER``), if it has one and scoring
@@ -645,14 +655,14 @@ class RunController:
             )
             bar_id = bar_of(run.base).id
             candidate = run.base
-            ids: list[int] = []
+            ids: list[CandidateId] = []
             for sha in shas:
                 candidate, _ = resolve(s, campaign_id, repo, sha, parent=candidate, run_id=run_id)
                 ids.append(candidate.id)
             s.commit()
         for i, sha in enumerate(shas):
             git.pin(repo, f'refs/piloop/{cfg.name}/r{run_id}/{i}', sha)
-        recovered_id: int | None = None
+        recovered_id: CandidateId | None = None
         for i, (sha, candidate_id) in enumerate(zip(shas, ids, strict=True)):
             skip = git.eval_skipped(repo, sha)
             recovered = bool(git.trailers(repo, sha, RECOVERED_TRAILER))
@@ -697,13 +707,13 @@ class RunController:
                 return None
         return recovered_id
 
-    def _follow(self, scope: Scope, candidate_id: int, log_dir: Path) -> bool:
+    def _follow(self, scope: Scope, candidate_id: CandidateId, log_dir: Path) -> bool:
         """Measure a rebased candidate and judge it against its parent, the head it was merged onto.
 
         If the head moved again and the merge keeps against its parent, the merge is rebased in turn (``_judge``). This
         repeats until a merge is judged on the head or a merge conflicts. Returns False if the run was cancelled.
         """
-        current: int | None = candidate_id
+        current: CandidateId | None = candidate_id
         while current is not None:
             with self._db.session() as s:
                 candidate = s.get_one(Candidate, current)
@@ -733,13 +743,13 @@ class RunController:
 
     def _measure(
         self,
-        run_id: int | None,
-        campaign_id: int,
+        run_id: RunId | None,
+        campaign_id: CampaignId,
         cfg: CampaignConfig,
         repo: Repo,
         sha: str,
-        candidate_id: int,
-        evaluator_id: int,
+        candidate_id: CandidateId,
+        evaluator_id: EvaluatorId,
         eval_dir: Path,
     ) -> bool:
         """Measure ``sha`` on the executor, and wait until its measurement is recorded. False if the daemon stopped.
@@ -801,8 +811,8 @@ class RunController:
     def _judge(
         self,
         scope: Scope,
-        candidate_id: int,
-        bar_id: int,
+        candidate_id: CandidateId,
+        bar_id: CandidateId,
         span: Span,
         *,
         judge_now: bool,
@@ -827,7 +837,7 @@ class RunController:
         discard or an interesting candidate into a noted ``interesting`` (``ledger.note``). A keep or a crash keeps
         its verdict.
         """
-        merged: int | None = None
+        merged: CandidateId | None = None
         moved = False
         with self._db.session() as s:
             candidate = s.get_one(Candidate, candidate_id)
@@ -870,7 +880,7 @@ class RunController:
         return Judged(verdict, advanced=advanced, merged=merged)
 
     def _verdict(
-        self, s: Session, scope: Scope, candidate: Candidate, bar_id: int
+        self, s: Session, scope: Scope, candidate: Candidate, bar_id: CandidateId
     ) -> tuple[Verdict, str, Candidate | None]:
         """Return the rule's verdict and reason against the run's bar, and the head to rebase onto if needed.
 
@@ -897,7 +907,7 @@ class RunController:
             return verdict, f'the head candidate#{trunk.id} is in its history: {reason}', None
         return Verdict.INTERESTING, MOVED.format(head=trunk.id) + reason, trunk
 
-    def _close(self, span: Span, run_id: int, status: RunStatus, error: str | None) -> None:
+    def _close(self, span: Span, run_id: RunId, status: RunStatus, error: str | None) -> None:
         """Record the run's outcome when its implementer ends, so the slot is free while the commits are scored (``scoring``)."""
         with self.launcher.lock:
             if self.launcher.cancelled.is_set():  # stop() failed the row. Do not open it again.
@@ -911,7 +921,14 @@ class RunController:
         span.set(status=status, error=error)
 
     def _settle(
-        self, span: Span, run_id: int, idea_id: int, status: RunStatus, *, startup_failed: bool, recovered: int | None
+        self,
+        span: Span,
+        run_id: RunId,
+        idea_id: IdeaId,
+        status: RunStatus,
+        *,
+        startup_failed: bool,
+        recovered: CandidateId | None,
     ) -> None:
         """After the run's commits are judged, set the idea to ``ready`` if it has attempts left, else to ``done``.
 
@@ -943,8 +960,7 @@ class RunController:
                         idea.status = IdeaStatus.PARKED
                         s.add(
                             Comment(
-                                target_kind=TargetKind.IDEA,
-                                target_id=idea.id,
+                                target=TargetRef(TargetKind.IDEA, idea.id),
                                 author=DAEMON_ACTOR,
                                 kind=CommentKind.NOTE,
                                 body=f'parked: run#{run_id} ended while its escalation comment#{asked} waits for an'
@@ -963,8 +979,7 @@ class RunController:
                         emit(s, RECOVERY_REQUEUED, TargetKind.IDEA, idea.id, payload=payload)
                         s.add(
                             Comment(
-                                target_kind=TargetKind.IDEA,
-                                target_id=idea.id,
+                                target=TargetRef(TargetKind.IDEA, idea.id),
                                 author=DAEMON_ACTOR,
                                 kind=CommentKind.NOTE,
                                 body=f'requeued from candidate#{recovered}: run#{run_id} ended {status} with work its'
@@ -976,8 +991,7 @@ class RunController:
                         idea.status = IdeaStatus.PARKED
                         s.add(
                             Comment(
-                                target_kind=TargetKind.IDEA,
-                                target_id=idea.id,
+                                target=TargetRef(TargetKind.IDEA, idea.id),
                                 author=DAEMON_ACTOR,
                                 kind=CommentKind.NOTE,
                                 body=f'parked: no agent of run#{run_id} started to work; fix what stopped them (the'
@@ -1001,8 +1015,8 @@ class RunController:
         it is queued.
         """
         track = cfg.track(idea.track)
-        evaluator_id = idea.campaign.evaluator_id or 0
-        on_idea = (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == idea.id)
+        evaluator_id = idea.campaign.evaluator_id
+        on_idea = Comment.target == TargetRef(TargetKind.IDEA, idea.id)
         on_its_runs = (Comment.target_kind == TargetKind.RUN) & Comment.target_id.in_(
             select(Run.id).where(Run.idea_id == idea.id)
         )
@@ -1061,12 +1075,12 @@ class RunController:
 class Scope:
     """The scope for scoring the candidates of one run: the run, the campaign's config at scoring time and the track."""
 
-    run_id: int
-    campaign_id: int
+    run_id: RunId
+    campaign_id: CampaignId
     cfg: CampaignConfig
     track: Track
     repo: Repo
-    evaluator_id: int
+    evaluator_id: EvaluatorId
     branch: bool
 
 
@@ -1077,7 +1091,7 @@ class Judged:
     verdict: Verdict
     advanced: bool
     """It kept against the run's bar, on the trunk or for a rebase. The run's next commit is judged against it."""
-    merged: int | None
+    merged: CandidateId | None
     """The candidate of its merge onto the head, if it was rebased and the merge is a new tree."""
 
 
@@ -1092,8 +1106,8 @@ def left_finding(s: Session, run: Run, agent_session: AgentSession) -> bool:
     A finding is the implementer's report that it is done. Only the implementer's own finding counts: a relaunched run's dead
     implementer did not finish it.
     """
-    on_idea = (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == run.idea_id)
-    on_run = (Comment.target_kind == TargetKind.RUN) & (Comment.target_id == run.id)
+    on_idea = Comment.target == TargetRef(TargetKind.IDEA, run.idea_id)
+    on_run = Comment.target == TargetRef(TargetKind.RUN, run.id)
     signed = (*deprecated.signatures(Agent(role=agent_session.kind, session=agent_session.id)), f'run#{run.id}')
     found = s.scalar(
         select(Comment.id)
@@ -1117,7 +1131,7 @@ class RunEnd:
     """The implementer ran into its role's timeout."""
     error: str | None = None
     """How the implementer's process failed, a timeout included."""
-    asked: int | None = None
+    asked: CommentId | None = None
     """The implementer's escalation that waits for an answer (``open_escalation``)."""
     commits: int = 0
     recovered_only: bool = False
@@ -1162,7 +1176,7 @@ def run_outcome(end: RunEnd) -> RunOutcome:
             return RunStatus.SUCCEEDED, None
 
 
-def open_escalation(s: Session, run: Run) -> int | None:
+def open_escalation(s: Session, run: Run) -> CommentId | None:
     """Return the id of the first escalation that an implementer of ``run`` wrote on its run or idea and nobody acknowledged.
 
     The implementer asked for something that it cannot do itself, and the answer has not come. An implementer signs as
@@ -1170,8 +1184,8 @@ def open_escalation(s: Session, run: Run) -> int | None:
     """
     sessions = s.scalars(select(AgentSession).where(AgentSession.run_id == run.id))
     signed = [name for w in sessions for name in deprecated.signatures(Agent(role=w.kind, session=w.id))]
-    on_idea = (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == run.idea_id)
-    on_run = (Comment.target_kind == TargetKind.RUN) & (Comment.target_id == run.id)
+    on_idea = Comment.target == TargetRef(TargetKind.IDEA, run.idea_id)
+    on_run = Comment.target == TargetRef(TargetKind.RUN, run.id)
     return s.scalar(
         select(Comment.id)
         .where(
@@ -1188,12 +1202,12 @@ def open_escalation(s: Session, run: Run) -> int | None:
 def _requeues(s: Session, idea: Idea) -> int:
     """How many times ``_settle`` requeued the idea from recovered work (its ``RECOVERY_REQUEUED`` events)."""
     query = select(func.count()).where(
-        Event.target_kind == TargetKind.IDEA, Event.target_id == idea.id, Event.kind == RECOVERY_REQUEUED
+        Event.target == TargetRef(TargetKind.IDEA, idea.id), Event.kind == RECOVERY_REQUEUED
     )
     return s.scalar(query) or 0
 
 
-def commits_of(run_id: int, agent_session_id: int) -> Commits:
+def commits_of(run_id: RunId, agent_session_id: AgentSessionId) -> Commits:
     """How a run's implementer's commits come back: the uncommitted work on a commit of its own, the head pinned.
 
     The commit has the ``RECOVERED_TRAILER``, and the head is pinned at ``AGENT_REFS``.
@@ -1217,7 +1231,7 @@ def _commits(repo: Repo, base_sha: str, head: str | None) -> list[str]:
     return [c.hexsha for c in repo.iter_commits(f'{base_sha}..{head}', first_parent=True)][::-1]
 
 
-def implementer_of(s: Session, run_id: int) -> Actor:
+def implementer_of(s: Session, run_id: RunId) -> Actor:
     """The run's newest implementer, which a note from its finding is by; the daemon for a run that has none."""
     w = s.scalars(
         select(AgentSession).where(AgentSession.run_id == run_id).order_by(AgentSession.id.desc()).limit(1)

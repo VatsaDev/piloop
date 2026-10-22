@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session
 from piloop.agents.roles import files_of
 from piloop.campaign.ideas import Yield, source, yields
 from piloop.config import CampaignConfig, load_campaign_config
-from piloop.db.models import Campaign, Comment, CommentKind, IdeaStatus, TargetKind, Verdict
+from piloop.db.models import Campaign, Comment, CommentKind, IdeaStatus, Verdict
 from piloop.db.session import Database
+from piloop.ids import TargetKind, TargetRef
 from piloop.plugins.role.contract import Files
 from piloop.reports.pack import (
     ARTIFACTS_SHOWN,
@@ -50,7 +51,7 @@ def render(db: Database, campaign: Campaign, workspace: Path | None) -> str:
 
 
 def note(s: Session, campaign: Campaign, author: str, kind: CommentKind, body: str, **fields: object) -> Comment:
-    row = Comment(target_kind=TargetKind.CAMPAIGN, target_id=campaign.id, author=author, kind=kind, body=body, **fields)
+    row = Comment(target=TargetRef(TargetKind.CAMPAIGN, campaign.id), author=author, kind=kind, body=body, **fields)
     s.add(row)
     s.flush()
     return row

@@ -8,13 +8,14 @@ from pydantic import ValidationError
 
 from piloop.campaign import ops
 from piloop.cli import common
+from piloop.ids import CandidateId
 
 app = cyclopts.App(name='measurement', help='Record a measurement made outside the daemon.')
 
 
 @app.command(name='add')
 def measurement_add(
-    candidate_id: Annotated[int, cyclopts.Parameter(help='The candidate that was measured.')],
+    candidate_id: Annotated[CandidateId, cyclopts.Parameter(help='The candidate that was measured.')],
     /,
     *,
     report: Annotated[

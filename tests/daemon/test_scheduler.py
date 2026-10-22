@@ -53,15 +53,24 @@ from piloop.db.models import (
     LeaseState,
     LinkKind,
     Measurement,
-    RoleName,
     Run,
     RunStatus,
-    TargetKind,
     Verdict,
     utcnow,
 )
 from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
+from piloop.ids import (
+    IMPLEMENTER,
+    RESEARCH,
+    WATCHDOG,
+    AgentSessionId,
+    CandidateId,
+    RoleName,
+    RunId,
+    TargetKind,
+    TargetRef,
+)
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins
 from piloop.plugins.runtime.contract import AgentStatus, Handle, NotSteerable
@@ -92,9 +101,9 @@ def make_scheduler(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer:
     return Scheduler(db, controller, tracer, tmp_path, factory(runtime))
 
 
-def request_watchdog(db: Database, campaign: Campaign) -> int:
+def request_watchdog(db: Database, campaign: Campaign) -> AgentSessionId:
     with db.session() as s:
-        agent_session = AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, reason='by hand')
+        agent_session = AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='by hand')
         s.add(agent_session)
         s.commit()
         return agent_session.id
@@ -167,7 +176,7 @@ def test_ready_ideas_become_runs_in_priority_order(
             agent_session.model,
             agent_session.reason,
         ) == (
-            RoleName.IMPLEMENTER,
+            IMPLEMENTER,
             1,
             'script',
             'test-model',
@@ -278,9 +287,7 @@ def test_a_harness_at_its_cap_passes_its_turn_and_an_idea_pinned_to_it_waits(
     (pinned,) = add_ideas(db, campaign, 'pinned', harness='script', priority=0)
     with db.session() as s:
         s.add(
-            AgentSession(
-                kind=RoleName.IMPLEMENTER, campaign_id=campaign.id, harness='script', state=AgentSessionState.RUNNING
-            )
+            AgentSession(kind=IMPLEMENTER, campaign_id=campaign.id, harness='script', state=AgentSessionState.RUNNING)
         )
         s.commit()
     scheduler = make_scheduler(db, runtime, tmp_path)
@@ -307,8 +314,8 @@ def test_a_sweep_passes_over_a_harness_at_its_cap_and_a_pinned_one_stays_request
         roles={'watchdog': {'harnesses': ['script', 'pi'], 'max_concurrent': 4}},
     )
     with db.session() as s:
-        rows = [AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, reason='by hand') for _ in range(3)]
-        rows.append(AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, harness='script', reason='pinned'))
+        rows = [AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='by hand') for _ in range(3)]
+        rows.append(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, harness='script', reason='pinned'))
         s.add_all(rows)
         s.commit()
     scheduler = make_scheduler(db, runtime, tmp_path)
@@ -418,8 +425,8 @@ def test_a_pin_is_honored_over_the_after_link_and_the_run_records_both_bases(
     commit_candidate(db, campaign, 1, {'other.txt': 'x\n'}, Verdict.KEEP)
     with db.session() as s:
         s.add(Measurement(candidate_id=2, evaluator_id=1, metrics={'score': 9, 'size': 9}))
-        s.get_one(Idea, branch).base_candidate_id = 1
-        s.get_one(Idea, missing).base_candidate_id = 99
+        s.get_one(Idea, branch).base_candidate_id = CandidateId(1)
+        s.get_one(Idea, missing).base_candidate_id = CandidateId(99)
         s.commit()
     scheduler = make_scheduler(db, runtime, tmp_path)
     with db.session() as s:
@@ -436,7 +443,9 @@ def test_a_pin_is_honored_over_the_after_link_and_the_run_records_both_bases(
         assert s.scalars(select(Run).where(Run.idea_id == missing)).all() == []
 
 
-def commit_candidate(db: Database, campaign: Campaign, parent: int, files: dict[str, str], verdict: Verdict) -> int:
+def commit_candidate(
+    db: Database, campaign: Campaign, parent: int, files: dict[str, str], verdict: Verdict
+) -> CandidateId:
     """Commit ``files`` on candidate ``parent``'s commit, and add the commit as a candidate with ``verdict``."""
     repo = Repo(campaign.path)
     with db.session() as s:
@@ -574,7 +583,7 @@ def test_low_water_does_not_count_blocked_ideas_as_backlog(
     with db.session() as s:
         agent_session = s.get_one(AgentSession, 1)
         assert (agent_session.kind, agent_session.reason) == (
-            RoleName.RESEARCH,
+            RESEARCH,
             '1 free implementer slots without a runnable idea; 0 of 3 runnable ideas',
         ), 'one ready idea exists, but it cannot run: the backlog is empty for the research role'
         assert s.scalars(select(Run)).all() == []
@@ -1221,7 +1230,7 @@ def test_a_run_whose_scoring_cannot_resume_returns_its_idea_to_the_queue(
     assert span_named(spans, 'piloop.resume').status.status_code is StatusCode.ERROR
 
 
-def measured_by(db: Database, candidate_id: int) -> list[tuple[int, float | None, str | None]]:
+def measured_by(db: Database, candidate_id: CandidateId) -> list[tuple[int, float | None, str | None]]:
     with db.session() as s:
         rows = s.get_one(Candidate, candidate_id).measurements
         return [(m.evaluator_id, m.metrics.get('score'), m.error) for m in rows]
@@ -1259,11 +1268,13 @@ def test_a_new_evaluator_measures_the_head_runs_wait_for_it_and_older_keeps_only
     assert statuses(db) == [IdeaStatus.DONE, IdeaStatus.READY]
     sched.wait(30)
     assert measured_by(db, kept.id) == [(old, 2.0, None), (new, 4.0, None)], 'the head first'
-    assert measured_by(db, 1) == [(old, 1.0, None)], 'one at a time'
+    assert measured_by(db, CandidateId(1)) == [(old, 1.0, None)], 'one at a time'
 
     assert sched.tick() == [2], 'the head has a score: the run starts from it'
     sched.wait(30)
-    assert measured_by(db, 1) == [(old, 1.0, None)], 'the baseline is no base or bar of any run: nobody asked'
+    assert measured_by(db, CandidateId(1)) == [(old, 1.0, None)], (
+        'the baseline is no base or bar of any run: nobody asked'
+    )
     with db.session() as s:
         assert s.get_one(Run, 2).base_candidate_id == kept.id
         assert s.get_one(Candidate, kept.id).verdict is Verdict.KEEP, 'measuring again judges nothing again'
@@ -1271,7 +1282,7 @@ def test_a_new_evaluator_measures_the_head_runs_wait_for_it_and_older_keeps_only
         s.commit()
     sched.tick()
     sched.wait(30)
-    assert measured_by(db, 1) == [(old, 1.0, None), (new, 2.0, None)], 'measured when asked'
+    assert measured_by(db, CandidateId(1)) == [(old, 1.0, None), (new, 2.0, None)], 'measured when asked'
     with db.session() as s:
         assert s.get_one(Candidate, 1).verdict is Verdict.KEEP
 
@@ -1398,11 +1409,11 @@ def test_a_keep_that_cannot_be_checked_out_is_measured_as_a_crash_once(
     sched = make_scheduler(db, runtime, tmp_path)
     sched.tick()
     sched.wait(10)
-    [(_, score, error)] = measured_by(db, 2)
+    [(_, score, error)] = measured_by(db, CandidateId(2))
     assert score is None and error is not None and error.startswith('GitCommandError'), error
     sched.tick()
     sched.wait(10)
-    assert len(measured_by(db, 2)) == 1, 'a crash is an answer: not measured again'
+    assert len(measured_by(db, CandidateId(2))) == 1, 'a crash is an answer: not measured again'
     sched.stop(timeout=5)
 
 
@@ -1498,7 +1509,7 @@ def running_agent_session(
         s.flush()
         s.add(
             AgentSession(
-                kind=RoleName.IMPLEMENTER,
+                kind=IMPLEMENTER,
                 campaign_id=campaign.id,
                 run_id=run.id,
                 harness='script',
@@ -1576,9 +1587,7 @@ def test_comments_on_a_running_run_or_its_idea_reach_the_implementer_once_as_one
     coming_up = running_agent_session(db, campaign, 'coming up', state=AgentSessionState.STARTING)
     with db.session() as s:
         before = utcnow() - timedelta(minutes=5)
-        s.add(
-            Comment(target_kind=TargetKind.IDEA, target_id=idea, author='human', body='in the brief', created_at=before)
-        )
+        s.add(Comment(target=TargetRef(TargetKind.IDEA, idea), author='human', body='in the brief', created_at=before))
         s.commit()
     scheduler = make_scheduler(db, runtime, tmp_path, tracer)
     assert scheduler.tick() == [] and runtime.prompts == [], 'a comment from before the run started is in its brief'
@@ -1674,12 +1683,12 @@ def test_a_run_frees_its_slot_when_its_implementer_ends_and_its_idea_settles_onc
     set_config(db, campaign, evaluate=['sh', '-c', gated])
     first, second = add_ideas(db, campaign, 'first', 'second')
     with db.session() as s:  # the new evaluator never measured the baseline, so only a pin makes it a base
-        s.get_one(Idea, second).base_candidate_id = 1
+        s.get_one(Idea, second).base_candidate_id = CandidateId(1)
         s.commit()
     scheduler = make_scheduler(db, runtime, tmp_path)
     assert scheduler.tick() == [1]
     # the run closes, then its commit becomes a candidate: wait for both, the evaluation is gated
-    wait_until(lambda: candidate_rows(db, 1))
+    wait_until(lambda: candidate_rows(db, RunId(1)))
     with db.session() as s:
         run = s.get_one(Run, 1)
         assert (run.status, run.finished_at is not None) == (RunStatus.SUCCEEDED, True), 'closed: its implementer ended'
@@ -1694,7 +1703,7 @@ def test_a_run_frees_its_slot_when_its_implementer_ends_and_its_idea_settles_onc
         assert s.get_one(Idea, second).status is IdeaStatus.DONE
 
 
-def candidate_rows(db: Database, run_id: int) -> int:
+def candidate_rows(db: Database, run_id: RunId) -> int:
     with db.session() as s:
         return len(s.scalars(select(Candidate).where(Candidate.run_id == run_id)).all())
 
@@ -1715,7 +1724,7 @@ def test_implementers_of_a_stopped_campaign_are_told_to_wrap_up_then_ended_after
     with db.session() as s:
         s.add(
             AgentSession(
-                kind=RoleName.RESEARCH,
+                kind=RESEARCH,
                 campaign_id=campaign.id,
                 runtime='subprocess',
                 handle={'agent': 'research-2', 'pid': 4243},
@@ -1840,7 +1849,7 @@ def test_a_cancelled_run_is_told_to_wrap_up_and_ended_after_the_grace(
     running_agent_session(db, campaign, 'useful')
     with db.session() as s:
         sweep = AgentSession(
-            kind=RoleName.RESEARCH,
+            kind=RESEARCH,
             campaign_id=campaign.id,
             runtime='subprocess',
             handle={'agent': 'research-3', 'pid': 4243},
@@ -1971,17 +1980,15 @@ def test_a_cancelled_request_never_launches_and_a_cancelled_sweep_is_ended(
         run = Run(idea_id=idea, attempt=1, base_candidate_id=1, harness='script', model='m')
         s.add(run)
         s.flush()
-        queued = AgentSession(
-            kind=RoleName.IMPLEMENTER, campaign_id=campaign.id, run_id=run.id, harness='script', model='m'
-        )
+        queued = AgentSession(kind=IMPLEMENTER, campaign_id=campaign.id, run_id=run.id, harness='script', model='m')
         sweep = AgentSession(
-            kind=RoleName.RESEARCH,
+            kind=RESEARCH,
             campaign_id=campaign.id,
             runtime='subprocess',
             handle={'agent': 'research-2', 'pid': 4243},
             state=AgentSessionState.RUNNING,
         )
-        requested = AgentSession(kind=RoleName.RESEARCH, campaign_id=campaign.id, reason='low_water')
+        requested = AgentSession(kind=RESEARCH, campaign_id=campaign.id, reason='low_water')
         s.add_all([queued, sweep, requested])
         s.flush()
         request_cancel(s, queued, System.HUMAN, wrap_up=True)
@@ -2034,7 +2041,7 @@ def test_an_implementer_silent_while_its_jobs_run_requests_an_incident_sweep(
     scheduler = make_scheduler(db, BusyRuntime(), tmp_path)
     scheduler.tick()
     with db.session() as s:
-        [watchdog] = s.scalars(select(AgentSession).where(AgentSession.kind == RoleName.WATCHDOG)).all()
+        [watchdog] = s.scalars(select(AgentSession).where(AgentSession.kind == WATCHDOG)).all()
         assert watchdog.reason == 'anomaly: agent_session#1 silent while its jobs run'
     scheduler.stop(timeout=5)
 
@@ -2048,10 +2055,10 @@ def test_jobs_the_runtime_cannot_report_are_traced_and_page_nobody(
     failed = span_named(spans, 'agent_session.jobs_failed').attributes
     assert dict(failed or {}) == {'agent_session': 1, 'error': 'server_not_running: herdr is down'}
     with db.session() as s:
-        assert s.scalars(select(AgentSession).where(AgentSession.kind == RoleName.WATCHDOG)).all() == []
+        assert s.scalars(select(AgentSession).where(AgentSession.kind == WATCHDOG)).all() == []
 
 
-def died_at_startup(db: Database, campaign: Campaign, kind: RoleName, minutes_ago: float = 0) -> int:
+def died_at_startup(db: Database, campaign: Campaign, kind: RoleName, minutes_ago: float = 0) -> AgentSessionId:
     """Add a killed agent row and the launcher's ``anomaly.startup`` event, ``minutes_ago`` minutes ago."""
     with db.session() as s:
         agent_session = AgentSession(
@@ -2070,8 +2077,7 @@ def died_at_startup(db: Database, campaign: Campaign, kind: RoleName, minutes_ag
             Event(
                 kind=STARTUP_ANOMALY,
                 actor='daemon',
-                target_kind=TargetKind.AGENT_SESSION,
-                target_id=agent_session.id,
+                target=TargetRef(TargetKind.AGENT_SESSION, agent_session.id),
                 payload=payload,
                 at=utcnow() - timedelta(minutes=minutes_ago),
             )
@@ -2093,15 +2099,15 @@ def test_startup_deaths_pause_launches_and_escalate_until_they_age_out(
     Without the pause, each death launches another agent on a host that is already overloaded. Launches resume when
     the deaths age out of the window.
     """
-    died_at_startup(db, campaign, RoleName.IMPLEMENTER, minutes_ago=11)
-    for kind in (RoleName.WATCHDOG, RoleName.RESEARCH):
+    died_at_startup(db, campaign, IMPLEMENTER, minutes_ago=11)
+    for kind in (WATCHDOG, RESEARCH):
         died_at_startup(db, campaign, kind)
     wanted = request_watchdog(db, campaign)
     scheduler = make_scheduler(db, runtime, tmp_path)
     assert wanted in scheduler.tick(), 'two recent deaths: launches go on'
     scheduler.wait(10)
 
-    died = [died_at_startup(db, campaign, RoleName.WATCHDOG) for _ in range(2)]
+    died = [died_at_startup(db, campaign, WATCHDOG) for _ in range(2)]
     request_watchdog(db, campaign)
     assert scheduler.tick() == []
     [escalation] = pause_escalations(db)
@@ -2120,7 +2126,7 @@ def test_startup_deaths_pause_launches_and_escalate_until_they_age_out(
         s.commit()
     assert scheduler.tick() == [] and len(pause_escalations(db)) == 1, 'acknowledged means seen: not posted again'
 
-    latest = died_at_startup(db, campaign, RoleName.RESEARCH)
+    latest = died_at_startup(db, campaign, RESEARCH)
     assert scheduler.tick() == []
     [extended] = pause_escalations(db)
     assert extended.id == escalation.id and extended.acked_at is not None, 'the same pause: updated in place'
@@ -2136,7 +2142,7 @@ def test_startup_deaths_pause_launches_and_escalate_until_they_age_out(
     scheduler.wait(10)
 
     for _ in range(STARTUP_BREAKER):
-        died_at_startup(db, campaign, RoleName.WATCHDOG)
+        died_at_startup(db, campaign, WATCHDOG)
     request_watchdog(db, campaign)
     assert scheduler.tick() == [] and len(pause_escalations(db)) == 2, 'a new pause: a new escalation'
     with db.session() as s:
@@ -2158,8 +2164,8 @@ def explore_setup(db: Database, campaign: Campaign, explore_every: int) -> tuple
     commit_candidate(db, campaign, 1, {'other.txt': 'x\n'}, Verdict.KEEP)
     with db.session() as s:
         s.add(Measurement(candidate_id=2, evaluator_id=1, metrics={'score': 9, 'size': 9}))
-        s.get_one(Idea, level).base_candidate_id = 2
-        s.get_one(Idea, explore).base_candidate_id = 1
+        s.get_one(Idea, level).base_candidate_id = CandidateId(2)
+        s.get_one(Idea, explore).base_candidate_id = CandidateId(1)
         for attempt in (1, 2):
             s.add(
                 Run(
@@ -2291,17 +2297,15 @@ def test_low_water_counts_each_track_short_of_its_share_whatever_the_others_hold
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         cfg = CampaignConfig.model_validate(p.config)
-        backlog = scheduler._backlog(s, p, cfg, RoleName.RESEARCH, 0)
+        backlog = scheduler._backlog(s, p, cfg, RESEARCH, 0)
         assert (backlog.runnable, backlog.target, backlog.short) == (6, 4, 1), 'cost is one short; accuracy has 3 spare'
         assert str(backlog) == '6 of 4 runnable ideas (accuracy 6 of 3, cost 0 of 1)'
-        fire = LowWaterTrigger(buffer=0).fire(scheduler._tick(s, p, cfg, RoleName.RESEARCH, cfg.roles.research))
+        fire = LowWaterTrigger(buffer=0).fire(scheduler._tick(s, p, cfg, RESEARCH, cfg.roles.research))
         assert fire is not None and fire.reason == str(backlog)
     add_ideas(db, campaign, 'c0', track='cost')
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        assert scheduler._backlog(s, p, cfg, RoleName.RESEARCH, 0).short == -3, (
-            'no track short: the surplus, as with one track'
-        )
+        assert scheduler._backlog(s, p, cfg, RESEARCH, 0).short == -3, 'no track short: the surplus, as with one track'
 
 
 class WaitingRuntime(PromptingRuntime):

@@ -14,6 +14,7 @@ from piloop.campaign import inbox
 from piloop.cli import common
 from piloop.cli.common import CampaignRef, JsonFlag
 from piloop.db.models import Comment, CommentKind, Event, utcnow
+from piloop.ids import CommentId
 from piloop.reports import feed
 from piloop.reports.overview import age, item_lines
 from piloop.text import cell
@@ -62,7 +63,7 @@ def inbox_list(
                 str(c.priority),
                 str(c.kind),
                 campaign.name if campaign else '—',
-                f'{c.target_kind}#{c.target_id}',
+                str(c.target),
                 c.author,
                 age(c.created_at, now),
                 *acked,
@@ -81,7 +82,7 @@ def inbox_list(
 
 
 @app.command(name='show')
-def inbox_show(comment_id: Annotated[int, cyclopts.Parameter(help='The id of the item.')], /) -> None:
+def inbox_show(comment_id: Annotated[CommentId, cyclopts.Parameter(help='The id of the item.')], /) -> None:
     """Show one item in full, then the comments that it cites as `comment#<id>`, that cite it, or reply to it."""
     with common.session() as s:
         c = s.get(Comment, comment_id)
@@ -129,9 +130,9 @@ def inbox_wait(
 
 @app.command(name='ack')
 def inbox_ack(
-    *ids: Annotated[int, cyclopts.Parameter(help='The ids of the items.')],
+    *ids: Annotated[CommentId, cyclopts.Parameter(help='The ids of the items.')],
     up_to: Annotated[
-        int | None,
+        CommentId | None,
         cyclopts.Parameter(
             help='Acknowledge every unacknowledged item up to this id instead. --campaign and --kind narrow it.'
         ),

@@ -27,13 +27,13 @@ from piloop.db.models import (
     IdeaStatus,
     LinkKind,
     Measurement,
-    RoleName,
     Run,
     RunStatus,
     Verdict,
     utcnow,
 )
 from piloop.db.session import Database
+from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, AgentSessionId, IdeaId, RunId
 from piloop.otel import Tracer
 from piloop.reports.overview import ANOMALY_EVENT, anomalies
 from tests.conftest import HARNESS_NOOP, HARNESS_PROMPT_TO_FILE, ScriptRuntime, factory, wait_until, write_toml
@@ -66,7 +66,7 @@ def agent_sessions(db: Database, kind: str) -> list[tuple[int, AgentSessionState
         return [(w.id, w.state, w.reason) for w in rows]
 
 
-def fail_a_run(db: Database, campaign: Campaign, title: str, status: RunStatus = RunStatus.FAILED) -> int:
+def fail_a_run(db: Database, campaign: Campaign, title: str, status: RunStatus = RunStatus.FAILED) -> RunId:
     with db.session() as s:
         idea = Idea(
             track='score',
@@ -92,7 +92,7 @@ def fail_a_run(db: Database, campaign: Campaign, title: str, status: RunStatus =
         return run.id
 
 
-def finish_a_run(db: Database, campaign: Campaign, title: str, verdict: Verdict = Verdict.DISCARD) -> int:
+def finish_a_run(db: Database, campaign: Campaign, title: str, verdict: Verdict = Verdict.DISCARD) -> RunId:
     """Add a run that succeeded just now with a measured candidate, a discard by default.
 
     The research trigger sees a new result. The watchdog trigger sees no failure.
@@ -116,7 +116,7 @@ def finish_a_run(db: Database, campaign: Campaign, title: str, verdict: Verdict 
     return run_id
 
 
-def wait_for(db: Database, agent_session_id: int, state: AgentSessionState) -> None:
+def wait_for(db: Database, agent_session_id: AgentSessionId, state: AgentSessionState) -> None:
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         with db.session() as s:
@@ -126,7 +126,7 @@ def wait_for(db: Database, agent_session_id: int, state: AgentSessionState) -> N
     raise AssertionError(f'implementer#{agent_session_id} never reached {state}')
 
 
-def backdate(db: Database, agent_session_id: int, seconds: float) -> None:
+def backdate(db: Database, agent_session_id: AgentSessionId, seconds: float) -> None:
     with db.session() as s:
         w = s.get_one(AgentSession, agent_session_id)
         w.started_at = w.started_at - timedelta(seconds=seconds)
@@ -163,8 +163,8 @@ def test_an_anomaly_requests_an_incident_sweep_once_and_collapses_while_one_is_p
     assert sched.tick() == [], 'max_concurrent=1: the sweep for the second failure waits'
     fail_a_run(db, campaign, 'third')
     sched.tick()
-    wait_for(db, 1, AgentSessionState.RUNNING)
-    assert agent_sessions(db, RoleName.WATCHDOG) == [
+    wait_for(db, AgentSessionId(1), AgentSessionState.RUNNING)
+    assert agent_sessions(db, WATCHDOG) == [
         (1, AgentSessionState.RUNNING, 'anomaly: run#1 failed'),
         (2, AgentSessionState.REQUESTED, 'anomaly: run#2 failed'),
     ], 'one pending request absorbs later anomalies'
@@ -184,7 +184,7 @@ def test_an_anomaly_requests_an_incident_sweep_once_and_collapses_while_one_is_p
     again = scheduler(db, runtime, tmp_path)
     assert again.tick() == [], 'the events are the record: a restarted daemon replays nothing'
     again.stop(timeout=5)
-    assert [w[1] for w in agent_sessions(db, RoleName.WATCHDOG)] == [AgentSessionState.EXITED] * 3
+    assert [w[1] for w in agent_sessions(db, WATCHDOG)] == [AgentSessionState.EXITED] * 3
 
 
 def test_an_anomaly_takes_the_tick_and_does_not_reset_the_timer(
@@ -201,7 +201,7 @@ def test_an_anomaly_takes_the_tick_and_does_not_reset_the_timer(
     sched.wait(10)
     assert sched.tick() == [2], 'the incident sweep is not a progress review: the timer is still due'
     sched.wait(10)
-    assert agent_sessions(db, RoleName.WATCHDOG) == [
+    assert agent_sessions(db, WATCHDOG) == [
         (1, AgentSessionState.EXITED, 'anomaly: run#1 failed'),
         (2, AgentSessionState.EXITED, 'timer: 30s'),
     ]
@@ -228,7 +228,7 @@ def test_only_incident_anomalies_request_a_sweep(
         [idle] = anomalies(s, p, load_campaign_config(Path(campaign.path)), utcnow(), lambda w: [])
     assert idle.key == 'campaign#1 idle' and not idle.incident
     assert sched.tick() == []
-    assert agent_sessions(db, RoleName.WATCHDOG) == []
+    assert agent_sessions(db, WATCHDOG) == []
     sched.stop(timeout=1)
 
 
@@ -240,20 +240,20 @@ def test_cron_fires_once_per_interval(db: Database, campaign: Campaign, runtime:
         s.get_one(Campaign, campaign.id).created_at = utcnow() - timedelta(seconds=31)
         s.commit()
     assert sched.tick() == [1]
-    assert agent_sessions(db, RoleName.WATCHDOG)[0][2] == 'timer: 30s'
+    assert agent_sessions(db, WATCHDOG)[0][2] == 'timer: 30s'
     sched.wait(10)
     assert sched.tick() == [], 'not due again'
-    backdate(db, 1, 31)
+    backdate(db, AgentSessionId(1), 31)
     assert sched.tick() == [2]
     sched.wait(10)
 
     configure(db, campaign, watchdog={'interval': 0})
-    backdate(db, 2, 3600)
+    backdate(db, AgentSessionId(2), 3600)
     assert sched.tick() == [], 'interval 0 turns the timer off'
     sched.stop(timeout=5)
 
 
-def occupy(db: Database, campaign: Campaign, title: str = 'busy') -> int:
+def occupy(db: Database, campaign: Campaign, title: str = 'busy') -> RunId:
     """Add a run in flight that holds an implementer slot without the queue starting anything."""
     with db.session() as s:
         idea = Idea(
@@ -274,7 +274,7 @@ def occupy(db: Database, campaign: Campaign, title: str = 'busy') -> int:
 
 def add_ideas(
     db: Database, campaign: Campaign, count: int, by: str = 'human', status: IdeaStatus = IdeaStatus.READY
-) -> list[int]:
+) -> list[IdeaId]:
     with db.session() as s:
         ideas = [
             Idea(
@@ -287,17 +287,17 @@ def add_ideas(
         return [idea.id for idea in ideas]
 
 
-def consume(db: Database, idea_id: int) -> None:
+def consume(db: Database, idea_id: IdeaId) -> None:
     with db.session() as s:
         s.get_one(Idea, idea_id).status = IdeaStatus.DONE
         s.commit()
 
 
 def last_reason(db: Database) -> str | None:
-    return agent_sessions(db, RoleName.RESEARCH)[-1][2]
+    return agent_sessions(db, RESEARCH)[-1][2]
 
 
-def take(db: Database, agent_session_id: int, seconds: float, ago: float = 0) -> None:
+def take(db: Database, agent_session_id: AgentSessionId, seconds: float, ago: float = 0) -> None:
     """Make an ended sweep have taken ``seconds`` and have ended ``ago`` seconds ago."""
     with db.session() as s:
         w = s.get_one(AgentSession, agent_session_id)
@@ -325,7 +325,7 @@ def test_low_water_keeps_a_slot_s_worth_plus_the_buffer_and_tops_it_up_on_new_re
     assert sched.tick() == [1], 'below the target with no slot free: the first sweep needs nothing'
     assert last_reason(db) == '2 of 3 runnable ideas'
     sched.wait(10)
-    take(db, 1, seconds=600)
+    take(db, AgentSessionId(1), seconds=600)
     assert sched.tick() == [], 'nothing finished since the sweep started, which defined nothing: research rests'
 
     finish_a_run(db, campaign, 'one')
@@ -340,7 +340,7 @@ def test_low_water_keeps_a_slot_s_worth_plus_the_buffer_and_tops_it_up_on_new_re
     add_ideas(db, campaign, 1, by='research#2')
     finish_a_run(db, campaign, 'three')
     assert sched.tick() == [], 'back at the target: new results alone ask for nothing'
-    consume(db, first + 1)
+    consume(db, IdeaId(first + 1))
     assert sched.tick() == [3], 'implementer#2 inserted an idea: the back-off is reset, one finished run is enough'
     assert last_reason(db) == '2 of 3 runnable ideas; 1 runs finished since agent_session#2 started'
     sched.wait(10)
@@ -364,9 +364,9 @@ def test_low_water_keeps_sweeping_a_short_backlog_though_every_slot_is_busy_rest
     assert sched.tick() == [2], 'implementer#1 defined an idea, the backlog is still short: no result needed'
     assert last_reason(db) == '1 of 3 runnable ideas'
     sched.wait(10)
-    take(db, 2, seconds=60)
+    take(db, AgentSessionId(2), seconds=60)
     assert sched.tick() == [], 'implementer#2 defined nothing: research rests as long as it took'
-    take(db, 2, seconds=60, ago=61)
+    take(db, AgentSessionId(2), seconds=60, ago=61)
     assert sched.tick() == [3]
     assert last_reason(db) == '1 of 3 runnable ideas; rested 60s after 1 sweeps that defined no idea'
     sched.wait(10)
@@ -443,7 +443,7 @@ def test_a_long_stall_gets_one_stalled_sweep_per_stall_step_and_a_keep_ends_it(
         finish_a_run(db, campaign, f'tried {n}')
         sched.tick()
         sched.wait(10)
-    reasons = [reason or '' for _, _, reason in agent_sessions(db, RoleName.RESEARCH)]
+    reasons = [reason or '' for _, _, reason in agent_sessions(db, RESEARCH)]
     assert [r.split(';')[0] for r in reasons] == ['stalled, step 1', 'stalled, step 2', 'stalled, step 3']
 
     finish_a_run(db, campaign, 'kept', Verdict.KEEP)
@@ -451,7 +451,7 @@ def test_a_long_stall_gets_one_stalled_sweep_per_stall_step_and_a_keep_ends_it(
         finish_a_run(db, campaign, f'after the keep {n}')
         sched.tick()
         sched.wait(10)
-    assert len(agent_sessions(db, RoleName.RESEARCH)) == 4, 'the keep ended the stall: four runs mark a new one'
+    assert len(agent_sessions(db, RESEARCH)) == 4, 'the keep ended the stall: four runs mark a new one'
     assert (last_reason(db) or '').startswith('stalled, step 1; 5 runs finished since agent_session#3 started')
     sched.stop(timeout=5)
 
@@ -479,7 +479,7 @@ def test_a_killed_sweep_s_seeds_are_retried_once_and_a_new_seed_waits_for_a_free
     configure(db, campaign, BLOCKING.format(release=release), research={'max_ideas': 0, 'max_concurrent': 1})
     add_ideas(db, campaign, 1, by='watchdog#10', status=IdeaStatus.SEED)
     assert sched.tick() == [3], 'a seed filed after the latest sweep started is new'
-    wait_until(lambda: agent_sessions(db, RoleName.RESEARCH)[-1][1] is AgentSessionState.RUNNING)
+    wait_until(lambda: agent_sessions(db, RESEARCH)[-1][1] is AgentSessionState.RUNNING)
     add_ideas(db, campaign, 1, by='watchdog#11', status=IdeaStatus.SEED)
     assert sched.tick() == [], 'a new seed, but the only research slot is busy'
     release.touch()
@@ -487,7 +487,7 @@ def test_a_killed_sweep_s_seeds_are_retried_once_and_a_new_seed_waits_for_a_free
     sched.stop(timeout=5)
 
 
-def finish(db: Database, run_id: int) -> None:
+def finish(db: Database, run_id: RunId) -> None:
     with db.session() as s:
         run = s.get_one(Run, run_id)
         run.status, run.finished_at = RunStatus.SUCCEEDED, utcnow()
@@ -507,9 +507,9 @@ def test_after_a_barren_sweep_research_never_waits_for_more_results_than_the_run
     in_flight = occupy(db, campaign)
     assert sched.tick() == [1]
     sched.wait(10)
-    take(db, 1, seconds=600, ago=60)
+    take(db, AgentSessionId(1), seconds=600, ago=60)
     assert sched.tick() == [], 'barren: two finished runs wanted, none yet, and the idle rest has 540 s to go'
-    take(db, 1, seconds=600, ago=601)
+    take(db, AgentSessionId(1), seconds=600, ago=601)
     assert sched.tick() == [2], 'three slots idle, no result: the rest is over'
     assert last_reason(db) == (
         '3 free implementer slots without a runnable idea; 0 of 6 runnable ideas; rested 600s after 1 sweeps that defined'
@@ -517,7 +517,7 @@ def test_after_a_barren_sweep_research_never_waits_for_more_results_than_the_run
     )
     sched.wait(10)
 
-    take(db, 2, seconds=600, ago=60)
+    take(db, AgentSessionId(2), seconds=600, ago=60)
     finish(db, in_flight)
     assert sched.tick() == [3], 'two barren sweeps want four finished runs, but nothing else is in flight'
     assert last_reason(db) == (
@@ -558,7 +558,7 @@ def test_low_water_sizes_the_batch_to_the_shortfall_net_of_the_sweeps_in_flight(
         s.commit()
     sched = scheduler(db, runtime, tmp_path)
     assert sched.tick() == [1, 2, 3]
-    assert [w[2] for w in agent_sessions(db, RoleName.RESEARCH)] == [
+    assert [w[2] for w in agent_sessions(db, RESEARCH)] == [
         '5 free implementer slots without a runnable idea; 0 of 6 runnable ideas'
     ] * 3
     assert sched.tick() == [], 'the three in flight may insert the six: a fourth would overshoot'
@@ -569,7 +569,7 @@ def test_low_water_sizes_the_batch_to_the_shortfall_net_of_the_sweeps_in_flight(
     assert picks == [('script', 'test-model'), ('b', 'mb'), ('c', 'mc')]
 
     with db.session() as s:  # a sweep in flight, started by hand
-        s.add(AgentSession(kind=RoleName.RESEARCH, campaign_id=campaign.id, state=AgentSessionState.RUNNING))
+        s.add(AgentSession(kind=RESEARCH, campaign_id=campaign.id, state=AgentSessionState.RUNNING))
         s.commit()
     add_ideas(db, campaign, 1, by='research#3', status=IdeaStatus.PROPOSED)
     assert sched.tick() == [5, 6], 'six wanted, two coming: two sweeps of two'
@@ -655,7 +655,7 @@ def test_low_water_wants_no_more_ideas_than_max_runs_leaves_to_run(
     add_ideas(db, campaign, 2)
     sched = scheduler(db, runtime, tmp_path)
     assert sched.tick() == [1], 'a run of the first idea; one run left, one idea for it: no research'
-    assert agent_sessions(db, RoleName.RESEARCH) == []
+    assert agent_sessions(db, RESEARCH) == []
     release.touch()
     sched.wait(10)
     sched.stop(timeout=5)
@@ -720,9 +720,9 @@ def test_low_water_retries_a_killed_batch_once(
     sched = scheduler(db, runtime, tmp_path)
     assert sched.tick() == [1, 2, 3]
     sched.wait(10)
-    assert {state for _, state, _ in agent_sessions(db, RoleName.RESEARCH)} == {AgentSessionState.KILLED}
+    assert {state for _, state, _ in agent_sessions(db, RESEARCH)} == {AgentSessionState.KILLED}
     assert sched.tick() == [4, 5, 6], 'the killed siblings are one batch, not three prior attempts'
-    assert agent_sessions(db, RoleName.RESEARCH)[3][2] == (
+    assert agent_sessions(db, RESEARCH)[3][2] == (
         '3 free implementer slots without a runnable idea; 0 of 5 runnable ideas; retrying after agent_session#3 was killed:'
         ' agent timeout after 0.2s'
     )
@@ -747,8 +747,8 @@ def test_manual_requests_are_launched_under_max_concurrent(
     sched = scheduler(db, runtime, tmp_path)
     assert sched.tick() == [1]
     assert sched.tick() == []
-    wait_for(db, 1, AgentSessionState.RUNNING)
-    assert agent_sessions(db, RoleName.RESEARCH) == [
+    wait_for(db, AgentSessionId(1), AgentSessionState.RUNNING)
+    assert agent_sessions(db, RESEARCH) == [
         (1, AgentSessionState.RUNNING, None),
         (2, AgentSessionState.REQUESTED, None),
     ]
@@ -770,7 +770,7 @@ def test_an_implementer_request_without_a_run_is_refused(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     with db.session() as s:
-        s.add(AgentSession(kind=RoleName.IMPLEMENTER, campaign_id=campaign.id, reason='by hand'))
+        s.add(AgentSession(kind=IMPLEMENTER, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     sched = scheduler(db, runtime, tmp_path)
     assert sched.tick() == []

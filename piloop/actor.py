@@ -7,10 +7,9 @@
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PlainSerializer, PositiveInt
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, PlainSerializer
 
-ROLE_NAME = r'^[a-z][a-z0-9_-]{0,19}$'
-"""A role's name, which is also its config table, CLI name, signature and pane prefix."""
+from piloop.ids import ROLE_NAME, AgentSessionId, RoleName
 
 
 class Agent(BaseModel):
@@ -18,8 +17,8 @@ class Agent(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    role: Annotated[str, Field(pattern=ROLE_NAME)]
-    session: PositiveInt
+    role: Annotated[RoleName, Field(pattern=ROLE_NAME)]
+    session: Annotated[AgentSessionId, Field(gt=0)]
 
     @property
     def signature(self) -> str:

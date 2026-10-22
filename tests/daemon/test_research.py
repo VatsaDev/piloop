@@ -22,10 +22,9 @@ from piloop.db.models import (
     CommentKind,
     Idea,
     IdeaStatus,
-    RoleName,
-    TargetKind,
 )
 from piloop.db.session import Database
+from piloop.ids import RESEARCH, TargetKind
 from piloop.otel import Tracer
 from tests.conftest import ScriptRuntime, factory
 from tests.daemon.test_triggers import add_ideas, configure, finish_a_run, last_reason, low_water, occupy
@@ -60,7 +59,7 @@ def test_research_sweep_inserts_ideas_signed_with_its_implementer_id(
     with db.session() as s:
         agent_session = s.get_one(AgentSession, 1)
         assert (agent_session.kind, agent_session.state, agent_session.error) == (
-            RoleName.RESEARCH,
+            RESEARCH,
             AgentSessionState.EXITED,
             None,
         )

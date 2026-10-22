@@ -14,6 +14,7 @@ from piloop.actor import System
 from piloop.daemon.run_controller import RunController
 from piloop.db.models import Campaign, Candidate, Evaluation, Run, RunStatus, Verdict, utcnow
 from piloop.db.session import Database
+from piloop.ids import CandidateId, RunId
 from piloop.otel import Tracer
 from piloop.plugins.host import PluginTable
 from piloop.scoring import queue
@@ -58,7 +59,7 @@ def evaluated(tmp_path: Path) -> list[str]:
     return path.read_text().split() if path.exists() else []
 
 
-def run_candidates(db: Database, run_id: int) -> list[Candidate]:
+def run_candidates(db: Database, run_id: RunId) -> list[Candidate]:
     with db.session() as s:
         return list(s.scalars(select(Candidate).where(Candidate.run_id == run_id).order_by(Candidate.id)))
 
@@ -73,7 +74,7 @@ def queued_executor(db: Database, runtime: ScriptRuntime, tmp_path: Path, slots:
     )
 
 
-def errors(db: Database, candidate_id: int) -> tuple[list[str | None], Verdict]:
+def errors(db: Database, candidate_id: CandidateId) -> tuple[list[str | None], Verdict]:
     with db.session() as s:
         c = s.get_one(Candidate, candidate_id)
         return [m.error for m in c.measurements], c.verdict
@@ -204,7 +205,7 @@ def test_a_stop_ends_the_waiting_evaluations_and_records_nothing(
     )
 
 
-def add_campaign(db: Database, name: str, trees: int) -> list[int]:
+def add_campaign(db: Database, name: str, trees: int) -> list[CandidateId]:
     """A second campaign with ``trees`` candidates, none kept."""
     with db.session() as s:
         other = Campaign(name=name, path=f'/{name}', config={})
@@ -227,7 +228,7 @@ def test_a_busy_campaign_never_holds_back_another_campaign(db: Database, campaig
         evaluator = s.get_one(Campaign, campaign.id).evaluator_id
         assert evaluator is not None
 
-        def ask(candidate_id: int) -> Evaluation:
+        def ask(candidate_id: CandidateId) -> Evaluation:
             return queue.request(s, candidate_id, evaluator)[0]
 
         def finish(evaluation: Evaluation) -> None:
@@ -312,7 +313,7 @@ def test_evaluations_that_wait_for_a_slot_never_hold_back_an_agent_launch(
     scheduler.stop(timeout=5)
 
 
-def run_status(db: Database, run_id: int) -> RunStatus:
+def run_status(db: Database, run_id: RunId) -> RunStatus:
     with db.session() as s:
         return s.get_one(Run, run_id).status
 

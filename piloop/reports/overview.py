@@ -52,12 +52,12 @@ from piloop.db.models import (
     Measurement,
     Pause,
     Run,
-    TargetKind,
     Verdict,
     campaign_runs,
     count,
     latest_agent_session,
 )
+from piloop.ids import AgentSessionId, CampaignId, EvaluatorId, TargetKind, TargetRef
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import Files
 from piloop.reports.history import IDEAS_IN_HISTORY, block
@@ -252,7 +252,7 @@ def head_scores(
     trunk = head(s, campaign)
     if trunk is None:
         return None
-    evaluator_id = campaign.evaluator_id or 0
+    evaluator_id = campaign.evaluator_id
     first = baseline(s, campaign)
     values: list[tuple[Track, float | None, float | None]] = []
     for track in cfg.all_tracks:
@@ -369,7 +369,7 @@ def queued_ideas(s: Session, campaign: Campaign) -> tuple[Sequence[Idea], Sequen
     return waiting, ready
 
 
-def scored(c: Candidate, evaluator_id: int, primary: Metric) -> tuple[str, str]:
+def scored(c: Candidate, evaluator_id: EvaluatorId | None, primary: Metric) -> tuple[str, str]:
     """Format the primary score of the candidate and its delta to its parent, each ``—`` when unknown."""
     value = score(c, evaluator_id, primary)
     parent = score(c.parent, evaluator_id, primary) if c.parent is not None else None
@@ -389,7 +389,7 @@ def item_lines(s: Session, c: Comment, now: datetime) -> tuple[str, list[str]]:
         state = f'p{c.priority}, unacknowledged'
     else:
         state = f'p{c.priority}, acknowledged by {c.acked_by} {age(c.acked_at, now)} ago'
-    title = f'comment#{c.id} {c.kind} on {c.target_kind}#{c.target_id} by {c.author}, {age(c.created_at, now)} ago · {state}'
+    title = f'comment#{c.id} {c.kind} on {c.target} by {c.author}, {age(c.created_at, now)} ago · {state}'
     lines = c.body.strip().splitlines()
     rest = inbox.thread(s, c)
     if rest:
@@ -412,7 +412,7 @@ def anomalies(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime
     return sorted(found, key=lambda a: a.at, reverse=True)
 
 
-def reported(s: Session, campaign_id: int) -> set[str]:
+def reported(s: Session, campaign_id: CampaignId) -> set[str]:
     """Return the keys of the anomalies that are already assigned to a watchdog of the campaign."""
     rows = s.scalars(
         select(Event.payload).where(
@@ -424,14 +424,13 @@ def reported(s: Session, campaign_id: int) -> set[str]:
     return {str(payload['key']) for payload in rows}
 
 
-def assigned(s: Session, agent_session_id: int) -> list[str]:
+def assigned(s: Session, agent_session_id: AgentSessionId) -> list[str]:
     """Return the anomaly lines assigned to a watchdog, in order. A progress sweep has none."""
     rows = s.scalars(
         select(Event.payload)
         .where(
             Event.kind == ANOMALY_EVENT,
-            Event.target_kind == TargetKind.AGENT_SESSION,
-            Event.target_id == agent_session_id,
+            Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id),
         )
         .order_by(Event.id)
     )
@@ -474,7 +473,7 @@ def tracks_lines(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datet
     Each line shows the primary at the head against the start and its floor, the trunk keeps of the track and the
     latest one, its share of the implementer slots against its open runs, and its runnable ideas.
     """
-    evaluator_id = campaign.evaluator_id or 0
+    evaluator_id = campaign.evaluator_id
     trunk = head(s, campaign)
     first = baseline(s, campaign)
     steps = s.scalars(trunk_keeps(campaign).where(Candidate.run_id.is_not(None)).order_by(Candidate.id)).all()
@@ -505,7 +504,7 @@ def tracks_lines(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datet
 
 def _trajectory(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> list[str]:
     """Show the trunk: the start, then each trunk keep in order, with its gain on its track."""
-    evaluator_id = campaign.evaluator_id or 0
+    evaluator_id = campaign.evaluator_id
     steps = s.scalars(trunk_keeps(campaign).order_by(Candidate.id)).all()
     if not steps:
         return ["- No trunk keep: the baseline's verdict was overridden and nothing was kept since."]
@@ -548,7 +547,7 @@ def _known(c: Candidate) -> datetime:
     return min((m.created_at for m in c.measurements if m.error is None), default=c.created_at)
 
 
-def _values(c: Candidate, cfg: CampaignConfig, evaluator_id: int) -> str:
+def _values(c: Candidate, cfg: CampaignConfig, evaluator_id: EvaluatorId | None) -> str:
     """Format the primary of each track on ``c``: ``accuracy 0.91, seconds 3.1``. One track shows the score only."""
     if not cfg.multitrack:
         return _num(score(c, evaluator_id, cfg.all_tracks[0].primary))
@@ -558,7 +557,7 @@ def _values(c: Candidate, cfg: CampaignConfig, evaluator_id: int) -> str:
 def _branches(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[str]:
     """List the lineages of keeps if there is more than one, then the latest notes: other places a run can start."""
     found = branches(s, campaign)
-    evaluator_id = campaign.evaluator_id or 0
+    evaluator_id = campaign.evaluator_id
     lines = []
     if len(found) > 1:
         lines.append('- Lineages (latest keep of each; a branch keep never moves the head):')
@@ -673,7 +672,7 @@ def _agents(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) 
 
 def _evaluations(s: Session, campaign: Campaign) -> str:
     """Show the number of evaluations, their duration now against at first, and the candidates without a verdict."""
-    evaluator_id = campaign.evaluator_id or 0
+    evaluator_id = campaign.evaluator_id
     mine = select(Candidate.id).where(Candidate.campaign_id == campaign.id)
     rows = s.scalars(
         select(Measurement)
@@ -702,7 +701,7 @@ def _candidates(s: Session, campaign: Campaign, cfg: CampaignConfig, now: dateti
     lines = [f'### Recent candidates ({len(recent)} of {total}; {on}, vs parent)']
     for c in recent:
         track = track_of(cfg, c)
-        value, delta = scored(c, campaign.evaluator_id or 0, track.primary)
+        value, delta = scored(c, campaign.evaluator_id, track.primary)
         run = f'run#{c.run_id}' if c.run_id else 'no run'
         tag = f' [{track.name}]' if cfg.multitrack else ''
         lines.append(
@@ -748,7 +747,7 @@ def _comments(s: Session, campaign: Campaign, now: datetime) -> list[str]:
     waiting = len(inbox.items(s, campaign_id=campaign.id))
     lines = [
         f'- comment#{c.id} {c.kind}{f" (p{c.priority}, unacknowledged)" if c.priority is not None and c.acked_at is None else ""}'
-        f' on {c.target_kind}#{c.target_id} by {c.author}, {age(c.created_at, now)} ago: {cell(c.body, DETAIL_CHARS)}'
+        f' on {c.target} by {c.author}, {age(c.created_at, now)} ago: {cell(c.body, DETAIL_CHARS)}'
         for c in rows
     ]
     return [
@@ -765,9 +764,7 @@ def latest_events(s: Session, campaign: Campaign, limit: int) -> Sequence[Event]
 
 def _events(s: Session, campaign: Campaign, now: datetime) -> str:
     latest = latest_events(s, campaign, EVENTS_SHOWN)
-    return '- ' + (
-        ' · '.join(f'{e.kind} {e.target_kind}#{e.target_id} {age(e.at, now)} ago' for e in latest) or 'None.'
-    )
+    return '- ' + (' · '.join(f'{e.kind} {e.target} {age(e.at, now)} ago' for e in latest) or 'None.')
 
 
 TOOLS = [
@@ -827,7 +824,7 @@ def _same_as_parent(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list
 
     If the other metrics are also equal (except a timing metric), the change did not affect what the evaluation sees.
     """
-    evaluator_id = campaign.evaluator_id or 0
+    evaluator_id = campaign.evaluator_id
     found: list[Anomaly] = []
     children = select(Candidate).where(Candidate.campaign_id == campaign.id, Candidate.parent_id.is_not(None))
     for c in s.scalars(children.order_by(Candidate.id)):

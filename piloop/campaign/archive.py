@@ -38,6 +38,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
+from piloop.ids import CampaignId, IdeaId
 from piloop.store import Entry, Manifest, Store, hash_file
 from piloop.store.tree import Materialised, Removed, Walk, materialise, put_walk, remove, walk
 
@@ -49,13 +50,13 @@ class NotArchived(RuntimeError):
     """The store lacks blobs of a manifest just stored: no row is recorded."""
 
 
-def idea_of(name: str) -> int | None:
+def idea_of(name: str) -> IdeaId | None:
     """The idea id that a top-level workspace entry is named after, or None."""
     m = IDEA_NAME.match(name)
-    return int(m[1]) if m else None
+    return IdeaId(int(m[1])) if m else None
 
 
-def owners(s: Session, campaign_id: int, names: Iterable[str]) -> dict[str, int]:
+def owners(s: Session, campaign_id: CampaignId, names: Iterable[str]) -> dict[str, IdeaId]:
     """The idea of ``campaign_id`` that each of ``names`` (top-level workspace entries) belongs to; the rest are left out.
 
     A name of an idea that is not in the campaign belongs to none, so the campaign's stop takes it.
@@ -69,11 +70,11 @@ def owners(s: Session, campaign_id: int, names: Iterable[str]) -> dict[str, int]
 class Job:
     """One archiving: a done idea's entries, or (``idea_id`` None) what a stopped campaign left."""
 
-    campaign_id: int
-    idea_id: int | None
+    campaign_id: CampaignId
+    idea_id: IdeaId | None
 
 
-def _due_ideas() -> Select[int, int]:
+def _due_ideas() -> Select[CampaignId, IdeaId]:
     """``(campaign, idea)`` of every idea due, oldest first.
 
     Due: ``done``, no run of it open, and its latest run finished after its latest complete archiving (a re-run idea is
@@ -91,7 +92,7 @@ def _due_ideas() -> Select[int, int]:
     )
 
 
-def _due_campaigns() -> Select[int]:
+def _due_campaigns() -> Select[CampaignId]:
     """Every campaign due, oldest first.
 
     Due: ``stopped``, none of its agents requested or alive, and no complete archiving of it newer than its last agent's

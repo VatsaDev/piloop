@@ -30,6 +30,7 @@ from piloop.daemon.run_controller import RunController
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Measurement, Verdict
 from piloop.db.session import Database, migrate
 from piloop.harnesses import DEFAULT_HARNESSES
+from piloop.ids import CampaignId
 from piloop.otel import Tracer
 from piloop.plugins.executor.kit.leases import Timing
 from piloop.plugins.executor.workers import WorkersExecutor
@@ -279,7 +280,7 @@ def register(db: Database, campaign_path: Path) -> Campaign:
         return proj
 
 
-def baseline(db: Database, campaign_id: int) -> Candidate:
+def baseline(db: Database, campaign_id: CampaignId) -> Candidate:
     with db.session() as s:
         return s.scalars(
             select(Candidate).where(Candidate.campaign_id == campaign_id).order_by(Candidate.id).limit(1)

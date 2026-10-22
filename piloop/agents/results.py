@@ -19,18 +19,9 @@ from piloop import deprecated
 from piloop.actor import Agent
 from piloop.config import harness_of
 from piloop.db.events import emit
-from piloop.db.models import (
-    LIVE,
-    AgentSession,
-    AgentSessionState,
-    Comment,
-    Evaluation,
-    Event,
-    Measurement,
-    TargetKind,
-    utcnow,
-)
+from piloop.db.models import LIVE, AgentSession, AgentSessionState, Comment, Evaluation, Event, Measurement, utcnow
 from piloop.db.session import Database, write_transaction
+from piloop.ids import AgentSessionId, CandidateId, EvaluatorId, MeasurementId, RunId, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import (
     AgentFinished,
@@ -279,17 +270,16 @@ def _open(s: Session, key: AgentKey) -> AgentSession:
     return w
 
 
-def _ended(s: Session, agent_session_id: int, ended: Ended) -> None:
+def _ended(s: Session, agent_session_id: AgentSessionId, ended: Ended) -> None:
     emit(s, ENDED_EVENT, TargetKind.AGENT_SESSION, agent_session_id, payload=ENDED.dump_python(ended, mode='json'))
 
 
-def ended_of(s: Session, agent_session_id: int) -> Ended | None:
+def ended_of(s: Session, agent_session_id: AgentSessionId) -> Ended | None:
     """Return how the agent's job ended (``ENDED_EVENT``), or None when no result closed its row: a stop did."""
     payload = s.scalar(
         select(Event.payload)
         .where(
-            Event.target_kind == TargetKind.AGENT_SESSION,
-            Event.target_id == agent_session_id,
+            Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id),
             Event.kind == ENDED_EVENT,
         )
         .order_by(Event.id.desc())
@@ -298,9 +288,9 @@ def ended_of(s: Session, agent_session_id: int) -> Ended | None:
     return None if payload is None else ENDED.validate_python(payload)
 
 
-def _asked_to_end(s: Session, agent_session_id: int) -> set[str]:
+def _asked_to_end(s: Session, agent_session_id: AgentSessionId) -> set[str]:
     """Return the ``ASKED_TO_END`` events on the agent: a stop or a cancel ended it, not a failed start."""
-    on_agent_session = (Event.target_kind == TargetKind.AGENT_SESSION) & (Event.target_id == agent_session_id)
+    on_agent_session = Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id)
     return set(s.scalars(select(Event.kind).where(on_agent_session, Event.kind.in_(ASKED_TO_END))))
 
 
@@ -330,8 +320,13 @@ def _never_worked(s: Session, w: AgentSession, report: AgentFinished) -> bool:
 
 
 def record(
-    s: Session, units_dir: Path, run_id: int | None, candidate_id: int, evaluator_id: int, result: EvalResult
-) -> int:
+    s: Session,
+    units_dir: Path,
+    run_id: RunId | None,
+    candidate_id: CandidateId,
+    evaluator_id: EvaluatorId,
+    result: EvalResult,
+) -> MeasurementId:
     """Store one evaluation as a measurement, with its per-unit results, and return its id. The caller commits."""
     measurement = Measurement(
         candidate_id=candidate_id,

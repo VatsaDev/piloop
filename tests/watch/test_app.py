@@ -35,14 +35,13 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Measurement,
-    RoleName,
     Run,
     RunStatus,
-    TargetKind,
     Verdict,
     utcnow,
 )
 from piloop.db.session import Database
+from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, CommentId, IdeaId, TargetKind, TargetRef
 from piloop.watch.app import CampaignScreen, CampaignsScreen, CandidatesTable, Watch
 from piloop.watch.panels import PANELS, Context, kept_scores
 from tests.conftest import wait_until
@@ -146,7 +145,7 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Campaign:
         s.add_all(
             [
                 AgentSession(
-                    kind=RoleName.IMPLEMENTER,
+                    kind=IMPLEMENTER,
                     campaign_id=p.id,
                     run_id=live_run.id,
                     harness='pi',
@@ -157,7 +156,7 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Campaign:
                     started_at=ago(minutes=3),
                 ),
                 AgentSession(
-                    kind=RoleName.RESEARCH,
+                    kind=RESEARCH,
                     campaign_id=p.id,
                     harness='claude',
                     model='opus',
@@ -167,7 +166,7 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Campaign:
                     started_at=ago(minutes=10, seconds=30),  # "10m" for 30 s: "40s" became "41s" on a loaded host
                 ),
                 AgentSession(
-                    kind=RoleName.WATCHDOG,
+                    kind=WATCHDOG,
                     campaign_id=p.id,
                     state=AgentSessionState.EXITED,
                     usage={'total': 1_234_567, 'turns': 9, 'source': '/x.jsonl'},
@@ -178,8 +177,7 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Campaign:
         s.add_all(
             [
                 Comment(
-                    target_kind=TargetKind.RUN,
-                    target_id=run.id,
+                    target=TargetRef(TargetKind.RUN, run.id),
                     kind=CommentKind.ESCALATION,
                     priority=1,
                     acked_at=ago(minutes=20),
@@ -188,8 +186,7 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Campaign:
                     **comment,
                 ),
                 Comment(
-                    target_kind=TargetKind.RUN,
-                    target_id=run.id,
+                    target=TargetRef(TargetKind.RUN, run.id),
                     author='pi',
                     kind=CommentKind.DECISION,
                     priority=2,
@@ -197,19 +194,15 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Campaign:
                     created_at=ago(minutes=20),
                 ),
                 Comment(
-                    target_kind=TargetKind.CAMPAIGN,
-                    target_id=p.id,
+                    target=TargetRef(TargetKind.CAMPAIGN, p.id),
                     kind=CommentKind.ESCALATION,
                     priority=1,
                     body='Codex cannot start: trust dialog. Environment or harness?\nSecond line.',
                     **comment,
                 ),
+                Comment(target=TargetRef(TargetKind.CAMPAIGN, p.id), kind=CommentKind.NOTE, body='a note', **comment),
                 Comment(
-                    target_kind=TargetKind.CAMPAIGN, target_id=p.id, kind=CommentKind.NOTE, body='a note', **comment
-                ),
-                Comment(
-                    target_kind=TargetKind.RUN,
-                    target_id=run.id,
+                    target=TargetRef(TargetKind.RUN, run.id),
                     author='human',
                     priority=2,
                     body='Why keep it?\nRe: comment#2',
@@ -239,7 +232,7 @@ BLOCKED_AGENT: Response = {
 }
 
 
-def comment(s: object, comment_id: int) -> Comment:
+def comment(s: object, comment_id: CommentId) -> Comment:
     assert isinstance(s, Session)
     return s.get_one(Comment, comment_id)
 
@@ -383,7 +376,7 @@ def test_r_replies_to_the_thread_root_with_a_priority_that_wakes_the_orchestrato
     drive(db, 'demo', scenario)
     assert notes == ['sent comment#6 (p3) in reply to comment#2', 'reply dropped', 'reply dropped']
     with db.session() as s:
-        sent = comment(s, 6)
+        sent = comment(s, CommentId(6))
         assert (sent.target_kind, sent.target_id, sent.author, sent.kind, sent.priority, sent.body) == (
             TargetKind.COMMENT,
             2,
@@ -578,7 +571,9 @@ def test_a_review_that_another_client_made_meanwhile_is_refused_with_why(
         await pilot.press('3', 'y')
         await pilot.pause()
         with db.session() as s:
-            ops.set_idea_status(s, 4, IdeaStatus.READY, reason='approved from the CLI', actor=System.ORCHESTRATOR)
+            ops.set_idea_status(
+                s, IdeaId(4), IdeaStatus.READY, reason='approved from the CLI', actor=System.ORCHESTRATOR
+            )
             s.commit()
         await pilot.press(*'worth a run', 'enter')
         await pilot.pause()
@@ -758,9 +753,7 @@ def test_the_screen_follows_the_database_and_a_dialog_holds_it_still(
 
     async def scenario(pilot: Pilot[None], app: Watch) -> None:
         with db.session() as s:
-            s.add(
-                Comment(target_kind=TargetKind.CAMPAIGN, target_id=live_campaign.id, author='w', priority=0, body='new')
-            )
+            s.add(Comment(target=TargetRef(TargetKind.CAMPAIGN, live_campaign.id), author='w', priority=0, body='new'))
             s.commit()
         app.poll()
         await pilot.pause()
@@ -797,7 +790,7 @@ def test_details_of_rows_gone_or_bare(db: Database, live_campaign: Campaign) -> 
         s.commit()
         assert text(PANELS['inbox'].detail(s, ctx, 99)) == 'comment#99 is gone\n'
         assert 'plan:\nstep one\nstep two\n' in text(PANELS['ideas'].detail(s, ctx, 5))
-        assert 'metrics under evaluator#0 (vs parent):\n  —\n' in text(PANELS['candidates'].detail(s, ctx, 5))
+        assert 'metrics under — (vs parent):\n  —\n' in text(PANELS['candidates'].detail(s, ctx, 5))
 
 
 def text(renderable: RenderableType) -> str:
@@ -822,8 +815,7 @@ def test_a_reply_typed_in_the_watch_wakes_the_orchestrators_inbox_wait(
     with db.session() as s:
         s.add(
             Comment(
-                target_kind=TargetKind.CAMPAIGN,
-                target_id=campaign.id,
+                target=TargetRef(TargetKind.CAMPAIGN, campaign.id),
                 author='watchdog#3',
                 kind=CommentKind.ESCALATION,
                 priority=1,

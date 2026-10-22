@@ -31,12 +31,12 @@ from piloop.db.models import (
     IdeaStatus,
     Measurement,
     Run,
-    TargetKind,
     Verdict,
     campaign_runs,
     utcnow,
 )
 from piloop.db.triggers import DAEMON_ACTOR
+from piloop.ids import RunId, TargetKind, TargetRef
 from piloop.plugins.stop_rule import contract as stop_contract
 from piloop.plugins.stop_rule.contract import STOP_RULES, Fact, Go, Hold, Progress, Stop, StopCase
 from piloop.scoring.ledger import head, keeps, score
@@ -139,14 +139,13 @@ def requested_stop(s: Session, campaign: Campaign) -> Event | None:
     reactivated = s.scalar(
         select(func.max(Event.id)).where(
             Event.kind == 'campaign.status',
-            Event.target_kind == TargetKind.CAMPAIGN,
-            Event.target_id == campaign.id,
+            Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id),
             Event.payload['new'].as_string() == CampaignStatus.ACTIVE.value,
         )
     )
     return s.scalars(
         select(Event)
-        .where(Event.kind == STOP_REQUESTED, Event.target_kind == TargetKind.CAMPAIGN, Event.target_id == campaign.id)
+        .where(Event.kind == STOP_REQUESTED, Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id))
         .where(Event.id > (reactivated or 0))
         .order_by(Event.id.desc())
         .limit(1)
@@ -163,13 +162,13 @@ def request_cancel(s: Session, target: Run | AgentSession, actor: Actor, *, wrap
     emit(s, kind, on, target.id, actor=actor, payload={'wrap_up': wrap_up})
 
 
-def run_cancel(s: Session, run_id: int) -> Event | None:
+def run_cancel(s: Session, run_id: RunId) -> Event | None:
     """Return the latest cancel of a run: requested on the run, or on any of its agents, or None.
 
     A cancel on an agent holds for its run, so an implementer that a relaunch puts in the place of one that failed to start
     is cancelled too.
     """
-    on_run = (Event.target_kind == TargetKind.RUN) & (Event.target_id == run_id)
+    on_run = Event.target == TargetRef(TargetKind.RUN, run_id)
     agents = select(AgentSession.id).where(AgentSession.run_id == run_id)
     on_agent = (Event.target_kind == TargetKind.AGENT_SESSION) & Event.target_id.in_(agents)
     return _latest_cancel(s, on_run | on_agent)
@@ -179,7 +178,7 @@ def agent_cancel(s: Session, agent_session: AgentSession) -> Event | None:
     """Return the latest cancel of an agent, or None: its run's (``run_cancel``) for an implementer, its own for a sweep."""
     if agent_session.run_id is not None:
         return run_cancel(s, agent_session.run_id)
-    return _latest_cancel(s, (Event.target_kind == TargetKind.AGENT_SESSION) & (Event.target_id == agent_session.id))
+    return _latest_cancel(s, Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id))
 
 
 def _latest_cancel(s: Session, target: ColumnElement[bool]) -> Event | None:
@@ -194,9 +193,7 @@ def park_cancelled(s: Session, run: Run) -> None:
     by = f' by {cancel.actor}' if cancel is not None else ''
     body = f'parked: run#{run.id} was cancelled{by}; set the idea ready to run it again'
     s.add(
-        Comment(
-            target_kind=TargetKind.IDEA, target_id=run.idea_id, author=DAEMON_ACTOR, kind=CommentKind.NOTE, body=body
-        )
+        Comment(target=TargetRef(TargetKind.IDEA, run.idea_id), author=DAEMON_ACTOR, kind=CommentKind.NOTE, body=body)
     )
 
 
@@ -216,7 +213,7 @@ def check(s: Session, campaign: Campaign, cfg: CampaignConfig) -> Go | Hold | St
     counting = Fact.RUNS in reads
     spending = Fact.SPEND in reads
     progress = Progress(
-        head=score(trunk, campaign.evaluator_id or 0, primary) if trunk is not None else None,
+        head=score(trunk, campaign.evaluator_id, primary) if trunk is not None else None,
         runs=runs(s, campaign) if counting else None,
         unsettled=(_over_runs(s, campaign, func.count(Run.id), attempt(), unsettled()) or 0) if counting else None,
         hours=hours(s, campaign, utcnow()) if Fact.HOURS in reads else None,
@@ -289,9 +286,7 @@ def paused_for(s: Session, campaign: Campaign, since: datetime, now: datetime) -
     """Return how long the campaign was paused between ``since`` and ``now``."""
     changes = s.execute(
         select(Event.at, Event.payload['new'].as_string())
-        .where(
-            Event.kind == 'campaign.paused', Event.target_kind == TargetKind.CAMPAIGN, Event.target_id == campaign.id
-        )
+        .where(Event.kind == 'campaign.paused', Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id))
         .order_by(Event.id)
     ).all()
     total, start = timedelta(), None
@@ -321,8 +316,7 @@ def runs_without_keep(s: Session, campaign: Campaign, before: datetime | None = 
     reactivated = s.scalar(
         select(func.max(Event.at)).where(
             Event.kind == 'campaign.status',
-            Event.target_kind == TargetKind.CAMPAIGN,
-            Event.target_id == campaign.id,
+            Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id),
             Event.payload['new'].as_string() == CampaignStatus.ACTIVE.value,
         )
     )

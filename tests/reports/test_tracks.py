@@ -6,6 +6,7 @@ from piloop.actor import System
 from piloop.config import CampaignConfig
 from piloop.db.models import Campaign, Candidate, Run, Verdict
 from piloop.db.session import Database
+from piloop.ids import TrackName
 from piloop.reports.history import history
 from piloop.reports.pack import pack
 from piloop.watch.panels import PANELS, Context, campaigns, header
@@ -34,7 +35,7 @@ def two_tracks(db: Database, campaign: Campaign) -> CampaignConfig:
         s.get_one(Candidate, 1).measurements[0].metrics = {'score': 1.0, 'size': 12.0}
         kept = candidate(s, p, 2, Verdict.KEEP, 3, 60, run_id=lighter.id)
         kept.measurements[0].metrics = {'score': 3.0, 'size': 8.0}
-        lighter.idea.track = 'size'
+        lighter.idea.track = TrackName('size')
         s.commit()
     return cfg
 

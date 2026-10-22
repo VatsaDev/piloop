@@ -19,12 +19,11 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Measurement,
-    RoleName,
     Run,
-    TargetKind,
     utcnow,
 )
 from piloop.db.session import Database
+from piloop.ids import WATCHDOG, CommentId, TargetKind, TargetRef
 from piloop.scoring.ledger import SKIPPED
 from tests.reports.test_history import idea
 from tests.reports.test_overview import render
@@ -44,28 +43,26 @@ def test_items_scope_to_the_campaign_through_every_target(db: Database, campaign
         theirs = idea(s, other, 'theirs', IdeaStatus.READY)
         run = Run(idea=mine, attempt=1, base_candidate_id=1, harness='h', model='m')
         s.add(run)
-        s.add(AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, state=AgentSessionState.EXITED))
+        s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, state=AgentSessionState.EXITED))
         s.flush()
         s.add(Measurement(candidate_id=1, evaluator_id=1, metrics={'score': 1}))
         s.flush()
         escalation = dict(author='watchdog', kind=CommentKind.ESCALATION, priority=1)
         s.add_all(
             [
-                Comment(target_kind=TargetKind.CAMPAIGN, target_id=campaign.id, body='on campaign', **escalation),
-                Comment(target_kind=TargetKind.IDEA, target_id=mine.id, body='on idea', **escalation),
-                Comment(target_kind=TargetKind.RUN, target_id=run.id, body='on run', **escalation),
-                Comment(target_kind=TargetKind.CANDIDATE, target_id=1, body='on candidate', **escalation),
-                Comment(target_kind=TargetKind.MEASUREMENT, target_id=1, body='on measurement', **escalation),
-                Comment(target_kind=TargetKind.AGENT_SESSION, target_id=1, body='on implementer', **escalation),
-                Comment(target_kind=TargetKind.IDEA, target_id=theirs.id, body='other campaign', **escalation),
-                Comment(target_kind=TargetKind.CAMPAIGN, target_id=other.id, body='other campaign too', **escalation),
-                Comment(target_kind=TargetKind.RUN, target_id=run.id, author='w', kind=CommentKind.FINDING, body='no'),
-                Comment(
-                    target_kind=TargetKind.IDEA, target_id=mine.id, author='h', kind=CommentKind.DECISION, body='park'
-                ),
-                Comment(target_kind=TargetKind.COMMENT, target_id=1, body='on a comment of the campaign', **escalation),
-                Comment(target_kind=TargetKind.COMMENT, target_id=7, body='on a comment of the other', **escalation),
-                Comment(target_kind=TargetKind.COMMENT, target_id=11, body="two levels deep: nobody's", **escalation),
+                Comment(target=TargetRef(TargetKind.CAMPAIGN, campaign.id), body='on campaign', **escalation),
+                Comment(target=TargetRef(TargetKind.IDEA, mine.id), body='on idea', **escalation),
+                Comment(target=TargetRef(TargetKind.RUN, run.id), body='on run', **escalation),
+                Comment(target=TargetRef(TargetKind.CANDIDATE, 1), body='on candidate', **escalation),
+                Comment(target=TargetRef(TargetKind.MEASUREMENT, 1), body='on measurement', **escalation),
+                Comment(target=TargetRef(TargetKind.AGENT_SESSION, 1), body='on implementer', **escalation),
+                Comment(target=TargetRef(TargetKind.IDEA, theirs.id), body='other campaign', **escalation),
+                Comment(target=TargetRef(TargetKind.CAMPAIGN, other.id), body='other campaign too', **escalation),
+                Comment(target=TargetRef(TargetKind.RUN, run.id), author='w', kind=CommentKind.FINDING, body='no'),
+                Comment(target=TargetRef(TargetKind.IDEA, mine.id), author='h', kind=CommentKind.DECISION, body='park'),
+                Comment(target=TargetRef(TargetKind.COMMENT, 1), body='on a comment of the campaign', **escalation),
+                Comment(target=TargetRef(TargetKind.COMMENT, 7), body='on a comment of the other', **escalation),
+                Comment(target=TargetRef(TargetKind.COMMENT, 11), body="two levels deep: nobody's", **escalation),
             ]
         )
         s.commit()
@@ -97,7 +94,7 @@ def test_items_scope_to_the_campaign_through_every_target(db: Database, campaign
 
 
 def test_most_urgent_first_narrowed_by_kind_until_acknowledged(db: Database, campaign: Campaign) -> None:
-    on_campaign = dict(target_kind=TargetKind.CAMPAIGN, target_id=campaign.id, author='pi')
+    on_campaign = dict(target=TargetRef(TargetKind.CAMPAIGN, campaign.id), author='pi')
     with db.session() as s:
         s.add_all(
             [
@@ -115,7 +112,7 @@ def test_most_urgent_first_narrowed_by_kind_until_acknowledged(db: Database, cam
             'half the sweeps add nothing',
         ]
         assert bodies(inbox.items(s, kinds=[CommentKind.DECISION])) == ['lowered the floor', 'requeued idea#4']
-        assert inbox.ack(s, [3, 1, 3, 99], System.HUMAN) == [
+        assert inbox.ack(s, [CommentId(3), CommentId(1), CommentId(3), CommentId(99)], System.HUMAN) == [
             'comment#3 acknowledged',
             'comment#1 acknowledged',
             'comment#3 was acknowledged already, by human',
@@ -136,21 +133,21 @@ def test_thread_follows_citations_both_ways_and_the_replies_not_the_rest_of_the_
     db: Database, campaign: Campaign
 ) -> None:
     with db.session() as s:
-        on_campaign = dict(target_kind=TargetKind.CAMPAIGN, target_id=campaign.id)
+        on_campaign = dict(target=TargetRef(TargetKind.CAMPAIGN, campaign.id))
         s.add_all(
             [
                 Comment(author='research#2', kind=CommentKind.FINDING, body='a sweep', **on_campaign),
                 Comment(
                     author='research#2', kind=CommentKind.ESCALATION, priority=1, body='floor exact?', **on_campaign
                 ),
-                Comment(target_kind=TargetKind.COMMENT, target_id=2, author='pi', body='looking'),
+                Comment(target=TargetRef(TargetKind.COMMENT, 2), author='pi', body='looking'),
                 Comment(
                     author='pi', kind=CommentKind.DECISION, priority=0, body='floor 2687\nRe: comment#2', **on_campaign
                 ),
                 Comment(
                     author='pi', kind=CommentKind.DECISION, priority=3, body='see comment#20, not #2', **on_campaign
                 ),
-                Comment(target_kind=TargetKind.IDEA, target_id=4, author='pi', body='as comment#4 decided, comment#2.'),
+                Comment(target=TargetRef(TargetKind.IDEA, 4), author='pi', body='as comment#4 decided, comment#2.'),
             ]
         )
         s.commit()
@@ -167,7 +164,7 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
     db: Database, campaign: Campaign
 ) -> None:
     def on(p: Campaign) -> dict[str, object]:
-        return dict(target_kind=TargetKind.CAMPAIGN, target_id=p.id)
+        return dict(target=TargetRef(TargetKind.CAMPAIGN, p.id))
 
     with db.session() as s:
         other = Campaign(name='other', path='/other', config=campaign.config)
@@ -176,7 +173,7 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
         s.commit()
         cursor = s.scalar(select(func.max(Event.id)))
         assert cursor is not None
-        watchdog = AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id)
+        watchdog = AgentSession(kind=WATCHDOG, campaign_id=campaign.id)
         s.add(watchdog)
         s.flush()
         s.add_all(
@@ -262,8 +259,7 @@ def test_a_reply_answers_the_root_of_the_thread_and_wakes_the_orchestrator_but_n
 ) -> None:
     with db.session() as s:
         item = Comment(
-            target_kind=TargetKind.CANDIDATE,
-            target_id=1,
+            target=TargetRef(TargetKind.CANDIDATE, 1),
             author='orchestrator',
             kind=CommentKind.DECISION,
             priority=1,
@@ -272,7 +268,7 @@ def test_a_reply_answers_the_root_of_the_thread_and_wakes_the_orchestrator_but_n
         s.add(item)
         s.flush()
         follow_up = Comment(
-            target_kind=TargetKind.COMMENT, target_id=item.id, author='orchestrator', priority=3, body='Details.'
+            target=TargetRef(TargetKind.COMMENT, item.id), author='orchestrator', priority=3, body='Details.'
         )
         s.add(follow_up)
         s.commit()

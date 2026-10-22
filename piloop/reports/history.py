@@ -25,7 +25,8 @@ from sqlalchemy.orm import Session
 
 from piloop.campaign.ideas import links, superseded_by
 from piloop.config import CampaignConfig, Metric
-from piloop.db.models import Campaign, Candidate, Comment, CommentKind, Idea, TargetKind, count
+from piloop.db.models import Campaign, Candidate, Comment, CommentKind, Idea, count
+from piloop.ids import EvaluatorId, TargetKind, TargetRef
 from piloop.scoring.ledger import fallback_track, keeps, references, score, session_checkpoint, session_tokens, track_of
 from piloop.text import NONE, cell, metric
 from piloop.usage import human
@@ -69,11 +70,11 @@ def renderables(
     ).all()[::-1]
     total = count(s, select(Idea).where(Idea.campaign_id == campaign.id))
     newer = superseded_by(s, [i.id for i in ideas])
-    evaluator_id = campaign.evaluator_id or 0
+    evaluator_id = campaign.evaluator_id
     kept = s.scalars(keeps(campaign).order_by(Candidate.id)).all()
     campaign_findings = s.scalars(
         select(Comment)
-        .where(Comment.target_kind == TargetKind.CAMPAIGN, Comment.target_id == campaign.id)
+        .where(Comment.target == TargetRef(TargetKind.CAMPAIGN, campaign.id))
         .where(Comment.kind == CommentKind.FINDING, Comment.author.like('%#%'))
         .order_by(Comment.id.desc())
         .limit(FINDINGS_IN_HISTORY)
@@ -158,7 +159,7 @@ def _starting_points(
         ['candidate', 'commit', *(m.name for m in deciding), 'summary'],
         table_box,
     )
-    evaluator_id = campaign.evaluator_id or 0
+    evaluator_id = campaign.evaluator_id
     for c in found:
         table.add_row(
             f'#{c.id}',
@@ -206,20 +207,20 @@ def block(text: str, chars: int = FINDING_CHARS) -> str:
     return '\n'.join([*kept, f'… ({omitted} more lines)'] if omitted else kept)
 
 
-def _value(c: Candidate, primary: Metric, evaluator_id: int) -> str:
+def _value(c: Candidate, primary: Metric, evaluator_id: EvaluatorId | None) -> str:
     """Format the score as a short number, or ``—`` if the current evaluator did not measure the candidate."""
     value = score(c, evaluator_id, primary)
     return NONE if value is None else metric(value)
 
 
-def _delta(c: Candidate, primary: Metric, evaluator_id: int) -> str:
+def _delta(c: Candidate, primary: Metric, evaluator_id: EvaluatorId | None) -> str:
     """Format the signed gain of the primary metric over the parent, or ``—`` without a parent or a score."""
     value = score(c, evaluator_id, primary)
     base = score(c.parent, evaluator_id, primary) if c.parent is not None else None
     return NONE if value is None or base is None else f'{value - base:+g}'
 
 
-def _outcome(s: Session, idea: Idea, primary: Metric, evaluator_id: int) -> str:
+def _outcome(s: Session, idea: Idea, primary: Metric, evaluator_id: EvaluatorId | None) -> str:
     """Format the best candidate of the idea with its verdict and its delta against the run base."""
     produced = [(c, run) for run in idea.runs for c in run.candidates]
     if not produced:

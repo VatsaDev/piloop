@@ -29,14 +29,13 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Measurement,
-    RoleName,
     Run,
     RunStatus,
-    TargetKind,
     Verdict,
     utcnow,
 )
 from piloop.db.session import Database
+from piloop.ids import RESEARCH, WATCHDOG, AgentSessionId, RoleName, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins_module
 from piloop.plugins.host import PluginError, compose
@@ -91,8 +90,7 @@ def decide(db: Database, campaign: Campaign, body: str) -> None:
     with db.session() as s:
         s.add(
             Comment(
-                target_kind=TargetKind.CAMPAIGN,
-                target_id=campaign.id,
+                target=TargetRef(TargetKind.CAMPAIGN, campaign.id),
                 author='human',
                 kind=CommentKind.DECISION,
                 body=body,
@@ -127,7 +125,7 @@ def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt
 
     decide(db, campaign, 'keep the cache')
     assert sched.tick() == [1]
-    wait_for(db, 1, AgentSessionState.RUNNING)
+    wait_for(db, AgentSessionId(1), AgentSessionState.RUNNING)
     assert sched.tick() == [], 'the decision is older than the running reviewer'
     decide(db, campaign, 'drop the cache')
     assert sched.tick() == [], 'max_concurrent = 1: the second reviewer waits'
@@ -331,8 +329,8 @@ def test_a_built_in_role_takes_other_triggers(
     assert sched.tick() == [1, 2]
     sched.wait(10)
     sched.stop(timeout=5)
-    assert agent_sessions(db, RoleName.WATCHDOG) == [(1, AgentSessionState.EXITED, 'timer: 30s')]
-    assert agent_sessions(db, RoleName.RESEARCH) == [(2, AgentSessionState.EXITED, f'sql: {REVIEW}')]
+    assert agent_sessions(db, WATCHDOG) == [(1, AgentSessionState.EXITED, 'timer: 30s')]
+    assert agent_sessions(db, RESEARCH) == [(2, AgentSessionState.EXITED, f'sql: {REVIEW}')]
     assert reported_events(db) == [], 'the watchdog got no anomaly'
 
 
@@ -361,7 +359,7 @@ def test_a_hand_over_leaves_a_sweep_in_the_campaign_checkout_running_and_the_nex
     harness = f'#!/bin/sh\necho $$ > {tmp_path}/agent.pid\nwhile [ -f {hold} ]; do sleep 0.05; done\n'
     configure(db, campaign, harness, watchdog={'workdir': 'repo', 'triggers': []})
     with db.session() as s:
-        s.add(AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, reason='by hand'))
+        s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     first = scheduler(db, recording(runtime, []), tmp_path)
     assert first.tick() == [1]
@@ -422,11 +420,13 @@ def test_a_package_adds_a_role_and_triggers_through_entry_points(
     The daemon runs it on the package's trigger. A trigger that raises is traced, and the role's other triggers fire.
     """
     cfg = load_campaign_config(Path(campaign.path))
-    auditor = cfg.roles.sweeping()['auditor']
+    auditor = cfg.roles.sweeping()[RoleName('auditor')]
     assert (auditor.timeout, auditor.triggers[0].kind) == (5, 'every_tick')
     toml = Path(campaign.path) / 'piloop.toml'
     toml.write_text(toml.read_text() + '\n[roles.auditor]\ntimeout = 9\n')
-    assert load_campaign_config(Path(campaign.path)).roles.sweeping()['auditor'].timeout == 9, 'the table goes over'
+    assert load_campaign_config(Path(campaign.path)).roles.sweeping()[RoleName('auditor')].timeout == 9, (
+        'the table goes over'
+    )
     configure(db, campaign, '#!/bin/sh\ntrue\n', auditor={'triggers': [{'kind': 'broken'}, {'kind': 'every_tick'}]})
     sched = scheduler(db, recording(runtime, []), tmp_path)
     assert sched.tick() == [1]
@@ -458,7 +458,9 @@ def test_a_package_role_takes_its_defaults_and_a_roles_value_that_is_not_a_table
 ) -> None:
     toml = campaign_path / 'piloop.toml'
     toml.write_text(MINIMAL.format(roles='[roles.auditor]'))
-    assert load_campaign_config(campaign_path).roles.sweeping()['auditor'].timeout == 5, 'an empty table: the defaults'
+    assert load_campaign_config(campaign_path).roles.sweeping()[RoleName('auditor')].timeout == 5, (
+        'an empty table: the defaults'
+    )
     toml.write_text(MINIMAL.format(roles='roles = { auditor = 3 }'))
     with pytest.raises(ConfigError, match=r'roles\.auditor = 3: Input should be a valid dictionary'):
         load_campaign_config(campaign_path)
@@ -496,7 +498,7 @@ def test_an_entry_point_of_the_wrong_kind_fails_with_its_name(
 def test_a_package_adds_a_role_that_does_runs(campaign_path: Path, plugins: None) -> None:
     cfg = load_campaign_config(campaign_path)
     assert list(cfg.roles.doing_runs()) == ['quick', 'implementer']
-    quick = cfg.roles.doing_runs()['quick']
+    quick = cfg.roles.doing_runs()[RoleName('quick')]
     assert (quick.takes, quick.timeout, quick.max_concurrent) == ('priority >= 3', 60, 1)
 
 
@@ -526,7 +528,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
             Path(campaign.path), runtime='nice', roles={'watchdog': {'runtime': 'nice', 'workdir': 'repo'}}
         )
         s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
-        s.add(AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, reason='by hand'))
+        s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     remote = f'[storage.backend]\nkind = "dir"\nroot = "{tmp_path / "remote"}"\n'
     (tmp_path / 'config.toml').write_text(f'{remote}[runtimes.nice]\nniceness = 5\n')

@@ -17,18 +17,8 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop.db.models import (
-    AgentSession,
-    Candidate,
-    Event,
-    Idea,
-    IdeaStatus,
-    Run,
-    TargetKind,
-    Technique,
-    Verdict,
-    count,
-)
+from piloop.db.models import AgentSession, Candidate, Event, Idea, IdeaStatus, Run, Technique, Verdict, count
+from piloop.ids import AgentSessionId, CampaignId, RoleName, TargetKind
 from piloop.text import cell
 
 WATCH_RUNS = 5
@@ -73,7 +63,7 @@ class Watched:
         return f'- {self.source} ({how}; {", ".join(f"idea#{i}" for i in self.ideas)})'
 
 
-def watch_list(s: Session, campaign_id: int, role: str) -> list[Watched]:
+def watch_list(s: Session, campaign_id: CampaignId, role: RoleName) -> list[Watched]:
     """Return the sources that later sweeps of ``role`` query directly: kept ones first, then the latest payoff first."""
     seeds = s.scalars(select(Idea).where(Idea.campaign_id == campaign_id, Idea.created_by.like(f'{role}#%'))).all()
     developed: dict[int, datetime] = {
@@ -114,7 +104,9 @@ def watch_list(s: Session, campaign_id: int, role: str) -> list[Watched]:
     return sorted(watched, key=lambda e: (not e.kept, -(e.paid.timestamp() if e.paid else 0)))
 
 
-def window(s: Session, campaign_id: int, role: str, agent_session_id: int, now: datetime) -> datetime:
+def window(
+    s: Session, campaign_id: CampaignId, role: RoleName, agent_session_id: AgentSessionId, now: datetime
+) -> datetime:
     """Return the start of the search window: the role's previous sweep's start, at least ``MIN_WINDOW`` back."""
     previous = s.scalar(
         select(AgentSession.started_at)
@@ -130,7 +122,9 @@ def window(s: Session, campaign_id: int, role: str, agent_session_id: int, now: 
     return now - WINDOW if previous is None else min(previous, now - MIN_WINDOW)
 
 
-def context(s: Session, campaign_id: int, role: str, agent_session_id: int, seeds: int, now: datetime) -> list[str]:
+def context(
+    s: Session, campaign_id: CampaignId, role: RoleName, agent_session_id: AgentSessionId, seeds: int, now: datetime
+) -> list[str]:
     """Return the scout's lines of the context block: its seed limit, its window, the watch list and the library."""
     library = s.scalars(
         select(Technique).where(Technique.campaign_id == campaign_id).order_by(Technique.id.desc()).limit(LIBRARY_SHOWN)

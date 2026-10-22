@@ -80,13 +80,13 @@ from piloop.db.models import (
     Pause,
     Run,
     RunStatus,
-    TargetKind,
     campaign_runs,
     count,
     utcnow,
 )
 from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
+from piloop.ids import AgentSessionId, RoleName, RunId, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentKey, Artifact, Checkout, GitTree, LeftJob
 from piloop.plugins.role.contract import Files, ImplementerRole, SweepRole, Workdir, ideas_taken
@@ -161,7 +161,7 @@ class Scheduler:
         # No bound: a run's thread waits in the evaluation queue while it scores, and a bound would let those waits
         # hold back agent launches. The roles' max_concurrent and the executor's slots bound the work itself.
         self._pool = ThreadPoolExecutor(max_workers=sys.maxsize, thread_name_prefix='agent')
-        self._futures: dict[int, Future[None]] = {}
+        self._futures: dict[AgentSessionId, Future[None]] = {}
         self._scoring: dict[tuple[TargetKind, int], Future[None]] = {}
         """Scoring outside an implementer: a run's resumed scoring by run id, or a campaign's re-measure by campaign id."""
         self._stop = threading.Event()
@@ -249,7 +249,7 @@ class Scheduler:
         artifact = Checkout(path=cwd) if checkout else GitTree(repo=Path(campaign.path), commit=head, links=links)
         return self._controller.launcher.left(s, w, artifact, cwd, None)
 
-    def _fail_open(self, error: str, *, reaped: bool, sparing: Collection[int] = ()) -> None:
+    def _fail_open(self, error: str, *, reaped: bool, sparing: Collection[AgentSessionId] = ()) -> None:
         """Fail each run in flight and queue its idea again. Close each live agent except ``sparing``.
 
         Requested implementers and their queued runs are not changed, because they are requests, not processes. An idea
@@ -352,7 +352,7 @@ class Scheduler:
         except Exception as e:  # The pane can be gone already. The database row is what matters.
             self._tracer.event('agent_session.kill_failed', agent_session=agent_session.id, error=str(e))
 
-    def tick(self) -> list[int]:
+    def tick(self) -> list[AgentSessionId]:
         """Send new comments to running implementers, run every campaign's triggers and launch requested agents.
 
         Returns the ids of the launched agent sessions. Before the triggers, the tick rejects the ideas that a newer idea
@@ -377,7 +377,7 @@ class Scheduler:
         self._read_spend()
         if self._archiver is not None:
             self._archiver.tick()
-        launched: list[tuple[int, int | None]] = []
+        launched: list[tuple[AgentSessionId, RunId | None]] = []
         with self._db.session() as s:
             for campaign in s.scalars(select(Campaign)).all():
                 try:
@@ -501,14 +501,13 @@ class Scheduler:
             e.payload.get('comment')
             for e in s.scalars(
                 select(Event).where(
-                    Event.target_kind == TargetKind.AGENT_SESSION,
-                    Event.target_id == agent_session.id,
+                    Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id),
                     Event.kind.in_(SETTLED),
                 )
             )
         }
-        on_run = (Comment.target_kind == TargetKind.RUN) & (Comment.target_id == run.id)
-        on_idea = (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == run.idea_id)
+        on_run = Comment.target == TargetRef(TargetKind.RUN, run.id)
+        on_idea = Comment.target == TargetRef(TargetKind.IDEA, run.idea_id)
         comments = s.scalars(
             select(Comment)
             .where(on_run | on_idea, Comment.kind.in_(PUSHED_KINDS))
@@ -551,8 +550,7 @@ class Scheduler:
         with self._db.session() as s:
             for agent_session in self._running_agent_sessions(s):
                 told = select(Event.id).where(
-                    Event.target_kind == TargetKind.AGENT_SESSION,
-                    Event.target_id == agent_session.id,
+                    Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id),
                     Event.kind == JOBS_LEFT,
                 )
                 if s.scalar(told) is not None or not left_finding(
@@ -631,8 +629,7 @@ class Scheduler:
                     continue
                 told = s.scalar(
                     select(Event.at).where(
-                        Event.target_kind == TargetKind.AGENT_SESSION,
-                        Event.target_id == agent_session.id,
+                        Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id),
                         Event.kind == WRAP_UP,
                     )
                 )
@@ -719,7 +716,14 @@ class Scheduler:
             self._close(s, agent_session, CAMPAIGN_STOPPED_ERROR)
 
     def _request(
-        self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: str, role: SweepRole, *, stopping: bool = False
+        self,
+        s: Session,
+        campaign: Campaign,
+        cfg: CampaignConfig,
+        name: RoleName,
+        role: SweepRole,
+        *,
+        stopping: bool = False,
     ) -> None:
         """Insert requested rows when the role's triggers fire. One batch per call, however many triggers fire.
 
@@ -762,7 +766,7 @@ class Scheduler:
                 emit(s, kind, TargetKind.AGENT_SESSION, rows[0].id, payload=payload)
         self._tracer.event('agent_session.requested', campaign=campaign.name, kind=name, reason=reason, count=count)
 
-    def _tick(self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: str, role: SweepRole) -> RoleTick:
+    def _tick(self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: RoleName, role: SweepRole) -> RoleTick:
         """Return what the triggers of role ``name`` read in this tick."""
         last = s.scalars(
             select(AgentSession)
@@ -801,7 +805,7 @@ class Scheduler:
             self._tracer.event('agent_session.jobs_failed', agent_session=agent_session.id, error=str(e))
             return []
 
-    def _backlog(self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: str, buffer: int) -> Backlog:
+    def _backlog(self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: RoleName, buffer: int) -> Backlog:
         """Return the campaign's backlog as role ``name`` fills it: ``buffer`` beyond the run slots, its own sweeps."""
         target = cfg.run_slots + buffer
         if cfg.stop.max_runs is not None:
@@ -837,7 +841,7 @@ class Scheduler:
         )
 
     def _free_slots(
-        self, s: Session, campaign: Campaign, cfg: CampaignConfig, roles: dict[str, ImplementerRole]
+        self, s: Session, campaign: Campaign, cfg: CampaignConfig, roles: dict[RoleName, ImplementerRole]
     ) -> int:
         """Return the runs that ``roles`` can start now.
 
@@ -901,8 +905,7 @@ class Scheduler:
             idea.status = IdeaStatus.PARKED
             s.add(
                 Comment(
-                    target_kind=TargetKind.IDEA,
-                    target_id=idea.id,
+                    target=TargetRef(TargetKind.IDEA, idea.id),
                     author=DAEMON_ACTOR,
                     kind=CommentKind.NOTE,
                     body=f'parked: its track {idea.track!r} is not in piloop.toml (tracks: {", ".join(names)}); set'
@@ -914,7 +917,13 @@ class Scheduler:
             )
 
     def _pick(
-        self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: str, role: ImplementerRole, query: Select[Idea]
+        self,
+        s: Session,
+        campaign: Campaign,
+        cfg: CampaignConfig,
+        name: RoleName,
+        role: ImplementerRole,
+        query: Select[Idea],
     ) -> tuple[Idea | None, Idea | None]:
         """Return the most urgent idea of the track furthest below its share, and the pick by priority alone.
 
@@ -934,7 +943,7 @@ class Scheduler:
         return idea, first
 
     def _explore(
-        self, s: Session, campaign: Campaign, name: str, role: ImplementerRole, query: Select[Idea]
+        self, s: Session, campaign: Campaign, name: RoleName, role: ImplementerRole, query: Select[Idea]
     ) -> Idea | None:
         """Return the most urgent runnable idea pinned to an alternative base if an exploration run is due, else None.
 
@@ -965,7 +974,7 @@ class Scheduler:
         s: Session,
         campaign: Campaign,
         cfg: CampaignConfig,
-        role: str,
+        role: RoleName,
         idea: Idea,
         full: Collection[str],
         *,
@@ -1044,7 +1053,7 @@ class Scheduler:
         agents = Counter(s.scalars(on))
         return {harness for harness, cap in cfg.max_concurrent.items() if agents[harness] >= cap}
 
-    def _take(self, s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[tuple[int, int | None]]:
+    def _take(self, s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[tuple[AgentSessionId, RunId | None]]:
         """Mark requested rows ``starting``, up to each role's ``max_concurrent``. Refuse a run role's row without a run.
 
         A sweep's harness is chosen here. A harness at its cap (``_full``) is skipped for the next one in the rotation.
@@ -1055,7 +1064,7 @@ class Scheduler:
         Returns ``(agent_session_id, run_id)`` pairs. The run is what an implementer executes. Nothing is taken while the startup
         breaker holds (``_paused``).
         """
-        taken: list[tuple[int, int | None]] = []
+        taken: list[tuple[AgentSessionId, RunId | None]] = []
         if self._paused(s, campaign):
             return taken
         roles = cfg.roles.all()
@@ -1138,7 +1147,7 @@ class Scheduler:
         latest = s.scalars(
             select(Event)
             .where(Event.kind.in_((LAUNCH_PAUSED, LAUNCH_RESUMED)))
-            .where(Event.target_kind == TargetKind.CAMPAIGN, Event.target_id == campaign.id)
+            .where(Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id))
             .order_by(Event.id.desc())
             .limit(1)
         ).first()
@@ -1157,8 +1166,7 @@ class Scheduler:
     def _escalate_pause(self, s: Session, campaign: Campaign, deaths: Sequence[Event]) -> None:
         load = ' / '.join(f'{x:.1f}' for x in os.getloadavg())
         comment = Comment(
-            target_kind=TargetKind.CAMPAIGN,
-            target_id=campaign.id,
+            target=TargetRef(TargetKind.CAMPAIGN, campaign.id),
             author=DAEMON_ACTOR,
             kind=CommentKind.ESCALATION,
             priority=1,
@@ -1170,7 +1178,7 @@ class Scheduler:
         emit(s, LAUNCH_PAUSED, TargetKind.CAMPAIGN, campaign.id, payload=payload)
         self._tracer.event(LAUNCH_PAUSED, campaign=campaign.name, deaths=len(deaths), load=load)
 
-    def _sweep(self, agent_session_id: int) -> None:
+    def _sweep(self, agent_session_id: AgentSessionId) -> None:
         """Run a sweep, an agent without a run, in its role's ``workdir``, with a brief made from its row.
 
         Every sweep gets the campaign overview (``piloop.reports.overview``) in its context. A sweep that got anomalies
@@ -1194,7 +1202,7 @@ class Scheduler:
             in_campaign = self._in_campaign(campaign, agent_session.kind)
             base = checkout_candidate(s, campaign)
             values = ', '.join(
-                f'{t.primary.name}={"unmeasured" if (v := score(base, campaign.evaluator_id or 0, t.primary)) is None else v}'
+                f'{t.primary.name}={"unmeasured" if (v := score(base, campaign.evaluator_id, t.primary)) is None else v}'
                 for t in cfg.all_tracks
             )
             now = utcnow()
@@ -1257,7 +1265,7 @@ class Scheduler:
                 return []
 
     def _research_context(
-        self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: str, role: ResearchRole, now: datetime
+        self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: RoleName, role: ResearchRole, now: datetime
     ) -> list[str]:
         """Return the context lines of a research sweep: the seeds, its share of the backlog, the stall mark.
 
@@ -1291,12 +1299,12 @@ class Scheduler:
             f'- Sweep started at: {now.strftime("%Y-%m-%d %H:%M:%S")} (UTC; the research pack below is as of then).',
         ]
 
-    def _in_campaign(self, campaign: Campaign, kind: str) -> bool:
+    def _in_campaign(self, campaign: Campaign, kind: RoleName) -> bool:
         """Return whether a sweep of ``kind`` works in the campaign checkout (``workdir = "repo"``)."""
         role = config_of(campaign).roles.sweeping().get(kind)
         return role is not None and role.workdir is Workdir.REPO
 
-    def _reattach_sweep(self, agent_session_id: int) -> None:
+    def _reattach_sweep(self, agent_session_id: AgentSessionId) -> None:
         """Wait for the agent of a sweep that a previous daemon process started, until it ends."""
         self._controller.launcher.reattach(agent_session_id)
 
@@ -1310,12 +1318,12 @@ class Scheduler:
                     self._close_dead(agent_session_id, f'{type(exc).__name__}: {exc}')
         self._scoring = {key: fut for key, fut in self._scoring.items() if not fut.done()}  # These never raise.
 
-    def _close_dead(self, agent_session_id: int, error: str) -> None:
+    def _close_dead(self, agent_session_id: AgentSessionId, error: str) -> None:
         with self._db.session() as s:
             self._close(s, s.get_one(AgentSession, agent_session_id), error)
             s.commit()
 
-    def active(self) -> list[int]:
+    def active(self) -> list[AgentSessionId]:
         """Return the ids of the implementers that are executing now."""
         self._collect()
         return sorted(self._futures)
@@ -1374,7 +1382,7 @@ class RoleTick:
 
     s: Session
     campaign: Campaign
-    role: str
+    role: RoleName
     last: AgentSession | None
     max_concurrent: int
     interval: float
@@ -1412,7 +1420,7 @@ class RoleTick:
         return self.s.scalars(self._mine().where(~given).order_by(AgentSession.id.desc()).limit(1)).first()
 
 
-def done_by(role: str) -> ColumnElement[bool]:
+def done_by(role: RoleName) -> ColumnElement[bool]:
     """Select the runs of ``role``.
 
     ``likely()`` tells SQLite that most runs match, as most runs are the implementer's. Without it, SQLite drives a join
@@ -1446,7 +1454,7 @@ def steer_line(comment: Comment) -> str:
     if len(first) > STEER_LINE_CHARS:
         first = first[: STEER_LINE_CHARS - 1] + '…'
     return (
-        f'[piloop] {comment.kind} on {comment.target_kind}#{comment.target_id} by {comment.author}: {first}'
+        f'[piloop] {comment.kind} on {comment.target} by {comment.author}: {first}'
         f' — full text: SELECT body FROM comments WHERE id={comment.id}'
     )
 

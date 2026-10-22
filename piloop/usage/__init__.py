@@ -26,6 +26,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from piloop.db.models import AgentSession, UsageJson
+from piloop.ids import CampaignId
 
 
 @dataclass(frozen=True)
@@ -164,7 +165,7 @@ def read_usage(spec: UsageSpec | None, session_id: str | None, cwd: Path | None,
     return spec.resolved.read(session_id, cwd, log_dir)
 
 
-def campaign_tokens(s: Session, campaign_id: int) -> int:
+def campaign_tokens(s: Session, campaign_id: CampaignId) -> int:
     """The tokens that all agents of the campaign spent: ``SUM(json_extract(usage, '$.total'))`` over its agent sessions."""
     total = s.scalar(
         select(func.sum(AgentSession.usage['total'].as_integer())).where(AgentSession.campaign_id == campaign_id)

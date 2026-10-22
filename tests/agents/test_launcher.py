@@ -30,9 +30,10 @@ from piloop.agents.roles import PILOOP_HINT, PROMPTS, SQL_HINT, Role, compose_br
 from piloop.config import CampaignConfig, config_of, load_campaign_config
 from piloop.daemon.run_controller import RunController
 from piloop.db.events import emit
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, Event, RoleName, TargetKind
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Event
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES
+from piloop.ids import RESEARCH, WATCHDOG, AgentSessionId, RoleName, TargetKind
 from piloop.mcp import MCP
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import Checkout, GitTree
@@ -64,11 +65,11 @@ CODEX_LIKE = f'#!/bin/sh\necho \'{{"type":"thread.started","thread_id":"{CODEX_I
 UUID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
 
 
-def role_in(campaign: Campaign, kind: RoleName = RoleName.WATCHDOG) -> Role:
+def role_in(campaign: Campaign, kind: RoleName = WATCHDOG) -> Role:
     return role(config_of(campaign), kind, Path(campaign.path))
 
 
-def request(db: Database, campaign: Campaign, kind: RoleName = RoleName.WATCHDOG, **fields: object) -> int:
+def request(db: Database, campaign: Campaign, kind: RoleName = WATCHDOG, **fields: object) -> AgentSessionId:
     with db.session() as s:
         agent_session = AgentSession(kind=kind, campaign_id=campaign.id, reason='test', **fields)
         s.add(agent_session)
@@ -85,7 +86,9 @@ def launcher(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Trace
     return controller(db, runtime, tmp_path, tracer).launcher
 
 
-def launch(db: Database, runtime: ScriptRuntime, tmp_path: Path, agent_session_id: int, tracer: Tracer | None = None):
+def launch(
+    db: Database, runtime: ScriptRuntime, tmp_path: Path, agent_session_id: AgentSessionId, tracer: Tracer | None = None
+):
     with db.session() as s:
         campaign = s.get_one(Campaign, s.get_one(AgentSession, agent_session_id).campaign_id)
         brief = compose_brief(
@@ -104,7 +107,7 @@ def exit_of(ended: Ended) -> AgentExit:
     return ended.process
 
 
-def agent_session(db: Database, agent_session_id: int) -> AgentSession:
+def agent_session(db: Database, agent_session_id: AgentSessionId) -> AgentSession:
     with db.session() as s:
         return s.get_one(AgentSession, agent_session_id)
 
@@ -158,9 +161,7 @@ def test_a_roles_addendum_follows_the_campaign_brief_in_that_roles_briefs_only(
         p.config = load_campaign_config(
             Path(campaign.path), roles={'research': {'addendum': 'research.md'}}
         ).model_dump(mode='json')
-        research = compose_brief(
-            role_in(p, RoleName.RESEARCH), p, Agent(role='research', session=7), reason='timer', context=''
-        )
+        research = compose_brief(role_in(p, RESEARCH), p, Agent(role='research', session=7), reason='timer', context='')
         watchdog = compose_brief(role_in(p), p, Agent(role='watchdog', session=8), reason='timer', context='')
     assert (
         research.index('# Demo') < research.index('# Search wide first') < research.index('# Working with the piloop')
@@ -232,7 +233,7 @@ def test_rotation_over_the_role_harnesses_unless_pinned(
         s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
         s.commit()
     ids = [request(db, campaign), request(db, campaign), request(db, campaign, harness='script', model='pinned')]
-    request(db, campaign, kind=RoleName.RESEARCH)  # another kind: not in this rotation
+    request(db, campaign, kind=RESEARCH)  # another kind: not in this rotation
     picks = []
     for agent_session_id in ids:
         launch(db, runtime, tmp_path, agent_session_id)
@@ -248,7 +249,7 @@ def test_an_agent_writes_through_piloop_sql_as_its_own_actor(
     use_harness(
         db, campaign, f'#!/bin/sh\n{SQL_HINT} "UPDATE campaigns SET name = \'renamed\' WHERE id = {campaign.id}"\n'
     )
-    agent_session_id = request(db, campaign, kind=RoleName.RESEARCH)
+    agent_session_id = request(db, campaign, kind=RESEARCH)
     outcome = launch(db, runtime, tmp_path, agent_session_id)
     assert exit_of(outcome).error is None, (tmp_path / 'w' / 'agent_session.stderr').read_text()
     with db.session() as s:
@@ -278,7 +279,7 @@ def test_an_agents_piloop_is_the_daemons_whatever_comes_first_on_path_or_sits_in
         db, campaign, f'#!/bin/sh\n{cli} sql "UPDATE campaigns SET name = \'renamed\' WHERE id = {campaign.id}"\n'
     )
 
-    agent_session_id = request(db, campaign, kind=RoleName.RESEARCH)
+    agent_session_id = request(db, campaign, kind=RESEARCH)
     outcome = launch(db, runtime, tmp_path, agent_session_id)
     assert exit_of(outcome).error is None, (tmp_path / 'w' / 'agent_session.stderr').read_text()
     with db.session() as s:
@@ -768,7 +769,7 @@ def test_a_killed_agents_usage_is_read_too(
     assert w.usage is not None and (w.usage['total'], w.usage['turns']) == (16478, 2)
 
 
-def span_attributes(spans: InMemorySpanExporter, name: str, agent_session_id: int) -> dict[str, object]:
+def span_attributes(spans: InMemorySpanExporter, name: str, agent_session_id: AgentSessionId) -> dict[str, object]:
     [span] = [
         s
         for s in spans.get_finished_spans()

@@ -7,8 +7,9 @@ from pydantic import TypeAdapter, ValidationError
 from piloop.actor import Actor, Agent, System
 from piloop.db import sql
 from piloop.db.events import emit
-from piloop.db.models import Event, TargetKind
+from piloop.db.models import Event
 from piloop.db.session import Database
+from piloop.ids import TargetKind
 from tests.conftest import at_head
 
 ACTORS: TypeAdapter[Actor] = TypeAdapter(Actor)

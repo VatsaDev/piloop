@@ -36,9 +36,9 @@ from pydantic_settings import (
 from sqlalchemy.orm import Session
 
 from piloop import deprecated
-from piloop.actor import ROLE_NAME
-from piloop.db.models import AgentSession, Campaign, RoleName
+from piloop.db.models import AgentSession, Campaign
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
+from piloop.ids import IMPLEMENTER, RESEARCH, ROLE_NAME, SCOUT, WATCHDOG, RoleName, TrackName
 from piloop.mcp import McpServer, ServerName
 from piloop.plugins.host import PluginTable, check_plugins
 from piloop.plugins.metric import Direction
@@ -77,7 +77,7 @@ class Metric(BaseModel):
     each track has exactly one. A ``guardrail`` may get worse by at most its ``margin``, or the candidate is at most
     ``interesting``. It must never pass its ``floor``, or the candidate is a ``discard``. A ``watch`` metric is
     recorded and never affects the verdict."""
-    track: str | None = None
+    track: TrackName | None = None
     """Primary metrics only. The name of the track (objective) that this metric is the primary of. When unset, the
     track has the metric's name, so a campaign with one primary needs nothing here. With several primaries, each one
     names its own track, and each track needs a ``[tracks.<name>]`` table."""
@@ -103,9 +103,9 @@ class Metric(BaseModel):
         return self
 
     @property
-    def track_name(self) -> str:
+    def track_name(self) -> TrackName:
         """The track that a primary decides: its ``track``, or else its own name."""
-        return self.track or self.name
+        return self.track or TrackName(self.name)
 
     def better(self, a: float, b: float) -> bool:
         """Whether ``a`` is better than ``b`` for this metric."""
@@ -143,7 +143,7 @@ class TrackConfig(BaseModel):
 class Track:
     """One track, as the daemon judges and schedules it."""
 
-    name: str
+    name: TrackName
     primary: Metric
     share: float
     addendum: str | None
@@ -306,32 +306,37 @@ class Roles(BaseModel):
                 )
         return self
 
-    def sweeping(self) -> dict[str, SweepRole]:
+    @property
+    def _defined(self) -> dict[RoleName, RoleEntry]:
+        """The roles that the file defines, in its order. ``_check`` makes each key a ``RoleName``."""
+        return {RoleName(name): role for name, role in self.__pydantic_extra__.items()}
+
+    def sweeping(self) -> dict[RoleName, SweepRole]:
         """The sweeping roles by name: the built-in ones, then the sweeping roles of the file in its order."""
-        mine = {name: role for name, role in self.__pydantic_extra__.items() if isinstance(role, SweepRole)}
+        mine = {name: role for name, role in self._defined.items() if isinstance(role, SweepRole)}
         return {
-            RoleName.WATCHDOG: self.watchdog,
-            RoleName.RESEARCH: self.research,
-            RoleName.SCOUT: self.scout,
+            WATCHDOG: self.watchdog,
+            RESEARCH: self.research,
+            SCOUT: self.scout,
             **mine,
         }
 
-    def doing_runs(self) -> dict[str, ImplementerRole]:
+    def doing_runs(self) -> dict[RoleName, ImplementerRole]:
         """The roles that do runs by name, in the order in which they fill their slots.
 
         The roles that you define come first, in the order of the file, and the implementer comes last.
         """
-        mine = {name: role for name, role in self.__pydantic_extra__.items() if isinstance(role, ImplementerRole)}
-        return {**mine, RoleName.IMPLEMENTER: self.implementer}
+        mine = {name: role for name, role in self._defined.items() if isinstance(role, ImplementerRole)}
+        return {**mine, IMPLEMENTER: self.implementer}
 
-    def all(self) -> dict[str, RoleConfig]:
+    def all(self) -> dict[RoleName, RoleConfig]:
         """Every role by name: the built-in roles, then the roles that you define in the order of the file."""
         return {
-            RoleName.IMPLEMENTER: self.implementer,
-            RoleName.WATCHDOG: self.watchdog,
-            RoleName.RESEARCH: self.research,
-            RoleName.SCOUT: self.scout,
-            **self.__pydantic_extra__,
+            IMPLEMENTER: self.implementer,
+            WATCHDOG: self.watchdog,
+            RESEARCH: self.research,
+            SCOUT: self.scout,
+            **self._defined,
         }
 
 
@@ -345,7 +350,7 @@ class CampaignConfig(BaseModel):
     metrics: list[Metric] = Field(min_length=1)
     """Every metric the evaluate command prints, each with its ``role``. Each track has one ``primary``, so a campaign
     with one track has exactly one."""
-    tracks: dict[str, TrackConfig] = {}
+    tracks: dict[TrackName, TrackConfig] = {}
     """``[tracks.<name>]``: the share and addendum of each track. Needed only with several primaries."""
     confidence: float = Field(default=0.95, gt=0.5, lt=1)
     """The confidence level of the paired bootstrap behind the verdict. For a ``keep``, the lower bound of the
@@ -468,55 +473,55 @@ class CampaignConfig(BaseModel):
         if missing:
             raise ValueError(f'{where}: no model configured for harnesses {missing}')
 
-    def _check_mcp(self, kind: str) -> None:
+    def _check_mcp(self, name: RoleName) -> None:
         """Every server the role lists exists, and every harness the role may run can take them in its argv."""
-        unknown = [n for n in self.role(kind).mcp if n not in self.mcp]
+        unknown = [n for n in self.role(name).mcp if n not in self.mcp]
         if unknown:
-            raise ValueError(f'roles.{kind}.mcp: no [mcp.<name>] table for {unknown}')
-        if not self.role(kind).mcp:
+            raise ValueError(f'roles.{name}.mcp: no [mcp.<name>] table for {unknown}')
+        if not self.role(name).mcp:
             return
-        runtime = self.role_runtime(kind)
+        runtime = self.role_runtime(name)
         invocation = RUNTIMES.get(runtime).invocation
-        for name in self.role_harnesses(kind):
-            if why := self.harness_for(name).refuses_servers(invocation):
+        for harness in self.role_harnesses(name):
+            if why := self.harness_for(harness).refuses_servers(invocation):
                 raise ValueError(
-                    f'roles.{kind}.mcp: harness {name!r} under the {runtime} runtime ({invocation}): {why}; or take it'
+                    f'roles.{name}.mcp: harness {harness!r} under the {runtime} runtime ({invocation}): {why}; or take it'
                     ' out of the rotation'
                 )
 
-    def role_servers(self, kind: str) -> dict[str, McpServer]:
+    def role_servers(self, name: RoleName) -> dict[str, McpServer]:
         """The MCP servers that the agents of a role get, by name."""
-        return {name: self.mcp[name] for name in self.role(kind).mcp}
+        return {server: self.mcp[server] for server in self.role(name).mcp}
 
-    def role(self, kind: str) -> RoleConfig:
-        """The ``[roles.<kind>]`` table. The keys that only one role has need ``self.roles.<kind>``.
+    def role(self, name: RoleName) -> RoleConfig:
+        """The ``[roles.<name>]`` table. The keys that only one role has need ``self.roles.<name>``.
 
         Raises:
             KeyError: ``piloop.toml`` has no such role.
         """
-        return self.roles.all()[kind]
+        return self.roles.all()[name]
 
-    def wake_budget(self, kind: str) -> int:
+    def wake_budget(self, name: RoleName) -> int:
         """The tokens of the lessons overview in a brief of this role: its own ``wake_budget``, or else ``[memory]``'s."""
-        own = self.role(kind).wake_budget
+        own = self.role(name).wake_budget
         return self.memory.wake_budget if own is None else own
 
-    def role_harnesses(self, kind: str) -> list[str]:
+    def role_harnesses(self, name: RoleName) -> list[str]:
         """The rotation a role uses: its own list, or else the campaign's."""
-        return self.role(kind).harnesses or self.harnesses
+        return self.role(name).harnesses or self.harnesses
 
-    def role_models(self, kind: str) -> dict[str, str]:
+    def role_models(self, name: RoleName) -> dict[str, str]:
         """The model for each harness of a role: the campaign's map, with the role's overrides on top."""
-        return {**self.model, **(self.role(kind).model or {})}
+        return {**self.model, **(self.role(name).model or {})}
 
-    def role_runtime(self, kind: str) -> str:
+    def role_runtime(self, name: RoleName) -> str:
         """The name of the runtime a role uses: its own, or else the campaign's."""
-        return self.role(kind).runtime or self.runtime
+        return self.role(name).runtime or self.runtime
 
     @property
     def runtimes(self) -> set[str]:
         """The names of the runtimes that the roles of the campaign use."""
-        return {self.role_runtime(kind) for kind in self.roles.all()}
+        return {self.role_runtime(name) for name in self.roles.all()}
 
     @property
     def run_slots(self) -> int:
@@ -548,7 +553,7 @@ class CampaignConfig(BaseModel):
         """Whether the campaign has more than one track. Only then do the renderers show track names."""
         return len(self.all_tracks) > 1
 
-    def track(self, name: str) -> Track:
+    def track(self, name: TrackName) -> Track:
         """The track called ``name``.
 
         Raises:

@@ -33,8 +33,9 @@ from sqlalchemy.orm import Session
 
 from piloop.campaign.inbox import campaign_of
 from piloop.config import CampaignConfig, MetricRole
-from piloop.db.models import Campaign, Candidate, Comment, CommentKind, Idea, IdeaStatus, TargetKind, Verdict
+from piloop.db.models import Campaign, Candidate, Comment, CommentKind, Idea, IdeaStatus, Verdict
 from piloop.db.triggers import DAEMON_ACTOR
+from piloop.ids import TargetKind
 from piloop.reports.history import BRIEF_WIDTH, block, renderables as history, text_row, titled_table
 from piloop.scoring.ledger import head, metrics
 from piloop.text import HEADING, NONE, cell, metric
@@ -101,7 +102,7 @@ def renderables(
 
 def _metrics(s: Session, campaign: Campaign, cfg: CampaignConfig, table_box: box.Box, heading: str) -> Table:
     """Show the definition of each metric, with the value of the start and of the head."""
-    evaluator_id = campaign.evaluator_id or 0
+    evaluator_id = campaign.evaluator_id
     start = s.scalars(
         select(Candidate)
         .where(Candidate.campaign_id == campaign.id, Candidate.verdict != Verdict.REFERENCE)
@@ -336,10 +337,7 @@ def _digests(s: Session, campaign: Campaign, heading: str) -> list[RenderableTyp
         .limit(DIGESTS_SHOWN)
     ).all()
     title = Text(f'{heading}Research pack: orchestrator and human digests and decisions (newest first)', style='bold')
-    lines = [
-        _body_line(f'comment#{c.id} {c.kind} by {c.author} on {c.target_kind}#{c.target_id}', c.body, DIGEST_CHARS)
-        for c in rows
-    ]
+    lines = [_body_line(f'comment#{c.id} {c.kind} by {c.author} on {c.target}', c.body, DIGEST_CHARS) for c in rows]
     return [title, *(lines or [Text('- None yet.')])]
 
 

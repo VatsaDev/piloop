@@ -8,8 +8,9 @@ from sqlalchemy import event
 from sqlalchemy.orm import Session
 
 from piloop.config import load_campaign_config
-from piloop.db.models import Campaign, CampaignStatus, Comment, CommentKind, Journal, Lesson, LessonStatus, TargetKind
+from piloop.db.models import Campaign, CampaignStatus, Comment, CommentKind, Journal, Lesson, LessonStatus
 from piloop.db.session import Database
+from piloop.ids import TargetKind, TargetRef
 from piloop.reports.wake import (
     LESSONS_MORE,
     Relevance,
@@ -191,8 +192,7 @@ def test_wake_prints_the_journal_newest_lines_in_order_the_inbox_the_active_head
             s.add(Journal(author='orchestrator', line=f'step {i:02d}: ' + 'x' * 60, created_at=NOW))
         s.add(
             Comment(
-                target_kind=TargetKind.CAMPAIGN,
-                target_id=campaign.id,
+                target=TargetRef(TargetKind.CAMPAIGN, campaign.id),
                 author='w',
                 body='Raise the floor?',
                 kind=CommentKind.ESCALATION,
@@ -235,8 +235,7 @@ def test_wake_and_a_brief_print_no_more_than_their_budget_headings_and_notices_i
             s.add(Journal(author='orchestrator', line=f'step {i}: ' + 'x' * 60, created_at=NOW))
             s.add(
                 Comment(
-                    target_kind=TargetKind.CAMPAIGN,
-                    target_id=campaign.id,
+                    target=TargetRef(TargetKind.CAMPAIGN, campaign.id),
                     author='w',
                     body='Raise the floor?',
                     kind=CommentKind.ESCALATION,

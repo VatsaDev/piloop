@@ -353,8 +353,8 @@ The package has one subpackage for each concern. Imports only point down this li
 8. `daemon/`: the process, the scheduler, the run controller.
 9. `watch/` and `cli/`.
 
-The top-level modules `actor`, `settings`, `otel`, `git`, `proc`, `text`, `version` and `deprecated` are leaves that every
-subpackage may use.
+The top-level modules `ids`, `actor`, `settings`, `otel`, `git`, `proc`, `text`, `version` and `deprecated` are leaves
+that every subpackage may use.
 
 `plugins/` is everything about plugins. `plugins/host.py` loads, checks and shows them, and imports nothing else of
 piloop, so every layer may use it. `plugins/metric.py` has the metric types that the verdict and stop contracts share.

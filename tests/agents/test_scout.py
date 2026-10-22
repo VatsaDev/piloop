@@ -20,7 +20,6 @@ from piloop.db.models import (
     CommentKind,
     Idea,
     IdeaStatus,
-    RoleName,
     Run,
     RunStatus,
     Technique,
@@ -28,6 +27,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
+from piloop.ids import RESEARCH, SCOUT, AgentSessionId
 from piloop.plugins.role.scout import ScoutRole
 from piloop.reports.history import history
 from piloop.reports.overview import overview
@@ -72,11 +72,11 @@ def test_a_scout_sweep_fires_on_its_interval_as_a_row_of_its_own_beside_research
     scout_due(db, campaign, 61)
     add_ideas(db, campaign, 1, by='watchdog#9', status=IdeaStatus.SEED)
     assert sorted(sched.tick()) == [1, 2], 'a seed sweep and a scout sweep, each in a slot of its own role'
-    assert agent_sessions(db, RoleName.RESEARCH)[0][2] == '1 new seeds to develop'
-    assert agent_sessions(db, RoleName.SCOUT)[0][2] == 'timer: 60s'
+    assert agent_sessions(db, RESEARCH)[0][2] == '1 new seeds to develop'
+    assert agent_sessions(db, SCOUT)[0][2] == 'timer: 60s'
     sched.wait(10)
     assert sched.tick() == [], 'the last scout started a moment ago'
-    backdate(db, 2, 61)
+    backdate(db, AgentSessionId(2), 61)
     assert sched.tick() == [3]
     sched.wait(10)
     sched.stop(timeout=5)
@@ -171,9 +171,7 @@ def add_scouts(db: Database, campaign: Campaign, n: int) -> None:
         for _ in range(n):
             time.sleep(0.01)
             s.add(
-                AgentSession(
-                    kind=RoleName.SCOUT, campaign_id=campaign.id, state=AgentSessionState.EXITED, started_at=utcnow()
-                )
+                AgentSession(kind=SCOUT, campaign_id=campaign.id, state=AgentSessionState.EXITED, started_at=utcnow())
             )
         s.commit()
 
@@ -195,32 +193,32 @@ def test_a_developed_source_joins_the_watch_list_and_ages_out_unless_it_kept(db:
     developed = developed_seed(db, campaign, 'developed', 'https://x.com/a/status/1 https://github.com/o/r')
     kept = developed_seed(db, campaign, 'kept', 'https://x.com/b/status/2', kept=True)
     with db.session() as s:
-        assert [(w.source, w.ideas, w.kept) for w in watch_list(s, campaign.id, RoleName.SCOUT)] == [
+        assert [(w.source, w.ideas, w.kept) for w in watch_list(s, campaign.id, SCOUT)] == [
             ('@b', [kept], True),
             ('@a', [developed], False),
             ('o/r', [developed], False),
         ]
-        assert watch_list(s, campaign.id, RoleName.SCOUT)[1].line() == (
+        assert watch_list(s, campaign.id, SCOUT)[1].line() == (
             f'- @a (developed, {WATCH_RUNS} more scout sweeps unless one pays off; idea#{developed})'
         )
-        assert watch_list(s, campaign.id, RoleName.SCOUT)[0].line() == f'- @b (kept; idea#{kept})'
+        assert watch_list(s, campaign.id, SCOUT)[0].line() == f'- @b (kept; idea#{kept})'
     add_scouts(db, campaign, WATCH_RUNS)
     with db.session() as s:
-        assert [w.source for w in watch_list(s, campaign.id, RoleName.SCOUT)] == ['@b'], 'what never kept ages out'
+        assert [w.source for w in watch_list(s, campaign.id, SCOUT)] == ['@b'], 'what never kept ages out'
 
 
 def test_the_search_window_starts_at_the_previous_scout_at_least_a_week_back(db: Database, campaign: Campaign) -> None:
     now = utcnow()
     with db.session() as s:
-        assert window(s, campaign.id, RoleName.SCOUT, 99, now) == now - WINDOW
+        assert window(s, campaign.id, SCOUT, AgentSessionId(99), now) == now - WINDOW
     add_scouts(db, campaign, 1)
     with db.session() as s:
-        assert window(s, campaign.id, RoleName.SCOUT, 99, now) == now - MIN_WINDOW, (
+        assert window(s, campaign.id, SCOUT, AgentSessionId(99), now) == now - MIN_WINDOW, (
             'a scout an hour ago still looks a week back'
         )
         started = s.get_one(AgentSession, 1).started_at = now - timedelta(days=12)
         s.commit()
-        assert window(s, campaign.id, RoleName.SCOUT, 99, now) == started
+        assert window(s, campaign.id, SCOUT, AgentSessionId(99), now) == started
 
 
 def test_a_scout_requested_by_hand_while_its_timer_is_off_files_the_default_number_of_seeds(
@@ -230,7 +228,7 @@ def test_a_scout_requested_by_hand_while_its_timer_is_off_files_the_default_numb
     configure(db, campaign, '#!/bin/sh\ncat ../brief.md > workspace/brief-seen.txt\n', research={'max_ideas': 0})
     occupy(db, campaign)
     with db.session() as s:
-        s.add(AgentSession(kind=RoleName.SCOUT, campaign_id=campaign.id, reason='by hand'))
+        s.add(AgentSession(kind=SCOUT, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     sched = scheduler(db, runtime, tmp_path)
     assert sched.tick() == [1]

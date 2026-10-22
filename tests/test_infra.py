@@ -11,7 +11,8 @@ from opentelemetry.trace import StatusCode
 from pytest_mock import MockerFixture
 
 from piloop import git, otel
-from piloop.db.models import AgentSession, AgentSessionState, RoleName
+from piloop.db.models import AgentSession, AgentSessionState
+from piloop.ids import RESEARCH
 from piloop.otel import Tracer
 from piloop.runtime.factory import handle_for
 from piloop.settings import Settings
@@ -113,4 +114,4 @@ def test_stale_directories_do_not_block_worktrees(campaign_path: Path, tmp_path:
 
 def test_handle_for_refuses_a_request() -> None:
     with pytest.raises(ValueError, match='agent_session#3 is requested: not launched yet'):
-        handle_for(AgentSession(id=3, kind=RoleName.RESEARCH, campaign_id=1, state=AgentSessionState.REQUESTED))
+        handle_for(AgentSession(id=3, kind=RESEARCH, campaign_id=1, state=AgentSessionState.REQUESTED))

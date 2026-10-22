@@ -35,18 +35,19 @@ from sqlalchemy.orm import Session
 from piloop.campaign import inbox
 from piloop.campaign.inbox import campaign_of
 from piloop.config import config_of
-from piloop.db.models import (
-    OPEN_RUNS,
-    Campaign,
-    CommentKind,
-    Event,
-    Idea,
-    IdeaStatus,
-    Run,
-    campaign_runs,
-    count,
-)
+from piloop.db.models import OPEN_RUNS, Campaign, CommentKind, Event, Idea, IdeaStatus, Run, campaign_runs, count
 from piloop.db.session import read_transaction
+from piloop.ids import (
+    AgentSessionId,
+    CampaignId,
+    CandidateId,
+    CommentId,
+    EvaluatorId,
+    IdeaId,
+    RoleName,
+    RunId,
+    TrackName,
+)
 from piloop.reports.overview import head_scores, live_agent_sessions, produced, queued_ideas
 from piloop.scoring.ledger import keeps
 from piloop.usage import campaign_tokens
@@ -69,7 +70,7 @@ class Subject(TypedDict):
     kind: str
     """A ``TargetKind``: ``campaign``, ``idea``, ``run``, ``candidate``, ``measurement``, ``agent_session`` or ``comment``."""
     id: int
-    campaign: int | None
+    campaign: CampaignId | None
     """The campaign of the row, resolved when the event is read. Null when the row is gone or has no campaign (a reply
     to a reply). A campaign filter keeps these events too, because they may be of that campaign."""
 
@@ -125,7 +126,7 @@ def snapshot(s: Session) -> Generator[int]:
 
 
 def read(
-    s: Session, after: int, *, campaign_id: int | None = None, kinds: Collection[str] = (), limit: int = LIMIT
+    s: Session, after: int, *, campaign_id: CampaignId | None = None, kinds: Collection[str] = (), limit: int = LIMIT
 ) -> Batch:
     """Read at most ``limit`` events after the cursor ``after``, oldest first.
 
@@ -196,7 +197,7 @@ def follow(
     s: Session,
     after: int,
     *,
-    campaign_id: int | None = None,
+    campaign_id: CampaignId | None = None,
     kinds: Collection[str] = (),
     limit: int = LIMIT,
     timeout: float,
@@ -220,7 +221,7 @@ def follow(
 class TrackScore(TypedDict):
     """The head on one track."""
 
-    track: str
+    track: TrackName
     metric: str
     """The primary metric of the track."""
     value: float | None
@@ -232,15 +233,15 @@ class TrackScore(TypedDict):
 class Head(TypedDict):
     """The head of the trunk: the latest keep."""
 
-    candidate: int
+    candidate: CandidateId
     tracks: list[TrackScore]
 
 
 class OpenRun(TypedDict):
     """A run that is queued or running."""
 
-    id: int
-    idea: int
+    id: RunId
+    idea: IdeaId
     title: str
     harness: str
     model: str
@@ -250,18 +251,18 @@ class OpenRun(TypedDict):
 class LiveAgent(TypedDict):
     """An agent that is starting or running."""
 
-    id: int
-    kind: str
+    id: AgentSessionId
+    kind: RoleName
     state: str
     harness: str | None
     model: str | None
-    run: int | None
+    run: RunId | None
 
 
 class CampaignState(TypedDict):
     """What ``piloop status`` shows of a campaign, as data."""
 
-    id: int
+    id: CampaignId
     name: str
     path: str
     status: str
@@ -269,7 +270,7 @@ class CampaignState(TypedDict):
     paused: str | None
     """What ``piloop pause`` holds: ``launches`` or ``all``. Null while the campaign is not paused."""
     paused_reason: str | None
-    evaluator: int | None
+    evaluator: EvaluatorId | None
     head: Head | None
     """Null when the campaign has no trunk keep."""
     kept: int
@@ -350,10 +351,10 @@ class Target(TypedDict):
 class Item(TypedDict):
     """An inbox item: a comment with a priority."""
 
-    id: int
+    id: CommentId
     priority: int | None
     kind: str
-    campaign: int | None
+    campaign: CampaignId | None
     target: Target
     author: str
     created: str
@@ -365,8 +366,8 @@ class Item(TypedDict):
 class Seed(TypedDict):
     """A seed that waits for research."""
 
-    idea: int
-    campaign: int
+    idea: IdeaId
+    campaign: CampaignId
     created_by: str
     title: str
     provenance: str | None
@@ -381,7 +382,7 @@ class Inbox(TypedDict):
 
 
 def inbox_view(
-    s: Session, *, campaign_id: int | None = None, kinds: Collection[CommentKind] = (), acked: bool = False
+    s: Session, *, campaign_id: CampaignId | None = None, kinds: Collection[CommentKind] = (), acked: bool = False
 ) -> Inbox:
     """What ``piloop inbox`` lists, as data, with the same filters (``piloop.campaign.inbox.items``)."""
     return Inbox(

@@ -17,17 +17,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.config import CampaignConfig, ClosingReview, Spend
-from piloop.db.models import (
-    AgentSession,
-    AgentSessionState,
-    Campaign,
-    CampaignStatus,
-    Comment,
-    CommentKind,
-    TargetKind,
-    utcnow,
-)
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, CampaignStatus, Comment, CommentKind, utcnow
 from piloop.db.triggers import DAEMON_ACTOR
+from piloop.ids import TargetKind, TargetRef
 from piloop.proc import STDERR_IN_ERROR, child_env, kill_group
 
 TIMEOUT = 60
@@ -143,8 +135,7 @@ def review_skipped(s: Session, campaign: Campaign, held: str) -> None:
 def _post(s: Session, campaign: Campaign, kind: CommentKind, priority: int, body: str) -> None:
     s.add(
         Comment(
-            target_kind=TargetKind.CAMPAIGN,
-            target_id=campaign.id,
+            target=TargetRef(TargetKind.CAMPAIGN, campaign.id),
             author=DAEMON_ACTOR,
             kind=kind,
             priority=priority,

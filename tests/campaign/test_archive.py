@@ -32,19 +32,19 @@ from piloop.db.models import (
     CampaignStatus,
     Idea,
     IdeaStatus,
-    RoleName,
     Run,
     RunStatus,
     utcnow,
 )
 from piloop.db.session import Database
+from piloop.ids import IMPLEMENTER, WATCHDOG, AgentSessionId, CampaignId, IdeaId, RoleName
 from piloop.store import Store, hash_file, key
 from piloop.store.tree import Removed, Stored, Walk
 
 LIVE = frozenset({'NOTES.md', 'research'})
 
 
-def add_idea(db: Database, campaign_id: int, title: str, status: IdeaStatus = IdeaStatus.DONE) -> int:
+def add_idea(db: Database, campaign_id: CampaignId, title: str, status: IdeaStatus = IdeaStatus.DONE) -> IdeaId:
     with db.session() as s:
         idea = Idea(campaign_id=campaign_id, track='score', title=title, hypothesis='h', created_by='t', status=status)
         s.add(idea)
@@ -53,8 +53,8 @@ def add_idea(db: Database, campaign_id: int, title: str, status: IdeaStatus = Id
 
 
 def add_run(
-    db: Database, idea_id: int, status: RunStatus = RunStatus.SUCCEEDED, kind: RoleName = RoleName.IMPLEMENTER
-) -> int:
+    db: Database, idea_id: IdeaId, status: RunStatus = RunStatus.SUCCEEDED, kind: RoleName = IMPLEMENTER
+) -> AgentSessionId:
     """A run of ``idea_id`` and the implementer that ran it; the implementer's id."""
     with db.session() as s:
         idea = s.get_one(Idea, idea_id)
@@ -154,7 +154,7 @@ def test_a_stopped_campaign_is_due_once_its_ideas_are_and_nothing_of_it_runs(db:
     agent_session = add_run(db, idea)
     with db.session() as s:
         s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
-        s.add(AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, reason='campaign stopped'))
+        s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='campaign stopped'))
         s.commit()
         assert due(s) == Job(campaign.id, idea), 'its done ideas first'
         assert backlog(s) == Backlog(ideas=1, campaigns=0), 'the closing watchdog is still requested'
@@ -170,11 +170,7 @@ def test_a_stopped_campaign_is_due_once_its_ideas_are_and_nothing_of_it_runs(db:
         assert due(s) is None
     time.sleep(0.01)
     with db.session() as s:
-        s.add(
-            AgentSession(
-                kind=RoleName.WATCHDOG, campaign_id=campaign.id, state=AgentSessionState.EXITED, ended_at=utcnow()
-            )
-        )
+        s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, state=AgentSessionState.EXITED, ended_at=utcnow()))
         s.commit()
         assert due(s) == Job(campaign.id, None), 'resumed and stopped again: what it wrote since is archived'
 
@@ -292,7 +288,7 @@ def test_local_copies_go_by_age_and_under_disk_pressure_the_oldest_archiving_fir
         assert all(a.pruned_at is not None for a in s.scalars(select(Archive)))
 
 
-def big_idea(db: Database, campaign: Campaign, home: Path) -> tuple[int, dict[str, bytes]]:
+def big_idea(db: Database, campaign: Campaign, home: Path) -> tuple[IdeaId, dict[str, bytes]]:
     """A done idea whose workspace holds three 4000-byte files in nested directories and a symlink."""
     idea = add_idea(db, campaign.id, 'big')
     add_run(db, idea)
@@ -409,9 +405,7 @@ def test_a_newer_archiving_displaces_an_older_file_or_directory_at_the_same_path
         prune(db, store, home, row.id)
         with db.session() as s:  # the next stop of the campaign
             s.add(
-                AgentSession(
-                    kind=RoleName.WATCHDOG, campaign_id=campaign.id, state=AgentSessionState.EXITED, ended_at=utcnow()
-                )
+                AgentSession(kind=WATCHDOG, campaign_id=campaign.id, state=AgentSessionState.EXITED, ended_at=utcnow())
             )
             s.commit()
         time.sleep(0.01)

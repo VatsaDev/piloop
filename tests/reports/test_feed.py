@@ -21,10 +21,10 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Run,
-    TargetKind,
     Verdict,
 )
 from piloop.db.session import Database
+from piloop.ids import CampaignId, TargetKind, TargetRef
 from piloop.reports import feed
 
 RAW = "INSERT INTO events (kind, actor, target_kind, target_id, payload) VALUES ('{kind}', 'plugin', '{target}', {id}, '{payload}')"
@@ -36,7 +36,7 @@ def raw(db: Database, kind: str, payload: str, target: str = 'campaign', target_
         return conn.execute(text(RAW.format(kind=kind, target=target, id=target_id, payload=payload))).lastrowid or 0
 
 
-def make_idea(campaign_id: int, title: str, **fields: object) -> Idea:
+def make_idea(campaign_id: CampaignId, title: str, **fields: object) -> Idea:
     return Idea(
         campaign_id=campaign_id,
         title=title,
@@ -70,7 +70,7 @@ def test_the_envelope_normalizes_history_without_inventing_and_keeps_unknown_kin
         idea = make_idea(campaign.id, 'try it')
         s.add(idea)
         s.flush()
-        s.add(Comment(target_kind=TargetKind.COMMENT, target_id=999, author='human', kind=CommentKind.NOTE, body='x'))
+        s.add(Comment(target=TargetRef(TargetKind.COMMENT, 999), author='human', kind=CommentKind.NOTE, body='x'))
         s.commit()
         idea.status = IdeaStatus.PARKED
         s.commit()
@@ -232,10 +232,9 @@ def test_follow_wakes_on_a_matching_event_and_otherwise_returns_at_its_timeout(
         assert [e['kind'] for e in woke['events']] == ['wanted']
 
 
-def escalation(campaign_id: int, body: str) -> Comment:
+def escalation(campaign_id: CampaignId, body: str) -> Comment:
     return Comment(
-        target_kind=TargetKind.CAMPAIGN,
-        target_id=campaign_id,
+        target=TargetRef(TargetKind.CAMPAIGN, campaign_id),
         author='watchdog#2',
         kind=CommentKind.ESCALATION,
         priority=1,

@@ -25,13 +25,12 @@ from piloop.db.models import (
     IdeaStatus,
     LinkKind,
     Measurement,
-    RoleName,
     Run,
     RunStatus,
-    TargetKind,
     Verdict,
 )
 from piloop.db.session import Database
+from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, RoleName, RunId, TargetKind, TargetRef
 from piloop.reports import overview as overview_module
 from piloop.reports.overview import AnomalyKind, anomalies, overview
 from tests.runtime.test_herdr import Response, calls, scripted
@@ -91,7 +90,7 @@ def agent(
     start: float,
     lived: float,
     *,
-    run_id: int | None = None,
+    run_id: RunId | None = None,
     **kw: object,
 ) -> AgentSession:
     row = AgentSession(
@@ -144,35 +143,31 @@ def live_campaign(db: Database, campaign: Campaign) -> None:
         baseline.measurements[0].created_at = T
         good = idea(s, p, 'longer lines', IdeaStatus.DONE)
         first = run(s, good, RunStatus.SUCCEEDED, 1, 5, 20)
-        agent(s, p, RoleName.IMPLEMENTER, 5, 600, run_id=first.id, usage={'total': 1000})
+        agent(s, p, IMPLEMENTER, 5, 600, run_id=first.id, usage={'total': 1000})
         kept = candidate(s, p, 1, Verdict.KEEP, 3, 18, run_id=first.id)
         candidate(s, p, kept.id, Verdict.DISCARD, 3, 19, run_id=first.id)
         bad = idea(s, p, 'crash it', IdeaStatus.REJECTED)
         failed = run(s, bad, RunStatus.FAILED, 1, 30, 40, error='boom\nand the rest')
-        dead = agent(
-            s, p, RoleName.IMPLEMENTER, 30, 5, run_id=failed.id, state=AgentSessionState.KILLED, error='dialog'
-        )
+        dead = agent(s, p, IMPLEMENTER, 30, 5, run_id=failed.id, state=AgentSessionState.KILLED, error='dialog')
         startup = {'kind': 'implementer', 'harness': 'script', 'run': failed.id, 'seconds': 5.0, 'error': 'dialog'}
         s.add(
             Event(
                 kind=STARTUP_ANOMALY,
                 actor='daemon',
-                target_kind=TargetKind.AGENT_SESSION,
-                target_id=dead.id,
+                target=TargetRef(TargetKind.AGENT_SESSION, dead.id),
                 payload=startup,
                 at=at(30) + timedelta(seconds=5),
             )
         )
         pinned = idea(s, p, 'build on longer lines', IdeaStatus.SCHEDULED, after=(good.id,), base_candidate_id=1)
         stuck = run(s, pinned, RunStatus.RUNNING, 1, 50, None)
-        agent(s, p, RoleName.IMPLEMENTER, 50, 300, run_id=stuck.id, usage={'total': 2000})
+        agent(s, p, IMPLEMENTER, 50, 300, run_id=stuck.id, usage={'total': 2000})
         idea(s, p, 'after the crash', IdeaStatus.READY, after=(bad.id,))
-        agent(s, p, RoleName.RESEARCH, 60, 120, usage={'total': 500})
+        agent(s, p, RESEARCH, 60, 120, usage={'total': 500})
         s.add_all(
             [
                 Comment(
-                    target_kind=TargetKind.RUN,
-                    target_id=failed.id,
+                    target=TargetRef(TargetKind.RUN, failed.id),
                     author='watchdog#9',
                     kind=CommentKind.ESCALATION,
                     priority=1,
@@ -180,16 +175,14 @@ def live_campaign(db: Database, campaign: Campaign) -> None:
                     created_at=at(45),
                 ),
                 Comment(
-                    target_kind=TargetKind.CAMPAIGN,
-                    target_id=p.id,
+                    target=TargetRef(TargetKind.CAMPAIGN, p.id),
                     author='pi',
                     kind=CommentKind.DECISION,
                     body='keep going',
                     created_at=at(46),
                 ),
                 Comment(
-                    target_kind=TargetKind.IDEA,
-                    target_id=good.id,
+                    target=TargetRef(TargetKind.IDEA, good.id),
                     author='implementer#1',
                     body='a note',
                     created_at=at(47),
@@ -297,7 +290,7 @@ def test_the_idle_queue_counts_from_the_last_run_and_names_pending_research(db: 
     with db.session() as s:
         s.get_one(Run, 3).status = RunStatus.SUCCEEDED
         s.get_one(Run, 3).finished_at = at(70)
-        s.add(AgentSession(kind=RoleName.RESEARCH, campaign_id=campaign.id, started_at=at(100)))
+        s.add(AgentSession(kind=RESEARCH, campaign_id=campaign.id, started_at=at(100)))
         s.commit()
         [idle] = [a for a in found(s, campaign) if a.kind is AnomalyKind.IDLE_QUEUE]
     assert (idle.at, idle.detail) == (at(70), '1 free implementer slots and no runnable idea; research#5 requested')
@@ -344,7 +337,7 @@ def found(s: Session, campaign: Campaign, now: datetime = NOW) -> list[overview_
 def test_a_short_life_without_the_launcher_event_is_not_a_startup_death(db: Database, campaign: Campaign) -> None:
     """The launcher decides that an agent died at startup (``STARTUP_ANOMALY``). The overview only reports it."""
     with db.session() as s:
-        agent(s, s.get_one(Campaign, campaign.id), RoleName.WATCHDOG, 0, 5)
+        agent(s, s.get_one(Campaign, campaign.id), WATCHDOG, 0, 5)
         s.commit()
         assert [a.key for a in found(s, campaign) if a.kind is AnomalyKind.DEAD_AT_STARTUP] == []
 
@@ -356,15 +349,14 @@ def test_an_agent_that_investigates_incidents_dead_at_startup_is_no_incident(db:
     trigger by default; research has not, so a research agent that died at startup is an incident.
     """
     with db.session() as s:
-        for kind in (RoleName.WATCHDOG, RoleName.RESEARCH):
+        for kind in (WATCHDOG, RESEARCH):
             dead = agent(s, s.get_one(Campaign, campaign.id), kind, 0, 35, state=AgentSessionState.KILLED)
-            payload = {'kind': kind.value, 'harness': 'script', 'run': None, 'seconds': 35.0, 'error': 'prompt_lost'}
+            payload = {'kind': kind, 'harness': 'script', 'run': None, 'seconds': 35.0, 'error': 'prompt_lost'}
             s.add(
                 Event(
                     kind=STARTUP_ANOMALY,
                     actor='daemon',
-                    target_kind=TargetKind.AGENT_SESSION,
-                    target_id=dead.id,
+                    target=TargetRef(TargetKind.AGENT_SESSION, dead.id),
                     payload=payload,
                 )
             )
@@ -426,9 +418,7 @@ def test_open_runs_say_how_far_they_got(db: Database, campaign: Campaign) -> Non
         waiting = run(s, idea(s, p, 'waiting', IdeaStatus.SCHEDULED), RunStatus.QUEUED, 1, 100, None)
         waiting.started_at = None
         going = run(s, idea(s, p, 'going', IdeaStatus.SCHEDULED), RunStatus.RUNNING, 1, 110, None)
-        s.add(
-            AgentSession(kind=RoleName.IMPLEMENTER, campaign_id=p.id, run_id=going.id, state=AgentSessionState.RUNNING)
-        )
+        s.add(AgentSession(kind=IMPLEMENTER, campaign_id=p.id, run_id=going.id, state=AgentSessionState.RUNNING))
         s.commit()
     cfg = load_campaign_config(Path(campaign.path), roles={'implementer': {'max_concurrent': 2}})
     lines = render(db, campaign, cfg).splitlines()
@@ -444,16 +434,13 @@ def busy(s: Session, campaign: Campaign, log_dir: Path | None, *, said: float | 
     p = s.get_one(Campaign, campaign.id)
     r = run(s, idea(s, p, 'train', IdeaStatus.SCHEDULED), RunStatus.RUNNING, 1, 0, None)
     r.log_dir = str(log_dir) if log_dir is not None else None
-    w = AgentSession(
-        kind=RoleName.IMPLEMENTER, campaign_id=p.id, run_id=r.id, state=AgentSessionState.RUNNING, started_at=at(0)
-    )
+    w = AgentSession(kind=IMPLEMENTER, campaign_id=p.id, run_id=r.id, state=AgentSessionState.RUNNING, started_at=at(0))
     s.add(w)
     s.flush()
     if said is not None:
         s.add(
             Comment(
-                target_kind=TargetKind.RUN,
-                target_id=r.id,
+                target=TargetRef(TargetKind.RUN, r.id),
                 author=f'implementer#{w.id}',
                 body='ETA',
                 created_at=at(said),
@@ -576,7 +563,7 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, campai
         s.add_all(
             [
                 AgentSession(
-                    kind=RoleName.RESEARCH,
+                    kind=RESEARCH,
                     campaign_id=p.id,
                     harness='script',
                     model='m',
@@ -586,12 +573,10 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, campai
                     reason='low_water: 2 ready < 10',
                     log_dir=str(log_dir),
                 ),
-                AgentSession(
-                    kind=RoleName.WATCHDOG, campaign_id=p.id, state=AgentSessionState.REQUESTED, reason='cron'
-                ),
+                AgentSession(kind=WATCHDOG, campaign_id=p.id, state=AgentSessionState.REQUESTED, reason='cron'),
             ]
         )
-        s.add(Event(kind='idea.created', actor='cli', target_kind=TargetKind.IDEA, target_id=newer.id, at=at(110)))
+        s.add(Event(kind='idea.created', actor='cli', target=TargetRef(TargetKind.IDEA, newer.id), at=at(110)))
         s.commit()
     text = render(db, campaign)
     now = text[text.index('### Now') : text.index('### Anomalies')]
@@ -685,7 +670,7 @@ def test_live_agents_say_their_last_words_from_the_session_file_else_the_screen_
         ):
             s.add(
                 AgentSession(
-                    kind=RoleName.RESEARCH,
+                    kind=RESEARCH,
                     campaign_id=campaign.id,
                     state=AgentSessionState.RUNNING,
                     harness=harness,
@@ -719,7 +704,7 @@ def test_a_row_holding_a_blob_renders_as_a_placeholder_with_one_warning_naming_i
 ) -> None:
     """A comment body stored as bytes renders as a placeholder and prints one warning. It does not crash."""
     with db.session() as s:
-        s.add(Comment(target_kind=TargetKind.CAMPAIGN, target_id=campaign.id, author='w', body='x', priority=1))
+        s.add(Comment(target=TargetRef(TargetKind.CAMPAIGN, campaign.id), author='w', body='x', priority=1))
         s.commit()
     with db.engine.begin() as con:  # The CHECK constraints reject a blob, so turn them off to insert one.
         con.exec_driver_sql('PRAGMA ignore_check_constraints = ON')

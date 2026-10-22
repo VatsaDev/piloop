@@ -18,6 +18,7 @@ from sqlalchemy import (
     FetchedValue,
     ForeignKey,
     Index,
+    Integer,
     Select,
     String,
     UniqueConstraint,
@@ -28,9 +29,25 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.engine import Dialect
-from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, composite, mapped_column, relationship
 from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.types import TypeDecorator
+
+from piloop.ids import (
+    IMPLEMENTER,
+    AgentSessionId,
+    CampaignId,
+    CandidateId,
+    CommentId,
+    EvaluatorId,
+    IdeaId,
+    MeasurementId,
+    RoleName,
+    RunId,
+    TargetKind,
+    TargetRef,
+    TrackName,
+)
 
 
 def utcnow() -> datetime:
@@ -130,18 +147,6 @@ class Verdict(StrEnum):
     RECOVERED = 'recovered'
 
 
-class TargetKind(StrEnum):
-    """What a comment or an event points at."""
-
-    CAMPAIGN = 'campaign'
-    IDEA = 'idea'
-    RUN = 'run'
-    CANDIDATE = 'candidate'
-    MEASUREMENT = 'measurement'
-    AGENT_SESSION = 'agent_session'
-    COMMENT = 'comment'
-
-
 class CommentKind(StrEnum):
     """Why a comment was written. An ``escalation`` asks for a decision and is always in the human's inbox."""
 
@@ -157,18 +162,6 @@ class LessonStatus(StrEnum):
     DEAD = 'dead'
     PROMISING = 'promising'
     UNTESTED = 'untested'
-
-
-class RoleName(StrEnum):
-    """The names of the built-in roles. ``agent_sessions.kind`` holds a role name: one of these, or a role of the campaign.
-
-    A role's name is also its config table, CLI name, signature and pane prefix.
-    """
-
-    IMPLEMENTER = 'implementer'
-    WATCHDOG = 'watchdog'
-    RESEARCH = 'research'
-    SCOUT = 'scout'
 
 
 class AgentSessionState(StrEnum):
@@ -264,6 +257,16 @@ class Base(DeclarativeBase):
 
     type_annotation_map = {
         datetime: UTCDateTime,
+        CampaignId: Integer,
+        IdeaId: Integer,
+        RunId: Integer,
+        CandidateId: Integer,
+        MeasurementId: Integer,
+        EvaluatorId: Integer,
+        AgentSessionId: Integer,
+        CommentId: Integer,
+        RoleName: String,
+        TrackName: String,
         dict[str, float]: JSON,
         dict[str, object]: JSON,
         UsageJson: JSON,
@@ -311,13 +314,13 @@ class Campaign(Tracked, Base):
         *text_checks('campaigns', nullable=('paused_reason',)),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[CampaignId] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(unique=True)
     path: Mapped[str]
     """The absolute path of the repository. ``piloop.toml`` is at its root."""
     config: Mapped[dict[str, object]]
     """The ``CampaignConfig`` as the last ``piloop init`` stored it."""
-    evaluator_id: Mapped[int | None]
+    evaluator_id: Mapped[EvaluatorId | None]
     """The ``evaluators.id`` that the config describes now. Measurements under older evaluators stay, but no longer
     decide verdicts. A plain integer, not a foreign key, because evaluators reference campaigns."""
     status: Mapped[CampaignStatus] = mapped_column(
@@ -346,7 +349,7 @@ class Campaign(Tracked, Base):
     type: Mapped[str] = mapped_column(default=OPTIMIZATION, server_default=OPTIMIZATION)
     """What the campaign does: a campaign type, by its name. Every campaign is ``optimization``. Each change is a
     ``campaign.type`` event."""
-    parent_id: Mapped[int | None] = mapped_column(ForeignKey('campaigns.id'))
+    parent_id: Mapped[CampaignId | None] = mapped_column(ForeignKey('campaigns.id'))
     """The campaign that this one is under, for example the one that spawned it, NULL for a root. It makes a tree of
     the campaigns of one piloop home. ``piloop.campaign.ops.set_parent`` sets it, and each change is a
     ``campaign.parent_id`` event. The ``campaigns_parent`` triggers refuse a cycle. A raw DELETE of a campaign that has
@@ -369,8 +372,8 @@ class Evaluator(Base):
     __tablename__ = 'evaluators'
     __table_args__ = (UniqueConstraint('campaign_id', 'key'),)
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    campaign_id: Mapped[int] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
+    id: Mapped[EvaluatorId] = mapped_column(primary_key=True)
+    campaign_id: Mapped[CampaignId] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
     key: Mapped[str]
     """A short hash of ``definition``, from ``CampaignConfig.evaluator_key``."""
     definition: Mapped[dict[str, object]]
@@ -411,13 +414,13 @@ class Idea(Tracked, Base):
         ),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    campaign_id: Mapped[int] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
+    id: Mapped[IdeaId] = mapped_column(primary_key=True)
+    campaign_id: Mapped[CampaignId] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
     title: Mapped[str]
     """Unique in a campaign, so two research sweeps that pick the same title fail here and do not duplicate the idea."""
     hypothesis: Mapped[str]
     """Why this idea should improve the primary metric."""
-    track: Mapped[str]
+    track: Mapped[TrackName]
     """The track (objective) the idea works on, by its name in ``piloop.toml``: a primary's ``track``, or else the
     primary's name. Its runs are judged on that track's primary, with the primary of every other track as a guardrail,
     and their brief has the track's addendum. The scheduler parks an idea whose track is not in ``piloop.toml``, with
@@ -429,7 +432,7 @@ class Idea(Tracked, Base):
     """0 (urgent) to 4 (someday). The scheduler takes the lowest number first."""
     harness: Mapped[str | None]
     """The harness for this idea. None lets the scheduler use the campaign's harnesses in turn."""
-    base_candidate_id: Mapped[int | None]
+    base_candidate_id: Mapped[CandidateId | None]
     """A deliberate branch: the ``candidates.id`` to start from, instead of the head at the time the run starts. NULL
     unless the idea gives a reason for that starting point. Never pin the current head by default: when the idea
     runs, that tree is out of date. The ``run.queued`` event of a pinned run records both bases. A plain integer, as
@@ -490,8 +493,8 @@ class IdeaLink(Base):
         Index('ix_idea_links_target', 'target_id', 'kind'),
     )
 
-    idea_id: Mapped[int] = mapped_column(ForeignKey('ideas.id', ondelete='CASCADE'), primary_key=True)
-    target_id: Mapped[int] = mapped_column(ForeignKey('ideas.id', ondelete='CASCADE'), primary_key=True)
+    idea_id: Mapped[IdeaId] = mapped_column(ForeignKey('ideas.id', ondelete='CASCADE'), primary_key=True)
+    target_id: Mapped[IdeaId] = mapped_column(ForeignKey('ideas.id', ondelete='CASCADE'), primary_key=True)
     kind: Mapped[LinkKind] = mapped_column(primary_key=True)
 
     idea: Mapped[Idea] = relationship(foreign_keys=[idea_id], back_populates='links')
@@ -512,13 +515,13 @@ class Run(Tracked, Base):
         ),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    idea_id: Mapped[int] = mapped_column(ForeignKey('ideas.id', ondelete='CASCADE'))
-    role: Mapped[str] = mapped_column(default=RoleName.IMPLEMENTER.value, server_default=RoleName.IMPLEMENTER.value)
+    id: Mapped[RunId] = mapped_column(primary_key=True)
+    idea_id: Mapped[IdeaId] = mapped_column(ForeignKey('ideas.id', ondelete='CASCADE'))
+    role: Mapped[RoleName] = mapped_column(default=IMPLEMENTER, server_default=IMPLEMENTER)
     """The role that does the run: ``implementer``, or a role of the campaign with ``runs = true``. Its agents have this
     ``agent_sessions.kind``."""
     attempt: Mapped[int]
-    base_candidate_id: Mapped[int]
+    base_candidate_id: Mapped[CandidateId]
     """The ``candidates.id`` that the worktree started from. The run's candidates descend from it. A plain integer,
     not a foreign key: candidates reference runs, and SQLite cannot add a foreign key for a cycle afterwards."""
     branch: Mapped[bool] = mapped_column(default=False, server_default=text('0'))
@@ -547,7 +550,7 @@ class Run(Tracked, Base):
     )
 
 
-def campaign_runs(campaign_id: int) -> Select[Run]:
+def campaign_runs(campaign_id: CampaignId) -> Select[Run]:
     """Every run of the campaign. A run has no ``campaign_id``, but its idea has one."""
     return select(Run).join(Idea).where(Idea.campaign_id == campaign_id)
 
@@ -557,7 +560,7 @@ def count[*Ts](s: Session, query: Select[*Ts]) -> int:
     return s.scalar(select(func.count()).select_from(query.subquery())) or 0
 
 
-def latest_agent_session(s: Session, run_id: int) -> AgentSession | None:
+def latest_agent_session(s: Session, run_id: RunId) -> AgentSession | None:
     """The latest agent row that did run ``run_id``. A relaunch after the agent failed to start is a second row."""
     return s.scalars(
         select(AgentSession).where(AgentSession.run_id == run_id).order_by(AgentSession.id.desc()).limit(1)
@@ -585,10 +588,10 @@ class Candidate(Tracked, Base):
         *text_checks('candidates', nullable=('summary', 'verdict_by', 'verdict_reason')),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    campaign_id: Mapped[int] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
-    run_id: Mapped[int | None] = mapped_column(ForeignKey('runs.id', ondelete='SET NULL'))
-    parent_id: Mapped[int | None] = mapped_column(ForeignKey('candidates.id'))
+    id: Mapped[CandidateId] = mapped_column(primary_key=True)
+    campaign_id: Mapped[CampaignId] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
+    run_id: Mapped[RunId | None] = mapped_column(ForeignKey('runs.id', ondelete='SET NULL'))
+    parent_id: Mapped[CandidateId | None] = mapped_column(ForeignKey('candidates.id'))
     """The candidate that this one comes from."""
     tree_sha: Mapped[str]
     """The hash of the contents. Two commits with the same tree are the same candidate."""
@@ -612,9 +615,9 @@ class Measurement(Base):
     __tablename__ = 'measurements'
     __table_args__ = (Index('ix_measurements_candidate_evaluator', 'candidate_id', 'evaluator_id'),)
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    candidate_id: Mapped[int] = mapped_column(ForeignKey('candidates.id', ondelete='CASCADE'))
-    evaluator_id: Mapped[int] = mapped_column(ForeignKey('evaluators.id'))
+    id: Mapped[MeasurementId] = mapped_column(primary_key=True)
+    candidate_id: Mapped[CandidateId] = mapped_column(ForeignKey('candidates.id', ondelete='CASCADE'))
+    evaluator_id: Mapped[EvaluatorId] = mapped_column(ForeignKey('evaluators.id'))
     metrics: Mapped[dict[str, float]] = mapped_column(default=dict, server_default=EMPTY_JSON)
     error: Mapped[str | None]
     """Set when the evaluate command failed. ``metrics`` then has what it printed before it failed."""
@@ -644,8 +647,8 @@ class Evaluation(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    candidate_id: Mapped[int] = mapped_column(ForeignKey('candidates.id', ondelete='CASCADE'))
-    evaluator_id: Mapped[int] = mapped_column(ForeignKey('evaluators.id'))
+    candidate_id: Mapped[CandidateId] = mapped_column(ForeignKey('candidates.id', ondelete='CASCADE'))
+    evaluator_id: Mapped[EvaluatorId] = mapped_column(ForeignKey('evaluators.id'))
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
     started_at: Mapped[datetime | None]
     """When it got a slot. NULL while it waits."""
@@ -681,7 +684,7 @@ class Lease(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     """The fencing token. AUTOINCREMENT: an id is never used again, so a newer lease always has a larger one."""
     kind: Mapped[LeaseKind]
-    agent_session_id: Mapped[int | None] = mapped_column(ForeignKey('agent_sessions.id', ondelete='CASCADE'))
+    agent_session_id: Mapped[AgentSessionId | None] = mapped_column(ForeignKey('agent_sessions.id', ondelete='CASCADE'))
     """The job of an ``agent`` lease."""
     evaluation_id: Mapped[int | None]
     """The job of an ``evaluation`` lease: an ``evaluations`` id. No foreign key: the queue row goes when it is
@@ -730,9 +733,10 @@ class Comment(Tracked, Base):
         *text_checks('comments', 'author', 'body'),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[CommentId] = mapped_column(primary_key=True)
     target_kind: Mapped[TargetKind]
     target_id: Mapped[int]
+    target: Mapped[TargetRef] = composite('target_kind', 'target_id')
     author: Mapped[str]
     """Who wrote the comment, for example ``human``, ``orchestrator`` or ``implementer#12``."""
     kind: Mapped[CommentKind] = mapped_column(default=CommentKind.NOTE, server_default=CommentKind.NOTE.value)
@@ -761,7 +765,7 @@ class Technique(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    campaign_id: Mapped[int] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
+    campaign_id: Mapped[CampaignId] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
     title: Mapped[str]
     """The technique, in a few words."""
     mechanism: Mapped[str]
@@ -790,7 +794,7 @@ class Lesson(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    campaign_id: Mapped[int] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
+    campaign_id: Mapped[CampaignId] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
     family: Mapped[str]
     """The mechanism family, as ``ideas.family`` names it. Case and spacing do not matter when lessons are matched."""
     status: Mapped[LessonStatus]
@@ -826,7 +830,7 @@ class Document(Tracked, Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    campaign_id: Mapped[int] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
+    campaign_id: Mapped[CampaignId] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
     path: Mapped[str]
     """Where it is: repo-relative for a synced file, or else wherever its writer keeps it."""
     hash: Mapped[str]
@@ -882,8 +886,8 @@ class Archive(Base):
     __table_args__ = (Index('ix_archives_campaign_idea', 'campaign_id', 'idea_id'),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    campaign_id: Mapped[int] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
-    idea_id: Mapped[int | None]
+    campaign_id: Mapped[CampaignId] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
+    idea_id: Mapped[IdeaId | None]
     """The done idea whose subtree this is; NULL for what a stopped campaign left. Plain integer: the archive outlives
     a deleted idea."""
     manifest: Mapped[str | None]
@@ -917,13 +921,13 @@ class AgentSession(Tracked, Base):
         *text_checks('agent_sessions', 'kind', nullable=('reason', 'harness', 'model')),
     )
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    kind: Mapped[str]
+    id: Mapped[AgentSessionId] = mapped_column(primary_key=True)
+    kind: Mapped[RoleName]
     """The agent's role: a role of its campaign, a built-in one or a ``[roles.<name>]`` table. A trigger refuses other
     names."""
-    campaign_id: Mapped[int | None] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
+    campaign_id: Mapped[CampaignId | None] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'))
     """The campaign the agent works for. piloop always sets it, but readers must accept NULL."""
-    run_id: Mapped[int | None] = mapped_column(ForeignKey('runs.id', ondelete='SET NULL'))
+    run_id: Mapped[RunId | None] = mapped_column(ForeignKey('runs.id', ondelete='SET NULL'))
     """The run that the row does, for a role that does runs. Sweeping roles have none."""
     harness: Mapped[str | None]
     model: Mapped[str | None]
@@ -983,6 +987,7 @@ class Event(Base):
     actor: Mapped[str]
     target_kind: Mapped[TargetKind]
     target_id: Mapped[int]
+    target: Mapped[TargetRef] = composite('target_kind', 'target_id')
     payload: Mapped[dict[str, object]] = mapped_column(default=dict, server_default=EMPTY_JSON)
 
 

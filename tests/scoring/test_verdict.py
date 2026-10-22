@@ -14,6 +14,7 @@ from piloop_min_gain import MIN_GAIN
 
 from piloop.config import CampaignConfig, Metric, MetricRole, Track, TrackConfig
 from piloop.db.models import Verdict
+from piloop.ids import TrackName
 from piloop.plugins.host import data_errors
 from piloop.plugins.metric import Direction
 from piloop.plugins.verdict_rule import bootstrap as verdict_module
@@ -263,11 +264,11 @@ def test_every_other_track_primary_is_a_guardrail_with_its_margin_and_floor() ->
             Metric(name='cost', direction=Direction.LOWER, role=MetricRole.PRIMARY, track='serving', margin=1),
             ERRORS,
         ],
-        tracks={'accuracy': TrackConfig(share=0.75), 'serving': TrackConfig(share=0.25)},
+        tracks={TrackName('accuracy'): TrackConfig(share=0.75), TrackName('serving'): TrackConfig(share=0.25)},
         evaluate=['true'],
         model={'pi': 'm'},
     )
-    serving, accuracy = cfg.track('serving'), cfg.track('accuracy')
+    serving, accuracy = cfg.track(TrackName('serving')), cfg.track(TrackName('accuracy'))
     assert ([m.name for m in serving.guardrails], [m.name for m in accuracy.guardrails]) == (
         ['errors', 'acc'],
         ['errors', 'cost'],

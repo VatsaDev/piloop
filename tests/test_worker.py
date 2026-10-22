@@ -32,12 +32,12 @@ from piloop.db.models import (
     Event,
     Lease,
     LeaseState,
-    RoleName,
     Run,
     RunStatus,
     utcnow,
 )
 from piloop.db.session import Database
+from piloop.ids import IMPLEMENTER, AgentSessionId
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentJob, AgentReport, Checkout, Commits, EvaluationReport, GitTree
 from piloop.plugins.executor.kit.leases import (
@@ -105,15 +105,15 @@ def use(db: Database, campaign: Campaign, contract: Contract, body: str, timeout
         s.commit()
 
 
-def request_agent(db: Database, campaign: Campaign) -> int:
+def request_agent(db: Database, campaign: Campaign) -> AgentSessionId:
     with db.session() as s:
-        w = AgentSession(kind=RoleName.IMPLEMENTER, campaign_id=campaign.id, reason='contract')
+        w = AgentSession(kind=IMPLEMENTER, campaign_id=campaign.id, reason='contract')
         s.add(w)
         s.commit()
         return w.id
 
 
-def launch(ex: RunController, agent_session_id: int, tmp_path: Path) -> Ended:
+def launch(ex: RunController, agent_session_id: AgentSessionId, tmp_path: Path) -> Ended:
     cwd = tmp_path / 'cwd'
     cwd.mkdir(exist_ok=True)
     return ex.launcher.launch(
@@ -121,7 +121,7 @@ def launch(ex: RunController, agent_session_id: int, tmp_path: Path) -> Ended:
     )
 
 
-def lease_state(db: Database, agent_session_id: int) -> LeaseState | None:
+def lease_state(db: Database, agent_session_id: AgentSessionId) -> LeaseState | None:
     with db.session() as s:
         lease = s.scalars(select(Lease).where(Lease.agent_session_id == agent_session_id)).first()
         return lease.state if lease is not None else None
@@ -132,7 +132,7 @@ def lease_states(db: Database) -> list[LeaseState]:
         return list(s.scalars(select(Lease.state).order_by(Lease.id)))
 
 
-def rows(db: Database, agent_session_id: int) -> tuple[AgentSession, Lease]:
+def rows(db: Database, agent_session_id: AgentSessionId) -> tuple[AgentSession, Lease]:
     with db.session() as s:
         lease = s.scalars(select(Lease).where(Lease.agent_session_id == agent_session_id)).one()
         return s.get_one(AgentSession, agent_session_id), lease
@@ -399,7 +399,7 @@ def test_an_evaluation_whose_lease_expired_before_its_evaluator_started_kills_it
 FAST = Timing(renew=0.1, grace=0.3, toleration=1.0)
 
 
-def renewed_while(ex: RunController, db: Database, agent_session_id: int, seconds: float) -> None:
+def renewed_while(ex: RunController, db: Database, agent_session_id: AgentSessionId, seconds: float) -> None:
     """Tick the scheduler's expiry for ``seconds``, and check that the agent's lease stays live meanwhile."""
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -419,7 +419,7 @@ def launched(db: Database) -> Iterator[list[threading.Thread]]:
 
 def launching(
     db: Database, campaign: Campaign, ex: RunController, tmp_path: Path, name: str, threads: list[threading.Thread]
-) -> int:
+) -> AgentSessionId:
     """Launch an agent on a thread, and return its row."""
     agent_session_id = request_agent(db, campaign)
     cwd = tmp_path / name
@@ -436,7 +436,7 @@ def launching(
 
 def running_agent(
     db: Database, campaign: Campaign, ex: RunController, tmp_path: Path, name: str, threads: list[threading.Thread]
-) -> int:
+) -> AgentSessionId:
     """Launch an agent on a thread, and return its row once it runs."""
     agent_session_id = launching(db, campaign, ex, tmp_path, name, threads)
     wait_until(lambda: lease_state(db, agent_session_id) is LeaseState.RUNNING)

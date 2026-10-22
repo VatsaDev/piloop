@@ -42,9 +42,9 @@ from piloop.db.models import (
     Measurement,
     Pause,
     Run,
-    TargetKind,
     Verdict,
 )
+from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TargetRef, TrackName
 from piloop.plugins.role.contract import Files
 from piloop.scoring.ledger import REJUDGE_REQUESTED, NoteRefused, follow_up, head, note, rejudgeable, track_of
 
@@ -66,7 +66,7 @@ def _reason(reason: str) -> str:
     return reason.strip()
 
 
-def pause(s: Session, campaign_id: int, *, evals: bool, reason: str) -> Campaign:
+def pause(s: Session, campaign_id: CampaignId, *, evals: bool, reason: str) -> Campaign:
     """Pause the campaign: nothing launches, and with ``evals`` the daemon starts no measurement either.
 
     No run is queued, no role is requested and no requested row launches, so research files no ideas. A sweep that
@@ -86,7 +86,7 @@ def pause(s: Session, campaign_id: int, *, evals: bool, reason: str) -> Campaign
     return campaign
 
 
-def resume(s: Session, campaign_id: int) -> Pause:
+def resume(s: Session, campaign_id: CampaignId) -> Pause:
     """Resume a paused campaign, and return what it held. The daemon schedules it again on its next tick.
 
     Raises:
@@ -100,7 +100,7 @@ def resume(s: Session, campaign_id: int) -> Pause:
     return held
 
 
-def set_parent(s: Session, campaign_id: int, parent_id: int | None) -> Campaign:
+def set_parent(s: Session, campaign_id: CampaignId, parent_id: CampaignId | None) -> Campaign:
     """Put the campaign under ``parent_id`` in the tree of campaigns, or make it a root with None, and return it.
 
     A campaign has at most one parent, a campaign of the same piloop home. The tree is for reading: it changes nothing
@@ -155,7 +155,7 @@ OVERRIDES = (Verdict.KEEP, Verdict.INTERESTING, Verdict.DISCARD, Verdict.CRASH)
 daemon judges it now), ``reference`` (an import), ``unmeasured`` and ``recovered`` (nothing was measured)."""
 
 
-def set_verdict(s: Session, candidate_id: int, verdict: Verdict, *, reason: str, actor: Actor) -> Verdict:
+def set_verdict(s: Session, candidate_id: CandidateId, verdict: Verdict, *, reason: str, actor: Actor) -> Verdict:
     """Override a candidate's judgement with ``actor``'s, and return the verdict it had.
 
     The verdict is ``actor``'s now, so the daemon never changes it. The ``candidate.verdict`` event (a trigger) has the
@@ -240,7 +240,7 @@ class Added:
     """What happens to the verdict, in one line: when the daemon judges it again, or why the verdict stays."""
 
 
-def add_measurement(s: Session, candidate_id: int, report: Report, *, actor: Actor) -> Added:
+def add_measurement(s: Session, candidate_id: CandidateId, report: Report, *, actor: Actor) -> Added:
     """Record ``report`` as a measurement of the candidate under the campaign's current evaluator.
 
     The daemon judges the candidate again when its verdict is the daemon's ``crash``, ``discard`` or ``interesting`` on
@@ -324,7 +324,7 @@ def files(campaign: Campaign, actor: Actor) -> Files | None:
 
 def add_idea(
     s: Session,
-    campaign_id: int,
+    campaign_id: CampaignId,
     title: str,
     *,
     actor: Actor,
@@ -334,11 +334,11 @@ def add_idea(
     family: str | None = None,
     priority: int = 2,
     harness: str | None = None,
-    base: int | None = None,
+    base: CandidateId | None = None,
     proposed: bool = False,
-    track: str | None = None,
-    after: Sequence[int] = (),
-    supersedes: Sequence[int] = (),
+    track: TrackName | None = None,
+    after: Sequence[IdeaId] = (),
+    supersedes: Sequence[IdeaId] = (),
 ) -> tuple[Idea, str | None]:
     """Add a defined idea, with its links, and return it with why it waits for a review (``review_first``), or None.
 
@@ -378,13 +378,13 @@ def add_idea(
 
 def file_seed(
     s: Session,
-    campaign_id: int,
+    campaign_id: CampaignId,
     hunch: str,
     *,
     actor: Actor,
     provenance: str,
-    base: int | None = None,
-    track: str | None = None,
+    base: CandidateId | None = None,
+    track: TrackName | None = None,
 ) -> Idea:
     """File a seed: a hunch with pointers, for research to develop or reject. Emits ``idea.created``.
 
@@ -412,17 +412,17 @@ def file_seed(
 
 def develop_seed(
     s: Session,
-    idea_id: int,
+    idea_id: IdeaId,
     definition: Definition,
     *,
     actor: Actor,
     title: str | None = None,
     family: str | None = None,
-    base: int | None = None,
+    base: CandidateId | None = None,
     priority: int | None = None,
     proposed: bool = False,
-    after: Sequence[int] = (),
-    supersedes: Sequence[int] = (),
+    after: Sequence[IdeaId] = (),
+    supersedes: Sequence[IdeaId] = (),
 ) -> tuple[Idea, str | None]:
     """Develop a seed into a defined idea (``ideas.develop``) with its links, and return it with why it waits.
 
@@ -453,12 +453,12 @@ def develop_seed(
 
 def note_candidate(
     s: Session,
-    candidate_id: int,
+    candidate_id: CandidateId,
     reason: str,
     *,
     actor: Actor,
     follow_ups: Sequence[str] = (),
-    track: str | None = None,
+    track: TrackName | None = None,
 ) -> tuple[Candidate, list[Idea]]:
     """Keep a regressed result in view as a lead (``ledger.note``), with a seed pinned to it per follow-up.
 
@@ -486,7 +486,7 @@ def _create(s: Session, idea: Idea, actor: Actor) -> None:
     emit(s, 'idea.created', TargetKind.IDEA, idea.id, actor=actor)
 
 
-def _link_all(s: Session, idea: Idea, after: Sequence[int], supersedes: Sequence[int]) -> None:
+def _link_all(s: Session, idea: Idea, after: Sequence[IdeaId], supersedes: Sequence[IdeaId]) -> None:
     for kind, targets in ((LinkKind.AFTER, after), (LinkKind.SUPERSEDES, supersedes)):
         for target in targets:
             _link(s, idea, kind, target)
@@ -535,7 +535,7 @@ def _busy(idea: Idea) -> str | None:
     return None
 
 
-def set_idea_status(s: Session, idea_id: int, status: IdeaStatus, *, reason: str, actor: Actor) -> IdeaStatus:
+def set_idea_status(s: Session, idea_id: IdeaId, status: IdeaStatus, *, reason: str, actor: Actor) -> IdeaStatus:
     """Set the idea's status, with a ``note`` on it that says why, and return the status it had.
 
     The ``idea.status`` event is the trigger's. Parking or rejecting an idea with an open run lets the run finish; the
@@ -553,7 +553,7 @@ def set_idea_status(s: Session, idea_id: int, status: IdeaStatus, *, reason: str
     return old
 
 
-def link(s: Session, idea_id: int, kind: LinkKind, target_id: int, *, reason: str, actor: Actor) -> None:
+def link(s: Session, idea_id: IdeaId, kind: LinkKind, target_id: IdeaId, *, reason: str, actor: Actor) -> None:
     """Link the idea to ``target``: it runs *after* it, or it *supersedes* it, with a ``note`` that says why.
 
     The link is written in the caller's transaction, so the daemon sees it or queues the idea first, never in between.
@@ -568,7 +568,7 @@ def link(s: Session, idea_id: int, kind: LinkKind, target_id: int, *, reason: st
     _note(s, idea, f'{kind} idea#{target_id}: {why}', actor)
 
 
-def _link(s: Session, idea: Idea, kind: LinkKind, target_id: int) -> None:
+def _link(s: Session, idea: Idea, kind: LinkKind, target_id: IdeaId) -> None:
     """Add the link from ``idea``: every way to link ideas goes through here.
 
     Raises:
@@ -591,7 +591,7 @@ def _link(s: Session, idea: Idea, kind: LinkKind, target_id: int) -> None:
     s.flush()
 
 
-def _reaches(s: Session, start: int, goal: int, kind: LinkKind) -> bool:
+def _reaches(s: Session, start: IdeaId, goal: IdeaId, kind: LinkKind) -> bool:
     """Return whether ``kind`` links lead from idea ``start`` to idea ``goal``."""
     seen, todo = {start}, [start]
     while todo:
@@ -603,7 +603,7 @@ def _reaches(s: Session, start: int, goal: int, kind: LinkKind) -> bool:
     return False
 
 
-def unlink(s: Session, idea_id: int, kind: LinkKind, target_id: int, *, reason: str, actor: Actor) -> None:
+def unlink(s: Session, idea_id: IdeaId, kind: LinkKind, target_id: IdeaId, *, reason: str, actor: Actor) -> None:
     """Delete the idea's ``kind`` link to ``target``, with a ``note`` that says why. The trigger logs ``idea.unlinked``.
 
     Raises:
@@ -618,7 +618,9 @@ def unlink(s: Session, idea_id: int, kind: LinkKind, target_id: int, *, reason: 
     _note(s, idea, f'no longer {kind} idea#{target_id}: {why}', actor)
 
 
-def set_base(s: Session, idea_id: int, candidate_id: int | None, *, reason: str, actor: Actor) -> int | None:
+def set_base(
+    s: Session, idea_id: IdeaId, candidate_id: CandidateId | None, *, reason: str, actor: Actor
+) -> CandidateId | None:
     """Pin the idea to start from ``candidate_id``, or clear the pin with None, and return the old base.
 
     A cleared pin runs from the head at the time the run starts. A run already open keeps its base, and the next
@@ -638,11 +640,11 @@ def set_base(s: Session, idea_id: int, candidate_id: int | None, *, reason: str,
     return old
 
 
-def _base(candidate_id: int | None) -> str:
+def _base(candidate_id: CandidateId | None) -> str:
     return 'the head' if candidate_id is None else f'candidate#{candidate_id}'
 
 
-def check_base(s: Session, campaign: Campaign, candidate_id: int | None) -> None:
+def check_base(s: Session, campaign: Campaign, candidate_id: CandidateId | None) -> None:
     """Refuse a base that is not unset or a candidate of ``campaign``.
 
     Raises:
@@ -654,7 +656,7 @@ def check_base(s: Session, campaign: Campaign, candidate_id: int | None) -> None
         raise Refused(f'no candidate#{candidate_id} in campaign {campaign.name}')
 
 
-def set_track(s: Session, idea_id: int, track: str, *, reason: str, actor: Actor) -> str:
+def set_track(s: Session, idea_id: IdeaId, track: TrackName, *, reason: str, actor: Actor) -> TrackName:
     """Move the idea to another track of its campaign, with a ``note`` that says why, and return the old track.
 
     The ``idea.track`` event is the trigger's.
@@ -676,7 +678,7 @@ def set_track(s: Session, idea_id: int, track: str, *, reason: str, actor: Actor
     return old
 
 
-def track_for(campaign: Campaign, track: str | None) -> str:
+def track_for(campaign: Campaign, track: TrackName | None) -> TrackName:
     """Return the track for an idea: ``track`` when ``piloop.toml`` has it, else the only track.
 
     Raises:
@@ -685,15 +687,11 @@ def track_for(campaign: Campaign, track: str | None) -> str:
     tracks = [t.name for t in config_of(campaign).all_tracks]
     if track is None and len(tracks) == 1:
         return tracks[0]
-    if track not in tracks:
+    if track is None or track not in tracks:
         given = 'name one with --track' if track is None else f'there is no track {track!r}'
         raise Refused(f'{campaign.name} has tracks {", ".join(tracks)}: {given}')
     return track
 
 
 def _note(s: Session, idea: Idea, body: str, actor: Actor) -> None:
-    s.add(
-        Comment(
-            target_kind=TargetKind.IDEA, target_id=idea.id, author=actor.signature, kind=CommentKind.NOTE, body=body
-        )
-    )
+    s.add(Comment(target=TargetRef(TargetKind.IDEA, idea.id), author=actor.signature, kind=CommentKind.NOTE, body=body))

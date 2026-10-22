@@ -42,9 +42,9 @@ from piloop.db.models import (
     Measurement,
     Run,
     RunStatus,
-    TargetKind,
 )
 from piloop.db.session import Database
+from piloop.ids import RunId, TargetKind
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentReport, EvaluationReport
 from piloop.plugins.executor.kit.leases import NOT_TAKEN, STALE_REPORT, Leases, Timing
@@ -425,7 +425,10 @@ def test_a_real_daemon_killed_during_a_run_is_followed_by_one_that_finishes_it_o
             daemons.append(subprocess.Popen(SERVE_ARGV, stdin=subprocess.DEVNULL, stdout=log, stderr=log, env=env))
         wait_until(lambda: 'agent_session.reattached' in (tmp_path / 'second.log').read_text(), timeout=60)
         hold.unlink()
-        wait_until(lambda: run_row(db, 1).status is RunStatus.SUCCEEDED and not run_row(db, 1).scoring, timeout=60)
+        wait_until(
+            lambda: run_row(db, RunId(1)).status is RunStatus.SUCCEEDED and not run_row(db, RunId(1)).scoring,
+            timeout=60,
+        )
         with db.session() as s:
             agents = select(Lease).where(Lease.agent_session_id.is_not(None))
             assert [(lease.id, lease.state) for lease in s.scalars(agents)] == [(1, LeaseState.REPORTED)]

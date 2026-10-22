@@ -9,8 +9,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.agents.results import CampaignResults
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, Evaluation, Event, Measurement, RoleName, utcnow
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Evaluation, Event, Measurement, utcnow
 from piloop.db.session import Database
+from piloop.ids import WATCHDOG
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import (
     AgentFinished,
@@ -65,7 +66,7 @@ def test_a_start_report_moves_a_starting_agent_to_running_and_leaves_an_ending_o
     results = CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False)
     with db.session() as s:
         rows = [
-            AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, state=state)
+            AgentSession(kind=WATCHDOG, campaign_id=campaign.id, state=state)
             for state in (AgentSessionState.STARTING, AgentSessionState.ENDING)
         ]
         s.add_all(rows)
@@ -90,7 +91,7 @@ def test_two_results_for_one_job_in_plain_sessions_close_its_row_once_and_measur
     results = CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False)
     base = baseline(db, campaign.id)
     with db.session() as s:
-        w = AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id, state=AgentSessionState.RUNNING, reason='t')
+        w = AgentSession(kind=WATCHDOG, campaign_id=campaign.id, state=AgentSessionState.RUNNING, reason='t')
         evaluation = Evaluation(
             candidate_id=base.id, evaluator_id=s.get_one(Campaign, campaign.id).evaluator_id, started_at=utcnow()
         )

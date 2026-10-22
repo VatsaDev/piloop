@@ -22,12 +22,12 @@ from piloop.db.models import (
     Candidate,
     Idea,
     IdeaStatus,
-    RoleName,
     Run,
     RunStatus,
     Verdict,
 )
 from piloop.db.session import Database, migrate
+from piloop.ids import RESEARCH, WATCHDOG
 from piloop.proc import Inherited, alive, started
 from piloop.settings import Settings
 from tests.conftest import (
@@ -76,7 +76,7 @@ def test_daemon_end_to_end(
     with daemon.db.session() as s:
         watchdog = s.get_one(AgentSession, 3)
         assert (watchdog.kind, watchdog.reason, watchdog.state, watchdog.harness) == (
-            RoleName.WATCHDOG,
+            WATCHDOG,
             'anomaly: run#2 failed',
             AgentSessionState.EXITED,
             'script',
@@ -362,7 +362,7 @@ def test_shutdown_fails_open_runs(tmp_path: Path, capsys: pytest.CaptureFixture[
         s.add(Idea(track='score', campaign_id=1, title='x', hypothesis='x', created_by='t'))
         s.add(Run(idea_id=1, attempt=1, base_candidate_id=1, harness='h', model='m', status=RunStatus.RUNNING))
         s.flush()  # the run first: the unit of work orders unrelated mappers by name
-        s.add(AgentSession(kind=RoleName.RESEARCH, campaign_id=1, reason='by hand'))
+        s.add(AgentSession(kind=RESEARCH, campaign_id=1, reason='by hand'))
         s.commit()
     daemon.shutdown(timeout=1)
     after = Database(daemon.db.engine.url.render_as_string(hide_password=False), actor=System.HUMAN)

@@ -1,7 +1,7 @@
 """Every agent has a role of its campaign: the persistent trigger on ``agent_sessions``."""
 
-from piloop.db.models import RoleName
 from piloop.db.triggers.ddl import Trigger
+from piloop.ids import BUILT_IN_ROLES
 
 
 def known_role() -> Trigger:
@@ -10,8 +10,8 @@ def known_role() -> Trigger:
     The roles of a campaign are the ``roles`` keys of the config that ``piloop init`` stored. A CHECK cannot read
     another row, so this is a trigger. The daemon never changes the kind of a row, so the trigger checks INSERT only.
     """
-    built_in = ', '.join(f"'{kind}'" for kind in RoleName)
-    names = ', '.join(RoleName)
+    built_in = ', '.join(f"'{name}'" for name in BUILT_IN_ROLES)
+    names = ', '.join(BUILT_IN_ROLES)
     return Trigger(
         'agent_sessions_kind',
         'agent_sessions',

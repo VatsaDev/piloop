@@ -21,17 +21,8 @@ from piloop.actor import Actor
 from piloop.campaign import inbox
 from piloop.campaign.ideas import links, superseded_by
 from piloop.config import CampaignConfig, config_of
-from piloop.db.models import (
-    AgentSession,
-    Campaign,
-    CampaignStatus,
-    Candidate,
-    Comment,
-    Idea,
-    IdeaStatus,
-    TargetKind,
-    Verdict,
-)
+from piloop.db.models import AgentSession, Campaign, CampaignStatus, Candidate, Comment, Idea, IdeaStatus, Verdict
+from piloop.ids import CampaignId, TargetKind, TargetRef
 from piloop.plugins.runtime.contract import AgentStatus
 from piloop.reports.overview import (
     age,
@@ -156,7 +147,7 @@ def campaigns(s: Session, now: datetime, me: Actor) -> list[Item]:
 CAMPAIGN_COLUMNS = ('campaign', 'status', 'head', 'vs baseline', 'agents', 'ready', 'inbox', 'tokens', 'last event')
 
 
-def waiting(s: Session, campaign_id: int, me: Actor) -> list[Comment]:
+def waiting(s: Session, campaign_id: CampaignId, me: Actor) -> list[Comment]:
     """Return the campaign's unacknowledged inbox items that someone other than ``me`` wrote, most urgent first."""
     return [c for c, _ in inbox.items(s, campaign_id=campaign_id) if c.author != me.signature]
 
@@ -268,9 +259,7 @@ class IdeasPanel:
     def detail(self, s: Session, ctx: Context, key: int) -> RenderableType:
         idea = s.get_one(Idea, key)
         comments = s.scalars(
-            select(Comment)
-            .where(Comment.target_kind == TargetKind.IDEA, Comment.target_id == idea.id)
-            .order_by(Comment.id)
+            select(Comment).where(Comment.target == TargetRef(TargetKind.IDEA, idea.id)).order_by(Comment.id)
         ).all()
         body = [
             f'status {idea.status} · priority {idea.priority} · by {idea.created_by} {age(idea.created_at, ctx.now)} ago'
@@ -303,7 +292,7 @@ class CandidatesPanel:
 
     def items(self, s: Session, ctx: Context) -> list[Item]:
         """Return the campaign's own candidates, newest first, then the imported references, which are never kept."""
-        evaluator = ctx.campaign.evaluator_id or 0
+        evaluator = ctx.campaign.evaluator_id
         recent = s.scalars(
             select(Candidate)
             .where(Candidate.campaign_id == ctx.campaign.id, Candidate.verdict != Verdict.REFERENCE)
@@ -329,7 +318,7 @@ class CandidatesPanel:
 
     def detail(self, s: Session, ctx: Context, key: int) -> RenderableType:
         c = s.get_one(Candidate, key)
-        evaluator = ctx.campaign.evaluator_id or 0
+        evaluator = ctx.campaign.evaluator_id
         mine = metrics(c, evaluator)
         theirs = metrics(c.parent, evaluator) if c.parent is not None else {}
         body = [
@@ -337,7 +326,7 @@ class CandidatesPanel:
             f'parent {f"candidate#{c.parent_id}" if c.parent_id else NONE} · run {f"#{c.run_id}" if c.run_id else NONE}'
             f' · commit {c.commit_sha[:12]} · {age(c.created_at, ctx.now)} ago',
             '',
-            f'metrics under evaluator#{evaluator} (vs parent):',
+            f'metrics under {NONE if evaluator is None else f"evaluator#{evaluator}"} (vs parent):',
         ]
         for name in sorted(mine):
             delta = f' ({metric(mine[name] - theirs[name], signed=True)})' if name in theirs else ''
@@ -363,7 +352,7 @@ def kept_scores(s: Session, campaign: Campaign, cfg: CampaignConfig) -> dict[str
     Each trunk keep was the head in turn. A branch keep never was the head, so it does not move the line.
     """
     kept = s.scalars(trunk_keeps(campaign).order_by(Candidate.id)).all()[-SPARK_POINTS:]
-    evaluator_id = campaign.evaluator_id or 0
+    evaluator_id = campaign.evaluator_id
     return {t.name: [v for c in kept if (v := score(c, evaluator_id, t.primary)) is not None] for t in cfg.all_tracks}
 
 

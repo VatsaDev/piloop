@@ -19,7 +19,8 @@ from piloop.actor import Actor
 from piloop.agents.capture import ENTIRE_DIR
 from piloop.config import CONFIG_FILE, CampaignConfig, load_campaign_config
 from piloop.db.events import emit
-from piloop.db.models import Campaign, CampaignStatus, Measurement, TargetKind, Verdict
+from piloop.db.models import Campaign, CampaignStatus, Measurement, Verdict
+from piloop.ids import CampaignId, TargetKind
 from piloop.proc import child_env
 from piloop.scoring.evaluate import run_evaluate
 from piloop.scoring.ledger import DAEMON, current_evaluator, resolve, save_units
@@ -275,12 +276,12 @@ def tree(s: Session) -> list[tuple[int, Campaign]]:
 
     The roots and the children of each campaign come in the order of their ids.
     """
-    children: dict[int | None, list[Campaign]] = {}
+    children: dict[CampaignId | None, list[Campaign]] = {}
     for campaign in s.scalars(select(Campaign).order_by(Campaign.id)):
         children.setdefault(campaign.parent_id, []).append(campaign)
     ordered: list[tuple[int, Campaign]] = []
 
-    def walk(parent_id: int | None, depth: int) -> None:
+    def walk(parent_id: CampaignId | None, depth: int) -> None:
         for child in children.get(parent_id, []):
             ordered.append((depth, child))
             walk(child.id, depth + 1)
@@ -294,12 +295,12 @@ def campaigns_dir(home: Path) -> Path:
     return home / PROJECTS
 
 
-def campaign_dir(home: Path, campaign_id: int) -> Path:
+def campaign_dir(home: Path, campaign_id: CampaignId) -> Path:
     """The directory of a campaign: its shared workspace, its baseline and the evaluations of its candidates."""
     return campaigns_dir(home) / str(campaign_id)
 
 
-def workspace_dir(home: Path, campaign_id: int) -> Path:
+def workspace_dir(home: Path, campaign_id: CampaignId) -> Path:
     """The shared workspace of a campaign, where its agents leave notes and artifacts for each other."""
     return campaign_dir(home, campaign_id) / WORKSPACE
 

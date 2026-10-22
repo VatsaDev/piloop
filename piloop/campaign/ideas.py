@@ -21,20 +21,9 @@ from dataclasses import dataclass
 from sqlalchemy import ColumnElement, case, distinct, exists, func, select
 from sqlalchemy.orm import Session, aliased
 
-from piloop.db.models import (
-    Candidate,
-    Comment,
-    CommentKind,
-    Event,
-    Idea,
-    IdeaLink,
-    IdeaStatus,
-    LinkKind,
-    Run,
-    TargetKind,
-    Verdict,
-)
+from piloop.db.models import Candidate, Comment, CommentKind, Event, Idea, IdeaLink, IdeaStatus, LinkKind, Run, Verdict
 from piloop.db.triggers import DAEMON_ACTOR
+from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TargetRef
 
 NEVER_RAN = (IdeaStatus.SEED, IdeaStatus.PROPOSED, IdeaStatus.READY)
 """The statuses in which the daemon can reject a superseded idea. The idea must also have no run.
@@ -77,7 +66,7 @@ def _blocked_by(*settled: IdeaStatus) -> ColumnElement[bool]:
     )
 
 
-def supersede(s: Session, campaign_id: int) -> dict[int, int]:
+def supersede(s: Session, campaign_id: CampaignId) -> dict[IdeaId, IdeaId]:
     """Reject each idea of the campaign that a newer idea supersedes and that never ran.
 
     The daemon runs this on each tick. An idea never ran if it has no ``runs`` row and is ``seed``, ``proposed`` or
@@ -102,7 +91,7 @@ def supersede(s: Session, campaign_id: int) -> dict[int, int]:
         )
         .order_by(Idea.id)
     )
-    rejected: dict[int, int] = {}
+    rejected: dict[IdeaId, IdeaId] = {}
     for idea in s.scalars(superseded):
         newest = select(func.max(IdeaLink.idea_id)).where(
             IdeaLink.target_id == idea.id, IdeaLink.kind == LinkKind.SUPERSEDES
@@ -112,8 +101,7 @@ def supersede(s: Session, campaign_id: int) -> dict[int, int]:
         idea.status = IdeaStatus.REJECTED
         s.add(
             Comment(
-                target_kind=TargetKind.IDEA,
-                target_id=idea.id,
+                target=TargetRef(TargetKind.IDEA, idea.id),
                 author=DAEMON_ACTOR,
                 kind=CommentKind.NOTE,
                 body=f'rejected: superseded by idea#{by}. It does not run, even if idea#{by} has not run yet.',
@@ -123,7 +111,7 @@ def supersede(s: Session, campaign_id: int) -> dict[int, int]:
     return rejected
 
 
-def links(idea: Idea, superseded_by: dict[int, list[int]]) -> str:
+def links(idea: Idea, superseded_by: dict[IdeaId, list[IdeaId]]) -> str:
     """Format the idea's links as one short cell, or ``—`` if there are none.
 
     The parts are ``blocked by idea#3 (rejected), idea#5 (ready)``, ``after idea#1`` (prerequisites that are done),
@@ -148,14 +136,14 @@ def _refs(ids: Iterable[int]) -> str:
     return ', '.join(f'idea#{i}' for i in ids)
 
 
-def superseded_by(s: Session, idea_ids: list[int]) -> dict[int, list[int]]:
+def superseded_by(s: Session, idea_ids: list[IdeaId]) -> dict[IdeaId, list[IdeaId]]:
     """Map each of ``idea_ids`` that newer ideas supersede to the ids of those ideas, oldest first."""
     rows = s.execute(
         select(IdeaLink.target_id, IdeaLink.idea_id)
         .where(IdeaLink.target_id.in_(idea_ids), IdeaLink.kind == LinkKind.SUPERSEDES)
         .order_by(IdeaLink.idea_id)
     ).all()
-    out: dict[int, list[int]] = {}
+    out: dict[IdeaId, list[IdeaId]] = {}
     for old, new in rows:
         out.setdefault(old, []).append(new)
     return out
@@ -165,7 +153,7 @@ PRIORITIES = range(5)
 """From 0 (urgent) to 4 (someday)."""
 
 
-def reprioritise(s: Session, idea_id: int, by: int) -> Idea:
+def reprioritise(s: Session, idea_id: IdeaId, by: int) -> Idea:
     """Change the idea's priority by ``by`` and commit. A negative ``by`` is more urgent. The result stays in 0 to 4."""
     idea = s.get_one(Idea, idea_id)
     idea.priority = min(max(idea.priority + by, PRIORITIES.start), PRIORITIES.stop - 1)
@@ -211,7 +199,7 @@ def develop(
     *,
     title: str | None = None,
     family: str | None = None,
-    base: int | None = None,
+    base: CandidateId | None = None,
     priority: int | None = None,
     proposed: bool = False,
 ) -> Idea:
@@ -243,7 +231,7 @@ def develop(
     return idea
 
 
-def defined_by(s: Session, campaign_id: int) -> set[str]:
+def defined_by(s: Session, campaign_id: CampaignId) -> set[str]:
     """Return the signatures that added a defined idea to the campaign, by inserting it or by developing a seed.
 
     The agent that filed a seed did not define anything. A research sweep that did neither added no ideas, whatever
@@ -279,7 +267,7 @@ class Yield:
         return f'{self.source} {self.ideas} ideas, {self.ran} ran → {self.keeps} keep, {self.interesting} interesting'
 
 
-def yields(s: Session, campaign_id: int) -> list[Yield]:
+def yields(s: Session, campaign_id: CampaignId) -> list[Yield]:
     """Count, for each source, the ideas, the ideas with a run, and their ``keep`` and ``interesting`` candidates.
 
     The result is sorted by keeps, then interesting candidates, then ideas, most first. A verdict counts as it is

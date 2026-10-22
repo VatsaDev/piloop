@@ -33,10 +33,10 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Run,
-    TargetKind,
     Verdict,
     latest_agent_session,
 )
+from piloop.ids import CampaignId, EvaluatorId, MeasurementId, RunId, TargetKind, TargetRef, TrackName
 from piloop.plugins.verdict_rule import contract as rules
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Case, Criterion, Side, VerdictRule
 from piloop.scoring.evaluate import UNITS, Units
@@ -82,19 +82,19 @@ def evaluator_runners() -> tuple[str, ...]:
     return (PROCESS,)
 
 
-def metrics(candidate: Candidate, evaluator_id: int) -> dict[str, float]:
+def metrics(candidate: Candidate, evaluator_id: EvaluatorId | None) -> dict[str, float]:
     """Return the mean of each metric over the candidate's successful measurements under ``evaluator_id``."""
     rows = [m.metrics for m in candidate.measurements if m.evaluator_id == evaluator_id and m.error is None]
     names = {name for row in rows for name in row}
     return {name: fmean(values) for name in names if (values := [r[name] for r in rows if name in r])}
 
 
-def score(candidate: Candidate, evaluator_id: int, primary: Metric) -> float | None:
+def score(candidate: Candidate, evaluator_id: EvaluatorId | None, primary: Metric) -> float | None:
     """Return the primary metric under ``evaluator_id``, or None when no successful measurement has it."""
     return metrics(candidate, evaluator_id).get(primary.name)
 
 
-def measured(candidate: Candidate, evaluator_id: int) -> bool:
+def measured(candidate: Candidate, evaluator_id: EvaluatorId | None) -> bool:
     """Return whether any measurement under ``evaluator_id`` exists. A crashed measurement counts too."""
     return any(m.evaluator_id == evaluator_id for m in candidate.measurements)
 
@@ -151,7 +151,7 @@ def track_of(cfg: CampaignConfig, candidate: Candidate) -> Track:
     return fallback_track(cfg, candidate.run.idea.track if candidate.run is not None else None)
 
 
-def fallback_track(cfg: CampaignConfig, name: str | None) -> Track:
+def fallback_track(cfg: CampaignConfig, name: TrackName | None) -> Track:
     """Return the track called ``name``, else the first track. An idea can name a track that ``piloop.toml`` removed."""
     return next((t for t in cfg.all_tracks if t.name == name), cfg.all_tracks[0])
 
@@ -188,7 +188,7 @@ def due(s: Session, campaign: Campaign) -> list[Candidate]:
         ready = (Idea.campaign_id == campaign.id, Idea.status == IdeaStatus.READY)
         found += [bar_of(c) for c in s.scalars(pins.where(*ready).order_by(Idea.id))]
         found += s.scalars(new_references.order_by(Candidate.id))
-    evaluator_id = campaign.evaluator_id or 0
+    evaluator_id = campaign.evaluator_id
     return [c for c in dict.fromkeys(found) if c is not None and (c in asked or not measured(c, evaluator_id))]
 
 
@@ -200,7 +200,7 @@ def judged_again(candidate: Candidate) -> bool:
 def head_unmeasured(s: Session, campaign: Campaign) -> bool:
     """Whether the head has no measurement from the current evaluator: the queue then holds the unpinned ideas."""
     trunk = head(s, campaign)
-    return trunk is not None and not measured(trunk, campaign.evaluator_id or 0)
+    return trunk is not None and not measured(trunk, campaign.evaluator_id)
 
 
 REMEASURE_REQUESTED = 'candidate.remeasure_requested'
@@ -231,7 +231,7 @@ def requested(s: Session, campaign: Campaign) -> list[Candidate]:
 
     Only a measurement with the current evaluator answers a request.
     """
-    evaluator_id = campaign.evaluator_id or 0
+    evaluator_id = campaign.evaluator_id
     asks = s.execute(
         select(Event.target_id, func.max(Event.at))
         .join(Candidate, Candidate.id == Event.target_id)
@@ -288,8 +288,7 @@ def rejudges(s: Session, campaign: Campaign) -> list[Candidate]:
         answered = s.scalar(
             select(func.max(Event.id)).where(
                 Event.kind.in_(('candidate.judged', REJUDGE_FAILED)),
-                Event.target_kind == TargetKind.CANDIDATE,
-                Event.target_id == candidate_id,
+                Event.target == TargetRef(TargetKind.CANDIDATE, candidate_id),
             )
         )
         candidate = s.get_one(Candidate, candidate_id)
@@ -321,7 +320,7 @@ def checkout_candidate(s: Session, campaign: Campaign) -> Candidate:
     return head(s, campaign) or baseline(s, campaign)
 
 
-def units_file(units_dir: Path, measurement_id: int) -> Path:
+def units_file(units_dir: Path, measurement_id: MeasurementId) -> Path:
     """Return the path of a measurement's per-unit results, under ``PILOOP_HOME``.
 
     The file is outside every worktree and the database. The results are not a column, because every agent can read
@@ -331,7 +330,7 @@ def units_file(units_dir: Path, measurement_id: int) -> Path:
     return units_dir / f'{measurement_id}.json'
 
 
-def save_units(units_dir: Path, measurement_id: int, units: Units) -> None:
+def save_units(units_dir: Path, measurement_id: MeasurementId, units: Units) -> None:
     """Store a measurement's per-unit results. With none, remove any old file that a reused id could find."""
     path = units_file(units_dir, measurement_id)
     if not units:
@@ -341,7 +340,7 @@ def save_units(units_dir: Path, measurement_id: int, units: Units) -> None:
     path.write_text(json.dumps(units))
 
 
-def units(candidate: Candidate, evaluator_id: int, units_dir: Path) -> Units:
+def units(candidate: Candidate, evaluator_id: EvaluatorId, units_dir: Path) -> Units:
     """Return the candidate's per-unit results under ``evaluator_id``: each unit's mean over its measurements."""
     rows = [
         UNITS.validate_json(path.read_bytes())
@@ -359,7 +358,7 @@ def units(candidate: Candidate, evaluator_id: int, units_dir: Path) -> Units:
 def judge(
     candidate: Candidate,
     own: Candidate,
-    evaluator_id: int,
+    evaluator_id: EvaluatorId,
     cfg: CampaignConfig,
     track: Track,
     units_dir: Path,
@@ -532,7 +531,7 @@ def reproposed(candidate: Candidate, run: Run) -> bool:
 
 
 def resolve(
-    s: Session, campaign_id: int, repo: Repo, sha: str, *, parent: Candidate | None, run_id: int | None
+    s: Session, campaign_id: CampaignId, repo: Repo, sha: str, *, parent: Candidate | None, run_id: RunId | None
 ) -> tuple[Candidate, bool]:
     """Return the candidate for the tree of ``sha``: the existing one, or a new row with ``parent`` as its parent.
 
@@ -630,7 +629,7 @@ def follow_up(
     why: str,
     actor: Actor,
     *,
-    track: str,
+    track: TrackName,
     pin: bool = True,
 ) -> list[Idea]:
     """File one seed per title on ``track``, pinned to ``candidate`` unless ``pin`` is False. Return the new seeds.

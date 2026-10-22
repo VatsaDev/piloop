@@ -16,8 +16,9 @@ from typing import NamedTuple
 
 from piloop.campaign.archive import Job, archive, due, make_room, prune_older
 from piloop.db.events import emit
-from piloop.db.models import TargetKind, utcnow
+from piloop.db.models import utcnow
 from piloop.db.session import Database
+from piloop.ids import TargetKind
 from piloop.otel import Tracer
 from piloop.settings import GB, StorageSettings
 from piloop.store import Store

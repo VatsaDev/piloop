@@ -11,18 +11,9 @@ from piloop.actor import System
 from piloop.campaign import ops
 from piloop.config import load_campaign_config
 from piloop.daemon.run_controller import RunController
-from piloop.db.models import (
-    AgentSession,
-    AgentSessionState,
-    Campaign,
-    Candidate,
-    Comment,
-    Event,
-    IdeaStatus,
-    TargetKind,
-    Verdict,
-)
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Comment, Event, IdeaStatus, Verdict
 from piloop.db.session import Database
+from piloop.ids import CampaignId, TargetKind
 from piloop.scoring.ledger import DAEMON, REJUDGE_FAILED, head, import_reference, rejudges
 from tests.conftest import HARNESS_WORSE, Gate, ScriptRuntime, write_script
 from tests.daemon.test_run_controller import candidates, controller, execute, make_run
@@ -31,7 +22,7 @@ from tests.daemon.test_scheduler import add_ideas, make_scheduler, measured_by, 
 
 def pause(db: Database, *, evals: bool) -> None:
     with db.session() as s:
-        ops.pause(s, 1, evals=evals, reason='wait for the new evaluator')
+        ops.pause(s, CampaignId(1), evals=evals, reason='wait for the new evaluator')
         s.commit()
 
 
@@ -50,7 +41,7 @@ def test_a_paused_campaign_launches_nothing_requests_nothing_and_escalates_nothi
             'nothing launches or is asked'
         )
         assert s.scalars(select(Comment)).all() == [], 'a pause raises no escalation'
-        ops.resume(s, 1)
+        ops.resume(s, CampaignId(1))
         s.commit()
     launched = sched.tick()
     assert watchdog in launched and len(launched) == 2, 'the request and the run of the idea'

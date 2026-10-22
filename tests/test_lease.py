@@ -12,19 +12,9 @@ from pytest_mock import MockerFixture
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop.db.models import (
-    AgentSession,
-    Campaign,
-    Candidate,
-    Evaluation,
-    Event,
-    Lease,
-    LeaseState,
-    RoleName,
-    TargetKind,
-    utcnow,
-)
+from piloop.db.models import AgentSession, Campaign, Candidate, Evaluation, Event, Lease, LeaseState, utcnow
 from piloop.db.session import Database, write_transaction
+from piloop.ids import WATCHDOG, TargetKind
 from piloop.plugins.executor.contract import (
     AgentFinished,
     AgentJob,
@@ -111,7 +101,7 @@ def leases(db: Database, recorder: Recorder) -> Leases:
 
 def agent_job(db: Database, campaign: Campaign, tmp_path: Path) -> AgentJob:
     with db.session() as s:
-        w = AgentSession(kind=RoleName.WATCHDOG, campaign_id=campaign.id)
+        w = AgentSession(kind=WATCHDOG, campaign_id=campaign.id)
         s.add(w)
         s.commit()
         agent_session_id = w.id

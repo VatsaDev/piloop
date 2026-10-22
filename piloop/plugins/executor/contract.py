@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from piloop.db.models import UsageJson
 from piloop.db.session import Database
+from piloop.ids import AgentSessionId, CandidateId, RunId
 from piloop.mcp import McpServer
 from piloop.otel import Tracer
 from piloop.plugins.host import Capability, PluginTable, Selection
@@ -80,7 +81,7 @@ class AgentJob(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     kind: Literal['agent'] = 'agent'
-    agent_session: int
+    agent_session: AgentSessionId
     runtime: str
     """The runtime that starts the agent on the worker's host (``runtime`` in ``piloop.toml``)."""
     campaign: str
@@ -119,8 +120,8 @@ class EvaluationJob(BaseModel):
 
     kind: Literal['evaluation'] = 'evaluation'
     evaluation: int
-    candidate: int
-    run: int | None = None
+    candidate: CandidateId
+    run: RunId | None = None
     """The run whose commit it measures, named on the measurement's event. None for a measurement on request."""
     runner: str
     """The evaluator runner (``evaluators.runner``). A worker takes only jobs of the runners that it has."""
@@ -184,7 +185,7 @@ REPORT: TypeAdapter[AgentReport | EvaluationReport] = TypeAdapter(Report)
 class AgentKey:
     """The key of an agent's job: its ``agent_sessions`` row."""
 
-    agent_session: int
+    agent_session: AgentSessionId
 
 
 @dataclass(frozen=True)

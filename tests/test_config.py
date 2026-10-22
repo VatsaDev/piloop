@@ -5,8 +5,8 @@ import pytest
 from inline_snapshot import snapshot
 
 from piloop.config import CampaignConfig, ConfigError, Metric, MetricRole, Roles, Stop, load_campaign_config
-from piloop.db.models import RoleName
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
+from piloop.ids import BUILT_IN_ROLES, RESEARCH, WATCHDOG, RoleName, TrackName
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import Files, ImplementerRole
 from piloop.plugins.role.research import ResearchRole
@@ -46,10 +46,10 @@ def test_roles_are_typed_per_kind(campaign_path: Path) -> None:
             research=ResearchRole(timeout=20.0, max_ideas=0, max_concurrent=1),
         )
     )
-    assert cfg.role(RoleName.RESEARCH) is cfg.roles.research
-    assert set(Roles.model_fields) == {k.value for k in RoleName}, 'every kind has its table'
-    assert cfg.role_harnesses(RoleName.RESEARCH) == ['script'], 'unset: the campaign rotation'
-    assert cfg.role_models(RoleName.WATCHDOG) == {'script': 'watchdog-model'}, 'role map over the campaign map'
+    assert cfg.role(RESEARCH) is cfg.roles.research
+    assert set(Roles.model_fields) == set(BUILT_IN_ROLES), 'every built-in role has its table'
+    assert cfg.role_harnesses(RESEARCH) == ['script'], 'unset: the campaign rotation'
+    assert cfg.role_models(WATCHDOG) == {'script': 'watchdog-model'}, 'role map over the campaign map'
     assert CampaignConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the campaign row'
     defaults = CampaignConfig(
         name='bare',
@@ -230,10 +230,10 @@ def test_metric_roles_are_validated(campaign_path: Path) -> None:
         ['size'],
         0.95,
     )
-    assert not cfg.multitrack and cfg.track('score') == track
+    assert not cfg.multitrack and cfg.track(TrackName('score')) == track
     assert cfg.guardrails[0].gain(9, 10) == 1 and track.primary.gain(9, 10) == -1
     with pytest.raises(KeyError, match="no track 'speed' in piloop.toml; tracks: score"):
-        cfg.track('speed')
+        cfg.track(TrackName('speed'))
     with pytest.raises(ValueError, match="guardrail 'size' needs a margin"):
         load_campaign_config(campaign_path, metrics=[primary, {**guard, 'margin': None}])
     with pytest.raises(ValueError, match="'size': margin and floor apply to guardrails and primaries only"):
@@ -336,7 +336,7 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
     assert list(cfg.roles.sweeping()) == ['watchdog', 'research', 'scout', 'reviewer'], (
         'the implementer does runs, not sweeps'
     )
-    assert (cfg.role_runtime('reviewer'), cfg.role_runtime('research')) == ('herdr', 'subprocess')
+    assert (cfg.role_runtime(RoleName('reviewer')), cfg.role_runtime(RoleName('research'))) == ('herdr', 'subprocess')
     assert cfg.runtimes == {'herdr', 'subprocess'}
     assert CampaignConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the campaign row'
 
@@ -366,8 +366,8 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
     filler = load_campaign_config(
         campaign_path, roles=reviewer(triggers=[{'kind': 'low_water', 'buffer': 1}], files='ideas')
     )
-    assert cfg.roles.sweeping()['reviewer'].max_ideas == 1, 'any sweeping role can fill the backlog'
-    assert [t.model_dump() for t in filler.roles.sweeping()['reviewer'].triggers] == [
+    assert cfg.roles.sweeping()[RoleName('reviewer')].max_ideas == 1, 'any sweeping role can fill the backlog'
+    assert [t.model_dump() for t in filler.roles.sweeping()[RoleName('reviewer')].triggers] == [
         {'kind': 'low_water', 'buffer': 1}
     ]
     assert "Input should be 'head' or 'repo'" in fails(reviewer(workdir='base'))
@@ -393,7 +393,7 @@ def test_a_table_with_runs_defines_a_role_that_does_runs_with_the_implementer_de
     assert list(cfg.roles.all()) == ['implementer', 'watchdog', 'research', 'scout', 'quick']
     assert list(cfg.roles.doing_runs()) == ['quick', 'implementer'], 'the roles of the file fill their slots first'
     assert list(cfg.roles.sweeping()) == ['watchdog', 'research', 'scout']
-    role = cfg.roles.doing_runs()['quick']
+    role = cfg.roles.doing_runs()[RoleName('quick')]
     assert (role.prompt, role.PROMPT, role.files, role.explore_every) == (None, 'implementer.md', Files.NOTHING, 4)
     assert cfg.run_slots == 1 + cfg.roles.implementer.max_concurrent
     assert CampaignConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the campaign row'

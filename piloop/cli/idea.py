@@ -9,6 +9,7 @@ from piloop.campaign.ideas import Definition
 from piloop.cli import common
 from piloop.cli.common import HARNESS_HELP, CampaignRef
 from piloop.db.models import IdeaStatus, LinkKind
+from piloop.ids import CandidateId, IdeaId, TrackName
 
 app = cyclopts.App(
     name='idea', help='Propose work (a seed, a defined idea) and change an idea: its status, links, base or track.'
@@ -20,7 +21,7 @@ TRACK_HELP = 'The track it works on. Required when piloop.toml has more than one
 AFTER_HELP = 'An idea id to wait for. Repeatable. The idea runs from the head when all are done.'
 SUPERSEDES_HELP = 'An idea id that this idea refines. Repeatable. The daemon rejects each one that never ran.'
 REASON_HELP = 'Why, with ids. It goes into the event or a note on the idea.'
-IdeaId = Annotated[int, cyclopts.Parameter(help='The idea.')]
+IdeaArg = Annotated[IdeaId, cyclopts.Parameter(help='The idea.')]
 Reason = Annotated[str, cyclopts.Parameter(help=REASON_HELP)]
 
 
@@ -43,13 +44,13 @@ def idea_add(
     family: Annotated[str | None, cyclopts.Parameter(help=FAMILY_HELP)] = None,
     priority: Annotated[int, cyclopts.Parameter(help=PRIORITY_HELP)] = 2,
     harness: Annotated[str | None, cyclopts.Parameter(help=HARNESS_HELP)] = None,
-    base: Annotated[int | None, cyclopts.Parameter(help=BASE_HELP)] = None,
+    base: Annotated[CandidateId | None, cyclopts.Parameter(help=BASE_HELP)] = None,
     proposed: Annotated[
         bool, cyclopts.Parameter(help='Wait for a review before the daemon schedules the idea.')
     ] = False,
-    track: Annotated[str | None, cyclopts.Parameter(help=TRACK_HELP)] = None,
-    after: Annotated[tuple[int, ...], cyclopts.Parameter(help=AFTER_HELP)] = (),
-    supersedes: Annotated[tuple[int, ...], cyclopts.Parameter(help=SUPERSEDES_HELP)] = (),
+    track: Annotated[TrackName | None, cyclopts.Parameter(help=TRACK_HELP)] = None,
+    after: Annotated[tuple[IdeaId, ...], cyclopts.Parameter(help=AFTER_HELP)] = (),
+    supersedes: Annotated[tuple[IdeaId, ...], cyclopts.Parameter(help=SUPERSEDES_HELP)] = (),
 ) -> None:
     """Add a defined idea, which the daemon schedules in priority order once it is ready.
 
@@ -94,9 +95,10 @@ def idea_seed(
         ),
     ],
     base: Annotated[
-        int | None, cyclopts.Parameter(help='The candidate id to start from, when the hunch is about that tree.')
+        CandidateId | None,
+        cyclopts.Parameter(help='The candidate id to start from, when the hunch is about that tree.'),
     ] = None,
-    track: Annotated[str | None, cyclopts.Parameter(help=TRACK_HELP)] = None,
+    track: Annotated[TrackName | None, cyclopts.Parameter(help=TRACK_HELP)] = None,
 ) -> None:
     """File a seed: a hunch with pointers, for research to develop into a defined idea or to reject.
 
@@ -120,7 +122,7 @@ def idea_seed(
 
 @app.command(name='develop')
 def idea_develop(
-    idea_id: Annotated[int, cyclopts.Parameter(help='The id of the seed.')],
+    idea_id: Annotated[IdeaId, cyclopts.Parameter(help='The id of the seed.')],
     /,
     *,
     hypothesis: Annotated[str, cyclopts.Parameter(help='The mechanism, and why it should move the metric.')],
@@ -138,13 +140,13 @@ def idea_develop(
     plan: Annotated[str | None, cyclopts.Parameter(help='More steps for the implementer, after the check.')] = None,
     title: Annotated[str | None, cyclopts.Parameter(help="A clearer title. Default: the seed's title.")] = None,
     family: Annotated[str | None, cyclopts.Parameter(help=FAMILY_HELP)] = None,
-    base: Annotated[int | None, cyclopts.Parameter(help=BASE_HELP)] = None,
+    base: Annotated[CandidateId | None, cyclopts.Parameter(help=BASE_HELP)] = None,
     priority: Annotated[int | None, cyclopts.Parameter(help=f"{PRIORITY_HELP} Default: the seed's priority.")] = None,
     proposed: Annotated[
         bool, cyclopts.Parameter(help='Wait for a human review before the daemon schedules the idea.')
     ] = False,
-    after: Annotated[tuple[int, ...], cyclopts.Parameter(help=AFTER_HELP)] = (),
-    supersedes: Annotated[tuple[int, ...], cyclopts.Parameter(help=SUPERSEDES_HELP)] = (),
+    after: Annotated[tuple[IdeaId, ...], cyclopts.Parameter(help=AFTER_HELP)] = (),
+    supersedes: Annotated[tuple[IdeaId, ...], cyclopts.Parameter(help=SUPERSEDES_HELP)] = (),
 ) -> None:
     """Develop a seed into a defined idea that the daemon can schedule.
 
@@ -173,7 +175,7 @@ def idea_develop(
 
 @app.command(name='status')
 def idea_status(
-    idea_id: IdeaId,
+    idea_id: IdeaArg,
     status: Annotated[IdeaStatus, cyclopts.Parameter(help='proposed, ready, parked, rejected or done.')],
     /,
     *,
@@ -193,9 +195,9 @@ def idea_status(
 
 @app.command(name='link')
 def idea_link(
-    idea_id: IdeaId,
+    idea_id: IdeaArg,
     kind: Annotated[LinkKind, cyclopts.Parameter(help='after: wait until the target is done. supersedes: refine it.')],
-    target_id: Annotated[int, cyclopts.Parameter(help='The idea it links to.')],
+    target_id: Annotated[IdeaId, cyclopts.Parameter(help='The idea it links to.')],
     /,
     *,
     reason: Reason,
@@ -213,9 +215,9 @@ def idea_link(
 
 @app.command(name='unlink')
 def idea_unlink(
-    idea_id: IdeaId,
+    idea_id: IdeaArg,
     kind: Annotated[LinkKind, cyclopts.Parameter(help='after or supersedes.')],
-    target_id: Annotated[int, cyclopts.Parameter(help='The idea it links to.')],
+    target_id: Annotated[IdeaId, cyclopts.Parameter(help='The idea it links to.')],
     /,
     *,
     reason: Reason,
@@ -229,9 +231,9 @@ def idea_unlink(
 
 @app.command(name='base')
 def idea_base(
-    idea_id: IdeaId,
+    idea_id: IdeaArg,
     base: Annotated[
-        int | Literal['head'],
+        CandidateId | Literal['head'],
         cyclopts.Parameter(help='A candidate id to start from, or head: no pin, the head when the run starts.'),
     ],
     /,
@@ -252,8 +254,8 @@ def idea_base(
 
 @app.command(name='track')
 def idea_track(
-    idea_id: IdeaId,
-    track: Annotated[str, cyclopts.Parameter(help='A track of piloop.toml.')],
+    idea_id: IdeaArg,
+    track: Annotated[TrackName, cyclopts.Parameter(help='A track of piloop.toml.')],
     /,
     *,
     reason: Reason,

@@ -31,9 +31,9 @@ from piloop.db.models import (
     IdeaStatus,
     Measurement,
     Run,
-    TargetKind,
     utcnow,
 )
+from piloop.ids import CampaignId, CommentId, TargetKind, TargetRef
 from piloop.scoring.ledger import SKIPPED
 from piloop.text import cell
 
@@ -46,7 +46,7 @@ An escalation writes two events: one from the persistent trigger and one from th
 
 
 def items(
-    s: Session, *, campaign_id: int | None = None, kinds: Collection[CommentKind] = (), acked: bool = False
+    s: Session, *, campaign_id: CampaignId | None = None, kinds: Collection[CommentKind] = (), acked: bool = False
 ) -> list[tuple[Comment, Campaign | None]]:
     """Return the inbox items with their campaigns, most urgent first, then oldest first.
 
@@ -69,7 +69,7 @@ def items(
     return [(c, p) for c, p in s.execute(query)]
 
 
-def seeds(s: Session, *, campaign_id: int | None = None) -> list[tuple[Idea, Campaign]]:
+def seeds(s: Session, *, campaign_id: CampaignId | None = None) -> list[tuple[Idea, Campaign]]:
     """Return the seeds that wait for research, oldest first, with their campaigns. ``campaign_id`` filters them."""
     query = select(Idea, Campaign).join(Campaign).where(Idea.status == IdeaStatus.SEED).order_by(Idea.id)
     if campaign_id is not None:
@@ -82,7 +82,7 @@ def seed_line(idea: Idea, campaign: Campaign) -> str:
     return f'seed idea#{idea.id} ({campaign.name}) by {idea.created_by}: {cell(idea.title)} — {cell(idea.provenance or "")}'
 
 
-def news(s: Session, after: int, *, campaign_id: int | None = None, me: Actor) -> tuple[int, list[str]]:
+def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, me: Actor) -> tuple[int, list[str]]:
     """Return the events after event#``after`` that the orchestrator must look at, one line each, and the last id.
 
     The lines report:
@@ -100,7 +100,7 @@ def news(s: Session, after: int, *, campaign_id: int | None = None, me: Actor) -
         return after, []
     fresh = {e.target_id for e in events if e.kind in COMMENT_EVENTS}
     lines = [
-        f'comment#{c.id} {c.kind} p{c.priority} on {c.target_kind}#{c.target_id}'
+        f'comment#{c.id} {c.kind} p{c.priority} on {c.target}'
         f' ({campaign.name if campaign else "—"}) by {c.author}: {cell(c.body)}'
         for c, campaign in items(s, campaign_id=campaign_id)
         if c.id in fresh and c.author != me.signature
@@ -127,7 +127,7 @@ def news(s: Session, after: int, *, campaign_id: int | None = None, me: Actor) -
     return events[-1].id, lines
 
 
-def ack(s: Session, ids: Sequence[int], actor: Actor) -> list[str]:
+def ack(s: Session, ids: Sequence[CommentId], actor: Actor) -> list[str]:
     """Acknowledge the inbox items ``ids`` as ``actor`` and commit. Return one line per id that says what happened.
 
     An id that is not an inbox item, or that is already acknowledged, is reported and not changed.
@@ -147,7 +147,7 @@ def ack(s: Session, ids: Sequence[int], actor: Actor) -> list[str]:
     return lines
 
 
-def reply(s: Session, comment_id: int, body: str, *, author: Actor, priority: int) -> Comment:
+def reply(s: Session, comment_id: CommentId, body: str, *, author: Actor, priority: int) -> Comment:
     """Answer inbox item ``comment_id`` as ``author`` with a ``decision`` on the root of its thread, and commit.
 
     The root is the first comment up the reply chain that is not a reply. A reply to a reply has no campaign, because
@@ -158,8 +158,7 @@ def reply(s: Session, comment_id: int, body: str, *, author: Actor, priority: in
     while root.target_kind is TargetKind.COMMENT and (parent := s.get(Comment, root.target_id)) is not None:
         root = parent
     answer = Comment(
-        target_kind=TargetKind.COMMENT,
-        target_id=root.id,
+        target=TargetRef(TargetKind.COMMENT, root.id),
         author=author.signature,
         kind=CommentKind.DECISION,
         priority=priority,
@@ -182,7 +181,7 @@ def thread(s: Session, comment: Comment) -> list[Comment]:
     citing = Comment.body.op('GLOB', is_comparison=True)(f'*{ref}') | Comment.body.op('GLOB', is_comparison=True)(
         f'*{ref}[^0-9]*'
     )
-    replies = (Comment.target_kind == TargetKind.COMMENT) & (Comment.target_id == comment.id)
+    replies = Comment.target == TargetRef(TargetKind.COMMENT, comment.id)
     return list(
         s.scalars(select(Comment).where(cited | citing | replies, Comment.id != comment.id).order_by(Comment.id))
     )

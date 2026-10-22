@@ -8,8 +8,9 @@ import pytest
 
 from piloop.cli import agents, common, doctor
 from piloop.config import config_of
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, RoleName, utcnow
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, utcnow
 from piloop.db.session import Database
+from piloop.ids import WATCHDOG
 from piloop.plugins.runtime.contract import RUNTIMES, Check
 from piloop.reports.overview import overview
 from piloop.runtime.factory import view_of
@@ -34,7 +35,7 @@ def test_attach_focus_view_and_doctor_use_the_methods_of_a_runtime_that_a_packag
     with db.session() as s:
         s.get_one(Campaign, campaign.id).config = {**campaign.config, 'runtime': 'shown'}
         agent_session = AgentSession(
-            kind=RoleName.WATCHDOG,
+            kind=WATCHDOG,
             campaign_id=campaign.id,
             harness='script',
             model='m',

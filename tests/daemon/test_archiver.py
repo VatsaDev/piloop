@@ -18,8 +18,9 @@ from piloop.campaign.archive import Archived, Job, Pruned, archive, due, make_ro
 from piloop.campaign.campaigns import workspace_dir
 from piloop.daemon import archiver as archiver_module
 from piloop.daemon.archiver import DISK_ANOMALY, ArchivePolicy, Archiver
-from piloop.db.models import Archive, Campaign, Event, Run, TargetKind, utcnow
+from piloop.db.models import Archive, Campaign, Event, Run, utcnow
 from piloop.db.session import Database
+from piloop.ids import TargetKind
 from piloop.otel import Tracer
 from piloop.settings import GB, StorageSettings
 from piloop.store import Blob, Store

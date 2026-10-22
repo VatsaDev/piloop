@@ -34,16 +34,9 @@ from sqlalchemy.orm import Session
 
 from piloop import deprecated
 from piloop.db.events import emit
-from piloop.db.models import (
-    LIVE_LEASES,
-    OPEN_LEASES,
-    Lease,
-    LeaseKind,
-    LeaseState,
-    TargetKind,
-    utcnow,
-)
+from piloop.db.models import LIVE_LEASES, OPEN_LEASES, Lease, LeaseKind, LeaseState, utcnow
 from piloop.db.session import Database, write_transaction
+from piloop.ids import AgentSessionId, TargetKind
 from piloop.plugins.executor.contract import (
     JOB,
     REPORT,
@@ -132,7 +125,7 @@ def enqueue(s: Session, job: AgentJob | EvaluationJob) -> Lease:
     return lease
 
 
-def of_agent(s: Session, agent_session_id: int) -> Lease | None:
+def of_agent(s: Session, agent_session_id: AgentSessionId) -> Lease | None:
     """Return the newest lease of an agent session, or None when it has none."""
     return s.scalars(
         select(Lease).where(Lease.agent_session_id == agent_session_id).order_by(Lease.id.desc()).limit(1)
@@ -306,7 +299,7 @@ class Leases:
         The answer for each says go on, stop (``REVOKED``, and report), or the lease is no longer yours (``STALE``).
         """
         answers: dict[int, Answer] = {}
-        reported: list[tuple[int, int, str]] = []
+        reported: list[tuple[int, AgentSessionId, str]] = []
         now = utcnow()
         with self._db.session() as s:
             write_transaction(s)

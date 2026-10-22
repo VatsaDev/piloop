@@ -11,6 +11,7 @@ from piloop.campaign.campaigns import workspace_dir
 from piloop.cli import common
 from piloop.db.models import Archive, IdeaStatus
 from piloop.db.session import Database
+from piloop.ids import CampaignId
 from piloop.settings import BackendTable, Settings, StorageSettings
 from piloop.store import key
 from piloop.store.config import open_store
@@ -43,15 +44,15 @@ def archived(campaign_path: Path, out) -> tuple[Database, int, dict[str, bytes]]
     run_cli(['init', str(campaign_path)])
     out()
     db = Database(common.settings.database_url, actor=common.settings.actor)
-    idea = add_idea(db, 1, 'idea')
+    idea = add_idea(db, CampaignId(1), 'idea')
     add_run(db, idea)
-    workspace = workspace_dir(common.settings.home, 1)
+    workspace = workspace_dir(common.settings.home, CampaignId(1))
     write(workspace / f'idea{idea}' / 'a.npy', os.urandom(3069))
     write(workspace / f'idea{idea}-run.log', 'ok\n')
     write(workspace / 'scratch.md', '# Notes\n')
     before = files(workspace)
     store, home = open_store(common.settings), common.settings.home
-    for job in (Job(1, idea), Job(1, None)):
+    for job in (Job(CampaignId(1), idea), Job(CampaignId(1), None)):
         for row in archive(db, store, home, job, live=(), reserve=0).rows:
             prune(db, store, home, row.id)
     assert not list(workspace.iterdir())
@@ -60,7 +61,7 @@ def archived(campaign_path: Path, out) -> tuple[Database, int, dict[str, bytes]]
 
 def test_restore_writes_an_idea_a_path_or_everything_back(archived, out) -> None:
     db, idea, before = archived
-    workspace = workspace_dir(common.settings.home, 1)
+    workspace = workspace_dir(common.settings.home, CampaignId(1))
     run_cli(['restore', 'demo', f'idea#{idea}'])
     assert out().strip() == f'restored 2 file(s), 3.1 kB, into {workspace}; 0 already there'
     run_cli(['restore', 'demo', 'scratch.md'])
@@ -82,10 +83,10 @@ def test_restore_writes_an_idea_a_path_or_everything_back(archived, out) -> None
 def test_restore_lists_at_most_ten_kept_files(campaign_path: Path, out) -> None:
     run_cli(['init', str(campaign_path)])
     db = Database(common.settings.database_url, actor=common.settings.actor)
-    workspace = workspace_dir(common.settings.home, 1)
+    workspace = workspace_dir(common.settings.home, CampaignId(1))
     for n in range(12):
         write(workspace / 'notes' / f'{n:02}.md', 'a')
-    archive(db, open_store(common.settings), common.settings.home, Job(1, None), live=(), reserve=0)
+    archive(db, open_store(common.settings), common.settings.home, Job(CampaignId(1), None), live=(), reserve=0)
     for n in range(12):
         write(workspace / 'notes' / f'{n:02}.md', 'b')
     out()
@@ -128,7 +129,7 @@ def test_store_status_evict_and_verify(archived, out, monkeypatch: pytest.Monkey
 def test_status_with_a_ready_idea_shows_nothing_archived(campaign_path: Path, out) -> None:
     run_cli(['init', str(campaign_path)])
     db = Database(common.settings.database_url, actor=common.settings.actor)
-    add_idea(db, 1, 'waiting', IdeaStatus.READY)
+    add_idea(db, CampaignId(1), 'waiting', IdeaStatus.READY)
     out()
     run_cli(['store', 'status'])
     lines = out().splitlines()

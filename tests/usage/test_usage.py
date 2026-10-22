@@ -12,9 +12,10 @@ from pytest_mock import MockerFixture
 from piloop.agents import refill as refill_module
 from piloop.agents.refill import usage_of
 from piloop.config import ConfigError, load_campaign_config
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, RoleName, utcnow
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, utcnow
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
+from piloop.ids import IMPLEMENTER, WATCHDOG
 from piloop.settings import env_names, expand_env
 from piloop.usage import (
     READERS,
@@ -352,10 +353,10 @@ def test_usage_of_an_implementer_never_raises(
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         ended = dict(campaign_id=p.id, state=AgentSessionState.EXITED, ended_at=utcnow(), log_dir=str(home / 'logs'))
-        found = AgentSession(kind=RoleName.IMPLEMENTER, harness='pi', session_id=PI_ID, **ended)
-        removed = AgentSession(kind=RoleName.IMPLEMENTER, harness='local-agent', session_id='x', **ended)
-        no_spec = AgentSession(kind=RoleName.IMPLEMENTER, harness='script', session_id='x', **ended)
-        orphan = AgentSession(kind=RoleName.WATCHDOG, harness='pi', session_id=PI_ID, state=AgentSessionState.EXITED)
+        found = AgentSession(kind=IMPLEMENTER, harness='pi', session_id=PI_ID, **ended)
+        removed = AgentSession(kind=IMPLEMENTER, harness='local-agent', session_id='x', **ended)
+        no_spec = AgentSession(kind=IMPLEMENTER, harness='script', session_id='x', **ended)
+        orphan = AgentSession(kind=WATCHDOG, harness='pi', session_id=PI_ID, state=AgentSessionState.EXITED)
         s.add_all([found, removed, no_spec, orphan])
         s.flush()
         usage = usage_of(s, found)

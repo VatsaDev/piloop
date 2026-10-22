@@ -51,16 +51,25 @@ from piloop.db.models import (
     Lesson,
     LessonStatus,
     Measurement,
-    RoleName,
     Run,
     RunStatus,
-    TargetKind,
     Verdict,
     utcnow,
 )
 from piloop.db.session import Database
 from piloop.git import pin as git_pin
 from piloop.harnesses import SESSION_ENV
+from piloop.ids import (
+    IMPLEMENTER,
+    CampaignId,
+    CandidateId,
+    CommentId,
+    EvaluatorId,
+    RoleName,
+    RunId,
+    TargetKind,
+    TargetRef,
+)
 from piloop.otel import Span, Tracer
 from piloop.plugins import host
 from piloop.plugins.executor.kit import jobs
@@ -126,7 +135,7 @@ def make_run(
     max_runs: int = 2,
     provenance: str | None = None,
     track: str = 'score',
-) -> int:
+) -> RunId:
     with db.session() as s:
         idea = Idea(
             track=track,
@@ -152,7 +161,7 @@ def make_run(
         s.flush()
         s.add(
             AgentSession(
-                kind=RoleName.IMPLEMENTER,
+                kind=IMPLEMENTER,
                 campaign_id=campaign.id,
                 run_id=run.id,
                 harness='script',
@@ -164,7 +173,7 @@ def make_run(
         return run.id
 
 
-def execute(ex: RunController, db: Database, run_id: int) -> None:
+def execute(ex: RunController, db: Database, run_id: RunId) -> None:
     """Run ``run_id`` through its requested agent session row, the way the scheduler does: it takes the row, then executes."""
     with db.session() as s:
         requested = select(AgentSession).where(
@@ -198,21 +207,21 @@ class Scored:
         self.metrics, self.error = m.metrics, m.error
 
 
-def candidates(db: Database, run_id: int) -> list[Scored]:
+def candidates(db: Database, run_id: RunId) -> list[Scored]:
     """The candidates a run produced (its commits' trees), with their one measurement each."""
     with db.session() as s:
         rows = s.scalars(select(Candidate).where(Candidate.run_id == run_id).order_by(Candidate.id)).all()
         return [Scored(c) for c in rows]
 
 
-def candidates_measured(db: Database, run_id: int) -> list[Scored]:
+def candidates_measured(db: Database, run_id: RunId) -> list[Scored]:
     """``candidates``, without the ones nothing measured (a skip commit, recovered work)."""
     with db.session() as s:
         rows = s.scalars(select(Candidate).where(Candidate.run_id == run_id).order_by(Candidate.id)).all()
         return [Scored(c) for c in rows if c.measurements]
 
 
-def run_row(db: Database, run_id: int) -> Run:
+def run_row(db: Database, run_id: RunId) -> Run:
     with db.session() as s:
         return s.get_one(Run, run_id)
 
@@ -328,13 +337,13 @@ def test_every_commit_of_a_run_is_a_candidate_before_the_first_is_measured(
     seen: list[list[tuple[str | None, Verdict, int | None]]] = []
 
     def watched(
-        run: int | None,
-        campaign_id: int,
+        run: RunId | None,
+        campaign_id: CampaignId,
         cfg: CampaignConfig,
         repo: Repo,
         sha: str,
-        candidate_id: int,
-        evaluator_id: int,
+        candidate_id: CandidateId,
+        evaluator_id: EvaluatorId,
         eval_dir: Path,
     ) -> bool:
         with db.session() as s:
@@ -364,7 +373,7 @@ def test_a_run_counts_toward_max_runs_from_its_close_to_its_verdict(
     close = ex._close
     counted: list[tuple[int, bool]] = []
 
-    def close_and_count(span: Span, run_id: int, status: RunStatus, error: str | None) -> None:
+    def close_and_count(span: Span, run_id: RunId, status: RunStatus, error: str | None) -> None:
         close(span, run_id, status, error)
         with db.session() as s:
             if moved_to is not None:
@@ -477,9 +486,7 @@ def test_work_a_stopped_implementer_left_uncommitted_is_recovered_and_a_new_run_
         s.add(run)
         s.flush()
         s.add(
-            AgentSession(
-                kind=RoleName.IMPLEMENTER, campaign_id=campaign.id, run_id=run.id, harness='script', model='test-model'
-            )
+            AgentSession(kind=IMPLEMENTER, campaign_id=campaign.id, run_id=run.id, harness='script', model='test-model')
         )
         s.commit()
         finishing = run.id
@@ -546,7 +553,7 @@ def test_an_idea_whose_implementers_keep_dying_is_requeued_from_its_recovered_wo
             s.flush()
             s.add(
                 AgentSession(
-                    kind=RoleName.IMPLEMENTER,
+                    kind=IMPLEMENTER,
                     campaign_id=campaign.id,
                     run_id=run.id,
                     harness='script',
@@ -593,7 +600,7 @@ def test_the_role_of_the_run_caps_its_recovery_requeues(
         s.commit()
     run_id = make_run(db, campaign, max_runs=1)
     with db.session() as s:
-        s.get_one(Run, run_id).role = 'quick'
+        s.get_one(Run, run_id).role = RoleName('quick')
         s.commit()
     execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
@@ -792,9 +799,9 @@ def test_brief_carries_history_and_comments(
     second = make_run(db, campaign, title='second idea')
     with db.session() as s:
         idea_id = s.get_one(Run, second).idea_id
-        s.add(Comment(target_kind=TargetKind.IDEA, target_id=idea_id, author='human:t', body='try harder'))
-        s.add(Comment(target_kind=TargetKind.RUN, target_id=second, author='pi', kind='decision', body='and faster'))
-        s.add(Comment(target_kind=TargetKind.RUN, target_id=first, author='pi', body='about another idea'))
+        s.add(Comment(target=TargetRef(TargetKind.IDEA, idea_id), author='human:t', body='try harder'))
+        s.add(Comment(target=TargetRef(TargetKind.RUN, second), author='pi', kind='decision', body='and faster'))
+        s.add(Comment(target=TargetRef(TargetKind.RUN, first), author='pi', body='about another idea'))
         s.commit()
     execute(controller(db, runtime, tmp_path), db, second)
     brief = run_row(db, second).brief or ''
@@ -899,7 +906,7 @@ def test_exception_in_run_is_recorded(
 ) -> None:
     run_id = make_run(db, campaign, max_runs=1)
     with db.session() as s:
-        s.get_one(Run, run_id).base_candidate_id = 999
+        s.get_one(Run, run_id).base_candidate_id = CandidateId(999)
         s.commit()
     execute(controller(db, runtime, tmp_path, tracer), db, run_id)
     run = run_row(db, run_id)
@@ -1399,7 +1406,9 @@ STOPPED = 'stopped by the campaign stop'
     [
         # one case per case of run_outcome, in order
         pytest.param(
-            RunEnd(finding=True, asked=7), (RunStatus.FAILED, f'{stop.BLOCKED} comment#7'), id='finding-asked'
+            RunEnd(finding=True, asked=CommentId(7)),
+            (RunStatus.FAILED, f'{stop.BLOCKED} comment#7'),
+            id='finding-asked',
         ),
         pytest.param(RunEnd(finding=True), (RunStatus.SUCCEEDED, None), id='finding'),
         pytest.param(RunEnd(stop_error=STOPPED, commits=1), (RunStatus.FAILED, STOPPED), id='stop'),
@@ -1408,13 +1417,13 @@ STOPPED = 'stopped by the campaign stop'
         pytest.param(
             RunEnd(error='implementer exit 1', commits=1), (RunStatus.FAILED, 'implementer exit 1'), id='error'
         ),
-        pytest.param(RunEnd(asked=7), (RunStatus.FAILED, f'{stop.BLOCKED} comment#7'), id='asked'),
+        pytest.param(RunEnd(asked=CommentId(7)), (RunStatus.FAILED, f'{stop.BLOCKED} comment#7'), id='asked'),
         pytest.param(RunEnd(), (RunStatus.FAILED, NO_CHANGES), id='nothing'),
         pytest.param(RunEnd(commits=1, recovered_only=True), (RunStatus.FAILED, INTERRUPTED), id='recovered-only'),
         pytest.param(RunEnd(commits=2), (RunStatus.SUCCEEDED, None), id='commits'),
         # the overlaps that fix the order: each pair of neighbouring rows, and the #116 cases
         pytest.param(
-            RunEnd(finding=True, asked=7, timed_out=True, error=TIMEOUT),
+            RunEnd(finding=True, asked=CommentId(7), timed_out=True, error=TIMEOUT),
             (RunStatus.FAILED, f'{stop.BLOCKED} comment#7'),
             id='finding-asked-timeout',
         ),
@@ -1439,14 +1448,18 @@ STOPPED = 'stopped by the campaign stop'
         ),
         pytest.param(RunEnd(cancelled=True, commits=1), (RunStatus.FAILED, stop.CANCELLED_ERROR), id='cancel-commits'),
         pytest.param(
-            RunEnd(timed_out=True, error=TIMEOUT, asked=7, commits=1),
+            RunEnd(timed_out=True, error=TIMEOUT, asked=CommentId(7), commits=1),
             (RunStatus.TIMED_OUT, TIMEOUT),
             id='timeout-asked',
         ),
         pytest.param(
-            RunEnd(error='implementer exit 1', asked=7), (RunStatus.FAILED, 'implementer exit 1'), id='error-asked'
+            RunEnd(error='implementer exit 1', asked=CommentId(7)),
+            (RunStatus.FAILED, 'implementer exit 1'),
+            id='error-asked',
         ),
-        pytest.param(RunEnd(asked=7, commits=1), (RunStatus.FAILED, f'{stop.BLOCKED} comment#7'), id='asked-commits'),
+        pytest.param(
+            RunEnd(asked=CommentId(7), commits=1), (RunStatus.FAILED, f'{stop.BLOCKED} comment#7'), id='asked-commits'
+        ),
     ],
 )
 def test_how_a_run_ended_decides_its_status_by_the_first_row_that_holds(end: RunEnd, expected: RunOutcome) -> None:
@@ -1562,8 +1575,7 @@ def test_an_escalation_answered_before_the_implementer_stops_does_not_block_its_
         idea_id, agent_session_id = run_row(db, run_id).idea_id, s.scalars(select(AgentSession.id)).one()
         s.add(
             Comment(
-                target_kind=TargetKind.RUN,
-                target_id=run_id,
+                target=TargetRef(TargetKind.RUN, run_id),
                 author=f'implementer#{agent_session_id}',
                 kind='escalation',
                 priority=1,
@@ -1574,8 +1586,7 @@ def test_an_escalation_answered_before_the_implementer_stops_does_not_block_its_
         )
         s.add(
             Comment(
-                target_kind=TargetKind.IDEA,
-                target_id=idea_id,
+                target=TargetRef(TargetKind.IDEA, idea_id),
                 author='watchdog#9',
                 kind='escalation',
                 priority=1,
@@ -1616,14 +1627,13 @@ def test_uncommitted_changes_without_a_finding_are_scored_but_not_an_attempt_tha
         )
         s.add(
             Comment(
-                target_kind=TargetKind.RUN,
-                target_id=run_id,
+                target=TargetRef(TargetKind.RUN, run_id),
                 author=f'implementer#{agent_session_id}',
                 kind='finding',
                 body='x',
             )
         )
-        s.add(Comment(target_kind=TargetKind.IDEA, target_id=idea_id, author='watchdog#9', kind='finding', body='y'))
+        s.add(Comment(target=TargetRef(TargetKind.IDEA, idea_id), author='watchdog#9', kind='finding', body='y'))
         s.commit()
     write_toml(Path(campaign.path), '#!/bin/sh\necho other >> solve.txt\n')
     reload_campaign(db, campaign)
@@ -1957,7 +1967,7 @@ HARNESS_SCAFFOLD_THEN_WORK = (
 )
 
 
-def scored(db: Database, run_id: int) -> list[tuple[str | None, Verdict, str | None, int, int | None]]:
+def scored(db: Database, run_id: RunId) -> list[tuple[str | None, Verdict, str | None, int, int | None]]:
     """``(summary, verdict, reason, measurements, parent)`` of each candidate the run produced, in order."""
     with db.session() as s:
         rows = s.scalars(select(Candidate).where(Candidate.run_id == run_id).order_by(Candidate.id)).all()
@@ -2043,7 +2053,7 @@ def test_a_commit_that_moves_no_deciding_metric_says_no_op(
     )
 
 
-def import_empty_solution(db: Database, campaign: Campaign) -> int:
+def import_empty_solution(db: Database, campaign: Campaign) -> CandidateId:
     """Import an empty solution from another branch as a reference that scores 0, below the baseline's 1."""
     repo = Repo(campaign.path)
     repo.git.checkout('-qb', 'elsewhere')
@@ -2140,8 +2150,8 @@ def keep_elsewhere(
     *,
     on: int = 1,
     verdict: Verdict = Verdict.KEEP,
-    run_id: int | None = None,
-) -> int:
+    run_id: RunId | None = None,
+) -> CandidateId:
     """Add a trunk keep made outside any run.
 
     The keep writes ``files`` on a commit off candidate ``on`` and is measured as ``metrics``. To a run that started
@@ -2561,13 +2571,13 @@ def test_a_merge_a_stop_left_unjudged_is_measured_and_judged_when_the_run_resume
     merged_id = 4
 
     def stopped_at_the_merge(
-        run: int | None,
-        campaign_id: int,
+        run: RunId | None,
+        campaign_id: CampaignId,
         cfg: CampaignConfig,
         repo: Repo,
         sha: str,
-        candidate_id: int,
-        evaluator_id: int,
+        candidate_id: CandidateId,
+        evaluator_id: EvaluatorId,
         eval_dir: Path,
     ) -> bool:
         if candidate_id == merged_id:

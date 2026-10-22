@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 
 from piloop.actor import Actor
 from piloop.db.events import emit
-from piloop.db.models import Campaign, Candidate, Evaluation, Event, Measurement, TargetKind
+from piloop.db.models import Campaign, Candidate, Evaluation, Event, Measurement
+from piloop.ids import CandidateId, EvaluatorId, TargetKind
 from piloop.scoring import ledger
 from piloop.scoring.ledger import head
 
@@ -26,7 +27,7 @@ CANCELLED = 'evaluation cancelled by {actor}'
 """The error of the crashed measurement that ``cancel`` records."""
 
 
-def request(s: Session, candidate_id: int, evaluator_id: int) -> tuple[Evaluation, bool]:
+def request(s: Session, candidate_id: CandidateId, evaluator_id: EvaluatorId) -> tuple[Evaluation, bool]:
     """Queue an evaluation of the candidate under the evaluator, or find the one that waits or runs. The caller commits.
 
     Returns ``(evaluation, created)``. The requests for one candidate and evaluator share one evaluation, so a tree is
@@ -89,11 +90,11 @@ def requested(s: Session) -> list[tuple[Candidate, datetime]]:
         (candidate, asked[candidate.id])
         for campaign in s.scalars(select(Campaign).order_by(Campaign.id))
         for candidate in ledger.requested(s, campaign)
-        if (candidate.id, campaign.evaluator_id or 0) not in queued
+        if (candidate.id, campaign.evaluator_id) not in queued
     ]
 
 
-def cancel(s: Session, candidate_id: int, actor: Actor) -> int:
+def cancel(s: Session, candidate_id: CandidateId, actor: Actor) -> int:
     """Cancel what the candidate waits for: its evaluations that wait or run, or its remeasure that is not queued yet.
 
     Signed by ``actor``. Return how many it cancelled. The caller commits.
