@@ -25,7 +25,6 @@ from piloop.db.session import Database
 from piloop.reports.history import (
     FINDING_CHARS,
     FINDINGS_IN_HISTORY,
-    HYPOTHESIS_CHARS,
     IDEAS_IN_HISTORY,
     block,
     history,
@@ -160,16 +159,16 @@ def test_history_lists_every_idea_with_its_outcome_the_lineage_and_the_findings(
     assert render(db, campaign) == snapshot("""\
 ## History: ideas (8 of 8)
 
-| id | status | by | family | links | prio | title | hypothesis | best candidate (score) | implementer finding |
-|---|---|---|---|---|---|---|---|---|---|
-| 1 | done | research#9 | appending | — | 1 | more lines | more lines helps | keep 3 (+2 vs candidate#1) (candidate#2) | appending works / keep appending |
-| 2 | done | implementer#4 | appending | superseded by idea#7, idea#8 | 2 | fewer lines | fewer lines helps | discard 2 (-1 vs candidate#2) (candidate#3) | — |
-| 3 | rejected | t | — | superseded by idea#8 | 3 | delete solve.txt | delete solve.txt helps | crash (candidate#4) | second attempt agrees; rejected |
-| 4 | done | t | — | after idea#1 | 2 | two commits | two commits helps | keep 4 (+1 vs candidate#2) (candidate#6) | — |
-| 5 | ready | t | — | blocked by idea#3 (rejected); after idea#1 | 0 | aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa… | hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh… | — | — |
-| 6 | proposed | t | — | — | 2 | human should look | the metric / is wrong | — | — |
-| 7 | ready | t | — | after idea#1, idea#4; supersedes idea#2 | 2 | fewer but longer lines | fewer but longer lines helps | — | — |
-| 8 | ready | t | — | supersedes idea#2, idea#3 | 2 | no lines at all | no lines at all helps | — | — |
+| id | status | by | family | links | prio | title | best candidate (score) |
+|---|---|---|---|---|---|---|---|
+| 1 | done | research#9 | appending | — | 1 | more lines | keep 3 (+2 vs candidate#1) (candidate#2) |
+| 2 | done | implementer#4 | appending | superseded by idea#7, idea#8 | 2 | fewer lines | discard 2 (-1 vs candidate#2) (candidate#3) |
+| 3 | rejected | t | — | superseded by idea#8 | 3 | delete solve.txt | crash (candidate#4) |
+| 4 | done | t | — | after idea#1 | 2 | two commits | keep 4 (+1 vs candidate#2) (candidate#6) |
+| 5 | ready | t | — | blocked by idea#3 (rejected); after idea#1 | 0 | aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa… | — |
+| 6 | proposed | t | — | — | 2 | human should look | — |
+| 7 | ready | t | — | after idea#1, idea#4; supersedes idea#2 | 2 | fewer but longer lines | — |
+| 8 | ready | t | — | supersedes idea#2, idea#3 | 2 | no lines at all | — |
 
 
 ## History: kept lineage
@@ -223,7 +222,7 @@ def test_history_worst_case_stays_under_the_documented_size(db: Database, campai
         'every link, both ways'
     )
     assert len(raw(db, campaign)) < 64_000
-    assert len(rendered) < 40_000
+    assert len(rendered) < 27_000
 
 
 def test_history_when_a_human_kept_an_unscored_commit_and_an_idea_builds_on_it(
@@ -239,10 +238,9 @@ def test_history_when_a_human_kept_an_unscored_commit_and_an_idea_builds_on_it(
         scored(s, row, unscored.id, (Verdict.KEEP, {'score': 5, 'size': 1}, None))
         s.commit()
     rendered = render(db, campaign)
-    assert (
-        '| 1 | done | t | — | — | 2 | from an unscored base | from an unscored base helps | keep 5 (candidate#3) | — |'
-        in rendered
-    ), 'no delta without a base score'
+    assert '| 1 | done | t | — | — | 2 | from an unscored base | keep 5 (candidate#3) |' in rendered, (
+        'no delta without a base score'
+    )
     assert '| #2 | — | — | — | — | y | — | — | — |' in rendered, 'the unscored base is in the lineage without a value'
     assert '| #3 | #2 | 5 | — | idea#1 (t) |' in rendered, 'no gain over a parent without a score'
 
@@ -251,7 +249,7 @@ def test_cell_is_one_bounded_line() -> None:
     assert cell('  \n') == '—'
     assert cell('a | b\nc') == 'a / b'
     assert len(cell('x' * 500)) == CELL_CHARS
-    assert len(cell('x' * 500, HYPOTHESIS_CHARS)) == HYPOTHESIS_CHARS
+    assert len(cell('x' * 500, 40)) == 40
 
 
 def test_block_keeps_whole_lines_and_counts_the_rest() -> None:

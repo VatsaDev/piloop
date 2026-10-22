@@ -121,7 +121,7 @@ def test_brief_is_role_prompt_campaign_brief_procedures_then_context(campaign: C
 - You are watchdog#7, the watchdog for campaign#1 (demo).
 - Campaign repo: {campaign.path} (every candidate commit and Entire checkpoint is in it).
 - Sign what you write as 'watchdog#7' (comments.author, ideas.created_by).
-- Trigger: timer
+- Why this agent started (context, not a scope): timer
 - piloop: `{PILOOP_HINT}` is this daemon's piloop. Run every `piloop` command of this brief with it.
 - SQL tool: `{SQL_HINT} -`, with the statement on stdin from a quoted heredoc (`<<'EOF'`).
 - Sweeping roles (`agent_sessions.kind` of a request): watchdog, research, scout.

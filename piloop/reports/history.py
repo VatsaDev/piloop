@@ -2,15 +2,16 @@
 
 The history has four parts:
 
-- The ideas: who proposed each one, its family, its outcome, and its links to other ideas.
+- The ideas: who proposed each one, its family, its outcome, and its links to other ideas. Their hypotheses and the
+  implementers' findings on them are a query away (``ideas_fts``, ``comments``), so the table leaves them out.
 - The kept lineage: the gain of each keep over its parent, its idea, its commit, the Entire checkpoint of the
   session that made it, and the tokens that session used. An agent can run ``git show`` and
   ``entire checkpoint explain`` on these.
 - The starting points: imported references that a pinned idea can start from.
 - The latest findings on the campaign, of every role.
 
-The size is bounded. 60 idea rows of about 560 characters and 10 findings of about 850 characters come to
-about 42 KB (about 11k tokens). Each kept candidate adds one line of about 230 characters.
+The size is bounded. 60 idea rows of about 300 characters and 10 findings of about 850 characters come to
+about 27 KB (about 7k tokens). Each kept candidate adds one line of about 230 characters.
 """
 
 import io
@@ -31,7 +32,6 @@ from piloop.usage import human
 
 IDEAS_IN_HISTORY = 60
 FINDINGS_IN_HISTORY = 10
-HYPOTHESIS_CHARS = 140
 FAMILY_CHARS = 30
 FINDING_CHARS = 800
 BRIEF_WIDTH = 1000
@@ -59,15 +59,15 @@ def renderables(
     The findings are those on the campaign of every agent, whatever its role (an author ``<role>#<id>``). Each keeps up
     to ``FINDING_CHARS`` of its body. The lines after the first of a research finding list the directions that the
     sweep rejected, and the next sweep must read them. The findings of the orchestrator and the human are in the pack's
-    digests. The findings on ideas show in the table. The ``links`` column shows what blocks an idea and which idea replaces
-    which. This stops a sweep from proposing a superseded idea again or waiting on an idea that will never run.
+    digests, and the latest implementer findings in the pack's findings. The ``links`` column shows what blocks an idea
+    and which idea replaces which. This stops a sweep from proposing a superseded idea again or waiting on an idea that
+    will never run.
     """
     tracks = cfg.all_tracks
     ideas = s.scalars(
         select(Idea).where(Idea.campaign_id == campaign.id).order_by(Idea.id.desc()).limit(IDEAS_IN_HISTORY)
     ).all()[::-1]
     total = count(s, select(Idea).where(Idea.campaign_id == campaign.id))
-    findings = _last_findings(s, [i.id for i in ideas])
     newer = superseded_by(s, [i.id for i in ideas])
     evaluator_id = campaign.evaluator_id or 0
     kept = s.scalars(keeps(campaign).order_by(Candidate.id)).all()
@@ -92,9 +92,7 @@ def renderables(
             'links',
             'prio',
             'title',
-            'hypothesis',
             f'best candidate ({on})',
-            'implementer finding',
         ],
         table_box,
     )
@@ -108,9 +106,7 @@ def renderables(
             links(i, newer),
             str(i.priority),
             cell(i.title),
-            cell(i.hypothesis, HYPOTHESIS_CHARS),
             _outcome(s, i, fallback_track(cfg, i.track).primary, evaluator_id),
-            cell(findings[i.id].body) if i.id in findings else NONE,
         )
     lineage = titled_table(
         f'{heading}History: kept lineage',
@@ -221,17 +217,6 @@ def _delta(c: Candidate, primary: Metric, evaluator_id: int) -> str:
     value = score(c, evaluator_id, primary)
     base = score(c.parent, evaluator_id, primary) if c.parent is not None else None
     return NONE if value is None or base is None else f'{value - base:+g}'
-
-
-def _last_findings(s: Session, idea_ids: list[int]) -> dict[int, Comment]:
-    """Return the latest implementer ``finding`` for each idea."""
-    rows = s.scalars(
-        select(Comment)
-        .where(Comment.target_kind == TargetKind.IDEA, Comment.kind == CommentKind.FINDING)
-        .where(Comment.target_id.in_(idea_ids))
-        .order_by(Comment.id)
-    )
-    return {c.target_id: c for c in rows}
 
 
 def _outcome(s: Session, idea: Idea, primary: Metric, evaluator_id: int) -> str:

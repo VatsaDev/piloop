@@ -82,7 +82,10 @@ def test_daemon_end_to_end(
         )
         assert watchdog.log_dir == str(home / 'agent_sessions' / '3')
     brief = (home / 'agent_sessions' / '3' / 'brief.md').read_text()
-    assert 'Trigger: anomaly: run#2 failed' in brief and '## This sweep: an incident' in brief
+    assert (
+        'Why this agent started (context, not a scope): anomaly: run#2 failed' in brief
+        and '## This sweep: an incident' in brief
+    )
     assert daemon.scheduler.tick() == [], 'one sweep per failure'
     daemon.shutdown(timeout=5)
 

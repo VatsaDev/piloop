@@ -153,7 +153,7 @@ def compose_brief(
                 f'- You are {author}, the {role.kind} for campaign#{campaign.id} ({campaign.name}).',
                 f'- Campaign repo: {campaign.path} (every candidate commit and Entire checkpoint is in it).',
                 f"- Sign what you write as '{author}' (comments.author, ideas.created_by).",
-                f'- Trigger: {reason}',
+                f'- Why this agent started (context, not a scope): {reason}',
                 f"- piloop: `{PILOOP_HINT}` is this daemon's piloop. Run every `piloop` command of this brief with it.",
                 f"- SQL tool: `{SQL_HINT} -`, with the statement on stdin from a quoted heredoc (`<<'EOF'`).",
                 f'- Sweeping roles (`agent_sessions.kind` of a request): {", ".join(cfg.roles.sweeping())}.',

@@ -725,7 +725,10 @@ def test_a_stopped_campaign_gets_one_closing_watchdog_and_no_trigger_requests(
         'campaign': 'demo',
         'reason': 'max_runs: 1 runs',
     }
-    assert 'Trigger: campaign stopped: max_runs: 1 runs' in (tmp_path / 'agent_sessions' / '2' / 'brief.md').read_text()
+    assert (
+        'Why this agent started (context, not a scope): campaign stopped: max_runs: 1 runs'
+        in (tmp_path / 'agent_sessions' / '2' / 'brief.md').read_text()
+    )
 
     with db.session() as s:
         s.add(AgentSession(kind=RoleName.RESEARCH, campaign_id=campaign.id, reason='by hand'))

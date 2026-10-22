@@ -113,11 +113,9 @@ def test_campaign_and_idea_lifecycle(campaign_path: Path, out) -> None:
     run_cli(['history', 'demo'])
     text = out()
     assert 'History: ideas (3 of 3)' in text and 'History: kept lineage' in text
-    assert 'Research pack: ideas by source' in text and 'Research pack: open escalations' in text, 'the pack'
+    assert 'Research pack: metrics' in text and 'Research pack: orchestrator and human digests' in text, 'the pack'
     assert 'more lines' in text and 'blocked by idea#1 (ready), idea#2 (proposed); supersedes idea#2' in text
-    assert 'lines help' in text and 'piloop init: .entire' in text and '## ' not in text, (
-        'a terminal table, not the brief markdown'
-    )
+    assert 'piloop init: .entire' in text and '## ' not in text, 'a terminal table, not the brief markdown'
 
     run_cli(['status'])
     text = re.sub(r'\b\d+s (old|ago)\b', r'Ns \1', out())  # the second may tick over since init

@@ -103,9 +103,9 @@ def test_research_sweep_inserts_ideas_signed_with_its_implementer_id(
     tail = brief[brief.index('- Seeds to develop first: 0') :]
     assert [line.split('|')[1].strip() for line in tail.splitlines() if line.startswith('| #')] == ['#1']
     assert '## Research pack: metrics' in tail and '## History: kept lineage' in tail
-    assert tail.rstrip().endswith('## Research pack: open escalations (unacknowledged, newest first)\n- None.'), (
-        'the sweep reads the research pack from its brief instead of querying for it'
-    )
+    assert tail.rstrip().endswith(
+        '## Research pack: orchestrator and human digests and decisions (newest first)\n- None yet.'
+    ), 'the sweep reads the research pack from its brief instead of querying for it'
     assert '## History: ideas (0 of 0)' in tail and '## History: kept lineage' in tail
     assert brief == (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
     assert (tmp_path / 'agent_sessions' / '1' / 'transcript.txt').is_file()

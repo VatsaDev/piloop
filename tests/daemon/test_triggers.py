@@ -704,7 +704,10 @@ def test_manual_requests_are_launched_under_max_concurrent(
     with db.session() as s:
         second = s.get_one(AgentSession, 2)
     assert (second.state, second.harness, second.model) == (AgentSessionState.EXITED, 'script', 'test-model')
-    assert 'Trigger: requested' in (tmp_path / 'agent_sessions' / '2' / 'brief.md').read_text()
+    assert (
+        'Why this agent started (context, not a scope): requested'
+        in (tmp_path / 'agent_sessions' / '2' / 'brief.md').read_text()
+    )
 
 
 def test_an_implementer_request_without_a_run_is_refused(

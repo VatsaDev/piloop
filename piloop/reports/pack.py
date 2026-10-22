@@ -4,15 +4,16 @@ Ideas written with broad context produce more keeps. The daemon builds this pack
 repo when a research sweep or a progress review starts. ``piloop history`` prints it too. It contains:
 
 - the metrics with their roles, tracks, margins and floors, and the start and the head on each;
-- the keeps that the ideas of each source produced (``piloop.campaign.ideas.yields``);
 - the analysis artifacts (``context``) and the shared workspace, newest first, as file pointers
   with an outline;
 - what was tried, by family (``ideas.family``), and the seeds that other roles filed for research to develop;
 - the history (``piloop.reports.history``);
-- the latest implementer findings, the digests and decisions of the orchestrator and the human, and the open escalations.
+- the latest implementer findings, and the digests and decisions of the orchestrator and the human.
+
+The ideas by source and the open escalations are in the campaign overview, which every sweep also reads.
 
 The size is bounded. Each list keeps its latest rows, each body keeps a fixed number of characters, and files are
-pointers, not inlined content. On top of the history, the pack adds at most about 45 KB (about 11k tokens).
+pointers, not inlined content. On top of the history, the pack adds at most about 40 KB (about 10k tokens).
 """
 
 import heapq
@@ -30,7 +31,6 @@ from rich.text import Text
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from piloop.campaign.ideas import yields
 from piloop.campaign.inbox import campaign_of
 from piloop.config import CampaignConfig, MetricRole
 from piloop.db.models import Campaign, Candidate, Comment, CommentKind, Idea, IdeaStatus, TargetKind, Verdict
@@ -54,8 +54,6 @@ FINDINGS_SHOWN = 8
 FINDING_CHARS = 800
 DIGESTS_SHOWN = 5
 DIGEST_CHARS = 1000
-ESCALATIONS_SHOWN = 8
-ESCALATION_CHARS = 300
 FAMILY_IDEAS_CHARS = 200
 OUTCOMES = (
     Verdict.KEEP,
@@ -90,8 +88,6 @@ def renderables(
     return [
         _metrics(s, campaign, cfg, table_box, heading),
         Text(),
-        _yields(s, campaign, table_box, heading),
-        Text(),
         *_artifacts(campaign, cfg, workspace, heading),
         _families(s, campaign, table_box, heading),
         Text(),
@@ -100,7 +96,6 @@ def renderables(
         Text(),
         *_agent_session_findings(s, campaign, cfg, heading),
         *_digests(s, campaign, heading),
-        *_escalations(s, campaign, heading),
     ]
 
 
@@ -152,18 +147,6 @@ def _metrics(s: Session, campaign: Campaign, cfg: CampaignConfig, table_box: box
             _num(b),
             NONE if a is None or b is None else f'{m.gain(b, a):+g}',
         )
-    return table
-
-
-def _yields(s: Session, campaign: Campaign, table_box: box.Box, heading: str) -> Table:
-    """Show the ideas of each source and their outcomes, so research sees which sources find gains."""
-    table = titled_table(
-        f'{heading}Research pack: ideas by source (keeps, not ideas, measure a source)',
-        ['source', 'ideas', 'ran', 'keep', 'interesting'],
-        table_box,
-    )
-    for y in yields(s, campaign.id):
-        text_row(table, y.source, str(y.ideas), str(y.ran), str(y.keeps), str(y.interesting))
     return table
 
 
@@ -357,29 +340,7 @@ def _digests(s: Session, campaign: Campaign, heading: str) -> list[RenderableTyp
         _body_line(f'comment#{c.id} {c.kind} by {c.author} on {c.target_kind}#{c.target_id}', c.body, DIGEST_CHARS)
         for c in rows
     ]
-    return [title, *(lines or [Text('- None yet.')]), Text()]
-
-
-def _escalations(s: Session, campaign: Campaign, heading: str) -> list[RenderableType]:
-    """List the unacknowledged escalations: open questions that an idea must not assume an answer to."""
-    rows = s.scalars(
-        select(Comment)
-        .where(
-            campaign_of(Comment.target_kind, Comment.target_id) == campaign.id,
-            Comment.kind == CommentKind.ESCALATION,
-            Comment.acked_at.is_(None),
-        )
-        .order_by(Comment.id.desc())
-        .limit(ESCALATIONS_SHOWN)
-    ).all()
-    title = Text(f'{heading}Research pack: open escalations (unacknowledged, newest first)', style='bold')
-    lines = [
-        _body_line(
-            f'comment#{c.id} p{c.priority} by {c.author} on {c.target_kind}#{c.target_id}', c.body, ESCALATION_CHARS
-        )
-        for c in rows
-    ]
-    return [title, *(lines or [Text('- None.')])]
+    return [title, *(lines or [Text('- None yet.')])]
 
 
 def _body_line(head: str, body: str, chars: int) -> Text:

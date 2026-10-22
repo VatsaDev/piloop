@@ -15,7 +15,6 @@ from piloop.plugins.role.contract import Files
 from piloop.reports.pack import (
     ARTIFACTS_SHOWN,
     DIGESTS_SHOWN,
-    ESCALATIONS_SHOWN,
     FINDINGS_SHOWN,
     OUTLINE_CHARS,
     SEEDS_SHOWN,
@@ -58,7 +57,7 @@ def note(s: Session, campaign: Campaign, author: str, kind: CommentKind, body: s
 
 
 def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Path:
-    """Add ideas from four sources, a keep, a discard, proposals, findings, digests, escalations and artifacts."""
+    """Add ideas from four sources, a keep, a discard, proposals, findings, digests and artifacts."""
     repo = Path(campaign.path)
     write(
         repo / 'docs' / 'losses.md', '# Where we lose\n## By slice\n```\n# not a heading\n```\n#12 is no heading\n', 2
@@ -83,9 +82,6 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Path:
         note(s, campaign, 'human', CommentKind.DECISION, 'no external data')
         note(s, campaign, 'research#4', CommentKind.FINDING, 'batch 1: rejected deleting')
         note(s, campaign, 'daemon', CommentKind.FINDING, 'not a digest')
-        note(s, campaign, 'watchdog#3', CommentKind.ESCALATION, 'is the metric right?', priority=1)
-        acked = note(s, campaign, 'watchdog#3', CommentKind.ESCALATION, 'answered already', priority=2)
-        acked.acked_at, acked.acked_by = acked.created_at, 'orchestrator'
         s.commit()
     return workspace
 
@@ -102,16 +98,6 @@ def test_the_pack_of_a_campaign(db: Database, campaign: Campaign, tmp_path: Path
 |---|---|---|---|---|---|---|---|
 | score | primary | higher | — | — | 1 | 3 | +2 |
 | size | watch | lower | — | — | 5 | 12 | -7 |
-
-
-## Research pack: ideas by source (keeps, not ideas, measure a source)
-
-| source | ideas | ran | keep | interesting |
-|---|---|---|---|---|
-| orchestrator | 1 | 1 | 1 | 0 |
-| research | 2 | 2 | 0 | 1 |
-| watchdog | 2 | 0 | 0 | 0 |
-| human | 1 | 0 | 0 | 0 |
 
 
 ## Research pack: analysis artifacts (read before proposing; newest first)
@@ -150,9 +136,6 @@ def test_the_pack_of_a_campaign(db: Database, campaign: Campaign, tmp_path: Path
 - comment#3 decision by human on campaign#1: no external data
 - comment#2 finding by orchestrator on campaign#1: digest: best #2 +2 over the start
   by slice: …
-
-## Research pack: open escalations (unacknowledged, newest first)
-- comment#6 p1 by watchdog#3 on campaign#1: is the metric right?
 """)
     assert '| #2 | #1 | 3 | +2 | idea#1 (orchestrator) |' in rest, (
         'the lineage shows the gain of each keep and who proposed its idea'
@@ -174,12 +157,8 @@ def test_an_empty_pack_says_what_is_missing(db: Database, campaign: Campaign, tm
     assert '- None configured: `context` in piloop.toml lists them.' in text
     assert 'shared workspace' not in text, 'no section without a workspace directory'
     assert '## Research pack: seeds to develop (oldest first)\n- None.' in text
-    for title, empty in [
-        ('latest implementer findings', '- None yet.'),
-        ('digests and decisions', '- None yet.'),
-        ('open escalations', '- None.'),
-    ]:
-        assert f'{title} (newest first)\n{empty}' in text or f'{title} (unacknowledged, newest first)\n{empty}' in text
+    for title in ('latest implementer findings', 'digests and decisions'):
+        assert f'{title} (newest first)\n- None yet.' in text
     (tmp_path / 'workspace').mkdir()
     assert '(what agents left in ./workspace/; newest first)\n- Empty.' in render(db, campaign, tmp_path / 'workspace')
 
@@ -198,8 +177,6 @@ def test_the_pack_is_bounded(db: Database, campaign: Campaign, tmp_path: Path) -
             comment(s, TargetKind.IDEA, row.id, '\n'.join(['w' * 79] * 30))
         for _ in range(DIGESTS_SHOWN + 2):
             note(s, campaign, 'orchestrator', CommentKind.FINDING, '\n'.join(['d' * 79] * 30))
-        for _ in range(ESCALATIONS_SHOWN + 2):
-            note(s, campaign, 'watchdog#1', CommentKind.ESCALATION, '\n'.join(['e' * 79] * 30), priority=2)
         s.commit()
     text = render(db, campaign, workspace)
     assert '- … and 2 older files.' in text and '- … and 3 older files.' in text
@@ -210,11 +187,10 @@ def test_the_pack_is_bounded(db: Database, campaign: Campaign, tmp_path: Path) -
     assert '- idea#1 by t: idea 0 ' in text, 'oldest first: research develops the seeds in the order they arrived'
     assert text.count(' implementer#1 on idea#') == FINDINGS_SHOWN
     assert text.count(' finding by orchestrator on campaign#') == DIGESTS_SHOWN
-    assert text.count(' p2 by watchdog#1 on campaign#') == ESCALATIONS_SHOWN
     pack_only = (
         text.split('## History: ideas', 1)[0] + text.split('## History: findings on the campaign (last 10)', 1)[1]
     )
-    assert len(pack_only) < 45_000, 'the module docstring promises about 45 KB on top of the history'
+    assert len(pack_only) < 40_000, 'the module docstring promises about 40 KB on top of the history'
 
 
 def test_yields_count_ideas_runs_keeps_and_interesting_per_source(db: Database, campaign: Campaign) -> None:

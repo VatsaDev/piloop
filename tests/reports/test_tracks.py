@@ -77,7 +77,7 @@ def test_history_and_pack_show_each_track(db: Database, campaign: Campaign) -> N
         text = history(s, p, cfg)
         packed = pack(s, p, cfg, workspace=None)
     assert text.splitlines()[2] == snapshot(
-        "| id | status    | track | by         | family | links                        | prio | title                 | hypothesis            | best candidate (its track's primary)     | implementer finding |"
+        "| id | status    | track | by         | family | links                        | prio | title                 | best candidate (its track's primary)     |"
     )
     assert [line for line in text.splitlines() if line.startswith(('| candidate', '| #4'))] == snapshot(
         [

@@ -82,7 +82,7 @@ Steps:
 8. **Report** when the human is present, at least every few waits or every hour. Then go back to step 2.
    - Give one short status: the head against the baseline (per track when there are several), what ran, what you
      decided. `piloop status <name>` has the numbers.
-   - Include the keeps by source in every digest: the "ideas by source" table at the top of `piloop history <name>`.
+   - Include the keeps by source in every digest: the "Ideas by source" line of `piloop status <name>`.
      This shows whether research earns its sweeps.
    - When every campaign you watch has stopped, report the result and stop the loop.
 
@@ -110,7 +110,7 @@ It shows:
 
 Imported references are counted separately as starting points. They are never kept.
 
-`piloop history [<name>]` prints the research pack: metrics, ideas by source, analysis artifacts, what was tried per
+`piloop history [<name>]` prints the research pack: metrics, analysis artifacts, what was tried per
 mechanism family, the waiting seeds, every idea, the kept lineage, the starting points, findings and digests.
 
 `piloop watch` shows the same as `piloop status`, live, in the human's terminal.

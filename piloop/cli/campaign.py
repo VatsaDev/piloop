@@ -107,9 +107,9 @@ def init(
 def history(ref: CampaignRef | None = None, /) -> None:
     """Print the research pack: what a research sweep reads before it proposes ideas.
 
-    It shows the metrics, the ideas by source, the analysis artifacts, what was tried per mechanism family, the latest
-    60 ideas with their outcomes, the kept lineage, the findings, the digests and the open escalations. Without a
-    campaign, it uses the campaign that the current directory is in, else the only active campaign, else every campaign.
+    It shows the metrics, the analysis artifacts, what was tried per mechanism family, the latest 60 ideas with their
+    outcomes, the kept lineage, the findings and the digests. Without a campaign, it uses the campaign that the current
+    directory is in, else the only active campaign, else every campaign.
     """
     with common.session() as s:
         for campaign in common.campaigns(s, ref):
