@@ -99,7 +99,7 @@ class Worker:
         self._stopping = False
         self._handover = False
         self._heard = time.monotonic()
-        """When a call of the leases last came back. The worker stops its jobs ``Timing.self_stop`` after it."""
+        """When the last heartbeat that came back was sent. The worker stops its jobs ``Timing.self_stop`` after it."""
         self._failures = 0
         """How many turns failed one after another (``FAILING_TURNS``)."""
         self._starting: set[int] = set()
@@ -225,8 +225,11 @@ class Worker:
                     lease_id: running.session_id if (running := self._jobs.get(lease_id)) is not None else None
                     for lease_id in self._threads
                 }
+            sent = time.monotonic()
             answers = self.leases.heartbeat(self.id, sessions) if sessions else {}
-            self._heard = time.monotonic()
+            # the renewal is stamped inside the call, after ``sent``: a call that waited for the write lock must not
+            # move the worker's own deadline past the lease's
+            self._heard = sent
         except Exception as e:  # a partition: the control plane does not answer
             self._tracer.event('worker.unheard', worker=self.id, error=str(e))
             if time.monotonic() - self._heard >= self.leases.timing.self_stop:

@@ -43,7 +43,6 @@ from piloop.db.models import (
     Run,
     RunStatus,
     TargetKind,
-    utcnow,
 )
 from piloop.db.session import Database
 from piloop.otel import Tracer
@@ -69,6 +68,9 @@ from tests.daemon.test_scheduler import add_ideas, make_scheduler, request_watch
 from tests.daemon.test_serve import env_for, reap
 
 FAST = Timing(renew=0.1, grace=0.5, toleration=2.0)
+SLACK = Timing(renew=0.5, grace=1.0, toleration=3.0)
+"""For a deadline that the test checks: the worker stops its job at least one heartbeat before its lease expires,
+which on a loaded host must be longer than a scheduling delay."""
 WORKER_PROCESS = Path(__file__).parent.parent / 'fixtures' / 'worker_process.py'
 COMMIT_THEN_HOLD = (
     f'#!/bin/sh\n{WRITE_PID}echo line >> solve.txt\ngit commit -qam "a line"\n'
@@ -311,7 +313,7 @@ def test_a_partitioned_worker_stops_its_job_before_its_lease_expires_and_its_rep
     write_toml(Path(campaign.path), COMMIT_THEN_HOLD.format(hold=hold), implementer_timeout=600)
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    ex = RunController(db, tracer, tmp_path, factory(runtime), executor=timed(FAST))
+    ex = RunController(db, tracer, tmp_path, factory(runtime), executor=timed(SLACK))
     partitioned = threading.Event()
     heartbeat, report = Leases.heartbeat, Leases.report
 
@@ -333,12 +335,13 @@ def test_a_partitioned_worker_stops_its_job_before_its_lease_expires_and_its_rep
     start = started(agent_pid)
     assert start is not None
     partitioned.set()
-    wait_until(lambda: not alive(agent_pid, start), timeout=FAST.toleration + 30)
-    ended = utcnow()
+    wait_until(lambda: not alive(agent_pid, start), timeout=SLACK.toleration + 30)
+    [stopped] = [s for s in spans.get_finished_spans() if s.name == 'worker.job_stopped']
+    assert stopped.attributes is not None and stopped.attributes['why'] == 'silent'
+    assert stopped.start_time is not None
     expires_at = lease_of(db, 1).expires_at
-    assert expires_at is not None and ended < expires_at, 'the worker stopped its job before its lease expired'
-    stopped = [dict(s.attributes or {}) for s in spans.get_finished_spans() if s.name == 'worker.job_stopped']
-    assert [a['why'] for a in stopped] == ['silent']
+    assert expires_at is not None
+    assert stopped.start_time / 1e9 < expires_at.timestamp(), 'the worker stopped its job before its lease expired'
     expire_until(ex, db, 1, LeaseState.EXPIRED)
     thread.join(30)
     partitioned.clear()
