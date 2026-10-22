@@ -21,7 +21,7 @@ name = "accuracy"
 direction = "higher"
 role = "primary"
 track = "accuracy"
-margin = 0.02          # how much a cost keep may lose per step (about 3 of 178 holdout passengers)
+margin = 0.02          # bounds the paired 95% worst case, not the mean: a cost keep must keep nearly every prediction
 floor = 0.74           # a cost keep may never push accuracy below this
 
 [[metrics]]

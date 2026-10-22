@@ -19,8 +19,8 @@ Wikipedia XML dump. It is the benchmark of the Hutter Prize.
 - Measure with `uv run python evaluate.py`. It prints two metrics:
   - `bytes`: the compressed size plus the size of `compressor.py`. Lower is better. This is the metric to improve.
     A large model or dictionary inside `compressor.py` counts against you.
-  - `seconds`: the time to compress and decompress. Lower is better. It may grow by at most 10 s per step and must
-    stay below 120 s.
+  - `seconds`: the CPU time to compress and decompress. Lower is better. It may grow by at most 60 s per step and
+    must stay below 120 s.
 - Commit with `git add compressor.py && git commit -m "<what you did and why>"`. Every commit is scored. If the idea
   did not work, commit anyway and say so in the message.
 - Do not stop to ask questions. Decide and commit.

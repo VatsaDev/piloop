@@ -17,7 +17,7 @@ name = "accuracy"
 direction = "higher"
 role = "primary"
 track = "accuracy"
-margin = 0.02          # what a cost keep may give up for each keep
+margin = 0.02          # bounds the paired 95% worst case, not the mean: a cost keep must keep nearly every prediction
 floor = 0.74           # and never below this
 
 [[metrics]]

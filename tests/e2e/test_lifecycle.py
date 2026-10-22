@@ -91,8 +91,7 @@ IDEAS = (
 )
 """The slow idea runs first and is cancelled; lzma should be a keep; bz2 runs while the campaign stops.
 
-lzma uses preset 1 (about 1 s): preset 9 extreme takes 6 to 12 s on a busy machine, past the template's ``seconds``
-guardrail (the baseline plus 10 s), and is then judged ``interesting`` instead of ``keep``."""
+lzma uses preset 1 (about 1 s) to keep the scenario short."""
 
 
 @pytest.fixture(scope='module')

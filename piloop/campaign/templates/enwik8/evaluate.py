@@ -1,15 +1,16 @@
 """Score ``compressor.py`` on the first 10 MB of enwik8. Prints ``METRIC bytes=`` and ``METRIC seconds=``.
 
 ``bytes`` is the compressed size plus the size of ``compressor.py``: as in the Hutter Prize, the decompressor counts.
-``seconds`` is the wall-clock time of compression plus decompression. Each step runs in its own Python process, so
-this process measures the time and the compressor cannot change the result. If the round trip does not give back
-the exact input, or a step fails, this script exits non-zero with the reason on stderr, and piloop records a crash.
+``seconds`` is the CPU time (user + system) of compression plus decompression. Each step runs in its own Python
+process, so this process measures the time and the compressor cannot change the result. CPU time, unlike wall-clock
+time, changes little when other jobs load the machine. If the round trip does not give back the exact input, or a
+step fails, this script exits non-zero with the reason on stderr, and piloop records a crash.
 """
 
+import resource
 import subprocess
 import sys
 import tempfile
-import time
 import zipfile
 from pathlib import Path
 
@@ -35,9 +36,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         t = Path(tmp)
         (t / 'input').write_bytes(original)
-        seconds = 0.0
         for step, src, dst in (('compress', 'input', 'blob'), ('decompress', 'blob', 'output')):
-            started = time.monotonic()
             try:
                 proc = subprocess.run(
                     [sys.executable, '-c', STEP, str(ROOT), step, str(t / src), str(t / dst)],
@@ -48,14 +47,14 @@ def main() -> int:
                 )
             except subprocess.TimeoutExpired:
                 return fail(f'{step} took longer than {TIMEOUT} s')
-            seconds += time.monotonic() - started
             if proc.returncode != 0:
                 return fail(f'{step} failed with exit code {proc.returncode}\n{proc.stderr[-4000:]}')
         if (t / 'output').read_bytes() != original:
             return fail('decompress(compress(data)) is not equal to data')
         compressed = (t / 'blob').stat().st_size
+    usage = resource.getrusage(resource.RUSAGE_CHILDREN)
     print(f'METRIC bytes={compressed + COMPRESSOR.stat().st_size}')
-    print(f'METRIC seconds={seconds:.2f}')
+    print(f'METRIC seconds={usage.ru_utime + usage.ru_stime:.2f}')
     return 0
 
 

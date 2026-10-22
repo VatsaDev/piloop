@@ -66,10 +66,10 @@ direction = "lower"
 role = "primary"     # the metric to improve
 
 [[metrics]]
-name = "seconds"     # the time to compress and decompress
+name = "seconds"     # the CPU time to compress and decompress
 direction = "lower"
 role = "guardrail"   # may get worse
-margin = 10          # by at most 10 s from the head
+margin = 60          # by at most 60 s from the head
 floor = 120          # and never past 120 s
 ```
 
@@ -87,7 +87,7 @@ enwik8 · head bytes 2711853 (candidate#2, -976922 vs baseline) · 2 kept / 2 ca
 The verdict says why:
 
 ```text
-against candidate#1: bytes 2711853 vs 3688775 (-976922; aggregate: no per-unit results); guardrails: seconds 6.89 vs 0.67 (+6.22; aggregate: no per-unit results) within its margin 10
+against candidate#1: bytes 2711853 vs 3688775 (-976922; aggregate: no per-unit results); guardrails: seconds 6.89 vs 0.67 (+6.22; aggregate: no per-unit results) within its margin 60
 ```
 
 The example stops after 20 scored runs (`[stop] max_runs`). See [the verdict](/concepts/verdict) for the rules.
