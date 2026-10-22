@@ -8,10 +8,20 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop.agents.results import CampaignResults
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, Evaluation, Event, Measurement, utcnow
+from piloop.agents.results import IDENTIFIED_EVENT, CampaignResults, learn
+from piloop.db.models import (
+    AgentSession,
+    AgentSessionState,
+    Campaign,
+    Evaluation,
+    Event,
+    Idea,
+    Measurement,
+    Run,
+    utcnow,
+)
 from piloop.db.session import Database
-from piloop.ids import WATCHDOG
+from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, AgentSessionId, IdeaId, RunId
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import (
     AgentFinished,
@@ -26,7 +36,10 @@ from piloop.plugins.executor.contract import (
     Settled,
 )
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
-from tests.conftest import baseline
+from tests.agents.test_launcher import MINTED_HARNESS, agent_session, launch, request, use_harness
+from tests.conftest import HARNESS_PROMPT_TO_FILE, ScriptRuntime, baseline
+
+RESEARCH_SESSION = '0c5b9f9e-3a43-4c39-9a51-6f0cfa1a3b0e'
 
 
 def test_an_evaluation_that_left_the_queue_or_never_started_is_settled(
@@ -66,7 +79,7 @@ def test_a_start_report_moves_a_starting_agent_to_running_and_leaves_an_ending_o
     results = CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False)
     with db.session() as s:
         rows = [
-            AgentSession(kind=WATCHDOG, campaign_id=campaign.id, state=state)
+            AgentSession(kind=WATCHDOG, campaign_id=campaign.id, harness='script', state=state)
             for state in (AgentSessionState.STARTING, AgentSessionState.ENDING)
         ]
         s.add_all(rows)
@@ -148,3 +161,147 @@ def test_two_results_for_one_job_in_plain_sessions_close_its_row_once_and_measur
         finished = s.scalars(select(Event).where(Event.kind == 'watchdog.finished')).all()
         measured = s.scalars(select(Measurement).where(Measurement.candidate_id == base.id)).all()
     assert (len(finished), len(measured)) == (1, 2), 'one close, and one measurement besides the baseline'
+
+
+def identified(db: Database, agent_session_id: AgentSessionId) -> list[dict[str, object]]:
+    with db.session() as s:
+        on_row = (Event.kind == IDENTIFIED_EVENT) & (Event.target_id == agent_session_id)
+        return [e.payload for e in s.scalars(select(Event).where(on_row).order_by(Event.id))]
+
+
+def implementer_of(
+    db: Database, campaign: Campaign, created_by: str, **fields: object
+) -> tuple[AgentSessionId, RunId, IdeaId]:
+    """Request an implementer for a run of a new idea that ``created_by`` proposed. Return its row, run and idea."""
+    with db.session() as s:
+        idea = Idea(campaign_id=campaign.id, track='score', title='stack', hypothesis='h', created_by=created_by)
+        s.add(idea)
+        s.flush()
+        run = Run(idea_id=idea.id, attempt=1, base_candidate_id=1, harness='script', model='test-model')
+        s.add(run)
+        s.commit()
+        run_id, idea_id = run.id, idea.id
+    return request(db, campaign, IMPLEMENTER, run_id=run_id, **fields), run_id, idea_id
+
+
+def agent_job(campaign: Campaign, agent_session_id: AgentSessionId, tmp_path: Path) -> AgentJob:
+    return AgentJob(
+        agent_session=agent_session_id,
+        runtime='subprocess',
+        campaign=campaign.name,
+        campaign_path=Path(campaign.path),
+        artifact=Checkout(path=tmp_path),
+        cwd=tmp_path,
+        log_dir=tmp_path,
+        timeout=60,
+        brief=None,
+        spec=None,
+    )
+
+
+def test_an_implementer_with_a_minted_session_id_is_identified_at_launch_with_the_agent_that_proposed_its_idea(
+    campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    use_harness(db, campaign, HARNESS_PROMPT_TO_FILE, **MINTED_HARNESS)
+    research = request(db, campaign, RESEARCH, harness='claude', session_id=RESEARCH_SESSION)
+    implementer, run, idea = implementer_of(db, campaign, f'research#{research}')
+    launch(db, runtime, tmp_path, implementer)
+    w = agent_session(db, implementer)
+    assert identified(db, implementer) == [
+        {
+            'session_id': w.session_id,
+            'harness': 'script',
+            'executable': str(Path(campaign.path).parent / 'harness.sh'),
+            'role': 'implementer',
+            'model': 'test-model',
+            'campaign': 'demo',
+            'run': run,
+            'idea': idea,
+            'proposed_by': {
+                'actor': f'research#{research}',
+                'harness': 'claude',
+                'executable': 'claude',
+                'session_id': RESEARCH_SESSION,
+            },
+        }
+    ]
+
+
+def test_a_reported_session_id_is_identified_once_whatever_repeats_it(
+    campaign: Campaign, db: Database, tmp_path: Path
+) -> None:
+    """Heartbeats and the final report repeat the id: only an id that is new to the row emits the event."""
+    results = CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False)
+    research = request(db, campaign, RESEARCH, harness='script', state=AgentSessionState.STARTING)
+    key = AgentKey(research)
+    results.started(key, {}, None)
+    assert identified(db, research) == []
+    results.session(key, 'first')
+    results.session(key, 'first')
+    results.session(key, 'second')
+    report = AgentFinished(process=AgentExit(ExitStatus.EXITED, 200, 0), session_id='second')
+    results.finished(agent_job(campaign, research, tmp_path), report)
+    found = identified(db, research)
+    assert [e['session_id'] for e in found] == ['first', 'second']
+    assert found[0] == {
+        'session_id': 'first',
+        'harness': 'script',
+        'executable': str(Path(campaign.path).parent / 'harness.sh'),
+        'role': 'research',
+        'model': None,
+        'campaign': 'demo',
+        'run': None,
+        'idea': None,
+        'proposed_by': None,
+    }
+
+
+def test_an_id_that_only_the_final_report_carries_is_identified(
+    campaign: Campaign, db: Database, tmp_path: Path
+) -> None:
+    results = CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False)
+    watchdog = request(db, campaign, harness='script', state=AgentSessionState.RUNNING)
+    report = AgentFinished(process=AgentExit(ExitStatus.EXITED, 200, 0), session_id='at-the-end')
+    results.finished(agent_job(campaign, watchdog, tmp_path), report)
+    assert [e['session_id'] for e in identified(db, watchdog)] == ['at-the-end']
+
+
+@pytest.mark.parametrize(
+    ('created_by', 'proposed_by'),
+    [
+        ('human', None),
+        ('orchestrator', None),
+        (
+            'research#{research}',
+            {'actor': 'research#{research}', 'harness': 'claude', 'executable': 'claude', 'session_id': None},
+        ),
+        ('research#9999', {'actor': 'research#9999', 'harness': None, 'executable': None, 'session_id': None}),
+    ],
+    ids=['human', 'orchestrator', 'agent-without-a-session-yet', 'agent-whose-row-is-gone'],
+)
+def test_the_proposer_is_an_agent_only(
+    campaign: Campaign,
+    db: Database,
+    tmp_path: Path,
+    created_by: str,
+    proposed_by: dict[str, object] | None,
+) -> None:
+    research = request(db, campaign, RESEARCH, harness='claude')
+    implementer, _, _ = implementer_of(
+        db, campaign, created_by.format(research=research), harness='script', state=AgentSessionState.RUNNING
+    )
+    CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False).session(AgentKey(implementer), 'x')
+    [event] = identified(db, implementer)
+    expected = (
+        None if proposed_by is None else {**proposed_by, 'actor': str(proposed_by['actor']).format(research=research)}
+    )
+    assert event['proposed_by'] == expected
+
+
+def test_the_event_commits_with_the_session_id_or_not_at_all(campaign: Campaign, db: Database) -> None:
+    watchdog = request(db, campaign, harness='script', state=AgentSessionState.RUNNING)
+    with db.session() as s:
+        learn(s, s.get_one(AgentSession, watchdog), 'x')
+        s.rollback()
+    assert agent_session(db, watchdog).session_id is None
+    assert identified(db, watchdog) == []

@@ -53,3 +53,5 @@ def _signed(actor: Actor) -> str:
 
 
 type Actor = Annotated[Agent | System, BeforeValidator(_fields), PlainSerializer(_signed, return_type=str)]
+type SignedAgent = Annotated[Agent, BeforeValidator(_fields), PlainSerializer(_signed, return_type=str)]
+"""An ``Agent`` that is read from and written as its signature, as an ``Actor`` is."""

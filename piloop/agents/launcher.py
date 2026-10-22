@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from piloop import deprecated
 from piloop.actor import Agent
-from piloop.agents.results import DaemonStopped, Ended, HandedOver, NotStarted, ended_of
+from piloop.agents.results import DaemonStopped, Ended, HandedOver, NotStarted, ended_of, learn
 from piloop.config import BRIEF_FILE, config_of, harness_of
 from piloop.db.events import emit
 from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Run, utcnow
@@ -234,7 +234,7 @@ class Launcher:
                 commits=commits,
             )
             w.harness, w.model, w.runtime, w.log_dir = harness, model, runtime_kind, str(log_dir)
-            w.state, w.started_at, w.session_id = AgentSessionState.STARTING, utcnow(), session_id
+            w.state, w.started_at = AgentSessionState.STARTING, utcnow()
             emit(
                 s,
                 f'{kind}.started',
@@ -242,6 +242,7 @@ class Launcher:
                 agent_session_id,
                 payload={'harness': harness, 'model': model, 'reason': reason},
             )
+            learn(s, w, session_id)
             s.commit()
             return job
 

@@ -98,6 +98,10 @@ payload can still be text that is not strict JSON, such as `NaN` or `1e400`, and
 through can have a time that is not a time. Such a value comes as null with its stored text under `invalid`, and the
 events after it read as usual. The documents are always strict JSON.
 
+`agent_session.identified` comes once for each harness session id of an agent, with `session_id`, `harness`,
+`executable`, `role`, `model`, `campaign`, `run`, `idea` and `proposed_by` (the agent that proposed the idea, with
+its `actor`, `harness`, `executable` and `session_id`).
+
 An event kind that this version of piloop does not know, such as a plugin's, comes in the same envelope with its
 payload as opaque JSON. A reader that does not need it skips it and moves its cursor on.
 

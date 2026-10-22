@@ -11,27 +11,40 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal, assert_never
 
-from pydantic import Field, TypeAdapter
+from pydantic import Field, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop import deprecated
-from piloop.actor import Agent
+from piloop.actor import Agent, SignedAgent
 from piloop.config import harness_of
 from piloop.db.events import emit
 from piloop.db.models import (
     LIVE,
     AgentSession,
     AgentSessionState,
+    Campaign,
     Comment,
     Evaluation,
     Event,
+    Idea,
     Measurement,
+    Run,
     RunEnd,
     utcnow,
 )
 from piloop.db.session import Database, write_transaction
-from piloop.ids import AgentSessionId, CandidateId, EvaluatorId, MeasurementId, RunId, TargetKind, TargetRef
+from piloop.ids import (
+    AgentSessionId,
+    CandidateId,
+    EvaluatorId,
+    IdeaId,
+    MeasurementId,
+    RoleName,
+    RunId,
+    TargetKind,
+    TargetRef,
+)
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import (
     AgentFinished,
@@ -128,6 +141,49 @@ type Ended = Annotated[Ran | NotStarted | Lost | DaemonStopped | HandedOver, Fie
 ENDED: TypeAdapter[Ended] = TypeAdapter(Ended)
 """How an ``ENDED_EVENT`` holds an ``Ended``."""
 
+IDENTIFIED_EVENT = 'agent_session.identified'
+"""The event on an agent's row when its harness session id is new to the row (``learn``), with an ``Identified``."""
+
+
+@dataclass(frozen=True)
+class Proposer:
+    """The agent that proposed an implementer's idea, and its harness session."""
+
+    actor: SignedAgent
+    harness: str | None
+    """Its ``[harness.<name>]``. None when its row is gone."""
+    executable: str | None
+    """Its harness's ``executable``. None when its row is gone, or ``piloop.toml`` no longer names the harness."""
+    session_id: str | None
+    """Its harness's session id. None until piloop knows it, or when its row is gone."""
+
+
+@dataclass(frozen=True)
+class Identified:
+    """An agent's harness session, and what the agent does in the campaign."""
+
+    session_id: str
+    """The harness's own session id."""
+    harness: str
+    """The ``[harness.<name>]`` that runs the agent."""
+    executable: str | None
+    """The harness's ``executable``. None when ``piloop.toml`` no longer names the harness."""
+    role: RoleName
+    model: str | None
+    campaign: str | None
+    """The campaign's name."""
+    run: RunId | None
+    idea: IdeaId | None
+    proposed_by: Proposer | None
+    """The agent that proposed the run's idea (``ideas.created_by``). None when a person or the orchestrator did, or
+    without a run."""
+
+
+IDENTIFIED: TypeAdapter[Identified] = TypeAdapter(Identified)
+"""How an ``IDENTIFIED_EVENT`` holds an ``Identified``."""
+SIGNED: TypeAdapter[SignedAgent] = TypeAdapter(SignedAgent)
+"""Reads an agent from its signature, such as an ``ideas.created_by``."""
+
 
 class CampaignResults:
     """``Results``: what an agent's or an evaluation's end changes in the campaign's rows."""
@@ -163,14 +219,13 @@ class CampaignResults:
             w.handle = handle
             if w.state is AgentSessionState.STARTING:  # a row that the daemon ended meanwhile stays ending
                 w.state = AgentSessionState.RUNNING
-            if session_id is not None:
-                w.session_id = session_id
+            learn(s, w, session_id)
 
         self._apply(guard, change)
 
     def session(self, key: AgentKey, session_id: str, *, guard: Guard | None = None) -> None:
         def change(s: Session) -> None:
-            _open(s, key).session_id = session_id
+            learn(s, _open(s, key), session_id)
 
         self._apply(guard, change)
 
@@ -221,8 +276,7 @@ class CampaignResults:
                 w.state, w.error = AgentSessionState.KILLED, reason
                 ended: Ran | NotStarted = NotStarted(reason)
             case AgentFinished(process=process):
-                if report.session_id is not None:
-                    w.session_id = report.session_id
+                learn(s, w, report.session_id)
                 w.usage = report.usage
                 if self._stopping():
                     self._stopped(s, w, report.head)
@@ -277,6 +331,46 @@ def _open(s: Session, key: AgentKey) -> AgentSession:
     if w is None or w.state not in LIVE:
         raise Settled(f'agent_session#{key.agent_session} is closed')
     return w
+
+
+def learn(s: Session, w: AgentSession, session_id: str | None) -> None:
+    """Put ``session_id`` on the row. When the row did not have it, emit ``IDENTIFIED_EVENT``. The caller commits.
+
+    Each write of an agent's session id goes through here: the launcher's minted id, and the ids that its executor
+    reports at the start, in each heartbeat and in the final report.
+    """
+    if session_id is None or session_id == w.session_id:
+        return
+    w.session_id = session_id
+    assert w.harness is not None  # the launcher picks the harness before it launches the agent
+    run = None if w.run_id is None else s.get(Run, w.run_id)
+    idea = None if run is None else s.get_one(Idea, run.idea_id)
+    definition = harness_of(s, w)
+    identified = Identified(
+        session_id=session_id,
+        harness=w.harness,
+        executable=None if definition is None else definition.executable,
+        role=w.kind,
+        model=w.model,
+        campaign=None if w.campaign_id is None else s.get_one(Campaign, w.campaign_id).name,
+        run=w.run_id,
+        idea=None if idea is None else idea.id,
+        proposed_by=None if idea is None else _proposer(s, idea.created_by),
+    )
+    emit(s, IDENTIFIED_EVENT, TargetKind.AGENT_SESSION, w.id, payload=IDENTIFIED.dump_python(identified, mode='json'))
+
+
+def _proposer(s: Session, created_by: str) -> Proposer | None:
+    """The agent whose signature ``created_by`` is, with its harness session. None for any other author."""
+    try:
+        agent = SIGNED.validate_python(created_by)
+    except ValidationError:  # created_by is text: a person, the orchestrator, or a name that no agent signs
+        return None
+    row = s.get(AgentSession, agent.session)
+    if row is None:
+        return Proposer(agent, None, None, None)
+    definition = harness_of(s, row)
+    return Proposer(agent, row.harness, None if definition is None else definition.executable, row.session_id)
 
 
 def _ended(s: Session, agent_session_id: AgentSessionId, ended: Ended) -> None:

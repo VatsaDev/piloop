@@ -1077,8 +1077,8 @@ class Event(Base):
 
     It has two writers. The daemon writes what only it knows: ``run.started``, ``measurement.recorded``,
     ``candidate.judged`` with the score, ``comment.delivered``, ``comment.undelivered``, ``agent_session.wrap_up`` and
-    ``agent_session.stop_ended`` on an implementer, ``<role>.started`` and ``<role>.finished``, and ``anomaly.*`` for faults in the
-    environment such as ``anomaly.startup``. Triggers write what any connection does to the rows. The persistent
+    ``agent_session.stop_ended`` on an implementer, ``<role>.started``, ``agent_session.identified`` and
+    ``<role>.finished``, and ``anomaly.*`` for faults in the environment such as ``anomaly.startup``. Triggers write what any connection does to the rows. The persistent
     trigger writes ``comment.escalation``. The TEMP triggers of each connection (``piloop/db/actor_triggers.sql``,
     generated from ``piloop.db.triggers.TEMP``) write the change log, signed by the connection's actor:
     ``idea.status``, ``idea.priority``, ``idea.track``, ``idea.base_candidate_id``, ``candidate.verdict``, ``run.brief``,
