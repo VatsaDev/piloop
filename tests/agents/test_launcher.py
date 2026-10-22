@@ -16,7 +16,16 @@ from piloop.actor import Agent
 from piloop.agents import capture
 from piloop.agents.capture import ENTIRE_INSTALL, MIN_ENTIRE
 from piloop.agents.launcher import PROMPT, Launcher, fill
-from piloop.agents.results import ENDED_EVENT, STARTUP_ANOMALY, STOPPED_ERROR, WRAP_UP, End
+from piloop.agents.results import (
+    ENDED_EVENT,
+    NEVER_WORKED,
+    STARTUP_ANOMALY,
+    WRAP_UP,
+    DaemonStopped,
+    Ended,
+    NotStarted,
+    Ran,
+)
 from piloop.agents.roles import PILOOP_HINT, PROMPTS, SQL_HINT, Role, compose_brief, role
 from piloop.config import CampaignConfig, config_of, load_campaign_config
 from piloop.daemon.run_controller import RunController
@@ -27,7 +36,7 @@ from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.mcp import MCP
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import Checkout, GitTree
-from piloop.plugins.runtime.contract import AgentSpec, AgentStatus, StartFailed
+from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, StartFailed
 from piloop.settings import Settings
 from piloop.usage.jsonl import CWD_ENCODERS
 from tests.conftest import (
@@ -87,6 +96,12 @@ def launch(db: Database, runtime: ScriptRuntime, tmp_path: Path, agent_session_i
     return launcher(db, runtime, tmp_path, tracer).launch(
         agent_session_id, brief=brief, cwd=cwd, log_dir=tmp_path / 'w', artifact=Checkout(path=cwd)
     )
+
+
+def exit_of(ended: Ended) -> AgentExit:
+    """How the agent's process ended: the agent ran."""
+    assert isinstance(ended, Ran), ended
+    return ended.process
 
 
 def agent_session(db: Database, agent_session_id: int) -> AgentSession:
@@ -164,7 +179,8 @@ def test_launch_runs_the_row_through_its_lifecycle(
     use_harness(db, campaign, HARNESS_PROMPT_TO_FILE)
     agent_session_id = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, agent_session_id, tracer)
-    assert (outcome.process.status, outcome.process.exit_code, outcome.process.error) == (AgentStatus.EXITED, 0, None)
+    process = exit_of(outcome)
+    assert (process.status, process.exit_code, process.error) == (ExitStatus.EXITED, 0, None)
     w = agent_session(db, agent_session_id)
     assert (w.state, w.harness, w.model, w.runtime, w.log_dir, w.error) == (
         AgentSessionState.EXITED,
@@ -188,7 +204,7 @@ def test_launch_runs_the_row_through_its_lifecycle(
         ]
     )
     [ended] = [payload for kind, _, payload in events if kind == ENDED_EVENT]
-    assert (ended['end'], ended['head']) == ('ran', None), 'how it ended, for what waits for it'
+    assert (ended['kind'], ended['head']) == ('ran', None), 'how it ended, for what waits for it'
     [span] = [span for span in spans.get_finished_spans() if span.name == 'piloop.agent']
     assert dict(span.attributes or {}) == {
         'agent_session': 1,
@@ -234,7 +250,7 @@ def test_an_agent_writes_through_piloop_sql_as_its_own_actor(
     )
     agent_session_id = request(db, campaign, kind=RoleName.RESEARCH)
     outcome = launch(db, runtime, tmp_path, agent_session_id)
-    assert outcome.process.error is None, (tmp_path / 'w' / 'agent_session.stderr').read_text()
+    assert exit_of(outcome).error is None, (tmp_path / 'w' / 'agent_session.stderr').read_text()
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
         assert (row.name, row.updated_by) == ('renamed', f'research#{agent_session_id}')
@@ -264,7 +280,7 @@ def test_an_agents_piloop_is_the_daemons_whatever_comes_first_on_path_or_sits_in
 
     agent_session_id = request(db, campaign, kind=RoleName.RESEARCH)
     outcome = launch(db, runtime, tmp_path, agent_session_id)
-    assert outcome.process.error is None, (tmp_path / 'w' / 'agent_session.stderr').read_text()
+    assert exit_of(outcome).error is None, (tmp_path / 'w' / 'agent_session.stderr').read_text()
     with db.session() as s:
         assert s.get_one(Campaign, campaign.id).name == 'renamed'
 
@@ -276,7 +292,7 @@ def test_harness_exit_code_is_recorded_not_raised(
     agent_session_id = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, agent_session_id)
     w = agent_session(db, agent_session_id)
-    assert (outcome.process.error, outcome.process.exit_code, w.state, w.error) == (
+    assert (exit_of(outcome).error, exit_of(outcome).exit_code, w.state, w.error) == (
         'agent exit 3',
         3,
         AgentSessionState.EXITED,
@@ -293,8 +309,8 @@ def test_timeout_kills_and_records(campaign: Campaign, db: Database, runtime: Sc
     agent_session_id = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, agent_session_id)
     w = agent_session(db, agent_session_id)
-    assert (outcome.process.status, w.state, w.error) == (
-        AgentStatus.TIMED_OUT,
+    assert (exit_of(outcome).status, w.state, w.error) == (
+        ExitStatus.TIMED_OUT,
         AgentSessionState.KILLED,
         'agent timeout after 0.3s',
     )
@@ -313,8 +329,8 @@ def test_runtime_failure_is_isolated(
     agent_session_id = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, agent_session_id, tracer)
     w = agent_session(db, agent_session_id)
-    assert (outcome.process.error, w.state, w.handle, w.error) == (
-        'RuntimeError: no server',
+    assert (outcome, w.state, w.handle, w.error) == (
+        NotStarted('RuntimeError: no server'),
         AgentSessionState.KILLED,
         {},
         'RuntimeError: no server',
@@ -338,13 +354,11 @@ def test_a_failed_start_leaves_its_screen_as_the_transcript_and_its_last_lines_i
     outcome = launch(db, runtime, tmp_path, agent_session_id)
     assert (tmp_path / 'w' / 'transcript.txt').read_text() == screen
     tail = '\n'.join([*(f'line {i}' for i in range(9, 20)), '> do the thing'])
-    assert (
-        outcome.process.error == agent_session(db, agent_session_id).error == f'{error}\nIts screen ended with:\n{tail}'
-    )
-    assert outcome.end is End.NOT_STARTED
+    reason = f'{error}\nIts screen ended with:\n{tail}'
+    assert (outcome, agent_session(db, agent_session_id).error) == (NotStarted(reason), reason)
 
     mocker.patch.object(runtime, 'start', side_effect=StartFailed(error, '\n'))
-    assert launch(db, runtime, tmp_path, request(db, campaign)).process.error == error, 'a blank screen adds nothing'
+    assert launch(db, runtime, tmp_path, request(db, campaign)) == NotStarted(error), 'a blank screen adds nothing'
 
 
 def anomalies(db: Database) -> list[tuple[int, dict[str, object]]]:
@@ -368,7 +382,7 @@ def test_an_agent_that_never_got_going_is_an_anomaly(
     mocker.patch.object(runtime, 'start', side_effect=RuntimeError('agent_not_ready: Trust this folder?'))
     dialog = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, dialog)
-    assert ((outcome.end is End.NOT_STARTED), agent_session(db, dialog).state) == (True, AgentSessionState.KILLED)
+    assert (isinstance(outcome, NotStarted), agent_session(db, dialog).state) == (True, AgentSessionState.KILLED)
     assert anomalies(db) == [
         (
             dialog,
@@ -388,18 +402,14 @@ def test_an_agent_that_never_got_going_is_an_anomaly(
     use_harness(db, campaign, HARNESS_PROMPT_TO_FILE, **counted)
     idle_at_once = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, idle_at_once)
-    assert ((outcome.end is End.NOT_STARTED), outcome.process.error, agent_session(db, idle_at_once).state) == (
-        True,
-        None,
-        AgentSessionState.EXITED,
-    )
+    assert (outcome, agent_session(db, idle_at_once).state) == (NotStarted(NEVER_WORKED), AgentSessionState.EXITED)
     assert [w for w, _ in anomalies(db)] == [dialog, idle_at_once], 'ended within a minute without a token'
 
     monkeypatch.setattr('piloop.agents.results.STARTUP_SECONDS', 0)
-    assert launch(db, runtime, tmp_path, request(db, campaign)).end is not End.NOT_STARTED, 'past the startup window'
+    assert not isinstance(launch(db, runtime, tmp_path, request(db, campaign)), NotStarted), 'past the startup window'
     monkeypatch.undo()
     use_harness(db, campaign, HARNESS_PROMPT_TO_FILE)
-    assert launch(db, runtime, tmp_path, request(db, campaign)).end is not End.NOT_STARTED, (
+    assert not isinstance(launch(db, runtime, tmp_path, request(db, campaign)), NotStarted), (
         'a harness whose usage is not read cannot tell "spent nothing" from "unknown"'
     )
     assert len(anomalies(db)) == 2
@@ -417,7 +427,7 @@ def test_an_agent_told_to_wrap_up_that_stops_with_nothing_is_not_a_failed_start(
         emit(s, WRAP_UP, TargetKind.AGENT_SESSION, told)
         s.commit()
     outcome = launch(db, runtime, tmp_path, told)
-    assert ((outcome.end is End.NOT_STARTED), agent_session(db, told).state, anomalies(db)) == (
+    assert (isinstance(outcome, NotStarted), agent_session(db, told).state, anomalies(db)) == (
         False,
         AgentSessionState.EXITED,
         [],
@@ -444,7 +454,7 @@ def test_a_cwd_that_cannot_be_made_is_a_failed_start(
         artifact=GitTree(repo=Path(campaign.path), commit='HEAD'),
     )
     w = agent_session(db, agent_session_id)
-    assert ((outcome.end is End.NOT_STARTED), w.state, w.error) == (
+    assert (isinstance(outcome, NotStarted), w.state, w.error) == (
         True,
         AgentSessionState.KILLED,
         'OSError: [Errno 28] No space left on device',
@@ -460,9 +470,7 @@ def test_nothing_starts_after_cancel(campaign: Campaign, db: Database, runtime: 
         agent_session_id, brief='x', cwd=tmp_path, log_dir=tmp_path / 'w', artifact=Checkout(path=tmp_path)
     )
     w = agent_session(db, agent_session_id)
-    assert (outcome.process.error, w.state, w.harness) == (STOPPED_ERROR, AgentSessionState.REQUESTED, None), (
-        'stop() closes rows'
-    )
+    assert (outcome, w.state, w.harness) == (DaemonStopped(), AgentSessionState.REQUESTED, None), 'stop() closes rows'
     assert not (tmp_path / 'w').exists()
 
 
@@ -752,8 +760,8 @@ def test_a_killed_agents_usage_is_read_too(
     agent_session_id = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, agent_session_id)
     w = agent_session(db, agent_session_id)
-    assert (outcome.process.status, w.state, w.error) == (
-        AgentStatus.TIMED_OUT,
+    assert (exit_of(outcome).status, w.state, w.error) == (
+        ExitStatus.TIMED_OUT,
         AgentSessionState.KILLED,
         'agent timeout after 0.5s',
     )
@@ -809,11 +817,7 @@ def test_a_brief_past_the_limit_of_one_argument_reaches_the_agent_as_a_file(
     outcome = launcher(db, runtime, tmp_path).launch(
         request(db, campaign), brief=brief, cwd=cwd, log_dir=tmp_path / 'w', artifact=Checkout(path=cwd)
     )
-    assert (outcome.process.status, outcome.process.error, (outcome.end is End.NOT_STARTED)) == (
-        AgentStatus.EXITED,
-        None,
-        False,
-    )
+    assert (exit_of(outcome).status, exit_of(outcome).error) == (ExitStatus.EXITED, None)
     assert (cwd / 'argv.txt').read_text().splitlines() == [PROMPT.format(path=tmp_path / 'w' / 'brief.md')]
     assert (tmp_path / 'w' / 'brief.md').read_text() == brief
 
@@ -932,4 +936,4 @@ def test_an_agent_whose_start_cannot_be_recorded_is_killed_and_waited_for(
     outcome = launch(db, runtime, tmp_path, agent_session_id, Tracer(None))
     [proc] = runtime._procs.values()
     assert proc.returncode is not None, 'killed and waited for, not left running unwatched'
-    assert ((outcome.end is End.NOT_STARTED), outcome.process.error) == (True, 'RuntimeError: database closed')
+    assert outcome == NotStarted('RuntimeError: database closed')

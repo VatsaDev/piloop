@@ -9,7 +9,7 @@ from piloop.plugins.host import Selection, Source
 from piloop.plugins.runtime.contract import RUNTIMES
 from piloop.plugins.runtime.contract import AgentSpec, AgentStatus, Check, Handle
 from piloop.plugins.runtime.contract import NotAttachable, NotSteerable
-from piloop.plugins.runtime.contract import AgentExit
+from piloop.plugins.runtime.contract import AgentExit, ExitStatus
 from piloop.plugins.runtime.contract import Runtime, RuntimeFailure, StartFailed
 from piloop.harnesses import Invocation, QueueKey
 from piloop.settings import runtime_settings
@@ -54,6 +54,7 @@ from piloop.plugins.executor.contract import EXECUTORS, Executor, Host
 from piloop.plugins.executor.contract import Results, Settled, NoParameters
 from piloop.plugins.executor.contract import AgentJob, EvaluationJob, LeftJob
 from piloop.plugins.executor.contract import AgentReport, EvaluationReport
+from piloop.plugins.executor.contract import AgentFinished, AgentNotStarted
 from piloop.plugins.executor.contract import AgentKey, EvaluationKey, JobKey
 from piloop.plugins.executor.contract import key_of
 from piloop.plugins.executor.contract import GitTree, Checkout, Commits

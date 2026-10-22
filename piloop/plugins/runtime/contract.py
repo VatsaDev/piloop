@@ -18,11 +18,19 @@ from piloop.plugins.host import Capability, Selection
 
 
 class AgentStatus(StrEnum):
-    """The state a runtime can report for an agent."""
+    """The state a runtime can report for an agent (``Runtime.status``)."""
 
     WORKING = 'working'
     IDLE = 'idle'
     BLOCKED = 'blocked'
+    EXITED = 'exited'
+    deprecated.until('0.3.0', 'AgentStatus.TIMED_OUT, which a 0.2.0 runtime returned from wait: delete it')
+    TIMED_OUT = 'timed_out'
+
+
+class ExitStatus(StrEnum):
+    """How an agent process ended (``AgentExit``). A runtime maps its own ends onto these, and the error says why."""
+
     EXITED = 'exited'
     TIMED_OUT = 'timed_out'
     """The runtime killed the agent because ``wait`` ran out of time."""
@@ -78,7 +86,7 @@ class Handle:
 class AgentExit:
     """How an agent process ended: what ``Runtime.wait`` returns."""
 
-    status: AgentStatus
+    status: ExitStatus
     seconds: float
     exit_code: int | None = None
     error: str | None = None
@@ -206,9 +214,11 @@ class Runtime(Protocol):
         ...
 
 
-deprecated.until('0.3.0', 'Outcome of piloop.plugins.runtime.contract is AgentExit: delete the Outcome alias')
-Outcome = AgentExit
-"""The name of ``AgentExit`` in 0.2.0."""
+@deprecated.until('0.3.0', 'Outcome of piloop.plugins.runtime.contract is AgentExit with an ExitStatus: delete Outcome')
+def Outcome(status: AgentStatus, seconds: float, exit_code: int | None = None, error: str | None = None) -> AgentExit:
+    """Return the ``AgentExit`` of a 0.2.0 runtime's ``wait``, whose status was an ``AgentStatus``."""
+    end = ExitStatus.TIMED_OUT if status is AgentStatus.TIMED_OUT else ExitStatus.EXITED
+    return AgentExit(end, seconds, exit_code, error)
 
 
 TAG_ENV = 'PILOOP_PROCESS_TAG'

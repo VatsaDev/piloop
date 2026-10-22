@@ -47,6 +47,7 @@ from piloop.plugins.runtime.contract import (
     AgentSpec,
     AgentStatus,
     Check,
+    ExitStatus,
     Handle,
     NotSteerable,
     RuntimeFailure,
@@ -516,18 +517,18 @@ class HerdrRuntime:
             remaining = deadline - now
             if remaining <= 0:
                 self.kill(handle)
-                return AgentExit(AgentStatus.TIMED_OUT, timeout, error=f'agent timeout after {timeout:g}s')
+                return AgentExit(ExitStatus.TIMED_OUT, timeout, error=f'agent timeout after {timeout:g}s')
             chunk = min(remaining, herdr_settings.wait_chunk_seconds)
             window = self._window(handle, block, now, chunk)
             if isinstance(window, str):
                 # the dialog is only on the visible screen, and the pane closes with the agent: keep it in the error
-                return AgentExit(AgentStatus.BLOCKED, now - started, error=f'{BLOCKED_ERROR}:\n{window.strip()}')
+                return AgentExit(ExitStatus.EXITED, now - started, error=f'{BLOCKED_ERROR}:\n{window.strip()}')
             until, chunk = window
             try:
                 info = self._agent_wait(agent, until, chunk)['agent']
             except HerdrError as e:
                 if e.code in GONE_CODES:
-                    return AgentExit(AgentStatus.EXITED, time.monotonic() - started, error=None)
+                    return AgentExit(ExitStatus.EXITED, time.monotonic() - started, error=None)
                 if e.code == 'timeout':
                     continue
                 raise
@@ -553,13 +554,13 @@ class HerdrRuntime:
             if says is Screen.FAILED_TURN:
                 if resumes == len(RESUME_BACKOFF_SECONDS):
                     return AgentExit(
-                        AgentStatus.IDLE, time.monotonic() - started, error=f'{TURN_FAILED_ERROR}:\n{tail}'
+                        ExitStatus.EXITED, time.monotonic() - started, error=f'{TURN_FAILED_ERROR}:\n{tail}'
                     )
                 self._sleep(min(RESUME_BACKOFF_SECONDS[resumes], remaining))
                 resumes += 1
                 self._resume(agent, seq, RESUME_PROMPT)
                 continue
-            return AgentExit(AgentStatus.IDLE, time.monotonic() - started, error=None)
+            return AgentExit(ExitStatus.EXITED, time.monotonic() - started, error=None)
 
     def _window(self, handle: Handle, block: Block | None, now: float, chunk: float) -> tuple[list[str], float] | str:
         """Return the states the next ``agent wait`` stops on and for how long, or the screen of a stuck agent.

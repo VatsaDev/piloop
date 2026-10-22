@@ -47,8 +47,10 @@ from piloop.db.session import Database, write_transaction
 from piloop.plugins.executor.contract import (
     JOB,
     REPORT,
+    AgentFinished,
     AgentJob,
     AgentKey,
+    AgentNotStarted,
     AgentReport,
     EvaluationJob,
     EvaluationKey,
@@ -59,7 +61,6 @@ from piloop.plugins.executor.contract import (
     Results,
     Settled,
 )
-from piloop.plugins.runtime.contract import AgentStatus
 
 LOCAL_WORKER = 'local'
 """The id of the worker inside ``piloop serve``. It is stable, so the next daemon's worker finds its leases again."""
@@ -368,7 +369,7 @@ class Leases:
             'report': REPORT.dump_python(report, mode='json'),
         }
         job = JOB.validate_python(lease.job)
-        if isinstance(job, AgentJob) and job.commits is not None and isinstance(report, AgentReport):
+        if isinstance(job, AgentJob) and job.commits is not None and isinstance(report, AgentFinished):
             payload['ref'] = job.commits.ref if report.head is not None else None
         kind, target = _target(lease)
         with self._db.session() as s:
@@ -521,7 +522,7 @@ class Leases:
                     raise StaleLease(f'stale_lease: lease#{lease_id} was taken')
                 cancel(s, found, NOT_TAKEN)
 
-            report = AgentReport(status=AgentStatus.EXITED, seconds=0, error=NOT_TAKEN)
+            report = AgentNotStarted(reason=NOT_TAKEN)
             try:
                 self._results.finished(AgentJob.model_validate(lease.job), report, guard=take)
             except StaleLease:  # a worker took it meanwhile: it reports

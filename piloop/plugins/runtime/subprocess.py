@@ -21,6 +21,7 @@ from piloop.plugins.runtime.contract import (
     AgentSpec,
     AgentStatus,
     Check,
+    ExitStatus,
     Handle,
     NotAttachable,
     NotSteerable,
@@ -123,13 +124,13 @@ class SubprocessRuntime:
                 if time.monotonic() - started > timeout:
                     self.kill(handle)
                     seconds = time.monotonic() - started
-                    return AgentExit(AgentStatus.TIMED_OUT, seconds, None, f'agent timeout after {timeout:g}s')
+                    return AgentExit(ExitStatus.TIMED_OUT, seconds, None, f'agent timeout after {timeout:g}s')
                 time.sleep(POLL_SECONDS)
             if not self._resume(handle):
                 break
         rc = self._exit_code(handle)
         return AgentExit(
-            AgentStatus.EXITED, time.monotonic() - started, rc, None if rc in (0, None) else f'agent exit {rc}'
+            ExitStatus.EXITED, time.monotonic() - started, rc, None if rc in (0, None) else f'agent exit {rc}'
         )
 
     def status(self, handle: Handle) -> AgentStatus:

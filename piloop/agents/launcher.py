@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 
 from piloop import deprecated
 from piloop.actor import Agent
-from piloop.agents.results import STOPPED_ERROR, End, Ended, ended_of
+from piloop.agents.results import DaemonStopped, Ended, HandedOver, NotStarted, ended_of
 from piloop.config import BRIEF_FILE, config_of, harness_of
 from piloop.db.events import emit
 from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Run, TargetKind, utcnow
@@ -23,7 +23,7 @@ from piloop.db.session import Database
 from piloop.harnesses import SESSION_ENV, SESSION_ID, Invocation, fill, takes_session_id
 from piloop.otel import Span, Tracer
 from piloop.plugins.executor.contract import AgentJob, AgentKey, Artifact, Commits, Executor, LeftJob
-from piloop.plugins.runtime.contract import RUNTIMES, AgentExit, AgentSpec, AgentStatus
+from piloop.plugins.runtime.contract import RUNTIMES, AgentSpec
 from piloop.proc import PILOOP_ARGV, child_env
 from piloop.text import cell
 
@@ -104,7 +104,7 @@ class Launcher:
         with self.tracer.span('piloop.agent', agent_session=agent_session_id) as span:
             with self.lock:
                 if self.cancelled.is_set():
-                    return Ended(End.STOPPED, AgentExit(AgentStatus.EXITED, 0, error=STOPPED_ERROR))
+                    return DaemonStopped()
                 try:
                     job = self._prepare(agent_session_id, span, brief, cwd, log_dir, artifact, commits)
                     self.executor.submit(job)
@@ -112,7 +112,7 @@ class Launcher:
                     span.error(e)
                     error = f'{type(e).__name__}: {e}'
                     self._fail(agent_session_id, error)
-                    return Ended(End.NOT_STARTED, AgentExit(AgentStatus.EXITED, 0, error=error))
+                    return NotStarted(error)
             return self._await(agent_session_id, span)
 
     def reattach(self, agent_session_id: int) -> Ended:
@@ -131,18 +131,18 @@ class Launcher:
 
         if not self.db.wait_until(closed, give_up=self.handover.is_set):
             span.set(state='handed_over')
-            return Ended(End.HANDED_OVER, AgentExit(AgentStatus.EXITED, 0))
+            return HandedOver()
         with self.db.session() as s:
             span.set(state=s.get_one(AgentSession, agent_session_id).state)
             ended = ended_of(s, agent_session_id)
-        return ended or Ended(End.STOPPED, AgentExit(AgentStatus.EXITED, 0, error=STOPPED_ERROR))
+        return ended or DaemonStopped()
 
     def _fail(self, agent_session_id: int, error: str) -> None:
         """Close a row whose job could not be described or submitted: no executor has it."""
         with self.db.session() as s:
             w = s.get_one(AgentSession, agent_session_id)
             w.state, w.ended_at, w.error = AgentSessionState.KILLED, utcnow(), error
-            payload: dict[str, object] = {'reason': w.reason, 'status': AgentStatus.EXITED, 'error': error}
+            payload: dict[str, object] = {'reason': w.reason, 'status': None, 'error': error}
             emit(s, f'{w.kind}.finished', TargetKind.AGENT_SESSION, agent_session_id, payload=payload)
             s.commit()
 

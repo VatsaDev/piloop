@@ -26,6 +26,7 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database, write_transaction
 from piloop.plugins.executor.contract import (
+    AgentFinished,
     AgentJob,
     AgentKey,
     AgentReport,
@@ -52,7 +53,7 @@ from piloop.plugins.executor.kit.leases import (
     revoke,
 )
 from piloop.plugins.executor.workers import WorkersParameters
-from piloop.plugins.runtime.contract import AgentStatus
+from piloop.plugins.runtime.contract import AgentExit, ExitStatus
 from tests.conftest import baseline
 
 HANDLE: dict[str, object] = {'runtime': 'subprocess', 'data': {}}
@@ -166,8 +167,8 @@ def events(db: Database, kind: str) -> list[tuple[TargetKind, int, dict[str, obj
         return [(e.target_kind, e.target_id, e.payload) for e in s.scalars(select(Event).where(Event.kind == kind))]
 
 
-DONE = AgentReport(status=AgentStatus.EXITED, seconds=1.0, exit_code=0)
-RECEIPT = {'reported': 'agent'}
+DONE = AgentFinished(process=AgentExit(ExitStatus.EXITED, 1.0, 0))
+RECEIPT = {'reported': 'agent_finished'}
 MEASURED = EvaluationReport(metrics={'score': 2.0}, seconds=1.0)
 
 

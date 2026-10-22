@@ -30,7 +30,7 @@ from piloop.db.session import Database
 from piloop.mcp import McpServer
 from piloop.otel import Tracer
 from piloop.plugins.host import Capability, PluginTable, Selection
-from piloop.plugins.runtime.contract import AgentSpec, AgentStatus
+from piloop.plugins.runtime.contract import AgentExit, AgentSpec
 from piloop.runtime.factory import RuntimeFactory
 from piloop.usage import UsageSpec
 
@@ -139,16 +139,11 @@ type Job = Annotated[AgentJob | EvaluationJob, Field(discriminator='kind')]
 JOB: TypeAdapter[AgentJob | EvaluationJob] = TypeAdapter(Job)
 
 
-class AgentReport(BaseModel):
-    """How an agent's job ended, as its executor saw it. Core decides the rest (``Results.finished``)."""
+class AgentFinished(BaseModel):
+    """An agent's process ended, as its executor saw it. Core decides the rest (``Results.finished``)."""
 
-    kind: Literal['agent'] = 'agent'
-    status: AgentStatus
-    seconds: float
-    exit_code: int | None = None
-    error: str | None = None
-    startup_failed: bool = False
-    """The job did not start: its worktree, its secrets or its runtime's start failed. Not an attempt."""
+    kind: Literal['agent_finished'] = 'agent_finished'
+    process: AgentExit
     session_id: str | None = None
     usage: UsageJson | None = None
     checkpoint: str | None = None
@@ -156,6 +151,19 @@ class AgentReport(BaseModel):
     """Whether the agent changed its checkout: a commit, or an uncommitted change outside the links."""
     head: str | None = None
     """The head of its commits, pinned at ``Commits.ref``, when the job asked for them back and there are some."""
+
+
+class AgentNotStarted(BaseModel):
+    """An agent's job did not start, so no process ran: its worktree, its secrets or its start failed, or a stop came."""
+
+    kind: Literal['agent_not_started'] = 'agent_not_started'
+    reason: str
+    seconds: float = 0
+    """How long it tried."""
+
+
+type AgentReport = AgentFinished | AgentNotStarted
+"""How an agent's job ended, as its executor saw it."""
 
 
 class EvaluationReport(BaseModel):
@@ -168,7 +176,7 @@ class EvaluationReport(BaseModel):
     units: dict[str, dict[str, float]] = Field(default_factory=dict)
 
 
-type Report = Annotated[AgentReport | EvaluationReport, Field(discriminator='kind')]
+type Report = Annotated[AgentFinished | AgentNotStarted | EvaluationReport, Field(discriminator='kind')]
 REPORT: TypeAdapter[AgentReport | EvaluationReport] = TypeAdapter(Report)
 
 

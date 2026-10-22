@@ -43,6 +43,7 @@ HELPERS: set[object] = {
     capabilities.GO,
     capabilities.key_of,
     capabilities.Settled,
+    capabilities.AgentReport,  # type aliases, which the search of classes does not find by itself
     capabilities.JobKey,  # a type alias, which the search of classes does not find by itself
     capabilities.Control,
     capabilities.run_agent,

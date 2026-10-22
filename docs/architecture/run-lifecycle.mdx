@@ -40,7 +40,7 @@ sequenceDiagram
     R-->>W: AgentExit
     W->>G: commit the work that is left uncommitted, pin the head, remove the worktree
     W->>DB: report on the lease: close the agent session row (exited or killed), with its token usage
-    L-->>X: AgentExit and the head
+    L-->>X: how the job ended: Ran, with the AgentExit and the head
     X->>DB: close the run (succeeded, failed or timed_out)
     loop each new commit, oldest first
         X->>G: pin it under refs/piloop/

@@ -24,8 +24,16 @@ from piloop.agents.capture import ENTIRE_INSTALL, MIN_ENTIRE, AttachError, attac
 from piloop.config import BRIEF_FILE, TRANSCRIPT
 from piloop.mcp import RENDERERS, Launch, expand, forwarded_env
 from piloop.otel import Span
-from piloop.plugins.executor.contract import AgentJob, AgentReport, Checkout, EvaluationJob, EvaluationReport
-from piloop.plugins.runtime.contract import AgentExit, AgentSpec, AgentStatus, Handle, Runtime, StartFailed
+from piloop.plugins.executor.contract import (
+    AgentFinished,
+    AgentJob,
+    AgentNotStarted,
+    AgentReport,
+    Checkout,
+    EvaluationJob,
+    EvaluationReport,
+)
+from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, Handle, Runtime, StartFailed
 from piloop.proc import child_env, kill_group
 from piloop.scoring.evaluate import SENT, EvalResult, run_evaluate
 from piloop.usage import UsageError, read_usage
@@ -97,7 +105,7 @@ def run_agent(job: AgentJob, runtime: Runtime, control: Control, span: Span) -> 
         return _unstarted(job, f'{type(e).__name__}: {e}', started_at)
     if not control.begin():
         remove(job)
-        return AgentReport(status=AgentStatus.EXITED, seconds=0, error=STOPPED)
+        return AgentNotStarted(reason=STOPPED)
     handle: Handle | None = None
     try:
         started_at = time.monotonic()
@@ -127,7 +135,7 @@ def run_agent(job: AgentJob, runtime: Runtime, control: Control, span: Span) -> 
 
 def watch_agent(
     job: AgentJob, runtime: Runtime, handle: Handle, elapsed: float, control: Control, span: Span
-) -> AgentReport | None:
+) -> AgentFinished | None:
     """Watch a started agent to its end, then return its report. ``elapsed``: the seconds it ran before this.
 
     None after a hand-over: the next daemon re-attaches, and the job and its worktree stay.
@@ -142,11 +150,10 @@ def _killer(runtime: Runtime, handle: Handle) -> Callable[[], None]:
     return lambda: runtime.kill(handle)
 
 
-def _unstarted(job: AgentJob, error: str, started_at: float) -> AgentReport:
+def _unstarted(job: AgentJob, error: str, started_at: float) -> AgentNotStarted:
     """Remove the worktree of an agent that did not start, and return its report: a failed start."""
     remove(job)
-    seconds = time.monotonic() - started_at
-    return AgentReport(status=AgentStatus.EXITED, seconds=seconds, error=error, startup_failed=True)
+    return AgentNotStarted(reason=error, seconds=time.monotonic() - started_at)
 
 
 def _watch(
@@ -167,9 +174,7 @@ def _watch(
         return runtime.wait(handle, timeout), session_id
     except Exception as e:  # a pane or a server that is gone: the agent ended for the worker
         span.error(e)
-        return AgentExit(
-            AgentStatus.EXITED, time.monotonic() - started_at, error=f'{type(e).__name__}: {e}'
-        ), session_id
+        return AgentExit(ExitStatus.EXITED, time.monotonic() - started_at, error=f'{type(e).__name__}: {e}'), session_id
     finally:
         if not reported:
             try:
@@ -198,15 +203,9 @@ def _session(runtime: Runtime, handle: Handle, control: Control, span: Span) -> 
     return session_id
 
 
-def _finish(job: AgentJob, outcome: AgentExit, session_id: str | None, control: Control, span: Span) -> AgentReport:
+def _finish(job: AgentJob, outcome: AgentExit, session_id: str | None, control: Control, span: Span) -> AgentFinished:
     """Read the usage, attach the session, bring the commits back, and return the report."""
-    report = AgentReport(
-        status=outcome.status,
-        seconds=outcome.seconds,
-        exit_code=outcome.exit_code,
-        error=outcome.error,
-        session_id=session_id,
-    )
+    report = AgentFinished(process=outcome, session_id=session_id)
     span.set(session_id=session_id)
     if job.usage is not None:
         try:
@@ -226,8 +225,9 @@ def _finish(job: AgentJob, outcome: AgentExit, session_id: str | None, control: 
             report.head = _commits(job, Repo(job.cwd), ignore)
     except Exception as e:  # a worktree that is gone: the report says what is known
         span.error(e)
-        report.error = report.error or f'{type(e).__name__}: {e}'
-    span.set(status=report.status, error=report.error, head=report.head, checkpoint=report.checkpoint)
+        report.process = replace(report.process, error=report.process.error or f'{type(e).__name__}: {e}')
+    process = report.process
+    span.set(status=process.status, error=process.error, head=report.head, checkpoint=report.checkpoint)
     return report
 
 

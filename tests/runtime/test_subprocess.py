@@ -11,7 +11,7 @@ import pytest
 from dirty_equals import IsPositive, IsStr
 
 from piloop.plugins.runtime import subprocess as subprocess_runtime
-from piloop.plugins.runtime.contract import AgentSpec, AgentStatus, Handle, NotSteerable
+from piloop.plugins.runtime.contract import AgentSpec, AgentStatus, ExitStatus, Handle, NotSteerable
 from piloop.plugins.runtime.subprocess import SubprocessRuntime
 from piloop.proc import alive, started
 
@@ -60,7 +60,7 @@ def test_runs_to_completion_and_captures_output(tmp_path: Path) -> None:
         'token': IsStr(regex='[0-9a-f]{32}'),
     }
     outcome = rt.wait(handle, timeout=10)
-    assert (outcome.status, outcome.exit_code, outcome.error) == (AgentStatus.EXITED, 3, 'agent exit 3')
+    assert (outcome.status, outcome.exit_code, outcome.error) == (ExitStatus.EXITED, 3, 'agent exit 3')
     assert outcome.seconds == IsPositive()
     assert rt.status(handle) is AgentStatus.EXITED
     assert rt.read(handle) == f'prompt=the brief var=yes token={handle.data["token"]}'
@@ -74,7 +74,7 @@ def test_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
     assert rt.status(handle) is AgentStatus.WORKING
     outcome = rt.wait(handle, timeout=0.5)
     assert (outcome.status, outcome.exit_code, outcome.error) == (
-        AgentStatus.TIMED_OUT,
+        ExitStatus.TIMED_OUT,
         None,
         'agent timeout after 0.5s',
     )
@@ -115,7 +115,7 @@ def test_a_timeout_kills_what_the_agent_started_in_a_session_of_its_own(tmp_path
     pid, start = escaped(tmp_path)
     try:
         assert os.getsid(pid) != handle.data['pid'], 'the child left the group that killpg reaches'
-        assert rt.wait(handle, timeout=0.5).status is AgentStatus.TIMED_OUT
+        assert rt.wait(handle, timeout=0.5).status is ExitStatus.TIMED_OUT
         assert gone(pid, start), 'the escaped child dies with the agent'
     finally:
         if alive(pid, start):
@@ -128,7 +128,7 @@ def test_kill_ends_an_escaped_child_after_the_agent_itself_exited(tmp_path: Path
     handle = rt.start(spec(tmp_path, script(tmp_path, ESCAPE)))
     pid, start = escaped(tmp_path)
     try:
-        assert rt.wait(handle, timeout=10).status is AgentStatus.EXITED
+        assert rt.wait(handle, timeout=10).status is ExitStatus.EXITED
         assert alive(pid, start), 'the agent exited, its job did not'
         SubprocessRuntime().kill(Handle(handle.runtime, dict(handle.data)))
         assert gone(pid, start), 'any instance, from the handle in the database'
@@ -148,7 +148,7 @@ def test_kill_ends_what_an_agent_without_a_tag_started_in_a_session_of_its_own(t
         assert os.getsid(pid) != handle.data['pid'], 'the child left the group that killpg reaches'
         SubprocessRuntime().kill(legacy)  # the daemon after the upgrade: another instance, the handle from its row
         assert gone(pid, start), 'the escaped child dies with the agent'
-        assert starter.wait(handle, timeout=5).status is AgentStatus.EXITED
+        assert starter.wait(handle, timeout=5).status is ExitStatus.EXITED
     finally:
         if alive(pid, start):
             os.kill(pid, signal.SIGKILL)
@@ -239,7 +239,7 @@ def test_an_agent_that_exits_at_once_still_starts(tmp_path: Path, monkeypatch: p
     rt = SubprocessRuntime()
     handle = rt.start(spec(tmp_path, script(tmp_path, 'exit 0')))
     assert handle.data['pgid'] == handle.data['pid']
-    assert rt.wait(handle, timeout=10).status is AgentStatus.EXITED
+    assert rt.wait(handle, timeout=10).status is ExitStatus.EXITED
 
 
 TURNS = """
@@ -268,7 +268,7 @@ def test_a_message_waits_for_the_turn_to_end_then_resumes_the_session_with_it(tm
         time.sleep(0.05)
     assert 'turn 2' not in (tmp_path / 'turns.log').read_text(), 'the turn in progress gets nothing'
     outcome = rt.wait(handle, timeout=20)
-    assert (outcome.status, outcome.error) == (AgentStatus.EXITED, None)
+    assert (outcome.status, outcome.error) == (ExitStatus.EXITED, None)
     assert (tmp_path / 'turns.log').read_text() == (
         'turn 1: the brief\nturn 2 of t-42: [piloop] note on run#1 by research#2: stop after the next commit\n'
         'and say so\n'

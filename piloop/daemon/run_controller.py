@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import assert_never
 
 from git import Repo
 from sqlalchemy import func, select, update
@@ -17,7 +18,16 @@ from sqlalchemy.orm import Session
 from piloop import deprecated, git
 from piloop.actor import Actor, Agent, System
 from piloop.agents.launcher import AGENT_REFS, Launcher
-from piloop.agents.results import STOP_ENDED, CampaignResults, End, Ended, record
+from piloop.agents.results import (
+    STOP_ENDED,
+    CampaignResults,
+    DaemonStopped,
+    HandedOver,
+    Lost,
+    NotStarted,
+    Ran,
+    record,
+)
 from piloop.agents.roles import compose_brief, role
 from piloop.campaign.campaigns import WORKSPACE, campaign_dir, worktree_links
 from piloop.campaign.stop import (
@@ -56,7 +66,7 @@ from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Span, Tracer
 from piloop.plugins.executor.contract import Commits, EvaluationJob, EvaluationKey, Executor, GitTree, Host, selected
 from piloop.plugins.host import PluginTable
-from piloop.plugins.runtime.contract import AgentStatus
+from piloop.plugins.runtime.contract import ExitStatus
 from piloop.reports.history import history
 from piloop.reports.wake import lessons_overview
 from piloop.runtime.factory import RuntimeFactory, make_runtime
@@ -315,25 +325,30 @@ class RunController:
                 artifact=GitTree(repo=campaign_path, commit=base_sha, links=links),
                 commits=commits_of(run_id, agent_session_id),
             )
-        if ended.end is End.HANDED_OVER:  # the next daemon waits for the agent again
-            span.set(status='handed_over')
-            return
         # a daemon stop owns the rows, also when it came just after the report applied
-        if ended.end is End.STOPPED or self.launcher.cancelled.is_set():
-            self._cut(span, run_id, idea_id, agent_session_id, cfg.name, repo, base_sha, ended.head)
-            return
-        match ended.end:
-            case End.LOST:
+        stopping = self.launcher.cancelled.is_set()
+        match ended:
+            case HandedOver():  # the next daemon waits for the agent again
+                span.set(status='handed_over')
+            case DaemonStopped(head=head):
+                self._cut(span, run_id, idea_id, agent_session_id, cfg.name, repo, base_sha, head)
+            case Ran(head=head) if stopping:
+                self._cut(span, run_id, idea_id, agent_session_id, cfg.name, repo, base_sha, head)
+            case NotStarted() | Lost() if stopping:
+                self._cut(span, run_id, idea_id, agent_session_id, cfg.name, repo, base_sha, None)
+            case Lost():
                 self._close(span, run_id, RunStatus.FAILED, WORKER_LOST)
                 self._settle(span, run_id, idea_id, RunStatus.FAILED, startup_failed=False, recovered=None)
-            case End.NOT_STARTED:
+            case NotStarted():
                 if not self._relaunch(span, run_id, agent_session_id, log_dir):
                     with self._db.session() as s:
                         error = CANCELLED_ERROR if run_cancel(s, run_id) is not None else NOT_STARTED
                     self._close(span, run_id, RunStatus.FAILED, error)
                     self._settle(span, run_id, idea_id, RunStatus.FAILED, startup_failed=True, recovered=None)
-            case _:  # End.RAN
+            case Ran():
                 self._ran(span, run_id, idea_id, campaign_id, agent_session_id, repo, base_sha, ended, log_dir)
+            case _:
+                assert_never(ended)
 
     def _cut(
         self,
@@ -361,7 +376,7 @@ class RunController:
         agent_session_id: int,
         repo: Repo,
         base_sha: str,
-        ended: Ended,
+        ended: Ran,
         log_dir: Path,
     ) -> None:
         """Close the run of an agent that worked (``run_outcome``), score its commits and settle its idea."""
@@ -382,7 +397,7 @@ class RunController:
             finding=finding,
             stop_error=None if stop_ended is None else str(stop_ended.get('error', CAMPAIGN_STOPPED_ERROR)),
             cancelled=cancelled,
-            timed_out=outcome.status is AgentStatus.TIMED_OUT,
+            timed_out=outcome.status is ExitStatus.TIMED_OUT,
             error=outcome.error,
             asked=asked,
             commits=len(shas),

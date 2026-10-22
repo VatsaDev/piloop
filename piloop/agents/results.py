@@ -8,10 +8,10 @@ the agent reads it there (``Launcher.launch``), whichever process applied it.
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
+from typing import Annotated, Literal, assert_never
 
-from pydantic import TypeAdapter
+from pydantic import Field, TypeAdapter
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -33,8 +33,10 @@ from piloop.db.models import (
 from piloop.db.session import Database, write_transaction
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import (
+    AgentFinished,
     AgentJob,
     AgentKey,
+    AgentNotStarted,
     AgentReport,
     EvaluationJob,
     EvaluationKey,
@@ -43,7 +45,7 @@ from piloop.plugins.executor.contract import (
     JobKey,
     Settled,
 )
-from piloop.plugins.runtime.contract import AgentExit, AgentStatus
+from piloop.plugins.runtime.contract import AgentExit, ExitStatus
 from piloop.scoring.evaluate import EvalResult
 from piloop.scoring.ledger import save_units
 
@@ -53,8 +55,10 @@ STARTUP_SECONDS = 120
 
 Longer than the default Herdr ``startup_grace_seconds``: a Herdr agent that never starts its first turn is watched for
 the whole grace, and must still count as a failed start, not as a run that worked and left nothing."""
+NEVER_WORKED = f'it ended within {STARTUP_SECONDS}s and left nothing'
+"""Why an agent that ended with no error did not start to work (``_never_worked``)."""
 STARTUP_ANOMALY = 'anomaly.startup'
-"""The event on an implementer that did not start to work (``End.NOT_STARTED``): an environment fault, not bad work."""
+"""The event on an implementer that did not start to work (``NotStarted``): an environment fault, not bad work."""
 WRAP_UP = 'agent_session.wrap_up'
 """Event on an implementer of a stopped campaign, or of a run cancelled with its wrap-up: the implementer was told to commit and stop.
 
@@ -70,35 +74,57 @@ unless its implementer left its finding before."""
 ASKED_TO_END = (WRAP_UP, STOP_ENDED)
 """Events on an agent that the daemon told to stop or ended. Such an agent never counts as a failed start."""
 ENDED_EVENT = 'agent_session.job_ended'
-"""The event on an agent's row that says how its job ended (``Ended``), with the head of its commits."""
-
-
-class End(StrEnum):
-    """How an agent's job ended, for what waits for it (``Ended``)."""
-
-    RAN = 'ran'
-    """Its executor reported it, and it started to work. The process says how it ended."""
-    NOT_STARTED = 'not_started'
-    """It did not start to work: its start failed, or it ended within ``STARTUP_SECONDS`` and left nothing
-    (``_never_worked``). A fault of the host or the harness, not an attempt."""
-    LOST = 'lost'
-    """Nothing came back from it (``Results.lost``): the executor lost it."""
-    STOPPED = 'daemon_stopped'
-    """The daemon stopped before it started or while it ran. The stop writes the rows."""
-    HANDED_OVER = 'handed_over'
-    """An in-place restart left it running for the next daemon process, which waits for it again."""
+"""The event on an agent's row that says how its job ended (``Ended``)."""
 
 
 @dataclass(frozen=True)
-class Ended:
-    """How an agent's job ended (``end``), how its process ended, and the head of its commits."""
+class Ran:
+    """The agent started to work, and its process ended."""
 
-    end: End
     process: AgentExit
     head: str | None = None
     """The head of its commits, pinned at the job's ``Commits.ref``, when it was asked for them and made some."""
+    kind: Literal['ran'] = 'ran'
 
 
+@dataclass(frozen=True)
+class NotStarted:
+    """The agent did not start to work: a fault of the host or the harness, not an attempt.
+
+    Its job did not start (``AgentNotStarted``), or it ended within ``STARTUP_SECONDS`` and left nothing
+    (``_never_worked``).
+    """
+
+    reason: str
+    kind: Literal['not_started'] = 'not_started'
+
+
+@dataclass(frozen=True)
+class Lost:
+    """Nothing came back from the agent (``Results.lost``): its executor lost it."""
+
+    reason: str
+    kind: Literal['lost'] = 'lost'
+
+
+@dataclass(frozen=True)
+class DaemonStopped:
+    """The daemon stopped before the agent started or while it ran. The stop writes the rows."""
+
+    head: str | None = None
+    """The head of its commits, when it ran, was asked for them and made some."""
+    kind: Literal['daemon_stopped'] = 'daemon_stopped'
+
+
+@dataclass(frozen=True)
+class HandedOver:
+    """An in-place restart left the agent running for the next daemon process, which waits for it again."""
+
+    kind: Literal['handed_over'] = 'handed_over'
+
+
+type Ended = Annotated[Ran | NotStarted | Lost | DaemonStopped | HandedOver, Field(discriminator='kind')]
+"""How an agent's job ended, for what waits for it. Only ``Ran`` has a process exit: only then did a process end."""
 ENDED: TypeAdapter[Ended] = TypeAdapter(Ended)
 """How an ``ENDED_EVENT`` holds an ``Ended``."""
 
@@ -153,7 +179,7 @@ class CampaignResults:
     ) -> None:
         def change(s: Session) -> None:
             if isinstance(job, AgentJob):
-                assert isinstance(report, AgentReport)
+                assert isinstance(report, AgentFinished | AgentNotStarted)
                 self._agent(s, job, report)
             else:
                 assert isinstance(report, EvaluationReport)
@@ -171,52 +197,63 @@ class CampaignResults:
                 return
             w = _open(s, key)
             w.state, w.ended_at, w.error = AgentSessionState.KILLED, utcnow(), reason
-            payload: dict[str, object] = {'reason': w.reason, 'status': AgentStatus.EXITED, 'error': reason}
+            payload: dict[str, object] = {'reason': w.reason, 'status': None, 'error': reason}
             emit(s, f'{w.kind}.finished', TargetKind.AGENT_SESSION, w.id, payload=payload)
-            _ended(s, w.id, Ended(End.LOST, AgentExit(AgentStatus.EXITED, 0, error=reason)))
+            _ended(s, w.id, Lost(reason))
 
         self._apply(guard, change)
 
     def _agent(self, s: Session, job: AgentJob, report: AgentReport) -> None:
         """Close the row from the report, and emit ``<kind>.finished``, ``ENDED_EVENT`` and ``STARTUP_ANOMALY``.
 
-        The anomaly only when it applies. An agent that ended within ``STARTUP_SECONDS`` and left nothing did not start to work (``_never_worked``),
-        unless the daemon told it to stop or ended it. While the daemon stops, the row closes as killed by the stop
-        (``STOPPED_ERROR``), with the usage that was read.
+        The anomaly only when the agent did not start to work (``NotStarted``): its job did not start, or it ended
+        within ``STARTUP_SECONDS`` and left nothing (``_never_worked``), unless the daemon told it to stop or ended it.
+        While the daemon stops, the row closes as killed by the stop (``STOPPED_ERROR``), with the usage that was read.
         """
         w = _open(s, AgentKey(job.agent_session))
-        if report.session_id is not None:
-            w.session_id = report.session_id
-        w.ended_at, w.usage = utcnow(), report.usage
-        if self._stopping():
-            w.state, w.error = AgentSessionState.KILLED, STOPPED_ERROR
-            stopped = AgentExit(report.status, report.seconds, report.exit_code, STOPPED_ERROR)
-            _ended(s, w.id, Ended(End.STOPPED, stopped, report.head))
-            return
-        asked = _asked_to_end(s, w.id)
-        killed = report.status is AgentStatus.TIMED_OUT or report.startup_failed or w.state is AgentSessionState.ENDING
-        startup_failed = report.startup_failed or (not asked and _never_worked(s, w, report))
-        w.state = AgentSessionState.KILLED if killed else AgentSessionState.EXITED
-        w.error, w.checkpoint_id = report.error, report.checkpoint
-        emit(
-            s,
-            f'{w.kind}.finished',
-            TargetKind.AGENT_SESSION,
-            w.id,
-            payload={'reason': w.reason, 'status': report.status, 'error': report.error},
-        )
-        if startup_failed:
+        w.ended_at = utcnow()
+        process: AgentExit | None = None
+        match report:
+            case AgentNotStarted(reason=reason, seconds=seconds):
+                if self._stopping():
+                    self._stopped(s, w, None)
+                    return
+                w.state, w.error = AgentSessionState.KILLED, reason
+                ended: Ran | NotStarted = NotStarted(reason)
+            case AgentFinished(process=process):
+                if report.session_id is not None:
+                    w.session_id = report.session_id
+                w.usage = report.usage
+                if self._stopping():
+                    self._stopped(s, w, report.head)
+                    return
+                asked = _asked_to_end(s, w.id)
+                killed = process.status is ExitStatus.TIMED_OUT or w.state is AgentSessionState.ENDING
+                w.state = AgentSessionState.KILLED if killed else AgentSessionState.EXITED
+                w.error, w.checkpoint_id, seconds = process.error, report.checkpoint, process.seconds
+                worked = asked or not _never_worked(s, w, report)
+                ended = Ran(process, report.head) if worked else NotStarted(process.error or NEVER_WORKED)
+            case _:
+                assert_never(report)
+        status = None if process is None else process.status
+        payload: dict[str, object] = {'reason': w.reason, 'status': status, 'error': w.error}
+        emit(s, f'{w.kind}.finished', TargetKind.AGENT_SESSION, w.id, payload=payload)
+        if isinstance(ended, NotStarted):
             anomaly: dict[str, object] = {
                 'kind': w.kind,
                 'harness': w.harness,
                 'run': w.run_id,
-                'seconds': round(report.seconds, 1),
-                'error': report.error,
+                'seconds': round(seconds, 1),
+                'error': ended.reason,
             }
             emit(s, STARTUP_ANOMALY, TargetKind.AGENT_SESSION, w.id, payload=anomaly)
-            self._tracer.event(STARTUP_ANOMALY, agent_session=w.id, harness=w.harness, error=report.error)
-        process = AgentExit(report.status, report.seconds, report.exit_code, report.error)
-        _ended(s, w.id, Ended(End.NOT_STARTED if startup_failed else End.RAN, process, report.head))
+            self._tracer.event(STARTUP_ANOMALY, agent_session=w.id, harness=w.harness, error=ended.reason)
+        _ended(s, w.id, ended)
+
+    @staticmethod
+    def _stopped(s: Session, w: AgentSession, head: str | None) -> None:
+        w.state, w.error = AgentSessionState.KILLED, STOPPED_ERROR
+        _ended(s, w.id, DaemonStopped(head))
 
     def _measured(self, s: Session, job: EvaluationJob, report: EvaluationReport) -> None:
         """Record what an evaluation measured as one measurement, and take it out of the queue.
@@ -267,10 +304,10 @@ def _asked_to_end(s: Session, agent_session_id: int) -> set[str]:
     return set(s.scalars(select(Event.kind).where(on_agent_session, Event.kind.in_(ASKED_TO_END))))
 
 
-def _never_worked(s: Session, w: AgentSession, report: AgentReport) -> bool:
+def _never_worked(s: Session, w: AgentSession, report: AgentFinished) -> bool:
     """Return whether a started agent ended within ``STARTUP_SECONDS`` and left nothing behind.
 
-    Nothing behind means no change to its checkout (``AgentReport.changed``: no commit, no uncommitted change outside
+    Nothing behind means no change to its checkout (``AgentFinished.changed``: no commit, no uncommitted change outside
     the links) and no comment signed by it. Herdr reports some first-launch dialogs as idle, so such an agent looks
     finished.
 
@@ -280,7 +317,7 @@ def _never_worked(s: Session, w: AgentSession, report: AgentReport) -> bool:
     harness's usage is read is judged. The tokens can be unknown for a sweep that worked too: Herdr reports no
     session for a harness without Herdr hooks.
     """
-    if report.status is AgentStatus.TIMED_OUT or report.seconds >= STARTUP_SECONDS or report.changed:
+    if report.process.status is ExitStatus.TIMED_OUT or report.process.seconds >= STARTUP_SECONDS or report.changed:
         return False
     if w.run_id is None:
         definition = harness_of(s, w)

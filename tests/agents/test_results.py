@@ -13,6 +13,7 @@ from piloop.db.models import AgentSession, AgentSessionState, Campaign, Evaluati
 from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import (
+    AgentFinished,
     AgentJob,
     AgentKey,
     AgentReport,
@@ -23,7 +24,7 @@ from piloop.plugins.executor.contract import (
     GitTree,
     Settled,
 )
-from piloop.plugins.runtime.contract import AgentStatus
+from piloop.plugins.runtime.contract import AgentExit, ExitStatus
 from tests.conftest import baseline
 
 
@@ -121,7 +122,7 @@ def test_two_results_for_one_job_in_plain_sessions_close_its_row_once_and_measur
         units_file=tmp_path / 'units.pending',
     )
     reports: list[tuple[AgentJob | EvaluationJob, AgentReport | EvaluationReport]] = [
-        (agent, AgentReport(status=AgentStatus.EXITED, seconds=200, exit_code=0)),
+        (agent, AgentFinished(process=AgentExit(ExitStatus.EXITED, 200, 0))),
         (measure, EvaluationReport(metrics={'score': 1.0}, seconds=1)),
     ]
     for job, report in reports:

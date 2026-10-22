@@ -21,7 +21,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import OperationalError
 
 from piloop import git
-from piloop.agents.results import CampaignResults, End, Ended
+from piloop.agents.results import CampaignResults, DaemonStopped, Ended, Lost, NotStarted, Ran
 from piloop.daemon.run_controller import RunController
 from piloop.db.models import (
     AgentSession,
@@ -52,7 +52,7 @@ from piloop.plugins.executor.kit.leases import (
     revoke,
 )
 from piloop.plugins.executor.workers.worker import WORKER_ANOMALY, Unsent, Worker
-from piloop.plugins.runtime.contract import AgentStatus, Handle
+from piloop.plugins.runtime.contract import ExitStatus, Handle
 from piloop.plugins.runtime.herdr import HerdrSettings
 from piloop.runtime.factory import RuntimeFactory, make_runtime
 from tests.conftest import Gate, ScriptRuntime, baseline, factory, timed, wait_until, workers_of, write_toml
@@ -145,7 +145,8 @@ def test_an_agent_that_ends_is_reported_on_its_lease(
     ex = RunController(db, Tracer(None), tmp_path, contract.runtime_factory)
     agent_session_id = request_agent(db, campaign)
     outcome = launch(ex, agent_session_id, tmp_path)
-    assert outcome.process.status in (AgentStatus.EXITED, AgentStatus.IDLE) and outcome.process.error is None
+    assert isinstance(outcome, Ran)
+    assert (outcome.process.status, outcome.process.error) == (ExitStatus.EXITED, None)
     w, lease = rows(db, agent_session_id)
     assert (w.state, w.runtime, lease.state, lease.worker) == (
         AgentSessionState.EXITED,
@@ -165,7 +166,8 @@ def test_an_agent_that_runs_out_of_time_is_reported_timed_out(
     ex = RunController(db, Tracer(None), tmp_path, contract.runtime_factory)
     agent_session_id = request_agent(db, campaign)
     outcome = launch(ex, agent_session_id, tmp_path)
-    assert (outcome.process.status, outcome.process.error) == (AgentStatus.TIMED_OUT, 'agent timeout after 0.5s')
+    assert isinstance(outcome, Ran)
+    assert (outcome.process.status, outcome.process.error) == (ExitStatus.TIMED_OUT, 'agent timeout after 0.5s')
     w, lease = rows(db, agent_session_id)
     assert (w.state, lease.state) == (AgentSessionState.KILLED, LeaseState.REPORTED)
 
@@ -180,7 +182,7 @@ def test_a_start_that_fails_is_reported_as_a_failed_start(
     ex = RunController(db, Tracer(None), tmp_path, contract.runtime_factory)
     agent_session_id = request_agent(db, campaign)
     outcome = launch(ex, agent_session_id, tmp_path)
-    assert (outcome.end is End.NOT_STARTED) and 'spawn_failed' in str(outcome.process.error)
+    assert isinstance(outcome, NotStarted) and 'spawn_failed' in str(outcome.reason)
     w, lease = rows(db, agent_session_id)
     assert (w.state, lease.state, w.handle) == (AgentSessionState.KILLED, LeaseState.REPORTED, {})
 
@@ -206,7 +208,8 @@ def test_a_restarted_worker_re_attaches_to_its_agent_and_reports_it(
     contract.script()  # herdr's agent is now idle
     hold.unlink()
     outcome = second.launcher.reattach(agent_session_id)
-    assert outcome.process.status in (AgentStatus.EXITED, AgentStatus.IDLE) and outcome.process.error is None
+    assert isinstance(outcome, Ran)
+    assert (outcome.process.status, outcome.process.error) == (ExitStatus.EXITED, None)
     w, lease = rows(db, agent_session_id)
     assert (w.state, lease.id, lease.state) == (AgentSessionState.EXITED, 1, LeaseState.REPORTED), 'the same lease'
 
@@ -228,6 +231,7 @@ def test_a_revoked_agent_is_stopped_by_its_worker_and_still_reported(
     workers_of(ex).leases.notify()
     launching.join(30)
     [outcome] = outcomes
+    assert isinstance(outcome, Ran)
     assert runtime.killed and outcome.process.exit_code is not None and outcome.process.exit_code < 0, (
         'killed by the worker'
     )
@@ -242,7 +246,7 @@ def test_a_worker_whose_own_code_fails_loses_the_job_so_that_nothing_waits_for_e
     ex = RunController(db, Tracer(None), tmp_path, factory(runtime))
     agent_session_id = request_agent(db, campaign)
     outcome = launch(ex, agent_session_id, tmp_path)
-    assert ((outcome.end is End.LOST), outcome.process.error) == (True, 'worker lost: RuntimeError: a bug')
+    assert outcome == Lost('worker lost: RuntimeError: a bug')
     assert rows(db, agent_session_id)[1].state is LeaseState.EXPIRED
     workers_of(ex).worker._lost(
         99, 'nothing'
@@ -266,9 +270,7 @@ def test_a_restarted_worker_reports_an_agent_whose_worktree_is_gone(
     second = RunController(db, Tracer(None), tmp_path, factory(runtime))
     workers_of(second).worker.start()
     outcome = second.launcher.reattach(agent_session_id)
-    assert (
-        outcome.end is End.LOST
-    ) and outcome.process.error == 'worker lost: the worker restarted and could not find its agent'
+    assert outcome == Lost('worker lost: the worker restarted and could not find its agent')
     hold.unlink()
 
 
@@ -290,7 +292,8 @@ def test_a_hand_over_twice_leaves_a_re_attached_agent_to_the_third_daemon(
     third = RunController(db, Tracer(None), tmp_path, factory(runtime))
     workers_of(third).worker.start()
     hold.unlink()
-    assert third.launcher.reattach(agent_session_id).process.error is None
+    outcome = third.launcher.reattach(agent_session_id)
+    assert isinstance(outcome, Ran) and outcome.process.error is None
     assert rows(db, agent_session_id)[1].state is LeaseState.REPORTED
 
 
@@ -316,7 +319,7 @@ def test_an_agent_whose_lease_ends_while_it_starts_is_ended_and_not_reported(
     gate.release.set()
     launching.join(30)
     wait_until(lambda: runtime.killed)
-    assert outcomes[0].process.error == 'daemon stopped' and rows(db, agent_session_id)[1].state is LeaseState.CANCELLED
+    assert outcomes[0] == DaemonStopped() and rows(db, agent_session_id)[1].state is LeaseState.CANCELLED
 
 
 def test_an_agent_that_removes_its_own_worktree_is_still_reported(
@@ -336,7 +339,9 @@ def test_an_agent_that_removes_its_own_worktree_is_still_reported(
         artifact=GitTree(repo=repo, commit=commit),
         commits=Commits(message='leftovers', ref='refs/piloop/agents/1'),
     )
-    assert outcome.process.error is not None and outcome.head is None, 'the report says what is known'
+    assert isinstance(outcome, Ran) and outcome.process.error is not None and outcome.head is None, (
+        'the report says what is known'
+    )
     assert rows(db, agent_session_id)[1].state is LeaseState.REPORTED
 
 

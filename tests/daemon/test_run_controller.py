@@ -19,7 +19,7 @@ from sqlalchemy import func, insert, select
 from piloop import git
 from piloop.actor import System
 from piloop.agents.capture import ENTIRE_DIR
-from piloop.agents.results import STARTUP_ANOMALY, Ended
+from piloop.agents.results import STARTUP_ANOMALY, Ended, Lost, NotStarted
 from piloop.agents.roles import SQL_HINT
 from piloop.campaign import stop
 from piloop.campaign.campaigns import sync
@@ -1451,6 +1451,23 @@ STOPPED = 'stopped by the campaign stop'
 )
 def test_how_a_run_ended_decides_its_status_by_the_first_row_that_holds(end: RunEnd, expected: RunOutcome) -> None:
     assert run_outcome(end) == expected
+
+
+@pytest.mark.parametrize('ended', [NotStarted('no server'), Lost('worker lost')], ids=['not-started', 'lost'])
+def test_a_failed_start_or_a_lost_job_while_the_daemon_stops_leaves_the_run_to_the_stop(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture, ended: Ended
+) -> None:
+    """The stop fails the open runs itself, so the run is neither relaunched nor closed as lost."""
+    ex = controller(db, runtime, tmp_path)
+
+    def stopped_meanwhile(*args: object, **kwargs: object) -> Ended:
+        ex.launcher.cancel()
+        return ended
+
+    mocker.patch.object(ex.launcher, 'launch', side_effect=stopped_meanwhile)
+    run_id = make_run(db, campaign)
+    execute(ex, db, run_id)
+    assert run_row(db, run_id).status is RunStatus.RUNNING, 'stop() writes the row, not the run thread'
 
 
 @pytest.mark.parametrize('timed_out', [True, False])
