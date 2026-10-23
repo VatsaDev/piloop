@@ -249,10 +249,13 @@ class Worker:
         It keeps its own clock: the loop can be held in any call meanwhile, and a partition that drops packets holds a
         call until the call's own timeout, which can be longer than what the leases have left.
         """
-        while not self._ended.wait(max(self._heard + self.timing.self_stop - time.monotonic(), 0)):
-            if time.monotonic() - self._heard >= self.timing.self_stop and not self._handover:
+        while True:
+            left = self._heard + self.timing.self_stop - time.monotonic()
+            if left <= 0 and not self._handover:  # silent: again on each heartbeat, so a failed kill is tried again
                 self._stop_jobs('silent')
-                self._ended.wait(self.timing.renew)
+                left = self.timing.renew
+            if self._ended.wait(left):
+                return
 
     def _wake(self) -> None:
         """Make the loop turn now."""

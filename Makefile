@@ -25,8 +25,7 @@ test:  ## Run tests in parallel (no coverage)
 
 .PHONY: testcov
 testcov:  ## Run tests in parallel with coverage; fails under 100%
-	COLUMNS=150 uv run pytest -n logical --durations=10 --cov --cov-report=
-	uv run coverage report
+	COLUMNS=150 uv run pytest -n logical --durations=10 --cov --cov-report=term-missing:skip-covered
 
 .PHONY: e2e
 e2e:  ## Run the end-to-end scenarios with real agents (about 15 minutes and 1 USD)

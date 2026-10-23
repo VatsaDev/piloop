@@ -705,12 +705,13 @@ def test_a_worker_whose_heartbeat_hangs_stops_its_job_when_its_self_stop_passes(
         return heartbeat(sessions, host)
 
     mocker.patch.object(worker.client, 'heartbeat', side_effect=unanswered)
+    stops = mocker.spy(worker, '_stop_jobs')
 
     def stopped() -> list[str]:
         return [str((s.attributes or {})['why']) for s in spans.get_finished_spans() if s.name == 'worker.job_stopped']
 
     try:
-        wait_until(stopped)
+        wait_until(lambda: stops.call_count >= 2)  # and again a heartbeat later, while it stays silent
         assert stopped() == ['silent']
     finally:
         healed.set()
