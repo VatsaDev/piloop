@@ -39,7 +39,8 @@ from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, AgentSessionId, RoleName
 from piloop.mcp import MCP
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import Checkout, GitTree
-from piloop.plugins.executor.kit.leases import LeaseQueued
+from piloop.plugins.executor.kit.capacity import HostSample
+from piloop.plugins.executor.kit.leases import Answer, LeaseQueued, Leases
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, StartFailed
 from piloop.settings import Settings
@@ -554,6 +555,26 @@ def test_a_session_reported_late_is_asked_for_again_before_the_agent_is_released
     assert events(spans, 'agent_session.session_unknown') == [
         {'agent_session': lost, 'runtime': 'subprocess', 'error': 'server_unavailable'}
     ]
+
+
+def test_a_session_reported_late_goes_back_in_the_report_not_only_in_a_heartbeat(
+    campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """The agent can end and report before the next heartbeat would carry the session id that the last ask found."""
+    codex = DEFAULT_HARNESSES['codex']
+    use_harness(db, campaign, CODEX_LIKE, entire_agent='codex', session_id_pattern=codex.session_id_pattern)
+    heartbeat = Leases.heartbeat
+
+    def no_session_ids(
+        self: Leases, worker: str, sessions: dict[int, str | None], host: HostSample
+    ) -> dict[int, Answer]:
+        return heartbeat(self, worker, dict.fromkeys(sessions), host)
+
+    mocker.patch.object(Leases, 'heartbeat', no_session_ids)
+    mocker.patch.object(runtime, 'session_id', side_effect=[None, CODEX_ID])
+    late = request(db, campaign)
+    launch(db, runtime, tmp_path, late, Tracer(None))
+    assert agent_session(db, late).session_id == CODEX_ID
 
 
 def test_the_session_is_attached_to_entire_from_the_cwd_when_the_agent_ends(

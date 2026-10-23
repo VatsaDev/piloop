@@ -173,10 +173,10 @@ def _watch(
         if not reported:
             session_id = _session(runtime, handle, control, span)
             reported = session_id is not None
-        return runtime.wait(handle, timeout), session_id
+        outcome = runtime.wait(handle, timeout)
     except Exception as e:  # a pane or a server that is gone: the agent ended for the worker
         span.error(e)
-        return AgentExit(ExitStatus.EXITED, time.monotonic() - started_at, error=f'{type(e).__name__}: {e}'), session_id
+        outcome = AgentExit(ExitStatus.EXITED, time.monotonic() - started_at, error=f'{type(e).__name__}: {e}')
     finally:
         if not reported:
             try:
@@ -195,6 +195,7 @@ def _watch(
             except Exception as e:  # the pane can already be gone; a missing transcript is not an error
                 span.event('agent_session.transcript_lost', error=str(e))
             runtime.kill(handle)
+    return outcome, session_id  # after the last ask: a session reported late goes in the report
 
 
 def _session(runtime: Runtime, handle: Handle, control: Control, span: Span) -> str | None:

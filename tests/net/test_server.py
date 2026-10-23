@@ -39,6 +39,9 @@ def _echo(caller: Caller, ask: Ask) -> Answer | None:
 ECHO = Route('echo', TokenScope.WORKER, Ask, _echo)
 ECHOED = '/v1/executor/echo'
 HI = {'text': 'hi'}
+DROPPED = (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError)
+"""How a client sees a server that drops its connection unanswered: a close (FIN), or a reset (RST) when the server
+closed with some of the request still unread, which depends on when the rest of the request arrived."""
 
 
 def test_a_caller_without_a_known_token_gets_401_and_a_revoked_token_stops_working(
@@ -102,7 +105,7 @@ def test_tls_with_a_certificate_that_the_client_trusts_through_ssl_cert_file(
     with serving([ECHO], tls=certificate) as server, network.config.client(server.url, token()) as client:
         assert server.url.startswith('https://127.0.0.1:')
         assert client.post(ECHOED, json=HI).status_code == 200
-        with pytest.raises(httpx.RemoteProtocolError):
+        with pytest.raises(DROPPED):
             httpx.post(server.url.replace('https', 'http') + ECHOED, json=HI)
 
 

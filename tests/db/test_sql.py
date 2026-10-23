@@ -224,6 +224,27 @@ def test_optimize_raises_what_is_not_the_lock(monkeypatch: pytest.MonkeyPatch) -
         sql.optimize(con)
 
 
+def test_a_holder_that_one_read_of_proc_locks_skipped_is_found_by_the_next(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """/proc/locks is no snapshot: while other processes drop locks between its reads, a held lock's line can be
+    skipped."""
+    database = tmp_path / 'piloop.db'
+    shm = Path(f'{database}-shm')
+    shm.touch()
+    st = shm.stat()
+    line = f'1: POSIX  ADVISORY  WRITE 4242 {os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino} 120 120\n'
+
+    class Skipping:
+        reads = ['', line]
+
+        def read_text(self) -> str:
+            return self.reads.pop(0)
+
+    monkeypatch.setattr(sql, 'PROC_LOCKS', Skipping())
+    assert sql._write_lock_pid(shm) == 4242
+
+
 def test_the_holder_is_the_write_lock_line_in_proc_locks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Only a WRITE lock on byte 120 of this database's -shm file; a waiter (``->``) is not the holder."""
     database = tmp_path / 'piloop.db'

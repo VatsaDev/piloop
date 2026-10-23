@@ -112,6 +112,11 @@ of temporary files. ``cache_size`` stays at SQLite's default: the tables that a 
 connection pays for its own cache.
 """
 PROC_LOCKS = Path('/proc/locks')
+PROC_LOCKS_READS = 3
+"""How many times ``_write_lock_pid`` reads ``/proc/locks`` before it says no one holds the lock. The file is no
+snapshot: it takes one read per page, and a line can be skipped when another process drops a lock between two reads.
+With 5000 lines and 48 processes taking and dropping locks, one read missed a held lock 44 times in 1009, and three
+reads never did."""
 WAL_WRITE_LOCK = 120
 """The byte of the ``-shm`` file that a connection locks with an exclusive ``fcntl`` lock while its write transaction
 is open: SQLite's ``UNIX_SHM_BASE``, WAL lock slot 0."""
@@ -228,14 +233,18 @@ def _write_lock_pid(shm: Path) -> int | None:
     """
     try:
         st = shm.stat()
-        lines = PROC_LOCKS.read_text().splitlines()
     except FileNotFoundError:
         return None
     file = f'{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}:{st.st_ino}'
-    for line in lines:
-        fields = line.split()
-        if fields[3:4] == ['WRITE'] and fields[5:7] == [file, str(WAL_WRITE_LOCK)]:
-            return int(fields[4])
+    for _ in range(PROC_LOCKS_READS):
+        try:
+            lines = PROC_LOCKS.read_text().splitlines()
+        except FileNotFoundError:
+            return None
+        for line in lines:
+            fields = line.split()
+            if fields[3:4] == ['WRITE'] and fields[5:7] == [file, str(WAL_WRITE_LOCK)]:
+                return int(fields[4])
     return None
 
 
