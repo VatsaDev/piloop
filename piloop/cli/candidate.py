@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Annotated
 
 import cyclopts
+from cyclopts import validators
 
 from piloop import git
 from piloop.campaign import ops
@@ -13,9 +14,12 @@ from piloop.config import config_of
 from piloop.db.models import Campaign, Candidate, Verdict
 from piloop.ids import CandidateId, TrackName
 from piloop.scoring.ledger import (
+    REPEATS,
     ImportRefused,
     RemeasureRefused,
+    bar_of,
     import_reference,
+    rejudgeable,
     request_remeasure,
 )
 
@@ -68,28 +72,34 @@ def candidate_import(
 def candidate_remeasure(
     candidate_id: Annotated[CandidateId, cyclopts.Parameter(help='The candidate to measure again.')],
     /,
+    *,
+    repeats: Annotated[
+        int, cyclopts.Parameter(help='How many pairs of the candidate and its bar.', validator=validators.Number(gte=1))
+    ] = REPEATS,
 ) -> None:
-    """Ask the daemon to measure a candidate again with the current evaluator.
+    """Ask the daemon to measure a candidate again, next to its bar, with the current evaluator.
 
-    Use it when a fault of the host spoiled a measurement (a full disk, a lost GPU), or for one more repeat. The daemon
-    measures it soon, after the head and the bars that runs need, also when the campaign is stopped: not while it is
-    paused with `--evals`, or held by its stop rule. A `crash` that the daemon judged is judged again with the new
-    measurement. Any other verdict stays. A pending, unmeasured or recovered candidate is never measured.
+    Use it when a fault of the host spoiled a measurement (a full disk, a lost GPU), or when load made it noisy. The
+    daemon runs the evaluate command on the candidate and on its bar, one after the other, `--repeats` times, and judges
+    a `crash`, `discard` or `interesting` that it gave again on these pairs. A keep, and a verdict that someone set,
+    stay. It measures soon, after the head and the bars that runs need, also when the campaign is stopped: not while it
+    is paused with `--evals`, or held by its stop rule. A pending, unmeasured or recovered candidate is never measured.
     """
     with common.session() as s:
         candidate = s.get(Candidate, candidate_id)
         if candidate is None:
             raise SystemExit(f'no candidate#{candidate_id}')
         try:
-            request_remeasure(s, candidate, common.settings.actor)
+            request_remeasure(s, candidate, common.settings.actor, repeats)
         except RemeasureRefused as e:
             raise SystemExit(str(e)) from e
         s.commit()
         campaign = s.get_one(Campaign, candidate.campaign_id)
         later = ops.measuring_held(s, campaign, config_of(campaign))
+        bar = f'next to its bar candidate#{bar_of(candidate.parent).id}' if candidate.parent is not None else 'alone'
+        effect = 'then judges it again' if rejudgeable(candidate) else 'its verdict stays'
         common.console.print(
-            f'candidate#{candidate.id} {candidate.verdict}: the daemon measures it again with the current evaluator'
-            f'{later}; a crash is judged again',
+            f'candidate#{candidate.id} {candidate.verdict}: the daemon measures it {repeats} times {bar}{later}; {effect}',
             markup=False,
         )
 

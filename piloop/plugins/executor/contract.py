@@ -115,8 +115,22 @@ class AgentJob(BaseModel):
     """Bring the agent's commits back. None for a sweep: nothing that it commits comes back."""
 
 
+class Bar(BaseModel):
+    """The bar of a paired evaluation: the candidate that the measured one must beat, and its tree."""
+
+    model_config = ConfigDict(frozen=True)
+
+    candidate: CandidateId
+    artifact: GitTree
+
+
 class EvaluationJob(BaseModel):
-    """The description of an evaluation's job: the evaluator's runner and its arguments, on the candidate's tree."""
+    """The description of an evaluation's job: the evaluator's runner and its arguments, on the candidate's tree.
+
+    It runs the evaluator ``repeats`` times on the candidate. With a ``bar``, it is a **paired evaluation**: each run of
+    the candidate has a run of the bar next to it, in the order candidate, bar, bar, candidate, candidate, bar. So a
+    load that changes slowly hits both sides alike.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -136,6 +150,10 @@ class EvaluationJob(BaseModel):
     """The metrics the evaluate command must print."""
     units_file: Path
     """Where the evaluate command writes its per-unit results (``UNITS_ENV``)."""
+    bar: Bar | None = None
+    """The bar to run next to the candidate. None: the candidate alone."""
+    repeats: int = Field(default=1, ge=1)
+    """How many times the evaluator runs on the candidate, and on the bar."""
 
 
 type Job = Annotated[AgentJob | EvaluationJob, Field(discriminator='kind')]
@@ -169,14 +187,23 @@ type AgentReport = AgentFinished | AgentNotStarted
 """How an agent's job ended, as its executor saw it."""
 
 
-class EvaluationReport(BaseModel):
-    """What an evaluation measured: one run of the evaluator, which the control plane records as one measurement."""
+class Sample(BaseModel):
+    """One run of the evaluator on one tree, which the control plane records as one measurement."""
 
-    kind: Literal['evaluation'] = 'evaluation'
     metrics: dict[str, float]
     seconds: float
     error: str | None = None
     units: dict[str, dict[str, float]] = Field(default_factory=dict)
+
+
+class EvaluationReport(BaseModel):
+    """What an evaluation measured, in the order of its runs. It stops at the first run that fails."""
+
+    kind: Literal['evaluation'] = 'evaluation'
+    samples: list[Sample] = Field(min_length=1)
+    """The candidate's samples. The first one ran first."""
+    bar_samples: list[Sample] = Field(default_factory=list)
+    """The bar's samples of a paired evaluation: the i-th ran next to the i-th of ``samples``."""
 
 
 type Report = Annotated[AgentFinished | AgentNotStarted | EvaluationReport, Field(discriminator='kind')]

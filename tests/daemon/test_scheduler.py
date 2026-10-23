@@ -1230,7 +1230,7 @@ def test_a_restart_during_an_evaluation_scores_the_run_on_start_and_never_runs_i
     first = make_scheduler(db, runtime, tmp_path)
     add_ideas(db, campaign, 'two commits')
     first.tick()
-    wait_until(lambda: list((tmp_path / 'runs' / '1' / 'eval-0').glob('lease-*/eval.stdout')))
+    wait_until(lambda: list((tmp_path / 'runs' / '1' / 'eval-0').glob('lease-*/candidate-0/eval.stdout')))
     first.stop(timeout=10)
     with db.session() as s:
         assert s.get_one(Idea, 1).status is IdeaStatus.SCHEDULED
@@ -1343,7 +1343,7 @@ def test_a_new_evaluator_measures_the_head_runs_wait_for_it_and_older_keeps_only
     with db.session() as s:
         assert s.get_one(Run, 2).base_candidate_id == kept.id
         assert s.get_one(Candidate, kept.id).verdict is Verdict.KEEP, 'measuring again judges nothing again'
-        request_remeasure(s, s.get_one(Candidate, 1), System.HUMAN)
+        request_remeasure(s, s.get_one(Candidate, 1), System.HUMAN, repeats=1)
         s.commit()
     sched.tick()
     sched.wait()

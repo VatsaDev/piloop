@@ -12,6 +12,7 @@ from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import cyclopts
 import pytest
 from alembic import command
 from alembic.script import ScriptDirectory
@@ -754,21 +755,33 @@ def test_candidate_remeasure_asks_the_daemon_to_measure_a_candidate_again_and_re
     run_cli(['init', str(campaign_path)])
     out()
     run_cli(['candidate', 'remeasure', '1'])
-    assert (
-        out().strip()
-        == 'candidate#1 keep: the daemon measures it again with the current evaluator; a crash is judged again'
+    assert out().strip() == 'candidate#1 keep: the daemon measures it 3 times alone; its verdict stays', (
+        'the baseline has no bar'
     )
     with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
         [event] = s.scalars(select(Event).where(Event.kind == REMEASURE_REQUESTED)).all()
-        assert (event.actor, event.target_kind, event.target_id) == ('human', TargetKind.CANDIDATE, 1)
+        assert (event.actor, event.target_kind, event.target_id, event.payload) == (
+            'human',
+            TargetKind.CANDIDATE,
+            1,
+            {'repeats': 3},
+        )
         s.add(Candidate(campaign_id=1, commit_sha='0' * 40, tree_sha='1' * 40, verdict=Verdict.UNMEASURED))
+        s.add(Candidate(campaign_id=1, commit_sha='2' * 40, tree_sha='3' * 40, verdict=Verdict.DISCARD, parent_id=1))
         s.commit()
+    run_cli(['candidate', 'remeasure', '3', '--repeats', '5'])
+    assert (
+        out().strip()
+        == 'candidate#3 discard: the daemon measures it 5 times next to its bar candidate#1; its verdict stays'
+    )
+    with pytest.raises(cyclopts.ValidationError, match='Must be >= 1'):
+        run_cli(['candidate', 'remeasure', '3', '--repeats', '0'])
     run_cli(['pause', 'demo', '--evals', '--reason', 'review'])
     out()
     run_cli(['candidate', 'remeasure', '1'])
     assert out().strip() == (
-        'candidate#1 keep: the daemon measures it again with the current evaluator once campaign demo is resumed'
-        ' (its evaluations are paused); a crash is judged again'
+        'candidate#1 keep: the daemon measures it 3 times alone once campaign demo is resumed'
+        ' (its evaluations are paused); its verdict stays'
     )
     with pytest.raises(SystemExit, match=r'candidate#2 is unmeasured: the daemon never measures it'):
         run_cli(['candidate', 'remeasure', '2'])

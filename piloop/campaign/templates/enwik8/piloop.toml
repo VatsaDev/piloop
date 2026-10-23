@@ -29,3 +29,4 @@ direction = "lower"
 role = "guardrail"
 margin = 60
 floor = 120
+repeats = 3                              # a time: measure each candidate 3 times next to its bar

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from piloop.plugins.metric import Direction
-from piloop.plugins.verdict_rule.bootstrap import RESAMPLES, SEED, compare, lower_bound
+from piloop.plugins.verdict_rule.bootstrap import RESAMPLES, SEED, Over, compare, lower_bound
 from piloop.plugins.verdict_rule.contract import Criterion
 from piloop.scoring.evaluate import UNITS_SUM_TOLERANCE, parse_metrics, read_units, run_evaluate
 
@@ -30,7 +30,7 @@ def test_the_bootstrap_pairs_units_by_sorted_name_and_measures_gain_in_the_metri
     mine = {'b': 3.0, 'a': 5.0, 'd': 7.0, 'c': 0.0}
     theirs = {'a': 6.0, 'b': 2.0, 'c': 1.0, 'd': 9.0}
     c = compare(errors, 15.0, 18.0, mine, theirs, 0.95)
-    assert (c.gain, c.worst, c.units) == (3.0, lower_bound([1.0, -1.0, 1.0, 2.0], 0.95), 4)
+    assert (c.gain, c.worst, c.count, c.over) == (3.0, lower_bound([1.0, -1.0, 1.0, 2.0], 0.95), 4, Over.UNITS)
     assert c.worst == -1.0
 
 

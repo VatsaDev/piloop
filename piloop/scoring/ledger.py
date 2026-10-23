@@ -13,6 +13,7 @@ from statistics import fmean
 
 from git import Repo
 from git.exc import BadName
+from pydantic import BaseModel, Field
 from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -40,6 +41,9 @@ from piloop.ids import CampaignId, EvaluatorId, MeasurementId, RunId, TargetKind
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Case, Criterion, Side, VerdictRule
 from piloop.scoring.evaluate import UNITS, Units
 from piloop.text import metric
+
+type Samples = dict[str, list[float]]
+"""The samples of a paired evaluation: metric name → the value of each sample, in the order of the pairs."""
 
 DAEMON = System.DAEMON
 """The ``verdict_by`` of a verdict that the daemon set. The daemon never overwrites a verdict by anyone else."""
@@ -161,8 +165,7 @@ def due(s: Session, campaign: Campaign) -> list[Candidate]:
     1. The head: an unpinned run starts from it and is judged against it, so the queue waits only for it
        (``head_unmeasured``).
     2. The bar of each open run (``bar_of`` its base), oldest run first: the run is judged against it.
-    3. Each candidate that someone asked to measure again (``requested``), oldest request first. A crash that the daemon
-       judges again (``judged_again``) comes after the bar of its parent.
+    3. Each candidate that someone asked to measure again (``requested``), oldest request first.
     4. The bar of each ``ready`` idea pinned to a base.
     5. Each reference that no evaluator measured: a new import.
 
@@ -179,21 +182,13 @@ def due(s: Session, campaign: Campaign) -> list[Candidate]:
     asked = requested(s, campaign)
     active = campaign.status is CampaignStatus.ACTIVE
     found = [head(s, campaign), *(bar_of(run.base) for run in s.scalars(open_runs.order_by(Run.id)))] if active else []
-    for candidate in asked:
-        if judged_again(candidate) and candidate.parent is not None:
-            found.append(bar_of(candidate.parent))
-        found.append(candidate)
+    found += asked
     if active:
         ready = (Idea.campaign_id == campaign.id, Idea.status == IdeaStatus.READY)
         found += [bar_of(c) for c in s.scalars(pins.where(*ready).order_by(Idea.id))]
         found += s.scalars(new_references.order_by(Candidate.id))
     evaluator_id = campaign.evaluator_id
     return [c for c in dict.fromkeys(found) if c is not None and (c in asked or not measured(c, evaluator_id))]
-
-
-def judged_again(candidate: Candidate) -> bool:
-    """Whether a new measurement of ``candidate`` judges it again: a ``crash`` of a run that the daemon judged."""
-    return candidate.verdict is Verdict.CRASH and candidate.verdict_by == DAEMON and candidate.run_id is not None
 
 
 def head_unmeasured(s: Session, campaign: Campaign) -> bool:
@@ -203,26 +198,51 @@ def head_unmeasured(s: Session, campaign: Campaign) -> bool:
 
 
 REMEASURE_REQUESTED = 'candidate.remeasure_requested'
-"""The event on a candidate that someone asked the daemon to measure again (``request_remeasure``)."""
+"""The event on a candidate that someone asked the daemon to measure again (``request_remeasure``), with ``Remeasure``."""
+REPEATS = 3
+"""The pairs of a remeasure that asks for no number: the 95% bound of 3 pairs is near their worst pair."""
+
+
+class Remeasure(BaseModel):
+    """The payload of ``REMEASURE_REQUESTED``."""
+
+    repeats: int = Field(default=REPEATS, ge=1)
+    """How many samples of the candidate, each next to one of its bar."""
 
 
 class RemeasureRefused(Exception):
     """``request_remeasure`` cannot ask for the candidate. The message says why."""
 
 
-def request_remeasure(s: Session, candidate: Candidate, actor: Actor) -> None:
-    """Ask the daemon to measure ``candidate`` again with the current evaluator. The caller commits.
+def request_remeasure(s: Session, candidate: Candidate, actor: Actor, repeats: int = REPEATS) -> None:
+    """Ask the daemon to measure ``candidate`` again with the current evaluator, next to its bar. The caller commits.
 
-    Use it for a measurement that a fault of the host spoiled (a full disk, a lost GPU), or for one more repeat. The
+    Use it for a measurement that a fault of the host spoiled (a full disk, a lost GPU), or that load made noisy. The
     request is the ``REMEASURE_REQUESTED`` event, and ``requested`` lists it until a newer measurement exists. The
-    daemon judges a ``crash`` again (``RunController.remeasure``). Any other verdict stays.
+    daemon runs ``repeats`` pairs of the candidate and its bar (``bar_of`` its parent), then judges it again when it is
+    ``rejudgeable`` (``RunController.remeasure``). A candidate without a parent, the baseline or a reference, gets
+    ``repeats`` samples alone.
 
     Raises:
         RemeasureRefused: the daemon never measures the candidate (``pending``, ``unmeasured`` or ``recovered``).
     """
     if candidate.verdict in (Verdict.PENDING, Verdict.UNMEASURED, Verdict.RECOVERED):
         raise RemeasureRefused(f'candidate#{candidate.id} is {candidate.verdict}: the daemon never measures it again')
-    emit(s, REMEASURE_REQUESTED, TargetKind.CANDIDATE, candidate.id, actor=actor)
+    payload = Remeasure(repeats=repeats).model_dump()
+    emit(s, REMEASURE_REQUESTED, TargetKind.CANDIDATE, candidate.id, actor=actor, payload=payload)
+
+
+def remeasure_asked(s: Session, campaign: Campaign, candidate: Candidate) -> Remeasure | None:
+    """Return the latest request to measure ``candidate`` again that no measurement answered yet, or None."""
+    if candidate not in requested(s, campaign):
+        return None
+    payload = s.scalar(
+        select(Event.payload)
+        .where(Event.kind == REMEASURE_REQUESTED, Event.target == TargetRef(TargetKind.CANDIDATE, candidate.id))
+        .order_by(Event.id.desc())
+        .limit(1)
+    )
+    return Remeasure.model_validate(payload)
 
 
 def requested(s: Session, campaign: Campaign) -> list[Candidate]:
@@ -339,6 +359,26 @@ def save_units(units_dir: Path, measurement_id: MeasurementId, units: Units) -> 
     path.write_text(json.dumps(units))
 
 
+def pairs(candidate: Candidate, bar: Candidate, evaluator_id: EvaluatorId) -> tuple[Samples, Samples]:
+    """Return the samples that ``candidate`` and ``bar`` measured next to each other under ``evaluator_id``.
+
+    The i-th sample of a metric of the candidate and the i-th of the bar are one pair (``Measurement.pair``). A pair
+    counts when both of its measurements succeeded.
+    """
+    mine: Samples = {}
+    theirs: Samples = {}
+    for m in candidate.measurements:
+        other = m.pair
+        if m.evaluator_id != evaluator_id or m.error is not None or other is None:
+            continue
+        if other.candidate_id != bar.id or other.error is not None:
+            continue
+        for name in m.metrics.keys() & other.metrics.keys():
+            mine.setdefault(name, []).append(m.metrics[name])
+            theirs.setdefault(name, []).append(other.metrics[name])
+    return mine, theirs
+
+
 def units(candidate: Candidate, evaluator_id: EvaluatorId, units_dir: Path) -> Units:
     """Return the candidate's per-unit results under ``evaluator_id``: each unit's mean over its measurements."""
     rows = [
@@ -379,12 +419,13 @@ def judge(
     evaluation measures, whatever the verdict against the bar.
     """
     mine = metrics(candidate, evaluator_id)
+    mine_samples, theirs_samples = pairs(candidate, own, evaluator_id)
     verdict, reason = decide(
         VERDICT_RULES.selected(cfg.plugins),
         track,
         cfg.confidence,
-        Side(f'candidate#{candidate.id}', mine, units(candidate, evaluator_id, units_dir)),
-        Side(f'candidate#{own.id}', metrics(own, evaluator_id), units(own, evaluator_id, units_dir)),
+        Side(f'candidate#{candidate.id}', mine, units(candidate, evaluator_id, units_dir), mine_samples),
+        Side(f'candidate#{own.id}', metrics(own, evaluator_id), units(own, evaluator_id, units_dir), theirs_samples),
     )
     primary = track.primary
     leader = metrics(head, evaluator_id).get(primary.name) if head is not None else None

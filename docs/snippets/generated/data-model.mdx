@@ -97,6 +97,7 @@ erDiagram
         json metrics
         varchar error
         double seconds
+        integer pair_id FK
         datetime created_at
     }
     evaluations {
@@ -254,6 +255,7 @@ erDiagram
     candidates |o--o{ candidates : "parent_id"
     candidates ||--o{ measurements : "candidate_id"
     evaluators ||--o{ measurements : "evaluator_id"
+    measurements |o--o{ measurements : "pair_id"
     candidates ||--o{ evaluations : "candidate_id"
     evaluators ||--o{ evaluations : "evaluator_id"
     agent_sessions |o--o{ leases : "agent_session_id"

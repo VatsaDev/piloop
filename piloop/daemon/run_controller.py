@@ -73,6 +73,7 @@ from piloop.otel import Span, Tracer
 from piloop.plugins import limits
 from piloop.plugins.executor.contract import (
     EXECUTORS,
+    Bar,
     Commits,
     EvaluationJob,
     EvaluationKey,
@@ -80,13 +81,13 @@ from piloop.plugins.executor.contract import (
     ExecutorConfig,
     GitTree,
     Host,
+    Sample,
 )
 from piloop.plugins.runtime.contract import ExitStatus
 from piloop.reports.history import history
 from piloop.reports.wake import lessons_overview
 from piloop.runtime.factory import RuntimeFactory, make_runtime
 from piloop.scoring import queue
-from piloop.scoring.evaluate import EvalResult
 from piloop.scoring.ledger import (
     DAEMON,
     MOVED,
@@ -97,12 +98,12 @@ from piloop.scoring.ledger import (
     head,
     judge,
     judgeable,
-    judged_again,
     measured,
     note,
     raises_bar,
     rebase,
     rejudgeable,
+    remeasure_asked,
     reproposed,
     resolve,
     score,
@@ -556,12 +557,14 @@ class RunController:
             self._settle(span, run_id, idea_id, end, startup_failed=False, recovered=recovered)
 
     def remeasure(self, candidate_id: CandidateId) -> None:
-        """Measure a candidate with the campaign's current evaluator. Its verdict does not change, unless it is a crash.
+        """Measure a candidate with the campaign's current evaluator, then judge it again if it is ``rejudgeable``.
 
         Never raises. If the evaluation cannot start, for example because the commit is gone, a crashed measurement is
         recorded. It is a result like any other, so the candidate is not tried again with this evaluator unless someone
-        asks (``ledger.request_remeasure``). A ``crash`` that the daemon judged, from a fault of the host for example,
-        is judged again with the new measurement (``_rejudge``).
+        asks (``ledger.request_remeasure``). What someone asked for is a paired evaluation: ``repeats`` samples, each
+        next to one of its bar's (``bar_of`` its parent). Then a ``crash``, ``discard`` or ``interesting`` that the
+        daemon judged is judged again on the pairs (``_rejudge``), as after ``piloop measurement add``. What runs need,
+        the head and the bars, gets one sample.
         """
         with self._db.session() as s:
             candidate = s.get_one(Candidate, candidate_id)
@@ -569,15 +572,21 @@ class RunController:
             cfg = config_of(campaign)
             evaluator_id = current_evaluator(s, campaign, cfg).id
             s.commit()
+            asked = remeasure_asked(s, campaign, candidate)
+            parent = candidate.parent
+            bar = bar_of(parent).id if asked is not None and parent is not None else None
+            repeats = asked.repeats if asked is not None else 1
             campaign_id, campaign_path, sha = campaign.id, Path(campaign.path), candidate.commit_sha
         eval_dir = campaign_dir(self._home, campaign_id) / 'measure' / f'{candidate_id}-e{evaluator_id}'
         try:
             repo = git.open_repo(campaign_path)
-            if not self._measure(None, campaign_id, cfg, repo, sha, candidate_id, evaluator_id, eval_dir):
+            if not self._measure(
+                None, campaign_id, cfg, repo, sha, candidate_id, evaluator_id, eval_dir, bar=bar, repeats=repeats
+            ):
                 return  # a stop killed the evaluator: there is nothing new to judge
         except Exception as e:
             with self._db.session() as s:
-                error = EvalResult({}, 0.0, f'{type(e).__name__}: {e}')
+                error = Sample(metrics={}, seconds=0.0, error=f'{type(e).__name__}: {e}')
                 record(s, self._units_dir, None, candidate_id, evaluator_id, error)
                 s.commit()
             return
@@ -594,7 +603,7 @@ class RunController:
             campaign_id, campaign_path = candidate.campaign_id, Path(s.get_one(Campaign, candidate.campaign_id).path)
         try:
             eval_dir = campaign_dir(self._home, campaign_id) / 'measure' / f'{candidate_id}-rejudge'
-            self._rejudge(candidate_id, git.open_repo(campaign_path), eval_dir, rejudgeable)
+            self._rejudge(candidate_id, git.open_repo(campaign_path), eval_dir)
         except Exception as e:
             with self._db.session() as s:
                 payload: dict[str, object] = {'error': f'{type(e).__name__}: {e}'}
@@ -602,10 +611,8 @@ class RunController:
                 s.commit()
             self._tracer.event(REJUDGE_FAILED, candidate=candidate_id, error=str(e))
 
-    def _rejudge(
-        self, candidate_id: CandidateId, repo: Repo, log_dir: Path, again: Callable[[Candidate], bool] = judged_again
-    ) -> None:
-        """Judge again a run's candidate that ``again`` selects, now that it has a new measurement.
+    def _rejudge(self, candidate_id: CandidateId, repo: Repo, log_dir: Path) -> None:
+        """Judge again a run's candidate that is ``rejudgeable``, now that it has a new measurement.
 
         It is judged as its run would have judged it (``_judge``): against the bar of its parent, a keep moves the head
         only while that bar is the head, and else it is rebased onto the head (``_follow``). A crash that crashes again
@@ -614,7 +621,7 @@ class RunController:
         with self._db.session() as s:
             candidate = s.get_one(Candidate, candidate_id)
             run = candidate.run
-            if run is None or not again(candidate):
+            if run is None or not rejudgeable(candidate):
                 return
             assert candidate.parent is not None  # a run's candidate descends from the run's base
             cfg = config_of(run.idea.campaign)
@@ -705,7 +712,16 @@ class RunController:
                     span.set(status='known')
                     self._tracer.event('candidate.known', run=run_id, commit=sha, candidate=candidate_id)
                 elif not self._measure(
-                    run_id, campaign_id, cfg, repo, sha, candidate_id, scope.evaluator_id, log_dir / f'eval-{i}'
+                    run_id,
+                    campaign_id,
+                    cfg,
+                    repo,
+                    sha,
+                    candidate_id,
+                    scope.evaluator_id,
+                    log_dir / f'eval-{i}',
+                    bar=bar_id if scope.track.repeats else None,
+                    repeats=scope.track.repeats or 1,
                 ):
                     span.set(status='cancelled')
                     return None
@@ -758,6 +774,8 @@ class RunController:
                     current,
                     scope.evaluator_id,
                     log_dir / f'eval-rebased-{current}',
+                    bar=parent_id if scope.track.repeats else None,
+                    repeats=scope.track.repeats or 1,
                 ):
                     span.set(status='cancelled')
                     return False
@@ -777,8 +795,14 @@ class RunController:
         candidate_id: CandidateId,
         evaluator_id: EvaluatorId,
         eval_dir: Path,
+        *,
+        bar: CandidateId | None = None,
+        repeats: int = 1,
     ) -> bool:
         """Measure ``sha`` on the executor, and wait until its measurement is recorded. False if the daemon stopped.
+
+        With ``bar``, it is a paired evaluation: ``repeats`` samples of ``sha``, each next to one of the bar's
+        (``EvaluationJob.bar``). Without, ``repeats`` samples of ``sha`` alone.
 
         A request for a candidate that already waits or runs under the evaluator waits for that evaluation and submits
         nothing of its own (``queue.request``). It is submitted when the queue gives it a slot (``dispatch``), and its
@@ -794,6 +818,13 @@ class RunController:
                 job = None
                 if mine:
                     links = worktree_links(cfg, Path(repo.working_dir), campaign_dir(self._home, campaign_id))
+                    tree = Path(repo.working_dir)
+                    paired = None
+                    if bar is not None:
+                        paired = Bar(
+                            candidate=bar,
+                            artifact=GitTree(repo=tree, commit=s.get_one(Candidate, bar).commit_sha, links=links),
+                        )
                     job = EvaluationJob(
                         evaluation=evaluation.id,
                         candidate=candidate_id,
@@ -806,6 +837,8 @@ class RunController:
                         timeout=cfg.evaluate_timeout,
                         required=[m.name for m in cfg.metrics],
                         units_file=self._units_dir / f'{uuid.uuid4().hex}.pending',
+                        bar=paired,
+                        repeats=repeats,
                     )
                 s.commit()
                 evaluation_id = evaluation.id

@@ -300,7 +300,8 @@ A verdict rule is a [pure](#pure-plugins) provider, a subclass of `VerdictRule` 
 - `Case.guardrails`: the guardrail metrics, each a `Criterion`.
 - `Case.confidence`: `confidence` in `piloop.toml`.
 - `Case.candidate` and `Case.bar`: each a `Side`. A `Side` has a name for the reason (`candidate#73`), the mean of
-  each metric, and the per-unit results of the metrics that have them.
+  each metric, the per-unit results of the metrics that have them, and the samples that ran in pairs with the other
+  side's.
 - `Judgement.verdict`: `keep`, `interesting`, `discard` or `crash`.
 - `Judgement.reason`: the text that piloop stores and shows with the verdict.
 

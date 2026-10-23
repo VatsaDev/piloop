@@ -7,6 +7,8 @@ standard library and its contract, as a rule from a plugin does. It is an entry 
 
 import random
 from dataclasses import dataclass
+from enum import StrEnum
+from statistics import fmean
 
 from piloop.plugins.metric import Direction, number
 from piloop.plugins.verdict_rule.contract import Case, Criterion, Judgement, Outcome, VerdictRule
@@ -17,6 +19,15 @@ SEED = 0
 """Each comparison uses a new generator with this seed, so the same numbers always give the same verdict."""
 
 
+class Over(StrEnum):
+    """What the bootstrap resamples."""
+
+    UNITS = 'units'
+    """The per-unit results: the worst case is a bound of the sum of the unit differences."""
+    PAIRS = 'pairs'
+    """The pairs of a paired evaluation: the worst case is a bound of the mean of the pair differences."""
+
+
 @dataclass(frozen=True)
 class Comparison:
     """One metric of a candidate compared with the same metric of the bar."""
@@ -24,10 +35,12 @@ class Comparison:
     criterion: Criterion
     mine: float
     theirs: float
+    """The means of the pairs when ``over`` is ``PAIRS``, else the means of each side."""
     worst: float
-    """The worst-case gain at the configured confidence: the bootstrap's lower bound with units, else the gain."""
-    units: int
-    """The number of units the bootstrap paired. 0 when the comparison uses aggregates (``why`` says why)."""
+    """The worst-case gain at the configured confidence: the bootstrap's lower bound, else the gain."""
+    count: int
+    """How many units or pairs the bootstrap resampled. 0 when the comparison uses aggregates (``why`` says why)."""
+    over: Over = Over.UNITS
     why: str = ''
 
     @property
@@ -46,8 +59,9 @@ class Comparison:
             f'{self.criterion.name} {number(self.mine)} vs {number(self.theirs)}'
             f' ({number(sign * self.gain + 0.0, signed=True)}'
         )
-        if self.units:
-            return f'{change}; {confidence:.0%} worst case {sign * self.worst + 0.0:+.4g} over {self.units} units)'
+        if self.count:
+            worst = f'{number(sign * self.worst + 0.0, signed=True)} over {self.count} {self.over}'
+            return f'{change}; {confidence:.0%} worst case {worst})'
         return f'{change}; aggregate: {self.why})'
 
 
@@ -71,18 +85,27 @@ def compare(
     mine_units: dict[str, float] | None,
     theirs_units: dict[str, float] | None,
     confidence: float,
+    *,
+    mine_samples: list[float] | None = None,
+    theirs_samples: list[float] | None = None,
 ) -> Comparison:
-    """Compare with a paired bootstrap over the units that both sides report.
+    """Compare with a paired bootstrap over the units that both sides report, else over the pairs of samples.
 
-    Compare the aggregates when the units cannot be paired.
+    Units come first: the pairs of a deterministic metric all differ by the same amount, so they hide the spread of
+    the units. Compare the aggregates when neither can be paired.
     """
     gain = criterion.direction.gain
+    mine_samples, theirs_samples = mine_samples or [], theirs_samples or []
+    if (mine_units is None or theirs_units is None) and mine_samples and len(mine_samples) == len(theirs_samples):
+        diffs = [gain(a, b) for a, b in zip(mine_samples, theirs_samples, strict=True)]
+        worst = lower_bound(diffs, confidence) / len(diffs)
+        return Comparison(criterion, fmean(mine_samples), fmean(theirs_samples), worst, len(diffs), Over.PAIRS)
     if mine_units is None or theirs_units is None:
         missing = {(True, True): '', (True, False): ' for the candidate', (False, True): ' for the bar'}
         why = 'no per-unit results' + missing[mine_units is None, theirs_units is None]
-        return Comparison(criterion, mine, theirs, gain(mine, theirs), 0, why)
+        return Comparison(criterion, mine, theirs, gain(mine, theirs), 0, why=why)
     if mine_units.keys() != theirs_units.keys():
-        return Comparison(criterion, mine, theirs, gain(mine, theirs), 0, 'the unit sets differ')
+        return Comparison(criterion, mine, theirs, gain(mine, theirs), 0, why='the unit sets differ')
     diffs = [gain(mine_units[u], theirs_units[u]) for u in sorted(mine_units)]
     return Comparison(criterion, mine, theirs, lower_bound(diffs, confidence), len(diffs))
 
@@ -140,7 +163,14 @@ def _compare(case: Case, criterion: Criterion) -> Comparison:
     name = criterion.name
     mine, theirs = case.candidate, case.bar
     return compare(
-        criterion, mine.means[name], theirs.means[name], mine.units.get(name), theirs.units.get(name), case.confidence
+        criterion,
+        mine.means[name],
+        theirs.means[name],
+        mine.units.get(name),
+        theirs.units.get(name),
+        case.confidence,
+        mine_samples=mine.samples.get(name),
+        theirs_samples=theirs.samples.get(name),
     )
 
 

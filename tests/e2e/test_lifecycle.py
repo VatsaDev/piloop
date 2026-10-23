@@ -220,11 +220,12 @@ def test_candidate_remeasure_keeps_the_head(live_campaign: Smoke) -> None:
     head = live_campaign.sql("SELECT id FROM candidates WHERE run_id = ? AND verdict = 'keep'", run['id'])
     assert head, f'run {run["id"]} has no keep to measure again'
     candidate = head[0]['id']
+    before = live_campaign.sql('SELECT count(*) AS n FROM measurements WHERE candidate_id = ?', candidate)[0]['n']
     live_campaign.piloop('candidate', 'remeasure', str(candidate))
 
     def measured() -> list[sqlite3.Row] | None:
         rows = live_campaign.sql('SELECT metrics FROM measurements WHERE candidate_id = ? ORDER BY id', candidate)
-        return rows if len(rows) >= 2 else None
+        return rows if len(rows) >= before + 3 else None
 
     wait_until(measured, timeout=120)
     rows = measured()

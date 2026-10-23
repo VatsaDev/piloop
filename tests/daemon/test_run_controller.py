@@ -1,5 +1,7 @@
 import json
+import math
 import os
+import random
 import re
 import subprocess
 import threading
@@ -84,6 +86,7 @@ from piloop.scoring.ledger import (
     due,
     head,
     import_reference,
+    pairs as ledger_pairs,
     request_remeasure,
     requested,
     resolve,
@@ -353,11 +356,14 @@ def test_every_commit_of_a_run_is_a_candidate_before_the_first_is_measured(
         candidate_id: CandidateId,
         evaluator_id: EvaluatorId,
         eval_dir: Path,
+        *,
+        bar: CandidateId | None,
+        repeats: int,
     ) -> bool:
         with db.session() as s:
             rows = s.scalars(select(Candidate).where(Candidate.run_id == run_id).order_by(Candidate.id)).all()
             seen.append([(c.summary, c.verdict, c.parent_id) for c in rows])
-        return measure(run, campaign_id, cfg, repo, sha, candidate_id, evaluator_id, eval_dir)
+        return measure(run, campaign_id, cfg, repo, sha, candidate_id, evaluator_id, eval_dir, bar=bar, repeats=repeats)
 
     monkeypatch.setattr(ex, '_measure', watched)
     execute(ex, db, run_id)
@@ -712,6 +718,9 @@ def test_a_crash_from_a_fault_of_the_host_is_measured_again_on_request_and_judge
     with db.session() as s:
         c = s.get_one(Candidate, crashed.id)
         assert (c.verdict, len(c.measurements)) == (Verdict.CRASH, 2), 'the fault is still there: a crash again'
+        assert len(s.get_one(Candidate, baseline(db, campaign.id).id).measurements) == 2, (
+            'its first run crashed, so its bar never ran'
+        )
     fault.unlink()
     write_script(
         Path(campaign.path).parent / 'harness.sh',
@@ -733,8 +742,9 @@ def test_a_crash_from_a_fault_of_the_host_is_measured_again_on_request_and_judge
         assert (c.verdict, c.verdict_by) == (Verdict.INTERESTING, DAEMON)
         assert c.verdict_reason is not None and c.verdict_reason.startswith(
             f'keeps against its own bar, but the head moved on to candidate#{moved.id}: against candidate#1: score 2 vs 1'
+            ' (+1; 95% worst case +1 over 3 pairs)'
         )
-        assert [m.error is None for m in c.measurements] == [False, False, True]
+        assert [m.error is None for m in c.measurements] == [False, False, True, True, True]
         p = s.get_one(Campaign, campaign.id)
         assert requested(s, p) == [], 'measured since the request'
         merged = head(s, p)
@@ -750,7 +760,10 @@ def test_a_crash_from_a_fault_of_the_host_is_measured_again_on_request_and_judge
     ex.remeasure(merged_id)
     with db.session() as s:
         c = s.get_one(Candidate, merged_id)
-        assert (len(c.measurements), c.verdict) == (2, Verdict.KEEP), 'a repeat of a judged candidate keeps its verdict'
+        assert (len(c.measurements), c.verdict) == (4, Verdict.KEEP), 'a repeat of a keep keeps its verdict'
+        assert {m.pair.candidate_id for m in c.measurements if m.pair} == {moved.id}, (
+            'its bar is the head it merged onto'
+        )
 
 
 def test_a_crash_on_the_evaluate_timeout_is_measured_again_on_request_once_the_timeout_is_raised(
@@ -775,7 +788,7 @@ def test_a_crash_on_the_evaluate_timeout_is_measured_again_on_request_once_the_t
     toml.write_text(toml.read_text().replace('evaluate_timeout = 0.2', 'evaluate_timeout = 30'))
     reload_campaign(db, campaign)
     with db.session() as s:
-        request_remeasure(s, s.get_one(Candidate, crashed.id), System.ORCHESTRATOR)
+        request_remeasure(s, s.get_one(Candidate, crashed.id), System.ORCHESTRATOR, repeats=1)
         s.commit()
     ex.remeasure(crashed.id)
     with db.session() as s:
@@ -784,9 +797,132 @@ def test_a_crash_on_the_evaluate_timeout_is_measured_again_on_request_once_the_t
         assert (c.verdict, c.verdict_by, c.verdict_reason) == (
             Verdict.KEEP,
             DAEMON,
-            'against candidate#1: score 2 vs 1 (+1; aggregate: no per-unit results)',
+            'against candidate#1: score 2 vs 1 (+1; 95% worst case +1 over 1 pairs)',
         )
         assert head(s, s.get_one(Campaign, campaign.id)) == c
+
+
+LOADED = (
+    'lines=$(wc -l < solve.txt); echo $lines >> {order}; grep -qx $lines {fail} 2>/dev/null && exit 3;'
+    ' echo METRIC score=$lines; echo METRIC seconds=$((10 * $(cat {load})))'
+)
+"""An evaluate whose time is 10 s times the host's load, whatever the tree. It logs the lines of each tree it runs, and
+fails on a tree whose lines are in ``fail``."""
+
+
+def loaded(db: Database, campaign: Campaign, tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Give the campaign the ``LOADED`` evaluate, with ``seconds`` as a guardrail of margin 5. Return its files."""
+    load, order, fail = tmp_path / 'load', tmp_path / 'order', tmp_path / 'fail'
+    load.write_text('1')
+    metrics = [
+        {'name': 'score', 'direction': 'higher', 'role': 'primary'},
+        {'name': 'seconds', 'direction': 'lower', 'role': 'guardrail', 'margin': 5},
+    ]
+    evaluate = ['sh', '-c', LOADED.format(load=load, order=order, fail=fail)]
+    set_config(db, campaign, metrics=metrics, evaluate=evaluate)
+    return load, order, fail
+
+
+def test_a_remeasure_runs_pairs_of_the_candidate_and_its_bar_and_judges_it_again_on_them(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """The bar was measured on a quiet host, the candidate under load, so a guardrail held the keep back. A remeasure
+    runs the candidate and its bar one after the other, so the load hits both, and judges the candidate on the pairs."""
+    load, order, _ = loaded(db, campaign, tmp_path)
+    ex = controller(db, runtime, tmp_path)
+    ex.remeasure(baseline(db, campaign.id).id)  # the new evaluator measures the head first, as the daemon does
+    load.write_text('4')
+    run_id = make_run(db, campaign)
+    execute(ex, db, run_id)
+    [c] = candidates(db, run_id)
+    with db.session() as s:
+        assert s.get_one(Candidate, c.id).verdict_reason == snapshot(
+            'against candidate#1: score 2 vs 1 (+1; aggregate: no per-unit results); guardrails: seconds 40 vs 10 (+30; aggregate: no per-unit results) beyond its margin 5'
+        )
+    order.write_text('')
+    with db.session() as s:
+        request_remeasure(s, s.get_one(Candidate, c.id), System.ORCHESTRATOR, repeats=3)
+        s.commit()
+    ex.remeasure(c.id)
+    assert order.read_text().split() == ['2', '1', '1', '2', '2', '1'], 'the candidate first, then in ABBA order'
+    with db.session() as s:
+        candidate = s.get_one(Candidate, c.id)
+        assert (candidate.verdict, candidate.verdict_by, candidate.verdict_reason) == snapshot(
+            (
+                Verdict.KEEP,
+                'daemon',
+                'against candidate#1: score 2 vs 1 (+1; 95% worst case +1 over 3 pairs); guardrails: seconds 40 vs 40 (+0; 95% worst case +0 over 3 pairs) within its margin 5',
+            )
+        )
+        paired = [(m.metrics, m.pair.candidate_id, m.pair.metrics) for m in candidate.measurements if m.pair]
+        assert paired == [({'score': 2.0, 'seconds': 40.0}, 1, {'score': 1.0, 'seconds': 40.0})] * 3
+        assert head(s, s.get_one(Campaign, campaign.id)) == candidate
+        recorded = [e.payload['pair'] for e in s.scalars(select(Event).where(Event.kind == 'measurement.recorded'))]
+        bars = [m.pair_id for m in candidate.measurements if m.pair]
+        assert recorded[-6:] == [None, None, None, *bars], 'the event names the pair too'
+
+
+def test_a_paired_evaluation_stops_at_the_first_run_that_fails(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """A pair needs both sides, so a bar that crashes ends the evaluation. The candidate ran first: it has a sample."""
+    _, order, fail = loaded(db, campaign, tmp_path)
+    ex = controller(db, runtime, tmp_path)
+    ex.remeasure(baseline(db, campaign.id).id)
+    run_id = make_run(db, campaign)
+    execute(ex, db, run_id)
+    [c] = candidates(db, run_id)
+    fail.write_text('1\n')
+    order.write_text('')
+    with db.session() as s:
+        request_remeasure(s, s.get_one(Candidate, c.id), System.ORCHESTRATOR)
+        s.commit()
+    ex.remeasure(c.id)
+    assert order.read_text().split() == ['2', '1'], 'the bar failed: no pair can follow'
+    with db.session() as s:
+        crashed = s.get_one(Candidate, baseline(db, campaign.id).id).measurements[-1]
+        assert crashed.error == IsStr(regex='evaluate exit 3.*')
+        last = s.get_one(Candidate, c.id).measurements[-1]
+        assert (last.error, last.pair) == (None, crashed), 'it names what ran next to it, which is no pair'
+
+
+DRIFTING = (
+    'load=$(head -n 1 {loads}); tail -n +2 {loads} > {loads}.next; mv {loads}.next {loads};'
+    ' echo METRIC score=$(wc -l < solve.txt); echo METRIC seconds=$(awk -v l=$load "BEGIN {{ print 10 * l }}")'
+)
+"""An evaluate whose time is 10 s times the next load of ``loads``, whatever the tree: one line per run."""
+
+
+def drifting_loads(seed: int) -> list[float]:
+    """The load of each run: 1 for the bar on a quiet host, then a load between 2x and 5x that drifts a little on each
+    run, as a host's load does over seconds."""
+    rng = random.Random(seed)
+    load, loads = rng.uniform(2, 5), [1.0]
+    for _ in range(12):
+        loads.append(round(load, 3))
+        load = min(max(load * math.exp(rng.gauss(0, 0.03)), 1), 5)
+    return loads
+
+
+@pytest.mark.parametrize('seed', range(10))
+@pytest.mark.parametrize('repeats', [None, 3])
+def test_an_a_a_test_under_load_keeps_a_gain_of_the_same_speed_only_when_it_is_paired(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, seed: int, repeats: int | None
+) -> None:
+    """The candidate gains on the primary and has the speed of its bar, which was measured on a quiet host. Unpaired,
+    the load decides its time guardrail. With ``repeats``, the bar runs next to it, so the load hits both alike."""
+    loads = tmp_path / 'loads'
+    loads.write_text(''.join(f'{x}\n' for x in drifting_loads(seed)))
+    seconds = {'name': 'seconds', 'direction': 'lower', 'role': 'guardrail', 'margin': 5, 'repeats': repeats}
+    metrics = [{'name': 'score', 'direction': 'higher', 'role': 'primary'}, seconds]
+    set_config(db, campaign, metrics=metrics, evaluate=['sh', '-c', DRIFTING.format(loads=loads)])
+    ex = controller(db, runtime, tmp_path)
+    ex.remeasure(baseline(db, campaign.id).id)  # the new evaluator measures the head on a quiet host
+    run_id = make_run(db, campaign)
+    execute(ex, db, run_id)
+    with db.session() as s:
+        c = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).one()
+        assert (c.verdict, len(c.measurements)) == ((Verdict.KEEP, 3) if repeats else (Verdict.INTERESTING, 1))
 
 
 def test_a_remeasure_that_a_stop_cancels_records_and_judges_nothing(
@@ -977,7 +1113,7 @@ def test_a_new_evaluator_measures_what_a_verdict_needs_then_what_someone_asked_f
     db: Database, campaign: Campaign
 ) -> None:
     """After an evaluator change, the daemon measures the head, the bars of open runs, the asks and the bars of pinned
-    ideas, in that order. A requested crash that the daemon judges again comes after the bar it is judged against.
+    ideas, in that order. An ask needs no measured bar: its paired evaluation measures the bar too.
 
     Every other keep keeps its old scores until someone asks: measuring the whole history again held every evaluation
     for hours after each change of the evaluator.
@@ -1035,11 +1171,11 @@ def test_a_new_evaluator_measures_what_a_verdict_needs_then_what_someone_asked_f
             insert(Evaluator).values(campaign_id=campaign.id, key='next', definition={}).returning(Evaluator.id)
         )
         s.flush()
-        assert [c.tree_sha for c in due(s, proj)] == ['head', 'k1', 'k2', 'crash', 'repeat', 'k4', 'fresh'], (
-            'the head; the bar of the open run (its base is a lead of k1); the bar of the asked crash, then the crash;'
-            ' the asked repeat alone; the bar of the pinned idea; the new reference. Not k3, k5, the baseline or ref'
+        assert [c.tree_sha for c in due(s, proj)] == ['head', 'k1', 'crash', 'repeat', 'k4', 'fresh'], (
+            'the head; the bar of the open run (its base is a lead of k1); the asks; the bar of the pinned idea; the'
+            ' new reference. Not k2, k3, k5, the baseline or ref'
         )
-        for tree in ('head', 'k1', 'k2'):
+        for tree in ('head', 'k1'):
             s.add(Measurement(candidate_id=rows[tree].id, evaluator_id=new, metrics={'score': 1.0}))
         s.flush()
         s.expire_all()
@@ -1978,6 +2114,32 @@ def test_units_of_a_candidate_are_the_mean_per_unit_over_its_measurements(
         )
 
 
+def test_pairs_are_the_samples_of_a_candidate_next_to_the_successful_samples_of_that_bar(
+    db: Database, campaign: Campaign
+) -> None:
+    with db.session() as s:
+        evaluator_id = s.get_one(Campaign, campaign.id).evaluator_id
+        assert evaluator_id is not None
+        bar, other, c = (Candidate(campaign_id=campaign.id, tree_sha=t, commit_sha=t) for t in 'boc')
+        s.add_all([bar, other, c])
+        s.flush()
+
+        def sample(
+            on: Candidate, score: float, pair: Measurement | None = None, error: str | None = None
+        ) -> Measurement:
+            m = Measurement(candidate=on, evaluator_id=evaluator_id, metrics={'score': score}, pair=pair, error=error)
+            s.add(m)
+            return m
+
+        sample(c, 5.0, sample(bar, 1.0))
+        sample(c, 6.0, sample(bar, 2.0, error='crashed after its METRIC line'))
+        sample(c, 7.0, sample(other, 3.0))
+        sample(c, 8.0)
+        sample(c, 9.0, sample(bar, 4.0))
+        s.flush()
+        assert ledger_pairs(c, bar, evaluator_id) == ({'score': [5.0, 9.0]}, {'score': [1.0, 4.0]})
+
+
 HARNESS_SCAFFOLD_THEN_WORK = (
     '#!/bin/sh\necho a >> solve.txt\ngit commit -qam scaffold -m "piloop-eval: SKIP"\n'
     'echo b >> solve.txt\ngit commit -qam work\n'
@@ -2327,6 +2489,25 @@ def test_a_keep_that_lost_the_race_to_the_head_is_merged_onto_it_and_judged_ther
         assert s.get_one(Idea, run_row(db, run_id).idea_id).status is IdeaStatus.DONE
 
 
+def test_with_a_noisy_metric_a_run_pairs_its_commit_with_its_bar_and_a_merge_with_the_head_it_merged_onto(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    size = {'name': 'size', 'direction': 'lower', 'role': 'guardrail', 'margin': 100, 'repeats': 2}
+    set_config(db, campaign, metrics=[{'name': 'score', 'direction': 'higher', 'role': 'primary'}, size])
+    ex = controller(db, runtime, tmp_path)
+    ex.remeasure(baseline(db, campaign.id).id)
+    run_id = make_run(db, campaign)
+    h2 = keep_elsewhere(db, campaign, 'notes', {'notes.txt': 'n\n'}, {'score': 1.0, 'size': 5.0})
+    execute(ex, db, run_id)
+    with db.session() as s:
+        x, merged = s.scalars(select(Candidate).where(Candidate.run_id == run_id).order_by(Candidate.id)).all()
+        assert [m.pair.candidate_id for m in x.measurements if m.pair] == [1, 1], 'paired with its bar'
+        assert [m.pair.candidate_id for m in merged.measurements if m.pair] == [h2, h2], 'paired with the new head'
+        assert merged.verdict_reason == snapshot(
+            'against candidate#2: score 2 vs 1 (+1; 95% worst case +1 over 2 pairs); guardrails: size 10 vs 5 (+5; 95% worst case +5 over 2 pairs) within its margin 100'
+        )
+
+
 def test_a_keep_whose_merge_onto_the_head_conflicts_stays_interesting_and_files_a_seed_to_compose_it(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
@@ -2596,10 +2777,13 @@ def test_a_merge_a_stop_left_unjudged_is_measured_and_judged_when_the_run_resume
         candidate_id: CandidateId,
         evaluator_id: EvaluatorId,
         eval_dir: Path,
+        *,
+        bar: CandidateId | None,
+        repeats: int,
     ) -> bool:
         if candidate_id == merged_id:
             return False  # what a stop does to an evaluation in flight
-        return measure(run, campaign_id, cfg, repo, sha, candidate_id, evaluator_id, eval_dir)
+        return measure(run, campaign_id, cfg, repo, sha, candidate_id, evaluator_id, eval_dir, bar=bar, repeats=repeats)
 
     monkeypatch.setattr(ex, '_measure', stopped_at_the_merge)
     execute(ex, db, run_id)

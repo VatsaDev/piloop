@@ -311,6 +311,29 @@ def test_the_evaluator_is_what_scores_not_how_the_verdict_reads_it(campaign_path
     assert flipped.evaluator_key != cfg.evaluator_key
 
 
+def test_repeats_marks_a_noisy_metric_and_a_track_pairs_with_the_largest_repeats_of_its_deciding_metrics(
+    campaign_path: Path,
+) -> None:
+    timing = {'name': 'seconds', 'direction': 'lower', 'role': 'guardrail', 'margin': 1, 'repeats': 3}
+    cpu = {'name': 'cpu', 'direction': 'lower', 'role': 'guardrail', 'margin': 1, 'repeats': 5}
+    primary = {'name': 'score', 'direction': 'higher', 'role': 'primary'}
+    assert load_campaign_config(campaign_path).all_tracks[0].repeats is None, 'no noisy metric: one sample'
+    noisy = load_campaign_config(campaign_path, metrics=[primary, timing, cpu])
+    assert noisy.all_tracks[0].repeats == 5
+    assert (
+        noisy.evaluator_key
+        == load_campaign_config(
+            campaign_path, metrics=[primary, {**timing, 'repeats': None}, {**cpu, 'repeats': None}]
+        ).evaluator_key
+    ), 'repeats is verdict policy: it re-measures nothing'
+    serving = load_campaign_config(campaign_path, metrics=[ACCURACY, {**COST, 'repeats': 3}], tracks=SHARES)
+    assert [t.repeats for t in serving.all_tracks] == [3, 3], 'the primary of another track is a guardrail'
+    with pytest.raises(ValueError, match="'size': repeats applies to primaries and guardrails only"):
+        load_campaign_config(campaign_path, metrics=[primary, {'name': 'size', 'direction': 'lower', 'repeats': 3}])
+    with pytest.raises(ValueError, match=r'metrics\[1\]\.repeats = 0'):
+        load_campaign_config(campaign_path, metrics=[primary, {**timing, 'repeats': 0}])
+
+
 def test_default_harnesses_keep_agents_out_of_the_harness_memory() -> None:
     """A memory the harness keys by repo would carry one agent's notes into every later agent of the campaign."""
     off = {'claude': ['"autoMemoryEnabled":false'], 'codex': ['-c', 'features.memories=false']}

@@ -381,10 +381,12 @@ CREATE TABLE measurements (
 	metrics JSON DEFAULT '{}' NOT NULL,
 	error VARCHAR,
 	seconds DOUBLE,
+	pair_id INTEGER,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
 	PRIMARY KEY (id),
 	FOREIGN KEY(candidate_id) REFERENCES candidates (id) ON DELETE CASCADE,
-	FOREIGN KEY(evaluator_id) REFERENCES evaluators (id)
+	FOREIGN KEY(evaluator_id) REFERENCES evaluators (id),
+	FOREIGN KEY(pair_id) REFERENCES measurements (id) ON DELETE SET NULL
 );
 CREATE INDEX ix_measurements_candidate_evaluator ON measurements (candidate_id, evaluator_id);
 CREATE VIRTUAL TABLE ideas_fts USING fts5(title, hypothesis, plan, content='ideas', content_rowid='id', tokenize='porter unicode61 remove_diacritics 2');

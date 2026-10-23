@@ -454,10 +454,12 @@ PILOOP_ACTOR=orchestrator piloop candidate verdict <c> interesting --reason '<wh
   with `{"metrics": {"<name>": <value>}, "seconds": <s>}` in the file. The daemon judges its `crash`, `discard` or
   `interesting` again with every measurement; the output says when. Never `INSERT INTO measurements`: nothing judges
   it.
-- A suspicious jump: `piloop candidate remeasure <c>` adds one more measurement, and the score is the mean.
+- A suspicious jump: `piloop candidate remeasure <c>`. The daemon measures it 3 times next to its bar and judges its
+  `crash`, `discard` or `interesting` again on the pairs. A time that load inflates needs `repeats` on its metric in
+  `piloop.toml`, not a remeasure or a larger margin.
 - A `crash` that the host caused (a full disk, a lost GPU, a load that hit `evaluate_timeout`): `piloop candidate
-  remeasure <c>`, after you raise the timeout and run `piloop init`. The daemon measures it again and judges the crash
-  again. Never queue an idea with a no-op change to get a new tree measured.
+  remeasure <c>`, after you raise the timeout and run `piloop init`. Never queue an idea with a no-op change to get a
+  new tree measured.
 - After a new evaluator, the daemon measures only the head and the bars that runs need. An older keep keeps its old
   score until you ask for it with `piloop candidate remeasure <c>`.
 - Evaluations wait for one of the daemon's slots (`evaluations` of `[plugins.executor.pools.serve]`): `piloop eval queue` lists them. `piloop eval cancel

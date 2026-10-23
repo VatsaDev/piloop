@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, select
 
+from piloop.actor import System
 from piloop.agents.results import SETTLED, DaemonStopped, Ended, Ran
 from piloop.daemon.main import Daemon
 from piloop.daemon.run_controller import RunController
@@ -23,6 +24,7 @@ from piloop.otel import Tracer
 from piloop.plugins import host as plugins
 from piloop.plugins.executor.contract import EXECUTORS, AgentKey, Capacity, Checkout, Prompt
 from piloop.plugins.runtime.contract import Handle
+from piloop.scoring.ledger import request_remeasure
 from piloop.settings import Settings
 from tests.conftest import (
     HARNESS_SLEEPS,
@@ -102,6 +104,22 @@ def test_an_evaluation_records_its_measurement(
     with db.session() as s:
         count = s.scalar(select(func.count()).select_from(Measurement).where(Measurement.candidate_id == candidate))
     assert count == 2, 'the baseline and the new measurement'
+
+
+def test_a_paired_evaluation_records_each_sample_with_its_pair(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, provider: str
+) -> None:
+    ex = controller(db, runtime, tmp_path, provider)
+    execute(ex, db, make_run(db, campaign))
+    with db.session() as s:
+        candidate = s.scalars(select(Candidate).where(Candidate.run_id.is_not(None))).one()
+        request_remeasure(s, candidate, System.ORCHESTRATOR, repeats=2)
+        s.commit()
+        candidate_id = candidate.id
+    ex.remeasure(candidate_id)
+    with db.session() as s:
+        pairs = [(m.metrics, m.pair.metrics) for m in s.get_one(Candidate, candidate_id).measurements if m.pair]
+    assert pairs == [({'score': 2.0, 'size': 10.0}, {'score': 1.0, 'size': 5.0})] * 2
 
 
 def test_a_cancelled_agent_is_stopped_and_still_reports(

@@ -31,6 +31,7 @@ role = "primary"
 track = "cost"
 margin = 0.3           # how much an accuracy keep may add per step, in CPU seconds
 floor = 2.0            # an accuracy keep may not make the CPU cost higher than this
+repeats = 3            # a time: measure each candidate 3 times next to its bar
 
 [tracks.accuracy]
 share = 0.75

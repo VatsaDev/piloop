@@ -40,6 +40,7 @@ from piloop.plugins.executor.contract import (
     Guard,
     JobKey,
     Prompt,
+    Sample,
     Settled,
 )
 from piloop.plugins.executor.kit.capacity import GB, HostSample, Pool
@@ -202,7 +203,7 @@ def events(db: Database, kind: str) -> list[tuple[TargetKind, int, dict[str, obj
 
 DONE = AgentFinished(process=AgentExit(ExitStatus.EXITED, 1.0, 0))
 RECEIPT = {'reported': 'agent_finished'}
-MEASURED = EvaluationReport(metrics={'score': 2.0}, seconds=1.0)
+MEASURED = EvaluationReport(samples=[Sample(metrics={'score': 2.0}, seconds=1.0)])
 
 
 def test_the_timing_is_kubernetes_two_stages_and_the_parameters_name_it_and_refuse_a_disorder() -> None:

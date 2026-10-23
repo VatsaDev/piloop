@@ -92,10 +92,18 @@ class Metric(BaseModel):
     it. Allowed on a guardrail, and on a primary of a campaign with several tracks, where it applies to the candidates
     of the other tracks."""
 
+    repeats: int | None = Field(default=None, ge=1)
+    """Optional. Marks a noisy metric, such as a time: each evaluation of a run's candidate that this metric judges runs
+    the evaluate command ``repeats`` times on the candidate and as many times on its bar, one after the other, and the
+    verdict compares these pairs. Load then slows both sides alike. With several, the largest number counts. Allowed on
+    a guardrail, and on a primary."""
+
     @model_validator(mode='after')
     def _check(self) -> Self:
         if self.role is MetricRole.GUARDRAIL and self.margin is None:
             raise ValueError(f'guardrail {self.name!r} needs a margin')
+        if self.role is MetricRole.WATCH and self.repeats is not None:
+            raise ValueError(f'{self.name!r}: repeats applies to primaries and guardrails only')
         if self.role is MetricRole.WATCH and (self.margin is not None or self.floor is not None):
             raise ValueError(f'{self.name!r}: margin and floor apply to guardrails and primaries only')
         if self.role is not MetricRole.PRIMARY and self.track is not None:
@@ -150,6 +158,14 @@ class Track:
     guardrails: tuple[Metric, ...]
     """What a candidate of this track must hold: the campaign's guardrails, then the primary of every other track, each
     with its margin and floor."""
+
+    @property
+    def repeats(self) -> int | None:
+        """The pairs of each evaluation of this track's candidates: the largest ``repeats`` of the metrics that judge.
+
+        None: one sample, unpaired.
+        """
+        return max((m.repeats for m in (self.primary, *self.guardrails) if m.repeats is not None), default=None)
 
 
 """The form of a role name: the agents' signature, ``agent_sessions.kind``, and the start of their Herdr agent name."""

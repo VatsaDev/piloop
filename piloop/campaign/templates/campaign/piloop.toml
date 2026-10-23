@@ -159,6 +159,7 @@ role = "primary"                          # primary: must beat the head · guard
 # role = "guardrail"
 # margin = 20                             # in the metric's own units, compared with the run's bar
 # floor = 500                             # optional hard limit on the value
+# repeats = 3                             # a noisy metric (a time): each candidate runs 3 times next to its bar
 
 # [tracks.<name>]                         # experimental: one table for each track when several metrics are primary
 # share = 1                               # the fraction of each role's run slots for this track; shares sum to 1

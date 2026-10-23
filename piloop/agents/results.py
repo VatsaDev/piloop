@@ -59,10 +59,10 @@ from piloop.plugins.executor.contract import (
     EvaluationReport,
     Guard,
     JobKey,
+    Sample,
     Settled,
 )
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
-from piloop.scoring.evaluate import EvalResult
 from piloop.scoring.ledger import save_units
 
 STARTUP_SECONDS = 120
@@ -351,7 +351,9 @@ class CampaignResults:
         _ended(s, w.id, DaemonStopped(head))
 
     def _measured(self, s: Session, job: EvaluationJob, report: EvaluationReport) -> None:
-        """Record what an evaluation measured as one measurement, and take it out of the queue.
+        """Record each sample of an evaluation as one measurement, and take the evaluation out of the queue.
+
+        A sample of the candidate names the bar's sample that ran next to it (``Measurement.pair``).
 
         A cancelled evaluation records nothing: ``queue.cancel`` recorded its crash. Nor does one that ends while the
         daemon stops: its evaluator was killed, and the next daemon measures it again.
@@ -362,8 +364,17 @@ class CampaignResults:
         s.delete(evaluation)
         if self._stopping() or evaluation.cancelled_by is not None:
             return
-        result = EvalResult(report.metrics, report.seconds, report.error, report.units)
-        record(s, self._units_dir, job.run, job.candidate, evaluation.evaluator_id, result)
+        evaluator_id = evaluation.evaluator_id
+        bar = job.bar
+        assert bar is not None or not report.bar_samples  # a bar's samples come only from a paired evaluation
+        pairs = (
+            []
+            if bar is None
+            else [record(s, self._units_dir, None, bar.candidate, evaluator_id, b) for b in report.bar_samples]
+        )
+        for i, sample in enumerate(report.samples):
+            pair = pairs[i] if i < len(pairs) else None
+            record(s, self._units_dir, job.run, job.candidate, evaluator_id, sample, pair=pair)
 
 
 def _open(s: Session, key: AgentKey) -> AgentSession:
@@ -469,24 +480,31 @@ def record(
     run_id: RunId | None,
     candidate_id: CandidateId,
     evaluator_id: EvaluatorId,
-    result: EvalResult,
+    sample: Sample,
+    *,
+    pair: MeasurementId | None = None,
 ) -> MeasurementId:
-    """Store one evaluation as a measurement, with its per-unit results, and return its id. The caller commits."""
+    """Store one sample as a measurement, with its per-unit results, and return its id. The caller commits.
+
+    ``pair`` is the bar's measurement that ran next to it in a paired evaluation.
+    """
     measurement = Measurement(
         candidate_id=candidate_id,
         evaluator_id=evaluator_id,
-        metrics=result.metrics,
-        error=result.error,
-        seconds=result.seconds,
+        metrics=sample.metrics,
+        error=sample.error,
+        seconds=sample.seconds,
+        pair_id=pair,
     )
     s.add(measurement)
     s.flush()
-    save_units(units_dir, measurement.id, result.units)
+    save_units(units_dir, measurement.id, sample.units)
     payload: dict[str, object] = {
         'candidate': candidate_id,
-        'metrics': result.metrics,
-        'error': result.error,
+        'metrics': sample.metrics,
+        'error': sample.error,
         'run': run_id,
+        'pair': pair,
     }
     emit(s, 'measurement.recorded', TargetKind.MEASUREMENT, measurement.id, payload=payload)
     return measurement.id

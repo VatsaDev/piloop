@@ -14,6 +14,7 @@ import subprocess
 import time
 from collections.abc import Callable
 from dataclasses import replace
+from enum import StrEnum
 from pathlib import Path
 from typing import Protocol
 
@@ -32,6 +33,7 @@ from piloop.plugins.executor.contract import (
     Checkout,
     EvaluationJob,
     EvaluationReport,
+    Sample,
 )
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, Handle, Runtime, StartFailed
 from piloop.proc import child_env, kill_group
@@ -280,17 +282,56 @@ def _attach(job: AgentJob, session_id: str | None, entire_version: str | None, s
 
 
 def run_evaluation(job: EvaluationJob, control: Control, span: Span) -> EvaluationReport:
-    """Run the evaluator on the candidate's tree, and return what it measured.
+    """Run the evaluator ``repeats`` times on the candidate's tree, each next to a run on the bar's tree, if any.
 
-    An evaluate that another process killed, an agent's ``pkill -f`` say, measured nothing of the candidate, so it
-    runs once more, in a new worktree. The executor's own kills (a cancel, its stop) are not run again.
+    The order is candidate, bar, bar, candidate, candidate, bar (``order``). It stops at the first run that fails: a
+    candidate that crashes once crashes again, and a pair needs both sides. The candidate runs first, so each job
+    measures it. Each run has its own worktree and logs, under ``<side>-<n>`` in ``log_dir``.
+    """
+    samples: dict[Tree, list[Sample]] = {Tree.CANDIDATE: [], Tree.BAR: []}
+    for side in order(job.repeats, paired=job.bar is not None):
+        n = len(samples[side])
+        artifact = job.artifact if side is Tree.CANDIDATE or job.bar is None else job.bar.artifact
+        one = job.model_copy(update={'artifact': artifact, 'log_dir': job.log_dir / f'{side}-{n}'})
+        result = _evaluate(one, control, span)
+        sample = Sample(metrics=result.metrics, seconds=result.seconds, error=result.error, units=result.units)
+        samples[side].append(sample)
+        if result.error is not None or control.asked() or control.stopping():
+            break
+    return EvaluationReport(samples=samples[Tree.CANDIDATE], bar_samples=samples[Tree.BAR])
+
+
+class Tree(StrEnum):
+    """The tree that one run of an evaluation measures."""
+
+    CANDIDATE = 'candidate'
+    BAR = 'bar'
+
+
+def order(repeats: int, *, paired: bool) -> list[Tree]:
+    """The runs of an evaluation: ``repeats`` of the candidate, and with ``paired``, as many of the bar in ABBA order.
+
+    Linear drift of the load then costs both sides alike. The candidate opens, so a first run that is slower (a cold
+    cache) counts against the candidate, never for it.
+    """
+    if not paired:
+        return [Tree.CANDIDATE] * repeats
+    pairs = [(Tree.CANDIDATE, Tree.BAR), (Tree.BAR, Tree.CANDIDATE)]
+    return [side for i in range(repeats) for side in pairs[i % 2]]
+
+
+def _evaluate(job: EvaluationJob, control: Control, span: Span) -> EvalResult:
+    """Run the evaluator once on the job's tree.
+
+    An evaluate that another process killed, an agent's ``pkill -f`` say, measured nothing of the tree, so it runs
+    once more, in a new worktree. The executor's own kills (a cancel, its stop) are not run again.
     """
     result = _evaluate_once(job, control, span)
     if result.signal in SENT and not control.asked() and not control.stopping():
         span.event('evaluation.retry', evaluation=job.evaluation, error=result.error)
         result = _evaluate_once(job, control, span)
     span.set(error=result.error)
-    return EvaluationReport(metrics=result.metrics, seconds=result.seconds, error=result.error, units=result.units)
+    return result
 
 
 def _evaluate_once(job: EvaluationJob, control: Control, span: Span) -> EvalResult:

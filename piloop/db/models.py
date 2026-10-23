@@ -736,10 +736,13 @@ class Measurement(Base):
     error: Mapped[str | None]
     """Set when the evaluate command failed. ``metrics`` then has what it printed before it failed."""
     seconds: Mapped[float | None]
+    pair_id: Mapped[MeasurementId | None] = mapped_column(ForeignKey('measurements.id', ondelete='SET NULL'))
+    """The bar's measurement that ran next to this one in a paired evaluation. NULL on any other measurement."""
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
     candidate: Mapped[Candidate] = relationship(back_populates='measurements')
     evaluator: Mapped[Evaluator] = relationship()
+    pair: Mapped[Measurement | None] = relationship(remote_side=[id])
 
 
 class Evaluation(Base):

@@ -13,7 +13,7 @@ else of piloop.
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from piloop.plugins.host import Capability, Choice, Parameters, Scope, Tier
@@ -55,6 +55,9 @@ class Side:
     """The mean of each metric over its successful measurements. Empty when none succeeded."""
     units: dict[str, dict[str, float]]
     """The per-unit results of each metric that has them: unit id → the unit's mean contribution."""
+    samples: dict[str, list[float]] = field(default_factory=dict)
+    """The samples of each metric that ran in pairs with the other side's: the i-th of the candidate and the i-th of
+    the bar ran one after the other, on one worker. Empty without pairs."""
 
 
 @dataclass(frozen=True)

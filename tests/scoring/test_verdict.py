@@ -202,6 +202,72 @@ def test_a_guardrail_with_units_is_tested_on_its_bootstrap_worst_case() -> None:
     assert untouched[0] is Verdict.KEEP, 'paired: units that did not move add no noise'
 
 
+SECONDS = Metric(name='seconds', direction=Direction.LOWER, role=MetricRole.GUARDRAIL, margin=1)
+
+
+def test_pairs_judge_a_metric_without_units_on_the_worst_case_of_the_mean_pair_difference() -> None:
+    """The bar was measured long ago on a quiet host, the candidate under load: their means say nothing.
+
+    The pairs ran next to each other, so the load hit both sides alike.
+    """
+    stale = ({'accuracy': 2, 'seconds': 24.5}, {'accuracy': 1, 'seconds': 5.6})
+    pairs = (
+        {'accuracy': [2.0, 2.0, 2.0], 'seconds': [6.5, 6.4, 6.6]},
+        {'accuracy': [1.0, 1.0, 1.0], 'seconds': [6.5, 5.5, 6.4]},
+    )
+    track, confidence = rule(config(SECONDS))
+    unpaired = ledger.decide(
+        Bootstrap(), track, confidence, Side('candidate#74', stale[0], {}), Side(BAR, stale[1], {})
+    )
+    assert unpaired[0] is Verdict.INTERESTING
+    paired = ledger.decide(
+        Bootstrap(),
+        track,
+        confidence,
+        Side('candidate#74', stale[0], {}, pairs[0]),
+        Side(BAR, stale[1], {}, pairs[1]),
+    )
+    assert paired == snapshot(
+        (
+            Verdict.KEEP,
+            'against candidate#73: accuracy 2 vs 1 (+1; 95% worst case +1 over 3 pairs); guardrails: seconds 6.5 vs 6.133 (+0.3667; 95% worst case +0.6667 over 3 pairs) within its margin 1',
+        )
+    )
+
+
+def test_units_decide_a_metric_that_has_them_also_when_it_has_pairs() -> None:
+    """Pairs of a deterministic metric differ by the same amount each time: they say nothing of the spread of the
+    units, so a gain that three units carry is still not significant."""
+    mine, theirs, mine_units, theirs_units = scored(*records(CONCENTRATED))
+    samples = ({'accuracy': [mine['accuracy']] * 3}, {'accuracy': [theirs['accuracy']] * 3})
+    verdict, reason = ledger.decide(
+        Bootstrap(),
+        *rule(config()),
+        Side('candidate#74', mine, mine_units, samples[0]),
+        Side(BAR, theirs, theirs_units, samples[1]),
+    )
+    assert (verdict, reason) == snapshot(
+        (
+            Verdict.INTERESTING,
+            'against candidate#73: accuracy 93 vs 69 (+24; 95% worst case -1 over 69 units): the gain is not significant',
+        )
+    )
+
+
+def test_samples_of_one_side_only_are_no_pairs() -> None:
+    track, confidence = rule(config())
+    only = ledger.decide(
+        Bootstrap(),
+        track,
+        confidence,
+        Side('candidate#74', {'accuracy': 2}, {}, {'accuracy': [2.0, 2.0]}),
+        Side(BAR, {'accuracy': 1}, {}),
+    )
+    assert only == snapshot(
+        (Verdict.KEEP, 'against candidate#73: accuracy 2 vs 1 (+1; aggregate: no per-unit results)')
+    )
+
+
 def test_a_guardrail_neither_side_measured_holds_the_keep_back() -> None:
     assert decide(*rule(config(ERRORS)), {'accuracy': 2}, {'accuracy': 1}, {}, {}, bar=BAR) == snapshot(
         (

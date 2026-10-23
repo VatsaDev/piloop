@@ -71,6 +71,7 @@ direction = "lower"
 role = "guardrail"   # may get worse
 margin = 60          # by at most 60 s from the head
 floor = 120          # and never past 120 s
+repeats = 3          # a time: measured 3 times next to the head
 ```
 
 A commit with fewer bytes that holds the guardrail is a `keep`, and the next runs start from it. In this run, the
@@ -81,13 +82,13 @@ piloop status enwik8
 ```
 
 ```text
-enwik8 · head bytes 2711853 (candidate#2, -976922 vs baseline) · 2 kept / 2 candidates · 356k tok · evaluator #1, 3m old
+enwik8 · head bytes 2720458 (candidate#2, -968317 vs baseline) · 2 kept / 2 candidates · 356k tok · evaluator #1, 3m old
 ```
 
 The verdict says why:
 
 ```text
-against candidate#1: bytes 2711853 vs 3688775 (-976922; aggregate: no per-unit results); guardrails: seconds 6.89 vs 0.67 (+6.22; aggregate: no per-unit results) within its margin 60
+against candidate#1: bytes 2720458 vs 3688775 (-968317; 95% worst case -968317 over 3 pairs); guardrails: seconds 10.9 vs 0.8467 (+10.05; 95% worst case +10.28 over 3 pairs) within its margin 60
 ```
 
 The example stops after 20 scored runs (`[stop] max_runs`). See [the verdict](/concepts/verdict) for the rules.

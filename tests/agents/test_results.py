@@ -33,6 +33,7 @@ from piloop.plugins.executor.contract import (
     EvaluationKey,
     EvaluationReport,
     GitTree,
+    Sample,
     Settled,
 )
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
@@ -64,7 +65,7 @@ def test_an_evaluation_that_left_the_queue_or_never_started_is_settled(
         required=['score'],
         units_file=tmp_path / 'units.pending',
     )
-    report = EvaluationReport(metrics={'score': 1.0}, seconds=1)
+    report = EvaluationReport(samples=[Sample(metrics={'score': 1.0}, seconds=1)])
     with pytest.raises(Settled, match='is not running'):
         results.finished(job, report)  # it waits: no executor started it
     with pytest.raises(Settled, match='left the queue'):
@@ -137,7 +138,7 @@ def test_two_results_for_one_job_in_plain_sessions_close_its_row_once_and_measur
     )
     reports: list[tuple[AgentJob | EvaluationJob, AgentReport | EvaluationReport]] = [
         (agent, AgentFinished(process=AgentExit(ExitStatus.EXITED, 200, 0))),
-        (measure, EvaluationReport(metrics={'score': 1.0}, seconds=1)),
+        (measure, EvaluationReport(samples=[Sample(metrics={'score': 1.0}, seconds=1)])),
     ]
     for job, report in reports:
         second: list[str] = []

@@ -126,6 +126,9 @@ Map each answer to its keys:
   - Each guardrail: `role = "guardrail"` with a `margin` and an optional hard `floor`. The `margin` is the regression
     that the human accepts, in the units of the metric.
   - The daemon enforces margins and floors. Never write them only in `brief.md`.
+  - A metric that changes between identical runs, such as a time: `repeats = 3`. The daemon then measures each
+    candidate 3 times next to its bar, so load on the host does not decide the verdict. Prefer CPU time to wall-clock
+    time, and put a `floor` only on a metric that load does not inflate.
 - **Several tracks:**
   - Each primary metric names its `track`.
   - Each primary has a `margin`: what a keep on another track may give up per step.

@@ -53,14 +53,14 @@ The rule, in order:
 Each verdict has a reason. This one is from the enwik8 example campaign:
 
 ```text
-against candidate#33: bytes 2361893 vs 2365922 (-4029; aggregate: no per-unit results); guardrails: seconds 24.48 vs 23.28 (+1.2; aggregate: no per-unit results) within its margin 60
+against candidate#1: bytes 2720458 vs 3688775 (-968317; 95% worst case -968317 over 3 pairs); guardrails: seconds 10.9 vs 0.8467 (+10.05; 95% worst case +10.28 over 3 pairs) within its margin 60
 ```
 
 The reason names every guardrail past its floor or beyond its margin, whatever rule decided the verdict. So the
 reason of a `discard` on the primary metric still shows a large regression of a guardrail:
 
 ```text
-against candidate#33: bytes 2365922 vs 2365922 (+0; aggregate: no per-unit results); guardrails past their margin: seconds 92.3 vs 23.28 (+69.02; aggregate: no per-unit results) beyond its margin 60
+against candidate#33: bytes 2365922 vs 2365922 (+0; 95% worst case +0 over 3 pairs); guardrails past their margin: seconds 92.37 vs 23.29 (+69.07; 95% worst case +69.61 over 3 pairs) beyond its margin 60
 ```
 
 A candidate whose primary and guardrail values equal those of its parent has `no-op` in its reason. The change did
@@ -95,9 +95,33 @@ bootstrap over the units:
 So a gain that comes from three units has the spread of three units, not of the whole test set. The random generator
 has a fixed seed, so the same numbers always give the same verdict.
 
-Without per-unit results, or when the two sides report different units, the verdict compares the aggregate values.
-Any gain then counts, and the reason says `aggregate`. This is right for a deterministic metric, such as a compressed
-size. For a noisy metric, write per-unit results.
+Without per-unit results, a metric that the candidate and the bar measured in **pairs** is compared on the pairs. A
+pair is one run of the evaluate command on the candidate and one on the bar, one after the other on one worker, so a
+load on the host slows both. The worst case is the `1 - confidence` quantile of the mean pair difference, from the same
+bootstrap over the pairs, and the reason says `over 3 pairs`.
+
+Mark a noisy metric, such as a time, with `repeats`. Then the daemon measures each candidate that the metric judges
+`repeats` times, each next to a run of its bar, in the order candidate, bar, bar, candidate, candidate, bar:
+
+```toml
+[[metrics]]
+name = "bytes"
+direction = "lower"
+role = "primary"
+
+[[metrics]]
+name = "seconds"
+direction = "lower"
+role = "guardrail"
+margin = 60
+repeats = 3
+```
+
+A candidate then costs `2 × repeats` runs of the evaluate command. `piloop candidate remeasure` measures in pairs too.
+
+Without either, or when the two sides report different units, the verdict compares the aggregate values. Any gain
+then counts, and the reason says `aggregate`. This is right for a deterministic metric, such as a compressed size.
+For a noisy metric, write per-unit results, or measure in pairs.
 
 ## Replace the rule
 
@@ -127,20 +151,24 @@ filed again when the candidate is judged again.
 
 ## Measure a candidate again
 
-A fault of the host, such as a full disk, can crash a measurement of good code. The same tree committed again is the
-same candidate, so the daemon does not measure it again by itself. Ask for it:
+A fault of the host, such as a full disk, can crash a measurement of good code. A load on the host can slow a
+candidate that its bar, measured earlier on a quiet host, then beats. The same tree committed again is the same
+candidate, so the daemon does not measure it again by itself. Ask for it:
 
 ```bash
 piloop candidate remeasure 42
 ```
 
-The daemon measures the candidate again with the current evaluator, after the head and the bars that runs need. A
-`crash` that the daemon judged is judged again with the new measurement, as its run would have judged it. Any other
-verdict stays, and the new measurement is one more repeat in the mean. A `pending`, `unmeasured` or `recovered`
-candidate is never measured this way. A stopped campaign is measured too, but only what someone asked for, so you can
-measure a result again when you review a campaign. A campaign paused with `--evals`, or held by its stop rule, is
-measured once the hold ends. The command says when. `piloop eval queue` shows the request as `waiting` at once, and
-`piloop eval cancel` cancels it.
+The daemon runs the evaluate command on the candidate and on its bar 3 times each (`--repeats`), with the current
+evaluator, after the head and the bars that runs need. The order is candidate, bar, bar, candidate, candidate, bar,
+and it stops at the first run that fails. A `crash`, `discard` or `interesting` that the daemon gave is then judged
+again on these pairs, as its run would have judged it. A keep, and a verdict that someone set, stay. The baseline and
+a reference have no bar: they run alone. A `pending`, `unmeasured` or `recovered` candidate is never measured this
+way.
+
+A stopped campaign is measured too, but only what someone asked for, so you can measure a result again when you
+review a campaign. A campaign paused with `--evals`, or held by its stop rule, is measured once the hold ends. The
+command says when. `piloop eval queue` shows the request as `waiting` at once, and `piloop eval cancel` cancels it.
 
 ## The evaluation queue
 
