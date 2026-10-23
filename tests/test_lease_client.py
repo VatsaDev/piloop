@@ -20,7 +20,7 @@ from pytest_mock import MockerFixture
 from piloop.db.models import Campaign, LeaseState, NoLease, TokenScope
 from piloop.db.session import Database
 from piloop.ids import CampaignId, CommentId
-from piloop.net import tokens
+from piloop.net import MAX_POLL_SECONDS, tokens
 from piloop.net.server import Server, app
 from piloop.net.tokens import Tokens
 from piloop.otel import Tracer
@@ -41,7 +41,7 @@ from piloop.plugins.executor.kit.leases import (
 from piloop.plugins.executor.kit.remote import Remote, lease_routes
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import Https, HttpsNetwork
-from tests.conftest import Dial, disk
+from tests.conftest import Dial, disk, wait_until
 from tests.fixtures.netfault import CutResponse, Proxy
 from tests.test_lease import (
     DONE,
@@ -321,16 +321,22 @@ def test_a_worker_of_another_protocol_is_dismissed_with_the_servers_version(remo
         remote().register(INFO.model_copy(update={'protocol': 1}))
 
 
-def test_long_polls_hold_no_thread_of_the_server_so_a_heartbeat_still_answers(remote: Callable[..., Remote]) -> None:
-    """More long-polls than the server's 40 threads: each awaits a commit outside the pool."""
+def test_long_polls_hold_no_thread_of_the_server_so_a_heartbeat_still_answers(
+    remote: Callable[..., Remote], server: Server, db: Database
+) -> None:
+    """More long-polls than the server's 40 threads: each awaits a commit outside the pool, so a heartbeat answers
+    while every one of them is still parked."""
     workers = [remote(f'w{i}') for i in range(45)]
     cursors = [w.register(INFO).cursor for w in workers]
-    polls = [threading.Thread(target=w.messages, args=(c, 3)) for w, c in zip(workers, cursors, strict=True)]
+    polls = [
+        threading.Thread(target=w.messages, args=(c, MAX_POLL_SECONDS)) for w, c in zip(workers, cursors, strict=True)
+    ]
     for poll in polls:
         poll.start()
-    began = time.monotonic()
+    wait_until(lambda: len(db._changed) == len(polls))  # all parked: their first reads are done
     assert workers[0].heartbeat({}, HOST) == {}
-    assert time.monotonic() - began < 1
+    assert all(poll.is_alive() for poll in polls), 'it answered before any long-poll gave up its wait'
+    server.close()  # ends the long-polls
     for poll in polls:
         poll.join()
 
