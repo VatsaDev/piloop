@@ -1,7 +1,9 @@
 """The server of ``piloop serve --listen``: who may call it, TLS, and an executor's routes."""
 
 import subprocess
+import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import httpx2 as httpx
@@ -9,9 +11,9 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from piloop.daemon.main import preflight
-from piloop.db.models import TokenScope
+from piloop.db.models import Campaign, TokenScope
 from piloop.db.session import Database
-from piloop.net import Route, tokens
+from piloop.net import Polled, Route, tokens
 from piloop.net.tokens import Caller
 from piloop.plugins import host as plugins
 from piloop.plugins.network.contract import NETWORKS, Address
@@ -164,3 +166,46 @@ def test_config_toml_selects_the_network_and_listen_overrides_its_address(tmp_pa
     (tmp_path / 'config.toml').write_text('[plugins.network]\nprovider = "https"\nlisten = "0.0.0.0:8443"\n')
     with pytest.raises(plugins.PluginError, match='is not loopback'):
         preflight(Settings(home=tmp_path))
+
+
+class Poll(Polled):
+    name: str
+
+
+def renamed_to(db: Database) -> Callable[[Caller, Poll], Answer | None]:
+    """A long-poll's handler: the campaign's name once it is the asked one, else nothing yet."""
+
+    def handle(caller: Caller, poll: Poll) -> Answer | None:
+        with db.session() as s:
+            name = s.get_one(Campaign, 1).name
+        return Answer(text=name, caller=caller.name) if name == poll.name else None
+
+    return handle
+
+
+def test_more_long_polls_than_pool_threads_hold_none_and_a_quick_route_still_answers_at_once(
+    serving: Serving, network: HttpsNetwork, token: Callable[..., str], db: Database, campaign: Campaign
+) -> None:
+    """Starlette's pool has 40 threads. A long-poll holds one only while it reads, then awaits a commit."""
+    polls = 50
+    route = Route.long_poll('renamed', TokenScope.WORKER, Poll, renamed_to(db), db.changed)
+    with serving([ECHO, route]) as server, network.client(server.url, token()) as client:
+        with ThreadPoolExecutor(polls) as pool:
+            waiting = [
+                pool.submit(client.post, '/v1/executor/renamed', json={'name': 'renamed', 'wait': 20})
+                for _ in range(polls)
+            ]
+            time.sleep(1)  # every long-poll is parked
+            began = time.monotonic()
+            assert client.post(ECHOED, json=HI).status_code == 200
+            assert time.monotonic() - began < 1, 'a heartbeat waits for no long-poll'
+            with db.session() as s:
+                s.get_one(Campaign, campaign.id).name = 'renamed'
+                s.commit()
+            began = time.monotonic()
+            answers = [w.result(timeout=15) for w in waiting]
+        assert {(a.status_code, a.json()['text']) for a in answers} == {(200, 'renamed')}
+        assert time.monotonic() - began < 10, 'the commit woke them, long before their wait ended'
+        quiet = client.post('/v1/executor/renamed', json={'name': 'other', 'wait': 0.2})
+        assert quiet.status_code == 204, 'nothing by the end of its wait'
+        assert client.post('/v1/executor/renamed', json={'name': 'x', 'wait': 26}).status_code == 422

@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from functools import partial
 from importlib.metadata import version
 from pathlib import Path
+from typing import assert_never
 
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentJob, AgentReport, EvaluationJob, EvaluationReport
@@ -35,6 +36,7 @@ from piloop.plugins.executor.kit.leases import (
     AgentHandle,
     Answer,
     Grant,
+    NotAddressed,
     ProcessHandle,
     PromptMessage,
     Revoke,
@@ -124,7 +126,8 @@ class Worker:
         self._wanted = threading.Event()
         self._registered = False
         self._outcomes: dict[int, str | None] = {}
-        """What each prompt that this worker handled came to, by prompt id: a prompt sent again gets it again."""
+        """What each prompt past the cursor that this worker handled came to, by message id: a prompt read again,
+        because its answer did not land, is answered the same, and not delivered again."""
         self._started = False
         self._stopping = False
         self._handover = False
@@ -136,6 +139,8 @@ class Worker:
         """The leases of the agents that start now: ``runtime.start`` ran or runs, and their start is not over."""
         self._started_all = threading.Condition(self._lock)
         """Notified when ``_starting`` falls: a hand-over waits for every start in flight to be recorded."""
+        self._recovered = threading.Condition(self._lock)
+        """Notified when a held job is registered again, or its thread ends: the listener waits for every one."""
 
     def start(self) -> None:
         """Register, find this worker's leases again, then take jobs and read messages. Later calls do nothing.
@@ -168,7 +173,10 @@ class Worker:
         self.id, self.timing, self._registered = registration.worker, registration.timing, True
         for grant in registration.held:
             self._spawn(grant, partial(self._recover, grant))
-        self._listener = threading.Thread(target=self._listen, name=f'messages-{self.id}', daemon=True)
+        held = [grant.lease for grant in registration.held]
+        self._listener = threading.Thread(
+            target=self._listen, args=(registration.cursor, held), name=f'messages-{self.id}', daemon=True
+        )
         self._listener.start()
         return True
 
@@ -176,13 +184,16 @@ class Worker:
         """Make the loop turn now."""
         self._wanted.set()
 
-    def _listen(self) -> None:
-        """Read the worker's messages until it stops: wake the loop on ``Work``, stop a revoked job, deliver prompts.
+    def _listen(self, after: int, held: list[int]) -> None:
+        """Read the messages after the cursor ``after`` until the worker stops: wake the loop, stop jobs, prompt.
 
-        One long-poll is open at a time, after the GitHub Actions runner. Its wait is one heartbeat, so a worker that
-        stops ends this thread within one.
+        It reads once every ``held`` job is registered again or given up, so a prompt that waited across a restart
+        finds its agent. One long-poll is open at a time, after the GitHub Actions runner. Its wait is one heartbeat,
+        so a worker that stops ends this thread within one. The cursor moves past a prompt only once its answer
+        landed, so the next read, in this process or the next, gets an unanswered prompt again.
         """
-        after = 0
+        with self._lock:
+            self._recovered.wait_for(lambda: all(lease in self._jobs or lease not in self._threads for lease in held))
         while not self._stopping:
             try:
                 messages = self.client.messages(after, self.timing.renew)
@@ -192,24 +203,28 @@ class Worker:
                 continue
             prompts: dict[int, list[PromptMessage]] = {}
             for message in messages:
-                after = max(after, message.id)
                 match message:
                     case Work():
                         self._wake()
                     case Revoke(lease=lease):
                         self._stop_job(lease, 'revoke')
-                    case _:
-                        prompts.setdefault(message.lease, []).append(message)
-            for lease, batch in prompts.items():
-                self._prompt(lease, batch)
+                    case PromptMessage(lease=lease):
+                        prompts.setdefault(lease, []).append(message)
+                    case never:
+                        assert_never(never)
+            unanswered = [id_ for lease, batch in prompts.items() for id_ in self._prompt(lease, batch)]
+            after = min(unanswered) - 1 if unanswered else max((m.id for m in messages), default=after)
+            self._outcomes = {id_: outcome for id_, outcome in self._outcomes.items() if id_ > after}
+            if unanswered:  # the control plane does not take answers now: the next read would get them at once
+                self._wanted.wait(self.timing.renew)
 
-    def _prompt(self, lease_id: int, messages: list[PromptMessage]) -> None:
-        """Deliver the prompts of one agent in one ``Runtime.prompt``, then answer each.
+    def _prompt(self, lease_id: int, messages: list[PromptMessage]) -> list[int]:
+        """Deliver the prompts of one agent in one ``Runtime.prompt``, answer each, and return those not answered.
 
-        A prompt seen before is answered as it was, and not delivered again. One prompt, because two prompts typed
+        A prompt handled before is answered as it was, and not delivered again. One prompt, because two prompts typed
         into a busy pane join in its input queue with nothing between them.
         """
-        new = [m for m in messages if m.prompt.id not in self._outcomes]
+        new = [m for m in messages if m.id not in self._outcomes]
         if new:
             with self._lock:
                 running = self._jobs.get(lease_id)
@@ -224,12 +239,17 @@ class Worker:
                     Exception
                 ) as e:  # NotSteerable (subprocess), a blocked agent or a closed pane: the worker goes on
                     error = str(e)
-            self._outcomes.update(dict.fromkeys((m.prompt.id for m in new), error))
+            self._outcomes.update(dict.fromkeys((m.id for m in new), error))
+        unanswered: list[int] = []
         for message in messages:
             try:
-                self.client.delivered(message.id, self._outcomes[message.prompt.id])
-            except Exception as e:  # the control plane does not answer: core sends the prompt again after a restart
+                self.client.delivered(message.id, self._outcomes[message.id])
+            except NotAddressed as e:  # not this worker's: no answer of it will land
+                self._tracer.event('worker.delivered_refused', worker=self.id, message=message.id, error=str(e))
+            except Exception as e:  # the control plane does not answer: the cursor stays, so the next read gets it
                 self._tracer.event('worker.delivered_unsent', worker=self.id, message=message.id, error=str(e))
+                unanswered.append(message.id)
+        return unanswered
 
     def stop(self) -> None:
         """Take no more jobs, and stop the running ones. Each still reports how it ended.
@@ -376,6 +396,7 @@ class Worker:
         finally:
             with self._lock:
                 self._threads.pop(lease_id, None)
+                self._recovered.notify_all()
 
     def _send(self, lease_id: int, unsent: Unsent) -> None:
         """Send a report. Once the control plane accepted or refused it, remove the agent's worktree.
@@ -434,6 +455,7 @@ class Worker:
         with self._lock:
             running = self._register(grant.lease, partial(runtime.kill, handle))
             running.session_id, running.steer = job.session_id, partial(runtime.prompt, handle)
+            self._recovered.notify_all()
         with self._tracer.span('piloop.job', lease=grant.lease, agent_session=job.agent_session) as span:
             span.set(reattached=True)
             report = jobs.watch_agent(job, runtime, handle, elapsed, _Control(self, grant.lease, runtime), span)

@@ -12,12 +12,16 @@ from pytest_mock import MockerFixture
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop.db.events import in_order
+from piloop.actor import System
+from piloop.agents.results import PromptSettled
+from piloop.db import feed, session as db_session
+from piloop.db.events import emit, has, in_order
 from piloop.db.models import (
     AgentSession,
     Campaign,
     Candidate,
     Evaluation,
+    Event,
     EventModel,
     Lease,
     LeaseState,
@@ -26,7 +30,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database, write_transaction
-from piloop.ids import WATCHDOG, CommentId, TargetKind
+from piloop.ids import WATCHDOG, CommentId, TargetKind, TargetRef
 from piloop.plugins.executor.contract import (
     AgentFinished,
     AgentJob,
@@ -52,8 +56,12 @@ from piloop.plugins.executor.kit.leases import (
     Answer,
     Grant,
     LeaseExpired,
+    LeasePrompted,
+    LeaseQueued,
+    LeaseRevoked,
     Leases,
     LeaseUnreachable,
+    NotAddressed,
     PromptMessage,
     Revoke,
     StaleLease,
@@ -126,7 +134,13 @@ class Recorder:
         self._apply(guard, ('lost', target, reason), change)
 
     def delivered(self, key: AgentKey, prompt: CommentId, error: str | None) -> None:
-        self.calls.append(('delivered', key.agent_session, (prompt, error)))
+        """Record the outcome once, as core does: an event that the leases read."""
+        with self.db.session() as s:
+            if s.scalar(select(Event.id).where(has(PromptSettled, comment=prompt))) is None:
+                settled = PromptSettled(kind='comment.delivered', comment=prompt)
+                emit(s, settled, TargetRef(TargetKind.AGENT_SESSION, key.agent_session), System.DAEMON)
+                s.commit()
+                self.calls.append(('delivered', key.agent_session, (prompt, error)))
 
 
 @pytest.fixture
@@ -544,35 +558,109 @@ def test_a_stop_leaves_an_agent_lease_that_a_worker_took_meanwhile_to_its_report
     assert (lease_row(db, lease_id).state, recorder.calls) == (LeaseState.ACQUIRED, [])
 
 
-def test_a_worker_reads_its_messages_work_on_a_submit_a_revoke_and_a_prompt_that_it_answers(
+def test_a_worker_reads_work_for_every_worker_and_only_its_own_prompts_and_revokes(
     db: Database, campaign: Campaign, tmp_path: Path, leases: Leases, recorder: Recorder
 ) -> None:
-    """The GitHub Actions runner's long-poll: it returns at once when a message waits, and drops what was read."""
+    """The GitHub Actions runner's long-poll: it returns at once when a message waits. Each message is an event."""
     w1, w2 = Local(leases, 'w1'), Local(leases, 'w2')
-    join(leases, 'w1', [])
-    join(leases, 'w2', [])
-    assert w1.messages(0, 0.01) == [], 'nothing waits: it waits, then returns empty'
+    start = join(leases, 'w1', []).cursor
+    assert join(leases, 'w2', []).cursor == start, 'a new worker starts at the newest event'
+    assert w1.messages(start, 0.01) == [], 'nothing waits: it waits, then returns empty'
     job = agent_job(db, campaign, tmp_path)
     leases.submit(job)
     leases.submit(agent_job(db, campaign, tmp_path))
-    [work] = w1.messages(0, 5)
-    assert isinstance(work, Work) and [type(m) for m in w2.messages(0, 5)] == [Work], 'one Work for two jobs, to each'
-    assert w1.messages(work.id, 0.01) == [], 'read: it goes'
+    works = w1.messages(start, 5)
+    assert [type(m) for m in works] == [Work, Work] and w2.messages(start, 5) == works, 'one Work for each job, to each'
+    assert w1.messages(works[-1].id, 0.01) == [], 'read past'
     grant = w1.acquire(HOST)
     assert isinstance(grant, Grant)
     w1.started(grant.lease, HANDLE, None)
     leases.prompt(AgentKey(job.agent_session), Prompt(CommentId(7), 'try lzma'))
     leases.revoke(AgentKey(job.agent_session))
-    prompt, stop = w1.messages(work.id, 5)
+    prompt, stop = w1.messages(works[-1].id, 5)
     assert isinstance(prompt, PromptMessage) and (prompt.lease, prompt.prompt) == (
         grant.lease,
         Prompt(CommentId(7), 'try lzma'),
     )
     assert isinstance(stop, Revoke) and stop.lease == grant.lease
-    assert [type(m) for m in w2.messages(0, 0.01)] == [Work], "the other worker's messages are its own"
+    assert w2.messages(works[-1].id, 0.01) == [], "another worker's prompts and revokes are not its own"
+    with pytest.raises(NotAddressed, match=f'event#{prompt.id} is not a prompt for w2'):
+        w2.delivered(prompt.id, None)
+    with pytest.raises(NotAddressed):
+        w1.delivered(stop.id, None)
     w1.delivered(prompt.id, None)
     w1.delivered(prompt.id, None)
     assert [c for c in recorder.calls if c[0] == 'delivered'] == [('delivered', job.agent_session, (7, None))], 'once'
+    assert w1.messages(works[-1].id, 0.01) == [stop], 'a prompt with its outcome is left out, though behind the cursor'
+
+
+def test_a_prompt_handed_over_again_is_not_written_again_and_survives_the_process(
+    db: Database, campaign: Campaign, tmp_path: Path, recorder: Recorder
+) -> None:
+    """Core hands an unanswered prompt over again after a daemon restart: the lease has it already."""
+    job = agent_job(db, campaign, tmp_path)
+    first = Leases(db, recorder, TIMING, POOLS)
+    start = join(first, 'w1', []).cursor
+    queue(db, job)
+    grant = Local(first, 'w1').acquire(HOST)
+    assert isinstance(grant, Grant)
+    first.prompt(AgentKey(job.agent_session), Prompt(CommentId(7), 'try lzma'))
+    second = Leases(db, recorder, TIMING, POOLS)  # the next daemon process
+    second.prompt(AgentKey(job.agent_session), Prompt(CommentId(7), 'try lzma'))
+    assert [p.comment for _, _, p in events(db, LeasePrompted)] == [7]
+    [_, prompt] = Local(second, 'w1').messages(start, 5)
+    assert isinstance(prompt, PromptMessage) and prompt.prompt == Prompt(CommentId(7), 'try lzma')
+
+
+def test_a_worker_that_restarts_resumes_from_its_cursor(
+    db: Database, campaign: Campaign, tmp_path: Path, leases: Leases
+) -> None:
+    """Its last read stored the cursor that it gave: its ack floor. It gets again only what lies after it."""
+    job = agent_job(db, campaign, tmp_path)
+    start = join(leases, 'w1', []).cursor
+    queue(db, job)
+    w1 = Local(leases, 'w1')
+    grant = w1.acquire(HOST)
+    assert isinstance(grant, Grant)
+    leases.prompt(AgentKey(job.agent_session), Prompt(CommentId(1), 'one'))
+    leases.prompt(AgentKey(job.agent_session), Prompt(CommentId(2), 'two'))
+    [_, one, two] = w1.messages(start, 5)
+    w1.delivered(one.id, None)
+    assert w1.messages(one.id, 0.01) == [two], 'the first is answered: the worker reads after it, then dies'
+    again = join(leases, 'w1', [])
+    assert (again.cursor, [g.lease for g in again.held]) == (one.id, [grant.lease])
+    assert w1.messages(again.cursor, 0.01) == [two]
+    with db.session() as s:
+        s.get_one(LeaseWorker, 'w1').cursor = two.id + 100  # a database restored from an older backup
+        s.commit()
+        end = feed.newest(s)
+    assert join(leases, 'w1', []).cursor == end, 'a cursor past the feed starts again at its newest event'
+
+
+def test_a_change_that_rolls_back_leaves_no_message(
+    db: Database, campaign: Campaign, tmp_path: Path, leases: Leases
+) -> None:
+    """The outbox: a message is written in the transaction of the change that it announces, or not at all."""
+    lease_id = queue(db, agent_job(db, campaign, tmp_path))
+    take(leases, 'w1', [])
+    with db.session() as s:
+        enqueue(s, agent_job(db, campaign, tmp_path))
+        revoke(s, s.get_one(Lease, lease_id))
+        s.rollback()
+    assert lease_row(db, lease_id).revoked_at is None
+    assert [p.lease for _, _, p in events(db, LeaseQueued)] == [lease_id]
+    assert events(db, LeaseRevoked) == []
+
+
+def test_a_waiting_worker_wakes_on_a_commit_of_this_process_before_the_poll(
+    db: Database, campaign: Campaign, tmp_path: Path, leases: Leases, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(db_session, 'WAIT_POLL_SECONDS', 60)
+    start = join(leases, 'w1', []).cursor
+    threading.Timer(0.2, leases.submit, [agent_job(db, campaign, tmp_path)]).start()
+    began = time.monotonic()
+    assert [type(m) for m in Local(leases, 'w1').messages(start, 30)] == [Work]
+    assert time.monotonic() - began < 10
 
 
 def test_a_prompt_for_an_agent_without_a_live_lease_is_undelivered_at_once(

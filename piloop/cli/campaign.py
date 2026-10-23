@@ -33,6 +33,7 @@ from piloop.cli.common import CampaignRef, JsonFlag
 from piloop.cli.daemon import daemon_line
 from piloop.config import config_of
 from piloop.daemon.serve import running_pid
+from piloop.db import feed as db_feed
 from piloop.db.models import AgentSession, Campaign, CampaignStatus, utcnow
 from piloop.db.session import Database
 from piloop.plugins.limits import Origin
@@ -135,7 +136,7 @@ def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> Non
     `piloop events --after <cursor>`.
     """
     if json_:
-        with common.session() as s, feed.snapshot(s) as cursor:
+        with common.session() as s, db_feed.snapshot(s) as cursor:
             states = feed.status_view(s, common.campaigns(s, ref))
         common.print_json({'cursor': cursor, 'daemon': {'pid': running_pid(common.settings)}, 'campaigns': states})
         return

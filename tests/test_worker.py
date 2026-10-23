@@ -22,15 +22,17 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import OperationalError
 
 from piloop import git
-from piloop.agents.results import CampaignResults, DaemonStopped, Ended, Lost, NotStarted, Ran
+from piloop.actor import System
+from piloop.agents.results import CampaignResults, DaemonStopped, Ended, Lost, NotStarted, PromptSettled, Ran
 from piloop.daemon.run_controller import RunController
-from piloop.db.events import in_order
+from piloop.db.events import emit, in_order
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
     Campaign,
     Candidate,
     Evaluation,
+    Event,
     Lease,
     LeaseState,
     Measurement,
@@ -39,7 +41,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, AgentSessionId, CommentId
+from piloop.ids import IMPLEMENTER, AgentSessionId, CommentId, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import (
     AgentJob,
@@ -55,11 +57,15 @@ from piloop.plugins.executor.kit.capacity import HostSample, sample
 from piloop.plugins.executor.kit.leases import (
     SERVE,
     Grant,
+    LeasePrompted,
     Leases,
+    NotAddressed,
     PromptMessage,
+    Revoke,
     StaleLease,
     StaleReport,
     Timing,
+    Work,
     cancel,
     enqueue,
     revoke,
@@ -647,7 +653,7 @@ def test_a_worker_that_cannot_register_at_its_start_registers_on_its_next_turn(
 ) -> None:
     ex = RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST))
     register = mocker.patch.object(
-        workers_of(ex).leases, 'register', side_effect=[OperationalError('SELECT', {}, Exception('locked')), []]
+        workers_of(ex).leases, 'register', side_effect=[OperationalError('SELECT', {}, Exception('locked')), ([], 0)]
     )
     workers_of(ex).worker.start()
     wait_until(lambda: register.call_count == 2)
@@ -766,28 +772,103 @@ def test_a_join_while_a_job_thread_starts_waits_for_it(
     assert errors == []
 
 
-def test_prompts_read_together_reach_the_agent_in_one_turn_and_one_sent_again_is_answered_without_a_second(
+def held_reads(mocker: MockerFixture, leases: Leases) -> threading.Event:
+    """Hold the worker's next read until the returned event is set, once its current long-poll has ended."""
+    reading, release = threading.Event(), threading.Event()
+    messages = leases.messages
+
+    def held(worker: str, after: int, wait: float) -> list[Work | PromptMessage | Revoke]:
+        reading.set()
+        assert release.wait(10)
+        return messages(worker, after, wait)
+
+    mocker.patch.object(leases, 'messages', side_effect=held)
+    assert reading.wait(10)
+    return release
+
+
+def outcomes(db: Database, agent_session_id: AgentSessionId) -> list[str]:
+    on_agent = Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id)
+    with db.session() as s:
+        return [settled.kind for _, settled in in_order(s, PromptSettled, on_agent)]
+
+
+def prompts(db: Database) -> list[object]:
+    with db.session() as s:
+        return [prompted.comment for _, prompted in in_order(s, LeasePrompted)]
+
+
+def test_prompts_read_together_reach_the_agent_in_one_turn_and_a_batch_read_again_is_not_applied_again(
     db: Database, campaign: Campaign, tmp_path: Path, mocker: MockerFixture, launched: list[threading.Thread]
 ) -> None:
-    """Two prompts typed into a busy pane join in its input queue: one ``Runtime.prompt`` carries both. A prompt that a
-    restarted daemon sends again (no outcome was recorded) gets the first answer, and the agent never sees it twice."""
+    """Two prompts typed into a busy pane join in its input queue: one ``Runtime.prompt`` carries both. An answer that
+    did not land keeps the cursor before its prompt: the next read gets it again, and it is answered, never typed
+    again."""
     runtime = Steerable()
     hold = tmp_path / 'hold'
     hold.touch()
     use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), HOLD.format(hold=hold))
-    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST)))
     key = AgentKey(running_agent(db, campaign, ex, tmp_path, 'steered', launched))
     leases = workers_of(ex).leases
-    answered = mocker.spy(leases, 'delivered')
-    with leases._mail:  # both wait before the worker reads
-        leases.prompt(key, Prompt(CommentId(1), 'one'))
-        leases.prompt(key, Prompt(CommentId(2), 'two'))
-    wait_until(lambda: answered.call_count == 2)
+    release = held_reads(mocker, leases)
+    delivered = leases.delivered
+
+    def lost_once(worker: str, message: int, error: str | None) -> None:
+        if answered.call_count == 1:
+            raise OperationalError('INSERT', {}, Exception('locked'))
+        delivered(worker, message, error)
+
+    answered = mocker.patch.object(leases, 'delivered', side_effect=lost_once)
     leases.prompt(key, Prompt(CommentId(1), 'one'))
-    wait_until(lambda: answered.call_count == 3)
-    assert runtime.prompts == ['one\ntwo']
-    assert [c.args[2] for c in answered.call_args_list] == [None, None, None]
+    leases.prompt(key, Prompt(CommentId(2), 'two'))
+    release.set()
+    wait_until(lambda: outcomes(db, key.agent_session) == ['comment.delivered', 'comment.delivered'])
+    assert runtime.prompts == ['one\ntwo'], 'typed once'
+    assert answered.call_count == 3, 'the first answer did not land: it was answered again'
     hold.unlink()
+
+
+def test_a_prompt_survives_a_daemon_restart_and_reaches_its_agent_once(
+    db: Database, campaign: Campaign, tmp_path: Path, mocker: MockerFixture, launched: list[threading.Thread]
+) -> None:
+    """The daemon stops before its worker reads the prompt. The next daemon's worker reads nothing until its agent is
+    re-attached, then reads the prompt after its cursor, and core's second hand-over of the prompt writes nothing."""
+    runtime = Steerable()
+    hold = tmp_path / 'hold'
+    hold.touch()
+    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), HOLD.format(hold=hold))
+    first = RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST))
+    mocker.patch.object(workers_of(first).worker, '_listen')  # it reads no message: the daemon is gone first
+    key = AgentKey(running_agent(db, campaign, serving(first), tmp_path, 'steered', launched))
+    prompt = Prompt(CommentId(41), 'try lzma')
+    first.executor.prompt(key, prompt)
+    first.hand_over()
+    second = RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST))
+    worker, leases = workers_of(second).worker, workers_of(second).leases
+    reattached, recover = threading.Event(), worker._recover
+
+    def slow_to_reattach(grant: Grant) -> None:
+        assert reattached.wait(10)
+        recover(grant)
+
+    mocker.patch.object(worker, '_recover', side_effect=slow_to_reattach)
+    read = mocker.spy(leases, 'messages')
+    serving(second)
+    second.executor.prompt(key, prompt)  # core hands over an unanswered prompt again after a restart
+    wait_until(lambda: worker._registered)
+    time.sleep(0.5)  # a listener that did not wait for its agent would have read the prompt by now
+    assert read.call_count == 0, 'it reads nothing before its agent is back'
+    reattached.set()
+    wait_until(lambda: outcomes(db, key.agent_session) == ['comment.delivered'])
+    assert (runtime.prompts, prompts(db)) == (['try lzma'], [41])
+    with db.session() as s:
+        [(event, _)] = in_order(s, LeasePrompted)
+        message = event.id
+    leases.delivered(SERVE, message, None)
+    assert outcomes(db, key.agent_session) == ['comment.delivered'], 'an answer sent again changes nothing'
+    hold.unlink()
+    wait_until(lambda: lease_state(db, key.agent_session) is LeaseState.REPORTED)
 
 
 def test_a_prompt_that_cannot_reach_its_agent_is_answered_with_why_and_the_worker_goes_on(
@@ -811,15 +892,25 @@ def test_a_prompt_that_cannot_reach_its_agent_is_answered_with_why_and_the_worke
     leases.prompt(key, Prompt(CommentId(1), 'one'))
     wait_until(lambda: answered.call_count == 1)
     assert 'cannot take a message' in str(answered.call_args.args[2])
-    leases._post('serve', PromptMessage(id=time.time_ns(), lease=999, prompt=Prompt(CommentId(2), 'two')))
+    prompted(db, key, lease=999, comment=2)
     wait_until(lambda: answered.call_count == 2)
     assert answered.call_args.args[2] == 'the agent does not run on this worker'
     mocker.patch.object(leases, 'delivered', side_effect=OperationalError('INSERT', {}, Exception('locked')))
-    leases._post('serve', PromptMessage(id=time.time_ns(), lease=999, prompt=Prompt(CommentId(3), 'three')))
+    prompted(db, key, lease=999, comment=3)
     wait_until(lambda: 'worker.delivered_unsent' in span_names(spans))
+    mocker.patch.object(leases, 'delivered', side_effect=NotAddressed('not_addressed: not for serve'))
+    wait_until(lambda: 'worker.delivered_refused' in span_names(spans))
     mocker.patch.object(leases, 'messages', side_effect=OperationalError('SELECT', {}, Exception('locked')))
     wait_until(lambda: 'worker.unheard' in span_names(spans))
     hold.unlink()
+
+
+def prompted(db: Database, key: AgentKey, *, lease: int, comment: int) -> None:
+    """A prompt for the worker ``serve`` on a lease that it does not run."""
+    prompted = LeasePrompted(lease=lease, worker=SERVE, comment=CommentId(comment), text='x')
+    with db.session() as s:
+        emit(s, prompted, TargetRef(TargetKind.AGENT_SESSION, key.agent_session), System.DAEMON)
+        s.commit()
 
 
 def span_names(spans: InMemorySpanExporter) -> list[str]:
@@ -833,7 +924,9 @@ def test_a_stop_that_comes_while_the_worker_registers_leaves_no_loop_behind(
     executor = workers_of(RunController(db, Tracer(None), tmp_path, factory(runtime)))
     worker, register = executor.worker, executor.leases.register
 
-    def stopped_meanwhile(name: str, pool: str, version: str, runners: list[str], host: HostSample) -> list[Grant]:
+    def stopped_meanwhile(
+        name: str, pool: str, version: str, runners: list[str], host: HostSample
+    ) -> tuple[list[Grant], int]:
         worker.stop()
         return register(name, pool, version, runners, host)
 

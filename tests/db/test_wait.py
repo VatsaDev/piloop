@@ -1,5 +1,6 @@
 """``Database.wait_until``: a waiter wakes on a commit of this process, polls for one of another, and gives up."""
 
+import asyncio
 import threading
 import time
 from collections.abc import Callable
@@ -99,3 +100,43 @@ def test_a_closed_database_refuses_a_new_session(db: Database) -> None:
     db.close()
     with pytest.raises(DatabaseClosed, match='the database is closed'):
         db.session()
+
+
+def test_a_waiter_gives_up_at_its_timeout_without_waiting_for_the_poll(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(db_session, 'WAIT_POLL_SECONDS', 60)
+    began = time.monotonic()
+    assert db.wait_until(lambda _s: False, timeout=0.1) is False
+    assert time.monotonic() - began < 5
+
+
+def test_changed_returns_on_a_commit_of_this_process_and_holds_no_thread(db: Database, campaign: Campaign) -> None:
+    async def waits() -> None:
+        seen = await db.changed(0, 0)
+        assert await db.changed(seen, 0.01) == seen, 'nothing committed: it returns at its timeout'
+        threading.Timer(0.1, rename, [db, campaign]).start()  # another thread, as the daemon's writers are
+        began = time.monotonic()
+        assert await db.changed(seen, 30) == seen + 1
+        assert time.monotonic() - began < 10
+
+    asyncio.run(waits())
+
+
+def test_changed_waits_for_no_poll_and_returns_at_once_once_closed(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(db_session, 'WAIT_POLL_SECONDS', 0.05)
+
+    async def waits() -> None:
+        seen = await db.changed(0, 0)
+        began = time.monotonic()
+        assert await db.changed(seen, 0.5) == seen
+        assert time.monotonic() - began >= 0.4, 'nothing committed here: it waits to its timeout, not for the poll'
+        threading.Timer(0.1, db.close).start()
+        began = time.monotonic()
+        await db.changed(seen, 30)
+        assert time.monotonic() - began < 10, 'the close resolves it'
+        assert await db.changed(seen, 30) == seen, 'once closed, at once'
+
+    asyncio.run(waits())

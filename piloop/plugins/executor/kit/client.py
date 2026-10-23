@@ -50,6 +50,8 @@ class Registration(BaseModel):
     timing: Timing
     held: list[Grant]
     """The worker's live leases, with each handle: what a restarted worker finds again."""
+    cursor: int
+    """Read the messages after this event: the worker's ack floor, or the newest event for a new worker."""
 
 
 class LeaseClient(Protocol):
@@ -84,11 +86,11 @@ class LeaseClient(Protocol):
         ...
 
     def messages(self, after: int, wait: float) -> Sequence[Work | PromptMessage | Revoke]:
-        """The worker's messages after the id ``after``. A long-poll: it waits up to ``wait`` seconds for one."""
+        """The worker's messages after ``after``, its ack floor. A long-poll: it waits up to ``wait`` seconds for one."""
         ...
 
     def delivered(self, message: int, error: str | None) -> None:
-        """Answer a ``PromptMessage``: the prompt reached the agent, or why it did not."""
+        """Answer a ``PromptMessage``: the prompt reached the agent, or why it did not. Raises ``NotAddressed``."""
         ...
 
 
@@ -100,8 +102,8 @@ class Local:
         self._worker = worker
 
     def register(self, info: WorkerInfo) -> Registration:
-        held = self._leases.register(self._worker, info.pool, info.version, info.runners, info.sample)
-        return Registration(worker=self._worker, timing=self._leases.timing, held=held)
+        held, cursor = self._leases.register(self._worker, info.pool, info.version, info.runners, info.sample)
+        return Registration(worker=self._worker, timing=self._leases.timing, held=held, cursor=cursor)
 
     def acquire(self, sample: HostSample) -> Grant | NoLease:
         return self._leases.acquire(self._worker, sample)

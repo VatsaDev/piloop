@@ -1,16 +1,10 @@
 """The public read side: the event feed after a cursor, and snapshots that carry the cursor they were read at.
 
-A client reads a snapshot (``status_view``, ``inbox_view``) inside ``snapshot``, which also returns the id of the
-newest event in the same read transaction. It then reads the events after that cursor (``read``, or ``follow`` to wait
-for them), so it joins the two without a gap. Delivery is at least once: a client checkpoints ``next`` after it has
-handled a batch, resumes from its checkpoint after a disconnect, and ignores an event id it has already handled.
-Each client keeps its own cursor; piloop keeps no subscriber state.
-
-The event id is the cursor. SQLite has one writer at a time and allocates an id inside the writing transaction, so
-the events at or below the newest id that a reader sees are all committed: a later commit never takes a smaller id.
-Every piloop connection, ``piloop sql`` included, keeps it so: events are append-only, and a new event takes the next
-id (``piloop.db.triggers.immutable``). Otherwise a reader whose cursor had passed a deleted, moved or explicit id would
-miss the event that takes it.
+A client reads a snapshot (``status_view``, ``inbox_view``) inside ``piloop.db.feed.snapshot``, which also returns the
+id of the newest event in the same read transaction. It then reads the events after that cursor (``read``, or
+``follow`` to wait for them), so it joins the two without a gap. Delivery is at least once: a client checkpoints
+``next`` after it has handled a batch, resumes from its checkpoint after a disconnect, and ignores an event id it has
+already handled. Each client keeps its own cursor; piloop keeps no subscriber state.
 
 Every stored event is shown in one envelope (``Envelope``, version ``PROTOCOL``), whatever its kind, without
 rewriting the row. A kind that this piloop does not know (a plugin's, or an agent's own insert) passes through with its
@@ -23,9 +17,7 @@ only format the result. The documents and their fields are on the "Event feed" p
 
 import json
 import math
-import time
-from collections.abc import Collection, Generator, Sequence
-from contextlib import contextmanager
+from collections.abc import Collection, Sequence
 from datetime import UTC, datetime
 from typing import NotRequired, TypedDict
 
@@ -35,8 +27,9 @@ from sqlalchemy.orm import Session
 from piloop.campaign import inbox
 from piloop.campaign.inbox import campaign_of
 from piloop.config import config_of
+from piloop.db import feed as db_feed
 from piloop.db.models import OPEN_RUNS, Campaign, CommentKind, Event, Idea, IdeaStatus, Run, campaign_runs, count
-from piloop.db.session import read_transaction
+from piloop.db.session import Database
 from piloop.ids import (
     AgentSessionId,
     CampaignId,
@@ -58,8 +51,6 @@ fields they do not know. Removing or changing a field is a new version."""
 LIMIT = 100
 """How many events a read returns at most, by default."""
 MAX_LIMIT = 1000
-POLL_SECONDS = 1.0
-"""How often ``follow`` reads the feed while it waits. A read is one indexed query, as for ``piloop inbox wait``."""
 
 type Json = None | bool | int | float | str | list[Json] | dict[str, Json]
 
@@ -102,29 +93,6 @@ class Batch(TypedDict):
     """Events newer than ``next`` exist already: read again without waiting. They may not match the filters."""
 
 
-class CursorAhead(Exception):
-    """The cursor is past the newest event: it is not a cursor of this database. Read a new snapshot."""
-
-    code = 'cursor_ahead'
-
-    def __init__(self, after: int, newest: int) -> None:
-        super().__init__(
-            f'cursor {after} is ahead of the feed, which ends at {newest}: read a new snapshot and use its cursor'
-        )
-
-
-def newest(s: Session) -> int:
-    """The id of the newest event, 0 when there is none."""
-    return s.scalar(select(func.max(Event.id))) or 0
-
-
-@contextmanager
-def snapshot(s: Session) -> Generator[int]:
-    """Hold one read transaction on ``s`` and yield its cursor: the id of the newest event that it sees."""
-    with read_transaction(s):
-        yield newest(s)
-
-
 def read(
     s: Session, after: int, *, campaign_id: CampaignId | None = None, kinds: Collection[str] = (), limit: int = LIMIT
 ) -> Batch:
@@ -137,12 +105,13 @@ def read(
         ValueError: ``after`` is negative, or ``limit`` is not from 1 to ``MAX_LIMIT``.
         CursorAhead: ``after`` is past the newest event.
     """
-    if after < 0:
-        raise ValueError(f'cursor must be 0 or more, not {after}')
     if not 1 <= limit <= MAX_LIMIT:
         raise ValueError(f'limit must be from 1 to {MAX_LIMIT}, not {limit}')
     owner = campaign_of(Event.target_kind, Event.target_id)
-    query = (
+    of_kinds = [Event.kind.in_(kinds)] if kinds else []
+    of_campaign = [] if campaign_id is None else [(owner == campaign_id) | owner.is_(None)]
+    page = db_feed.after(s, after, limit=limit, where=[*of_kinds, *of_campaign])
+    rows = s.execute(
         select(
             Event.id,
             cast(Event.kind, String).label('kind'),
@@ -156,18 +125,9 @@ def read(
                 (func.typeof(Event.payload) == 'blob', func.quote(Event.payload)), else_=cast(Event.payload, String)
             ).label('payload'),
         )
-        .where(Event.id > after)
+        .where(Event.id.in_(page.ids))
         .order_by(Event.id)
-        .limit(limit)
-    )
-    if campaign_id is not None:
-        query = query.where((owner == campaign_id) | owner.is_(None))
-    if kinds:
-        query = query.where(Event.kind.in_(kinds))
-    with snapshot(s) as end:
-        if after > end:
-            raise CursorAhead(after, end)
-        rows = s.execute(query.where(Event.id <= end)).all()
+    ).all()
     events: list[Envelope] = []
     for row in rows:
         invalid: dict[str, str] = {}
@@ -189,33 +149,33 @@ def read(
         if invalid:
             event['invalid'] = invalid
         events.append(event)
-    last = rows[-1].id if len(rows) == limit else end
-    return Batch(events=events, next=last, more=last < end)
+    return Batch(events=events, next=page.next, more=page.more)
 
 
 def follow(
-    s: Session,
+    db: Database,
     after: int,
     *,
     campaign_id: CampaignId | None = None,
     kinds: Collection[str] = (),
     limit: int = LIMIT,
     timeout: float,
-    poll: float = POLL_SECONDS,
 ) -> Batch:
-    """``read``, and while it returns no event, read again every ``poll`` seconds until ``timeout`` seconds pass.
+    """``read``, and while it returns no event, read again on each commit (``Database.wait_until``) until ``timeout``.
 
     It returns the first batch with an event, or at the timeout the last empty batch, whose ``next`` has moved over
-    what the filters left out. The sleep blocks the caller: a streaming transport (server-sent events) loops over
+    what the filters left out. The wait blocks the caller: a streaming transport (server-sent events) loops over
     ``read`` with its own wait instead.
     """
-    deadline = time.monotonic() + timeout
-    while True:
-        batch = read(s, after, campaign_id=campaign_id, kinds=kinds, limit=limit)
-        if batch['events'] or time.monotonic() >= deadline:
-            return batch
-        after = batch['next']
-        time.sleep(poll)
+    batch = Batch(events=[], next=after, more=False)
+
+    def found(s: Session) -> bool:
+        nonlocal batch
+        batch = read(s, batch['next'], campaign_id=campaign_id, kinds=kinds, limit=limit)
+        return bool(batch['events'])
+
+    db.wait_until(found, timeout=timeout)
+    return batch
 
 
 class TrackScore(TypedDict):
@@ -289,7 +249,7 @@ class CampaignState(TypedDict):
 
 
 def status_view(s: Session, campaigns: Sequence[Campaign]) -> list[CampaignState]:
-    """The state of each campaign, as ``piloop status`` shows it. Call it inside ``snapshot`` for one consistent view."""
+    """The state of each campaign, as ``piloop status`` shows it. Call it inside a snapshot for one consistent view."""
     states = []
     for campaign in campaigns:
         at = head_scores(s, campaign, config_of(campaign))

@@ -11,11 +11,14 @@ Revision ids are bare numbers, so a branch's ``0006`` and ``main``'s share one. 
 database that a build before fingerprints migrated: only its stamp is checked.
 """
 
+import asyncio
 import fcntl
 import hashlib
+import math
 import os
 import sqlite3
 import threading
+import time
 from collections.abc import Callable, Generator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
@@ -403,6 +406,8 @@ class Database:
         self._closed = False
         self._reading = 0
         """How many waiters read now: ``close`` lets them end before it closes the connections that they hold."""
+        self._changed: set[asyncio.Future[None]] = set()
+        """The futures of ``changed``'s waiters, each on its own event loop: the next commit resolves them."""
         event.listen(self._sessions, 'after_commit', lambda _s: self._wake())
 
     def session(self) -> Session:
@@ -419,13 +424,23 @@ class Database:
         with self._committed:
             self._commits += 1
             self._committed.notify_all()
+            self._resolve()
 
-    def wait_until(self, done: Callable[[Session], bool], give_up: Callable[[], bool] = lambda: False) -> bool:
-        """Block until ``done`` holds in a new session, and return True. False once ``give_up`` or ``close`` comes.
+    def _resolve(self) -> None:
+        """Resolve every waiter of ``changed`` on its own loop. The caller holds ``_committed``."""
+        for future in self._changed:
+            future.get_loop().call_soon_threadsafe(future.set_result, None)
+        self._changed.clear()
+
+    def wait_until(
+        self, done: Callable[[Session], bool], give_up: Callable[[], bool] = lambda: False, timeout: float = math.inf
+    ) -> bool:
+        """Block until ``done`` holds in a new session, and return True. False at ``timeout``, ``give_up`` or ``close``.
 
         It reads again after every commit of this process, and every ``WAIT_POLL_SECONDS`` for one of another. The
         read happens outside the condition, so no commit waits for it.
         """
+        deadline = time.monotonic() + timeout
         while True:
             with self._committed:
                 if self._closed:
@@ -440,10 +455,32 @@ class Database:
                     self._committed.notify_all()
             if found:
                 return True
-            if give_up():
+            left = deadline - time.monotonic()
+            if left <= 0 or give_up():
                 return False
             with self._committed:
-                self._committed.wait_for(lambda seen=seen: self._commits != seen or self._closed, WAIT_POLL_SECONDS)
+                self._committed.wait_for(
+                    lambda seen=seen: self._commits != seen or self._closed, min(left, WAIT_POLL_SECONDS)
+                )
+
+    async def changed(self, seen: int, timeout: float) -> int:
+        """The count of this process's commits once it is not ``seen``, or at ``timeout``.
+
+        ``wait_until`` for a coroutine: it holds no thread while it waits, so a server can hold many long-polls. It
+        sees only this process's commits: wait on it for what only this process writes, as a worker's messages. A
+        caller that saw nothing yet passes 0, and reads again at once if anything committed.
+        """
+        future = asyncio.get_running_loop().create_future()
+        with self._committed:
+            if self._commits != seen or self._closed:
+                return self._commits
+            self._changed.add(future)
+        try:
+            await asyncio.wait([future], timeout=timeout)
+        finally:
+            with self._committed:
+                self._changed.discard(future)
+        return self._commits
 
     def close(self) -> None:
         """Make every waiter give up, let the reads in flight end, then close the pooled connections.
@@ -453,5 +490,6 @@ class Database:
         with self._committed:
             self._closed = True
             self._committed.notify_all()
+            self._resolve()
             self._committed.wait_for(lambda: self._reading == 0, CLOSE_WAIT_SECONDS)
         self.engine.dispose()

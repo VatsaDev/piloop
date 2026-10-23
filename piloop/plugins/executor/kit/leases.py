@@ -21,6 +21,11 @@ Each worker has a row in ``lease_workers``: its pool (``capacity.Pool``) and the
 takes a job only while ``capacity.admits`` it, and ``Leases.capacity`` sums the slots of the reachable workers that
 are not under pressure.
 
+A worker's messages are events on the job's row (``LeaseQueued``, ``LeasePrompted``, ``LeaseRevoked``), each written
+in the transaction of the change that it announces: a transactional outbox. A worker reads those of its ``topics``
+after its cursor (``piloop.db.feed``), which it moves past a prompt only once it answered ``delivered``, as a NATS
+JetStream consumer moves its ack floor. So a message survives a restart of the daemon or the worker.
+
 The fence is the executor's, not core's: core checks only the domain (``Settled``). Every operation that checks it
 runs in one write transaction with the core operation that it guards (``Results``), so a report, a heartbeat and an
 expiry never both apply. The ``leases`` and ``lease_workers`` tables belong here, but their models and migrations stay in
@@ -28,26 +33,27 @@ core's schema until the plugin host gives a plugin tables of its own: one schema
 """
 
 import contextlib
-import itertools
-import threading
-import time
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Literal, assert_never
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
-from sqlalchemy import ColumnElement, func, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy import ColumnElement, exists, func, select, update
+from sqlalchemy.orm import Session, aliased
 
 from piloop import deprecated
 from piloop.actor import System
-from piloop.db.events import emit
+from piloop.agents.results import PromptSettled
+from piloop.db import feed
+from piloop.db.events import emit, has
+from piloop.db.feed import Topic
 from piloop.db.models import (
     LIVE_LEASES,
     OPEN_LEASES,
+    Event,
     EventModel,
     Lease,
     LeaseKind,
@@ -88,6 +94,8 @@ UNREPORTED = 'the daemon stopped, and the job did not report in time'
 NOT_TAKEN = 'the daemon stopped before a worker took the job'
 KINDS = (LeaseKind.AGENT, LeaseKind.EVALUATION)
 """The order in which a worker takes jobs: agents first."""
+PAGE = 100
+"""How many messages one read returns at most. A worker reads again at once for the rest."""
 
 
 class StaleReport(EventModel):
@@ -117,6 +125,37 @@ class LeaseExpired(EventModel):
     lease: int
     worker: str | None
     reason: str
+
+
+class LeaseQueued(EventModel):
+    """On the job's row, a message for every worker (``Work``): the lease waits for one."""
+
+    kind: Literal['lease.queued'] = 'lease.queued'
+    lease: int
+    lease_kind: LeaseKind
+
+
+class LeasePrompted(EventModel):
+    """On the agent's row, a message for its worker (``PromptMessage``): a prompt to deliver."""
+
+    kind: Literal['lease.prompt'] = 'lease.prompt'
+    lease: int
+    worker: str
+    comment: CommentId
+    text: str
+
+
+class LeaseRevoked(EventModel):
+    """On the job's row, a message for its worker (``Revoke``): stop the job."""
+
+    kind: Literal['lease.revoked'] = 'lease.revoked'
+    lease: int
+    worker: str
+
+
+def topics(worker: str) -> tuple[Topic, ...]:
+    """The events that are messages of ``worker``."""
+    return Topic(LeaseQueued), Topic(LeasePrompted, to=worker), Topic(LeaseRevoked, to=worker)
 
 
 @dataclass(frozen=True)
@@ -196,7 +235,10 @@ class Grant(BaseModel):
 
 
 class Work(BaseModel):
-    """A message: a job waits. The worker asks for leases until it gets none."""
+    """A message: a job waits. The worker asks for leases until it gets none.
+
+    The id of each message is its event's.
+    """
 
     kind: Literal['work'] = 'work'
     id: int
@@ -222,6 +264,25 @@ class Revoke(BaseModel):
 type Message = Annotated[Work | PromptMessage | Revoke, Field(discriminator='kind')]
 
 
+class NotAddressed(Exception):
+    """A worker's answer to a message that is not a prompt for it: refused, and nothing changed. ``not_addressed``."""
+
+
+def _message(event: Event) -> Work | PromptMessage | Revoke:
+    """The message that ``event``, of one of ``topics``, carries."""
+    payload = event.payload
+    assert isinstance(payload, LeaseQueued | LeasePrompted | LeaseRevoked)  # what ``topics`` select
+    match payload:
+        case LeaseQueued():
+            return Work(id=event.id)
+        case LeasePrompted(lease=lease, comment=comment, text=text):
+            return PromptMessage(id=event.id, lease=lease, prompt=Prompt(comment, text))
+        case LeaseRevoked(lease=lease):
+            return Revoke(id=event.id, lease=lease)
+        case never:
+            assert_never(never)
+
+
 def _granted(lease: Lease) -> AgentJob | EvaluationJob:
     """The lease's job, as its worker runs it. An evaluation gets files of this lease's own, under ``lease-<id>``.
 
@@ -243,7 +304,10 @@ def _granted(lease: Lease) -> AgentJob | EvaluationJob:
 
 
 def enqueue(s: Session, job: AgentJob | EvaluationJob) -> Lease:
-    """Insert the ``queued`` lease of ``job`` in the caller's transaction. The caller commits."""
+    """Insert the ``queued`` lease of ``job``, and its ``LeaseQueued``, in the caller's transaction.
+
+    The caller commits.
+    """
     lease = Lease(kind=LeaseKind(job.kind), job=JOB.dump_python(job, mode='json'))
     if isinstance(job, AgentJob):
         lease.agent_session_id = job.agent_session
@@ -251,6 +315,7 @@ def enqueue(s: Session, job: AgentJob | EvaluationJob) -> Lease:
         lease.evaluation_id = job.evaluation
     s.add(lease)
     s.flush()
+    emit(s, LeaseQueued(lease=lease.id, lease_kind=lease.kind), _target(lease), System.DAEMON)
     return lease
 
 
@@ -271,9 +336,14 @@ def lease_of(s: Session, key: JobKey) -> Lease | None:
 
 
 def revoke(s: Session, lease: Lease) -> None:
-    """Ask the worker to stop a live lease's job, a kill or a cancel. It still reports. The caller commits."""
+    """Ask the worker to stop a live lease's job, a kill or a cancel (``LeaseRevoked``). It still reports.
+
+    The caller commits.
+    """
     if lease.state in LIVE_LEASES and lease.revoked_at is None:
         lease.revoked_at = utcnow()
+        assert lease.worker is not None  # a live lease has its worker
+        emit(s, LeaseRevoked(lease=lease.id, worker=lease.worker), _target(lease), System.DAEMON)
 
 
 def cancel(s: Session, lease: Lease, reason: str) -> None:
@@ -300,7 +370,7 @@ def _job_of(lease: Lease) -> ColumnElement[bool]:
 
 
 class Leases:
-    """The lease operations, and the signal that wakes a worker of this process on a change.
+    """The lease operations, and the messages of each worker.
 
     Every operation that checks the fence runs in one write transaction (``write_transaction``) with the core
     operation that it guards (``results``), so a report, a heartbeat and an expiry never both apply to one lease. A
@@ -320,17 +390,14 @@ class Leases:
         self.pools = pools
         self._expired_at: datetime | None = None
         """When ``expire`` last ran, to tell a gap in the scheduler's ticks (a suspend) from a silent worker."""
-        self._mail = threading.Condition()
-        """Guards ``_mailboxes`` and ``_prompts``, and wakes the workers that wait in ``messages``."""
-        self._mailboxes: dict[str, list[Work | PromptMessage | Revoke]] = {}
-        """The messages that each worker that registered with this process has not read yet."""
-        self._prompts: dict[int, tuple[AgentKey, CommentId]] = {}
-        """The agent and the prompt of each ``PromptMessage`` that waits for its ``delivered``, by message id."""
-        self._ids = itertools.count(time.time_ns())
-        """Message ids. They start from the clock, so they grow across daemon restarts and a worker's cursor holds."""
 
-    def register(self, worker: str, pool: str, version: str, runners: Sequence[str], host: HostSample) -> list[Grant]:
-        """Record a worker that starts, and return its live leases: what a restarted worker finds again.
+    def register(
+        self, worker: str, pool: str, version: str, runners: Sequence[str], host: HostSample
+    ) -> tuple[list[Grant], int]:
+        """Record a worker that starts, and return its live leases and its cursor: what a restarted worker finds again.
+
+        A new worker's cursor is the newest event, and so is one that is past it (a database restored from a backup):
+        its leases are the truth then.
 
         Raises:
             ValueError: no ``[plugins.executor.pools.<pool>]``.
@@ -339,18 +406,18 @@ class Leases:
             raise ValueError(f'no pool {pool!r}: the pools are {", ".join(sorted(self.pools))}')
         with self._db.session() as s:
             write_transaction(s)
-            row = s.get(LeaseWorker, worker) or LeaseWorker(id=worker)
+            newest = feed.newest(s)
+            row = s.get(LeaseWorker, worker) or LeaseWorker(id=worker, cursor=newest)
             row.pool, row.version, row.runners, row.no_lease = pool, version, list(runners), None
+            row.cursor = min(row.cursor, newest)
             self._heard(row, host)
             s.add(row)
-            s.commit()
             rows = s.scalars(
                 select(Lease).where(Lease.worker == worker, Lease.state.in_(LIVE_LEASES)).order_by(Lease.id)
             ).all()
-            held = [Grant.of(r) for r in rows]
-        with self._mail:
-            self._mailboxes.setdefault(worker, [])
-        return held
+            held, cursor = [Grant.of(r) for r in rows], row.cursor
+            s.commit()
+        return held, cursor
 
     @staticmethod
     def _heard(row: LeaseWorker, host: HostSample) -> None:
@@ -643,70 +710,68 @@ class Leases:
             s.commit()
 
     def submit(self, job: AgentJob | EvaluationJob) -> None:
-        """Queue ``job`` on a new lease, and tell every worker (``Work``)."""
+        """Queue ``job`` on a new lease, which tells every worker (``Work``)."""
         with self._db.session() as s:
             enqueue(s, job)
             s.commit()
-        with self._mail:
-            for mailbox in self._mailboxes.values():
-                if not mailbox or not isinstance(mailbox[-1], Work):  # one waiting Work says it all
-                    mailbox.append(Work(id=next(self._ids)))
-            self._mail.notify_all()
 
     def revoke(self, key: JobKey) -> None:
-        """Ask the worker of the job's live lease to stop it (``revoke``, and a ``Revoke``). Its job still reports."""
+        """Ask the worker of the job's live lease to stop it (``revoke``). Its job still reports."""
         with self._db.session() as s:
             lease = lease_of(s, key)
-            if lease is None or lease.state not in LIVE_LEASES or lease.worker is None:
-                return
-            revoke(s, lease)
-            s.commit()
-            lease_id, worker = lease.id, lease.worker
-        self._post(worker, Revoke(id=next(self._ids), lease=lease_id))
+            if lease is not None:
+                revoke(s, lease)
+                s.commit()
 
     def prompt(self, key: AgentKey, prompt: Prompt) -> None:
-        """Send ``prompt`` to the worker of the agent's live lease (``PromptMessage``). It answers ``delivered``.
+        """Send ``prompt`` to the worker of the agent's live lease (``LeasePrompted``), unless it was sent.
 
-        An agent without a live lease never gets it: core records why at once.
+        The worker answers ``delivered``. An agent without a live lease never gets it: core records why at once.
         """
         with self._db.session() as s:
+            write_transaction(s)
             lease = of_agent(s, key.agent_session)
-            if lease is None or lease.state not in LIVE_LEASES or lease.worker is None:
-                live = None
-            else:
-                live = lease.id, lease.worker
-        if live is None:
-            self._results.delivered(key, prompt.id, 'the agent has no live lease')
-            return
-        message = PromptMessage(id=next(self._ids), lease=live[0], prompt=prompt)
-        with self._mail:
-            self._prompts[message.id] = key, prompt.id
-        self._post(live[1], message)
-
-    def _post(self, worker: str, message: Work | PromptMessage | Revoke) -> None:
-        with self._mail:
-            self._mailboxes.setdefault(worker, []).append(message)
-            self._mail.notify_all()
+            if lease is not None and lease.state in LIVE_LEASES and lease.worker is not None:
+                if not _prompted(s, lease, prompt.id):
+                    prompted = LeasePrompted(lease=lease.id, worker=lease.worker, comment=prompt.id, text=prompt.text)
+                    emit(s, prompted, _target(lease), System.DAEMON)
+                s.commit()
+                return
+        self._results.delivered(key, prompt.id, 'the agent has no live lease')
 
     def messages(self, worker: str, after: int, wait: float) -> list[Work | PromptMessage | Revoke]:
-        """Return the messages of ``worker`` after the id ``after``, waiting up to ``wait`` seconds for one.
+        """Store ``after`` as the worker's cursor, and return its messages after it, waiting up to ``wait`` seconds.
 
-        A long-poll, after the GitHub Actions runner: it returns at once when a message waits. The messages up to
-        ``after`` are read: they go.
+        A long-poll, after the GitHub Actions runner: it returns at once when a message waits, and reads again on each
+        commit (``Database.wait_until``). A prompt whose comment has its outcome is left out: the worker answered it.
         """
-        with self._mail:
-            mailbox = self._mailboxes.setdefault(worker, [])
-            mailbox[:] = [m for m in mailbox if m.id > after]  # read: a ``Work`` that waits is then a new one
-            self._mail.wait_for(lambda: bool(mailbox), timeout=wait)
-            return list(mailbox)
+        found: list[Work | PromptMessage | Revoke] = []
+
+        def read(s: Session) -> bool:
+            row = s.get_one(LeaseWorker, worker)  # ``register`` wrote it
+            if row.cursor != after:
+                row.cursor = after
+                s.commit()
+            page = feed.after(s, after, topics(worker), limit=PAGE, where=[_unanswered()])
+            found[:] = [_message(e) for e in s.scalars(select(Event).where(Event.id.in_(page.ids)).order_by(Event.id))]
+            return bool(found)
+
+        self._db.wait_until(read, timeout=wait)
+        return found
 
     def delivered(self, worker: str, message: int, error: str | None) -> None:
-        """The worker's answer to a ``PromptMessage``: core records the outcome. An answer sent again changes nothing."""
-        with self._mail:
-            prompted = self._prompts.pop(message, None)
-        if prompted is not None:
-            key, prompt = prompted
-            self._results.delivered(key, prompt, error)
+        """The worker's answer to the ``PromptMessage`` of id ``message``: core records the outcome once.
+
+        Raises:
+            NotAddressed: ``message`` is not a prompt for ``worker``.
+        """
+        with self._db.session() as s:
+            event = s.get(Event, message)
+        match event:
+            case Event(payload=LeasePrompted(worker=to, comment=comment), target_id=agent) if to == worker:
+                self._results.delivered(AgentKey(AgentSessionId(agent)), comment, error)
+            case _:
+                raise NotAddressed(f'not_addressed: event#{message} is not a prompt for {worker}')
 
     def adopt(self, left: Sequence[LeftJob], worker: str) -> list[JobKey]:
         """Give every live lease a full period, and return the jobs of ``left`` that have no open lease.
@@ -763,6 +828,24 @@ class Leases:
             for lease in s.scalars(select(Lease).where(live)).all():
                 cancel(s, lease, UNREPORTED)
             s.commit()
+
+
+def _prompted(s: Session, lease: Lease, comment: CommentId) -> bool:
+    """Whether ``lease`` has the ``LeasePrompted`` of ``comment``: core hands it over again after a restart."""
+    found = select(Event.id).where(Event.target == _target(lease), has(LeasePrompted, lease=lease.id, comment=comment))
+    return s.scalar(found.limit(1)) is not None
+
+
+def _unanswered() -> ColumnElement[bool]:
+    """Select the events but the prompts (``LeasePrompted``) whose comment has its outcome (``PromptSettled``)."""
+    outcome = aliased(Event)
+    answered = exists().where(
+        outcome.target_kind == Event.target_kind,
+        outcome.target_id == Event.target_id,
+        outcome.kind.in_(PromptSettled.kinds()),
+        func.json_extract(outcome.payload, '$.comment') == func.json_extract(Event.payload, '$.comment'),
+    )
+    return Event.kind.not_in(LeasePrompted.kinds()) | ~answered
 
 
 def _sum(a: int | None, b: int | None) -> int | None:

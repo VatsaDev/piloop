@@ -9,6 +9,7 @@ from cyclopts import validators
 
 from piloop.cli import common
 from piloop.cli.common import JsonFlag
+from piloop.db import feed as db_feed
 from piloop.reports import feed
 
 
@@ -44,16 +45,14 @@ def events(
     missed in between. Save the cursor after you have handled the events, and read from it again after a disconnect.
     An event can come twice then: skip an id that you have handled.
     """
-    with common.session() as s:
+    with common.database() as db, db.session() as s:
         campaign_id = common.campaign(s, campaign).id if campaign else None
         try:
             if follow:
-                batch = feed.follow(
-                    s, after, campaign_id=campaign_id, kinds=kind, limit=limit, timeout=timeout, poll=feed.POLL_SECONDS
-                )
+                batch = feed.follow(db, after, campaign_id=campaign_id, kinds=kind, limit=limit, timeout=timeout)
             else:
                 batch = feed.read(s, after, campaign_id=campaign_id, kinds=kind, limit=limit)
-        except feed.CursorAhead as e:
+        except db_feed.CursorAhead as e:
             raise (common.json_error(e.code, str(e)) if json_ else SystemExit(str(e))) from e
     if json_:
         common.print_json(batch)

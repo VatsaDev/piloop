@@ -671,7 +671,7 @@ def test_inbox_wait_blocks_until_an_item_lands_and_hands_over_a_cursor_that_miss
 ) -> None:
     run_cli(['init', str(campaign_path)])
     out()
-    monkeypatch.setattr(inbox_cli, 'WAIT_POLL_SECONDS', 0.01)
+    monkeypatch.setattr(session, 'WAIT_POLL_SECONDS', 0.01)  # the writer is another Database
     run_cli(['inbox', 'wait', '--timeout', '0'])
     quiet, again = out().splitlines()
     assert quiet == 'nothing new in 0:00:00' and re.fullmatch(r'next: piloop inbox wait --after \d+', again)

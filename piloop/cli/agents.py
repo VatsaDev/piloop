@@ -1,6 +1,5 @@
 """The commands that act on agents: ``launch``, ``prompt``, ``attach``, ``agent cancel`` and ``run cancel``."""
 
-import time
 from typing import Annotated
 
 import cyclopts
@@ -109,9 +108,8 @@ def _outcome(agent_session_id: AgentSessionId, comment_id: CommentId) -> results
         return event is not None
 
     db = Database(common.settings.database_url, actor=common.settings.actor)
-    deadline = time.monotonic() + DELIVERY_WAIT
     try:
-        db.wait_until(settled, give_up=lambda: time.monotonic() > deadline)
+        db.wait_until(settled, timeout=DELIVERY_WAIT)
     finally:
         db.close()
     return found[0] if found else None

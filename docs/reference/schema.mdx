@@ -91,6 +91,7 @@ CREATE TABLE lease_workers (
 	sample JSON DEFAULT '{}' NOT NULL,
 	seen_at DATETIME NOT NULL,
 	no_lease VARCHAR(16),
+	cursor INTEGER DEFAULT 0 NOT NULL,
 	PRIMARY KEY (id),
 	CONSTRAINT "lease_workers.id must be a text value" CHECK (typeof(id) IN ('text')),
 	CONSTRAINT "lease_workers.pool must be a text value" CHECK (typeof(pool) IN ('text')),

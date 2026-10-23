@@ -1,19 +1,19 @@
 """The ``piloop inbox`` commands: list, show, wait for and acknowledge what the agents address to you."""
 
 import shlex
-import time
 from datetime import timedelta
 from typing import Annotated
 
 import cyclopts
 from rich.table import Table
 from rich.text import Text
-from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from piloop.campaign import inbox
 from piloop.cli import common
 from piloop.cli.common import CampaignRef, JsonFlag
-from piloop.db.models import Comment, CommentKind, Event, utcnow
+from piloop.db import feed as db_feed
+from piloop.db.models import Comment, CommentKind, utcnow
 from piloop.ids import CommentId
 from piloop.reports import feed
 from piloop.reports.overview import age, item_lines
@@ -22,10 +22,6 @@ from piloop.text import cell
 app = cyclopts.App(
     name='inbox', help='Read and acknowledge what the agents address to you: decisions, escalations and findings.'
 )
-WAIT_POLL_SECONDS = 1.0
-"""How often ``piloop inbox wait`` reads the events feed. A read is one indexed query: a wait costs no model turns."""
-
-
 KindFilter = Annotated[
     tuple[CommentKind, ...], cyclopts.Parameter(name='--kind', help='Only items of this kind. Repeatable.')
 ]
@@ -46,7 +42,7 @@ def inbox_list(
     prints them read at one cursor: follow them with `piloop events --after <cursor>`.
     """
     if json_:
-        with common.session() as s, feed.snapshot(s) as cursor:
+        with common.session() as s, db_feed.snapshot(s) as cursor:
             campaign_id = common.campaign(s, ref).id if ref else None
             view = feed.inbox_view(s, campaign_id=campaign_id, kinds=kind, acked=all_)
         common.print_json({'cursor': cursor, **view})
@@ -111,16 +107,18 @@ def inbox_wait(
     on a measured candidate. Your own decisions, as PILOOP_ACTOR, do not end it. At --timeout it returns with nothing.
     Set the timeout of your shell tool higher than --timeout. Without a campaign, it waits for every campaign.
     """
-    deadline = time.monotonic() + timeout
-    with common.session() as s:
-        campaign_id = common.campaign(s, ref).id if ref else None
-        cursor = after if after is not None else s.scalar(select(func.max(Event.id))) or 0
-        while True:
+    lines: list[str] = []
+    with common.database() as db:
+        with db.session() as s:
+            campaign_id = common.campaign(s, ref).id if ref else None
+            cursor = after if after is not None else db_feed.newest(s)
+
+        def news(s: Session) -> bool:
+            nonlocal cursor, lines
             cursor, lines = inbox.news(s, cursor, campaign_id=campaign_id, me=common.settings.actor)
-            s.rollback()  # end the read transaction: a WAL reader that stays open while it sleeps blocks checkpoints
-            if lines or time.monotonic() >= deadline:
-                break
-            time.sleep(WAIT_POLL_SECONDS)
+            return bool(lines)
+
+        db.wait_until(news, timeout=timeout)
     again = shlex.join(['piloop', 'inbox', 'wait', *([ref] if ref else []), '--after', str(cursor)])
     common.console.print(
         '\n'.join(lines) or f'nothing new in {timedelta(seconds=round(timeout))}', markup=False, soft_wrap=True

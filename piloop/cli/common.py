@@ -60,8 +60,8 @@ def json_error(code: str, message: str) -> SystemExit:
 
 
 @contextmanager
-def session(*, create: bool = False) -> Generator[Session]:
-    """Open the database, which must be at the schema of this piloop (``refuse_other_schema``), and yield one session.
+def database(*, create: bool = False) -> Generator[Database]:
+    """Open the database, which must be at the schema of this piloop (``refuse_other_schema``), until the block ends.
 
     With ``create`` (``piloop init``), a database that does not exist yet is created at head first.
     """
@@ -70,10 +70,16 @@ def session(*, create: bool = False) -> Generator[Session]:
         if create and not (settings.home / 'piloop.db').is_file():
             migrate(db)
         refuse_other_schema()
-        with db.session() as s:
-            yield s
+        yield db
     finally:
         db.close()
+
+
+@contextmanager
+def session(*, create: bool = False) -> Generator[Session]:
+    """One session on ``database``."""
+    with database(create=create) as db, db.session() as s:
+        yield s
 
 
 def campaign(s: Session, ref: str) -> Campaign:

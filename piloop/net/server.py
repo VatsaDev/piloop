@@ -1,11 +1,13 @@
 """The server of ``piloop serve --listen``: FastAPI on uvicorn, in a thread of the daemon, on the network's socket.
 
 Every route checks its caller with a dependency: the network identifies it (401 when it cannot), and the route's
-scope must be the caller's (403). FastAPI runs a route that blocks, a long-poll say, in its thread pool.
+scope must be the caller's (403). A handler runs in the thread pool of Starlette, 40 threads; a long-poll awaits its
+next call outside it, so many long-polls never starve a heartbeat.
 """
 
 import ssl
 import threading
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Annotated
 
@@ -49,15 +51,23 @@ def app(network: Network, routes: Sequence[Route]) -> FastAPI:
 
 
 def _endpoint(network: Network, route: Route) -> Callable[[Request, Caller], Awaitable[Response]]:
-    """The handler of ``route``: its body is read here and validated by the route, in the thread that handles it."""
+    """The handler of ``route``: its body is read and validated here, and the route's handler runs in the thread pool.
+
+    A long-poll calls it again after each commit (``Route.changed``) while it answers None, until the body's wait ends.
+    """
     scoped = authorized(network, route.scope)
 
     async def endpoint(request: Request, caller: Annotated[Caller, Depends(scoped)]) -> Response:
         body = await request.body()
         try:
-            answer = await run_in_threadpool(route.call, caller, body)
+            call = route.bind(caller, body)
         except InvalidBody as e:
             raise RequestValidationError(e.error.errors()) from e
+        deadline, seen = time.monotonic() + call.wait, 0
+        while (answer := await run_in_threadpool(call.handle)) is None and route.changed is not None:
+            if (left := deadline - time.monotonic()) <= 0:
+                break
+            seen = await route.changed(seen, left)
         if answer is None:
             return Response(status_code=204)
         return Response(answer.model_dump_json(), media_type='application/json')

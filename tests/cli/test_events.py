@@ -18,6 +18,7 @@ from sqlalchemy import select, text
 
 from piloop.campaign import campaigns as campaign_module, ops
 from piloop.cli import common, main as cli
+from piloop.db import session as db_session
 from piloop.db.models import Campaign, Comment, CommentKind, Event, Idea, IdeaStatus
 from piloop.db.session import Database
 from piloop.ids import CampaignId, IdeaId, TargetKind, TargetRef
@@ -167,7 +168,7 @@ def test_events_reads_after_a_cursor_with_filters_and_says_how_to_read_on(
     )
     assert lines[1] == f'next: piloop events --after {end} --campaign demo --kind acme.raw --kind idea.status'
 
-    monkeypatch.setattr(feed, 'POLL_SECONDS', 0.01)
+    monkeypatch.setattr(db_session, 'WAIT_POLL_SECONDS', 0.01)  # the test's commits are another Database's
     threading.Timer(0.3, write, [db, f"UPDATE ideas SET status = 'parked' WHERE id = {first}"]).start()
     run_cli(['events', '--after', str(end), '--follow', '--timeout', '30', '--json', '--kind', 'idea.status'])
     [parked] = document(EventsDocument, out())['events']

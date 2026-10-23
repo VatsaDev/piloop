@@ -1008,6 +1008,8 @@ class LeaseWorker(Base):
     """When a call of it last came in."""
     no_lease: Mapped[NoLease | None]
     """Why its last request got no lease, or that it went silent. NULL after a grant."""
+    cursor: Mapped[int] = mapped_column(default=0, server_default=text('0'))
+    """The event after which it reads its messages: its ack floor. A new worker starts at the newest event."""
 
 
 class Limit(Base):

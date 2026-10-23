@@ -299,9 +299,11 @@ def test_successful_run_scores_the_commit(
         [
             'run.started',
             'agent_session.started',
+            'lease.queued',
             'agent_session.finished',
             'agent_session.job_ended',
             'run.finished',
+            'lease.queued',
             'measurement.recorded',
             'candidate.judged',
             'candidate.verdict',

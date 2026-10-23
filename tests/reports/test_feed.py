@@ -10,6 +10,7 @@ from sqlalchemy import func, select, text, update
 
 from piloop.actor import System
 from piloop.campaign import ops
+from piloop.db import feed as db_feed
 from piloop.db.events import emit
 from piloop.db.models import (
     AgentSession,
@@ -22,6 +23,7 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Run,
+    UnknownEvent,
     Verdict,
 )
 from piloop.db.session import Database
@@ -58,13 +60,13 @@ def newest(db: Database) -> int:
 
 def test_a_read_transaction_sees_one_state_and_refuses_unflushed_changes(db: Database, campaign: Campaign) -> None:
     with db.session() as s, db.session() as other:
-        with feed.snapshot(s) as cursor:
+        with db_feed.snapshot(s) as cursor:
             emit(other, IdeaCreated(), TargetRef(TargetKind.IDEA, 1), System.DAEMON)
             other.commit()
-            assert feed.newest(s) == cursor, 'a commit after the first read is not seen'
-        assert feed.newest(s) == cursor + 1, 'the transaction ended: the commit is seen'
+            assert db_feed.newest(s) == cursor, 'a commit after the first read is not seen'
+        assert db_feed.newest(s) == cursor + 1, 'the transaction ended: the commit is seen'
         s.add(make_idea(campaign.id, 'unsaved'))
-        with pytest.raises(RuntimeError, match='uncommitted changes'), feed.snapshot(s):
+        with pytest.raises(RuntimeError, match='uncommitted changes'), db_feed.snapshot(s):
             pass
 
 
@@ -217,7 +219,7 @@ def test_a_cursor_ahead_of_the_feed_asks_for_a_new_snapshot_and_bad_bounds_are_r
 ) -> None:
     end = newest(db)
     with db.session() as s:
-        with pytest.raises(feed.CursorAhead, match=f'cursor {end + 5} is ahead of the feed, which ends at {end}'):
+        with pytest.raises(db_feed.CursorAhead, match=f'cursor {end + 5} is ahead of the feed, which ends at {end}'):
             feed.read(s, end + 5)
         with pytest.raises(ValueError, match='cursor must be 0 or more'):
             feed.read(s, -1)
@@ -231,12 +233,17 @@ def test_follow_wakes_on_a_matching_event_and_otherwise_returns_at_its_timeout(
 ) -> None:
     start = newest(db)
     noise = raw(db, 'noise', '{}')
+    quiet = feed.follow(db, start, kinds=['wanted'], timeout=0)
+    assert quiet == {'events': [], 'next': noise, 'more': False}, 'the timeout still hands back the advanced cursor'
+    threading.Timer(0.2, emitted, [db, 'wanted']).start()
+    woke = feed.follow(db, quiet['next'], kinds=['wanted'], timeout=30)
+    assert [e['kind'] for e in woke['events']] == ['wanted'], 'a commit of this process wakes it before its poll'
+
+
+def emitted(db: Database, kind: str) -> None:
     with db.session() as s:
-        quiet = feed.follow(s, start, kinds=['wanted'], timeout=0, poll=0.01)
-        assert quiet == {'events': [], 'next': noise, 'more': False}, 'the timeout still hands back the advanced cursor'
-        threading.Timer(0.2, raw, [db, 'wanted', '{}']).start()
-        woke = feed.follow(s, quiet['next'], kinds=['wanted'], timeout=30, poll=0.01)
-        assert [e['kind'] for e in woke['events']] == ['wanted']
+        emit(s, UnknownEvent(kind=kind, payload={}), TargetRef(TargetKind.CAMPAIGN, 1), System.DAEMON)
+        s.commit()
 
 
 def escalation(campaign_id: CampaignId, body: str) -> Comment:
@@ -272,7 +279,7 @@ def test_snapshots_carry_the_cursor_they_were_read_at(db: Database, campaign: Ca
         s.add(escalation(campaign.id, 'look'))
         s.commit()
         ids = idea.id, seed.id, candidate.id, run.id, agent_session.id
-        with feed.snapshot(s) as cursor:
+        with db_feed.snapshot(s) as cursor:
             other.add(escalation(campaign.id, 'after the cursor'))
             other.commit()
             [state] = feed.status_view(s, [s.get_one(Campaign, campaign.id)])
