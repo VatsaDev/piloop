@@ -82,6 +82,8 @@ def test_a_blackhole_forwards_nothing_and_sends_no_reset_until_it_heals(proxy: P
 
 def test_reset_breaks_open_and_new_connections(proxy: Proxy) -> None:
     with _connect(proxy) as client:
+        client.sendall(b'before')  # an open connection: the proxy accepted it before the toxic, and forwards it
+        assert client.recv(1024) == b'before'
         proxy.toxic = Reset()
         client.sendall(b'x')
         with pytest.raises(ConnectionResetError):
