@@ -140,7 +140,7 @@ class LeaseQueued(EventModel):
 class LeasePrompted(EventModel):
     """On the agent's row, a message for its worker (``PromptMessage``): a prompt to deliver."""
 
-    kind: Literal['lease.prompt'] = 'lease.prompt'
+    kind: Literal['lease.prompted'] = 'lease.prompted'
     lease: int
     worker: str
     comment: CommentId

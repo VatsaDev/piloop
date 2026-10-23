@@ -18,11 +18,12 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from uvicorn.protocols.http.h11_impl import H11Protocol
 
 from piloop.db.models import TokenScope
 from piloop.net import InvalidBody, Refusal, Route
 from piloop.net.tokens import Caller
-from piloop.plugins.network.contract import Listener, Network, Refused
+from piloop.plugins.network.contract import Address, Listener, Network, Peer, Refused
 
 GRACE_SECONDS = 5
 """How long ``Server.close`` lets the requests in flight finish."""
@@ -32,7 +33,7 @@ def authorized(network: Network, scope: TokenScope) -> Callable[[Request], Calle
     """The dependency that admits a caller of ``scope`` only."""
 
     def caller(request: Request) -> Caller:
-        match network.identify(request.headers):
+        match network.identify(request.headers, _peer(request)):
             case Refused(reason=reason):
                 raise HTTPException(401, reason, headers={'WWW-Authenticate': 'Bearer'})
             case known if known.scope != scope:
@@ -43,6 +44,15 @@ def authorized(network: Network, scope: TokenScope) -> Callable[[Request], Calle
                 return known
 
     return caller
+
+
+def _peer(request: Request) -> Peer:
+    """The other end of ``request``'s connection."""
+    client = request.client
+    return Peer(
+        address=None if client is None else Address(host=client.host, port=client.port),
+        certificate=request.scope['state'].get(_CERTIFICATE),
+    )
 
 
 class App(FastAPI):
@@ -128,6 +138,7 @@ class Server:
             log_config=None,
             access_log=False,
             lifespan='off',
+            http=_Protocol,
             timeout_graceful_shutdown=GRACE_SECONDS,
             ssl_context_factory=_tls(listener.tls) if listener.tls is not None else None,
         )
@@ -171,3 +182,18 @@ def _tls(context: ssl.SSLContext) -> Callable[[uvicorn.Config, Callable[[], ssl.
         return context
 
     return factory
+
+
+_CERTIFICATE = 'piloop.peer_certificate'
+
+
+class _Protocol(H11Protocol):
+    """uvicorn's HTTP/1.1, which puts the peer's TLS certificate in each request's ``scope['state']``.
+
+    uvicorn sets no ASGI ``tls`` extension in the scope, and this is the one per-connection seam that reaches it.
+    """
+
+    def connection_made(self, transport: asyncio.Transport) -> None:
+        tls = transport.get_extra_info('ssl_object')
+        self.app_state = {**self.app_state, _CERTIFICATE: None if tls is None else tls.getpeercert(binary_form=True)}
+        super().connection_made(transport)

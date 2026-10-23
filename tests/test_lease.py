@@ -304,10 +304,12 @@ def test_a_silent_worker_is_unreachable_after_the_grace_period_and_its_leases_ex
 ) -> None:
     job = agent_job(db, campaign, tmp_path)
     lease_id = queue(db, job)
+    before = utcnow()
     take(leases, 'w1', [])
     now = utcnow()
     expiry = leases.expire(now + timedelta(seconds=49))
-    assert expiry is not None and timedelta(seconds=299) < expiry - now < timedelta(seconds=301), 'the next deadline'
+    toleration = timedelta(seconds=300)
+    assert expiry is not None and before + toleration <= expiry <= now + toleration, 'the next deadline'
     assert events(db, LeaseUnreachable) == []
     leases.expire(now + timedelta(seconds=51))
     leases.expire(now + timedelta(seconds=52))

@@ -77,6 +77,6 @@ from piloop.net import Route
 
 from piloop.plugins.network.contract import NETWORKS, Network, NetworkHost
 from piloop.plugins.network.contract import NetworkConfig, Address
-from piloop.plugins.network.contract import Listener, NoCredential, Refused
+from piloop.plugins.network.contract import Listener, NoCredential, Peer, Refused
 from piloop.net.tokens import Caller, Tokens
 from piloop.plugins.network.https import Https, HttpsNetwork

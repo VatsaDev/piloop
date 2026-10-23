@@ -215,7 +215,8 @@ The entry point names a subclass of `NetworkConfig`, which has `listen`: its fie
 provider finds itself, or it raises `NoCredential` with what to set: `piloop worker` dials with it. The daemon calls its `open(host)` once, when it starts, to make the server's `Network`:
 
 - `listener()` binds `listen`, and returns the socket with its TLS, or None when `listen` is unset.
-- `identify(headers)` returns the `Caller` of a request, or `Refused` with the reason. The server answers 401.
+- `identify(headers, peer)` returns the `Caller` of a request, or `Refused` with the reason. The server answers 401.
+  `peer` is the other end of the connection: its `address`, and the `certificate` that it presented over TLS, if any.
 
 ### Built in
 

@@ -24,7 +24,7 @@ from piloop.plugins.host import Capability, Choice, Parameters, Scope
 
 
 class Address(BaseModel):
-    """Where to listen: ``HOST:PORT``, such as ``127.0.0.1:8443`` or ``[::1]:8443``. Port 0 takes any free port."""
+    """A host and port, ``HOST:PORT``, such as ``127.0.0.1:8443`` or ``[::1]:8443``. Port 0 listens on any free port."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -53,6 +53,22 @@ class Address(BaseModel):
 
     def __str__(self) -> str:
         return f'[{self.host}]:{self.port}' if ':' in self.host else f'{self.host}:{self.port}'
+
+
+class Peer(BaseModel):
+    """The other end of a request's connection, as the server sees it.
+
+    A provider that knows a caller by its connection rather than by a token reads it: a tailnet one asks the tailnet
+    who has ``address``, an mTLS one maps ``certificate``, and a trusted CIDR list admits ``address``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    address: Address | None
+    """Where the caller connects from. None when the socket has no address, such as a Unix socket."""
+    certificate: bytes | None
+    """The certificate that the caller presented in the TLS handshake, in DER. None without TLS, or when the listener's
+    TLS asks for none."""
 
 
 @dataclass(frozen=True)
@@ -89,8 +105,8 @@ class Network(Protocol):
         """Bind ``listen``, or return None when it is None. The daemon calls it once."""
         ...
 
-    def identify(self, headers: Mapping[str, str]) -> Caller | Refused:
-        """Who sends a request with these headers (their names in lower case)."""
+    def identify(self, headers: Mapping[str, str], peer: Peer) -> Caller | Refused:
+        """Who sends a request with these headers (their names in lower case), from ``peer``."""
         ...
 
 

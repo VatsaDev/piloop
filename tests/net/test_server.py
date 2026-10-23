@@ -1,22 +1,33 @@
 """The server of ``piloop serve --listen``: who may call it, TLS, and an executor's routes."""
 
+import http.client
+import json
 import logging
+import socket
+import ssl
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 
 import httpx2 as httpx
 import pytest
+from covalence import Cid
 from pydantic import BaseModel, ValidationError
 
 from piloop.daemon.main import preflight
 from piloop.db.models import Campaign, TokenScope
 from piloop.db.session import Database
-from piloop.net import Polled, Route, tokens
+from piloop.net import Polled, Route, cas_server, tokens
+from piloop.net.cas import route
+from piloop.net.server import App, Server, app
 from piloop.net.tokens import Caller
 from piloop.plugins import host as plugins
-from piloop.plugins.network.contract import NETWORKS, Address
+from piloop.plugins.cas.contract import BLAKE3
+from piloop.plugins.cas.disk import DiskCas
+from piloop.plugins.network.contract import NETWORKS, Address, Listener, Network, Peer
 from piloop.plugins.network.https import Https
 from piloop.settings import Settings
 from tests.conftest import Dial, package
@@ -92,6 +103,84 @@ def test_tls_with_a_certificate_that_the_client_trusts_through_ssl_cert_file(
         assert client.post(ECHOED, json=HI).status_code == 200
         with pytest.raises(DROPPED):
             httpx.post(server.url.replace('https', 'http') + ECHOED, json=HI)
+
+
+class Recording:
+    """A network that admits every caller as ``gpu1`` and records the peer of each request."""
+
+    def __init__(self, tls: ssl.SSLContext | None) -> None:
+        self.tls = tls
+        self.peers: list[Peer] = []
+
+    def listener(self) -> Listener:
+        return Listener(socket.create_server(('127.0.0.1', 0)), self.tls)
+
+    def identify(self, headers: Mapping[str, str], peer: Peer) -> Caller:
+        self.peers.append(peer)
+        return Caller('gpu1', TokenScope.WORKER)
+
+
+@dataclass(frozen=True)
+class Served:
+    """A server's app over a network, and a request that the network must admit, with the status that answers it."""
+
+    app: Callable[[Network, Path], App]
+    method: str
+    path: str
+    status: int
+    body: str | None = None
+
+
+def _control_plane(network: Network, tmp: Path) -> App:
+    return app(network, [ECHO])
+
+
+def _cas(network: Network, tmp: Path) -> App:
+    return cas_server.app(network, DiskCas(tmp / 'cas'), tmp / 'scratch')
+
+
+SERVED = {
+    'piloop serve': Served(_control_plane, 'POST', ECHOED, 200, json.dumps(HI)),
+    'piloop cas serve': Served(_cas, 'HEAD', route(Cid.from_parts('raw', BLAKE3, b'\0' * 32)), 404),
+}
+
+
+def _peer_of(served: Served, network: Recording, tmp: Path, client: ssl.SSLContext | None) -> Address:
+    """Send ``served``'s request through a server over ``network``, and return the address that it came from."""
+    with closing(Server(served.app(network, tmp), network.listener())) as server:
+        server.start()
+        host, port = server.listener.socket.getsockname()[:2]
+        connection = (
+            http.client.HTTPConnection(host, port)
+            if client is None
+            else http.client.HTTPSConnection(host, port, context=client)
+        )
+        connection.connect()
+        sent = Address(host=connection.sock.getsockname()[0], port=connection.sock.getsockname()[1])
+        connection.request(served.method, served.path, served.body, {'Content-Type': 'application/json'})
+        assert connection.getresponse().status == served.status
+        connection.close()
+    return sent
+
+
+@pytest.mark.parametrize('served', SERVED.values(), ids=SERVED.keys())
+def test_the_server_tells_the_network_the_peer_address_and_its_tls_certificate(
+    served: Served, certificate: dict[str, str], tmp_path: Path
+) -> None:
+    plain = Recording(None)
+    sent = _peer_of(served, plain, tmp_path, None)
+    assert plain.peers == [Peer(address=sent, certificate=None)]
+
+    tls = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    tls.load_cert_chain(certificate['cert'], certificate['key'])
+    tls.verify_mode = ssl.CERT_OPTIONAL
+    tls.load_verify_locations(certificate['cert'])
+    mutual = Recording(tls)
+    client = ssl.create_default_context(cafile=certificate['cert'])
+    client.load_cert_chain(certificate['cert'], certificate['key'])
+    sent = _peer_of(served, mutual, tmp_path, client)
+    der = ssl.PEM_cert_to_DER_cert(Path(certificate['cert']).read_text())
+    assert mutual.peers == [Peer(address=sent, certificate=der)]
 
 
 @pytest.mark.parametrize(

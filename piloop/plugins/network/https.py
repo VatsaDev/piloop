@@ -22,7 +22,7 @@ import httpx2 as httpx
 from pydantic import BaseModel, ConfigDict, FilePath, model_validator
 
 from piloop.net.tokens import Caller
-from piloop.plugins.network.contract import Listener, NetworkConfig, NetworkHost, NoCredential, Refused
+from piloop.plugins.network.contract import Listener, NetworkConfig, NetworkHost, NoCredential, Peer, Refused
 
 TIMEOUT = httpx.Timeout(30, connect=10)
 TOKEN_ENV = 'PILOOP_HTTPS_TOKEN'
@@ -92,7 +92,7 @@ class HttpsNetwork:
             case _:
                 assert_never(self.config.tls)
 
-    def identify(self, headers: Mapping[str, str]) -> Caller | Refused:
+    def identify(self, headers: Mapping[str, str], peer: Peer) -> Caller | Refused:
         scheme, _, secret = headers.get('authorization', '').partition(' ')
         if scheme.lower() != 'bearer' or not secret:
             return Refused('no bearer token: send Authorization: Bearer <token> (piloop token create)')
