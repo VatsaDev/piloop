@@ -37,7 +37,6 @@ from piloop.db.models import (
     latest_agent_session,
 )
 from piloop.ids import CampaignId, EvaluatorId, MeasurementId, RunId, TargetKind, TargetRef, TrackName
-from piloop.plugins.verdict_rule import contract as rules
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Case, Criterion, Side, VerdictRule
 from piloop.scoring.evaluate import UNITS, Units
 from piloop.text import metric
@@ -380,14 +379,12 @@ def judge(
     evaluation measures, whatever the verdict against the bar.
     """
     mine = metrics(candidate, evaluator_id)
-    table = cfg.plugins.get('verdict_rule')
     verdict, reason = decide(
-        VERDICT_RULES.get(table.provider if table is not None else rules.DEFAULT),
+        VERDICT_RULES.selected(cfg.plugins),
         track,
         cfg.confidence,
         Side(f'candidate#{candidate.id}', mine, units(candidate, evaluator_id, units_dir)),
         Side(f'candidate#{own.id}', metrics(own, evaluator_id), units(own, evaluator_id, units_dir)),
-        table.parameters if table is not None else '{}',
     )
     primary = track.primary
     leader = metrics(head, evaluator_id).get(primary.name) if head is not None else None
@@ -407,16 +404,14 @@ def criterion(m: Metric) -> Criterion:
     return Criterion(m.name, m.direction, m.margin, m.floor)
 
 
-def decide(
-    rule: VerdictRule, track: Track, confidence: float, candidate: Side, bar: Side, parameters: str = '{}'
-) -> tuple[Verdict, str]:
+def decide(rule: VerdictRule, track: Track, confidence: float, candidate: Side, bar: Side) -> tuple[Verdict, str]:
     """Return ``rule``'s verdict on ``candidate``, a candidate of ``track``, against ``bar``, and the reason.
 
     The rule gets the case as data (``piloop.plugins.verdict_rule.contract.Case``): the track's primary and guardrails,
-    the confidence, both sides' results and its own parameters. Its outcome is the ``Verdict`` of the same value.
+    the confidence and both sides' results. Its outcome is the ``Verdict`` of the same value.
     """
     guardrails = tuple(map(criterion, track.guardrails))
-    judged = rule.decide(Case(criterion(track.primary), guardrails, confidence, candidate, bar, parameters))
+    judged = rule.decide(Case(criterion(track.primary), guardrails, confidence, candidate, bar))
     return Verdict(judged.verdict), judged.reason
 
 

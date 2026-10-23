@@ -7,8 +7,8 @@ operations (``Results``), which change the campaign's rows. Like Airflow's execu
 ``CeleryExecutor``): core queues work and reads results, and the executor owns the workers.
 
 Host tier: an executor runs processes. ``[plugins.executor] provider`` in ``config.toml`` selects one (``workers`` by
-default), and the other keys of the table are its parameters (``Parameters``). The entry point names a class:
-``Executor(host, parameters)``.
+default). The entry point names an ``ExecutorConfig`` class, whose fields are the other keys of the table, and the
+daemon calls its ``open`` once to make the ``Executor``.
 
 Core enforces the domain's invariants only: a job's row closes once, a measurement is recorded once. An executor that
 can deliver a result twice, or late (a worker presumed dead), protects the work itself: ``workers`` does it with leases
@@ -16,11 +16,12 @@ and fencing tokens, checked inside the session in which it calls ``Results``. Wh
 protect it, is the executor's choice.
 """
 
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal, Protocol, TypeIs
+from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from sqlalchemy.orm import Session
@@ -31,7 +32,7 @@ from piloop.ids import AgentSessionId, CandidateId, CommentId, RunId
 from piloop.mcp import McpServer
 from piloop.net import Route
 from piloop.otel import Tracer
-from piloop.plugins.host import Capability, PluginTable, Selection
+from piloop.plugins.host import Capability, Choice, Parameters, Scope
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec
 from piloop.runtime.factory import RuntimeFactory
 from piloop.usage import UsageSpec
@@ -300,24 +301,11 @@ class Capacity:
     evaluations: int | None
 
 
-class NoParameters(BaseModel):
-    """The ``Parameters`` of an executor that takes no keys in ``[plugins.executor]`` besides ``provider``."""
-
-    model_config = ConfigDict(extra='forbid', frozen=True)
-
-
 class Executor(Protocol):
     """Runs the jobs that piloop submits, and reports their results through ``Host.results``.
 
     The daemon calls it from its threads; an executor makes its methods safe for that.
     """
-
-    Parameters: ClassVar[type[BaseModel]]
-    """The keys of ``[plugins.executor]`` besides ``provider``."""
-
-    def __init__(self, host: Host, parameters: BaseModel) -> None:
-        """Made once, when the daemon starts, with ``parameters`` checked against ``Parameters``."""
-        ...
 
     def capacity(self) -> Capacity:
         """How many more jobs of each kind it can take now: its free slots, less the jobs it has and has not started.
@@ -327,8 +315,8 @@ class Executor(Protocol):
         """
         ...
 
-    def configure(self, parameters: BaseModel) -> None:
-        """Take ``parameters``, its ``Parameters`` with the live limits applied. The daemon calls it when one changes."""
+    def configure(self, config: ExecutorConfig) -> None:
+        """Take ``config``, the one that opened it with the live limits applied. The daemon calls it when one changes."""
         ...
 
     def submit(self, job: AgentJob | EvaluationJob) -> None:
@@ -375,52 +363,14 @@ class Executor(Protocol):
         ...
 
 
-def _is_executor(loaded: object) -> TypeIs[type[Executor]]:
-    methods = (
-        'capacity',
-        'configure',
-        'submit',
-        'prompt',
-        'cancel',
-        'adopt',
-        'routes',
-        'tick',
-        'stop',
-        'hand_over',
-        'close',
-    )
-    parameters = getattr(loaded, 'Parameters', None)
-    return (
-        isinstance(loaded, type)
-        and isinstance(parameters, type)
-        and issubclass(parameters, BaseModel)
-        and all(callable(getattr(loaded, m, None)) for m in methods)
-    )
+class ExecutorConfig(Parameters, ABC):
+    """An executor's ``[plugins.executor]``: its fields are the keys of the table besides ``provider``."""
+
+    @abstractmethod
+    def open(self, host: Host) -> Executor:
+        """Make the executor. The daemon calls it once, when it starts."""
 
 
-def _check(name: str, loaded: object) -> type[Executor]:
-    if _is_executor(loaded):
-        return loaded
-    raise TypeError('is not a piloop executor class: it needs Parameters and the methods of Executor')
-
-
-DEFAULT_EXECUTOR = 'workers'
-"""The executor of a home whose ``config.toml`` has no ``[plugins.executor]``."""
-EXECUTORS = Capability(
-    'executor',
-    group='piloop.executors',
-    check=_check,
-    selection=Selection('home', 'plugins.executor.provider', default=DEFAULT_EXECUTOR),
-)
-"""Every executor by name. ``workers``, built in and the default, runs every job on a lease (``piloop.plugins.executor.kit.leases``)."""
-
-
-def selected(table: PluginTable | None) -> tuple[type[Executor], BaseModel]:
-    """The executor that ``[plugins.executor]`` selects, ``DEFAULT_EXECUTOR`` without one, and its checked parameters.
-
-    Raises:
-        MissingProvider: No executor has that name.
-        ValidationError: Its ``Parameters`` refuse the other keys of the table.
-    """
-    provider = EXECUTORS.get(table.provider if table is not None else DEFAULT_EXECUTOR)
-    return provider, provider.Parameters.model_validate(table.keys if table is not None else {})
+EXECUTORS = Capability('executor', ExecutorConfig, choice=Choice(Scope.HOME, default='workers'))
+"""Every executor by name. ``workers``, built in and the default, runs every job on a lease
+(``piloop.plugins.executor.kit.leases``)."""

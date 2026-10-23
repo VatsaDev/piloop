@@ -16,7 +16,7 @@ from piloop.db.models import Campaign, Candidate, Evaluation, Run, RunStatus, Ve
 from piloop.db.session import Database
 from piloop.ids import CandidateId, RunId
 from piloop.otel import Tracer
-from piloop.plugins.host import PluginTable
+from piloop.plugins.executor.workers import Workers
 from piloop.scoring import queue
 from piloop.scoring.ledger import measured, request_remeasure
 from tests.conftest import ScriptRuntime, baseline, factory, serving, workers_of, write_script
@@ -65,10 +65,8 @@ def run_candidates(db: Database, run_id: RunId) -> list[Candidate]:
 
 
 def queued_executor(db: Database, runtime: ScriptRuntime, tmp_path: Path, slots: int) -> RunController:
-    executor = {'provider': 'workers', 'pools': {'serve': {'evaluations': slots}}}
-    return serving(
-        RunController(db, Tracer(None), tmp_path, factory(runtime), executor=PluginTable.model_validate(executor))
-    )
+    executor = Workers.model_validate({'pools': {'serve': {'evaluations': slots}}})
+    return serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=executor))
 
 
 def errors(db: Database, candidate_id: CandidateId) -> tuple[list[str | None], Verdict]:

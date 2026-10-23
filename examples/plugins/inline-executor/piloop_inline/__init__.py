@@ -19,11 +19,11 @@ from piloop.capabilities import (
     Capacity,
     EvaluationJob,
     EvaluationReport,
+    ExecutorConfig,
     Handle,
     Host,
     JobKey,
     LeftJob,
-    NoParameters,
     Prompt,
     Route,
     Runtime,
@@ -36,18 +36,23 @@ from piloop.capabilities import (
 )
 
 
+class Inline(ExecutorConfig):
+    """``inline``: it takes no parameters."""
+
+    def open(self, host: Host) -> InlineExecutor:
+        return InlineExecutor(host)
+
+
 class InlineExecutor:
-    """``Executor``: a thread for each job, started when the job is submitted. It takes no parameters."""
+    """``Executor``: a thread for each job, started when the job is submitted."""
 
-    Parameters = NoParameters
-
-    def __init__(self, host: Host, parameters: object) -> None:
+    def __init__(self, host: Host) -> None:
         self.host = host
         self._lock = threading.Lock()
         self._jobs: dict[JobKey, _Job] = {}
         self.stopping = False
 
-    def configure(self, parameters: object) -> None:
+    def configure(self, config: ExecutorConfig) -> None:
         """Nothing to change: it takes no parameters."""
 
     def capacity(self) -> Capacity:

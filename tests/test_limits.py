@@ -4,8 +4,6 @@ from pathlib import Path
 from typing import Annotated
 
 import pytest
-from pydantic import BaseModel
-from pytest_mock import MockerFixture
 from sqlalchemy import select
 
 from piloop.daemon.run_controller import RunController
@@ -13,17 +11,17 @@ from piloop.db.models import Campaign, Limit
 from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.plugins import limits
-from piloop.plugins.executor.contract import EXECUTORS, Capacity
+from piloop.plugins.executor.contract import Capacity
 from piloop.plugins.executor.kit.capacity import NoLease, Pool
 from piloop.plugins.executor.kit.client import Local
 from piloop.plugins.executor.kit.leases import Grant, Leases
-from piloop.plugins.executor.workers import WorkersParameters
-from piloop.plugins.host import Live, PluginTable
+from piloop.plugins.executor.workers import Workers
+from piloop.plugins.host import Live, Parameters
 from tests.conftest import ScriptRuntime, factory, serving, workers_of
 from tests.test_lease import HOST, MEASURED, TIMING, Recorder, evaluation_job, join, queue
 
 KEY = 'executor.pools.serve.evaluations'
-GPU = {'executor': PluginTable.model_validate({'provider': 'workers', 'pools': {'gpu': {'evaluations': 4}}})}
+GPU = {'executor': Workers.model_validate({'pools': {'gpu': {'evaluations': 4}}})}
 
 
 def test_only_a_live_key_that_there_is_takes_a_limit_and_only_a_value_that_its_parameters_accept(
@@ -36,7 +34,7 @@ def test_only_a_live_key_that_there_is_takes_a_limit_and_only_a_value_that_its_p
             limits.set_limit(s, {}, 'executor.pools.gpu.evaluations', 1, reason='a limit adds no pool', actor='human')
         with pytest.raises(limits.Refused, match='greater than or equal to 0'):
             limits.set_limit(s, {}, KEY, -1, reason='r', actor='human')
-        with pytest.raises(limits.Refused, match=r'no provider of the home that has parameters is \[plugins.nope\]'):
+        with pytest.raises(limits.Refused, match=r'no provider of the home is \[plugins.nope\]'):
             limits.set_limit(s, {}, 'nope.x', 1, reason='r', actor='human')
         limits.set_limit(s, GPU, 'executor.pools.gpu.evaluations', 1, reason='the GPU is shared', actor='human')
         limits.set_limit(s, GPU, KEY, 0, reason='nothing on the server', actor='orchestrator')
@@ -85,7 +83,7 @@ def test_with_two_evaluations_running_a_lowered_limit_starts_no_third_until_none
         queue(db, job.model_copy(update={'evaluation': job.evaluation + n}))
     first, second = worker.acquire(HOST), worker.acquire(HOST)
     assert isinstance(first, Grant) and isinstance(second, Grant) and worker.acquire(HOST) is NoLease.SLOTS
-    applied = limits.applied(None, [Limit(key=KEY, value=1)], WorkersParameters, 'executor')
+    applied = limits.applied(Workers(), [Limit(key=KEY, value=1)], 'executor')
     leases.pools = applied.pools  # what ``WorkersExecutor.configure`` does on the next tick
     worker.report(first.lease, 'r1', MEASURED)
     assert worker.acquire(HOST) is NoLease.SLOTS, 'one runs, and one is the limit'
@@ -93,7 +91,7 @@ def test_with_two_evaluations_running_a_lowered_limit_starts_no_third_until_none
     assert isinstance(worker.acquire(HOST), Grant)
 
 
-class Nested(BaseModel):
+class Nested(Parameters):
     flags: dict[str, int] = {}
     pools: dict[str, Pool] = {}
     serve: Pool = Pool()
@@ -109,9 +107,4 @@ def test_the_live_keys_are_found_in_models_and_in_dicts_of_models_by_their_path(
         'x.window',
     ]
     other = Limit(key='store.window', value=9)
-    assert limits.applied(None, [other, Limit(key='x.window', value=5)], Nested, 'x').window == 5, 'only its own'
-
-
-def test_a_provider_without_parameters_takes_no_limit(mocker: MockerFixture) -> None:
-    mocker.patch.object(EXECUTORS, 'get', return_value=object)
-    assert limits.selected({}) == {}
+    assert limits.applied(Nested(), [other, Limit(key='x.window', value=5)], 'x').window == 5, 'only its own'

@@ -25,7 +25,7 @@ def limits_list() -> None:
 def lines(s: Session, origins: Collection[limits.Origin] = tuple(limits.Origin)) -> list[str]:
     """One line for each live key whose value comes from one of ``origins``: `piloop status` leaves the defaults out."""
     out = []
-    for key, value, origin, limit in limits.sources(s, common.settings.plugins):
+    for key, value, origin, limit in limits.sources(s, common.settings.providers):
         if origin not in origins:
             continue
         source = f'limit by {limit.actor}: {limit.reason}' if limit is not None else origin
@@ -50,7 +50,7 @@ def limits_set(
     with common.session() as s:
         try:
             limits.set_limit(
-                s, common.settings.plugins, key, _value(text), reason=reason, actor=common.settings.actor.signature
+                s, common.settings.providers, key, _value(text), reason=reason, actor=common.settings.actor.signature
             )
         except limits.Refused as e:
             raise SystemExit(str(e)) from e

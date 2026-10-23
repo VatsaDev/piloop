@@ -47,7 +47,7 @@ def test_a_package_adds_a_backend_and_the_backend_checks_its_own_keys(
     tmp_path: Path, registered: list[EntryPoint]
 ) -> None:
     registered.append(EntryPoint('dir', 'piloop_dir_store:DirConfig', STORAGE_BACKENDS.group))
-    assert {name: p.value for name, p in STORAGE_BACKENDS.providers().items()} == STORAGE_BACKENDS.builtins() | {
+    assert {name: p.model for name, p in STORAGE_BACKENDS.providers().items()} == STORAGE_BACKENDS.builtins() | {
         'dir': DirConfig
     }
     config = backend_config(BackendTable(kind='dir', root=str(tmp_path)))
@@ -70,7 +70,7 @@ def test_an_entry_point_must_name_a_new_backend_settings_class(registered: list[
     registered[:] = [EntryPoint('odd', 'piloop.store:Store', STORAGE_BACKENDS.group)]
     with pytest.raises(
         PluginError,
-        match='odd = piloop.store:Store in piloop.stores is not a piloop.plugins.storage_backend.contract.StorageBackendConfig',
+        match='odd = piloop.store:Store in piloop.stores is not a subclass of piloop.plugins.storage_backend.contract.StorageBackendConfig',
     ):
         STORAGE_BACKENDS.providers()
 

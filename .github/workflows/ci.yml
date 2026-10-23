@@ -92,8 +92,6 @@ jobs:
           grep -q "storage backend dir, from piloop-dir-store 0.1.0" /tmp/plugins.txt
           grep -q "enwik8: verdict rule min_gain, from piloop-min-gain 0.1.0" /tmp/plugins.txt
           grep -q "enwik8: stop rule after_keeps, from piloop-stop-after-keeps 0.1.0" /tmp/plugins.txt
-          grep -q "verdict checks (pure tier, piloop_verdict_checks.checks):" /tmp/plugins.txt
-          grep -q "no_unit_regression  piloop-no-unit-regression 0.1.0" /tmp/plugins.txt
       - name: the wheel carries the skills (a stand-in codex on PATH)
         run: |
           export PATH="$HOME/.local/bin:$PATH"

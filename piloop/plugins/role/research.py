@@ -34,6 +34,3 @@ class ResearchRole(SweepRole):
     """The maximum number of sweeps that run at the same time, each on the next harness of the rotation. The default
     is 1: sweeps that run at the same time read the same evidence and often duplicate each other, and two of them can
     race to develop the same seed."""
-
-
-RESEARCH = ResearchRole()

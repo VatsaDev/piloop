@@ -27,7 +27,7 @@ from piloop.cli.main import app
 from piloop.config import CampaignConfig
 from piloop.db import sql
 from piloop.plugins import host
-from piloop.settings import StorageSettings
+from piloop.settings import HOME_PLUGINS, StorageSettings
 from piloop.store.config import backend_config
 from tests.conftest import at_head, example
 
@@ -110,7 +110,7 @@ GLOBAL_TABLES = ('storage', 'plugins')
 def is_global(data: dict[str, object]) -> bool:
     """Whether a TOML block holds tables of ``config.toml`` only."""
     plugins = data.get('plugins', {})
-    of_home = {c.selection.key.split('.')[1] for c in host.declared() if c.selection and c.selection.scope == 'home'}
+    of_home = {c.name for c in host.declared() if c.choice is not None and c.choice.scope is host.Scope.HOME}
     return bool(data) and data.keys() <= set(GLOBAL_TABLES) and isinstance(plugins, dict) and plugins.keys() <= of_home
 
 
@@ -132,9 +132,7 @@ def check_toml(block: Block, _db: Path) -> None:
         assert not misplaced, f'{block.at()}: {", ".join(".".join(p) for p in misplaced)} is not project.entry-points'
         return
     if is_global(data):
-        plugins = data.get('plugins', {})
-        assert isinstance(plugins, dict)
-        host.check_plugins(plugins, 'home')  # as the daemon checks them before it starts
+        HOME_PLUGINS.validate_python(data.get('plugins', {}))  # as the daemon checks them before it starts
         if (storage := data.get('storage')) is not None:
             settings = StorageSettings.model_validate(storage)
             if settings.backend is not None:

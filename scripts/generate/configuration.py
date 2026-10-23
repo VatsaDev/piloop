@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from piloop.config import CampaignConfig
 from piloop.deprecated import BRIDGES, CONFIG_BRIDGES
-from piloop.plugins.host import declared
+from piloop.plugins.host import Scope, declared
 from piloop.plugins.runtime.herdr import HerdrSettings
 from piloop.plugins.storage_backend.contract import STORAGE_BACKENDS
 from piloop.plugins.trigger.contract import TRIGGERS
@@ -142,20 +142,18 @@ def home_plugins() -> str:
     """Return ``[plugins]`` of ``config.toml``: a table for each capability of the home, with its providers' keys."""
     out = (
         '\n### `[plugins]`\n\n`[plugins.<capability>]` selects the provider of a capability of the home: `provider`, the'
-        " name of its entry point, and the provider's own keys, which the daemon checks before it starts.\n"
+        " name of its entry point (the default without it), and the provider's own keys, which the daemon checks before"
+        ' it starts.\n'
     )
     for capability in declared():
-        selection = capability.selection
-        if selection is None or selection.scope != 'home' or not selection.key.startswith('plugins.'):
+        if capability.choice is None or capability.choice.scope is not Scope.HOME:
             continue
-        name = selection.key.split('.')[1]
-        out += f'\n#### `[plugins.{name}]`\n\nSelects the {capability.noun}.\n'
-        for provider, source in capability.sources().items():
-            parameters = getattr(capability.get(provider), 'Parameters', None) if source.built_in else None
-            if isinstance(parameters, type) and issubclass(parameters, BaseModel):
-                schema = json_schema(parameters)
+        out += f'\n#### `[plugins.{capability.name}]`\n\nSelects the {capability.noun}.\n'
+        for provider, model in capability.builtins().items():
+            if isinstance(model, type) and issubclass(model, BaseModel):
+                schema = json_schema(model)
                 out += f'\nWith `provider = "{provider}"`:\n\n{table(schema, schema.get("$defs", {}))}'
-                for model in [m for m in _nested(parameters, []) if m.__name__ in schema.get('$defs', {})]:
-                    nested = json_schema(model)
-                    out += f'\n#### {model.__name__}\n\n{mdx(nested.get("description", ""))}\n\n{table(nested, {})}'
+                for inner in [m for m in _nested(model, []) if m.__name__ in schema.get('$defs', {})]:
+                    nested = json_schema(inner)
+                    out += f'\n#### {inner.__name__}\n\n{mdx(nested.get("description", ""))}\n\n{table(nested, {})}'
     return out

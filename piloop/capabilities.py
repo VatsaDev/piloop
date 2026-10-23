@@ -2,9 +2,9 @@
 
 # ruff: noqa: F401  # this module only re-exports: every import is unused here
 
-from piloop.plugins.host import Capability, PureCapability, Tier
-from piloop.plugins.host import MissingProvider, Provider
-from piloop.plugins.host import Selection, Source, Live
+from piloop.plugins.host import Capability, Tier, Parameters, Choice, Scope
+from piloop.plugins.host import MissingProvider, Provider, PythonSource
+from piloop.plugins.host import Selection, Live
 
 from piloop.plugins.runtime.contract import RUNTIMES
 from piloop.plugins.runtime.contract import AgentSpec, AgentStatus, Check, Handle
@@ -34,25 +34,25 @@ from piloop.plugins.trigger.stopped import StoppedTrigger
 
 from piloop.plugins.role.contract import ROLES, ImplementerRole, SweepRole
 from piloop.plugins.role.contract import Files, Workdir
-from piloop.plugins.role.implementer import IMPLEMENTER
-from piloop.plugins.role.research import RESEARCH
-from piloop.plugins.role.scout import SCOUT
-from piloop.plugins.role.watchdog import WATCHDOG
+from piloop.plugins.role.contract import RoleConfig
+from piloop.plugins.role.research import ResearchRole
+from piloop.plugins.role.scout import ScoutRole
+from piloop.plugins.role.watchdog import WatchdogRole
 
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, VerdictRule, Case
 from piloop.plugins.verdict_rule.contract import Criterion, Side
 from piloop.plugins.metric import Direction
 from piloop.plugins.verdict_rule.contract import Judgement, Outcome
 from piloop.plugins.metric import number
-from piloop.plugins.verdict_rule.bootstrap import BOOTSTRAP
+from piloop.plugins.verdict_rule.bootstrap import Bootstrap
 
 from piloop.plugins.stop_rule.contract import STOP_RULES, StopRule, StopCase
 from piloop.plugins.stop_rule.contract import Limits, Progress, Fact
 from piloop.plugins.stop_rule.contract import Go, GO, Hold, Stop
-from piloop.plugins.stop_rule.limits import LIMITS
+from piloop.plugins.stop_rule.limits import FirstLimit
 
-from piloop.plugins.executor.contract import EXECUTORS, Executor, Host
-from piloop.plugins.executor.contract import Results, Settled, NoParameters
+from piloop.plugins.executor.contract import EXECUTORS, Executor, ExecutorConfig, Host
+from piloop.plugins.executor.contract import Results, Settled
 from piloop.plugins.executor.contract import AgentJob, EvaluationJob, LeftJob
 from piloop.plugins.executor.contract import AgentReport, EvaluationReport
 from piloop.plugins.executor.contract import AgentFinished, AgentNotStarted
@@ -64,7 +64,7 @@ from piloop.plugins.executor.kit.jobs import run_evaluation
 from piloop.plugins.executor.kit.leases import Leases, Timing, Grant, Answer
 from piloop.plugins.executor.kit.leases import StaleLease
 from piloop.proc import kill_group
-from piloop.plugins.executor.workers import WorkersExecutor
+from piloop.plugins.executor.workers import Workers, WorkersExecutor
 from piloop.otel import Tracer, Span, ConsoleProcessor
 from piloop.runtime.factory import RuntimeFactory
 from piloop.mcp import McpServer
@@ -72,7 +72,7 @@ from piloop.usage import UsageSpec, UsageReader
 from piloop.net import Route
 
 from piloop.plugins.network.contract import NETWORKS, Network, NetworkHost
-from piloop.plugins.network.contract import NetworkParameters, Address
+from piloop.plugins.network.contract import NetworkConfig, Address
 from piloop.plugins.network.contract import Listener, Refused
 from piloop.net.tokens import Caller, Tokens
-from piloop.plugins.network.https import Https
+from piloop.plugins.network.https import Https, HttpsNetwork

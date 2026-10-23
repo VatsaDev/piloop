@@ -12,7 +12,7 @@ from pathlib import Path
 from piloop.config import Roles
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.mcp import RENDERERS
-from piloop.plugins.host import PureCapability, Tier, data_errors, declared
+from piloop.plugins.host import Tier, data_errors, declared
 from piloop.plugins.runtime.contract import RUNTIMES
 from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.usage import READERS
@@ -117,11 +117,7 @@ HOST_CONTRACTS = {
 
 
 def test_every_capability_has_a_tier_and_every_pure_contract_is_data_in_data_out() -> None:
-    """A pure contract can be served out of process or by a Wasm component later only if nothing live crosses it."""
     for capability in declared():
-        if isinstance(capability, PureCapability):
-            assert capability.tier is Tier.PURE
+        if capability.tier is Tier.PURE:
             assert data_errors(capability.contract) == [], capability.noun
-        else:
-            assert capability.tier is Tier.HOST
     assert {c.noun for c in declared() if c.tier is Tier.HOST} == set(HOST_CONTRACTS)

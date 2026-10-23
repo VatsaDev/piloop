@@ -15,7 +15,7 @@ from piloop.net import Route, tokens
 from piloop.net.tokens import Caller
 from piloop.plugins import host as plugins
 from piloop.plugins.network.contract import NETWORKS, Address
-from piloop.plugins.network.https import Https, HttpsParameters
+from piloop.plugins.network.https import Https, HttpsNetwork
 from piloop.settings import Settings
 from tests.conftest import package
 from tests.net.conftest import Serving
@@ -40,7 +40,7 @@ HI = {'text': 'hi'}
 
 
 def test_a_caller_without_a_known_token_gets_401_and_a_revoked_token_stops_working(
-    serving: Serving, network: Https, token: Callable[..., str], db: Database
+    serving: Serving, network: HttpsNetwork, token: Callable[..., str], db: Database
 ) -> None:
     secret = token()
     with serving([ECHO]) as server, network.client(server.url, secret) as client, httpx.Client() as anonymous:
@@ -57,7 +57,7 @@ def test_a_caller_without_a_known_token_gets_401_and_a_revoked_token_stops_worki
 
 
 def test_a_route_refuses_a_token_of_another_scope_with_403(
-    serving: Serving, network: Https, token: Callable[..., str]
+    serving: Serving, network: HttpsNetwork, token: Callable[..., str]
 ) -> None:
     secret = token('agent7', TokenScope.LEASE)
     with serving([ECHO]) as server, network.client(server.url, secret) as client:
@@ -67,7 +67,7 @@ def test_a_route_refuses_a_token_of_another_scope_with_403(
 
 
 def test_an_executor_route_takes_its_model_and_answers_with_its_model_or_204(
-    serving: Serving, network: Https, token: Callable[..., str]
+    serving: Serving, network: HttpsNetwork, token: Callable[..., str]
 ) -> None:
     with serving([ECHO]) as server, network.client(server.url, token()) as client:
         answered = client.post('/v1/executor/echo', json={'text': 'hi'})
@@ -95,7 +95,7 @@ def certificate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, st
 
 
 def test_tls_with_a_certificate_that_the_client_trusts_through_ssl_cert_file(
-    serving: Serving, network: Https, token: Callable[..., str], certificate: dict[str, str]
+    serving: Serving, network: HttpsNetwork, token: Callable[..., str], certificate: dict[str, str]
 ) -> None:
     with serving([ECHO], tls=certificate) as server, network.client(server.url, token()) as client:
         assert server.url.startswith('https://127.0.0.1:')
@@ -120,15 +120,15 @@ def test_tls_with_a_certificate_that_the_client_trusts_through_ssl_cert_file(
 def test_an_address_that_is_not_loopback_needs_tls(keys: dict[str, str], refused: bool) -> None:
     if refused:
         with pytest.raises(ValidationError, match='is not loopback, and without tls its tokens would cross'):
-            HttpsParameters.model_validate(keys)
+            Https.model_validate(keys)
     else:
-        HttpsParameters.model_validate(keys)
+        Https.model_validate(keys)
 
 
 def test_a_certificate_makes_any_address_acceptable(certificate: dict[str, str]) -> None:
-    HttpsParameters.model_validate({'listen': '0.0.0.0:8443', 'tls': certificate})
+    Https.model_validate({'listen': '0.0.0.0:8443', 'tls': certificate})
     with pytest.raises(ValidationError, match='key'):
-        HttpsParameters.model_validate({'listen': '0.0.0.0:8443', 'tls': {'cert': certificate['cert']}})
+        Https.model_validate({'listen': '0.0.0.0:8443', 'tls': {'cert': certificate['cert']}})
 
 
 @pytest.mark.parametrize('text', ['8443', ':8443', '127.0.0.1:', '127.0.0.1:http', '127.0.0.1:70000'])
@@ -146,7 +146,9 @@ def test_an_entry_point_that_is_not_a_network_class_is_refused(tmp_path: Path, m
     monkeypatch.syspath_prepend(tmp_path / 'bad')
     plugins.close()
     try:
-        with pytest.raises(plugins.PluginError, match='is not a piloop network class'):
+        with pytest.raises(
+            plugins.PluginError, match='is not a subclass of piloop.plugins.network.contract.NetworkConfig'
+        ):
             NETWORKS.get('bad')
     finally:
         plugins.close()
@@ -156,10 +158,9 @@ def test_config_toml_selects_the_network_and_listen_overrides_its_address(tmp_pa
     (tmp_path / 'config.toml').write_text(
         '[plugins.network]\nprovider = "https"\nlisten = "0.0.0.0:8443"\ntls = "proxy"\n'
     )
-    provider, parameters = preflight(Settings(home=tmp_path))
-    assert provider is Https and parameters.listen == Address(host='0.0.0.0', port=8443)
-    _, parameters = preflight(Settings(home=tmp_path), Address(host='127.0.0.1', port=0))
-    assert parameters.listen == Address(host='127.0.0.1', port=0)
+    assert preflight(Settings(home=tmp_path)) == Https(listen=Address(host='0.0.0.0', port=8443), tls='proxy')
+    served = preflight(Settings(home=tmp_path), Address(host='127.0.0.1', port=0))
+    assert served == Https(listen=Address(host='127.0.0.1', port=0), tls='proxy')
     (tmp_path / 'config.toml').write_text('[plugins.network]\nprovider = "https"\nlisten = "0.0.0.0:8443"\n')
     with pytest.raises(plugins.PluginError, match='is not loopback'):
         preflight(Settings(home=tmp_path))

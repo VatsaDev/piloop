@@ -22,7 +22,7 @@ def backend_config(table: BackendTable) -> StorageBackendConfig:
         pydantic.ValidationError: The backend refuses a key.
     """
     try:
-        backend = STORAGE_BACKENDS.get(table.kind)
+        backend = STORAGE_BACKENDS.get(table.kind).model
     except MissingProvider as e:
         raise ValueError(f'[storage.backend] kind = {table.kind!r}: {e}') from e
     return backend.model_validate(table.model_dump())

@@ -172,28 +172,25 @@ def test_max_evaluations_of_config_toml_or_the_environment_is_the_evaluations_of
         r' removed in piloop 0\.4\.0',
     ):
         settings = Settings(home=tmp_path)
-    assert (settings.plugins['executor'].provider, settings.plugins['executor'].keys) == (
-        'workers',
-        {'pools': {'serve': {'evaluations': 3}}},
-    )
+    assert settings.plugins['executor'] == {'provider': 'workers', 'pools': {'serve': {'evaluations': 3}}}
     (tmp_path / 'config.toml').write_text('max_evaluations = 3\n\n[plugins.executor.pools.serve]\nevaluations = 4\n')
     with pytest.warns(PiloopDeprecationWarning):
         settings = Settings(home=tmp_path)
-    assert settings.plugins['executor'].keys == {'pools': {'serve': {'evaluations': 4}}}
+    assert settings.plugins['executor']['pools'] == {'serve': {'evaluations': 4}}
     (tmp_path / 'config.toml').unlink()
     monkeypatch.setenv('PILOOP_MAX_EVALUATIONS', '5')
     with pytest.warns(
         PiloopDeprecationWarning, match=r'PILOOP_MAX_EVALUATIONS is deprecated.*removed in piloop 0\.4\.0'
     ):
         settings = Settings(home=tmp_path)
-    assert settings.plugins['executor'].keys == {'pools': {'serve': {'evaluations': '5'}}}
+    assert settings.plugins['executor']['pools'] == {'serve': {'evaluations': '5'}}
 
 
 def test_max_evaluations_changes_nothing_for_an_executor_without_slots(tmp_path: Path) -> None:
     (tmp_path / 'config.toml').write_text('max_evaluations = 3\n\n[plugins.executor]\nprovider = "inline"\n')
     with pytest.warns(PiloopDeprecationWarning, match='max_evaluations is deprecated'):
         settings = Settings(home=tmp_path)
-    assert (settings.plugins['executor'].provider, settings.plugins['executor'].keys) == ('inline', {})
+    assert settings.plugins['executor'] == {'provider': 'inline'}
     (tmp_path / 'config.toml').write_text('max_evaluations = 3\nplugins = 1\n')
     with pytest.raises(ValueError), pytest.warns(PiloopDeprecationWarning):
         Settings(home=tmp_path)  # not a table: the validation refuses it
@@ -201,6 +198,4 @@ def test_max_evaluations_changes_nothing_for_an_executor_without_slots(tmp_path:
         'max_evaluations = 3\n\n[plugins.executor]\nprovider = "workers"\npools = 1\n'
     )
     with pytest.warns(PiloopDeprecationWarning):
-        assert Settings(home=tmp_path).plugins['executor'].keys == {'pools': 1}, (
-            'the executor refuses it when it starts'
-        )
+        assert Settings(home=tmp_path).plugins['executor']['pools'] == 1, 'the executor refuses it when it starts'

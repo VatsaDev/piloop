@@ -5,12 +5,11 @@ config become a ``Case`` of plain data, and the built-in rule's ``Judgement`` be
 """
 
 import ast
-import json
 import sys
 from pathlib import Path
 
 from inline_snapshot import snapshot
-from piloop_min_gain import MIN_GAIN
+from piloop_min_gain import MinGain
 
 from piloop.config import CampaignConfig, Metric, MetricRole, Track, TrackConfig
 from piloop.db.models import Verdict
@@ -18,7 +17,7 @@ from piloop.ids import TrackName
 from piloop.plugins.host import data_errors
 from piloop.plugins.metric import Direction
 from piloop.plugins.verdict_rule import bootstrap as verdict_module
-from piloop.plugins.verdict_rule.bootstrap import BOOTSTRAP, compare, lower_bound
+from piloop.plugins.verdict_rule.bootstrap import Bootstrap, compare, lower_bound
 from piloop.plugins.verdict_rule.contract import Outcome, Side, VerdictRule
 from piloop.scoring import ledger
 from piloop.scoring.evaluate import Units
@@ -39,7 +38,7 @@ def decide(
 ) -> tuple[Verdict, str]:
     """The built-in rule's verdict on a candidate of ``track`` against ``bar``, as the daemon asks for it."""
     return ledger.decide(
-        BOOTSTRAP, track, confidence, Side('candidate#74', mine, mine_units), Side(bar, theirs, theirs_units)
+        Bootstrap(), track, confidence, Side('candidate#74', mine, mine_units), Side(bar, theirs, theirs_units)
     )
 
 
@@ -360,10 +359,9 @@ def test_the_built_in_rule_imports_only_the_standard_library_its_contract_and_th
 def test_the_example_rule_min_gain_delegates_to_bootstrap_and_holds_back_a_small_gain() -> None:
     """``examples/plugins/min-gain``: it calls the built-in rule and changes one thing, through the host's contract."""
     track = rule(config(COVERAGE))[0]
-    least = json.dumps({'min_gain': 2})
 
     def judged(mine: dict[str, float], theirs: dict[str, float], with_rule: VerdictRule) -> tuple[Verdict, str]:
-        return ledger.decide(with_rule, track, 0.95, Side('candidate#74', mine, {}), Side(BAR, theirs, {}), least)
+        return ledger.decide(with_rule, track, 0.95, Side('candidate#74', mine, {}), Side(BAR, theirs, {}))
 
     bar = {'accuracy': 10.0, 'coverage': 1000.0}
     for mine, theirs in [
@@ -373,8 +371,10 @@ def test_the_example_rule_min_gain_delegates_to_bootstrap_and_holds_back_a_small
         ({'accuracy': 1.0}, {}),
         ({}, bar),
     ]:
-        assert judged(mine, theirs, MIN_GAIN) == judged(mine, theirs, BOOTSTRAP), 'the built-in verdict stays'
-    assert judged({'accuracy': 11.0, 'coverage': 1000.0}, bar, MIN_GAIN) == (
+        assert judged(mine, theirs, MinGain(min_gain=2)) == judged(mine, theirs, Bootstrap()), (
+            'the built-in verdict stays'
+        )
+    assert judged({'accuracy': 11.0, 'coverage': 1000.0}, bar, MinGain(min_gain=2)) == (
         Verdict.INTERESTING,
         'against candidate#73: accuracy 11 vs 10 (+1; aggregate: no per-unit results); guardrails: coverage 1000 vs'
         ' 1000 (+0; aggregate: no per-unit results) within its margin 10; the gain is below min_gain 2',

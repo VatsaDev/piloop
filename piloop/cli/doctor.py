@@ -265,7 +265,7 @@ def _runtimes(configs: list[CampaignConfig]) -> list[Check]:
         programs = {c.harness_for(h).executable for kind in c.roles.all() for h in c.role_harnesses(kind)}
         for kind in c.runtimes:
             executables.setdefault(kind, set()).update(programs)
-    return [check for kind, found in sorted(executables.items()) for check in RUNTIMES.get(kind).checks(found)]
+    return [check for kind, found in sorted(executables.items()) for check in RUNTIMES.get(kind).model.checks(found)]
 
 
 def stored_campaigns(path: Path) -> list[tuple[str, str, CampaignConfig | ValidationError]]:

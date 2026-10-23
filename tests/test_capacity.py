@@ -10,7 +10,7 @@ from piloop.db.session import Database
 from piloop.plugins.executor.contract import Capacity
 from piloop.plugins.executor.kit.capacity import GB, HostSample, Pool, admits, sample
 from piloop.plugins.executor.kit.leases import SERVE, Grant, Leases
-from piloop.plugins.executor.workers import WorkersParameters
+from piloop.plugins.executor.workers import Workers
 from tests.test_lease import TIMING, Recorder, agent_job, evaluation_job, queue
 
 HOST = HostSample(at=utcnow(), cpus=4, load1=2.0, memory_available=8 * GB, disk_free=100 * GB)
@@ -49,12 +49,12 @@ def test_a_sample_reads_this_host(tmp_path: Path) -> None:
 
 
 def test_pools_keep_serve_with_its_defaults_unless_the_table_names_it() -> None:
-    assert WorkersParameters().pools == {SERVE: Pool()}
-    gpu = WorkersParameters.model_validate({'pools': {'gpu': {'evaluations': 1}}}).pools
+    assert Workers().pools == {SERVE: Pool()}
+    gpu = Workers.model_validate({'pools': {'gpu': {'evaluations': 1}}}).pools
     assert gpu == {SERVE: Pool(), 'gpu': Pool(evaluations=1)}
-    assert WorkersParameters.model_validate({'pools': {'serve': {'agents': 2}}}).pools == {SERVE: Pool(agents=2)}
+    assert Workers.model_validate({'pools': {'serve': {'agents': 2}}}).pools == {SERVE: Pool(agents=2)}
     with pytest.raises(ValueError, match='Extra inputs'):
-        WorkersParameters.model_validate({'evaluations': 2})
+        Workers.model_validate({'evaluations': 2})
 
 
 def test_a_worker_takes_no_job_over_its_slots_or_under_pressure_and_its_row_says_why(

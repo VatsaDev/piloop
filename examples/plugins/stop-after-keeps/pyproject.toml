@@ -6,7 +6,7 @@ requires-python = ">=3.14"
 dependencies = ["piloop"]
 
 [project.entry-points."piloop.stop_rules"]
-after_keeps = "piloop_stop_after_keeps:AFTER_KEEPS"
+after_keeps = "piloop_stop_after_keeps:AfterKeeps"
 
 [build-system]
 requires = ["hatchling"]

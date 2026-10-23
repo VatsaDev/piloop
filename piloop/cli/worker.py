@@ -6,13 +6,11 @@ from rich.table import Table
 
 from piloop.cli import common
 from piloop.db.models import utcnow
-from piloop.plugins.executor.contract import DEFAULT_EXECUTOR
-from piloop.plugins.executor.workers import seen
+from piloop.plugins.executor.contract import EXECUTORS
+from piloop.plugins.executor.workers import Workers, seen
 from piloop.reports.overview import age
 
 app = cyclopts.App(name='worker', help='The workers that run jobs on leases.')
-WORKERS = 'workers'
-"""The executor whose workers these are."""
 
 
 @app.command(name='list')
@@ -34,9 +32,9 @@ def worker_list() -> None:
                 str(w.running.evaluations),
                 w.worker.no_lease or '',
             )
-    executor = common.settings.plugins.get('executor')
-    if (selected := executor.provider if executor is not None else DEFAULT_EXECUTOR) != WORKERS:
-        common.console.print(f'the executor is {selected}, not {WORKERS}: these workers take no job', markup=False)
+    if not isinstance(executor := EXECUTORS.selected(common.settings.providers), Workers):
+        named = EXECUTORS.name_of(executor)
+        common.console.print(f'the executor is {named}, not workers: these workers take no job', markup=False)
     if workers:
         common.console.print(table)
     else:

@@ -175,7 +175,7 @@ class Launcher:
             effort = cfg.role(w.kind).effort
             definition = cfg.harness_for(harness)
             runtime_kind = cfg.role_runtime(w.kind)
-            invocation = RUNTIMES.get(runtime_kind).invocation
+            invocation = RUNTIMES.get(runtime_kind).model.invocation
             template = definition.argv(invocation)
             session_id = str(uuid4()) if definition.captures_session and takes_session_id(template) else None
             kind, reason = w.kind, w.reason

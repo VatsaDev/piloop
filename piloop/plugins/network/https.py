@@ -15,13 +15,13 @@ tunnel.
 import socket
 import ssl
 from collections.abc import Mapping
-from typing import ClassVar, Literal, Self, assert_never
+from typing import Literal, Self, assert_never
 
 import httpx2 as httpx
 from pydantic import BaseModel, ConfigDict, FilePath, model_validator
 
 from piloop.net.tokens import Caller
-from piloop.plugins.network.contract import Listener, NetworkHost, NetworkParameters, Refused
+from piloop.plugins.network.contract import Listener, NetworkConfig, NetworkHost, Refused
 
 TIMEOUT = httpx.Timeout(30, connect=10)
 
@@ -37,8 +37,8 @@ class Certificate(BaseModel):
     """The certificate's private key, unencrypted."""
 
 
-class HttpsParameters(NetworkParameters):
-    """The keys of ``[plugins.network]`` for ``https``."""
+class Https(NetworkConfig):
+    """``https``: the keys of ``[plugins.network]``."""
 
     tls: Certificate | Literal['proxy'] | None = None
     """The server ends TLS with a certificate, or ``"proxy"``: a reverse proxy or an SSH tunnel ends it. None: plain
@@ -53,24 +53,24 @@ class HttpsParameters(NetworkParameters):
             )
         return self
 
+    def open(self, host: NetworkHost) -> HttpsNetwork:
+        return HttpsNetwork(host, self)
 
-class Https:
+
+class HttpsNetwork:
     """``Network``: a TCP socket, with TLS when ``tls`` names a certificate, and a bearer token on every request."""
 
-    Parameters: ClassVar[type[NetworkParameters]] = HttpsParameters
-
-    def __init__(self, host: NetworkHost, parameters: NetworkParameters) -> None:
-        assert isinstance(parameters, HttpsParameters)
+    def __init__(self, host: NetworkHost, config: Https) -> None:
         self.host = host
-        self.parameters = parameters
+        self.config = config
 
     def listener(self) -> Listener | None:
-        listen = self.parameters.listen
+        listen = self.config.listen
         if listen is None:
             return None
         family = socket.AF_INET6 if ':' in listen.host else socket.AF_INET
         sock = socket.create_server((listen.host, listen.port), family=family)
-        match self.parameters.tls:
+        match self.config.tls:
             case Certificate(cert=cert, key=key):
                 tls = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
                 tls.load_cert_chain(cert, key)
@@ -78,7 +78,7 @@ class Https:
             case 'proxy' | None:  # None only on loopback: plain HTTP
                 return Listener(sock, None)
             case _:
-                assert_never(self.parameters.tls)
+                assert_never(self.config.tls)
 
     def identify(self, headers: Mapping[str, str]) -> Caller | Refused:
         scheme, _, secret = headers.get('authorization', '').partition(' ')

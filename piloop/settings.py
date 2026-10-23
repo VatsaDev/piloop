@@ -10,10 +10,11 @@ import os
 import pwd
 import re
 import tomllib
+from functools import cached_property
 from pathlib import Path
 from typing import Annotated, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     InitSettingsSource,
@@ -24,7 +25,7 @@ from pydantic_settings import (
 
 from piloop import deprecated
 from piloop.actor import Actor, System
-from piloop.plugins.host import PluginTable
+from piloop.plugins.host import Plugins, PluginTables, Scope
 
 DEFAULT_HOME = Path.home() / '.piloop'
 REAL_HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
@@ -104,9 +105,9 @@ class Settings(BaseSettings):
     """The number of seconds between two ticks. On each tick, the daemon checks the triggers of every campaign and
     launches the requested agents."""
 
-    plugins: dict[str, PluginTable] = {}
+    plugins: dict[str, dict[str, JsonValue]] = {}
     """``[plugins.<capability>]``: the provider of each capability of this home that ``config.toml`` selects, and its
-    parameters. The daemon checks them before it starts (``piloop.plugins.host.check_plugins``)."""
+    parameters. ``providers`` validates them."""
 
     migration_backups: int = Field(default=3, ge=0)
     """The number of copies of the database to keep, one written before each migration: ``piloop.db.bak-<revision>-<UTC
@@ -184,6 +185,16 @@ class Settings(BaseSettings):
             raise ValueError(f'{home} is the home of a real install, and {UNDER_TEST_ENV} is set: use a temporary home')
         return self
 
+    @cached_property
+    def providers(self) -> Plugins:
+        """``plugins``, validated on first use: the plugins cannot load while this module loads, and ``settings`` does.
+
+        Raises:
+            ValidationError: A table names no capability of the home, no provider of it, or parameters that the
+                provider refuses.
+        """
+        return HOME_PLUGINS.validate_python(self.plugins)
+
     @property
     def store_dir(self) -> Path:
         """The artifact store's local directory, shared by every campaign (``piloop.store``)."""
@@ -211,6 +222,11 @@ class Settings(BaseSettings):
     def log_file(self) -> Path:
         """The file that ``piloop serve --detach`` appends the daemon's stdout and stderr to."""
         return self.home / 'serve.log'
+
+
+HOME_PLUGINS: TypeAdapter[Plugins] = TypeAdapter(
+    Annotated[Plugins, PluginTables(Scope.HOME)], config=ConfigDict(title='[plugins]')
+)
 
 
 def home_of_env() -> Path:

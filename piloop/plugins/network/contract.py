@@ -1,8 +1,8 @@
 """The network capability: how other machines reach the server of ``piloop serve --listen``, and who a caller is.
 
 Host tier: a provider binds a socket and makes HTTP clients. ``[plugins.network] provider`` in ``config.toml`` selects
-one (``https`` by default), and the other keys of the table are its parameters (``Parameters``), which always have
-``listen``. ``piloop serve --listen`` overrides it. The entry point names a class: ``Network(host, parameters)``.
+one (``https`` by default). The entry point names a ``NetworkConfig`` class, whose fields are the other keys of the
+table and always have ``listen``, which ``piloop serve --listen`` overrides. Its ``open`` makes the ``Network``.
 
 What a caller may do once it is known is core's (``piloop.net``), not the provider's.
 """
@@ -10,15 +10,16 @@ What a caller may do once it is known is core's (``piloop.net``), not the provid
 import ipaddress
 import socket
 import ssl
+from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Annotated, ClassVar, Protocol, TypeIs
+from typing import Annotated, Protocol
 
 import httpx2 as httpx
 from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema, model_validator
 
 from piloop.net.tokens import Caller, Tokens
-from piloop.plugins.host import Capability, PluginTable, Selection
+from piloop.plugins.host import Capability, Choice, Parameters, Scope
 
 
 class Address(BaseModel):
@@ -53,15 +54,6 @@ class Address(BaseModel):
         return f'[{self.host}]:{self.port}' if ':' in self.host else f'{self.host}:{self.port}'
 
 
-class NetworkParameters(BaseModel):
-    """The base of every network provider's ``Parameters``: core reads ``listen``, and the provider the rest."""
-
-    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
-
-    listen: Annotated[Address, WithJsonSchema({'type': 'string'})] | None = None
-    """Where the server listens, as ``HOST:PORT``. None: no server. ``piloop serve --listen`` overrides it."""
-
-
 @dataclass(frozen=True)
 class Refused:
     """Why the server does not know a caller: it answers 401 with this."""
@@ -88,12 +80,6 @@ class NetworkHost:
 class Network(Protocol):
     """How machines reach the server, and who a caller is. The daemon makes one when it starts."""
 
-    Parameters: ClassVar[type[NetworkParameters]]
-
-    def __init__(self, host: NetworkHost, parameters: NetworkParameters) -> None:
-        """Made with ``parameters`` checked against ``Parameters``: a provider refuses a server that it cannot secure."""
-        ...
-
     def listener(self) -> Listener | None:
         """Bind ``listen``, or return None when it is None. The daemon calls it once."""
         ...
@@ -107,41 +93,29 @@ class Network(Protocol):
         ...
 
 
-def _is_network(loaded: object) -> TypeIs[type[Network]]:
-    parameters = getattr(loaded, 'Parameters', None)
-    return (
-        isinstance(loaded, type)
-        and isinstance(parameters, type)
-        and issubclass(parameters, NetworkParameters)
-        and all(callable(getattr(loaded, m, None)) for m in ('listener', 'identify', 'client'))
-    )
+class NetworkConfig(Parameters, ABC):
+    """A network's ``[plugins.network]``: core reads ``listen``, and the provider the other fields.
 
-
-def _check(name: str, loaded: object) -> type[Network]:
-    if _is_network(loaded):
-        return loaded
-    raise TypeError(
-        'is not a piloop network class: it needs Parameters (a NetworkParameters) and the methods of Network'
-    )
-
-
-NETWORKS = Capability(
-    'network', group='piloop.networks', check=_check, selection=Selection('home', 'plugins.network.provider')
-)
-"""Every network by name. ``https``, built in and the default, takes bearer tokens over TLS."""
-DEFAULT_NETWORK = 'https'
-"""The network of a home whose ``config.toml`` has no ``[plugins.network]``."""
-
-
-def selected(table: PluginTable | None, listen: Address | None) -> tuple[type[Network], NetworkParameters]:
-    """The network that ``[plugins.network]`` selects, ``DEFAULT_NETWORK`` without one, and its checked parameters.
-
-    ``listen``, from ``piloop serve --listen``, replaces the table's.
-
-    Raises:
-        MissingProvider: No network has that name.
-        ValidationError: Its ``Parameters`` refuse the table, or the address.
+    A provider refuses, when it validates, a ``listen`` that it cannot secure.
     """
-    provider = NETWORKS.get(table.provider if table is not None else DEFAULT_NETWORK)
-    keys = table.keys if table is not None else {}
-    return provider, provider.Parameters.model_validate(keys | ({'listen': listen} if listen is not None else {}))
+
+    listen: Annotated[Address, WithJsonSchema({'type': 'string'})] | None = None
+    """Where the server listens, as ``HOST:PORT``. None: no server. ``piloop serve --listen`` overrides it."""
+
+    @abstractmethod
+    def open(self, host: NetworkHost) -> Network:
+        """Make the network. The daemon calls it once, when it starts."""
+
+    def listening(self, listen: Address | None) -> NetworkConfig:
+        """This network, with ``listen`` (``piloop serve --listen``) in place of its own when it is not None.
+
+        Raises:
+            ValidationError: The network refuses the address.
+        """
+        if listen is None:
+            return self
+        return type(self).model_validate(self.model_dump(exclude_unset=True) | {'listen': listen})
+
+
+NETWORKS = Capability('network', NetworkConfig, choice=Choice(Scope.HOME, default='https'))
+"""Every network by name. ``https``, built in and the default, takes bearer tokens over TLS."""

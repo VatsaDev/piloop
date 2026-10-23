@@ -37,7 +37,7 @@ section.
 | `stop` | [Stop](#stop) | `{}` | `[stop]`: conditions that end the campaign. None by default. |
 | `spend` | [Spend](#spend) \| null | `null` | `[spend]`: a hard budget on what the campaign spends outside piloop. None by default. |
 | `memory` | [Memory](#memory) | `{}` | `[memory]`: documents to search and the lessons overview in briefs. |
-| `plugins` | dict\[string, [PluginTable](#plugintable)\] | `{}` | `[plugins.<capability>]`: the provider of each capability that a plugin package can provide and that has no key of its own, and its parameters. |
+| `plugins` | dict\[string, object\] | `{}` | `[plugins.<capability>]`: the provider of each capability of the campaign, by its name (`provider`), and its parameters, the other keys of the table. A capability without a table, or a table without `provider`, has its default provider. |
 
 ## Metric
 
@@ -327,17 +327,6 @@ built-in stop rule `limits` holds; a stop rule of a plugin must read the spend, 
 | `documents` | list\[string\] | `[]` | Repo-relative globs of text documents, for example `["docs/evidence/**/*.md"]`: campaign reports, orchestrator logs, design notes. `piloop init` and the stop of the campaign copy them into the `documents` table, where every agent of every campaign can search them. Never name a document that is derived from validation or test data. |
 | `wake_budget` | integer | `400` | The size in tokens (about 4 characters each) of the overview that opens the briefs of implementers and research sweeps: the current lesson of each mechanism family on the same repo, from the newest campaign that tried it, one line each. Lessons in the campaign's own metrics come first (`lessons.metric`), then lessons in related metrics, then the rest. Within those, dead or promising come before untested, then the larger effects of each metric, then newer campaigns: effects in different metrics are never compared by size. The brief then says how to read more. A role can change it with `[roles.<kind>] wake_budget`. 0 turns it off. |
 
-## PluginTable
-
-`[plugins.<capability>]`: which provider of a capability to use, and its parameters.
-
-In `piloop.toml` for a capability of the campaign, in `config.toml` for one of the home. The capability declares
-the table (`Selection`), and the provider checks the parameters (`check_plugins`).
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `provider` | string | required | The name of the provider: the name of its entry point. The other keys of the table are its parameters. |
-
 ## AnomalyTrigger
 
 The daemon detected an incident that no agent of the campaign got yet. The agent gets it to investigate.
@@ -520,7 +509,7 @@ A package adds a backend with an entry point in the `piloop.stores` group: see [
 
 ### `[plugins]`
 
-`[plugins.<capability>]` selects the provider of a capability of the home: `provider`, the name of its entry point, and the provider's own keys, which the daemon checks before it starts.
+`[plugins.<capability>]` selects the provider of a capability of the home: `provider`, the name of its entry point (the default without it), and the provider's own keys, which the daemon checks before it starts.
 
 #### `[plugins.executor]`
 

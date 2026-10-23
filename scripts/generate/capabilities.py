@@ -3,7 +3,7 @@
 from importlib.metadata import EntryPoint, entry_points
 
 from piloop import capabilities
-from piloop.plugins.host import BUILT_IN, CAPABILITIES, Capability
+from piloop.plugins.host import BUILT_IN, CAPABILITIES, Capability, Choice, Scope, Selection
 from scripts.generate import SNIPPETS, header
 
 PATH = SNIPPETS / 'capabilities.mdx'
@@ -27,12 +27,16 @@ def generate() -> str:
     for declaration in _own(CAPABILITIES):
         capability = declaration.load()
         assert isinstance(capability, Capability)
-        selection = capability.selection
-        key = 'its name, where the configuration uses it'
-        if selection is not None:
-            leaf = selection.key.rpartition('.')[2]
-            key = f'`[{selection.table}] {leaf}`' if selection.table else f'`{selection.key}`'
-            key += ' in `config.toml`' if selection.scope == 'home' else ''
+        match capability.choice, capability.selection:
+            case Choice(scope=scope), _:
+                key = f'`[plugins.{capability.name}] provider`'
+            case _, Selection(scope=scope, table=str(table), key=selecting):
+                key = f'`[{table}] {selecting.rpartition(".")[2]}`'
+            case _, Selection(scope=scope, key=selecting):
+                key = f'`{selecting}`'
+            case _:
+                scope, key = Scope.CAMPAIGN, 'its name, where the configuration uses it'
+        key += ' in `config.toml`' if scope is Scope.HOME else ''
         providers = '<br/>'.join(f'`{ep.name}`: {_exported(ep)}' for ep in _own(capability.group))
         concept = declaration.name.replace('_', ' ')
         rows.append(

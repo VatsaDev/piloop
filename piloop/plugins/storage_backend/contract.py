@@ -11,7 +11,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
 
-from piloop.plugins.host import Capability, Selection
+from piloop.plugins.host import Capability, Scope, Selection
 
 
 class StorageBackend(Protocol):
@@ -50,13 +50,10 @@ class StorageBackendConfig(BaseModel, ABC):
         """The remote these settings describe."""
 
 
-def _check(name: str, loaded: object) -> type[StorageBackendConfig]:
-    if isinstance(loaded, type) and issubclass(loaded, StorageBackendConfig):
-        return loaded
-    raise TypeError('is not a piloop.plugins.storage_backend.contract.StorageBackendConfig')
-
-
 STORAGE_BACKENDS = Capability(
-    'storage backend', group='piloop.stores', check=_check, selection=Selection('home', 'storage.backend.kind')
+    'storage_backend',
+    StorageBackendConfig,
+    group='piloop.stores',
+    selection=Selection(Scope.HOME, 'storage.backend.kind'),
 )
 """The settings model of every storage backend by kind."""

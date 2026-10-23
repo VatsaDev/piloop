@@ -37,7 +37,6 @@ from piloop.db.models import (
 )
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.ids import RunId, TargetKind, TargetRef
-from piloop.plugins.stop_rule import contract as stop_contract
 from piloop.plugins.stop_rule.contract import STOP_RULES, Fact, Go, Hold, Progress, Stop, StopCase
 from piloop.scoring.ledger import head, keeps, score
 from piloop.usage import campaign_tokens
@@ -169,11 +168,9 @@ def check(s: Session, campaign: Campaign, cfg: CampaignConfig) -> Go | Hold | St
     (``StopRule.reads``). ``head`` is the first track's primary at the head: config validation rejects ``target`` for
     a campaign with more than one track. A stop request is not the rule's: see ``requested``.
     """
-    table = cfg.plugins.get('stop_rule')
-    rule = STOP_RULES.get(table.provider if table is not None else stop_contract.DEFAULT)
-    parameters = table.parameters if table is not None else '{}'
+    rule = STOP_RULES.selected(cfg.plugins)
     primary, limits = cfg.all_tracks[0].primary, cfg.limits()
-    reads = set(rule.reads(limits, parameters))
+    reads = set(rule.reads(limits))
     trunk = head(s, campaign) if Fact.HEAD in reads else None
     counting = Fact.RUNS in reads
     spending = Fact.SPEND in reads
@@ -188,7 +185,7 @@ def check(s: Session, campaign: Campaign, cfg: CampaignConfig) -> Go | Hold | St
         spend=campaign.spend_usd if spending else None,
         spend_error=campaign.spend_error if spending else None,
     )
-    return rule.check(StopCase(primary.name, primary.direction, limits, progress, parameters))
+    return rule.check(StopCase(primary.name, primary.direction, limits, progress))
 
 
 def requested(s: Session, campaign: Campaign) -> Stop | None:

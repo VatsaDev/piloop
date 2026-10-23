@@ -420,9 +420,12 @@ def test_a_verdict_rule_from_a_plugin_replaces_the_built_in_one_through_piloop_t
     host.close()
     try:
         for table, error in [
-            ({'provider': 'strict'}, "[plugins.verdict_rule] provider = 'strict': unknown verdict rule 'strict'"),
+            ({'provider': 'strict'}, "plugins.verdict_rule: provider = 'strict': unknown verdict rule 'strict'"),
             ({'provider': 'min_gain', 'min_gain': 'x'}, "min_gain = 'x': Input should be a valid number"),
-            ({'provider': 'bootstrap', 'min_gain': 2}, "verdict rule 'bootstrap' takes no parameters: min_gain"),
+            (
+                {'provider': 'bootstrap', 'min_gain': 2},
+                'plugins.verdict_rule.min_gain = 2: Extra inputs are not permitted',
+            ),
         ]:
             with pytest.raises(ConfigError, match=re.escape(error)):
                 load_campaign_config(Path(campaign.path), plugins={'verdict_rule': table})

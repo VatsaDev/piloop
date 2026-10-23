@@ -14,7 +14,7 @@ from pydantic import AfterValidator
 
 from piloop import deprecated
 from piloop.harnesses import Invocation, QueueKey
-from piloop.plugins.host import Capability, Selection
+from piloop.plugins.host import Capability, Scope, Selection
 
 
 class AgentStatus(StrEnum):
@@ -246,11 +246,16 @@ def _check(name: str, loaded: object) -> type[Runtime]:
     )
 
 
+deprecated.until(
+    '0.3.0',
+    'a runtime is a provider class of its contract, selected by the annotation of its field: delete Selection, lookup'
+    ' and check_selection in the host, the check argument of Capability, and _check and _is_runtime here',
+)
 RUNTIMES = Capability(
     'runtime',
-    group='piloop.runtimes',
+    Runtime,
     check=_check,
-    selection=Selection('campaign', 'runtime', per_role=True, settings='runtimes'),
+    selection=Selection(Scope.CAMPAIGN, 'runtime', per_role=True, settings='runtimes'),
 )
 """Every runtime by name. Each entry point of the group names a ``Runtime`` class whose ``kind`` is its name."""
 

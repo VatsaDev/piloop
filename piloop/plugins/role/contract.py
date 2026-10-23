@@ -177,13 +177,6 @@ RoleEntry = Annotated[ImplementerRole | SweepRole, BeforeValidator(_role)]
 """The type of a ``[roles.<name>]`` table with a new name."""
 
 
-def _check_role(name: str, loaded: object) -> SweepRole | ImplementerRole:
-    if isinstance(loaded, SweepRole | ImplementerRole):
-        return loaded
-    raise TypeError('is not a piloop SweepRole or ImplementerRole')
-
-
-ROLES = Capability('role', group='piloop.roles', check=_check_role)
+ROLES = Capability('role', RoleConfig)
 """Every role by name, with its defaults: the built-in ones, then the ones that packages add. Each entry point of the
-group names a ``SweepRole`` or a ``ImplementerRole``. A role whose runtime or triggers are checked when it is defined
-looks them up, which activates the runtimes or the triggers first."""
+group names a subclass of ``SweepRole`` or of ``ImplementerRole``, whose defaults are the role's."""

@@ -8,8 +8,6 @@ import ExampleDirStore from '/snippets/generated/example-dir-store.mdx';
 import ExampleInlineExecutor from '/snippets/generated/example-inline-executor.mdx';
 import ExampleMinGain from '/snippets/generated/example-min-gain.mdx';
 import ExampleStopAfterKeeps from '/snippets/generated/example-stop-after-keeps.mdx';
-import ExampleVerdictChecks from '/snippets/generated/example-verdict-checks.mdx';
-import ExampleNoUnitRegression from '/snippets/generated/example-no-unit-regression.mdx';
 import Capabilities from '/snippets/generated/capabilities.mdx';
 import Roles from '/snippets/generated/roles.mdx';
 import Triggers from '/snippets/generated/triggers.mdx';
@@ -40,8 +38,12 @@ A plugin imports what it needs of piloop from one module, `piloop.capabilities`:
 contract, and its built-in providers. The names on this page are names in that module:
 
 ```python
-from piloop.capabilities import BOOTSTRAP, Case, Judgement, Outcome
+from piloop.capabilities import Bootstrap, Case, Judgement, Outcome
 ```
+
+A provider of a `[plugins.<capability>]` table is a class that subclasses the contract of its capability. Its fields
+are its parameters, the other keys of the table, and its methods are the contract. piloop validates the table into it
+when it loads the file.
 
 Each example plugin on this page is a package in
 [`examples/plugins/`](https://github.com/hiloopai/piloop/tree/main/examples/plugins). piloop's tests install each
@@ -173,14 +175,14 @@ provider = "inline"
 
 ### The contract
 
-The daemon makes the class once, as `Executor(host, parameters)`. `Parameters` checks the other keys of
-`[plugins.executor]`.
+The entry point names a subclass of `ExecutorConfig`: its fields are the other keys of `[plugins.executor]`. The
+daemon calls its `open(host)` once, when it starts, to make the `Executor`:
 
 - `submit(job)` runs an `AgentJob` or an `EvaluationJob`.
 - `cancel(key)` stops a job. It still reports.
 - `adopt(left)` takes over the jobs that the previous daemon left, and returns those it cannot.
 - `capacity()` is how many more agents and evaluations it can take now: its free slots. The daemon submits no more.
-- `configure(parameters)` takes its parameters again, with the live [limits](/architecture/leases#capacity) applied.
+- `configure(config)` takes the config that opened it, with the live [limits](/architecture/leases#capacity) applied.
 - `prompt(key, prompt)` delivers a comment to a running agent, then calls `host.results.delivered`.
 - `routes()` are the HTTP routes that its workers on other machines call, under `/v1/executor/`. The server of
   `piloop serve --listen` serves them, and a [network](#networks) says who may call them.
@@ -203,8 +205,8 @@ executor with routes needs one.
 
 ### The contract
 
-The daemon makes the class once, as `Network(host, parameters)`. `Parameters` is a subclass of `NetworkParameters`,
-which has `listen`.
+The entry point names a subclass of `NetworkConfig`, which has `listen`: its fields are the other keys of
+`[plugins.network]`. The daemon calls its `open(host)` once, when it starts, to make the `Network`:
 
 - `listener()` binds `listen`, and returns the socket with its TLS, or None when `listen` is unset.
 - `identify(headers)` returns the `Caller` of a request, or `Refused` with the reason. The server answers 401.
@@ -224,9 +226,8 @@ from `piloop.capabilities`, the **contract** of its capability (the types that t
 built-in providers that it calls.
 
 The [verdict rules](#verdict-rules) and the [stop rules](#stop-conditions) are pure capabilities, and their examples
-are pure plugins. You select the provider of a pure capability with a table in `piloop.toml`. `provider` is its name. The other keys of the table are
-the provider's **parameters**. piloop checks them against the provider's `Parameters` type when it loads
-`piloop.toml`:
+are pure plugins. You select the provider of a pure capability with a table in `piloop.toml`. `provider` is its name. The other keys of
+the table are the provider's **parameters**, its fields:
 
 ```text
 [plugins.verdict_rule]
@@ -236,8 +237,8 @@ min_gain = 100
 
 ### The contract
 
-The contract of a pure capability is a Python protocol that has only methods. The arguments and the return value of
-each method are data:
+The contract of a pure capability is an abstract class with methods only. The arguments and the return value of each
+method are data:
 
 - Data is `str`, `int`, `float`, `bool`, `bytes`, an enum, a dataclass or a pydantic model of data, `list`, `tuple`,
   `dict`, and unions of these.
@@ -246,9 +247,11 @@ each method are data:
 - No type can contain itself.
 
 These are the rules of WIT, the interface language of WebAssembly components. A provider returns an error as a
-value, a case of a union of records. It does not raise an exception. The entry point of a pure provider names an
-instance, not a class. piloop checks that the instance has the methods of the contract, with the same argument
-names.
+value, a case of a union of records. It does not raise an exception.
+
+The entry point of a provider names its class. piloop checks that the class subclasses the contract and implements
+each abstract method. A type checker such as ty checks the rest in the provider's own package: the arguments and the
+return types of its methods, and the types of its parameters.
 
 ### Data that costs queries
 
@@ -285,20 +288,19 @@ provider = "min_gain"
 min_gain = 100
 ```
 
-`min_gain` is a parameter of the rule. piloop checks it against the rule's `Parameters` when it loads
-`piloop.toml`. piloop then gives it to the rule in each `Case`, as JSON text.
+`min_gain` is a field of the rule. piloop validates it when it loads `piloop.toml`, and the rule reads
+`self.min_gain`.
 
 ### The contract
 
-A verdict rule is a [pure](#pure-plugins) provider with one method: `decide(case: Case) -> Judgement`. Import the
-types from `piloop.capabilities`.
+A verdict rule is a [pure](#pure-plugins) provider, a subclass of `VerdictRule` with one method:
+`decide(case: Case) -> Judgement`. Import the types from `piloop.capabilities`.
 
 - `Case.primary`: the primary metric of the candidate's track, as a `Criterion` (name, direction, margin, floor).
 - `Case.guardrails`: the guardrail metrics, each a `Criterion`.
 - `Case.confidence`: `confidence` in `piloop.toml`.
 - `Case.candidate` and `Case.bar`: each a `Side`. A `Side` has a name for the reason (`candidate#73`), the mean of
   each metric, and the per-unit results of the metrics that have them.
-- `Case.parameters`: the rule's parameters, as JSON text.
 - `Judgement.verdict`: `keep`, `interesting`, `discard` or `crash`.
 - `Judgement.reason`: the text that piloop stores and shows with the verdict.
 
@@ -419,7 +421,12 @@ class NoKeep(Trigger):
         return Fire(f'no keep for {self.hours:g} hours')
 
 
-AUDITOR = SweepRole(prompt=str(Path(__file__).parent / 'auditor.md'), triggers=[NoKeep()], timeout=1800)
+class Auditor(SweepRole):
+    """``auditor``: the role's defaults are its fields' defaults."""
+
+    prompt: str | None = str(Path(__file__).parent / 'auditor.md')
+    triggers: list[Trigger] = [NoKeep()]
+    timeout: float = 1800
 ```
 
 ```toml
@@ -427,7 +434,7 @@ AUDITOR = SweepRole(prompt=str(Path(__file__).parent / 'auditor.md'), triggers=[
 no_keep = "my_package:NoKeep"
 
 [project.entry-points."piloop.roles"]
-auditor = "my_package:AUDITOR"
+auditor = "my_package:Auditor"
 ```
 
 Any campaign can then use `{ kind = "no_keep", hours = 12 }` in the triggers of a role, and gets the `auditor` role,
@@ -438,7 +445,7 @@ with its table in `piloop.toml` over the package's defaults, at its next `piloop
 A role is a table in `piloop.toml`: its prompt, when it starts (the run queue, or its triggers), where it works, how
 (harnesses, models, MCP servers, timeout, concurrency) and what it may file. A role that does runs (`runs = true`)
 takes ideas from the run queue, and its commits are scored and judged. A sweeping role starts on its triggers, and
-nothing it commits is scored. A plugin's role is a `SweepRole` or an `ImplementerRole` with the defaults. [Roles](/concepts/roles) describes each key.
+nothing it commits is scored. A plugin's role is a subclass of `SweepRole` or of `ImplementerRole` whose fields have the role's defaults. [Roles](/concepts/roles) describes each key.
 
 ### Built in
 
@@ -568,8 +575,8 @@ one.
 ## Stop conditions
 
 On each tick (every 2 seconds by default), the daemon asks the stop rule of each active campaign whether the campaign
-goes on, holds, or stops. piloop gives the rule a `StopCase`: the limits, the facts that the rule asked for, and the
-rule's parameters. The rule returns one of three answers:
+goes on, holds, or stops. piloop gives the rule a `StopCase`: the limits, and the facts that the rule asked for. The
+rule returns one of three answers:
 
 | Answer | What piloop does |
 |---|---|
@@ -605,9 +612,10 @@ keeps = 3
 
 ### The contract
 
-A stop rule is a [pure](#pure-plugins) provider with two methods. Import the types from `piloop.capabilities`.
+A stop rule is a [pure](#pure-plugins) provider, a subclass of `StopRule` with two methods. Import the types from
+`piloop.capabilities`.
 
-- `reads(limits, parameters) -> list[Fact]`: the facts that the rule needs. Most facts cost database queries on every
+- `reads(limits) -> list[Fact]`: the facts that the rule needs. Most facts cost database queries on every
   tick, so piloop gets only these.
 - `check(case: StopCase) -> Go | Hold | Stop`: the answer. `Hold` and `Stop` have a `reason`.
 
@@ -621,9 +629,9 @@ The facts are:
 - `keeps`: the candidates of runs that are kept.
 - `spend`: the spend in USD that the `[spend]` command printed last, and why its last run failed, if it failed.
 
-A `StopCase` has the name and direction of the primary metric, the limits, the facts that the rule asked for (the
-others are None in `case.progress`), and the rule's parameters as JSON text. The limits are the keys of `[stop]`, and
-`max_spend`, the `limit` of `[spend]`.
+A `StopCase` has the name and direction of the primary metric, the limits, and the facts that the rule asked for
+(the others are None in `case.progress`). The limits are the keys of `[stop]`, and `max_spend`, the `limit` of
+`[spend]`.
 
 A stop that a person requests (`piloop campaign stop`) stops the campaign whatever the rule answers, also when the
 rule holds it. The closing review of that stop then follows `closing_review` of `[spend]`
@@ -652,38 +660,40 @@ plateau = 30
 
 ## Call a built-in provider
 
-A provider of a plugin can call a built-in provider, and then change one part of the answer. The rest of the answer
-stays the same as the built-in provider's.
+A provider of a plugin can subclass a built-in provider, call it with `super()`, and then change one part of the
+answer. The rest of the answer, and the built-in provider's parameters, stay the same.
 
 ### Example: the built-in verdict rule, with a minimum gain
 
 The verdict rule `min_gain` (in [Verdict rules](#verdict-rules)) does this:
 
 1. piloop calls `min_gain` with a `Case`: the measurements of a candidate and of its bar.
-2. `min_gain` calls the built-in rule `bootstrap` with the same `Case`. `bootstrap` returns a `Judgement`: a verdict
+2. `min_gain` calls the built-in rule `bootstrap`, its base class, with the same `Case`. `bootstrap` returns a `Judgement`: a verdict
    and a reason.
 3. If the verdict is `keep` and the gain is below `min_gain`, `min_gain` returns `interesting` with the same reason
    and a note. Otherwise it returns the `Judgement` of `bootstrap`.
 
 ```python
-from piloop.capabilities import BOOTSTRAP, Case, Judgement, Outcome
+from piloop.capabilities import Bootstrap, Case, Judgement, Outcome
 
 
-class MinGain:
+class MinGain(Bootstrap):
+    min_gain: float
+
     def decide(self, case: Case) -> Judgement:
-        judged = BOOTSTRAP.decide(case)  # the built-in rule's verdict and reason
-        if judged.verdict is Outcome.KEEP and gain(case) < least(case):
+        judged = super().decide(case)  # the built-in rule's verdict and reason
+        if judged.verdict is Outcome.KEEP and gain(case) < self.min_gain:
             return Judgement(Outcome.INTERESTING, judged.reason + '; the gain is below min_gain')
         return judged
 ```
 
-`gain` and `least` are short helpers. The full rule is in the [example](#example-keep-only-a-gain-of-a-fixed-size).
+`gain` is a short helper. The full rule is in the [example](#example-keep-only-a-gain-of-a-fixed-size).
 
 ### Where to import the built-in providers
 
-You import a built-in provider from `piloop.capabilities`, by the name of the attribute that its entry point names.
-The table shows each capability of piloop with its name in that module, where the configuration selects its provider,
-and the name of each built-in provider. These names do not change unless the contract of the capability changes.
+You import a built-in provider from `piloop.capabilities`, by the name of the class that its entry point names. The
+table shows each capability of piloop with its name in that module, where the configuration selects its provider, and
+the name of each built-in provider.
 
 <Capabilities />
 
@@ -692,47 +702,32 @@ and the name of each built-in provider. These names do not change unless the con
 A plugin can let other plugins extend it. It declares a capability: a named kind of provider. Then it calls the
 providers of that capability. Other plugins add providers to the capability, and piloop loads them.
 
-### Example: verdict checks
-
-Two example plugins work together:
-
-- `verdict-checks` declares the capability `verdict check`. A verdict check looks at a candidate that `bootstrap`
-  keeps, and can refuse it. `verdict-checks` also adds the verdict rule `checked`. This rule calls `bootstrap`, then
-  each verdict check that its parameter `checks` names. When a check refuses the candidate, `checked` returns
-  `interesting` with the reason of the check.
-- `no-unit-regression` adds one verdict check, `no_unit_regression`. It refuses a candidate when a unit of the primary
-  metric got worse, for example one test file. `verdict-checks` runs it.
-
-The plugin that declares the capability:
-
-<ExampleVerdictChecks />
-
-The plugin that adds a provider to it. It imports only the contract of the verdict rule:
-
-<ExampleNoUnitRegression />
-
-Install both next to piloop. Then select the rule in `piloop.toml` and run `piloop init .`:
-
-```bash
-uv tool install piloop --with ./examples/plugins/verdict-checks --with ./examples/plugins/no-unit-regression
-piloop plugins
-```
-
-```text
-[plugins.verdict_rule]
-provider = "checked"
-checks = ["no_unit_regression"]
-```
-
 ### How to declare a capability
 
-1. Make a `Capability`, or a `PureCapability` with its contract. Import both from `piloop.capabilities`. Give it a name
-   (`verdict check`) and an entry point group for its providers (`piloop_verdict_checks.checks`).
-2. Add an entry point in `piloop.capabilities` that names it. The name of the entry point is the name of the concept
-   (`verdict_check`).
-3. Call a provider with `get(name)`. piloop loads and checks all the providers when you first call `get`.
-4. Check the names of the providers when the configuration loads, for example in your `Parameters`. `get` fails on a
-   name that no provider has, and the error lists the names that exist.
+1. Make a `Capability` with its name and its contract, an abstract class. Import both from `piloop.capabilities`.
+   Its providers are entry points in the group `piloop.<name>s`.
+2. Add an entry point in `piloop.capabilities` with the same name that names it.
+3. Call a provider with `get(name).model`. piloop loads and checks all the providers when you first call `get`.
+4. Check the names of the providers when the configuration loads, for example in a validator of a field of your
+   provider. `get` fails on a name that no provider has, and the error lists the names that exist.
+
+```python
+class VerdictCheck(Parameters, ABC):
+    @abstractmethod
+    def check(self, case: Case) -> str | None: ...
+
+
+VERDICT_CHECKS = Capability('verdict_check', VerdictCheck, tier=Tier.PURE)  # providers: piloop.verdict_checks
+
+
+class Checked(Bootstrap):  # a verdict rule that calls the checks that its field `checks` names
+    checks: list[Annotated[str, AfterValidator(lambda n: VERDICT_CHECKS.get(n).name)]]  # step 4: refused at load
+
+    def decide(self, case: Case) -> Judgement:
+        judged = super().decide(case)
+        held = [why for n in self.checks if (why := VERDICT_CHECKS.get(n).model().check(case)) is not None]
+        return Judgement(Outcome.INTERESTING, '; '.join(held)) if judged.verdict is Outcome.KEEP and held else judged
+```
 
 `piloop plugins` and `piloop doctor` list your capability and its providers. piloop itself calls only its own
 capabilities. A provider that calls another capability runs in the process of piloop.
@@ -756,11 +751,10 @@ The **plugin host** is the part of piloop that finds, checks and loads plugins (
   `piloop restart` and `piloop upgrade` do them first, and keep the daemon running if it would not start again.
   A broken storage backend that nothing selects is only a warning.
 - **Selection.** Each capability says where the configuration selects its provider. The runtime and the storage
-  backend have their own keys. A new capability uses a table in `piloop.toml`: `provider` is the name of the provider,
-  and the other keys are its parameters. If no provider has that name, the error names the key and lists the names
-  that exist.
-- **Versions.** An entry point group is one version of a contract. An incompatible change to a contract gets a new
-  group.
+  backend have their own keys. A new capability uses a table, `[plugins.<name>]`: `provider` is the name of the
+  provider, and the other keys are its parameters. piloop validates the table into the provider's class when it loads
+  the file, and the capability gets that instance. If no provider has that name, the error names the key and lists the
+  names that exist.
 - **Two kinds of contract.** A provider of a `host` capability, such as a runtime, can get live objects of piloop:
   processes, files, a database session. A provider of a `pure` capability gets data only. piloop loads, selects,
   lists and unloads both kinds in the same way.

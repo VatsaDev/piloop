@@ -77,11 +77,10 @@ from piloop.plugins.executor.contract import (
     EvaluationJob,
     EvaluationKey,
     Executor,
+    ExecutorConfig,
     GitTree,
     Host,
-    selected,
 )
-from piloop.plugins.host import PluginTable
 from piloop.plugins.runtime.contract import ExitStatus
 from piloop.reports.history import history
 from piloop.reports.wake import lessons_overview
@@ -143,7 +142,7 @@ class RunController:
         home: Path,
         runtime_factory: RuntimeFactory = make_runtime,
         *,
-        executor: PluginTable | None = None,
+        executor: ExecutorConfig | None = None,
         entire_version: str | None = None,
     ) -> None:
         self._db = db
@@ -151,13 +150,13 @@ class RunController:
         self._runs_dir = home / 'runs'
         self._home = home
         self._units_dir = home / 'units'
-        provider, parameters = selected(executor)
-        self._table, self._parameters = executor, type(parameters)
+        self._config = executor if executor is not None else EXECUTORS.selected({})
+        """The executor's ``[plugins.executor]``, as ``config.toml`` has it: its default without one."""
         self._limits: tuple[tuple[str, str, datetime], ...] = ()
         """The limits that the executor has, as read: ``configure`` hands it the parameters when they change."""
         results = CampaignResults(db, tracer, self._units_dir, lambda: self.launcher.cancelled.is_set())
         host = Host(db, results, tracer, home, runtime_factory, entire_version)
-        self.executor: Executor = provider(host, parameters)
+        self.executor: Executor = self._config.open(host)
         self.launcher = Launcher(db, tracer, home, self.executor)
         self.configure()
         self._jobs: dict[int, EvaluationJob] = {}
@@ -165,7 +164,7 @@ class RunController:
         submitted again. A row without one is another daemon's: a reap drops it, and what needs it asks again."""
 
     def configure(self) -> None:
-        """Hand the executor its parameters with the live limits applied (``Executor.configure``), when one changed.
+        """Hand the executor its config with the live limits applied (``Executor.configure``), when one changed.
 
         The daemon calls it on each tick, so a limit holds from the next one. Limits that its parameters refuse (a
         ``config.toml`` that changed under them) leave the parameters as they were, and the event says why.
@@ -177,11 +176,11 @@ class RunController:
             return
         self._limits = seen
         try:
-            parameters = limits.applied(self._table, rows, self._parameters, limits.name(EXECUTORS))
+            config = limits.applied(self._config, rows, EXECUTORS.name)
         except ValidationError as e:
             self._tracer.event('limits.refused', error=str(e))
             return
-        self.executor.configure(parameters)
+        self.executor.configure(config)
         self._tracer.event('limits.applied', limits=len(rows))
 
     def _wait(self, evaluation_id: int) -> bool:

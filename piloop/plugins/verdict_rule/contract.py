@@ -6,17 +6,17 @@ beat), and the metrics that decide. The rule returns a ``Judgement``: ``keep``, 
 ``crash``, and a reason. piloop stores both on the candidate.
 
 The rule reads nothing else: it is a pure provider. ``[plugins.verdict_rule] provider`` in ``piloop.toml`` selects the
-rule. The other keys of that table are the rule's parameters. Without the table, the rule is ``bootstrap``.
+rule, and the other keys of that table are its fields. Without the table, the rule is ``bootstrap``.
 
 This module imports only the Python standard library, the plugin host and the metric types. A rule imports this module, and nothing
 else of piloop.
 """
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
 
-from piloop.plugins.host import PureCapability, Selection
+from piloop.plugins.host import Capability, Choice, Parameters, Scope, Tier
 from piloop.plugins.metric import Direction
 
 
@@ -68,9 +68,6 @@ class Case:
     """``confidence`` in ``piloop.toml``: the confidence level that a gain must reach, between 0.5 and 1."""
     candidate: Side
     bar: Side
-    parameters: str = '{}'
-    """The rule's parameters, the other keys of ``[plugins.verdict_rule]``, as a JSON object. piloop checked them
-    against the rule's ``Parameters`` when it loaded the configuration."""
 
 
 @dataclass(frozen=True)
@@ -81,21 +78,16 @@ class Judgement:
     reason: str
 
 
-class VerdictRule(Protocol):
-    """The method that a verdict rule has. A rule has no error case: it returns a verdict for every case."""
+class VerdictRule(Parameters, ABC):
+    """A verdict rule: its fields are its parameters. A rule has no error case: it returns a verdict for every case."""
 
+    @abstractmethod
     def decide(self, case: Case) -> Judgement:
         """Return the verdict on ``case.candidate`` against ``case.bar``, and the reason."""
-        ...
 
 
-VERDICT_RULES = PureCapability(
-    'verdict rule',
-    group='piloop.verdict_rules',
-    contract=VerdictRule,
-    selection=Selection('campaign', 'plugins.verdict_rule.provider'),
+VERDICT_RULES = Capability(
+    'verdict_rule', VerdictRule, tier=Tier.PURE, choice=Choice(Scope.CAMPAIGN, default='bootstrap')
 )
 """The verdict rule capability: every verdict rule by name. The built-in rule is ``bootstrap``
 (``piloop.plugins.verdict_rule.bootstrap``)."""
-DEFAULT = 'bootstrap'
-"""The rule of a campaign without ``[plugins.verdict_rule]``."""

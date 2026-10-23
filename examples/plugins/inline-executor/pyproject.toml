@@ -6,7 +6,7 @@ requires-python = ">=3.14"
 dependencies = ["piloop"]
 
 [project.entry-points."piloop.executors"]
-inline = "piloop_inline:InlineExecutor"
+inline = "piloop_inline:Inline"
 
 [build-system]
 requires = ["hatchling"]

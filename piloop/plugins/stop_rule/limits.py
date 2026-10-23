@@ -7,10 +7,10 @@ point of piloop's own ``pyproject.toml``, in ``piloop.stop_rules``.
 from collections.abc import Callable
 
 from piloop.plugins.metric import Direction, number
-from piloop.plugins.stop_rule.contract import GO, Fact, Go, Hold, Limits, Progress, Stop, StopCase
+from piloop.plugins.stop_rule.contract import GO, Fact, Go, Hold, Limits, Progress, Stop, StopCase, StopRule
 
 
-class FirstLimit:
+class FirstLimit(StopRule):
     """``limits``: hold while the spend is unknown or at ``[spend] limit``, else stop at the first limit reached.
 
     The hold comes first: a ``[stop]`` limit does not stop a held campaign. A stop that someone requests still stops
@@ -18,7 +18,7 @@ class FirstLimit:
     no attempt is unsettled, because one that ends without a scored candidate does not count.
     """
 
-    def reads(self, limits: Limits, parameters: str) -> list[Fact]:
+    def reads(self, limits: Limits) -> list[Fact]:
         """The fact of each limit that is set: an open-ended campaign costs no query."""
         stops = [fact for fact, limit, _ in STOPS if limit(limits) is not None]
         return stops + ([Fact.SPEND] if limits.max_spend is not None else [])
@@ -29,10 +29,6 @@ class FirstLimit:
             return Hold(held)
         reasons = (reached(case, value) for _, limit, reached in STOPS if (value := limit(limits)) is not None)
         return next((Stop(reason) for reason in reasons if reason is not None), GO)
-
-
-LIMITS = FirstLimit()
-"""The provider, and the default stop rule: the entry point names this instance."""
 
 
 def _spend(progress: Progress, limit: float) -> str | None:

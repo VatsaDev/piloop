@@ -9,7 +9,7 @@ import random
 from dataclasses import dataclass
 
 from piloop.plugins.metric import Direction, number
-from piloop.plugins.verdict_rule.contract import Case, Criterion, Judgement, Outcome
+from piloop.plugins.verdict_rule.contract import Case, Criterion, Judgement, Outcome, VerdictRule
 
 RESAMPLES = 4000
 """Bootstrap resamples per comparison. With 4000, the 5% quantile changes by much less than one unit between seeds."""
@@ -87,7 +87,7 @@ def compare(
     return Comparison(criterion, mine, theirs, lower_bound(diffs, confidence), len(diffs))
 
 
-class Bootstrap:
+class Bootstrap(VerdictRule):
     """``bootstrap``: the primary must beat the bar with confidence, and the guardrails may regress a little."""
 
     def decide(self, case: Case) -> Judgement:
@@ -133,10 +133,6 @@ class Bootstrap:
         if guards:
             reason += '; guardrails: ' + '; '.join(text for _, text, _ in guards)
         return Judgement(Outcome.INTERESTING if any(held for _, _, held in guards) else Outcome.KEEP, reason)
-
-
-BOOTSTRAP = Bootstrap()
-"""The provider, and the default verdict rule: the entry point names this instance."""
 
 
 def _compare(case: Case, criterion: Criterion) -> Comparison:

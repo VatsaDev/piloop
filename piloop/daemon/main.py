@@ -24,8 +24,8 @@ from piloop.db.session import BackupFailed, Database, OlderDaemon, SchemaMismatc
 from piloop.net.tokens import Tokens
 from piloop.otel import Span, tracer
 from piloop.plugins import host as plugins
+from piloop.plugins.executor.contract import EXECUTORS
 from piloop.plugins.network import contract as network
-from piloop.plugins.network.contract import NetworkParameters
 from piloop.proc import Inherited
 from piloop.settings import CONFIG_FILE, Settings, settings
 from piloop.store.config import open_store
@@ -37,22 +37,28 @@ ACTOR = System.DAEMON
 """The actor that the daemon's connections record in ``updated_by``. The change-log triggers use this name."""
 
 
-def bound(cfg: Settings) -> list[plugins.Activatable]:
-    """The capabilities that the daemon uses: every one, but one that ``config.toml`` selects only when it does.
+def bound(cfg: Settings) -> list[plugins.Capability[object]]:
+    """The capabilities that the daemon uses: every one, but one of the home only when ``config.toml`` selects it.
 
     A broken package of a capability that nothing selects does not stop the daemon (``unbound_failures``).
     """
     home = cfg.model_dump(mode='json')
-    return [
-        c
-        for c in plugins.declared()
-        if c.selection is None or c.selection.scope == 'campaign' or plugins.lookup(home, c.selection.key) is not None
-    ]
+
+    def used(c: plugins.Capability[object]) -> bool:
+        match c.choice, c.selection:
+            case plugins.Choice(scope=plugins.Scope.HOME, default=default), _:
+                return default is not None or c.name in cfg.plugins
+            case _, plugins.Selection(scope=plugins.Scope.HOME, key=key):
+                return plugins.lookup(home, key) is not None
+            case _:
+                return True
+
+    return [c for c in plugins.declared() if used(c)]
 
 
-def unbound_failures(cfg: Settings) -> dict[plugins.Activatable, str]:
+def unbound_failures(cfg: Settings) -> dict[plugins.Capability[object], str]:
     """The capabilities that the daemon does not use and that do not load, with why. ``piloop doctor`` warns."""
-    failed: dict[plugins.Activatable, str] = {}
+    failed: dict[plugins.Capability[object], str] = {}
     for capability in plugins.declared():
         if capability not in bound(cfg):
             try:
@@ -62,10 +68,10 @@ def unbound_failures(cfg: Settings) -> dict[plugins.Activatable, str]:
     return failed
 
 
-def preflight(cfg: Settings, listen: network.Address | None = None) -> tuple[type[network.Network], NetworkParameters]:
+def preflight(cfg: Settings, listen: network.Address | None = None) -> network.NetworkConfig:
     """Compose the capabilities that the daemon uses (``bound``), check what ``config.toml`` selects, return the network.
 
-    The network comes with its parameters, ``listen`` (``piloop serve --listen``) in place of the table's.
+    The network has ``listen`` (``piloop serve --listen``) in place of its own.
 
     ``piloop serve --check`` runs this, and ``piloop restart`` and ``piloop upgrade`` run it before they restart the
     daemon. ``piloop.toml`` is checked when it loads (``piloop init``).
@@ -77,10 +83,9 @@ def preflight(cfg: Settings, listen: network.Address | None = None) -> tuple[typ
     plugins.compose(*bound(cfg))
     home = cfg.model_dump(mode='json')
     try:
-        plugins.check_plugins(home['plugins'], 'home')
         for capability in bound(cfg):
-            plugins.check_selection(capability, home, 'home')
-        return network.selected(cfg.plugins.get('network'), listen)
+            plugins.check_selection(capability, home, plugins.Scope.HOME)
+        return network.NETWORKS.selected(cfg.providers).listening(listen)
     except ValueError as e:
         raise plugins.PluginError(f'{cfg.home / CONFIG_FILE}: {e}') from e
 
@@ -101,7 +106,7 @@ class Daemon:
     ) -> None:
         """``listen``: where the server listens (``piloop serve --listen``), in place of ``[plugins.network] listen``."""
         try:
-            provider, parameters = preflight(cfg, listen)
+            served = preflight(cfg, listen)
         except plugins.PluginError as e:
             raise SystemExit(f'the daemon does not start: {e}') from e
         self._inherited = inherited or Inherited(set())
@@ -115,7 +120,7 @@ class Daemon:
         self._cfg = cfg
         self._argv = serve_argv(listen)
         """What an in-place restart execs."""
-        self.network = provider(network.NetworkHost(Tokens(self.db)), parameters)
+        self.network = served.open(network.NetworkHost(Tokens(self.db)))
         self._server: Server | None = None
         try:
             # Before the remote opens: its credentials can come from the secrets. And before the lock, because
@@ -130,7 +135,7 @@ class Daemon:
             self.db,
             self.tracer,
             cfg.home,
-            executor=cfg.plugins.get('executor'),
+            executor=EXECUTORS.selected(cfg.providers),
             entire_version=self._entire if isinstance(self._entire, str) else None,
         )
         self.scheduler = Scheduler(

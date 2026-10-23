@@ -1,15 +1,21 @@
-"""What a package can add to piloop through entry points: triggers, roles, a runtime, a stop rule, and objects of the
-wrong type."""
+"""What a package can add to piloop through entry points: triggers, roles, a runtime, a stop rule, a capability of
+its own with a provider and a verdict rule that calls it, and objects of the wrong type."""
 
+from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import ClassVar, Literal
 
+from pydantic import field_validator
+
 from piloop.harnesses import Invocation
+from piloop.plugins.host import Capability, Parameters, Tier
 from piloop.plugins.role.contract import ImplementerRole, SweepRole
-from piloop.plugins.runtime.contract import Check, Handle
+from piloop.plugins.runtime.contract import Check, Handle, RuntimeName
 from piloop.plugins.runtime.subprocess import SubprocessRuntime
-from piloop.plugins.stop_rule.contract import GO, Fact, Go, Hold, Limits, Stop, StopCase
-from piloop.plugins.trigger.contract import Fire, Tick, Trigger
+from piloop.plugins.stop_rule.contract import GO, Fact, Go, Hold, Limits, Stop, StopCase, StopRule
+from piloop.plugins.trigger.contract import Fire, Tick, Trigger, TriggerEntry
+from piloop.plugins.verdict_rule.bootstrap import Bootstrap
+from piloop.plugins.verdict_rule.contract import Case, Judgement, Outcome, VerdictRule
 
 
 class EveryTick(Trigger):
@@ -59,17 +65,14 @@ class Shown(SubprocessRuntime):
         return [Check('shown', f'ready for {", ".join(sorted(executables))}')]
 
 
-class GoesOn:
+class GoesOn(StopRule):
     """``goes_on``: a stop rule that reads no fact, so it never holds or stops a campaign."""
 
-    def reads(self, limits: Limits, parameters: str) -> list[Fact]:
+    def reads(self, limits: Limits) -> list[Fact]:
         return []
 
     def check(self, case: StopCase) -> Go | Hold | Stop:
         return GO
-
-
-GOES_ON = GoesOn()
 
 
 class Unsure:
@@ -78,10 +81,74 @@ class Unsure:
     kind: ClassVar[str] = 'unsure'
 
 
-AUDITOR = SweepRole(prompt=str(Path(__file__).parent / 'auditor.md'), triggers=[EveryTick(label='audit')], timeout=5)
-QUICK = ImplementerRole(takes='priority >= 3', timeout=60, max_concurrent=1)
-FAST = ImplementerRole.model_construct(takes='priority >= 9', runtime='nice')
-"""A role whose default runtime is ``nice``. Built unvalidated: ``nice`` is a runtime only once a test installs it."""
+class Auditor(SweepRole):
+    """``auditor``: a sweep on every tick."""
+
+    prompt: str | None = str(Path(__file__).parent / 'auditor.md')
+    triggers: list[TriggerEntry] = [EveryTick(label='audit')]
+    timeout: float = 5
+
+
+class Quick(ImplementerRole):
+    """``quick``: an implementer of the ideas of priority 3 and more."""
+
+    takes: str | None = 'priority >= 3'
+    timeout: float = 60
+    max_concurrent: int = 1
+
+
+class Fast(ImplementerRole):
+    """A role whose default runtime is ``nice``, a runtime only once a test installs it: defaults are not validated."""
+
+    takes: str | None = 'priority >= 9'
+    runtime: RuntimeName | None = 'nice'
+
+
+class VerdictCheck(Parameters, ABC):
+    """A capability that a plugin declares: a check that can refuse a candidate that ``bootstrap`` keeps."""
+
+    @abstractmethod
+    def check(self, case: Case) -> str | None:
+        """Return why the candidate must not be kept, or None."""
+
+
+VERDICT_CHECKS = Capability('verdict_check', VerdictCheck, tier=Tier.PURE)
+
+
+class NoUnitRegression(VerdictCheck):
+    """``no_unit_regression``: refuses a keep when a unit of the primary metric got worse."""
+
+    def check(self, case: Case) -> str | None:
+        name, direction = case.primary.name, case.primary.direction
+        mine, theirs = case.candidate.units.get(name, {}), case.bar.units.get(name, {})
+        worse = sorted(u for u in mine.keys() & theirs.keys() if direction.gain(mine[u], theirs[u]) < 0)
+        return f'{len(worse)} units of {name} got worse: {", ".join(worse[:3])}' if worse else None
+
+
+class Checked(Bootstrap):
+    """``checked``: what ``bootstrap`` decides, but a keep that one of ``checks`` refuses is ``interesting``."""
+
+    checks: list[str]
+
+    @field_validator('checks')
+    @classmethod
+    def _known(cls, checks: list[str]) -> list[str]:
+        for name in checks:
+            VERDICT_CHECKS.get(name)
+        return checks
+
+    def decide(self, case: Case) -> Judgement:
+        judged = super().decide(case)
+        held = [f'{n}: {why}' for n in self.checks if (why := VERDICT_CHECKS.get(n).model().check(case)) is not None]
+        if judged.verdict is not Outcome.KEEP or not held:
+            return judged
+        return Judgement(Outcome.INTERESTING, f'{judged.reason}; held by {"; ".join(held)}')
+
+
+class Undecided(VerdictRule):
+    """A verdict rule without ``decide``."""
+
+
 NOT_A_TRIGGER = 'every_tick'
 NOT_A_ROLE = 'auditor'
 NOT_A_RUNTIME = 'typed'

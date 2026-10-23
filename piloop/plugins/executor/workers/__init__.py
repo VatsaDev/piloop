@@ -1,6 +1,6 @@
 """The ``workers`` executor, built in: lease-based workers (``piloop.plugins.executor.kit.leases``), in-process by default.
 
-``[plugins.executor]`` in ``config.toml`` selects it (the default) and sets its ``Parameters``. Its worker in
+``[plugins.executor]`` in ``config.toml`` selects it (the default) and sets its fields (``Workers``). Its worker in
 ``piloop serve`` takes every lease. Remote workers are to join it as a configuration of this executor, through the same
 lease operations, not as another executor.
 """
@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -22,6 +22,7 @@ from piloop.plugins.executor.contract import (
     AgentKey,
     Capacity,
     EvaluationJob,
+    ExecutorConfig,
     Host,
     JobKey,
     LeftJob,
@@ -33,13 +34,11 @@ from piloop.plugins.executor.kit.leases import DEFAULT_POOLS, SERVE, Leases, Tim
 from piloop.plugins.executor.workers.worker import Worker
 
 
-class WorkersParameters(BaseModel):
-    """The keys of ``[plugins.executor]`` for ``workers``.
+class Workers(ExecutorConfig):
+    """``workers``: the keys of ``[plugins.executor]``.
 
     A policy beyond these numbers (placement, retries) is another executor's, not more keys here.
     """
-
-    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
 
     pools: dict[str, Pool] = Field(default=dict(DEFAULT_POOLS))
     """``[plugins.executor.pools.<name>]``: the slots and thresholds of each worker of a pool. ``serve`` is the worker
@@ -68,16 +67,16 @@ class WorkersParameters(BaseModel):
             raise ValueError('renew_seconds < grace_seconds < toleration_seconds - 2 * renew_seconds')
         return self
 
+    def open(self, host: Host) -> WorkersExecutor:
+        return WorkersExecutor(host, self)
+
 
 class WorkersExecutor:
     """``Executor``: every job on a lease (``piloop.plugins.executor.kit.leases``), run by the worker of this process."""
 
-    Parameters = WorkersParameters
-
-    def __init__(self, host: Host, parameters: BaseModel) -> None:
-        assert isinstance(parameters, WorkersParameters)
-        timing = Timing(parameters.renew_seconds, parameters.grace_seconds, parameters.toleration_seconds)
-        self.leases = Leases(host.db, host.results, timing, parameters.pools)
+    def __init__(self, host: Host, config: Workers) -> None:
+        timing = Timing(config.renew_seconds, config.grace_seconds, config.toleration_seconds)
+        self.leases = Leases(host.db, host.results, timing, config.pools)
         self.worker = Worker(
             Local(self.leases, SERVE),
             host.tracer,
@@ -87,10 +86,10 @@ class WorkersExecutor:
         )
         """The worker inside ``piloop serve``, in the pool ``serve``."""
 
-    def configure(self, parameters: BaseModel) -> None:
+    def configure(self, config: ExecutorConfig) -> None:
         """Take the pools with the live limits applied: the next ``acquire`` and ``capacity`` read them."""
-        assert isinstance(parameters, WorkersParameters)
-        self.leases.pools = parameters.pools
+        assert isinstance(config, Workers)  # the daemon applies the limits to the config that opened it
+        self.leases.pools = config.pools
 
     def capacity(self) -> Capacity:
         """The free slots of the reachable workers that their pools admit now (``Leases.capacity``)."""

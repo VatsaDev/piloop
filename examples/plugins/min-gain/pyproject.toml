@@ -6,7 +6,7 @@ requires-python = ">=3.14"
 dependencies = ["piloop"]
 
 [project.entry-points."piloop.verdict_rules"]
-min_gain = "piloop_min_gain:MIN_GAIN"
+min_gain = "piloop_min_gain:MinGain"
 
 [build-system]
 requires = ["hatchling"]

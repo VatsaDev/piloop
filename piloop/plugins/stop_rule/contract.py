@@ -2,8 +2,7 @@
 
 On each tick of the daemon, piloop asks the stop rule of each active campaign whether the campaign goes on, holds, or
 stops. It asks in two steps. First it calls ``reads``: the rule names the facts that it needs. piloop gets only those
-facts. Then it calls ``check`` with a ``StopCase``: the limits, those facts, and the rule's parameters. The rule
-returns one answer:
+facts. Then it calls ``check`` with a ``StopCase``: the limits and those facts. The rule returns one answer:
 
 - ``Go``: piloop starts what the campaign needs.
 - ``Hold``: piloop starts no agent and no evaluation for the campaign. Work that runs finishes. The hold is not a
@@ -11,17 +10,17 @@ returns one answer:
 - ``Stop``: piloop stops the campaign.
 
 The rule reads nothing else: it is a pure provider. ``[plugins.stop_rule] provider`` in ``piloop.toml`` selects the
-rule. The other keys of that table are the rule's parameters. Without the table, the rule is ``limits``.
+rule, and the other keys of that table are its fields. Without the table, the rule is ``limits``.
 
 This module imports only the Python standard library, the plugin host, and the metric types (``piloop.plugins.metric``).
 A rule imports this module, and nothing else of piloop.
 """
 
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
 
-from piloop.plugins.host import PureCapability, Selection
+from piloop.plugins.host import Capability, Choice, Parameters, Scope, Tier
 from piloop.plugins.metric import Direction
 
 
@@ -88,9 +87,6 @@ class StopCase:
     direction: Direction
     limits: Limits
     progress: Progress
-    parameters: str = '{}'
-    """The rule's parameters, the other keys of ``[plugins.stop_rule]``, as a JSON object. piloop checked them
-    against the rule's ``Parameters`` when it loaded the configuration."""
 
 
 @dataclass(frozen=True)
@@ -117,25 +113,18 @@ class Stop:
     """Why, for ``campaigns.stopped_reason`` and the closing review."""
 
 
-class StopRule(Protocol):
-    """The contract of a stop rule. A rule has no error: it answers every case."""
+class StopRule(Parameters, ABC):
+    """A stop rule: its fields are its parameters. A rule has no error: it answers every case."""
 
-    def reads(self, limits: Limits, parameters: str) -> list[Fact]:
-        """Return the facts that ``check`` reads with these limits and parameters. piloop gets only those."""
-        ...
+    @abstractmethod
+    def reads(self, limits: Limits) -> list[Fact]:
+        """Return the facts that ``check`` reads with these limits. piloop gets only those."""
 
+    @abstractmethod
     def check(self, case: StopCase) -> Go | Hold | Stop:
         """Return whether the campaign goes on, holds, or stops now."""
-        ...
 
 
-STOP_RULES = PureCapability(
-    'stop rule',
-    group='piloop.stop_rules',
-    contract=StopRule,
-    selection=Selection('campaign', 'plugins.stop_rule.provider'),
-)
+STOP_RULES = Capability('stop_rule', StopRule, tier=Tier.PURE, choice=Choice(Scope.CAMPAIGN, default='limits'))
 """The stop rule capability: every stop rule by name. The built-in rule is ``limits``
 (``piloop.plugins.stop_rule.limits``)."""
-DEFAULT = 'limits'
-"""The rule of a campaign without ``[plugins.stop_rule]``."""

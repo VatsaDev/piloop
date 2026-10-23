@@ -80,22 +80,22 @@ stopped = "piloop.plugins.trigger.stopped:StoppedTrigger"
 sql = "piloop.plugins.trigger.sql:SqlTrigger"
 
 [project.entry-points."piloop.verdict_rules"]
-bootstrap = "piloop.plugins.verdict_rule.bootstrap:BOOTSTRAP"
+bootstrap = "piloop.plugins.verdict_rule.bootstrap:Bootstrap"
 
 [project.entry-points."piloop.stop_rules"]
-limits = "piloop.plugins.stop_rule.limits:LIMITS"
+limits = "piloop.plugins.stop_rule.limits:FirstLimit"
 
 [project.entry-points."piloop.executors"]
-workers = "piloop.plugins.executor.workers:WorkersExecutor"
+workers = "piloop.plugins.executor.workers:Workers"
 
 [project.entry-points."piloop.networks"]
 https = "piloop.plugins.network.https:Https"
 
 [project.entry-points."piloop.roles"]
-implementer = "piloop.plugins.role.implementer:IMPLEMENTER"
-watchdog = "piloop.plugins.role.watchdog:WATCHDOG"
-research = "piloop.plugins.role.research:RESEARCH"
-scout = "piloop.plugins.role.scout:SCOUT"
+implementer = "piloop.plugins.role.implementer:ImplementerRole"
+watchdog = "piloop.plugins.role.watchdog:WatchdogRole"
+research = "piloop.plugins.role.research:ResearchRole"
+scout = "piloop.plugins.role.scout:ScoutRole"
 
 [tool.hatch.build.targets.wheel]
 packages = ["piloop"]
@@ -164,16 +164,20 @@ quote-style = "single"
 
 [tool.ty.environment]
 python-version = "3.14"
-extra-paths = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/verdict-checks", "examples/plugins/no-unit-regression", "examples/plugins/inline-executor"]
+extra-paths = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/inline-executor"]
 
 [tool.ty.src]
 include = ["piloop", "tests", "scripts", "examples"]
-exclude = ["piloop/db/migrations/versions", "piloop/campaign/templates"]  # templates are projects with their own deps
+exclude = [
+    "piloop/db/migrations/versions",
+    "piloop/campaign/templates",  # projects with their own deps
+    "tests/typing",  # wrong on purpose: tests/test_typing.py checks it
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The example plugins import as packages; their entry points register only where a test installs them.
-pythonpath = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/verdict-checks", "examples/plugins/no-unit-regression", "examples/plugins/inline-executor"]
+pythonpath = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/inline-executor"]
 # The e2e tests run real agents and cost money: only `make e2e` (`-m e2e`, which overrides this) selects them.
 addopts = ["-m", "not e2e"]
 markers = [

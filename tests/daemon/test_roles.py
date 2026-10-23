@@ -381,8 +381,8 @@ def test_a_hand_over_leaves_a_sweep_in_the_campaign_checkout_running_and_the_nex
 ENTRY_POINTS = [
     EntryPoint('every_tick', f'{PLUGIN}:EveryTick', TRIGGER_GROUP),
     EntryPoint('broken', f'{PLUGIN}:Broken', TRIGGER_GROUP),
-    EntryPoint('auditor', f'{PLUGIN}:AUDITOR', ROLE_GROUP),
-    EntryPoint('quick', f'{PLUGIN}:QUICK', ROLE_GROUP),
+    EntryPoint('auditor', f'{PLUGIN}:Auditor', ROLE_GROUP),
+    EntryPoint('quick', f'{PLUGIN}:Quick', ROLE_GROUP),
     EntryPoint('typed', f'{PLUGIN}:Typed', RUNTIME_GROUP),
 ]
 
@@ -473,10 +473,16 @@ def test_a_package_role_takes_its_defaults_and_a_roles_value_that_is_not_a_table
 @pytest.mark.parametrize(
     ('entry', 'error'),
     [
-        (EntryPoint('not_a_trigger', f'{PLUGIN}:NOT_A_TRIGGER', TRIGGER_GROUP), 'is not a piloop Trigger class'),
+        (
+            EntryPoint('not_a_trigger', f'{PLUGIN}:NOT_A_TRIGGER', TRIGGER_GROUP),
+            'is not a subclass of piloop.plugins.trigger.contract.Trigger',
+        ),
         (EntryPoint('cron', f'{PLUGIN}:EveryTick', TRIGGER_GROUP), "'cron' is a trigger already, from piloop "),
-        (EntryPoint('auditor', f'{PLUGIN}:NOT_A_ROLE', ROLE_GROUP), 'is not a piloop SweepRole'),
-        (EntryPoint('research', f'{PLUGIN}:AUDITOR', ROLE_GROUP), "'research' is a role already, from piloop "),
+        (
+            EntryPoint('auditor', f'{PLUGIN}:NOT_A_ROLE', ROLE_GROUP),
+            'is not a subclass of piloop.plugins.role.contract.RoleConfig',
+        ),
+        (EntryPoint('research', f'{PLUGIN}:Auditor', ROLE_GROUP), "'research' is a role already, from piloop "),
         (EntryPoint('typed', f'{PLUGIN}:NOT_A_RUNTIME', RUNTIME_GROUP), 'is not a piloop runtime class'),
         (EntryPoint('other', f'{PLUGIN}:Typed', RUNTIME_GROUP), "it needs kind = 'other'"),
         (EntryPoint('unsure', f'{PLUGIN}:Unsure', RUNTIME_GROUP), 'and an invocation'),
@@ -519,7 +525,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
     """
     example(tmp_path / 'site', 'nice-runtime')
     example(tmp_path / 'site', 'dir-store')
-    package(tmp_path / 'site', 'piloop-fast-role', '1.0', f'[piloop.roles]\nfast = {PLUGIN}:FAST\n')
+    package(tmp_path / 'site', 'piloop-fast-role', '1.0', f'[piloop.roles]\nfast = {PLUGIN}:Fast\n')
     monkeypatch.syspath_prepend(tmp_path / 'site')
     monkeypatch.setenv('PILOOP_HOME', str(tmp_path))  # where the runtime reads its [runtimes.nice] settings
     forget_loaded()

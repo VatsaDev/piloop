@@ -43,9 +43,8 @@ from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.ids import CampaignId
 from piloop.otel import Tracer
 from piloop.plugins.executor.kit.leases import Timing
-from piloop.plugins.executor.workers import WorkersExecutor
+from piloop.plugins.executor.workers import Workers, WorkersExecutor
 from piloop.plugins.executor.workers.worker import Worker
-from piloop.plugins.host import PluginTable
 from piloop.plugins.runtime.contract import Handle, Runtime
 from piloop.plugins.runtime.subprocess import SubprocessRuntime
 from piloop.runtime.factory import RuntimeFactory
@@ -444,16 +443,9 @@ def span_named(spans: InMemorySpanExporter, name: str) -> ReadableSpan:
     return span
 
 
-def timed(timing: Timing) -> PluginTable:
+def timed(timing: Timing) -> Workers:
     """``[plugins.executor]`` for ``workers`` with the lease timing ``timing``."""
-    return PluginTable.model_validate(
-        {
-            'provider': 'workers',
-            'renew_seconds': timing.renew,
-            'grace_seconds': timing.grace,
-            'toleration_seconds': timing.toleration,
-        }
-    )
+    return Workers(renew_seconds=timing.renew, grace_seconds=timing.grace, toleration_seconds=timing.toleration)
 
 
 def serving(controller: RunController) -> RunController:

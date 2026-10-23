@@ -222,13 +222,7 @@ class Trigger(BaseModel, ABC):
         """Return the request that the trigger makes now, or None."""
 
 
-def _check(name: str, loaded: object) -> type[Trigger]:
-    if isinstance(loaded, type) and issubclass(loaded, Trigger):
-        return loaded
-    raise TypeError('is not a piloop Trigger class')
-
-
-TRIGGERS = Capability('trigger', group='piloop.triggers', check=_check)
+TRIGGERS = Capability('trigger', Trigger)
 """Every trigger by kind. Each entry point of the group names a ``Trigger`` subclass, and its name is the ``kind``.
 The roles name triggers by kind, so no single key selects one."""
 
@@ -237,7 +231,7 @@ def _parse(entry: object) -> object:
     """Validate a ``triggers`` entry as the trigger that its ``kind`` names."""
     if not isinstance(entry, dict):
         return entry
-    return TRIGGERS.get(str(entry.get('kind'))).model_validate(entry)
+    return TRIGGERS.get(str(entry.get('kind'))).model.model_validate(entry)
 
 
 TriggerEntry = Annotated[SerializeAsAny[Trigger], BeforeValidator(_parse)]

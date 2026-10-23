@@ -1,14 +1,13 @@
 """Live limits: values for the ``Live`` keys of a provider's parameters, changed while the daemon runs.
 
-A **limit** is a row of ``limits``: a dotted key, the capability then the path in its parameters
+A **limit** is a row of ``limits``: a dotted key, the capability then the path in its provider's fields
 (``executor.pools.serve.evaluations``), a value, a reason and who set it. It wins over ``config.toml``. The daemon
-hands the provider its parameters with the limits applied (``applied``, then ``Executor.configure``) on its next tick,
+hands the executor its provider with the limits applied (``applied``, then ``Executor.configure``) on its next tick,
 so a busy GPU takes fewer evaluations without a restart.
 
 Only a key that the provider marks ``Live`` takes a limit, and only a value that its parameters accept.
 """
 
-import copy
 from collections.abc import Iterator, Mapping, Sequence
 from enum import StrEnum
 
@@ -17,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.db.models import Limit, utcnow
-from piloop.plugins.host import Activatable, Live, PluginTable, declared
+from piloop.plugins.host import Choice, Live, Parameters, Scope, declared
 
 
 class Refused(ValueError):
@@ -32,42 +31,28 @@ class Origin(StrEnum):
     LIMIT = 'limit'
 
 
-def name(capability: Activatable) -> str:
-    """The name of a home capability's table, ``[plugins.<name>]``, which is the first segment of its limits' keys."""
-    assert capability.selection is not None  # a capability with Live keys is selected by a table
-    return capability.selection.key.split('.')[1]
+def selected(plugins: Mapping[str, Parameters]) -> dict[str, Parameters]:
+    """The provider of each capability of the home that ``[plugins.<name>]`` chooses, or its default, by name."""
+    found: dict[str, Parameters] = {}
+    for c in declared():
+        match c.choice:
+            case Choice(scope=Scope.HOME, default=default) if c.name in plugins or default is not None:
+                found[c.name] = plugins[c.name] if c.name in plugins else c.validated({})
+    return found
 
 
-def selected(plugins: Mapping[str, PluginTable]) -> dict[str, type[BaseModel]]:
-    """The ``Parameters`` of the provider of each capability of the home that ``[plugins.<name>]`` selects, by name.
-
-    A capability without a table has its default provider. A provider without ``Parameters`` takes no limit.
-    """
-    out: dict[str, type[BaseModel]] = {}
-    for capability in declared():
-        selection = capability.selection
-        if selection is None or selection.scope != 'home' or not selection.key.startswith('plugins.'):
-            continue
-        table = plugins.get(key := name(capability))
-        provider = table.provider if table is not None else selection.default
-        model = getattr(capability.get(provider), 'Parameters', None) if provider is not None else None
-        if isinstance(model, type) and issubclass(model, BaseModel):
-            out[key] = model
-    return out
-
-
-def applied[P: BaseModel](table: PluginTable | None, limits: Sequence[Limit], model: type[P], capability: str) -> P:
-    """The parameters of ``table`` with the limits of ``capability`` over them.
+def applied[P: Parameters](provider: P, limits: Sequence[Limit], capability: str) -> P:
+    """``provider`` with the limits of ``capability`` over its parameters.
 
     Raises:
         ValidationError: The parameters refuse a value.
     """
-    raw: dict[str, object] = copy.deepcopy(table.keys) if table is not None else {}
+    raw = provider.model_dump(exclude_unset=True)
     for limit in limits:
         name, _, path = limit.key.partition('.')
         if name == capability:
             _put(raw, path.split('.'), limit.value)
-    return model.model_validate(raw)
+    return type(provider).model_validate(raw)
 
 
 def _put(raw: dict[str, object], path: list[str], value: JsonValue) -> None:
@@ -100,7 +85,7 @@ def live(model: BaseModel, prefix: str) -> Iterator[tuple[str, object]]:
 
 
 def set_limit(
-    s: Session, plugins: Mapping[str, PluginTable], key: str, value: JsonValue, *, reason: str, actor: str
+    s: Session, plugins: Mapping[str, Parameters], key: str, value: JsonValue, *, reason: str, actor: str
 ) -> Limit:
     """Set the limit of ``key``, for the daemon's next tick. The caller commits.
 
@@ -108,14 +93,14 @@ def set_limit(
         Refused: ``key`` is not a ``Live`` key of the selected provider's parameters, or they refuse ``value``.
     """
     capability = key.partition('.')[0]
-    if (model := selected(plugins).get(capability)) is None:
-        raise Refused(f'{key}: no provider of the home that has parameters is [plugins.{capability}]')
-    table, others = plugins.get(capability), list(s.scalars(select(Limit).where(Limit.key != key)))
-    keys = [k for k, _ in live(applied(table, others, model, capability), capability)]
+    if (provider := selected(plugins).get(capability)) is None:
+        raise Refused(f'{key}: no provider of the home is [plugins.{capability}]')
+    others = list(s.scalars(select(Limit).where(Limit.key != key)))
+    keys = [k for k, _ in live(applied(provider, others, capability), capability)]
     if key not in keys:  # a limit changes a key that there is: it never adds a pool
         raise Refused(f'{key} is not a live key; the live keys are {", ".join(keys) or "none"}')
     try:
-        applied(table, [*others, Limit(key=key, value=value)], model, capability)
+        applied(provider, [*others, Limit(key=key, value=value)], capability)
     except ValidationError as e:
         raise Refused(f'{key} = {value!r}: {e.errors()[0]["msg"]}') from e
     limit = s.get(Limit, key) or Limit(key=key)
@@ -132,14 +117,13 @@ def unset_limit(s: Session, key: str) -> bool:
     return limit is not None
 
 
-def sources(s: Session, plugins: Mapping[str, PluginTable]) -> list[tuple[str, object, Origin, Limit | None]]:
+def sources(s: Session, plugins: Mapping[str, Parameters]) -> list[tuple[str, object, Origin, Limit | None]]:
     """Each ``Live`` key of the home's providers: its value, where it comes from, and its limit if one sets it."""
     limits = {limit.key: limit for limit in s.scalars(select(Limit))}
     out: list[tuple[str, object, Origin, Limit | None]] = []
-    for capability, model in selected(plugins).items():
-        table = plugins.get(capability)
-        raw = table.keys if table is not None else {}
-        for key, value in live(applied(table, list(limits.values()), model, capability), capability):
+    for capability, provider in selected(plugins).items():
+        raw = provider.model_dump(exclude_unset=True)
+        for key, value in live(applied(provider, list(limits.values()), capability), capability):
             match limits.get(key):
                 case Limit() as limit:
                     out.append((key, value, Origin.LIMIT, limit))

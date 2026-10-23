@@ -1,8 +1,7 @@
 """``piloop.capabilities``: the one module that a plugin imports, complete and without stale names.
 
 Complete: every capability that piloop declares, its built-in providers, and every type of piloop that a contract
-names. A host capability's contract is the return type of its check, a pure one's is its protocol. The types of
-``piloop.db`` are the database's own contract, so the search stops there.
+names. The types of ``piloop.db`` are the database's own contract, so the search stops there.
 """
 
 import ast
@@ -21,14 +20,11 @@ import piloop_dir_store
 import piloop_inline
 import piloop_min_gain
 import piloop_nice
-import piloop_no_unit_regression
 import piloop_stop_after_keeps
-import piloop_verdict_checks
-import piloop_verdict_checks.contract
 
 from piloop import capabilities
 from piloop.plugins import metric
-from piloop.plugins.host import BUILT_IN, CAPABILITIES, Capability, PureCapability
+from piloop.plugins.host import BUILT_IN, CAPABILITIES, Capability, Tier
 from piloop.plugins.runtime.contract import NotAttachable, NotSteerable, RuntimeFailure, StartFailed
 
 HELPERS: set[object] = {
@@ -56,7 +52,8 @@ HELPERS: set[object] = {
     capabilities.Grant,
     capabilities.Answer,
     capabilities.StaleLease,
-    capabilities.NoParameters,
+    capabilities.WorkersExecutor,  # what a built-in provider's open makes, which a plugin's may wrap
+    capabilities.HttpsNetwork,
 }
 """What a provider raises, calls or returns that no signature of a contract names."""
 
@@ -96,14 +93,16 @@ def _named(cls: type) -> set[type]:
 
 
 def _contracts() -> set[type]:
-    """Every type of piloop that the contract of one of its capabilities names, and what those types name."""
+    """Every type of piloop that the contract of one of its capabilities names, and what those types name.
+
+    With the classes between a built-in provider and its contract, which a plugin's provider subclasses too.
+    """
     found: set[type] = set()
     for capability in _declared():
-        found |= {type(capability)} | ({type(capability.selection)} if capability.selection else set())
-        if isinstance(capability, PureCapability):
-            found.add(capability.contract)
-        else:
-            found |= _types(get_type_hints(capability._check)['return'])
+        found |= {type(capability), capability.contract}
+        found |= {type(c) for c in (capability.choice, capability.selection) if c is not None}
+        for provider in capability.builtins().values():
+            found |= {b for b in provider.__mro__[1:] if capability.contract in b.__mro__}
     queue = list(found)
     while queue:
         new = _named(queue.pop()) - found
@@ -191,10 +190,7 @@ def test_the_example_plugins_import_piloop_only_from_the_module() -> None:
         piloop_inline,
         piloop_min_gain,
         piloop_nice,
-        piloop_no_unit_regression,
         piloop_stop_after_keeps,
-        piloop_verdict_checks,
-        piloop_verdict_checks.contract,
     ]
     for plugin in plugins:
         own = plugin.__name__.split('.')[0]
@@ -205,16 +201,10 @@ def test_the_example_plugins_import_piloop_only_from_the_module() -> None:
 def test_a_pure_example_plugin_uses_only_pure_contracts_and_pure_providers() -> None:
     """A pure provider still imports only data and other pure providers through the one module: a pure contract, the
     metric types, or a pure built-in provider."""
-    pure = [c for c in _declared() if isinstance(c, PureCapability)]
+    pure = [c for c in _declared() if c.tier is Tier.PURE]
     modules = {c.contract.__module__ for c in pure} | {p.__module__ for c in pure for p in c.builtins().values()}
-    modules |= {PureCapability.__module__, metric.__name__}
-    plugins = [
-        piloop_min_gain,
-        piloop_no_unit_regression,
-        piloop_stop_after_keeps,
-        piloop_verdict_checks,
-        piloop_verdict_checks.contract,
-    ]
+    modules |= {Capability.__module__, metric.__name__}
+    plugins = [piloop_min_gain, piloop_stop_after_keeps]
     for plugin in plugins:
         tree = ast.parse(Path(plugin.__file__ or '').read_text())
         imports = [n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == 'piloop.capabilities']

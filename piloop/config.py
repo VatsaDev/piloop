@@ -40,14 +40,14 @@ from piloop.db.models import AgentSession, Campaign
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.ids import IMPLEMENTER, RESEARCH, ROLE_NAME, SCOUT, WATCHDOG, RoleName, TrackName
 from piloop.mcp import McpServer, ServerName
-from piloop.plugins.host import PluginTable, check_plugins
+from piloop.plugins.host import Plugins, PluginTables, Scope
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import ROLES, ImplementerRole, RoleConfig, RoleEntry, SweepRole
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.scout import ScoutRole
 from piloop.plugins.role.watchdog import WatchdogRole
 from piloop.plugins.runtime.contract import RUNTIMES, RuntimeName
-from piloop.plugins.stop_rule.contract import DEFAULT as DEFAULT_STOP_RULE, STOP_RULES, Fact, Limits
+from piloop.plugins.stop_rule.contract import STOP_RULES, Fact, Limits
 
 CONFIG_FILE = 'piloop.toml'
 BRIEF_FILE = 'brief.md'
@@ -393,14 +393,14 @@ class CampaignConfig(BaseModel):
     """``[spend]``: a hard budget on what the campaign spends outside piloop. None by default."""
     memory: Memory = Memory()
     """``[memory]``: documents to search and the lessons overview in briefs."""
-    plugins: dict[str, PluginTable] = {}
-    """``[plugins.<capability>]``: the provider of each capability that a plugin package can provide and that has no
-    key of its own, and its parameters."""
+    plugins: Annotated[Plugins, PluginTables(Scope.CAMPAIGN)] = {}
+    """``[plugins.<capability>]``: the provider of each capability of the campaign, by its name (``provider``), and its
+    parameters, the other keys of the table. A capability without a table, or a table without ``provider``,
+    has its default provider."""
 
     @model_validator(mode='after')
     def _check(self) -> Self:
         self._check_tracks()
-        self._check_plugins()
         self._check_spend()
         self._check_harnesses(self.harnesses, self.model, 'campaign')
         if unknown := [h for h in self.max_concurrent if h not in DEFAULT_HARNESSES and h not in self.harness]:
@@ -417,19 +417,13 @@ class CampaignConfig(BaseModel):
                 raise ValueError(f'{rel!r} must be a relative path inside the repo')
         return self
 
-    def _check_plugins(self) -> None:
-        """Each ``[plugins.<name>]`` names a capability, one of its providers, and the parameters that it takes."""
-        check_plugins({name: table.model_dump() for name, table in self.plugins.items()}, 'campaign')
-
     def _check_spend(self) -> None:
         """``[spend] limit`` holds launches only through the stop rule, so the selected rule must read the spend."""
-        table = self.plugins.get('stop_rule')
-        if self.spend is None or table is None:
-            return
-        if Fact.SPEND not in STOP_RULES.get(table.provider).reads(self.limits(), table.parameters):
+        rule = STOP_RULES.selected(self.plugins)
+        if self.spend is not None and Fact.SPEND not in rule.reads(self.limits()):
             raise ValueError(
-                f'[spend] limit holds only through the stop rule, and {table.provider!r} does not read the spend: select'
-                f' a rule that does, for example {DEFAULT_STOP_RULE!r}, or remove [spend]'
+                f'[spend] limit holds only through the stop rule, and {STOP_RULES.name_of(rule)!r} does not read the'
+                ' spend: select a rule that does, or remove [spend]'
             )
 
     def limits(self) -> Limits:
@@ -481,7 +475,7 @@ class CampaignConfig(BaseModel):
         if not self.role(name).mcp:
             return
         runtime = self.role_runtime(name)
-        invocation = RUNTIMES.get(runtime).invocation
+        invocation = RUNTIMES.get(runtime).model.invocation
         for harness in self.role_harnesses(name):
             if why := self.harness_for(harness).refuses_servers(invocation):
                 raise ValueError(
@@ -631,7 +625,7 @@ def with_registered_roles(raw: dict[str, object]) -> None:
     A value that is not a table is left for the validation to refuse.
     """
     tables = raw.get('roles', {})
-    added = {name: p.value for name, p in ROLES.providers().items() if not p.source.built_in}
+    added = {name: p.model() for name, p in ROLES.providers().items() if not p.source.built_in}
     if not added or not isinstance(tables, dict):
         return
     merged = dict(tables)

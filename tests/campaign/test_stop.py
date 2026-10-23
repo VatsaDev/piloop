@@ -1,7 +1,6 @@
 """Each ``[stop]`` condition ends the campaign exactly as the configuration reference says. A stopped campaign requests nothing."""
 
 import ast
-import json
 import re
 import sys
 from datetime import timedelta
@@ -11,7 +10,7 @@ from pathlib import Path
 import pytest
 from git.exc import GitCommandError
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from piloop_stop_after_keeps import AFTER_KEEPS
+from piloop_stop_after_keeps import AfterKeeps
 from sqlalchemy import func, select
 
 from piloop.actor import Agent, System
@@ -54,7 +53,7 @@ from piloop.plugins.host import data_errors
 from piloop.plugins.metric import Direction
 from piloop.plugins.stop_rule import limits as limits_module
 from piloop.plugins.stop_rule.contract import GO, STOP_RULES, Fact, Hold, Limits, Progress, Stop, StopCase, StopRule
-from piloop.plugins.stop_rule.limits import LIMITS
+from piloop.plugins.stop_rule.limits import FirstLimit
 from piloop.reports.overview import progress
 from piloop.scoring.ledger import SKIPPED
 from tests.conftest import (
@@ -830,12 +829,12 @@ def test_limits_holds_while_the_spend_is_unknown_or_at_its_limit_and_a_hold_come
     unknown or at its limit.
     """
     limits = Limits(max_runs=3, max_spend=300)
-    assert LIMITS.reads(limits, '{}') == [Fact.RUNS, Fact.SPEND]
-    assert Fact.SPEND not in LIMITS.reads(Limits(max_runs=3), '{}'), 'no [spend]: no spend to read'
+    assert FirstLimit().reads(limits) == [Fact.RUNS, Fact.SPEND]
+    assert Fact.SPEND not in FirstLimit().reads(Limits(max_runs=3)), 'no [spend]: no spend to read'
 
     def check(spend: float | None, *, runs: int = 1, spend_error: str | None = None) -> object:
         progress = Progress(runs=runs, unsettled=0, spend=spend, spend_error=spend_error)
-        return LIMITS.check(StopCase('score', Direction.HIGHER, limits, progress))
+        return FirstLimit().check(StopCase('score', Direction.HIGHER, limits, progress))
 
     assert check(spend=299.99) == GO
     assert check(spend=None) == Hold('spend not read yet')
@@ -849,11 +848,12 @@ def test_the_example_stop_rule_ends_after_its_keeps_or_at_its_cost_limits() -> N
     """``examples/plugins/stop-after-keeps``: it reads only the facts that it needs, and the built-in ``limits`` keeps
     ``max_hours``, ``max_tokens`` and ``[spend]``."""
     capped = Limits(max_hours=12, max_tokens=1000, plateau=5, max_spend=300)
-    assert AFTER_KEEPS.reads(Limits(plateau=5), '{"keeps": 3}') == [Fact.KEEPS]
-    assert AFTER_KEEPS.reads(capped, '{"keeps": 3}') == [Fact.KEEPS, Fact.HOURS, Fact.TOKENS, Fact.SPEND]
+    rule = AfterKeeps(keeps=3)
+    assert rule.reads(Limits(plateau=5)) == [Fact.KEEPS]
+    assert rule.reads(capped) == [Fact.KEEPS, Fact.HOURS, Fact.TOKENS, Fact.SPEND]
 
     def check(progress: Progress) -> object:
-        return AFTER_KEEPS.check(StopCase('score', Direction.HIGHER, capped, progress, json.dumps({'keeps': 3})))
+        return rule.check(StopCase('score', Direction.HIGHER, capped, progress))
 
     assert check(Progress(keeps=2, hours=1, tokens=10, spend=12)) == GO
     assert check(Progress(keeps=3, hours=1, tokens=10, spend=12)) == Stop('after_keeps: 3 keeps')
@@ -868,7 +868,7 @@ def test_a_spend_limit_needs_a_stop_rule_that_reads_the_spend(
 ) -> None:
     """Only the stop rule holds launches at ``[spend] limit``. A rule that does not read the spend would drop the limit
     without a word, so piloop refuses the configuration."""
-    installed(monkeypatch, [EntryPoint('goes_on', f'{PLUGIN}:GOES_ON', STOP_RULES.group)])
+    installed(monkeypatch, [EntryPoint('goes_on', f'{PLUGIN}:GoesOn', STOP_RULES.group)])
     try:
         plugin = {'stop_rule': {'provider': 'goes_on'}}
         load_campaign_config(Path(campaign.path), plugins=plugin)
@@ -895,9 +895,12 @@ def test_a_stop_rule_from_a_plugin_replaces_the_built_in_one_through_piloop_toml
     try:
         write_toml(Path(campaign.path), HARNESS_APPEND)
         for table, error in [
-            ({'provider': 'never'}, "[plugins.stop_rule] provider = 'never': unknown stop rule 'never'"),
+            ({'provider': 'never'}, "plugins.stop_rule: provider = 'never': unknown stop rule 'never'"),
             ({'provider': 'after_keeps'}, 'keeps: Field required'),
-            ({'provider': 'limits', 'keeps': 1}, "stop rule 'limits' takes no parameters: keeps"),
+            (
+                {'provider': 'limits', 'keeps': 1},
+                'plugins.stop_rule.keeps = 1: Extra inputs are not permitted',
+            ),
         ]:
             with pytest.raises(ConfigError, match=re.escape(error)):
                 load_campaign_config(Path(campaign.path), plugins={'stop_rule': table})

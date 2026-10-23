@@ -62,7 +62,7 @@ from piloop.plugins.executor.kit.leases import (
     enqueue,
     revoke,
 )
-from piloop.plugins.executor.workers import WorkersParameters
+from piloop.plugins.executor.workers import Workers
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
 from tests.conftest import baseline
 
@@ -209,11 +209,11 @@ def test_the_timing_is_kubernetes_two_stages_and_the_parameters_name_it_and_refu
     """Renewed every 10 s (the kubelet's node Lease), unreachable after 50 s (``--node-monitor-grace-period`` since
     Kubernetes 1.32), expired after 300 s (the unreachable taint's ``tolerationSeconds``). The worker stops two
     heartbeats before."""
-    defaults = WorkersParameters()
+    defaults = Workers()
     assert (defaults.renew_seconds, defaults.grace_seconds, defaults.toleration_seconds) == (10, 50, 300)
     assert Timing() == Timing(renew=10, grace=50, toleration=300) and Timing().self_stop == 280
     with pytest.raises(ValueError, match='renew_seconds < grace_seconds'):
-        WorkersParameters(grace_seconds=400)
+        Workers(grace_seconds=400)
 
 
 def test_a_lease_is_acquired_started_renewed_and_reported_once_with_its_receipt(

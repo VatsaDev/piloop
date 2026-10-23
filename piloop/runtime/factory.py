@@ -14,7 +14,7 @@ def make_runtime(kind: str, *, campaign: str, campaign_path: Path) -> Runtime:
 
     Herdr uses the campaign to name its workspace. The subprocess runtime ignores it.
     """
-    return RUNTIMES.get(kind)(campaign, campaign_path)
+    return RUNTIMES.get(kind).model(campaign, campaign_path)
 
 
 class RuntimeFactory(Protocol):
@@ -38,7 +38,7 @@ def view_of(agent_session: AgentSession) -> str | None:
     None also for a row not launched yet, and for a runtime that is no longer installed: this only labels the agent.
     """
     runtime = RUNTIMES.providers().get(agent_session.runtime) if agent_session.runtime is not None else None
-    return None if runtime is None else runtime.value.view(handle_for(agent_session))
+    return None if runtime is None else runtime.model.view(handle_for(agent_session))
 
 
 def runtime_for(

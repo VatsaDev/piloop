@@ -43,6 +43,3 @@ class ScoutRole(SweepRole):
     """What a scout sweep may write, as its brief states it."""
     timeout: float = 900
     """The number of seconds one sweep may run before it is stopped."""
-
-
-SCOUT = ScoutRole()

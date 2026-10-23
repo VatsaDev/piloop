@@ -51,6 +51,7 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database, migrate
 from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, CampaignId, CandidateId, TargetKind
+from piloop.plugins import host
 from piloop.plugins.executor.kit.capacity import GB, HostSample
 from piloop.plugins.executor.kit.leases import Leases
 from piloop.plugins.runtime import herdr
@@ -58,7 +59,7 @@ from piloop.plugins.runtime.herdr import HerdrSettings
 from piloop.scoring.ledger import REMEASURE_REQUESTED
 from piloop.settings import Settings
 from piloop.version import direct_url, installed
-from tests.conftest import at_head, hold_lock, wait_until
+from tests.conftest import at_head, example, hold_lock, wait_until
 from tests.daemon.test_serve import alive
 from tests.db.test_migrations import TOO_OLD, alembic
 from tests.fixtures.fake_herdr import SOCKET
@@ -808,9 +809,15 @@ def test_worker_list_says_when_another_executor_is_selected(
     run_cli(['init', str(campaign_path)])
     out()
     home = common.settings.home
+    example(home / 'site', 'inline-executor')
+    monkeypatch.syspath_prepend(home / 'site')
+    host.close()
     (home / 'config.toml').write_text('[plugins.executor]\nprovider = "inline"\n')
     monkeypatch.setattr(common, 'settings', Settings(home=home))
-    run_cli(['worker', 'list'])
+    try:
+        run_cli(['worker', 'list'])
+    finally:
+        host.close()
     assert out().splitlines()[0] == 'the executor is inline, not workers: these workers take no job'
 
 

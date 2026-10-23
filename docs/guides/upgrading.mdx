@@ -167,6 +167,29 @@ of these texts does not fail, but it finds only old runs: compare `end` instead.
 | `error = 'no agent of the run started to work'` | `end = 'not_started'` |
 | `error LIKE 'blocked on escalation%'` | `end = 'awaiting_answer'` |
 
+### Plugins: a provider is its own parameters
+
+A provider of a `[plugins.<name>]` table is now a class: a pydantic model that subclasses the contract of its
+capability. Its fields are its parameters, and its methods are the contract. piloop validates the table into it when
+it loads the file. A plugin of 0.2.0 fails to load until you change it:
+
+| Before 0.3.0 | Since 0.3.0 |
+|---|---|
+| Imports from `piloop.plugins.contracts.*`, `piloop.plugins.builtin.*`, `piloop.config` or `piloop.triggers` | Every name from `piloop.capabilities` |
+| The entry point names an instance: `MIN_GAIN = MinGain()` | The entry point names the class: `piloop_min_gain:MinGain` |
+| `Parameters = Parameters`, then `json.loads(case.parameters)` | A field, `min_gain: float`, read as `self.min_gain` |
+| `class MinGain:` that calls `BOOTSTRAP.decide(case)` | `class MinGain(Bootstrap):` that calls `super().decide(case)` |
+| `class AfterKeeps:` that calls `LIMITS` | `class AfterKeeps(FirstLimit):` that calls `super()` |
+| `reads(self, limits, parameters)` | `reads(self, limits)` |
+| `Case.parameters`, `StopCase.parameters` | The rule's fields |
+| A role's entry point names `SweepRole(...)` | A subclass of `SweepRole` or `ImplementerRole` whose fields have the role's defaults |
+| `Capability(noun, group=..., check=...)`, `PureCapability(noun, group=..., contract=...)` | `Capability(name, contract)`, `tier=Tier.PURE` for a pure one: `name` is its entry point in `piloop.capabilities`, and its providers are in `piloop.<name>s` |
+| `get(name)` returns the provider | `get(name).model` is the provider's class |
+
+The examples in [`examples/plugins/`](https://github.com/hiloopai/piloop/tree/main/examples/plugins) show each one.
+`piloop.toml` and `config.toml` do not change. A `[plugins.<name>]` table without `provider` now sets the parameters
+of the default provider.
+
 ## Upgrading to 0.2.0
 
 Read this before you upgrade from 0.1.0.

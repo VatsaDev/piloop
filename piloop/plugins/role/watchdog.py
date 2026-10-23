@@ -31,6 +31,3 @@ class WatchdogRole(SweepRole):
     wake_budget: int | None = Field(default=0, ge=0)
     """The size in tokens of the lessons overview that opens a watchdog's brief. Off by default: the closing review
     reads the lessons itself before it writes its own."""
-
-
-WATCHDOG = WatchdogRole()

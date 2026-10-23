@@ -22,7 +22,6 @@ from piloop.ids import WATCHDOG, AgentSessionId, CommentId
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins
 from piloop.plugins.executor.contract import EXECUTORS, AgentKey, Capacity, Checkout, Prompt
-from piloop.plugins.host import PluginTable
 from piloop.plugins.runtime.contract import Handle
 from piloop.settings import Settings
 from tests.conftest import (
@@ -51,7 +50,8 @@ def provider(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest
 
 
 def controller(db: Database, runtime: ScriptRuntime, tmp_path: Path, provider: str) -> RunController:
-    return serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=PluginTable(provider=provider)))
+    executor = EXECUTORS.get(provider).model()
+    return serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=executor))
 
 
 def launch_in_thread(
@@ -212,7 +212,9 @@ def test_an_entry_point_that_is_not_an_executor_class_is_refused(
     monkeypatch.syspath_prepend(tmp_path / 'bad')
     plugins.close()
     try:
-        with pytest.raises(plugins.PluginError, match='is not a piloop executor class'):
+        with pytest.raises(
+            plugins.PluginError, match='is not a subclass of piloop.plugins.executor.contract.ExecutorConfig'
+        ):
             EXECUTORS.get('bad')
     finally:
         plugins.close()
@@ -229,5 +231,7 @@ def test_the_capacity_is_the_slots_of_the_executor_now(
 def test_config_toml_refuses_a_plugins_table_that_no_capability_of_the_home_declares(tmp_path: Path) -> None:
     """``[plugins.<name>]`` of ``config.toml`` is generic: the plugin host checks it, as ``piloop.toml``'s."""
     (tmp_path / 'config.toml').write_text('[plugins.verdict_rule]\nprovider = "bootstrap"\n')
-    with pytest.raises(SystemExit, match=r'\[plugins.verdict_rule\]: no capability has that name; there is executor'):
+    with pytest.raises(
+        SystemExit, match=r'verdict_rule\n  Value error, no capability has that name; there is executor'
+    ):
         Daemon(Settings(home=tmp_path))
