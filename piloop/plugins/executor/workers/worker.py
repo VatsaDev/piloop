@@ -165,6 +165,8 @@ class Worker:
         self._handover = False
         self._heard = time.monotonic()
         """When the last heartbeat that came back was sent. The worker stops its jobs ``Timing.self_stop`` after it."""
+        self._ended = threading.Event()
+        """Set once the worker stops or hands over: its silence guard ends (``_guard_silence``)."""
         self._failures = 0
         """How many turns failed one after another (``FAILING_TURNS``)."""
         self._starting: set[int] = set()
@@ -224,7 +226,19 @@ class Worker:
             target=self._listen, args=(registration.cursor, held), name=f'messages-{self.id}', daemon=True
         )
         self._listener.start()
+        threading.Thread(target=self._guard_silence, name=f'silence-{self.id}', daemon=True).start()
         return True
+
+    def _guard_silence(self) -> None:
+        """Stop the jobs once no heartbeat came back for ``Timing.self_stop``, and again on each heartbeat while silent.
+
+        It keeps its own clock: the loop can be held in any call meanwhile, and a partition that drops packets holds a
+        call until the call's own timeout, which can be longer than what the leases have left.
+        """
+        while not self._ended.wait(max(self._heard + self.timing.self_stop - time.monotonic(), 0)):
+            if time.monotonic() - self._heard >= self.timing.self_stop and not self._handover:
+                self._stop_jobs('silent')
+                self._ended.wait(self.timing.renew)
 
     def _wake(self) -> None:
         """Make the loop turn now."""
@@ -314,6 +328,7 @@ class Worker:
         """
         with self._lock:
             self._stopping = True
+            self._ended.set()
             jobs = list(self._jobs)
         for lease_id in jobs:
             self._stop_job(lease_id, 'stop')
@@ -327,6 +342,7 @@ class Worker:
         """
         with self._lock:
             self._handover = self._stopping = True
+            self._ended.set()
             # a start that is not recorded leaves the next worker an agent it cannot find; starts are bounded waits
             self._started_all.wait_for(lambda: not self._starting)
             evaluations = [lease_id for lease_id, running in self._jobs.items() if running.evaluation]
@@ -405,10 +421,8 @@ class Worker:
             self._heard = sent
         except Dismissed:  # an answer, and the end of this worker: not a partition
             raise
-        except Exception as e:  # a partition: the control plane does not answer
+        except Exception as e:  # a partition: the control plane does not answer; ``_guard_silence`` stops the jobs
             self._tracer.event('worker.unheard', worker=self.id, error=str(e))
-            if time.monotonic() - self._heard >= self.timing.self_stop:
-                self._stop_jobs('silent')
             return
         for lease_id, answer in answers.items():
             if answer is not Answer.RENEWED:

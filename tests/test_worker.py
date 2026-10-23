@@ -652,6 +652,45 @@ def test_a_worker_killed_between_the_start_and_its_record_leaves_no_worktree(
     assert not cwd.exists() and git.worktrees_under(git.open_repo(repo), cwd) == []
 
 
+def test_a_worker_whose_heartbeat_hangs_stops_its_job_when_its_self_stop_passes(
+    db: Database,
+    campaign: Campaign,
+    runtime: ScriptRuntime,
+    tmp_path: Path,
+    mocker: MockerFixture,
+    tracer: Tracer,
+    spans: InMemorySpanExporter,
+) -> None:
+    """A partition that drops packets holds a call until its own timeout, which can be longer than the lease has
+    left. The worker stops its job on time all the same, on its own clock, not once the call gives up."""
+    (tmp_path / 'hold').touch()
+    set_config(db, campaign, evaluate=held_evaluate(tmp_path))
+    ex = serving(RunController(db, tracer, tmp_path, factory(runtime), executor=timed(FAST)))
+    measuring = threading.Thread(target=ex.remeasure, args=(baseline(db, campaign.id).id,))
+    measuring.start()
+    wait_until(lambda: lease_states(db) == [LeaseState.RUNNING])
+    worker = workers_of(ex).worker
+    healed = threading.Event()
+    heartbeat = worker.client.heartbeat
+
+    def unanswered(sessions: dict[int, str | None], host: HostSample) -> dict[int, Answer]:
+        healed.wait()  # no answer and no error, until the partition heals
+        return heartbeat(sessions, host)
+
+    mocker.patch.object(worker.client, 'heartbeat', side_effect=unanswered)
+
+    def stopped() -> list[str]:
+        return [str((s.attributes or {})['why']) for s in spans.get_finished_spans() if s.name == 'worker.job_stopped']
+
+    try:
+        wait_until(stopped)
+        assert stopped() == ['silent']
+    finally:
+        healed.set()
+        (tmp_path / 'hold').unlink()
+        measuring.join(30)
+
+
 def test_a_worker_that_cannot_register_at_its_start_registers_on_its_next_turn(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
