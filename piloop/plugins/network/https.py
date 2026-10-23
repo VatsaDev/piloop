@@ -9,9 +9,10 @@ tls = { cert = "/etc/piloop/cert.pem", key = "/etc/piloop/key.pem" }
 
 A server that other machines can reach and that has no TLS would send its tokens in the clear: an address that is not
 loopback needs ``tls``. ``tls = "proxy"`` says that TLS ends in front of the server, at a reverse proxy or an SSH
-tunnel.
+tunnel. A machine that dials the server sends the token in ``PILOOP_HTTPS_TOKEN``.
 """
 
+import os
 import socket
 import ssl
 from collections.abc import Mapping
@@ -21,9 +22,11 @@ import httpx2 as httpx
 from pydantic import BaseModel, ConfigDict, FilePath, model_validator
 
 from piloop.net.tokens import Caller
-from piloop.plugins.network.contract import Listener, NetworkConfig, NetworkHost, Refused
+from piloop.plugins.network.contract import Listener, NetworkConfig, NetworkHost, NoCredential, Refused
 
 TIMEOUT = httpx.Timeout(30, connect=10)
+TOKEN_ENV = 'PILOOP_HTTPS_TOKEN'
+"""The variable that holds the bearer token of a machine that dials the server (``piloop worker``)."""
 
 
 class Certificate(BaseModel):
@@ -56,8 +59,13 @@ class Https(NetworkConfig):
     def open(self, host: NetworkHost) -> HttpsNetwork:
         return HttpsNetwork(host, self)
 
-    def client(self, server: str, token: str) -> httpx.Client:
-        """A client that trusts the system's certificates, or those of ``SSL_CERT_FILE`` when it is set."""
+    def client(self, server: str) -> httpx.Client:
+        """A client that sends the bearer token of ``TOKEN_ENV``.
+
+        It trusts the system's certificates, or those of ``SSL_CERT_FILE`` when it is set.
+        """
+        if not (token := os.environ.get(TOKEN_ENV)):
+            raise NoCredential(f'set {TOKEN_ENV} to the secret that `piloop token create <name>` printed on the server')
         return httpx.Client(base_url=server, headers={'Authorization': f'Bearer {token}'}, timeout=TIMEOUT)
 
 

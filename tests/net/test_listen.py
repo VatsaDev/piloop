@@ -5,6 +5,7 @@ from pathlib import Path
 
 import httpx2 as httpx
 import pytest
+from pydantic import ValidationError
 
 from piloop.cli import common
 from piloop.daemon.main import Daemon
@@ -52,3 +53,13 @@ def test_listen_must_be_host_colon_port(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(common, 'settings', Settings(home=tmp_path))
     with pytest.raises(SystemExit, match="'8443' is not HOST:PORT"):
         run_cli(['serve', '--listen', '8443'])
+
+
+def test_a_tls_file_that_does_not_exist_is_a_validation_error_at_its_key(tmp_path: Path) -> None:
+    (tmp_path / 'config.toml').write_text(
+        '[plugins.network]\nlisten = "0.0.0.0:8443"\ntls = { cert = "missing.pem", key = "missing.key" }\n'
+    )
+    with pytest.raises(
+        ValidationError, match=r'for \[plugins\]\nnetwork\.tls\.Certificate\.cert\n  Path does not point to a file'
+    ):
+        _ = Settings(home=tmp_path).providers

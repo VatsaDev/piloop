@@ -62,6 +62,10 @@ class Refused:
     reason: str
 
 
+class NoCredential(Exception):
+    """This machine has no credential to dial the server with. The message says how to give it one."""
+
+
 @dataclass(frozen=True)
 class Listener:
     """A socket that is bound and listening, and the TLS that the server ends on it, or None for plain HTTP."""
@@ -104,8 +108,14 @@ class NetworkConfig(Parameters, ABC):
         """Make the server's side of the network. The daemon calls it once, when it starts."""
 
     @abstractmethod
-    def client(self, server: str, token: str) -> httpx.Client:
-        """The dialing side, which needs no host: a client of the server at ``server`` that calls it with ``token``."""
+    def client(self, server: str) -> httpx.Client:
+        """The dialing side, which needs no host: a client of the server at ``server``, with this machine's credential.
+
+        The provider finds the credential itself, so its caller (``piloop worker``) knows no kind of credential.
+
+        Raises:
+            NoCredential: This machine has none.
+        """
 
     def listening(self, listen: Address | None) -> NetworkConfig:
         """This network, with ``listen`` (``piloop serve --listen``) in place of its own when it is not None.

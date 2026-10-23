@@ -41,7 +41,7 @@ from enum import StrEnum
 from functools import cache
 from importlib.metadata import EntryPoint, entry_points
 from threading import RLock
-from typing import get_type_hints
+from typing import get_args, get_type_hints
 
 from pydantic import (
     BaseModel,
@@ -55,7 +55,8 @@ from pydantic import (
 )
 from pydantic.errors import PydanticInvalidForJsonSchema
 from pydantic.json_schema import JsonSchemaValue
-from pydantic_core import CoreSchema, ErrorDetails, InitErrorDetails, core_schema
+from pydantic_core import CoreSchema, ErrorDetails, InitErrorDetails, PydanticCustomError, core_schema
+from pydantic_core.core_schema import ErrorType
 
 BUILT_IN = 'piloop'
 """The package of the built-in providers: they are entry points of piloop's own ``pyproject.toml``."""
@@ -423,8 +424,19 @@ class PluginTables:
         }
 
 
+CORE_ERRORS = frozenset(get_args(ErrorType))
+"""The error types that pydantic-core can rebuild from a name."""
+
+
 def _at(loc: tuple[str | int, ...], error: ErrorDetails) -> InitErrorDetails:
-    """``error`` at ``loc``: a provider's error, under the key of its table."""
+    """``error`` at ``loc``: a provider's error, under the key of its table.
+
+    ``from_exception_data`` rebuilds only pydantic-core's own error types. One of pydantic's, such as
+    ``path_not_file``, keeps its message as an ``invalid_value``.
+    """
+    if error['type'] not in CORE_ERRORS:
+        invalid = PydanticCustomError('invalid_value', '{message}', {'message': error['msg']})
+        return InitErrorDetails(type=invalid, loc=loc, input=error['input'])
     found = InitErrorDetails(type=error['type'], loc=loc, input=error['input'])
     if 'ctx' in error:
         found['ctx'] = error['ctx']

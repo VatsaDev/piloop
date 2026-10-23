@@ -40,6 +40,7 @@ HELPERS: set[object] = {
     capabilities.integrity,
     capabilities.UNBOUNDED,
     capabilities.Nested,
+    capabilities.NoCredential,
     capabilities.NestedLocal,
     capabilities.LocalProvider,  # what a local tier's provider and store are, and what eviction sees
     capabilities.LocalCas,

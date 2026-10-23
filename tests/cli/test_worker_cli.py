@@ -1,6 +1,5 @@
 """``piloop worker --server URL --pool NAME``: a worker on this machine, of a server on another."""
 
-import os
 import signal
 import threading
 from collections.abc import Callable, Generator
@@ -18,7 +17,7 @@ from piloop.plugins.executor.kit.capacity import Pool
 from piloop.plugins.executor.kit.leases import Leases
 from piloop.plugins.executor.kit.remote import lease_routes
 from piloop.plugins.network.contract import NetworkHost
-from piloop.plugins.network.https import Https
+from piloop.plugins.network.https import TOKEN_ENV, Https
 from piloop.settings import Settings
 from tests.cli.test_cli import run_cli
 from tests.conftest import wait_until
@@ -46,7 +45,8 @@ def as_worker(tmp_path: Path, db: Database, monkeypatch: pytest.MonkeyPatch) -> 
         with db.session() as s:
             secret = tokens.create(s, 'gpu1', TokenScope.WORKER)
             s.commit()
-        monkeypatch.setattr(common, 'settings', Settings(home=tmp_path / 'worker', token=secret))
+        monkeypatch.setenv(TOKEN_ENV, secret)
+        monkeypatch.setattr(common, 'settings', Settings(home=tmp_path / 'worker'))
 
     yield token
     for sig, handler in handlers.items():
@@ -54,8 +54,11 @@ def as_worker(tmp_path: Path, db: Database, monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_a_worker_without_a_token_says_how_to_get_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv(TOKEN_ENV, raising=False)
     monkeypatch.setattr(common, 'settings', Settings(home=tmp_path))
-    with pytest.raises(SystemExit, match=r'set PILOOP_TOKEN to the secret that `piloop token create <name>` printed'):
+    with pytest.raises(
+        SystemExit, match=r'set PILOOP_HTTPS_TOKEN to the secret that `piloop token create <name>` printed'
+    ):
         run_cli(['worker', '--server', 'http://127.0.0.1:9', '--pool', 'gpu'])
 
 
@@ -69,14 +72,17 @@ def test_a_worker_registers_with_its_tokens_name_and_stops_on_sigterm(
     server: str, as_worker: Callable[[], None], db: Database, tmp_path: Path
 ) -> None:
     as_worker()
+    default, main = signal.getsignal(signal.SIGTERM), threading.main_thread().ident
+    assert main is not None
 
     def stop_once_registered() -> None:
         def registered() -> bool:
             with db.session() as s:
                 return s.get(LeaseWorker, 'gpu1') is not None
 
-        wait_until(registered)
-        os.kill(os.getpid(), signal.SIGTERM)
+        wait_until(lambda: signal.getsignal(signal.SIGTERM) is not default and registered())
+        # to the main thread, which runs the handler: a signal to the process may land on another thread
+        signal.pthread_kill(main, signal.SIGTERM)
 
     threading.Thread(target=stop_once_registered, daemon=True).start()
     run_cli(['worker', '--server', server, '--pool', 'gpu'])

@@ -36,6 +36,7 @@ from piloop.plugins.executor.kit.leases import (
 from piloop.plugins.executor.kit.remote import Remote, lease_routes
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import Https, HttpsNetwork
+from tests.conftest import Dial
 from tests.fixtures.netfault import CutResponse, Proxy
 from tests.test_lease import (
     DONE,
@@ -94,11 +95,11 @@ def connect(request: pytest.FixtureRequest, db: Database, leases: Leases) -> Gen
     if request.param == 'local':
         yield lambda worker: Local(leases, worker)
         return
-    network, server = request.getfixturevalue('network'), request.getfixturevalue('server')
+    server, dial = request.getfixturevalue('server'), request.getfixturevalue('dial')
     clients: list[httpx.Client] = []
 
     def remote(worker: str) -> LeaseClient:
-        clients.append(http := network.config.client(server.url, secret(db, worker)))
+        clients.append(http := dial(server.url, secret(db, worker)))
         return Remote(http, threading.Event())
 
     yield remote
@@ -249,11 +250,11 @@ def test_a_report_on_a_lease_that_never_was_is_stale(connect: Connect) -> None:
 
 
 @pytest.fixture
-def remote(db: Database, network: HttpsNetwork, server: Server) -> Generator[Callable[..., Remote]]:
+def remote(db: Database, server: Server, dial: Dial) -> Generator[Callable[..., Remote]]:
     clients: list[httpx.Client] = []
 
     def make(name: str = 'w1', url: str | None = None, scope: TokenScope = TokenScope.WORKER) -> Remote:
-        clients.append(http := network.config.client(url or server.url, secret(db, name, scope)))
+        clients.append(http := dial(url or server.url, secret(db, name, scope)))
         return Remote(http, threading.Event())
 
     yield make
@@ -315,12 +316,10 @@ def test_a_call_whose_answer_is_lost_is_sent_again_with_the_same_request_id(
         assert proxy.cuts == 2 and events(db, StaleReport) == [], 'one report, applied once'
 
 
-def test_a_call_to_a_server_that_does_not_answer_tries_again_with_backoff_until_the_self_stop(
-    network: HttpsNetwork,
-) -> None:
+def test_a_call_to_a_server_that_does_not_answer_tries_again_with_backoff_until_the_self_stop(dial: Dial) -> None:
     """Doubling waits, and none that would end past the self-stop. Nothing listens on the discard port."""
     stop = Naps()
-    w1 = Remote(network.config.client('http://127.0.0.1:9', 'plt_x'), stop)
+    w1 = Remote(dial('http://127.0.0.1:9', 'plt_x'), stop)
     w1._retry_for = 1.0
     with pytest.raises(httpx.ConnectError):
         w1.heartbeat({}, HOST)

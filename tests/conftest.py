@@ -17,6 +17,7 @@ from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
 from typing import Concatenate
 
+import httpx2 as httpx
 import pytest
 from git import Repo
 from opentelemetry.sdk.trace import ReadableSpan
@@ -45,6 +46,7 @@ from piloop.otel import Tracer
 from piloop.plugins.executor.kit.leases import Timing
 from piloop.plugins.executor.workers import Workers, WorkersExecutor
 from piloop.plugins.executor.workers.worker import Worker
+from piloop.plugins.network.https import TOKEN_ENV, Https
 from piloop.plugins.runtime.contract import Handle, Runtime
 from piloop.plugins.runtime.subprocess import SubprocessRuntime
 from piloop.runtime.factory import RuntimeFactory
@@ -389,6 +391,20 @@ def writer(db: Database, tmp_path: Path) -> Iterator[subprocess.Popen[str]]:
         assert proc.stdout is not None and proc.stdout.readline() == 'held\n'
         yield proc
         proc.kill()
+
+
+type Dial = Callable[[str, str], httpx.Client]
+
+
+@pytest.fixture
+def dial(monkeypatch: pytest.MonkeyPatch) -> Dial:
+    """``https``'s client of a server with a secret, which it reads from ``TOKEN_ENV`` as on a worker's machine."""
+
+    def make(server: str, secret: str) -> httpx.Client:
+        monkeypatch.setenv(TOKEN_ENV, secret)
+        return Https().client(server)
+
+    return make
 
 
 def wait_until(predicate: Callable[[], object], *, timeout: float = 30) -> None:

@@ -119,8 +119,8 @@ piloop worker --server URL --pool NAME
 ```
 
 Takes the leases of the pool `NAME` from the server at `URL`, and runs their jobs on this machine until Ctrl-C.
-`PILOOP_TOKEN` holds the worker's token. It exits non-zero when the server refuses it. See
-[A worker on another machine](/architecture/leases#a-worker-on-another-machine).
+The [network](/architecture/extension-points#networks) gives it its credential. It exits non-zero when the server
+refuses it. See [A worker on another machine](/architecture/leases#a-worker-on-another-machine).
 
 ### piloop worker list
 

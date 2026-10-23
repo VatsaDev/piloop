@@ -17,9 +17,9 @@ from piloop.net import Polled, Route, tokens
 from piloop.net.tokens import Caller
 from piloop.plugins import host as plugins
 from piloop.plugins.network.contract import NETWORKS, Address
-from piloop.plugins.network.https import Https, HttpsNetwork
+from piloop.plugins.network.https import Https
 from piloop.settings import Settings
-from tests.conftest import package
+from tests.conftest import Dial, package
 from tests.net.conftest import Serving
 
 
@@ -45,14 +45,14 @@ closed with some of the request still unread, which depends on when the rest of 
 
 
 def test_a_caller_without_a_known_token_gets_401_and_a_revoked_token_stops_working(
-    serving: Serving, network: HttpsNetwork, token: Callable[..., str], db: Database
+    serving: Serving, token: Callable[..., str], db: Database, dial: Dial
 ) -> None:
     secret = token()
-    with serving([ECHO]) as server, network.config.client(server.url, secret) as client, httpx.Client() as anonymous:
+    with serving([ECHO]) as server, dial(server.url, secret) as client, httpx.Client() as anonymous:
         assert client.post(ECHOED, json=HI).status_code == 200
         refused = anonymous.post(server.url + ECHOED, json=HI)
         assert (refused.status_code, refused.headers['www-authenticate']) == (401, 'Bearer')
-        with network.config.client(server.url, 'plt_guessed') as guessed:
+        with dial(server.url, 'plt_guessed') as guessed:
             assert guessed.post(ECHOED, json=HI).status_code == 401
         with db.session() as s:
             tokens.revoke(s, 'gpu1')
@@ -62,19 +62,19 @@ def test_a_caller_without_a_known_token_gets_401_and_a_revoked_token_stops_worki
 
 
 def test_a_route_refuses_a_token_of_another_scope_with_403(
-    serving: Serving, network: HttpsNetwork, token: Callable[..., str]
+    serving: Serving, token: Callable[..., str], dial: Dial
 ) -> None:
     secret = token('agent7', TokenScope.LEASE)
-    with serving([ECHO]) as server, network.config.client(server.url, secret) as client:
+    with serving([ECHO]) as server, dial(server.url, secret) as client:
         refused = client.post(ECHOED, json=HI)
         assert refused.status_code == 403
         assert refused.json() == {'detail': 'agent7 has a lease token, and this route takes a worker token'}
 
 
 def test_an_executor_route_takes_its_model_and_answers_with_its_model_or_204(
-    serving: Serving, network: HttpsNetwork, token: Callable[..., str]
+    serving: Serving, token: Callable[..., str], dial: Dial
 ) -> None:
-    with serving([ECHO]) as server, network.config.client(server.url, token()) as client:
+    with serving([ECHO]) as server, dial(server.url, token()) as client:
         answered = client.post('/v1/executor/echo', json={'text': 'hi'})
         assert (answered.status_code, answered.json()) == (200, {'text': 'hi', 'caller': 'gpu1'})
         assert client.post('/v1/executor/echo', json={'text': ''}).status_code == 204
@@ -100,9 +100,9 @@ def certificate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, st
 
 
 def test_tls_with_a_certificate_that_the_client_trusts_through_ssl_cert_file(
-    serving: Serving, network: HttpsNetwork, token: Callable[..., str], certificate: dict[str, str]
+    serving: Serving, token: Callable[..., str], certificate: dict[str, str], dial: Dial
 ) -> None:
-    with serving([ECHO], tls=certificate) as server, network.config.client(server.url, token()) as client:
+    with serving([ECHO], tls=certificate) as server, dial(server.url, token()) as client:
         assert server.url.startswith('https://127.0.0.1:')
         assert client.post(ECHOED, json=HI).status_code == 200
         with pytest.raises(DROPPED):
@@ -187,12 +187,12 @@ def renamed_to(db: Database) -> Callable[[Caller, Poll], Answer | None]:
 
 
 def test_more_long_polls_than_pool_threads_hold_none_and_a_quick_route_still_answers_at_once(
-    serving: Serving, network: HttpsNetwork, token: Callable[..., str], db: Database, campaign: Campaign
+    serving: Serving, token: Callable[..., str], db: Database, campaign: Campaign, dial: Dial
 ) -> None:
     """Starlette's pool has 40 threads. A long-poll holds one only while it reads, then awaits a commit."""
     polls = 50
     route = Route.long_poll('renamed', TokenScope.WORKER, Poll, renamed_to(db), db.changed)
-    with serving([ECHO, route]) as server, network.config.client(server.url, token()) as client:
+    with serving([ECHO, route]) as server, dial(server.url, token()) as client:
         with ThreadPoolExecutor(polls) as pool:
             waiting = [
                 pool.submit(client.post, '/v1/executor/renamed', json={'name': 'renamed', 'wait': 20})

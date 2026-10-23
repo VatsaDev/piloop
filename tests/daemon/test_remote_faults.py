@@ -75,7 +75,7 @@ class Net:
     def start_worker(self) -> subprocess.Popen[str]:
         """Start ``piloop worker --server`` in the pool ``gpu``, and wait until it registered."""
         assert self.proxy is not None
-        env = os.environ | {'PILOOP_HOME': str(self.tmp_path / 'worker'), 'PILOOP_TOKEN': self.token}
+        env = os.environ | {'PILOOP_HOME': str(self.tmp_path / 'worker'), 'PILOOP_HTTPS_TOKEN': self.token}
         url = f'http://127.0.0.1:{self.proxy.port}'
         argv = [sys.executable, '-m', 'piloop', 'worker', '--server', url, '--pool', 'gpu']
         before = _seen(self.db)

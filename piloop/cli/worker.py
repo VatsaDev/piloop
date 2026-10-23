@@ -14,7 +14,7 @@ from piloop.db.models import utcnow
 from piloop.otel import tracer
 from piloop.plugins.executor.contract import EXECUTORS
 from piloop.plugins.executor.workers import Workers, remote_worker, seen
-from piloop.plugins.network.contract import NETWORKS
+from piloop.plugins.network.contract import NETWORKS, NoCredential
 from piloop.reports.overview import age
 
 app = cyclopts.App(name='worker', help='The workers that run jobs on leases.')
@@ -28,15 +28,18 @@ def run(
 ) -> None:
     """Take leases from a server, and run their jobs on this machine until it stops (Ctrl-C).
 
-    The worker's name is the name of its token, which ``PILOOP_TOKEN`` holds (``piloop token create`` on the server).
-    It exits non-zero when the server refuses it: a revoked token, another piloop protocol, an unknown pool.
+    The network (``[plugins.network]``) gives it its credential, and its name is the one that the server knows that
+    credential by. It exits non-zero when the server refuses it: a revoked credential, another piloop protocol, an
+    unknown pool.
     """
     settings = common.settings
-    if settings.token is None:
-        raise SystemExit('set PILOOP_TOKEN to the secret that `piloop token create <name>` printed on the server')
+    try:
+        client = NETWORKS.selected(settings.providers).client(server)
+    except NoCredential as e:
+        raise SystemExit(str(e)) from e
     settings.home.mkdir(parents=True, exist_ok=True)  # its jobs' files, its spool and its free disk are there
     stopping = threading.Event()
-    with NETWORKS.selected(settings.providers).client(server, settings.token.get_secret_value()) as http:
+    with client as http:
         worker = remote_worker(http, stopping, tracer(), settings.home, pool)
 
         def stop(signum: int, frame: FrameType | None) -> None:
