@@ -38,7 +38,7 @@ from piloop.actor import Agent, System
 from piloop.agents import scout
 from piloop.agents.launcher import rotate
 from piloop.agents.refill import usage_of
-from piloop.agents.results import AgentEnded, PromptSettled, StartupAnomaly, WrapUp
+from piloop.agents.results import AgentEnded, PromptSettled, StartupAnomaly, WrapUp, queue_prompt
 from piloop.agents.roles import compose_brief, role_of
 from piloop.campaign import spend
 from piloop.campaign.anomaly import AnomalyReported
@@ -65,11 +65,13 @@ from piloop.daemon.archiver import Archiver, Archiving
 from piloop.daemon.run_controller import (
     RUNS,
     RunController,
+    branches,
     close_run,
     commits_of,
+    finding_of,
     handed_off,
-    left_finding,
     run_place,
+    wrap_up_lead,
 )
 from piloop.db.events import emit, has, in_order
 from piloop.db.models import (
@@ -104,7 +106,6 @@ from piloop.plugins.executor.contract import AgentKey, Artifact, LeftJob, Prompt
 from piloop.plugins.role.contract import Files, ImplementerRole, SweepRole, Workdir, ideas_taken
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.scout import ScoutRole
-from piloop.plugins.runtime.contract import AgentStatus
 from piloop.plugins.stop_rule.contract import GO, Go, Hold, Stop
 from piloop.plugins.trigger.contract import Backlog, Fire, Incident, TrackBacklog
 from piloop.plugins.trigger.low_water import LowWaterTrigger
@@ -112,8 +113,7 @@ from piloop.reports.overview import anomalies, assigned, overview, reported
 from piloop.reports.pack import pack
 from piloop.reports.wake import lessons_overview
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
-from piloop.scoring.ledger import bar_of, checkout_candidate, due, head, head_unmeasured, rejudges, score
-from piloop.text import cell
+from piloop.scoring.ledger import checkout_candidate, due, head, head_unmeasured, rejudges, score
 
 AGENT_SESSIONS = 'agent_sessions'
 """The directory under the home of each sweep's place: ``agent_sessions/<id>``."""
@@ -131,26 +131,13 @@ WRAP_UP_PROMPT = (
     '[piloop] {what} ({cause}). Commit what you have now, with a message that says where it stands.'
     ' Leave your finding and stop. This session ends in {minutes:g} minutes.'
 )
-
-
-class JobsLeft(EventModel):
-    """An implementer left its finding and went idle while jobs that it started still ran.
-
-    The daemon told it which jobs keep its run open (``JOBS_LEFT_PROMPT``). It is sent once per implementer.
-    """
-
-    kind: Literal['agent_session.jobs_left'] = 'agent_session.jobs_left'
-    jobs: list[str]
-    error: str | None = None
-    """Why the prompt failed."""
-
-
-JOBS_LEFT_PROMPT = (
-    '[piloop] You left your finding, but your run stays open while these jobs that you started still run: {jobs}.'
-    ' Kill the ones that you no longer need: your run ends when you stop with nothing left running.'
-)
-JOBS_LEFT_SHOWN = 5
-"""How many of the jobs the prompt names. Each is ``<pid> <command line>``, cut to ``STEER_LINE_CHARS``."""
+EventModel.retire('agent_session.jobs_left')  # 0.2.0 listed the jobs of an idle implementer; its finding ends it now
+FINDING_GRACE_SECONDS = 60
+"""The seconds after its finding that the daemon ends an implementer, and every process it left: a last commit takes seconds."""
+FOUND = 'left its finding'
+"""The ``reason`` of the ``AgentEnded`` of an implementer that the daemon ended after its finding."""
+TIMEOUT = 'role timeout'
+"""The ``reason`` of the ``WrapUp`` of an implementer whose role timeout is ``wrap_up_lead`` away."""
 STARTUP_BREAKER = 3
 """The number of a campaign's agents that can fail at startup within ``STARTUP_WINDOW`` before its launches pause.
 
@@ -199,6 +186,14 @@ class RunRerouted(EventModel):
     kind: Literal['run.rerouted'] = 'run.rerouted'
     from_: str = Field(alias='from')
     to: str
+
+
+@dataclass(frozen=True)
+class TimeLeft:
+    """The time an implementer has left before its role ``timeout`` ends it, in ``minutes``."""
+
+    timeout: float
+    minutes: float
 
 
 class Scheduler:
@@ -351,7 +346,11 @@ class Scheduler:
         agent_session = s.scalars(
             select(AgentSession).where(AgentSession.run_id == run.id).order_by(AgentSession.id.desc()).limit(1)
         ).first()
-        if run.status is RunStatus.RUNNING and agent_session is not None and left_finding(s, run, agent_session):
+        if (
+            run.status is RunStatus.RUNNING
+            and agent_session is not None
+            and finding_of(s, run, agent_session) is not None
+        ):
             self._hand_off(s, run)
             return
         close_run(s, run, end, None)
@@ -434,7 +433,6 @@ class Scheduler:
         self._controller.stop_cancelled()
         self._controller.dispatch()
         self._push_comments()
-        self._report_jobs()
         self._wind_down()
         self._read_spend()
         if self._archiver is not None:
@@ -564,13 +562,6 @@ class Scheduler:
                         'comment.unsent', comment=prompt.id, agent_session=agent_session_id, error=str(e)
                     )
 
-    def _running_agent_sessions(self, s: Session) -> Sequence[AgentSession]:
-        return s.scalars(
-            select(AgentSession)
-            .where(AgentSession.state == AgentSessionState.RUNNING, AgentSession.run_id.is_not(None))
-            .order_by(AgentSession.id)
-        ).all()
-
     def _unseen(self, s: Session, agent_session: AgentSession) -> list[Comment]:
         """Return the comments for the agent that have no outcome yet: on the agent, or on an implementer's run or idea.
 
@@ -599,54 +590,24 @@ class Scheduler:
         ).all()
         return [c for c in comments if c.id not in settled and c.author not in own]
 
-    def _report_jobs(self) -> None:
-        """Tell each idle implementer that left its finding which of its jobs still keep its run open. Once per implementer.
-
-        An idle agent is finished only when nothing that it started still runs (``Runtime.wait``). That keeps a run
-        open while its training job works. But an implementer that left its finding believes that it is done, and it cannot
-        see what the runtime sees: a job that it forgot, or a waiter that never ends, such as a ``pgrep -f`` loop that
-        finds its own command line. ``JobsLeft`` on the implementer records the prompt, also when it failed. A runtime that
-        reports no jobs (the subprocess runtime) never gets this prompt.
-        """
-        with self._db.session() as s:
-            for agent_session in self._running_agent_sessions(s):
-                told = select(Event.id).where(
-                    Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id), has(JobsLeft)
-                )
-                if s.scalar(told) is not None or not left_finding(
-                    s, s.get_one(Run, agent_session.run_id), agent_session
-                ):
-                    continue
-                if not (jobs := self._jobs(s, agent_session)):
-                    continue
-                runtime, handle = (
-                    runtime_for(s, agent_session, self._runs_dir, self._runtime_factory),
-                    handle_for(agent_session),
-                )
-                if runtime.status(handle) is not AgentStatus.IDLE:  # it may still stop them in this turn
-                    continue
-                named = '; '.join(cell(job, STEER_LINE_CHARS) for job in jobs[:JOBS_LEFT_SHOWN])
-                left = JobsLeft(jobs=jobs)
-                try:
-                    runtime.prompt(handle, JOBS_LEFT_PROMPT.format(jobs=named))
-                except Exception as e:  # NotSteerable, a blocked agent or a closed pane. The daemon goes on.
-                    left = JobsLeft(jobs=jobs, error=str(e))
-                emit(s, left, TargetRef(TargetKind.AGENT_SESSION, agent_session.id), System.DAEMON)
-                self._tracer.event(left.kind, agent_session=agent_session.id, jobs=len(jobs))
-            s.commit()
-
     def _wind_down(self) -> None:
-        """Wind down the implementers of stopped campaigns and the agents that someone cancelled (``CancelRequested``).
+        """End the implementers that left their finding, and wind down those of stopped campaigns and cancelled agents.
 
-        An implementer of a stopped campaign is told to commit and stop (``WrapUp``), and ended after the grace period
+        An implementer is ended ``FINDING_GRACE_SECONDS`` after its finding, with every process that it left running: it
+        reported that it is done, and a job that it forgot must not hold its slot to the role timeout. Its run is
+        finished (``run_outcome``).
+
+        A wrap-up prompt (``WrapUp``) is a note on the agent, which its executor delivers. An implementer whose role
+        timeout is ``wrap_up_lead`` away is told to commit and stop. Its timeout ends it.
+
+        An implementer of a stopped campaign is told to commit and stop, and ended after the grace period
         (``STOP_GRACE_SECONDS``), or at once when the stop request asked to end it ``now``. The runs then close and their
-        commits are scored. An implementer in the middle of a turn takes the prompt only when the turn ends, which can be
-        after the grace period. An implementer that the daemon ends (``AgentEnded``) without its finding closes its run as
+        commits are scored. An implementer that the daemon ends (``AgentEnded``) without its finding closes its run as
         cut by the stop (``RunEnd.CAMPAIGN_STOPPED``), not as a failed attempt. Sweeps of a stopped campaign are not
         changed, because their timeouts limit them and the closing review is one of them.
 
-        A cancelled run or agent of any role (``agent_cancel``) is ended at once, or after the wrap-up prompt and the
-        grace period when the cancel asked for it. Its run ends ``RunEnd.CANCELLED``. A cancelled request never
+        A cancelled run or agent of any role (``agent_cancel``, ``CANCEL_REQUESTED``) is ended at once, or after the
+        wrap-up prompt and the grace period when the cancel asked for it. Its run ends ``RunEnd.CANCELLED``. A cancelled request never
         starts, and its queued run fails. Both park the run's idea. A starting agent is left for a later tick, once it
         runs; if its start fails, the run is not launched again (``RunController._relaunch``).
         """
@@ -669,10 +630,17 @@ class Scheduler:
                 .where(AgentSession.run_id.is_not(None), AgentSession.state.in_(winding))
                 .where(Campaign.status == CampaignStatus.STOPPED)
             )
+            implementers = select(AgentSession).where(AgentSession.run_id.is_not(None), AgentSession.state.in_(winding))
+            found = [w.id for w in s.scalars(implementers) if self._found(s, w)]
             agent_sessions = s.scalars(
-                select(AgentSession).where(cancelled | AgentSession.id.in_(stopping)).order_by(AgentSession.id)
+                select(AgentSession)
+                .where(cancelled | AgentSession.id.in_(stopping) | AgentSession.id.in_(found))
+                .order_by(AgentSession.id)
             ).all()
             for agent_session in agent_sessions:
+                if agent_session.id in found:
+                    self._end(s, agent_session, FOUND, RunEnd.FINISHED)
+                    continue
                 if (cancel := agent_cancel(s, agent_session)) is not None:
                     event, asked = cancel
                     reason, end = f'cancelled by {event.actor}', RunEnd.CANCELLED
@@ -700,17 +668,38 @@ class Scheduler:
                     self._wrap_up(s, agent_session, reason, text)
                 elif utcnow() - told >= timedelta(seconds=STOP_GRACE_SECONDS):
                     self._end(s, agent_session, reason, end)
+            for agent_session in s.scalars(implementers.where(AgentSession.state == AgentSessionState.RUNNING)):
+                if (left := self._time_left(s, agent_session)) is not None:
+                    cause = f'the role timeout of {left.timeout:g}s'
+                    text = WRAP_UP_PROMPT.format(what='Your time is almost up', cause=cause, minutes=left.minutes)
+                    self._wrap_up(s, agent_session, TIMEOUT, text)
             s.commit()
 
+    @staticmethod
+    def _found(s: Session, implementer: AgentSession) -> bool:
+        """Whether the implementer left its finding ``FINDING_GRACE_SECONDS`` ago or more."""
+        assert implementer.run_id is not None
+        finding = finding_of(s, s.get_one(Run, implementer.run_id), implementer)
+        return finding is not None and utcnow() - finding.created_at >= timedelta(seconds=FINDING_GRACE_SECONDS)
+
+    @staticmethod
+    def _time_left(s: Session, implementer: AgentSession) -> TimeLeft | None:
+        """The time an implementer that was not told to wrap up has left, once it is ``wrap_up_lead`` or less."""
+        role = config_of(s.get_one(Campaign, implementer.campaign_id)).roles.doing_runs().get(implementer.kind)
+        told = select(Event.id).where(Event.target == TargetRef(TargetKind.AGENT_SESSION, implementer.id), has(WrapUp))
+        if role is None or implementer.started_at is None or s.scalar(told.limit(1)) is not None:
+            return None
+        left = role.timeout - (utcnow() - implementer.started_at).total_seconds()
+        return TimeLeft(role.timeout, round(left / 60, 1)) if left <= wrap_up_lead(role.timeout) else None
+
     def _wrap_up(self, s: Session, agent_session: AgentSession, reason: str, text: str) -> None:
-        """Send the wrap-up prompt. The grace period starts even if the prompt fails, as for a headless implementer."""
-        told = WrapUp(reason=reason)
-        try:
-            runtime_for(s, agent_session, self._runs_dir, self._runtime_factory).prompt(handle_for(agent_session), text)
-        except Exception as e:  # NotSteerable (subprocess), a blocked agent or a closed pane.
-            told = WrapUp(reason=reason, error=str(e))
+        """Leave the wrap-up prompt as a note on the agent, which its executor delivers (``_push_comments``).
+
+        The grace period starts now, also when the note never reaches the agent.
+        """
+        told = WrapUp(reason=reason, comment=queue_prompt(s, agent_session.id, text, DAEMON_ACTOR))
         emit(s, told, TargetRef(TargetKind.AGENT_SESSION, agent_session.id), System.DAEMON)
-        self._tracer.event(told.kind, agent_session=agent_session.id, reason=reason, error=told.error)
+        self._tracer.event(told.kind, agent_session=agent_session.id, reason=reason, comment=told.comment)
 
     def _end(self, s: Session, agent_session: AgentSession, reason: str, end: RunEnd) -> None:
         """Kill a wound-down agent, once ``ending``: its executor stops it, and it reports.
@@ -1537,20 +1526,6 @@ def done_by(role: RoleName) -> ColumnElement[bool]:
     with ``ideas`` from ``runs`` and scans every run of every campaign.
     """
     return func.likely(Run.role == role, type_=Boolean)
-
-
-def branches(campaign: Campaign, pinned: Candidate | None, computed: Candidate | None) -> bool:
-    """Return True if a run on ``pinned`` is a branch run: the pinned base's bar is not the current head.
-
-    A pin to a non-keep whose nearest keep is the head is not a branch. Its run is judged against the head
-    (``ledger.bar_of``). Nor is a pin whose commit has the head's (``git.contains``), such as a compose that
-    cherry-picked it: a keep of it builds on the head.
-    """
-    if pinned is None or computed is None:
-        return pinned is not None
-    if bar_of(pinned).id == computed.id:
-        return False
-    return not git.contains(git.open_repo(Path(campaign.path)), pinned.commit_sha, computed.commit_sha)
 
 
 def steer_line(comment: Comment) -> str:

@@ -5,6 +5,10 @@ The daemon and the CLI depend only on the ``Runtime`` protocol, and never on the
 the group of ``RUNTIMES``.
 """
 
+import fcntl
+import json
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -253,6 +257,40 @@ def Outcome(status: AgentStatus, seconds: float, exit_code: int | None = None, e
 
 TAG_ENV = 'PILOOP_PROCESS_TAG'
 """The variable that holds an agent's process tag."""
+MESSAGES_ENV = 'PILOOP_MESSAGES'
+"""The variable that names the agent's message queue (``QUEUE``), for a runtime that keeps one, so that a hook of its
+harness can take the messages during a turn (``piloop agent messages``). A file, because ``prompt`` can run in another
+runtime instance, or another process, than the turn that takes them."""
+QUEUE = 'queued-messages'
+"""Under the agent's log directory: the messages queued for its next turn, one JSON string per line."""
+
+
+def put(log_dir: Path, text: str) -> None:
+    """Append ``text`` to the agent's queue, under its lock."""
+    with locked(log_dir), (log_dir / QUEUE).open('a') as queue:
+        queue.write(json.dumps(text) + '\n')
+
+
+def take(queue: Path) -> list[str]:
+    """Remove and return the messages in ``queue``, oldest first, under its lock."""
+    with locked(queue.parent):
+        messages = [json.loads(line) for line in queue.read_text().splitlines() if line] if queue.is_file() else []
+        if messages:
+            queue.unlink()
+    return messages
+
+
+@contextmanager
+def locked(log_dir: Path) -> Generator[None]:
+    """Hold the agent's queue lock: ``put`` appends and ``take`` drains under it, across processes."""
+    with (log_dir / f'{QUEUE}.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
 deprecated.until('0.3.0', 'PILOOP_WORKER_TOKEN of an agent that 0.1.0 started: delete OLD_TAG_ENV and its uses')
 OLD_TAG_ENV = 'PILOOP_WORKER_TOKEN'
 """``TAG_ENV`` before 0.2.0. ``tagged`` still finds the processes of an agent that an older daemon started: the agent

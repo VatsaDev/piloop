@@ -27,7 +27,7 @@ What must not get worse (latency, size, cost), and by how much. Each one is a `[
 
 ## 5. Budget
 
-The time limit per run (the role's `timeout`). The compute (GPUs, cores). The total budget of the campaign in runs,
+The compute (GPUs, cores). The total budget of the campaign in runs,
 hours or money. How many implementers run at the same time.
 
 ## 6. Baselines and prior work

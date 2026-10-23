@@ -75,6 +75,7 @@ from piloop.otel import Span, Tracer
 from piloop.plugins import limits
 from piloop.plugins.cas.contract import CAS, Cas
 from piloop.plugins.executor.contract import (
+    DEADLINE_ENV,
     EXECUTORS,
     Bar,
     Bundle,
@@ -130,7 +131,7 @@ RUNS = 'runs'
 
 
 class RecoveryRequeued(EventModel):
-    """``_settle`` requeued an idea from the recovered work of a run.
+    """``_settle`` requeued an idea from the last commit of a run that did not succeed.
 
     Counting these events caps the requeues (the ``recovery_requeues`` of the run's role): candidates cannot, because
     two runs that leave the same tree share one candidate.
@@ -166,6 +167,8 @@ class RunFinished(EventModel):
     error: str | None
 
 
+WRAP_UP_LEAD_SECONDS = 600
+"""The most seconds before its role timeout that the daemon tells an implementer to wrap up (``wrap_up_lead``)."""
 STARTUP_RELAUNCHES = 2
 """How many times a run is queued again with a new implementer after its implementer failed to start. Then the run fails.
 
@@ -340,7 +343,7 @@ class RunController:
                     )
                     s.commit()
                 self._close(span, run_id, RunEnd.FAILED, error)
-                self._settle(span, run_id, idea_id, RunEnd.FAILED, startup_failed=False, recovered=None)
+                self._settle(span, run_id, idea_id, RunEnd.FAILED, startup_failed=False, last=None)
 
     def _execute(self, run_id: RunId, agent_session_id: AgentSessionId, span: Span) -> None:
         with self.launcher.lock:
@@ -364,6 +367,7 @@ class RunController:
                         idea,
                         base,
                         Agent(role=run.role, session=agent_session_id).signature,
+                        cfg.role(run.role).timeout,
                     ),
                     track=cfg.track(idea.track),
                     wake=lessons_overview(s, campaign, cfg.wake_budget(run.role)),
@@ -426,13 +430,13 @@ class RunController:
                 self._cut(span, run_id, idea_id, agent_session_id, cfg.name, repo, base_sha, None)
             case Lost(reason=reason):
                 self._close(span, run_id, RunEnd.WORKER_LOST, reason)
-                self._settle(span, run_id, idea_id, RunEnd.WORKER_LOST, startup_failed=False, recovered=None)
+                self._settle(span, run_id, idea_id, RunEnd.WORKER_LOST, startup_failed=False, last=None)
             case NotStarted():
                 if not self._relaunch(span, run_id, agent_session_id, log_dir):
                     with self._db.session() as s:
                         end = RunEnd.CANCELLED if run_cancel(s, run_id) is not None else RunEnd.NOT_STARTED
                     self._close(span, run_id, end, None)
-                    self._settle(span, run_id, idea_id, end, startup_failed=True, recovered=None)
+                    self._settle(span, run_id, idea_id, end, startup_failed=True, last=None)
             case Ran():
                 self._ran(span, run_id, idea_id, campaign_id, agent_session_id, repo, base_sha, ended, log_dir)
             case _:
@@ -458,7 +462,7 @@ class RunController:
         """Trace the end that a daemon stop writes on the run (``Scheduler._fail_run``), which owns the row."""
         with self._db.session() as s:
             run, agent = s.get_one(Run, run_id), latest_agent_session(s, run_id)
-            if run.status is RunStatus.RUNNING and agent is not None and left_finding(s, run, agent):
+            if run.status is RunStatus.RUNNING and agent is not None and finding_of(s, run, agent) is not None:
                 end, error = handed_off(s, run)
             else:
                 end, error = RunEnd.DAEMON_STOPPED, None
@@ -501,8 +505,8 @@ class RunController:
         end, error = run_outcome(facts)
         self._close(span, run_id, end, error)
         # Score all commits, even if the implementer then timed out or crashed.
-        recovered = self._score(run_id, campaign_id, repo, shas, log_dir) if shas else None
-        self._settle(span, run_id, idea_id, end, startup_failed=False, recovered=recovered)
+        last = self._score(run_id, campaign_id, repo, shas, log_dir) if shas else None
+        self._settle(span, run_id, idea_id, end, startup_failed=False, last=last)
 
     def _relaunch(self, span: Span, run_id: RunId, agent_session_id: AgentSessionId, log_dir: Path) -> bool:
         """Queue the run again with a new implementer, up to ``STARTUP_RELAUNCHES`` times, after its implementer failed to start.
@@ -595,9 +599,9 @@ class RunController:
         return self.sources.git(campaign, commit)
 
     def _left_finding(self, run_id: RunId, idea_id: IdeaId, agent_session_id: AgentSessionId) -> bool:
-        """Return True if the agent signed a ``finding`` on its idea or its run (``left_finding``)."""
+        """Return True if the agent signed a ``finding`` on its idea or its run (``finding_of``)."""
         with self._db.session() as s:
-            return left_finding(s, s.get_one(Run, run_id), s.get_one(AgentSession, agent_session_id))
+            return finding_of(s, s.get_one(Run, run_id), s.get_one(AgentSession, agent_session_id)) is not None
 
     def resume(self, run_id: RunId) -> None:
         """Score the commits of a closed run and settle its idea, after a daemon stopped while it scored them.
@@ -611,17 +615,17 @@ class RunController:
                 campaign = run.idea.campaign
                 end, idea_id, campaign_id = run.end, run.idea_id, campaign.id
                 name, campaign_path = config_of(campaign).name, Path(campaign.path)
-            recovered = None
+            last = None
             try:
                 repo = git.open_repo(campaign_path)
                 shas = git.pinned(repo, f'refs/piloop/{name}/r{run_id}/')
                 span.set(commits=len(shas))
-                recovered = self._score(run_id, campaign_id, repo, shas, self._runs_dir / str(run_id))
+                last = self._score(run_id, campaign_id, repo, shas, self._runs_dir / str(run_id))
             except Exception as e:
                 span.error(e)
                 end = RunEnd.FAILED
             assert end is not None  # a run whose commits are scored is closed
-            self._settle(span, run_id, idea_id, end, startup_failed=False, recovered=recovered)
+            self._settle(span, run_id, idea_id, end, startup_failed=False, last=last)
 
     def remeasure(self, candidate_id: CandidateId) -> None:
         """Measure a candidate with the campaign's current evaluator, then judge it again if it is ``rejudgeable``.
@@ -716,8 +720,7 @@ class RunController:
     ) -> CandidateId | None:
         """Turn each new commit into a candidate, or find its existing candidate, then measure and judge it.
 
-        Return the id of the candidate of the run's recovery commit (``RECOVERED_TRAILER``), if it has one and scoring
-        was not cancelled. A tree that is already a candidate keeps that candidate, and its verdict unless another run
+        Return the id of the candidate of the run's last commit, unless scoring was cancelled. A tree that is already a candidate keeps that candidate, and its verdict unless another run
         proposes it again (``ledger.reproposed``).
 
         The daemon scores with the campaign's current config, not the config at launch. A run that outlives a config
@@ -762,7 +765,6 @@ class RunController:
             s.commit()
         for i, sha in enumerate(shas):
             git.pin(repo, f'refs/piloop/{cfg.name}/r{run_id}/{i}', sha)
-        recovered_id: CandidateId | None = None
         for i, (sha, candidate_id) in enumerate(zip(shas, ids, strict=True)):
             skip = git.eval_skipped(repo, sha)
             recovered = bool(git.trailers(repo, sha, RECOVERED_TRAILER))
@@ -802,8 +804,6 @@ class RunController:
                     recovered=recovered,
                     notes=git.trailers(repo, sha, 'Piloop-Note'),
                 )
-            if recovered:  # by its trailer: the tree may be a known candidate, which keeps its verdict
-                recovered_id = candidate_id
             if judged.merged is not None and not self._follow(scope, judged.merged, log_dir):
                 return None
             if judged.advanced:
@@ -814,7 +814,7 @@ class RunController:
         for candidate_id in left:  # Rebased candidates that a daemon stop left unjudged.
             if not self._follow(scope, candidate_id, log_dir):
                 return None
-        return recovered_id
+        return ids[-1]
 
     def _follow(self, scope: Scope, candidate_id: CandidateId, log_dir: Path) -> bool:
         """Measure a rebased candidate and judge it against its parent, the head it was merged onto.
@@ -1042,7 +1042,7 @@ class RunController:
         end: RunEnd,
         *,
         startup_failed: bool,
-        recovered: CandidateId | None,
+        last: CandidateId | None,
     ) -> None:
         """After the run's commits are judged, set the idea to ``ready`` if it has attempts left, else to ``done``.
 
@@ -1050,10 +1050,9 @@ class RunController:
         (``startup_failed``), the idea is ``parked`` instead, attempts left or not. It was never tried, a new run would
         fail the same way, and ``done`` would let the ideas that wait for it start without its result.
 
-        A run that did not succeed and left ``recovered`` work requeues its idea from that work, attempts left or not,
-        up to ``recovery_requeues`` times of the run's role (``RecoveryRequeued`` events): the idea's base becomes the
-        recovered candidate, so a new implementer starts from it and finishes it, and that run is judged as any other. A
-        note on the idea says so.
+        A run that did not succeed and made commits requeues its idea from them, attempts left or not, up to
+        ``recovery_requeues`` times of the run's role (``RecoveryRequeued`` events): the idea's base becomes the
+        candidate of the ``last`` commit, so a new implementer starts from it and finishes the work (``_requeue``).
 
         A run whose implementer's escalation still waits for an answer (``open_escalation``) parks its idea first, whatever
         its status. A new run would stop on the same question, and ``done`` would start the ideas that wait for it.
@@ -1082,24 +1081,12 @@ class RunController:
                             )
                         )
                     elif (
-                        recovered is not None
+                        last is not None
                         and end is not RunEnd.FINISHED
                         and role is not None
                         and _requeues(s, idea) < role.recovery_requeues
                     ):
-                        idea.status, idea.base_candidate_id = IdeaStatus.READY, recovered
-                        requeued = RecoveryRequeued(run=run_id, candidate=recovered)
-                        emit(s, requeued, TargetRef(TargetKind.IDEA, idea.id), System.DAEMON)
-                        s.add(
-                            Comment(
-                                target=TargetRef(TargetKind.IDEA, idea.id),
-                                author=DAEMON_ACTOR,
-                                kind=CommentKind.NOTE,
-                                body=f'requeued from candidate#{recovered}: run#{run_id} ended {end} with work its'
-                                f' implementer never committed, recovered as candidate#{recovered}; the next run starts'
-                                ' from it to finish it',
-                            )
-                        )
+                        _requeue(s, run, s.get_one(Candidate, last))
                     elif startup_failed:
                         idea.status = IdeaStatus.PARKED
                         s.add(
@@ -1117,8 +1104,10 @@ class RunController:
                         idea.status = IdeaStatus.DONE
                 s.commit()
 
-    def _context(self, s: Session, cfg: CampaignConfig, idea: Idea, base: Candidate, author: str) -> str:
-        """Return the implementer's context: its worktree, the idea, its base, and the comments on the idea and its runs.
+    def _context(
+        self, s: Session, cfg: CampaignConfig, idea: Idea, base: Candidate, author: str, timeout: float
+    ) -> str:
+        """Return the implementer's context: its worktree, its time, the idea, its base, and the comments on the idea and its runs.
 
         A comment on a run is about the idea too. Examples are a human's decision during attempt 1, or a watchdog's
         finding on why it failed. The next attempt is a new run, so without these comments it would start with no
@@ -1137,13 +1126,17 @@ class RunController:
             '- Your cwd is your worktree: make every edit, run every evaluation and make every commit there.'
             f' Only its commits are scored. The campaign repo, {idea.campaign.path}, is read-only for you: read'
             ' its history and candidates, never edit, run or commit in it.',
+            f'- Your session ends {round(timeout / 60, 1):g} minutes after it starts, at `${DEADLINE_ENV}` (Unix time).'
+            f' The daemon tells you to wrap up {round(wrap_up_lead(timeout) / 60, 1):g} minutes before. Commit each step'
+            ' that runs, and leave your finding before the end.',
             f'- Starting from candidate#{base.id}: {at_base} — {base.summary}',
         ]
-        if base.verdict is Verdict.RECOVERED:
+        if base.run_id is not None and s.get_one(Run, base.run_id).idea_id == idea.id:
+            recovered = base.verdict is Verdict.RECOVERED
+            unmeasured = ' It is what its implementer left uncommitted, never measured.' if recovered else ''
             lines.append(
-                f'- candidate#{base.id} is work that an earlier run of this idea left uncommitted when its implementer'
-                ' stopped. It was never measured. Read its diff against its parent, finish it, and commit what you'
-                ' would ship.'
+                f'- candidate#{base.id} is where run#{base.run_id}, an earlier run of this idea, stopped.{unmeasured}'
+                ' Read its diff against its parent, finish the work, and commit what you would ship.'
             )
         if (bar := bar_of(base)) is not base:
             at_bar = ', '.join(f'{t.primary.name}={score(bar, evaluator_id, t.primary)}' for t in cfg.all_tracks)
@@ -1206,13 +1199,18 @@ class Judged:
     """The candidate of its merge onto the head, if it was rebased and the merge is a new tree."""
 
 
+def wrap_up_lead(timeout: float) -> float:
+    """How many seconds before its role ``timeout`` an implementer is told to wrap up: a quarter, at most 10 minutes."""
+    return min(WRAP_UP_LEAD_SECONDS, timeout / 4)
+
+
 def _comment_line(c: Comment) -> str:
     where = f' on run#{c.target_id}' if c.target_kind is TargetKind.RUN else ''
     return f'- {c.author} ({c.kind}{where}): {c.body}'
 
 
-def left_finding(s: Session, run: Run, agent_session: AgentSession) -> bool:
-    """Return True if ``implementer`` signed a ``finding`` on its run's idea or on the run, as ``<role>#<id>`` or ``run#<id>``.
+def finding_of(s: Session, run: Run, agent_session: AgentSession) -> Comment | None:
+    """Return the first ``finding`` that ``agent_session`` signed on its run's idea or on the run, as ``<role>#<id>`` or ``run#<id>``.
 
     A finding is the implementer's report that it is done. Only the implementer's own finding counts: a relaunched run's dead
     implementer did not finish it.
@@ -1220,12 +1218,12 @@ def left_finding(s: Session, run: Run, agent_session: AgentSession) -> bool:
     on_idea = Comment.target == TargetRef(TargetKind.IDEA, run.idea_id)
     on_run = Comment.target == TargetRef(TargetKind.RUN, run.id)
     signed = (*deprecated.signatures(Agent(role=agent_session.kind, session=agent_session.id)), f'run#{run.id}')
-    found = s.scalar(
-        select(Comment.id)
+    return s.scalars(
+        select(Comment)
         .where(on_idea | on_run, Comment.kind == CommentKind.FINDING, Comment.author.in_(signed))
+        .order_by(Comment.id)
         .limit(1)
-    )
-    return found is not None
+    ).first()
 
 
 @dataclass(frozen=True)
@@ -1233,9 +1231,9 @@ class RunFacts:
     """The facts that decide how a run ended (``run_outcome``), gathered when its implementer ends."""
 
     finding: bool = False
-    """The implementer left its own finding (``left_finding``): its report that it is done."""
+    """The implementer left its own finding (``finding_of``): its report that it is done."""
     ended: bool = False
-    """The daemon ended the implementer for a stop or a cancel (``AgentEnded``)."""
+    """The daemon ended the implementer (``AgentEnded``)."""
     cancelled: bool = False
     """Someone cancelled the run (``run_cancel``)."""
     timed_out: bool = False
@@ -1323,9 +1321,44 @@ def open_escalation(s: Session, run: Run) -> CommentId | None:
 
 
 def _requeues(s: Session, idea: Idea) -> int:
-    """How many times ``_settle`` requeued the idea from recovered work (its ``RecoveryRequeued`` events)."""
+    """How many times ``_settle`` requeued the idea from a run's commits (its ``RecoveryRequeued`` events)."""
     query = select(func.count()).where(Event.target == TargetRef(TargetKind.IDEA, idea.id), has(RecoveryRequeued))
     return s.scalar(query) or 0
+
+
+def _requeue(s: Session, run: Run, last: Candidate) -> None:
+    """Requeue the idea of a run that did not succeed from its ``last`` commit, with a note. The caller commits.
+
+    When the head moved past that commit, a run from it would be a branch run, whose keeps never move the head. The
+    idea then starts on the head, and the note says how to take the commits.
+    """
+    idea = run.idea
+    trunk = head(s, idea.campaign)
+    moved = not run.branch and trunk is not None and branches(idea.campaign, last, trunk)
+    idea.status, idea.base_candidate_id = IdeaStatus.READY, None if moved else last.id
+    emit(s, RecoveryRequeued(run=run.id, candidate=last.id), TargetRef(TargetKind.IDEA, idea.id), System.DAEMON)
+    body = (
+        f'requeued on the head: run#{run.id} ended {run.end} after its commits, and the head moved past them. To start'
+        f' from them, run git cherry-pick {bar_of(run.base).commit_sha}..{last.commit_sha}'
+        if moved
+        else f'requeued from candidate#{last.id}: run#{run.id} ended {run.end} after its commits; the next run starts'
+        ' from its last one to finish the work'
+    )
+    s.add(Comment(target=TargetRef(TargetKind.IDEA, idea.id), author=DAEMON_ACTOR, kind=CommentKind.NOTE, body=body))
+
+
+def branches(campaign: Campaign, pinned: Candidate | None, computed: Candidate | None) -> bool:
+    """Return True if a run on ``pinned`` is a branch run: the pinned base's bar is not the current head.
+
+    A pin to a non-keep whose nearest keep is the head is not a branch. Its run is judged against the head
+    (``ledger.bar_of``). Nor is a pin whose commit has the head's (``git.contains``), such as a compose that
+    cherry-picked it: a keep of it builds on the head.
+    """
+    if pinned is None or computed is None:
+        return pinned is not None
+    if bar_of(pinned).id == computed.id:
+        return False
+    return not git.contains(git.open_repo(Path(campaign.path)), pinned.commit_sha, computed.commit_sha)
 
 
 def commits_of(run_id: RunId) -> Commits:

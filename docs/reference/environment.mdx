@@ -40,5 +40,7 @@ the harnesses name.
 | `PILOOP_BIN` | every agent | `$PILOOP_HOME/bin/piloop`, which runs the daemon's own piloop on the daemon's home. The briefs run piloop with it, so another piloop on your `PATH`, or a harness shell that runs your rc files again, does not matter. |
 | `PATH` | every agent | The daemon's `PATH`, after `$PILOOP_HOME/bin`, so that a plain `piloop` is the daemon's too. |
 | `PILOOP_UNITS_FILE` | the evaluate command, in piloop's own measurements only: the daemon's, and the baseline that `piloop init` measures. Never in an agent's environment. | The path where the evaluate command may write its [per-unit results](/concepts/campaigns#per-unit-results). |
+| `PILOOP_DEADLINE` | every agent | The Unix time at which the role's `timeout` ends the agent. |
+| `PILOOP_MESSAGES` | every agent of the `subprocess` runtime | The file of the messages that wait for the agent. The hook of a Claude agent runs `piloop agent messages` after each tool call when it is not empty. |
 | `PILOOP_PROCESS_TAG` | every agent | A random tag of the agent's own, which its runtime finds the processes that the agent started by, also those in sessions of their own, to end them with the agent. It is not the agent's identity: `PILOOP_ACTOR` is. |
 | `CLAUDE_CODE_CHILD_SESSION` | every agent, set to empty | Claude Code sets it for every process that it runs. A Claude Code agent that inherits it saves no transcript, so piloop clears it. |

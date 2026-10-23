@@ -107,6 +107,11 @@ class Commits(BaseModel):
     """The message of the commit of what the agent left uncommitted."""
 
 
+DEADLINE_ENV = 'PILOOP_DEADLINE'
+"""The variable in an agent's environment that holds the Unix time at which its ``AgentJob.timeout`` ends it. Every
+executor sets it when it starts the agent."""
+
+
 class AgentJob(BaseModel):
     """The description of an agent's job: everything a worker needs, so it reads no campaign table.
 

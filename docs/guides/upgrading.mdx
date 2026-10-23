@@ -180,6 +180,7 @@ field does not fail, but it finds nothing: read the new one.
 | `$.wrap_up` of `run.cancel_requested` and `agent_session.cancel_requested` | `$.ending`: `wrap_up` or `now` |
 | `$.status` of `run.finished` | `$.end`, as in `runs.end` |
 | `$.error` of `agent_session.stop_ended` | `$.end` |
+| `$.error` of `agent_session.wrap_up` | `$.comment`, the note that carries the prompt; a prompt that did not reach the agent is that note's `comment.undelivered` |
 | `$.key` of `anomaly.reported` | `$.subject` and `$.anomaly`; the line is `$.line` |
 | `$.kind` of `anomaly.startup` | `$.role` |
 | `$.kind` of `idea.linked` and `idea.unlinked` | `$.link_kind` |

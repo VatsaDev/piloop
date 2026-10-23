@@ -372,7 +372,8 @@ without a priority), out of the inbox.
 
 - The ids of the agents are in the status.
 - By default (`runtime = "subprocess"`), each agent is a background process. `piloop prompt <agent_session_id> '…'` queues a
-  message for it: when its turn ends, piloop resumes its session with the message.
+  message for it. A Claude agent reads it after its next tool call. Any other reads it when its turn ends, when
+  piloop resumes its session with the message.
 - With `runtime = "herdr"`, each agent runs as a tab in the workspace of the campaign in the `piloop` Herdr session:
   - `piloop attach <agent_session_id>` focuses that tab. From a terminal outside that session, it also attaches to the
     session. It takes over the terminal, so it is for the human, not for your shell tool.

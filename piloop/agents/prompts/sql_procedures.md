@@ -174,7 +174,7 @@ Special reasons:
 - `not evaluated: Piloop-Eval: skip` is the reason of an `unmeasured` commit, one that asked not to be evaluated
   (scaffolding). It has no measurement and says nothing about the idea.
 - A reason that starts with `recovered:` is a `recovered` candidate: what an implementer left uncommitted when it stopped.
-  It has no measurement. If its run did not finish, the idea was requeued with it as the base.
+  It has no measurement. If its run did not finish, the next run of its idea starts from it.
 - A reason that starts with `keeps against its own bar, but the head moved on` is a keep that was rebased. The rest of
   the reason names the merged candidate or the conflict.
 

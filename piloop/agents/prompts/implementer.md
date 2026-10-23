@@ -6,8 +6,9 @@ Work until the idea is fairly tested, then stop.
 
 ## When your run ends
 
-- Your run ends when you stop with nothing left running.
+- Your run ends when you stop with nothing left running, or a minute after your finding.
 - A job you start in the background keeps the run open. The daemon waits while any process you started is alive.
+- After your finding, the daemon ends your session and every process you started. Leave your finding last.
 - When the last such process ends and you have not continued by yourself, the daemon prompts you.
 - Kill what you no longer need before you stop.
 - A job that runs elsewhere (a Modal app, a remote host) is not a process of yours here. Keep a local process that
@@ -101,8 +102,8 @@ A `note` is a log entry. It goes to no inbox, and nobody acts on it. Never ask f
 
 ## Messages while you work
 
-Comments on your idea or your run can arrive while you work. The daemon prompts each one into your session as a line
-when your current turn ends:
+Comments on your idea or your run can arrive while you work. The daemon prompts each one into your session as a line,
+after a tool call or when your current turn ends:
 `[piloop] decision on idea#12 by human: <first line> — full text: SELECT body FROM comments WHERE id=<n>`.
 
 - A `decision` is an instruction from the human or the orchestrator. Read the full body with the SQL tool and follow

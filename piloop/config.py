@@ -178,8 +178,8 @@ class Stop(BaseModel):
 
     The daemon checks the conditions on every tick, before it requests anything. When one holds, the campaign is
     ``stopped`` (``campaigns.status``, ``stopped_reason``). Running implementers are told to commit and stop, and are ended
-    10 minutes later. What they committed is scored. An implementer in the middle of a turn reads the message only when the
-    turn ends: one that is ended before it left its finding ends its run ``campaign_stopped``, which does not
+    10 minutes later. What they committed is scored. Most harnesses read the message only when the turn
+    ends: an implementer that is ended before it left its finding ends its run ``campaign_stopped``, which does not
     count toward ``max_runs`` or ``plateau``. Pending requests and queued runs are dropped
     (``campaign_stopped``). The ``stopped`` triggers fire once, which by default requests the watchdog's closing
     review, and the triggers request nothing more. The daemon files no seeds for the campaign either. An agent that you

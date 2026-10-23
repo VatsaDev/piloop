@@ -53,8 +53,8 @@ stateDiagram-v2
 `runs.end` says how a finished run ended, and `runs.error` gives the detail. Only `finished`, `failed`, `timed_out`
 and `awaiting_answer` are attempts at the idea. A run whose implementer had left its finding before a stop is not
 stopped: it is finished. The stop closes it as `succeeded`, its idea stays `scheduled`, and the next daemon scores its
-commits and settles the idea. The same holds when such an implementer times out, because a job of its own keeps the
-run open, or exits with an error: the run `succeeded`, the idea is `done`, and the agent session row keeps the error.
+commits and settles the idea. A minute after its finding, the daemon ends the implementer and every process that it
+left running. The run `succeeded`, the idea is `done`, and the agent session row keeps how its process ended.
 
 An implementer that stops while its own escalation waits for an answer ends its run `awaiting_answer`, and the error
 names the escalation. Its idea is `parked` until someone answers and sets it `ready`.

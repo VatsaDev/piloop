@@ -80,10 +80,12 @@ your `brief.md`, the idea, and every comment on the idea and on its earlier runs
 
 The implementer commits, also when the idea did not work, and says so in the message. When the run ends, the daemon
 scores every new commit. piloop commits what the implementer left uncommitted as a `recovered` commit. It is never
-measured, but the next attempt starts from it.
+measured.
 
-Then the idea is `done`. When the run failed or timed out, the idea goes back to `ready` while it has attempts left
-(2 by default). A run whose agent never started to work is not an attempt. See
+Then the idea is `done`. When the run failed or timed out after it made commits, the idea goes back to `ready`, and the
+next attempt starts from its last commit, up to `[roles.implementer] recovery_requeues` times (2). When the head moved
+past that commit, the next attempt starts on the head, and a note on the idea gives the `git cherry-pick` of the
+commits. A run that failed with no commit sends the idea back to `ready` while it has attempts left (2 by default). A run whose agent never started to work is not an attempt. See
 [Run lifecycle](/architecture/run-lifecycle).
 
 An implementer asks for a decision with an `escalation` comment. If it stops while the escalation waits for an answer,
@@ -105,4 +107,5 @@ campaign reaches no implementer. When a comment cannot reach the implementer, th
 brief.
 
 `piloop prompt <agent-session-id> "<text>"` writes a note on the agent itself, and the agent gets its full text. It
-waits for the end of the agent's current turn.
+reaches a Claude agent of the `subprocess` runtime after its next tool call, and any other agent when its current
+turn ends.

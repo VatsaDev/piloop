@@ -116,23 +116,25 @@ class StartupAnomaly(EventModel):
 
 
 class WrapUp(EventModel):
-    """An implementer of a stopped campaign, or of a run cancelled with its wrap-up, was told to commit and stop.
+    """The daemon told an agent to commit and stop, with the ``comment``: the note that carries the prompt.
 
-    The daemon ends the implementer ``STOP_GRACE_SECONDS`` later.
+    An implementer of a stopped campaign, or an agent cancelled with its wrap-up, is ended ``STOP_GRACE_SECONDS`` later.
+    An implementer whose role timeout is near is ended by its timeout. A note that does not reach the agent has its
+    ``comment.undelivered``; the grace period starts anyway.
     """
 
     kind: Literal['agent_session.wrap_up'] = 'agent_session.wrap_up'
     reason: str
-    error: str | None = None
-    """Why the prompt did not reach the agent. The grace period starts anyway."""
+    comment: CommentId | None = None
+    """None when the agent no longer ran, or for a wrap-up from before the note carried the prompt."""
 
 
 class AgentEnded(EventModel):
-    """The daemon ended an agent for a stop or a cancel, with the ``reason`` and the run's ``end``.
+    """The daemon ended an agent, with the ``reason`` and the run's ``end``: a stop, a cancel, or its finding.
 
     An implementer of a stopped campaign is ended when the grace period after its wrap-up prompt is over, or at once for
-    a stop that ends it now. An implementer in the middle of a turn takes a message only when the turn ends, so it may
-    never have read the prompt. The scheduler sets the row ``ending`` and commits it with the event before the kill, so
+    a stop that ends it now. Most harnesses take a message only when the turn ends, so the implementer may never have
+    read the prompt. The scheduler sets the row ``ending`` and commits it with the event before the kill, so
     a finding that the agent writes after it is refused. The run ends ``campaign_stopped`` or ``cancelled`` unless its
     implementer left its finding before.
     """

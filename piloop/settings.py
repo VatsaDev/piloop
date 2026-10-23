@@ -78,6 +78,10 @@ class Settings(BaseSettings):
     def _actor(cls, actor: object) -> object:
         return deprecated.old_actor(actor) if isinstance(actor, str) else actor
 
+    messages: Path | None = None
+    """The queue of messages for this agent's turn, set by a runtime that keeps one. ``piloop agent messages`` takes
+    them."""
+
     tick_seconds: float = 2
     """The number of seconds between two ticks. On each tick, the daemon checks the triggers of every campaign and
     launches the requested agents."""

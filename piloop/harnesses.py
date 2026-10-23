@@ -1,7 +1,8 @@
 """Built-in coding-agent harness definitions. A campaign may override any of them in ``piloop.toml``."""
 
+import json
 from enum import StrEnum
-from typing import Self
+from typing import Self, assert_never
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
@@ -11,8 +12,17 @@ from piloop.usage import UsageSpec
 SESSION_ID = '{session_id}'
 PROMPT = '{prompt}'
 EFFORT = '{effort}'
-CLAUDE_SETTINGS = (
-    '{"autoMemoryEnabled":false,"env":{"BASH_DEFAULT_TIMEOUT_MS":"300000","BASH_MAX_TIMEOUT_MS":"600000"}}'
+TAKE_MESSAGES = 'if [ -s "$PILOOP_MESSAGES" ]; then exec "$PILOOP_BIN" agent messages --format claude-hook; fi'
+"""The ``PostToolUse`` hook of every Claude agent: it hands the agent the messages that wait for it, in its turn.
+
+It checks the queue first, so a tool call with no message costs a file check, not a start of piloop."""
+CLAUDE_SETTINGS = json.dumps(
+    {
+        'autoMemoryEnabled': False,
+        'env': {'BASH_DEFAULT_TIMEOUT_MS': '300000', 'BASH_MAX_TIMEOUT_MS': '600000'},
+        'hooks': {'PostToolUse': [{'hooks': [{'type': 'command', 'command': TAKE_MESSAGES}]}]},
+    },
+    separators=(',', ':'),
 )
 """``--settings`` for every Claude agent. They take precedence over the user's own settings.
 
@@ -21,7 +31,32 @@ load into every later agent of the campaign, outside piloop's database and brief
 
 A foreground Bash command moves to the background after 5 minutes, and after 10 minutes at most. Without this, a
 user's long ``BASH_DEFAULT_TIMEOUT_MS`` lets an agent block its turn on one command for an hour. pi's bash tool has no
-default timeout, so there is nothing to set for pi."""
+default timeout, so there is nothing to set for pi.
+
+A message reaches the turn in progress (``TAKE_MESSAGES``)."""
+
+
+class MessageFormat(StrEnum):
+    """How ``piloop agent messages`` prints the messages that it takes: the hook of a harness names the one it reads."""
+
+    LINES = 'lines'
+    """One message per line."""
+    CLAUDE_HOOK = 'claude-hook'
+    """The output of a Claude Code ``PostToolUse`` hook, which gives the agent the messages (``additionalContext``)."""
+
+
+def render_messages(messages: list[str], form: MessageFormat) -> str:
+    """Return ``messages`` as ``form`` prints them."""
+    lines = '\n'.join(messages)
+    match form:
+        case MessageFormat.LINES:
+            return lines
+        case MessageFormat.CLAUDE_HOOK:
+            return json.dumps({'hookSpecificOutput': {'hookEventName': 'PostToolUse', 'additionalContext': lines}})
+        case _:
+            assert_never(form)
+
+
 NO_CODEX_MEMORY = 'features.memories=false'
 """``-c`` for every Codex agent, for the same reason. Codex memories are off by default. The flag makes sure that a
 user's config cannot turn them on for piloop's agents. pi has no memory store of its own."""

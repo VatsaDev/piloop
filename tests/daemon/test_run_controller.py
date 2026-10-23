@@ -35,6 +35,7 @@ from piloop.daemon.run_controller import (
     NO_CHANGES,
     RECOVERED_REASON,
     UNCOMMITTED_SUMMARY,
+    RecoveryRequeued,
     RunController,
     RunFacts,
     RunRelaunched,
@@ -522,9 +523,9 @@ def test_work_a_stopped_implementer_left_uncommitted_is_recovered_and_a_new_run_
     ex = controller(db, runtime, tmp_path)
     execute(ex, db, finishing)
     with db.session() as s:
-        assert '- candidate#' in (
+        assert '- candidate#' in (s.get_one(Run, finishing).brief or '') and 'left uncommitted, never measured' in (
             s.get_one(Run, finishing).brief or ''
-        ) and 'left uncommitted when its implementer' in (s.get_one(Run, finishing).brief or '')
+        )
     [done] = candidates(db, finishing)
     assert (done.summary, done.verdict, done.metrics['score'], done.parent_id) == (
         'add a line',
@@ -534,6 +535,78 @@ def test_work_a_stopped_implementer_left_uncommitted_is_recovered_and_a_new_run_
     ), 'judged against the nearest keep below the recovered work, the baseline'
     with db.session() as s:
         assert s.get_one(Idea, idea_id).status is IdeaStatus.DONE
+
+
+TWO_DISCARDS = (
+    '#!/bin/sh\n: > solve.txt\ngit commit -qam "wipe"\necho x > other.txt\ngit add other.txt\ngit commit -qm "second"\n'
+)
+"""Two commits that score below the baseline: neither moves the head."""
+
+
+def test_a_run_that_timed_out_after_its_commits_is_retried_from_its_last_commit(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """A retry from the idea's base redid the work that the timed-out run had committed and that was scored."""
+    write_toml(Path(campaign.path), f'{TWO_DISCARDS}touch ../committed\nsleep 30\n')
+    reload_campaign(db, campaign)
+    run_id = make_run(db, campaign, max_runs=1)
+    wait = runtime.wait
+
+    def time_out_after_the_commits(handle: Handle, timeout: float) -> AgentExit:
+        wait_until((tmp_path / 'runs' / str(run_id) / 'committed').exists)
+        return wait(handle, 0.5)
+
+    mocker.patch.object(runtime, 'wait', side_effect=time_out_after_the_commits)
+    execute(controller(db, runtime, tmp_path), db, run_id)
+    assert run_row(db, run_id).end is RunEnd.TIMED_OUT
+    [_, second] = candidates(db, run_id)
+    with db.session() as s:
+        idea = s.get_one(Idea, run_row(db, run_id).idea_id)
+        assert (idea.status, idea.base_candidate_id) == (IdeaStatus.READY, second.id), 'max_runs=1 is spent'
+        [note] = s.scalars(select(Comment).where(Comment.target_kind == TargetKind.IDEA)).all()
+        assert note.body == (
+            f'requeued from candidate#{second.id}: run#{run_id} ended timed_out after its commits; the next run starts'
+            ' from its last one to finish the work'
+        )
+        assert [e.payload for e in s.scalars(select(Event).where(has(RecoveryRequeued)))] == [
+            RecoveryRequeued(run=run_id, candidate=second.id)
+        ]
+
+
+def test_a_failed_run_whose_commits_the_head_moved_past_is_retried_on_the_head_with_its_commits_named(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """A retry from those commits would be a branch run, whose keeps never move the head."""
+    harness = (
+        f'#!/bin/sh\nif [ -p ../go ]; then\n{TWO_DISCARDS.removeprefix("#!/bin/sh\n")}read line < ../go\nexit 1\nfi\n'
+        'echo line >> solve.txt\ngit commit -qam "add a line"\n'
+    )
+    write_toml(Path(campaign.path), harness, max_implementers=2)
+    reload_campaign(db, campaign)
+    ex = controller(db, runtime, tmp_path)
+    slow = make_run(db, campaign, title='slow')
+    (tmp_path / 'runs' / str(slow)).mkdir(parents=True)
+    go = tmp_path / 'runs' / str(slow) / 'go'
+    os.mkfifo(go)
+    running = threading.Thread(target=execute, args=(ex, db, slow))
+    running.start()
+    wait_until(lambda: (tmp_path / 'runs' / str(slow) / 'worktree' / 'other.txt').exists())
+    execute(ex, db, make_run(db, campaign, title='quick'))
+    go.write_text('\n')
+    running.join(30)
+    [wipe, second] = candidates(db, slow)
+    with db.session() as s:
+        moved = head(s, s.get_one(Campaign, campaign.id))
+        assert moved is not None and moved.summary == 'add a line'
+        idea = s.get_one(Idea, run_row(db, slow).idea_id)
+        assert (idea.status, idea.base_candidate_id) == (IdeaStatus.READY, None), 'on the head'
+        [note] = s.scalars(select(Comment).where(Comment.target == TargetRef(TargetKind.IDEA, idea.id))).all()
+        base = baseline(db, campaign.id).commit_sha
+        assert note.body == (
+            f'requeued on the head: run#{slow} ended failed after its commits, and the head moved past them. To start'
+            f' from them, run git cherry-pick {base}..{second.commit_sha}'
+        )
+    assert wipe.verdict is Verdict.DISCARD
 
 
 def test_dirt_after_a_commit_is_recovered_on_its_own_and_the_commit_is_scored_as_made(
@@ -984,6 +1057,10 @@ def test_brief_carries_history_and_comments(
     assert '| 1 ' in brief and 'first idea' in brief, 'the same history block the research agent reads'
     assert 'Tried so far' not in brief
     assert '"$PILOOP_BIN" sql' in brief and "'implementer#2', 'finding'" in brief
+    assert (
+        '- Your session ends 0.3 minutes after it starts, at `$PILOOP_DEADLINE` (Unix time). The daemon tells you to'
+        ' wrap up 0.1 minutes before. Commit each step that runs, and leave your finding before the end.\n' in brief
+    ), 'the role timeout of 20s'
     assert "VALUES ('idea', 2, 'implementer#2', 'escalation', 1, '...')" in brief, (
         'a request is an escalation, never a note'
     )

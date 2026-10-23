@@ -1046,6 +1046,33 @@ def test_attach_focuses_an_implementer_tab(
         run_cli(['attach', '1'])
 
 
+def test_agent_messages_takes_the_queue_in_the_format_that_the_hook_names(
+    tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Claude agent's ``PostToolUse`` hook runs it, so the messages reach the turn in progress."""
+    queue = tmp_path / 'logs' / 'queued-messages'
+    queue.parent.mkdir()
+    queue.write_text('"[piloop] stop after this commit"\n"and say so"\n')
+    monkeypatch.setattr(common, 'settings', common.settings.model_copy(update={'messages': queue}))
+    out()
+    run_cli(['agent', 'messages'])
+    assert out() == '[piloop] stop after this commit\nand say so\n'
+    queue.write_text('"[piloop] stop after this commit"\n"and say so"\n')
+    run_cli(['agent', 'messages', '--format', 'claude-hook'])
+    assert json.loads(out()) == {
+        'hookSpecificOutput': {
+            'hookEventName': 'PostToolUse',
+            'additionalContext': '[piloop] stop after this commit\nand say so',
+        }
+    }
+    assert not queue.exists()
+    run_cli(['agent', 'messages'])
+    assert out() == '', 'nothing to say: no output'
+    monkeypatch.setattr(common, 'settings', common.settings.model_copy(update={'messages': None}))
+    with pytest.raises(SystemExit, match='PILOOP_MESSAGES'):
+        run_cli(['agent', 'messages'])
+
+
 def test_prompt_is_a_note_on_the_agent_and_says_whether_it_arrived(
     campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:

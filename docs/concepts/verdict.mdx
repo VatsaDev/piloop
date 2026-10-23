@@ -38,7 +38,7 @@ The daemon gives each measured candidate one verdict:
 | `crash` | The candidate has no successful measurement: the evaluate command failed or timed out, wrote a bad per-unit results file, or did not print every metric in `piloop.toml`. |
 | `reference` | A starting point imported with `piloop candidate import`. It is never judged. |
 | `unmeasured` | A commit marked `Piloop-Eval: skip`. It is never measured or judged, and says nothing about its idea. |
-| `recovered` | What an implementer left uncommitted when it stopped, committed by the daemon (`Piloop-Recovered: run#<id>`). The implementer never declared it ready, so it is never measured, judged or kept. If its run did not succeed, the idea goes back to the queue with it as the base, so a new implementer finishes it, up to `[roles.implementer] recovery_requeues` times per idea (2). |
+| `recovered` | What an implementer left uncommitted when it stopped, committed by the daemon (`Piloop-Recovered: run#<id>`). The implementer never declared it ready, so it is never measured, judged or kept. If its run did not succeed, the next attempt starts from it, as from the last commit of any such run ([Ideas and runs](/concepts/ideas-and-runs)). |
 
 The rule, in order:
 

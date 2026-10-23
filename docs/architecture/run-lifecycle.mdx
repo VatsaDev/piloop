@@ -76,9 +76,9 @@ sequenceDiagram
 4. **Work.** The agent reads its brief, implements the idea and commits. It reads and writes the database with
    `piloop sql`. On each tick, the scheduler hands new comments on the run or the idea to the executor, which sends
    them to the agent.
-5. **Close.** When the agent ends or times out, the worker reads its token usage, commits what is left uncommitted, on
-   its own, as a `recovered` commit, and reports, which closes the agent session row. The run controller closes the
-   run. The implementer slot is now free for the next run.
+5. **Close.** When the agent ends, times out, or a minute after its finding, when the daemon ends it, the worker reads
+   its token usage, commits what is left uncommitted, on its own, as a `recovered` commit, and reports, which closes
+   the agent session row. The run controller closes the run. The implementer slot is now free for the next run.
 6. **Score.** Each new commit becomes a candidate. Commits with the same git tree are the same candidate. The worker
    runs the evaluate command in a clean worktree of the commit, its report stores a measurement, and the daemon judges the candidate against the run's bar. A keep becomes the bar for the run's next commit. A `recovered` commit is not measured; if the run
    did not succeed, the idea goes back to the queue with it as its base, so a new implementer finishes it.

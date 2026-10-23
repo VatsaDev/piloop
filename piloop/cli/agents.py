@@ -1,4 +1,4 @@
-"""The commands that act on agents: ``launch``, ``prompt``, ``attach``, ``agent cancel`` and ``run cancel``."""
+"""The commands that act on agents: ``launch``, ``prompt``, ``attach``, ``agent messages``, ``agent cancel`` and ``run cancel``."""
 
 from typing import Annotated
 
@@ -14,8 +14,9 @@ from piloop.config import TRANSCRIPT, config_of
 from piloop.db.events import has, latest
 from piloop.db.models import OPEN_RUNS, AgentSession, AgentSessionState, Event, Run, TargetKind
 from piloop.db.session import Database
+from piloop.harnesses import MessageFormat, render_messages
 from piloop.ids import AgentSessionId, CommentId, RoleName, RunId, TargetRef
-from piloop.plugins.runtime.contract import Handle, NotAttachable, Runtime, RuntimeFailure
+from piloop.plugins.runtime.contract import MESSAGES_ENV, Handle, NotAttachable, Runtime, RuntimeFailure, take
 from piloop.runtime.factory import handle_for, runtime_for
 
 agent_app = cyclopts.App(name='agent', help='Act on one agent.')
@@ -150,6 +151,24 @@ WrapUp = Annotated[
         name='--wrap-up', help='Tell the agent to commit and stop first, and end it 10 minutes later.', negative=''
     ),
 ]
+
+
+@agent_app.command(name='messages')
+def messages(
+    form: Annotated[
+        MessageFormat,
+        cyclopts.Parameter(name='--format', help='How to print them: the format that the hook of the harness reads.'),
+    ] = MessageFormat.LINES,
+) -> None:
+    """Take the messages that wait for this agent's turn, and print them.
+
+    A hook of the harness runs it during a turn, so a message reaches the turn in progress. It prints nothing when no
+    message waits.
+    """
+    if common.settings.messages is None:
+        raise SystemExit(f'{MESSAGES_ENV} is not set: the runtime of this agent keeps no message queue')
+    if taken := take(common.settings.messages):
+        common.console.out(render_messages(taken, form), highlight=False)
 
 
 @agent_app.command(name='cancel')

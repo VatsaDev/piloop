@@ -545,6 +545,15 @@ Cancels an agent of any role on the daemon's next tick: a sweep, or an implement
 `piloop run cancel` does. A requested agent never starts. A running one is ended with every process that it started,
 at once or, with `--wrap-up`, after it was told to commit and stop.
 
+### piloop agent messages
+
+```text
+piloop agent messages [--format lines|claude-hook]
+```
+
+Takes the messages that wait for the agent of this shell, and prints them, one per line by default. A hook of the
+harness runs it during a turn, in the format that the hook reads: the built-in Claude harness passes `claude-hook`.
+
 ## The database
 
 ### piloop sql

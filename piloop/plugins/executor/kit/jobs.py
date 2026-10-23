@@ -34,6 +34,7 @@ from piloop.mcp import RENDERERS, Launch, expand, forwarded_env
 from piloop.otel import Span
 from piloop.plugins.cas.contract import Cas
 from piloop.plugins.executor.contract import (
+    DEADLINE_ENV,
     AgentFinished,
     AgentJob,
     AgentNotStarted,
@@ -235,7 +236,7 @@ def run_agent(job: AgentJob, runtime: Runtime, control: Control, site: Site, spa
     try:
         started_at = time.monotonic()
         try:
-            handle = runtime.start(spec)
+            handle = runtime.start(replace(spec, env=spec.env | {DEADLINE_ENV: str(int(time.time() + job.timeout))}))
         except Exception as e:  # an unanswered dialog or a lost prompt: the agent did not start to work
             span.error(e)
             return _unstarted(job, site, _start_error(e, log_dir), started_at)

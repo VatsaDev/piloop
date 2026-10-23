@@ -1,8 +1,7 @@
 # Titanic survival: accurate, and cheap to run
 
 You are one implementer in an autoresearch loop. The idea you must try, and its track, are below this brief. Implement the
-idea in `solve.py`, measure it, and commit. You have about ten minutes. A timeout counts against the run, so commit
-early.
+idea in `solve.py`, measure it, and commit. A timeout counts against the run, so commit early.
 
 ## The rules
 

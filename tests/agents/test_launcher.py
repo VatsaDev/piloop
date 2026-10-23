@@ -2,6 +2,7 @@ import json
 import os
 import re
 import shutil
+import time
 import tomllib
 from pathlib import Path
 
@@ -903,6 +904,18 @@ def test_the_mcp_element_expands_to_the_roles_servers_and_their_env_reaches_the_
     assert 'probe-value' not in ' '.join(spec.args) and 'probe-value' not in config.read_text()
     assert 'PI_MCP_CONFIG_MODE=exclusive' in (Path(campaign.path) / 'env.txt').read_text().splitlines()
     assert agent_session(db, agent_session_id).error is None
+
+
+def test_an_agent_knows_when_its_timeout_ends(
+    campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """``PILOOP_DEADLINE`` is the Unix time at which the agent's role timeout ends it."""
+    use_harness(db, campaign, RECORDS_ARGV_AND_ENV)
+    before = time.time()
+    launch(db, runtime, tmp_path, request(db, campaign))
+    env = dict(line.split('=', 1) for line in (Path(campaign.path) / 'env.txt').read_text().splitlines() if '=' in line)
+    timeout = load_campaign_config(Path(campaign.path)).role(WATCHDOG).timeout
+    assert before + timeout - 1 <= int(env['PILOOP_DEADLINE']) <= time.time() + timeout
 
 
 def test_a_variable_a_roles_server_names_but_the_daemon_lacks_fails_the_launch_naming_it(

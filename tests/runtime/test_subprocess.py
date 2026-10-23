@@ -12,7 +12,16 @@ import pytest
 from dirty_equals import IsPositive, IsStr
 
 from piloop.plugins.runtime import subprocess as subprocess_runtime
-from piloop.plugins.runtime.contract import AgentSpec, AgentStart, AgentStatus, ExitStatus, Handle, NotSteerable
+from piloop.plugins.runtime.contract import (
+    AgentSpec,
+    AgentStart,
+    AgentStatus,
+    ExitStatus,
+    Handle,
+    NotSteerable,
+    locked,
+    take,
+)
 from piloop.plugins.runtime.subprocess import SubprocessRuntime
 from piloop.proc import alive, started
 
@@ -279,6 +288,24 @@ def test_a_message_waits_for_the_turn_to_end_then_resumes_the_session_with_it(tm
         elsewhere.prompt(handle, 'too late')
 
 
+def test_a_hook_of_the_harness_takes_the_messages_during_the_turn_and_no_turn_follows(tmp_path: Path) -> None:
+    """``PILOOP_MESSAGES`` names the queue: a harness that runs a hook between two tool calls takes them there."""
+    rt = SubprocessRuntime()
+    go = tmp_path / 'go'
+    os.mkfifo(go)
+    exe = script(tmp_path, f'read line < {go}; echo "queue=$PILOOP_MESSAGES" > env.txt')
+    handle = rt.start(spec(tmp_path, exe, 'brief', resume=['resume', 'id', '{prompt}']))
+    rt.prompt(handle, 'first')
+    rt.prompt(handle, 'second')
+    queue = tmp_path / 'logs' / 'queued-messages'
+    assert take(queue) == ['first', 'second']
+    assert take(queue) == [], 'taken once'
+    go.write_text('\n')
+    assert rt.wait(handle, timeout=10).error is None
+    assert (tmp_path / 'env.txt').read_text() == f'queue={queue}\n'
+    assert not rt._resume(handle), 'nothing left for a turn of its own'
+
+
 def test_a_resumed_turn_is_the_one_kill_and_status_reach_from_any_instance(tmp_path: Path) -> None:
     rt = SubprocessRuntime()
     go = tmp_path / 'go'
@@ -350,7 +377,7 @@ def test_queueing_and_draining_hold_one_lock_so_no_message_falls_between_them(tm
     rt = SubprocessRuntime()
     handle = rt.start(spec(tmp_path, script(tmp_path, 'sleep 0.5'), resume=['resume', 'id', '{prompt}']))
     queue = tmp_path / 'logs' / 'queued-messages'
-    with subprocess_runtime._locked(tmp_path / 'logs'):
+    with locked(tmp_path / 'logs'):
         appending = threading.Thread(target=rt.prompt, args=(handle, 'waits for the lock'))
         appending.start()
         appending.join(0.3)
@@ -359,7 +386,7 @@ def test_queueing_and_draining_hold_one_lock_so_no_message_falls_between_them(tm
     assert queue.read_text() == '"waits for the lock"\n'
     while rt._alive(handle):
         time.sleep(0.01)
-    with subprocess_runtime._locked(tmp_path / 'logs'):
+    with locked(tmp_path / 'logs'):
         draining = threading.Thread(target=rt._resume, args=(handle,))
         draining.start()
         draining.join(0.3)

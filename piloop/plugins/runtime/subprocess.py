@@ -1,14 +1,12 @@
 """Agents as plain background processes: the default runtime. Herdr is the optional one with visible panes."""
 
-import fcntl
 import json
 import os
 import re
 import signal
 import subprocess
 import time
-from collections.abc import Generator
-from contextlib import contextmanager, suppress
+from contextlib import suppress
 from pathlib import Path
 from typing import ClassVar
 from uuid import uuid4
@@ -16,6 +14,8 @@ from uuid import uuid4
 from piloop import deprecated
 from piloop.harnesses import Invocation, fill
 from piloop.plugins.runtime.contract import (
+    MESSAGES_ENV,
+    QUEUE,
     TAG_ENV,
     AgentExit,
     AgentSpec,
@@ -25,6 +25,8 @@ from piloop.plugins.runtime.contract import (
     Handle,
     NotAttachable,
     NotSteerable,
+    put,
+    take,
 )
 from piloop.plugins.runtime.kit.tags import kill_tagged, kill_tree
 from piloop.proc import alive, child_env, kill_group, started
@@ -35,9 +37,6 @@ POLL_SECONDS = 0.1
 SESSION_ID_SECONDS = 30
 """How long a live process has to print the line that ``session_id_pattern`` matches. After that, the session id is
 unknown."""
-QUEUE = 'queued-messages'
-"""Under the agent's log directory: the messages ``prompt`` queued for its next turn, one JSON string per line. A file,
-because ``prompt`` can run in another runtime instance, or another process, than ``wait``."""
 RESUMER = 'agent_session.resumer'
 """Under the agent's log directory: present while the instance that started the agent waits on it and can resume it.
 ``wait`` in any other instance (a re-attach after an in-place restart) removes it, so ``prompt`` refuses from then
@@ -55,9 +54,9 @@ class SubprocessRuntime:
 
     The first prompt is in ``spec.args``.
 
-    A message (``prompt``) waits in a queue until the turn ends: when the process exits, ``wait`` starts the harness
-    again with ``spec.resume_args``, which continue the same session with the queued messages as the prompt. Nothing
-    reaches a turn in progress, as with Herdr. Only the instance that started the agent can resume it, because the
+    A message (``prompt``) waits in a queue. A hook of the harness can take it during the turn (``MESSAGES_ENV``).
+    Otherwise, when the process exits, ``wait`` starts the harness again with ``spec.resume_args``, which continue the
+    same session with the queued messages as the prompt. Only the instance that started the agent can resume it, because the
     environment, secrets included, is never written down: after an in-place restart, a re-attached agent takes no
     more messages (``prompt`` refuses them) and its queue is left as it is.
 
@@ -162,9 +161,9 @@ class SubprocessRuntime:
         return []
 
     def prompt(self, handle: Handle, text: str) -> None:
-        """Keeps the message in a queue, and continues the agent's session with it when the turn ends.
+        """Keeps the message in a queue, which a hook of the harness can take in the turn, or else the next turn takes.
 
-        piloop runs the harness again with ``[harness.<name>] resume``, with the queued messages as the prompt. A
+        When the turn ends with messages queued, piloop runs the harness again with ``[harness.<name>] resume``, with the queued messages as the prompt. A
         harness without ``resume`` takes no message. Neither does an agent that the daemon re-attached to after
         ``piloop restart``.
 
@@ -182,8 +181,7 @@ class SubprocessRuntime:
             )
         if not self._alive(handle):
             raise NotSteerable(f'subprocess agent pid {_pid(handle)} has ended')
-        with _locked(_log_dir(handle)), (_log_dir(handle) / QUEUE).open('a') as queue:
-            queue.write(json.dumps(text) + '\n')
+        put(_log_dir(handle), text)
 
     def focus(self, handle: Handle) -> str:
         """Cannot: the agent is a background process without a terminal. Its output is in ``agent_session.stdout`` instead."""
@@ -217,12 +215,8 @@ class SubprocessRuntime:
         session = self.session_id(handle) or ''
         if not session and any('{session_id}' in a for a in spec.resume_args):
             return False
-        with _locked(log_dir):
-            queue = log_dir / QUEUE
-            messages = [json.loads(line) for line in queue.read_text().splitlines() if line] if queue.is_file() else []
-            if not messages:
-                return False
-            queue.unlink()
+        if not (messages := take(log_dir / QUEUE)):
+            return False
         prompt = '\n'.join(messages)
         args = [fill(a, prompt=prompt, session_id=session) for a in spec.resume_args]
         proc = _spawn(spec, args, 'a', str(handle.data['token']))
@@ -280,17 +274,6 @@ def _current(handle: Handle) -> tuple[int, float]:
     return int(str(data['pid'])), float(str(data['start_time']))
 
 
-@contextmanager
-def _locked(log_dir: Path) -> Generator[None]:
-    """Hold the agent's queue lock: ``prompt`` appends and ``_resume`` drains under it, across processes."""
-    with (log_dir / f'{QUEUE}.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
-
-
 def _spawn(spec: AgentSpec, args: list[str], mode: str, token: str) -> subprocess.Popen[bytes]:
     """Start one turn of the agent in a session of its own, writing (``w``) or appending (``a``) its output files."""
     with (spec.log_dir / STDOUT).open(mode) as out, (spec.log_dir / STDERR).open(mode) as err:
@@ -300,7 +283,7 @@ def _spawn(spec: AgentSpec, args: list[str], mode: str, token: str) -> subproces
             stdout=out,
             stderr=err,
             stdin=subprocess.DEVNULL,
-            env=child_env() | spec.env | {TAG_ENV: token},
+            env=child_env() | spec.env | {TAG_ENV: token, MESSAGES_ENV: str(spec.log_dir / QUEUE)},
             start_new_session=True,
         )
 

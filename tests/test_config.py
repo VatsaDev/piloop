@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -348,6 +349,39 @@ def test_default_claude_moves_a_long_bash_command_to_the_background() -> None:
     for argv in (claude.interactive, claude.headless):
         settings = json.loads(argv[argv.index('--settings') + 1])
         assert settings['env'] == {'BASH_DEFAULT_TIMEOUT_MS': '300000', 'BASH_MAX_TIMEOUT_MS': '600000'}
+
+
+def test_default_claude_takes_the_queued_messages_after_each_tool_call(tmp_path: Path) -> None:
+    """A headless turn can last an hour, and a message waits for its end. A hook after each tool call reads the queue.
+
+    Without a message, the hook costs a file check: piloop starts only when the queue has one.
+    """
+    claude = DEFAULT_HARNESSES['claude']
+    commands = set()
+    for argv in (claude.interactive, claude.headless, claude.resume):
+        settings = json.loads(argv[argv.index('--settings') + 1])
+        [entry] = settings['hooks']['PostToolUse']
+        [hook] = entry['hooks']
+        commands.add(hook['command'])
+    [command] = commands
+    fake = tmp_path / 'piloop'
+    fake.write_text('#!/bin/sh\necho "took: $*"\n')
+    fake.chmod(0o755)
+    queue = tmp_path / 'queued-messages'
+
+    def hook(**env: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ['sh', '-c', command],
+            env={'PATH': '/usr/bin:/bin', 'PILOOP_BIN': str(fake)} | env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    assert (hook().returncode, hook().stdout) == (0, ''), 'no queue: a Herdr agent'
+    assert (hook(PILOOP_MESSAGES=str(queue)).returncode, hook(PILOOP_MESSAGES=str(queue)).stdout) == (0, '')
+    queue.write_text('"x"\n')
+    assert hook(PILOOP_MESSAGES=str(queue)).stdout == 'took: agent messages --format claude-hook\n'
 
 
 def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_triggers(campaign_path: Path) -> None:

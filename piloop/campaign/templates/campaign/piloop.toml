@@ -49,7 +49,7 @@ runs = true                               # its agents do runs; a sweeping role 
 timeout = 1800                            # seconds one implementer may run
 max_concurrent = 4                        # the most runs at the same time; each run is one harness process on this machine
 explore_every = 4                         # at least 1 run in 4 starts from a pinned idea, when one is ready; 0 = off
-recovery_requeues = 2                     # times an idea is requeued from work a failed implementer left uncommitted
+recovery_requeues = 2                     # times an idea is requeued from the last commit of a failed implementer
 
 [roles.watchdog]                          # a watchdog investigates anomalies and reviews progress every `interval` seconds
 # harnesses = ["pi", "claude", "codex"]   # if not set: the campaign's harnesses
