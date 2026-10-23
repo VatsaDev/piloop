@@ -411,7 +411,8 @@ It goes when the daemon wakes on the commits of every process: those then notify
 
 
 CLOSE_WAIT_SECONDS = 5.0
-"""How long ``Database.close`` waits for the reads of its waiters, which are short."""
+"""How long ``Database.close`` waits for the connections in use to come back: the reads of its waiters, and every
+other session in flight."""
 
 
 def write_transaction(s: Session) -> None:
@@ -448,6 +449,11 @@ class Database:
         self._changed: set[asyncio.Future[None]] = set()
         """The futures of ``changed``'s waiters, each on its own event loop: the next commit resolves them."""
         event.listen(self._sessions, 'after_commit', lambda _s: self._wake())
+        self._checked_out = 0
+        """How many connections the pool has handed out now: ``close`` lets them come back before it closes them."""
+        event.listen(self.engine, 'checkout', lambda *_: self._count_checkout(1))
+        event.listen(self.engine, 'checkin', lambda *_: self._count_checkout(-1))
+        event.listen(self.engine, 'do_connect', self._refuse_once_closed)
 
     def session(self) -> Session:
         """A new session. Use it as a context manager.
@@ -458,6 +464,16 @@ class Database:
         if self._closed:
             raise DatabaseClosed('the database is closed')
         return self._sessions()
+
+    def _count_checkout(self, change: int) -> None:
+        with self._committed:
+            self._checked_out += change
+            self._committed.notify_all()
+
+    def _refuse_once_closed(self, *_: object) -> None:
+        """Open no connection after ``close``: a session made before it would leave one that nothing closes."""
+        if self._closed:
+            raise DatabaseClosed('the database is closed')
 
     def _wake(self) -> None:
         with self._committed:
@@ -522,13 +538,14 @@ class Database:
         return self._commits
 
     def close(self) -> None:
-        """Make every waiter give up, let the reads in flight end, then close the pooled connections.
+        """Make every waiter give up, let the sessions in flight end, then close the pooled connections.
 
-        A connection that a read holds while the pool goes is never closed: Python warns when it collects it.
+        A connection that is checked out while the pool goes is never closed: Python warns when it collects it. So it
+        waits for every one to come back, a waiter's read or any other session, and opens no new one meanwhile.
         """
         with self._committed:
             self._closed = True
             self._committed.notify_all()
             self._resolve()
-            self._committed.wait_for(lambda: self._reading == 0, CLOSE_WAIT_SECONDS)
+            self._committed.wait_for(lambda: self._reading == self._checked_out == 0, CLOSE_WAIT_SECONDS)
         self.engine.dispose()

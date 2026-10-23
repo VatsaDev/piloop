@@ -12,7 +12,7 @@ from uuid import uuid4
 import pytest
 from covalence import Cid
 from pytest_mock import MockerFixture
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.orm import Session
 
 from piloop.actor import System
@@ -487,6 +487,30 @@ def test_an_unreachable_worker_counts_no_slot_until_it_is_heard_again(
     assert leases.capacity() == Capacity(0, 0), 'unreachable'
     Local(leases, 'w1').heartbeat({held: None}, HOST)
     assert leases.capacity() == Capacity(None, 99)
+
+
+def test_capacity_counts_a_lease_that_a_worker_takes_while_it_reads_once(
+    db: Database, campaign: Campaign, tmp_path: Path, recorder: Recorder
+) -> None:
+    """Its reads are one snapshot: a lease that moves from queued to live between two of them is counted once."""
+    leases = Leases(db, recorder, TIMING, {'test': Pool(agents=2)})
+    join(leases, 'w1', [])
+    queue(db, agent_job(db, campaign, tmp_path))
+    assert leases.capacity().agents == 1, 'two slots, one taken by the queued job'
+
+    def acquire_before_the_queued_count(conn: object, cursor: object, statement: str, *_: object) -> None:
+        if statement.startswith('SELECT leases.kind') and 'leases.state = ?' in statement and not acquiring:
+            acquiring.append(True)  # its own reads come through here too
+            acquired.append(Local(leases, 'w1').acquire(uuid4().hex, HOST))
+
+    acquiring: list[bool] = []
+    acquired: list[object] = []
+    event.listen(db.engine, 'before_cursor_execute', acquire_before_the_queued_count)
+    try:
+        assert leases.capacity().agents == 1
+    finally:
+        event.remove(db.engine, 'before_cursor_execute', acquire_before_the_queued_count)
+    assert isinstance(acquired[0], Grant), 'the lease moved from queued to live during the read'
 
 
 class Settles(Recorder):

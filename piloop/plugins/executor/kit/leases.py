@@ -66,7 +66,7 @@ from piloop.db.models import (
     NoLease,
     utcnow,
 )
-from piloop.db.session import Database, write_transaction
+from piloop.db.session import Database, read_transaction, write_transaction
 from piloop.ids import AgentSessionId, CommentId, TargetKind, TargetRef
 from piloop.plugins.executor.contract import (
     JOB,
@@ -477,17 +477,20 @@ class Leases:
         A worker under pressure counts zero, and its live leases take nothing from another worker's slots.
         """
         since = utcnow() - timedelta(seconds=self.timing.grace)
-        with self._db.session() as s:
-            rows = s.scalars(select(LeaseWorker).where(LeaseWorker.seen_at > since)).all()
+        # one snapshot: a lease that a worker takes between two reads would otherwise count in neither
+        with self._db.session() as s, read_transaction(s):
+            reachable = s.execute(
+                select(LeaseWorker.id, LeaseWorker.pool, LeaseWorker.sample).where(LeaseWorker.seen_at > since)
+            ).all()
             leased = s.execute(select(Lease.worker, Lease.kind).where(Lease.state.in_(LIVE_LEASES))).all()
             live = Counter((worker, kind) for worker, kind in leased)
             queued = Counter(s.scalars(select(Lease.kind).where(Lease.state == LeaseState.QUEUED)))
         free: dict[LeaseKind, int | None] = dict.fromkeys(KINDS, 0)
-        for row in rows:
-            if (pool := self.pools.get(row.pool)) is None:
+        for worker, pool_name, sample in reachable:
+            if (pool := self.pools.get(pool_name)) is None:
                 continue
-            running = Capacity(live[row.id, LeaseKind.AGENT], live[row.id, LeaseKind.EVALUATION])
-            host = HostSample.model_validate(row.sample)
+            running = Capacity(live[worker, LeaseKind.AGENT], live[worker, LeaseKind.EVALUATION])
+            host = HostSample.model_validate(sample)
             for kind in KINDS:
                 if admits(pool, host, running, kind) is None:
                     bound = slots(pool, kind)

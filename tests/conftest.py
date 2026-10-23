@@ -117,8 +117,6 @@ executable = "{script}"
 headless = ["{{prompt}}"]
 """
 
-pytest_plugins = ['tests.unclosed']
-
 
 def spent(total: int, turns: int = 1) -> Usage:
     """The usage of a test's agent that spent ``total`` tokens in ``turns`` turns."""

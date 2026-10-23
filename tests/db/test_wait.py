@@ -1,11 +1,13 @@
 """``Database.wait_until``: a waiter wakes on a commit of this process, polls for one of another, and gives up."""
 
 import asyncio
+import sqlite3
 import threading
 import time
 from collections.abc import Callable
 
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.actor import System
@@ -93,6 +95,42 @@ def test_close_lets_a_read_in_flight_end_before_it_closes_the_connections(db: Da
     closing.join(10)
     waiting.join(10)
     assert not closing.is_alive() and not waiting.is_alive()
+
+
+def test_close_lets_a_session_in_flight_end_before_it_closes_the_connections(db: Database) -> None:
+    """Any session, not only a waiter's read: a thread that the daemon did not join can still be in one."""
+    holding, release = threading.Event(), threading.Event()
+    held: list[sqlite3.Connection] = []
+
+    def hold() -> None:
+        with db.session() as s:
+            s.execute(select(1))
+            raw = s.connection().connection.dbapi_connection
+            assert isinstance(raw, sqlite3.Connection)
+            held.append(raw)
+            holding.set()
+            release.wait(10)
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert holding.wait(10)
+    closing = threading.Thread(target=db.close)
+    closing.start()
+    closing.join(0.2)
+    assert closing.is_alive(), 'it waits for the session'
+    release.set()
+    closing.join(10)
+    holder.join(10)
+    with pytest.raises(sqlite3.ProgrammingError, match='closed database'):
+        held[0].execute('SELECT 1')
+
+
+def test_a_session_opened_before_the_close_gets_no_connection_after_it(db: Database) -> None:
+    """Its first statement fails loudly, and opens no connection that nothing would close."""
+    with db.session() as s:
+        db.close()
+        with pytest.raises(DatabaseClosed, match='the database is closed'):
+            s.execute(select(1))
 
 
 def test_a_closed_database_refuses_a_new_session(db: Database) -> None:

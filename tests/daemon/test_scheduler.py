@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+import traceback
 from collections import Counter
 from contextlib import closing
 from dataclasses import dataclass, field
@@ -203,6 +204,25 @@ def test_agents_launch_across_campaigns_within_the_executors_agent_slots_fewest_
     assert scheduler.tick() == [], 'the executor counts them once submitted'
     mocker.patch.object(scheduler._controller.executor, 'capacity', return_value=Capacity(agents=1, evaluations=None))
     assert len(scheduler.tick()) == 1, 'one free slot: core subtracts nothing that the executor counts'
+    scheduler.stop(timeout=5)
+
+
+def test_a_job_submitted_while_the_scheduler_counts_its_slots_still_takes_one(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """The job leaves core's count as the executor counts it: between the two reads, it must not be in neither."""
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    unsubmitted = scheduler._controller.launcher.unsubmitted
+    unsubmitted.add(AgentSessionId(99))  # an agent that a launch thread is about to submit
+    add_ideas(db, campaign, 'a1')
+
+    def submitted_meanwhile() -> Capacity:
+        if any(frame.name == '_launch' for frame in traceback.extract_stack()):  # the agents' count, not evaluations'
+            unsubmitted.discard(AgentSessionId(99))  # its submit lands after the executor's read: no lease of it there
+        return Capacity(agents=1, evaluations=None)
+
+    mocker.patch.object(scheduler._controller.executor, 'capacity', side_effect=submitted_meanwhile)
+    assert scheduler.tick() == [], 'its one slot is taken'
     scheduler.stop(timeout=5)
 
 

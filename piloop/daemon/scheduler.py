@@ -1109,9 +1109,11 @@ class Scheduler:
         Each slot goes to the campaign with the fewest live agents, so that a campaign with many requests never holds
         back another. Returns ``(agent_session_id, run_id)`` pairs.
         """
+        # before the executor's count: a job submitted in between then counts twice, for one tick, never in neither
+        unsubmitted = len(self._controller.launcher.unsubmitted)
         free = self._controller.executor.capacity().agents
         if free is not None:
-            free -= len(self._controller.launcher.unsubmitted)
+            free -= unsubmitted
         live = Counter(s.scalars(select(AgentSession.campaign_id).where(AgentSession.state.in_(LIVE))).all())
         left = list(launching)
         taken: list[tuple[AgentSessionId, RunId | None]] = []
