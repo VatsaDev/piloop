@@ -102,8 +102,8 @@ from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.ids import AgentSessionId, CandidateId, CommentId, IdeaId, RoleName, RunId, TargetKind, TargetRef, TrackName
 from piloop.otel import Tracer
-from piloop.plugins.executor.contract import AgentKey, Artifact, LeftJob, Prompt
-from piloop.plugins.role.contract import Files, ImplementerRole, SweepRole, Workdir, ideas_taken
+from piloop.plugins.executor.contract import AgentKey, LeftJob, Prompt
+from piloop.plugins.role.contract import Files, ImplementerRole, SweepRole, ideas_taken
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.scout import ScoutRole
 from piloop.plugins.stop_rule.contract import GO, Go, Hold, Stop
@@ -296,14 +296,11 @@ class Scheduler:
             run = s.get_one(Run, w.run_id)
             if run.status is not RunStatus.RUNNING or not (self._runs_dir / str(w.run_id) / 'worktree').is_dir():
                 return None
-            artifact: Artifact = sources.git(campaign, run.base.commit_sha)
+            artifact = sources.git(campaign, run.base.commit_sha)
             return self._controller.launcher.left(s, w, artifact, run_place(w.run_id), commits_of(w.run_id))
-        in_campaign = self._in_campaign(campaign, w.kind)
-        cwd = Path(campaign.path) if in_campaign else self._agent_sessions_dir / str(w.id) / 'worktree'
-        if not cwd.is_dir():
+        if not (self._agent_sessions_dir / str(w.id) / 'worktree').is_dir():
             return None
-        head = checkout_candidate(s, campaign).commit_sha
-        artifact = sources.checkout(campaign) if in_campaign else sources.git(campaign, head)
+        artifact = sources.git(campaign, checkout_candidate(s, campaign).commit_sha)
         return self._controller.launcher.left(s, w, artifact, sweep_place(w.id), None)
 
     def _fail_open(self, end: RunEnd, *, reaped: bool, sparing: Collection[AgentSessionId] = ()) -> None:
@@ -1257,7 +1254,7 @@ class Scheduler:
         self._tracer.event(paused.kind, campaign=campaign.name, deaths=len(deaths), load=load)
 
     def _sweep(self, agent_session_id: AgentSessionId) -> None:
-        """Run a sweep, an agent without a run, in its role's ``workdir``, with a brief made from its row.
+        """Run a sweep, an agent without a run, in a worktree at the head, with a brief made from its row.
 
         Every sweep gets the campaign overview (``piloop.reports.overview``) in its context. A sweep that got anomalies
         is an incident sweep: the anomalies come first, the research pack is left out (``piloop history`` prints it),
@@ -1277,7 +1274,6 @@ class Scheduler:
             campaign = s.get_one(Campaign, agent_session.campaign_id)
             cfg = config_of(campaign)
             role = role_of(s, agent_session)
-            in_campaign = self._in_campaign(campaign, agent_session.kind)
             base = checkout_candidate(s, campaign)
             values = ', '.join(
                 f'{t.primary.name}={"unmeasured" if (v := score(base, campaign.evaluator_id, t.primary)) is None else v}'
@@ -1285,10 +1281,7 @@ class Scheduler:
             )
             now = utcnow()
             cwd = (
-                f'- Your cwd is the campaign checkout, shared with the human; the head is candidate#{base.id} ({values}).'
-                ' Leave it as you found it: nothing you change here is scored or kept.'
-                if in_campaign
-                else f'- Your cwd is a detached checkout of candidate#{base.id}, the head ({values}): read and run the'
+                f'- Your cwd is a detached checkout of candidate#{base.id}, the head ({values}): read and run the'
                 ' code, try things. Nothing you commit here is scored or kept; it goes with the checkout when you end.'
             )
             lines = [
@@ -1315,7 +1308,7 @@ class Scheduler:
                 wake=lessons_overview(s, campaign, cfg.wake_budget(role.kind)),
             )
         sources = self._controller.sources  # outside the session: it puts the linked inputs into the CAS
-        artifact = sources.checkout(campaign) if in_campaign else sources.git(campaign, base.commit_sha)
+        artifact = sources.agent(campaign, base.commit_sha)
         place = sweep_place(agent_session_id)
         self._controller.launcher.launch(agent_session_id, brief=brief, place=place, artifact=artifact)
 
@@ -1371,11 +1364,6 @@ class Scheduler:
             f'- Measured runs since the last keep: {without}, of the {mark} that mark a stall ({why}){stalled}.',
             f'- Sweep started at: {now.strftime("%Y-%m-%d %H:%M:%S")} (UTC; the research pack below is as of then).',
         ]
-
-    def _in_campaign(self, campaign: Campaign, kind: RoleName) -> bool:
-        """Return whether a sweep of ``kind`` works in the campaign checkout (``workdir = "repo"``)."""
-        role = config_of(campaign).roles.sweeping().get(kind)
-        return role is not None and role.workdir is Workdir.REPO
 
     def _reattach_sweep(self, agent_session_id: AgentSessionId) -> None:
         """Wait for the agent of a sweep that a previous daemon process started, until it ends."""

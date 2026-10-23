@@ -5,19 +5,11 @@ from typing import Annotated, ClassVar, Literal, Self
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
+from piloop import deprecated
 from piloop.db.sql import sql_error
 from piloop.plugins.host import Capability
 from piloop.plugins.runtime.contract import RuntimeName
 from piloop.plugins.trigger.contract import TriggerEntry
-
-
-class Workdir(StrEnum):
-    """Where the agent of a sweeping role works. An agent that does a run works in a new worktree at its run's base."""
-
-    HEAD = 'head'
-    """A detached worktree at the head. It is removed when the agent ends, and nothing committed in it is scored."""
-    REPO = 'repo'
-    """The campaign's repository checkout itself, shared with you. piloop does not reset or remove it."""
 
 
 class Files(StrEnum):
@@ -35,6 +27,13 @@ class RoleConfig(BaseModel):
     """The keys that every ``[roles.<name>]`` table accepts. Each role's table below adds keys and sets defaults."""
 
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    @model_validator(mode='before')
+    @classmethod
+    def _no_workdir(cls, data: object) -> object:
+        if isinstance(data, dict) and 'workdir' in data:
+            raise ValueError(deprecated.removed_workdir())
+        return data
 
     PROMPT: ClassVar[str] = ''
     """The built-in prompt of a built-in role, a file under ``piloop/agents/prompts/``. Empty for other roles."""
@@ -144,8 +143,6 @@ class SweepRole(RoleConfig):
     """When the daemon requests an agent of this role: a list of ``{ kind = "<trigger>", ... }`` entries, checked in
     order on each tick. A package can add triggers. An empty list means that agents start only on request
     (``piloop launch``)."""
-    workdir: Workdir = Workdir.HEAD
-    """Where the agent works: ``head``, a detached worktree at the head, or ``campaign``, the campaign checkout."""
     interval: float = Field(default=0, ge=0)
     """The number of seconds between two routine sweeps of the ``cron`` trigger, counted from the start of the last
     one. A sweep that investigates an anomaly is not a routine sweep. 0 turns the timer off."""

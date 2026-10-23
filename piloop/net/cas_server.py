@@ -25,7 +25,6 @@ from pydantic import TypeAdapter, ValidationError
 from starlette.exceptions import HTTPException
 from starlette.types import Receive, Scope, Send
 
-from piloop.db.models import TokenScope
 from piloop.net.cas import ROUTE, Code, ErrorBody
 from piloop.net.server import App, authorized
 from piloop.plugins.cas.contract import UNBOUNDED, BlobAddress, Cas
@@ -61,7 +60,7 @@ class CasError(Exception):
 
 def app(network: Network, cas: Cas, scratch: Path) -> App:
     """The routes of ``ROUTE`` over ``cas``, with temporary files in ``scratch``."""
-    workers = [Depends(authorized(network, TokenScope.WORKER))]
+    workers = [Depends(authorized(network))]
     server = App()
 
     @server.exception_handler(CasError)

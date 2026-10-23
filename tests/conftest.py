@@ -194,6 +194,12 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup('e2e', 'the end-to-end campaign (make e2e)')
     group.addoption('--e2e-harness', default='claude', help='the harness of every agent (default: claude)')
     group.addoption('--e2e-model', help="the harness's model (default: its cheapest, claude-haiku-4-5 for claude)")
+    group.addoption(
+        '--e2e-mode',
+        choices=('local', 'distributed'),
+        action='append',
+        help='run the scenarios in this mode only; give it twice for both (default: both)',
+    )
 
 
 @pytest.fixture(autouse=True)

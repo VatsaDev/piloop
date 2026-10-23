@@ -20,10 +20,13 @@ from piloop.store.tree import (
     Manifest,
     Missing,
     Removed,
+    changed,
     materialise,
+    merge,
     put_tree,
     put_walk,
     remove,
+    stage,
     walk,
     write_files,
 )
@@ -519,3 +522,52 @@ def test_files_are_written_under_a_root_and_replace_other_content(tmp_path: Path
     assert (root / 'same.txt').stat().st_ino == before, 'what holds the content already stays'
     with pytest.raises(Missing):
         write_files(disk(tmp_path / 'empty'), {'lost.txt': other}, root)
+
+
+def test_a_merge_writes_each_path_that_still_holds_its_base_and_puts_the_others_beside(
+    tmp_path: Path, workspace: Path
+) -> None:
+    """A compare-and-swap for each path, on the blob that the job started from: the first writer of a path wins."""
+    cas = disk(tmp_path)
+    base = put_tree(cas, workspace, ['NOTES.md', 'idea7.log', 'idea7']).manifest
+    [same] = [e.blob for e in base.entries if e.path == 'idea7/run.sh' and e.blob is not None]
+    (workspace / 'idea7.log').write_text('another agent wrote this meanwhile\n')
+    (workspace / 'idea7' / 'blocked').mkdir()
+    files = {
+        'NOTES.md': cas.put(b'# Notes\nmine\n'),
+        'idea7.log': cas.put(b'mine\n'),
+        'idea7/new.txt': cas.put(b'new\n'),
+        'idea7/blocked': cas.put(b'x'),
+        'idea7/latest': cas.put(b'not through a symlink'),
+        '../outside': cas.put(b'x'),
+        'idea7/run.sh': same,
+        'idea7/copy.npy': None,
+        'idea7.gone': None,
+    }
+    (workspace / 'NOTES.md.removed').write_text('x')
+    merged = merge(workspace, base, stage(cas, files, tmp_path / 'scratch'), 'implementer-3')
+    assert sorted(merged.written) == ['NOTES.md', 'idea7/new.txt']
+    assert merged.removed == ['idea7/copy.npy'], 'a removal is a write: it holds what the job started from'
+    assert merged.beside == {'idea7.log': 'idea7.log.implementer-3'}
+    assert sorted(merged.blocked) == ['../outside', 'idea7/blocked', 'idea7/latest']
+    assert (workspace / 'NOTES.md').read_text() == '# Notes\nmine\n'
+    assert (workspace / 'idea7.log').read_text() == 'another agent wrote this meanwhile\n'
+    assert (workspace / 'idea7.log.implementer-3').read_text() == 'mine\n'
+    assert (workspace / 'idea7' / 'new.txt').read_text() == 'new\n'
+    assert not (workspace / 'idea7' / 'copy.npy').exists()
+    assert not (tmp_path / 'outside').exists()
+    (workspace / 'NOTES.md.implementer-4').mkdir()
+    (workspace / 'NOTES.md').write_text('a third version\n')
+    staged = stage(cas, {'NOTES.md': cas.put(b'x'), 'idea7/run.sh': None}, tmp_path / 'scratch')
+    again = merge(workspace, base, staged, 'implementer-4')
+    assert (again.blocked, again.removed) == (['NOTES.md'], ['idea7/run.sh'])
+    (workspace / 'idea7.log').write_text('changed again\n')
+    assert merge(workspace, base, {'idea7.log': None}, 'implementer-5').kept == ['idea7.log'], (
+        'another agent changed it since: it stays'
+    )
+    with pytest.raises(Missing):
+        stage(cas, {'gone.txt': Cid.of(b'never stored')}, tmp_path / 'scratch')
+
+
+def test_nothing_changed_where_no_tree_is(tmp_path: Path) -> None:
+    assert changed(disk(tmp_path), tmp_path / 'never-made', Manifest(entries=()), {}) == {}

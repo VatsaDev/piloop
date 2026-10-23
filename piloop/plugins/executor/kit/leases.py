@@ -540,7 +540,8 @@ class Leases:
         match handle:
             case AgentHandle() if agent_session is not None:
                 try:
-                    self._results.started(AgentKey(agent_session), handle.data, session_id, guard=mark)
+                    machine = None if worker == SERVE else worker
+                    self._results.started(AgentKey(agent_session), handle.data, session_id, machine=machine, guard=mark)
                 except Settled as e:
                     raise StaleLease(f'stale_lease: {e}') from e
             case _:  # an evaluator: core needs nothing of its start
@@ -578,6 +579,22 @@ class Leases:
             with contextlib.suppress(Settled, StaleLease):
                 self._results.session(AgentKey(agent_session), session_id, guard=self._fence(lease_id, worker))
         return answers
+
+    def relayed(self, lease_id: int, worker: str) -> AgentJob:
+        """The agent's job of ``worker``'s live lease ``lease_id``, whose ``piloop`` calls its worker relays.
+
+        The fence of each relayed call: once the lease ended, the agent's calls are refused.
+
+        Raises:
+            StaleLease: no such live lease of ``worker``, or an evaluation's.
+        """
+        with self._db.session() as s:
+            if s.get(Lease, lease_id) is None:
+                raise StaleLease(f'stale_lease: there is no lease#{lease_id}')
+            job = _granted(self._live(s, lease_id, worker))
+        if not isinstance(job, AgentJob):
+            raise StaleLease(f'stale_lease: lease#{lease_id} is an evaluation, which relays nothing')
+        return job
 
     def report(
         self, lease_id: int, worker: str, request_id: str, report: AgentReport | EvaluationReport

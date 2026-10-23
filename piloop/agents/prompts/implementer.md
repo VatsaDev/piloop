@@ -114,10 +114,14 @@ after a tool call or when your current turn ends:
   or your idea.
 - Do not reply with a comment of your own just to reply. Your `finding` at the end is the reply.
 
-## The workspace is archived
+## The workspace
+
+`workspace/` is a copy of the campaign's shared workspace as it was when your run started. Its files are read-only:
+to change one, remove it and write it again. What you write there goes into the shared workspace when your run ends.
 
 Everything under `workspace/idea<your idea id>/` goes into piloop's artifact store when the idea is done. Its local
-copy is removed some days later, or sooner when the disk is short, and `piloop restore` brings it back.
+copy is removed some days later, or sooner when the disk is short, and `piloop restore` brings it back for the runs
+that start after.
 `workspace/NOTES.md` and `workspace/research/` stay. So:
 
 - Put what you produce there, large intermediate arrays included, never at the top level of the workspace.
@@ -128,5 +132,5 @@ copy is removed some days later, or sooner when the disk is short, and `piloop r
 ## Do not touch
 
 - the campaign checkout;
-- the contents of the shared `workspace/` symlink, except to add notes and artifacts;
+- the files of other ideas in `workspace/`;
 - the data files.

@@ -40,7 +40,6 @@ from piloop.plugins.executor.contract import (
     AgentKey,
     AgentReport,
     Capacity,
-    Checkout,
     EvaluationJob,
     EvaluationKey,
     EvaluationReport,
@@ -118,7 +117,13 @@ class Recorder:
         self.calls.append(call)
 
     def started(
-        self, key: AgentKey, handle: dict[str, object], session_id: str | None, *, guard: Guard | None = None
+        self,
+        key: AgentKey,
+        handle: dict[str, object],
+        session_id: str | None,
+        *,
+        machine: str | None = None,
+        guard: Guard | None = None,
     ) -> None:
         self._apply(guard, ('started', key.agent_session, handle), lambda s: None)
 
@@ -168,7 +173,7 @@ def agent_job(db: Database, campaign: Campaign, tmp_path: Path) -> AgentJob:
     return AgentJob(
         agent_session=agent_session_id,
         runtime='subprocess',
-        artifact=Checkout(repo=RepoId(campaign.id)),
+        artifact=GitSource(repo=RepoId(campaign.id), commit=baseline(db, campaign.id).commit_sha),
         place='logs',
         timeout=60,
         brief='b',

@@ -41,7 +41,7 @@ from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, AgentSessionId, RoleName, TargetKind, TargetRef
 from piloop.mcp import MCP
 from piloop.otel import Tracer
-from piloop.plugins.executor.contract import Checkout, GitSource, RepoId
+from piloop.plugins.executor.contract import GitSource, RepoId
 from piloop.plugins.executor.kit.capacity import HostSample
 from piloop.plugins.executor.kit.leases import Answer, LeaseQueued, Leases
 from piloop.plugins.executor.workers import Workers
@@ -115,11 +115,16 @@ def exit_of(ended: Ended) -> AgentExit:
     return ended.process
 
 
-def checkout(campaign: Campaign) -> Checkout:
-    """The campaign's checkout as the artifact: the agent runs there, and what the test harnesses write stays, ignored
-    by git, so it is no change of the agent's."""
+def checkout(campaign: Campaign) -> GitSource:
+    """The campaign's head as the artifact: the agent runs in a worktree of it, and what the test harnesses write there
+    is ignored by git, so it is no change of the agent's."""
     (Path(campaign.path) / '.git' / 'info' / 'exclude').write_text('*.txt\njson.py\npiloop/\n')
-    return Checkout(repo=RepoId(campaign.id))
+    return GitSource(repo=RepoId(campaign.id), commit=Repo(campaign.path).head.commit.hexsha)
+
+
+def worktree(tmp_path: Path) -> Path:
+    """The worktree that an agent of ``launch`` works in: it goes when the job ends, so harnesses write in its parent."""
+    return tmp_path / 'w' / 'worktree'
 
 
 def agent_session(db: Database, agent_session_id: AgentSessionId) -> AgentSession:
@@ -153,7 +158,7 @@ def test_brief_is_role_prompt_campaign_brief_procedures_then_context(campaign: C
     assert brief.endswith(
         f"""# Context
 - You are watchdog#7, the watchdog for campaign#1 (demo).
-- Campaign repo: {campaign.path} (every candidate commit and Entire checkpoint is in it).
+- Campaign repo: {campaign.path}, on the daemon's machine. Your worktree's repo has every candidate commit.
 - Sign what you write as 'watchdog#7' (comments.author, ideas.created_by).
 - Why this agent started (context, not a scope): timer
 - piloop: `{PILOOP_HINT}` is this daemon's piloop. Run every `piloop` command of this brief with it.
@@ -192,7 +197,7 @@ def test_launch_runs_the_row_through_its_lifecycle(
     tracer: Tracer,
     spans: InMemorySpanExporter,
 ) -> None:
-    use_harness(db, campaign, HARNESS_PROMPT_TO_FILE)
+    use_harness(db, campaign, HARNESS_PROMPT_TO_FILE.replace('prompt.txt', '../prompt.txt'))
     agent_session_id = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, agent_session_id, tracer)
     process = exit_of(outcome)
@@ -207,7 +212,7 @@ def test_launch_runs_the_row_through_its_lifecycle(
         None,
     )
     assert w.handle['pid'] and w.ended_at is not None and w.ended_at >= w.started_at
-    assert (Path(campaign.path) / 'prompt.txt').read_text() == PROMPT.format(path=tmp_path / 'w' / 'brief.md')
+    assert (tmp_path / 'w' / 'prompt.txt').read_text() == PROMPT.format(path=tmp_path / 'w' / 'brief.md')
     assert (tmp_path / 'w' / 'brief.md').read_text().startswith('# Watchdog')
     assert (tmp_path / 'w' / 'transcript.txt').is_file()
     assert runtime.killed, 'the runtime is told to release the implementer'
@@ -476,12 +481,12 @@ def test_a_harness_with_an_entire_agent_gets_a_minted_session_id_in_its_argv_and
     plain = request(db, campaign)
     launch(db, runtime, tmp_path, plain)
     assert agent_session(db, plain).session_id is None, 'no entire_agent: nothing to attach, no id minted'
-    use_harness(db, campaign, '#!/bin/sh\nprintf %s "$2" > session.txt\n', **MINTED_HARNESS)
+    use_harness(db, campaign, '#!/bin/sh\nprintf %s "$2" > ../session.txt\n', **MINTED_HARNESS)
     agent_session_id = request(db, campaign)
     launch(db, runtime, tmp_path, agent_session_id, tracer)
     w = agent_session(db, agent_session_id)
     assert w.session_id is not None and UUID.match(w.session_id), 'a uuid4, as pi and claude --session-id take'
-    assert (Path(campaign.path) / 'session.txt').read_text() == w.session_id
+    assert (tmp_path / 'w' / 'session.txt').read_text() == w.session_id
     assert dict(span_attributes(spans, 'piloop.agent', agent_session_id))['session_id'] == w.session_id
 
 
@@ -580,8 +585,8 @@ def test_the_session_is_attached_to_entire_from_the_cwd_when_the_agent_ends(
     w = agent_session(db, agent_session_id)
     assert w.checkpoint_id == CHECKPOINT
     assert entire_log() == [
-        {'argv': ['session', 'attach', w.session_id, '--agent', 'pi'], 'cwd': str(Path(campaign.path))},
-        {'argv': ['session', 'info', w.session_id, '--json'], 'cwd': str(Path(campaign.path))},
+        {'argv': ['session', 'attach', w.session_id, '--agent', 'pi'], 'cwd': str(worktree(tmp_path))},
+        {'argv': ['session', 'info', w.session_id, '--json'], 'cwd': str(worktree(tmp_path))},
     ], "from the agent's own cwd: pi and claude key their session stores by it; the id comes from info's JSON"
     assert events(spans, 'agent_session.session_attached') == [
         {
@@ -790,7 +795,7 @@ def test_fill_keeps_literal_braces() -> None:
 def test_the_argv_gets_the_agents_cwd(campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path) -> None:
     use_harness(db, campaign, RECORDS_ARGV_AND_ENV, headless=['--cd', '{cwd}', '{prompt}'])
     launch(db, runtime, tmp_path, request(db, campaign))
-    assert (Path(campaign.path) / 'argv.txt').read_text().splitlines()[:2] == ['--cd', campaign.path]
+    assert (tmp_path / 'w' / 'argv.txt').read_text().splitlines()[:2] == ['--cd', str(worktree(tmp_path))]
 
 
 def test_codex_trusts_the_agents_worktree_and_gives_its_tool_shells_the_agents_env() -> None:
@@ -818,12 +823,11 @@ def test_a_brief_past_the_limit_of_one_argument_reaches_the_agent_as_a_file(
     """
     use_harness(db, campaign, RECORDS_ARGV_AND_ENV)
     brief = 'x' * 200 * 1024 + '\n'
-    cwd = Path(campaign.path)
     outcome = launcher(db, runtime, tmp_path).launch(
         request(db, campaign), brief=brief, place='w', artifact=checkout(campaign)
     )
     assert (exit_of(outcome).status, exit_of(outcome).error) == (ExitStatus.EXITED, None)
-    assert (cwd / 'argv.txt').read_text().splitlines() == [PROMPT.format(path=tmp_path / 'w' / 'brief.md')]
+    assert (tmp_path / 'w' / 'argv.txt').read_text().splitlines() == [PROMPT.format(path=tmp_path / 'w' / 'brief.md')]
     assert (tmp_path / 'w' / 'brief.md').read_text() == brief
 
 
@@ -839,7 +843,7 @@ def give_watchdog_servers(db: Database, campaign: Campaign, servers: dict[str, o
         s.commit()
 
 
-RECORDS_ARGV_AND_ENV = '#!/bin/sh\nprintf "%s\\n" "$@" > argv.txt\nenv > env.txt\n'
+RECORDS_ARGV_AND_ENV = '#!/bin/sh\nprintf "%s\\n" "$@" > ../argv.txt\nenv > ../env.txt\n'
 
 
 def test_the_mcp_element_expands_to_the_roles_servers_and_their_env_reaches_the_agent(
@@ -853,7 +857,7 @@ def test_the_mcp_element_expands_to_the_roles_servers_and_their_env_reaches_the_
     monkeypatch.setattr(runtime, 'start', lambda spec: specs.append(spec) or start(spec))
     agent_session_id = request(db, campaign)
     launch(db, runtime, tmp_path, agent_session_id)
-    argv = (Path(campaign.path) / 'argv.txt').read_text().splitlines()
+    argv = (tmp_path / 'w' / 'argv.txt').read_text().splitlines()
     config = tmp_path / 'w' / 'mcp.json'
     assert argv[:5] == ['--no-extensions', '-e', 'npm:pi-mcp-adapter@4.0.0', '--mcp-config', str(config)]
     assert json.loads(config.read_text()) == {
@@ -862,7 +866,7 @@ def test_the_mcp_element_expands_to_the_roles_servers_and_their_env_reaches_the_
     [spec] = specs
     assert spec.env['PROBE_KEY'] == 'probe-value', 'the worker forwards the variables that the servers name'
     assert 'probe-value' not in ' '.join(spec.args) and 'probe-value' not in config.read_text()
-    assert 'PI_MCP_CONFIG_MODE=exclusive' in (Path(campaign.path) / 'env.txt').read_text().splitlines()
+    assert 'PI_MCP_CONFIG_MODE=exclusive' in (tmp_path / 'w' / 'env.txt').read_text().splitlines()
     assert agent_session(db, agent_session_id).error is None
 
 
@@ -873,7 +877,7 @@ def test_an_agent_knows_when_its_timeout_ends(
     use_harness(db, campaign, RECORDS_ARGV_AND_ENV)
     before = time.time()
     launch(db, runtime, tmp_path, request(db, campaign))
-    env = dict(line.split('=', 1) for line in (Path(campaign.path) / 'env.txt').read_text().splitlines() if '=' in line)
+    env = dict(line.split('=', 1) for line in (tmp_path / 'w' / 'env.txt').read_text().splitlines() if '=' in line)
     timeout = load_campaign_config(Path(campaign.path)).role(WATCHDOG).timeout
     assert before + timeout - 1 <= int(env['PILOOP_DEADLINE']) <= time.time() + timeout
 
@@ -891,7 +895,7 @@ def test_a_variable_a_roles_server_names_but_the_daemon_lacks_fails_the_launch_n
     assert w.error.startswith(
         "McpError: MCP servers ['probe'] need PROBE_TOKEN in the environment piloop serve runs in"
     )
-    assert not (Path(campaign.path) / 'argv.txt').exists(), 'never started'
+    assert not (tmp_path / 'w' / 'argv.txt').exists(), 'never started'
 
 
 def test_servers_that_cannot_be_rendered_fail_the_launch_on_the_row(

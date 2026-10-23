@@ -78,18 +78,27 @@ piloop limits unset executor.pools.serve.evaluations
 
 ## A worker on another machine
 
-A worker on another machine takes the leases of its pool over HTTPS. A job names its data by address in the CAS, and
-the worker reads and writes the CAS itself, so give it the server's `[plugins.cas]` (an `s3` or `gcs` bucket, or
-`cached` over one). It keeps clones of the campaign's repo under its home, filled from the CAS. Its agents' `workspace/`
-is a directory on the worker's machine, empty at first: the server's agents and other machines never see what they
-write there.
+A worker on another machine takes the leases of its pool over HTTPS: evaluations, and agents with the harness logins
+of that machine. A job names its data by address in the CAS, and the worker reads and writes the CAS itself, so give it
+the server's `[plugins.cas]` (an `s3` or `gcs` bucket, `cached` over one, or `http` to `piloop cas serve`). It keeps
+clones of the campaign's repo under its home, filled from the CAS. Its agents get the shared
+[workspace](/concepts/campaigns#shared-files) from the CAS too, and what they write there comes back with their report.
+
+An agent's `piloop` commands run on the server: the worker relays each one, with its own token, while the agent's
+lease is live. An agent there may run the commands that its brief names, such as `piloop sql` and `piloop idea status`.
+
+<Warning>
+An agent on a worker runs as the worker's user, with the worker's environment, so it holds the worker's token. It can
+do whatever the worker can do on the server, as an agent of `piloop serve` can open its database. Run a worker as a
+user that you give that trust.
+</Warning>
 
 On the server, add the pool, set `tls` in `[plugins.network]` (see [Networks](/architecture/extension-points#networks)),
 listen, and make the worker's token:
 
 ```toml
 [plugins.executor.pools.gpu]
-agents = 0
+agents = 2
 evaluations = 1
 ```
 
@@ -119,5 +128,7 @@ The worker is the token's name. It calls the server, and the server never calls 
 | A worker stops or dies before it sends a report | The report waits in `$PILOOP_HOME/spool/<worker>`, and goes out when the worker starts again. |
 | A worker's token is revoked | The worker stops its jobs and exits. |
 | The server does not answer | The worker tries each call again. Its log says `worker.unreachable` at the first failure, then once a minute. |
+| An agent runs `piloop` after its lease ended | The call is refused. |
+| Two agents change one workspace file | The first one's stays. The second one's goes beside it, as `NOTES.md.implementer-12`. |
 | The machine sleeps | A gap longer than the grace period is the daemon's own absence: nothing expires. |
 | `piloop serve` restarts | Its worker finds its leases again and re-attaches to each agent whose worktree is there. |

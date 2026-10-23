@@ -3,41 +3,62 @@
 Three processes on one machine, as on three hosts. Core runs in the test process: it submits evaluations and expires
 leases. The lease routes run in a server process (``tests/fixtures/server_process.py``). The worker is ``piloop worker
 --server``, with a home and clones of its own, and it reaches the server only through the proxy; it shares the server's
-CAS, as a worker on another host shares an S3 bucket. The jobs are evaluations.
+CAS, as a worker on another host shares an S3 bucket. The jobs are evaluations, and implementers whose ``piloop``
+calls the worker relays to the server.
 """
 
 import os
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable, Generator
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import httpx2 as httpx
 import pytest
 from sqlalchemy import func, select
 
+from piloop.agents.results import PromptOutcome, queue_prompt
 from piloop.daemon.run_controller import RunController
 from piloop.db.events import in_order
-from piloop.db.models import Campaign, Lease, LeaseState, LeaseWorker, Measurement, TokenScope
+from piloop.db.models import (
+    AgentSession,
+    Campaign,
+    Comment,
+    CommentKind,
+    Event,
+    Lease,
+    LeaseKind,
+    LeaseState,
+    LeaseWorker,
+    Measurement,
+    RunStatus,
+    TokenScope,
+)
 from piloop.db.session import Database
-from piloop.ids import CandidateId
+from piloop.ids import AgentSessionId, CandidateId, CommentId, TargetKind
 from piloop.net import tokens
 from piloop.otel import Tracer
+from piloop.plugins.executor.contract import AgentKey, Prompt
 from piloop.plugins.executor.kit.capacity import Pool
-from piloop.plugins.executor.kit.leases import StaleReport
+from piloop.plugins.executor.kit.door import SOCKET, AgentCall, Call
+from piloop.plugins.executor.kit.leases import StaleLease, StaleReport
+from piloop.plugins.executor.kit.remote import Remote
 from piloop.plugins.executor.workers import Workers
 from piloop.proc import alive
 from piloop.settings import STORE_DIR
-from tests.conftest import ScriptRuntime, baseline, factory, wait_until, workers_of
+from tests.agents.test_launcher import MINTED_HARNESS, use_harness
+from tests.conftest import Dial, ScriptRuntime, baseline, factory, wait_until, workers_of, write_toml
 from tests.daemon.test_evaluation_queue import held_evaluate
-from tests.daemon.test_run_controller import set_config
-from tests.fixtures.netfault import Blackhole, CutResponse, Proxy
+from tests.daemon.test_run_controller import candidates, execute, make_run, reload_campaign, run_row, set_config
+from tests.fixtures.netfault import Blackhole, CutResponse, Latency, Proxy
 
 SERVER_PROCESS = Path(__file__).parent.parent / 'fixtures' / 'server_process.py'
 WORKER = 'gpu1'
 WORKERS = Workers(
-    renew_seconds=0.2, grace_seconds=1.0, toleration_seconds=6.0, pools={'gpu': Pool(agents=0, evaluations=1)}
+    renew_seconds=0.2, grace_seconds=1.0, toleration_seconds=6.0, pools={'gpu': Pool(agents=1, evaluations=1)}
 )
 """Short lease times with the default's two stages. The self-stop, 5.6 s, outlasts a restart of the server process."""
 
@@ -94,8 +115,12 @@ class Net:
         return proc
 
     @property
+    def home(self) -> Path:
+        return self.tmp_path / 'worker'
+
+    @property
     def spool(self) -> Path:
-        return self.tmp_path / 'worker' / 'spool' / WORKER
+        return self.home / 'spool' / WORKER
 
 
 def _seen(db: Database) -> object:
@@ -331,3 +356,105 @@ def test_a_worker_whose_token_is_revoked_stops_its_evaluation_and_exits_non_zero
     net.start_worker()
     measuring.join(30)
     assert not measuring.is_alive() and state(db, 1) is LeaseState.REPORTED, 'a new token sends the kept report'
+
+
+RELAYED_FINDING = (
+    "INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES ('idea', 1, 'implementer#1', 'finding',"
+    " 'relayed from elsewhere')"
+)
+HARNESS_ELSEWHERE = (
+    '#!/bin/sh\necho line >> solve.txt\ngit commit -qam "add a line"\nmkdir -p workspace/idea1\n'
+    'echo out > workspace/idea1/out.txt\n'
+    f'"$PILOOP_BIN" sql "{RELAYED_FINDING}" > workspace/idea1/relayed.txt 2>&1\n'
+)
+"""An implementer that commits, writes in its workspace, and leaves its finding through ``piloop sql``."""
+
+
+def finding(db: Database) -> list[tuple[str, str]]:
+    """Each finding, with who it is signed by in the event feed."""
+    with db.session() as s:
+        rows = s.execute(
+            select(Comment.body, Event.actor)
+            .join(Event, (Event.target_kind == TargetKind.COMMENT) & (Event.target_id == Comment.id))
+            .where(Comment.kind == CommentKind.FINDING, Event.kind == 'comment.finding')
+        ).all()
+    return [(body, actor) for body, actor in rows]
+
+
+def test_a_remote_implementers_commits_come_back_as_a_bundle_and_are_scored_and_its_piloop_calls_reach_the_server(
+    db: Database, net: Net, core: RunController, campaign: Campaign, tmp_path: Path, dial: Dial
+) -> None:
+    write_toml(Path(campaign.path), HARNESS_ELSEWHERE)
+    reload_campaign(db, campaign)
+    net.start_worker()
+    run_id = make_run(db, campaign)
+    execute(core, db, run_id)
+    [scored] = candidates(db, run_id)
+    assert (scored.summary, scored.metrics['score'], run_row(db, run_id).status) == (
+        'add a line',
+        2.0,
+        RunStatus.SUCCEEDED,
+    ), 'its commit, imported from its bundle, then measured'
+    with db.session() as s:
+        leases = s.execute(select(Lease.kind, Lease.worker).order_by(Lease.id)).all()
+    assert leases == [(LeaseKind.AGENT, WORKER), (LeaseKind.EVALUATION, WORKER)], 'both ran on the worker elsewhere'
+    with db.session() as s:
+        assert s.get_one(AgentSession, 1).machine == WORKER, 'piloop attach names it'
+    workspace = tmp_path / 'projects' / str(campaign.id) / 'workspace'
+    relayed = (workspace / 'idea1' / 'relayed.txt').read_text()
+    assert finding(db) == [('relayed from elsewhere', 'implementer#1')], relayed
+    assert (workspace / 'idea1' / 'out.txt').read_text() == 'out\n', 'its workspace came back through the CAS'
+    assert net.proxy is not None
+    with dial(f'http://127.0.0.1:{net.proxy.port}', net.token) as http, pytest.raises(StaleLease, match='is reported'):
+        Remote(http, threading.Event(), Tracer(None)).cli(1, Call(argv=['sql', 'SELECT 1']))
+
+
+HARNESS_PROMPTED = (
+    '#!/bin/sh\nif [ -f ../started ]; then printf %s "$2" > workspace/prompt.txt; exit 0; fi\n'
+    'touch ../started\nwhile [ -f {hold} ]; do sleep 0.05; done\n'
+)
+"""An implementer whose first turn waits while ``hold`` exists, and whose next turn writes the prompt that it got."""
+
+
+def test_a_prompt_reaches_a_remote_implementer_within_a_round_trip_and_its_relay_dies_with_its_lease(
+    db: Database, net: Net, core: RunController, campaign: Campaign, tmp_path: Path, hold: Path
+) -> None:
+    resumes = {**MINTED_HARNESS, 'resume': ['{session_id}', '{prompt}']}
+    use_harness(db, campaign, HARNESS_PROMPTED.format(hold=hold), **resumes)
+    net.start_worker()
+    run_id = make_run(db, campaign)
+    running = in_thread(execute, core, db, run_id)
+    wait_until(lambda: state(db, 1) is LeaseState.RUNNING)
+    assert net.proxy is not None
+    net.proxy.toxic = Latency(LATENCY)
+    with db.session() as s:
+        note = queue_prompt(s, AgentSessionId(1), 'try lzma', 'human')
+        s.commit()
+    assert note is not None
+    sent = time.monotonic()
+    core.executor.prompt(AgentKey(AgentSessionId(1)), Prompt(note, 'try lzma'))
+    wait_until(lambda: queued(db) == [note], timeout=10)
+    elapsed = time.monotonic() - sent
+    # a poll that is open or opens next brings it, and the worker's answer goes back: a few chunks each way, with no
+    # heartbeat or other timer between them
+    assert elapsed < 10 * LATENCY, f'{elapsed:.1f} s from the prompt to its answer'
+    net.proxy.toxic = None
+    hold.unlink()
+    running.join(30)
+    assert not running.is_alive()
+    workspace = tmp_path / 'projects' / str(campaign.id) / 'workspace'
+    assert (workspace / 'prompt.txt').read_text() == 'try lzma', 'its next turn took the prompt'
+    with httpx.Client(transport=httpx.HTTPTransport(uds=str(net.home / SOCKET))) as relay:
+        refused = relay.post(
+            'http://worker/v1/cli', content=AgentCall(agent=AgentSessionId(1), argv=[]).model_dump_json()
+        )
+    assert refused.status_code == 404, 'its job ended: its worker relays nothing more for it'
+
+
+LATENCY = 0.3
+"""Seconds that the proxy holds each chunk, in each direction."""
+
+
+def queued(db: Database) -> list[CommentId]:
+    with db.session() as s:
+        return [p.comment for _, p in in_order(s, PromptOutcome) if p.kind == 'comment.queued']

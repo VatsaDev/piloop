@@ -327,8 +327,33 @@ def test_successful_run_scores_the_commit(
         and (log_dir / 'transcript.txt').is_file()
         and not (log_dir / 'worktree').exists()
     )
-    assert (tmp_path / 'projects' / str(campaign.id) / 'workspace').is_dir()
     assert runtime.killed, 'the runtime is told to release the implementer'
+
+
+HARNESS_WRITES_THE_WORKSPACE = (
+    '#!/bin/sh\nmkdir -p workspace/idea1\necho out > workspace/idea1/out.txt\n'
+    'cat workspace/NOTES.md > workspace/idea1/seen.txt\nrm workspace/NOTES.md\necho mine > workspace/NOTES.md\n'
+    'echo line >> solve.txt\ngit commit -qam "add a line"\n'
+)
+
+
+def test_what_an_implementer_writes_in_its_workspace_is_merged_into_the_campaigns_after_its_run(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """The implementer starts from a snapshot, and its writes land when its report is applied, not while it works."""
+    live = tmp_path / 'projects' / str(campaign.id) / 'workspace'
+    live.mkdir(parents=True)
+    (live / 'NOTES.md').write_text('the notes\n')
+    write_toml(Path(campaign.path), HARNESS_WRITES_THE_WORKSPACE)
+    reload_campaign(db, campaign)
+    run_id = make_run(db, campaign)
+    execute(controller(db, runtime, tmp_path), db, run_id)
+    assert (live / 'idea1' / 'out.txt').read_text() == 'out\n'
+    assert (live / 'idea1' / 'seen.txt').read_text() == 'the notes\n', 'it started from the workspace'
+    assert (live / 'NOTES.md').read_text() == 'mine\n'
+    assert run_row(db, run_id).status is RunStatus.SUCCEEDED
+    [c] = candidates(db, run_id)
+    assert c.summary == 'add a line', 'what it wrote in the workspace is not in its commit'
 
 
 def test_every_commit_is_scored_and_lineage_follows_keeps(

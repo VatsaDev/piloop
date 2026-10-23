@@ -5,10 +5,12 @@ import time
 from pathlib import Path
 
 import pytest
+from covalence import Cid
+from git import Repo
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop.agents.results import AgentSessionFinished, CampaignResults, Identified, learn
+from piloop.agents.results import AgentSessionFinished, CampaignResults, Identified, WorkspaceConflict, learn
 from piloop.db.events import in_order
 from piloop.db.models import (
     AgentSession,
@@ -31,7 +33,6 @@ from piloop.plugins.executor.contract import (
     AgentNotStarted,
     AgentReport,
     Bundle,
-    Checkout,
     EvaluationJob,
     EvaluationKey,
     EvaluationReport,
@@ -40,8 +41,10 @@ from piloop.plugins.executor.contract import (
     RepoId,
     Sample,
     Settled,
+    Workspace,
 )
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
+from piloop.store.tree import put_tree
 from tests.agents.test_launcher import MINTED_HARNESS, agent_session, launch, request, use_harness
 from tests.conftest import HARNESS_PROMPT_TO_FILE, ScriptRuntime, baseline, disk
 
@@ -118,7 +121,7 @@ def test_the_finished_event_of_an_agent_says_the_state_of_its_closed_row(
     job = AgentJob(
         agent_session=agent_session_id,
         runtime='subprocess',
-        artifact=Checkout(repo=RepoId(campaign.id)),
+        artifact=GitSource(repo=RepoId(campaign.id), commit=baseline(db, campaign.id).commit_sha),
         place='agent',
         timeout=60,
         brief=None,
@@ -148,7 +151,7 @@ def test_two_results_for_one_job_in_plain_sessions_close_its_row_once_and_measur
     agent = AgentJob(
         agent_session=agent_session_id,
         runtime='subprocess',
-        artifact=Checkout(repo=RepoId(campaign.id)),
+        artifact=GitSource(repo=RepoId(campaign.id), commit=baseline(db, campaign.id).commit_sha),
         place='agent',
         timeout=60,
         brief=None,
@@ -218,7 +221,7 @@ def agent_job(campaign: Campaign, agent_session_id: AgentSessionId, tmp_path: Pa
     return AgentJob(
         agent_session=agent_session_id,
         runtime='subprocess',
-        artifact=Checkout(repo=RepoId(campaign.id)),
+        artifact=GitSource(repo=RepoId(campaign.id), commit=Repo(campaign.path).head.commit.hexsha),
         place='agent',
         timeout=60,
         brief=None,
@@ -374,8 +377,59 @@ def test_a_report_naming_a_blob_the_cas_lacks_is_refused_until_it_is_there_then_
 def test_the_blobs_of_a_report_are_its_files_and_its_bundle(tmp_path: Path) -> None:
     cas = disk(tmp_path)
     brief, bundle = cas.put(b'brief'), cas.put(b'bundle')
+    notes = cas.put(b'notes')
     finished = AgentFinished(
-        process=AgentExit(ExitStatus.EXITED, 1), commits=Bundle(blob=bundle, head='h'), files={'brief.md': brief}
+        process=AgentExit(ExitStatus.EXITED, 1),
+        commits=Bundle(blob=bundle, head='h'),
+        files={'brief.md': brief},
+        workspace={'NOTES.md': notes},
     )
-    assert finished.blobs() == [brief, bundle]
+    assert finished.blobs() == [brief, notes, bundle]
     assert AgentNotStarted(reason='r', files={'brief.md': brief}).blobs() == [brief]
+
+
+def test_two_agents_that_change_one_workspace_file_keep_the_first_ones_and_the_seconds_goes_beside_it(
+    db: Database, campaign: Campaign, tmp_path: Path
+) -> None:
+    """A compare-and-swap on the blob that each started from: only a path that both wrote conflicts."""
+    cas = disk(tmp_path)
+    results = CampaignResults(db, Tracer(None), tmp_path, cas, lambda: False)
+    live = tmp_path / 'projects' / str(campaign.id) / 'workspace'
+    live.mkdir(parents=True)
+    (live / 'NOTES.md').write_text('notes\n')
+    workspace = Workspace(
+        place=live.relative_to(tmp_path).as_posix(), manifest=put_tree(cas, live, ['NOTES.md']).manifest.put(cas)
+    )
+    with db.session() as s:
+        agents = [AgentSession(kind=RESEARCH, campaign_id=campaign.id, state=AgentSessionState.RUNNING) for _ in '1234']
+        s.add_all(agents)
+        s.commit()
+        first, second, third, fourth = (a.id for a in agents)
+    base = baseline(db, campaign.id)
+
+    def finish(agent: AgentSessionId, changed: dict[str, Cid | None]) -> None:
+        job = AgentJob(
+            agent_session=agent,
+            runtime='subprocess',
+            artifact=GitSource(repo=RepoId(campaign.id), commit=base.commit_sha, workspace=workspace),
+            place=f'agent_sessions/{agent}',
+            timeout=60,
+            brief=None,
+            spec=None,
+        )
+        results.finished(job, AgentFinished(process=AgentExit(ExitStatus.EXITED, 200, 0), workspace=changed))
+
+    finish(first, {'NOTES.md': cas.put(b'notes\nfirst\n'), 'research/a.csv': cas.put(b'a')})
+    finish(second, {'NOTES.md': cas.put(b'notes\nsecond\n'), 'research/b.csv': cas.put(b'b')})
+    finish(third, {'research': (lost := cas.put(b'a file where a directory stands'))})
+    finish(fourth, {'NOTES.md': None})
+    assert (live / 'NOTES.md').read_text() == 'notes\nfirst\n', 'its removal waited on a NOTES.md that changed since'
+    assert (live / f'NOTES.md.research-{second}').read_text() == 'notes\nsecond\n'
+    assert sorted(p.name for p in (live / 'research').iterdir()) == ['a.csv', 'b.csv']
+    with db.session() as s:
+        assert [(e.target_id, p) for e, p in in_order(s, WorkspaceConflict)] == [
+            (second, WorkspaceConflict(beside={'NOTES.md': f'NOTES.md.research-{second}'})),
+            (third, WorkspaceConflict(blocked={'research': lost})),
+            (fourth, WorkspaceConflict(kept=['NOTES.md'])),
+        ]
+    assert not list((tmp_path / 'tmp').iterdir()), 'every staged blob was moved into place or removed'

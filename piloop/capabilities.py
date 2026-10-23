@@ -37,7 +37,7 @@ from piloop.plugins.trigger.stalled import StalledTrigger
 from piloop.plugins.trigger.stopped import StoppedTrigger
 
 from piloop.plugins.role.contract import ROLES, ImplementerRole, SweepRole
-from piloop.plugins.role.contract import Files, Workdir
+from piloop.plugins.role.contract import Files
 from piloop.plugins.role.contract import RoleConfig
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.scout import ScoutRole
@@ -62,7 +62,7 @@ from piloop.plugins.executor.contract import AgentReport, EvaluationReport, Samp
 from piloop.plugins.executor.contract import AgentFinished, AgentNotStarted
 from piloop.plugins.executor.contract import AgentKey, EvaluationKey, JobKey
 from piloop.plugins.executor.contract import key_of, Capacity, Prompt
-from piloop.plugins.executor.contract import GitSource, Checkout, Commits, Bar, RepoId, Bundle, MissingBlobs
+from piloop.plugins.executor.contract import GitSource, Commits, Bar, RepoId, Bundle, MissingBlobs, Workspace
 from piloop.plugins.executor.kit.jobs import Control, Site, local_site, run_agent, remove
 from piloop.plugins.executor.kit.jobs import run_evaluation
 from piloop.plugins.executor.kit.leases import Leases, Timing, Grant, Answer

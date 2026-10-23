@@ -19,12 +19,14 @@ from piloop.plugins.runtime.contract import TAG_ENV
 from piloop.plugins.runtime.kit.tags import kill_tagged, tagged
 from piloop.plugins.runtime.subprocess import STDOUT
 from piloop.reports.feed import Batch, CampaignState, Envelope
+from tests.fixtures.netfault import Proxy
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = ROOT / 'piloop' / 'campaign' / 'templates'
 CHEAPEST_MODEL = {'claude': 'claude-haiku-4-5-20251001'}
 """The model of each harness when ``--e2e-model`` is not given."""
 OPEN = {'queued', 'running'}
+WORKER_LOG = 'worker.log'
 EVENT_PAGE = 25
 """A small page, so the feed is read in many batches, each by a new process from the saved cursor."""
 
@@ -35,6 +37,7 @@ class Daemon(TypedDict):
     """``daemon`` in ``piloop status --json``."""
 
     pid: int | None
+    listen: str | None
 
 
 class Status(TypedDict):
@@ -68,6 +71,34 @@ def merged(base: Toml, over: Toml) -> dict[str, object]:
 
 
 @dataclass
+class Elsewhere:
+    """The machine of a worker elsewhere, in distributed mode: ``piloop worker`` in a home of its own, which reaches the
+    daemon through a fault proxy and its CAS through ``piloop cas serve``."""
+
+    home: Path
+    worker: subprocess.Popen[bytes]
+    cas: subprocess.Popen[str]
+    proxy: Proxy
+
+    def stop(self) -> None:
+        """Stop the worker, as its operator does when the daemon is gone, then the CAS and the proxy."""
+        for proc in (self.worker, self.cas):
+            proc.terminate()
+            try:
+                proc.wait(WORKER_STOP)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        if self.cas.stdout is not None:
+            self.cas.stdout.close()
+        self.proxy.close()
+
+
+WORKER_STOP = 60
+"""Seconds that a worker elsewhere has to stop its jobs and end."""
+
+
+@dataclass
 class Smoke:
     """One campaign, with its own home and campaign repo, and what the tests learn of it as they go."""
 
@@ -89,6 +120,8 @@ class Smoke:
     """What the background readers raised, as evidence for the tests that read their results."""
     stop_readers: threading.Event = field(default_factory=threading.Event)
     readers: list[threading.Thread] = field(default_factory=list)
+    elsewhere: Elsewhere | None = None
+    """The worker elsewhere that runs every job, in distributed mode. None: the daemon's own worker runs them."""
 
     @property
     def home(self) -> Path:
@@ -169,9 +202,20 @@ class Smoke:
         )
         return [r['token'] for r in rows]
 
+    @property
+    def homes(self) -> list[Path]:
+        """The daemon's home, and the home of the worker elsewhere."""
+        return [self.home, *([self.elsewhere.home] if self.elsewhere is not None else [])]
+
+    def stop(self) -> None:
+        """``piloop stop``, then the worker elsewhere, which its operator stops."""
+        self.piloop('stop', '--timeout', '60')
+        if self.elsewhere is not None:
+            self.elsewhere.stop()
+
     def processes(self) -> list[str]:
-        """Every live process of the campaign: with its ``PILOOP_HOME``, or with an agent's process tag."""
-        markers = [f'PILOOP_HOME={self.home}', *(f'{TAG_ENV}={t}' for t in self.process_tags())]
+        """Every live process of the campaign: with one of its ``PILOOP_HOME``, or with an agent's process tag."""
+        markers = [*(f'PILOOP_HOME={h}' for h in self.homes), *(f'{TAG_ENV}={t}' for t in self.process_tags())]
         return sorted({f'{pid} {cmd[:120]}' for m in markers for pid, _, cmd in tagged(m)})
 
     def start_readers(self) -> None:
@@ -216,8 +260,11 @@ class Smoke:
         try:
             if (self.home / 'serve.pid').exists():
                 self.piloop('stop', '--timeout', '60', check=False, timeout=120)
+            if self.elsewhere is not None:
+                self.elsewhere.stop()
         finally:
-            kill_tagged(f'PILOOP_HOME={self.home}')
+            for home in self.homes:
+                kill_tagged(f'PILOOP_HOME={home}')
             if self.db.is_file():
                 for token in self.process_tags():
                     kill_tagged(f'{TAG_ENV}={token}')
@@ -225,6 +272,8 @@ class Smoke:
     def summary(self) -> list[str]:
         """Where the logs are, and one row per agent: its run, how it ended, its tokens and the printed cost."""
         lines = [f'{self.name}: daemon log {self.home / "serve.log"}; agent output under {self.home / "runs"}']
+        if self.elsewhere is not None:
+            lines.append(f'{self.name}: the worker elsewhere logs to {self.elsewhere.home / WORKER_LOG}')
         if not self.db.is_file():
             return lines
         rows = self.sql(

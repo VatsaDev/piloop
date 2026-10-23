@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict
 
 from piloop.db.models import NoLease
 from piloop.plugins.cas.contract import BlobAddress
-from piloop.plugins.executor.contract import AgentReport, EvaluationReport
+from piloop.plugins.executor.contract import AgentJob, AgentReport, EvaluationReport
 from piloop.plugins.executor.kit.capacity import HostSample
 from piloop.plugins.executor.kit.leases import (
     Answer,
@@ -148,3 +148,7 @@ class Local:
 
     def queued(self, message: int, error: str | None) -> None:
         self._leases.queued(self._worker, message, error)
+
+    def relayed(self, lease: int) -> AgentJob:
+        """The agent's job of a live lease of this worker, whose calls it relays (``Leases.relayed``)."""
+        return self._leases.relayed(lease, self._worker)

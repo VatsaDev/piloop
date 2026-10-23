@@ -13,21 +13,22 @@ from piloop.plugins.cas.contract import Cas
 from piloop.store.tree import Missing
 
 
-def bundle(cas: Cas, repo: Repo, head: str, have: Sequence[str]) -> Cid | None:
-    """Put a git bundle of what ``head`` has beyond ``have`` into ``cas``. None when ``have`` holds all of it.
+def bundle(cas: Cas, repo: Repo, heads: Sequence[str], have: Sequence[str]) -> Cid | None:
+    """Put a git bundle of what ``heads`` have beyond ``have`` into ``cas``. None when ``have`` holds all of it.
 
-    The one way commits travel: a chain of packs could replace it, and nothing else would change. ``have`` may name
-    commits that ``repo`` lacks: they are left out. The bundle (v3, ``gitformat-bundle``) is written by hand around
-    ``git pack-objects``, because ``git bundle create`` needs a ref to name ``head``, and the repo of record is not
-    given one.
+    The one way commits travel: a chain of packs could replace it, and nothing else would change. ``heads`` and
+    ``have`` may name commits that ``repo`` lacks: they are left out. The bundle (v3, ``gitformat-bundle``) is written
+    by hand around ``git pack-objects``, because ``git bundle create`` needs a ref to name each head, and the repo of
+    record is not given one.
     """
-    known = _commits_of(repo, have)
-    if int(repo.git.rev_list('--count', head, *(f'^{sha}' for sha in known))) == 0:
+    wanted, known = _commits_of(repo, heads), _commits_of(repo, have)
+    if not wanted or int(repo.git.rev_list('--count', *wanted, *(f'^{sha}' for sha in known))) == 0:
         return None
     header = '# v3 git bundle\n'
     header += f'@object-format={repo.git.rev_parse("--show-object-format")}\n'
-    header += ''.join(f'-{sha}\n' for sha in known) + f'{head} HEAD\n\n'
-    revs = '\n'.join([head, *(f'^{sha}' for sha in known)]) + '\n'
+    header += ''.join(f'-{sha}\n' for sha in known)
+    header += ''.join(f'{sha} refs/heads/{i}\n' for i, sha in enumerate(wanted)) + '\n'
+    revs = '\n'.join([*wanted, *(f'^{sha}' for sha in known)]) + '\n'
     with tempfile.TemporaryDirectory(dir=repo.common_dir) as scratch:
         tmp = Path(scratch) / 'bundle'
         with tmp.open('wb') as out:
@@ -58,14 +59,14 @@ def _commits_of(repo: Repo, shas: Sequence[str]) -> list[str]:
     return [sha for sha, kind in zip(shas, checked.stdout.decode().splitlines(), strict=True) if kind == 'commit']
 
 
-def unbundle(cas: Cas, repo: Repo, blob: Cid, head: str) -> None:
-    """Import the commits of the bundle ``blob`` up to ``head`` into ``repo``, unless it has ``head``. No ref changes.
+def unbundle(cas: Cas, repo: Repo, blob: Cid, heads: Sequence[str]) -> None:
+    """Import the commits of the bundle ``blob`` up to ``heads`` into ``repo``, unless it has them all. No ref changes.
 
     Raises:
         GitCommandError: The bundle needs a commit that ``repo`` lacks, or it is not a bundle.
         Missing: The CAS does not hold it.
     """
-    if git.has(repo, head):
+    if all(git.has(repo, head) for head in heads):
         return
     with tempfile.TemporaryDirectory(dir=repo.common_dir) as scratch:
         tmp = Path(scratch) / 'bundle'

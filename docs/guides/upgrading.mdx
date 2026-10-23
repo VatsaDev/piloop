@@ -170,6 +170,13 @@ link to this section.
 - An agent has no terminal pane to read and type into. `piloop attach <agent-session-id>` prints its last lines, and
   `piloop prompt` or `s` in `piloop watch` sends it a message.
 
+### workdir
+
+`[roles.<name>] workdir` is removed. Every agent works in a worktree of its own, at the head for a sweep, on any
+machine; the campaign checkout is only the repo of record. Delete the key from each role table of `piloop.toml`, then
+run `piloop init <repo>`. A `piloop.toml` that still sets it fails, with a link to this section. The stored configs lose
+it at the upgrade, and an agent that worked in the campaign checkout when you upgraded ends.
+
 ### How a run ended
 
 `runs.end` says how a run ended, and `runs.error` only gives the detail. A new run no longer writes the texts below
@@ -262,6 +269,18 @@ remote = { provider = "s3", url = "s3://my-bucket/piloop" }   # was [storage.bac
 - The example `dir` backend is gone. Write `remote = { provider = "disk", path = "<its root>" }` instead.
 - `min_free_gb` measures the disk of `PILOOP_HOME`, not the disk of the store.
 
+### The shared workspace
+
+An agent's `./workspace/` is no longer a link to the shared workspace. It is a read-only copy of it as it was when the
+agent started, and what the agent writes there goes into the shared workspace when it ends:
+
+- Agents no longer see each other's writes while they run.
+- A write in place fails. To change a file, remove it and write it again.
+- A file that the agent removes goes from the shared workspace too, unless another agent changed it meanwhile.
+- When two agents change one file, the first one's stays, and the second one's goes beside it, as
+  `NOTES.md.implementer-12`.
+- The evaluate command gets no `./workspace/`. Keep what it reads in a `link` input.
+
 ## Upgrading to 0.2.0
 
 Read this before you upgrade from 0.1.0.
@@ -323,7 +342,7 @@ Each of these still works in 0.2.0, with a `PiloopDeprecationWarning`. piloop 0.
 |---|---|
 | `[roles.worker]` | `[roles.implementer]` |
 | `PILOOP_PROJECT_<KEY>` | `PILOOP_CAMPAIGN_<KEY>`. When both are set, `PILOOP_CAMPAIGN_<KEY>` wins. |
-| `[roles.research.scout]` | `[roles.scout]`. The keys of `[roles.research]` that the scout used (`runtime`, `harnesses`, `model`, `timeout`, `mcp`, `addendum`, `workdir`) move with it. |
+| `[roles.research.scout]` | `[roles.scout]`. The keys of `[roles.research]` that the scout used (`runtime`, `harnesses`, `model`, `timeout`, `mcp`, `addendum`) move with it. |
 | `[roles.research] buffer` | `buffer` on research's `low_water` trigger: `triggers = [{ kind = "low_water", buffer = 2 }, { kind = "seed" }, { kind = "stalled" }]` |
 | `[roles.research] context` | The top-level `context` |
 | `{claude_config_dir}` in `[harness.<name>.usage] file` | `{env:CLAUDE_CONFIG_DIR:~/.claude}` |

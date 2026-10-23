@@ -2537,14 +2537,14 @@ def test_an_implementer_is_told_once_to_wrap_up_before_its_timeout(
     monkeypatch.setattr('piloop.daemon.scheduler.STOP_GRACE_SECONDS', 0)
     for _ in range(3):
         scheduler.tick()
-    assert [(agent, p.text) for agent, p in fake.prompts] == [
-        (
-            1,
+    [(agent, prompt)] = fake.prompts  # once
+    assert agent == 1 and prompt.text == IsStr(
+        regex=re.escape(
             f'[piloop] Your time is almost up (the role timeout of {timeout:g}s). Commit what you have now, with a'
             ' message that says where it stands. Leave your finding and stop. This session ends in'
-            f' {round(lead / 60, 1):g} minutes.',
         )
-    ], 'once'
+        + r' [\d.]+ minutes\.'  # the time left when the tick ran: a loaded host takes seconds of it
+    )
     assert revoked(db) == [], 'the role timeout ends it, not the daemon'
     assert [kind for kind, _ in settled(db, 'agent_session.wrap_up')] == [1]
     scheduler.stop(timeout=5)

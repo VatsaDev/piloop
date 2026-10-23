@@ -853,7 +853,7 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
         assert stored[2] == {
             'roles': {'research': {'triggers': [{'kind': 'low_water', 'buffer': 3}, {'kind': 'seed'}]}}
         }, "a release's config has no triggers: research's defaults, with its buffer"
-        p = CampaignConfig.model_validate(without_herdr(stored[0]))
+        p = CampaignConfig.model_validate(upgraded(stored[0]))
         assert (p.roles.scout.interval, p.roles.scout.seeds) == (86400, 4)
         assert (p.roles.scout.mcp, p.roles.scout.timeout, p.roles.scout.addendum) == (['xai'], 1200, 'research.md'), (
             'the keys of research that the scout used'
@@ -883,9 +883,12 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
             con.execute("INSERT INTO workers (kind, project_id) VALUES ('scout', 2)")
 
 
-def without_herdr(config: dict[str, object]) -> dict[str, object]:
-    """``config`` without the keys of the herdr runtime, as revision 0034 stores it, so that today's piloop reads it."""
-    return ScriptDirectory(str(MIGRATIONS)).get_revision('0034').module.upgraded(config, stopped=False)
+def upgraded(config: dict[str, object]) -> object:
+    """``config`` as revisions 0034 (no herdr) and 0035 (no ``workdir``) store it, so that today's piloop reads it."""
+    revisions = ScriptDirectory(str(MIGRATIONS))
+    return revisions.get_revision('0035').module.upgraded(
+        revisions.get_revision('0034').module.upgraded(config, stopped=False)
+    )
 
 
 def test_0012_leaves_the_cached_input_out_of_the_input_of_codex_rows_and_downgrades(tmp_path: Path) -> None:
@@ -1070,6 +1073,8 @@ def test_0016_renames_projects_campaigns_and_evaluators_evaluators_with_every_ro
         restored = json.loads(con.execute('SELECT config FROM projects WHERE id = 1').fetchone()[0])['roles']
         roles['fixer']['takes'] = TAKES_0015.replace('"Project_Id"', '"project_id"')
         roles['research']['triggers'][1]['when'] = 'SELECT 1 WHERE @project = $project'
+        for role in roles.values():
+            role.pop('workdir', None)  # 0035 strips it, and its downgrade leaves it out
         assert restored == roles, 'the old names come back, in lower case'
         triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
         assert triggers == triggers_at('0015')
@@ -1508,3 +1513,37 @@ def test_a_database_from_before_agent_sessions_is_not_checked_for_herdr(tmp_path
     path = tmp_path / 'piloop.db'
     command.upgrade(alembic(path), '0017')
     assert session.on_herdr(path) is None
+
+
+def test_0035_adds_the_machine_of_an_agent_leaves_out_the_workspace_place_and_strips_workdir(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0034')
+    place = {'kind': 'git', 'repo': 1, 'commit': 'c', 'workspace': 'projects/1/workspace'}
+    jobs = [{'kind': 'agent', 'artifact': place}, {'kind': 'evaluation', 'artifact': place, 'bar': {'artifact': place}}]
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        roles = {'watchdog': {'workdir': 'repo', 'timeout': 60}, 'research': {'workdir': 'head'}}
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', ?)", (dumps({'roles': roles}),))
+        con.execute("INSERT INTO agent_sessions (kind, campaign_id) VALUES ('implementer', 1)")
+        con.execute("INSERT INTO agent_sessions (kind, campaign_id) VALUES ('watchdog', 1)")
+        con.execute("INSERT INTO leases (kind, agent_session_id, job) VALUES ('agent', 1, ?)", (dumps(jobs[0]),))
+        con.execute("INSERT INTO leases (kind, evaluation_id, job) VALUES ('evaluation', 1, ?)", (dumps(jobs[1]),))
+        checkout = {'kind': 'agent', 'artifact': {'kind': 'checkout', 'repo': 1}}
+        con.execute(
+            "INSERT INTO leases (kind, agent_session_id, job, state) VALUES ('agent', 2, ?, 'running')",
+            (dumps(checkout),),
+        )
+    command.upgrade(cfg, '0035')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        stored = [loads(job) for (job,) in con.execute('SELECT job FROM leases WHERE id < 3 ORDER BY id')]
+        assert [j['artifact'] for j in stored] == [{'kind': 'git', 'repo': 1, 'commit': 'c'}] * 2
+        assert stored[1]['bar']['artifact'] == {'kind': 'git', 'repo': 1, 'commit': 'c'}
+        [(state, ended, receipt)] = con.execute('SELECT state, ended_at, receipt FROM leases WHERE id = 3').fetchall()
+        assert (state, ended is not None) == ('cancelled', True), 'an agent in the campaign checkout is not adopted'
+        assert 'workdir is removed' in loads(receipt)['cancelled']
+        [(config,)] = con.execute('SELECT config FROM campaigns').fetchall()
+        assert loads(config) == {'roles': {'watchdog': {'timeout': 60}, 'research': {}}}
+        assert con.execute('SELECT machine FROM agent_sessions').fetchall() == [(None,), (None,)]
+    command.downgrade(cfg, '0034')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert 'machine' not in [row[1] for row in con.execute('PRAGMA table_info(agent_sessions)')]

@@ -102,12 +102,12 @@ def decide(db: Database, campaign: Campaign, body: str) -> None:
     time.sleep(0.01)
 
 
-def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt_workdir_and_runtime(
+def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt_and_runtime(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, typed: None
 ) -> None:
     """A ``[roles.reviewer]`` table with a ``sql`` trigger: each new decision requests one reviewer.
 
-    The reviewer runs with its own prompt, in the campaign checkout, under its own runtime, one at a time.
+    The reviewer runs with its own prompt, in a worktree of its own, under its own runtime, one at a time.
     """
     release = tmp_path / 'release'
     (Path(campaign.path) / 'reviewer.md').write_text('# Review\nRead the latest decision and say if it holds.\n')
@@ -115,7 +115,6 @@ def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt
     reviewer: dict[str, object] = {
         'prompt': 'reviewer.md',
         'triggers': [{'kind': 'sql', 'when': REVIEW}],
-        'workdir': 'repo',
         'runtime': 'typed',
         'harnesses': ['script'],
         'max_concurrent': 1,
@@ -147,10 +146,10 @@ def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt
     assert brief.startswith('# Review\nRead the latest decision')
     assert '- You are reviewer#1, the reviewer for campaign#1 (demo).' in brief
     assert f'- Why this agent started (context, not a scope): {reason}' in brief
-    assert '- Your cwd is the campaign checkout, shared with the human' in brief
     assert '- File a seed:' in brief and '- You may write:' not in brief, 'a new role files seeds and states no writes'
-    assert Path((tmp_path / 'cwd.txt').read_text().strip()) == Path(campaign.path).resolve()
-    assert not (tmp_path / 'agent_sessions' / '1' / 'worktree').exists()
+    last = tmp_path / 'agent_sessions' / '2' / 'worktree'
+    assert Path((tmp_path / 'cwd.txt').read_text().strip()) == last.resolve()
+    assert not last.exists(), 'its worktree goes when it ends'
     with db.session() as s:
         rows = s.scalars(select(AgentSession).where(AgentSession.kind == 'reviewer')).all()
         assert [(w.state, w.runtime, w.harness) for w in rows] == [(AgentSessionState.EXITED, 'typed', 'script')] * 2
@@ -353,13 +352,13 @@ def test_a_request_for_a_role_that_piloop_toml_no_longer_has_is_refused(
     assert (row.state, row.error) == (AgentSessionState.KILLED, 'no [roles.reviewer] in piloop.toml')
 
 
-def test_a_hand_over_leaves_a_sweep_in_the_campaign_checkout_running_and_the_next_scheduler_re_attaches_to_it(
+def test_a_hand_over_leaves_a_sweep_running_and_the_next_scheduler_re_attaches_to_it(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     hold = tmp_path / 'hold'
     hold.touch()
     harness = f'#!/bin/sh\necho $$ > {tmp_path}/agent.pid\nwhile [ -f {hold} ]; do sleep 0.05; done\n'
-    configure(db, campaign, harness, watchdog={'workdir': 'repo', 'triggers': []})
+    configure(db, campaign, harness, watchdog={'triggers': []})
     with db.session() as s:
         s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='by hand'))
         s.commit()
@@ -517,7 +516,7 @@ def test_a_package_adds_a_role_that_does_runs(campaign_path: Path, plugins: None
     assert (quick.takes, quick.timeout, quick.max_concurrent) == ('priority >= 3', 60, 1)
 
 
-HARNESS_NICENESS = '#!/bin/sh\nps -o nice= -p $$ | tr -d " " > niceness.txt\n'
+HARNESS_NICENESS = '#!/bin/sh\nps -o nice= -p $$ | tr -d " " > "$PILOOP_HOME/niceness.txt"\n'
 """A harness that writes its own niceness, so a test sees which runtime started it."""
 
 
@@ -539,9 +538,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_cas_through_the_config
     forget_loaded()
     write_toml(Path(campaign.path), HARNESS_NICENESS)
     with db.session() as s:
-        cfg = load_campaign_config(
-            Path(campaign.path), runtime='nice', roles={'watchdog': {'runtime': 'nice', 'workdir': 'repo'}}
-        )
+        cfg = load_campaign_config(Path(campaign.path), runtime='nice', roles={'watchdog': {'runtime': 'nice'}})
         s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
         s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='by hand'))
         s.commit()
@@ -559,7 +556,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_cas_through_the_config
     with db.session() as s:
         agent_session = s.get_one(AgentSession, 1)
         assert (agent_session.state, agent_session.runtime) == (AgentSessionState.EXITED, 'nice')
-    assert (Path(campaign.path) / 'niceness.txt').read_text().strip() == str(min(os.nice(0) + 5, 19))
+    assert (tmp_path / 'niceness.txt').read_text().strip() == str(min(os.nice(0) + 5, 19))
     monkeypatch.setattr(common, 'settings', home)
     printed: list[str] = []
     monkeypatch.setattr(common.console, 'print', lambda text, **_: printed.append(text))

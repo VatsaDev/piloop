@@ -153,7 +153,7 @@ def compose_brief(
             [
                 '# Context',
                 f'- You are {author}, the {role.kind} for campaign#{campaign.id} ({campaign.name}).',
-                f'- Campaign repo: {campaign.path} (every candidate commit and Entire checkpoint is in it).',
+                f"- Campaign repo: {campaign.path}, on the daemon's machine. Your worktree's repo has every candidate commit.",
                 f"- Sign what you write as '{author}' (comments.author, ideas.created_by).",
                 f'- Why this agent started (context, not a scope): {reason}',
                 f"- piloop: `{PILOOP_HINT}` is this daemon's piloop. Run every `piloop` command of this brief with it.",

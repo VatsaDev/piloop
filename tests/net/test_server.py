@@ -47,7 +47,7 @@ def _echo(caller: Caller, ask: Ask) -> Answer | None:
     return Answer(text=ask.text, caller=caller.name) if ask.text else None
 
 
-ECHO = Route('echo', TokenScope.WORKER, Ask, _echo)
+ECHO = Route('echo', Ask, _echo)
 ECHOED = '/v1/executor/echo'
 HI = {'text': 'hi'}
 DROPPED = (httpx.RemoteProtocolError, httpx.ReadError, httpx.WriteError)
@@ -70,16 +70,6 @@ def test_a_caller_without_a_known_token_gets_401_and_a_revoked_token_stops_worki
             s.commit()
         revoked = client.post(ECHOED, json=HI)
         assert (revoked.status_code, revoked.json()) == (401, {'detail': 'the token is unknown or revoked'})
-
-
-def test_a_route_refuses_a_token_of_another_scope_with_403(
-    serving: Serving, token: Callable[..., str], dial: Dial
-) -> None:
-    secret = token('agent7', TokenScope.LEASE)
-    with serving([ECHO]) as server, dial(server.url, secret) as client:
-        refused = client.post(ECHOED, json=HI)
-        assert refused.status_code == 403
-        assert refused.json() == {'detail': 'agent7 has a lease token, and this route takes a worker token'}
 
 
 def test_an_executor_route_takes_its_model_and_answers_with_its_model_or_204(
@@ -265,7 +255,7 @@ def test_more_long_polls_than_pool_threads_hold_none_and_a_quick_route_still_ans
 ) -> None:
     """Starlette's pool has 40 threads. A long-poll holds one only while it reads, then awaits a commit."""
     polls = 50
-    route = Route.long_poll('renamed', TokenScope.WORKER, Poll, renamed_to(db), db.changed)
+    route = Route.long_poll('renamed', Poll, renamed_to(db), db.changed)
     with serving([ECHO, route]) as server, dial(server.url, token()) as client:
         with ThreadPoolExecutor(polls) as pool:
             waiting = [
@@ -296,7 +286,7 @@ def test_a_close_ends_a_parked_long_poll_at_once_with_204_and_logs_no_error(
     dial: Dial,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    route = Route.long_poll('renamed', TokenScope.WORKER, Poll, renamed_to(db), db.changed)
+    route = Route.long_poll('renamed', Poll, renamed_to(db), db.changed)
     with serving([route]) as server, dial(server.url, token()) as client, ThreadPoolExecutor(1) as pool:
         parked = pool.submit(client.post, '/v1/executor/renamed', json={'name': 'renamed', 'wait': 20})
         time.sleep(0.5)  # the long-poll is parked

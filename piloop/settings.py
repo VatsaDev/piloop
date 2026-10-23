@@ -38,6 +38,8 @@ STORE_DIR = 'store'
 UNITS_DIR = 'units'
 INPUTS_DIR = 'inputs'
 """The read-only copies of the blobs of linked inputs that worktrees share (``piloop.store.tree.Copies``)."""
+TMP_DIR = 'tmp'
+"""``<home>/tmp``: files that wait to be moved into place, on the disk of the home."""
 GB = 1024**3
 
 

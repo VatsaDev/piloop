@@ -336,7 +336,7 @@ describes it:
 ### Example: a role in configuration
 
 Add a table with a new name, a prompt file and at least one trigger. This role reads each new escalation in the inbox
-and writes a plan for it, one agent at a time, in the campaign checkout:
+and writes a plan for it, one agent at a time:
 
 ```toml
 [roles.planner]
@@ -344,7 +344,6 @@ prompt = "briefs/planner.md"
 triggers = [
   { kind = "sql", when = "SELECT id FROM comments WHERE kind = 'escalation' AND acked_at IS NULL AND created_at > :since" },
 ]
-workdir = "repo"
 max_concurrent = 1
 timeout = 1200
 files = "seeds"

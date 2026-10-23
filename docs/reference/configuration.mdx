@@ -176,7 +176,6 @@ name defines a new role, and needs `prompt` and `triggers`.
 |---|---|---|---|
 | `runs` | boolean | `false` | The agents of this role do no runs. Set `runs = true` in a new table to define a role that does runs. |
 | `triggers` | list\[[Trigger](#trigger)\] | required | When the daemon requests an agent of this role: a list of `{ kind = "<trigger>", ... }` entries, checked in order on each tick. A package can add triggers. An empty list means that agents start only on request (`piloop launch`). Built in: `anomaly`, `cron`, `low_water`, `seed`, `sql`, `stalled`, `stopped`. |
-| `workdir` | `head` \| `repo` | `"head"` | Where the agent works: `head`, a detached worktree at the head, or `campaign`, the campaign checkout. |
 | `interval` | number | `0` | The number of seconds between two routine sweeps of the `cron` trigger, counted from the start of the last one. A sweep that investigates an anomaly is not a routine sweep. 0 turns the timer off. |
 | `max_ideas` | integer | `1` | The maximum number of new ideas one sweep may insert, as its brief states it. The seeds it develops do not count. `low_water` requests enough sweeps to fill the backlog at this many ideas each. 0 pauses the role's new ideas: `low_water` is off, and an idea that a sweep of the role adds (`piloop idea add`) is `proposed`, so it waits for a review, also from a sweep that started before the change. |
 | `incident_prompt` | string \| null | `null` | A file that follows `prompt` in the brief of an incident sweep, a sweep that got anomalies (the `anomaly` trigger): a path relative to the repo root, or an absolute path. When unset, a built-in role uses its built-in file (the watchdog's `watchdog_incident.md`), and another role adds nothing. |
@@ -528,7 +527,7 @@ The settings of a runtime that a package adds, which it reads with `runtime_sett
 These keys still work. Each one shows a `PiloopDeprecationWarning` that names the file, the key, its replacement and the release that removes it. The changelog lists them too.
 
 - `[roles.worker]` is `[roles.implementer]`: the role that runs one idea in its own worktree. A key that `[roles.implementer]` sets too keeps its value there.
-- `[roles.research.scout]` is `[roles.scout]`, a role of its own. The keys of `[roles.research]` that the scout used (`runtime`, `harnesses`, `model`, `timeout`, `mcp`, `addendum` and `workdir`) are copied into it, unless `[roles.scout]` sets them.
+- `[roles.research.scout]` is `[roles.scout]`, a role of its own. The keys of `[roles.research]` that the scout used (`runtime`, `harnesses`, `model`, `timeout`, `mcp` and `addendum`) are copied into it, unless `[roles.scout]` sets them.
 - The `scout` trigger of `[roles.research] triggers` is gone: the scout is a role with its own `cron`.
 - `[roles.research] buffer` is the `buffer` of research's `low_water` trigger. Without `triggers` in the table, research gets its default triggers with that `buffer`.
 - `[roles.research] context` is the top-level `context`: every sweep's research pack lists the files.

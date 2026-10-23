@@ -8,7 +8,7 @@ whichever executor placed it.
 The steps of an agent's job: make its place and its artifact (a worktree, ``Clones``), write the brief, render the MCP
 servers with the variables of this machine, start the agent, watch it to its end, save its transcript, read its
 usage, attach its session to Entire, and bring its commits back as a bundle. What it made goes back by address: the
-report names the bundle and its log files in the CAS (``Site.files``). The worktree stays: the executor removes it
+report names the bundle, its log files (``Site.files``) and what it wrote in the shared workspace in the CAS. The worktree stays: the executor removes it
 (``remove``) once the report is out, so a worker that restarts in between finds the ended agent there.
 """
 
@@ -22,7 +22,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import partial
 from pathlib import Path
-from typing import Protocol, assert_never
+from typing import Protocol
 
 from covalence import Cid
 from git import Repo
@@ -40,15 +40,14 @@ from piloop.plugins.executor.contract import (
     AgentJob,
     AgentNotStarted,
     AgentReport,
-    Checkout,
     EvaluationJob,
     EvaluationReport,
-    GitSource,
     Prompt,
     RepoId,
     Sample,
 )
 from piloop.plugins.executor.kit.clones import Clones, Fetch
+from piloop.plugins.executor.kit.relay import RELAY_ARGV
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, Handle, Runtime, taken
 from piloop.proc import PILOOP_ARGV, child_env, kill_group
 from piloop.scoring.evaluate import SENT, EvalResult, run_evaluate
@@ -71,16 +70,16 @@ CHANGED_INPUTS = 'evaluate changed its linked inputs'
 SHOWN = 10
 """How many paths or blobs an event or an error names."""
 CLI_SHIM = '#!/bin/sh\nPILOOP_HOME={home} exec {argv} "$@"\n'
-"""``<home>/bin/piloop``: this home's piloop, the worker's own code on the worker's home. Agents get it as
-``PILOOP_BIN``, which the briefs use, and its directory first on their PATH, for the prompts' plain ``piloop``. Another
-install can come first on the user's PATH (a release next to a build of ``main``), and a harness's shell can run the
-user's rc files again, which can put it back in front."""
+"""``<home>/bin/piloop``: this home's piloop, the worker's own code on the worker's home, or on a worker elsewhere the
+relay to the server (``door.main``). Agents get it as ``PILOOP_BIN``, which the briefs use, and its directory first on
+their PATH, for the prompts' plain ``piloop``. Another install can come first on the user's PATH (a release next to a
+build of ``main``), and a harness's shell can run the user's rc files again, which can put it back in front."""
 
 
-def own_cli(home: Path) -> Path:
-    """Write the ``CLI_SHIM`` for this process's piloop under ``home``, and return its path."""
+def own_cli(home: Path, argv: Sequence[str]) -> Path:
+    """Write the ``CLI_SHIM`` that runs ``argv`` under ``home``, and return its path."""
     shim = home / 'bin' / 'piloop'
-    text = CLI_SHIM.format(home=shlex.quote(str(home)), argv=shlex.join(PILOOP_ARGV))
+    text = CLI_SHIM.format(home=shlex.quote(str(home)), argv=shlex.join(argv))
     if not shim.is_file() or shim.read_text() != text:
         shim.parent.mkdir(parents=True, exist_ok=True)
         shim.write_text(text)
@@ -97,26 +96,22 @@ class Site:
     clones: Clones
     reserve: int
     """Bytes kept free on the disk of ``home`` (``[storage] min_free_gb``): ``evict_inputs`` frees room below it."""
+    piloop: Sequence[str] = PILOOP_ARGV
+    """What an agent's ``piloop`` runs: this process's piloop, or on a worker elsewhere the relay to the server."""
     cli: Path = field(init=False)
     seen: Seen = field(default_factory=dict, init=False)
     """What ``files`` stored, so that a file it stored before is not read again."""
 
     def __post_init__(self) -> None:
-        self.cli = own_cli(self.home)
+        self.cli = own_cli(self.home, self.piloop)
 
     def log_dir(self, job: AgentJob | EvaluationJob) -> Path:
         """The job's place on this machine: its log files, and its worktree."""
         return self.home / job.place
 
     def cwd(self, job: AgentJob | EvaluationJob) -> Path:
-        """Where the job runs: its worktree, or the repo's checkout for a ``Checkout``."""
-        match job.artifact:
-            case Checkout():
-                return self.clones.path(job.artifact)
-            case GitSource():
-                return self.log_dir(job) / WORKTREE
-            case _:
-                assert_never(job.artifact)
+        """Where the job runs: its worktree."""
+        return self.log_dir(job) / WORKTREE
 
     def env(self) -> dict[str, str]:
         """What an agent's environment gets from this machine: its piloop first on the PATH, and its home.
@@ -151,8 +146,11 @@ def local_site(home: Path, cas: Cas, repos: Callable[[RepoId], Path], reserve: i
 
 
 def remote_site(home: Path, cas: Cas, fetch: Fetch, reserve: int) -> Site:
-    """The machine of a worker elsewhere: its home and the shared CAS, with clones of its own, filled by ``fetch``."""
-    return Site(home, cas, Clones(cas, partial(clone_of, home), fetch, home), reserve)
+    """The machine of a worker elsewhere: its home and the shared CAS, with clones of its own, filled by ``fetch``.
+
+    Its agents' ``piloop`` is the relay to the server (``door.main``).
+    """
+    return Site(home, cas, Clones(cas, partial(clone_of, home), fetch, home), reserve, RELAY_ARGV)
 
 
 def clone_of(home: Path, repo: RepoId) -> Path:
@@ -164,10 +162,10 @@ def clone_of(home: Path, repo: RepoId) -> Path:
 
 
 def bundle_of_record(
-    cas: Cas, repos: Callable[[RepoId], Path], repo: RepoId, commit: str, have: Sequence[str]
+    cas: Cas, repos: Callable[[RepoId], Path], repo: RepoId, heads: Sequence[str], have: Sequence[str]
 ) -> Cid | None:
     """What the server does for a worker that lacks a commit: a bundle of it from the repo of record, into the CAS."""
-    return commits.bundle(cas, git.open_repo(repos(repo)), commit, have)
+    return commits.bundle(cas, git.open_repo(repos(repo)), heads, have)
 
 
 class Control(Protocol):
@@ -225,8 +223,7 @@ def run_agent(job: AgentJob, runtime: Runtime, control: Control, site: Site, spa
     started_at = time.monotonic()
     log_dir, cwd = site.log_dir(job), site.cwd(job)
     try:
-        if not isinstance(job.artifact, Checkout):
-            _rebuilt(site.clones.checkout(job.artifact, cwd), span)
+        _rebuilt(site.clones.checkout(job.artifact, cwd), span)
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / BRIEF_FILE).write_text(job.brief)
         spec = rendered(job, job.spec.at(cwd, log_dir, site.env()))
@@ -350,12 +347,12 @@ def _finish(
             error = str(e) if isinstance(e, UsageError) else f'{type(e).__name__}: {e}'
             span.event('agent_session.usage_unknown', agent_session=job.agent_session, error=error)
     try:
-        ignore = site.clones.ignored(job.artifact) if not isinstance(job.artifact, Checkout) else []
-        report.changed = git.changed(cwd, ignore)
+        report.changed = git.changed(cwd, site.clones.ignored(job.artifact))
         if not control.stopping():
             report.checkpoint = _attach(job, cwd, session_id, control.entire_version, span)
-        if job.commits is not None and not isinstance(job.artifact, Checkout):
+        if job.commits is not None:
             report.commits = site.clones.bring_back(job.artifact, cwd, job.commits.message)
+        report.workspace = site.clones.changed(job.artifact, cwd)
     except Exception as e:  # a worktree that is gone: the report says what is known
         span.error(e)
         report.process = replace(report.process, error=report.process.error or f'{type(e).__name__}: {e}')

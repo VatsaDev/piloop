@@ -56,6 +56,7 @@ from piloop.plugins.executor.kit.leases import (
     StaleLease,
     Work,
 )
+from piloop.plugins.executor.kit.relay import Relay
 from piloop.plugins.runtime.contract import Handle, Runtime
 from piloop.proc import alive, kill_group, started
 from piloop.runtime.factory import RuntimeFactory, make_runtime
@@ -138,6 +139,7 @@ class Worker:
         runtime_factory: RuntimeFactory = make_runtime,
         runners: tuple[str, ...] | None = None,
         entire_version: str | None = None,
+        relay: Relay | None = None,
     ) -> None:
         self.id: str | None = None
         """The worker's name, which its registration gives."""
@@ -153,6 +155,8 @@ class Worker:
         self.runners = runners if runners is not None else evaluator_runners()
         self.entire_version = entire_version
         """What ``entire version`` printed on this machine (``Host.entire_version``)."""
+        self.relay = relay
+        """How its agents' ``piloop`` calls reach the server, on a worker elsewhere. None: they run here."""
         self._lock = threading.RLock()
         """Guards ``_jobs``, ``_threads`` and the flags, briefly: never across a slow call (a start, a kill, the
         database), so a heartbeat never waits for one. Re-entrant.
@@ -206,6 +210,8 @@ class Worker:
             if self._started or self._stopping:
                 return
             self._started = True
+        if self.relay is not None:
+            self.relay.start()
         self._join()
         with self._lock:
             if self._stopping:  # a stop came while it registered: it joined no loop, so none may start
@@ -231,6 +237,8 @@ class Worker:
             self._tracer.event('worker.turn_failed', worker=self.id, error=f'{type(e).__name__}: {e}')
             return False
         self.id, self.timing, self._registered = registration.worker, registration.timing, True
+        if self.relay is not None:  # a re-attached agent goes on relaying
+            self.relay.open({g.job.agent_session: g.lease for g in registration.held if isinstance(g.job, AgentJob)})
         spooled = self.spool.leases()
         for grant in registration.held:
             if grant.lease not in spooled:  # a job that ended: the loop sends its report
@@ -397,15 +405,19 @@ class Worker:
         A turn that fails is tried again after ``Timing.renew``: it never ends the loop, which would let every lease of
         the worker expire.
         """
-        # after a hand-over the next daemon's worker has the leases, and this daemon's database may be closed
-        while not self._handover:
-            self._wanted.clear()  # before the turn: a change during it makes another turn at once
-            if self._registered or self._join():
-                self._guarded_turn()
-            with self._lock:
-                if self._stopping and not self._threads:
-                    return
-            self._wanted.wait(self.timing.renew)
+        try:
+            # after a hand-over the next daemon's worker has the leases, and this daemon's database may be closed
+            while not self._handover:
+                self._wanted.clear()  # before the turn: a change during it makes another turn at once
+                if self._registered or self._join():
+                    self._guarded_turn()
+                with self._lock:
+                    if self._stopping and not self._threads:
+                        return
+                self._wanted.wait(self.timing.renew)
+        finally:
+            if self.relay is not None:
+                self.relay.stop()
 
     def _guarded_turn(self) -> None:
         """Run a turn. A streak of ``FAILING_TURNS`` failures is an anomaly."""
@@ -535,6 +547,8 @@ class Worker:
             self._jobs.pop(lease_id, None)
         if self._handover:
             return
+        if self.relay is not None:
+            self.relay.close(lease_id)
         unsent = Unsent(request_id=uuid.uuid4().hex, report=report, job=job)
         self.spool.put(lease_id, unsent)
         self._send(lease_id, unsent)
@@ -579,6 +593,8 @@ class Worker:
             self._report(grant.lease, report, job)
 
     def _lost(self, lease_id: int, reason: str) -> None:
+        if self.relay is not None:
+            self.relay.close(lease_id)
         try:
             self.client.lost(lease_id, reason)
         except StaleLease as e:
@@ -597,6 +613,8 @@ class Worker:
         job = grant.job
         assert isinstance(job, AgentJob)
         runtime = self._runtime(job)
+        if self.relay is not None:
+            self.relay.open({job.agent_session: grant.lease})
         with self._tracer.span('piloop.job', lease=grant.lease, agent_session=job.agent_session) as span:
             report = jobs.run_agent(job, runtime, _Control(self, grant.lease, runtime), self.site, span)
         if report is not None:

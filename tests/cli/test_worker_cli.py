@@ -14,8 +14,9 @@ from piloop.db.session import Database
 from piloop.net import tokens
 from piloop.net.server import Server, app
 from piloop.net.tokens import Tokens
-from piloop.plugins.executor.contract import RepoId
+from piloop.plugins.executor.contract import AgentJob, RepoId
 from piloop.plugins.executor.kit.capacity import Pool
+from piloop.plugins.executor.kit.door import Call, Relayed
 from piloop.plugins.executor.kit.leases import Leases
 from piloop.plugins.executor.kit.remote import lease_routes
 from piloop.plugins.network.contract import NetworkHost
@@ -26,8 +27,12 @@ from tests.conftest import disk, wait_until
 from tests.test_lease import Recorder
 
 
-def no_bundle(repo: RepoId, commit: str, have: Sequence[str]) -> Cid | None:
+def no_bundle(repo: RepoId, commits: Sequence[str], have: Sequence[str]) -> Cid | None:
     return None
+
+
+def echoed(job: AgentJob, call: Call) -> Relayed:
+    return Relayed(stdout=' '.join(call.argv), exit_code=0)
 
 
 @pytest.fixture
@@ -37,7 +42,8 @@ def server(db: Database, tmp_path: Path) -> Generator[str]:
     listener = network.listener()
     assert listener is not None
     leases = Leases(db, Recorder(db), pools={'gpu': Pool()})
-    server = Server(app(network, lease_routes(leases, db.changed, disk(tmp_path / 'worker'), no_bundle)), listener)
+    routes = lease_routes(leases, db.changed, disk(tmp_path / 'worker'), no_bundle, echoed)
+    server = Server(app(network, routes), listener)
     server.start()
     yield server.url
     server.close()

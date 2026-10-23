@@ -61,7 +61,6 @@ recovery_requeues = 2                     # times an idea is requeued from the l
 # files = "seeds"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role: its triggers start it and nothing it commits is scored
 triggers = [{ kind = "anomaly" }, { kind = "cron" }, { kind = "stopped" }]  # an anomaly, the timer below, the stop
-# workdir = "repo"                         # head (the default): a worktree at the head · repo: the campaign checkout
 wake_budget = 0                           # the lessons overview is off: the closing review reads the lessons itself
 interval = 1800                           # seconds between two progress reviews of the cron trigger; 0 turns it off
 # incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies; default: watchdog_incident.md
@@ -82,7 +81,6 @@ max_concurrent = 1
 # files = "ideas"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role
 triggers = [{ kind = "low_water", buffer = 2 }, { kind = "seed" }, { kind = "stalled" }]  # a short backlog (buffer: ideas beyond one per run slot), a new seed, a stall
-# workdir = "repo"                         # head (the default): a worktree at the head · repo: the campaign checkout
 # interval = 0                            # seconds between two sweeps of a cron trigger, if you add one
 # wake_budget = 400                       # tokens of the lessons overview that opens the brief; if not set: [memory]'s
 # incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies, if you add that trigger
@@ -103,7 +101,6 @@ max_concurrent = 1                        # sweeps at the same time; more than o
 # files = "seeds"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role
 triggers = [{ kind = "cron" }]            # the timer below
-# workdir = "repo"                         # head (the default): a worktree at the head · repo: the campaign checkout
 interval = 0                              # seconds between two scout sweeps; 0 (the default) turns the scout off
 # incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies, if you add that trigger
 # routine_prompt = "briefs/routine.md"    # follows the prompt in every other sweep; none by default

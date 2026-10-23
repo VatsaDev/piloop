@@ -55,31 +55,35 @@ RepoId = NewType('RepoId', CampaignId)
 two tenants' forks: git's own identity (a root commit) is the same for all of them."""
 
 
+class Workspace(BaseModel):
+    """A campaign's shared workspace, as a job gets it: read-only copies of its files when the job was made.
+
+    What the job writes, changes or adds there comes back in its report (``AgentFinished.workspace``), and core merges
+    it into the workspace at ``place`` under its own home, path by path (``piloop.store.tree.merge``).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    place: Place
+    manifest: BlobAddress
+    """Its tree in the CAS when the job was made."""
+
+
 class GitSource(BaseModel):
     """An artifact: the tree of ``commit`` in ``repo``, as a worktree at the job's place, with ``links`` in it."""
 
     model_config = ConfigDict(frozen=True)
 
-    kind: Literal['git'] = 'git'
     repo: RepoId
     commit: str
     links: dict[str, BlobAddress] = Field(default_factory=dict)
     """Inputs that are not committed (data, environments), by name in the worktree: each the manifest of its tree in
     the CAS, put there read-only (``piloop.store.tree.Copies``)."""
-    workspace: Place | None = None
-    """The place of the campaign's shared workspace under the worker's home, linked into the worktree. None: none."""
-
-
-class Checkout(BaseModel):
-    """An artifact that is already there: the repo's own checkout, for a sweep whose ``workdir`` is the repo."""
-
-    model_config = ConfigDict(frozen=True)
-
-    kind: Literal['checkout'] = 'checkout'
-    repo: RepoId
-
-
-type Artifact = Annotated[GitSource | Checkout, Field(discriminator='kind')]
+    workspace: Workspace | None = None
+    """The campaign's shared workspace, put into the worktree as ``workspace/``. None: an evaluation's, which has none."""
+    history: list[str] = Field(default_factory=list)
+    """Other commits of ``repo`` that the worktree's repo holds: the campaign's candidates, which an agent reads with
+    ``git show`` and ``git cherry-pick``."""
 
 
 class Bundle(BaseModel):
@@ -126,7 +130,7 @@ class AgentJob(BaseModel):
     agent_session: AgentSessionId
     runtime: str
     """The runtime that starts the agent on the worker's host (``runtime`` in ``piloop.toml``)."""
-    artifact: Artifact
+    artifact: GitSource
     place: Place
     timeout: float
     """The seconds the agent may run, counted from its start, also across a restart of its worker."""
@@ -213,10 +217,13 @@ class AgentFinished(BaseModel):
     """The prompts that the agent read: it took them from its runtime's queue."""
     unread: list[CommentId] = Field(default_factory=list)
     """The prompts that still waited in its runtime's queue when it ended."""
+    workspace: dict[str, BlobAddress | None] = Field(default_factory=dict)
+    """The files of its ``Workspace`` that it wrote, changed, added or removed (None), by relative path."""
 
     def blobs(self) -> list[Cid]:
         """Every blob that it names: what the CAS holds before core applies it."""
-        return [*self.files.values(), *([self.commits.blob] if self.commits is not None else [])]
+        commits = [self.commits.blob] if self.commits is not None else []
+        return [*self.files.values(), *(blob for blob in self.workspace.values() if blob is not None), *commits]
 
 
 class AgentNotStarted(BaseModel):
@@ -332,9 +339,18 @@ class Results(Protocol):
     """
 
     def started(
-        self, key: AgentKey, handle: dict[str, object], session_id: str | None, *, guard: Guard | None = None
+        self,
+        key: AgentKey,
+        handle: dict[str, object],
+        session_id: str | None,
+        *,
+        machine: str | None = None,
+        guard: Guard | None = None,
     ) -> None:
-        """An agent started: record where it runs (``handle``), which steers it. Raises ``Settled``."""
+        """An agent started: record where it runs (``handle``), which steers it. Raises ``Settled``.
+
+        ``machine`` names another machine that runs it, as the executor knows it (a worker); None: this daemon's.
+        """
         ...
 
     def session(self, key: AgentKey, session_id: str, *, guard: Guard | None = None) -> None:

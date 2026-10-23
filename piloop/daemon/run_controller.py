@@ -84,7 +84,6 @@ from piloop.plugins.executor.contract import (
     EvaluationKey,
     Executor,
     ExecutorConfig,
-    GitSource,
     Host,
     Sample,
 )
@@ -202,7 +201,7 @@ class RunController:
         self._home = home
         self._units_dir = home / 'units'
         self._cas = cas if cas is not None else CAS.selected({}).open(home)
-        self.sources = Sources(self._cas)
+        self.sources = Sources(self._cas, home, db)
         """The artifacts of jobs: a campaign's repo of record, and its linked inputs in the CAS."""
         self._config = executor
         """The executor's ``[plugins.executor]``, as ``config.toml`` has it."""
@@ -415,7 +414,7 @@ class RunController:
                 agent_session_id,
                 brief=brief,
                 place=run_place(run_id),
-                artifact=self._source(campaign_id, base_sha),
+                artifact=self.sources.agent(self._campaign(campaign_id), base_sha),
                 commits=commits_of(run_id),
             )
         # a daemon stop owns the rows, also when it came just after the report applied
@@ -592,14 +591,13 @@ class RunController:
         """
         if commits is None:
             return []
-        store_commits.unbundle(self._cas, repo, commits.blob, commits.head)
+        store_commits.unbundle(self._cas, repo, commits.blob, [commits.head])
         return [c.hexsha for c in repo.iter_commits(f'{base_sha}..{commits.head}', first_parent=True)][::-1]
 
-    def _source(self, campaign_id: CampaignId, commit: str) -> GitSource:
-        """``Sources.git`` outside every transaction: it puts the linked inputs into the CAS, minutes the first time."""
+    def _campaign(self, campaign_id: CampaignId) -> Campaign:
+        """The campaign's row, for ``Sources``, which runs outside every transaction: minutes the first time."""
         with self._db.session() as s:
-            campaign = s.get_one(Campaign, campaign_id)
-        return self.sources.git(campaign, commit)
+            return s.get_one(Campaign, campaign_id)
 
     def _left_finding(self, run_id: RunId, idea_id: IdeaId, agent_session_id: AgentSessionId) -> bool:
         """Return True if the agent signed a ``finding`` on its idea or its run (``finding_of``)."""
@@ -880,7 +878,7 @@ class RunController:
         be checked out say, is a crash like one that fails, so every request ends with a measurement. A cancelled
         evaluation records nothing: ``queue.cancel`` recorded its crash.
         """
-        artifact = self._source(campaign_id, sha)
+        artifact = self.sources.git(self._campaign(campaign_id), sha)
         with self.launcher.lock:
             if self.launcher.cancelled.is_set():
                 return False

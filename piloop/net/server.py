@@ -20,7 +20,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from uvicorn.protocols.http.h11_impl import H11Protocol
 
-from piloop.db.models import TokenScope
 from piloop.net import InvalidBody, Refusal, Route
 from piloop.net.tokens import Caller
 from piloop.plugins.network.contract import Address, Listener, Network, Peer, Refused
@@ -29,17 +28,13 @@ GRACE_SECONDS = 5
 """How long ``Server.close`` lets the requests in flight finish."""
 
 
-def authorized(network: Network, scope: TokenScope) -> Callable[[Request], Caller]:
-    """The dependency that admits a caller of ``scope`` only."""
+def authorized(network: Network) -> Callable[[Request], Caller]:
+    """The dependency that admits a caller that the network knows. Every token has the scope ``worker``."""
 
     def caller(request: Request) -> Caller:
         match network.identify(request.headers, _peer(request)):
             case Refused(reason=reason):
                 raise HTTPException(401, reason, headers={'WWW-Authenticate': 'Bearer'})
-            case known if known.scope != scope:
-                raise HTTPException(
-                    403, f'{known.name} has a {known.scope} token, and this route takes a {scope} token'
-                )
             case known:
                 return known
 
@@ -80,7 +75,7 @@ def _endpoint(
     A long-poll calls it again after each commit (``Route.changed``) while it answers None, until the body's wait ends
     or the server closes.
     """
-    scoped = authorized(network, route.scope)
+    scoped = authorized(network)
 
     async def endpoint(request: Request, caller: Annotated[Caller, Depends(scoped)]) -> Response:
         body = await request.body()

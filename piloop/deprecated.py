@@ -61,7 +61,7 @@ REMOVED_IN = Version(0, 3, 0)
 """The release that ``warn`` names for the keys that 0.2.0 deprecates."""
 MAX_EVALUATIONS_REMOVED_IN = Version(0, 4, 0)
 """The release that ``warn`` names for ``max_evaluations``, which 0.2.0 configs set."""
-SCOUT_SHARED = ('runtime', 'harnesses', 'model', 'timeout', 'mcp', 'addendum', 'workdir')
+SCOUT_SHARED = ('runtime', 'harnesses', 'model', 'timeout', 'mcp', 'addendum')
 """The keys of ``[roles.research]`` that a scout sweep used before the scout was a role of its own."""
 
 
@@ -77,8 +77,8 @@ def _table(raw: dict[str, object], *path: str) -> dict[str, object] | None:
 def research_scout(toml: Path, raw: dict[str, object]) -> None:
     """``[roles.research.scout]`` is ``[roles.scout]``, a role of its own.
 
-    The keys of ``[roles.research]`` that the scout used (``runtime``, ``harnesses``, ``model``, ``timeout``, ``mcp``,
-    ``addendum`` and ``workdir``) are copied into it, unless ``[roles.scout]`` sets them.
+    The keys of ``[roles.research]`` that the scout used (``runtime``, ``harnesses``, ``model``, ``timeout``, ``mcp``
+    and ``addendum``) are copied into it, unless ``[roles.scout]`` sets them.
     """
     research = _table(raw, 'roles', 'research')
     if research is None or (scout := research.pop('scout', None)) is None:
@@ -336,6 +336,19 @@ def removed_runtime(name: str) -> str | None:
     if name != HERDR:
         return None
     return f'the herdr runtime is removed in piloop 0.3.0: write runtime = "subprocess", or delete the key ({HERDR_UPGRADE})'
+
+
+WORKDIR_UPGRADE = 'https://piloop.autoresearch.inc/guides/upgrading#workdir'
+"""What to do about the removed ``[roles.<name>] workdir``."""
+
+
+@until('0.4.0', 'workdir of a 0.2 piloop.toml: delete removed_workdir and WORKDIR_UPGRADE')
+def removed_workdir() -> str:
+    """Why a role table with ``workdir`` does not load: every agent works in a worktree of its own now."""
+    return (
+        'workdir is removed in piloop 0.3.0: every agent works in a worktree of its own, never in the campaign'
+        f' checkout. Delete the key ({WORKDIR_UPGRADE})'
+    )
 
 
 OLD_ENV_PREFIX = 'PILOOP_PROJECT_'

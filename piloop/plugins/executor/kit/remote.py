@@ -8,7 +8,7 @@ body says. A refusal has a typed body, ``RefusalBody``. What ``Remote`` does wit
 |---|---|
 | 409 with an ``error`` of ``CONFLICTS`` | raises its exception: ``StaleLease`` stops the job, ``NotAddressed`` drops an answer to a message that was not its, ``MissingBlobs`` loses the job whose report names blobs that the server's CAS lacks, ``Dismissed`` ends the worker (no such pool) |
 | 408, 429, 5xx, or no answer (``RETRIED``) | tries again with backoff, with the same body and so the same request id |
-| any other 4xx | ``Dismissed``: stops its jobs, keeps their reports, and exits. 401: the token is unknown or revoked. 403: a token of another scope, or one named ``serve``. 404: the server's executor takes no workers. 412: the worker's CAS is not the server's. 422 or 426: another piloop |
+| any other 4xx | ``Dismissed``: stops its jobs, keeps their reports, and exits. 401: the token is unknown or revoked. 403: a token named ``serve``. 404: the server's executor takes no workers. 412: the worker's CAS is not the server's. 422 or 426: another piloop |
 
 ``messages`` is a long-poll: the server awaits a commit between two reads (``Route.long_poll``), and holds no thread.
 
@@ -31,7 +31,7 @@ import httpx2 as httpx
 from covalence import Cid
 from pydantic import BaseModel, RootModel, ValidationError
 
-from piloop.db.models import NoLease, TokenScope
+from piloop.db.models import NoLease
 from piloop.net import MAX_POLL_SECONDS, Changed, Polled, Refusal, Route
 from piloop.net.tokens import Caller
 from piloop.otel import Tracer
@@ -40,6 +40,7 @@ from piloop.plugins.executor.contract import AgentReport, EvaluationReport, Miss
 from piloop.plugins.executor.kit.capacity import HostSample
 from piloop.plugins.executor.kit.client import PROTOCOL, Dismissed, Local, Registration, WorkerInfo
 from piloop.plugins.executor.kit.clones import Fetch
+from piloop.plugins.executor.kit.door import RELAY_SECONDS, Call, Relayed
 from piloop.plugins.executor.kit.leases import (
     DEFAULT_TIMING,
     SERVE,
@@ -54,6 +55,7 @@ from piloop.plugins.executor.kit.leases import (
     StaleLease,
     Work,
 )
+from piloop.plugins.executor.kit.relay import LeaseCall, Run
 
 FIRST_BACKOFF = 0.2
 MAX_BACKOFF = 5.0
@@ -155,10 +157,10 @@ class Queued(BaseModel):
 
 
 class BundleAsked(BaseModel):
-    """The body of ``bundle``: a commit of a repo of record, and the commits that the worker's clone has."""
+    """The body of ``bundle``: commits of a repo of record, and the commits that the worker's clone has."""
 
     repo: RepoId
-    commit: str
+    commits: list[str]
     have: list[str]
 
 
@@ -166,29 +168,34 @@ class BundleMade(RootModel[BlobAddress | None]):
     """The answer of ``bundle``: the bundle's address in the CAS, or None when the clone has the commit already."""
 
 
-def lease_routes(leases: Leases, changed: Changed, cas: Cas, bundle: Fetch) -> list[Route]:
-    """The routes of the ``LeaseClient`` calls, each made on ``Local`` as the caller, and ``bundle``.
+def lease_routes(leases: Leases, changed: Changed, cas: Cas, bundle: Fetch, cli: Run) -> list[Route]:
+    """The routes of the ``LeaseClient`` calls, each made on ``Local`` as the caller, ``bundle`` and ``cli``.
 
     ``changed`` is ``Database.changed`` of the leases' database: what ``messages`` awaits between two reads.
     ``cas`` is the server's, which ``register`` checks that the worker shares (``WorkerInfo.cas_probe``). ``bundle``
-    builds a bundle from the repo of record into it (``jobs.bundle_of_record``).
+    builds a bundle from the repo of record into it (``jobs.bundle_of_record``). ``cli`` runs a relayed call of an
+    agent, on a live lease of the caller (``relay.Runner``).
     """
-    worker = TokenScope.WORKER
     return [
-        Route('register', worker, WorkerInfo, _as_caller(leases, partial(_register, cas))),
-        Route('acquire', worker, Acquire, _as_caller(leases, _acquire)),
-        Route('started', worker, Started, _as_caller(leases, _started)),
-        Route('heartbeat', worker, Heartbeat, _as_caller(leases, _heartbeat)),
-        Route('report', worker, Reported, _as_caller(leases, _report)),
-        Route('lost', worker, Lost, _as_caller(leases, _lost)),
-        Route.long_poll('messages', worker, Read, _as_caller(leases, _messages), changed),
-        Route('queued', worker, Queued, _as_caller(leases, _queued)),
-        Route('bundle', worker, BundleAsked, partial(_bundle, bundle)),
+        Route('register', WorkerInfo, _as_caller(leases, partial(_register, cas))),
+        Route('acquire', Acquire, _as_caller(leases, _acquire)),
+        Route('started', Started, _as_caller(leases, _started)),
+        Route('heartbeat', Heartbeat, _as_caller(leases, _heartbeat)),
+        Route('report', Reported, _as_caller(leases, _report)),
+        Route('lost', Lost, _as_caller(leases, _lost)),
+        Route.long_poll('messages', Read, _as_caller(leases, _messages), changed),
+        Route('queued', Queued, _as_caller(leases, _queued)),
+        Route('bundle', BundleAsked, partial(_bundle, bundle)),
+        Route('cli', LeaseCall, _as_caller(leases, partial(_cli, cli))),
     ]
 
 
+def _cli(run: Run, worker: Local, body: LeaseCall) -> Relayed:
+    return run(worker.relayed(body.lease), body)
+
+
 def _bundle(bundle: Fetch, caller: Caller, body: BundleAsked) -> BundleMade:
-    return BundleMade(bundle(body.repo, body.commit, body.have))
+    return BundleMade(bundle(body.repo, body.commits, body.have))
 
 
 def _as_caller[I: BaseModel](
@@ -264,6 +271,15 @@ class RefusalBody(BaseModel):
     detail: object = None
 
 
+class Resend(StrEnum):
+    """When ``Remote`` sends a call again."""
+
+    ANSWERLESS = 'answerless'
+    """After a call that got no answer, or a 5xx: the call is idempotent, by its request id or its content."""
+    UNSENT = 'unsent'
+    """Only after a connection that never opened: the call, a relayed ``piloop`` command, must not run twice."""
+
+
 class Remote:
     """``LeaseClient`` over HTTP, through ``http``: a client of the server that ``Network.client`` makes.
 
@@ -315,10 +331,10 @@ class Remote:
     def queued(self, message: int, error: str | None) -> None:
         self._post('queued', Queued(message=message, error=error))
 
-    def bundle(self, repo: RepoId, commit: str, have: Sequence[str]) -> Cid | None:
-        """``Clones``' fetch: the server puts a bundle of ``commit`` beyond ``have`` into the CAS, and names it."""
+    def bundle(self, repo: RepoId, commits: Sequence[str], have: Sequence[str]) -> Cid | None:
+        """``Clones``' fetch: the server puts a bundle of ``commits`` beyond ``have`` into the CAS, and names it."""
         return BundleMade.model_validate_json(
-            self._post('bundle', BundleAsked(repo=repo, commit=commit, have=list(have)))
+            self._post('bundle', BundleAsked(repo=repo, commits=list(commits), have=list(have)))
         ).root
 
     def _unanswered(self, path: str, error: Exception) -> None:
@@ -332,10 +348,16 @@ class Remote:
             self._said, since = now, self._unanswered_since
         self._tracer.event('worker.unreachable', call=path, seconds=round(now - since), error=str(error))
 
-    def _post(self, path: str, body: BaseModel, wait: float = 0) -> bytes:
+    def cli(self, lease: int, call: Call) -> Relayed:
+        """``Relay``'s send: run an agent's relayed call on the server, on its lease. Raises ``StaleLease``."""
+        body = LeaseCall(lease=lease, argv=call.argv, stdin=call.stdin)
+        return Relayed.model_validate_json(self._post('cli', body, RELAY_SECONDS, resend=Resend.UNSENT))
+
+    def _post(self, path: str, body: BaseModel, wait: float = 0, *, resend: Resend = Resend.ANSWERLESS) -> bytes:
         """POST ``body`` until the server answers it, and return the body of its success.
 
-        Raises the exception of a refusal, or the last error once the time is up.
+        Raises the exception of a refusal, or the last error once the time is up, or at once when ``resend`` says
+        that the call may not be sent again.
         """
         deadline = monotonic() + self._retry_for
         backoff = FIRST_BACKOFF
@@ -351,14 +373,15 @@ class Remote:
                 )
             except httpx.TransportError as e:
                 error: Exception = e
+                again = resend is Resend.ANSWERLESS or isinstance(e, httpx.ConnectError)
             else:
                 if response.status_code < HTTPStatus.INTERNAL_SERVER_ERROR and response.status_code not in RETRIED:
                     with self._lock:
                         self._unanswered_since = None
                     return _success(response)
-                error = _failed(response)
+                error, again = _failed(response), resend is Resend.ANSWERLESS
             self._unanswered(path, error)
-            if monotonic() + backoff >= deadline or self._stop.wait(backoff):
+            if not again or monotonic() + backoff >= deadline or self._stop.wait(backoff):
                 raise error
             backoff = min(backoff * 2, MAX_BACKOFF)
 

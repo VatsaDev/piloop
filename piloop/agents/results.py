@@ -6,11 +6,13 @@ the executor's (``piloop.plugins.executor.contract``). An agent's end is a ``Job
 the agent reads it there (``Launcher.launch``), whichever process applied it.
 """
 
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal, assert_never
 
+from covalence import Cid
 from pydantic import Field, TypeAdapter, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -49,7 +51,7 @@ from piloop.ids import (
     TargetRef,
 )
 from piloop.otel import Tracer
-from piloop.plugins.cas.contract import Cas
+from piloop.plugins.cas.contract import BlobAddress, Cas
 from piloop.plugins.executor.contract import (
     AgentFinished,
     AgentJob,
@@ -60,16 +62,18 @@ from piloop.plugins.executor.contract import (
     EvaluationJob,
     EvaluationKey,
     EvaluationReport,
+    GitSource,
     Guard,
     JobKey,
     MissingBlobs,
     Sample,
     Settled,
+    Workspace,
 )
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
 from piloop.scoring.ledger import MeasurementRecorded, save_units
-from piloop.settings import UNITS_DIR
-from piloop.store.tree import write_files
+from piloop.settings import TMP_DIR, UNITS_DIR
+from piloop.store.tree import Manifest, Staged, merge, stage, write_files
 
 STARTUP_SECONDS = 120
 """An agent that ends sooner than this and leaves nothing did not start to work: a crash, broken tools, no quota."""
@@ -140,6 +144,18 @@ class AgentEnded(EventModel):
     kind: Literal['agent_session.stop_ended'] = 'agent_session.stop_ended'
     reason: str
     end: RunEnd
+
+
+class WorkspaceConflict(EventModel):
+    """What an agent wrote in its workspace that another agent wrote too, meanwhile: the first one's stays."""
+
+    kind: Literal['agent_session.workspace_conflict'] = 'agent_session.workspace_conflict'
+    beside: dict[str, str] = Field(default_factory=dict)
+    """Workspace path → where this agent's file went instead: beside it, named after the agent."""
+    blocked: dict[str, BlobAddress] = Field(default_factory=dict)
+    """Workspace path → this agent's file in the CAS, where a directory or a symlink stands now: it is only there."""
+    kept: list[str] = Field(default_factory=list)
+    """The paths that this agent removed and another one changed meanwhile: they stay."""
 
 
 class PromptOutcome(EventModel):
@@ -302,13 +318,19 @@ class CampaignResults:
             s.commit()
 
     def started(
-        self, key: AgentKey, handle: dict[str, object], session_id: str | None, *, guard: Guard | None = None
+        self,
+        key: AgentKey,
+        handle: dict[str, object],
+        session_id: str | None,
+        *,
+        machine: str | None = None,
+        guard: Guard | None = None,
     ) -> None:
-        """The agent runs: its row is ``running`` with its handle in its runtime (``piloop attach`` shows it by it)."""
+        """The agent runs: its row is ``running``, with its handle in its runtime on ``machine``: ``piloop attach``."""
 
         def change(s: Session) -> None:
             w = _open(s, key)
-            w.handle = handle
+            w.handle, w.machine = handle, machine
             if w.state is AgentSessionState.STARTING:  # a row that the daemon ended meanwhile stays ending
                 w.state = AgentSessionState.RUNNING
             learn(s, w, session_id)
@@ -330,17 +352,27 @@ class CampaignResults:
         """
         if missing := self._cas.missing(report.blobs()):
             raise MissingBlobs(f'its report names blobs that the CAS lacks: {", ".join(map(str, missing))}')
+        workspace = (
+            job.artifact.workspace if isinstance(job, AgentJob) and isinstance(job.artifact, GitSource) else None
+        )
+        changed = report.workspace if isinstance(report, AgentFinished) and workspace is not None else {}
+        # read from the CAS before the write lock: a workspace file can be large, and a remote CAS slow
+        base = Manifest.get(self._cas, workspace.manifest) if workspace is not None and changed else None
+        with tempfile.TemporaryDirectory(dir=self._scratch()) as scratch:
+            staged = stage(self._cas, changed, Path(scratch))
 
-        def change(s: Session) -> None:
-            if isinstance(job, AgentJob):
-                assert isinstance(report, AgentFinished | AgentNotStarted)
-                self._agent(s, job, report)
-            else:
-                assert isinstance(report, EvaluationReport)
-                self._measured(s, job, report)
-            write_files(self._cas, report.files, self._home / job.place)
+            def change(s: Session) -> None:
+                if isinstance(job, AgentJob):
+                    assert isinstance(report, AgentFinished | AgentNotStarted)
+                    self._agent(s, job, report)
+                    if workspace is not None and base is not None:
+                        self._workspace(s, job, workspace, base, staged, changed)
+                else:
+                    assert isinstance(report, EvaluationReport)
+                    self._measured(s, job, report)
+                write_files(self._cas, report.files, self._home / job.place)
 
-        self._apply(guard, change)
+            self._apply(guard, change)
         if isinstance(job, AgentJob) and isinstance(report, AgentFinished):
             for comment in report.read:
                 self._tracer.event('comment.delivered', comment=comment, agent_session=job.agent_session)
@@ -423,6 +455,40 @@ class CampaignResults:
             emit(s, anomaly, TargetRef(TargetKind.AGENT_SESSION, w.id), System.DAEMON)
             self._tracer.event(anomaly.kind, agent_session=w.id, harness=w.harness, error=ended.reason)
         _ended(s, w.id, ended)
+
+    def _workspace(
+        self,
+        s: Session,
+        job: AgentJob,
+        workspace: Workspace,
+        base: Manifest,
+        staged: dict[str, Staged | None],
+        changed: dict[str, Cid | None],
+    ) -> None:
+        """Merge what the agent wrote or removed in its workspace into the campaign's, path by path (``merge``).
+
+        A path that another agent wrote meanwhile keeps that agent's file: this one's goes beside it, named after the
+        agent, and this one's removal is not done. ``WorkspaceConflict`` says which.
+        """
+        w = s.get_one(AgentSession, job.agent_session)
+        merged = merge(self._home / workspace.place, base, staged, f'{w.kind}-{w.id}')
+        if merged.beside or merged.blocked or merged.kept:
+            blocked = {rel: blob for rel in merged.blocked if (blob := changed[rel]) is not None}
+            conflict = WorkspaceConflict(beside=merged.beside, blocked=blocked, kept=merged.kept)
+            emit(s, conflict, TargetRef(TargetKind.AGENT_SESSION, w.id), System.DAEMON)
+            self._tracer.event(
+                conflict.kind,
+                agent_session=w.id,
+                beside=len(merged.beside),
+                blocked=len(merged.blocked),
+                kept=len(merged.kept),
+            )
+
+    def _scratch(self) -> Path:
+        """``<home>/tmp``, where the blobs of a merge wait: on the disk of the workspace, so that a move is a rename."""
+        scratch = self._home / TMP_DIR
+        scratch.mkdir(parents=True, exist_ok=True)
+        return scratch
 
     @staticmethod
     def _stopped(s: Session, w: AgentSession, commits: Bundle | None) -> None:

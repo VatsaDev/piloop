@@ -4,7 +4,7 @@
     uv run pytest -m e2e tests/e2e/test_lifecycle.py -rA [--e2e-harness claude] [--e2e-model <model>]
 
 Three ideas run with two implementers. The slow one is cancelled, lzma is judged, and the campaign stops while bz2 runs.
-About 3 minutes and 0.45 USD.
+About 3 minutes and 0.45 USD in each mode (``tests/e2e/conftest.py``).
 
 The tests are the steps of this one campaign. They run in the order of this file, and read the state that earlier
 tests leave on the ``Campaign``. ``@needs(...)`` names those earlier tests: when one of them did not pass, the test is
@@ -329,7 +329,7 @@ def test_no_anomaly_event(live_campaign: Smoke) -> None:
 
 def test_daemon_stops(live_campaign: Smoke) -> None:
     live_campaign.join_readers()
-    live_campaign.piloop('stop', '--timeout', '60')
+    live_campaign.stop()
     assert not (live_campaign.home / 'serve.pid').exists()
 
 

@@ -424,7 +424,10 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
     assert [t.model_dump() for t in filler.roles.sweeping()[RoleName('reviewer')].triggers] == [
         {'kind': 'low_water', 'buffer': 1}
     ]
-    assert "Input should be 'head' or 'repo'" in fails(reviewer(workdir='base'))
+    for workdir in ('repo', 'head'):
+        assert fails(reviewer(workdir=workdir)) == snapshot(
+            '  roles.reviewer: workdir is removed in piloop 0.3.0: every agent works in a worktree of its own, never in the campaign checkout. Delete the key (https://piloop.autoresearch.inc/guides/upgrading#workdir). Fix: https://piloop.autoresearch.inc/reference/configuration describes the key'
+        )
     for query, error in {
         'DELETE FROM ideas': 'not authorized',
         'SELECT nope FROM ideas': 'no such column: nope',

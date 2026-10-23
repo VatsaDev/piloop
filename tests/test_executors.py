@@ -357,8 +357,9 @@ def test_two_campaigns_on_clones_of_one_repo_get_their_own_checkouts(
         other = Campaign(name='other', path=str(clone), repo='other', config=campaign.config)
         s.add(other)
         s.commit()
-        sources = Sources(disk(tmp_path))
-        first, second = sources.checkout(s.get_one(Campaign, campaign.id)), sources.checkout(other)
+        sources = Sources(disk(tmp_path), tmp_path, db)
+        first = sources.git(s.get_one(Campaign, campaign.id), Repo(campaign.path).head.commit.hexsha)
+        second = sources.git(other, Repo(clone).head.commit.hexsha)
     assert first.repo != second.repo
     assert (checkout_of(db, first.repo), checkout_of(db, second.repo)) == (Path(campaign.path), clone)
     with pytest.raises(KeyError, match='is gone'):

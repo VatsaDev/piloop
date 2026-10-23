@@ -279,9 +279,7 @@ class TokenScope(StrEnum):
     """What a bearer token (``piloop token``) lets its caller do on the server of ``piloop serve --listen``."""
 
     WORKER = 'worker'
-    """A worker's calls: take leases, heartbeat, report."""
-    LEASE = 'lease'
-    """One agent's calls, while its lease is live."""
+    """A worker's calls: take leases, heartbeat, report, relay its agents' ``piloop`` calls, and the CAS."""
 
 
 class LeaseState(StrEnum):
@@ -1253,6 +1251,8 @@ class AgentSession(Tracked, Base):
     session_id: Mapped[str | None]
     """The harness's own session id. piloop creates it at launch when the harness takes it as an argument
     (``{session_id}``), or the runtime reports it after the agent starts. ``entire session attach`` takes it."""
+    machine: Mapped[str | None]
+    """The machine that runs the agent, as its executor names it (a worker of ``piloop worker``). NULL: the daemon's."""
     checkpoint_id: Mapped[str | None]
     """The Entire checkpoint of this session (``refs/entire/checkpoints/``). ``entire session attach`` writes it when
     the session ends. NULL when Entire is not installed or the attach failed."""

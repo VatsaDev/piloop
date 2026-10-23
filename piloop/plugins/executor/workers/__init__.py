@@ -38,6 +38,7 @@ from piloop.plugins.executor.kit import jobs
 from piloop.plugins.executor.kit.capacity import HostSample, Pool
 from piloop.plugins.executor.kit.client import Local
 from piloop.plugins.executor.kit.leases import DEFAULT_POOLS, SERVE, Leases, Timing
+from piloop.plugins.executor.kit.relay import Relay, Runner
 from piloop.plugins.executor.kit.remote import Remote, lease_routes
 from piloop.plugins.executor.workers.worker import Worker
 
@@ -89,6 +90,8 @@ class WorkersExecutor:
         self._cas = host.cas
         self._bundle = partial(jobs.bundle_of_record, host.cas, host.repos)
         """What the ``bundle`` route does: a bundle from the repo of record, into the CAS."""
+        self._cli = Runner(host.db, host.home, host.repos)
+        """What the ``cli`` route does: an agent's relayed call, run here."""
         self.worker = Worker(
             Local(self.leases, SERVE),
             host.tracer,
@@ -129,7 +132,7 @@ class WorkersExecutor:
 
     def routes(self) -> Sequence[Route]:
         """The lease routes (``remote.lease_routes``), which workers on other machines call (``piloop worker``)."""
-        return lease_routes(self.leases, self._changed, self._cas, self._bundle)
+        return lease_routes(self.leases, self._changed, self._cas, self._bundle, self._cli)
 
     def tick(self, now: datetime) -> datetime | None:
         """Expire the leases of a silent worker (``Leases.expire``), and return the next expiry."""
@@ -161,10 +164,11 @@ def remote_worker(
 
     It reads and writes ``cas``, the CAS that the server shares, and keeps clones of its own. After each job it keeps
     ``reserve`` bytes free on its home's disk (``Site.evict_inputs``). Its calls give up trying
-    again once ``stop`` is set.
+    again once ``stop`` is set. Its agents' ``piloop`` calls go to the server through it (``relay``).
     """
     client = Remote(http, stop, tracer)
-    return Worker(client, tracer, jobs.remote_site(home, cas, client.bundle, reserve), pool=pool)
+    site = jobs.remote_site(home, cas, client.bundle, reserve)
+    return Worker(client, tracer, site, pool=pool, relay=Relay(home, client.cli))
 
 
 @dataclass(frozen=True)

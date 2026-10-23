@@ -8,6 +8,7 @@ import time
 from collections.abc import Iterator, Mapping, Sequence
 from datetime import timedelta
 from functools import partial
+from http import HTTPStatus
 from pathlib import Path
 from uuid import uuid4
 
@@ -54,6 +55,7 @@ from piloop.plugins.executor.contract import (
 )
 from piloop.plugins.executor.kit.capacity import HostSample, sample
 from piloop.plugins.executor.kit.client import Dismissed, Local, Registration, WorkerInfo
+from piloop.plugins.executor.kit.door import AgentCall, Relayed
 from piloop.plugins.executor.kit.jobs import bundle_of_record, local_site, remote_site
 from piloop.plugins.executor.kit.leases import (
     SERVE,
@@ -72,6 +74,7 @@ from piloop.plugins.executor.kit.leases import (
     enqueue,
     revoke,
 )
+from piloop.plugins.executor.kit.relay import Relay
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.executor.workers.worker import WORKER_ANOMALY, Unsent, Worker
 from piloop.plugins.runtime.contract import QUEUE, ExitStatus, Handle, put, take
@@ -229,6 +232,41 @@ def test_a_revoked_agent_is_stopped_by_its_worker_and_still_reported(
         'killed by the worker'
     )
     assert rows(db, agent_session_id)[1].state is LeaseState.REPORTED
+
+
+def test_a_worker_with_a_relay_relays_each_agent_while_its_job_runs(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """An agent's calls are relayed while its job runs, and no more once its report or its loss goes out."""
+    hold = tmp_path / 'hold'
+    hold.touch()
+    use(db, campaign, HOLD.format(hold=hold))
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers())
+    worker = workers_of(ex).worker
+    relay = worker.relay = Relay(tmp_path / 'relay-home', lambda lease, call: Relayed(exit_code=0))
+    ex.executor.adopt([])
+    agent_session_id = request_agent(db, campaign)
+
+    def relayed(agent: AgentSessionId) -> bool:
+        return relay.answer(AgentCall(agent=agent, argv=['sql']).model_dump_json().encode())[0] is HTTPStatus.OK
+
+    launching = threading.Thread(target=launch, args=(ex, agent_session_id, tmp_path))
+    launching.start()
+    wait_until(lambda: relayed(agent_session_id) and lease_state(db, agent_session_id) is LeaseState.RUNNING)
+    ex.hand_over()  # as a worker that restarts: the next one finds the agent on its lease, and relays for it again
+    launching.join(30)
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers())
+    relay = workers_of(ex).worker.relay = Relay(tmp_path / 'relay-home', lambda lease, call: Relayed(exit_code=0))
+    workers_of(ex).leases.renew_all()
+    ex.executor.adopt([])
+    wait_until(lambda: relayed(agent_session_id))
+    hold.unlink()
+    assert isinstance(ex.launcher.reattach(agent_session_id), Ran)
+    assert not relayed(agent_session_id), 'no more after its report'
+    mocker.patch('piloop.plugins.executor.kit.jobs.run_agent', side_effect=RuntimeError('a bug'))
+    lost = request_agent(db, campaign)
+    assert isinstance(launch(ex, lost, tmp_path), Lost) and not relayed(lost), 'nor after its loss'
+    ex.stop(5)
 
 
 def test_a_worker_whose_own_code_fails_loses_the_job_so_that_nothing_waits_for_ever(

@@ -24,9 +24,10 @@ from piloop.net import MAX_POLL_SECONDS, tokens
 from piloop.net.server import Server, app
 from piloop.net.tokens import Tokens
 from piloop.otel import Tracer
-from piloop.plugins.executor.contract import AgentKey, MissingBlobs, Prompt, RepoId
+from piloop.plugins.executor.contract import AgentJob, AgentKey, MissingBlobs, Prompt, RepoId
 from piloop.plugins.executor.kit import remote as remote_module
 from piloop.plugins.executor.kit.client import Dismissed, LeaseClient, Local, WorkerInfo
+from piloop.plugins.executor.kit.door import Call, Relayed
 from piloop.plugins.executor.kit.leases import (
     Answer,
     Grant,
@@ -63,13 +64,18 @@ type Connect = Callable[[str], LeaseClient]
 INFO = WorkerInfo(version='0.2.0', pool='test', runners=['process'], sample=HOST, cas_probe=PROBE)
 
 
-BUNDLES: list[tuple[RepoId, str, list[str]]] = []
+BUNDLES: list[tuple[RepoId, list[str], list[str]]] = []
 
 
-def bundled(repo: RepoId, commit: str, have: Sequence[str]) -> Cid | None:
-    """The server's half of ``bundle``, which records what it was asked: a commit that the caller has is None."""
-    BUNDLES.append((repo, commit, list(have)))
-    return None if commit in have else Cid.of(commit.encode())
+def echoed(job: AgentJob, call: Call) -> Relayed:
+    """The server's half of ``cli``: what it ran, as whom, without a run."""
+    return Relayed(stdout=f'{job.agent_session}: {" ".join(call.argv)} <{call.stdin}>', exit_code=3)
+
+
+def bundled(repo: RepoId, commits: Sequence[str], have: Sequence[str]) -> Cid | None:
+    """The server's half of ``bundle``, which records what it was asked: commits that the caller has are None."""
+    BUNDLES.append((repo, list(commits), list(have)))
+    return None if set(commits) <= set(have) else Cid.of(''.join(commits).encode())
 
 
 @pytest.fixture
@@ -93,7 +99,7 @@ def server(network: HttpsNetwork, leases: Leases, db: Database, tmp_path: Path) 
     assert listener is not None
     cas = disk(tmp_path / 'server')
     assert cas.put(b'piloop worker cas probe\n') == PROBE, 'the workers share it'
-    server = Server(app(network, lease_routes(leases, db.changed, cas, bundled)), listener)
+    server = Server(app(network, lease_routes(leases, db.changed, cas, bundled, echoed)), listener)
     server.start()
     yield server
     server.close()
@@ -298,9 +304,7 @@ def test_a_worker_whose_cas_is_not_the_servers_is_dismissed_at_register(remote: 
         remote().register(elsewhere)
 
 
-def test_a_revoked_token_a_token_of_another_scope_and_the_servers_own_name_are_dismissed(
-    remote: Callable[..., Remote], db: Database
-) -> None:
+def test_a_revoked_token_and_the_servers_own_name_are_dismissed(remote: Callable[..., Remote], db: Database) -> None:
     w1 = remote()
     w1.register(INFO)
     with db.session() as s:
@@ -308,8 +312,6 @@ def test_a_revoked_token_a_token_of_another_scope_and_the_servers_own_name_are_d
         s.commit()
     with pytest.raises(Dismissed, match=r'\(401\): the token is unknown or revoked'):
         w1.heartbeat({}, HOST)
-    with pytest.raises(Dismissed, match=r'\(403\): agent7 has a lease token'):
-        remote('agent7', scope=TokenScope.LEASE).register(INFO)
     with pytest.raises(Dismissed, match=r'\(403\): serve is the worker inside piloop serve'):
         remote('serve').register(INFO)
 
@@ -443,6 +445,38 @@ def test_a_worker_asks_the_server_for_a_bundle_and_gets_its_address_in_the_cas(r
     """No bytes come through the route: the server puts the bundle in the CAS, and the worker reads it from there."""
     worker = remote('w1')
     BUNDLES.clear()
-    assert worker.bundle(RepoId(CampaignId(3)), 'c2', ['c1']) == Cid.of(b'c2')
-    assert worker.bundle(RepoId(CampaignId(3)), 'c1', ['c1']) is None, 'the clone has it'
-    assert BUNDLES == [(3, 'c2', ['c1']), (3, 'c1', ['c1'])]
+    assert worker.bundle(RepoId(CampaignId(3)), ['c2', 'c3'], ['c1']) == Cid.of(b'c2c3')
+    assert worker.bundle(RepoId(CampaignId(3)), ['c1'], ['c1']) is None, 'the clone has it'
+    assert BUNDLES == [(3, ['c2', 'c3'], ['c1']), (3, ['c1'], ['c1'])]
+
+
+def test_an_agents_relayed_call_runs_on_its_live_lease_only_and_a_lost_answer_is_not_sent_again(
+    remote: Callable[..., Remote], server: Server, db: Database, campaign: Campaign, tmp_path: Path, leases: Leases
+) -> None:
+    """The fence scopes the call: another worker's lease, an evaluation's, and a lease that ended are refused. A call
+    is a ``piloop`` command, which must not run twice, so only a connection that never opened is tried again."""
+    host, port = server.listener.socket.getsockname()[:2]
+    with Proxy((host, port)) as proxy:
+        w1, w2 = remote('w1', f'http://127.0.0.1:{proxy.port}'), remote('w2')
+        w1.register(INFO)
+        w2.register(INFO)
+        job = agent_job(db, campaign, tmp_path)
+        lease = queue(db, job)
+        assert isinstance(w1.acquire(uuid4().hex, HOST), Grant)
+        call = Call(argv=['sql', '-'], stdin='SELECT 1')
+        assert w1.cli(lease, call) == Relayed(stdout=f'{job.agent_session}: sql - <SELECT 1>', exit_code=3)
+        with pytest.raises(StaleLease):
+            w2.cli(lease, call)
+        evaluation = queue(db, evaluation_job(db, campaign, tmp_path))
+        assert isinstance(w1.acquire(uuid4().hex, HOST), Grant)
+        with pytest.raises(StaleLease, match='an evaluation, which relays nothing'):
+            w1.cli(evaluation, call)
+        with pytest.raises(StaleLease, match='there is no lease#99'):
+            w1.cli(99, call)
+        proxy.toxic = CutResponse(b'POST /v1/executor/cli')
+        with pytest.raises(httpx.TransportError):
+            w1.cli(lease, call)
+        assert proxy.cuts == 1
+        w1.report(lease, uuid4().hex, DONE)
+        with pytest.raises(StaleLease, match='is reported'):
+            w1.cli(lease, call)

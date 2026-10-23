@@ -1,5 +1,6 @@
 """Create and register campaign repos: ``piloop init``, ``piloop campaign add`` and the bundled examples."""
 
+import os
 import re
 import shutil
 import subprocess
@@ -21,11 +22,11 @@ from piloop.actor import Actor
 from piloop.agents.capture import ENTIRE_DIR
 from piloop.config import CONFIG_FILE, CampaignConfig, config_of, load_campaign_config
 from piloop.db.events import emit
-from piloop.db.models import Campaign, CampaignStatus, EventModel, Measurement, Verdict
+from piloop.db.models import Campaign, CampaignStatus, Candidate, EventModel, Measurement, Verdict
 from piloop.db.session import Database
 from piloop.ids import CampaignId, CandidateId, TargetKind, TargetRef
 from piloop.plugins.cas.contract import CAS, Cas
-from piloop.plugins.executor.contract import Checkout, GitSource, RepoId
+from piloop.plugins.executor.contract import GitSource, RepoId, Workspace
 from piloop.proc import child_env
 from piloop.scoring.evaluate import run_evaluate
 from piloop.scoring.ledger import DAEMON, current_evaluator, resolve, save_units
@@ -332,26 +333,34 @@ def links_of(cas: Cas, cfg: CampaignConfig, path: Path, seen: Seen | None = None
 
 
 class Sources:
-    """The artifacts of a campaign's jobs, by address: its repo of record, and its linked inputs put into the CAS."""
+    """The artifacts of a campaign's jobs, by address: its repo of record, with its inputs and workspace in the CAS."""
 
-    def __init__(self, cas: Cas) -> None:
+    def __init__(self, cas: Cas, home: Path, db: Database) -> None:
         self._cas = cas
+        self._home = home
+        self._db = db
         self._seen: Seen = {}
-        """The files of linked inputs stored so far: a job made later reads only those that changed."""
+        """The files stored so far: a job made later reads only those that changed."""
 
     def git(self, campaign: Campaign, commit: str) -> GitSource:
-        """``commit`` of the campaign's repo, with its links and its shared workspace."""
+        """``commit`` of the campaign's repo, with its links: an evaluation's tree."""
         path = Path(campaign.path)
         return GitSource(
-            repo=RepoId(campaign.id),
-            commit=commit,
-            links=links_of(self._cas, config_of(campaign), path, self._seen),
-            workspace=f'{PROJECTS}/{campaign.id}/{WORKSPACE}',
+            repo=RepoId(campaign.id), commit=commit, links=links_of(self._cas, config_of(campaign), path, self._seen)
         )
 
-    def checkout(self, campaign: Campaign) -> Checkout:
-        """The campaign's checkout itself."""
-        return Checkout(repo=RepoId(campaign.id))
+    def agent(self, campaign: Campaign, commit: str) -> GitSource:
+        """``git``, with a snapshot of the campaign's shared workspace and every candidate's commit: an agent's tree."""
+        workspace = workspace_dir(self._home, campaign.id)
+        names = os.listdir(workspace) if workspace.is_dir() else []
+        manifest = put_tree(self._cas, workspace, names, seen=self._seen).manifest.put(self._cas)
+        place = workspace.relative_to(self._home).as_posix()
+        with self._db.session() as s:
+            history = list(
+                s.scalars(select(Candidate.commit_sha).where(Candidate.campaign_id == campaign.id).distinct())
+            )
+        update = {'workspace': Workspace(place=place, manifest=manifest), 'history': history}
+        return self.git(campaign, commit).model_copy(update=update)
 
 
 def checkout_of(db: Database, repo: RepoId) -> Path:

@@ -1983,3 +1983,26 @@ def test_serve_and_migrate_refuse_under_a_daemon_that_a_service_manager_started(
     assert out().strip() == f'schema: 0016 → {HEAD}; backup of 0016: {backup}', 'without the daemon, it migrates'
     for _ in hold_lock(common.settings.pid_file):
         run_cli(['status'])  # at head: a daemon of the same piloop is no reason to refuse
+
+
+def test_attach_names_the_worker_of_an_agent_that_runs_elsewhere(campaign_path: Path) -> None:
+    """What it writes is on that worker until it ends."""
+    run_cli(['init', str(campaign_path)])
+    db = Database(common.settings.database_url, actor=common.settings.actor)
+    with db.session() as s:
+        s.add(
+            AgentSession(
+                kind='implementer',
+                campaign_id=1,
+                runtime='subprocess',
+                state=AgentSessionState.RUNNING,
+                log_dir='/tmp/x',
+                machine='gpu1',
+            )
+        )
+        s.commit()
+    db.close()
+    with pytest.raises(
+        SystemExit, match='agent_session#1 runs on the worker gpu1: what it writes is there until it ends'
+    ):
+        run_cli(['attach', '1'])

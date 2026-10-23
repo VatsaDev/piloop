@@ -21,6 +21,7 @@ from piloop.otel import Tracer
 from piloop.plugins.cas.contract import CAS
 from piloop.plugins.executor.kit.jobs import bundle_of_record
 from piloop.plugins.executor.kit.leases import Leases, Timing
+from piloop.plugins.executor.kit.relay import Runner
 from piloop.plugins.executor.kit.remote import lease_routes
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.network.contract import NetworkHost
@@ -39,7 +40,8 @@ def main() -> None:
     listener = network.listener()
     assert listener is not None
     bundle = partial(bundle_of_record, cas, partial(checkout_of, db))
-    Server(app(network, lease_routes(leases, db.changed, cas, bundle)), listener).start()
+    cli = Runner(db, home, partial(checkout_of, db))
+    Server(app(network, lease_routes(leases, db.changed, cas, bundle, cli)), listener).start()
     print(f'ready {listener.socket.getsockname()[1]}', flush=True)
     threading.Event().wait()
 

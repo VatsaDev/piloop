@@ -492,6 +492,116 @@ def write_files(cas: Cas, files: Mapping[str, Cid], root: Path) -> None:
             raise Missing(f'the blob {blob} of {rel} is not in the CAS')
 
 
+def changed(
+    cas: Cas, root: Path, base: Manifest, copies: Mapping[str, Copy], seen: Seen | None = None
+) -> dict[str, Cid | None]:
+    """Put the files under ``root`` that are new since ``base``, or hold other content, and return them by path.
+
+    A file of ``base`` that went is None: a removal. A file that ``base`` put as a copy (``copies``) is not read when its
+    stat is as it was made (``Copy.holds``). Symlinks and special files are left out. Nothing may write under ``root``
+    meanwhile.
+    """
+    if not root.is_dir():
+        return {}
+    blobs = {e.path: e.blob for e in base.entries if e.blob is not None}
+
+    def same(rel: str) -> bool:
+        if (blob := blobs.get(rel)) is None:
+            return False
+        copy = copies.get(rel)
+        return copy.holds(root / rel) if copy is not None else cid_of(root / rel) == blob
+
+    found = walk(root, os.listdir(root))
+    stored = put_walk(cas, root, Walk(files=[(rel, st) for rel, st in found.files if not same(rel)]), seen=seen)
+    removed = blobs.keys() - {rel for rel, _ in found.files}
+    return {e.path: e.blob for e in stored.manifest.entries if e.blob is not None} | dict.fromkeys(removed)
+
+
+@dataclass(frozen=True)
+class Staged:
+    """A blob read from the CAS into a file of its own, which ``merge`` moves into place."""
+
+    blob: Cid
+    path: Path
+
+
+def stage(cas: Cas, files: Mapping[str, Cid | None], scratch: Path) -> dict[str, Staged | None]:
+    """Read each blob of ``files`` into a file under ``scratch``, so that ``merge`` reads nothing of the CAS.
+
+    A removal (None) stays None.
+
+    Raises:
+        Missing: The CAS does not hold one of ``files``.
+    """
+    scratch.mkdir(parents=True, exist_ok=True)
+    staged: dict[str, Staged | None] = {}
+    for rel, blob in files.items():
+        if blob is None:
+            staged[rel] = None
+            continue
+        path = Path(tempfile.mkstemp(dir=scratch)[1])
+        if cas.get_file(blob, path) is None:
+            raise Missing(f'the blob {blob} of {rel} is not in the CAS')
+        staged[rel] = Staged(blob, path)
+    return staged
+
+
+@dataclass
+class Merged:
+    """What ``merge`` did: the paths it wrote or removed, and those that had changed since, which it left."""
+
+    written: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)
+    beside: dict[str, str] = field(default_factory=dict)
+    """Path → the path beside it that got the new content."""
+    kept: list[str] = field(default_factory=list)
+    """The paths to remove that held another content than in ``base``: they stay."""
+    blocked: list[str] = field(default_factory=list)
+    """The paths where a directory, a symlink or a special file stands: nothing was written."""
+
+
+def merge(root: Path, base: Manifest, files: Mapping[str, Staged | None], suffix: str) -> Merged:
+    """Write or remove each of ``files`` (``stage``) under ``root`` where it still holds what ``base`` had.
+
+    A compare-and-swap for each path: one that holds another content than in ``base`` (someone wrote it since) keeps it: the new content goes beside
+    it, as ``<path>.<suffix>``, and a removal is not done. A path that holds the new content already is left as it is.
+    """
+    blobs = {e.path: e.blob for e in base.entries if e.blob is not None}
+    done = Merged()
+    for rel, new in sorted(files.items()):
+        path = root / rel
+        if not _within(root, Path(rel)) or _blocked(root, Path(rel), set()) or _taken(path):
+            done.blocked.append(rel)
+            continue
+        current = cid_of(path) if path.exists() else None
+        if current == (new.blob if new is not None else None):
+            continue
+        if current != blobs.get(rel):
+            if new is None:
+                done.kept.append(rel)
+                continue
+            beside = f'{rel}.{suffix}'
+            if _taken(root / beside):
+                done.blocked.append(rel)
+                continue
+            done.beside[rel] = beside
+            path = root / beside
+        elif new is None:
+            path.unlink()
+            done.removed.append(rel)
+            continue
+        else:
+            done.written.append(rel)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(new.path, path)
+    return done
+
+
+def _taken(path: Path) -> bool:
+    """Whether something other than a regular file stands at ``path``: a directory, a symlink, a socket."""
+    return path.is_symlink() or (path.exists() and not path.is_file())
+
+
 @dataclass(frozen=True)
 class Copy:
     """A file put from a blob, as it was when it was made: what it must still be."""

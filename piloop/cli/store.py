@@ -33,7 +33,7 @@ def restore(
     ] = None,
     /,
 ) -> None:
-    """Write archived files back into the campaign's workspace (`./workspace/` in every agent's worktree).
+    """Write archived files back into the campaign's shared workspace: agents that start after get them in `./workspace/`.
 
     The daemon archives a done idea's workspace files, and what is left when a campaign stops, into the artifact store
     and removes the local copies. This brings them back from the local store or its remote. A file that is already

@@ -11,7 +11,6 @@ import httpx2 as httpx
 import pytest
 from covalence import Cid, IntegrityError, StoreError
 
-from piloop.db.models import TokenScope
 from piloop.db.session import Database
 from piloop.net import cas_server
 from piloop.net.cas import route
@@ -117,20 +116,13 @@ def test_a_cut_download_is_retried_from_the_start(
     assert (tmp_path / 'fetched').read_bytes() == PAYLOAD
 
 
-def test_a_workers_token_reads_and_writes_and_no_other_does(
+def test_a_workers_token_reads_and_writes_and_an_unknown_one_does_not(
     server: Server, served: DiskCas, token: Callable[..., str], connect: Connect
 ) -> None:
     cid = served.put(b'stored')
     worker = connect(server.url, token('gpu1'))
     assert worker.get(cid) == b'stored'
     assert worker.get(worker.put(b'from a worker')) == b'from a worker'
-    agent = connect(server.url, token('agent', TokenScope.LEASE))
-    with pytest.raises(
-        StoreError, match='403: .*"permission_denied".*agent has a lease token, and this route takes a worker token'
-    ):
-        agent.get(cid)
-    with pytest.raises(StoreError, match='HEAD .* answered 403'):  # a HEAD has no body to say why
-        agent.has(cid)
     anonymous = connect(server.url, 'plt_unknown')
     with pytest.raises(StoreError, match='401: .*"unauthenticated".*the token is unknown or revoked'):
         anonymous.get(cid)

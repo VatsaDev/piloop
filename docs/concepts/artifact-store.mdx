@@ -3,8 +3,8 @@ title: The artifact store
 description: How piloop archives the shared workspace when it is done with it, and how to get files back.
 ---
 
-Every campaign has one shared workspace, `$PILOOP_HOME/projects/<id>/workspace`. It is linked into every agent's
-worktree as `./workspace/`. Agents leave notes, logs, evaluation outputs and analysis arrays there. On a long campaign
+Every campaign has one shared workspace, `$PILOOP_HOME/projects/<id>/workspace`. Agents leave notes, logs, evaluation
+outputs and analysis arrays there. On a long campaign
 it grows to hundreds of gigabytes, much of it copies.
 
 piloop stores workspace files in a content-addressed **artifact store** once nothing needs them any more. It removes

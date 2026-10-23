@@ -1,8 +1,8 @@
 """The server of ``piloop serve --listen``: the routes that other machines call, and who may call each one.
 
 The network capability (``piloop.plugins.network.contract``) says how machines reach the server and who a caller is.
-What a caller may do is core's: each route has a ``TokenScope``, and a caller of another scope gets 403. The server is
-FastAPI on uvicorn (``piloop.net.server``), and it serves the routes of the executor (``Executor.routes``). Data never
+What a caller may do is core's: every token is a worker's (``TokenScope``), and a worker may call every route. The
+server is FastAPI on uvicorn (``piloop.net.server``), and it serves the routes of the executor (``Executor.routes``). Data never
 goes through it: workers read and write the artifact store's remote directly, and the routes pass only hashes.
 """
 
@@ -14,7 +14,6 @@ from http import HTTPStatus
 
 from pydantic import BaseModel, Field, ValidationError
 
-from piloop.db.models import TokenScope
 from piloop.net.tokens import Caller
 
 MAX_POLL_SECONDS = 25
@@ -44,11 +43,8 @@ class Route:
     ``handle`` runs in a thread of the server's pool, so it must not wait: a long-poll is a ``long_poll``.
     """
 
-    def __init__[I: BaseModel](
-        self, path: str, scope: TokenScope, body: type[I], handle: Callable[[Caller, I], BaseModel | None]
-    ) -> None:
+    def __init__[I: BaseModel](self, path: str, body: type[I], handle: Callable[[Caller, I], BaseModel | None]) -> None:
         self.path = path
-        self.scope = scope
 
         def bind(caller: Caller, raw: bytes) -> Call:
             return Call(partial(handle, caller, _parsed(body, raw)), 0)
@@ -62,7 +58,6 @@ class Route:
     def long_poll[I: Polled](
         cls,
         path: str,
-        scope: TokenScope,
         body: type[I],
         handle: Callable[[Caller, I], BaseModel | None],
         changed: Changed,
@@ -71,7 +66,7 @@ class Route:
 
         The server then awaits ``changed`` and calls it again, until the body's ``wait`` ends. No thread waits.
         """
-        route = cls(path, scope, body, handle)
+        route = cls(path, body, handle)
 
         def bind(caller: Caller, raw: bytes) -> Call:
             parsed = _parsed(body, raw)

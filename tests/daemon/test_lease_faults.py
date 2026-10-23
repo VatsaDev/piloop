@@ -448,21 +448,18 @@ def test_a_real_daemon_killed_during_a_run_is_followed_by_one_that_finishes_it_o
         db.close()
 
 
-@pytest.mark.parametrize('workdir', ['run', 'worktree', 'repo'])
+@pytest.mark.parametrize('agent', ['run', 'sweep'])
 def test_an_agent_that_a_daemon_before_leases_started_is_adopted_and_its_work_scored(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, workdir: str
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, agent: str
 ) -> None:
     """An upgrade hands over to a daemon with leases: each running agent without one gets one, keeps running, and its
-    run is scored. A run's implementer, a sweep in a worktree, and a sweep in the campaign checkout."""
+    run is scored. A run's implementer and a sweep."""
     hold = tmp_path / 'hold'
     hold.touch()
     write_toml(Path(campaign.path), COMMIT_THEN_HOLD.format(hold=hold).replace('../agent.pid', f'{tmp_path}/agent.pid'))
-    if workdir == 'run':
-        reload_campaign(db, campaign)
-    else:
-        set_config(db, campaign, roles={'watchdog': {'workdir': 'repo' if workdir == 'repo' else 'head'}})
+    reload_campaign(db, campaign)
     first = make_scheduler(db, runtime, tmp_path)
-    if workdir == 'run':
+    if agent == 'run':
         add_ideas(db, campaign, 'one line')
     else:
         request_watchdog(db, campaign)
@@ -482,11 +479,9 @@ def test_an_agent_that_a_daemon_before_leases_started_is_adopted_and_its_work_sc
     with db.session() as s:
         assert s.get_one(AgentSession, 1).state is AgentSessionState.EXITED
         assert s.get_one(Lease, adopted.id).state is LeaseState.REPORTED
-        if workdir == 'run':
+        if agent == 'run':
             [candidate] = s.scalars(select(Candidate).where(Candidate.run_id == 1)).all()
             assert candidate.summary == 'a line', 'its work is scored'
-    if workdir == 'repo':
-        subprocess.run(['git', 'reset', '-q', '--hard', 'HEAD~1'], cwd=campaign.path, check=True)
 
 
 def test_a_stop_ends_an_agent_lease_that_no_worker_took_yet(

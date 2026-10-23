@@ -117,7 +117,7 @@ CREATE TABLE tokens (
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
 	PRIMARY KEY (id),
 	UNIQUE (name),
-	CONSTRAINT tokenscope CHECK (scope IN ('worker', 'lease')),
+	CONSTRAINT tokenscope CHECK (scope IN ('worker')),
 	UNIQUE (sha256)
 );
 CREATE TABLE archives (
@@ -293,6 +293,7 @@ CREATE TABLE agent_sessions (
 	ended_at DATETIME,
 	error VARCHAR,
 	session_id VARCHAR,
+	machine VARCHAR,
 	checkpoint_id VARCHAR,
 	usage JSON,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
