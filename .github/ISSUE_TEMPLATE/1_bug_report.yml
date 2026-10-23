@@ -27,6 +27,6 @@ body:
     id: platform
     attributes:
       label: Operating system and harnesses
-      placeholder: macOS 26, Claude Code 2.1, runtime = "herdr"
+      placeholder: macOS 26, Claude Code 2.1, runtime = "subprocess"
     validations:
       required: true

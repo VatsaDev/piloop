@@ -1,16 +1,11 @@
-"""The runtime contract behind the worker: every runtime runs an agent's job on a lease the same way.
+"""The worker runs an agent's job on a lease: an agent that ends, one that runs out of time, a start that fails, and a
+worker that restarts and re-attaches."""
 
-Each case runs on ``subprocess`` (a real process) and on ``herdr`` (the real runtime against the fake ``herdr`` CLI):
-an agent that ends, one that runs out of time, a start that fails, and a worker that restarts and re-attaches.
-"""
-
-import json
 import os
 import shutil
 import threading
 import time
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass
 from datetime import timedelta
 from functools import partial
 from pathlib import Path
@@ -80,8 +75,6 @@ from piloop.plugins.executor.kit.leases import (
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.executor.workers.worker import WORKER_ANOMALY, Unsent, Worker
 from piloop.plugins.runtime.contract import QUEUE, ExitStatus, Handle, put, take
-from piloop.plugins.runtime.herdr import HerdrSettings
-from piloop.runtime.factory import RuntimeFactory, make_runtime
 from piloop.settings import INPUTS_DIR
 from piloop.store import tree as tree_module
 from tests.conftest import (
@@ -101,49 +94,12 @@ from tests.daemon.test_run_controller import execute, make_run, reload_campaign,
 from tests.test_executors import Steerable
 from tests.test_lease import PROBE, agent_job, evaluation_job
 
-NO_JOBS = {'error': {'code': 'pane_not_found', 'message': 'gone'}}
-"""What the fake ``herdr`` answers for the agent's jobs: none, so an idle agent is finished."""
 HOLD = '#!/bin/sh\nwhile [ -f {hold} ]; do sleep 0.05; done\n'
 
 
-@dataclass(frozen=True)
-class Contract:
-    """One runtime under the contract: how to make it, and how to make it fail a start or time out."""
-
-    kind: str
-    runtime_factory: RuntimeFactory
-    monkeypatch: pytest.MonkeyPatch
-
-    def script(self, **responses: list[dict[str, object]]) -> None:
-        """Answer the fake ``herdr`` CLI's calls with ``responses``. Nothing for the subprocess runtime."""
-        if self.kind == 'herdr':
-            scripts = {'pane process-info': [NO_JOBS], **{k.replace('_', ' '): v for k, v in responses.items()}}
-            self.monkeypatch.setenv('FAKE_HERDR_SCRIPT', json.dumps(scripts))
-
-
-@pytest.fixture(params=['subprocess', 'herdr'])
-def contract(
-    request: pytest.FixtureRequest, runtime: ScriptRuntime, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> Iterator[Contract]:
-    if request.param == 'herdr':
-        request.getfixturevalue('herdr_log')
-        monkeypatch.setattr('piloop.plugins.runtime.herdr.QUIET_SECONDS', 0)
-        # the fake's agent is idle at once: past the grace, that is the end of its turn, not a slow start
-        monkeypatch.setattr('piloop.plugins.runtime.herdr.herdr_settings', HerdrSettings(startup_grace_seconds=0.05))
-        herdr = Contract('herdr', make_runtime, monkeypatch)
-        herdr.script()
-        yield herdr
-    else:
-        yield Contract('subprocess', factory(runtime), monkeypatch)
-
-
-def use(db: Database, campaign: Campaign, contract: Contract, body: str, timeout: float = 20) -> None:
+def use(db: Database, campaign: Campaign, body: str, timeout: float = 20) -> None:
     write_toml(Path(campaign.path), body, implementer_timeout=timeout)
     reload_campaign(db, campaign)
-    with db.session() as s:
-        row = s.get_one(Campaign, campaign.id)
-        row.config = {**row.config, 'runtime': contract.kind}
-        s.commit()
 
 
 def request_agent(db: Database, campaign: Campaign) -> AgentSessionId:
@@ -184,10 +140,10 @@ def rows(db: Database, agent_session_id: AgentSessionId) -> tuple[AgentSession, 
 
 
 def test_an_agent_that_ends_is_reported_on_its_lease(
-    db: Database, campaign: Campaign, contract: Contract, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    use(db, campaign, contract, '#!/bin/sh\necho done\n')
-    ex = serving(RunController(db, Tracer(None), tmp_path, contract.runtime_factory, executor=Workers()))
+    use(db, campaign, '#!/bin/sh\necho done\n')
+    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     agent_session_id = request_agent(db, campaign)
     outcome = launch(ex, agent_session_id, tmp_path)
     assert isinstance(outcome, Ran)
@@ -195,20 +151,19 @@ def test_an_agent_that_ends_is_reported_on_its_lease(
     w, lease = rows(db, agent_session_id)
     assert (w.state, w.runtime, lease.state, lease.worker) == (
         AgentSessionState.EXITED,
-        contract.kind,
+        'subprocess',
         LeaseState.REPORTED,
         'serve',
     )
-    assert lease.handle['runtime'] == contract.kind and w.handle == lease.handle['data'], 'steered by its handle'
+    assert lease.handle['runtime'] == 'subprocess' and w.handle == lease.handle['data'], 'steered by its handle'
     assert (tmp_path / 'logs' / 'transcript.txt').is_file() and (tmp_path / 'logs' / 'brief.md').read_text() == 'b'
 
 
 def test_an_agent_that_runs_out_of_time_is_reported_timed_out(
-    db: Database, campaign: Campaign, contract: Contract, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    use(db, campaign, contract, '#!/bin/sh\nsleep 30\n', timeout=0.5)
-    contract.script(agent_wait=[{'error': {'code': 'timeout', 'message': 'timed out'}}])
-    ex = serving(RunController(db, Tracer(None), tmp_path, contract.runtime_factory, executor=Workers()))
+    use(db, campaign, '#!/bin/sh\nsleep 30\n', timeout=0.5)
+    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     agent_session_id = request_agent(db, campaign)
     outcome = launch(ex, agent_session_id, tmp_path)
     assert isinstance(outcome, Ran)
@@ -218,13 +173,11 @@ def test_an_agent_that_runs_out_of_time_is_reported_timed_out(
 
 
 def test_a_start_that_fails_is_reported_as_a_failed_start(
-    db: Database, campaign: Campaign, contract: Contract, tmp_path: Path, runtime: ScriptRuntime, mocker: MockerFixture
+    db: Database, campaign: Campaign, tmp_path: Path, runtime: ScriptRuntime, mocker: MockerFixture
 ) -> None:
-    use(db, campaign, contract, '#!/bin/sh\necho done\n')
-    contract.script(agent_start=[{'error': {'code': 'spawn_failed', 'message': 'no such harness'}}])
-    if contract.kind == 'subprocess':
-        mocker.patch.object(runtime, 'start', side_effect=RuntimeError('spawn_failed: no such harness'))
-    ex = serving(RunController(db, Tracer(None), tmp_path, contract.runtime_factory, executor=Workers()))
+    use(db, campaign, '#!/bin/sh\necho done\n')
+    mocker.patch.object(runtime, 'start', side_effect=RuntimeError('spawn_failed: no such harness'))
+    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     agent_session_id = request_agent(db, campaign)
     outcome = launch(ex, agent_session_id, tmp_path)
     assert isinstance(outcome, NotStarted) and 'spawn_failed' in str(outcome.reason)
@@ -233,24 +186,22 @@ def test_a_start_that_fails_is_reported_as_a_failed_start(
 
 
 def test_a_restarted_worker_re_attaches_to_its_agent_and_reports_it(
-    db: Database, campaign: Campaign, contract: Contract, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """The worker of an in-place restart leaves its agent running. The next one finds it on its lease, by its handle."""
     hold = tmp_path / 'hold'
     hold.touch()
-    use(db, campaign, contract, HOLD.format(hold=hold))
-    contract.script(agent_wait=[{'result': {'type': 'agent_info', 'agent': {'agent_status': 'working'}}}])
-    first = serving(RunController(db, Tracer(None), tmp_path, contract.runtime_factory, executor=Workers()))
+    use(db, campaign, HOLD.format(hold=hold))
+    first = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     agent_session_id = request_agent(db, campaign)
     launching = threading.Thread(target=launch, args=(first, agent_session_id, tmp_path))
     launching.start()
     wait_until(lambda: lease_state(db, agent_session_id) is LeaseState.RUNNING)
     first.hand_over()
     launching.join(30)
-    second = serving(RunController(db, Tracer(None), tmp_path, contract.runtime_factory, executor=Workers()))
+    second = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     workers_of(second).leases.renew_all()
     workers_of(second).worker.start()
-    contract.script()  # herdr's agent is now idle
     hold.unlink()
     outcome = second.launcher.reattach(agent_session_id)
     assert isinstance(outcome, Ran)
@@ -263,7 +214,7 @@ def test_a_revoked_agent_is_stopped_by_its_worker_and_still_reported(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """A kill is a revoke: the worker stops the agent and reports it, so its run keeps what it made."""
-    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), '#!/bin/sh\nsleep 30\n')
+    use(db, campaign, '#!/bin/sh\nsleep 30\n')
     ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     agent_session_id = request_agent(db, campaign)
     outcomes: list[Ended] = []
@@ -283,7 +234,7 @@ def test_a_revoked_agent_is_stopped_by_its_worker_and_still_reported(
 def test_a_worker_whose_own_code_fails_loses_the_job_so_that_nothing_waits_for_ever(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
-    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), '#!/bin/sh\necho done\n')
+    use(db, campaign, '#!/bin/sh\necho done\n')
     mocker.patch('piloop.plugins.executor.workers.worker.Worker._agent', side_effect=RuntimeError('a bug'))
     ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     agent_session_id = request_agent(db, campaign)
@@ -298,7 +249,7 @@ def test_a_worker_whose_own_code_fails_loses_the_job_so_that_nothing_waits_for_e
 def test_a_report_that_names_blobs_the_cas_lacks_loses_the_job_with_why_and_is_not_sent_again(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
-    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), '#!/bin/sh\necho done\n')
+    use(db, campaign, '#!/bin/sh\necho done\n')
     lacks = MissingBlobs('its report names blobs that the CAS lacks: bafk')
     finished = mocker.patch.object(CampaignResults, 'finished', side_effect=lacks)
     ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
@@ -315,7 +266,7 @@ def test_a_restarted_worker_reports_an_agent_whose_worktree_is_gone(
 ) -> None:
     hold = tmp_path / 'hold'
     hold.touch()
-    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), HOLD.format(hold=hold))
+    use(db, campaign, HOLD.format(hold=hold))
     first = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     agent_session_id = request_agent(db, campaign)
     launching = threading.Thread(target=launch, args=(first, agent_session_id, tmp_path))
@@ -336,7 +287,7 @@ def test_a_hand_over_twice_leaves_a_re_attached_agent_to_the_third_daemon(
 ) -> None:
     hold = tmp_path / 'hold'
     hold.touch()
-    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), HOLD.format(hold=hold))
+    use(db, campaign, HOLD.format(hold=hold))
     agent_session_id = request_agent(db, campaign)
     first = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     threading.Thread(target=launch, args=(first, agent_session_id, tmp_path)).start()
@@ -359,7 +310,7 @@ def test_an_agent_whose_lease_ends_while_it_starts_is_ended_and_not_reported(
 ) -> None:
     """A daemon stop ended the lease and closed the row while the runtime started the agent: nothing waits for it, so
     it is killed."""
-    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), '#!/bin/sh\nsleep 30\n')
+    use(db, campaign, '#!/bin/sh\nsleep 30\n')
     gate = Gate()
     monkeypatch.setattr(runtime, 'start', gate.wrap(runtime.start))
     ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
@@ -382,7 +333,7 @@ def test_an_agent_whose_lease_ends_while_it_starts_is_ended_and_not_reported(
 def test_an_agent_that_removes_its_own_worktree_is_still_reported(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), '#!/bin/sh\nrm -rf "$PWD"\n')
+    use(db, campaign, '#!/bin/sh\nrm -rf "$PWD"\n')
     ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     agent_session_id = request_agent(db, campaign)
     outcome = ex.launcher.launch(
@@ -546,10 +497,10 @@ def test_a_slow_start_holds_back_no_heartbeat(
     monkeypatch: pytest.MonkeyPatch,
     launched: list[threading.Thread],
 ) -> None:
-    """A Herdr start can take minutes; meanwhile the worker's other agents are renewed."""
+    """A start can take minutes (a checkout of a large repo); meanwhile the worker's other agents are renewed."""
     hold = tmp_path / 'hold'
     hold.touch()
-    use(db, campaign, Contract('subprocess', factory(runtime), monkeypatch), HOLD.format(hold=hold), timeout=600)
+    use(db, campaign, HOLD.format(hold=hold), timeout=600)
     ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST)))
     first = running_agent(db, campaign, ex, tmp_path, 'first', launched)
     start = runtime.start
@@ -574,7 +525,6 @@ def test_a_failing_turn_never_ends_the_loop_and_a_failing_streak_is_an_anomaly(
     use(
         db,
         campaign,
-        Contract('subprocess', factory(runtime), pytest.MonkeyPatch()),
         HOLD.format(hold=hold),
         timeout=600,
     )
@@ -592,7 +542,7 @@ def test_a_failing_turn_never_ends_the_loop_and_a_failing_streak_is_an_anomaly(
 def test_a_kill_that_fails_is_tried_again_on_the_next_heartbeat(
     db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, launched: list[threading.Thread]
 ) -> None:
-    """A revoke whose kill fails (a Herdr server that does not answer) is not forgotten: the next answer asks again."""
+    """A revoke whose kill fails is not forgotten: the next answer asks again."""
 
     class Flaky(ScriptRuntime):
         def kill(self, handle: Handle) -> None:
@@ -602,7 +552,7 @@ def test_a_kill_that_fails_is_tried_again_on_the_next_heartbeat(
             super().kill(handle)
 
     runtime = Flaky()
-    use(db, campaign, Contract('subprocess', factory(runtime), monkeypatch), '#!/bin/sh\nsleep 600\n', timeout=600)
+    use(db, campaign, '#!/bin/sh\nsleep 600\n', timeout=600)
     ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST)))
     agent_session_id = running_agent(db, campaign, ex, tmp_path, 'stubborn', launched)
     with db.session() as s:  # no message: each heartbeat's ``REVOKED`` asks again
@@ -657,7 +607,6 @@ def test_a_worker_killed_between_the_start_and_its_record_leaves_no_worktree(
     job = AgentJob(
         agent_session=agent_session_id,
         runtime='subprocess',
-        campaign=campaign.name,
         artifact=source,
         place='logs',
         timeout=60,
@@ -880,7 +829,7 @@ def test_prompts_read_together_reach_the_agent_in_one_turn_and_a_batch_read_agai
     runtime = Steerable()
     hold = tmp_path / 'hold'
     hold.touch()
-    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), HOLD.format(hold=hold))
+    use(db, campaign, HOLD.format(hold=hold))
     ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST)))
     key = AgentKey(running_agent(db, campaign, ex, tmp_path, 'steered', launched))
     leases = workers_of(ex).leases
@@ -918,7 +867,7 @@ def test_a_prompt_is_queued_and_delivered_only_once_the_agent_reads_it(
     runtime = Queueing()
     hold = tmp_path / 'hold'
     hold.touch()
-    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), HOLD.format(hold=hold))
+    use(db, campaign, HOLD.format(hold=hold))
     ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST)))
     key = AgentKey(running_agent(db, campaign, ex, tmp_path, 'steered', launched))
     ex.executor.prompt(key, Prompt(CommentId(1), 'wrap up'))
@@ -940,7 +889,7 @@ def test_a_prompt_survives_a_daemon_restart_and_reaches_its_agent_once(
     runtime = Steerable()
     hold = tmp_path / 'hold'
     hold.touch()
-    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), HOLD.format(hold=hold))
+    use(db, campaign, HOLD.format(hold=hold))
     first = RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST))
     mocker.patch.object(workers_of(first).worker, '_listen')  # it reads no message: the daemon is gone first
     key = AgentKey(running_agent(db, campaign, serving(first), tmp_path, 'steered', launched))
@@ -987,7 +936,7 @@ def test_a_prompt_that_cannot_reach_its_agent_is_answered_with_why_and_the_worke
     runtime = ScriptRuntime()  # a subprocess agent cannot take a message
     hold = tmp_path / 'hold'
     hold.touch()
-    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), HOLD.format(hold=hold))
+    use(db, campaign, HOLD.format(hold=hold))
     ex = serving(RunController(db, tracer, tmp_path, factory(runtime), executor=timed(FAST)))
     key = AgentKey(running_agent(db, campaign, ex, tmp_path, 'headless', launched))
     leases = workers_of(ex).leases

@@ -1,14 +1,12 @@
 """The commands about campaigns: ``init``, ``status``, ``history``, ``watch``, ``pause``, ``resume``, ``campaign stop``."""
 
 import sys
-from functools import partial
 from pathlib import Path
 from typing import Annotated
 
 import cyclopts
 from rich import box
 from rich.console import Group
-from sqlalchemy.orm import Session
 
 from piloop.campaign import ops
 from piloop.campaign.campaigns import (
@@ -34,13 +32,12 @@ from piloop.cli.daemon import daemon_line
 from piloop.config import config_of
 from piloop.daemon.serve import listening, running_pid
 from piloop.db import feed as db_feed
-from piloop.db.models import AgentSession, Campaign, CampaignStatus, utcnow
+from piloop.db.models import Campaign, CampaignStatus, utcnow
 from piloop.db.session import Database
 from piloop.plugins.limits import Origin
 from piloop.reports import feed
 from piloop.reports.overview import overview, paused
 from piloop.reports.pack import renderables as pack_renderables
-from piloop.runtime.factory import handle_for, runtime_for
 from piloop.watch.app import Watch
 
 app = cyclopts.App(name='campaign', help='Act on a campaign as a whole.')
@@ -149,16 +146,8 @@ def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> Non
             parent = None if campaign.parent_id is None else s.get_one(Campaign, campaign.parent_id)
             under = '' if parent is None else f'  under {parent.name} #{parent.id}'
             common.console.rule(f'[bold]{campaign.name}[/] #{campaign.id}  {campaign.path}{under}')
-            text = overview(s, campaign, config_of(campaign), utcnow(), partial(_jobs, s), tools=False)
+            text = overview(s, campaign, config_of(campaign), utcnow(), tools=False)
             common.console.print(text, markup=False, highlight=False, soft_wrap=True)
-
-
-def _jobs(s: Session, agent_session: AgentSession) -> list[str]:
-    """What a running implementer has in flight, for the ``silent`` anomaly. Empty when its runtime cannot say."""
-    try:
-        return runtime_for(s, agent_session, common.settings.home).jobs(handle_for(agent_session))
-    except Exception:  # the runtime is not installed or the agent is gone: status still prints, without this anomaly
-        return []
 
 
 def pause(

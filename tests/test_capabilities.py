@@ -25,15 +25,12 @@ import piloop_stop_after_keeps
 from piloop import capabilities
 from piloop.plugins import metric
 from piloop.plugins.host import BUILT_IN, CAPABILITIES, Capability, Selection, Tier
-from piloop.plugins.runtime.contract import NotAttachable, NotSteerable, RuntimeFailure, StartFailed
+from piloop.plugins.runtime.contract import NotSteerable
 
 HELPERS: set[object] = {
     capabilities.MissingProvider,
     capabilities.Live,
-    RuntimeFailure,
-    StartFailed,
     NotSteerable,
-    NotAttachable,
     capabilities.runtime_settings,
     capabilities.check_cas,
     capabilities.ContractBroken,

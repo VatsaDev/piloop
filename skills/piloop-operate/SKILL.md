@@ -219,9 +219,9 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
 ### Steer an idea
 
 - A comment on the idea goes into its next brief.
-- With `runtime = "herdr"`, a `note`, `finding` or `decision` comment (any kind except an escalation) on the idea, or
-  on its *running* run, goes into that implementer's pane on the next tick. The pane gets only the first line (up to 200
-  characters) and a query for the full text, so put the instruction in the first line.
+- A `note`, `finding` or `decision` comment (any kind except an escalation) on the idea, or on its *running* run, is
+  queued for that implementer on the next tick. It gets only the first line (up to 200 characters) and a query for
+  the full text, so put the instruction in the first line.
 - `comment.queued` on the implementer says that the comment waits for it, and `comment.delivered` that it read it. It
   reads only between two tool calls. `comment.undelivered` says why it never did.
 - `piloop prompt <agent-session> '<text>'` writes a note on the agent itself, which it gets in full. It says whether
@@ -372,20 +372,16 @@ without a priority), out of the inbox.
 ## Agents
 
 - The ids of the agents are in the status.
-- By default (`runtime = "subprocess"`), each agent is a background process. `piloop prompt <agent_session_id> '…'` queues a
+- Each agent is a background process. `piloop prompt <agent_session_id> '…'` queues a
   message for it. A Claude agent reads it after its next tool call. Any other reads it when its turn ends, when
   piloop resumes its session with the message.
-- With `runtime = "herdr"`, each agent runs as a tab in the workspace of the campaign in the `piloop` Herdr session:
-  - `piloop attach <agent_session_id>` focuses that tab. From a terminal outside that session, it also attaches to the
-    session. It takes over the terminal, so it is for the human, not for your shell tool.
-  - `piloop prompt <agent_session_id> '…'` steers a running agent of any role. The message waits for the end of the
-    agent's current turn; an idle agent takes it at once.
+- `piloop attach <agent_session_id>` prints the last 40 lines that an agent wrote.
 - To request one more sweep, run `piloop launch <name> <role> [--harness pi --model …] [--reason '…']`: `watchdog`,
   `research`, or a role that `piloop.toml` defines.
   Or insert a request:
   `INSERT INTO agent_sessions (kind, campaign_id, state, reason) VALUES ('research', <p>, 'requested', '…')`.
   The daemon launches it on the next tick, within the `max_concurrent` of the role.
-- When an agent's process exits, or its Herdr tab closes, the agent ends. The daemon records the outcome on its
+- When an agent's process exits, the agent ends. The daemon records the outcome on its
   `agent_sessions` row.
 
 ## Read a candidate or a session

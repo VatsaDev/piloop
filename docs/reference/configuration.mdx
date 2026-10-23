@@ -9,7 +9,7 @@ description: Every key of piloop.toml, with its type and its default.
 copy. The daemon uses that copy, so an edit takes effect only when you run `piloop init`.
 
 To override a key when `piloop init` reads the file, set `PILOOP_CAMPAIGN_<KEY>`. Join nested keys with `__`, for
-example `PILOOP_CAMPAIGN_RUNTIME=herdr` or `PILOOP_CAMPAIGN_ROLES__IMPLEMENTER__MAX_CONCURRENT=2`. The stored copy keeps the
+example `PILOOP_CAMPAIGN_RUNTIME=subprocess` or `PILOOP_CAMPAIGN_ROLES__IMPLEMENTER__MAX_CONCURRENT=2`. The stored copy keeps the
 override until the next `piloop init`. The variable has no effect on `piloop serve`.
 
 A type in the tables links to the section that describes it. A table that you leave out has the defaults of its
@@ -19,12 +19,12 @@ section.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `name` | string | required | A short name for the campaign. piloop names its git refs and Herdr workspaces after it. |
+| `name` | string | required | A short name for the campaign. piloop names its git refs after it. |
 | `metrics` | list\[[Metric](#metric)\] | required | Every metric the evaluate command prints, each with its `role`. Each track has one `primary`, so a campaign with one track has exactly one. |
 | `tracks` | dict\[string, [TrackConfig](#trackconfig)\] | `{}` | `[tracks.<name>]`: the share and addendum of each track. Needed only with several primaries. |
 | `confidence` | number | `0.95` | The confidence level of the paired bootstrap behind the verdict. For a `keep`, the lower bound of the primary's gain must be above zero at this level. A guardrail's margin is tested on the bound at this level too. |
 | `evaluate` | list\[string\] | required | The command (argv) that scores a commit. It runs in a clean worktree of the commit and must print `METRIC <name>=<value>` lines. |
-| `runtime` | string | `"subprocess"` | Where the agents run: the name of a runtime, which starts, watches, steers, shows and stops them. A package can add a runtime with a `piloop.runtimes` entry point. A role can override it (`[roles.<name>] runtime`). Built in: `herdr`, `subprocess`. |
+| `runtime` | string | `"subprocess"` | Where the agents run: the name of a runtime, which starts, watches, steers and stops them. A package can add a runtime with a `piloop.runtimes` entry point. A role can override it (`[roles.<name>] runtime`). Built in: `subprocess`. |
 | `harnesses` | list\[string\] | `["pi"]` | The enabled harnesses. Runs use them in turn, unless an idea pins one. Built in: `claude`, `codex`, `pi`. |
 | `model` | dict\[string, string\] | required | The model id for each harness, for example `{pi = "anthropic/claude-opus-5-5", claude = "claude-opus-5-5", codex = "gpt-6.1-sol"}`. |
 | `harness` | dict\[string, [Harness](#harness)\] | `{}` | Harness definitions by name: overrides of the built-in harnesses, or new ones. |
@@ -73,7 +73,7 @@ Experimental: campaigns with more than one track.
 
 `[harness.<name>]`: how to launch one coding agent.
 
-piloop substitutes these placeholders in both argument lists: `{model}`, `{effort}` (the role's `effort`),
+piloop substitutes these placeholders in the argument lists: `{model}`, `{effort}` (the role's `effort`),
 `{session_id}`, `{cwd}` (the agent's working directory), `{log_dir}` (the directory of the agent's brief and
 logs) and `{prompt}` (the first prompt, which names the file that holds the brief). An element that is exactly `{mcp}` expands to the role's MCP
 servers, in the form that `mcp` names. The built-in harnesses run without permission prompts: agents run
@@ -81,41 +81,22 @@ in worktrees that the daemon owns and throws away, and a sandbox that cannot rea
 commit. The built-in Claude harness passes `--settings` that move a foreground Bash command to the background
 after 5 minutes.
 
-When the argument list in use contains `{session_id}`, piloop creates the session id. Otherwise the runtime
+When `headless` contains `{session_id}`, piloop creates the session id. Otherwise the runtime
 reports it, or reads it with `session_id_pattern`.
 When the agent ends, `entire session attach` takes this id, and `usage` uses it to find the session file and
 read the tokens the agent spent.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `executable` | string | required | The program to run. A runtime can also use it to recognise the agent. |
-| `interactive` | list\[string\] | `[]` | The arguments for an interactive session, for a runtime whose `invocation` is `interactive`. The runtime types the first prompt, which names the file that holds the brief, after the agent starts. |
-| `headless` | list\[string\] | required | The arguments for a run without a terminal, for a runtime whose `invocation` is `headless`. Must include `{prompt}`. |
-| `resume` | list\[string\] | `[]` | The arguments that continue the session of a run without a terminal with a new prompt, for a `headless` runtime. When the agent's turn ends with messages queued for it (comments, `piloop prompt`), the runtime runs the harness again with these, `{prompt}` being the messages and `{session_id}` the session's id. Must include both. When empty, the agent takes no message while it runs. |
-| `startup_dialogs` | list\[tuple\[string, list\[string\]\]\] | `[]` | The dialogs the agent shows when it first starts in a new directory, in the order they appear. Each entry is the text to look for on the screen and the keys that accept the dialog. |
-| `busy_screens` | list\[string\] \| null | `null` | For an interactive runtime: texts at the bottom of a still screen that show that the agent works while the runtime reads it as idle, for example a prompt that the agent holds in its queue, or a retry of the API. When unset, those of the built-in harness with the same `executable`, so an override of `claude` keeps them. |
-| `failed_turn_screens` | list\[string\] \| null | `null` | For an interactive runtime: texts at the bottom of the screen that show that the turn ended on an API error, not because the agent was done. The agent is then resumed. When unset, those of the built-in harness with the same `executable`. |
-| `queue_key` | [QueueKey](#queuekey) \| null | `null` | For an interactive runtime: how to queue a message for the end of the agent's turn, for a harness that ends its turn to take a message submitted while it works. When unset, the queue key of the built-in harness with the same `executable`, if it has one; else the message is submitted, and the agent queues it by itself. |
-| `composer` | string \| null | `null` | For an interactive runtime: the marker at the start of the agent's input line. The runtime reads the text after the last one to tell a first prompt that the TUI left typed but not submitted, and submits it with Enter. When unset, the marker of the built-in harness with the same `executable`; without one, a prompt is never submitted again. |
+| `executable` | string | required | The program to run. |
+| `headless` | list\[string\] | required | The arguments for a run without a terminal. Must include `{prompt}`. |
+| `resume` | list\[string\] | `[]` | The arguments that continue the session of a run with a new prompt. When the agent's turn ends with messages queued for it (comments, `piloop prompt`), the runtime runs the harness again with these, `{prompt}` being the messages and `{session_id}` the session's id. Must include both. When empty, the agent takes no message while it runs. |
 | `entire_agent` | string \| null | `null` | Entire's name for this agent, as `entire agent list` shows it. When it is set and `entire` is installed, the agent's session is attached to Entire as a checkpoint when the agent ends. When unset, the session is not captured. |
-| `session_id_pattern` | string \| null | `null` | A regex with one group that finds the session id in the first lines of the process's stdout. Use it in a `headless` runtime for a harness that cannot take its id as an argument (`{session_id}`). For example, Codex `exec --json` prints `{"type":"thread.started","thread_id":"<uuid>"}` first. |
+| `session_id_pattern` | string \| null | `null` | A regex with one group that finds the session id in the first lines of the process's stdout. Use it in a harness that cannot take its id as an argument (`{session_id}`). For example, Codex `exec --json` prints `{"type":"thread.started","thread_id":"<uuid>"}` first. |
 | `usage` | [UsageSpec](#usagespec) \| null | `null` | `[harness.<name>.usage]`: how to read the tokens an agent spent, when it ends, into `agent_sessions.usage`. When unset, token usage is not recorded. |
 | `home` | string \| null | `null` | The directory where the agent keeps its config and sessions, as `{env:NAME:default}`. piloop's tests move it to a temporary directory through `NAME`. |
 | `session_env` | list\[string\] | `[]` | The variables the agent sets for the processes of its session. piloop clears them for every agent, so an agent started from inside such a session is not its child. |
 | `mcp` | string \| null | `null` | The renderer that expands the `{mcp}` element of the argv into the role's `[mcp.<name>]` servers. Each renderer also keeps the user's own servers out, where its harness allows it. When unset, the harness takes no servers, and a role that lists servers cannot use it. Built in: `claude`, `codex`, `pi`. |
-
-## QueueKey
-
-`queue_key`: the key that queues a typed message for the end of the agent's turn.
-
-The message is typed into the composer, then the key is pressed. A harness that reads a burst of input as a paste
-swallows a key that arrives inside the burst, so the key waits until the text is drawn, and is pressed again while
-`pending` is still at the bottom of the screen, which shows that the agent did not take it yet.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `key` | string | required | The key, as `herdr agent send-keys` names it, for example `tab`. |
-| `pending` | string | required | Text at the bottom of the screen while the composer still holds the typed message. |
 
 ## UsageSpec
 
@@ -154,7 +135,7 @@ The keys that every `[roles.<name>]` table accepts. Each role's table below adds
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `prompt` | string \| null | `null` | The file that starts the brief of this role: a path relative to the repo root, or an absolute path. When unset, a built-in role uses its built-in prompt. A new role needs it. |
-| `runtime` | string \| null | `null` | Where the agents of this role run. When unset, the role uses the campaign's `runtime`. Built in: `herdr`, `subprocess`. |
+| `runtime` | string \| null | `null` | Where the agents of this role run. When unset, the role uses the campaign's `runtime`. Built in: `subprocess`. |
 | `harnesses` | list\[string\] \| null | `null` | The harness rotation of this role. When unset, the role uses the campaign's `harnesses`. |
 | `model` | dict\[string, string\] \| null | `null` | The model for each harness in this role. It is merged over the campaign's `model`. |
 | `effort` | string | `"high"` | How hard the agents of this role think, as the harness names it, for example `high`. It fills `{effort}` in the harness's argv, and the harness checks it. |
@@ -540,19 +521,7 @@ The server's certificate chain and its private key, as PEM files.
 
 ### `[runtimes.<name>]`
 
-The settings of a runtime, which the runtime reads and checks. An environment variable wins over the file. The `herdr` runtime reads `[runtimes.herdr]`, and `PILOOP_HERDR_<KEY>` overrides a key:
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `session` | string | `"piloop"` | The name of the Herdr session that piloop owns. It has one workspace for each campaign, and every agent that piloop starts runs there, never in the session you use for other work. `piloop attach` attaches a terminal to it. piloop starts its server when it first needs it. |
-| `server_start_seconds` | number | `10` | The number of seconds to wait for the Herdr server of the piloop session to answer after piloop starts it. |
-| `start_timeout_seconds` | number | `60` | The number of seconds Herdr may take to detect an agent that just started. |
-| `cli_timeout_seconds` | number | `30` | The timeout in seconds of one `herdr` CLI call, in addition to any wait that the call itself does. |
-| `unavailable_seconds` | number | `300` | The number of seconds to keep retrying a read of the Herdr server that does not answer (`server_unavailable`, or a `herdr` call that times out) before the read fails. A loaded host can stall the server for a while, and a failed read of a working agent ends it. Calls that change something (a prompt, keys, a new tab) are never retried, because the server may have applied them. |
-| `prompt_pickup_seconds` | number | `5` | The number of seconds to wait for an idle agent to start working again after piloop prompts it to resume, and for Herdr to report the session id of a started agent. The first prompt has `startup_grace_seconds`. |
-| `startup_grace_seconds` | number | `60` | The number of seconds an agent has to start its first turn after its brief is submitted. Within it, an agent whose state has not changed yet is still starting, not a lost prompt, and a quiet idle screen is not a finished turn: under load a TUI can take many seconds to show that it took the brief. After it, a brief that was never picked up is lost, and an agent that never worked counts as failed to start. |
-| `shell_ready_seconds` | number | `10` | The number of seconds to retry `agent start` while the shell of a new tab is still starting. |
-| `wait_chunk_seconds` | number | `10` | The longest `agent wait` call, in seconds. piloop notices an agent whose tab was closed within this time. |
+The settings of a runtime that a package adds, which it reads with `runtime_settings`.
 
 ## Deprecated keys
 
@@ -564,7 +533,6 @@ These keys still work. Each one shows a `PiloopDeprecationWarning` that names th
 - `[roles.research] buffer` is the `buffer` of research's `low_water` trigger. Without `triggers` in the table, research gets its default triggers with that `buffer`.
 - `[roles.research] context` is the top-level `context`: every sweep's research pack lists the files.
 - `{claude_config_dir}` and `{codex_home}` in `[harness.<name>.usage] file` are `{env:…}` placeholders. `{claude_config_dir}` is `{env:CLAUDE_CONFIG_DIR:~/.claude}`, and `{codex_home}` is `{env:CODEX_HOME:~/.codex}`.
-- In `config.toml`, `herdr_<key> = …` is `<key> = …` in its `[runtimes.herdr]` table. The Herdr settings are the Herdr runtime's own. Their environment variables (`PILOOP_HERDR_<KEY>`) do not change.
 - In `config.toml`, `[storage.remote]` is `[storage.backend]`: the storage backend that mirrors the store. A key that `[storage.backend]` sets too keeps its value there.
 - In `config.toml`, `[storage.backend]` is the `remote` of `[plugins.cas] provider = "cached"`. Its `kind` is the remote's `provider`. `evict_after_days` and `local_max_gb` of `[storage]` move with it. A `[plugins.cas]` table of the file wins: the old keys then go, with the warning, and change nothing.
 - In `config.toml`, `max_evaluations` is `evaluations` in `[plugins.executor.pools.serve]`. A value that `[plugins.executor.pools.serve]` sets too wins.

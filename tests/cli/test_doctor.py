@@ -4,7 +4,6 @@ import json
 import os
 import shutil
 import sqlite3
-import sys
 from contextlib import closing
 from importlib.metadata import distribution
 from pathlib import Path
@@ -15,17 +14,15 @@ from alembic.script import ScriptDirectory
 from pytest_mock import MockerFixture
 
 from piloop.cli import doctor, skills, upgrade
-from piloop.cli.doctor import checks, report
+from piloop.cli.doctor import Check, checks, report
 from piloop.config import CampaignConfig
 from piloop.db.models import Campaign
 from piloop.db.session import Database
-from piloop.plugins.runtime.contract import Check
 from piloop.settings import Settings
 from piloop.version import Version, installed
 from tests.cli.test_cli import git_check
-from tests.conftest import FAKE_HERDR, hold_lock
+from tests.conftest import hold_lock
 from tests.db.test_migrations import alembic
-from tests.runtime.test_herdr import scripted
 
 HEAD = ScriptDirectory.from_config(alembic(Path('unused.db'))).get_current_head()
 
@@ -37,7 +34,6 @@ def cfg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     bin_dir.mkdir(exist_ok=True)
     for tool in ('git', 'sh', 'wc'):  # what the campaign fixture's repo and evaluate command need
         (bin_dir / tool).symlink_to(shutil.which(tool) or tool)
-    (bin_dir / 'python3').symlink_to(sys.executable)  # the fake herdr's interpreter
     monkeypatch.setenv('PATH', str(bin_dir))
     receipt = tmp_path / 'uv' / 'piloop' / 'uv-receipt.toml'
     receipt.parent.mkdir(parents=True)
@@ -69,13 +65,13 @@ def test_a_healthy_install_passes_every_check(
         f'ok    cli: {installed()}; not checked for a newer one: installed from file:///src/piloop: update that checkout',
         'ok    daemon: not running',
         f'ok    database: {tmp_path}/piloop.db at schema {HEAD}, current',
-        'ok    plugins: 5 CAS providers, 1 executor, 1 network, 4 roles, 2 runtimes, 1 stop rule, 7 triggers, 1 verdict rule; all built in',
+        'ok    plugins: 5 CAS providers, 1 executor, 1 network, 4 roles, 1 runtime, 1 stop rule, 7 triggers, 1 verdict rule; all built in',
         'ok    secrets: from the environment of this shell only (PILOOP_SECRETS_COMMAND unset)',
         f'ok    campaign demo: {campaign.path}/piloop.toml loads',
         f'ok    skills (pi): current in {cfg.agent_skills_dir}',
         'ok    harnesses: on PATH: script',
         git_check(),
-    ], 'a subprocess-runtime campaign needs no Herdr check'
+    ]
 
 
 def test_a_git_older_than_piloop_needs_or_one_that_does_not_run_fails_with_the_fix(
@@ -182,66 +178,16 @@ def test_a_campaign_whose_toml_is_gone_invalid_or_whose_stored_copy_no_longer_va
     assert by_name(cfg)['harnesses'].found == 'on PATH: none configured', 'no valid stored config, no harness to check'
 
 
-def test_a_missing_harness_and_herdr_are_named(
-    cfg: Settings, db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_a_missing_harness_is_named(cfg: Settings, db: Database, campaign: Campaign) -> None:
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
-        row.config = {
-            **row.config,
-            'runtime': 'herdr',
-            'harnesses': ['script', 'codex'],
-            'model': {'script': 'm', 'codex': 'm'},
-        }
+        row.config = {**row.config, 'harnesses': ['script', 'codex'], 'model': {'script': 'm', 'codex': 'm'}}
         s.commit()
-    found = by_name(cfg)
-    assert found['harnesses'] == Check(
+    assert by_name(cfg)['harnesses'] == Check(
         'harnesses',
         'not on PATH: codex (codex)',
         'install them, or take them out of `harnesses` in piloop.toml and `piloop init` the campaign',
     )
-    assert found['herdr'] == Check(
-        'herdr', 'a campaign uses the herdr runtime and herdr is not on PATH', 'install herdr'
-    )
-    on_path(tmp_path, 'herdr', FAKE_HERDR)
-    monkeypatch.setenv('FAKE_HERDR_LOG', str(tmp_path / 'herdr.log'))
-    assert by_name(cfg)['herdr'] == Check('herdr', 'the piloop session answers')
-    scripted(monkeypatch, workspace_list=[{'error': {'code': 'server_not_running', 'message': 'no server'}}])
-    assert by_name(cfg)['herdr'] == Check('herdr', 'server not running; started on first use')
-    calls = [json.loads(line) for line in (tmp_path / 'herdr.log').read_text().splitlines()]
-    assert calls[-2][2:] == ['workspace', 'list'] and calls[-1] == ['integration', 'status'], (
-        'asked, never started: no `server` call'
-    )
-    scripted(monkeypatch, workspace_list=[{'error': {'code': 'boom', 'message': 'socket refused'}}])
-    assert by_name(cfg)['herdr'] == Check(
-        'herdr', 'the piloop session does not answer: boom: socket refused', '`herdr server stop`, then retry'
-    )
-
-
-def test_missing_herdr_hooks_for_a_harness_of_a_herdr_campaign_fail(
-    cfg: Settings, db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Herdr reports no session for an agent whose harness lacks Herdr's hooks, so doctor names the install command."""
-    with db.session() as s:
-        row = s.get_one(Campaign, campaign.id)
-        row.config = {**row.config, 'runtime': 'herdr', 'harnesses': ['codex'], 'model': {'codex': 'm'}}
-        s.commit()
-    on_path(tmp_path, 'herdr', FAKE_HERDR)
-    monkeypatch.setenv('FAKE_HERDR_LOG', str(tmp_path / 'herdr.log'))
-    assert by_name(cfg)['herdr hooks'] == Check('herdr hooks', 'current for codex')
-    status = 'claude: current (v8) (/h/c.sh)\ncodex: not installed (/h/.codex/herdr-agent-state.sh)\nnoise\n'
-    scripted(monkeypatch, integration_status=[{'text': status}])
-    assert by_name(cfg)['herdr hooks'] == Check(
-        'herdr hooks', 'codex: not installed', '`herdr integration install codex`'
-    )
-    scripted(monkeypatch, integration_status=[{'error': {'code': 'unknown_command', 'message': 'integration'}}])
-    assert by_name(cfg)['herdr hooks'] == Check(
-        'herdr hooks',
-        "`herdr integration status` failed: Command '['herdr', 'integration', 'status']' returned non-zero exit status 1.",
-        'upgrade herdr',
-    )
-    scripted(monkeypatch, integration_status=[{'text': ''}])
-    assert by_name(cfg)['herdr hooks'] == Check('herdr hooks', 'current for no harness Herdr has hooks for')
 
 
 def test_mcp_servers_are_checked_for_their_commands_and_the_variables_they_name_by_name_only(

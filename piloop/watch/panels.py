@@ -9,7 +9,6 @@ from ``piloop/reports/overview.py``, which ``piloop status`` prints, so the two 
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Protocol
 
 from rich.console import Group, RenderableType
@@ -23,7 +22,6 @@ from piloop.campaign.ideas import links, superseded_by
 from piloop.config import CampaignConfig, config_of
 from piloop.db.models import AgentSession, Campaign, CampaignStatus, Candidate, Comment, Idea, IdeaStatus, Verdict
 from piloop.ids import CampaignId, TargetKind, TargetRef
-from piloop.plugins.runtime.contract import AgentStatus
 from piloop.reports.overview import (
     age,
     agent_output,
@@ -40,7 +38,6 @@ from piloop.reports.overview import (
     summary,
     tracks_lines,
 )
-from piloop.runtime.factory import handle_for, runtime_for, view_of
 from piloop.scoring.ledger import metrics, references, score, track_of, trunk_keeps
 from piloop.text import NONE, cell, metric
 from piloop.usage import campaign_tokens, human
@@ -55,13 +52,6 @@ STATUS_CHARS = 40
 IDEA_ORDER = (IdeaStatus.SEED, IdeaStatus.PROPOSED, IdeaStatus.READY, IdeaStatus.SCHEDULED, IdeaStatus.PARKED)
 """The statuses that the ideas panel shows, in this order: the seeds for research, then the ideas that wait for a
 review. The panel leaves out done and rejected ideas."""
-STATES = {
-    AgentStatus.WORKING: '●',
-    AgentStatus.IDLE: '○',
-    AgentStatus.BLOCKED: '◐',
-}
-"""The mark for an agent's state, as the runtime reports it. Any other state (gone, unknown) is ``·``."""
-BLOCKED = 'blocked on a dialog'
 
 type Cell = str | Text
 
@@ -181,46 +171,36 @@ class InboxPanel:
 
 
 class AgentsPanel:
-    """Panel 2: the running agents, with the state that the runtime reports. The detail is the agent's last output."""
+    """Panel 2: the running agents. The detail is the agent's last output."""
 
     def title(self, s: Session, ctx: Context, items: Sequence[Item]) -> str:
-        blocked = sum(1 for i in items if i.cells[2] == AgentStatus.BLOCKED)
-        return f'Agents {len(items)}{f" · {blocked} blocked" if blocked else ""}'
+        return f'Agents {len(items)}'
 
     def items(self, s: Session, ctx: Context) -> list[Item]:
-        path = Path(ctx.campaign.path)
-        rows = []
-        for w in live_agent_sessions(s, ctx.campaign):
-            state = state_of(s, w, path)
-            rows.append(
-                Item(
-                    w.id,
-                    (
-                        f'{STATES.get(state, "·") if state else "·"} #{w.id}',
-                        str(w.kind),
-                        str(state or NONE),
-                        f'{w.harness}/{w.model}' if w.harness else NONE,
-                        age(w.started_at, ctx.now),
-                        on(s, w),
-                    ),
-                )
+        return [
+            Item(
+                w.id,
+                (
+                    f'#{w.id}',
+                    str(w.kind),
+                    str(w.state),
+                    f'{w.harness}/{w.model}' if w.harness else NONE,
+                    age(w.started_at, ctx.now),
+                    on(s, w),
+                ),
             )
-        return rows
+            for w in live_agent_sessions(s, ctx.campaign)
+        ]
 
     def detail(self, s: Session, ctx: Context, key: int) -> RenderableType:
         w = s.get_one(AgentSession, key)
-        path = Path(ctx.campaign.path)
-        state = state_of(s, w, path)
-        where = ' '.join(p for p in (w.runtime, view_of(w)) if p) or NONE
         facts = [
-            f'{w.kind}-{w.id} · {w.harness}/{w.model} · {w.state} {age(w.started_at, ctx.now)} · {where}',
+            f'{w.kind}-{w.id} · {w.harness}/{w.model} · {w.state} {age(w.started_at, ctx.now)} · {w.runtime or NONE}',
             f'on: {on(s, w)}',
         ]
         if w.reason:
             facts.append(f'why: {cell(w.reason)}')
-        if state is AgentStatus.BLOCKED:
-            facts.append(f'{BLOCKED}: steering is refused until it is answered; enter brings it to the front')
-        output = agent_output(s, w, path, AGENT_LINES)
+        output = agent_output(s, w, AGENT_LINES)
         return Group(
             Text(facts[0], style='bold'),
             lines(*facts[1:]),
@@ -228,14 +208,6 @@ class AgentsPanel:
             Text(f'the last {len(output)} lines it wrote', style='dim'),
             lines(*output) if output else Text(NONE),
         )
-
-
-def state_of(s: Session, w: AgentSession, campaign_path: Path) -> AgentStatus | None:
-    """Return what the runtime says the agent does now. None when it cannot say (not launched, runtime missing)."""
-    try:
-        return runtime_for(s, w, campaign_path).status(handle_for(w))
-    except Exception:  # not launched yet, or the runtime is missing: the row shows · and the rest of the screen draws
-        return None
 
 
 class IdeasPanel:

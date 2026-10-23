@@ -23,7 +23,7 @@ from sqlalchemy import func, insert, select
 from piloop import git
 from piloop.actor import System
 from piloop.agents.capture import ENTIRE_DIR
-from piloop.agents.results import Ended, Lost, NotStarted, StartupAnomaly
+from piloop.agents.results import NEVER_WORKED, Ended, Lost, NotStarted, StartupAnomaly
 from piloop.agents.roles import SQL_HINT
 from piloop.campaign import stop
 from piloop.campaign.campaigns import sync
@@ -83,7 +83,7 @@ from piloop.plugins.executor.kit import jobs
 from piloop.plugins.executor.kit.jobs import CHANGED_INPUTS, INPUTS_CHANGED, INPUTS_REBUILT
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.executor.workers.worker import _Control
-from piloop.plugins.runtime.contract import AgentExit, Handle, StartFailed
+from piloop.plugins.runtime.contract import AgentExit, Handle
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES
 from piloop.scoring.ledger import (
     DAEMON,
@@ -1348,8 +1348,9 @@ def test_an_implementer_that_never_got_going_is_relaunched_on_its_run_then_the_r
     The dead implementer's transcript is kept aside. A run whose every launch died fails, but it is still no attempt: its
     idea is parked, whatever attempts it has left, so that a broken host or harness does not burn them.
     """
-    mocker.patch.object(runtime, 'start', side_effect=StartFailed('HerdrError: prompt_lost: no pickup', 'Welcome\n'))
     run_id = make_run(db, campaign, max_runs=1)
+    write_toml(Path(campaign.path), '#!/bin/sh\necho Welcome\n')
+    reload_campaign(db, campaign)
     ex = controller(db, runtime, tmp_path)
     for launches in (1, 2):
         execute(ex, db, run_id)
@@ -1357,11 +1358,11 @@ def test_an_implementer_that_never_got_going_is_relaunched_on_its_run_then_the_r
             run = s.get_one(Run, run_id)
             assert (run.status, run.finished_at, run.idea.status) == (RunStatus.QUEUED, None, IdeaStatus.SCHEDULED)
             rows = s.scalars(select(AgentSession).where(AgentSession.run_id == run_id).order_by(AgentSession.id)).all()
-            assert [w.state for w in rows] == [*[AgentSessionState.KILLED] * launches, AgentSessionState.REQUESTED]
+            assert [w.state for w in rows] == [*[AgentSessionState.EXITED] * launches, AgentSessionState.REQUESTED]
             assert (rows[-1].harness, rows[-1].model) == ('script', 'test-model')
             assert rows[-1].reason == f'run#{run_id} relaunched: implementer#{rows[-2].id} failed to start', 'its role'
             assert stop.runs(s, run.idea.campaign) == 1
-        assert (tmp_path / 'runs' / str(run_id) / f'transcript-implementer{rows[-2].id}.txt').read_text() == 'Welcome\n'
+        assert (tmp_path / 'runs' / str(run_id) / f'transcript-implementer{rows[-2].id}.txt').read_text() == 'Welcome'
     execute(ex, db, run_id)
     with db.session() as s:
         relaunched = in_order(s, RunRelaunched)
@@ -1379,8 +1380,7 @@ def test_an_implementer_that_never_got_going_is_relaunched_on_its_run_then_the_r
     run = run_row(db, run_id)
     assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.NOT_STARTED)
     with db.session() as s:
-        errors = s.scalars(select(AgentSession.error).where(AgentSession.run_id == run_id)).all()
-        assert all((e or '').startswith('HerdrError: prompt_lost') for e in errors), 'each start says why it failed'
+        assert [a.error for _, a in in_order(s, StartupAnomaly)] == [NEVER_WORKED] * 3, 'each says why it failed'
         assert stop.attempts(s.get_one(Idea, run_row(db, run_id).idea_id)) == 0
 
     mocker.patch.object(runtime, 'start', side_effect=RuntimeError('no server'))
@@ -1482,7 +1482,7 @@ def test_a_cancel_made_while_the_implementer_starts_survives_a_failed_start(
             else:
                 stop.request_cancel(s, agent_session, System.HUMAN, ending=stop.Ending.NOW)
             s.commit()
-        raise StartFailed('HerdrError: prompt_lost: no pickup', 'Welcome\n')
+        raise RuntimeError('no pickup')
 
     mocker.patch.object(runtime, 'start', side_effect=cancel_then_fail)
     execute(controller(db, runtime, tmp_path), db, run_id)
@@ -1521,7 +1521,7 @@ def test_a_relaunched_implementer_signs_as_itself_and_its_finding_without_a_comm
     write_toml(Path(campaign.path), f'#!/bin/sh\n{me}\n{SQL_HINT} "{finding}"\n')
     reload_campaign(db, campaign)
     start = mocker.patch.object(runtime, 'start', wraps=runtime.start)
-    start.side_effect = [StartFailed('HerdrError: prompt_lost: no pickup', ''), DEFAULT]
+    start.side_effect = [RuntimeError('no pickup'), DEFAULT]
     ex = controller(db, runtime, tmp_path)
     execute(ex, db, run_id)
     execute(ex, db, run_id)
@@ -1601,7 +1601,7 @@ def test_a_startup_death_during_a_stop_leaves_the_run_to_the_stop(
 
     def stopped_meanwhile(spec: object) -> Handle:
         ex.launcher.cancelled.set()  # what ``cancel`` sets; it takes the lock this start holds
-        raise StartFailed('HerdrError: prompt_lost: no pickup', '')
+        raise RuntimeError('no pickup')
 
     mocker.patch.object(runtime, 'start', side_effect=stopped_meanwhile)
     run_id = make_run(db, campaign)
@@ -2073,7 +2073,6 @@ def test_the_implementer_session_is_attached_inside_the_worktree_before_it_is_re
         **cfg.harness['script'].model_dump(mode='json'),
         'entire_agent': 'claude-code',
         'headless': ['{session_id}', '{prompt}'],
-        'interactive': ['{session_id}'],
     }
     with db.session() as s:
         s.get_one(Campaign, campaign.id).config = load_campaign_config(

@@ -49,7 +49,7 @@ from piloop.plugins.executor.contract import (
     Sample,
 )
 from piloop.plugins.executor.kit.clones import Clones, Fetch
-from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, Handle, Runtime, StartFailed, taken
+from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, Handle, Runtime, taken
 from piloop.proc import PILOOP_ARGV, child_env, kill_group
 from piloop.scoring.evaluate import SENT, EvalResult, run_evaluate
 from piloop.settings import INPUTS_DIR
@@ -58,8 +58,6 @@ from piloop.store.tree import Materialised, Seen, evict_unlinked, put_tree
 from piloop.usage import UsageError, read_usage
 
 TRANSCRIPT_LINES = 2000
-START_SCREEN_LINES = 12
-"""How many non-blank lines from the end of a failed start's screen go into the row's error."""
 STOPPED = 'the worker stopped before the job started'
 WORKTREE = 'worktree'
 CLONES = 'clones'
@@ -243,9 +241,9 @@ def run_agent(job: AgentJob, runtime: Runtime, control: Control, site: Site, spa
         started_at = time.monotonic()
         try:
             handle = runtime.start(replace(spec, env=spec.env | {DEADLINE_ENV: str(int(time.time() + job.timeout))}))
-        except Exception as e:  # an unanswered dialog or a lost prompt: the agent did not start to work
+        except Exception as e:  # a missing executable, a full disk: the agent did not start to work
             span.error(e)
-            return _unstarted(job, site, _start_error(e, log_dir), started_at)
+            return _unstarted(job, site, f'{type(e).__name__}: {e}', started_at)
         try:
             recorded = control.started(handle, job.session_id)
         except Exception as e:
@@ -523,17 +521,3 @@ def rendered(job: AgentJob, spec: AgentSpec) -> AgentSpec:
         Launch(job.servers, spec.executable, spec.cwd, spec.log_dir, child_env() | env, spec.args)
     )
     return replace(spec, args=expand(spec.args, mcp), resume_args=expand(spec.resume_args, mcp), env=env | mcp.env)
-
-
-def _start_error(e: Exception, log_dir: Path) -> str:
-    """Return the error of a failed start.
-
-    A ``StartFailed`` screen becomes the transcript, and its last lines end the error. The pane is gone now, so this
-    screen is the only record of what the agent was stuck on.
-    """
-    if not isinstance(e, StartFailed):
-        return f'{type(e).__name__}: {e}'
-    log_dir.mkdir(parents=True, exist_ok=True)
-    (log_dir / TRANSCRIPT).write_text(e.screen)
-    tail = [line for line in e.screen.splitlines() if line.strip()][-START_SCREEN_LINES:]
-    return '\n'.join([str(e), 'Its screen ended with:', *tail]) if tail else str(e)

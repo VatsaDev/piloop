@@ -312,7 +312,7 @@ def test_an_in_place_restart_leaves_the_agents_running_and_the_new_daemon_finish
 ) -> None:
     """An in-place restart does not kill the agents, and the new daemon finishes their runs.
 
-    An agent is a process of its own (a Herdr pane or its own session), so it outlives the exec. The new daemon picks
+    An agent is a process in its own session, so it outlives the exec. The new daemon picks
     it up where it is, and the idea does not run again.
     """
     hold = tmp_path / 'hold'

@@ -2,9 +2,8 @@
 
 The checks note a newer piloop at the source of the CLI, and find what can break after an upgrade: a daemon that still
 runs the old code, a database behind the code, a secrets command that fails, a ``piloop.toml`` that the new code refuses,
-an MCP server that cannot start, skills that are missing or out of date, a missing harness, what each runtime in
-use checks itself (``Runtime.checks``), and a git older than piloop needs. Nothing here writes: the database is opened read-only, and no runtime starts
-anything. The check of the source asks the network (``git ls-remote`` or the package index). The commands that the
+an MCP server that cannot start, skills that are missing or out of date, a missing harness, and a git older than
+piloop needs. Nothing here writes: the database is opened read-only, and nothing starts. The check of the source asks the network (``git ls-remote`` or the package index). The commands that the
 lines name use ``Settings.cli``. ``piloop upgrade`` runs the checks last.
 """
 
@@ -15,7 +14,7 @@ import sqlite3
 import subprocess
 from collections.abc import Iterator
 from contextlib import closing
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -31,7 +30,6 @@ from piloop.daemon.serve import SECRETS_COMMAND_ENV, SecretsError, running_pid, 
 from piloop.db.models import utcnow
 from piloop.db.session import head, schema_mismatch
 from piloop.plugins.host import PluginError, declared
-from piloop.plugins.runtime.contract import RUNTIMES, Check
 from piloop.proc import child_env, environment
 from piloop.reports.overview import age
 from piloop.settings import Settings
@@ -42,10 +40,20 @@ GIT_NEEDED = (2, 40)
 """The oldest git that piloop works with: it merges by tree with ``git merge-tree --merge-base``, new in git 2.40."""
 
 
+@dataclass(frozen=True)
+class Check:
+    """One line of the report: what was checked, what was found and, for a failure, the fix."""
+
+    name: str
+    found: str
+    fix: str | None = None
+    """None when the check passed."""
+
+
 def checks(cfg: Settings) -> list[Check]:
     """Run every check, in the best order to debug a broken upgrade: daemon, database, plugins, configs, skills, tools.
 
-    When the plugins do not compose, the checks of the campaigns, harnesses and runtimes, which use them, do not run.
+    When the plugins do not compose, the checks of the campaigns and harnesses, which use them, do not run.
     """
     composed = _plugins(cfg)
     whose, names, command = _daemon_env(cfg)
@@ -69,7 +77,6 @@ def checks(cfg: Settings) -> list[Check]:
             *(_mcp(name, c, env) for name, _, c in campaigns if isinstance(c, CampaignConfig) and c.mcp),
             *_skills(cfg),
             _harnesses(stored),
-            *_runtimes(stored),
         ]
     # the commands that the lines name are this install's, which a second install (piloop-canary) runs under its name
     return [replace(c, found=_named(c.found, cfg), fix=c.fix and _named(c.fix, cfg)) for c in [*found, _git()]]
@@ -256,16 +263,6 @@ def _harnesses(configs: list[CampaignConfig]) -> Check:
             'install them, or take them out of `harnesses` in piloop.toml and `piloop init` the campaign',
         )
     return Check('harnesses', f'on PATH: {", ".join(sorted(executables.values())) or "none configured"}')
-
-
-def _runtimes(configs: list[CampaignConfig]) -> list[Check]:
-    """Run the checks of each runtime that a campaign uses, with the harness executables of the campaigns that use it."""
-    executables: dict[str, set[str]] = {}
-    for c in configs:
-        programs = {c.harness_for(h).executable for kind in c.roles.all() for h in c.role_harnesses(kind)}
-        for kind in c.runtimes:
-            executables.setdefault(kind, set()).update(programs)
-    return [check for kind, found in sorted(executables.items()) for check in RUNTIMES.get(kind).model.checks(found)]
 
 
 def stored_campaigns(path: Path) -> list[tuple[str, str, CampaignConfig | ValidationError]]:

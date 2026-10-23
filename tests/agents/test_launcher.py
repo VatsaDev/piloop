@@ -45,7 +45,7 @@ from piloop.plugins.executor.contract import Checkout, GitSource, RepoId
 from piloop.plugins.executor.kit.capacity import HostSample
 from piloop.plugins.executor.kit.leases import Answer, LeaseQueued, Leases
 from piloop.plugins.executor.workers import Workers
-from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, StartFailed
+from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus
 from piloop.settings import Settings
 from piloop.usage.jsonl import CWD_ENCODERS
 from tests.conftest import (
@@ -65,7 +65,6 @@ from tests.usage.test_usage import PI_SPEC, SESSIONS
 MINTED_HARNESS = {
     'entire_agent': 'pi',
     'headless': ['--session-id', '{session_id}', '{prompt}'],
-    'interactive': ['--session-id', '{session_id}'],
 }
 CODEX_ID = '01a09262-d574-7e10-9f75-23b0ce9c0a2f'
 CODEX_LIKE = f'#!/bin/sh\necho \'{{"type":"thread.started","thread_id":"{CODEX_ID}"}}\'\nsleep 0.3\necho more\n'
@@ -359,24 +358,6 @@ def test_runtime_failure_is_isolated(
     assert (finished.role, finished.error) == (WATCHDOG, 'RuntimeError: no server')
 
 
-def test_a_failed_start_leaves_its_screen_as_the_transcript_and_its_last_lines_in_the_error(
-    campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
-) -> None:
-    """A failed start keeps the screen the agent was stuck on, so the row's error shows the cause."""
-    screen = 'Welcome to Claude Code\n\n' + ''.join(f'line {i}\n' for i in range(20)) + '> do the thing\n\n'
-    error = 'HerdrError: prompt_lost: watchdog-1 did not start working after 2 prompt submissions'
-    mocker.patch.object(runtime, 'start', side_effect=StartFailed(error, screen))
-    agent_session_id = request(db, campaign)
-    outcome = launch(db, runtime, tmp_path, agent_session_id)
-    assert (tmp_path / 'w' / 'transcript.txt').read_text() == screen
-    tail = '\n'.join([*(f'line {i}' for i in range(9, 20)), '> do the thing'])
-    reason = f'{error}\nIts screen ended with:\n{tail}'
-    assert (outcome, agent_session(db, agent_session_id).error) == (NotStarted(reason), reason)
-
-    mocker.patch.object(runtime, 'start', side_effect=StartFailed(error, '\n'))
-    assert launch(db, runtime, tmp_path, request(db, campaign)) == NotStarted(error), 'a blank screen adds nothing'
-
-
 def anomalies(db: Database) -> list[tuple[int, StartupAnomaly]]:
     with db.session() as s:
         return [(e.target_id, anomaly) for e, anomaly in in_order(s, StartupAnomaly)]
@@ -392,10 +373,10 @@ def test_an_agent_that_never_got_going_is_an_anomaly(
 ) -> None:
     """A start that fails, or an agent that ends at once without work, is a startup anomaly, not a finished agent.
 
-    An unanswered first-launch dialog (Codex's "Trust this folder?") fails the start. A dialog that Herdr reports as
-    idle ends the agent quickly, as if it had finished.
+    A missing harness fails the start. A harness that cannot work (no quota, broken tools) ends the agent quickly, as
+    if it had finished.
     """
-    mocker.patch.object(runtime, 'start', side_effect=RuntimeError('agent_not_ready: Trust this folder?'))
+    mocker.patch.object(runtime, 'start', side_effect=RuntimeError('no such harness'))
     dialog = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, dialog)
     assert (isinstance(outcome, NotStarted), agent_session(db, dialog).state) == (True, AgentSessionState.KILLED)
@@ -407,7 +388,7 @@ def test_an_agent_that_never_got_going_is_an_anomaly(
             'harness': 'script',
             'run': None,
             'seconds': IsFloat(ge=0),
-            'error': 'RuntimeError: agent_not_ready: Trust this folder?',
+            'error': 'RuntimeError: no such harness',
         },
     )
     mocker.stopall()
@@ -816,7 +797,7 @@ def test_codex_trusts_the_agents_worktree_and_gives_its_tool_shells_the_agents_e
     """The ``-c`` values parse the way Codex reads them: a dotted key split on every ``.``, and a TOML value."""
     cwd = '/home/me/.piloop/runs/7/worktree'
     codex = DEFAULT_HARNESSES['codex']
-    for template in (codex.interactive, codex.headless):
+    for template in (codex.headless, codex.resume):
         args = [fill(a, cwd=cwd, model='m', prompt='p', session_id='s') for a in template]
         flags = [value.partition('=') for flag, value in zip(args, args[1:], strict=False) if flag == '-c']
         parsed = {key: tomllib.loads(f'v = {value}')['v'] for key, _, value in flags}
@@ -844,27 +825,6 @@ def test_a_brief_past_the_limit_of_one_argument_reaches_the_agent_as_a_file(
     assert (exit_of(outcome).status, exit_of(outcome).error) == (ExitStatus.EXITED, None)
     assert (cwd / 'argv.txt').read_text().splitlines() == [PROMPT.format(path=tmp_path / 'w' / 'brief.md')]
     assert (tmp_path / 'w' / 'brief.md').read_text() == brief
-
-
-def test_a_herdr_agent_is_prompted_with_where_its_brief_is(
-    campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Herdr submits ``AgentSpec.prompt`` as one argument of ``agent prompt <name> <text>``, under the same limit."""
-    with db.session() as s:
-        p = s.get_one(Campaign, campaign.id)
-        p.config = {**p.config, 'runtime': 'herdr'}
-        s.commit()
-    specs: list[AgentSpec] = []
-    start = runtime.start
-    monkeypatch.setattr(runtime, 'start', lambda spec: specs.append(spec) or start(spec))
-    launcher(db, runtime, tmp_path).launch(
-        request(db, campaign),
-        brief='y' * 200 * 1024,
-        place='w',
-        artifact=checkout(campaign),
-    )
-    [spec] = specs
-    assert (spec.prompt, spec.args) == (PROMPT.format(path=tmp_path / 'w' / 'brief.md'), [])
 
 
 def give_watchdog_servers(db: Database, campaign: Campaign, servers: dict[str, object]) -> None:
@@ -900,7 +860,7 @@ def test_the_mcp_element_expands_to_the_roles_servers_and_their_env_reaches_the_
         'mcpServers': {'probe': {'command': 'cat', 'args': [], 'env': {'PROBE_KEY': '${PROBE_KEY}'}}}
     }
     [spec] = specs
-    assert spec.env['PROBE_KEY'] == 'probe-value', "in the spec's own env: a Herdr pane does not inherit the daemon's"
+    assert spec.env['PROBE_KEY'] == 'probe-value', 'the worker forwards the variables that the servers name'
     assert 'probe-value' not in ' '.join(spec.args) and 'probe-value' not in config.read_text()
     assert 'PI_MCP_CONFIG_MODE=exclusive' in (Path(campaign.path) / 'env.txt').read_text().splitlines()
     assert agent_session(db, agent_session_id).error is None

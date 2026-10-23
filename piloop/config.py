@@ -46,7 +46,7 @@ from piloop.plugins.role.contract import ROLES, ImplementerRole, RoleConfig, Rol
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.scout import ScoutRole
 from piloop.plugins.role.watchdog import WatchdogRole
-from piloop.plugins.runtime.contract import RUNTIMES, RuntimeName
+from piloop.plugins.runtime.contract import RuntimeName
 from piloop.plugins.stop_rule.contract import STOP_RULES, Fact, Limits
 
 CONFIG_FILE = 'piloop.toml'
@@ -168,7 +168,7 @@ class Track:
         return max((m.repeats for m in (self.primary, *self.guardrails) if m.repeats is not None), default=None)
 
 
-"""The form of a role name: the agents' signature, ``agent_sessions.kind``, and the start of their Herdr agent name."""
+"""The form of a role name: the agents' signature and ``agent_sessions.kind``."""
 RESERVED_NAMES = frozenset({'run', 'orchestrator', 'human', 'daemon'})
 """Names that already sign writes: a run, and the actors that are not roles."""
 
@@ -362,7 +362,7 @@ class CampaignConfig(BaseModel):
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
 
     name: str
-    """A short name for the campaign. piloop names its git refs and Herdr workspaces after it."""
+    """A short name for the campaign. piloop names its git refs after it."""
     metrics: list[Metric] = Field(min_length=1)
     """Every metric the evaluate command prints, each with its ``role``. Each track has one ``primary``, so a campaign
     with one track has exactly one."""
@@ -375,7 +375,7 @@ class CampaignConfig(BaseModel):
     """The command (argv) that scores a commit. It runs in a clean worktree of the commit and must print
     ``METRIC <name>=<value>`` lines."""
     runtime: RuntimeName = 'subprocess'
-    """Where the agents run: the name of a runtime, which starts, watches, steers, shows and stops them. A package can
+    """Where the agents run: the name of a runtime, which starts, watches, steers and stops them. A package can
     add a runtime with a ``piloop.runtimes`` entry point. A role can override it (``[roles.<name>] runtime``)."""
     harnesses: list[str] = Field(default=['pi'], min_length=1)
     """The enabled harnesses. Runs use them in turn, unless an idea pins one."""
@@ -490,14 +490,9 @@ class CampaignConfig(BaseModel):
             raise ValueError(f'roles.{name}.mcp: no [mcp.<name>] table for {unknown}')
         if not self.role(name).mcp:
             return
-        runtime = self.role_runtime(name)
-        invocation = RUNTIMES.get(runtime).model.invocation
         for harness in self.role_harnesses(name):
-            if why := self.harness_for(harness).refuses_servers(invocation):
-                raise ValueError(
-                    f'roles.{name}.mcp: harness {harness!r} under the {runtime} runtime ({invocation}): {why}; or take it'
-                    ' out of the rotation'
-                )
+            if why := self.harness_for(harness).refuses_servers():
+                raise ValueError(f'roles.{name}.mcp: harness {harness!r}: {why}; or take it out of the rotation')
 
     def role_servers(self, name: RoleName) -> dict[str, McpServer]:
         """The MCP servers that the agents of a role get, by name."""
@@ -527,11 +522,6 @@ class CampaignConfig(BaseModel):
     def role_runtime(self, name: RoleName) -> str:
         """The name of the runtime a role uses: its own, or else the campaign's."""
         return self.role(name).runtime or self.runtime
-
-    @property
-    def runtimes(self) -> set[str]:
-        """The names of the runtimes that the roles of the campaign use."""
-        return {self.role_runtime(name) for name in self.roles.all()}
 
     @property
     def run_slots(self) -> int:

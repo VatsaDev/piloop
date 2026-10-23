@@ -168,7 +168,6 @@ def agent_job(db: Database, campaign: Campaign, tmp_path: Path) -> AgentJob:
     return AgentJob(
         agent_session=agent_session_id,
         runtime='subprocess',
-        campaign=campaign.name,
         artifact=Checkout(repo=RepoId(campaign.id)),
         place='logs',
         timeout=60,

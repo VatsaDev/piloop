@@ -4,7 +4,6 @@ description: The environment variables that piloop reads, and the ones that it s
 ---
 
 import Settings from '/snippets/generated/settings.mdx';
-import HerdrSettings from '/snippets/generated/herdr-settings.mdx';
 
 ## Variables that you set
 
@@ -12,17 +11,11 @@ These are the settings of the daemon and the CLI. The table comes from piloop's 
 
 <Settings />
 
-### Herdr
-
-These are the settings of the [`herdr` runtime](/concepts/roles#runtimes). The defaults of the timeouts suit most machines.
-
-<HerdrSettings />
-
 ### Other variables
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PILOOP_CAMPAIGN_<KEY>` | none | Overrides a key of `piloop.toml` when `piloop init` reads the file. `piloop init` stores the result, and the daemon uses it until the next `piloop init`. Set on `piloop serve`, it has no effect. Join nested keys with `__`, for example `PILOOP_CAMPAIGN_RUNTIME=herdr`. `piloop doctor` reads it too. |
+| `PILOOP_CAMPAIGN_<KEY>` | none | Overrides a key of `piloop.toml` when `piloop init` reads the file. `piloop init` stores the result, and the daemon uses it until the next `piloop init`. Set on `piloop serve`, it has no effect. Join nested keys with `__`, for example `PILOOP_CAMPAIGN_RUNTIME=subprocess`. `piloop doctor` reads it too. |
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's configuration directory. `piloop install-skills` writes Claude Code's skills to its `skills/` directory, unless `PILOOP_CLAUDE_SKILLS_DIR` names another one. The usage glob of the `claude` harness reads it (`{env:CLAUDE_CONFIG_DIR:~/.claude}`). |
 | `CODEX_HOME` | `~/.codex` | Codex's home directory. The usage glob of the `codex` harness reads it (`{env:CODEX_HOME:~/.codex}`). |
 | `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi's agent directory. The usage glob of the `pi` harness reads it (`{env:PI_CODING_AGENT_DIR:~/.pi/agent}`). |

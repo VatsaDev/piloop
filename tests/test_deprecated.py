@@ -221,17 +221,17 @@ def test_a_piloop_project_variable_still_overrides_after_its_campaign_one(
     campaign_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     write_toml(campaign_path, HARNESS_APPEND)
-    monkeypatch.setenv('PILOOP_PROJECT_RUNTIME', 'herdr')
+    monkeypatch.setenv('PILOOP_PROJECT_NAME', 'old')
     monkeypatch.setenv('PILOOP_PROJECT_EVALUATE_TIMEOUT', '7')
     monkeypatch.setenv('PILOOP_CAMPAIGN_EVALUATE_TIMEOUT', '9')
     with pytest.warns(PiloopDeprecationWarning) as record:
         cfg = load_campaign_config(campaign_path)
-    assert (cfg.runtime, cfg.evaluate_timeout) == ('herdr', 9), 'the new name wins'
+    assert (cfg.name, cfg.evaluate_timeout) == ('old', 9), 'the new name wins'
     assert [str(w.message).split(';')[0] for w in record] == [
         'PILOOP_PROJECT_EVALUATE_TIMEOUT is deprecated',
-        'PILOOP_PROJECT_RUNTIME is deprecated',
+        'PILOOP_PROJECT_NAME is deprecated',
     ]
-    assert 'set PILOOP_CAMPAIGN_RUNTIME' in str(record[1].message)
+    assert 'set PILOOP_CAMPAIGN_NAME' in str(record[1].message)
 
 
 ROOT = Path(__file__).parents[1]
@@ -427,7 +427,7 @@ def test_a_free_text_compat_note_is_a_problem(tmp_path: Path, text: str) -> None
 @pytest.mark.parametrize(
     'text',
     [
-        '# TODO: remove it once Herdr detects that state',
+        '# TODO: remove it once the harness reports that state',
         '# the directories keep their 0.1 name',
         '# see piloop.deprecated.old_env',
         "warn('the key is deprecated; removed in piloop 0.3.0')",

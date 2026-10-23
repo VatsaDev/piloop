@@ -314,7 +314,7 @@ class HotPaths:
         return {
             'scheduler.tick': each(tick),
             'stop.check': each(lambda p, _cfg: check(s, p, stopping)),
-            'overview.overview': each(lambda p, cfg: overview.overview(s, p, cfg, utcnow(), lambda _w: [])),
+            'overview.overview': each(lambda p, cfg: overview.overview(s, p, cfg, utcnow())),
             'history.renderables': each(lambda p, cfg: history.renderables(s, p, cfg, table_box=box.SIMPLE)),
             'inbox.news': lambda: inbox.news(s, 0, me=System.ORCHESTRATOR),
         }

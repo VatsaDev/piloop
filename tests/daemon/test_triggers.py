@@ -242,7 +242,7 @@ def test_only_incident_anomalies_request_a_sweep(
     sched = scheduler(db, runtime, tmp_path)
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        [idle] = anomalies(s, p, load_campaign_config(Path(campaign.path)), utcnow(), lambda w: [])
+        [idle] = anomalies(s, p, load_campaign_config(Path(campaign.path)))
     assert idle.name == 'campaign#1 idle' and not idle.incident
     assert sched.tick() == []
     assert agent_sessions(db, WATCHDOG) == []
@@ -555,7 +555,7 @@ def test_low_water_sizes_the_batch_to_the_shortfall_net_of_the_sweeps_in_flight(
     """
     release = tmp_path / 'release'
     write_toml(Path(campaign.path), BLOCKING.format(release=release))
-    script = {'executable': str(tmp_path / 'harness.sh'), 'headless': ['{prompt}'], 'interactive': []}
+    script = {'executable': str(tmp_path / 'harness.sh'), 'headless': ['{prompt}']}
     cfg = load_campaign_config(
         Path(campaign.path),
         harness={'b': script, 'c': script},

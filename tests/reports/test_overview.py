@@ -4,7 +4,6 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from git import Repo
 from inline_snapshot import snapshot
 from sqlalchemy.orm import Session
 
@@ -36,14 +35,9 @@ from piloop.reports import overview as overview_module
 from piloop.reports.overview import LINKED_CHARS, anomalies, block, overview
 from piloop.scoring.ledger import IdeaCreated
 from tests.conftest import end_of, spent
-from tests.runtime.test_herdr import Response, calls, scripted
 
 T = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 NOW = T + timedelta(hours=2)
-
-
-def no_jobs(agent_session: AgentSession) -> list[str]:
-    return []
 
 
 def at(minutes: float) -> datetime:
@@ -198,7 +192,7 @@ def live_campaign(db: Database, campaign: Campaign) -> None:
 def render(db: Database, campaign: Campaign, cfg: CampaignConfig | None = None, now: datetime = NOW) -> str:
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        return overview(s, p, cfg or CampaignConfig.model_validate(p.config), now, no_jobs)
+        return overview(s, p, cfg or CampaignConfig.model_validate(p.config), now)
 
 
 def test_the_overview_of_a_campaign(db: Database, campaign: Campaign) -> None:
@@ -305,12 +299,10 @@ def test_max_runs_reached_is_not_idle(db: Database, campaign: Campaign) -> None:
     cfg = load_campaign_config(Path(campaign.path), stop={'max_runs': 2}, roles={'implementer': {'max_concurrent': 4}})
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        assert AnomalyKind.IDLE_QUEUE not in {a.kind for a in anomalies(s, p, cfg, NOW, no_jobs)}
+        assert AnomalyKind.IDLE_QUEUE not in {a.kind for a in anomalies(s, p, cfg)}
         p.status = CampaignStatus.STOPPED
         uncapped = load_campaign_config(Path(campaign.path), roles={'implementer': {'max_concurrent': 4}})
-        assert AnomalyKind.IDLE_QUEUE not in {a.kind for a in anomalies(s, p, uncapped, NOW, no_jobs)}, (
-            'a stopped campaign'
-        )
+        assert AnomalyKind.IDLE_QUEUE not in {a.kind for a in anomalies(s, p, uncapped)}, 'a stopped campaign'
 
 
 def test_a_run_that_the_daemon_stopped_is_not_a_failed_run(db: Database, campaign: Campaign) -> None:
@@ -338,7 +330,7 @@ def test_a_run_blocked_on_its_implementers_escalation_is_not_a_failed_run(db: Da
 
 def found(s: Session, campaign: Campaign, now: datetime = NOW) -> list[overview_module.Anomaly]:
     p = s.get_one(Campaign, campaign.id)
-    return anomalies(s, p, CampaignConfig.model_validate(p.config), now, no_jobs)
+    return anomalies(s, p, CampaignConfig.model_validate(p.config))
 
 
 def test_a_short_life_without_the_launcher_event_is_not_a_startup_death(db: Database, campaign: Campaign) -> None:
@@ -433,93 +425,6 @@ def test_open_runs_say_how_far_they_got(db: Database, campaign: Campaign) -> Non
         '  - run#1 idea#1 "waiting" (script): queued',
         '  - run#2 idea#2 "going" (script): running 10m',
     ]
-
-
-def busy(s: Session, campaign: Campaign, log_dir: Path | None, *, said: float | None = None) -> AgentSession:
-    """An implementer running since minute 0 on run#1, which comments at minute ``said``."""
-    p = s.get_one(Campaign, campaign.id)
-    r = run(s, idea(s, p, 'train', IdeaStatus.SCHEDULED), RunStatus.RUNNING, 1, 0, None)
-    r.log_dir = str(log_dir) if log_dir is not None else None
-    w = AgentSession(kind=IMPLEMENTER, campaign_id=p.id, run_id=r.id, state=AgentSessionState.RUNNING, started_at=at(0))
-    s.add(w)
-    s.flush()
-    if said is not None:
-        s.add(
-            Comment(
-                target=TargetRef(TargetKind.RUN, r.id),
-                author=f'implementer#{w.id}',
-                body='ETA',
-                created_at=at(said),
-            )
-        )
-    s.commit()
-    return w
-
-
-class Jobs:
-    """A ``JobsProbe`` that answers ``running`` and remembers whom it was asked about."""
-
-    def __init__(self, *running: str) -> None:
-        self.running = list(running)
-        self.asked: list[int] = []
-
-    def __call__(self, agent_session: AgentSession) -> list[str]:
-        self.asked.append(agent_session.id)
-        return self.running
-
-
-def silent(s: Session, campaign: Campaign, jobs: Jobs, now: datetime = NOW) -> list[overview_module.Anomaly]:
-    p = s.get_one(Campaign, campaign.id)
-    found = anomalies(s, p, CampaignConfig.model_validate(p.config), now, jobs)
-    return [a for a in found if a.kind is AnomalyKind.SILENT]
-
-
-def test_an_implementer_quiet_for_an_hour_with_jobs_in_flight_is_an_incident(
-    db: Database, campaign: Campaign, tmp_path: Path
-) -> None:
-    jobs = Jobs('4242 python train.py --epochs 90', '4243 tee train.log')
-    with db.session() as s:
-        busy(s, campaign, tmp_path / 'run', said=30)
-        [quiet] = silent(s, campaign, jobs)
-    assert (quiet.name, quiet.at, quiet.incident) == ('agent_session#1 silent while its jobs run', at(90), True)
-    assert quiet.detail == snapshot(
-        'run#1 idea#1: no comment or commit for 1h (its last comment); 2 jobs in flight, e.g. 4242 python train.py --epochs 90'
-    )
-    with db.session() as s:
-        text = overview(s, s.get_one(Campaign, campaign.id), CampaignConfig.model_validate(campaign.config), NOW, jobs)
-    assert '- [incident] agent_session#1 silent while its jobs run, 30m ago: run#1 idea#1' in text
-
-
-def test_an_implementer_that_spoke_or_committed_within_the_hour_is_not_asked_about_its_jobs(
-    db: Database, campaign: Campaign, tmp_path: Path
-) -> None:
-    jobs = Jobs('4242 python train.py')
-    with db.session() as s:
-        busy(s, campaign, None, said=61)
-        assert silent(s, campaign, jobs) == [] and jobs.asked == [], 'it commented 59 minutes ago'
-        assert silent(s, campaign, jobs, at(60)) == [], 'its run started an hour ago, to the second'
-    worktree = tmp_path / 'run' / 'worktree'
-    repo = Repo.init(worktree)
-    repo.index.commit(
-        'epoch 40 checkpoint',
-        commit_date=at(100).strftime('%Y-%m-%dT%H:%M:%S%z'),
-        author_date=at(100).strftime('%Y-%m-%dT%H:%M:%S%z'),
-    )
-    with db.session() as s:
-        s.get_one(Run, 1).log_dir = str(tmp_path / 'run')
-        s.commit()
-        assert silent(s, campaign, jobs, at(150)) == [] and jobs.asked == [], 'it committed 50 minutes ago'
-        assert [a.detail.split('; ')[0] for a in silent(s, campaign, jobs, at(170))] == [
-            'run#1 idea#1: no comment or commit for 1h (its last commit)'
-        ]
-
-
-def test_a_quiet_implementer_with_nothing_running_is_not_silent(db: Database, campaign: Campaign) -> None:
-    """A silent implementer with no job in flight is not an anomaly. The anomaly is about jobs that nobody watches."""
-    jobs = Jobs()
-    with db.session() as s:
-        agent_session = busy(s, campaign, None)
-        assert silent(s, campaign, jobs) == [] and jobs.asked == [agent_session.id]
 
 
 def test_branches_and_notes_say_where_else_a_run_may_start(db: Database, campaign: Campaign) -> None:
@@ -623,56 +528,28 @@ def test_age_floors_to_the_largest_unit() -> None:
     assert overview_module.age(NOW + timedelta(hours=1), NOW) == '0s', 'a clock skew is not a negative age'
 
 
-CLAUDE_SCREEN = """\
-⏺ Baseline finished. Starting the two training runs.
-
-✻ Training… (12s · esc to interrupt)
-──────────────────────────────────────────
-❯
-──────────────────────────────────────────
-  Opus 5.5 · ~/.piloop/runs/112/worktree ⎇ ca4aefc · ▰▰▱▱▱▱▱▱▱▱ 20%
-  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
-"""
-"""The end of a Claude Code pane as ``herdr agent read`` returns it: the output above the input box and status bar."""
-CODEX_SCREEN = """\
-• Ran the evaluation; measurement pending.
-  Worked for 7m 23s • 4:21 PM
-› Ask Codex to do anything
-  GPT-6.1-Sol high · ~/.piloop/runs/95/worktree · Test implementer idea
-  ? for shortcuts                                         ⚠ 3 warnings · f2 to view
-"""
-PI_SCREEN = """\
- The ensemble wins because the HGBs make partially uncorrelated errors.
-──────────────────────────────────────────
-──────────────────────────────────────────
-~/.piloop/runs/7/worktree (detached)
-↑24 ↓21k R382k W31k CH98.3% $0.541 3.1%/1.0M (auto)                      (anthropic) claude-sonnet
-"""
 SESSION_ID = 'd96a2121-355c-4608-b2f7-8bfc85bba1b5'
 
 
-def test_live_agents_say_their_last_words_from_the_session_file_else_the_screen_without_chrome(
-    db: Database, campaign: Campaign, tmp_path: Path, herdr_log: Path, monkeypatch: pytest.MonkeyPatch
+def test_live_agents_say_their_last_words_from_the_session_file_else_their_output_else_their_transcript(
+    db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv('HOME', str(tmp_path))
     monkeypatch.setenv('CLAUDE_CONFIG_DIR', str(tmp_path / '.claude'))
     session = tmp_path / '.claude' / 'projects' / '-somewhere' / f'{SESSION_ID}.jsonl'
     session.parent.mkdir(parents=True)
     session.write_text((Path(__file__).parent.parent / 'fixtures' / 'said' / 'claude.jsonl').read_text())
-    saved = tmp_path / 'saved'
-    saved.mkdir()
-    (saved / 'transcript.txt').write_text(CODEX_SCREEN)
-    gone: Response = {'error': {'code': 'agent_not_found', 'message': 'no agent'}}
-    screens = [CLAUDE_SCREEN, gone, gone, PI_SCREEN, 'just a shell $\n']
-    scripted(monkeypatch, agent_read=[{'text': s} if isinstance(s, str) else s for s in screens])
+    writing, saved, silent = tmp_path / 'writing', tmp_path / 'saved', tmp_path / 'silent'
+    for log_dir in (writing, saved, silent):
+        log_dir.mkdir()
+    (writing / 'agent_session.stdout').write_text('{"type":"turn.started"}\n\n{"type":"item.completed"}\n')
+    (saved / 'transcript.txt').write_text('Ran the evaluation; measurement pending.\n')
     with db.session() as s:
-        for name, harness, session_id, log_dir in (
-            ('w0', 'claude', SESSION_ID, None),
-            ('w1', 'claude', 'no-file-yet', None),
-            ('w2', 'codex', None, saved),
-            ('w3', 'gone', None, tmp_path / 'nowhere'),
-            ('w4', 'script', None, None),
-            ('w5', None, None, None),
+        for harness, session_id, log_dir in (
+            ('claude', SESSION_ID, silent),
+            ('claude', 'no-file-yet', writing),
+            ('codex', None, saved),
+            ('script', None, silent),
         ):
             s.add(
                 AgentSession(
@@ -680,11 +557,11 @@ def test_live_agents_say_their_last_words_from_the_session_file_else_the_screen_
                     campaign_id=campaign.id,
                     state=AgentSessionState.RUNNING,
                     harness=harness,
-                    model='m' if harness else None,
+                    model='m',
                     session_id=session_id,
-                    runtime='herdr',
-                    handle={'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': name},
-                    log_dir=str(log_dir) if log_dir else None,
+                    runtime='subprocess',
+                    handle={'pid': 1, 'start_time': 0, 'log_dir': str(log_dir)},
+                    log_dir=str(log_dir),
                     reason='cron',
                     started_at=at(100),
                 )
@@ -692,16 +569,11 @@ def test_live_agents_say_their_last_words_from_the_session_file_else_the_screen_
         s.commit()
     assert [line for line in render(db, campaign).splitlines() if line.startswith('  - research#')] == snapshot(
         [
-            '  - research#1 claude/m 20m, tab w7:t2, on cron: Starting both training runs (16 processes each).',
-            '  - research#2 claude/m 20m, tab w7:t2, on cron: ⏺ Baseline finished. Starting the two training runs.',
-            '  - research#3 codex/m 20m, tab w7:t2, on cron: • Ran the evaluation; measurement pending.',
-            '  - research#4 gone/m 20m, tab w7:t2, on cron: —',
-            '  - research#5 script/m 20m, tab w7:t2, on cron: The ensemble wins because the HGBs make partially uncorrelated errors.',
-            '  - research#6 —/— 20m, tab w7:t2, on cron: just a shell $',
+            '  - research#1 claude/m 20m, on cron: Starting both training runs (16 processes each).',
+            '  - research#2 claude/m 20m, on cron: {"type":"item.completed"}',
+            '  - research#3 codex/m 20m, on cron: Ran the evaluation; measurement pending.',
+            '  - research#4 script/m 20m, on cron: —',
         ]
-    )
-    assert [c[2] for c in calls(herdr_log) if c[:2] == ['agent', 'read']] == ['w1', 'w2', 'w3', 'w4', 'w5'], (
-        'an agent with text in its session file needs no runtime read'
     )
 
 

@@ -401,14 +401,14 @@ class Scheduler:
 
     @deprecated.until('0.3.0', 'a kill of an agent that no executor holds: delete _kill_stale with _running')
     def _kill_stale(self, s: Session, agent_session: AgentSession) -> None:
-        """Ask the runtime to close the pane of an agent that no executor adopted, which outlives its daemon. Best effort.
+        """Ask the runtime to kill an agent that no executor adopted, which outlives its daemon. Best effort.
 
         Such an agent was started before leases, or its job ended with no report. Once every agent is an executor's,
         its executor stops it.
         """
         try:
-            runtime_for(s, agent_session, self._runs_dir, self._runtime_factory).kill(handle_for(agent_session))
-        except Exception as e:  # The pane can be gone already. The database row is what matters.
+            runtime_for(agent_session, self._runtime_factory).kill(handle_for(agent_session))
+        except Exception as e:  # The agent can be gone already. The database row is what matters.
             self._tracer.event('agent_session.kill_failed', agent_session=agent_session.id, error=str(e))
 
     def tick(self) -> list[AgentSessionId]:
@@ -535,8 +535,8 @@ class Scheduler:
         The events table records each outcome: ``PromptOutcome`` events on the agent, with the comment id. A
         comment is handed over once per daemon process (``_prompted``). One without an outcome after a restart goes
         again, and the executor answers it as it did the first time. An agent whose row is still ``starting`` (brief
-        composed, pane not yet up) gets the comments once it runs. A failed delivery is recorded and not retried: the
-        comment is in the brief of the idea's next run anyway, and a headless agent would fail the same way each time.
+        composed, process not yet up) gets the comments once it runs. A failed delivery is recorded and not retried: the
+        comment is in the brief of the idea's next run anyway, and the agent would fail the same way each time.
         A tick that sends something makes one span.
         """
         with self._db.session() as s:
@@ -845,19 +845,9 @@ class Scheduler:
         given = reported(s, campaign.id)
         now = utcnow()
         found = [
-            Incident(a.name, a.reported(now))
-            for a in anomalies(s, campaign, cfg, now, partial(self._jobs, s))
-            if a.incident and a.key not in given
+            Incident(a.name, a.reported(now)) for a in anomalies(s, campaign, cfg) if a.incident and a.key not in given
         ]
         return found[::-1]
-
-    def _jobs(self, s: Session, agent_session: AgentSession) -> list[str]:
-        """Return the jobs that the implementer's runtime reports in flight, or none if the runtime fails (traced)."""
-        try:
-            return runtime_for(s, agent_session, self._runs_dir, self._runtime_factory).jobs(handle_for(agent_session))
-        except Exception as e:  # A Herdr error must not stop the tick. The next tick checks the anomaly again.
-            self._tracer.event('agent_session.jobs_failed', agent_session=agent_session.id, error=str(e))
-            return []
 
     def _backlog(self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: RoleName, buffer: int) -> Backlog:
         """Return the campaign's backlog as role ``name`` fills it: ``buffer`` beyond the run slots, its own sweeps."""
@@ -1310,7 +1300,7 @@ class Scheduler:
             sections = [*lines, '']
             if incidents:
                 sections += ['## Incidents to investigate', *incidents, '']
-            sections.append(overview(s, campaign, cfg, now, partial(self._jobs, s)))
+            sections.append(overview(s, campaign, cfg, now))
             if not incidents:
                 sections.append(pack(s, campaign, cfg, workspace=workspace_dir(self._home, campaign.id)))
             brief = compose_brief(
@@ -1533,7 +1523,7 @@ def steer_line(comment: Comment) -> str:
 
     Any other is one line: who wrote what, and how to read the rest. The line quotes the first line of the body, cut at
     ``STEER_LINE_CHARS``. The implementer can read the full text with the SQL tool that its brief names, so a long
-    decision does not fill the pane.
+    decision does not fill its turn.
     """
     if comment.target_kind is TargetKind.AGENT_SESSION:
         return comment.body

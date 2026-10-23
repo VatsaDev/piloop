@@ -8,7 +8,6 @@ from pydantic import BaseModel
 from piloop.config import CampaignConfig
 from piloop.deprecated import BRIDGES, CONFIG_BRIDGES
 from piloop.plugins.host import Scope, declared
-from piloop.plugins.runtime.herdr import HerdrSettings
 from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.settings import StorageSettings
 from scripts.generate import ROOT, header
@@ -29,7 +28,7 @@ description: Every key of piloop.toml, with its type and its default.
 copy. The daemon uses that copy, so an edit takes effect only when you run `piloop init`.
 
 To override a key when `piloop init` reads the file, set `PILOOP_CAMPAIGN_<KEY>`. Join nested keys with `__`, for
-example `PILOOP_CAMPAIGN_RUNTIME=herdr` or `PILOOP_CAMPAIGN_ROLES__IMPLEMENTER__MAX_CONCURRENT=2`. The stored copy keeps the
+example `PILOOP_CAMPAIGN_RUNTIME=subprocess` or `PILOOP_CAMPAIGN_ROLES__IMPLEMENTER__MAX_CONCURRENT=2`. The stored copy keeps the
 override until the next `piloop init`. The variable has no effect on `piloop serve`.
 
 A type in the tables links to the section that describes it. A table that you leave out has the defaults of its
@@ -93,7 +92,7 @@ def generate() -> str:
 
 
 def global_section() -> str:
-    """Return the tables of the global settings file, ``$PILOOP_HOME/config.toml``: ``[storage]``, ``[plugins]``, runtimes."""
+    """Return the tables of the global settings file, ``$PILOOP_HOME/config.toml``: ``[storage]``, ``[plugins]``, ``[runtimes]``."""
     storage = json_schema(StorageSettings)
     out = (
         '\n## Global settings: `config.toml`\n\n`$PILOOP_HOME/config.toml` holds the settings that every campaign of'
@@ -102,12 +101,9 @@ def global_section() -> str:
         f'{mdx(storage.get("description", ""))}\n\n{table(storage, {})}'
     )
     out += home_plugins()
-    herdr = json_schema(HerdrSettings)
     out += (
-        '\n### `[runtimes.<name>]`\n\nThe settings of a runtime, which the runtime reads and checks. An environment'
-        ' variable wins over the file. The `herdr` runtime reads `[runtimes.herdr]`, and `PILOOP_HERDR_<KEY>`'
-        ' overrides a key:\n\n'
-        f'{table(herdr, {}, {k for k in herdr["properties"] if k.islower()})}'
+        '\n### `[runtimes.<name>]`\n\nThe settings of a runtime that a package adds, which it reads with'
+        ' `runtime_settings`.\n'
     )
     return out
 

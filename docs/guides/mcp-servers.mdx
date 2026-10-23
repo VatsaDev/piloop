@@ -62,15 +62,12 @@ Each built-in harness puts the role's servers at the `{mcp}` element of its comm
   server with the same name as one of yours makes the launch fail.
 - **pi**: through `pi-mcp-adapter` in exclusive mode. This works only when pi's own extensions are off.
 
-So the agents see only the role's servers, never the servers in your own configuration. A runtime starts either the
-headless or the interactive command of a harness: its [invocation](/concepts/roles#built-in-runtimes). The last
-column says, for each invocation, whether the command of the harness can take servers:
+So the agents see only the role's servers, never the servers in your own configuration.
 
 <Harnesses />
 
-`piloop init` refuses a role that lists servers when a harness of its rotation cannot take them in the invocation of
-the role's runtime. Then use a runtime with another invocation for that role, or leave that harness out of the role's
-rotation, for example `harnesses = ["claude", "codex"]` under `[roles.research]`.
+`piloop init` refuses a role that lists servers when a harness of its rotation cannot take them. Then leave that
+harness out of the role's rotation, for example `harnesses = ["claude", "codex"]` under `[roles.research]`.
 
 A [custom harness](/reference/configuration#harness) takes servers when its command has an `{mcp}` element and it sets
 `mcp` to one of the renderers: `claude`, `codex` or `pi`.

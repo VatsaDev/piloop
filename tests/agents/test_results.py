@@ -118,7 +118,6 @@ def test_the_finished_event_of_an_agent_says_the_state_of_its_closed_row(
     job = AgentJob(
         agent_session=agent_session_id,
         runtime='subprocess',
-        campaign=campaign.name,
         artifact=Checkout(repo=RepoId(campaign.id)),
         place='agent',
         timeout=60,
@@ -149,7 +148,6 @@ def test_two_results_for_one_job_in_plain_sessions_close_its_row_once_and_measur
     agent = AgentJob(
         agent_session=agent_session_id,
         runtime='subprocess',
-        campaign=campaign.name,
         artifact=Checkout(repo=RepoId(campaign.id)),
         place='agent',
         timeout=60,
@@ -220,7 +218,6 @@ def agent_job(campaign: Campaign, agent_session_id: AgentSessionId, tmp_path: Pa
     return AgentJob(
         agent_session=agent_session_id,
         runtime='subprocess',
-        campaign=campaign.name,
         artifact=Checkout(repo=RepoId(campaign.id)),
         place='agent',
         timeout=60,

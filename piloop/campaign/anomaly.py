@@ -15,6 +15,7 @@ class AnomalyKind(StrEnum):
     SAME_AS_PARENT = 'scored exactly its parent'
     IDLE_QUEUE = 'idle'
     SILENT = 'silent while its jobs run'
+    """Reported while a runtime could list an agent's jobs. Nothing reports it now; older events still name it."""
 
 
 class AnomalyReported(EventModel):

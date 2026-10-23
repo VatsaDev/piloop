@@ -119,7 +119,7 @@ def test_a_scout_sweep_reads_its_context_signs_as_a_scout_and_files_only_seeds_a
         campaign_row = s.get_one(Campaign, campaign.id)
         cfg = load_campaign_config(Path(campaign.path))
         assert '0 research, 1 scout; 0 of 0 ended research sweeps defined no idea' in overview(
-            s, campaign_row, cfg, utcnow(), lambda _: []
+            s, campaign_row, cfg, utcnow()
         )
         assert 'scout#1: Problem statement: digits' in history(s, campaign_row, cfg)
 

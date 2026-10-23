@@ -34,7 +34,7 @@ cat > ~/.local/bin/piloop-canary <<'EOF'
 #!/bin/sh
 C="$HOME/.piloop-canary"
 export PILOOP_HOME="$C" UV_TOOL_DIR="$C/uv/tools" UV_TOOL_BIN_DIR="$C/uv/bin" PILOOP_CLI=piloop-canary \
-    PILOOP_CLAUDE_SKILLS_DIR="$C/skills" PILOOP_AGENT_SKILLS_DIR="$C/skills" PILOOP_HERDR_SESSION=piloop-canary
+    PILOOP_CLAUDE_SKILLS_DIR="$C/skills" PILOOP_AGENT_SKILLS_DIR="$C/skills"
 exec "$C/uv/bin/piloop" "$@"
 EOF
 chmod +x ~/.local/bin/piloop-canary
@@ -53,7 +53,6 @@ Each variable keeps one thing apart:
 | `PILOOP_HOME` | The database, the runs, the artifact store, `config.toml`, and the daemon's `serve.pid` and `serve.log`. One daemon runs for each home. |
 | `UV_TOOL_DIR`, `UV_TOOL_BIN_DIR` | The installed package. uv keeps one tool named `piloop` per tool directory, and `piloop upgrade` upgrades the tool of this directory only. Keep the bin directory outside the tool directory. |
 | `PILOOP_CLAUDE_SKILLS_DIR`, `PILOOP_AGENT_SKILLS_DIR` | The orchestrator skills, which `install-skills` would otherwise put over the release's in `~/.claude/skills` and `~/.agents/skills`. |
-| `PILOOP_HERDR_SESSION` | The Herdr session of the agents, for campaigns with `runtime = "herdr"`. |
 | `PILOOP_CLI` | The command that `piloop-canary doctor` names in what it tells you, or an orchestrator, to run. |
 
 The canary's agents run the canary's piloop: the daemon gives each agent `PILOOP_BIN`, its own `piloop` under its
@@ -105,11 +104,8 @@ Keep the suite fast:
 - Take a database from the `db` fixture, or copy one with `at_head` from `tests/conftest.py`. Both copy a database
   that is migrated once per session. Migrating from scratch costs about a second.
 - Wait for a condition with `wait_until`, never with a fixed sleep or a loop that goes on after its deadline.
-- To test a timeout of the code, give it a fake clock that a sleep advances, as `FakeClock` in
-  `tests/runtime/test_herdr.py` does, rather than a short real timeout: that one is slow alone and flaky under load.
-
-The tests marked `herdr` need a local [Herdr](https://herdr.dev). They are skipped when `herdr` is not on your
-`PATH`.
+- To test a timeout of the code, give it a fake clock that a sleep advances, rather than a short real timeout: that
+  one is slow alone and flaky under load.
 
 Other targets: `make format`, `make lint`, `make typecheck`, `make test` (no coverage), `make testcov`, `make docs`,
 `make docs-check` and `make e2e` (see below). CI runs the pre-commit hooks, `make testcov` on Linux, and `install.sh`

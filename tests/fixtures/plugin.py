@@ -7,10 +7,9 @@ from typing import ClassVar, Literal
 
 from pydantic import field_validator
 
-from piloop.harnesses import Invocation
 from piloop.plugins.host import Capability, Parameters, Tier
 from piloop.plugins.role.contract import ImplementerRole, SweepRole
-from piloop.plugins.runtime.contract import Check, Handle, RuntimeName
+from piloop.plugins.runtime.contract import Handle, RuntimeName
 from piloop.plugins.runtime.subprocess import SubprocessRuntime
 from piloop.plugins.stop_rule.contract import GO, Fact, Go, Hold, Limits, Stop, StopCase, StopRule
 from piloop.plugins.trigger.contract import Fire, Tick, Trigger, TriggerEntry
@@ -38,31 +37,18 @@ class Broken(Trigger):
 
 
 class Typed(SubprocessRuntime):
-    """``typed``: a background process, like ``subprocess``, that starts the interactive argument list of a harness."""
+    """``typed``: a background process, like ``subprocess``, under a name of its own."""
 
     kind: ClassVar[str] = 'typed'
-    invocation: ClassVar[Invocation] = Invocation.INTERACTIVE
 
 
 class Shown(SubprocessRuntime):
-    """``shown``: a background process, like ``subprocess``, with a pane of its own to focus, attach to and check."""
+    """``shown``: a background process, like ``subprocess``, whose output is one line that names its pid."""
 
     kind: ClassVar[str] = 'shown'
-    invocation: ClassVar[Invocation] = Invocation.HEADLESS
 
-    def focus(self, handle: Handle) -> str:
-        return f'focused pane {handle.data["pid"]}'
-
-    def attach(self, handle: Handle) -> str:
-        return f'attached to pane {handle.data["pid"]}'
-
-    @classmethod
-    def view(cls, handle: Handle) -> str | None:
+    def read(self, handle: Handle, lines: int = 80) -> str:
         return f'pane {handle.data["pid"]}'
-
-    @classmethod
-    def checks(cls, executables: set[str]) -> list[Check]:
-        return [Check('shown', f'ready for {", ".join(sorted(executables))}')]
 
 
 class GoesOn(StopRule):
@@ -73,12 +59,6 @@ class GoesOn(StopRule):
 
     def check(self, case: StopCase) -> Go | Hold | Stop:
         return GO
-
-
-class Unsure:
-    """A class with a runtime's name and without an invocation."""
-
-    kind: ClassVar[str] = 'unsure'
 
 
 class Auditor(SweepRole):

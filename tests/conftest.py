@@ -115,7 +115,6 @@ direction = "lower"
 [harness.script]
 executable = "{script}"
 headless = ["{{prompt}}"]
-interactive = []
 """
 
 
@@ -483,7 +482,7 @@ def disk(home: Path) -> Cas:
 
 
 def factory(rt: Runtime) -> RuntimeFactory:
-    def make(_kind: str, *, campaign: str, campaign_path: Path) -> Runtime:
+    def make(_kind: str) -> Runtime:
         return rt
 
     return make
@@ -511,22 +510,6 @@ def git_identity(monkeypatch: pytest.MonkeyPatch) -> None:
         'GIT_COMMITTER_EMAIL': 'test@piloop',
     }.items():
         monkeypatch.setenv(key, value)
-
-
-FAKE_HERDR = Path(__file__).parent / 'fixtures' / 'fake_herdr.py'
-
-
-@pytest.fixture
-def herdr_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Put the fake ``herdr`` first on PATH; returns the argv log it appends to."""
-    bin_dir = tmp_path / 'bin'
-    bin_dir.mkdir()
-    (bin_dir / 'herdr').symlink_to(FAKE_HERDR)
-    log = tmp_path / 'herdr.log'
-    monkeypatch.setenv('PATH', f'{bin_dir}{os.pathsep}{os.environ["PATH"]}')
-    monkeypatch.setenv('FAKE_HERDR_LOG', str(log))
-    monkeypatch.delenv('FAKE_HERDR_SCRIPT', raising=False)
-    return log
 
 
 FAKE_ENTIRE = Path(__file__).parent / 'fixtures' / 'fake_entire.py'

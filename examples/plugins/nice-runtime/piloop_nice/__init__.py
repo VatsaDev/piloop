@@ -7,14 +7,13 @@ The agents of a long campaign then leave the CPU to your own work first. ``[runt
 from dataclasses import replace
 from typing import ClassVar
 
-from piloop.capabilities import AgentSpec, Handle, Invocation, SubprocessRuntime, runtime_settings
+from piloop.capabilities import AgentSpec, Handle, SubprocessRuntime, runtime_settings
 
 
 class NiceRuntime(SubprocessRuntime):
     """``nice``: background processes, like ``subprocess``, at a lower CPU priority."""
 
     kind: ClassVar[str] = 'nice'
-    invocation: ClassVar[Invocation] = Invocation.HEADLESS
 
     def start(self, spec: AgentSpec) -> Handle:
         niceness = str(runtime_settings(self.kind).get('niceness', 10))

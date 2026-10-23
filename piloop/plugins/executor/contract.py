@@ -126,8 +126,6 @@ class AgentJob(BaseModel):
     agent_session: AgentSessionId
     runtime: str
     """The runtime that starts the agent on the worker's host (``runtime`` in ``piloop.toml``)."""
-    campaign: str
-    """The campaign's name, which a runtime can name what it makes after (Herdr's workspace)."""
     artifact: Artifact
     place: Place
     timeout: float

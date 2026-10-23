@@ -118,7 +118,7 @@ class Running:
     """The worker asked it to stop: a revoke, the worker's own stop. An evaluation it stopped is not run again."""
     killed: bool = False
     """The kill went through. Until then, each heartbeat that asks again, and each turn of a silent worker, tries it
-    again: a kill can fail (a Herdr server that does not answer)."""
+    again: a kill can fail."""
     steer: Callable[[str], None] | None = None
     """How to prompt its agent (``Runtime.prompt`` at its handle), once the agent started. None for an evaluation."""
     queued: list[list[Prompt]] = field(default_factory=list)
@@ -322,9 +322,7 @@ class Worker:
             else:
                 try:
                     steer('\n'.join(m.prompt.text for m in new))
-                except (
-                    Exception
-                ) as e:  # NotSteerable (subprocess), a blocked agent or a closed pane: the worker goes on
+                except Exception as e:  # NotSteerable, or a runtime that fails: the worker goes on
                     error = str(e)
                 else:
                     with self._lock:
@@ -589,9 +587,7 @@ class Worker:
             self._dismiss(e)
 
     def _runtime(self, job: AgentJob) -> Runtime:
-        return self.runtime_factory(
-            job.runtime, campaign=job.campaign, campaign_path=self.site.clones.path(job.artifact)
-        )
+        return self.runtime_factory(job.runtime)
 
     def _agent(self, grant: Grant) -> None:
         """Run an agent's job (``jobs.run_agent``), and report it once the job's span ends.

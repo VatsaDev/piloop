@@ -35,6 +35,7 @@ from piloop.db.session import (
     Release,
     Revision,
     SchemaAhead,
+    SchemaMismatch,
     SchemaTooOld,
     fingerprints,
     migrate,
@@ -852,7 +853,7 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
         assert stored[2] == {
             'roles': {'research': {'triggers': [{'kind': 'low_water', 'buffer': 3}, {'kind': 'seed'}]}}
         }, "a release's config has no triggers: research's defaults, with its buffer"
-        p = CampaignConfig.model_validate(stored[0])
+        p = CampaignConfig.model_validate(without_herdr(stored[0]))
         assert (p.roles.scout.interval, p.roles.scout.seeds) == (86400, 4)
         assert (p.roles.scout.mcp, p.roles.scout.timeout, p.roles.scout.addendum) == (['xai'], 1200, 'research.md'), (
             'the keys of research that the scout used'
@@ -880,6 +881,11 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
         assert con.execute(scouts).fetchall() == [(2,), (3,)], 'every scout row is a scout sweep of research again'
         with pytest.raises(sqlite3.IntegrityError, match='workers.kind must be a role of the project'):
             con.execute("INSERT INTO workers (kind, project_id) VALUES ('scout', 2)")
+
+
+def without_herdr(config: dict[str, object]) -> dict[str, object]:
+    """``config`` without the keys of the herdr runtime, as revision 0034 stores it, so that today's piloop reads it."""
+    return ScriptDirectory(str(MIGRATIONS)).get_revision('0034').module.upgraded(config, stopped=False)
 
 
 def test_0012_leaves_the_cached_input_out_of_the_input_of_codex_rows_and_downgrades(tmp_path: Path) -> None:
@@ -1416,3 +1422,89 @@ def test_0027_spells_each_archived_manifest_as_its_raw_cid_and_downgrades(tmp_pa
         con.execute(f"UPDATE archives SET manifest = '{Cid.from_parts('drisl', 'blake3', cid.digest)}' WHERE id = 1")
     with pytest.raises(RuntimeError, match='archive 1 names a DASL manifest .* restore the database backup'):
         command.downgrade(cfg, '0026')
+
+
+HERDR_HARNESS = {
+    'executable': 'claude',
+    'headless': ['{prompt}'],
+    'interactive': ['--session-id', '{session_id}'],
+    'startup_dialogs': [['trust this folder', ['down', 'enter']]],
+    'busy_screens': ['Retrying in'],
+    'failed_turn_screens': None,
+    'queue_key': {'key': 'tab', 'pending': 'tab to queue message'},
+    'composer': '❯',
+}
+"""A stored harness table of 0.2, with every key that only the herdr runtime read."""
+
+
+def test_0034_drops_the_herdr_keys_of_the_stored_configs_and_moves_the_stopped_campaigns_off_herdr(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0033')
+    stopped = {
+        'runtime': 'herdr',
+        'roles': {'research': {'runtime': 'herdr'}, 'scout': {}},
+        'harness': {'c': HERDR_HARNESS},
+    }
+    active = {'runtime': 'herdr', 'harness': {'c': HERDR_HARNESS}}
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute(
+            "INSERT INTO campaigns (name, path, config, status) VALUES ('s', '/s', ?, 'stopped')", (dumps(stopped),)
+        )
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('a', '/a', ?)", (dumps(active),))
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('q', '/q', '{\"harness\": 3}')")
+    command.upgrade(cfg, '0034')
+    plain = {'executable': 'claude', 'headless': ['{prompt}']}
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert [loads(c) for (c,) in con.execute('SELECT config FROM campaigns ORDER BY id')] == [
+            {'runtime': 'subprocess', 'roles': {'research': {'runtime': None}, 'scout': {}}, 'harness': {'c': plain}},
+            {'runtime': 'herdr', 'harness': {'c': plain}},
+            {'harness': 3},
+        ], 'an active campaign keeps herdr, which session.on_herdr refuses before this revision runs'
+    command.downgrade(cfg, '0033')
+
+
+def test_a_database_with_work_on_herdr_is_not_migrated_until_that_work_moves_off_it(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    command.upgrade(alembic(path), '0033')
+    research_on_herdr = {'runtime': 'subprocess', 'roles': {'research': {'runtime': 'herdr'}}}
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        for name, status, config in (
+            ('stopped', 'stopped', {'runtime': 'herdr'}),
+            ('mixed', 'active', research_on_herdr),
+            ('fine', 'active', {'runtime': 'subprocess'}),
+            ('bare', 'active', {}),
+        ):
+            con.execute(
+                'INSERT INTO campaigns (name, path, config, status) VALUES (?, ?, ?, ?)',
+                (name, f'/{name}', dumps(config), status),
+            )
+        for runtime, state in (('herdr', 'running'), ('herdr', 'exited'), ('subprocess', 'running')):
+            con.execute(
+                "INSERT INTO agent_sessions (kind, campaign_id, runtime, state) VALUES ('implementer', 3, ?, ?)",
+                (runtime, state),
+            )
+    engine = create_engine(f'sqlite:///{path}')
+    with pytest.raises(SchemaMismatch) as refused:
+        migrate(engine, backups=0, daemon=None)
+    assert str(refused.value) == (
+        f'{path} has work on the herdr runtime, which piloop 0.3.0 removes: campaign mixed, agent_session#1: with'
+        ' piloop 0.2 (`uv tool install \'piloop==0.2.*\'`), set runtime = "subprocess" in the piloop.toml of each such'
+        ' campaign and run `piloop init <repo>`, let its herdr agents end or `piloop agent cancel` them, then install'
+        ' this piloop again and run `piloop upgrade` (https://piloop.autoresearch.inc/guides/upgrading#the-herdr-runtime)'
+    )
+    assert str(schema_mismatch(path, None, System.HUMAN)) == str(refused.value), 'every command says it'
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("UPDATE campaigns SET config = '{}' WHERE name = 'mixed'")
+        con.execute("UPDATE agent_sessions SET state = 'exited' WHERE id = 1")
+    migrate(engine, backups=0, daemon=None)
+    assert revision(path) == revisions()[-1]
+    engine.dispose()
+
+
+def test_a_database_from_before_agent_sessions_is_not_checked_for_herdr(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    command.upgrade(alembic(path), '0017')
+    assert session.on_herdr(path) is None

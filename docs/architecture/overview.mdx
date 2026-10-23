@@ -73,7 +73,7 @@ flowchart LR
         launcher["Launcher"]
         worker["Executor: workers<br/>a worker on leases"]
     end
-    runtime{{"Runtime<br/>subprocess, herdr or a package's"}}
+    runtime{{"Runtime<br/>subprocess or a package's"}}
     subgraph agents["Agents: a harness in a git worktree"]
         implementer["implementer"]
         research["research"]
@@ -112,8 +112,8 @@ flowchart LR
   2. [Leases](/architecture/leases) are a library that an executor can use to hand jobs to workers.
   3. The built-in executor, `workers`, runs one worker on leases, in `piloop serve`. The worker makes the worktree,
      runs the agent or the evaluate command, and reports.
-- **The [runtime](/concepts/roles#runtimes)** is where an agent process runs: a background process by default, or a
-  [Herdr](https://herdr.dev) pane that you can watch and steer. A package can add others.
+- **The [runtime](/concepts/roles#runtimes)** is where an agent process runs: a background process by default. A package can
+  add others.
 - **The harness** is the coding agent CLI: Claude Code, Codex or pi. A `[harness.<name>]` table says how to start it.
 - **The agents** each work in their own git worktree. An implementer tries one idea. Research, the watchdog and the roles that
   you define are [sweeps](/concepts/roles) that read the state of the campaign and write ideas, seeds and comments.

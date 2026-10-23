@@ -9,8 +9,7 @@ from piloop import settings as settings_module
 from piloop.actor import Agent, System
 from piloop.deprecated import PiloopDeprecationWarning
 from piloop.harnesses import DEFAULT_HARNESSES, SESSION_ENV
-from piloop.plugins.runtime.herdr import HerdrSettings
-from piloop.settings import UNDER_TEST_ENV, Settings, StorageSettings, env_names, expand_env
+from piloop.settings import UNDER_TEST_ENV, Settings, StorageSettings, env_names, expand_env, runtime_settings
 
 
 def test_the_test_session_runs_in_a_temporary_home() -> None:
@@ -87,21 +86,6 @@ def test_an_env_placeholder_is_the_variable_or_its_default_in_the_home(monkeypat
     assert env_names(glob + ' {env:A_DIR:other}') == ['A_DIR', 'UNSET', 'EMPTY']
 
 
-def test_herdr_keys_of_config_toml_still_load_and_are_the_herdr_runtime_s(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``config.toml`` held the Herdr settings as top-level keys while they were core settings."""
-    (tmp_path / 'config.toml').write_text('tick_seconds = 1\nherdr_session = "mine"\nherdr_cli_timeout_seconds = 5\n')
-    monkeypatch.setenv('PILOOP_HOME', str(tmp_path))
-    with pytest.warns(PiloopDeprecationWarning, match=r'herdr_\w+ in config.toml is deprecated'):
-        core, herdr = Settings(), HerdrSettings()
-    assert core.tick_seconds == 1
-    assert (herdr.session, herdr.cli_timeout_seconds) == ('mine', 5)
-    (tmp_path / 'config.toml').write_text('[runtimes.herdr]\nsession = "theirs"\n')
-    monkeypatch.setenv('PILOOP_HERDR_CLI_TIMEOUT_SECONDS', '7')
-    assert (HerdrSettings().session, HerdrSettings().cli_timeout_seconds) == ('theirs', 7), 'the environment wins'
-
-
 def test_the_storage_backend_of_config_toml_is_the_remote_of_a_cached_cas(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -137,11 +121,11 @@ def test_a_runtimes_value_that_is_no_table_of_tables_is_refused_and_gives_the_ru
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv('PILOOP_HOME', str(tmp_path))
-    for text in ('runtimes = 3\nherdr_session = "mine"\n', '[runtimes]\nherdr = 3\n'):
+    for text in ('runtimes = 3\n', '[runtimes]\nnice = 3\n'):
         (tmp_path / 'config.toml').write_text(text)
         with pytest.raises(ValidationError, match='runtimes'):
             Settings()
-        assert HerdrSettings().session == 'piloop', text
+        assert runtime_settings('nice') == {}, text
 
 
 def test_the_signature_of_an_implementer_from_before_0_2_0_is_its_new_signature(

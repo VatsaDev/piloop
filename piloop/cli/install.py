@@ -93,8 +93,8 @@ def doctor_cmd() -> None:
     """Check the install without writing anything, and say how to fix each failure.
 
     It notes a newer piloop at the source of the CLI, and checks that the daemon runs the installed code, the database
-    is at head, each piloop.toml loads, the MCP servers can start, the harnesses are on PATH and have the skills of
-    this CLI, and Herdr answers. The commands it names use PILOOP_CLI.
+    is at head, each piloop.toml loads, the MCP servers can start, and the harnesses are on PATH and have the skills
+    of this CLI. The commands it names use PILOOP_CLI.
     """
     results = doctor_module.checks(common.settings)
     common.console.print('\n'.join(doctor_module.report(results)), markup=False, highlight=False, soft_wrap=True)

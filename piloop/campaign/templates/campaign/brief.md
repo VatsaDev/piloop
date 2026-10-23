@@ -37,7 +37,7 @@ the same idea again and tells an implementer where to start.
 
 ## 7. Harnesses and models
 
-Which coding agents run the implementers and which run research. The runtime: background processes (`subprocess`, the default) or Herdr panes.
+Which coding agents run the implementers and which run research. The runtime: background processes (`subprocess`, the default) or a package's runtime.
 
 ## 8. Escalation
 

@@ -1,7 +1,8 @@
-import json
 import re
 import shutil
+import signal
 import sqlite3
+import subprocess
 import threading
 import time
 from collections import Counter
@@ -87,7 +88,6 @@ from piloop.plugins.executor.kit.leases import SERVE
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.runtime.contract import Handle
 from piloop.plugins.trigger.low_water import LowWaterTrigger
-from piloop.reports.overview import SILENT_SECONDS
 from piloop.scoring.ledger import current_evaluator, due, head, import_reference, request_remeasure
 from tests.conftest import (
     HARNESS_APPEND,
@@ -1141,10 +1141,11 @@ def test_a_stop_after_the_implementer_left_its_finding_scores_its_run_on_the_nex
         assert s.get_one(Run, 1).scoring is False
 
 
-def test_reap_closes_the_herdr_tab_of_an_agent_that_no_executor_adopts(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, herdr_log: Path
+def test_reap_kills_an_agent_that_no_executor_adopts(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """A running agent that a previous daemon left with no job (no lease, no worktree) outlives it: the reap kills it."""
+    agent = subprocess.Popen(['sleep', '60'], start_new_session=True)
     with db.session() as s:
         s.add(
             AgentSession(
@@ -1152,8 +1153,13 @@ def test_reap_closes_the_herdr_tab_of_an_agent_that_no_executor_adopts(
                 campaign_id=campaign.id,
                 harness='pi',
                 model='m',
-                runtime='herdr',
-                handle={'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': 'implementer-1'},
+                runtime='subprocess',
+                handle={
+                    'pid': agent.pid,
+                    'start_time': proc.started(agent.pid),
+                    'log_dir': str(tmp_path),
+                    'token': 't',
+                },
                 state=AgentSessionState.RUNNING,
                 log_dir='x',
             )
@@ -1163,9 +1169,7 @@ def test_reap_closes_the_herdr_tab_of_an_agent_that_no_executor_adopts(
     scheduler = Scheduler(db, controller, Tracer(None), tmp_path)
     scheduler.reap()
     scheduler.stop(timeout=5)
-    assert [json.loads(line) for line in herdr_log.read_text().splitlines()] == [
-        ['--session', 'piloop', 'tab', 'close', 'w7:t2']
-    ]
+    assert agent.wait(timeout=5) == -signal.SIGKILL
     with db.session() as s:
         assert s.get_one(AgentSession, 1).state is AgentSessionState.KILLED
 
@@ -1655,7 +1659,7 @@ def test_stop_waits_for_a_sweep_start_in_flight_then_kills_it(
 
 
 class PromptingRuntime(ScriptRuntime):
-    """A subprocess runtime with a prompt channel that records what the daemon sends, in place of a Herdr pane."""
+    """A subprocess runtime with a prompt channel that records what the daemon sends."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -2234,50 +2238,6 @@ def test_a_cancelled_request_never_launches_and_a_cancelled_sweep_is_ended(
     scheduler.stop(timeout=5)
 
 
-class BusyRuntime(ScriptRuntime):
-    """A subprocess runtime whose implementer has a job in flight, or whose jobs it cannot report (``error``)."""
-
-    def __init__(self, error: str | None = None) -> None:
-        super().__init__()
-        self.error = error
-
-    def jobs(self, handle: Handle) -> list[str]:
-        if self.error is not None:
-            raise RuntimeError(self.error)
-        return ['4242 python train.py']
-
-
-def quiet_for_over_an_hour(db: Database, campaign: Campaign) -> None:
-    running_agent_session(db, campaign, 'train')
-    with db.session() as s:
-        s.get_one(Run, 1).started_at = utcnow() - timedelta(seconds=SILENT_SECONDS + 60)
-        s.commit()
-
-
-def test_an_implementer_silent_while_its_jobs_run_requests_an_incident_sweep(
-    db: Database, campaign: Campaign, tmp_path: Path
-) -> None:
-    quiet_for_over_an_hour(db, campaign)
-    scheduler = make_scheduler(db, BusyRuntime(), tmp_path)
-    scheduler.tick()
-    with db.session() as s:
-        [watchdog] = s.scalars(select(AgentSession).where(AgentSession.kind == WATCHDOG)).all()
-        assert watchdog.reason == 'anomaly: agent_session#1 silent while its jobs run'
-    scheduler.stop(timeout=5)
-
-
-def test_jobs_the_runtime_cannot_report_are_traced_and_page_nobody(
-    db: Database, campaign: Campaign, tmp_path: Path, tracer: Tracer, spans: InMemorySpanExporter
-) -> None:
-    quiet_for_over_an_hour(db, campaign)
-    scheduler = make_scheduler(db, BusyRuntime('server_not_running: herdr is down'), tmp_path, tracer)
-    assert scheduler.tick() == []
-    failed = span_named(spans, 'agent_session.jobs_failed').attributes
-    assert dict(failed or {}) == {'agent_session': 1, 'error': 'server_not_running: herdr is down'}
-    with db.session() as s:
-        assert s.scalars(select(AgentSession).where(AgentSession.kind == WATCHDOG)).all() == []
-
-
 def died_at_startup(db: Database, campaign: Campaign, kind: RoleName, minutes_ago: float = 0) -> AgentSessionId:
     """Add a killed agent row and the launcher's ``anomaly.startup`` event, ``minutes_ago`` minutes ago."""
     with db.session() as s:
@@ -2291,7 +2251,7 @@ def died_at_startup(db: Database, campaign: Campaign, kind: RoleName, minutes_ag
             harness='script',
             run=None,
             seconds=35.0,
-            error=f'HerdrError: prompt_lost: {kind}-{agent_session.id} did not start working\nIts screen ended with:\n> brief',
+            error=f'FileNotFoundError: {kind}-{agent_session.id}: no such harness',
         )
         s.add(
             Event(
@@ -2334,7 +2294,7 @@ def test_startup_deaths_pause_launches_and_escalate_until_they_age_out(
     assert escalation.body == IsStr(
         regex=r'Launches paused: 4 agents died at startup in the last 10 minutes\. Load average [\d.]+ / [\d.]+ / [\d.]+'
         rf' on \d+ CPUs when launches paused\..*\n- agent_session#\d+ \(research on script\): .*\n- agent_session#{died[0]} \(watchdog on script\):'
-        rf' HerdrError: prompt_lost: watchdog-{died[0]} did not start working\nIts screen ended with:\n> brief\n'
+        rf' FileNotFoundError: watchdog-{died[0]}: no such harness\n'
         rf'- agent_session#{died[1]} .*',
         regex_flags=re.DOTALL,
     )

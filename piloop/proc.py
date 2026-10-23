@@ -83,7 +83,7 @@ def environment(pid: int) -> dict[str, str] | None:
 class Inherited:
     """The children that a process already had when it began: an in-place restart (``exec``) hands them over.
 
-    ``piloop restart`` execs the daemon while its threads still wait on subprocesses (``herdr agent wait``, ``git``).
+    ``piloop restart`` execs the daemon while its threads still wait on subprocesses (an agent's turn, ``git``).
     They stay children of the pid, but the new program has no ``Popen`` for them, so each one that exits stays a zombie
     until the pid exits: the campaign build's daemon had 26 after two restarts. ``reap`` waits for the ones that have
     exited, and only for these pids, so it never takes the exit status of a child that a ``Popen`` of this program owns.

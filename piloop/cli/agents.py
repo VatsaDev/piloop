@@ -3,21 +3,20 @@
 from typing import Annotated
 
 import cyclopts
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.agents import results
 from piloop.campaign.stop import CANCELLABLE, Ending, request_cancel
 from piloop.cli import common
 from piloop.cli.common import HARNESS_HELP, CampaignRef
-from piloop.config import TRANSCRIPT, config_of
+from piloop.config import config_of
 from piloop.db.events import has, latest
-from piloop.db.models import OPEN_RUNS, AgentSession, AgentSessionState, Event, Run, TargetKind
+from piloop.db.models import OPEN_RUNS, AgentSession, Event, Run, TargetKind
 from piloop.db.session import Database
 from piloop.harnesses import MessageFormat, render_messages
 from piloop.ids import AgentSessionId, CommentId, RoleName, RunId, TargetRef
-from piloop.plugins.runtime.contract import MESSAGES_ENV, Handle, NotAttachable, Runtime, RuntimeFailure, take
-from piloop.runtime.factory import handle_for, runtime_for
+from piloop.plugins.runtime.contract import MESSAGES_ENV, take
+from piloop.reports.overview import agent_output
 
 agent_app = cyclopts.App(name='agent', help='Act on one agent.')
 run_app = cyclopts.App(name='run', help='Act on one run.')
@@ -116,33 +115,23 @@ def _outcome(agent_session_id: AgentSessionId, comment_id: CommentId) -> results
     return found[0] if found else None
 
 
+ATTACH_LINES = 40
+"""How many lines of the agent's output ``piloop attach`` prints."""
+
+
 def attach(agent_session_id: Annotated[AgentSessionId, cyclopts.Parameter(help='The id of the agent.')], /) -> None:
-    """Show a running agent in this terminal.
+    """Print the last lines that an agent wrote, running or ended.
 
-    The runtime of the agent defines how. When it cannot, the command says so and where to look instead.
+    An agent is a background process, with no terminal to type into: `piloop prompt` sends it a message.
     """
-    try:
-        runtime, handle, log_dir = _running(agent_session_id)
-        common.console.print(runtime.attach(handle))
-    except NotAttachable as e:
-        raise SystemExit(
-            f'agent_session#{agent_session_id}: {e}; once it ends, its transcript is {log_dir}/{TRANSCRIPT}'
-        ) from e
-    except RuntimeFailure as e:
-        raise SystemExit(str(e)) from e
-
-
-def _running(agent_session_id: AgentSessionId) -> tuple[Runtime, Handle, str | None]:
-    """Return the runtime, the handle and the log directory of a running agent."""
     with common.session() as s:
-        agent_session = s.scalars(
-            select(AgentSession).where(
-                AgentSession.id == agent_session_id, AgentSession.state == AgentSessionState.RUNNING
-            )
-        ).first()
+        agent_session = s.get(AgentSession, agent_session_id)
         if agent_session is None:
-            raise SystemExit(f'agent_session#{agent_session_id} is not running')
-        return runtime_for(s, agent_session, common.settings.home), handle_for(agent_session), agent_session.log_dir
+            raise SystemExit(f'no agent_session#{agent_session_id}')
+        output, state = agent_output(s, agent_session, ATTACH_LINES), agent_session.state
+    if not output:
+        raise SystemExit(f'agent_session#{agent_session_id} is {state} and has written nothing yet')
+    common.console.print('\n'.join(output), markup=False, highlight=False, soft_wrap=True)
 
 
 WrapUp = Annotated[

@@ -4,7 +4,6 @@ import re
 import shutil
 import threading
 from collections.abc import Iterable
-from datetime import datetime
 from pathlib import Path
 
 from git import Repo
@@ -226,14 +225,6 @@ def trailers(repo: Repo, sha: str, key: str) -> list[str]:
             folding = False
     values = (' '.join(part for part in parts if part) for parts in found)
     return [value for value in values if value]
-
-
-def head_time(path: Path) -> datetime | None:
-    """When HEAD of the checkout at ``path`` was committed. None when there is no checkout there."""
-    try:
-        return Repo(path).head.commit.committed_datetime
-    except NoSuchPathError, InvalidGitRepositoryError:
-        return None
 
 
 def changed(path: Path, ignore: list[str]) -> bool:

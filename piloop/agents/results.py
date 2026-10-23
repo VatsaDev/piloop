@@ -72,10 +72,7 @@ from piloop.settings import UNITS_DIR
 from piloop.store.tree import write_files
 
 STARTUP_SECONDS = 120
-"""An agent that ends sooner than this and leaves nothing did not start to work: a dialog, a crash, broken tools.
-
-Longer than the default Herdr ``startup_grace_seconds``: a Herdr agent that never starts its first turn is watched for
-the whole grace, and must still count as a failed start, not as a run that worked and left nothing."""
+"""An agent that ends sooner than this and leaves nothing did not start to work: a crash, broken tools, no quota."""
 NEVER_WORKED = f'it ended within {STARTUP_SECONDS}s and left nothing'
 """Why an agent that ended with no error did not start to work (``_never_worked``)."""
 
@@ -149,8 +146,7 @@ class PromptOutcome(EventModel):
     """What came of a prompt to an agent, on the agent.
 
     ``comment.queued`` once the agent's runtime holds the prompt, then ``comment.delivered`` once the agent read it.
-    ``comment.undelivered`` when it never did: the runtime refused it, or the agent ended before it read it. A runtime
-    that cannot tell when its agent reads (``Runtime.prompt`` without the queue of ``take``) leaves the prompt queued.
+    ``comment.undelivered`` when it never did: the runtime refused it, or the agent ended before it read it.
     """
 
     kind: Literal['comment.queued', 'comment.delivered', 'comment.undelivered']
@@ -550,14 +546,13 @@ def _never_worked(s: Session, w: AgentSession, report: AgentFinished) -> bool:
     """Return whether a started agent ended within ``STARTUP_SECONDS`` and left nothing behind.
 
     Nothing behind means no change to its checkout (``AgentFinished.changed``: no commit, no uncommitted change outside
-    the links) and no comment signed by it. Herdr reports some first-launch dialogs as idle, so such an agent looks
-    finished.
+    the links) and no comment signed by it.
 
     A run's work is a change to its worktree or a comment, so that decides for an agent with a run, whatever its
     harness and its tokens: an agent whose tools fail at launch still reads its brief and says that it is blocked.
     A sweep's work can be rows that no comment signs, so a sweep that spent tokens worked, and only a sweep whose
-    harness's usage is read is judged. The tokens can be unknown for a sweep that worked too: Herdr reports no
-    session for a harness without Herdr hooks.
+    harness's usage is read is judged. The tokens can be unknown for a sweep that worked too, when its session id
+    was not found.
     """
     if report.process.status is ExitStatus.TIMED_OUT or report.process.seconds >= STARTUP_SECONDS or report.changed:
         return False

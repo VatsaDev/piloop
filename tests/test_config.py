@@ -1,4 +1,5 @@
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -24,18 +25,27 @@ def test_load_precedence(campaign_path: Path, monkeypatch: pytest.MonkeyPatch) -
         {'script': 'test-model'},
     )
     assert [t.primary.name for t in cfg.all_tracks] == ['score'] and [m.name for m in cfg.metrics] == ['score', 'size']
-    assert (cfg.harness_for('script').headless, cfg.harness_for('script').startup_dialogs) == (['{prompt}'], [])
+    assert cfg.harness_for('script').headless == ['{prompt}']
     assert cfg.harness_for('pi') is DEFAULT_HARNESSES['pi']
-    override = {'executable': 'x', 'headless': ['{prompt}'], 'startup_dialogs': [['trust', ['down', 'enter']]]}
-    assert load_campaign_config(campaign_path, harness={'script': override}).harness_for('script').startup_dialogs == [
-        ('trust', ['down', 'enter'])
-    ]
+    override = {'executable': 'x', 'headless': ['{prompt}']}
+    assert load_campaign_config(campaign_path, harness={'script': override}).harness_for('script').executable == 'x'
 
     monkeypatch.setenv('PILOOP_CAMPAIGN_ROLES__IMPLEMENTER__MAX_CONCURRENT', '3')
-    monkeypatch.setenv('PILOOP_CAMPAIGN_RUNTIME', 'herdr')
+    monkeypatch.setenv('PILOOP_CAMPAIGN_EVALUATE_TIMEOUT', '9')
     cfg = load_campaign_config(campaign_path)
-    assert (cfg.roles.implementer.max_concurrent, cfg.runtime) == (3, 'herdr')
-    assert load_campaign_config(campaign_path, runtime=None).runtime == 'herdr'
+    assert (cfg.roles.implementer.max_concurrent, cfg.evaluate_timeout) == (3, 9)
+    assert load_campaign_config(campaign_path, evaluate_timeout=None).evaluate_timeout == 9
+
+
+def test_a_piloop_toml_on_the_removed_herdr_runtime_says_where_to_read_why(campaign_path: Path) -> None:
+    gone = re.escape(
+        'the herdr runtime is removed in piloop 0.3.0: write runtime = "subprocess", or delete the key'
+        ' (https://piloop.autoresearch.inc/guides/upgrading#the-herdr-runtime)'
+    )
+    with pytest.raises(ConfigError, match=f"  runtime = 'herdr': {gone}"):
+        load_campaign_config(campaign_path, runtime='herdr')
+    with pytest.raises(ConfigError, match=f"  roles.research.runtime = 'herdr': {gone}"):
+        load_campaign_config(campaign_path, roles={'research': {'runtime': 'herdr'}})
 
 
 def test_roles_are_typed_per_kind(campaign_path: Path) -> None:
@@ -178,14 +188,11 @@ def test_default_harnesses_are_entire_agents_and_say_where_their_session_id_come
     ), 'pi and claude are told their id; codex prints its own, which the subprocess runtime reads back'
     for name in ('pi', 'claude'):
         h = DEFAULT_HARNESSES[name]
-        assert '--session-id {session_id}' in ' '.join(h.interactive) and '--session-id {session_id}' in ' '.join(
-            h.headless
-        ), name
+        assert '--session-id {session_id}' in ' '.join(h.headless), name
     assert '--session-dir' not in DEFAULT_HARNESSES['pi'].headless, "entire looks in pi's own session store"
     with pytest.raises(ValueError, match=r'headless must pass \{session_id\} to the agent or session_id_pattern'):
-        Harness(executable='x', interactive=['{session_id}'], headless=['{prompt}'], entire_agent='pi')
-    interactive_only_by_herdr = Harness(executable='x', headless=['{prompt}', '{session_id}'], entire_agent='pi')
-    assert interactive_only_by_herdr.interactive == [], 'the Herdr runtime reports the id: no placeholder needed there'
+        Harness(executable='x', headless=['{prompt}'], entire_agent='pi')
+    Harness(executable='x', headless=['{prompt}', '{session_id}'], entire_agent='pi')
     Harness(executable='x', headless=['{prompt}'], entire_agent='codex', session_id_pattern='id=(\\w+)')
     Harness(executable='x', headless=['{prompt}'])
     for resume in (['{prompt}'], ['--resume', '{session_id}']):
@@ -198,12 +205,6 @@ def test_default_harnesses_are_entire_agents_and_say_where_their_session_id_come
     ], 'each continues the session of its headless run (verified live with pi 0.99.2, Claude Code, codex-cli 0.162.1)'
 
 
-def test_interactive_pi_keeps_the_users_extensions() -> None:
-    """Herdr detects pi's working/idle state through an extension the user installed."""
-    pi = DEFAULT_HARNESSES['pi']
-    assert '--no-extensions' not in pi.interactive and '--no-extensions' in pi.headless
-
-
 def test_default_harnesses_take_the_roles_effort_in_every_argv() -> None:
     thinking = {
         'pi': '--thinking {effort}',
@@ -212,10 +213,7 @@ def test_default_harnesses_take_the_roles_effort_in_every_argv() -> None:
     }
     for name, flags in thinking.items():
         h = DEFAULT_HARNESSES[name]
-        assert all(flags in ' '.join(argv) for argv in (h.interactive, h.headless, h.resume)), name
-    assert '-c check_for_update_on_startup=false' in ' '.join(DEFAULT_HARNESSES['codex'].interactive), (
-        'an update dialog before the prompt is a dialog nobody answers'
-    )
+        assert all(flags in ' '.join(argv) for argv in (h.headless, h.resume)), name
 
 
 def test_metric_roles_are_validated(campaign_path: Path) -> None:
@@ -340,13 +338,13 @@ def test_default_harnesses_keep_agents_out_of_the_harness_memory() -> None:
     off = {'claude': ['"autoMemoryEnabled":false'], 'codex': ['-c', 'features.memories=false']}
     for name, flags in off.items():
         h = DEFAULT_HARNESSES[name]
-        assert ' '.join(flags) in ' '.join(h.interactive) and ' '.join(flags) in ' '.join(h.headless), name
+        assert ' '.join(flags) in ' '.join(h.headless) and ' '.join(flags) in ' '.join(h.resume), name
 
 
 def test_default_claude_moves_a_long_bash_command_to_the_background() -> None:
     """Claude agents get a 5-minute default and a 10-minute maximum for a foreground Bash command, whatever the user's."""
     claude = DEFAULT_HARNESSES['claude']
-    for argv in (claude.interactive, claude.headless):
+    for argv in (claude.headless, claude.resume):
         settings = json.loads(argv[argv.index('--settings') + 1])
         assert settings['env'] == {'BASH_DEFAULT_TIMEOUT_MS': '300000', 'BASH_MAX_TIMEOUT_MS': '600000'}
 
@@ -358,7 +356,7 @@ def test_default_claude_takes_the_queued_messages_after_each_tool_call(tmp_path:
     """
     claude = DEFAULT_HARNESSES['claude']
     commands = set()
-    for argv in (claude.interactive, claude.headless, claude.resume):
+    for argv in (claude.headless, claude.resume):
         settings = json.loads(argv[argv.index('--settings') + 1])
         [entry] = settings['hooks']['PostToolUse']
         [hook] = entry['hooks']
@@ -378,7 +376,7 @@ def test_default_claude_takes_the_queued_messages_after_each_tool_call(tmp_path:
             check=False,
         )
 
-    assert (hook().returncode, hook().stdout) == (0, ''), 'no queue: a Herdr agent'
+    assert (hook().returncode, hook().stdout) == (0, ''), 'no queue named'
     assert (hook(PILOOP_MESSAGES=str(queue)).returncode, hook(PILOOP_MESSAGES=str(queue)).stdout) == (0, '')
     queue.write_text('"x"\n')
     assert hook(PILOOP_MESSAGES=str(queue)).stdout == 'took: agent messages --format claude-hook\n'
@@ -387,14 +385,13 @@ def test_default_claude_takes_the_queued_messages_after_each_tool_call(tmp_path:
 def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_triggers(campaign_path: Path) -> None:
     (campaign_path / 'reviewer.md').write_text('# Review\n')
     when = 'SELECT 1 FROM ideas WHERE campaign_id = :campaign AND created_at > :since'
-    good = {'prompt': 'reviewer.md', 'triggers': [{'kind': 'sql', 'when': when}], 'runtime': 'herdr'}
+    good = {'prompt': 'reviewer.md', 'triggers': [{'kind': 'sql', 'when': when}], 'runtime': 'subprocess'}
     cfg = load_campaign_config(campaign_path, roles={'reviewer': good})
     assert list(cfg.roles.all()) == ['implementer', 'watchdog', 'research', 'scout', 'reviewer']
     assert list(cfg.roles.sweeping()) == ['watchdog', 'research', 'scout', 'reviewer'], (
         'the implementer does runs, not sweeps'
     )
-    assert (cfg.role_runtime(RoleName('reviewer')), cfg.role_runtime(RoleName('research'))) == ('herdr', 'subprocess')
-    assert cfg.runtimes == {'herdr', 'subprocess'}
+    assert cfg.role_runtime(RoleName('reviewer')) == 'subprocess'
     assert CampaignConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the campaign row'
 
     def fails(roles: dict[str, object]) -> str:
@@ -477,25 +474,3 @@ def test_a_table_with_runs_defines_a_role_that_does_runs_with_the_implementer_de
     )
     assert 'roles.watchdog.runs = True: Input should be False' in fails({'watchdog': {'runs': True}})
     assert 'roles.implementer.runs = False: Input should be True' in fails({'implementer': {'runs': False}})
-
-
-def test_an_override_of_a_built_in_harness_keeps_the_screens_and_queue_key_of_its_executable(
-    campaign_path: Path,
-) -> None:
-    """A ``[harness.<name>]`` table replaces the built-in definition; what it leaves out of these keys is inherited."""
-    codex = {'executable': 'codex', 'headless': ['exec', '{prompt}']}
-    cfg = load_campaign_config(
-        campaign_path,
-        harness={'codex': codex, 'mine': codex | {'busy_screens': ['Thinking'], 'failed_turn_screens': []}},
-    )
-    built_in = DEFAULT_HARNESSES['codex']
-    assert cfg.harness_for('codex').screens == (
-        tuple(built_in.busy_screens or ()),
-        tuple(built_in.failed_turn_screens or ()),
-        built_in.queue_key,
-        built_in.composer,
-    ), 'an override that sets none of them'
-    assert cfg.harness_for('mine').screens == (('Thinking',), (), built_in.queue_key, built_in.composer), (
-        'what it sets wins, [] included'
-    )
-    assert DEFAULT_HARNESSES['pi'].screens == ((), (), None, None), 'an executable without any'

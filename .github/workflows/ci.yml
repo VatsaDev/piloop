@@ -60,7 +60,7 @@ jobs:
             sleep $((attempt * 10))
           done
           exit 1
-      - name: enwik8 example, headless (no Herdr on a runner)
+      - name: enwik8 example, headless
         env:
           PILOOP_CAMPAIGN_RUNTIME: subprocess
           COLUMNS: 200

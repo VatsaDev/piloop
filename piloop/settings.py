@@ -140,8 +140,8 @@ class Settings(BaseSettings):
     """``[storage]`` in ``config.toml``: where archived workspace files go."""
 
     runtimes: dict[str, dict[str, object]] = {}
-    """``[runtimes.<name>]`` in ``config.toml``: the settings of a runtime, which the runtime's own settings class
-    reads and checks (``piloop.plugins.runtime.herdr.HerdrSettings``, say)."""
+    """``[runtimes.<name>]`` in ``config.toml``: the settings of a runtime that a package adds, which it reads with
+    ``runtime_settings``."""
 
     @classmethod
     def settings_customise_sources(

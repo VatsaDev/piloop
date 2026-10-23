@@ -68,7 +68,7 @@ TRIGGER_GROUP, ROLE_GROUP, RUNTIME_GROUP = TRIGGERS.group, ROLES.group, RUNTIMES
 def recording(runtime: ScriptRuntime, kinds: list[str]) -> RuntimeFactory:
     """A factory that runs every agent in ``runtime`` and records the kind of runtime that was asked for."""
 
-    def make(kind: str, *, campaign: str, campaign_path: Path) -> Runtime:
+    def make(kind: str) -> Runtime:
         kinds.append(kind)
         return runtime
 
@@ -103,7 +103,7 @@ def decide(db: Database, campaign: Campaign, body: str) -> None:
 
 
 def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt_workdir_and_runtime(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, typed: None
 ) -> None:
     """A ``[roles.reviewer]`` table with a ``sql`` trigger: each new decision requests one reviewer.
 
@@ -116,7 +116,7 @@ def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt
         'prompt': 'reviewer.md',
         'triggers': [{'kind': 'sql', 'when': REVIEW}],
         'workdir': 'repo',
-        'runtime': 'herdr',
+        'runtime': 'typed',
         'harnesses': ['script'],
         'max_concurrent': 1,
     }
@@ -153,8 +153,8 @@ def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt
     assert not (tmp_path / 'agent_sessions' / '1' / 'worktree').exists()
     with db.session() as s:
         rows = s.scalars(select(AgentSession).where(AgentSession.kind == 'reviewer')).all()
-        assert [(w.state, w.runtime, w.harness) for w in rows] == [(AgentSessionState.EXITED, 'herdr', 'script')] * 2
-    assert 'herdr' in kinds
+        assert [(w.state, w.runtime, w.harness) for w in rows] == [(AgentSessionState.EXITED, 'typed', 'script')] * 2
+    assert 'typed' in kinds
 
 
 def test_a_role_adds_its_incident_prompt_to_an_incident_sweep_and_its_routine_prompt_to_any_other(
@@ -403,6 +403,14 @@ def installed(monkeypatch: pytest.MonkeyPatch, entries: list[EntryPoint]) -> Non
 
 
 @pytest.fixture
+def typed(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Install a package that adds only the ``typed`` runtime."""
+    installed(monkeypatch, [EntryPoint('typed', f'{PLUGIN}:Typed', RUNTIME_GROUP)])
+    yield
+    forget_loaded()
+
+
+@pytest.fixture
 def plugins(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     installed(monkeypatch, ENTRY_POINTS)
     yield
@@ -486,8 +494,7 @@ def test_a_package_role_takes_its_defaults_and_a_roles_value_that_is_not_a_table
         (EntryPoint('research', f'{PLUGIN}:Auditor', ROLE_GROUP), "'research' is a role already, from piloop "),
         (EntryPoint('typed', f'{PLUGIN}:NOT_A_RUNTIME', RUNTIME_GROUP), 'is not a piloop runtime class'),
         (EntryPoint('other', f'{PLUGIN}:Typed', RUNTIME_GROUP), "it needs kind = 'other'"),
-        (EntryPoint('unsure', f'{PLUGIN}:Unsure', RUNTIME_GROUP), 'and an invocation'),
-        (EntryPoint('herdr', f'{PLUGIN}:Typed', RUNTIME_GROUP), "'herdr' is a runtime already"),
+        (EntryPoint('subprocess', f'{PLUGIN}:Typed', RUNTIME_GROUP), "'subprocess' is a runtime already"),
     ],
 )
 def test_an_entry_point_of_the_wrong_kind_fails_with_its_name(

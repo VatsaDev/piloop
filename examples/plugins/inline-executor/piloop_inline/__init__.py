@@ -126,8 +126,7 @@ class InlineExecutor:
         try:
             with self.host.tracer.span('piloop.job', job=job.kind) as span:
                 if isinstance(job, AgentJob):
-                    path = self.site.clones.path(job.artifact)
-                    runtime = self.host.runtimes(job.runtime, campaign=job.campaign, campaign_path=path)
+                    runtime = self.host.runtimes(job.runtime)
                     running.runtime = runtime
                     report: AgentReport | EvaluationReport | None = run_agent(job, runtime, running, self.site, span)
                     running.steer = None  # the agent ended: a prompt from now on is undelivered

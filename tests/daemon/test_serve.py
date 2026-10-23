@@ -341,7 +341,7 @@ def test_the_service_unit_carries_the_settings_of_the_shell_and_no_other_variabl
     carried = {
         'PILOOP_SECRETS_COMMAND': "op inject -i '%h/keys'",
         'PILOOP_TICK_SECONDS': '0.5',
-        'PILOOP_HERDR_SESSION': 'my <session> & "co"',
+        'PILOOP_CLI': 'my <cli> & "co"',
         'PILOOP_CAMPAIGN_RUNTIME': 'subprocess',
         'OTEL_EXPORTER_OTLP_ENDPOINT': 'http://localhost:4318',
         'CLAUDE_CONFIG_DIR': '/home/me/claude work',
@@ -351,7 +351,7 @@ def test_the_service_unit_carries_the_settings_of_the_shell_and_no_other_variabl
         'PILOOP_ACTOR': 'orchestrator',
         'PILOOP_UNITS_FILE': '/home/me/units.json',
         'ANTHROPIC_API_KEY': 'sk-secret',
-        'HERDR_SOCKET_PATH': '/home/me/herdr.sock',
+        'TMUX': '/tmp/tmux-1000/default,1,0',
     }
     clear_settings_env(monkeypatch)
     for key, value in (carried | dropped).items():
@@ -364,7 +364,7 @@ def test_the_service_unit_carries_the_settings_of_the_shell_and_no_other_variabl
     )
     unit = service_unit(cfg, BUILT_IN, 'linux')
     assert 'Environment="PILOOP_SECRETS_COMMAND=op inject -i \'%%h/keys\'"' in unit
-    assert 'Environment="PILOOP_HERDR_SESSION=my <session> & \\"co\\""' in unit
+    assert 'Environment="PILOOP_CLI=my <cli> & \\"co\\""' in unit
     assert 'Environment="CODEX_HOME=/home/me/100%% codex"' in unit
     assert not any(key in unit for key in dropped)
 

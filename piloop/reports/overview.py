@@ -11,9 +11,8 @@ watchdog requests an incident sweep. An ``anomaly.reported`` event on the row of
 (see ``reported`` and ``assigned``). So each anomaly is investigated once, and a daemon restart does not repeat it.
 """
 
-import re
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -22,8 +21,6 @@ from statistics import median
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
-from piloop import deprecated, git
-from piloop.actor import Agent
 from piloop.agents.results import StartupAnomaly
 from piloop.campaign import inbox
 from piloop.campaign.anomaly import AnomalyKind, AnomalyReported
@@ -61,7 +58,7 @@ from piloop.ids import AgentSessionId, CampaignId, EvaluatorId, TargetKind, Targ
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import Files
 from piloop.reports.history import IDEAS_IN_HISTORY
-from piloop.runtime.factory import handle_for, runtime_for, view_of
+from piloop.runtime.factory import handle_for, runtime_for
 from piloop.scoring.ledger import (
     NOTE,
     baseline,
@@ -90,39 +87,18 @@ EVALS_IN_TREND = 5
 DETAIL_CHARS = 160
 LINKED_CHARS = 800
 """How much of each linked comment ``piloop inbox show`` prints under an item."""
-SILENT_SECONDS = 3600
-"""How long an implementer with jobs in flight can go without a comment or a commit before it is ``silent``.
-
-One hour allows several progress checks on a long job, and is a small part of ``[roles.implementer] timeout``.
-"""
-LIVE_LINES = 40
-"""How many extra screen lines to read when the session file of an agent has no text yet.
-
-The extra lines get past the input box and the status bar of the harness to the output above them.
-"""
-CHROME = re.compile(r'\s*([─━═]{3,}|[❯›](\s|$)|.*\besc to interrupt\b|Worked for \d)')
-"""A line that the harness draws, not output of the agent.
-
-It matches the rule of an input box (Claude Code, pi), the prompt (Claude Code ``❯``, Codex ``›``), the
-``esc to interrupt`` of a spinner and the ``Worked for 3m 2s`` of Codex. Everything from the last such line down is
-cut, which also removes the status bar under the prompt.
-"""
 
 
 INCIDENTS = frozenset(
     {
         AnomalyKind.RUN_FAILED,
         AnomalyKind.DEAD_AT_STARTUP,
-        AnomalyKind.SILENT,
     }
 )
 """Kinds that request an incident sweep. The progress review weighs the other kinds, which are costs, not failures.
 
 An anomaly of an agent that investigates incidents is not an incident (``Anomaly.investigator``).
 """
-
-type JobsProbe = Callable[[AgentSession], list[str]]
-"""Return the jobs that a running implementer has in flight (``Runtime.jobs``). Tests pass their own function."""
 
 
 @dataclass(frozen=True)
@@ -163,9 +139,7 @@ class Anomaly:
         return AnomalyReported(subject=self.ref, anomaly=self.kind, line=self.line(now))
 
 
-def overview(
-    s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime, jobs: JobsProbe, *, tools: bool = True
-) -> str:
+def overview(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime, *, tools: bool = True) -> str:
     """Render the overview as markdown, as of ``now``.
 
     ``tools`` adds the summary of tools and schema that an agent needs and a human does not.
@@ -182,7 +156,7 @@ def overview(
         *_now(s, campaign, cfg, now),
         *_candidates(s, campaign, cfg, now),
         '### Anomalies the daemon detected',
-        *_anomalies(anomalies(s, campaign, cfg, now, jobs), now),
+        *_anomalies(anomalies(s, campaign, cfg), now),
         *_comments(s, campaign, now),
         '### Recent events',
         _events(s, campaign, now),
@@ -324,26 +298,21 @@ def on(s: Session, w: AgentSession) -> str:
     return cell(w.reason or NONE)
 
 
-def agent_output(s: Session, w: AgentSession, campaign_path: Path, lines: int) -> list[str]:
+def agent_output(s: Session, w: AgentSession, lines: int) -> list[str]:
     """Return the last ``lines`` non-empty lines of output of the agent.
 
     The first choice is the text in the session file of the harness, found in the same way as its usage
-    (``UsageSpec``). If the harness has no usage spec, or the agent has written no text yet, the screen from the
-    runtime is used, without the lines that the harness draws. The last choice is the transcript saved when the agent
-    ended.
+    (``UsageSpec``). If the harness has no usage spec, or the agent has written no text yet, the output that the
+    runtime reads is used. The last choice is the transcript saved when the agent ended.
     """
     definition = harness_of(s, w)
     said = definition.usage.resolved.said(w.session_id, lines) if definition and definition.usage else []
-    return (
-        said
-        or above_chrome(_live_output(s, w, campaign_path, lines + LIVE_LINES))[-lines:]
-        or above_chrome(_transcript(w.log_dir))[-lines:]
-    )
+    return said or _filled(_live_output(w, lines))[-lines:] or _filled(_transcript(w.log_dir))[-lines:]
 
 
-def _live_output(s: Session, w: AgentSession, campaign_path: Path, lines: int) -> str:
+def _live_output(w: AgentSession, lines: int) -> str:
     try:
-        return runtime_for(s, w, campaign_path).read(handle_for(w), lines=lines)
+        return runtime_for(w).read(handle_for(w), lines=lines)
     except Exception:  # Not launched yet, runtime missing or agent gone: the transcript is the fallback.
         return ''
 
@@ -353,13 +322,9 @@ def _transcript(log_dir: str | None) -> str:
     return path.read_text(errors='replace') if path is not None and path.is_file() else ''
 
 
-def above_chrome(text: str) -> list[str]:
-    """Return the non-empty lines above the last ``CHROME`` line, without any other ``CHROME`` line."""
-    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
-    furniture = [i for i, line in enumerate(lines) if CHROME.match(line)]
-    if furniture:
-        lines = [line for line in lines[: furniture[-1]] if not CHROME.match(line)]
-    return lines
+def _filled(text: str) -> list[str]:
+    """Return the lines of ``text`` that are not blank, without trailing blanks."""
+    return [line.rstrip() for line in text.splitlines() if line.strip()]
 
 
 def queued_ideas(s: Session, campaign: Campaign) -> tuple[Sequence[Idea], Sequence[Idea]]:
@@ -420,14 +385,13 @@ def item_lines(s: Session, c: Comment, now: datetime) -> tuple[str, list[str]]:
     return title, lines
 
 
-def anomalies(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime, jobs: JobsProbe) -> list[Anomaly]:
-    """Return every anomaly of ``campaign``, newest first. ``jobs`` is called only for silent implementers."""
+def anomalies(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Anomaly]:
+    """Return every anomaly of ``campaign``, newest first."""
     found = [
         *_failed_runs(s, campaign),
         *_dead_at_startup(s, campaign, cfg),
         *_same_as_parent(s, campaign, cfg),
         *_idle_queue(s, campaign, cfg),
-        *_silent(s, campaign, now, jobs),
     ]
     return sorted(found, key=lambda a: a.at, reverse=True)
 
@@ -648,11 +612,9 @@ def _agents(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) 
     rows = s.scalars(
         select(AgentSession).where(AgentSession.campaign_id == campaign.id).order_by(AgentSession.id)
     ).all()
-    path = Path(campaign.path)
     live = [
-        f'  - {w.kind}#{w.id} {w.harness or NONE}/{w.model or NONE} {age(w.started_at, now)}'
-        f'{f", {view}" if (view := view_of(w)) else ""}, on {on(s, w)}: '
-        + (cell(output[-1]) if (output := agent_output(s, w, path, 1)) else NONE)
+        f'  - {w.kind}#{w.id} {w.harness or NONE}/{w.model or NONE} {age(w.started_at, now)}, on {on(s, w)}: '
+        + (cell(output[-1]) if (output := agent_output(s, w, 1)) else NONE)
         for w in rows
         if w.state in LIVE
     ]
@@ -888,48 +850,6 @@ def _idle_queue(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Ano
     )
     detail = f'{free} free implementer slots and no runnable idea; {sweeps}'
     return [Anomaly(AnomalyKind.IDLE_QUEUE, TargetRef(TargetKind.CAMPAIGN, campaign.id), max(moments), detail)]
-
-
-def _silent(s: Session, campaign: Campaign, now: datetime, jobs: JobsProbe) -> list[Anomaly]:
-    """Find running implementers with jobs in flight that have not commented or committed for ``SILENT_SECONDS``.
-
-    The silence starts at the latest of: the start of the run, a comment signed ``implementer#<id>`` or ``run#<id>``, and
-    the HEAD commit of its worktree. The commits of an implementer become candidates only when it ends, so the worktree is
-    checked directly. The runtime is asked for jobs last, and only for implementers that are already silent. Each implementer
-    gets one anomaly. If an implementer goes silent again later, the progress review notices it.
-    """
-    limit = timedelta(seconds=SILENT_SECONDS)
-    rows = s.scalars(
-        select(AgentSession)
-        .where(
-            AgentSession.campaign_id == campaign.id,
-            AgentSession.state == AgentSessionState.RUNNING,
-            AgentSession.run_id.is_not(None),
-        )
-        .order_by(AgentSession.id)
-    )
-    found: list[Anomaly] = []
-    for agent_session in rows:
-        run = s.get_one(Run, agent_session.run_id)
-        signed = (*deprecated.signatures(Agent(role=agent_session.kind, session=agent_session.id)), f'run#{run.id}')
-        moments = [
-            ('its run started', run.started_at or agent_session.started_at),
-            ('its last comment', s.scalar(select(func.max(Comment.created_at)).where(Comment.author.in_(signed)))),
-            ('its last commit', git.head_time(Path(run.log_dir) / 'worktree') if run.log_dir else None),
-        ]
-        what, last = max(((w, m) for w, m in moments if m is not None), key=lambda p: p[1])
-        if now - last <= limit:
-            continue
-        running = jobs(agent_session)
-        if not running:
-            continue
-        detail = (
-            f'run#{run.id} idea#{run.idea_id}: no comment or commit for {age(last, now)} ({what});'
-            f' {len(running)} jobs in flight, e.g. {cell(running[0], DETAIL_CHARS)}'
-        )
-        ref = TargetRef(TargetKind.AGENT_SESSION, agent_session.id)
-        found.append(Anomaly(AnomalyKind.SILENT, ref, last + limit, detail))
-    return found
 
 
 def defining(cfg: CampaignConfig) -> list[str]:

@@ -15,7 +15,6 @@ from piloop.plugins.runtime import subprocess as subprocess_runtime
 from piloop.plugins.runtime.contract import (
     AgentSpec,
     AgentStart,
-    AgentStatus,
     ExitStatus,
     Handle,
     NotSteerable,
@@ -42,11 +41,8 @@ def spec(
     resume: list[str] | None = None,
 ) -> AgentSpec:
     return AgentSpec(
-        name='w1',
-        label='w1',
         executable=str(executable),
         args=list(args),
-        prompt='the brief',
         cwd=tmp_path,
         log_dir=tmp_path / 'logs',
         env=env or {},
@@ -72,7 +68,7 @@ def test_runs_to_completion_and_captures_output(tmp_path: Path) -> None:
     outcome = rt.wait(handle, timeout=10)
     assert (outcome.status, outcome.exit_code, outcome.error) == (ExitStatus.EXITED, 3, 'agent exit 3')
     assert outcome.seconds == IsPositive()
-    assert rt.status(handle) is AgentStatus.EXITED
+    assert not rt._alive(handle)
     assert rt.read(handle) == f'prompt=the brief var=yes token={handle.data["token"]}'
     assert (tmp_path / 'logs' / 'agent_session.stderr').read_text() == 'oops\n'
 
@@ -81,7 +77,7 @@ def test_timeout_kills_the_whole_process_group(tmp_path: Path) -> None:
     rt = SubprocessRuntime()
     exe = script(tmp_path, 'sleep 30 &\necho $! > child.pid\nwait')
     handle = rt.start(spec(tmp_path, exe))
-    assert rt.status(handle) is AgentStatus.WORKING
+    assert rt._alive(handle)
     outcome = rt.wait(handle, timeout=0.5)
     assert (outcome.status, outcome.exit_code, outcome.error) == (
         ExitStatus.TIMED_OUT,
@@ -189,15 +185,7 @@ def test_a_harness_without_resume_arguments_takes_no_message(tmp_path: Path) -> 
         rt.prompt(handle, 'hi')
     rt.kill(handle)
     rt.kill(handle)
-    assert rt.status(handle) is AgentStatus.EXITED
-
-
-def test_no_jobs_are_reported(tmp_path: Path) -> None:
-    """A one-shot process is not watched for what it leaves running, so no agent of it is ever ``silent``."""
-    rt = SubprocessRuntime()
-    handle = rt.start(spec(tmp_path, script(tmp_path, 'sleep 5 &\nwait')))
-    assert rt.jobs(handle) == []
-    rt.kill(handle)
+    assert not rt._alive(handle)
 
 
 def test_rehydrated_handle_is_observable_without_an_exit_code(tmp_path: Path) -> None:
@@ -205,10 +193,10 @@ def test_rehydrated_handle_is_observable_without_an_exit_code(tmp_path: Path) ->
     handle = starter.start(spec(tmp_path, script(tmp_path, 'sleep 5')))
     other = SubprocessRuntime()  # another process would rebuild the handle from the database
     rehydrated = Handle(handle.runtime, {k: v for k, v in handle.data.items() if k != 'token'})  # a row from before it
-    assert other.status(rehydrated) is AgentStatus.WORKING
+    assert other._alive(rehydrated)
     other.kill(rehydrated)
     starter.wait(handle, timeout=5)
-    assert other.status(rehydrated) is AgentStatus.EXITED
+    assert not other._alive(rehydrated)
     assert other.wait(rehydrated, timeout=1).exit_code is None
     assert other.read(Handle('subprocess', {**handle.data, 'log_dir': str(tmp_path / 'nope')})) == ''
 
@@ -218,7 +206,7 @@ def test_reused_pid_is_not_mistaken_for_the_implementer(tmp_path: Path) -> None:
     handle = rt.start(spec(tmp_path, script(tmp_path, 'true')))
     rt.wait(handle, timeout=5)
     impostor = Handle('subprocess', {**handle.data, 'pid': os.getpid(), 'start_time': -1.0})
-    assert SubprocessRuntime().status(impostor) is AgentStatus.EXITED
+    assert not SubprocessRuntime()._alive(impostor)
 
 
 def test_kill_tolerates_a_vanished_group(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -261,7 +249,7 @@ sleep 1
 
 
 def test_a_message_waits_for_the_turn_to_end_then_resumes_the_session_with_it(tmp_path: Path) -> None:
-    """The subprocess runtime queues as Herdr does: nothing reaches the turn in progress. When the process exits,
+    """The subprocess runtime queues a message: nothing reaches the turn in progress. When the process exits,
     the harness runs again with ``resume_args``: the same session, the queued messages as its prompt."""
     rt = SubprocessRuntime()
     exe = script(tmp_path, TURNS)
@@ -319,12 +307,12 @@ def test_a_resumed_turn_is_the_one_kill_and_status_reach_from_any_instance(tmp_p
         time.sleep(0.05)
     assert rt._resume(handle), 'the launcher filled in the minted session id'
     elsewhere = SubprocessRuntime()
-    assert elsewhere.status(handle) is AgentStatus.WORKING, 'the resumed process, from agent_session.current'
+    assert elsewhere._alive(handle), 'the resumed process, from agent_session.current'
     logs = tmp_path / 'logs'
     (logs / 'agent_session.current').rename(logs / 'worker.current')
-    assert elsewhere.status(handle) is AgentStatus.WORKING, 'its 0.1.0 name, from a daemon before the upgrade'
+    assert elsewhere._alive(handle), 'its 0.1.0 name, from a daemon before the upgrade'
     elsewhere.kill(handle)
-    assert elsewhere.status(handle) is AgentStatus.EXITED and rt.status(handle) is AgentStatus.EXITED
+    assert not elsewhere._alive(handle) and not rt._alive(handle)
 
 
 def test_queued_messages_stay_when_the_turn_failed_or_the_session_is_unknown_or_another_instance_waits(
@@ -424,24 +412,17 @@ def test_a_start_that_fails_after_the_spawn_kills_and_waits_for_the_process(
 def test_a_start_is_a_spec_once_the_worker_fills_in_where_it_runs(tmp_path: Path) -> None:
     """``AgentStart`` names no place of the machine that made it: ``at`` fills ``{cwd}`` and ``{log_dir}``."""
     start = AgentStart(
-        name='w1',
-        label='w1',
         executable='pi',
         args=['--log', '{log_dir}/pi.log', 'Your brief is in {log_dir}/brief.md'],
-        prompt='Your brief is in {log_dir}/brief.md',
         env={'PILOOP_ACTOR': 'implementer#1'},
-        busy_screens=('busy',),
         session_id_pattern='id=(\\S+)',
         resume_args=['--cd', '{cwd}', '{prompt}'],
     )
     spec = start.at(tmp_path / 'wt', tmp_path / 'logs', {'PILOOP_HOME': str(tmp_path)})
     assert spec.args == ['--log', f'{tmp_path}/logs/pi.log', f'Your brief is in {tmp_path}/logs/brief.md']
-    assert (spec.prompt, spec.resume_args) == (
-        f'Your brief is in {tmp_path}/logs/brief.md',
-        ['--cd', f'{tmp_path}/wt', '{prompt}'],
-    )
+    assert spec.resume_args == ['--cd', f'{tmp_path}/wt', '{prompt}']
     assert spec.env == {'PILOOP_ACTOR': 'implementer#1', 'PILOOP_HOME': str(tmp_path)}
-    filled = {'args', 'prompt', 'resume_args', 'env'}
+    filled = {'args', 'resume_args', 'env'}
     assert {f.name: getattr(spec, f.name) for f in fields(AgentStart) if f.name not in filled} == {
         f.name: getattr(start, f.name) for f in fields(AgentStart) if f.name not in filled
     }, 'every other field of the start, as it is'

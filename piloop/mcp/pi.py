@@ -5,9 +5,8 @@ agent's log directory (with variable names only), and loads the adapter on that 
 the adapter reads that file and nothing else.
 
 Only an argv that turns pi's own extensions off can take servers. With them on, a user who installed the adapter gets
-it twice (and pi does not start), and pi's built-in MCP loads the user's ``mcp.json``. piloop's headless pi turns the
-extensions off. The interactive pi (Herdr runtime) keeps the user's extensions, because Herdr reads pi's state
-through one of them.
+it twice (and pi does not start), and pi's built-in MCP loads the user's ``mcp.json``. piloop's pi turns the
+extensions off.
 
 API keys are ``${NAME}`` references in the headers and in a stdio server's env. The adapter expands them from pi's
 environment.

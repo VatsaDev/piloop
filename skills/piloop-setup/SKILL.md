@@ -22,14 +22,6 @@ Run each check yourself:
   `curl -fsSL https://raw.githubusercontent.com/hiloopai/piloop/main/install.sh | sh`, then retry.
 - `git config user.email`. The baseline commit needs a git identity.
 - `uv --version`.
-- Herdr is optional. By default (`runtime = "subprocess"`), every agent is a background process, and `piloop watch`
-  shows what it printed. Ask the human if they want to see every agent in a terminal pane and steer it with
-  `piloop prompt`. Only then, install [Herdr](https://herdr.dev), set `runtime = "herdr"` in step 3, and check it:
-  - `herdr workspace list`. Herdr answers.
-  - `herdr integration status`. Herdr tells a working agent from an idle one through a hook that it installs per
-    harness. Every harness that the campaign enables must show `current`.
-  - To fix one, run `herdr integration install pi|claude|codex`.
-  - A pi implementer without the hook stops with `prompt_lost`.
 - For each harness the human wants, check the version and the login:
   - pi: `pi --version`, and look at `~/.pi/agent/auth.json`.
   - Claude Code: `claude --version` and `claude auth status`.
@@ -80,8 +72,7 @@ Topics to cover:
   hours or dollars). How many implementers the machine can run at the same time.
 - **Prior art and beliefs.** What the human tried, what they believe works, what result would surprise them.
 - **Harnesses and models.** Which ones are installed and logged in (from step 1). Which ones run implementers and which run
-  research. The runtime: `subprocess` (background processes, the default), or `herdr` when the human wants to see and
-  steer every agent in a pane.
+  research.
 - **Escalation policy.** What the human wants to be asked about (a new dependency, data changes, a cost above X), and
   what implementers decide alone.
 
@@ -215,8 +206,7 @@ scores from the new one.
 - `piloop status` prints the head, the running agents, the last candidates and the items in the human's inbox.
 - `piloop watch` shows the same, live, in the human's terminal.
 - `piloop sql -` runs the SQL statement piped in from a quoted heredoc (`<<'EOF'`).
-- Agents run as background processes. With `runtime = "herdr"`, they run as tabs in the workspace of this campaign
-  in the `piloop` Herdr session, and `piloop attach <agent_session_id>` focuses one.
+- Agents run as background processes. `piloop attach <agent_session_id>` prints the last lines that one wrote.
 - Every commit an implementer makes becomes a candidate (a commit whose tree is already a candidate is that candidate). The
   evaluate command measures it, unless the commit has a `Piloop-Eval: skip` trailer.
 - With `entire` installed, `entire checkpoint explain <id>` on the checkpoint of a session tells why a commit was made.

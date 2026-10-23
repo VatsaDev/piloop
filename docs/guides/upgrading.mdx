@@ -71,8 +71,6 @@ catches up with an upgrade that you already made.
   set. The check does not start the servers.
 - Every harness on your `PATH` has the skills of this CLI.
 - The harnesses that your campaigns use are on your `PATH`.
-- Each runtime that a campaign uses runs its own checks. For example, for `runtime = "herdr"`: Herdr is installed, the
-  piloop session answers, and Herdr's hooks are current for the harnesses of that campaign.
 - git on your `PATH` is 2.40 or later.
 
 Each failure says how to fix it, often with the command to run.
@@ -149,6 +147,28 @@ one. The [changelog](https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md) 
 [Deprecated keys and variables](#deprecated-keys-and-variables) lists those of 0.2.0.
 
 ## Upgrading to 0.3.0
+
+### The herdr runtime
+
+The `herdr` runtime is removed. Agents run on `subprocess`, as background processes. Before you upgrade, with piloop
+0.2, move each active campaign off herdr:
+
+1. In its `piloop.toml`, set `runtime = "subprocess"`, or delete the key. Do the same for each
+   `[roles.<name>] runtime`.
+2. Run `piloop init <repo>`.
+3. Let its herdr agents end, or end them with `piloop agent cancel <agent-session-id>`.
+
+While an active campaign or a live agent is on herdr, `piloop upgrade` refuses and says what to do. The stopped
+campaigns move to `subprocess` by themselves. A `piloop.toml` that still says `herdr` fails at `piloop init`, with a
+link to this section.
+
+- Delete `[runtimes.herdr]` from `config.toml`, and any `PILOOP_RUNTIMES__HERDR__<KEY>` variable: the daemon does not
+  start with them. Delete the `herdr_<key>` keys of `config.toml` too. The `PILOOP_HERDR_<KEY>` variables have no
+  effect.
+- Delete `interactive`, `startup_dialogs`, `busy_screens`, `failed_turn_screens`, `queue_key` and `composer` from
+  each `[harness.<name>]` table.
+- An agent has no terminal pane to read and type into. `piloop attach <agent-session-id>` prints its last lines, and
+  `piloop prompt` or `s` in `piloop watch` sends it a message.
 
 ### How a run ended
 
@@ -328,8 +348,6 @@ stored configs hold.
 These keys of `main` still work until 0.3.0, with a warning:
 
 - `{ kind = "scout" }` in `[roles.research] triggers`: delete it. The scout has its own `cron` trigger.
-- `herdr_<key>` in `config.toml`: write `<key>` in its `[runtimes.herdr]` table. The `PILOOP_HERDR_<KEY>` variables
-  do not change.
 - `[storage.remote]` in `config.toml`: write `[storage.backend]`.
 
 The plugin contracts of `main` changed, with no alias:

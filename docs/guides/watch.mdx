@@ -48,7 +48,7 @@ These keys work on the screen of a campaign. `?` and `q` also work on the list o
 | Panel | Rows | Main pane | Keys |
 |---|---|---|---|
 | [1] Inbox | The unacknowledged items, most urgent first, without the items that you wrote. | The item and its thread. | `a` acknowledge, `A` acknowledge every item shown, `r` reply |
-| [2] Agents | The running agents: `●` working, `○` idle, `◐` waiting on a dialog. | The agent, its task, and its last 60 lines of output. | `enter` bring it to the front, `s` steer |
+| [2] Agents | The starting and running agents. | The agent, its task, and its last 60 lines of output. | `s` steer |
 | [3] Ideas | Seeds, then proposed, ready, scheduled and parked ideas, and by priority within each status. | Hypothesis, plan, links, runs and comments. | `y` approve, `p` park, `x` reject, `+` `-` priority |
 | [4] Candidates | The candidates, newest first, then the imported references. The title shows the head after each keep as a sparkline. | Verdict and reason, metrics against the parent, summary. | none |
 
@@ -61,25 +61,6 @@ other.
 - **Reply** asks for the text and a priority (default 2). It writes a `decision` comment that replies to the first
   item of the thread. The orchestrator's next wait returns with it, and the orchestrator acknowledges it after it
   applies it.
-- **Bring to the front** does what the [runtime](/concepts/roles#runtimes) of the agent defines, for example it focuses the
-  agent's tab. When the runtime has no view of its own, a notification says where to look instead.
 - **Steer** queues text for the agent's next turn, as `piloop prompt` does.
 - **Approve, park and reject** ask why. Each one writes the status change and a `note` on the idea with the reason.
   A seed cannot be approved: research develops it into an idea first (`piloop idea develop`).
-
-## In Herdr
-
-By default, the agents run as background processes. To see every agent in a terminal pane, install
-[Herdr](https://herdr.dev) and set `runtime = "herdr"` in `piloop.toml`. Then piloop has its own Herdr session,
-`piloop`, with one workspace for each campaign. The first tab of a workspace is `home`: a shell on the left and
-`piloop watch <campaign>` on the right. Each agent gets its own tab, named after its role, its id and its idea:
-
-```text
-my-campaign
-  home                                shell │ piloop watch
-  implementer-12 idea#5 Stacking with a meta-learner…
-  research-7
-  watchdog-13
-```
-
-`piloop attach <agent-session-id>` opens an agent's tab from any terminal.

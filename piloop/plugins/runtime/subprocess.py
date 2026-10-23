@@ -1,4 +1,4 @@
-"""Agents as plain background processes: the default runtime. Herdr is the optional one with visible panes."""
+"""Agents as plain background processes: the built-in runtime."""
 
 import json
 import os
@@ -12,18 +12,15 @@ from typing import ClassVar
 from uuid import uuid4
 
 from piloop import deprecated
-from piloop.harnesses import Invocation, fill
+from piloop.harnesses import fill
 from piloop.plugins.runtime.contract import (
     MESSAGES_ENV,
     QUEUE,
     TAG_ENV,
     AgentExit,
     AgentSpec,
-    AgentStatus,
-    Check,
     ExitStatus,
     Handle,
-    NotAttachable,
     NotSteerable,
     put,
     take,
@@ -65,10 +62,8 @@ class SubprocessRuntime:
     """
 
     kind: ClassVar[str] = 'subprocess'
-    invocation: ClassVar[Invocation] = Invocation.HEADLESS
 
-    def __init__(self, campaign: str = '', campaign_path: Path | None = None) -> None:
-        """Take the same arguments as every runtime constructor. A child process needs neither of them."""
+    def __init__(self) -> None:
         self._procs: dict[int, subprocess.Popen[bytes]] = {}
         """The process of each agent's latest turn, by the pid of its first process (the handle's)."""
         self._specs: dict[int, AgentSpec] = {}
@@ -132,10 +127,6 @@ class SubprocessRuntime:
             ExitStatus.EXITED, time.monotonic() - started, rc, None if rc in (0, None) else f'agent exit {rc}'
         )
 
-    def status(self, handle: Handle) -> AgentStatus:
-        """A live process is working. A one-shot process is never idle."""
-        return AgentStatus.WORKING if self._alive(handle) else AgentStatus.EXITED
-
     def session_id(self, handle: Handle) -> str | None:
         """Return the first match of the spec's ``session_id_pattern`` in the captured stdout. None without a pattern.
 
@@ -155,10 +146,6 @@ class SubprocessRuntime:
             if not alive or time.monotonic() >= deadline:
                 return None
             time.sleep(POLL_SECONDS)
-
-    def jobs(self, handle: Handle) -> list[str]:
-        """Return no jobs: a one-shot process ends with its work. ``kill`` still ends what it left running."""
-        return []
 
     def prompt(self, handle: Handle, text: str) -> None:
         """Keeps the message in a queue, which a hook of the harness can take in the turn, or else the next turn takes.
@@ -182,24 +169,6 @@ class SubprocessRuntime:
         if not self._alive(handle):
             raise NotSteerable(f'subprocess agent pid {_pid(handle)} has ended')
         put(_log_dir(handle), text)
-
-    def focus(self, handle: Handle) -> str:
-        """Cannot: the agent is a background process without a terminal. Its output is in ``agent_session.stdout`` instead."""
-        raise NotAttachable(_elsewhere(handle))
-
-    def attach(self, handle: Handle) -> str:
-        """Cannot: the agent is a background process without a terminal. Its output is in ``agent_session.stdout`` instead."""
-        raise NotAttachable(_elsewhere(handle))
-
-    @classmethod
-    def view(cls, handle: Handle) -> str | None:
-        """None: a background process has no place to see it."""
-        return None
-
-    @classmethod
-    def checks(cls, executables: set[str]) -> list[Check]:
-        """None: a background process needs nothing more than its harness, which ``piloop doctor`` checks already."""
-        return []
 
     def _resume(self, handle: Handle) -> bool:
         """Start the agent's next turn with the queued messages. False when there is none to start.
@@ -286,11 +255,6 @@ def _spawn(spec: AgentSpec, args: list[str], mode: str, token: str) -> subproces
             env=child_env() | spec.env | {TAG_ENV: token, MESSAGES_ENV: str(spec.log_dir / QUEUE)},
             start_new_session=True,
         )
-
-
-def _elsewhere(handle: Handle) -> str:
-    """Say where the output of a background process is."""
-    return f'a background process has no terminal to show: read {_log_dir(handle) / STDOUT}'
 
 
 def _log_dir(handle: Handle) -> Path:

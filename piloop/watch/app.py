@@ -34,11 +34,9 @@ from piloop.campaign import inbox, ops
 from piloop.campaign.campaigns import find
 from piloop.campaign.ideas import reprioritise
 from piloop.config import config_of
-from piloop.db.models import AgentSession, AgentSessionState, Idea, IdeaStatus, utcnow
+from piloop.db.models import Idea, IdeaStatus, utcnow
 from piloop.db.session import Database
 from piloop.ids import AgentSessionId, CommentId, IdeaId
-from piloop.plugins.runtime.contract import Handle, NotAttachable, Runtime, RuntimeFailure
-from piloop.runtime.factory import handle_for, runtime_for
 from piloop.watch.panels import CAMPAIGN_COLUMNS, PANELS, Cell, Context, Item, Panel, campaigns, header
 
 POLL_SECONDS = 0.5
@@ -200,16 +198,9 @@ class InboxTable(PanelTable):
 
 
 class AgentsTable(PanelTable):
-    """Panel 2. ``enter`` brings the agent to the front of its runtime's view, and ``s`` steers it with a message."""
+    """Panel 2. ``s`` steers the agent with a message."""
 
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding('enter', 'focus', 'focus'),
-        Binding('s', 'steer', 'steer'),
-    ]
-
-    def action_focus(self) -> None:
-        if (key := self.key()) is not None:
-            self.campaign.say(focus(self.campaign.db, AgentSessionId(key), self.campaign.home))
+    BINDINGS: ClassVar[list[BindingType]] = [Binding('s', 'steer', 'steer')]
 
     def action_steer(self) -> None:
         if (key := self.key()) is None:
@@ -222,19 +213,6 @@ class AgentsTable(PanelTable):
         self.app.push_screen(Ask(f'steer agent_session#{key}: a message for its next turn'), send)
 
 
-def focus(db: Database, agent_session_id: AgentSessionId, home: Path) -> str:
-    """Bring a running agent to the front of its runtime's view, and return a note that says what happened."""
-    try:
-        runtime, handle = _running(db, agent_session_id, home, 'focus')
-        return f'agent_session#{agent_session_id}: {runtime.focus(handle)}'
-    except NotRunning as e:
-        return str(e)
-    except NotAttachable as e:
-        return f'agent_session#{agent_session_id}: {e}'
-    except RuntimeFailure as e:
-        return f'could not focus agent_session#{agent_session_id}: {e}'
-
-
 def steer(s: Session, agent_session_id: AgentSessionId, text: str, actor: Actor) -> str:
     """Queue a message for a running agent as ``piloop prompt`` does, and return a note that says so."""
     comment_id = queue_prompt(s, agent_session_id, text, actor.signature)
@@ -242,26 +220,6 @@ def steer(s: Session, agent_session_id: AgentSessionId, text: str, actor: Actor)
         return f'agent_session#{agent_session_id} is not running: nothing to steer'
     s.commit()
     return f'comment#{comment_id}: queued for agent_session#{agent_session_id}'
-
-
-class NotRunning(Exception):
-    """The agent is not running, so there is nothing to act on. The message says so."""
-
-
-def _running(db: Database, agent_session_id: AgentSessionId, home: Path, verb: str) -> tuple[Runtime, Handle]:
-    """Return the runtime and the handle of a running agent.
-
-    Raises:
-        NotRunning: the agent is not running.
-        RuntimeFailure: the runtime cannot be made, for example because it is not installed.
-    """
-    with db.session() as s:
-        agent_session = s.get_one(AgentSession, agent_session_id)
-        if agent_session.state is not AgentSessionState.RUNNING:
-            raise NotRunning(
-                f'agent_session#{agent_session_id} is {agent_session.state}, not running: nothing to {verb}'
-            )
-        return runtime_for(s, agent_session, home), handle_for(agent_session)
 
 
 class IdeasTable(PanelTable):
@@ -402,10 +360,6 @@ class CampaignScreen(Screen[None]):
     @property
     def actor(self) -> Actor:
         return self.main_app.actor
-
-    @property
-    def home(self) -> Path:
-        return self.main_app.db_file.parent
 
     def compose(self) -> ComposeResult:
         yield Static(id='header')

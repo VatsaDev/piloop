@@ -306,21 +306,17 @@ def test_every_harness_a_role_with_servers_may_run_must_carry_them() -> None:
     assert CampaignConfig.model_validate(custom).harnesses == ['claude', 'plain'], 'no role lists a server: any will do'
     with pytest.raises(
         ValidationError,
-        match=re.escape(
-            "harness 'plain' under the subprocess runtime (headless): it takes no MCP servers in its headless argv"
-        ),
+        match=re.escape("harness 'plain': it takes no MCP servers in its headless argv"),
     ):
         CampaignConfig.model_validate(custom | {'roles': {'watchdog': {'mcp': ['exa']}}})
     without = {'executable': 'x', 'headless': ['{prompt}'], 'mcp': 'claude'}
-    with pytest.raises(ValidationError, match="harness 'plain' under the subprocess runtime"):
+    with pytest.raises(ValidationError, match="harness 'plain': it takes no MCP servers"):
         CampaignConfig.model_validate(custom | {'harness': {'plain': without}, 'roles': {'watchdog': {'mcp': ['exa']}}})
-    herdr = config(runtime='herdr', roles={'research': {'mcp': ['exa']}})
-    with pytest.raises(
-        ValidationError,
-        match=re.escape("harness 'pi' under the herdr runtime (interactive): pi takes MCP servers only with"),
-    ):
-        CampaignConfig.model_validate(herdr)
-    CampaignConfig.model_validate(herdr | {'roles': {'research': {'mcp': ['exa'], 'harnesses': ['claude', 'codex']}}})
+    extended = {'executable': 'pi', 'headless': [MCP, '{prompt}'], 'mcp': 'pi'}
+    with pytest.raises(ValidationError, match=re.escape("harness 'plain': pi takes MCP servers only with")):
+        CampaignConfig.model_validate(
+            custom | {'harness': {'plain': extended}, 'roles': {'watchdog': {'mcp': ['exa']}}}
+        )
 
 
 def test_a_harness_names_a_known_renderer_and_mcp_only_with_one() -> None:
@@ -330,7 +326,7 @@ def test_a_harness_names_a_known_renderer_and_mcp_only_with_one() -> None:
         Harness(executable='x', headless=['{prompt}'], mcp='opencode')
     with pytest.raises(ValidationError, match=re.escape('{mcp} in the argv needs mcp set to a renderer')):
         Harness(executable='x', headless=[MCP, '{prompt}'])
-    assert {name: (h.mcp, MCP in h.headless, MCP in h.interactive) for name, h in DEFAULT_HARNESSES.items()} == {
+    assert {name: (h.mcp, MCP in h.headless, MCP in h.resume) for name, h in DEFAULT_HARNESSES.items()} == {
         'pi': ('pi', True, True),
         'claude': ('claude', True, True),
         'codex': ('codex', True, True),

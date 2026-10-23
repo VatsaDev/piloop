@@ -26,7 +26,7 @@ The implementer **does runs**: it takes ideas from the run queue, and its commit
 ## Configure a role
 
 Each role has a table in `piloop.toml`. This one runs up to four implementers on two harnesses, for at most 30 minutes
-each, and shows the research agents in Herdr:
+each, and one research agent at a time:
 
 ```toml
 model = { claude = "claude-opus-5-5", codex = "gpt-6.1-sol" }
@@ -37,7 +37,7 @@ max_concurrent = 4
 timeout = 1800
 
 [roles.research]
-runtime = "herdr"
+max_concurrent = 1
 ```
 
 The [configuration reference](/reference/configuration#roles) lists every key and its default. The top-level
@@ -115,8 +115,7 @@ of an idea and the verdict count every run of the campaign. A keep of any role m
 - The **implementer** gets one idea, with your `brief.md`, the starting point and the recent results. It edits the
   code and commits. At the end, it writes a `finding` comment on its idea. It files no ideas or seeds.
 - The **watchdog** edits no code and changes no row. It writes comments for the orchestrator, and seeds for research.
-  An **incident sweep** investigates an anomaly: a failed run, an agent that died at its start, or an implementer that
-  was silent for an hour. A **progress review** asks if the campaign gets closer to its goal. The last review, when the
+  An **incident sweep** investigates an anomaly: a failed run, or an agent that died at its start. A **progress review** asks if the campaign gets closer to its goal. The last review, when the
   campaign stops, writes the closing report.
 - The **research** agent reads the **research pack**: the metrics, what was tried for each mechanism, the recent ideas
   and their outcomes, the kept lineage, and the findings of every role. `piloop history enwik8` prints it. Research
@@ -151,28 +150,22 @@ harness and model.
 
 ## Runtimes
 
-A **runtime** is where an agent runs. It starts the agent, watches it, sends it messages, shows it to you and stops
-it. The `runtime` key of `piloop.toml` sets it for the campaign, and `[roles.<name>] runtime` for one role.
+A **runtime** is where an agent runs. It starts the agent, watches it, sends it messages and stops it. The `runtime` key of `piloop.toml` sets it for the campaign, and `[roles.<name>] runtime` for one role.
 
 ### Built-in runtimes
 
 <Runtimes />
 
-- `subprocess` is the default. It needs nothing more than the harnesses. `piloop watch` shows what each agent prints.
-- `herdr` gives each agent a terminal pane, where you can read it, answer its dialogs and type into it. It needs
-  [Herdr](https://herdr.dev). See [In Herdr](/guides/watch#in-herdr).
-
-The invocation says if the runtime starts the harness without a terminal (`headless`) or in one (`interactive`). Some
-features depend on it: pi, for example, takes [MCP servers](/guides/mcp-servers#what-each-harness-gets) only when it
-is headless. A plugin can add a runtime. See [Extension points](/architecture/extension-points#runtimes).
+`subprocess` is the default. Each agent is a background process without a terminal. It needs nothing more than the
+harnesses. A plugin can add a runtime. See [Extension points](/architecture/extension-points#runtimes).
 
 ## Look at an agent
 
 - `piloop watch` shows the agents with their last output.
-- `piloop attach <agent-session-id>` shows the agent in this terminal.
+- `piloop attach <agent-session-id>` prints the last 40 lines that the agent wrote.
 - `piloop prompt <agent-session-id> "<text>"` queues a message for the agent's next turn.
 
-When the runtime of the agent cannot do one of these, the command says why. The brief, log and
+When the runtime of the agent cannot take the message, the command says why. The brief, log and
 transcript of an agent are in `~/.piloop/runs/<run>/` for a run, and in `~/.piloop/agent_sessions/<id>/` for a sweep.
 
 ## When an agent ends

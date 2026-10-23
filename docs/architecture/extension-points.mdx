@@ -97,16 +97,14 @@ piloop plugins
 runtime = "nice"
 ```
 
-A role can select its own: `[roles.research] runtime = "herdr"`. `[runtimes.nice]` in `config.toml` holds the
+A role can select its own: `[roles.research] runtime = "nice"`. `[runtimes.nice]` in `config.toml` holds the
 runtime's settings.
 
 ### The contract
 
-A runtime is a class with the methods of the `Runtime` protocol, and two class attributes: `kind`, its name (the name
-of its entry point), and `invocation`, which argument list of a harness it starts (`headless` with the first prompt
-in it, or `interactive`, a terminal session that the runtime types the prompt into). Its constructor takes the
-campaign's name and path. It reports a failure as a `RuntimeFailure`. The worker, `piloop attach`, `doctor` and `watch`
-call its methods, so a new runtime gets them at once. [Runtimes](/concepts/roles#runtimes) says what a runtime does for
+A runtime is a class with the methods of the `Runtime` protocol, and one class attribute: `kind`, its name (the name
+of its entry point). Its constructor takes no arguments. It starts the `headless` argv of a harness, with the first
+prompt in it. The worker and `piloop prompt` call its methods, so a new runtime gets them at once. [Runtimes](/concepts/roles#runtimes) says what a runtime does for
 you.
 
 <RuntimeProtocol />
@@ -498,16 +496,15 @@ headless = ["--model", "{model}", "{prompt}"]
 
 ### The contract
 
-A harness is a coding agent CLI, and a `[harness.<name>]` table says how to start it: the executable, the argv with
-a terminal (`interactive`) and without one (`headless`), and the startup dialogs to accept. piloop fills in
+A harness is a coding agent CLI, and a `[harness.<name>]` table says how to start it: the executable and the argv
+(`headless`). piloop fills in
 `{model}`, `{effort}`, `{session_id}`, `{cwd}` and `{prompt}`. To record its tokens and give it MCP servers, it names one of the
 [built-in readers and renderers](#usage-readers-and-mcp-renderers). The
 [configuration reference](/reference/configuration#harness) has every key.
 
 ### Built in
 
-A campaign can override any key of a built-in harness. An override without `busy_screens`, `failed_turn_screens` or
-`queue_key` keeps those of the built-in harness with the same `executable`.
+A campaign can override any key of a built-in harness.
 
 <Harnesses />
 

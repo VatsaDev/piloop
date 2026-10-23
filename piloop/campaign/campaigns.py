@@ -158,7 +158,7 @@ def _template_files(template: Path, prefix: str = '') -> list[str]:
 
 
 def _slug(dest: Path) -> str:
-    """Make a directory name safe to use as a campaign name. Git refs and Herdr workspaces use this name."""
+    """Make a directory name safe to use as a campaign name, which git refs use."""
     return re.sub(r'[^A-Za-z0-9._-]+', '-', dest.resolve().name).strip('-') or NAME_PLACEHOLDER
 
 

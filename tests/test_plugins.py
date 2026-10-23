@@ -64,7 +64,7 @@ def test_an_installed_package_mounts_its_runtime_and_shows_where_it_comes_from(
     example(tmp_path, 'nice-runtime')
     monkeypatch.syspath_prepend(tmp_path)
     assert RUNTIMES.get('nice').model is NiceRuntime
-    assert isinstance(make_runtime('nice', campaign='p', campaign_path=tmp_path), NiceRuntime)
+    assert isinstance(make_runtime('nice'), NiceRuntime)
     assert RUNTIMES.sources()['nice'] == PythonSource('piloop-nice', '0.1.0', 'nice = piloop_nice:NiceRuntime')
     built_in = RUNTIMES.sources()['subprocess']
     assert (built_in.release.split()[0], built_in.built_in) == ('piloop', True)
@@ -77,9 +77,8 @@ def test_an_installed_package_mounts_its_runtime_and_shows_where_it_comes_from(
     app(['plugins'], result_action='return_value', exit_on_error=False)
     lines = printed[0].splitlines()
     runtimes = lines.index('runtimes (host tier, piloop.runtimes):')
-    assert lines[runtimes : runtimes + 4] == [
+    assert lines[runtimes : runtimes + 3] == [
         'runtimes (host tier, piloop.runtimes):',
-        f'  herdr       {built_in}',
         f'  subprocess  {built_in}',
         '  nice        piloop-nice 0.1.0, entry point nice = piloop_nice:NiceRuntime',
     ]
@@ -195,7 +194,7 @@ def test_a_broken_package_of_a_capability_that_nothing_binds_is_a_warning(
     found = next(c for c in doctor.checks(home) if c.name == 'plugins')
     assert found.fix is None
     assert found.found == (
-        '5 CAS providers, 1 executor, 1 network, 4 roles, 2 runtimes, 1 stop rule, 7 triggers, 1 verdict rule; all built in; warning: nothing selects a extra, and they do not load:'
+        '5 CAS providers, 1 executor, 1 network, 4 roles, 1 runtime, 1 stop rule, 7 triggers, 1 verdict rule; all built in; warning: nothing selects a extra, and they do not load:'
         ' entry point gone = tests.fixtures.no_such_module:Gone in piloop.example.extras does not load: ModuleNotFoundError:'
         " No module named 'tests.fixtures.no_such_module'"
     )
@@ -212,7 +211,7 @@ def test_a_broken_package_of_a_capability_that_nothing_binds_is_a_warning(
 
 
 def test_a_name_that_no_provider_has_lists_the_ones_there_are() -> None:
-    with pytest.raises(MissingProvider, match="^unknown runtime 'tmux'; registered runtimes: herdr, subprocess$"):
+    with pytest.raises(MissingProvider, match="^unknown runtime 'tmux'; registered runtimes: subprocess$"):
         RUNTIMES.get('tmux')
 
 

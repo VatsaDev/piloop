@@ -253,7 +253,7 @@ Give every failure one owner. Use the counterfactual: "if this were fixed, would
 | Owner | Typical failures |
 |---|---|
 | **model** | invented numbers, misread tool output, said one thing and did another, ignored the brief |
-| **harness** (piloop / pi / Herdr / Codex / Claude Code) | idle read as done, runs left open, wrong base, unenforced guardrails, messages sent into the wrong session, cache churn |
+| **harness** (piloop / pi / Codex / Claude Code) | idle read as done, runs left open, wrong base, unenforced guardrails, messages sent into the wrong session, cache churn |
 | **environment** | expired credentials, trust dialogs, quota, a remote job service down |
 | **spec** (brief, eval design, orchestrator decisions) | a brief that bans training but not tuning, a panel that is not held out, an oracle left readable, a goalpost moved after seeing the result |
 

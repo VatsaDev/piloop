@@ -6,7 +6,7 @@ Find out why each one happened. Use all the sources:
 - the rows and their `events`;
 - the agent's transcript and brief;
 - its session (`entire checkpoint explain`);
-- the process table and the Herdr panes, for anything still alive;
+- the process table, for anything still alive;
 - the campaign's git history.
 
 Classify the root cause:

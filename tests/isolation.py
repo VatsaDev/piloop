@@ -1,5 +1,5 @@
-"""The environment of the test session: a temporary HOME and PILOOP_HOME, and none of the caller's piloop, Herdr or
-harness sessions.
+"""The environment of the test session: a temporary HOME and PILOOP_HOME, and none of the caller's piloop or harness
+sessions.
 
 ``tests/conftest.py`` imports this first, because piloop reads its home when it is imported (``piloop.settings``).
 Every process a test starts inherits it, and ``PILOOP_UNDER_TEST`` makes each piloop among them refuse the home of a
@@ -16,9 +16,9 @@ from pathlib import Path
 CALLER_ENV = dict(os.environ)
 """The environment the session started with. The e2e campaigns start from it: their agents need the real harness
 homes to log in."""
-DROPPED = re.compile(r'^(PILOOP_|HERDR_|XDG_(CONFIG|DATA|STATE)_HOME$|UV_TOOL_DIR$)')
-"""The caller's settings of a real install: piloop's, the Herdr session it runs in, and the directories under the home
-that piloop, Herdr and uv would otherwise read."""
+DROPPED = re.compile(r'^(PILOOP_|XDG_(CONFIG|DATA|STATE)_HOME$|UV_TOOL_DIR$)')
+"""The caller's settings of a real install: piloop's, and the directories under the home that piloop and uv would
+otherwise read."""
 ROOT = Path(tempfile.mkdtemp(prefix='piloop-tests-'))
 
 

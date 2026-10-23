@@ -63,7 +63,6 @@ executor = "piloop.plugins.executor.contract:EXECUTORS"
 network = "piloop.plugins.network.contract:NETWORKS"
 
 [project.entry-points."piloop.runtimes"]
-herdr = "piloop.plugins.runtime.herdr:HerdrRuntime"
 subprocess = "piloop.plugins.runtime.subprocess:SubprocessRuntime"
 
 [project.entry-points."piloop.cas"]
@@ -184,7 +183,6 @@ pythonpath = ["examples/plugins/nice-runtime", "examples/plugins/sqlite-cas", "e
 # The e2e tests run real agents and cost money: only `make e2e` (`-m e2e`, which overrides this) selects them.
 addopts = ["-m", "not e2e"]
 markers = [
-    "herdr: needs a live Herdr server",
     "e2e: a real campaign with real agents (make e2e)",
     "needs(*tests): skip unless these earlier tests of the module passed (tests/e2e)",
 ]

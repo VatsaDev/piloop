@@ -25,23 +25,20 @@ from piloop.agents.results import (
 )
 from piloop.config import BRIEF_FILE, config_of, harness_of
 from piloop.db.events import emit
-from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Run, utcnow
+from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, utcnow
 from piloop.db.session import Database
-from piloop.harnesses import SESSION_ENV, SESSION_ID, Invocation, fill, takes_session_id
+from piloop.harnesses import SESSION_ENV, SESSION_ID, fill, takes_session_id
 from piloop.ids import AgentSessionId, TargetKind, TargetRef
 from piloop.otel import Span, Tracer
 from piloop.plugins.executor.contract import AgentJob, AgentKey, Artifact, Commits, Executor, ExecutorConfig, LeftJob
-from piloop.plugins.runtime.contract import RUNTIMES, AgentStart
-from piloop.text import cell
+from piloop.plugins.runtime.contract import AgentStart
 
 PROMPT = 'Your brief is in {path}. Read all of it, in parts if a read comes back cut short, then follow it.'
-"""An agent's first prompt, on its argv or Herdr's (``agent prompt``).
+"""An agent's first prompt, on its argv.
 
 It names the brief's file instead of holding the brief. The prompt is one argument, and Linux limits one argument to
 128 KiB (``MAX_ARG_STRLEN``). A research brief with a long history is longer than that.
 """
-TAB_TITLE_CHARS = 30
-"""How many characters of the idea's title go in an implementer's tab label: enough to tell tabs apart in Herdr."""
 
 
 class Launcher:
@@ -157,46 +154,34 @@ class Launcher:
             effort = cfg.role(w.kind).effort
             definition = cfg.harness_for(harness)
             runtime_kind = cfg.role_runtime(w.kind)
-            invocation = RUNTIMES.get(runtime_kind).model.invocation
-            template = definition.argv(invocation)
-            session_id = str(uuid4()) if definition.captures_session and takes_session_id(template) else None
+            session_id = str(uuid4()) if definition.captures_session and takes_session_id(definition.headless) else None
             kind, reason = w.kind, w.reason
             span.set(kind=kind, harness=harness, model=model, reason=reason, session_id=session_id)
             prompt = PROMPT.format(path=f'{{log_dir}}/{BRIEF_FILE}')
-            # A Herdr pane does not inherit the daemon's environment: the worker adds its PATH and its piloop
-            # (``jobs.Site.env``), and the variables that the MCP servers name.
+            # the worker adds its PATH and its piloop (``jobs.Site.env``), and the variables that the MCP servers name
             env = {
                 'PILOOP_ACTOR': Agent(role=kind, session=agent_session_id).signature,
-                # empty, not unset: a Herdr pane can only override what its server inherited
                 **dict.fromkeys(SESSION_ENV | {*definition.session_env}, ''),
             }
             # {cwd} and {log_dir} stay for the worker, which makes them (``AgentStart.at``)
-            argv = [fill(a, model=model, effort=effort, prompt=prompt, session_id=session_id or '') for a in template]
+            argv = [
+                fill(a, model=model, effort=effort, prompt=prompt, session_id=session_id or '')
+                for a in definition.headless
+            ]
             # {prompt} stays for the queued messages, and {session_id} for the id that a harness reports while it runs
             resume = [
-                fill(a, model=model, effort=effort, session_id=session_id or SESSION_ID)
-                for a in (definition.resume if invocation is Invocation.HEADLESS else [])
+                fill(a, model=model, effort=effort, session_id=session_id or SESSION_ID) for a in definition.resume
             ]
-            busy, failed, queue, composer = definition.screens
             spec = AgentStart(
-                name=f'{kind}-{agent_session_id}',
-                label=_label(s, w),
                 executable=definition.executable,
                 args=argv,
-                prompt=prompt,
                 env=env,
-                startup_dialogs=definition.startup_dialogs,
-                busy_screens=busy,
-                failed_turn_screens=failed,
-                queue_key=queue,
-                composer=composer,
                 session_id_pattern=definition.session_id_pattern,
                 resume_args=resume,
             )
             job = AgentJob(
                 agent_session=agent_session_id,
                 runtime=runtime_kind,
-                campaign=campaign.name,
                 artifact=artifact,
                 place=place,
                 timeout=cfg.role(kind).timeout,
@@ -228,14 +213,12 @@ class Launcher:
 
         Only an agent that a daemon before leases started needs it: an executor finds its own jobs again.
         """
-        campaign = s.get_one(Campaign, w.campaign_id)
-        cfg = config_of(campaign)
+        cfg = config_of(s.get_one(Campaign, w.campaign_id))
         definition = harness_of(s, w)
         assert w.runtime is not None and w.log_dir is not None  # a running row was launched
         job = AgentJob(
             agent_session=w.id,
             runtime=w.runtime,
-            campaign=campaign.name,
             artifact=artifact,
             place=place,
             timeout=cfg.role(w.kind).timeout,
@@ -262,11 +245,3 @@ def rotate(s: Session, agent_session: AgentSession, harnesses: list[str]) -> str
         )
     )
     return harnesses[(earlier or 0) % len(harnesses)]
-
-
-def _label(s: Session, w: AgentSession) -> str:
-    """Return the tab label: ``implementer-12 idea#5 Stacking with a meta-learner…``, or ``research-7`` for a sweep."""
-    if w.run_id is None:
-        return f'{w.kind}-{w.id}'
-    idea = s.get_one(Run, w.run_id).idea
-    return f'{w.kind}-{w.id} idea#{idea.id} {cell(idea.title, TAB_TITLE_CHARS)}'

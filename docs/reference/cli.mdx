@@ -504,8 +504,8 @@ Only the daemon starts implementers, because an implementer needs a run.
 piloop attach AGENT_SESSION_ID
 ```
 
-Shows a running agent in this terminal. The [runtime](/concepts/roles#runtimes) of the agent defines how. When the runtime
-cannot, the command says so and tells you where to look instead.
+Prints the last 40 lines that an agent wrote, running or ended. An agent has no terminal to type into: use
+`piloop prompt` to send it a message.
 
 ### piloop prompt
 

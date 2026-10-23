@@ -60,15 +60,12 @@ from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, CampaignId, CandidateId,
 from piloop.plugins import host
 from piloop.plugins.executor.kit.capacity import GB, HostSample
 from piloop.plugins.executor.kit.leases import Leases
-from piloop.plugins.runtime import herdr
-from piloop.plugins.runtime.herdr import HerdrSettings
 from piloop.scoring.ledger import CandidateImported, RemeasureRequested
 from piloop.settings import Settings
 from piloop.version import direct_url, installed
 from tests.conftest import at_head, example, hold_lock, wait_until
 from tests.daemon.test_serve import alive
 from tests.db.test_migrations import TOO_OLD, alembic
-from tests.fixtures.fake_herdr import SOCKET
 from tests.test_lease import Recorder
 
 HEAD = ScriptDirectory.from_config(alembic(Path('unused.db'))).get_current_head()
@@ -985,19 +982,20 @@ def test_baseline_must_evaluate(campaign_path: Path) -> None:
         run_cli(['init', str(campaign_path)])
 
 
-def herdr_calls(log: Path) -> list[list[str]]:
-    return [json.loads(line) for line in log.read_text().splitlines()]
-
-
-def test_attach_focuses_an_implementer_tab(
-    campaign_path: Path, out, herdr_log: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_attach_prints_the_last_lines_that_an_agent_wrote(campaign_path: Path, out, tmp_path: Path) -> None:
+    """A running agent's output, an ended agent's transcript, and why there is nothing to print."""
     run_cli(['init', str(campaign_path)])
+    live, ended, silent = tmp_path / 'live', tmp_path / 'ended', tmp_path / 'silent'
+    for log_dir in (live, ended, silent):
+        log_dir.mkdir()
+    (live / 'agent_session.stdout').write_text(''.join(f'line {i}\n' for i in range(50)))
+    (ended / 'transcript.txt').write_text('done\n')
     db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
-        for runtime, handle in (
-            ('herdr', {'workspace_id': 'w7', 'tab_id': 'w7:t3', 'pane_id': 'w7:p3', 'agent': 'implementer-1'}),
-            ('subprocess', {'pid': 1, 'pgid': 1, 'start_time': 0, 'started_at': 0, 'log_dir': '/tmp/x'}),
+        for state, log_dir in (
+            (AgentSessionState.RUNNING, live),
+            (AgentSessionState.EXITED, ended),
+            (AgentSessionState.RUNNING, silent),
         ):
             s.add(
                 AgentSession(
@@ -1005,45 +1003,23 @@ def test_attach_focuses_an_implementer_tab(
                     campaign_id=1,
                     harness='pi',
                     model='m',
-                    runtime=runtime,
-                    handle=handle,
-                    state=AgentSessionState.RUNNING,
-                    log_dir='/tmp/x',
+                    runtime='subprocess',
+                    handle={'pid': 1, 'pgid': 1, 'start_time': 0, 'started_at': 0, 'log_dir': str(log_dir)},
+                    state=state,
+                    log_dir=str(log_dir),
                 )
             )
         s.commit()
     db.close()
     out()
-    execvp = mocker.patch('piloop.plugins.runtime.herdr.os.execvp')
-    mocker.patch('piloop.plugins.runtime.herdr.sys.stdout').isatty.return_value = True
     run_cli(['attach', '1'])
-    assert herdr_calls(herdr_log) == [
-        ['--session', 'piloop', 'tab', 'focus', 'w7:t3'],
-        ['--session', 'piloop', 'session', 'list', '--json'],
-    ]
-    assert execvp.call_args.args == ('herdr', ['herdr', '--session', 'piloop'])
-    tty = mocker.patch('piloop.plugins.runtime.herdr.sys.stdout')
-    tty.isatty.return_value = False
-    out()
-    run_cli(['attach', '1'])
-    assert out().strip() == 'focused tab w7:t3; not a terminal, so it does not attach to Herdr session piloop'
-    tty.isatty.return_value = True
-    monkeypatch.setenv('HERDR_SOCKET_PATH', SOCKET)
-    monkeypatch.setattr(herdr, 'herdr_settings', HerdrSettings())
-    run_cli(['attach', '1'])
-    assert out().strip() == 'focused tab w7:t3' and execvp.call_count == 1, 'already inside the piloop session'
-    with pytest.raises(SystemExit) as headless:
-        run_cli(['attach', '2'])
-    assert str(headless.value) == (
-        'agent_session#2: a background process has no terminal to show: read /tmp/x/agent_session.stdout; once it ends, its'
-        ' transcript is /tmp/x/transcript.txt'
-    )
-    with pytest.raises(SystemExit, match='agent_session#3 is not running'):
+    assert out().splitlines() == [f'line {i}' for i in range(10, 50)]
+    run_cli(['attach', '2'])
+    assert out() == 'done\n'
+    with pytest.raises(SystemExit, match='^agent_session#3 is running and has written nothing yet$'):
         run_cli(['attach', '3'])
-    gone = {'error': {'code': 'tab_not_found', 'message': 'tab w7:t3 is gone'}}
-    monkeypatch.setenv('FAKE_HERDR_SCRIPT', json.dumps({'tab focus': [gone]}))
-    with pytest.raises(SystemExit, match='tab_not_found: tab w7:t3 is gone'):
-        run_cli(['attach', '1'])
+    with pytest.raises(SystemExit, match='^no agent_session#4$'):
+        run_cli(['attach', '4'])
 
 
 def test_agent_messages_takes_the_queue_in_the_format_that_the_hook_names(
@@ -1096,8 +1072,8 @@ def test_prompt_is_a_note_on_the_agent_and_says_whether_it_arrived(
                 run_id=1,
                 harness='script',
                 model='m',
-                runtime='herdr',
-                handle={'workspace_id': 'w7', 'tab_id': 'w7:t2', 'pane_id': 'w7:p2', 'agent': 'implementer-1'},
+                runtime='subprocess',
+                handle={'pid': 1, 'pgid': 1, 'start_time': 0, 'started_at': 0, 'log_dir': 'x'},
                 state=AgentSessionState.RUNNING,
                 log_dir='x',
             )
@@ -1105,7 +1081,7 @@ def test_prompt_is_a_note_on_the_agent_and_says_whether_it_arrived(
         s.commit()
         answers = (  # the daemon's answers to the next notes
             PromptOutcome(kind='comment.queued', comment=CommentId(2)),
-            PromptOutcome(kind='comment.undelivered', comment=CommentId(3), error='a dialog is open'),
+            PromptOutcome(kind='comment.undelivered', comment=CommentId(3), error='the agent has ended'),
             PromptOutcome(kind='comment.delivered', comment=CommentId(4)),
         )
         for answer in answers:
@@ -1118,7 +1094,7 @@ def test_prompt_is_a_note_on_the_agent_and_says_whether_it_arrived(
     assert out().strip() == 'comment#1: the daemon queues it for agent_session#1 once it runs'
     run_cli(['prompt', '1', 'try harder'])
     assert out().strip() == 'queued comment#2 for agent_session#1: it reads it at its next turn'
-    with pytest.raises(SystemExit, match='agent_session#1 did not get comment#3: a dialog is open'):
+    with pytest.raises(SystemExit, match='agent_session#1 did not get comment#3: the agent has ended'):
         run_cli(['prompt', '1', 'x'])
     run_cli(['prompt', '1', 'quick'])
     assert out().strip() == 'agent_session#1 read comment#4'
@@ -1573,7 +1549,7 @@ def test_upgrade_reinstalls_migrates_and_restarts_the_daemon(
         cli_check(),
         f'ok    daemon: pid {pid} runs the installed {installed()}',
         f'ok    database: {common.settings.home}/piloop.db at schema {HEAD}, current',
-        'ok    plugins: 5 CAS providers, 1 executor, 1 network, 4 roles, 2 runtimes, 1 stop rule, 7 triggers, 1 verdict rule; all built in',
+        'ok    plugins: 5 CAS providers, 1 executor, 1 network, 4 roles, 1 runtime, 1 stop rule, 7 triggers, 1 verdict rule; all built in',
         f'ok    secrets: from the environment of the daemon (pid {pid}) only (PILOOP_SECRETS_COMMAND unset)',
         f'ok    skills (pi): current in {common.settings.agent_skills_dir}',
         'ok    harnesses: on PATH: none configured',
@@ -1601,7 +1577,7 @@ def test_upgrade_of_a_checkout_install_without_a_daemon_creates_the_schema(fake_
         cli_check(),
         'ok    daemon: not running',
         f'ok    database: {common.settings.home}/piloop.db at schema {HEAD}, current',
-        'ok    plugins: 5 CAS providers, 1 executor, 1 network, 4 roles, 2 runtimes, 1 stop rule, 7 triggers, 1 verdict rule; all built in',
+        'ok    plugins: 5 CAS providers, 1 executor, 1 network, 4 roles, 1 runtime, 1 stop rule, 7 triggers, 1 verdict rule; all built in',
         'ok    secrets: from the environment of this shell only (PILOOP_SECRETS_COMMAND unset)',
         'ok    skills: none of claude, codex, pi, gemini, cursor-agent is on PATH: nothing to check',
         'ok    harnesses: on PATH: none configured',

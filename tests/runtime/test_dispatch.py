@@ -6,16 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from piloop.cli import agents, common, doctor
+from piloop.cli import agents, common
 from piloop.config import config_of
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, utcnow
 from piloop.db.session import Database
 from piloop.ids import WATCHDOG
-from piloop.plugins.runtime.contract import RUNTIMES, Check
+from piloop.plugins.runtime.contract import RUNTIMES
 from piloop.reports.overview import overview
-from piloop.runtime.factory import view_of
 from piloop.settings import Settings
-from piloop.watch.app import focus
 from tests.daemon.test_roles import PLUGIN, forget_loaded, installed
 
 SHOWN = [EntryPoint('shown', f'{PLUGIN}:Shown', RUNTIMES.group)]
@@ -29,7 +27,7 @@ def shown(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     forget_loaded()
 
 
-def test_attach_focus_view_and_doctor_use_the_methods_of_a_runtime_that_a_package_adds(
+def test_attach_and_status_read_the_output_through_a_runtime_that_a_package_adds(
     db: Database, campaign: Campaign, shown: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with db.session() as s:
@@ -46,16 +44,10 @@ def test_attach_focus_view_and_doctor_use_the_methods_of_a_runtime_that_a_packag
         )
         s.add(agent_session)
         s.commit()
-        assert view_of(agent_session) == 'pane 7'
         row = s.get_one(Campaign, campaign.id)
-        assert ', pane 7, on ' in overview(s, row, config_of(row), utcnow(), lambda w: [])
-    assert focus(db, agent_session.id, tmp_path) == f'agent_session#{agent_session.id}: focused pane 7'
+        assert ', on ' in (text := overview(s, row, config_of(row), utcnow())) and ': pane 7' in text
     monkeypatch.setattr(common, 'settings', Settings(home=tmp_path))
     printed: list[object] = []
-    monkeypatch.setattr(common.console, 'print', printed.append)
+    monkeypatch.setattr(common.console, 'print', lambda line, **_: printed.append(line))
     agents.attach(agent_session.id)
-    assert printed == ['attached to pane 7']
-    harness = str(tmp_path / 'harness.sh')
-    assert {c.name: c for c in doctor.checks(Settings(home=tmp_path))}['shown'] == Check(
-        'shown', f'ready for {harness}'
-    )
+    assert printed == ['pane 7']

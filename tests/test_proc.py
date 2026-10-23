@@ -40,13 +40,13 @@ print(before, reaped, zombies(), inherited.reap())
 """
 BEFORE_EXEC = f"""
 import os, subprocess, sys
-subprocess.Popen(['sleep', '0.2'])  # still running at the exec, as a daemon thread's herdr call is
+subprocess.Popen(['sleep', '0.2'])  # still running at the exec, as an agent's turn is
 os.execv(sys.executable, [sys.executable, '-c', {AFTER_EXEC!r}])
 """
 
 
 def test_a_child_that_outlives_an_exec_is_reaped_by_the_program_after_it() -> None:
-    """The campaign build's daemon kept 26 zombie herdr and git children: each in-place restart (an exec) left the
+    """The campaign build's daemon kept 26 zombie children: each in-place restart (an exec) left the
     subprocesses its threads were waiting on, and nothing in the new program waited for them."""
     out = subprocess.run([sys.executable, '-c', BEFORE_EXEC], capture_output=True, text=True, timeout=30, check=True)
     assert out.stdout.split() == ['1', '1', '0', '0'], 'one zombie before the reap, none after, nothing twice'

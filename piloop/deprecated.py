@@ -218,26 +218,6 @@ BRIDGES: tuple[Bridge, ...] = (
 )
 
 
-@until('0.3.0', 'herdr_<key> in config.toml is [runtimes.herdr] <key>: delete the herdr_keys bridge')
-def herdr_keys(toml: Path, raw: dict[str, object]) -> None:
-    """In ``config.toml``, ``herdr_<key> = …`` is ``<key> = …`` in its ``[runtimes.herdr]`` table.
-
-    The Herdr settings are the Herdr runtime's own. Their environment variables (``PILOOP_HERDR_<KEY>``) do not change.
-    """
-    for key in [k for k in raw if k.startswith('herdr_')]:
-        runtimes = raw.setdefault('runtimes', {})
-        herdr = runtimes.setdefault('herdr', {}) if isinstance(runtimes, dict) else None
-        if not isinstance(herdr, dict):
-            return  # a [runtimes] value that is not a table of tables: the validation refuses it
-        herdr[key.removeprefix('herdr_')] = raw.pop(key)
-        warn(
-            toml,
-            key,
-            f'{key} in config.toml is deprecated; write {key.removeprefix("herdr_")} in its [runtimes.herdr] table',
-            removed_in=REMOVED_IN,
-        )
-
-
 @until('0.3.0', '[storage.remote] in config.toml is [storage.backend]: delete the storage_remote bridge')
 def storage_remote(toml: Path, raw: dict[str, object]) -> None:
     """In ``config.toml``, ``[storage.remote]`` is ``[storage.backend]``: the storage backend that mirrors the store.
@@ -340,8 +320,22 @@ def _slots(raw: dict[str, object], old: object) -> None:
             serve.setdefault('evaluations', old)
 
 
-CONFIG_BRIDGES: tuple[Bridge, ...] = (herdr_keys, storage_remote, storage_backend, max_evaluations)
+CONFIG_BRIDGES: tuple[Bridge, ...] = (storage_remote, storage_backend, max_evaluations)
 """The bridges of ``config.toml``, the global settings file (``piloop.settings.config_file``)."""
+
+
+HERDR = 'herdr'
+"""The name of the runtime that 0.3.0 removed."""
+HERDR_UPGRADE = 'https://piloop.autoresearch.inc/guides/upgrading#the-herdr-runtime'
+"""What to do about the removed herdr runtime."""
+
+
+@until('0.4.0', 'runtime = "herdr" of a 0.2 piloop.toml: delete removed_runtime, HERDR and HERDR_UPGRADE')
+def removed_runtime(name: str) -> str | None:
+    """Why ``runtime = <name>`` does not load when piloop removed that runtime, else None."""
+    if name != HERDR:
+        return None
+    return f'the herdr runtime is removed in piloop 0.3.0: write runtime = "subprocess", or delete the key ({HERDR_UPGRADE})'
 
 
 OLD_ENV_PREFIX = 'PILOOP_PROJECT_'

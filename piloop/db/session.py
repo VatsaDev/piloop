@@ -33,6 +33,7 @@ from sqlalchemy.engine import ExceptionContext
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import ConnectionPoolEntry
 
+from piloop import deprecated
 from piloop.actor import Actor, Agent, System
 from piloop.db.models import utcnow
 from piloop.db.sql import CONNECTION_PRAGMAS, install_actor, install_functions, lock_holder, optimize
@@ -187,6 +188,8 @@ def unmigratable(database: Path) -> SchemaMismatch | None:
         return refused
     at = Revision(stamp)
     position, floor = chain.index, RELEASES[-1]
+    if position(at) < position(HERDR_REMOVED) and (refused := on_herdr(database)) is not None:
+        return refused
     if position(at) >= position(floor.head):
         return None
     before = [r.version.line for r in RELEASES if position(r.head) <= position(at)]
@@ -199,6 +202,42 @@ def unmigratable(database: Path) -> SchemaMismatch | None:
         f'{database} is from {origin} (schema revision {at}), and this {installed()} migrates from piloop'
         f' {floor.version.line} (schema revision {floor.head}) or newer',
         f'upgrade one release at a time: {steps}, then install this piloop again and run `piloop upgrade`',
+    )
+
+
+HERDR_REMOVED = Revision('0034')
+"""The revision that moves the stopped campaigns off the herdr runtime."""
+
+
+@deprecated.until('0.4.0', 'a 0.2 database with work on the herdr runtime: delete on_herdr, HERDR_REMOVED and its call')
+def on_herdr(database: Path) -> SchemaMismatch | None:
+    """Return why ``database`` cannot be migrated yet: an active campaign or a live agent is on the herdr runtime.
+
+    ``HERDR_REMOVED`` moves only the stopped campaigns, which run nothing. The others move with the piloop that runs
+    them, before the upgrade. A database from before ``agent_sessions`` (0.1) is not checked.
+    """
+    with closing(sqlite3.connect(f'file:{database}?mode=ro', uri=True)) as con:
+        try:
+            campaigns = con.execute(
+                "SELECT DISTINCT 'campaign ' || name FROM campaigns"
+                " LEFT JOIN json_each(campaigns.config, '$.roles') AS role ON 1 WHERE status = 'active'"
+                " AND :herdr IN (json_extract(config, '$.runtime'), json_extract(role.value, '$.runtime'))",
+                {'herdr': deprecated.HERDR},
+            ).fetchall()
+            agents = con.execute(
+                "SELECT 'agent_session#' || id FROM agent_sessions"
+                " WHERE runtime = :herdr AND state IN ('starting', 'running', 'ending')",
+                {'herdr': deprecated.HERDR},
+            ).fetchall()
+        except sqlite3.OperationalError:  # a 0.1 schema, with projects and workers
+            return None
+    if not (found := [row[0] for row in (*campaigns, *agents)]):
+        return None
+    return SchemaMismatch(
+        f'{database} has work on the herdr runtime, which piloop 0.3.0 removes: {", ".join(found)}',
+        'with piloop 0.2 (`uv tool install \'piloop==0.2.*\'`), set runtime = "subprocess" in the piloop.toml of each'
+        ' such campaign and run `piloop init <repo>`, let its herdr agents end or `piloop agent cancel` them, then'
+        f' install this piloop again and run `piloop upgrade` ({deprecated.HERDR_UPGRADE})',
     )
 
 
