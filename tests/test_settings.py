@@ -168,7 +168,8 @@ def test_max_evaluations_of_config_toml_or_the_environment_is_the_evaluations_of
     (tmp_path / 'config.toml').write_text('max_evaluations = 3\n')
     with pytest.warns(
         PiloopDeprecationWarning,
-        match=r'max_evaluations is deprecated; write evaluations in \[plugins.executor.pools.serve\]',
+        match=r'max_evaluations is deprecated; write evaluations in \[plugins.executor.pools.serve\];'
+        r' removed in piloop 0\.4\.0',
     ):
         settings = Settings(home=tmp_path)
     assert (settings.plugins['executor'].provider, settings.plugins['executor'].keys) == (
@@ -181,7 +182,9 @@ def test_max_evaluations_of_config_toml_or_the_environment_is_the_evaluations_of
     assert settings.plugins['executor'].keys == {'pools': {'serve': {'evaluations': 4}}}
     (tmp_path / 'config.toml').unlink()
     monkeypatch.setenv('PILOOP_MAX_EVALUATIONS', '5')
-    with pytest.warns(PiloopDeprecationWarning, match='PILOOP_MAX_EVALUATIONS is deprecated'):
+    with pytest.warns(
+        PiloopDeprecationWarning, match=r'PILOOP_MAX_EVALUATIONS is deprecated.*removed in piloop 0\.4\.0'
+    ):
         settings = Settings(home=tmp_path)
     assert settings.plugins['executor'].keys == {'pools': {'serve': {'evaluations': '5'}}}
 

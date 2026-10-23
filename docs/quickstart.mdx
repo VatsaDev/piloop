@@ -91,9 +91,8 @@ To look yourself, run `piloop watch`. Press `r` on an inbox item to reply to a d
 The campaign ends by itself at the limits in the `[stop]` table of `piloop.toml`. To end it sooner, lower a limit and
 run `piloop init` again, or ask your agent.
 
-`piloop stop` stops the daemon and its agents, and pauses every campaign. The next `piloop serve --detach` continues
-them. To pause one campaign, run `piloop pause <campaign> --reason "<why>"`, and later `piloop resume <campaign>`.
-See [Stop and restart](/guides/running-for-days#stop-and-restart).
+`piloop stop` stops the daemon and its agents, not the campaigns: the next `piloop serve --detach` continues them. To
+pause one campaign, run `piloop pause <campaign> --reason "<why>"`, and later `piloop resume <campaign>`.
 
 ## Next steps
 

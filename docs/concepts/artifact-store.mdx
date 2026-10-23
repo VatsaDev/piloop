@@ -29,8 +29,8 @@ agent or a human that still reads a file, for example to answer an escalation, f
 The daemon removes the workspace copies of an archiving later, and records when in `archives.pruned_at`:
 
 - **By age**: 7 days after the archiving.
-- **Under disk pressure**: while the disk of the store has less than `min_free_gb` (`[storage]`, 20 GB by default)
-  free, the oldest archivings first.
+- **Under disk pressure**: while the disk of the store has less than `[storage] min_free_gb` free, the oldest
+  archivings first.
 
 It removes only a file that still holds what was stored (same size and hash), and a symlink that still points where
 it did. A file that an agent wrote since stays, and so does its directory. It checks age and pressure every hour,
@@ -45,13 +45,8 @@ stops short, because of the disk, a failure or a stop of the daemon, stays due, 
 After a failed or deferred archiving the daemon waits 10 minutes before the next one.
 
 Which archivings are due is computed from the database. A daemon that stops in the middle of a backlog picks it up
-where it was when it starts again. Content that was already stored is found by its hash and is not stored twice. The
-first daemon start after an upgrade archives every done idea and stopped campaign that is already there.
+where it was when it starts again. Content that was already stored is found by its hash and is not stored twice.
 `piloop store status` shows how many are still due.
-
-Implementers are told to put their output under `workspace/idea<id>/`, so it is archived with their idea. They are also
-told not to copy the code tree into the workspace (every candidate's tree is in git) and to leave evaluator output in
-the campaign's own cache.
 
 ## Getting files back
 
@@ -95,8 +90,6 @@ local_max_gb = 200
 [storage.backend]
 kind = "s3"
 url = "s3://my-bucket/piloop"
-storage_class = "GLACIER_IR"   # the default
-standard_below = 131072        # compressed bytes; the default (128 KB)
 ```
 
 piloop checks `[storage.backend]` against its backend when it opens the store: `piloop serve`, `piloop restore` and
@@ -104,9 +97,6 @@ piloop checks `[storage.backend]` against its backend when it opens the store: `
 
 - **Mirror.** With a remote, every blob is uploaded as it is stored. For S3, boto3 finds the credentials
   (environment, profile or instance role).
-- **Storage class.** Each object gets Glacier Instant Retrieval (millisecond reads at a fraction of the price of
-  STANDARD), except objects under `standard_below`: Glacier IR bills each object as at least 128 KB, so small ones
-  are cheaper as STANDARD.
 - **Eviction.** Every hour, before the next archiving, the daemon drops the local copies of blobs that the remote
   holds: those older than `evict_after_days`, then the oldest ones until the local store fits `local_max_gb`.
   `piloop store evict` does the same on demand. It first uploads any blob that was stored before you set the remote.

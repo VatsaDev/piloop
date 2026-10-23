@@ -47,9 +47,8 @@ Each example plugin on this page is a package in
 [`examples/plugins/`](https://github.com/hiloopai/piloop/tree/main/examples/plugins). piloop's tests install each
 one and select it in the configuration.
 
-Each decision that piloop makes is a capability, for example the verdict rule that decides which candidates to
-keep. You can replace the built-in provider of a capability. Some parts of piloop are not capabilities, and you cannot
-replace them: the [overview](/architecture/overview#what-you-can-replace) lists them.
+Some parts of piloop are not capabilities, and you cannot replace them: the
+[overview](/architecture/overview#what-you-can-replace) lists them.
 
 A plugin can also do two more things:
 
@@ -62,6 +61,7 @@ A plugin can also do two more things:
 | [Runtimes](#runtimes) | `runtime`, `[roles.<name>] runtime` | a plugin: `piloop.runtimes` |
 | [Storage backends](#storage-backends) | `[storage.backend] kind` in `config.toml` | a plugin: `piloop.stores` |
 | [Executors](#executors) | `[plugins.executor] provider` in `config.toml` | a plugin: `piloop.executors` |
+| [Networks](#networks) | `[plugins.network] provider` in `config.toml` | a plugin: `piloop.networks` |
 | [Pure plugins](#pure-plugins) | `[plugins.<capability>] provider` | a plugin: data in, data out |
 | [Verdict rules](#verdict-rules) | `[plugins.verdict_rule] provider` | a plugin: `piloop.verdict_rules` |
 | [Roles](#roles) | `[roles.<name>]` | configuration, or a plugin: `piloop.roles` |
@@ -104,7 +104,7 @@ A runtime is a class with the methods of the `Runtime` protocol, and two class a
 of its entry point), and `invocation`, which argument list of a harness it starts (`headless` with the first prompt
 in it, or `interactive`, a terminal session that the runtime types the prompt into). Its constructor takes the
 campaign's name and path. It reports a failure as a `RuntimeFailure`. The worker, `piloop attach`, `doctor` and `watch`
-call its methods, so a new runtime gets them at once. [Runtimes](/concepts/runtimes) says what a runtime does for
+call its methods, so a new runtime gets them at once. [Runtimes](/concepts/roles#runtimes) says what a runtime does for
 you.
 
 <RuntimeProtocol />
@@ -180,7 +180,10 @@ The daemon makes the class once, as `Executor(host, parameters)`. `Parameters` c
 - `cancel(key)` stops a job. It still reports.
 - `adopt(left)` takes over the jobs that the previous daemon left, and returns those it cannot.
 - `capacity()` is how many more agents and evaluations it can take now: its free slots. The daemon submits no more.
+- `configure(parameters)` takes its parameters again, with the live [limits](/architecture/leases#capacity) applied.
 - `prompt(key, prompt)` delivers a comment to a running agent, then calls `host.results.delivered`.
+- `routes()` are the HTTP routes that its workers on other machines call, under `/v1/executor/`. The server of
+  `piloop serve --listen` serves them, and a [network](#networks) says who may call them.
 - `tick`, `stop`, `hand_over` and `close` are the daemon's periodic call, its stop, its in-place restart and its end.
 
 A job's end goes to `host.results`: `finished` or `lost`, in a session that the executor commits. Core raises
@@ -190,16 +193,35 @@ job on this machine.
 
 ### Built in
 
-`workers`, the default, runs every job on a [lease](/architecture/leases), taken by its worker in `piloop serve`.
-Remote workers are to join it later. Its keys are in the [configuration reference](/reference/configuration#plugins).
+`workers`, the default, runs every job on a [lease](/architecture/leases), taken by its worker in `piloop serve`. It
+has no routes. Its keys are in the [configuration reference](/reference/configuration#plugins).
+
+## Networks
+
+A **network** says how other machines reach the server of `piloop serve --listen`, and who each caller is. Only an
+executor with routes needs one.
+
+### The contract
+
+The daemon makes the class once, as `Network(host, parameters)`. `Parameters` is a subclass of `NetworkParameters`,
+which has `listen`.
+
+- `listener()` binds `listen`, and returns the socket with its TLS, or None when `listen` is unset.
+- `identify(headers)` returns the `Caller` of a request, or `Refused` with the reason. The server answers 401.
+- `client(server, token)` is an HTTP client of the server that sends `token`.
+
+### Built in
+
+`https`, the default, checks the bearer tokens of `piloop token`. An address that is not loopback needs `tls`: a
+certificate, or `"proxy"` when a reverse proxy or an SSH tunnel ends TLS. Its keys are in the
+[configuration reference](/reference/configuration#plugins).
 
 ## Pure plugins
 
 A **pure** capability gets data and returns data. Its provider does not read the database, files or other parts of
 piloop: piloop gives it all that it needs as arguments. A pure provider imports only the Python standard library and,
 from `piloop.capabilities`, the **contract** of its capability (the types that the provider gets and returns) and the
-built-in providers that it calls. Because of
-this, piloop can later run the same provider in another process, or as a WebAssembly component.
+built-in providers that it calls.
 
 The [verdict rules](#verdict-rules) and the [stop rules](#stop-conditions) are pure capabilities, and their examples
 are pure plugins. You select the provider of a pure capability with a table in `piloop.toml`. `provider` is its name. The other keys of the table are
@@ -230,48 +252,9 @@ names.
 
 ### Data that costs queries
 
-Some data costs database queries to get. A pure provider that needs such data does not query. It names the data
-first, and piloop gets only that data. Then the provider decides from it.
+Some data costs database queries to get. A pure provider that needs such data names it first, and piloop gets only
+that data. The stop rule's `reads` does this: see [Stop conditions](#stop-conditions).
 
-#### Example: a stop rule that names the facts it needs
-
-The example stop rule `after_keeps` stops the campaign after a number of keeps. It needs the fact `keeps`. It leaves
-the cost limits to the built-in rule `limits`, so it also names the facts that `limits` needs for them:
-
-```python
-class AfterKeeps:
-    def reads(self, limits: Limits, parameters: str) -> list[Fact]:
-        return [Fact.KEEPS, *LIMITS.reads(costs(limits), '{}')]  # 1. name the facts
-
-    def check(self, case: StopCase) -> Go | Hold | Stop:  # 3. decide from those facts
-        answer = LIMITS.check(replace(case, limits=costs(case.limits), parameters='{}'))
-        keeps = case.progress.keeps
-        if isinstance(answer, Hold) or keeps is None or keeps < Parameters(**json.loads(case.parameters)).keeps:
-            return answer
-        return Stop(f'after_keeps: {keeps} keeps')
-```
-
-`costs` keeps only `max_hours`, `max_tokens` and the `[spend]` limit. The full package is in
-[Stop conditions](#example-end-the-campaign-after-a-number-of-keeps). With this `piloop.toml`:
-
-```toml
-[plugins.stop_rule]
-provider = "after_keeps"
-keeps = 3
-
-[spend]
-command = ["uv", "run", "scripts/spend.py"]
-limit = 300
-```
-
-piloop does this on each tick:
-
-1. It calls `reads`. The rule returns `[Fact.KEEPS, Fact.SPEND]`. No `max_hours` or `max_tokens` is set, so `limits`
-   needs no other fact.
-2. It counts the keeps and reads the spend. It does not count the runs, the hours or the tokens: no query runs for
-   them, and they are `None` in `case.progress`.
-3. It calls `check` with the limits, those two facts and the parameters. The rule holds while the spend is unknown or
-   at its limit. Else it stops at 3 keeps. Else it goes on.
 ## Verdict rules
 
 After piloop measures a candidate, it asks the verdict rule whether to keep the candidate. piloop gives the rule a
@@ -571,8 +554,8 @@ example campaign with a working one:
 
 A harness names them: `[harness.<name>.usage] reader` reads the tokens from the harness's session files when an agent
 ends, with its `tally` (the file format) and its `cwd` (how the harness names the agent's working directory), and
-`[harness.<name>] mcp` names the renderer that writes a role's MCP servers in the harness's flags. You cannot add one
-today.
+`[harness.<name>] mcp` names the renderer that writes a role's MCP servers in the harness's flags. You cannot add
+one.
 
 <Readers />
 
@@ -638,8 +621,9 @@ The facts are:
 - `keeps`: the candidates of runs that are kept.
 - `spend`: the spend in USD that the `[spend]` command printed last, and why its last run failed, if it failed.
 
-A `StopCase` has the name and direction of the primary metric, the limits, the facts that the rule asked for, and
-the rule's parameters as JSON text. The limits are the keys of `[stop]`, and `max_spend`, the `limit` of `[spend]`.
+A `StopCase` has the name and direction of the primary metric, the limits, the facts that the rule asked for (the
+others are None in `case.progress`), and the rule's parameters as JSON text. The limits are the keys of `[stop]`, and
+`max_spend`, the `limit` of `[spend]`.
 
 A stop that a person requests (`piloop campaign stop`) stops the campaign whatever the rule answers, also when the
 rule holds it. The closing review of that stop then follows `closing_review` of `[spend]`
@@ -777,6 +761,6 @@ The **plugin host** is the part of piloop that finds, checks and loads plugins (
   that exist.
 - **Versions.** An entry point group is one version of a contract. An incompatible change to a contract gets a new
   group.
-- **Two kinds of contract.** A provider of the runtimes, the storage backends, the triggers or the roles can get live
-  objects of piloop: processes, files, a database session. A provider of a pure capability gets data only. piloop
-  loads, selects, lists and unloads both kinds in the same way.
+- **Two kinds of contract.** A provider of a `host` capability, such as a runtime, can get live objects of piloop:
+  processes, files, a database session. A provider of a `pure` capability gets data only. piloop loads, selects,
+  lists and unloads both kinds in the same way.

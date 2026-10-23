@@ -111,10 +111,8 @@ provider = "min_gain"
 min_gain = 100
 ```
 
-piloop gives the rule the metrics that decide, `confidence`, the measurements of the candidate and of its bar, and
-the rule's parameters. The rule returns `keep`, `interesting`, `discard` or `crash`, and a reason. The rest of this
-page stays the same with any rule: the bar, the head, the merge when the head moves, and the `no-op` note.
-[Verdict rules](/architecture/extension-points#verdict-rules) has the details.
+The rest of this page stays the same with any rule: the bar, the head, the merge when the head moves, and the `no-op`
+note. [Verdict rules](/architecture/extension-points#verdict-rules) has the details.
 
 ## When the head moves during a run
 
@@ -146,12 +144,11 @@ measured once the hold ends. The command says when. `piloop eval queue` shows th
 
 ## The evaluation queue
 
-The daemon runs at most `evaluations` evaluate commands at the same time on each worker, across all campaigns: 2 by
-default, in [`[plugins.executor.pools.serve]`](/reference/configuration#plugins). The others wait in the evaluation
-queue, which `piloop eval queue` lists. A free slot goes to the campaign
-with the fewest running evaluations, and in that campaign to its head first (the runs that start from the head wait
-for its score), then to the oldest request. So a busy campaign never holds back another one. The order in which a run
-measures its own commits does not change.
+Each worker runs at most `evaluations` evaluate commands at the same time, across all campaigns: a key of its
+[pool](/architecture/leases#capacity). The others wait in the evaluation queue, which `piloop eval queue` lists. A
+free slot goes to the campaign with the fewest running evaluations, and in that campaign to its head first (the runs
+that start from the head wait for its score), then to the oldest request. So a busy campaign never holds back another
+one. The order in which a run measures its own commits does not change.
 
 A tree is evaluated once: a second request for a candidate that waits or runs waits for that evaluation.
 

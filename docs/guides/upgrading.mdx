@@ -55,7 +55,7 @@ catches up with an upgrade that you already made.
 
 ## Check the install
 
-`piloop doctor` is read-only. You can run it at any time. It checks that:
+`piloop doctor` is read-only. You can run it at any time. It checks:
 
 - Whether the source that you installed the CLI from has a newer piloop: a newer release on PyPI, or a new commit on
   the branch of the GitHub repo. This check asks the network. A newer piloop is a notice, not a failure. An install
@@ -63,8 +63,8 @@ catches up with an upgrade that you already made.
   tell, it says why.
 - The daemon runs the installed code.
 - The database has the current schema.
-- The runtimes, storage backends, triggers and roles that packages add load, and none of them reuses a name. When
-  they do not, the checks after this one do not run.
+- The providers that packages add load, and none of them reuses a name. When they do not, the checks after this one
+  do not run.
 - `PILOOP_SECRETS_COMMAND`, when it is set, runs and prints `NAME=value` lines. The check shows the names only.
 - The `piloop.toml` of every campaign loads.
 - The commands of each campaign's stdio MCP servers are on your `PATH`, and the variables that its servers need are
@@ -289,5 +289,5 @@ Before 1.0, a minor release may contain breaking changes. These interfaces chang
   the exit status and the per-unit results file.
 - The [database schema](/reference/schema), as `piloop sql` shows it. `piloop upgrade` migrates the database forward.
 
-The Python import API (the modules of the `piloop` package) is not stable. It can change in any release. To script
-piloop, use the CLI and `piloop sql`.
+`piloop.capabilities` is the stable plugin API: its names change only when the contract of a capability changes. Other
+`piloop.*` imports can change in any release. To script piloop, use the CLI and `piloop sql`.

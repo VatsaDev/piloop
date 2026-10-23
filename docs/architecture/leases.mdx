@@ -34,11 +34,11 @@ stateDiagram-v2
 The timing follows the two stages of Kubernetes, with its defaults. For `workers`, each number is a key of
 [`[plugins.executor]`](/reference/configuration#plugins):
 
-| Key | Default | Then | Kubernetes |
-|---|---|---|---|
-| `renew_seconds` | 10 | The worker sends a heartbeat. | The kubelet renews its node Lease every 10 s. |
-| `grace_seconds` | 50 | The worker is unreachable, and its slots count zero. | `--node-monitor-grace-period` |
-| `toleration_seconds` | 300 | Its leases expire, and their jobs go back to the queue with a new token. | `tolerationSeconds` of the unreachable taint |
+| Key | Then |
+|---|---|
+| `renew_seconds` | The worker sends a heartbeat. |
+| `grace_seconds` | The worker is unreachable, and its slots count zero. |
+| `toleration_seconds` | Its leases expire, and their jobs go back to the queue with a new token. |
 
 A worker that hears nothing back stops its own jobs two heartbeats before its leases expire, so a job never runs
 twice.
@@ -53,16 +53,16 @@ Kubernetes node pool. `piloop serve`'s worker is in the pool `serve`:
 provider = "workers"
 
 [plugins.executor.pools.serve]
-agents = 2          # no bound when unset
-evaluations = 1     # 2 by default
+agents = 2
+evaluations = 1
 max_load = 1.5      # the 1-minute load per CPU
 min_memory_gb = 4
 ```
 
 Each heartbeat carries a sample of the worker's host. A worker over `max_load` or under `min_memory_gb` takes no job,
 and its slots count zero. The daemon launches an agent only into a free slot, and gives it to the campaign with the
-fewest live agents. To change a pool's key while the daemon runs, set a **limit**. It wins over `config.toml` from the daemon's next
-tick, and `piloop status` shows it with its reason:
+fewest live agents. To change a pool's key while the daemon runs, set a **limit**. It wins over `config.toml` from
+the daemon's next tick, and `piloop status` shows it with its reason:
 
 ```bash
 piloop limits set executor.pools.serve.evaluations=1 --reason "the GPU trains a model"

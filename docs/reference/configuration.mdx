@@ -535,7 +535,7 @@ With `provider = "workers"`:
 | `grace_seconds` | number | `50` | The silence after which the worker is unreachable (`lease.unreachable`): its slots count zero until it is heard again. Kubernetes: `--node-monitor-grace-period`, 50 s since 1.32 (40 s before). |
 | `toleration_seconds` | number | `300` | The silence after which its leases expire and their jobs are queued again with a larger fencing token. The worker stops its own jobs two heartbeats before. Kubernetes: the `tolerationSeconds` of 300 that the `DefaultTolerationSeconds` admission plugin gives a pod for the unreachable taint. |
 
-##### Pool
+#### Pool
 
 The capacity of each worker in a pool. Kubernetes: a node pool's allocatable, and its eviction thresholds.
 
@@ -557,7 +557,7 @@ With `provider = "https"`:
 | `listen` | string \| null | `null` | Where the server listens, as `HOST:PORT`. None: no server. `piloop serve --listen` overrides it. |
 | `tls` | [Certificate](#certificate) \| string \| null | `null` | The server ends TLS with a certificate, or `"proxy"`: a reverse proxy or an SSH tunnel ends it. None: plain HTTP, which only a loopback `listen` may use. |
 
-##### Certificate
+#### Certificate
 
 The server's certificate chain and its private key, as PEM files.
 

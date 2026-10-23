@@ -58,7 +58,9 @@ class PiloopDeprecationWarning(DeprecationWarning):
 
 
 REMOVED_IN = Version(0, 3, 0)
-"""The release that ``warn`` names for the keys that this release deprecates."""
+"""The release that ``warn`` names for the keys that 0.2.0 deprecates."""
+MAX_EVALUATIONS_REMOVED_IN = Version(0, 4, 0)
+"""The release that ``warn`` names for ``max_evaluations``, which 0.2.0 configs set."""
 SCOUT_SHARED = ('runtime', 'harnesses', 'model', 'timeout', 'mcp', 'addendum', 'workdir')
 """The keys of ``[roles.research]`` that a scout sweep used before the scout was a role of its own."""
 
@@ -250,7 +252,7 @@ def storage_remote(toml: Path, raw: dict[str, object]) -> None:
 
 
 @until(
-    '0.3.0',
+    '0.4.0',
     'max_evaluations in config.toml is [plugins.executor.pools.serve] evaluations: delete the max_evaluations bridge',
 )
 def max_evaluations(toml: Path, raw: dict[str, object]) -> None:
@@ -265,7 +267,7 @@ def max_evaluations(toml: Path, raw: dict[str, object]) -> None:
         toml,
         'max_evaluations',
         'max_evaluations is deprecated; write evaluations in [plugins.executor.pools.serve]',
-        removed_in=REMOVED_IN,
+        removed_in=MAX_EVALUATIONS_REMOVED_IN,
     )
 
 
@@ -273,7 +275,7 @@ OLD_MAX_EVALUATIONS_ENV = 'PILOOP_MAX_EVALUATIONS'
 
 
 @until(
-    '0.3.0',
+    '0.4.0',
     'PILOOP_MAX_EVALUATIONS is PILOOP_PLUGINS__EXECUTOR__POOLS__SERVE__EVALUATIONS: delete max_evaluations_env',
 )
 def max_evaluations_env(environ: Mapping[str, str], raw: dict[str, object]) -> dict[str, object]:
@@ -286,7 +288,7 @@ def max_evaluations_env(environ: Mapping[str, str], raw: dict[str, object]) -> d
     _slots(raw, old)
     warnings.warn(
         f'{OLD_MAX_EVALUATIONS_ENV} is deprecated; set PILOOP_PLUGINS__EXECUTOR__POOLS__SERVE__EVALUATIONS;'
-        f' removed in piloop {REMOVED_IN}',
+        f' removed in piloop {MAX_EVALUATIONS_REMOVED_IN}',
         PiloopDeprecationWarning,
         stacklevel=2,
     )

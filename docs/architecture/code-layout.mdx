@@ -1,27 +1,13 @@
 ---
 title: Code layout
-description: The subpackages of piloop, what each one does, and how they import each other.
+description: The subpackages of piloop and how they import each other.
 ---
 
 import Imports from '/snippets/generated/imports.mdx';
 
-The `piloop` package has one subpackage for each concern. Imports only point down this list:
-
-1. `db/`: storage, the SQL gate for agents, the events feed. `store/`: the artifact store, its blobs and manifests.
-2. `mcp/`, `usage/`, and `config.py` with `harnesses.py`: MCP servers, token usage, the campaign configuration.
-3. `runtime/`: the runtime of an agent session. The runtimes themselves are plugins (`plugins/runtime/`).
-4. `scoring/`: the evaluate command, the ledger, the verdict.
-5. `agents/`: the roles and their prompts, the agent lifecycle, session capture.
-6. `campaign/`: campaigns, ideas, the inbox, stop conditions, the spend limit.
-7. `reports/`: status, history, the research pack.
-8. `daemon/`: the process, the scheduler, the run controller.
-9. `watch/` and `cli/`.
-
-`capabilities.py` is not a layer: it re-exports what a plugin imports, every capability, its contract types and its
-built-in providers, and nothing in `piloop/` imports it.
-
-The rule is also in [CONTRIBUTING.md](https://github.com/hiloopai/piloop/blob/main/CONTRIBUTING.md#package-layout). When a
-module needs code from a higher layer, move that code down.
+The `piloop` package has one subpackage for each concern, and imports point down its layers.
+[CONTRIBUTING.md](https://github.com/hiloopai/piloop/blob/main/CONTRIBUTING.md#package-layout) lists the layers and the
+rules.
 
 The graph below is generated from the import statements in `piloop/`. An arrow points from the importer to what it
 imports. An arrow that a longer path already implies is left out, so the layers show. The table after the graph has

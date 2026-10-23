@@ -35,13 +35,14 @@ sequenceDiagram
     A->>DB: read and write with piloop sql
     A->>G: commit
     opt a new comment on the run or the idea
-        S->>R: send it to the agent as a [piloop] line
+        S->>W: hand it to the executor
+        W->>R: send it to the agent as a [piloop] line
     end
     R-->>W: AgentExit
     W->>G: commit the work that is left uncommitted, pin the head, remove the worktree
     W->>DB: report on the lease: close the agent session row (exited or killed), with its token usage
     L-->>X: how the job ended: Ran, with the AgentExit and the head
-    X->>DB: close the run (succeeded, failed or timed_out)
+    X->>DB: close the run with its end
     loop each new commit, oldest first
         X->>G: pin it under refs/piloop/
         X->>DB: find or insert its candidate, by git tree
@@ -73,7 +74,8 @@ sequenceDiagram
    job. The worker takes it, adds a git worktree at the run's base (the head, or the candidate that the idea
    pins) and calls `Runtime.start`.
 4. **Work.** The agent reads its brief, implements the idea and commits. It reads and writes the database with
-   `piloop sql`. On each tick, the scheduler sends new comments on the run or the idea to the agent.
+   `piloop sql`. On each tick, the scheduler hands new comments on the run or the idea to the executor, which sends
+   them to the agent.
 5. **Close.** When the agent ends or times out, the worker reads its token usage, commits what is left uncommitted, on
    its own, as a `recovered` commit, and reports, which closes the agent session row. The run controller closes the
    run. The implementer slot is now free for the next run.
@@ -86,6 +88,6 @@ sequenceDiagram
 8. **Settle.** The idea becomes `done`, or goes back to `ready` when its run failed and it has attempts left. The
    idea stays `scheduled` until every commit is judged, so an idea that waits for it starts from its keeps.
 
-An agent that does not start to work is not an attempt. The executor queues the run again with a new agent session row,
-up to two times. A run whose every agent failed to start parks its idea. A run whose worker was lost (`worker_lost`)
-is not an attempt either: its idea goes back to `ready`. [The verdict](/concepts/verdict) explains the bar, the head and the statistics.
+An agent that does not start to work is not an attempt. The run controller queues the run again with a new agent
+session row, up to two times, then parks the idea. [State machines](/architecture/state-machines#run) says which ends
+of a run are attempts, and [the verdict](/concepts/verdict) explains the bar and the head.

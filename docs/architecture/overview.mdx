@@ -22,7 +22,7 @@ The design optimizes three things, in this order:
    as the agent ends, while the daemon measures the commits.
 
 The state is one SQLite file. Agents read and write it with plain SQL through `piloop sql`, and the skills use the
-same CLI. There is no API server: this is the simplest thing that works.
+same CLI.
 
 You do not manage a swarm of agents. You talk to one agent, the [orchestrator](/concepts/orchestrator), and it runs
 piloop for you.
@@ -110,9 +110,9 @@ flowchart LR
 - **The executor** runs the jobs, in three layers:
   1. The executor itself is a [capability](/architecture/extension-points#executors) that you can swap.
   2. [Leases](/architecture/leases) are a library that an executor can use to hand jobs to workers.
-  3. The built-in executor, `workers`, runs its worker on leases: in `piloop serve` now, on other machines later. The
-     worker makes the worktree, runs the agent or the evaluate command, and reports.
-- **The [runtime](/concepts/runtimes)** is where an agent process runs: a background process by default, or a
+  3. The built-in executor, `workers`, runs one worker on leases, in `piloop serve`. The worker makes the worktree,
+     runs the agent or the evaluate command, and reports.
+- **The [runtime](/concepts/roles#runtimes)** is where an agent process runs: a background process by default, or a
   [Herdr](https://herdr.dev) pane that you can watch and steer. A package can add others.
 - **The harness** is the coding agent CLI: Claude Code, Codex or pi. A `[harness.<name>]` table says how to start it.
 - **The agents** each work in their own git worktree. An implementer tries one idea. Research, the watchdog and the roles that
@@ -122,7 +122,7 @@ flowchart LR
 - **The orchestrator** is any coding agent with the `piloop-operate` skill. It loops on `piloop inbox wait`. The
   daemon never starts it.
 
-Everything runs on one machine: one SQLite file, one daemon, and local worktrees.
+With the built-in executor, everything runs on one machine: one SQLite file, one daemon, and local worktrees.
 
 ## What you can replace
 
@@ -136,20 +136,7 @@ the configuration, or add one with a plugin, a Python package that you install n
 | The plugin host: the part of piloop that loads plugins | No. |
 | The interface of the artifact store | No. A storage backend can change where its files go. |
 | The operations that apply a job's result | No. An executor calls them. |
-| Each capability: executor, runtime, storage backend, role, trigger, verdict rule, stop rule | Yes. |
-
-The parts that you cannot replace make piloop run, and keep its data correct. Each capability has the name of a thing
-that you know from piloop, for example "verdict rule". piloop has few capabilities, and each one keeps the same
-interface from version to version.
-
-A plugin can also:
-
-- Call a built-in provider and change one part of its answer. For example, a verdict rule can call the built-in rule
-  `bootstrap`, then change its verdict.
-- Let other plugins extend it. The plugin declares a capability of its own and calls its providers. Other plugins add
-  providers.
-
-[Extension points](/architecture/extension-points) has an example of each.
+| Each capability: executor, network, runtime, storage backend, role, trigger, verdict rule, stop rule | Yes. |
 
 ## Read next
 

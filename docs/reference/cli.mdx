@@ -20,18 +20,10 @@ Commands that write sign their writes with `PILOOP_ACTOR` (`human` by default). 
 piloop init [PATH] [--example enwik8|titanic-tracks]
 ```
 
-Makes `PATH` (default `.`) a piloop campaign and registers it. It is safe to run again. When there is no database
-yet, it creates one with the schema of this CLI.
-
-- Runs `git init` and makes a baseline commit when necessary.
-- When there is no `piloop.toml`, writes `piloop.toml`, `brief.md` and `evaluate.py` from the template. It keeps
-  files that exist already. While `evaluate.py` is the unchanged stub, it stops and says what to edit.
-- Measures `HEAD` as the baseline candidate and registers the campaign. When the campaign is registered already, it
-  reads `piloop.toml` again.
-- Copies the documents that `[memory] documents` names into the database. See
-  [research memory](/concepts/research-memory).
-
-`--example` creates a bundled example instead of the blank template.
+Makes `PATH` (default `.`) a piloop campaign, measures `HEAD` as the baseline and registers the campaign. Without a
+`piloop.toml`, it writes one from the template, with `brief.md` and `evaluate.py`, and stops while `evaluate.py` is the
+stub. Run it again after each edit of `piloop.toml`. `--example` creates a bundled example instead. See
+[Run a campaign by hand](/by-hand).
 
 ### piloop install-skills
 
@@ -46,10 +38,9 @@ Checks the install, without changing anything. Each failure says how to fix it, 
 
 ### piloop plugins
 
-Lists each capability (runtimes, storage backends, triggers, roles, and any that a plugin adds) with every provider,
-the package and version that it comes from, and its entry point. Then it lists what the configuration selects: each
-provider with where the choice comes from. It checks them as the daemon does when it starts, and fails as the daemon
-would. See [How piloop loads plugins](/architecture/extension-points#how-piloop-loads-plugins).
+Lists each capability with every provider, the package and version that it comes from, and its entry point. Then it
+lists what the configuration selects, and checks it as the daemon does when it starts. See
+[How piloop loads plugins](/architecture/extension-points#how-piloop-loads-plugins).
 
 ### piloop upgrade
 
@@ -79,9 +70,10 @@ Runs the daemon in the foreground. `--detach` starts it in the background, with 
 daemon checks when it starts, its plugins and what `config.toml` binds, and fails with the reason when it would not
 start. See [How piloop loads plugins](/architecture/extension-points#how-piloop-loads-plugins).
 
-`--listen` serves other machines on `HOST:PORT`, in place of `[plugins.network] listen` in `config.toml`. Each caller
-sends a token of `piloop token`. An address that is not loopback needs `tls` in `[plugins.network]`: see the
-[configuration](/reference/configuration#plugins).
+`--listen` serves the routes of the [executor](/architecture/extension-points#executors) to other machines on
+`HOST:PORT`, in place of `[plugins.network] listen` in `config.toml`. The built-in `workers` has none. Each caller
+sends a token of `piloop token`. An address that is not loopback needs `tls`: see
+[Networks](/architecture/extension-points#networks).
 
 ### piloop token
 
@@ -99,24 +91,35 @@ piloop stop [--timeout SECONDS]
 ```
 
 Sends SIGTERM to the daemon and waits up to `--timeout` seconds (default 30) for it to exit. The daemon stops the
-running agents, and their runs end `daemon_stopped`. Their ideas go back to `ready`. A run whose implementer already
-left its finding is finished, not stopped: the next `piloop serve` scores its commits, and its idea does not run
-again. The campaigns stay active, and the next `piloop serve` continues them. A campaign ends only at its `[stop]`
-limits.
+running agents. The campaigns stay active, and the next `piloop serve` continues them. See
+[Stop and restart](/guides/running-for-days#stop-and-restart).
 
-### piloop campaign stop
+### piloop limits
 
 ```text
-piloop campaign stop REF [--kill] [--reason TEXT]
+piloop limits
+piloop limits set KEY=VALUE --reason TEXT
+piloop limits unset KEY
 ```
 
-Stops a campaign. The daemon stops it on its next tick, as when a [`[stop]` condition](/concepts/cost) holds: it
-drops the queued runs and the requested agents, the `stopped` triggers request the closing review, and each running
-implementer is told to commit and stop, then ended 10 minutes later. What the implementers committed is scored. With `--kill`,
-the implementers are ended at once, without the prompt, and their commits are still scored. On a stopped campaign, `--kill`
-ends the implementers that are still winding down. `--reason` goes into `stopped_reason`, after who stopped it. It also stops a campaign that
-is paused or held at its `[spend]` limit. A paused campaign gets its closing review; a held one as `[spend]
-closing_review` says ([Cost and spend limits](/concepts/cost#spend-outside-piloop)).
+Lists, sets or removes a **limit**: a value for a live key of a provider of the home, such as
+`executor.pools.serve.evaluations`, that wins over `config.toml` from the daemon's next tick. The value is JSON, or
+else text. `piloop status` shows each live key with its source:
+
+```text
+limit: executor.pools.serve.evaluations = 1  (limit by human: the GPU is busy)
+```
+
+See [Capacity](/architecture/leases#capacity).
+
+### piloop worker list
+
+```text
+piloop worker list
+```
+
+Lists each worker: its pool, when it was last heard, its host sample, its live jobs, and why it got no lease. See
+[Capacity](/architecture/leases#capacity).
 
 ### piloop restart
 
@@ -134,7 +137,7 @@ again; when it cannot, it says why and leaves the daemon running.
 Prints a systemd user unit (Linux) or a launchd agent (macOS) that keeps `piloop serve` running. It installs nothing.
 See [Running for days](/guides/running-for-days#under-a-service-manager).
 
-## Pause a campaign
+## Campaigns
 
 ### piloop pause
 
@@ -161,6 +164,29 @@ piloop resume REF
 
 Ends the pause. The daemon queues runs and requests roles again on its next tick.
 
+### piloop campaign stop
+
+```text
+piloop campaign stop REF [--kill] [--reason TEXT]
+```
+
+Stops a campaign on the daemon's next tick, as a [`[stop]` condition](/concepts/cost#stop-conditions) does, also a
+paused or held one. With `--kill`, the implementers are ended at once, without the prompt to commit and stop, and their
+commits are still scored. On a stopped campaign, `--kill` ends the implementers that are still winding down.
+`--reason` goes into `stopped_reason`.
+
+### piloop campaign parent
+
+```text
+piloop campaign parent REF PARENT_REF | --clear
+```
+
+Puts a campaign under another one of the same home, or makes it a root with `--clear`.
+
+### piloop campaign tree
+
+Prints every campaign under its parent, with its type and its status.
+
 ## Ideas and candidates
 
 ### piloop idea add
@@ -184,9 +210,6 @@ Adds a defined idea. A `ready` idea runs when an implementer slot is free, in or
 | `--track` | The track. Required when the campaign has several. |
 | `--after` | An idea to wait for. Repeat it for several. |
 | `--supersedes` | An idea that this one refines. Repeat it for several. |
-
-Research, the orchestrator and humans add ideas. A watchdog files a seed with `piloop idea seed` instead, and an implementer
-files neither.
 
 ### piloop idea seed
 
@@ -270,10 +293,7 @@ the old and new value, and `idea.linked` and `idea.unlinked` with the target and
 piloop candidate remeasure CANDIDATE_ID
 ```
 
-Asks the daemon to measure the candidate again with the current evaluator, for a measurement that a fault of the host
-spoiled, or for one more repeat, also on a stopped campaign. A `crash` that the daemon judged is judged again. Any
-other verdict stays. The command says when the daemon measures it: not while the campaign is paused with `--evals`, or
-held by its stop rule. See
+Asks the daemon to measure the candidate again with the current evaluator, also on a stopped campaign. See
 [Measure a candidate again](/concepts/verdict#measure-a-candidate-again).
 
 ### piloop eval queue
@@ -282,8 +302,7 @@ held by its stop rule. See
 piloop eval queue
 ```
 
-Lists the running evaluations, then the waiting ones in the order in which they get a slot. The last line counts them:
-`2 running, 1 waiting`. A requested remeasure shows as `waiting` at once. See
+Lists the running evaluations, then the waiting ones in the order in which they get a slot. See
 [The evaluation queue](/concepts/verdict#the-evaluation-queue).
 
 ### piloop eval cancel
@@ -292,35 +311,8 @@ Lists the running evaluations, then the waiting ones in the order in which they 
 piloop eval cancel CANDIDATE_ID
 ```
 
-Cancels the evaluation of a candidate. A waiting one never starts, and the daemon stops a running one. It also cancels
-a requested remeasure. The candidate gets a crashed measurement that names you.
-
-### piloop limits
-
-```text
-piloop limits
-piloop limits set KEY=VALUE --reason TEXT
-piloop limits unset KEY
-```
-
-Lists, sets or removes a **limit**: a value for a live key of a provider of the home, such as
-`executor.pools.serve.evaluations`, that wins over `config.toml` from the daemon's next tick. The value is JSON, or
-else text. `piloop status` shows each live key with its source:
-
-```text
-limit: executor.pools.serve.evaluations = 1  (limit by human: the GPU is busy)
-```
-
-See [Capacity](/architecture/leases#capacity).
-
-### piloop worker list
-
-```text
-piloop worker list
-```
-
-Lists each worker: its pool, when it was last heard, its host sample, its live jobs, and why it got no lease. See
-[Capacity](/architecture/leases#capacity).
+Cancels the evaluation of a candidate, waiting or running, or a requested remeasure. The candidate gets a crashed
+measurement that names you.
 
 ### piloop candidate import
 
@@ -338,9 +330,8 @@ of another campaign, fetch its commit into this repo first: `git fetch <its repo
 piloop candidate note CANDIDATE_ID REASON [--follow-up HUNCH]... [--track TRACK]
 ```
 
-Keeps a measured `discard` or `interesting` candidate in view as a starting point. Its verdict becomes `interesting`,
-and its reason becomes `note: <REASON>`, followed by the earlier reason. Each `--follow-up` files a seed pinned to the
-candidate. See [Notes](/concepts/verdict#notes).
+Keeps a measured `discard` or `interesting` candidate in view as a starting point. Each `--follow-up` files a seed
+pinned to the candidate. See [Notes](/concepts/verdict#notes).
 
 ### piloop candidate verdict
 
@@ -348,12 +339,8 @@ candidate. See [Notes](/concepts/verdict#notes).
 piloop candidate verdict CANDIDATE_ID keep|interesting|discard|crash --reason TEXT
 ```
 
-Overrides the judgement of a candidate. The verdict is then yours, so the daemon never changes it. The
-`candidate.verdict` event records the old and new verdict, with the reason. Only a judgement is overridden: a
-`pending` candidate (the daemon is judging it), a `reference`, and an `unmeasured` or `recovered` one are refused. A
-keep of a trunk run must build on the head (its commit has the head's changes, in its history or cherry-picked),
-because the head is the newest trunk keep: a keep without the head's changes would drop them. A keep of a branch run
-never moves the head.
+Overrides the judgement of a candidate. The daemon never changes a verdict that it did not set. See
+[Override a verdict](/concepts/verdict#override-a-verdict).
 
 ### piloop measurement add
 
@@ -361,14 +348,10 @@ never moves the head.
 piloop measurement add CANDIDATE_ID --report FILE
 ```
 
-Records a measurement that you made yourself, for example by running the evaluate command on the candidate's commit,
-under the campaign's current evaluator. `FILE` is JSON: `{"metrics": {"<name>": <value>}, "seconds": <s>, "error":
-"<why>"}`. Every metric name must be one of `piloop.toml`, and every metric is needed unless `error` says why the
-evaluation failed. A `pending` candidate is refused: add the measurement once the daemon has judged it. When the
-candidate's verdict is the daemon's `crash`, `discard` or `interesting`, the daemon judges it again with every
-measurement under the current evaluator, the next time it measures the campaign, also when the campaign is stopped:
-not while it is paused with `--evals`, or held by its stop rule. Any other verdict stays, and a keep's mean, which the runs that
-start from it must beat, includes the new measurement. The command says which of these happens.
+Records a measurement that you made yourself, under the campaign's current evaluator. `FILE` is JSON:
+`{"metrics": {"<name>": <value>}, "seconds": <s>, "error": "<why>"}`. Every metric of `piloop.toml` is needed unless
+`error` says why the evaluation failed. The command says whether the daemon judges the candidate again. See
+[Add a measurement by hand](/concepts/verdict#add-a-measurement-by-hand).
 
 ## Status and the inbox
 
@@ -464,10 +447,8 @@ nothing. Set the timeout of your shell tool above it.
 piloop wake [--budget TOKENS]
 ```
 
-Prints what an orchestrator session needs first, in a fixed budget (default 2000 tokens, about 4 characters each; 0
-prints nothing): the latest lines of the journal, the open inbox, the head of each active campaign, and the current
-lessons on their repos. Each section says how to read what did not fit. Run it at the start of every orchestrator
-session.
+Prints what an orchestrator session needs first, in a fixed budget of tokens (default 2000). See
+[Memory and sessions](/concepts/research-memory).
 
 ### piloop journal
 
@@ -475,9 +456,8 @@ session.
 piloop journal LINE
 ```
 
-Adds one line, at most 280 bytes, to the orchestrator's journal: a decision, a plan or a result, with its ids. The
-journal is append-only. `piloop wake` prints the latest lines, so that a new session picks up where the last one
-stopped.
+Adds one line, at most 280 bytes, to the orchestrator's append-only journal: a decision, a plan or a result, with its
+ids.
 
 ## Agents
 
@@ -498,7 +478,7 @@ Only the daemon starts implementers, because an implementer needs a run.
 piloop attach AGENT_SESSION_ID
 ```
 
-Shows a running agent in this terminal. The [runtime](/concepts/runtimes) of the agent defines how. When the runtime
+Shows a running agent in this terminal. The [runtime](/concepts/roles#runtimes) of the agent defines how. When the runtime
 cannot, the command says so and tells you where to look instead.
 
 ### piloop prompt
@@ -514,7 +494,7 @@ the command waits up to 20 seconds to say whether it arrived:
 prompted agent_session#4 (comment#31)
 ```
 
-When the [runtime](/concepts/runtimes) of the agent cannot take it, the command says why. The agent session ids are in
+When the [runtime](/concepts/roles#runtimes) of the agent cannot take it, the command says why. The agent session ids are in
 `piloop status`.
 
 ### piloop run cancel
@@ -525,7 +505,7 @@ piloop run cancel RUN_ID [--wrap-up]
 
 Cancels a queued or running run on the daemon's next tick. A queued run never starts, and a run whose implementer fails to
 start is not launched again. A running implementer is ended with
-[every process that it started](/concepts/runtimes#when-an-agent-ends), also those in sessions of their own. With `--wrap-up`, the implementer is first told to
+[every process that it started](/concepts/roles#when-an-agent-ends), also those in sessions of their own. With `--wrap-up`, the implementer is first told to
 commit and stop, and ended 10 minutes later. The run closes as `cancelled`, unless its implementer left its finding
 before the daemon ended it: a later finding is refused. Its commits are scored, it counts toward no run limit, and its idea is parked: set the idea `ready` to run it again.
 
@@ -574,10 +554,9 @@ they write.
 piloop restore REF [IDEA | PATH]
 ```
 
-Writes archived workspace files back into the campaign's workspace. `IDEA` (`12` or `idea#12`) restores the files of
-that idea. `PATH` restores one workspace-relative file or everything under a directory. With neither, it restores
-every archived file. A file that is already there with other content is kept and listed, never overwritten. See
-[The artifact store](/concepts/artifact-store).
+Writes archived workspace files back into the campaign's workspace: the files of `IDEA` (`12` or `idea#12`), one
+workspace-relative `PATH` or everything under it, or with neither, every archived file. See
+[Getting files back](/concepts/artifact-store#getting-files-back).
 
 ### piloop store status
 

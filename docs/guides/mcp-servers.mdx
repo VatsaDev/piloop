@@ -35,14 +35,6 @@ mcp = ["exa", "xai"]
 Whether a harness takes servers can depend on the runtime of the role. See
 [what each harness gets](#what-each-harness-gets).
 
-| Key | Meaning |
-|---|---|
-| `url` | The streamable HTTP endpoint. SSE is not supported. |
-| `headers_env` | HTTP only. Each header name, with the environment variable that holds its value. |
-| `bearer_token_env` | HTTP only. The environment variable sent as `Authorization: Bearer <value>`. |
-| `command` | stdio only. The server's command (argv). |
-| `env` | stdio only. The environment variables that the server reads. |
-
 A role gets no servers unless its `mcp` key lists them. The [configuration
 reference](/reference/configuration#mcpserver) has every key.
 
