@@ -18,7 +18,7 @@ class LowWaterTrigger(Trigger):
 
     - The campaign has no sweep yet, so there is nothing to wait for.
     - The last batch was killed. Lost prompts, timeouts or a daemon stop say nothing about the backlog, so the batch
-      is retried once. This applies to a streak of killed rows no longer than one batch (``max_concurrent``). A second
+      is retried once. A sweep that someone cancelled is not retried: after it, only new results start the next one. This applies to a streak of killed rows no longer than one batch (``max_concurrent``). A second
       killed batch is a systemic fault and counts as a normal last sweep.
     - New results: runs finished since the role's latest row started, which that sweep could not read. A sweep with
       nothing new to read reads the same history and proposes nothing. So each consecutive sweep that defined no idea
@@ -53,6 +53,8 @@ class LowWaterTrigger(Trigger):
         if (reason := news(tick, str(backlog))) is not None:
             return reason
         assert tick.last is not None  # Without a row, every backlog is news.
+        if tick.cancel(tick.last) is not None:
+            return None
         empty = tick.empty_sweeps((AgentSessionState.EXITED, AgentSessionState.KILLED))
         if not empty:
             return str(backlog)

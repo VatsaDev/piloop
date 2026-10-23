@@ -55,6 +55,7 @@ from piloop.db.models import (
     RunEnd,
     RunStatus,
     Verdict,
+    latest_agent_session,
     utcnow,
 )
 from piloop.db.session import Database, write_transaction
@@ -331,7 +332,7 @@ class RunController:
     def _execute(self, run_id: RunId, agent_session_id: AgentSessionId, span: Span) -> None:
         with self.launcher.lock:
             if self.launcher.cancelled.is_set():  # Queued after stop(). The scheduler already failed the row.
-                span.set(status='cancelled')
+                self._stopped(span, run_id)
                 return
             with self._db.session() as s:
                 run = s.get_one(Run, run_id)
@@ -443,7 +444,17 @@ class RunController:
         cut = not self._left_finding(run_id, idea_id, agent_session_id)  # else the stop closed it as handed off
         self._keep_cut_work(run_id, name, repo, base_sha, head, noted=cut)
         self._release(repo, agent_session_id, head)
-        span.set(status='cancelled')
+        self._stopped(span, run_id)
+
+    def _stopped(self, span: Span, run_id: RunId) -> None:
+        """Trace the end that a daemon stop writes on the run (``Scheduler._fail_run``), which owns the row."""
+        with self._db.session() as s:
+            run, agent = s.get_one(Run, run_id), latest_agent_session(s, run_id)
+            if run.status is RunStatus.RUNNING and agent is not None and left_finding(s, run, agent):
+                end, error = handed_off(s, run)
+            else:
+                end, error = RunEnd.DAEMON_STOPPED, None
+        span.set(status=end.status, end=end, error=error)
 
     def _ran(
         self,
@@ -1000,8 +1011,8 @@ class RunController:
     def _close(self, span: Span, run_id: RunId, end: RunEnd, error: str | None) -> None:
         """Record the run's end when its implementer ends, so the slot is free while the commits are scored (``scoring``)."""
         with self.launcher.lock:
-            if self.launcher.cancelled.is_set():  # stop() failed the row. Do not open it again.
-                span.set(status='cancelled')
+            if self.launcher.cancelled.is_set():  # stop() fails the row. Do not open it again.
+                self._stopped(span, run_id)
                 return
             with self._db.session() as s:
                 close_run(s, s.get_one(Run, run_id), end, error).scoring = True
@@ -1033,8 +1044,7 @@ class RunController:
         its status. A new run would stop on the same question, and ``done`` would start the ideas that wait for it.
         """
         with self.launcher.lock:
-            if self.launcher.cancelled.is_set():  # stop() returns the idea to the queue.
-                span.set(status='cancelled')
+            if self.launcher.cancelled.is_set():  # stop() returns the idea to the queue; the run's end stands
                 return
             with self._db.session() as s:
                 run, idea = s.get_one(Run, run_id), s.get_one(Idea, idea_id)
@@ -1269,6 +1279,11 @@ def close_run(s: Session, run: Run, end: RunEnd, error: str | None) -> Run:
     run.status, run.end, run.error, run.finished_at = end.status, end, error, utcnow()
     emit(s, RunFinished(end=end, error=error), TargetRef(TargetKind.RUN, run.id), System.DAEMON)
     return run
+
+
+def handed_off(s: Session, run: Run) -> tuple[RunEnd, str | None]:
+    """The end and error of a run that a stop hands off because its implementer left its finding (``run_outcome``)."""
+    return run_outcome(RunFacts(finding=True, asked=open_escalation(s, run)))
 
 
 def open_escalation(s: Session, run: Run) -> CommentId | None:

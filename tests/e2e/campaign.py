@@ -254,10 +254,20 @@ class Smoke:
 
 
 def harness_cost(log_dir: Path) -> float | None:
-    """Sum the ``total_cost_usd`` that a headless Claude Code prints at the end of each turn. A killed agent printed
-    none."""
+    """Sum the last ``total_cost_usd`` of each session in a headless Claude Code agent's output.
+
+    Claude Code prints its session's running total at the end of each process, and piloop resumes a session in a new
+    process to deliver a note. A killed agent printed none.
+    """
     out = log_dir / STDOUT
     if not out.is_file():
         return None
-    found = re.findall(r'"total_cost_usd":\s*([0-9.]+)', out.read_text(errors='replace'))
-    return sum(map(float, found)) if found else None
+    last: dict[str, float] = {}
+    for line in out.read_text(errors='replace').splitlines():
+        try:
+            result = json.loads(line)
+        except json.JSONDecodeError:
+            continue  # the harness's other output: only its result lines are JSON
+        if isinstance(result, dict) and 'total_cost_usd' in result:
+            last[str(result.get('session_id'))] = float(result['total_cost_usd'])
+    return sum(last.values()) if last else None

@@ -53,6 +53,10 @@ from piloop.db.feed import Topic
 from piloop.db.models import (
     LIVE_LEASES,
     OPEN_LEASES,
+    AgentSession,
+    AgentSessionState,
+    Evaluation,
+    Evaluator,
     Event,
     EventModel,
     Lease,
@@ -457,8 +461,10 @@ class Leases:
                     queued = queued.where(Lease.job['runner'].as_string().in_(row.runners))
                 lease = s.scalars(queued.order_by(Lease.id).limit(1)).first()
                 match lease, admits(pool, host, running, kind):
-                    case None, None | NoLease.SLOTS:  # full slots hold back nothing when nothing waits
+                    case None, None:
                         refused.append(NoLease.NOTHING)
+                    case None, NoLease.SLOTS if not _held_back(s, kind, row.runners):
+                        refused.append(NoLease.NOTHING)  # full slots hold back nothing when nothing waits
                     case _, NoLease() as refusal:
                         refused.append(refusal)
                     case _:
@@ -885,3 +891,23 @@ def _adopt_running(s: Session, left: LeftJob, worker: str, timing: Timing) -> bo
     lease.acquired_at = lease.started_at = left.started_at or now
     lease.renewed_at, lease.expires_at = now, now + timedelta(seconds=timing.toleration)
     return True
+
+
+def _held_back(s: Session, kind: LeaseKind, runners: Sequence[str]) -> bool:
+    """Whether core holds back a job of ``kind`` that a worker with ``runners`` could run.
+
+    Core submits a job only when ``Executor.capacity`` has a free slot, so while every slot is full the job waits in
+    core, as a requested agent or a waiting evaluation, and no lease is queued for it.
+    """
+    match kind:
+        case LeaseKind.AGENT:
+            query = select(AgentSession.id).where(AgentSession.state == AgentSessionState.REQUESTED)
+        case LeaseKind.EVALUATION:
+            query = (
+                select(Evaluation.id)
+                .join(Evaluator, Evaluator.id == Evaluation.evaluator_id)
+                .where(Evaluation.started_at.is_(None), Evaluator.runner.in_(runners))
+            )
+        case _:
+            assert_never(kind)
+    return s.scalar(query.limit(1)) is not None

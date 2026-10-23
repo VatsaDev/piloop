@@ -118,6 +118,8 @@ class Daemon:
         self._cfg = cfg
         self._argv = serve_argv(listen)
         """What an in-place restart execs."""
+        self._address = served.listen
+        """Where the server listens, as asked."""
         self.network = served.open(network.NetworkHost(Tokens(self.db)))
         self._server: Server | None = None
         try:
@@ -232,17 +234,27 @@ class Daemon:
         span.set(entire=version)
 
     def _listen(self, span: Span) -> None:
-        """Start the server on the network's listener, when it has one, and record its URL on the start span."""
+        """Start the server on the network's listener, when it has one, and record its URL on the start span.
+
+        The URL also goes to ``listen_file``, for ``piloop status``. An in-place restart listens on the port that port
+        0 took, so a worker that has the URL keeps its server.
+        """
+        self._cfg.listen_file.unlink(missing_ok=True)
         try:
             listener = self.network.listener()
         except OSError as e:
             raise SystemExit(f'the daemon does not listen: {e}') from e
         if listener is None:
             return
+        assert self._address is not None  # a network binds nothing without ``listen``
         from piloop.net.server import Server, app  # FastAPI takes a third of a second to import: only a server needs it
 
         self._server = Server(app(self.network, self.controller.executor.routes()), listener)
         self._server.start()
+        if self._address.port == 0:
+            port = listener.socket.getsockname()[1]
+            self._argv = serve_argv(self._address.model_copy(update={'port': port}))
+        self._cfg.listen_file.write_text(self._server.url)
         span.set(listen=self._server.url)
 
     def _on_sigterm(self, signum: int, frame: FrameType | None) -> None:
@@ -259,6 +271,7 @@ class Daemon:
             (self.scheduler.hand_over if self._restart else self.scheduler.stop)(timeout)
             if self._server is not None:
                 self._server.close()
+                self._cfg.listen_file.unlink(missing_ok=True)
         self.controller.close()
         self.tracer.shutdown()
         self.db.close()

@@ -36,8 +36,8 @@ A failed attempt puts an idea back to ``ready`` if it has attempts left. The dae
 def unblocked() -> ColumnElement[bool]:
     """Select the ideas whose ``after`` links all point to ``done`` ideas.
 
-    A prerequisite in any other status, including ``rejected`` and ``parked``, still blocks. The orchestrator or a
-    human then decides if the dependent idea is worth running without it.
+    A prerequisite in any other status still blocks. One that ended without a keep never releases its dependents:
+    ``park_stranded`` parks them.
     """
     return ~_blocked_by(IdeaStatus.DONE)
 
@@ -66,6 +66,58 @@ def _blocked_by(*settled: IdeaStatus) -> ColumnElement[bool]:
         target.id == link.target_id,
         target.status.not_in(settled),
     )
+
+
+def park_stranded(s: Session, campaign_id: CampaignId) -> dict[IdeaId, IdeaId]:
+    """Park each ``ready`` idea that never ran and runs ``after`` a prerequisite that ended without a keep.
+
+    Such a prerequisite is ``parked`` (a cancel parks it), ``rejected``, or ``done`` after runs that kept nothing. Its
+    dependents were meant to build on its change, which never landed, so they would block forever or start on a failed
+    premise. A prerequisite set ``done`` that never ran still releases them: that is a human's decision. Each parked
+    idea gets an escalation that asks whether to run it without the prerequisite. The ideas after a parked one are
+    parked in the same call.
+
+    Returns:
+        ``{parked idea id: the prerequisite that stranded it}``.
+    """
+    link, target = aliased(IdeaLink), aliased(Idea)
+    ran = exists().where(Run.idea_id == target.id)
+    kept = exists().where(Candidate.run_id == Run.id, Run.idea_id == target.id, Candidate.verdict == Verdict.KEEP)
+    ended = target.status.in_((IdeaStatus.PARKED, IdeaStatus.REJECTED)) | (
+        (target.status == IdeaStatus.DONE) & ran & ~kept
+    )
+    query = (
+        select(Idea, target)
+        .join(link, (link.idea_id == Idea.id) & (link.kind == LinkKind.AFTER))
+        .join(target, target.id == link.target_id)
+        .where(
+            Idea.campaign_id == campaign_id, Idea.status == IdeaStatus.READY, ~exists().where(Run.idea_id == Idea.id)
+        )
+        .where(ended)
+        .order_by(Idea.id, target.id)
+    )
+    parked: dict[IdeaId, IdeaId] = {}
+    while rows := s.execute(query).all():
+        first: dict[Idea, Idea] = {}
+        for idea, prerequisite in rows:
+            first.setdefault(idea, prerequisite)
+        for idea, prerequisite in first.items():
+            outcome = 'kept nothing' if prerequisite.status is IdeaStatus.DONE else f'is {prerequisite.status}'
+            idea.status = IdeaStatus.PARKED
+            s.add(
+                Comment(
+                    target=TargetRef(TargetKind.IDEA, idea.id),
+                    author=DAEMON_ACTOR,
+                    kind=CommentKind.ESCALATION,
+                    priority=2,
+                    body=f'parked: it runs after idea#{prerequisite.id}, which {outcome}. Unlink it (piloop idea unlink'
+                    f' {idea.id} after {prerequisite.id}) to run it without that change, or set it ready once'
+                    f' idea#{prerequisite.id} is ready again',
+                )
+            )
+            parked[idea.id] = prerequisite.id
+        s.flush()
+    return parked
 
 
 def supersede(s: Session, campaign_id: CampaignId) -> dict[IdeaId, IdeaId]:

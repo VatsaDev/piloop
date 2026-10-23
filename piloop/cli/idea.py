@@ -222,7 +222,7 @@ def idea_unlink(
     *,
     reason: Reason,
 ) -> None:
-    """Delete an idea's link, for example an `after` link to a prerequisite that was rejected and blocks it."""
+    """Delete an idea's link, for example an `after` link to a prerequisite that kept nothing, to run the idea anyway."""
     with common.refused(), common.session() as s:
         ops.unlink(s, idea_id, kind, target_id, reason=reason, actor=common.settings.actor)
         s.commit()

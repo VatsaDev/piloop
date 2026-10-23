@@ -29,6 +29,19 @@ def test_the_daemon_serves_on_listen_and_its_shutdown_closes_the_port(tmp_path: 
         httpx.post(url + UNROUTED)
 
 
+def test_a_daemon_on_a_fixed_port_says_where_it_listens_and_restarts_on_that_port(tmp_path: Path) -> None:
+    with socket.create_server(('127.0.0.1', 0)) as free:
+        port = free.getsockname()[1]
+    cfg = Settings(home=tmp_path / 'home')
+    daemon = Daemon(cfg, listen=Address(host='127.0.0.1', port=port))
+    argv = list(daemon._argv)
+    with daemon.tracer.span('test') as span:
+        daemon._listen(span)
+    assert (daemon._argv, cfg.listen_file.read_text()) == (argv, f'http://127.0.0.1:{port}')
+    daemon.shutdown(timeout=5)
+    assert not cfg.listen_file.exists()
+
+
 def test_a_daemon_without_listen_serves_nothing(tmp_path: Path) -> None:
     daemon = Daemon(Settings(home=tmp_path / 'home'))
     with daemon.tracer.span('test') as span:

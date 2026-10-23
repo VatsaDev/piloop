@@ -368,9 +368,14 @@ class CampaignResults:
                     self._stopped(s, w, report.head)
                     return
                 asked = _asked_to_end(s, w.id)
-                killed = process.status is ExitStatus.TIMED_OUT or w.state is AgentSessionState.ENDING
-                w.state = AgentSessionState.KILLED if killed else AgentSessionState.EXITED
-                w.error, w.checkpoint_id, seconds = process.error, report.checkpoint, process.seconds
+                ending = w.state is AgentSessionState.ENDING  # its error says why the daemon ended it
+                w.state = (
+                    AgentSessionState.KILLED
+                    if ending or process.status is ExitStatus.TIMED_OUT
+                    else AgentSessionState.EXITED
+                )
+                w.error = w.error if ending else process.error
+                w.checkpoint_id, seconds = report.checkpoint, process.seconds
                 worked = asked or not _never_worked(s, w, report)
                 ended = Ran(process, report.head) if worked else NotStarted(process.error or NEVER_WORKED)
             case _:

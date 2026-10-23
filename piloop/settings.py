@@ -182,6 +182,11 @@ class Settings(BaseSettings):
         return self.home / 'serve.pid'
 
     @property
+    def listen_file(self) -> Path:
+        """The file with the URL that the running daemon's server listens on. The daemon writes it once it listens."""
+        return self.home / 'serve.url'
+
+    @property
     def log_file(self) -> Path:
         """The file that ``piloop serve --detach`` appends the daemon's stdout and stderr to."""
         return self.home / 'serve.log'

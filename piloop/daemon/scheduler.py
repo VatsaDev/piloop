@@ -43,7 +43,7 @@ from piloop.agents.roles import compose_brief, role_of
 from piloop.campaign import spend
 from piloop.campaign.anomaly import AnomalyReported
 from piloop.campaign.campaigns import WORKSPACE, campaign_dir, workspace_dir, worktree_links
-from piloop.campaign.ideas import defined_by, runnable, supersede, waiting
+from piloop.campaign.ideas import defined_by, park_stranded, runnable, supersede, waiting
 from piloop.campaign.memory import sync_documents
 from piloop.campaign.spend import SpendError
 from piloop.campaign.stop import (
@@ -64,12 +64,10 @@ from piloop.config import CampaignConfig, ClosingReview, Spend, config_of
 from piloop.daemon.archiver import Archiver, Archiving
 from piloop.daemon.run_controller import (
     RunController,
-    RunFacts,
     close_run,
     commits_of,
+    handed_off,
     left_finding,
-    open_escalation,
-    run_outcome,
 )
 from piloop.db.events import emit, has, in_order
 from piloop.db.models import (
@@ -370,7 +368,7 @@ class Scheduler:
         (``RunController._keep_cut_work``), and ``reap`` scores them and settles the idea (``runs.scoring``). Its status is
         what the run's end would give (``run_outcome``).
         """
-        end, error = run_outcome(RunFacts(finding=True, asked=open_escalation(s, run)))
+        end, error = handed_off(s, run)
         close_run(s, run, end, error).scoring = True
         self._tracer.event('run.handed_off', run=run.id, end=end)
 
@@ -416,7 +414,8 @@ class Scheduler:
         """Send new comments to running implementers, run every campaign's triggers and launch requested agents.
 
         Returns the ids of the launched agent sessions. Before the triggers, the tick rejects the ideas that a newer idea
-        superseded (``piloop.campaign.ideas.supersede``). This also happens for a stopped campaign, which requests
+        superseded (``piloop.campaign.ideas.supersede``), and parks those after a prerequisite that ended without a keep
+        (``park_stranded``). This also happens for a stopped campaign, which requests
         nothing and is measured again only on request (``ledger.due``). Then the tick asks the stop rule
         (``piloop.campaign.stop.check``) of each active campaign, and of each stopped one whose closing review waits
         for a hold (``spend.review_waits``). A campaign that it holds gets only the first step. A paused campaign
@@ -448,6 +447,9 @@ class Scheduler:
                     continue
                 for idea_id, by in supersede(s, campaign.id).items():
                     self._tracer.event('idea.superseded', campaign=campaign.name, idea=idea_id, by=by)
+                for idea_id, prerequisite in park_stranded(s, campaign.id).items():
+                    reason = f'after idea#{prerequisite}, which ended without a keep'
+                    self._tracer.event('idea.parked', campaign=campaign.name, idea=idea_id, reason=reason)
                 answer = check_stop(s, campaign, cfg) if asked(s, campaign, cfg) else GO
                 held = answer.reason if isinstance(answer, Hold) else None
                 if held is None and campaign.paused is not Pause.ALL:
@@ -680,7 +682,7 @@ class Scheduler:
                     what, cause, request = 'The campaign stopped', reason, requested_stop(s, campaign)
                     ending = Ending.WRAP_UP if request is None else request[1].ending
                 if agent_session.state is AgentSessionState.REQUESTED:
-                    self._close(s, agent_session, end)
+                    self._close(s, agent_session, reason)
                     if agent_session.run_id is not None:
                         self._fail_run(s, s.get_one(Run, agent_session.run_id), end)
                     continue
@@ -715,7 +717,7 @@ class Scheduler:
         so a finding that the agent writes either committed before, and the agent finished first, or is refused.
         """
         if agent_session.state is not AgentSessionState.ENDING:
-            agent_session.state = AgentSessionState.ENDING
+            agent_session.state, agent_session.error = AgentSessionState.ENDING, reason
             emit(
                 s,
                 AgentEnded(reason=reason, end=end),
@@ -1503,6 +1505,10 @@ class RoleTick:
     def killed_streak(self) -> int:
         states = self.s.scalars(self._mine().with_only_columns(AgentSession.state).order_by(AgentSession.id.desc()))
         return len(list(itertools.takewhile(lambda state: state is AgentSessionState.KILLED, states)))
+
+    def cancel(self, agent_session: AgentSession, /) -> CancelRequested | None:
+        cancel = agent_cancel(self.s, agent_session)
+        return cancel[1] if cancel is not None else None
 
     def empty_sweeps(self, states: tuple[AgentSessionState, ...]) -> list[AgentSession]:
         """See ``Tick.empty_sweeps``.

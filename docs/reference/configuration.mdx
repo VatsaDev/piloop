@@ -361,7 +361,7 @@ not running does not count. Below the target, a sweep fires for one of these rea
 
 - The campaign has no sweep yet, so there is nothing to wait for.
 - The last batch was killed. Lost prompts, timeouts or a daemon stop say nothing about the backlog, so the batch
-  is retried once. This applies to a streak of killed rows no longer than one batch (`max_concurrent`). A second
+  is retried once. A sweep that someone cancelled is not retried: after it, only new results start the next one. This applies to a streak of killed rows no longer than one batch (`max_concurrent`). A second
   killed batch is a systemic fault and counts as a normal last sweep.
 - New results: runs finished since the role's latest row started, which that sweep could not read. A sweep with
   nothing new to read reads the same history and proposes nothing. So each consecutive sweep that defined no idea
@@ -387,7 +387,7 @@ no idea that a sweep adds could run sooner.
 A seed was filed after the role's latest agent started, and a slot of the role is free.
 
 It fires however full the backlog is. If the latest row got the seed but was killed, the seed is retried, once per
-batch, as `low_water` retries. A seed that a sweep read and did not develop is in the next sweep's brief,
+batch, as `low_water` retries, unless someone cancelled that row. A seed that a sweep read and did not develop is in the next sweep's brief,
 whatever trigger fires it. Gotcha: a sweep's brief is read a moment before its row's `started_at` is set, so a
 seed filed in that moment waits for the next sweep.
 

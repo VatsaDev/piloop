@@ -32,7 +32,7 @@ from piloop.cli import common, limits as limits_cli
 from piloop.cli.common import CampaignRef, JsonFlag
 from piloop.cli.daemon import daemon_line
 from piloop.config import config_of
-from piloop.daemon.serve import running_pid
+from piloop.daemon.serve import listening, running_pid
 from piloop.db import feed as db_feed
 from piloop.db.models import AgentSession, Campaign, CampaignStatus, utcnow
 from piloop.db.session import Database
@@ -132,13 +132,14 @@ def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> Non
     recent candidates, the anomalies, the inbox, the latest decisions and the recent events. Without a campaign, it
     uses the campaign that the current directory is in, else the only active campaign, else every campaign.
 
-    With --json, it prints the daemon's pid and the main facts of each campaign, read at one cursor: follow them with
+    With --json, it prints the daemon's pid and the URL it listens on, and the main facts of each campaign, read at one cursor: follow them with
     `piloop events --after <cursor>`.
     """
     if json_:
         with common.session() as s, db_feed.snapshot(s) as cursor:
             states = feed.status_view(s, common.campaigns(s, ref))
-        common.print_json({'cursor': cursor, 'daemon': {'pid': running_pid(common.settings)}, 'campaigns': states})
+        daemon = {'pid': running_pid(common.settings), 'listen': listening(common.settings)}
+        common.print_json({'cursor': cursor, 'daemon': daemon, 'campaigns': states})
         return
     common.console.print(daemon_line())
     with common.session() as s:

@@ -1814,7 +1814,11 @@ def test_a_cancelled_executor_leaves_the_bookkeeping_to_the_scheduler(
     ex.launcher.cancel()
     execute(ex, db, queued)
     assert run_row(db, queued).status is RunStatus.QUEUED, 'not even started'
-    assert dict(span_named(spans, 'piloop.run').attributes or {}) == {'run': queued, 'status': 'cancelled'}
+    assert dict(span_named(spans, 'piloop.run').attributes or {}) == {
+        'run': queued,
+        'status': 'failed',
+        'end': 'daemon_stopped',
+    }, 'what the stop writes on the row'
 
 
 def test_an_implementer_dying_after_cancel_is_not_a_run_failure(

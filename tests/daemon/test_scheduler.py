@@ -585,32 +585,99 @@ def test_a_blocked_idea_waits_for_every_prerequisite_then_starts_from_the_head(
         assert s.get_one(Idea, third).status is IdeaStatus.DONE
 
 
-def test_a_prerequisite_that_is_not_done_keeps_blocking(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+def test_a_prerequisite_that_ended_without_a_keep_parks_the_ideas_after_it_with_an_escalation(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer
 ) -> None:
-    (rejected,) = add_ideas(db, campaign, 'rejected', status=IdeaStatus.REJECTED)
-    (parked,) = add_ideas(db, campaign, 'parked', status=IdeaStatus.PARKED)
-    (proposed,) = add_ideas(db, campaign, 'proposed', status=IdeaStatus.PROPOSED)
-    (after_rejected,) = add_ideas(db, campaign, 'after rejected', after=(rejected,))
-    (after_parked,) = add_ideas(db, campaign, 'after parked', after=(parked,))
-    (after_proposed,) = add_ideas(db, campaign, 'after proposed', after=(proposed,))
-    (chained,) = add_ideas(db, campaign, 'after a blocked one', after=(after_rejected,))
-    scheduler = make_scheduler(db, runtime, tmp_path)
+    """A cancelled (parked), rejected, or done-but-kept-nothing prerequisite can never release its dependents.
 
-    assert scheduler.tick() == [], 'rejected, parked and proposed prerequisites all block; so does a blocked one'
-    assert statuses(db)[3:] == [IdeaStatus.READY] * 4, 'blocked ideas stay ready for the watchdog or a human'
-
+    Left ``ready``, they block forever and the implementer slots sit idle. The daemon parks them, and the ideas after
+    them, and asks for a decision. A prerequisite that kept something, never ran, or is still ``proposed`` does not.
+    """
+    (parked, rejected, nothing, kept, never, proposed) = add_ideas(
+        db, campaign, 'cancelled', 'rejected', 'kept nothing', 'kept', 'never ran', 'proposed'
+    )
     with db.session() as s:
-        s.get_one(Idea, rejected).status = IdeaStatus.DONE  # a human reconsidered; it never ran, so it kept nothing
+        for idea_id, status in (
+            (parked, IdeaStatus.PARKED),
+            (rejected, IdeaStatus.REJECTED),
+            (nothing, IdeaStatus.DONE),
+            (kept, IdeaStatus.DONE),
+            (never, IdeaStatus.DONE),
+            (proposed, IdeaStatus.PROPOSED),
+        ):
+            s.get_one(Idea, idea_id).status = status
+        for idea_id, verdict in ((parked, None), (nothing, Verdict.DISCARD), (kept, Verdict.KEEP)):
+            run = Run(
+                idea_id=idea_id,
+                attempt=1,
+                base_candidate_id=1,
+                harness='h',
+                model='m',
+                status=RunStatus.SUCCEEDED,
+                end=RunEnd.FINISHED,
+            )
+            s.add(run)
+            s.flush()
+            if verdict is not None:
+                s.add(
+                    Candidate(
+                        campaign_id=campaign.id,
+                        run_id=run.id,
+                        tree_sha=f't{run.id}',
+                        commit_sha=f'c{run.id}',
+                        verdict=verdict,
+                    )
+                )
+        p = s.get_one(Campaign, campaign.id)
+        p.status, p.stopped_reason = CampaignStatus.STOPPED, 'by the test'  # bookkeeping happens, nothing launches
         s.commit()
-    assert scheduler.tick() == [1]
-    scheduler.wait()
-    scheduler.stop(timeout=1)
+    stranded = add_ideas(db, campaign, 'after cancelled', after=(parked,))
+    stranded += add_ideas(db, campaign, 'after rejected', after=(rejected,))
+    stranded += add_ideas(db, campaign, 'after kept nothing', after=(nothing, kept))
+    (chained,) = add_ideas(db, campaign, 'after after cancelled', after=(stranded[0],))
+    released = add_ideas(db, campaign, 'after kept', 'after never ran', 'after proposed')
     with db.session() as s:
-        run = s.get_one(Run, 1)
-        assert (run.idea_id, run.base_candidate_id) == (after_rejected, 1), 'the head: the baseline'
-        assert s.get_one(Idea, after_rejected).status is IdeaStatus.DONE
-        assert [s.get_one(Idea, i).status for i in (after_parked, after_proposed, chained)] == [IdeaStatus.READY] * 3
+        for idea_id, target in zip(released, (kept, never, proposed), strict=True):
+            s.add(IdeaLink(idea_id=idea_id, target_id=target, kind=LinkKind.AFTER))
+        s.commit()
+    scheduler = make_scheduler(db, runtime, tmp_path, tracer)
+
+    assert scheduler.tick() == []
+    with db.session() as s:
+        assert [s.get_one(Idea, i).status for i in (*stranded, chained)] == [IdeaStatus.PARKED] * 4, 'chains too'
+        assert [s.get_one(Idea, i).status for i in released] == [IdeaStatus.READY] * 3
+        asked = s.scalars(select(Comment).where(Comment.author == DAEMON_ACTOR).order_by(Comment.id)).all()
+        assert [(c.target_id, c.kind, c.priority, c.body) for c in asked] == snapshot(
+            [
+                (
+                    7,
+                    CommentKind.ESCALATION,
+                    2,
+                    'parked: it runs after idea#1, which is parked. Unlink it (piloop idea unlink 7 after 1) to run it without that change, or set it ready once idea#1 is ready again',
+                ),
+                (
+                    8,
+                    CommentKind.ESCALATION,
+                    2,
+                    'parked: it runs after idea#2, which is rejected. Unlink it (piloop idea unlink 8 after 2) to run it without that change, or set it ready once idea#2 is ready again',
+                ),
+                (
+                    9,
+                    CommentKind.ESCALATION,
+                    2,
+                    'parked: it runs after idea#3, which kept nothing. Unlink it (piloop idea unlink 9 after 3) to run it without that change, or set it ready once idea#3 is ready again',
+                ),
+                (
+                    10,
+                    CommentKind.ESCALATION,
+                    2,
+                    'parked: it runs after idea#7, which is parked. Unlink it (piloop idea unlink 10 after 7) to run it without that change, or set it ready once idea#7 is ready again',
+                ),
+            ]
+        )
+    assert scheduler.tick() == []
+    with db.session() as s:
+        assert s.scalar(select(func.count()).select_from(Comment)) == 4, 'once'
 
 
 def test_low_water_does_not_count_blocked_ideas_as_backlog(
@@ -945,7 +1012,8 @@ def test_stop_kills_in_flight_implementers_and_fails_their_runs(
         assert s.scalars(select(Candidate).where(Candidate.run_id == 1)).all() == [], 'no scoring after stop'
     assert not (tmp_path / 'runs' / '1' / 'worktree').exists()
     assert dict(span_named(spans, 'run.aborted').attributes or {}) == {'run': 1, 'end': RunEnd.DAEMON_STOPPED}
-    assert dict(span_named(spans, 'piloop.run').attributes or {})['status'] == 'cancelled'
+    traced = dict(span_named(spans, 'piloop.run').attributes or {})
+    assert (traced['status'], traced['end']) == (RunStatus.FAILED, RunEnd.DAEMON_STOPPED), "the row's values"
 
 
 def test_stop_keeps_the_work_of_the_runs_it_cuts_pinned_and_noted_for_the_next_attempt(
@@ -1143,7 +1211,8 @@ def test_stop_before_the_implementer_starts_never_starts_it(
 
     wait_until(lambda: not (tmp_path / 'runs' / '1' / 'worktree').exists())  # the worker's, once its start returns
     assert events(spans, 'agent_session.kill_failed') == [], 'a row without a process is not asked to die'
-    assert dict(span_named(spans, 'piloop.run').attributes or {})['status'] == 'cancelled'
+    traced = dict(span_named(spans, 'piloop.run').attributes or {})
+    assert (traced['status'], traced['end']) == (RunStatus.FAILED, RunEnd.DAEMON_STOPPED)
     assert dict(span_named(spans, 'piloop.agent').attributes or {})['state'] == 'killed'
 
 
@@ -1215,7 +1284,8 @@ def test_stop_kills_the_evaluator_and_scores_nothing_more(
     measured = [sp for sp in spans.get_finished_spans() if sp.name == 'piloop.measure']
     assert len(measured) == 1, 'the second commit is never measured'
     assert dict(measured[0].attributes or {})['status'] == 'cancelled'
-    assert dict(span_named(spans, 'piloop.run').attributes or {})['status'] == 'cancelled'
+    traced = dict(span_named(spans, 'piloop.run').attributes or {})
+    assert (traced['status'], traced['end']) == (RunStatus.SUCCEEDED, RunEnd.FINISHED), 'only its scoring was cut'
     assert not (tmp_path / 'runs' / '1' / 'worktree').exists()
     assert list((tmp_path / 'runs' / '1' / 'eval-0').glob('lease-*/worktree')) == []
 
@@ -2122,12 +2192,12 @@ def test_a_cancelled_request_never_launches_and_a_cancelled_sweep_is_ended(
         w = s.get_one(AgentSession, 1)
         assert (w.state, w.error, s.get_one(Run, 1).end) == (
             AgentSessionState.KILLED,
-            RunEnd.CANCELLED,
+            'cancelled by human',
             RunEnd.CANCELLED,
         )
         assert (s.get_one(AgentSession, 3).state, s.get_one(AgentSession, 3).error) == (
             AgentSessionState.KILLED,
-            RunEnd.CANCELLED,
+            'cancelled by human',
         )
         assert s.get_one(Idea, idea).status is IdeaStatus.PARKED
     scheduler.stop(timeout=5)

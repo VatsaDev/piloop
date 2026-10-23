@@ -31,7 +31,7 @@ from piloop.campaign.stop import CancelRequested, Ending, StopRequested
 from piloop.cli import agents as agents_cli, campaign as campaign_cli, common, inbox as inbox_cli, install, main as cli
 from piloop.config import ConfigError
 from piloop.daemon.main import Daemon
-from piloop.daemon.serve import acquire, running_pid
+from piloop.daemon.serve import acquire, listening, running_pid
 from piloop.db import session, sql
 from piloop.db.events import emit, has
 from piloop.db.models import (
@@ -1234,6 +1234,30 @@ def test_serve_detach_status_stop(out, monkeypatch: pytest.MonkeyPatch) -> None:
     assert not alive(pid) and not common.settings.pid_file.exists()
     with pytest.raises(SystemExit, match='no daemon is running'):
         run_cli(['stop'])
+
+
+def test_status_shows_where_the_daemon_listens_and_a_restart_keeps_a_free_port(
+    out, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv('PILOOP_TICK_SECONDS', '0.05')
+    run_cli(['serve', '--detach', '--listen', '127.0.0.1:0'])
+    pid = int(out().split()[3].rstrip(','))
+    reaper = threading.Thread(target=os.waitpid, args=(pid, 0))
+    reaper.start()
+    wait_until(lambda: running_pid(common.settings) == pid and listening(common.settings) is not None)
+    url = listening(common.settings)
+    assert url is not None and re.fullmatch(r'http://127\.0\.0\.1:\d+', url) and not url.endswith(':0')
+    run_cli(['status'])
+    assert out().splitlines()[0].endswith(f', listening on {url}')
+    run_cli(['status', '--json'])
+    assert json.loads(out())['daemon'] == {'pid': pid, 'listen': url}
+    run_cli(['restart'])
+    out()
+    wait_until(lambda: listening(common.settings) is not None)
+    assert listening(common.settings) == url, 'the port that :0 took'
+    run_cli(['stop'])
+    reaper.join()
+    assert listening(common.settings) is None
 
 
 @pytest.mark.usefixtures('no_database')

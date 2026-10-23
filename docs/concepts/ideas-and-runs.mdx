@@ -40,6 +40,7 @@ piloop idea status 2 parked --reason "wait for the results of idea#1"
 ### Links between ideas
 
 - `--after <id>`: the idea waits until those ideas are `done`, then starts from the head, which holds what they kept.
+  If one ends without a keep, the daemon parks the idea and asks you whether to run it without that change.
 - `--supersedes <id>`: the idea is a sharper version of those ideas. The daemon rejects each of them that never ran.
 
 `piloop idea link` and `piloop idea unlink` change the links of an idea that exists.

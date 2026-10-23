@@ -171,6 +171,10 @@ class Tick(Protocol):
         """The number of the role's latest rows, newest first, that were killed in a row."""
         ...
 
+    def cancel(self, agent_session: AgentSession, /) -> EventModel | None:
+        """The latest request to cancel the row (``piloop agent cancel``), or None. A cancelled row ends killed."""
+        ...
+
     def empty_sweeps(self, states: tuple[AgentSessionState, ...]) -> list[AgentSession]:
         """The role's latest rows in ``states``, newest first, until one that defined an idea.
 

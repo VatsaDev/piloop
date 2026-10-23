@@ -73,7 +73,12 @@ start. See [How piloop loads plugins](/architecture/extension-points#how-piloop-
 `--listen` serves the routes of the [executor](/architecture/extension-points#executors) to other machines on
 `HOST:PORT`, in place of `[plugins.network] listen` in `config.toml`: for `workers`, the lease calls of
 [`piloop worker`](#piloop-worker). Each caller sends a token of `piloop token`. An address that is not loopback needs
-`tls`: see [Networks](/architecture/extension-points#networks).
+`tls`: see [Networks](/architecture/extension-points#networks). Port 0 takes a free port, which `piloop restart`
+keeps. `piloop status` shows the URL:
+
+```text
+daemon: pid 1754168, up 0:00:05, listening on http://127.0.0.1:35601
+```
 
 ### piloop cas serve
 
@@ -284,7 +289,7 @@ refines it (`supersedes`). The link is written in one transaction, so the daemon
 idea whose run is open takes no `after` link, and a link that closes a cycle of its kind is refused. The `--after` and
 `--supersedes` of `idea add` and `idea develop` are checked the same way.
 `piloop idea unlink IDEA_ID after|supersedes TARGET_ID --reason TEXT` deletes a link, for example to a prerequisite
-that was rejected and blocks the idea.
+that kept nothing, to run the idea anyway.
 
 ### piloop idea base
 

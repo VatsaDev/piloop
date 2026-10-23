@@ -17,8 +17,8 @@ def news(tick: Tick, lead: str) -> str | None:
     last = tick.last
     if last is None:
         return lead
-    if last.state is AgentSessionState.KILLED and tick.killed_streak() <= tick.max_concurrent:
-        return f'{lead}; retrying after agent_session#{last.id} was killed: {last.error}'
+    if (retrying := retry(tick)) is not None:
+        return f'{lead}; {retrying}'
     mine = campaign_runs(tick.campaign.id)
     finished = count(tick.s, mine.where(Run.finished_at > last.started_at))
     in_flight = count(tick.s, mine.where(Run.status.in_(OPEN_RUNS)))
@@ -27,3 +27,17 @@ def news(tick: Tick, lead: str) -> str | None:
         backoff = f' (after {barren} sweeps that defined no idea)' if barren else ''
         return f'{lead}; {finished} runs finished since agent_session#{last.id} started{backoff}'
     return None
+
+
+def retry(tick: Tick) -> str | None:
+    """Return why the role's latest row is retried, or None.
+
+    A row that was killed, in the first killed batch in a row, is retried once: a killed batch says nothing about the
+    backlog. A row that someone cancelled is not: it was not wanted.
+    """
+    last = tick.last
+    if last is None or last.state is not AgentSessionState.KILLED or tick.cancel(last) is not None:
+        return None
+    if tick.killed_streak() > tick.max_concurrent:
+        return None
+    return f'retrying after agent_session#{last.id} was killed: {last.error}'

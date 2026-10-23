@@ -11,6 +11,7 @@ from sqlalchemy import select
 
 from piloop.actor import System
 from piloop.campaign.anomaly import AnomalyKind, AnomalyReported
+from piloop.campaign.stop import Ending, request_cancel
 from piloop.config import load_campaign_config
 from piloop.daemon.main import ACTOR
 from piloop.daemon.run_controller import RunController
@@ -746,6 +747,45 @@ def test_low_water_retries_a_killed_batch_once(
     assert sched.tick() == [], 'two killed batches in a row: six empty sweeps, a rest of 63 times the last one'
     finish_a_run(db, campaign, 'one')
     assert sched.tick() == [7, 8, 9], 'a run finished since: research is back, killed sweeps are not barren ones'
+    sched.stop(timeout=5)
+
+
+def test_a_cancelled_sweep_is_not_retried_and_its_row_says_who_cancelled_it(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """A cancel is a decision, not a crash: neither low_water nor seed requests a sweep to replace it."""
+    configure(
+        db,
+        campaign,
+        BLOCKING.format(release=tmp_path / 'never'),
+        research={'max_ideas': 1, 'max_concurrent': 1, 'triggers': low_water(0)},
+    )
+    sched = scheduler(db, runtime, tmp_path)
+    assert sched.tick() == [1]
+    wait_until(lambda: agent_sessions(db, RESEARCH)[0][1] is AgentSessionState.RUNNING)
+    with db.session() as s:
+        old = utcnow() - timedelta(days=1)  # read by the cancelled sweep: no news to the next one
+        seed = Idea(track='score', campaign_id=campaign.id, title='s', hypothesis='h', created_by='t', created_at=old)
+        seed.status = IdeaStatus.SEED
+        s.add(seed)
+        request_cancel(s, s.get_one(AgentSession, 1), System.HUMAN, ending=Ending.NOW)
+        s.commit()
+    assert sched.tick() == []
+    sched.wait()
+    assert sched.tick() == [], 'a running sweep that was cancelled is not retried'
+    with db.session() as s:
+        requested = AgentSession(kind=RESEARCH, campaign_id=campaign.id, reason='by hand')
+        s.add(requested)
+        s.flush()
+        request_cancel(s, requested, System.HUMAN, ending=Ending.NOW)
+        s.commit()
+    assert sched.tick() == []
+    assert sched.tick() == [], 'nor is a cancelled request, and the rest after empty sweeps does not start one'
+    with db.session() as s:
+        rows = s.scalars(select(AgentSession).order_by(AgentSession.id)).all()
+        assert [(w.state, w.error) for w in rows] == [(AgentSessionState.KILLED, 'cancelled by human')] * 2
+    finish_a_run(db, campaign, 'one')
+    assert sched.tick() == [3], 'new results do'
     sched.stop(timeout=5)
 
 

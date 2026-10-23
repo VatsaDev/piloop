@@ -637,9 +637,9 @@ class Idea(Tracked, Base):
     ``after``: the idea is blocked (``ready``, but never taken) until every prerequisite is ``done``. Its run then
     starts from the head like any other run, and the head holds every keep on the trunk that the prerequisites made.
     An idea can pin a ``base_candidate_id`` instead, for example the branch keep of a prerequisite. A prerequisite
-    that ends ``rejected`` or ``parked`` keeps blocking. ``piloop status`` and the history block say so, and the
-    orchestrator or a human parks the dependent idea or deletes the link. Cycles of prerequisites are not detected:
-    the ideas in a cycle never run and show as blocked.
+    that ends without a keep (``parked``, ``rejected``, or ``done`` after runs that kept nothing) never releases its
+    dependents: the daemon parks them with an escalation, and the orchestrator or a human deletes the link or sets
+    them ready again. Cycles of prerequisites are not detected: the ideas in a cycle never run and show as blocked.
 
     ``supersedes``: the idea is a sharper version of the targets. A research sweep uses it to refine rejected, parked
     or done ideas instead of proposing near-duplicates. The daemon rejects a superseded idea that never ran (it has

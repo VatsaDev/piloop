@@ -12,6 +12,7 @@ from piloop.cli import common
 from piloop.config import config_of
 from piloop.daemon.main import Daemon, preflight
 from piloop.daemon.serve import (
+    listening,
     restart as restart_in_place,
     running_pid,
     service_unit,
@@ -41,7 +42,7 @@ def serve(
         str | None,
         cyclopts.Parameter(
             help='Serve other machines on HOST:PORT ([plugins.network] listen). An address that is not loopback needs'
-            ' TLS.'
+            ' TLS. Port 0 takes a free port, which `piloop restart` keeps. `piloop status` shows the URL.'
         ),
     ] = None,
 ) -> None:
@@ -93,7 +94,7 @@ def restart(
     Running agents keep running. The daemon stops its ticks, then the same process execs `piloop serve`. The new start
     re-attaches to every agent and finishes their runs. The process keeps its pid and its environment, so systemd,
     launchd or the terminal that started it still holds it. To change the environment of a service unit, use the
-    restart of the service manager.
+    restart of the service manager. A re-attached agent of the subprocess runtime takes no more notes (`piloop prompt`).
     """
     pid = running_pid(common.settings)
     if pid is None:
@@ -147,4 +148,5 @@ def daemon_line() -> str:
     if pid is None:
         return 'daemon: not running'
     up = timedelta(seconds=int(time.time() - common.settings.pid_file.stat().st_mtime))
-    return f'daemon: pid {pid}, up {up}'
+    url = listening(common.settings)
+    return f'daemon: pid {pid}, up {up}' + (f', listening on {url}' if url is not None else '')

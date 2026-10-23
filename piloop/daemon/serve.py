@@ -119,6 +119,16 @@ def running_pid(cfg: Settings) -> int | None:
     return int(text) if text.isdigit() else None
 
 
+def listening(cfg: Settings) -> str | None:
+    """Return the URL that the running daemon listens on, or None when no daemon runs or it does not listen."""
+    if running_pid(cfg) is None:
+        return None
+    try:
+        return cfg.listen_file.read_text().strip()
+    except FileNotFoundError:
+        return None
+
+
 class SecretsError(Exception):
     """The secrets command failed or printed something other than ``NAME=value`` lines. It never contains a value."""
 

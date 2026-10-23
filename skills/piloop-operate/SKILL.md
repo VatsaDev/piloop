@@ -192,8 +192,8 @@ Use these commands, not SQL. Each one validates, takes `--reason '<why, with ids
   An idea whose run is open (queued, running or being scored) can only be parked or rejected: its run finishes. Set
   it ready again after the run, never during it: that would queue a second run.
 - Link an idea that exists: `piloop idea link <id> after|supersedes <target> --reason '…'`. It refuses a link that
-  closes a cycle, and an `after` link to an idea that the daemon took already. `piloop idea unlink` deletes one, for
-  example a prerequisite that was rejected and blocks.
+  closes a cycle, and an `after` link to an idea that the daemon took already. When a prerequisite ends without a keep, the
+  daemon parks the ideas after it and escalates. To run one anyway, `piloop idea unlink` it, then set it ready.
 - Start it from another candidate: `piloop idea base <id> <candidate> --reason '…'`, or `head` to unpin it.
 - Move it to another track: `piloop idea track <id> <track> --reason '…'`.
 - Reprioritize: `UPDATE ideas SET priority = 0 WHERE id = …`, with a `note` that says why.

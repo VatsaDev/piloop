@@ -6,8 +6,9 @@ from uuid import uuid4
 
 import pytest
 
-from piloop.db.models import Campaign, LeaseKind, LeaseWorker, NoLease, utcnow
+from piloop.db.models import AgentSession, Campaign, LeaseKind, LeaseWorker, NoLease, utcnow
 from piloop.db.session import Database
+from piloop.ids import RESEARCH
 from piloop.plugins.executor.contract import Capacity
 from piloop.plugins.executor.kit.capacity import GB, HostSample, Pool, admits, sample
 from piloop.plugins.executor.kit.leases import SERVE, Grant, Leases
@@ -80,6 +81,23 @@ def test_a_worker_takes_no_job_over_its_slots_or_under_pressure_and_its_row_says
     with db.session() as s:
         assert s.get_one(LeaseWorker, 'w1').no_lease == NoLease.SLOTS
     assert leases.acquire('w1', uuid4().hex, low) is NoLease.MEMORY
+
+
+def test_a_worker_whose_slots_are_full_says_slots_while_core_holds_back_a_job_for_it(
+    db: Database, campaign: Campaign, tmp_path: Path
+) -> None:
+    """Core submits a job only to a free slot, so a full worker sees no queued lease: the jobs wait in core."""
+    leases = Leases(db, Recorder(db), TIMING, {'full': Pool(agents=0, evaluations=0)})
+    leases.register('w1', 'full', '0.2.0', ['process'], HOST)
+    leases.register('w2', 'full', '0.2.0', ['gpu'], HOST)
+    assert leases.acquire('w1', uuid4().hex, HOST) is NoLease.NOTHING
+    evaluation_job(db, campaign, tmp_path)  # waits in the evaluation queue, not submitted
+    assert leases.acquire('w1', uuid4().hex, HOST) is NoLease.SLOTS
+    assert leases.acquire('w2', uuid4().hex, HOST) is NoLease.NOTHING, 'w2 has not the runner of the waiting evaluation'
+    with db.session() as s:
+        s.add(AgentSession(kind=RESEARCH, campaign_id=campaign.id))  # a requested agent, not launched
+        s.commit()
+    assert leases.acquire('w2', uuid4().hex, HOST) is NoLease.SLOTS
 
 
 def test_capacity_sums_the_slots_of_the_reachable_workers_that_are_not_under_pressure(db: Database) -> None:
