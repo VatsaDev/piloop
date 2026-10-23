@@ -1,4 +1,4 @@
-"""Archiving the shared workspace into the artifact store, and restoring it: the campaign side of ``piloop.store``.
+"""Archiving the shared workspace into the CAS, and restoring it: the campaign side of ``piloop.store.tree``.
 
 Agents write to ``<PILOOP_HOME>/projects/<id>/workspace`` and nothing used to delete it: on one machine it grew to
 hundreds of gigabytes in millions of files, most of them copies. What the store owes (``due``):
@@ -14,6 +14,7 @@ hundreds of gigabytes in millions of files, most of them copies. What the store 
 """
 
 import re
+import shutil
 import threading
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
@@ -40,8 +41,21 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.ids import CampaignId, IdeaId
-from piloop.store import DRISL, BlobCorrupt, BlobMissing, Entry, Manifest, Store, hash_file
-from piloop.store.tree import Materialised, Removed, Walk, materialise, put_walk, remove, walk
+from piloop.plugins.cas.contract import Cas, Integrity, integrity
+from piloop.store.tree import (
+    DRISL,
+    Entry,
+    Manifest,
+    Materialised,
+    Missing,
+    Removed,
+    Walk,
+    cid_of,
+    materialise,
+    put_walk,
+    remove,
+    walk,
+)
 
 IDEA_NAME = re.compile(r'idea(\d+)(?!\d)')
 """A top-level workspace entry of an idea: ``idea12/``, ``idea12-canary.log``. Implementers are told to use it."""
@@ -148,20 +162,20 @@ def _unpruned() -> Select[Archive]:
     return select(Archive).where(Archive.pruned_at.is_(None)).order_by(Archive.id)
 
 
-def prune(db: Database, store: Store, home: Path, archive_id: int) -> Removed:
+def prune(db: Database, cas: Cas, home: Path, archive_id: int) -> Removed:
     """Remove the workspace copies of what an archiving stored, where they still hold what was stored.
 
-    Each blob is checked in the store first (``Store.check``): a workspace copy of a blob that is missing or corrupt
-    there stays. The row records when (``pruned_at``), so an archiving is pruned once, unless a file stayed for such a
+    Each blob is checked in the CAS first (``integrity``): a workspace copy of a blob that is missing or corrupt there
+    stays. The row records when (``pruned_at``), so an archiving is pruned once, unless a file stayed for such a
     reason or could not be read: then it stays unpruned, and the next prune tries again.
     """
     with db.session() as s:
         row = s.get_one(Archive, archive_id)
         done = Removed()
         if row.manifest is not None:
-            manifest = store.manifest(row.manifest)
-            # a workspace copy is the last good one of a blob that went bad in the store: it stays
-            doubtful = {blob for blob in manifest.blobs if store.check(blob) != 'ok'}
+            manifest = Manifest.get(cas, row.manifest)
+            # a workspace copy is the last good one of a blob that went bad in the CAS: it stays
+            doubtful = {blob for blob in manifest.blobs if integrity(cas, blob) is not Integrity.OK}
             done = remove(workspace_dir(home, row.campaign_id), manifest, keep=doubtful)
         if not done.left:
             row.pruned_at = utcnow()
@@ -182,7 +196,7 @@ class Pruned:
         self.left.update(done.left)
 
 
-def prune_older(db: Database, store: Store, home: Path, than: datetime, stop: threading.Event | None = None) -> Pruned:
+def prune_older(db: Database, cas: Cas, home: Path, than: datetime, stop: threading.Event | None = None) -> Pruned:
     """``prune`` every archiving made before ``than``, until ``stop`` is set."""
     with db.session() as s:
         ids = s.scalars(_unpruned().where(Archive.created_at < than).with_only_columns(Archive.id)).all()
@@ -190,11 +204,11 @@ def prune_older(db: Database, store: Store, home: Path, than: datetime, stop: th
     for archive_id in ids:
         if stop is not None and stop.is_set():
             break
-        pruned.add(prune(db, store, home, archive_id))
+        pruned.add(prune(db, cas, home, archive_id))
     return pruned
 
 
-def make_room(db: Database, store: Store, home: Path, reserve: int, stop: threading.Event | None = None) -> Pruned:
+def make_room(db: Database, cas: Cas, home: Path, reserve: int, stop: threading.Event | None = None) -> Pruned:
     """While the store's disk has less than ``reserve`` bytes free, ``prune`` the next archiving, oldest first.
 
     The workspaces and the store share the disk of ``PILOOP_HOME``. Each archiving is tried once per call, so one with a
@@ -204,10 +218,18 @@ def make_room(db: Database, store: Store, home: Path, reserve: int, stop: thread
         ids = s.scalars(_unpruned().with_only_columns(Archive.id)).all()
     pruned = Pruned()
     for archive_id in ids:
-        if store.free() >= reserve or (stop is not None and stop.is_set()):
+        if free(home) >= reserve or (stop is not None and stop.is_set()):
             break
-        pruned.add(prune(db, store, home, archive_id))
+        pruned.add(prune(db, cas, home, archive_id))
     return pruned
+
+
+def free(home: Path) -> int:
+    """Bytes free on the filesystem of ``home``, where the workspaces and a local CAS are, or of its nearest parent."""
+    path = home
+    while not path.exists():
+        path = path.parent
+    return shutil.disk_usage(path).free
 
 
 @dataclass(frozen=True)
@@ -231,7 +253,7 @@ class Archived:
 
 def archive(
     db: Database,
-    store: Store,
+    cas: Cas,
     home: Path,
     job: Job,
     *,
@@ -260,23 +282,23 @@ def archive(
     left = walk(workspace, names)
     done = Archived([])
     while True:
-        make_room(db, store, home, reserve + left.size)
-        free = store.free()
-        batch, left = left.take(free - reserve)
+        make_room(db, cas, home, reserve + left.size)
+        room = free(home)
+        batch, left = left.take(room - reserve)
         if left.files and not batch.files:
-            held, left = _held(store, workspace, left)
+            held, left = _held(cas, workspace, left)
             done.skipped.update(held.skipped)
             if not held.files:
-                return Archived(done.rows, Short(left.size, free, reserve), done.skipped)
+                return Archived(done.rows, Short(left.size, room, reserve), done.skipped)
             batch = Walk(files=held.files, links=batch.links, skipped=batch.skipped)
-        row, skipped = _store_batch(db, store, workspace, job, batch, stop, complete=not left.files)
+        row, skipped = _store_batch(db, cas, workspace, job, batch, stop, complete=not left.files)
         done.rows.append(row)
         done.skipped.update(skipped)
         if not left.files:
             return done
 
 
-def _held(store: Store, workspace: Path, left: Walk) -> tuple[Walk, Walk]:
+def _held(cas: Cas, workspace: Path, left: Walk) -> tuple[Walk, Walk]:
     """Split ``left`` into the files whose content the store holds already, which cost no room, and the rest.
 
     Only for a job that does not fit: it reads every file it has left once, to hash it. A file it cannot read is in
@@ -285,7 +307,7 @@ def _held(store: Store, workspace: Path, left: Walk) -> tuple[Walk, Walk]:
     held, rest = Walk(), Walk()
     for rel, st in left.files:
         try:
-            known = store.has(hash_file(workspace / rel).cid)
+            known = cas.has(cid_of(workspace / rel))
         except OSError as e:
             held.skipped[rel] = f'not readable ({e.strerror}): fix its permissions'
             continue
@@ -294,10 +316,10 @@ def _held(store: Store, workspace: Path, left: Walk) -> tuple[Walk, Walk]:
 
 
 def _store_batch(
-    db: Database, store: Store, workspace: Path, job: Job, batch: Walk, stop: threading.Event | None, *, complete: bool
+    db: Database, cas: Cas, workspace: Path, job: Job, batch: Walk, stop: threading.Event | None, *, complete: bool
 ) -> tuple[Archive, dict[str, str]]:
     """Store one batch and record its row. Returns the row, and the paths left out with why."""
-    stored = put_walk(store, workspace, batch, stop)
+    stored = put_walk(cas, workspace, batch, stop)
     row = Archive(
         campaign_id=job.campaign_id,
         idea_id=job.idea_id,
@@ -306,8 +328,8 @@ def _store_batch(
         complete=complete,
     )
     if stored.manifest.entries:
-        manifest = store.put_manifest(stored.manifest)
-        if missing := store.missing([manifest, *stored.manifest.blobs]):
+        manifest = stored.manifest.put(cas)
+        if missing := cas.missing([manifest, *stored.manifest.blobs]):
             raise NotArchived(f'the store lacks {len(missing)} blobs of manifest {manifest}, e.g. {missing[0]}')
         row.manifest = manifest
     with db.session() as s:
@@ -329,7 +351,7 @@ class Restored:
     done: Materialised
 
 
-def restore(s: Session, store: Store, home: Path, campaign: Campaign, target: int | str | None) -> Restored:
+def restore(s: Session, cas: Cas, home: Path, campaign: Campaign, target: int | str | None) -> Restored:
     """Write archived files back into the campaign's workspace: an idea's (``target`` an id), a path's, or all.
 
     A path is workspace-relative: the file itself or everything under it. When several archivings hold a path, the
@@ -344,7 +366,7 @@ def restore(s: Session, store: Store, home: Path, campaign: Campaign, target: in
     latest: dict[str, Entry] = {}
     for manifest in manifests:
         assert manifest is not None  # the query has only the archivings that stored something
-        newer = {e.path: e for e in store.manifest(manifest).entries}
+        newer = {e.path: e for e in Manifest.get(cas, manifest).entries}
         dirs = {parent for path in newer for parent in _parents(path)}
         # a newer file where an older path had a directory, or the reverse, displaces the older path
         latest = {
@@ -356,7 +378,7 @@ def restore(s: Session, store: Store, home: Path, campaign: Campaign, target: in
     elif target is not None:
         prefix = target.strip('/')
         entries = [e for e in entries if e.path == prefix or e.path.startswith(f'{prefix}/')]
-    done = materialise(store, Manifest(entries=tuple(entries)), workspace_dir(home, campaign.id))
+    done = materialise(cas, Manifest(entries=tuple(entries)), workspace_dir(home, campaign.id))
     return Restored(len(manifests), done)
 
 
@@ -365,7 +387,7 @@ def restore(s: Session, store: Store, home: Path, campaign: Campaign, target: in
     'JSON manifests of piloop 0.2: delete migrate_manifests, its callers and ManifestNotMigrated, and make 0.4 refuse a'
     ' home whose archives still name a raw CID (the schema revision does not tell)',
 )
-def migrate_manifests(db: Database, store: Store) -> int:
+def migrate_manifests(db: Database, cas: Cas) -> int:
     """Store each archive's JSON manifest again as a DASL one, and point its row at it. Returns how many.
 
     ``piloop migrate`` and the daemon's start run it, and it skips the rows done already. The JSON manifest stays in the
@@ -379,11 +401,11 @@ def migrate_manifests(db: Database, store: Store) -> int:
         if cid is None or cid.codec == DRISL:
             continue
         try:
-            dasl = store.put_manifest(store.manifest(cid))
-        except (BlobMissing, BlobCorrupt, OSError, ValueError) as e:
+            dasl = Manifest.get(cas, cid).put(cas)
+        except (Missing, OSError, ValueError) as e:
             raise ManifestNotMigrated(
                 f'archive {archive_id}: its manifest {cid} could not be read from the store ({type(e).__name__}: {e}).'
-                ' Make the store reachable ([storage.backend] and its credentials), then run `piloop migrate` again'
+                ' Make the CAS reachable ([plugins.cas] and its credentials), then run `piloop migrate` again'
             ) from e
         with db.session() as s:
             s.get_one(Archive, archive_id).manifest = dasl

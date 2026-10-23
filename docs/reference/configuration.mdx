@@ -441,76 +441,52 @@ trigger. The reason is `campaign stopped: <the condition>`.
 
 ### `[storage]`
 
-`[storage]`: the artifact store every campaign of this PILOOP_HOME archives its workspace into.
-
-The keys here hold for every backend. Blobs live in `<PILOOP_HOME>/store`, and in the remote too when
-`[storage.backend]` is set. The artifact store page of the docs describes the modes.
+`[storage]`: how archiving uses the disk of this PILOOP_HOME. Where the blobs go is `[plugins.cas]`.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `evict_after_days` | number \| null | `null` | Drop the local copy of a blob the remote holds once it is this old (since it was stored or fetched); 0 drops it as soon as it is uploaded, so the local directory is only a staging area and every read fetches. Unset: by age never. |
-| `local_max_gb` | number \| null | `null` | Drop the local copies of the oldest blobs the remote holds until the local store is at most this size. |
-| `min_free_gb` | number | `20` | Free space, in GB, that archiving keeps on the disk of the local store. Storing a file writes its compressed copy first, so the daemon removes the workspace copies of archived files, oldest archive first, while the disk has less than this free, and it archives in batches that fit above it. |
-
-`[storage.backend]` picks the backend that mirrors the store by its `kind`, and the backend owns the other keys of the table. The keys of `[storage]` stay the same whatever the backend. The same store, mirrored to S3 or to Google Cloud Storage:
-
-<CodeGroup>
-
-```toml S3
-[storage]
-evict_after_days = 30
-min_free_gb = 50
-
-[storage.backend]
-kind = "s3"
-url = "s3://my-bucket/piloop"
-storage_class = "GLACIER_IR"
-```
-
-```toml GCS
-[storage]
-evict_after_days = 30
-min_free_gb = 50
-
-[storage.backend]
-kind = "gcs"
-bucket = "my-bucket"
-prefix = "piloop"
-storage_class = "COLDLINE"
-credentials_file = "/etc/piloop/gcs-key.json"
-```
-
-</CodeGroup>
-
-A package adds a backend with an entry point in the `piloop.stores` group: see [storage backends](/architecture/extension-points#storage-backends). The built-in ones:
-
-### `[storage.backend]` with `kind = "gcs"`
-
-`[storage.backend]` with `kind = "gcs"`: a bucket, a prefix in it, and the storage class of each blob.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `kind` | string | `"gcs"` | The Google Cloud Storage backend. |
-| `bucket` | string | required | The bucket name, without `gs://`. |
-| `prefix` | string | `""` | The folder in the bucket that the store's objects go under. Empty: the bucket's root. |
-| `storage_class` | `STANDARD` \| `NEARLINE` \| `COLDLINE` \| `ARCHIVE` | `"STANDARD"` | The storage class of every blob. |
-| `project` | string \| null | `null` | The Google Cloud project to bill. Unset: the project of the credentials. |
-| `credentials_file` | string \| null | `null` | A service account key file (JSON) to use instead of Application Default Credentials. A path, never the key. |
-
-### `[storage.backend]` with `kind = "s3"`
-
-`[storage.backend]` with `kind = "s3"`: a bucket and prefix, and the storage class of each blob.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `kind` | string | `"s3"` | The S3 backend. |
-| `url` | string | required | `s3://<bucket>[/<prefix>]`: every blob is uploaded there as it is stored. |
-| `storage_class` | string | `"GLACIER_IR"` | The S3 storage class of a blob of at least `standard_below` compressed bytes. |
-| `standard_below` | integer | `131072` | Compressed size under which a blob is stored as `STANDARD`: Glacier IR bills every object as at least 128 KB. |
+| `min_free_gb` | number | `20` | Free space, in GB, that archiving keeps on the disk of PILOOP_HOME. Storing a file writes its compressed copy first, so the daemon removes the workspace copies of archived files, oldest archive first, while the disk has less than this free, and it archives in batches that fit above it. |
 
 ### `[plugins]`
 
 `[plugins.<capability>]` selects the provider of a capability of the home: `provider`, the name of its entry point (the default without it), and the provider's own keys, which the daemon checks before it starts.
+
+#### `[plugins.cas]`
+
+Selects the CAS provider.
+
+With `provider = "cached"`:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `remote` | object | required | The CAS that holds every blob: a table with its `provider` and parameters, `{ provider = "s3", url = … }`. |
+| `local` | object | `{}` | The local tier: a table of a provider that can be one, `{ provider = "disk", path = … }`. Unset: `disk`. |
+| `evict_after_days` | number \| null | `null` | Drop the local copy of a blob once it is this old (since it was stored or fetched); 0 keeps no local copy, so every read fetches. Unset: by age never. |
+| `local_max_gb` | number \| null | `null` | Drop the local copies of the oldest blobs until the local tier is at most this size. |
+
+With `provider = "disk"`:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `path` | string \| null | `null` | The directory. Unset: `<PILOOP_HOME>/store`. |
+
+With `provider = "gcs"`:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `bucket` | string | required | The bucket name, without `gs://`. |
+| `prefix` | string | `""` | The folder in the bucket that the objects go under. Empty: the bucket's root. |
+| `storage_class` | `STANDARD` \| `NEARLINE` \| `COLDLINE` \| `ARCHIVE` | `"STANDARD"` | The storage class of every blob. |
+| `project` | string \| null | `null` | The Google Cloud project to bill. Unset: the project of the credentials. |
+| `credentials_file` | string \| null | `null` | A service account key file (JSON) to use instead of Application Default Credentials. A path, never the key. |
+
+With `provider = "s3"`:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `url` | string | required | `s3://<bucket>[/<prefix>]`: the blobs go there. |
+| `storage_class` | string | `"GLACIER_IR"` | The S3 storage class of a blob of at least `standard_below` compressed bytes. |
+| `standard_below` | integer | `131072` | Compressed size under which a blob is stored as `STANDARD`: Glacier IR bills every object as at least 128 KB. |
 
 #### `[plugins.executor]`
 
@@ -584,4 +560,5 @@ These keys still work. Each one shows a `PiloopDeprecationWarning` that names th
 - `{claude_config_dir}` and `{codex_home}` in `[harness.<name>.usage] file` are `{env:…}` placeholders. `{claude_config_dir}` is `{env:CLAUDE_CONFIG_DIR:~/.claude}`, and `{codex_home}` is `{env:CODEX_HOME:~/.codex}`.
 - In `config.toml`, `herdr_<key> = …` is `<key> = …` in its `[runtimes.herdr]` table. The Herdr settings are the Herdr runtime's own. Their environment variables (`PILOOP_HERDR_<KEY>`) do not change.
 - In `config.toml`, `[storage.remote]` is `[storage.backend]`: the storage backend that mirrors the store. A key that `[storage.backend]` sets too keeps its value there.
+- In `config.toml`, `[storage.backend]` is the `remote` of `[plugins.cas] provider = "cached"`. Its `kind` is the remote's `provider`. `evict_after_days` and `local_max_gb` of `[storage]` move with it. A `[plugins.cas]` table of the file wins: the old keys then go, with the warning, and change nothing.
 - In `config.toml`, `max_evaluations` is `evaluations` in `[plugins.executor.pools.serve]`. A value that `[plugins.executor.pools.serve]` sets too wins.

@@ -9,7 +9,6 @@ from piloop.config import CampaignConfig
 from piloop.deprecated import BRIDGES, CONFIG_BRIDGES
 from piloop.plugins.host import Scope, declared
 from piloop.plugins.runtime.herdr import HerdrSettings
-from piloop.plugins.storage_backend.contract import STORAGE_BACKENDS
 from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.settings import StorageSettings
 from scripts.generate import ROOT, header
@@ -39,8 +38,6 @@ section.
 ## Top-level keys
 
 """
-SHARED_STORAGE = '[storage]\nevict_after_days = 30\nmin_free_gb = 50\n\n'
-"""The ``[storage]`` keys of both examples in ``global_section``: they do not change with the backend."""
 
 
 def _section(model: type[BaseModel], defs: JsonSchema, only: set[str] | None = None) -> str:
@@ -96,27 +93,14 @@ def generate() -> str:
 
 
 def global_section() -> str:
-    """Return the tables of the global settings file, ``$PILOOP_HOME/config.toml``: ``[storage]`` and each backend."""
+    """Return the tables of the global settings file, ``$PILOOP_HOME/config.toml``: ``[storage]``, ``[plugins]``, runtimes."""
     storage = json_schema(StorageSettings)
     out = (
         '\n## Global settings: `config.toml`\n\n`$PILOOP_HOME/config.toml` holds the settings that every campaign of'
         ' one `PILOOP_HOME` shares. To override a key, set `PILOOP_<TABLE>__<KEY>`, for example'
         ' `PILOOP_STORAGE__MIN_FREE_GB`.\n\n### `[storage]`\n\n'
-        f'{mdx(storage.get("description", ""))}\n\n{table(storage, {}, set(storage["properties"]) - {"backend"})}'
-        '\n`[storage.backend]` picks the backend that mirrors the store by its `kind`, and the backend owns the other'
-        ' keys of the table. The keys of `[storage]` stay the same whatever the backend. The same store, mirrored to S3'
-        ' or to Google Cloud Storage:\n\n'
-        f'<CodeGroup>\n\n```toml S3\n{SHARED_STORAGE}[storage.backend]\nkind = "s3"\nurl = "s3://my-bucket/piloop"\n'
-        'storage_class = "GLACIER_IR"\n```\n\n'
-        f'```toml GCS\n{SHARED_STORAGE}[storage.backend]\nkind = "gcs"\nbucket = "my-bucket"\nprefix = "piloop"\n'
-        'storage_class = "COLDLINE"\ncredentials_file = "/etc/piloop/gcs-key.json"\n```\n\n</CodeGroup>\n\n'
-        'A package adds a backend with an entry point in the `piloop.stores` group: see'
-        ' [storage backends](/architecture/extension-points#storage-backends). The built-in ones:\n'
+        f'{mdx(storage.get("description", ""))}\n\n{table(storage, {})}'
     )
-    for kind, backend in STORAGE_BACKENDS.builtins().items():
-        schema = json_schema(backend)
-        out += f'\n### `[storage.backend]` with `kind = "{kind}"`\n\n{mdx(schema.get("description", ""))}\n\n'
-        out += table(schema, schema.get('$defs', {}))
     out += home_plugins()
     herdr = json_schema(HerdrSettings)
     out += (

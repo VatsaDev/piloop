@@ -54,7 +54,7 @@ piloop = "piloop.cli.main:main"
 # The providers of piloop itself, in the groups that a plugin package uses (piloop.plugins.host).
 [project.entry-points."piloop.capabilities"]
 runtime = "piloop.plugins.runtime.contract:RUNTIMES"
-storage_backend = "piloop.plugins.storage_backend.contract:STORAGE_BACKENDS"
+cas = "piloop.plugins.cas.contract:CAS"
 trigger = "piloop.plugins.trigger.contract:TRIGGERS"
 role = "piloop.plugins.role.contract:ROLES"
 verdict_rule = "piloop.plugins.verdict_rule.contract:VERDICT_RULES"
@@ -66,9 +66,11 @@ network = "piloop.plugins.network.contract:NETWORKS"
 herdr = "piloop.plugins.runtime.herdr:HerdrRuntime"
 subprocess = "piloop.plugins.runtime.subprocess:SubprocessRuntime"
 
-[project.entry-points."piloop.stores"]
-s3 = "piloop.plugins.storage_backend.s3:S3Config"
-gcs = "piloop.plugins.storage_backend.gcs:GcsConfig"
+[project.entry-points."piloop.cas"]
+disk = "piloop.plugins.cas.disk:Disk"
+cached = "piloop.plugins.cas.cached:Cached"
+s3 = "piloop.plugins.cas.s3:S3"
+gcs = "piloop.plugins.cas.gcs:Gcs"
 
 [project.entry-points."piloop.triggers"]
 anomaly = "piloop.plugins.trigger.anomaly:AnomalyTrigger"
@@ -164,7 +166,7 @@ quote-style = "single"
 
 [tool.ty.environment]
 python-version = "3.14"
-extra-paths = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/inline-executor"]
+extra-paths = ["examples/plugins/nice-runtime", "examples/plugins/sqlite-cas", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/inline-executor"]
 
 [tool.ty.src]
 include = ["piloop", "tests", "scripts", "examples"]
@@ -177,7 +179,7 @@ exclude = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 # The example plugins import as packages; their entry points register only where a test installs them.
-pythonpath = ["examples/plugins/nice-runtime", "examples/plugins/dir-store", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/inline-executor"]
+pythonpath = ["examples/plugins/nice-runtime", "examples/plugins/sqlite-cas", "examples/plugins/min-gain", "examples/plugins/stop-after-keeps", "examples/plugins/inline-executor"]
 # The e2e tests run real agents and cost money: only `make e2e` (`-m e2e`, which overrides this) selects them.
 addopts = ["-m", "not e2e"]
 markers = [

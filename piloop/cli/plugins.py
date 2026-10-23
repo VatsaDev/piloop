@@ -43,7 +43,6 @@ def selections(cfg: Settings) -> list[str]:
     ``piloop init`` stored.
     """
     config = cfg.home / CONFIG_FILE
-    home = cfg.model_dump(mode='json')
     campaigns = [
         (f'in the config of {name} that the last `piloop init` stored from {Path(path)}/piloop.toml', campaign)
         for name, path, campaign in stored_campaigns(cfg.home / 'piloop.db')
@@ -57,9 +56,6 @@ def selections(cfg: Settings) -> list[str]:
             case Choice(scope=Scope.CAMPAIGN), _:
                 for stored, campaign in campaigns:
                     found += _chosen(capability, campaign.plugins, stored, f'{campaign.name}: ')
-            case _, Selection(scope=Scope.HOME) as selection:
-                if (name := lookup(home, selection.key)) is not None:
-                    found.append(f'{_provider(capability, str(name))} ({_key(selection)} in {config})')
             case _, Selection() as selection:
                 for stored, campaign in campaigns:
                     found += _in_campaign(capability, selection, campaign, stored, cfg)

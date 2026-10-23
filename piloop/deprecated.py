@@ -251,6 +251,33 @@ def storage_remote(toml: Path, raw: dict[str, object]) -> None:
     warn(toml, 'storage.remote', '[storage.remote] is deprecated; write [storage.backend]', removed_in=REMOVED_IN)
 
 
+@until('0.4.0', '[storage.backend] and its eviction keys are [plugins.cas] cached: delete the storage_backend bridge')
+def storage_backend(toml: Path, raw: dict[str, object]) -> None:
+    """In ``config.toml``, ``[storage.backend]`` is the ``remote`` of ``[plugins.cas] provider = "cached"``.
+
+    Its ``kind`` is the remote's ``provider``. ``evict_after_days`` and ``local_max_gb`` of ``[storage]`` move with
+    it. A ``[plugins.cas]`` table of the file wins: the old keys then go, with the warning, and change nothing.
+    """
+    storage = _table(raw, 'storage')
+    if storage is None or (backend := storage.pop('backend', None)) is None:
+        return
+    remote = dict(backend) if isinstance(backend, dict) else {}
+    cached: dict[str, object] = {'provider': 'cached', 'remote': {'provider': remote.pop('kind', None), **remote}}
+    for key in ('evict_after_days', 'local_max_gb'):
+        if key in storage:
+            cached[key] = storage.pop(key)
+    plugins = raw.setdefault('plugins', {})
+    if isinstance(plugins, dict):
+        plugins.setdefault('cas', cached)
+    warn(
+        toml,
+        'storage.backend',
+        '[storage.backend] is deprecated; write [plugins.cas] provider = "cached" and remote = { provider = <its kind>,'
+        ' <its keys> }, with evict_after_days and local_max_gb there too',
+        removed_in=Version(0, 4, 0),
+    )
+
+
 @until(
     '0.4.0',
     'max_evaluations in config.toml is [plugins.executor.pools.serve] evaluations: delete the max_evaluations bridge',
@@ -313,7 +340,7 @@ def _slots(raw: dict[str, object], old: object) -> None:
             serve.setdefault('evaluations', old)
 
 
-CONFIG_BRIDGES: tuple[Bridge, ...] = (herdr_keys, storage_remote, max_evaluations)
+CONFIG_BRIDGES: tuple[Bridge, ...] = (herdr_keys, storage_remote, storage_backend, max_evaluations)
 """The bridges of ``config.toml``, the global settings file (``piloop.settings.config_file``)."""
 
 

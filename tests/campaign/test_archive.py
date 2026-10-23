@@ -1,4 +1,5 @@
 import os
+import shutil
 import time
 from datetime import timedelta
 from pathlib import Path
@@ -39,12 +40,15 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.ids import IMPLEMENTER, WATCHDOG, AgentSessionId, CampaignId, IdeaId, RoleName
-from piloop.store import Store, key
-from piloop.store.tree import Removed, Stored, Walk
+from piloop.plugins.cas.disk import DiskCas
+from piloop.plugins.cas.kit.objects import ObjectsCas, key
+from piloop.store.tree import Manifest, Removed, Stored, Walk
 from tests.conftest import end_of
 
 LIVE = frozenset({'NOTES.md', 'research'})
 LOST = Cid.of(b'lost')
+REAL_FREE = archive_module.free
+"""Captured before ``conftest.plenty_of_disk`` replaces it for every test."""
 
 
 def add_idea(db: Database, campaign_id: CampaignId, title: str, status: IdeaStatus = IdeaStatus.DONE) -> IdeaId:
@@ -99,8 +103,8 @@ def home(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def store(home: Path) -> Store:
-    return Store(home / 'store')
+def store(home: Path) -> ObjectsCas:
+    return DiskCas(home / 'store')
 
 
 def test_an_entry_belongs_to_an_idea_by_its_name(db: Database, campaign: Campaign) -> None:
@@ -179,12 +183,12 @@ def test_a_stopped_campaign_is_due_once_its_ideas_are_and_nothing_of_it_runs(db:
         assert due(s) == Job(campaign.id, None), 'resumed and stopped again: what it wrote since is archived'
 
 
-def archive_job(db: Database, store: Store, home: Path, job: Job, reserve: int = 0) -> Archived:
+def archive_job(db: Database, store: ObjectsCas, home: Path, job: Job, reserve: int = 0) -> Archived:
     return archive(db, store, home, job, live=LIVE, reserve=reserve)
 
 
 def test_an_archiving_stores_and_keeps_the_files_a_prune_removes_them_and_restore_brings_back_any_part(
-    db: Database, campaign: Campaign, home: Path, store: Store
+    db: Database, campaign: Campaign, home: Path, store: ObjectsCas
 ) -> None:
     idea = add_idea(db, campaign.id, 'idea')
     parked = add_idea(db, campaign.id, 'parked', IdeaStatus.PARKED)
@@ -203,7 +207,7 @@ def test_an_archiving_stores_and_keeps_the_files_a_prune_removes_them_and_restor
 
     [row] = archive_job(db, store, home, Job(campaign.id, idea)).rows
     assert (row.idea_id, row.files, row.bytes, row.pruned_at) == (idea, 4, 2 * 5000 + 3, None)
-    assert row.manifest is not None and not store.missing(store.manifest(row.manifest).blobs)
+    assert row.manifest is not None and not store.missing(list(Manifest.get(store, row.manifest).blobs))
     assert files(workspace) == before, 'storing removes nothing'
     write(workspace / f'idea{idea}-fresh.log', 'rewritten since\n')
     assert prune(db, store, home, row.id) == Removed(3), 'the rewritten log stays'
@@ -235,7 +239,7 @@ def test_an_archiving_stores_and_keeps_the_files_a_prune_removes_them_and_restor
         assert restore(s, store, home, p, 999).done.written == 0
 
 
-def test_nothing_to_archive_is_recorded_too(db: Database, campaign: Campaign, home: Path, store: Store) -> None:
+def test_nothing_to_archive_is_recorded_too(db: Database, campaign: Campaign, home: Path, store: ObjectsCas) -> None:
     idea = add_idea(db, campaign.id, 'empty')
     add_run(db, idea)
     [row] = archive_job(db, store, home, Job(campaign.id, idea)).rows
@@ -247,12 +251,12 @@ def test_nothing_to_archive_is_recorded_too(db: Database, campaign: Campaign, ho
 
 
 def test_no_row_when_the_store_does_not_hold_every_blob(
-    db: Database, campaign: Campaign, home: Path, store: Store, monkeypatch: pytest.MonkeyPatch
+    db: Database, campaign: Campaign, home: Path, store: ObjectsCas, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     idea = add_idea(db, campaign.id, 'idea')
     add_run(db, idea)
     path = write(workspace_dir(home, campaign.id) / f'idea{idea}' / 'x.npy')
-    monkeypatch.setattr(Store, 'missing', lambda self, cids: [LOST])
+    monkeypatch.setattr(ObjectsCas, 'missing', lambda self, cids: [LOST])
     with pytest.raises(NotArchived, match=f'the store lacks 1 blobs of manifest .*, e.g. {LOST}'):
         archive_job(db, store, home, Job(campaign.id, idea))
     assert path.exists()
@@ -260,7 +264,7 @@ def test_no_row_when_the_store_does_not_hold_every_blob(
         assert s.scalars(select(Archive)).all() == []
 
 
-def archived_idea(db: Database, campaign: Campaign, home: Path, store: Store, title: str) -> tuple[int, int]:
+def archived_idea(db: Database, campaign: Campaign, home: Path, store: ObjectsCas, title: str) -> tuple[int, int]:
     """A done idea with one 1000-byte file, archived: its id and its archiving's."""
     idea = add_idea(db, campaign.id, title)
     add_run(db, idea)
@@ -270,7 +274,7 @@ def archived_idea(db: Database, campaign: Campaign, home: Path, store: Store, ti
 
 
 def test_local_copies_go_by_age_and_under_disk_pressure_the_oldest_archiving_first(
-    db: Database, campaign: Campaign, home: Path, store: Store, monkeypatch: pytest.MonkeyPatch
+    db: Database, campaign: Campaign, home: Path, store: ObjectsCas, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _, old_row = archived_idea(db, campaign, home, store, 'old')
     mid, _ = archived_idea(db, campaign, home, store, 'mid')
@@ -283,7 +287,7 @@ def test_local_copies_go_by_age_and_under_disk_pressure_the_oldest_archiving_fir
     assert sorted(p.name for p in workspace.iterdir()) == [f'idea{mid}', f'idea{new}']
     assert prune_older(db, store, home, utcnow() - timedelta(days=7)) == Pruned(0), 'once'
 
-    monkeypatch.setattr(Store, 'free', lambda self: 10_000 - 1000 * len(list(workspace.rglob('*.npy'))))
+    monkeypatch.setattr(archive_module, 'free', lambda _: 10_000 - 1000 * len(list(workspace.rglob('*.npy'))))
     assert make_room(db, store, home, reserve=8000) == Pruned(0), '8000 free already'
     assert make_room(db, store, home, reserve=9000) == Pruned(1)
     assert sorted(p.name for p in workspace.iterdir()) == [f'idea{new}'], 'the older of the two went'
@@ -312,15 +316,15 @@ def disk(home: Path, size: int) -> int:
 
 
 def test_a_workspace_larger_than_the_room_above_the_reserve_is_stored_in_batches_pruning_in_between(
-    db: Database, campaign: Campaign, home: Path, store: Store, monkeypatch: pytest.MonkeyPatch
+    db: Database, campaign: Campaign, home: Path, store: ObjectsCas, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     idea, before = big_idea(db, campaign, home)
     workspace = workspace_dir(home, campaign.id)
-    monkeypatch.setattr(Store, 'free', lambda self: disk(home, 12_000 + 1000 + 9000))
+    monkeypatch.setattr(archive_module, 'free', lambda _: disk(home, 12_000 + 1000 + 9000))
     on_disk: list[int] = []
     real_put = archive_module.put_walk
 
-    def counting(store: Store, root: Path, found: Walk, stop: object = None) -> Stored:
+    def counting(store: ObjectsCas, root: Path, found: Walk, stop: object = None) -> Stored:
         on_disk.append(len(list(workspace.rglob('*.npy'))))
         return real_put(store, root, found)
 
@@ -337,10 +341,10 @@ def test_a_workspace_larger_than_the_room_above_the_reserve_is_stored_in_batches
 
 
 def test_what_does_not_fit_with_nothing_left_to_prune_is_short_and_stays_for_the_campaign_stop(
-    db: Database, campaign: Campaign, home: Path, store: Store, monkeypatch: pytest.MonkeyPatch
+    db: Database, campaign: Campaign, home: Path, store: ObjectsCas, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     idea, before = big_idea(db, campaign, home)
-    monkeypatch.setattr(Store, 'free', lambda self: disk(home, 12_000 + 1100))
+    monkeypatch.setattr(archive_module, 'free', lambda _: disk(home, 12_000 + 1100))
     done = archive_job(db, store, home, Job(campaign.id, idea), reserve=1000)
     assert done == Archived([], Short(needed=12_000, free=1100, reserve=1000))
     assert files(workspace_dir(home, campaign.id)) == before
@@ -348,20 +352,20 @@ def test_what_does_not_fit_with_nothing_left_to_prune_is_short_and_stays_for_the
         assert due(s) == Job(campaign.id, idea), 'no batch stored: still due'
         s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
         s.commit()
-    monkeypatch.setattr(Store, 'free', lambda self: 1 << 40)
+    monkeypatch.setattr(archive_module, 'free', lambda _: 1 << 40)
     assert [r.files for r in archive_job(db, store, home, Job(campaign.id, idea), reserve=1000).rows] == [4]
 
 
 def test_a_job_cut_after_some_batches_stays_due_and_its_next_run_stores_the_rest(
-    db: Database, campaign: Campaign, home: Path, store: Store, monkeypatch: pytest.MonkeyPatch
+    db: Database, campaign: Campaign, home: Path, store: ObjectsCas, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The first batch of a job marked the whole job as done."""
     idea, before = big_idea(db, campaign, home)
     taken: list[int] = []  # what other programs write meanwhile, in bytes
-    monkeypatch.setattr(Store, 'free', lambda self: disk(home, 12_000 + 1000 + 9000) - sum(taken))
+    monkeypatch.setattr(archive_module, 'free', lambda _: disk(home, 12_000 + 1000 + 9000) - sum(taken))
     real_put = archive_module.put_walk
 
-    def filling(store: Store, root: Path, found: Walk, stop: object = None) -> Stored:
+    def filling(store: ObjectsCas, root: Path, found: Walk, stop: object = None) -> Stored:
         stored = real_put(store, root, found)
         taken.append(1 << 30)  # the disk fills up after the first batch
         return stored
@@ -382,7 +386,7 @@ def test_a_job_cut_after_some_batches_stays_due_and_its_next_run_stores_the_rest
 
 
 def test_an_idea_deleted_since_its_archiving_is_still_restored_by_its_id(
-    db: Database, campaign: Campaign, home: Path, store: Store
+    db: Database, campaign: Campaign, home: Path, store: ObjectsCas
 ) -> None:
     """Restore by id asked for a live idea row, and wrote nothing."""
     idea, row = archived_idea(db, campaign, home, store, 'short-lived')
@@ -395,7 +399,7 @@ def test_an_idea_deleted_since_its_archiving_is_still_restored_by_its_id(
 
 
 def test_a_newer_archiving_displaces_an_older_file_or_directory_at_the_same_path(
-    db: Database, campaign: Campaign, home: Path, store: Store
+    db: Database, campaign: Campaign, home: Path, store: ObjectsCas
 ) -> None:
     """`results` a file in one archiving and a directory in a later one."""
     workspace = workspace_dir(home, campaign.id)
@@ -419,7 +423,7 @@ def test_a_newer_archiving_displaces_an_older_file_or_directory_at_the_same_path
 
 
 def test_a_file_a_prune_cannot_read_keeps_its_archiving_unpruned(
-    db: Database, campaign: Campaign, home: Path, store: Store
+    db: Database, campaign: Campaign, home: Path, store: ObjectsCas
 ) -> None:
     """The archiving was marked pruned, and never pruned again."""
     _, row = archived_idea(db, campaign, home, store, 'locked')
@@ -437,25 +441,25 @@ def test_a_file_a_prune_cannot_read_keeps_its_archiving_unpruned(
 
 
 def test_content_the_store_holds_already_is_archived_even_when_nothing_else_fits(
-    db: Database, campaign: Campaign, home: Path, store: Store, monkeypatch: pytest.MonkeyPatch
+    db: Database, campaign: Campaign, home: Path, store: ObjectsCas, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A copy of a stored blob was budgeted by its full size and stayed short."""
     idea, _ = big_idea(db, campaign, home)
     workspace = workspace_dir(home, campaign.id)
     for path in workspace.rglob('*.npy'):
-        store.put_path(path)  # an earlier archiving stored the same content
-    monkeypatch.setattr(Store, 'free', lambda self: 1000)
+        store.put_file(path)  # an earlier archiving stored the same content
+    monkeypatch.setattr(archive_module, 'free', lambda _: 1000)
     done = archive_job(db, store, home, Job(campaign.id, idea), reserve=1000)
     assert done.short is None and [(r.files, r.complete) for r in done.rows] == [(4, True)], 'three arrays, one link'
 
 
 def test_a_workspace_copy_of_a_blob_that_went_bad_in_the_store_is_not_pruned(
-    db: Database, campaign: Campaign, home: Path, store: Store
+    db: Database, campaign: Campaign, home: Path, store: ObjectsCas
 ) -> None:
     """The intact workspace copy was deleted, leaving only a corrupt blob."""
     _, row = archived_idea(db, campaign, home, store, 'rotting')
     [path] = workspace_dir(home, campaign.id).rglob('*.npy')
-    (store.root / key(Cid.of_file(path))).write_bytes(b'rot')
+    (home / 'store' / key(Cid.of_file(path))).write_bytes(b'rot')
     done = prune(db, store, home, row)
     assert done.removed == 0 and list(done.left.values()) == [
         'its blob in the store is missing or corrupt: run piloop store verify'
@@ -466,12 +470,12 @@ def test_a_workspace_copy_of_a_blob_that_went_bad_in_the_store_is_not_pruned(
 
 
 def test_a_file_that_cannot_be_read_when_nothing_fits_is_reported_with_why(
-    db: Database, campaign: Campaign, home: Path, store: Store, monkeypatch: pytest.MonkeyPatch
+    db: Database, campaign: Campaign, home: Path, store: ObjectsCas, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     idea, _ = big_idea(db, campaign, home)
     [locked, *_] = sorted(workspace_dir(home, campaign.id).rglob('*.npy'))
     locked.chmod(0)
-    monkeypatch.setattr(Store, 'free', lambda self: 1000)
+    monkeypatch.setattr(archive_module, 'free', lambda _: 1000)
     try:
         done = archive_job(db, store, home, Job(campaign.id, idea), reserve=1000)
     finally:
@@ -479,3 +483,17 @@ def test_a_file_that_cannot_be_read_when_nothing_fits_is_reported_with_why(
     rel = str(locked.relative_to(workspace_dir(home, campaign.id)))
     assert done.rows == [] and done.short == Short(needed=8000, free=1000, reserve=1000)
     assert done.skipped == {rel: 'not readable (Permission denied): fix its permissions'}, 'said, with why'
+
+
+def test_free_space_is_measured_where_the_home_is_or_will_be(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    asked: list[Path] = []
+
+    def usage(path: Path) -> shutil._ntuple_diskusage:
+        asked.append(path)
+        return shutil._ntuple_diskusage(100, 40, 60)
+
+    monkeypatch.setattr(archive_module.shutil, 'disk_usage', usage)
+    assert REAL_FREE(tmp_path / 'not' / 'yet') == 60
+    (tmp_path / 'not' / 'yet').mkdir(parents=True)
+    REAL_FREE(tmp_path / 'not' / 'yet')
+    assert asked == [tmp_path, tmp_path / 'not' / 'yet']

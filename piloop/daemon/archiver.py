@@ -20,8 +20,8 @@ from piloop.db.models import utcnow
 from piloop.db.session import Database
 from piloop.ids import TargetKind
 from piloop.otel import Tracer
+from piloop.plugins.cas.contract import Cas, Upkeep
 from piloop.settings import GB, StorageSettings
-from piloop.store import Store
 from piloop.store.tree import Cancelled
 
 DISK_ANOMALY = 'anomaly.disk'
@@ -47,7 +47,7 @@ class ArchivePolicy:
     """How often the archiver prunes by age and by disk pressure, and evicts (with a remote), before the next job."""
     live: frozenset[str] = frozenset({'NOTES.md', 'research'})
     """Top-level workspace entries never archived: the small knowledge files that agents and research sweeps read
-    (``NOTES.md``, the loss tables in ``research/``) stay where they are; only bulk data goes to the store."""
+    (``NOTES.md``, the loss tables in ``research/``) stay where they are; only bulk data goes to the CAS."""
 
     @classmethod
     def of(cls, storage: StorageSettings) -> ArchivePolicy:
@@ -58,7 +58,7 @@ class ArchivePolicy:
 class Archiving(NamedTuple):
     """What the daemon archives into, and when. The scheduler builds its ``Archiver`` from it."""
 
-    store: Store
+    cas: Cas
     policy: ArchivePolicy
 
 
@@ -72,14 +72,14 @@ class Archiver:
     def __init__(
         self,
         db: Database,
-        store: Store,
+        cas: Cas,
         home: Path,
         policy: ArchivePolicy,
         tracer: Tracer,
         pool: ThreadPoolExecutor,
         stop: threading.Event,
     ) -> None:
-        self._db, self._store, self._home, self._policy, self._tracer = db, store, home, policy, tracer
+        self._db, self._cas, self._home, self._policy, self._tracer = db, cas, home, policy, tracer
         self._pool, self._stop = pool, stop
         self._job: Future[None] | None = None
         self._paused_until = -math.inf
@@ -117,7 +117,7 @@ class Archiver:
                 span.error,
                 lambda: archive(
                     self._db,
-                    self._store,
+                    self._cas,
                     self._home,
                     job,
                     live=self._policy.live,
@@ -164,9 +164,9 @@ class Archiver:
     def _prune_and_evict(self) -> None:
         with self._tracer.span('piloop.store.upkeep') as span:
             older = utcnow() - self._policy.prune_after
-            aged = self._guarded(span.error, lambda: prune_older(self._db, self._store, self._home, older, self._stop))
+            aged = self._guarded(span.error, lambda: prune_older(self._db, self._cas, self._home, older, self._stop))
             pressed = self._guarded(
-                span.error, lambda: make_room(self._db, self._store, self._home, self._policy.reserve, self._stop)
+                span.error, lambda: make_room(self._db, self._cas, self._home, self._policy.reserve, self._stop)
             )
             span.set(
                 pruned_by_age=aged.archivings if aged is not None else None,
@@ -179,7 +179,10 @@ class Archiver:
             if self._stop.is_set():  # the daemon stops: evicting can wait for the next one
                 span.set(stopped=True)
                 return
-            if self._store.remote is not None and (done := self._guarded(span.error, self._store.evict)) is not None:
+            if (
+                isinstance(cas := self._cas, Upkeep)
+                and (done := self._guarded(span.error, lambda: cas.flush(evict=True))) is not None
+            ):
                 span.set(uploaded=done.uploaded, evicted=done.evicted, freed=done.freed)
 
     def _guarded[T](self, error: Callable[[BaseException], None], step: Callable[[], T]) -> T | None:

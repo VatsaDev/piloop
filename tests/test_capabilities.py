@@ -16,10 +16,10 @@ from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
 from typing import get_type_hints
 
-import piloop_dir_store
 import piloop_inline
 import piloop_min_gain
 import piloop_nice
+import piloop_sqlite_cas
 import piloop_stop_after_keeps
 
 from piloop import capabilities
@@ -35,7 +35,27 @@ HELPERS: set[object] = {
     NotSteerable,
     NotAttachable,
     capabilities.runtime_settings,
-    capabilities.check_storage_backend,
+    capabilities.check_cas,
+    capabilities.ContractBroken,
+    capabilities.integrity,
+    capabilities.UNBOUNDED,
+    capabilities.Nested,
+    capabilities.NestedLocal,
+    capabilities.LocalProvider,  # what a local tier's provider and store are, and what eviction sees
+    capabilities.LocalCas,
+    capabilities.Evictable,
+    capabilities.Held,
+    capabilities.DiskCas,
+    capabilities.ObjectsCas,  # the kit: a store of objects that a provider may use
+    capabilities.StreamCas,
+    capabilities.Objects,
+    capabilities.Dir,
+    capabilities.CachedCas,
+    capabilities.Upkeep,  # a store's optional protocol, and what it returns
+    capabilities.TierUsage,
+    capabilities.Flushed,
+    capabilities.Integrity,
+    capabilities.BlobAddress,  # the type of a blob's address in the data that contracts pass
     capabilities.number,
     capabilities.GO,
     capabilities.key_of,
@@ -186,7 +206,7 @@ def test_core_imports_no_helper_of_a_kit() -> None:
 
 def test_the_example_plugins_import_piloop_only_from_the_module() -> None:
     plugins = [
-        piloop_dir_store,
+        piloop_sqlite_cas,
         piloop_inline,
         piloop_min_gain,
         piloop_nice,
@@ -195,7 +215,10 @@ def test_the_example_plugins_import_piloop_only_from_the_module() -> None:
     for plugin in plugins:
         own = plugin.__name__.split('.')[0]
         outside = {m for m in _imports(Path(plugin.__file__ or '')) if m.split('.')[0] not in sys.stdlib_module_names}
-        assert {m for m in outside if m.split('.')[0] != own} == {'piloop.capabilities'}, plugin.__name__
+        # covalence is the library of piloop's CAS: a provider may return its stores as they are
+        assert {m for m in outside if m.split('.')[0] not in {own, 'covalence'}} == {'piloop.capabilities'}, (
+            plugin.__name__
+        )
 
 
 def test_a_pure_example_plugin_uses_only_pure_contracts_and_pure_providers() -> None:

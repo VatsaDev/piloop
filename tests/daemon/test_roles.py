@@ -9,7 +9,7 @@ from importlib.metadata import EntryPoint
 from pathlib import Path
 
 import pytest
-from piloop_dir_store import Dir
+from covalence import Cas as Covalence
 from sqlalchemy import select
 
 from piloop.cli import common, main as cli
@@ -38,13 +38,13 @@ from piloop.db.session import Database
 from piloop.ids import RESEARCH, WATCHDOG, AgentSessionId, RoleName, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins_module
+from piloop.plugins.cas.contract import CAS
 from piloop.plugins.host import PluginError, compose
 from piloop.plugins.role.contract import ROLES
 from piloop.plugins.runtime.contract import RUNTIMES, Runtime
 from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.runtime.factory import RuntimeFactory
 from piloop.settings import Settings
-from piloop.store.config import open_store
 from tests.conftest import (
     HARNESS_APPEND,
     ScriptRuntime,
@@ -513,18 +513,18 @@ HARNESS_NICENESS = '#!/bin/sh\nps -o nice= -p $$ | tr -d " " > niceness.txt\n'
 """A harness that writes its own niceness, so a test sees which runtime started it."""
 
 
-def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_the_configuration(
+def test_example_plugins_replace_the_built_in_runtime_and_cas_through_the_configuration(
     db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The example plugins ``piloop-nice`` and ``piloop-dir-store`` are installed, with a package role ``fast``.
+    """The example plugins ``piloop-nice`` and ``piloop-sqlite-cas`` are installed, with a package role ``fast``.
 
-    ``runtime = "nice"`` in piloop.toml and ``[storage.backend] kind = "dir"`` in config.toml bind them in place of
-    ``subprocess`` and of no remote. The daemon composes them before it starts, its agents start through ``nice`` at
+    ``runtime = "nice"`` in piloop.toml and ``[plugins.cas] provider = "sqlite"`` in config.toml bind them in place of
+    ``subprocess`` and of ``disk``. The daemon composes them before it starts, its agents start through ``nice`` at
     the niceness of ``[runtimes.nice]``, and ``piloop plugins`` shows each binding with its package, its version and
     where the choice comes from.
     """
     example(tmp_path / 'site', 'nice-runtime')
-    example(tmp_path / 'site', 'dir-store')
+    example(tmp_path / 'site', 'sqlite-cas')
     package(tmp_path / 'site', 'piloop-fast-role', '1.0', f'[piloop.roles]\nfast = {PLUGIN}:Fast\n')
     monkeypatch.syspath_prepend(tmp_path / 'site')
     monkeypatch.setenv('PILOOP_HOME', str(tmp_path))  # where the runtime reads its [runtimes.nice] settings
@@ -537,10 +537,10 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
         s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
         s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='by hand'))
         s.commit()
-    remote = f'[storage.backend]\nkind = "dir"\nroot = "{tmp_path / "remote"}"\n'
-    (tmp_path / 'config.toml').write_text(f'{remote}[runtimes.nice]\nniceness = 5\n')
+    cas = f'[plugins.cas]\nprovider = "sqlite"\npath = "{tmp_path / "blobs.sqlite"}"\n'
+    (tmp_path / 'config.toml').write_text(f'{cas}[runtimes.nice]\nniceness = 5\n')
     home = Settings(home=tmp_path, tick_seconds=0.05)
-    assert isinstance(open_store(home).remote, Dir)
+    assert isinstance(CAS.selected(home.providers).open(home.home), Covalence)
     daemon = Daemon(home)
     try:
         daemon.scheduler.reap()
@@ -563,7 +563,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
     ]
     assert '  nice        piloop-nice 0.1.0, entry point nice = piloop_nice:NiceRuntime' in lines
     toml, config = Path(campaign.path) / 'piloop.toml', tmp_path / 'config.toml'
-    store = f'storage backend dir, from piloop-dir-store 0.1.0 ([storage.backend] kind in {config})'
+    store = f'CAS provider sqlite, from piloop-sqlite-cas 0.1.0 ([plugins.cas] provider, in {config})'
     stored = f'in the config of demo that the last `piloop init` stored from {toml}'
     settings = f'; its settings: [runtimes.nice] in {config}'
     keys = {
@@ -574,8 +574,8 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
         'fast': 'the default of the fast role from piloop-fast-role 1.0',
     }
     assert lines[lines.index('selected:') + 1 :] == [
-        *(f'  demo {k}: runtime nice, from piloop-nice 0.1.0 ({key}, {stored}{settings})' for k, key in keys.items()),
         f'  {store}',
+        *(f'  demo {k}: runtime nice, from piloop-nice 0.1.0 ({key}, {stored}{settings})' for k, key in keys.items()),
     ]
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
@@ -583,7 +583,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
         s.commit()
     built_in = RUNTIMES.sources()['subprocess'].release
     assert (
-        selections(home)[0] == f'demo implementer: runtime subprocess, from {built_in} (runtime, its default, {stored})'
+        selections(home)[1] == f'demo implementer: runtime subprocess, from {built_in} (runtime, its default, {stored})'
     )
     with db.session() as s:
         s.get_one(Campaign, campaign.id).config = {}

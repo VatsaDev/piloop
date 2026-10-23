@@ -16,11 +16,16 @@ from piloop.settings import runtime_settings
 from piloop.plugins.runtime.herdr import HerdrRuntime
 from piloop.plugins.runtime.subprocess import SubprocessRuntime
 
-from piloop.plugins.storage_backend.contract import STORAGE_BACKENDS
-from piloop.plugins.storage_backend.contract import StorageBackend, StorageBackendConfig
-from piloop.plugins.storage_backend.kit.conformance import check_storage_backend
-from piloop.plugins.storage_backend.gcs import GcsConfig
-from piloop.plugins.storage_backend.s3 import S3Config
+from piloop.plugins.cas.contract import CAS, Cas, CasProvider, BlobAddress, Writer
+from piloop.plugins.cas.contract import Upkeep, TierUsage, Flushed, Integrity, integrity, UNBOUNDED
+from piloop.plugins.cas.contract import Held, Evictable, LocalCas, LocalProvider
+from piloop.plugins.cas.kit.conformance import check_cas, ContractBroken
+from piloop.plugins.cas.kit.nested import Nested, NestedLocal
+from piloop.plugins.cas.kit.objects import Objects, ObjectsCas, StreamCas, Dir
+from piloop.plugins.cas.disk import Disk, DiskCas
+from piloop.plugins.cas.cached import Cached, CachedCas
+from piloop.plugins.cas.s3 import S3
+from piloop.plugins.cas.gcs import Gcs
 
 from piloop.plugins.trigger.contract import TRIGGERS, Trigger, Tick, Fire
 from piloop.plugins.trigger.contract import Backlog, TrackBacklog, Incident

@@ -1,4 +1,4 @@
-"""The artifact store's commands: ``piloop restore``, and ``piloop store status``, ``evict`` and ``verify``."""
+"""The commands of the CAS that archived files live in: ``piloop restore``, and ``piloop store`` ``status``, ``evict``, ``verify``."""
 
 from collections import Counter
 from typing import Annotated
@@ -14,7 +14,8 @@ from piloop.campaign.campaigns import workspace_dir
 from piloop.cli import common
 from piloop.cli.common import CampaignRef
 from piloop.db.models import Archive, Campaign
-from piloop.store.config import open_store
+from piloop.plugins.cas.contract import CAS, Integrity, Upkeep, integrity
+from piloop.store.tree import Manifest
 
 app = cyclopts.App(
     name='store', help='The artifact store that archived workspace files live in: what it holds, eviction, checks.'
@@ -42,7 +43,7 @@ def restore(
     parsed: int | str | None = int(idea) if idea is not None and idea.isdigit() else target
     with common.session() as s:
         campaign = common.campaign(s, ref)
-        restored = archive.restore(s, open_store(common.settings), common.settings.home, campaign, parsed)
+        restored = archive.restore(s, common.cas(), common.settings.home, campaign, parsed)
     done = restored.done
     if done.written + done.same + len(done.kept) == 0:
         what = f'idea#{parsed}' if isinstance(parsed, int) else parsed or 'anything'
@@ -66,19 +67,15 @@ def restore(
 @app.command(name='status')
 def store_status() -> None:
     """What the store holds, where, and how much of each campaign's workspace was archived into it."""
-    store = open_store(common.settings)
-    usage = store.usage()
-    remote = (
-        f'{usage.remote} on {store.remote.url}'
-        if store.remote is not None
-        else 'no storage backend ([storage.backend])'
-    )
-    common.console.print(
-        f'{store.root}: {usage.blobs} blob(s), {usage.local} local ({decimal(usage.local_bytes)}), {remote}',
-        markup=False,
-        highlight=False,
-        soft_wrap=True,
-    )
+    cas = common.cas()
+    line = f'cas: {CAS.name_of(CAS.selected(common.settings.providers))}'
+    if isinstance(cas, Upkeep):
+        usage = cas.usage()
+        line += (
+            f'; {usage.blobs} blob(s), {usage.local} local ({decimal(usage.local_bytes)}), {usage.remote} on'
+            f' {usage.where}'
+        )
+    common.console.print(line, markup=False, highlight=False, soft_wrap=True)
     table = Table('campaign', 'archives', 'files', 'archived', box=box.SIMPLE_HEAD)
     with common.session() as s:
         rows = s.execute(
@@ -102,8 +99,11 @@ def store_status() -> None:
 
 @app.command(name='evict')
 def store_evict() -> None:
-    """Upload what the remote lacks, then drop local copies as `[storage]` says; the daemon does it hourly too."""
-    done = open_store(common.settings).evict()
+    """Upload what the remote lacks, then drop local copies as `[plugins.cas]` says; the daemon does it hourly too."""
+    cas = common.cas()
+    if not isinstance(cas, Upkeep):
+        raise SystemExit('the CAS keeps no local copies to evict: only a cache over a remote does')
+    done = cas.flush(evict=True)
     common.console.print(f'uploaded {done.uploaded} blob(s), evicted {done.evicted} ({decimal(done.freed)})')
 
 
@@ -113,7 +113,7 @@ def store_verify(ref: CampaignRef | None = None, /) -> None:
 
     Exits non-zero when one is missing or corrupt.
     """
-    store = open_store(common.settings)
+    cas = common.cas()
     with common.session() as s:
         query = select(Archive.manifest).where(Archive.manifest.is_not(None))
         if ref is not None:
@@ -121,12 +121,12 @@ def store_verify(ref: CampaignRef | None = None, /) -> None:
         manifests = [m for m in s.scalars(query).all() if m is not None]
     cids = set(manifests)
     for manifest in manifests:
-        if store.check(manifest) == 'ok':
-            cids |= store.manifest(manifest).blobs
-    found = Counter(store.check(cid) for cid in cids)
+        if integrity(cas, manifest) is Integrity.OK:
+            cids |= Manifest.get(cas, manifest).blobs
+    found = Counter(integrity(cas, cid) for cid in cids)
     common.console.print(
-        f'{len(manifests)} manifest(s), {len(cids)} blob(s): {found["ok"]} ok, {found["missing"]} missing,'
-        f' {found["corrupt"]} corrupt'
+        f'{len(manifests)} manifest(s), {len(cids)} blob(s): {found[Integrity.OK]} ok, {found[Integrity.MISSING]} missing,'
+        f' {found[Integrity.CORRUPT]} corrupt'
     )
-    if found['missing'] or found['corrupt']:
+    if found[Integrity.MISSING] or found[Integrity.CORRUPT]:
         raise SystemExit(1)

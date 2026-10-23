@@ -176,7 +176,7 @@ class Scheduler:
         """Scoring outside an implementer: a run's resumed scoring by run id, or a campaign's re-measure by campaign id."""
         self._stop = threading.Event()
         self._archiver = (
-            Archiver(db, archiving.store, home, archiving.policy, tracer, self._pool, self._stop)
+            Archiver(db, archiving.cas, home, archiving.policy, tracer, self._pool, self._stop)
             if archiving is not None
             else None
         )

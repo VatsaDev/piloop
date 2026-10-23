@@ -1,19 +1,18 @@
-"""The GCS remote, against a stand-in for ``google.cloud.storage``'s client: no network, no credentials."""
+"""The GCS store, against a stand-in for ``google.cloud.storage``'s client: no network, no credentials."""
 
-import io
 import sys
 from pathlib import Path
 
 import google.cloud
 import pytest
+from covalence import Cid
 from google.api_core.exceptions import NotFound
 from google.cloud import storage
 from pydantic import ValidationError
 
-from piloop.plugins.storage_backend.gcs import Gcs, GcsConfig
-from piloop.settings import BackendTable
-from piloop.store import Store, key
-from piloop.store.config import backend_config
+from piloop.plugins.cas.gcs import Gcs
+from piloop.plugins.cas.kit.objects import key
+from tests.cas.test_selection import provider
 
 
 class FakeBlob:
@@ -69,34 +68,39 @@ def buckets(monkeypatch: pytest.MonkeyPatch) -> dict[str, FakeBucket]:
 def test_blobs_go_under_the_prefix_in_the_configured_class_and_come_back(
     buckets: dict[str, FakeBucket], tmp_path: Path
 ) -> None:
-    remote = GcsConfig(bucket='piloop-test', prefix='/piloop/store/', storage_class='COLDLINE').open()
-    assert (remote.url, remote.prefix) == ('gs://piloop-test/piloop/store', 'piloop/store/')
-    blob = Store(tmp_path / 'store', remote).put(io.BytesIO(b'{"a": 1}'))
-    assert buckets['piloop-test'].objects[f'piloop/store/{key(blob.cid)}'][1] == 'COLDLINE'
-    assert GcsConfig(bucket='b').open().url == 'gs://b', 'a bucket root has no prefix'
+    config = Gcs(bucket='piloop-test', prefix='/piloop/store/', storage_class='COLDLINE')
+    assert config.where(tmp_path) == 'gs://piloop-test/piloop/store'
+    cas = config.open(tmp_path)
+    cid = cas.put(b'{"a": 1}')
+    assert buckets['piloop-test'].objects[f'piloop/store/{key(cid)}'][1] == 'COLDLINE'
+    assert cas.get(cid) == b'{"a": 1}' and cas.get(Cid.of(b'none')) is None
+    assert Gcs(bucket='b').where(tmp_path) == 'gs://b', 'a bucket root has no prefix'
 
 
 def test_a_key_file_replaces_application_default_credentials(buckets: dict[str, FakeBucket], tmp_path: Path) -> None:
     key_file = tmp_path / 'sa.json'
-    remote = GcsConfig(bucket='b', project='p', credentials_file=key_file).open()
-    assert FakeClient.made == [('key file', str(key_file), 'p')] and remote.url == 'gs://b'
+    Gcs(bucket='b', project='p', credentials_file=key_file).open(tmp_path)
+    assert FakeClient.made == [('key file', str(key_file), 'p')]
 
 
 def test_the_gcs_table_has_its_own_keys() -> None:
-    """The same ``[storage.backend]`` table, with GCS's keys instead of S3's."""
-    config = backend_config(BackendTable(kind='gcs', bucket='b', prefix='p', storage_class='ARCHIVE', project='x'))
-    assert config == GcsConfig(bucket='b', prefix='p', storage_class='ARCHIVE', project='x')
-    for table, error in (
-        (BackendTable(kind='gcs', bucket='gs://b/p'), 'is no bucket name'),
-        (BackendTable(kind='gcs', bucket='b', storage_class='GLACIER_IR'), "'STANDARD', 'NEARLINE', 'COLDLINE'"),
-        (BackendTable(kind='gcs', url='s3://b'), 'bucket'),
+    """The same ``[plugins.cas]`` table, with GCS's keys instead of S3's."""
+    keys = {'provider': 'gcs', 'bucket': 'b', 'prefix': 'p', 'storage_class': 'ARCHIVE', 'project': 'x'}
+    expected = Gcs(bucket='b', prefix='p', storage_class='ARCHIVE', project='x')
+    assert provider(keys) == expected
+    for given, error in (
+        ({'bucket': 'gs://b/p'}, 'is no bucket name'),
+        ({'bucket': 'b', 'storage_class': 'GLACIER_IR'}, "'STANDARD', 'NEARLINE', 'COLDLINE'"),
+        ({'url': 's3://b'}, 'bucket'),
     ):
         with pytest.raises(ValidationError, match=error):
-            backend_config(table)
+            provider({'provider': 'gcs', **given})
 
 
-def test_without_the_gcs_extra_the_store_says_how_to_install_it(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_without_the_gcs_extra_the_store_says_how_to_install_it(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     monkeypatch.setitem(sys.modules, 'google.cloud.storage', None)
     monkeypatch.delattr(google.cloud, 'storage')
     with pytest.raises(ImportError, match=r"needs the gcs extra: uv tool install --reinstall 'piloop\[gcs\]'"):
-        Gcs(GcsConfig(bucket='b'))
+        Gcs(bucket='b').open(tmp_path)

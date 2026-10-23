@@ -2,11 +2,11 @@
 
 | Capability | Tier | Selected by | Built-in providers |
 |---|---|---|---|
+| cas: `CAS` (`piloop.cas`) | host | `[plugins.cas] provider` in `config.toml` | `cached`: `Cached`<br/>`disk`: `Disk`<br/>`gcs`: `Gcs`<br/>`s3`: `S3` |
 | executor: `EXECUTORS` (`piloop.executors`) | host | `[plugins.executor] provider` in `config.toml` | `workers`: `Workers` |
 | network: `NETWORKS` (`piloop.networks`) | host | `[plugins.network] provider` in `config.toml` | `https`: `Https` |
 | role: `ROLES` (`piloop.roles`) | host | its name, where the configuration uses it | `implementer`: `ImplementerRole`<br/>`research`: `ResearchRole`<br/>`scout`: `ScoutRole`<br/>`watchdog`: `WatchdogRole` |
 | runtime: `RUNTIMES` (`piloop.runtimes`) | host | `runtime` | `herdr`: `HerdrRuntime`<br/>`subprocess`: `SubprocessRuntime` |
 | stop rule: `STOP_RULES` (`piloop.stop_rules`) | pure | `[plugins.stop_rule] provider` | `limits`: `FirstLimit` |
-| storage backend: `STORAGE_BACKENDS` (`piloop.stores`) | host | `[storage.backend] kind` in `config.toml` | `gcs`: `GcsConfig`<br/>`s3`: `S3Config` |
 | trigger: `TRIGGERS` (`piloop.triggers`) | host | its name, where the configuration uses it | `anomaly`: `AnomalyTrigger`<br/>`cron`: `CronTrigger`<br/>`low_water`: `LowWaterTrigger`<br/>`seed`: `SeedTrigger`<br/>`sql`: `SqlTrigger`<br/>`stalled`: `StalledTrigger`<br/>`stopped`: `StoppedTrigger` |
 | verdict rule: `VERDICT_RULES` (`piloop.verdict_rules`) | pure | `[plugins.verdict_rule] provider` | `bootstrap`: `Bootstrap` |

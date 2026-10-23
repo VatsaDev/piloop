@@ -1,7 +1,6 @@
 """The daemon's archiver: one job at a time on the daemon's pool, a pause after a failure, and the hourly upkeep."""
 
 import errno
-import io
 import os
 import threading
 import time
@@ -11,9 +10,11 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from covalence import Cid
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from sqlalchemy import select
 
+from piloop.campaign import archive as archive_module
 from piloop.campaign.archive import Archived, Job, Pruned, archive, due, make_room
 from piloop.campaign.campaigns import workspace_dir
 from piloop.daemon import archiver as archiver_module
@@ -22,11 +23,12 @@ from piloop.db.models import Archive, Campaign, Event, Run, utcnow
 from piloop.db.session import Database
 from piloop.ids import TargetKind
 from piloop.otel import Tracer
+from piloop.plugins.cas.cached import CachedCas
+from piloop.plugins.cas.disk import DiskCas
+from piloop.plugins.cas.kit.objects import ObjectsCas
 from piloop.settings import GB, StorageSettings
-from piloop.store import Blob, Store
 from tests.campaign.test_archive import add_idea, add_run, big_idea, files, write
 from tests.conftest import events
-from tests.store.test_store import DirRemote
 
 POLICY = ArchivePolicy(reserve=0)
 type Stop = threading.Event | None
@@ -37,9 +39,14 @@ def home(tmp_path: Path) -> Path:
     return tmp_path / 'piloop-home'
 
 
+def cached(home: Path, evict_after: timedelta | None = None) -> CachedCas:
+    remote = DiskCas(home / 'remote')
+    return CachedCas(DiskCas(home / 'store'), home / 'store', remote, 'file://remote', evict_after)
+
+
 @pytest.fixture
-def store(home: Path) -> Store:
-    return Store(home / 'store')
+def store(home: Path) -> ObjectsCas:
+    return DiskCas(home / 'store')
 
 
 @pytest.fixture
@@ -75,7 +82,7 @@ def test_the_archiver_runs_one_job_at_a_time_and_pauses_after_a_failure(
     db: Database,
     campaign: Campaign,
     home: Path,
-    store: Store,
+    store: ObjectsCas,
     tracer: Tracer,
     spans: InMemorySpanExporter,
     pool: ThreadPoolExecutor,
@@ -90,7 +97,7 @@ def test_the_archiver_runs_one_job_at_a_time_and_pauses_after_a_failure(
     real = archiver_module.archive
 
     def held(
-        db: Database, store: Store, home: Path, job: Job, *, live: Collection[str], reserve: int, stop: Stop = None
+        db: Database, store: ObjectsCas, home: Path, job: Job, *, live: Collection[str], reserve: int, stop: Stop = None
     ) -> Archived:
         gate.wait(10)
         return real(db, store, home, job, live=live, reserve=reserve, stop=stop)
@@ -109,7 +116,7 @@ def test_the_archiver_runs_one_job_at_a_time_and_pauses_after_a_failure(
     add_run(db, third)
 
     def broken(
-        db: Database, store: Store, home: Path, job: Job, *, live: Collection[str], reserve: int, stop: Stop = None
+        db: Database, store: ObjectsCas, home: Path, job: Job, *, live: Collection[str], reserve: int, stop: Stop = None
     ) -> Archived:
         raise OSError('No space left on device')
 
@@ -134,7 +141,7 @@ def test_a_stopping_daemon_cancels_the_archiving_in_flight_and_the_next_one_resu
     db: Database,
     campaign: Campaign,
     home: Path,
-    store: Store,
+    store: ObjectsCas,
     tracer: Tracer,
     pool: ThreadPoolExecutor,
     monkeypatch: pytest.MonkeyPatch,
@@ -146,7 +153,7 @@ def test_a_stopping_daemon_cancels_the_archiving_in_flight_and_the_next_one_resu
     real = archiver_module.archive
 
     def stopping(
-        db: Database, store: Store, home: Path, job: Job, *, live: Collection[str], reserve: int, stop: Stop = None
+        db: Database, store: ObjectsCas, home: Path, job: Job, *, live: Collection[str], reserve: int, stop: Stop = None
     ) -> Archived:
         assert stop is not None
         stop.set()  # the daemon stops while the archiving runs
@@ -178,8 +185,7 @@ def test_with_nothing_due_the_upkeep_prunes_by_age_and_pressure_and_evicts_hourl
     pool: ThreadPoolExecutor,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    remote = DirRemote(home / 'remote')
-    store = Store(home / 'store', remote, evict_after=timedelta(days=1))
+    store = cached(home, evict_after=timedelta(days=1))
     workspace = workspace_dir(home, campaign.id)
     for title in ('old', 'new'):
         idea = add_idea(db, campaign.id, title)
@@ -193,7 +199,7 @@ def test_with_nothing_due_the_upkeep_prunes_by_age_and_pressure_and_evicts_hourl
         for run in s.scalars(select(Run).where(Run.idea_id == old.idea_id)):
             run.finished_at = utcnow() - timedelta(days=9)  # else the idea is due again
         s.commit()
-    monkeypatch.setattr(Store, 'free', lambda self: 1 << 40)
+    monkeypatch.setattr(archive_module, 'free', lambda _: 1 << 40)
     archiver = upkept(Archiver(db, store, home, POLICY, tracer, pool, threading.Event()))
     assert spans_named(spans, 'piloop.store.upkeep') == [
         {'pruned_by_age': 1, 'pruned_by_pressure': 0, 'uploaded': 0, 'evicted': 0, 'freed': 0}
@@ -203,8 +209,8 @@ def test_with_nothing_due_the_upkeep_prunes_by_age_and_pressure_and_evicts_hourl
     assert archiver._job is not None and archiver._job.done() and len(spans_named(spans, 'piloop.store.upkeep')) == 1
 
     archiver._policy = ArchivePolicy(reserve=GB, upkeep_every=timedelta(0))
-    monkeypatch.setattr(Store, 'free', lambda self: 0)
-    monkeypatch.setattr(store, 'evict', lambda: (_ for _ in ()).throw(OSError('remote down')))
+    monkeypatch.setattr(archive_module, 'free', lambda _: 0)
+    monkeypatch.setattr(store, 'flush', lambda *, evict: (_ for _ in ()).throw(OSError('remote down')))
     archiver.tick()
     settle(archiver)
     last = [s for s in spans.get_finished_spans() if s.name == 'piloop.store.upkeep'][-1]
@@ -214,14 +220,14 @@ def test_with_nothing_due_the_upkeep_prunes_by_age_and_pressure_and_evicts_hourl
     jobs = archiver._job
     archiver.tick()
     assert archiver._job is jobs, 'a failed upkeep pauses like a failed archiving'
-    Archiver(db, Store(home / 'other'), home, POLICY, tracer, pool, threading.Event()).tick()  # no remote: no evict
+    Archiver(db, DiskCas(home / 'other'), home, POLICY, tracer, pool, threading.Event()).tick()  # no evict
 
 
 def test_a_job_the_disk_is_too_full_for_writes_one_disk_anomaly_and_pauses(
     db: Database,
     campaign: Campaign,
     home: Path,
-    store: Store,
+    store: ObjectsCas,
     tracer: Tracer,
     spans: InMemorySpanExporter,
     pool: ThreadPoolExecutor,
@@ -229,7 +235,7 @@ def test_a_job_the_disk_is_too_full_for_writes_one_disk_anomaly_and_pauses(
 ) -> None:
     """The incident: a 21 GB idea was stored into a disk with less free, ENOSPC, and stored again every 600 s."""
     idea, before = big_idea(db, campaign, home)
-    monkeypatch.setattr(Store, 'free', lambda self: GB + 100)
+    monkeypatch.setattr(archive_module, 'free', lambda _: GB + 100)
     archiver = upkept(Archiver(db, store, home, ArchivePolicy(reserve=GB), tracer, pool, threading.Event()))
     archiver.tick()
     settle(archiver)
@@ -244,11 +250,11 @@ def test_a_job_the_disk_is_too_full_for_writes_one_disk_anomaly_and_pauses(
     archiver.tick()
     assert archiver._job is jobs, 'it waits'
 
-    def full(*_args: object) -> Blob:
+    def full(*_args: object, **_limits: object) -> Cid:
         raise OSError(errno.ENOSPC, 'No space left on device')
 
-    monkeypatch.setattr(Store, 'free', lambda self: 1 << 40)
-    monkeypatch.setattr(Store, 'put_path', full)
+    monkeypatch.setattr(archive_module, 'free', lambda _: 1 << 40)
+    monkeypatch.setattr(ObjectsCas, 'put_fileobj', full)
     archiver._paused_until = 0  # the wait is over
     archiver.tick()
     settle(archiver)
@@ -259,7 +265,7 @@ def test_a_job_the_disk_is_too_full_for_writes_one_disk_anomaly_and_pauses(
 
 
 def test_what_an_archiving_leaves_out_is_on_its_span_with_why(
-    db: Database, campaign: Campaign, home: Path, store: Store, tracer: Tracer, spans: InMemorySpanExporter, pool
+    db: Database, campaign: Campaign, home: Path, store: ObjectsCas, tracer: Tracer, spans: InMemorySpanExporter, pool
 ) -> None:
     """A skipped path went unreported."""
     idea = add_idea(db, campaign.id, 'idea')
@@ -279,7 +285,7 @@ def test_the_upkeep_reports_a_file_it_cannot_read_and_counts_from_its_end(
     db: Database,
     campaign: Campaign,
     home: Path,
-    store: Store,
+    store: ObjectsCas,
     tracer: Tracer,
     spans: InMemorySpanExporter,
     pool: ThreadPoolExecutor,
@@ -290,7 +296,7 @@ def test_the_upkeep_reports_a_file_it_cannot_read_and_counts_from_its_end(
     add_run(db, idea)
     path = write(workspace_dir(home, campaign.id) / f'idea{idea}' / 'x.npy', 'x')
     archive(db, store, home, Job(campaign.id, idea), live=POLICY.live, reserve=0)
-    monkeypatch.setattr(Store, 'free', lambda self: 0)
+    monkeypatch.setattr(archive_module, 'free', lambda _: 0)
     path.chmod(0)
     try:
         archiver = upkept(Archiver(db, store, home, ArchivePolicy(reserve=GB), tracer, pool, threading.Event()))
@@ -316,7 +322,7 @@ def test_an_upkeep_slower_than_its_period_still_leaves_the_next_tick_to_a_due_jo
     db: Database,
     campaign: Campaign,
     home: Path,
-    store: Store,
+    store: ObjectsCas,
     tracer: Tracer,
     spans: InMemorySpanExporter,
     pool: ThreadPoolExecutor,
@@ -353,9 +359,9 @@ def test_a_stopping_daemon_ends_the_upkeep_between_steps(
 ) -> None:
     """An upkeep went on pruning and evicting after the daemon had stopped."""
     stop = threading.Event()
-    store = Store(home / 'store', DirRemote(home / 'remote'))
+    store = cached(home)
     evicted: list[bool] = []
-    monkeypatch.setattr(store, 'evict', lambda: evicted.append(True))
+    monkeypatch.setattr(store, 'flush', lambda *, evict: evicted.append(evict))
     with db.session() as s:
         s.add(Archive(campaign_id=campaign.id, created_at=utcnow() - timedelta(days=30)))
         s.commit()
@@ -364,6 +370,6 @@ def test_a_stopping_daemon_ends_the_upkeep_between_steps(
     assert spans_named(spans, 'piloop.store.upkeep')[0]['stopped'] is True and evicted == []
     with db.session() as s:
         assert s.scalars(select(Archive.pruned_at)).one() is None, 'not even the overdue archiving'
-    store.put(io.BytesIO(b'x'))
-    monkeypatch.setattr(Store, 'free', lambda self: 0)
+    store.put(b'x')
+    monkeypatch.setattr(archive_module, 'free', lambda _: 0)
     assert make_room(db, store, home, reserve=1, stop=stop) == Pruned(), 'the pressure prune stops too'

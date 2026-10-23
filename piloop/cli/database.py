@@ -16,7 +16,6 @@ from piloop.campaign.archive import ManifestNotMigrated, migrate_manifests
 from piloop.cli import common
 from piloop.db import sql
 from piloop.db.session import Database, backups, revision
-from piloop.store.config import open_store
 
 
 def sql_cmd(
@@ -88,7 +87,7 @@ def migrate_cmd() -> None:
         backup = common.migrate(db)
         _print_schema(old, revision(common.settings.home / 'piloop.db'), backup)
         try:
-            manifests = migrate_manifests(db, open_store(common.settings))
+            manifests = migrate_manifests(db, common.cas())
         except ManifestNotMigrated as e:
             raise SystemExit(str(e)) from e
     finally:

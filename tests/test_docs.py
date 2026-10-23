@@ -28,7 +28,6 @@ from piloop.config import CampaignConfig
 from piloop.db import sql
 from piloop.plugins import host
 from piloop.settings import HOME_PLUGINS, StorageSettings
-from piloop.store.config import backend_config
 from tests.conftest import at_head, example
 
 ROOT = Path(__file__).parent.parent
@@ -134,9 +133,7 @@ def check_toml(block: Block, _db: Path) -> None:
     if is_global(data):
         HOME_PLUGINS.validate_python(data.get('plugins', {}))  # as the daemon checks them before it starts
         if (storage := data.get('storage')) is not None:
-            settings = StorageSettings.model_validate(storage)
-            if settings.backend is not None:
-                backend_config(settings.backend)  # the backend checks its own keys, as when the store opens
+            StorageSettings.model_validate(storage)
         return
     CampaignConfig.model_validate(data if {'name', 'evaluate'} <= data.keys() else merged(BASE_CONFIG, data))
 
@@ -275,7 +272,7 @@ def db(tmp_path_factory: pytest.TempPathFactory, schema: Path) -> Path:
 def examples(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
     """The example plugins installed, so that a page that selects one (``runtime = "nice"``) validates."""
     site = tmp_path_factory.mktemp('site')
-    for name in ('nice-runtime', 'dir-store', 'min-gain', 'stop-after-keeps', 'inline-executor'):
+    for name in ('nice-runtime', 'sqlite-cas', 'min-gain', 'stop-after-keeps', 'inline-executor'):
         example(site, name)
     with pytest.MonkeyPatch.context() as patch:
         patch.syspath_prepend(str(site))

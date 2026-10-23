@@ -38,47 +38,15 @@ STORE_DIR = 'store'
 GB = 1024**3
 
 
-class BackendTable(BaseModel):
-    """``[storage.backend]``: the backend that mirrors the store, by ``kind``, and that backend's own keys.
-
-    Only ``kind`` is read here. The backend's settings model checks the other keys when the store opens
-    (``piloop.store.config``): ``s3`` is built in, and packages add backends with a ``piloop.stores`` entry point.
-    """
-
-    model_config = ConfigDict(extra='allow', frozen=True)
-
-    kind: str
-    """The backend, for example ``s3``."""
-
-
 class StorageSettings(BaseModel):
-    """``[storage]``: the artifact store every campaign of this PILOOP_HOME archives its workspace into.
-
-    The keys here hold for every backend. Blobs live in ``<PILOOP_HOME>/store``, and in the remote too when
-    ``[storage.backend]`` is set. The artifact store page of the docs describes the modes.
-    """
+    """``[storage]``: how archiving uses the disk of this PILOOP_HOME. Where the blobs go is ``[plugins.cas]``."""
 
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
 
-    backend: BackendTable | None = None
-    """``[storage.backend]``: every blob is uploaded there as it is stored. Unset, the store is the local directory
-    alone and no blob is ever evicted."""
-    evict_after_days: float | None = Field(default=None, ge=0)
-    """Drop the local copy of a blob the remote holds once it is this old (since it was stored or fetched); 0 drops it
-    as soon as it is uploaded, so the local directory is only a staging area and every read fetches. Unset: by age
-    never."""
-    local_max_gb: float | None = Field(default=None, ge=0)
-    """Drop the local copies of the oldest blobs the remote holds until the local store is at most this size."""
     min_free_gb: float = Field(default=20, ge=0)
-    """Free space, in GB, that archiving keeps on the disk of the local store. Storing a file writes its compressed
-    copy first, so the daemon removes the workspace copies of archived files, oldest archive first, while the disk has
+    """Free space, in GB, that archiving keeps on the disk of PILOOP_HOME. Storing a file writes its compressed copy
+    first, so the daemon removes the workspace copies of archived files, oldest archive first, while the disk has
     less than this free, and it archives in batches that fit above it."""
-
-    @model_validator(mode='after')
-    def _check(self) -> Self:
-        if self.backend is None and (self.evict_after_days is not None or self.local_max_gb is not None):
-            raise ValueError('evict_after_days and local_max_gb need a storage backend: the local copy is the only one')
-        return self
 
 
 class Settings(BaseSettings):
@@ -194,11 +162,6 @@ class Settings(BaseSettings):
                 provider refuses.
         """
         return HOME_PLUGINS.validate_python(self.plugins)
-
-    @property
-    def store_dir(self) -> Path:
-        """The artifact store's local directory, shared by every campaign (``piloop.store``)."""
-        return self.home / STORE_DIR
 
     @property
     def database_url(self) -> str:

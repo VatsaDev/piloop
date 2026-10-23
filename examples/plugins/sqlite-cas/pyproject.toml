@@ -1,0 +1,13 @@
+[project]
+name = "piloop-sqlite-cas"
+version = "0.1.0"
+description = "A piloop CAS provider that keeps the blobs in one SQLite file, through covalence"
+requires-python = ">=3.14"
+dependencies = ["piloop", "covalence==0.1.0.dev6"]
+
+[project.entry-points."piloop.cas"]
+sqlite = "piloop_sqlite_cas:Sqlite"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

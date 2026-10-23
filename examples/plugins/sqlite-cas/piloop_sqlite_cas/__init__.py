@@ -1,0 +1,20 @@
+"""``sqlite``: a piloop CAS provider whose store is covalence's ``Cas.sqlite``, all the blobs in one SQLite file."""
+
+from pathlib import Path
+
+from covalence import Cas as SqliteCas
+
+from piloop.capabilities import Cas, CasProvider
+
+
+class Sqlite(CasProvider):
+    """``[plugins.cas] provider = "sqlite"``: the blobs in one SQLite file."""
+
+    path: Path
+    """The database file. It is created at the first put."""
+
+    def open(self, home: Path) -> Cas:
+        return SqliteCas.sqlite(self.path)
+
+    def where(self, home: Path) -> str:
+        return f'sqlite://{self.path}'

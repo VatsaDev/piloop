@@ -23,7 +23,7 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from sqlalchemy import select
 
-from piloop.campaign import campaigns as campaign_module
+from piloop.campaign import archive as archive_module, campaigns as campaign_module
 from piloop.config import load_campaign_config
 from piloop.daemon.main import ACTOR
 from piloop.daemon.run_controller import RunController
@@ -51,7 +51,6 @@ from piloop.runtime.factory import RuntimeFactory
 from piloop.scoring.evaluate import run_evaluate
 from piloop.scoring.ledger import DAEMON, current_evaluator
 from piloop.settings import Settings, env_names
-from piloop.store import Store
 
 # Harness stand-ins: any argv that edits the worktree and commits.
 HARNESS_APPEND = '#!/bin/sh\necho line >> solve.txt\ngit commit -qam "add a line"\n'
@@ -470,7 +469,7 @@ def factory(rt: Runtime) -> RuntimeFactory:
 @pytest.fixture(autouse=True)
 def plenty_of_disk(monkeypatch: pytest.MonkeyPatch) -> None:
     """The archiver keeps ``[storage] min_free_gb`` free: a test must not depend on the free space of its machine."""
-    monkeypatch.setattr(Store, 'free', lambda self: 1 << 50)
+    monkeypatch.setattr(archive_module, 'free', lambda home: 1 << 50)
 
 
 @pytest.fixture(autouse=True)

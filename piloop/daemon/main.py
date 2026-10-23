@@ -25,11 +25,11 @@ from piloop.db.session import BackupFailed, Database, OlderDaemon, SchemaMismatc
 from piloop.net.tokens import Tokens
 from piloop.otel import Span, tracer
 from piloop.plugins import host as plugins
+from piloop.plugins.cas import contract as cas
 from piloop.plugins.executor.contract import EXECUTORS
 from piloop.plugins.network import contract as network
 from piloop.proc import Inherited
 from piloop.settings import CONFIG_FILE, Settings, settings
-from piloop.store.config import open_store
 
 if TYPE_CHECKING:
     from piloop.net.server import Server
@@ -43,14 +43,11 @@ def bound(cfg: Settings) -> list[plugins.Capability[object]]:
 
     A broken package of a capability that nothing selects does not stop the daemon (``unbound_failures``).
     """
-    home = cfg.model_dump(mode='json')
 
     def used(c: plugins.Capability[object]) -> bool:
         match c.choice, c.selection:
             case plugins.Choice(scope=plugins.Scope.HOME, default=default), _:
                 return default is not None or c.name in cfg.plugins
-            case _, plugins.Selection(scope=plugins.Scope.HOME, key=key):
-                return plugins.lookup(home, key) is not None
             case _:
                 return True
 
@@ -130,7 +127,7 @@ class Daemon:
         except SystemExit:
             self.db.close()
             raise
-        self._store = open_store(cfg)
+        self._cas = cas.CAS.selected(cfg.providers).open(cfg.home)
         self.tracer = tracer()
         self._entire = _entire()
         self.controller = RunController(
@@ -145,7 +142,7 @@ class Daemon:
             self.controller,
             self.tracer,
             cfg.home,
-            archiving=Archiving(self._store, ArchivePolicy.of(cfg.storage)),
+            archiving=Archiving(self._cas, ArchivePolicy.of(cfg.storage)),
         )
         self._restart = False
 
@@ -219,7 +216,7 @@ class Daemon:
         store still reads the old manifests. The next start, or ``piloop migrate``, tries again.
         """
         try:
-            span.set(manifests_migrated=migrate_manifests(self.db, self._store))
+            span.set(manifests_migrated=migrate_manifests(self.db, self._cas))
         except ManifestNotMigrated as e:
             span.error(e)
 

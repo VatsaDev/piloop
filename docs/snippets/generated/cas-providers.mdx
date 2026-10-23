@@ -1,0 +1,8 @@
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the docstrings of the providers of the `piloop.cas` entry points in `pyproject.toml`, `piloop/plugins/cas/` if you want to change anything here. */}
+
+| Provider | What it is | Keys |
+|---|---|---|
+| `cached` | A local tier over `remote`, evicted by age and by size. | `remote`, `local`, `evict_after_days`, `local_max_gb` |
+| `disk` | The blobs in a directory. | `path` |
+| `gcs` | A bucket, a prefix in it, and the storage class of each blob. | `bucket`, `prefix`, `storage_class`, `project`, `credentials_file` |
+| `s3` | A bucket and prefix, and the storage class of each blob. | `url`, `storage_class`, `standard_below` |

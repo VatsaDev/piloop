@@ -23,6 +23,7 @@ from piloop.daemon.main import Daemon
 from piloop.db.models import Campaign
 from piloop.db.session import Database
 from piloop.plugins import host as plugins
+from piloop.plugins.cas.contract import CAS
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.host import (
     Capability,
@@ -39,7 +40,6 @@ from piloop.plugins.host import (
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import ROLES, SweepRole
 from piloop.plugins.runtime.contract import RUNTIMES
-from piloop.plugins.storage_backend.contract import STORAGE_BACKENDS
 from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Case, Criterion, Judgement, Outcome, Side, VerdictRule
@@ -121,10 +121,14 @@ def test_two_packages_with_the_same_name_fail_before_the_daemon_starts(
             r'config.toml: \[runtimes.tmux\]: no runtime has that name; registered runtimes:',
         ),
         (
-            '[storage.backend]\nkind = "azure"\n',
-            r"config.toml: \[storage.backend\] kind = 'azure': unknown storage backend 'azure'; registered storage backends",
+            '[plugins.cas]\nprovider = "azure"\n',
+            r"config.toml: 1 validation error for \[plugins\]\ncas\n  Value error, provider = 'azure': unknown CAS"
+            r" provider 'azure'; registered CAS providers",
         ),
-        ('[storage.backend]\nkind = "s3"\n', r'config.toml: 1 validation error for S3Config\nurl\n  Field required'),
+        (
+            '[plugins.cas]\nprovider = "s3"\n',
+            r'config.toml: 1 validation error for \[plugins\]\ncas.url\n  Field required',
+        ),
     ],
 )
 def test_config_toml_that_binds_a_provider_that_there_is_not_fails_before_the_daemon_starts(
@@ -154,10 +158,10 @@ def test_a_failed_composition_unregisters_what_it_activated_and_keeps_what_was_a
     """A broken role unwinds the runtimes and the triggers of the same call, and leaves the remotes, active before."""
     typed = EntryPoint('typed', f'{PLUGIN}:Typed', RUNTIMES.group)
     installed(monkeypatch, [typed, EntryPoint('auditor', f'{PLUGIN}:NOT_A_ROLE', ROLES.group)])
-    STORAGE_BACKENDS.providers()
+    CAS.providers()
     with pytest.raises(PluginError, match='is not a subclass of piloop.plugins.role.contract.RoleConfig'):
         compose(*declared('runtime', 'trigger', 'role'))
-    assert [c.active for c in (RUNTIMES, TRIGGERS, ROLES, STORAGE_BACKENDS)] == [False, False, False, True]
+    assert [c.active for c in (RUNTIMES, TRIGGERS, ROLES, CAS)] == [False, False, False, True]
     installed(monkeypatch, [typed])
     compose(*declared('runtime', 'trigger', 'role'))
     assert [c.active for c in (RUNTIMES, TRIGGERS, ROLES)] == [True, True, True]
@@ -177,16 +181,22 @@ def declared(*names: str) -> list[Capability[object]]:
 def test_a_broken_package_of_a_capability_that_nothing_binds_is_a_warning(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With no ``[storage.backend]``, the daemon starts without the storage backends: one that does not load warns."""
-    installed(monkeypatch, [EntryPoint('gone', 'tests.fixtures.no_such_module:Gone', STORAGE_BACKENDS.group)])
+    """With no ``[plugins.extra]``, the daemon starts without the extras that a plugin declares: one that does not load
+    warns."""
+    installed(
+        monkeypatch,
+        [
+            EntryPoint('extra', f'{__name__}:EXTRAS', plugins.CAPABILITIES),
+            EntryPoint('gone', 'tests.fixtures.no_such_module:Gone', EXTRAS.group),
+        ],
+    )
     home = Settings(home=tmp_path)
     Daemon(home).shutdown(timeout=5)
     found = next(c for c in doctor.checks(home) if c.name == 'plugins')
     assert found.fix is None
     assert found.found == (
-        '1 executor, 1 network, 4 roles, 2 runtimes, 1 stop rule, 7 triggers, 1 verdict rule; all built in; warning:'
-        ' nothing selects a storage backend, and they do not load:'
-        ' entry point gone = tests.fixtures.no_such_module:Gone in piloop.stores does not load: ModuleNotFoundError:'
+        '4 CAS providers, 1 executor, 1 network, 4 roles, 2 runtimes, 1 stop rule, 7 triggers, 1 verdict rule; all built in; warning: nothing selects a extra, and they do not load:'
+        ' entry point gone = tests.fixtures.no_such_module:Gone in piloop.example.extras does not load: ModuleNotFoundError:'
         " No module named 'tests.fixtures.no_such_module'"
     )
     monkeypatch.setattr(common, 'settings', home)
@@ -194,9 +204,9 @@ def test_a_broken_package_of_a_capability_that_nothing_binds_is_a_warning(
     monkeypatch.setattr(common.console, 'print', lambda text, **_: printed.append(text))
     app(['plugins'], result_action='return_value', exit_on_error=False)
     lines = printed[0].splitlines()
-    shown = lines.index('storage backends (host tier, piloop.stores):') + 1
-    assert lines[shown].startswith('  not loaded, and nothing selects a storage backend: entry point gone = ')
-    (tmp_path / 'config.toml').write_text('[storage.backend]\nkind = "s3"\nurl = "s3://b/p"\n')
+    shown = lines.index('extras (host tier, piloop.example.extras):') + 1
+    assert lines[shown].startswith('  not loaded, and nothing selects a extra: entry point gone = ')
+    (tmp_path / 'config.toml').write_text('[plugins.extra]\nprovider = "gone"\n')
     with pytest.raises(SystemExit, match='the daemon does not start: entry point gone = '):
         Daemon(Settings(home=tmp_path))
 
@@ -467,8 +477,16 @@ def test_a_plugin_declares_a_capability_calls_its_providers_and_another_package_
     assert lines[listed + 1].split()[:3] == ['no_unit_regression', 'an', 'unknown']
 
 
-STORES_AGAIN = Capability('odd', VerdictRule, group='piloop.stores')
-"""A capability whose provider group the storage backends have already."""
+STORES_AGAIN = Capability('odd', VerdictRule, group='piloop.cas')
+"""A capability whose provider group the CAS providers have already."""
+
+
+class Extra(Parameters):
+    """The contract of a capability of the home that a plugin declares."""
+
+
+EXTRAS = Capability('extra', Extra, choice=Choice(Scope.HOME), group='piloop.example.extras')
+"""A capability of the home that a plugin declares, which nothing selects by default."""
 
 
 @pytest.mark.parametrize(
@@ -476,7 +494,7 @@ STORES_AGAIN = Capability('odd', VerdictRule, group='piloop.stores')
     [
         ('tests.fixtures.no_such_module:X', 'does not load: ModuleNotFoundError'),
         (f'{PLUGIN}:NOT_A_ROLE', 'is not a piloop.plugins.host.Capability$'),
-        (f'{__name__}:STORES_AGAIN', 'the storage backends have the provider group piloop.stores already'),
+        (f'{__name__}:STORES_AGAIN', 'the CAS providers have the provider group piloop.cas already'),
         (f'{PLUGIN}:VERDICT_CHECKS', "names the capability 'verdict_check': the names must be the same$"),
     ],
 )

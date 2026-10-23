@@ -4,7 +4,6 @@ description: Each place where you can change what piloop does, with an example f
 ---
 
 import ExampleNiceRuntime from '/snippets/generated/example-nice-runtime.mdx';
-import ExampleDirStore from '/snippets/generated/example-dir-store.mdx';
 import ExampleInlineExecutor from '/snippets/generated/example-inline-executor.mdx';
 import ExampleMinGain from '/snippets/generated/example-min-gain.mdx';
 import ExampleStopAfterKeeps from '/snippets/generated/example-stop-after-keeps.mdx';
@@ -13,7 +12,8 @@ import Roles from '/snippets/generated/roles.mdx';
 import Triggers from '/snippets/generated/triggers.mdx';
 import RuntimeProtocol from '/snippets/generated/runtime-protocol.mdx';
 import Runtimes from '/snippets/generated/runtimes.mdx';
-import StorageBackends from '/snippets/generated/storage-backends.mdx';
+import CasProviders from '/snippets/generated/cas-providers.mdx';
+import ExampleSqliteCas from '/snippets/generated/example-sqlite-cas.mdx';
 import Harnesses from '/snippets/generated/harnesses.mdx';
 import McpKeys from '/snippets/generated/mcp-keys.mdx';
 import EvaluateExamples from '/snippets/generated/evaluate-examples.mdx';
@@ -61,7 +61,7 @@ A plugin can also do two more things:
 | Extension point | Select it in | Add your own |
 |---|---|---|
 | [Runtimes](#runtimes) | `runtime`, `[roles.<name>] runtime` | a plugin: `piloop.runtimes` |
-| [Storage backends](#storage-backends) | `[storage.backend] kind` in `config.toml` | a plugin: `piloop.stores` |
+| [CAS providers](#cas-providers) | `[plugins.cas] provider` in `config.toml` | a plugin: `piloop.cas` |
 | [Executors](#executors) | `[plugins.executor] provider` in `config.toml` | a plugin: `piloop.executors` |
 | [Networks](#networks) | `[plugins.network] provider` in `config.toml` | a plugin: `piloop.networks` |
 | [Pure plugins](#pure-plugins) | `[plugins.<capability>] provider` | a plugin: data in, data out |
@@ -115,47 +115,52 @@ you.
 
 <Runtimes />
 
-## Storage backends
+## CAS providers
 
-piloop keeps the files of its artifact store in `$PILOOP_HOME/store`. If you select a storage backend, piloop also
-copies each file to a remote place. The backend uploads a file, downloads a file, and says if a file is there.
+The **CAS** is the content-addressed store that archived files and manifests live in. A provider decides where its
+blobs go: a directory, a bucket, or a cache over another provider.
 
-### Example: mirror the store to a directory
+### Example: covalence's SQLite store
 
-This backend copies the files to a directory, for example a network share that is mounted on the machine:
+This provider keeps the blobs in one SQLite file. Its store is covalence's `Cas.sqlite`, as it is:
 
-<ExampleDirStore />
+<ExampleSqliteCas />
 
 Install it, then select it in `$PILOOP_HOME/config.toml` and restart the daemon (`piloop restart`):
 
 ```toml
-[storage.backend]
-kind = "dir"
-root = "/mnt/archive/piloop"
+[plugins.cas]
+provider = "sqlite"
+path = "/var/lib/piloop/blobs.sqlite"
 ```
 
 ### The contract
 
-The artifact store keeps its blobs in `$PILOOP_HOME/store` and can mirror them to a storage backend. A backend is a
-settings model, a subclass of `StorageBackendConfig`: its `kind` is the name of its entry point, its fields are the
-other keys of `[storage.backend]`, and its `open()` returns the `StorageBackend`. That one stores
-whole objects by key, and the store never lists, deletes or changes one:
+A provider is a pydantic model, a subclass of `CasProvider`: the name of its entry point is its `provider`, and its
+fields are the other keys of `[plugins.cas]`. Its `open(home)` returns the store, and `where(home)` names where the
+blobs are, such as `s3://bucket/prefix`. A key whose value is another provider's table, as the `remote` of `cached`,
+is a `Nested` field (`piloop.plugins.cas.kit.nested`).
 
-- `url`: where it puts objects, without a trailing `/`. The store records it at its first upload, and refuses to open
-  later with another one.
-- `upload(key, path)`: store the file, streaming it. Uploading a key again is harmless.
-- `download(key, path) -> bool`: write the object to `path`; `False`, and no file, when there is none.
-- `has(key) -> bool`: whether an object is stored under `key`.
+The store is a `Cas`: the methods of covalence's Python `Cas` that piloop calls, with the same signatures, so a
+`covalence.Cas` is a store as it is. A blob's address is a raw BLAKE3 CID of its content. A missing blob reads as
+`None`, and bytes that do not match their CID raise covalence's `IntegrityError`.
 
-`check_storage_backend(backend, scratch)` runs the contract against a backend, as piloop's tests
-do with the example. It writes under `piloop-contract/<random>/` and never deletes, so point it at a folder that you can
-empty.
+- `has(cid)`, `missing(cids)`: what the store holds, without reading it.
+- `put(data)`, `put_file(path)`, `put_fileobj(file, *, max_bytes, expected_length=None)`: store, and return the CID.
+- `get(cid)`, `get_file(cid, path)`, `get_to(cid, writer, *, max_bytes, expected_length=None)`: read back, checked.
+
+A store with a local tier over a remote one also implements `Upkeep` (`usage`, `flush`, `integrity`), which
+`piloop store` and the daemon's hourly upkeep use. A store that can be such a local tier is `Evictable`: `held()` lists
+each blob it holds (`Held`: CID, stored size, modified time) and `release(cid)` drops one. Its provider is a
+`LocalProvider`, and a `NestedLocal` key, as `cached`'s `local`, takes only those. `ObjectsCas` (`piloop.plugins.cas.kit.objects`) is a store of
+compressed objects over anything that puts, opens and finds whole files by key: `disk`, `s3` and `gcs` are three.
+
+`check_cas(cas, scratch)` runs the contract against a store, as piloop's tests do with each built-in provider and
+with covalence's `Cas.memory()`. It never deletes, so point it at a store that you can empty.
 
 ### Built in
 
-<StorageBackends />
-
-The [configuration reference](/reference/configuration) shows the store with each backend.
+<CasProviders />
 
 ## Executors
 
@@ -750,9 +755,8 @@ The **plugin host** is the part of piloop that finds, checks and loads plugins (
   provider has. It also does not start when `config.toml` selects a provider that does not exist.
 - **The same checks elsewhere.** `piloop serve --check`, `piloop doctor` and `piloop plugins` do the same checks.
   `piloop restart` and `piloop upgrade` do them first, and keep the daemon running if it would not start again.
-  A broken storage backend that nothing selects is only a warning.
-- **Selection.** Each capability says where the configuration selects its provider. The runtime and the storage
-  backend have their own keys. A new capability uses a table, `[plugins.<name>]`: `provider` is the name of the
+  A broken CAS provider that nothing selects is only a warning.
+- **Selection.** Each capability says where the configuration selects its provider. The runtime has its own key. A new capability uses a table, `[plugins.<name>]`: `provider` is the name of the
   provider, and the other keys are its parameters. piloop validates the table into the provider's class when it loads
   the file, and the capability gets that instance. If no provider has that name, the error names the key and lists the
   names that exist.

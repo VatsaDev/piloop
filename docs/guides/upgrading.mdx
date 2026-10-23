@@ -199,6 +199,25 @@ After the schema, `piloop migrate` and the daemon's start store each archive man
 value. A manifest that is only on the remote is read from there. When one cannot be read, `piloop migrate` names the
 archive and exits non-zero, and the next run tries again. The old manifests stay, so a restored backup still works.
 
+### The CAS
+
+`[plugins.cas]` in `config.toml` selects where the blobs go. A store mirrored with `[storage.backend]` still loads, with
+a warning, until 0.4.0. Write it as a `cached` CAS:
+
+```toml
+[plugins.cas]
+provider = "cached"
+evict_after_days = 30   # was [storage] evict_after_days
+local_max_gb = 200      # was [storage] local_max_gb
+remote = { provider = "s3", url = "s3://my-bucket/piloop" }   # was [storage.backend], with kind as provider
+```
+
+- A storage backend that a package adds (the `piloop.stores` entry point group) no longer loads. Make it a CAS
+  provider: a `CasProvider` in the `piloop.cas` group, whose `open(home)` returns a `Cas`. See
+  [CAS providers](/architecture/extension-points#cas-providers).
+- The example `dir` backend is gone. Write `remote = { provider = "disk", path = "<its root>" }` instead.
+- `min_free_gb` measures the disk of `PILOOP_HOME`, not the disk of the store.
+
 ## Upgrading to 0.2.0
 
 Read this before you upgrade from 0.1.0.

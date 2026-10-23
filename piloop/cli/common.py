@@ -28,6 +28,7 @@ from piloop.db.session import (
     migrate as migrate_schema,
     schema_mismatch,
 )
+from piloop.plugins.cas.contract import CAS, Cas
 from piloop.reports.feed import PROTOCOL
 from piloop.settings import settings
 
@@ -110,6 +111,11 @@ def campaigns(s: Session, ref: str | None) -> list[Campaign]:
         return [here]
     active = s.scalars(select(Campaign).where(Campaign.status == CampaignStatus.ACTIVE)).all()
     return list(active) if len(active) == 1 else list(s.scalars(select(Campaign)).all())
+
+
+def cas() -> Cas:
+    """The CAS of this home, as ``[plugins.cas]`` selects it."""
+    return CAS.selected(settings.providers).open(settings.home)
 
 
 def refuse_other_schema() -> None:

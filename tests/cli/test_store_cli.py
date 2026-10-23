@@ -14,9 +14,8 @@ from piloop.cli import common
 from piloop.db.models import Archive, Campaign, IdeaStatus
 from piloop.db.session import Database
 from piloop.ids import CampaignId
-from piloop.settings import BackendTable, Settings, StorageSettings
-from piloop.store import key
-from piloop.store.config import open_store
+from piloop.plugins.cas.kit.objects import key
+from piloop.settings import Settings
 from tests.campaign.test_archive import add_idea, add_run, files, write
 from tests.cli.test_cli import run_cli
 from tests.conftest import at_head
@@ -54,7 +53,7 @@ def archived(campaign_path: Path, out) -> tuple[Database, int, dict[str, bytes]]
     write(workspace / f'idea{idea}-run.log', 'ok\n')
     write(workspace / 'scratch.md', '# Notes\n')
     before = files(workspace)
-    store, home = open_store(common.settings), common.settings.home
+    store, home = common.cas(), common.settings.home
     for job in (Job(CampaignId(1), idea), Job(CampaignId(1), None)):
         for row in archive(db, store, home, job, live=(), reserve=0).rows:
             prune(db, store, home, row.id)
@@ -89,7 +88,7 @@ def test_restore_lists_at_most_ten_kept_files(campaign_path: Path, out) -> None:
     workspace = workspace_dir(common.settings.home, CampaignId(1))
     for n in range(12):
         write(workspace / 'notes' / f'{n:02}.md', 'a')
-    archive(db, open_store(common.settings), common.settings.home, Job(CampaignId(1), None), live=(), reserve=0)
+    archive(db, common.cas(), common.settings.home, Job(CampaignId(1), None), live=(), reserve=0)
     for n in range(12):
         write(workspace / 'notes' / f'{n:02}.md', 'b')
     out()
@@ -104,16 +103,25 @@ def test_store_status_evict_and_verify(archived, out, monkeypatch: pytest.Monkey
     db, _, _ = archived
     run_cli(['store', 'status'])
     lines = out().splitlines()
-    assert lines[0].startswith(f'{tmp_path / "store"}: 5 blob(s), 5 local (3.')
-    assert lines[0].endswith(' kB), no storage backend ([storage.backend])'), 'decimal units, as rich.filesize.decimal'
+    assert lines[0] == 'cas: disk'
     assert lines[4].split() == ['demo', '2', '3', '3.1', 'kB']
     assert lines[-1].startswith('to archive: 0 done idea(s), 0 stopped campaign(s); latest archiving 20')
-    run_cli(['store', 'evict'])
-    assert out().strip() == 'uploaded 0 blob(s), evicted 0 (0 bytes)'
+    with pytest.raises(SystemExit, match='the CAS keeps no local copies to evict'):
+        run_cli(['store', 'evict'])
     run_cli(['store', 'verify'])
     assert out().strip() == '2 manifest(s), 5 blob(s): 5 ok, 0 missing, 0 corrupt'
     run_cli(['store', 'verify', 'demo'])
     assert out().strip().startswith('2 manifest(s)')
+    cached = {'provider': 'cached', 'remote': {'provider': 'disk', 'path': str(tmp_path / 'remote')}}
+    monkeypatch.setattr(
+        common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', plugins={'cas': cached})
+    )
+    run_cli(['store', 'status'])
+    assert out().splitlines()[0].startswith('cas: cached; 5 blob(s), 5 local (3.')
+    run_cli(['store', 'evict'])
+    assert out().strip() == 'uploaded 5 blob(s), evicted 0 (0 bytes)'
+    run_cli(['store', 'status'])
+    assert out().splitlines()[0].endswith(f' kB), 5 on file://{tmp_path / "remote"}'), 'decimal units'
     with db.session() as s:
         manifest = s.scalars(select(Archive.manifest).where(Archive.idea_id.is_not(None))).one()
     assert manifest is not None
@@ -121,11 +129,6 @@ def test_store_status_evict_and_verify(archived, out, monkeypatch: pytest.Monkey
     with pytest.raises(SystemExit):
         run_cli(['store', 'verify'])
     assert out().strip() == '2 manifest(s), 3 blob(s): 2 ok, 0 missing, 1 corrupt', 'a rotten manifest names nothing'
-    storage = StorageSettings(backend=BackendTable(kind='s3', url='s3://bucket/prefix'))
-    monkeypatch.setattr(common, 'settings', Settings(home=tmp_path, uv_tool_dir=tmp_path / 'uv-tools', storage=storage))
-    monkeypatch.setattr('boto3.client', lambda _: None)
-    run_cli(['store', 'status'])
-    assert out().splitlines()[0].endswith(', 0 on s3://bucket/prefix')
     db.close()
 
 
@@ -136,7 +139,7 @@ def test_status_with_a_ready_idea_shows_nothing_archived(campaign_path: Path, ou
     out()
     run_cli(['store', 'status'])
     lines = out().splitlines()
-    assert lines[0].endswith(': 0 blob(s), 0 local (0 bytes), no storage backend ([storage.backend])')
+    assert lines[0] == 'cas: disk'
     assert (
         lines[-1]
         == 'to archive: 0 done idea(s), 0 stopped campaign(s) (the daemon works through them in the background, one at a time)'
@@ -145,7 +148,7 @@ def test_status_with_a_ready_idea_shows_nothing_archived(campaign_path: Path, ou
 
 
 def test_migrate_stores_each_manifest_of_0_2_again_and_names_one_that_it_cannot_read(out) -> None:
-    shutil.copytree(FIXTURE / 'local', common.settings.store_dir)
+    shutil.copytree(FIXTURE / 'local', common.settings.home / 'store')
     db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
         s.add(Campaign(name='c', path='/c', config={}))

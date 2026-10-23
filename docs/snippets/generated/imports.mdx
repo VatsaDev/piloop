@@ -21,6 +21,7 @@ flowchart TB
     store["store/"]
     usage["usage/"]
     watch["watch/"]
+    campaign --> store
     cli --> daemon
     cli --> watch
     daemon --> reports
@@ -30,6 +31,7 @@ flowchart TB
     reports --> campaign
     runtime --> plugins
     settings --> plugins
+    store --> plugins
     usage --> settings
     watch --> reports
 ```
@@ -53,13 +55,13 @@ The graph leaves out the shared modules `actor.py`, `deprecated.py`, `git.py`, `
 | `mcp/` | nothing |
 | `net/` | `db/`, `plugins/` |
 | `otel.py` | `settings.py` |
-| `plugins/` | `agents/`, `config.py`, `db/`, `deprecated.py`, `git.py`, `harnesses.py`, `ids.py`, `mcp/`, `net/`, `otel.py`, `proc.py`, `runtime/`, `scoring/`, `settings.py`, `store/`, `usage/` |
+| `plugins/` | `agents/`, `config.py`, `db/`, `deprecated.py`, `git.py`, `harnesses.py`, `ids.py`, `mcp/`, `net/`, `otel.py`, `proc.py`, `runtime/`, `scoring/`, `settings.py`, `usage/` |
 | `proc.py` | nothing |
 | `reports/` | `actor.py`, `agents/`, `campaign/`, `config.py`, `db/`, `deprecated.py`, `git.py`, `ids.py`, `plugins/`, `runtime/`, `scoring/`, `text.py`, `usage/` |
 | `runtime/` | `db/`, `plugins/` |
 | `scoring/` | `actor.py`, `config.py`, `db/`, `git.py`, `ids.py`, `plugins/`, `proc.py`, `text.py` |
 | `settings.py` | `actor.py`, `deprecated.py`, `plugins/` |
-| `store/` | `deprecated.py`, `plugins/`, `settings.py` |
+| `store/` | `deprecated.py`, `plugins/` |
 | `text.py` | nothing |
 | `usage/` | `db/`, `ids.py`, `settings.py` |
 | `version.py` | nothing |

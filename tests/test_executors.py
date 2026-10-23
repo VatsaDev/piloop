@@ -250,6 +250,6 @@ def test_config_toml_refuses_a_plugins_table_that_no_capability_of_the_home_decl
     """``[plugins.<name>]`` of ``config.toml`` is generic: the plugin host checks it, as ``piloop.toml``'s."""
     (tmp_path / 'config.toml').write_text('[plugins.verdict_rule]\nprovider = "bootstrap"\n')
     with pytest.raises(
-        SystemExit, match=r'verdict_rule\n  Value error, no capability has that name; there is executor'
+        SystemExit, match=r'verdict_rule\n  Value error, no capability has that name; there is cas, executor'
     ):
         Daemon(Settings(home=tmp_path))

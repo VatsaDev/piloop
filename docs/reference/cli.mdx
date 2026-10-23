@@ -560,12 +560,12 @@ workspace-relative `PATH` or everything under it, or with neither, every archive
 
 ### piloop store status
 
-Prints what the store holds (blobs, their local size, how many are on the remote), how much of each campaign was
+Prints the CAS provider and, for a cache, what it holds (blobs, their local size, how many are on the remote), how much of each campaign was
 archived, and how many done ideas and stopped campaigns are still due.
 
 ### piloop store evict
 
-Uploads the blobs that the remote does not have yet, then drops local copies as `[storage]` says. The daemon does this
+Uploads the blobs that the remote does not have yet, then drops local copies as `[plugins.cas]` says. The daemon does this
 every hour.
 
 ### piloop store verify

@@ -142,11 +142,11 @@ class Choice:
 
 @dataclass(frozen=True)
 class Selection:
-    """Where a key outside ``[plugins]`` names the provider of a capability: the runtime and the storage backend."""
+    """Where a key outside ``[plugins]`` names the provider of a capability: the runtime."""
 
     scope: Scope
     key: str
-    """The dotted key whose value is the provider's name: ``runtime``, ``storage.backend.kind``."""
+    """The dotted key whose value is the provider's name: ``runtime``."""
     per_role: bool = False
     """A role's own table can set the key too, for its agents: ``[roles.<role>] runtime``."""
     settings: str | None = None
@@ -154,7 +154,7 @@ class Selection:
 
     @property
     def table(self) -> str | None:
-        """The table that holds the key, whose other keys are the parameters of the provider: ``storage.backend``."""
+        """The table that holds the key, whose other keys are the parameters of the provider."""
         return self.key.rpartition('.')[0] or None
 
 
@@ -199,6 +199,7 @@ class Capability[P]:
         selection: Selection | None = None,
         group: str | None = None,
         check: Callable[[str, object], type[P]] | None = None,
+        noun: str | None = None,
     ) -> None:
         """Declare a capability.
 
@@ -212,6 +213,7 @@ class Capability[P]:
             group: The entry point group of its providers, piloop's own included. ``piloop.<name>s`` by default.
             check: Return the provider that an entry point called ``name`` loaded, or raise ``TypeError`` with what it
                 is not: in place of ``issubclass``, for a contract that is a protocol.
+            noun: What one provider is, for messages, when ``name`` does not say it: ``CAS provider``.
 
         Raises:
             TypeError: A pure contract is not data in, data out, or a chosen one is not ``Parameters``.
@@ -221,8 +223,8 @@ class Capability[P]:
         if choice is not None and not issubclass(contract, Parameters):
             raise TypeError(f'{contract.__qualname__} is chosen by [plugins.{name}], so it subclasses Parameters')
         self.name = name
-        self.noun = name.replace('_', ' ')
-        """What one provider is, for messages: ``storage backend``."""
+        self.noun = noun or name.replace('_', ' ')
+        """What one provider is, for messages: ``verdict rule``."""
         self.contract = contract
         self.tier = tier
         self.choice = choice
@@ -560,36 +562,19 @@ def declared() -> tuple[Capability[object], ...]:
 def lookup(data: object, key: str) -> object | None:
     """The value at the dotted ``key`` of a parsed configuration, or None."""
     for part in key.split('.'):
-        if not isinstance(data, dict):
-            return None
-        data = data.get(part)
+        data = data.get(part) if isinstance(data, dict) else None
     return data
 
 
 def check_selection(capability: Capability[object], data: dict[str, object], scope: Scope) -> None:
-    """Check what a parsed file of ``scope`` selects for ``capability`` with its ``Selection``.
-
-    The provider's parameters are the other keys of the table of the selecting key: a provider that is a pydantic
-    model class (a storage backend) checks them. In ``config.toml``, a ``settings`` table may name only providers that
-    there are.
+    """Check the ``settings`` tables of ``config.toml`` for ``capability``'s ``Selection``: they name only providers.
 
     Raises:
-        ValueError: The configuration names a provider that there is not, or one that refuses its parameters. The
-            message names the key.
+        ValueError: The configuration names a provider that there is not. The message names the key.
     """
     selection = capability.selection
     if selection is None:
         return
-    if selection.scope is scope and (name := lookup(data, selection.key)) is not None:
-        where = f'[{selection.table}] ' if selection.table else ''
-        leaf = selection.key.rpartition('.')[2]
-        try:
-            model = capability.get(str(name)).model
-        except MissingProvider as e:
-            raise ValueError(f'{where}{leaf} = {name!r}: {e}') from e
-        table = lookup(data, selection.table) if selection.table else {}
-        given = {k: v for k, v in table.items() if k != leaf} if isinstance(table, dict) else {}
-        TypeAdapter(model).validate_python(given)
     tables = lookup(data, selection.settings) if selection.settings and scope is Scope.HOME else None
     if isinstance(tables, dict) and (unknown := sorted(set(tables) - set(capability.sources()))):
         raise ValueError(
