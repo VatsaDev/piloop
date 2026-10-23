@@ -26,6 +26,7 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.ids import RESEARCH, TargetKind
 from piloop.otel import Tracer
+from piloop.plugins.executor.workers import Workers
 from tests.conftest import ScriptRuntime, factory, serving
 from tests.daemon.test_triggers import add_ideas, configure, finish_a_run, last_reason, low_water, occupy
 
@@ -49,7 +50,7 @@ def test_research_sweep_inserts_ideas_signed_with_its_implementer_id(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     configure(db, campaign, FAKE_RESEARCHER, research={'max_ideas': 2})
-    controller = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    controller = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     scheduler = Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))
 
     assert scheduler.tick() == [1], 'a free implementer slot, no idea for it: low water requests a research sweep'
@@ -157,7 +158,7 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
     add_ideas(db, campaign, 1)
     finish_a_run(db, campaign, 'tried once')
     finish_a_run(db, campaign, 'tried twice')
-    controller = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    controller = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     scheduler = Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))
 
     assert scheduler.tick() == [1], 'the one slot is busy and the backlog is at its target, but two seeds wait'
@@ -205,7 +206,7 @@ def test_with_several_tracks_research_reads_them_and_which_are_short_of_their_sh
             mode='json'
         )
         s.commit()
-    controller = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    controller = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     scheduler = Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))
     assert scheduler.tick() == [1]
     scheduler.wait()

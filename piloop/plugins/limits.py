@@ -37,7 +37,9 @@ def selected(plugins: Mapping[str, Parameters]) -> dict[str, Parameters]:
     for c in declared():
         match c.choice:
             case Choice(scope=Scope.HOME, default=default) if c.name in plugins or default is not None:
-                found[c.name] = plugins[c.name] if c.name in plugins else c.validated({})
+                provider = c.selected(plugins)
+                assert isinstance(provider, Parameters)  # Capability refuses a Choice of a contract that is not one
+                found[c.name] = provider
     return found
 
 

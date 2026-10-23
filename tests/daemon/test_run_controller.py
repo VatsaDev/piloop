@@ -76,6 +76,7 @@ from piloop.ids import (
 from piloop.otel import Span, Tracer
 from piloop.plugins import host
 from piloop.plugins.executor.kit import jobs
+from piloop.plugins.executor.workers import Workers
 from piloop.plugins.executor.workers.worker import _Control
 from piloop.plugins.runtime.contract import AgentExit, Handle, StartFailed
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES
@@ -194,7 +195,7 @@ def execute(ex: RunController, db: Database, run_id: RunId) -> None:
 
 
 def controller(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer | None = None) -> RunController:
-    return serving(RunController(db, tracer or Tracer(None), tmp_path, factory(runtime)))
+    return serving(RunController(db, tracer or Tracer(None), tmp_path, factory(runtime), executor=Workers()))
 
 
 def reload_campaign(db: Database, campaign: Campaign) -> None:

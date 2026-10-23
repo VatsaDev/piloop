@@ -4,7 +4,7 @@
 
 from piloop.plugins.host import Capability, Tier, Parameters, Choice, Scope
 from piloop.plugins.host import MissingProvider, Provider, PythonSource
-from piloop.plugins.host import Selection, Live
+from piloop.plugins.host import Live
 
 from piloop.plugins.runtime.contract import RUNTIMES
 from piloop.plugins.runtime.contract import AgentSpec, AgentStatus, Check, Handle

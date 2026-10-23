@@ -56,7 +56,7 @@ def test_only_a_live_key_that_there_is_takes_a_limit_and_only_a_value_that_its_p
 def test_the_daemon_applies_a_changed_limit_on_its_next_tick_and_keeps_its_parameters_when_one_is_refused(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     assert ex.executor.capacity() == Capacity(None, 2)
     with db.session() as s:
         limits.set_limit(s, {}, KEY, 1, reason='the GPU is busy', actor='human')

@@ -40,6 +40,7 @@ from piloop.mcp import MCP
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import Checkout, GitTree
 from piloop.plugins.executor.kit.leases import LeaseQueued
+from piloop.plugins.executor.workers import Workers
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, StartFailed
 from piloop.settings import Settings
 from piloop.usage.jsonl import CWD_ENCODERS
@@ -83,7 +84,7 @@ def request(db: Database, campaign: Campaign, kind: RoleName = WATCHDOG, **field
 
 def controller(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer | None = None) -> RunController:
     """The launcher and the in-process worker that takes its leases, as the daemon makes them."""
-    return serving(RunController(db, tracer or Tracer(None), tmp_path, factory(runtime)))
+    return serving(RunController(db, tracer or Tracer(None), tmp_path, factory(runtime), executor=Workers()))
 
 
 def launcher(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer | None = None) -> Launcher:

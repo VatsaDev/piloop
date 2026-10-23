@@ -21,7 +21,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Literal, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from sqlalchemy.orm import Session
@@ -328,7 +328,7 @@ class Capacity:
     evaluations: int | None
 
 
-class Executor(Protocol):
+class Executor[C: ExecutorConfig](Protocol):
     """Runs the jobs that piloop submits, and reports their results through ``Host.results``.
 
     The daemon calls it from its threads; an executor makes its methods safe for that.
@@ -342,7 +342,7 @@ class Executor(Protocol):
         """
         ...
 
-    def configure(self, config: ExecutorConfig) -> None:
+    def configure(self, config: C) -> None:
         """Take ``config``, the one that opened it with the live limits applied. The daemon calls it when one changes."""
         ...
 
@@ -394,7 +394,7 @@ class ExecutorConfig(Parameters, ABC):
     """An executor's ``[plugins.executor]``: its fields are the keys of the table besides ``provider``."""
 
     @abstractmethod
-    def open(self, host: Host) -> Executor:
+    def open(self, host: Host) -> Executor[Self]:
         """Make the executor. The daemon calls it once, when it starts."""
 
 

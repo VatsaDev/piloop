@@ -24,7 +24,7 @@ import piloop_stop_after_keeps
 
 from piloop import capabilities
 from piloop.plugins import metric
-from piloop.plugins.host import BUILT_IN, CAPABILITIES, Capability, Tier
+from piloop.plugins.host import BUILT_IN, CAPABILITIES, Capability, Selection, Tier
 from piloop.plugins.runtime.contract import NotAttachable, NotSteerable, RuntimeFailure, StartFailed
 
 HELPERS: set[object] = {
@@ -76,6 +76,8 @@ HELPERS: set[object] = {
     capabilities.HttpsNetwork,
 }
 """What a provider raises, calls or returns that no signature of a contract names."""
+WITHHELD: set[type] = {Selection}
+"""What a contract names and the module does not export: deprecated, so that no plugin adopts it before it goes."""
 
 
 def _own(group: str) -> list[EntryPoint]:
@@ -128,7 +130,7 @@ def _contracts() -> set[type]:
         new = _named(queue.pop()) - found
         found |= new
         queue += new
-    return found
+    return found - WITHHELD
 
 
 def _exports() -> dict[str, object]:

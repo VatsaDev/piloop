@@ -30,6 +30,7 @@ from piloop.daemon.scheduler import Scheduler
 from piloop.db.models import Campaign, utcnow
 from piloop.db.session import Database
 from piloop.otel import Tracer
+from piloop.plugins.executor.workers import Workers
 from piloop.plugins.stop_rule.contract import Hold
 from piloop.reports import history, overview
 
@@ -287,7 +288,7 @@ class HotPaths:
 
     def __init__(self, db: Database, home: Path) -> None:
         tracer = Tracer(None)
-        self._scheduler = Scheduler(db, RunController(db, tracer, home), tracer, home)
+        self._scheduler = Scheduler(db, RunController(db, tracer, home, executor=Workers()), tracer, home)
         self._session = db.session()
 
     def __enter__(self) -> dict[str, Callable[[], object]]:

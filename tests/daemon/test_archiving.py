@@ -17,6 +17,7 @@ from piloop.db.models import Archive, Campaign, utcnow
 from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.plugins.cas.disk import DiskCas
+from piloop.plugins.executor.workers import Workers
 from tests.campaign.test_archive import files
 from tests.conftest import ScriptRuntime, factory, serving, wait_until, write_toml
 from tests.daemon.test_scheduler import add_ideas
@@ -35,7 +36,7 @@ def test_the_tick_archives_an_idea_once_its_run_is_judged_and_leaves_its_files_f
     store = DiskCas(tmp_path / 'store')
     scheduler = Scheduler(
         db,
-        serving(RunController(db, tracer, tmp_path, factory(runtime))),
+        serving(RunController(db, tracer, tmp_path, factory(runtime), executor=Workers())),
         tracer,
         tmp_path,
         factory(runtime),
@@ -69,7 +70,7 @@ def test_a_stopping_scheduler_waits_for_the_archivers_job(
     store = DiskCas(tmp_path / 'store')
     scheduler = Scheduler(
         db,
-        serving(RunController(db, tracer, tmp_path, factory(runtime))),
+        serving(RunController(db, tracer, tmp_path, factory(runtime), executor=Workers())),
         tracer,
         tmp_path,
         factory(runtime),

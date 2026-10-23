@@ -39,6 +39,7 @@ from piloop.ids import RESEARCH, WATCHDOG, AgentSessionId, RoleName, TargetKind,
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins_module
 from piloop.plugins.cas.contract import CAS
+from piloop.plugins.executor.workers import Workers
 from piloop.plugins.host import PluginError, compose
 from piloop.plugins.role.contract import ROLES
 from piloop.plugins.runtime.contract import RUNTIMES, Runtime
@@ -76,7 +77,7 @@ def recording(runtime: ScriptRuntime, kinds: list[str]) -> RuntimeFactory:
 
 def scheduler(db: Database, make: RuntimeFactory, tmp_path: Path) -> Scheduler:
     tracer = Tracer(None)
-    return Scheduler(db, serving(RunController(db, tracer, tmp_path, make)), tracer, tmp_path, make)
+    return Scheduler(db, serving(RunController(db, tracer, tmp_path, make, executor=Workers())), tracer, tmp_path, make)
 
 
 def configure(db: Database, campaign: Campaign, harness_body: str, **roles: dict[str, object]) -> None:

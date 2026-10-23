@@ -180,7 +180,7 @@ class RunController:
         home: Path,
         runtime_factory: RuntimeFactory = make_runtime,
         *,
-        executor: ExecutorConfig | None = None,
+        executor: ExecutorConfig,
         entire_version: str | None = None,
     ) -> None:
         self._db = db
@@ -188,13 +188,13 @@ class RunController:
         self._runs_dir = home / 'runs'
         self._home = home
         self._units_dir = home / 'units'
-        self._config = executor if executor is not None else EXECUTORS.selected({})
-        """The executor's ``[plugins.executor]``, as ``config.toml`` has it: its default without one."""
+        self._config = executor
+        """The executor's ``[plugins.executor]``, as ``config.toml`` has it."""
         self._limits: tuple[tuple[str, str, datetime], ...] = ()
         """The limits that the executor has, as read: ``configure`` hands it the parameters when they change."""
         results = CampaignResults(db, tracer, self._units_dir, lambda: self.launcher.cancelled.is_set())
         host = Host(db, results, tracer, home, runtime_factory, entire_version)
-        self.executor: Executor = self._config.open(host)
+        self.executor: Executor[ExecutorConfig] = self._config.open(host)
         self.launcher = Launcher(db, tracer, home, self.executor)
         self.configure()
         self._jobs: dict[int, EvaluationJob] = {}

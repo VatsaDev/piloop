@@ -32,7 +32,7 @@ from piloop.db.session import Database
 from piloop.harnesses import SESSION_ENV, SESSION_ID, Invocation, fill, takes_session_id
 from piloop.ids import AgentSessionId, TargetKind, TargetRef
 from piloop.otel import Span, Tracer
-from piloop.plugins.executor.contract import AgentJob, AgentKey, Artifact, Commits, Executor, LeftJob
+from piloop.plugins.executor.contract import AgentJob, AgentKey, Artifact, Commits, Executor, ExecutorConfig, LeftJob
 from piloop.plugins.runtime.contract import RUNTIMES, AgentSpec
 from piloop.proc import PILOOP_ARGV, child_env
 from piloop.text import cell
@@ -71,7 +71,7 @@ def own_cli(home: Path) -> Path:
 class Launcher:
     """Turns an ``agent_sessions`` row into a job of the executor, and waits for the result that closes the row."""
 
-    def __init__(self, db: Database, tracer: Tracer, home: Path, executor: Executor) -> None:
+    def __init__(self, db: Database, tracer: Tracer, home: Path, executor: Executor[ExecutorConfig]) -> None:
         self.db = db
         self.tracer = tracer
         self.home = home

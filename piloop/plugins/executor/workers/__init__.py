@@ -92,9 +92,8 @@ class WorkersExecutor:
         )
         """The worker inside ``piloop serve``, in the pool ``serve``."""
 
-    def configure(self, config: ExecutorConfig) -> None:
+    def configure(self, config: Workers) -> None:
         """Take the pools with the live limits applied: the next ``acquire`` and ``capacity`` read them."""
-        assert isinstance(config, Workers)  # the daemon applies the limits to the config that opened it
         self.leases.pools = config.pools
 
     def capacity(self) -> Capacity:

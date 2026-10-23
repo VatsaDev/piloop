@@ -77,6 +77,7 @@ from piloop.plugins import host as plugins
 from piloop.plugins.executor.contract import AgentKey, Capacity, Prompt
 from piloop.plugins.executor.kit.capacity import Pool
 from piloop.plugins.executor.kit.leases import SERVE
+from piloop.plugins.executor.workers import Workers
 from piloop.plugins.runtime.contract import AgentStatus, Handle, NotSteerable
 from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.reports.overview import SILENT_SECONDS
@@ -105,7 +106,7 @@ from tests.usage.test_usage import PI_ID, store
 
 def make_scheduler(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer | None = None) -> Scheduler:
     tracer = tracer or Tracer(None)
-    controller = serving(RunController(db, tracer, tmp_path, factory(runtime)))
+    controller = serving(RunController(db, tracer, tmp_path, factory(runtime), executor=Workers()))
     return Scheduler(db, controller, tracer, tmp_path, factory(runtime))
 
 
@@ -1051,7 +1052,7 @@ def test_reap_closes_the_herdr_tab_of_an_agent_that_no_executor_adopts(
             )
         )
         s.commit()
-    controller = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    controller = RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers())
     scheduler = Scheduler(db, controller, Tracer(None), tmp_path)
     scheduler.reap()
     scheduler.stop(timeout=5)

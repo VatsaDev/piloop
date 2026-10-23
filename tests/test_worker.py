@@ -73,6 +73,7 @@ from piloop.plugins.executor.kit.leases import (
     enqueue,
     revoke,
 )
+from piloop.plugins.executor.workers import Workers
 from piloop.plugins.executor.workers.worker import WORKER_ANOMALY, Unsent, Worker
 from piloop.plugins.runtime.contract import ExitStatus, Handle
 from piloop.plugins.runtime.herdr import HerdrSettings
@@ -165,7 +166,7 @@ def test_an_agent_that_ends_is_reported_on_its_lease(
     db: Database, campaign: Campaign, contract: Contract, tmp_path: Path
 ) -> None:
     use(db, campaign, contract, '#!/bin/sh\necho done\n')
-    ex = serving(RunController(db, Tracer(None), tmp_path, contract.runtime_factory))
+    ex = serving(RunController(db, Tracer(None), tmp_path, contract.runtime_factory, executor=Workers()))
     agent_session_id = request_agent(db, campaign)
     outcome = launch(ex, agent_session_id, tmp_path)
     assert isinstance(outcome, Ran)
@@ -186,7 +187,7 @@ def test_an_agent_that_runs_out_of_time_is_reported_timed_out(
 ) -> None:
     use(db, campaign, contract, '#!/bin/sh\nsleep 30\n', timeout=0.5)
     contract.script(agent_wait=[{'error': {'code': 'timeout', 'message': 'timed out'}}])
-    ex = serving(RunController(db, Tracer(None), tmp_path, contract.runtime_factory))
+    ex = serving(RunController(db, Tracer(None), tmp_path, contract.runtime_factory, executor=Workers()))
     agent_session_id = request_agent(db, campaign)
     outcome = launch(ex, agent_session_id, tmp_path)
     assert isinstance(outcome, Ran)
@@ -202,7 +203,7 @@ def test_a_start_that_fails_is_reported_as_a_failed_start(
     contract.script(agent_start=[{'error': {'code': 'spawn_failed', 'message': 'no such harness'}}])
     if contract.kind == 'subprocess':
         mocker.patch.object(runtime, 'start', side_effect=RuntimeError('spawn_failed: no such harness'))
-    ex = serving(RunController(db, Tracer(None), tmp_path, contract.runtime_factory))
+    ex = serving(RunController(db, Tracer(None), tmp_path, contract.runtime_factory, executor=Workers()))
     agent_session_id = request_agent(db, campaign)
     outcome = launch(ex, agent_session_id, tmp_path)
     assert isinstance(outcome, NotStarted) and 'spawn_failed' in str(outcome.reason)
@@ -218,14 +219,14 @@ def test_a_restarted_worker_re_attaches_to_its_agent_and_reports_it(
     hold.touch()
     use(db, campaign, contract, HOLD.format(hold=hold))
     contract.script(agent_wait=[{'result': {'type': 'agent_info', 'agent': {'agent_status': 'working'}}}])
-    first = serving(RunController(db, Tracer(None), tmp_path, contract.runtime_factory))
+    first = serving(RunController(db, Tracer(None), tmp_path, contract.runtime_factory, executor=Workers()))
     agent_session_id = request_agent(db, campaign)
     launching = threading.Thread(target=launch, args=(first, agent_session_id, tmp_path))
     launching.start()
     wait_until(lambda: lease_state(db, agent_session_id) is LeaseState.RUNNING)
     first.hand_over()
     launching.join(30)
-    second = serving(RunController(db, Tracer(None), tmp_path, contract.runtime_factory))
+    second = serving(RunController(db, Tracer(None), tmp_path, contract.runtime_factory, executor=Workers()))
     workers_of(second).leases.renew_all()
     workers_of(second).worker.start()
     contract.script()  # herdr's agent is now idle
@@ -242,7 +243,7 @@ def test_a_revoked_agent_is_stopped_by_its_worker_and_still_reported(
 ) -> None:
     """A kill is a revoke: the worker stops the agent and reports it, so its run keeps what it made."""
     use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), '#!/bin/sh\nsleep 30\n')
-    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     agent_session_id = request_agent(db, campaign)
     outcomes: list[Ended] = []
     launching = threading.Thread(target=lambda: outcomes.append(launch(ex, agent_session_id, tmp_path)))
@@ -263,7 +264,7 @@ def test_a_worker_whose_own_code_fails_loses_the_job_so_that_nothing_waits_for_e
 ) -> None:
     use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), '#!/bin/sh\necho done\n')
     mocker.patch('piloop.plugins.executor.workers.worker.Worker._agent', side_effect=RuntimeError('a bug'))
-    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     agent_session_id = request_agent(db, campaign)
     outcome = launch(ex, agent_session_id, tmp_path)
     assert outcome == Lost('worker lost: RuntimeError: a bug')
@@ -279,7 +280,7 @@ def test_a_restarted_worker_reports_an_agent_whose_worktree_is_gone(
     hold = tmp_path / 'hold'
     hold.touch()
     use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), HOLD.format(hold=hold))
-    first = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    first = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     agent_session_id = request_agent(db, campaign)
     launching = threading.Thread(target=launch, args=(first, agent_session_id, tmp_path))
     launching.start()
@@ -287,7 +288,7 @@ def test_a_restarted_worker_reports_an_agent_whose_worktree_is_gone(
     first.hand_over()
     launching.join(30)
     shutil.rmtree(tmp_path / 'cwd')
-    second = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    second = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     workers_of(second).worker.start()
     outcome = second.launcher.reattach(agent_session_id)
     assert outcome == Lost('worker lost: the worker restarted and could not find its agent')
@@ -301,15 +302,15 @@ def test_a_hand_over_twice_leaves_a_re_attached_agent_to_the_third_daemon(
     hold.touch()
     use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), HOLD.format(hold=hold))
     agent_session_id = request_agent(db, campaign)
-    first = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    first = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     threading.Thread(target=launch, args=(first, agent_session_id, tmp_path)).start()
     wait_until(lambda: lease_state(db, agent_session_id) is LeaseState.RUNNING)
     first.hand_over()
-    second = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    second = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     workers_of(second).worker.start()
     wait_until(lambda: workers_of(second).worker._jobs)  # it re-attached
     second.hand_over()
-    third = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    third = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     workers_of(third).worker.start()
     hold.unlink()
     outcome = third.launcher.reattach(agent_session_id)
@@ -325,7 +326,7 @@ def test_an_agent_whose_lease_ends_while_it_starts_is_ended_and_not_reported(
     use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), '#!/bin/sh\nsleep 30\n')
     gate = Gate()
     monkeypatch.setattr(runtime, 'start', gate.wrap(runtime.start))
-    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     agent_session_id = request_agent(db, campaign)
     outcomes: list[Ended] = []
     launching = threading.Thread(target=lambda: outcomes.append(launch(ex, agent_session_id, tmp_path)))
@@ -346,7 +347,7 @@ def test_an_agent_that_removes_its_own_worktree_is_still_reported(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), '#!/bin/sh\nrm -rf "$PWD"\n')
-    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     agent_session_id = request_agent(db, campaign)
     with db.session() as s:
         base = s.get_one(Campaign, campaign.id)
@@ -371,12 +372,12 @@ def test_an_evaluation_at_a_hand_over_is_stopped_and_measured_again_by_the_next_
     """The next worker cannot watch an evaluator again: it finds the lease, reports it gone, and it is queued again."""
     (tmp_path / 'hold').touch()
     set_config(db, campaign, evaluate=held_evaluate(tmp_path))
-    first = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    first = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     candidate = baseline(db, campaign.id).id
     threading.Thread(target=first.remeasure, args=(candidate,)).start()
     wait_until(lambda: lease_states(db) == [LeaseState.RUNNING])
     first.hand_over()
-    second = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    second = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     with db.session() as s:  # the next daemon's reap: the queue starts empty
         s.execute(delete(Evaluation))
         s.commit()
@@ -400,7 +401,7 @@ def test_an_evaluation_whose_lease_expired_before_its_evaluator_started_kills_it
 ) -> None:
     gate = Gate()
     monkeypatch.setattr('piloop.plugins.executor.kit.jobs.git.add_worktree', gate.wrap(git.add_worktree))
-    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     measuring = threading.Thread(target=ex.remeasure, args=(baseline(db, campaign.id).id,))
     measuring.start()
     assert gate.entered.wait(10)
@@ -433,7 +434,7 @@ def test_a_stale_evaluation_never_touches_the_files_of_the_lease_that_replaced_i
         return add_worktree(repo, path, sha, links)
 
     monkeypatch.setattr('piloop.plugins.executor.kit.jobs.git.add_worktree', first_held)
-    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     candidate = baseline(db, campaign.id).id
     measuring = threading.Thread(target=ex.remeasure, args=(candidate,))
     measuring.start()
@@ -589,7 +590,7 @@ def test_a_worker_killed_after_its_agent_ended_but_before_it_reported_reports_on
     write_toml(Path(campaign.path), '#!/bin/sh\necho line >> solve.txt\ngit commit -qam "a line"\n')
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    first = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    first = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     send = Worker._send
 
     def gone_before_the_report(self: Worker, lease_id: int, unsent: Unsent) -> None:
@@ -602,7 +603,7 @@ def test_a_worker_killed_after_its_agent_ended_but_before_it_reported_reports_on
     thread = threading.Thread(target=execute, args=(first, db, run_id))
     thread.start()
     thread.join(30)
-    second = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    second = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     workers_of(second).leases.renew_all()
     workers_of(second).worker.start()
     with db.session() as s:
@@ -644,7 +645,7 @@ def test_a_worker_killed_between_the_start_and_its_record_leaves_no_worktree(
     killed = Leases(db, results)  # the killed worker's lease, which no worker watches
     killed.register(SERVE, SERVE, '0.2.0', [], sample(tmp_path))
     killed.acquire(SERVE, uuid4().hex, sample(tmp_path))
-    second = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    second = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     workers_of(second).worker.start()
     wait_until(lambda: lease_state(db, agent_session_id) is LeaseState.EXPIRED)
     workers_of(second).worker.join(10)
@@ -669,7 +670,7 @@ def test_an_evaluator_whose_start_is_refused_by_the_fence_is_killed_at_once(
     """The fence refused the record of the evaluator's start: its lease is no longer the worker's, so it stops."""
     (tmp_path / 'hold').touch()
     set_config(db, campaign, evaluate=held_evaluate(tmp_path))
-    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     mocker.patch.object(workers_of(ex).leases, 'started', side_effect=StaleLease('stale_lease: lease#1 was replaced'))
     measuring = threading.Thread(target=ex.remeasure, args=(baseline(db, campaign.id).id,))
     measuring.start()
@@ -688,7 +689,7 @@ def test_a_report_that_cannot_be_sent_keeps_the_worktree_and_a_restarted_worker_
     write_toml(Path(campaign.path), '#!/bin/sh\necho line >> solve.txt\ngit commit -qam "a line"\n')
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
-    first = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    first = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     report = Leases.report
     tried: list[int] = []
 
@@ -708,7 +709,7 @@ def test_a_report_that_cannot_be_sent_keeps_the_worktree_and_a_restarted_worker_
     assert worktree.is_dir(), 'the worktree outlives a report that is not out'
     first.hand_over()  # the process goes
     thread.join(30)
-    second = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    second = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     workers_of(second).leases.renew_all()
     workers_of(second).worker.start()
     with db.session() as s:
@@ -727,7 +728,9 @@ def test_a_stop_ends_a_queued_agent_lease_whose_row_is_settled_and_a_worker_star
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """The stop ends the lease all the same: core refused the stopped result of a row that was closed already."""
-    ex = RunController(db, Tracer(None), tmp_path, factory(runtime))  # not started: no turn may take the lease
+    ex = RunController(
+        db, Tracer(None), tmp_path, factory(runtime), executor=Workers()
+    )  # not started: no turn may take the lease
     worker = workers_of(ex).worker
     worker.join(0)  # nothing started yet: no loop to wait for
     job = agent_job(db, campaign, tmp_path)  # its row is requested, not live: settled for core
@@ -745,14 +748,14 @@ def test_a_stop_ends_a_queued_agent_lease_whose_row_is_settled_and_a_worker_star
 def test_a_hand_over_of_a_worker_that_never_turned_has_no_loop_to_wait_for(
     db: Database, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    workers_of(RunController(db, Tracer(None), tmp_path, factory(runtime))).worker.hand_over()
+    workers_of(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers())).worker.hand_over()
 
 
 def test_a_join_while_a_job_thread_starts_waits_for_it(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``stop`` joins the job threads while the loop may spawn one: it never finds a thread that is not started."""
-    worker = workers_of(RunController(db, Tracer(None), tmp_path, factory(runtime))).worker
+    worker = workers_of(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers())).worker
     errors: list[Exception] = []
     start = threading.Thread.start
 
@@ -924,7 +927,7 @@ def test_a_stop_that_comes_while_the_worker_registers_leaves_no_loop_behind(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
     """Else the loop would turn on a database that the daemon closes next."""
-    executor = workers_of(RunController(db, Tracer(None), tmp_path, factory(runtime)))
+    executor = workers_of(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     worker, register = executor.worker, executor.leases.register
 
     def stopped_meanwhile(
@@ -946,7 +949,7 @@ def test_a_job_that_arrives_while_the_loop_ends_its_turn_is_taken_at_once(
     The loop is held at the end of that turn, the job is submitted, and the loop goes on: it takes the job at once, not
     one heartbeat (``renew_seconds``, 10 s) later.
     """
-    ex = RunController(db, Tracer(None), tmp_path, factory(runtime))
+    ex = RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers())
     worker, leases = workers_of(ex).worker, workers_of(ex).leases
     turned, release = threading.Event(), threading.Event()
     turn = worker._guarded_turn

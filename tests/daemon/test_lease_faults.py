@@ -51,6 +51,7 @@ from piloop.ids import RunId, TargetKind
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentFinished, AgentReport, EvaluationReport
 from piloop.plugins.executor.kit.leases import NOT_TAKEN, SERVE, Leases, StaleReport, Timing
+from piloop.plugins.executor.workers import Workers
 from piloop.proc import alive, started
 from piloop.settings import Settings
 from tests.conftest import (
@@ -91,7 +92,9 @@ def control_plane(db: Database, runtime: ScriptRuntime, tmp_path: Path) -> RunCo
 def next_daemon(db: Database, tmp_path: Path) -> Scheduler:
     """The scheduler of a daemon that starts again: its ``reap`` starts its worker, which finds its leases again."""
     runtime = factory(ScriptRuntime())
-    return Scheduler(db, RunController(db, Tracer(None), tmp_path, runtime), Tracer(None), tmp_path, runtime)
+    return Scheduler(
+        db, RunController(db, Tracer(None), tmp_path, runtime, executor=Workers()), Tracer(None), tmp_path, runtime
+    )
 
 
 @contextmanager
