@@ -304,11 +304,11 @@ def test_the_shapes_of_0_1_0_are_rewritten_to_the_models(tmp_path: Path) -> None
             ),
             (
                 'AgentSessionFinished',
-                '{"reason":"idea#12 is ready","status":"exited","error":null,"role":"implementer","kind":"agent_session.finished"}',
+                '{"reason":"idea#12 is ready","error":null,"role":"implementer","kind":"agent_session.finished","state":"exited"}',
             ),
             (
                 'AgentSessionFinished',
-                '{"reason":"anomaly","status":"exited","error":"dialog","role":"watchdog","kind":"agent_session.finished"}',
+                '{"reason":"anomaly","error":"dialog","role":"watchdog","kind":"agent_session.finished","state":"exited"}',
             ),
             ('UnknownEvent', '{"kind":"scout.requested"}'),
             (
@@ -339,8 +339,8 @@ def test_the_shapes_of_0_1_0_are_rewritten_to_the_models(tmp_path: Path) -> None
             ),
             ('RunFinished', '{"error":"agent exit 1","end":"failed","kind":"run.finished"}'),
             ('RunFinished', '{"error":null,"end":"timed_out","kind":"run.finished"}'),
-            ('PromptSettled', '{"comment":88,"error":"NotSteerable: headless","kind":"comment.undelivered"}'),
-            ('PromptSettled', '{"comment":89,"kind":"comment.delivered"}'),
+            ('PromptOutcome', '{"comment":88,"error":"NotSteerable: headless","kind":"comment.undelivered"}'),
+            ('PromptOutcome', '{"comment":89,"kind":"comment.queued"}'),
             ('WrapUp', '{"reason":"target reached","kind":"agent_session.wrap_up"}'),
             ('WrapUp', '{"reason":"target reached","kind":"agent_session.wrap_up"}'),
             (
@@ -401,11 +401,11 @@ def test_the_shapes_of_0_2_0_are_rewritten_to_the_models(tmp_path: Path) -> None
             ),
             (
                 'AgentSessionFinished',
-                '{"reason":null,"status":"exited","error":null,"role":"implementer","kind":"agent_session.finished"}',
+                '{"reason":null,"error":null,"role":"implementer","kind":"agent_session.finished","state":"exited"}',
             ),
             (
                 'AgentSessionFinished',
-                '{"reason":"cron","status":"timed_out","error":"timeout","role":"scout","kind":"agent_session.finished"}',
+                '{"reason":"cron","error":"timeout","role":"scout","kind":"agent_session.finished","state":"killed"}',
             ),
             (
                 'StartupAnomaly',
@@ -459,7 +459,7 @@ def test_the_shapes_of_main_before_typed_events_are_rewritten_to_the_models(tmp_
         [
             (
                 'AgentSessionFinished',
-                '{"reason":null,"status":null,"error":"worker lost","role":"implementer","kind":"agent_session.finished"}',
+                '{"reason":null,"error":"worker lost","role":"implementer","kind":"agent_session.finished","state":"killed"}',
             ),
             (
                 'Identified',

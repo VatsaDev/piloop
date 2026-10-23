@@ -74,10 +74,10 @@ def prompt(
     text: Annotated[str, cyclopts.Parameter(help='The message.')],
     /,
 ) -> None:
-    """Queue a message for the next turn of a running agent of any role, and say whether it arrived.
+    """Queue a message for the next turn of a running agent of any role, and say whether it is queued.
 
-    The message is a note on the agent. The daemon delivers it through the agent's executor and its runtime. When it
-    cannot, the command says why. After 20 seconds without an outcome, the note stays queued.
+    The message is a note on the agent. The daemon queues it through the agent's executor and its runtime. When it
+    cannot, the command says why. After 20 seconds without an outcome, the daemon still queues it once the agent runs.
     """
     with common.session() as s:
         comment_id = results.queue_prompt(s, agent_session_id, text, common.settings.actor.signature)
@@ -87,23 +87,23 @@ def prompt(
     outcome = _outcome(agent_session_id, comment_id)
     match outcome:
         case None:
-            common.console.print(
-                f'comment#{comment_id}: queued for agent_session#{agent_session_id}; the daemon delivers it once it runs',
-                markup=False,
-            )
-        case results.PromptSettled(error=None):
-            common.console.print(f'prompted agent_session#{agent_session_id} (comment#{comment_id})', markup=False)
+            line = f'comment#{comment_id}: the daemon queues it for agent_session#{agent_session_id} once it runs'
+        case results.PromptOutcome(kind='comment.queued'):
+            line = f'queued comment#{comment_id} for agent_session#{agent_session_id}: it reads it at its next turn'
+        case results.PromptOutcome(kind='comment.delivered'):
+            line = f'agent_session#{agent_session_id} read comment#{comment_id}'
         case _:
             raise SystemExit(f'agent_session#{agent_session_id} did not get comment#{comment_id}: {outcome.error}')
+    common.console.print(line, markup=False)
 
 
-def _outcome(agent_session_id: AgentSessionId, comment_id: CommentId) -> results.PromptSettled | None:
+def _outcome(agent_session_id: AgentSessionId, comment_id: CommentId) -> results.PromptOutcome | None:
     """Wait up to ``DELIVERY_WAIT`` for the comment's outcome on the agent."""
-    found: list[results.PromptSettled] = []
+    found: list[results.PromptOutcome] = []
     on_agent = Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id)
 
     def settled(s: Session) -> bool:
-        event = latest(s, results.PromptSettled, on_agent, has(results.PromptSettled, comment=comment_id))
+        event = latest(s, results.PromptOutcome, on_agent, has(results.PromptOutcome, comment=comment_id))
         if event is not None:
             found.append(event[1])
         return event is not None

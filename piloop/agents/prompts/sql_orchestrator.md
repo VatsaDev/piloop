@@ -42,10 +42,11 @@ Each command takes `--reason '<why>'`, signs the change with your actor and reco
 - A `note`, `finding` or `decision` on a running run, or on the idea of one, also reaches its implementer within a tick.
   The daemon prompts the implementer with one line:
   `[piloop] decision on idea#12 by human: <first line> — full text: SELECT body FROM comments WHERE id=<n>`.
-- The daemon then records `comment.delivered` on the implementer. When it cannot reach the pane, it records
-  `comment.undelivered` with the error. This happens for a headless subprocess agent. The comment is still in the
-  next brief.
-- Nothing is delivered twice, and a daemon restart loses nothing: those two events are the record.
+- The daemon then records `comment.queued` on the implementer, and `comment.delivered` once the implementer read it.
+  An implementer reads it only between two tool calls. When the prompt cannot reach the implementer, or the
+  implementer ends before it read it, the daemon records `comment.undelivered` with the error. The comment is still in
+  the next brief.
+- Nothing is sent twice, and a daemon restart loses nothing: those events are the record.
 - So put the instruction in the first line of the body, and the reasons below it.
 - Escalations are never pushed to an implementer.
 - `piloop prompt <agent_session_id> '<text>'` steers any running agent with a note on the agent itself, which it gets in

@@ -122,6 +122,7 @@ UNCOMMITTED_SUMMARY = 'piloop: uncommitted implementer changes'
 RECOVERED_TRAILER = 'Piloop-Recovered'
 """The trailer of the commit the daemon makes of what an implementer left uncommitted: ``Piloop-Recovered: run#<id>``."""
 RECOVERED_REASON = 'recovered: what the implementer of run#{run} left uncommitted, never declared ready; not measured'
+CUT_REASON = 'recovered: where run#{run} was when a daemon stop cut it, never declared ready; not measured'
 NO_CHANGES = 'implementer produced no commits'
 INTERRUPTED = (
     'implementer stopped without a commit or a finding of its own; its uncommitted changes are a recovered candidate'
@@ -455,7 +456,7 @@ class RunController:
     ) -> None:
         """Keep the work of a run that a daemon stop cut (``_keep_cut_work``). The stop writes the rows."""
         cut = not self._left_finding(run_id, idea_id, agent_session_id)  # else the stop closed it as handed off
-        self._keep_cut_work(run_id, name, repo, base_sha, self._commits(repo, base_sha, commits), noted=cut)
+        self._keep_cut_work(run_id, name, repo, base_sha, self._commits(repo, base_sha, commits), cut=cut)
         self._stopped(span, run_id)
 
     def _stopped(self, span: Span, run_id: RunId) -> None:
@@ -549,34 +550,36 @@ class RunController:
         return True
 
     def _keep_cut_work(
-        self, run_id: RunId, name: str, repo: Repo, base_sha: str, shas: list[str], *, noted: bool
+        self, run_id: RunId, name: str, repo: Repo, base_sha: str, shas: list[str], *, cut: bool
     ) -> None:
-        """Pin the work of a run that a daemon stop interrupted, uncommitted work included, and add a note on the run.
+        """Pin the work of a run that a daemon stop interrupted, uncommitted work included.
 
         What the agent left uncommitted was committed on its own (``commits_of``).
 
-        The stop owns the rows. A run that the stop cut is not an attempt (``RunEnd.attempt``): its work is not
-        scored, and the note (``noted``) goes into the brief of the idea's next run, which can start from those
-        commits. A run whose implementer had left its finding was handed off: the stop closed it as finished, and the next
-        daemon scores the pinned commits (``resume``), so no note sends a new run to them.
+        The stop owns the run's row. A run that the stop ``cut`` is not an attempt (``RunEnd.attempt``), so its
+        commits are not measured: each new one is a ``recovered`` candidate (``CUT_REASON``), and its idea is requeued
+        from the last one (``_requeue``), as after a timed-out run. A run whose implementer had left its finding was
+        handed off: the stop closed it as finished, and the next daemon scores the pinned commits (``resume``).
         """
         if not shas:
             return
         prefix = f'refs/piloop/{name}/r{run_id}/'
         for i, sha in enumerate(shas):
             git.pin(repo, f'{prefix}{i}', sha)
-        if not noted:
+        if not cut:
             return
         with self._db.session() as s:
-            s.add(
-                Comment(
-                    target=TargetRef(TargetKind.RUN, run_id),
-                    author=DAEMON_ACTOR,
-                    kind=CommentKind.NOTE,
-                    body=f'interrupted by a daemon stop: its {len(shas)} commits are pinned, unscored, at {prefix}<n>'
-                    f' (head {shas[-1]}). To start from them, run git cherry-pick {base_sha}..{shas[-1]}',
-                )
-            )
+            run = s.get_one(Run, run_id)
+            candidate = run.base
+            for sha in shas:
+                candidate, created = resolve(s, run.idea.campaign_id, repo, sha, parent=candidate, run_id=run_id)
+                if created:
+                    candidate.verdict, candidate.verdict_by = Verdict.RECOVERED, DAEMON
+                    candidate.verdict_reason = CUT_REASON.format(run=run_id)
+                    judged = CandidateJudged(verdict=candidate.verdict, score=None, reason=candidate.verdict_reason)
+                    emit(s, judged, TargetRef(TargetKind.CANDIDATE, candidate.id), System.DAEMON)
+            if _requeuable(s, run):
+                _requeue(s, run, candidate, RunEnd.DAEMON_STOPPED)
             s.commit()
 
     def _commits(self, repo: Repo, base_sha: str, commits: Bundle | None) -> list[str]:
@@ -1063,8 +1066,6 @@ class RunController:
             with self._db.session() as s:
                 run, idea = s.get_one(Run, run_id), s.get_one(Idea, idea_id)
                 run.scoring = False
-                # a role that piloop init removed while the run ran requeues nothing
-                role = config_of(idea.campaign).roles.doing_runs().get(run.role)
                 if idea.status is IdeaStatus.SCHEDULED:  # A human may have parked or rejected it meanwhile.
                     if run.end is RunEnd.CANCELLED:
                         park_cancelled(s, run)
@@ -1080,13 +1081,8 @@ class RunController:
                                 ' brief, then set the idea ready',
                             )
                         )
-                    elif (
-                        last is not None
-                        and end is not RunEnd.FINISHED
-                        and role is not None
-                        and _requeues(s, idea) < role.recovery_requeues
-                    ):
-                        _requeue(s, run, s.get_one(Candidate, last))
+                    elif last is not None and end is not RunEnd.FINISHED and _requeuable(s, run):
+                        _requeue(s, run, s.get_one(Candidate, last), end)
                     elif startup_failed:
                         idea.status = IdeaStatus.PARKED
                         s.add(
@@ -1127,13 +1123,14 @@ class RunController:
             f' Only its commits are scored. The campaign repo, {idea.campaign.path}, is read-only for you: read'
             ' its history and candidates, never edit, run or commit in it.',
             f'- Your session ends {round(timeout / 60, 1):g} minutes after it starts, at `${DEADLINE_ENV}` (Unix time).'
-            f' The daemon tells you to wrap up {round(wrap_up_lead(timeout) / 60, 1):g} minutes before. Commit each step'
-            ' that runs, and leave your finding before the end.',
+            f' The daemon tells you to wrap up {round(wrap_up_lead(timeout) / 60, 1):g} minutes before, but a message'
+            ' reaches you only between two tool calls: start no command that can run past the deadline. Commit each'
+            ' step that runs, and leave your finding before the end.',
             f'- Starting from candidate#{base.id}: {at_base} — {base.summary}',
         ]
         if base.run_id is not None and s.get_one(Run, base.run_id).idea_id == idea.id:
             recovered = base.verdict is Verdict.RECOVERED
-            unmeasured = ' It is what its implementer left uncommitted, never measured.' if recovered else ''
+            unmeasured = ' It was never measured.' if recovered else ''
             lines.append(
                 f'- candidate#{base.id} is where run#{base.run_id}, an earlier run of this idea, stopped.{unmeasured}'
                 ' Read its diff against its parent, finish the work, and commit what you would ship.'
@@ -1326,8 +1323,19 @@ def _requeues(s: Session, idea: Idea) -> int:
     return s.scalar(query) or 0
 
 
-def _requeue(s: Session, run: Run, last: Candidate) -> None:
-    """Requeue the idea of a run that did not succeed from its ``last`` commit, with a note. The caller commits.
+def _requeuable(s: Session, run: Run) -> bool:
+    """Return whether the idea of ``run`` may be requeued from its commits.
+
+    The idea is still ``scheduled`` (a human may have parked it meanwhile), and the run's role allows one more requeue.
+    A role that ``piloop init`` removed while the run ran requeues nothing.
+    """
+    role = config_of(run.idea.campaign).roles.doing_runs().get(run.role)
+    scheduled = run.idea.status is IdeaStatus.SCHEDULED
+    return scheduled and role is not None and _requeues(s, run.idea) < role.recovery_requeues
+
+
+def _requeue(s: Session, run: Run, last: Candidate, end: RunEnd) -> None:
+    """Requeue the idea of a run that ended ``end``, not finished, from its ``last`` commit, with a note. The caller commits.
 
     When the head moved past that commit, a run from it would be a branch run, whose keeps never move the head. The
     idea then starts on the head, and the note says how to take the commits.
@@ -1338,10 +1346,10 @@ def _requeue(s: Session, run: Run, last: Candidate) -> None:
     idea.status, idea.base_candidate_id = IdeaStatus.READY, None if moved else last.id
     emit(s, RecoveryRequeued(run=run.id, candidate=last.id), TargetRef(TargetKind.IDEA, idea.id), System.DAEMON)
     body = (
-        f'requeued on the head: run#{run.id} ended {run.end} after its commits, and the head moved past them. To start'
+        f'requeued on the head: run#{run.id} ended {end} after its commits, and the head moved past them. To start'
         f' from them, run git cherry-pick {bar_of(run.base).commit_sha}..{last.commit_sha}'
         if moved
-        else f'requeued from candidate#{last.id}: run#{run.id} ended {run.end} after its commits; the next run starts'
+        else f'requeued from candidate#{last.id}: run#{run.id} ended {end} after its commits; the next run starts'
         ' from its last one to finish the work'
     )
     s.add(Comment(target=TargetRef(TargetKind.IDEA, idea.id), author=DAEMON_ACTOR, kind=CommentKind.NOTE, body=body))

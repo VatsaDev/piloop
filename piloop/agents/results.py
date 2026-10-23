@@ -98,8 +98,9 @@ class AgentSessionFinished(EventModel):
     role: RoleName
     reason: str | None
     """The row's ``reason``: why it was requested."""
-    status: ExitStatus | None
-    """How its process ended. None when no process ran or none came back."""
+    state: AgentSessionState
+    """The row's ``state``: ``exited``, or ``killed`` when the daemon or a timeout ended it, or no process ran. How the
+    process ended is in ``agent_session.job_ended``."""
     error: str | None
 
 
@@ -144,13 +145,24 @@ class AgentEnded(EventModel):
     end: RunEnd
 
 
-class PromptSettled(EventModel):
-    """The outcome of a prompt to an agent, on the agent: each comment gets one."""
+class PromptOutcome(EventModel):
+    """What came of a prompt to an agent, on the agent.
 
-    kind: Literal['comment.delivered', 'comment.undelivered']
+    ``comment.queued`` once the agent's runtime holds the prompt, then ``comment.delivered`` once the agent read it.
+    ``comment.undelivered`` when it never did: the runtime refused it, or the agent ended before it read it. A runtime
+    that cannot tell when its agent reads (``Runtime.prompt`` without the queue of ``take``) leaves the prompt queued.
+    """
+
+    kind: Literal['comment.queued', 'comment.delivered', 'comment.undelivered']
     comment: CommentId
     error: str | None = None
     """Why it did not reach the agent: only on ``comment.undelivered``."""
+
+
+FINAL_OUTCOMES = ('comment.delivered', 'comment.undelivered')
+"""The outcomes of a prompt after which nothing more comes of it."""
+UNREAD = 'the agent ended before it read it'
+"""The error of the ``comment.undelivered`` of a prompt that still waited in the agent's queue when it ended."""
 
 
 def queue_prompt(s: Session, agent_session_id: AgentSessionId, text: str, author: str) -> CommentId | None:
@@ -333,6 +345,13 @@ class CampaignResults:
             write_files(self._cas, report.files, self._home / job.place)
 
         self._apply(guard, change)
+        if isinstance(job, AgentJob) and isinstance(report, AgentFinished):
+            for comment in report.read:
+                self._tracer.event('comment.delivered', comment=comment, agent_session=job.agent_session)
+            for comment in report.unread:
+                self._tracer.event(
+                    'comment.undelivered', comment=comment, agent_session=job.agent_session, error=UNREAD
+                )
 
     def lost(self, key: JobKey, reason: str, *, guard: Guard | None = None) -> None:
         def change(s: Session) -> None:
@@ -344,25 +363,18 @@ class CampaignResults:
                 return
             w = _open(s, key)
             w.state, w.ended_at, w.error = AgentSessionState.KILLED, utcnow(), reason
-            session_finished(s, w, None)
+            session_finished(s, w)
             _ended(s, w.id, Lost(reason))
 
         self._apply(guard, change)
 
-    def delivered(self, key: AgentKey, prompt: CommentId, error: str | None) -> None:
-        """Record ``comment.delivered`` or ``comment.undelivered`` on the agent, unless the comment has its outcome."""
-        settled = PromptSettled(
-            kind='comment.delivered' if error is None else 'comment.undelivered', comment=prompt, error=error
+    def queued(self, key: AgentKey, prompt: CommentId, error: str | None) -> None:
+        """Record ``comment.queued``, or ``comment.undelivered`` with ``error``, unless the comment has an outcome."""
+        outcome = PromptOutcome(
+            kind='comment.queued' if error is None else 'comment.undelivered', comment=prompt, error=error
         )
-        on_agent = TargetRef(TargetKind.AGENT_SESSION, key.agent_session)
-
-        def change(s: Session) -> None:
-            outcome = select(Event.id).where(Event.target == on_agent, has(PromptSettled, comment=prompt))
-            if s.scalar(outcome.limit(1)) is None:
-                emit(s, settled, on_agent, System.DAEMON)
-
-        self._apply(None, change)
-        self._tracer.event(settled.kind, comment=prompt, agent_session=key.agent_session, error=error)
+        self._apply(None, lambda s: _record(s, key.agent_session, outcome))
+        self._tracer.event(outcome.kind, comment=prompt, agent_session=key.agent_session, error=error)
 
     def _agent(self, s: Session, job: AgentJob, report: AgentReport) -> None:
         """Close the row from the report, and emit ``AgentSessionFinished``, ``JobEnded`` and ``StartupAnomaly``.
@@ -373,7 +385,6 @@ class CampaignResults:
         """
         w = _open(s, AgentKey(job.agent_session))
         w.ended_at = utcnow()
-        process: AgentExit | None = None
         match report:
             case AgentNotStarted(reason=reason, seconds=seconds):
                 if self._stopping():
@@ -383,6 +394,10 @@ class CampaignResults:
                 ended: Ran | NotStarted = NotStarted(reason)
             case AgentFinished(process=process):
                 learn(s, w, report.session_id)
+                for comment in report.read:
+                    _record(s, w.id, PromptOutcome(kind='comment.delivered', comment=comment))
+                for comment in report.unread:
+                    _record(s, w.id, PromptOutcome(kind='comment.undelivered', comment=comment, error=UNREAD))
                 w.usage = report.usage
                 if self._stopping():
                     self._stopped(s, w, report.commits)
@@ -400,7 +415,7 @@ class CampaignResults:
                 ended = Ran(process, report.commits) if worked else NotStarted(process.error or NEVER_WORKED)
             case _:
                 assert_never(report)
-        session_finished(s, w, None if process is None else process.status)
+        session_finished(s, w)
         if isinstance(ended, NotStarted):
             anomaly = StartupAnomaly(
                 role=w.kind,
@@ -416,6 +431,7 @@ class CampaignResults:
     @staticmethod
     def _stopped(s: Session, w: AgentSession, commits: Bundle | None) -> None:
         w.state, w.error = AgentSessionState.KILLED, RunEnd.DAEMON_STOPPED
+        session_finished(s, w)
         _ended(s, w.id, DaemonStopped(commits))
 
     def _measured(self, s: Session, job: EvaluationJob, report: EvaluationReport) -> None:
@@ -493,10 +509,19 @@ def _proposer(s: Session, created_by: str) -> Proposer | None:
     return Proposer(agent, row.harness, None if definition is None else definition.executable, row.session_id)
 
 
-def session_finished(s: Session, w: AgentSession, status: ExitStatus | None) -> None:
+def session_finished(s: Session, w: AgentSession) -> None:
     """Emit ``AgentSessionFinished`` for the row that just closed. The caller commits."""
-    event = AgentSessionFinished(role=w.kind, reason=w.reason, status=status, error=w.error)
+    event = AgentSessionFinished(role=w.kind, reason=w.reason, state=w.state, error=w.error)
     emit(s, event, TargetRef(TargetKind.AGENT_SESSION, w.id), System.DAEMON)
+
+
+def _record(s: Session, agent_session_id: AgentSessionId, outcome: PromptOutcome) -> None:
+    """Emit ``outcome`` on the agent, unless the comment has one: any before a queue, a ``FINAL_OUTCOMES`` one else."""
+    on_agent = TargetRef(TargetKind.AGENT_SESSION, agent_session_id)
+    before = PromptOutcome.kinds() if outcome.kind == 'comment.queued' else FINAL_OUTCOMES
+    found = select(Event.id).where(Event.target == on_agent, has(PromptOutcome, comment=outcome.comment))
+    if s.scalar(found.where(Event.kind.in_(before)).limit(1)) is None:
+        emit(s, outcome, on_agent, System.DAEMON)
 
 
 def _ended(s: Session, agent_session_id: AgentSessionId, ended: Ended) -> None:

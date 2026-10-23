@@ -188,7 +188,8 @@ daemon calls its `open(host)` once, when it starts, to make the `Executor`:
 - `adopt(left)` takes over the jobs that the previous daemon left, and returns those it cannot.
 - `capacity()` is how many more agents and evaluations it can take now: its free slots. The daemon submits no more.
 - `configure(config)` takes the config that opened it, with the live [limits](/architecture/leases#capacity) applied.
-- `prompt(key, prompt)` delivers a comment to a running agent, then calls `host.results.delivered`.
+- `prompt(key, prompt)` gives a comment to a running agent's runtime, then calls `host.results.queued`. The agent's
+  report says which prompts the agent read (`read` and `unread`).
 - `routes()` are the HTTP routes that its workers on other machines call, under `/v1/executor/`. The server of
   `piloop serve --listen` serves them, and a [network](#networks) says who may call them.
 - `tick`, `stop`, `hand_over` and `close` are the daemon's periodic call, its stop, its in-place restart and its end.

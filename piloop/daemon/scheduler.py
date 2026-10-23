@@ -9,9 +9,9 @@ the same second phase.
 Before both phases, the tick sends new comments to the running agents through the executor (``Executor.prompt``). An
 agent gets the ``note``, ``finding`` and ``decision`` comments on itself (``piloop prompt``), and an implementer also
 those on its run or its idea that were written since the run started, one ``[piloop]`` line each (``steer_line``). An
-event on the agent, ``comment.delivered`` or ``comment.undelivered``, records each outcome. A comment with an outcome
-is never sent again. An agent that is still ``starting`` gets the comments once it runs. A failed delivery is not
-retried.
+event on the agent records each outcome (``PromptOutcome``): ``comment.queued``, then ``comment.delivered`` or
+``comment.undelivered``. A comment with an outcome is never sent again. An agent that is still ``starting`` gets the
+comments once it runs. A failed delivery is not retried.
 """
 
 import itertools
@@ -38,7 +38,7 @@ from piloop.actor import Agent, System
 from piloop.agents import scout
 from piloop.agents.launcher import rotate
 from piloop.agents.refill import usage_of
-from piloop.agents.results import AgentEnded, PromptSettled, StartupAnomaly, WrapUp, queue_prompt
+from piloop.agents.results import AgentEnded, PromptOutcome, StartupAnomaly, WrapUp, queue_prompt
 from piloop.agents.roles import compose_brief, role_of
 from piloop.campaign import spend
 from piloop.campaign.anomaly import AnomalyReported
@@ -532,7 +532,7 @@ class Scheduler:
     def _push_comments(self) -> None:
         """Hand each running agent's executor the comments that the agent has no outcome for (``Executor.prompt``).
 
-        The events table records each outcome: ``PromptSettled`` events on the agent, with the comment id. A
+        The events table records each outcome: ``PromptOutcome`` events on the agent, with the comment id. A
         comment is handed over once per daemon process (``_prompted``). One without an outcome after a restart goes
         again, and the executor answers it as it did the first time. An agent whose row is still ``starting`` (brief
         composed, pane not yet up) gets the comments once it runs. A failed delivery is recorded and not retried: the
@@ -581,7 +581,7 @@ class Scheduler:
             on_agent = on_agent | on_run | on_idea
             own, since = (*own, f'run#{run.id}'), run.started_at or since
         on_agent_session = Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id)
-        settled = {p.comment for _, p in in_order(s, PromptSettled, on_agent_session)}
+        settled = {p.comment for _, p in in_order(s, PromptOutcome, on_agent_session)}
         comments = s.scalars(
             select(Comment)
             .where(on_agent, Comment.kind.in_(PUSHED_KINDS))

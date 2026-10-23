@@ -5,6 +5,8 @@ scope must be the caller's (403). A handler runs in the thread pool of Starlette
 next call outside it, so many long-polls never starve a heartbeat.
 """
 
+import asyncio
+import socket
 import ssl
 import threading
 import time
@@ -43,18 +45,30 @@ def authorized(network: Network, scope: TokenScope) -> Callable[[Request], Calle
     return caller
 
 
-def app(network: Network, routes: Sequence[Route]) -> FastAPI:
+class App(FastAPI):
+    """FastAPI, with the event that its ``Server`` sets when it shuts down."""
+
+    def __init__(self) -> None:
+        super().__init__(openapi_url=None)
+        self.closing = asyncio.Event()
+        """Set at the start of the shutdown: each long-poll that waits answers 204 at once, as at the end of its wait."""
+
+
+def app(network: Network, routes: Sequence[Route]) -> App:
     """``routes`` under ``/v1/executor``."""
-    server = FastAPI(openapi_url=None)
+    server = App()
     for route in routes:
-        server.add_api_route(f'/v1/executor/{route.path}', _endpoint(network, route), methods=['POST'])
+        server.add_api_route(f'/v1/executor/{route.path}', _endpoint(network, route, server.closing), methods=['POST'])
     return server
 
 
-def _endpoint(network: Network, route: Route) -> Callable[[Request, Caller], Awaitable[Response]]:
+def _endpoint(
+    network: Network, route: Route, closing: asyncio.Event
+) -> Callable[[Request, Caller], Awaitable[Response]]:
     """The handler of ``route``: its body is read and validated here, and the route's handler runs in the thread pool.
 
-    A long-poll calls it again after each commit (``Route.changed``) while it answers None, until the body's wait ends.
+    A long-poll calls it again after each commit (``Route.changed``) while it answers None, until the body's wait ends
+    or the server closes.
     """
     scoped = authorized(network, route.scope)
 
@@ -69,7 +83,9 @@ def _endpoint(network: Network, route: Route) -> Callable[[Request, Caller], Awa
             while (answer := await run_in_threadpool(call.handle)) is None and route.changed is not None:
                 if (left := deadline - time.monotonic()) <= 0:
                     break
-                seen = await route.changed(seen, left)
+                if (changed := await _unless_closing(route.changed(seen, left), closing)) is None:
+                    break
+                seen = changed
         except Refusal as e:
             return JSONResponse({'error': e.error, 'detail': str(e)}, status_code=e.status)
         if answer is None:
@@ -79,10 +95,33 @@ def _endpoint(network: Network, route: Route) -> Callable[[Request, Caller], Awa
     return endpoint
 
 
+async def _unless_closing(changed: Awaitable[int], closing: asyncio.Event) -> int | None:
+    """What ``changed`` returns, or None once ``closing`` is set."""
+    waits = asyncio.ensure_future(changed), asyncio.ensure_future(closing.wait())
+    try:
+        await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for wait in waits:
+            wait.cancel()
+    return None if closing.is_set() else waits[0].result()
+
+
+class _Uvicorn(uvicorn.Server):
+    """uvicorn that sets ``closing`` when it shuts down, before it waits for the requests in flight."""
+
+    def __init__(self, config: uvicorn.Config, closing: asyncio.Event) -> None:
+        super().__init__(config)
+        self._closing = closing
+
+    async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
+        self._closing.set()
+        await super().shutdown(sockets)
+
+
 class Server:
     """uvicorn serving ``app`` on ``listener``: in this thread (``run``), or in its own from ``start`` until ``close``."""
 
-    def __init__(self, app: FastAPI, listener: Listener) -> None:
+    def __init__(self, app: App, listener: Listener) -> None:
         self.listener = listener
         config = uvicorn.Config(
             app,
@@ -92,7 +131,7 @@ class Server:
             timeout_graceful_shutdown=GRACE_SECONDS,
             ssl_context_factory=_tls(listener.tls) if listener.tls is not None else None,
         )
-        self._server = uvicorn.Server(config)
+        self._server = _Uvicorn(config, app.closing)
         self._thread = threading.Thread(target=self.run, name='piloop-server', daemon=True)
 
     @property
@@ -117,7 +156,10 @@ class Server:
         self._thread.start()
 
     def close(self) -> None:
-        """Stop accepting, let the requests in flight finish for up to ``GRACE_SECONDS``; ``run`` closes the socket."""
+        """Stop accepting, end the long-polls, let the other requests in flight finish for up to ``GRACE_SECONDS``.
+
+        ``run`` closes the socket.
+        """
         self._server.should_exit = True
         self._thread.join()
 

@@ -26,7 +26,7 @@ from sqlalchemy.exc import OperationalError
 
 from piloop import git
 from piloop.actor import System
-from piloop.agents.results import CampaignResults, DaemonStopped, Ended, Lost, NotStarted, PromptSettled, Ran
+from piloop.agents.results import CampaignResults, DaemonStopped, Ended, Lost, NotStarted, PromptOutcome, Ran
 from piloop.campaign.campaigns import checkout_of
 from piloop.daemon.run_controller import RunController
 from piloop.db.events import emit, in_order
@@ -79,7 +79,7 @@ from piloop.plugins.executor.kit.leases import (
 )
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.executor.workers.worker import WORKER_ANOMALY, Unsent, Worker
-from piloop.plugins.runtime.contract import ExitStatus, Handle
+from piloop.plugins.runtime.contract import QUEUE, ExitStatus, Handle, put, take
 from piloop.plugins.runtime.herdr import HerdrSettings
 from piloop.runtime.factory import RuntimeFactory, make_runtime
 from piloop.settings import INPUTS_DIR
@@ -862,7 +862,7 @@ def held_reads(mocker: MockerFixture, leases: Leases) -> threading.Event:
 def outcomes(db: Database, agent_session_id: AgentSessionId) -> list[str]:
     on_agent = Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id)
     with db.session() as s:
-        return [settled.kind for _, settled in in_order(s, PromptSettled, on_agent)]
+        return [settled.kind for _, settled in in_order(s, PromptOutcome, on_agent)]
 
 
 def prompts(db: Database) -> list[object]:
@@ -884,21 +884,51 @@ def test_prompts_read_together_reach_the_agent_in_one_turn_and_a_batch_read_agai
     key = AgentKey(running_agent(db, campaign, ex, tmp_path, 'steered', launched))
     leases = workers_of(ex).leases
     release = held_reads(mocker, leases)
-    delivered = leases.delivered
+    queued = leases.queued
 
     def lost_once(worker: str, message: int, error: str | None) -> None:
         if answered.call_count == 1:
             raise OperationalError('INSERT', {}, Exception('locked'))
-        delivered(worker, message, error)
+        queued(worker, message, error)
 
-    answered = mocker.patch.object(leases, 'delivered', side_effect=lost_once)
+    answered = mocker.patch.object(leases, 'queued', side_effect=lost_once)
     leases.prompt(key, Prompt(CommentId(1), 'one'))
     leases.prompt(key, Prompt(CommentId(2), 'two'))
     release.set()
-    wait_until(lambda: outcomes(db, key.agent_session) == ['comment.delivered', 'comment.delivered'])
+    wait_until(lambda: outcomes(db, key.agent_session) == ['comment.queued', 'comment.queued'])
     assert runtime.prompts == ['one\ntwo'], 'typed once'
     assert answered.call_count == 3, 'the first answer did not land: it was answered again'
     hold.unlink()
+
+
+class Queueing(ScriptRuntime):
+    """The subprocess runtime with resume arguments: a prompt waits in the agent's queue until a hook takes it."""
+
+    def prompt(self, handle: Handle, text: str) -> None:
+        put(Path(str(handle.data['log_dir'])), text)
+
+
+@pytest.mark.parametrize('read', [True, False], ids=['read', 'killed in a long tool call'])
+def test_a_prompt_is_queued_and_delivered_only_once_the_agent_reads_it(
+    db: Database, campaign: Campaign, tmp_path: Path, launched: list[threading.Thread], read: bool
+) -> None:
+    """A wrap-up that comes during a long tool call waits in the queue. The agent's hook reads it after the tool call,
+    or the agent ends first, and the message never reached it."""
+    runtime = Queueing()
+    hold = tmp_path / 'hold'
+    hold.touch()
+    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), HOLD.format(hold=hold))
+    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=timed(FAST)))
+    key = AgentKey(running_agent(db, campaign, ex, tmp_path, 'steered', launched))
+    ex.executor.prompt(key, Prompt(CommentId(1), 'wrap up'))
+    wait_until(lambda: outcomes(db, key.agent_session) == ['comment.queued'])
+    if read:
+        with db.session() as s:
+            log_dir = Path(s.get_one(AgentSession, key.agent_session).log_dir or '')
+        assert take(log_dir / QUEUE) == ['wrap up'], "the harness's hook, between two tool calls"
+    hold.unlink()
+    wait_until(lambda: lease_state(db, key.agent_session) is LeaseState.REPORTED)
+    assert outcomes(db, key.agent_session) == ['comment.queued', 'comment.delivered' if read else 'comment.undelivered']
 
 
 def test_a_prompt_survives_a_daemon_restart_and_reaches_its_agent_once(
@@ -932,13 +962,13 @@ def test_a_prompt_survives_a_daemon_restart_and_reaches_its_agent_once(
     time.sleep(0.5)  # a listener that did not wait for its agent would have read the prompt by now
     assert read.call_count == 0, 'it reads nothing before its agent is back'
     reattached.set()
-    wait_until(lambda: outcomes(db, key.agent_session) == ['comment.delivered'])
+    wait_until(lambda: outcomes(db, key.agent_session) == ['comment.queued'])
     assert (runtime.prompts, prompts(db)) == (['try lzma'], [41])
     with db.session() as s:
         [(event, _)] = in_order(s, LeasePrompted)
         message = event.id
-    leases.delivered(SERVE, message, None)
-    assert outcomes(db, key.agent_session) == ['comment.delivered'], 'an answer sent again changes nothing'
+    leases.queued(SERVE, message, None)
+    assert outcomes(db, key.agent_session) == ['comment.queued'], 'an answer sent again changes nothing'
     hold.unlink()
     wait_until(lambda: lease_state(db, key.agent_session) is LeaseState.REPORTED)
 
@@ -960,18 +990,18 @@ def test_a_prompt_that_cannot_reach_its_agent_is_answered_with_why_and_the_worke
     ex = serving(RunController(db, tracer, tmp_path, factory(runtime), executor=timed(FAST)))
     key = AgentKey(running_agent(db, campaign, ex, tmp_path, 'headless', launched))
     leases = workers_of(ex).leases
-    answered = mocker.spy(leases, 'delivered')
+    answered = mocker.spy(leases, 'queued')
     leases.prompt(key, Prompt(CommentId(1), 'one'))
     wait_until(lambda: answered.call_count == 1)
     assert 'cannot take a message' in str(answered.call_args.args[2])
     prompted(db, key, lease=999, comment=2)
     wait_until(lambda: answered.call_count == 2)
     assert answered.call_args.args[2] == 'the agent does not run on this worker'
-    mocker.patch.object(leases, 'delivered', side_effect=OperationalError('INSERT', {}, Exception('locked')))
+    mocker.patch.object(leases, 'queued', side_effect=OperationalError('INSERT', {}, Exception('locked')))
     prompted(db, key, lease=999, comment=3)
-    wait_until(lambda: 'worker.delivered_unsent' in span_names(spans))
-    mocker.patch.object(leases, 'delivered', side_effect=NotAddressed('not_addressed: not for serve'))
-    wait_until(lambda: 'worker.delivered_refused' in span_names(spans))
+    wait_until(lambda: 'worker.queued_unsent' in span_names(spans))
+    mocker.patch.object(leases, 'queued', side_effect=NotAddressed('not_addressed: not for serve'))
+    wait_until(lambda: 'worker.queued_refused' in span_names(spans))
     mocker.patch.object(leases, 'messages', side_effect=OperationalError('SELECT', {}, Exception('locked')))
     wait_until(lambda: 'worker.unheard' in span_names(spans))
     hold.unlink()

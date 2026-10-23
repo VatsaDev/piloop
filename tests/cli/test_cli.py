@@ -23,7 +23,7 @@ from rich.console import Console
 from sqlalchemy import create_engine, select
 
 from piloop.actor import Actor, Agent, System
-from piloop.agents.results import PromptSettled
+from piloop.agents.results import PromptOutcome
 from piloop.campaign import campaigns as campaign_module, inbox
 from piloop.campaign.campaigns import CampaignAdded
 from piloop.campaign.ideas import defined_by, runnable
@@ -1104,8 +1104,9 @@ def test_prompt_is_a_note_on_the_agent_and_says_whether_it_arrived(
         )
         s.commit()
         answers = (  # the daemon's answers to the next notes
-            PromptSettled(kind='comment.delivered', comment=CommentId(2)),
-            PromptSettled(kind='comment.undelivered', comment=CommentId(3), error='a dialog is open'),
+            PromptOutcome(kind='comment.queued', comment=CommentId(2)),
+            PromptOutcome(kind='comment.undelivered', comment=CommentId(3), error='a dialog is open'),
+            PromptOutcome(kind='comment.delivered', comment=CommentId(4)),
         )
         for answer in answers:
             emit(s, answer, TargetRef(TargetKind.AGENT_SESSION, 1), System.DAEMON)
@@ -1114,11 +1115,13 @@ def test_prompt_is_a_note_on_the_agent_and_says_whether_it_arrived(
     monkeypatch.setattr(agents_cli, 'DELIVERY_WAIT', 0.1)
     out()
     run_cli(['prompt', '1', 'no answer'])
-    assert out().strip() == 'comment#1: queued for agent_session#1; the daemon delivers it once it runs'
+    assert out().strip() == 'comment#1: the daemon queues it for agent_session#1 once it runs'
     run_cli(['prompt', '1', 'try harder'])
-    assert out().strip() == 'prompted agent_session#1 (comment#2)'
+    assert out().strip() == 'queued comment#2 for agent_session#1: it reads it at its next turn'
     with pytest.raises(SystemExit, match='agent_session#1 did not get comment#3: a dialog is open'):
         run_cli(['prompt', '1', 'x'])
+    run_cli(['prompt', '1', 'quick'])
+    assert out().strip() == 'agent_session#1 read comment#4'
     with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
         note = s.get_one(Comment, 1)
         assert (note.target_kind, note.target_id, note.kind, note.author, note.body) == (

@@ -23,7 +23,7 @@ are not under pressure.
 
 A worker's messages are events on the job's row (``LeaseQueued``, ``LeasePrompted``, ``LeaseRevoked``), each written
 in the transaction of the change that it announces: a transactional outbox. A worker reads those of its ``topics``
-after its cursor (``piloop.db.feed``), which it moves past a prompt only once it answered ``delivered``, as a NATS
+after its cursor (``piloop.db.feed``), which it moves past a prompt only once it answered ``queued``, as a NATS
 JetStream consumer moves its ack floor. So a message survives a restart of the daemon or the worker.
 
 The fence is the executor's, not core's: core checks only the domain (``Settled``). Every operation that checks it
@@ -46,7 +46,7 @@ from sqlalchemy.orm import Session, aliased
 
 from piloop import deprecated
 from piloop.actor import System
-from piloop.agents.results import PromptSettled
+from piloop.agents.results import PromptOutcome
 from piloop.db import feed
 from piloop.db.events import emit, has
 from piloop.db.feed import Topic
@@ -251,7 +251,7 @@ class Work(BaseModel):
 
 
 class PromptMessage(BaseModel):
-    """A message: deliver ``prompt`` to the agent of ``lease``, then answer ``delivered``."""
+    """A message: give ``prompt`` to the agent of ``lease``, then answer ``queued``."""
 
     kind: Literal['prompt'] = 'prompt'
     id: int
@@ -733,7 +733,7 @@ class Leases:
     def prompt(self, key: AgentKey, prompt: Prompt) -> None:
         """Send ``prompt`` to the worker of the agent's live lease (``LeasePrompted``), unless it was sent.
 
-        The worker answers ``delivered``. An agent without a live lease never gets it: core records why at once.
+        The worker answers ``queued``. An agent without a live lease never gets it: core records why at once.
         """
         with self._db.session() as s:
             write_transaction(s)
@@ -744,7 +744,7 @@ class Leases:
                     emit(s, prompted, _target(lease), System.DAEMON)
                 s.commit()
                 return
-        self._results.delivered(key, prompt.id, 'the agent has no live lease')
+        self._results.queued(key, prompt.id, 'the agent has no live lease')
 
     def messages(self, worker: str, after: int, wait: float) -> list[Work | PromptMessage | Revoke]:
         """Store ``after`` as the worker's cursor, and return its messages after it, waiting up to ``wait`` seconds.
@@ -766,7 +766,7 @@ class Leases:
         self._db.wait_until(read, timeout=wait)
         return found
 
-    def delivered(self, worker: str, message: int, error: str | None) -> None:
+    def queued(self, worker: str, message: int, error: str | None) -> None:
         """The worker's answer to the ``PromptMessage`` of id ``message``: core records the outcome once.
 
         Raises:
@@ -776,7 +776,7 @@ class Leases:
             event = s.get(Event, message)
         match event:
             case Event(payload=LeasePrompted(worker=to, comment=comment), target_id=agent) if to == worker:
-                self._results.delivered(AgentKey(AgentSessionId(agent)), comment, error)
+                self._results.queued(AgentKey(AgentSessionId(agent)), comment, error)
             case _:
                 raise NotAddressed(f'not_addressed: event#{message} is not a prompt for {worker}')
 
@@ -844,12 +844,12 @@ def _prompted(s: Session, lease: Lease, comment: CommentId) -> bool:
 
 
 def _unanswered() -> ColumnElement[bool]:
-    """Select the events but the prompts (``LeasePrompted``) whose comment has its outcome (``PromptSettled``)."""
+    """Select the events but the prompts (``LeasePrompted``) whose comment has its outcome (``PromptOutcome``)."""
     outcome = aliased(Event)
     answered = exists().where(
         outcome.target_kind == Event.target_kind,
         outcome.target_id == Event.target_id,
-        outcome.kind.in_(PromptSettled.kinds()),
+        outcome.kind.in_(PromptOutcome.kinds()),
         func.json_extract(outcome.payload, '$.comment') == func.json_extract(Event.payload, '$.comment'),
     )
     return Event.kind.not_in(LeasePrompted.kinds()) | ~answered

@@ -132,7 +132,7 @@ class Launcher:
         with self.db.session() as s:
             w = s.get_one(AgentSession, agent_session_id)
             w.state, w.ended_at, w.error = AgentSessionState.KILLED, utcnow(), error
-            session_finished(s, w, None)
+            session_finished(s, w)
             s.commit()
 
     def _prepare(

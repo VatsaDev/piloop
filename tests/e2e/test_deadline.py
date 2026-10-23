@@ -60,7 +60,7 @@ def test_the_wrap_up_reaches_the_turn_and_the_run_finishes_before_its_timeout(ca
         "SELECT kind FROM events WHERE target_kind = 'agent_session' AND target_id = ? AND kind LIKE 'comment.%'",
         implementer['id'],
     )
-    assert [e['kind'] for e in delivered] == ['comment.delivered'], 'the wrap-up note'
+    assert [e['kind'] for e in delivered] == ['comment.queued', 'comment.delivered'], 'the wrap-up note, read'
     assert (run['status'], run['end']) == ('succeeded', 'finished'), run['error']
     ended = campaign.sql(
         "SELECT json_extract(payload, '$.reason') AS reason FROM events WHERE kind = 'agent_session.stop_ended'"

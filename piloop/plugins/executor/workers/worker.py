@@ -22,7 +22,7 @@ import time
 import uuid
 from collections.abc import Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from importlib.metadata import version
 from pathlib import Path
@@ -37,6 +37,7 @@ from piloop.plugins.executor.contract import (
     EvaluationJob,
     EvaluationReport,
     MissingBlobs,
+    Prompt,
     Report,
 )
 from piloop.plugins.executor.kit import jobs
@@ -120,6 +121,8 @@ class Running:
     again: a kill can fail (a Herdr server that does not answer)."""
     steer: Callable[[str], None] | None = None
     """How to prompt its agent (``Runtime.prompt`` at its handle), once the agent started. None for an evaluation."""
+    queued: list[list[Prompt]] = field(default_factory=list)
+    """The prompts that its runtime took, one list for each ``steer``, oldest first."""
 
 
 class Worker:
@@ -166,7 +169,7 @@ class Worker:
         self._registered = False
         self._outcomes: dict[int, str | None] = {}
         """What each prompt past the cursor that this worker handled came to, by message id: a prompt read again,
-        because its answer did not land, is answered the same, and not delivered again."""
+        because its answer did not land, is answered the same, and not given to its agent again."""
         self._started = False
         self._stopping = False
         self._handover = False
@@ -300,9 +303,9 @@ class Worker:
                 self._wanted.wait(self.timing.renew)
 
     def _prompt(self, lease_id: int, messages: list[PromptMessage]) -> list[int]:
-        """Deliver the prompts of one agent in one ``Runtime.prompt``, answer each, and return those not answered.
+        """Give the prompts of one agent in one ``Runtime.prompt``, answer each, and return those not answered.
 
-        A prompt handled before is answered as it was, and not delivered again. One prompt, because two prompts typed
+        A prompt handled before is answered as it was, and not given again. One prompt, because two prompts typed
         into a busy pane join in its input queue with nothing between them.
         """
         new = [m for m in messages if m.id not in self._outcomes]
@@ -311,7 +314,7 @@ class Worker:
                 running = self._jobs.get(lease_id)
                 steer = running.steer if running is not None else None
             error: str | None = None
-            if steer is None:
+            if steer is None or running is None:
                 error = 'the agent does not run on this worker'
             else:
                 try:
@@ -320,15 +323,18 @@ class Worker:
                     Exception
                 ) as e:  # NotSteerable (subprocess), a blocked agent or a closed pane: the worker goes on
                     error = str(e)
+                else:
+                    with self._lock:
+                        running.queued.append([m.prompt for m in new])
             self._outcomes.update(dict.fromkeys((m.id for m in new), error))
         unanswered: list[int] = []
         for message in messages:
             try:
-                self.client.delivered(message.id, self._outcomes[message.id])
+                self.client.queued(message.id, self._outcomes[message.id])
             except NotAddressed as e:  # not this worker's: no answer of it will land
-                self._tracer.event('worker.delivered_refused', worker=self.id, message=message.id, error=str(e))
+                self._tracer.event('worker.queued_refused', worker=self.id, message=message.id, error=str(e))
             except Exception as e:  # the control plane does not answer: the cursor stays, so the next read gets it
-                self._tracer.event('worker.delivered_unsent', worker=self.id, message=message.id, error=str(e))
+                self._tracer.event('worker.queued_unsent', worker=self.id, message=message.id, error=str(e))
                 unanswered.append(message.id)
         return unanswered
 
@@ -687,3 +693,8 @@ class _Control:
 
     def handing_over(self) -> bool:
         return self._worker._handover
+
+    def queued(self) -> list[list[Prompt]]:
+        with self._worker._lock:
+            running = self._worker._jobs.get(self._lease)
+            return list(running.queued) if running is not None else []

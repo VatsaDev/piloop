@@ -263,6 +263,8 @@ harness can take the messages during a turn (``piloop agent messages``). A file,
 runtime instance, or another process, than the turn that takes them."""
 QUEUE = 'queued-messages'
 """Under the agent's log directory: the messages queued for its next turn, one JSON string per line."""
+READ = 'read-messages'
+"""Under the agent's log directory: the messages that the agent took from its queue (``take``), as ``QUEUE`` holds them."""
 
 
 def put(log_dir: Path, text: str) -> None:
@@ -272,12 +274,23 @@ def put(log_dir: Path, text: str) -> None:
 
 
 def take(queue: Path) -> list[str]:
-    """Remove and return the messages in ``queue``, oldest first, under its lock."""
+    """Remove and return the messages in ``queue``, oldest first, under its lock. Add them to the agent's ``READ``."""
     with locked(queue.parent):
-        messages = [json.loads(line) for line in queue.read_text().splitlines() if line] if queue.is_file() else []
-        if messages:
+        lines = [line for line in queue.read_text().splitlines() if line] if queue.is_file() else []
+        if lines:
+            with (queue.parent / READ).open('a') as read:
+                read.writelines(f'{line}\n' for line in lines)
             queue.unlink()
-    return messages
+    return [json.loads(line) for line in lines]
+
+
+def taken(log_dir: Path) -> tuple[int, int]:
+    """How many messages the agent took from its queue (``READ``), and how many still wait in it, oldest first."""
+    return _count(log_dir / READ), _count(log_dir / QUEUE)
+
+
+def _count(path: Path) -> int:
+    return sum(1 for line in path.read_text().splitlines() if line) if path.is_file() else 0
 
 
 @contextmanager

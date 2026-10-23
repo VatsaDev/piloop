@@ -29,7 +29,8 @@ nothing to clean up.
 
 - The runs of the stopped implementers end `daemon_stopped`. This does not count as an attempt: the ideas go back to
   `ready`.
-- What each run made is pinned under `refs/piloop/`, with a note that its next attempt reads.
+- What each run made is pinned under `refs/piloop/` as `recovered` candidates, never measured. The next run of the
+  idea starts from the last one, as after a [run that timed out](/concepts/ideas-and-runs).
 - Requested agents stay requested, and start when the daemon starts again.
 - The campaigns stay `active`. The next `piloop serve` continues them. A campaign ends only at its `[stop]` limits.
 - The sessions of the stopped agents are not attached to Entire.

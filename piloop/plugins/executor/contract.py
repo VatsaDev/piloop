@@ -211,6 +211,10 @@ class AgentFinished(BaseModel):
     """Its commits, when the job asked for them back and there are some."""
     files: dict[str, BlobAddress] = Field(default_factory=dict)
     """Its log directory's files by relative path: core puts them in the job's place under its own home."""
+    read: list[CommentId] = Field(default_factory=list)
+    """The prompts that the agent read: it took them from its runtime's queue."""
+    unread: list[CommentId] = Field(default_factory=list)
+    """The prompts that still waited in its runtime's queue when it ended."""
 
     def blobs(self) -> list[Cid]:
         """Every blob that it names: what the CAS holds before core applies it."""
@@ -355,8 +359,11 @@ class Results(Protocol):
         """
         ...
 
-    def delivered(self, key: AgentKey, prompt: CommentId, error: str | None) -> None:
-        """A prompt reached its agent, or ``error`` says why it did not. Its outcome is recorded once."""
+    def queued(self, key: AgentKey, prompt: CommentId, error: str | None) -> None:
+        """A prompt waits for its agent in the agent's runtime, or ``error`` says why it does not.
+
+        Whether the agent read it comes in the agent's report (``AgentFinished.read``).
+        """
         ...
 
 
@@ -413,7 +420,7 @@ class Executor[C: ExecutorConfig](Protocol):
         ...
 
     def prompt(self, key: AgentKey, prompt: Prompt) -> None:
-        """Deliver ``prompt`` to the running agent at least once, then call ``Results.delivered``.
+        """Give ``prompt`` to the running agent's runtime at least once, then call ``Results.queued``.
 
         Core calls it once for each prompt in each daemon process, and again after a restart when no outcome was
         recorded: an executor that may deliver it twice skips the ids that it has seen.

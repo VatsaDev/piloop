@@ -513,12 +513,15 @@ cannot, the command says so and tells you where to look instead.
 piloop prompt AGENT_SESSION_ID TEXT
 ```
 
-Queues `TEXT` for the next turn of a running agent of any role, as a `note` on the agent. The daemon delivers it, and
-the command waits up to 20 seconds to say whether it arrived:
+Queues `TEXT` for the next turn of a running agent of any role, as a `note` on the agent. The daemon gives it to the
+agent's runtime, and the command waits up to 20 seconds to say whether it is queued:
 
 ```text
-prompted agent_session#4 (comment#31)
+queued comment#31 for agent_session#4: it reads it at its next turn
 ```
+
+An agent reads a message only between two tool calls. `comment.delivered` on the agent records the read, and
+`comment.undelivered` an agent that ended first.
 
 When the [runtime](/concepts/roles#runtimes) of the agent cannot take it, the command says why. The agent session ids are in
 `piloop status`.

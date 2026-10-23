@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from covalence import Cid, StoreError
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import TypeAdapter, ValidationError
@@ -27,7 +27,7 @@ from starlette.types import Receive, Scope, Send
 
 from piloop.db.models import TokenScope
 from piloop.net.cas import ROUTE, Code, ErrorBody
-from piloop.net.server import authorized
+from piloop.net.server import App, authorized
 from piloop.plugins.cas.contract import UNBOUNDED, BlobAddress, Cas
 from piloop.plugins.network.contract import Network
 
@@ -59,10 +59,10 @@ class CasError(Exception):
         self.code = code
 
 
-def app(network: Network, cas: Cas, scratch: Path) -> FastAPI:
+def app(network: Network, cas: Cas, scratch: Path) -> App:
     """The routes of ``ROUTE`` over ``cas``, with temporary files in ``scratch``."""
     workers = [Depends(authorized(network, TokenScope.WORKER))]
-    server = FastAPI(openapi_url=None)
+    server = App()
 
     @server.exception_handler(CasError)
     def refused(request: Request, e: CasError) -> Response:

@@ -18,6 +18,7 @@ these routes. ``bundle`` asks the server to put a commit that the worker's clone
 address.
 """
 
+import math
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
@@ -33,6 +34,7 @@ from pydantic import BaseModel, RootModel, ValidationError
 from piloop.db.models import NoLease, TokenScope
 from piloop.net import MAX_POLL_SECONDS, Changed, Polled, Refusal, Route
 from piloop.net.tokens import Caller
+from piloop.otel import Tracer
 from piloop.plugins.cas.contract import BlobAddress, Cas
 from piloop.plugins.executor.contract import AgentReport, EvaluationReport, MissingBlobs, RepoId, Report
 from piloop.plugins.executor.kit.capacity import HostSample
@@ -58,6 +60,8 @@ MAX_BACKOFF = 5.0
 """Seconds between two tries of a call that got no answer: doubling from the first, up to the most."""
 ATTEMPT_SECONDS = 30.0
 """The longest one try waits for its answer, beyond a long-poll's own wait."""
+UNREACHABLE_EVERY = 60.0
+"""How often a worker whose server does not answer says so again (``worker.unreachable``)."""
 
 
 class Failure(StrEnum):
@@ -143,8 +147,8 @@ class Messages(RootModel[list[Message]]):
     """The answer of ``messages``, oldest first."""
 
 
-class Delivered(BaseModel):
-    """The body of ``delivered``."""
+class Queued(BaseModel):
+    """The body of ``queued``."""
 
     message: int
     error: str | None
@@ -178,7 +182,7 @@ def lease_routes(leases: Leases, changed: Changed, cas: Cas, bundle: Fetch) -> l
         Route('report', worker, Reported, _as_caller(leases, _report)),
         Route('lost', worker, Lost, _as_caller(leases, _lost)),
         Route.long_poll('messages', worker, Read, _as_caller(leases, _messages), changed),
-        Route('delivered', worker, Delivered, _as_caller(leases, _delivered)),
+        Route('queued', worker, Queued, _as_caller(leases, _queued)),
         Route('bundle', worker, BundleAsked, partial(_bundle, bundle)),
     ]
 
@@ -249,8 +253,8 @@ def _messages(worker: Local, body: Read) -> Messages | None:
     return Messages(found) if (found := list(worker.messages(body.after, 0))) else None
 
 
-def _delivered(worker: Local, body: Delivered) -> None:
-    worker.delivered(body.message, body.error)
+def _queued(worker: Local, body: Queued) -> None:
+    worker.queued(body.message, body.error)
 
 
 class RefusalBody(BaseModel):
@@ -266,13 +270,20 @@ class Remote:
     A call that gets no answer, or a 5xx, is sent again with backoff, with the same body and so the same request id,
     for up to the self-stop of the timing that ``register`` gave (``Timing.self_stop``). The worker's own self-stop
     then holds: a call never outlives the lease that it is about. Once ``stop`` is set (the worker stops), a call
-    tries once: what it could not send stays in the worker's spool.
+    tries once: what it could not send stays in the worker's spool. The first try without an answer says so at once
+    (``worker.unreachable``), and then every ``UNREACHABLE_EVERY`` until an answer comes.
     """
 
-    def __init__(self, http: httpx.Client, stop: threading.Event) -> None:
+    def __init__(self, http: httpx.Client, stop: threading.Event, tracer: Tracer) -> None:
         self._http = http
         self._stop = stop
+        self._tracer = tracer
         self._retry_for = DEFAULT_TIMING.self_stop
+        self._lock = threading.Lock()
+        self._unanswered_since: float | None = None
+        """When the server stopped answering. None while it answers."""
+        self._said = -math.inf
+        """When the worker last said so."""
 
     def register(self, info: WorkerInfo) -> Registration:
         registration = Registration.model_validate_json(self._post('register', info))
@@ -301,14 +312,25 @@ class Remote:
         answer = self._post('messages', Read(after=after, wait=wait), wait)
         return Messages.model_validate_json(answer).root if answer else []
 
-    def delivered(self, message: int, error: str | None) -> None:
-        self._post('delivered', Delivered(message=message, error=error))
+    def queued(self, message: int, error: str | None) -> None:
+        self._post('queued', Queued(message=message, error=error))
 
     def bundle(self, repo: RepoId, commit: str, have: Sequence[str]) -> Cid | None:
         """``Clones``' fetch: the server puts a bundle of ``commit`` beyond ``have`` into the CAS, and names it."""
         return BundleMade.model_validate_json(
             self._post('bundle', BundleAsked(repo=repo, commit=commit, have=list(have)))
         ).root
+
+    def _unanswered(self, path: str, error: Exception) -> None:
+        """Say that the server did not answer: at the first try of an outage, then every ``UNREACHABLE_EVERY``."""
+        now = monotonic()
+        with self._lock:
+            if self._unanswered_since is None:
+                self._unanswered_since, self._said = now, -math.inf
+            if now - self._said < UNREACHABLE_EVERY:
+                return
+            self._said, since = now, self._unanswered_since
+        self._tracer.event('worker.unreachable', call=path, seconds=round(now - since), error=str(error))
 
     def _post(self, path: str, body: BaseModel, wait: float = 0) -> bytes:
         """POST ``body`` until the server answers it, and return the body of its success.
@@ -331,8 +353,11 @@ class Remote:
                 error: Exception = e
             else:
                 if response.status_code < HTTPStatus.INTERNAL_SERVER_ERROR and response.status_code not in RETRIED:
+                    with self._lock:
+                        self._unanswered_since = None
                     return _success(response)
                 error = _failed(response)
+            self._unanswered(path, error)
             if monotonic() + backoff >= deadline or self._stop.wait(backoff):
                 raise error
             backoff = min(backoff * 2, MAX_BACKOFF)

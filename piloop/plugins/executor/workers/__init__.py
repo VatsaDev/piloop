@@ -163,7 +163,7 @@ def remote_worker(
     ``reserve`` bytes free on its home's disk (``Site.evict_inputs``). Its calls give up trying
     again once ``stop`` is set.
     """
-    client = Remote(http, stop)
+    client = Remote(http, stop, tracer)
     return Worker(client, tracer, jobs.remote_site(home, cas, client.bundle, reserve), pool=pool)
 
 

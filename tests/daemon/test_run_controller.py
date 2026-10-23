@@ -523,7 +523,7 @@ def test_work_a_stopped_implementer_left_uncommitted_is_recovered_and_a_new_run_
     ex = controller(db, runtime, tmp_path)
     execute(ex, db, finishing)
     with db.session() as s:
-        assert '- candidate#' in (s.get_one(Run, finishing).brief or '') and 'left uncommitted, never measured' in (
+        assert '- candidate#' in (s.get_one(Run, finishing).brief or '') and 'It was never measured.' in (
             s.get_one(Run, finishing).brief or ''
         )
     [done] = candidates(db, finishing)
@@ -1059,7 +1059,8 @@ def test_brief_carries_history_and_comments(
     assert '"$PILOOP_BIN" sql' in brief and "'implementer#2', 'finding'" in brief
     assert (
         '- Your session ends 0.3 minutes after it starts, at `$PILOOP_DEADLINE` (Unix time). The daemon tells you to'
-        ' wrap up 0.1 minutes before. Commit each step that runs, and leave your finding before the end.\n' in brief
+        ' wrap up 0.1 minutes before, but a message reaches you only between two tool calls: start no command that'
+        ' can run past the deadline. Commit each step that runs, and leave your finding before the end.\n' in brief
     ), 'the role timeout of 20s'
     assert "VALUES ('idea', 2, 'implementer#2', 'escalation', 1, '...')" in brief, (
         'a request is an escalation, never a note'

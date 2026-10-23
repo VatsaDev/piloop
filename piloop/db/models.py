@@ -217,8 +217,9 @@ class Verdict(StrEnum):
     whose reason starts with ``note:`` is an agent's note (``piloop candidate note``, the ``Piloop-Note`` trailer): the
     result got worse, but the tree is worth starting from. ``unmeasured`` is not a judgement either: the commit asked not
     to be evaluated (``Piloop-Eval: skip``), so nothing was measured and it says nothing about the idea. ``recovered``
-    is not a judgement either: the daemon committed what an implementer left uncommitted when it stopped, a tree the implementer
-    never declared ready. It is not measured, and a new run of the idea starts from it to finish it.
+    is not a judgement either: the daemon committed what an implementer left uncommitted when it stopped, or a daemon stop
+    cut its run, a tree the implementer never declared ready. It is not measured, and a new run of the idea starts from
+    it to finish it.
     """
 
     PENDING = 'pending'

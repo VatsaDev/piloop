@@ -217,7 +217,7 @@ def test_launch_runs_the_row_through_its_lifecycle(
     assert [e for e in events if not isinstance(e[1], JobEnded)] == [
         (1, AgentSessionStarted(role=WATCHDOG, harness='script', model='watchdog-model', reason='test')),
         (1, LeaseQueued(lease=1, lease_kind=LeaseKind.AGENT)),
-        (1, AgentSessionFinished(role=WATCHDOG, reason='test', status=ExitStatus.EXITED, error=None)),
+        (1, AgentSessionFinished(role=WATCHDOG, reason='test', state=AgentSessionState.EXITED, error=None)),
     ]
     [ended] = [payload.ended for _, payload in events if isinstance(payload, JobEnded)]
     assert isinstance(ended, Ran) and ended.commits is None, 'how it ended, for what waits for it'
@@ -614,7 +614,7 @@ def test_the_session_is_attached_to_entire_from_the_cwd_when_the_agent_ends(
     assert span_attributes(spans, 'piloop.job', agent_session_id)['checkpoint'] == CHECKPOINT
     with db.session() as s:
         [(_, finished)] = in_order(s, AgentSessionFinished, Event.target_id == agent_session_id)
-        assert (finished.role, finished.status) == (WATCHDOG, ExitStatus.EXITED)
+        assert (finished.role, finished.state) == (WATCHDOG, AgentSessionState.EXITED)
     for mode in ('added', 'existing'):
         monkeypatch.setenv('FAKE_ENTIRE_MODE', mode)
         other = request(db, campaign)

@@ -100,6 +100,37 @@ def test_a_start_report_moves_a_starting_agent_to_running_and_leaves_an_ending_o
         ]
 
 
+@pytest.mark.parametrize(
+    ('state', 'closed'),
+    [(AgentSessionState.RUNNING, AgentSessionState.EXITED), (AgentSessionState.ENDING, AgentSessionState.KILLED)],
+    ids=['exited by itself', 'cancelled'],
+)
+def test_the_finished_event_of_an_agent_says_the_state_of_its_closed_row(
+    db: Database, campaign: Campaign, tmp_path: Path, state: AgentSessionState, closed: AgentSessionState
+) -> None:
+    """A cancelled agent's process exits once the daemon killed it: its row and its event both say killed."""
+    results = CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False)
+    with db.session() as s:
+        w = AgentSession(kind=WATCHDOG, campaign_id=campaign.id, state=state, reason='t', error='cancelled by human')
+        s.add(w)
+        s.commit()
+        agent_session_id = w.id
+    job = AgentJob(
+        agent_session=agent_session_id,
+        runtime='subprocess',
+        campaign=campaign.name,
+        artifact=Checkout(repo=RepoId(campaign.id)),
+        place='agent',
+        timeout=60,
+        brief=None,
+        spec=None,
+    )
+    results.finished(job, AgentFinished(process=AgentExit(ExitStatus.EXITED, 200, 0)))
+    with db.session() as s:
+        [(_, finished)] = in_order(s, AgentSessionFinished)
+        assert finished.state == s.get_one(AgentSession, agent_session_id).state == closed
+
+
 def test_two_results_for_one_job_in_plain_sessions_close_its_row_once_and_measure_it_once(
     db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:

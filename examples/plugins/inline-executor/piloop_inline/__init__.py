@@ -76,12 +76,14 @@ class InlineExecutor:
             running = self._jobs.get(key)
         steer = running.steer if running is not None else None
         error = None if steer is not None else 'the agent is not running'
-        if steer is not None:
+        if steer is not None and running is not None:
             try:
                 steer(prompt.text)
             except Exception as e:  # the runtime refused it (a headless agent): core records why
                 error = str(e)
-        self.host.results.delivered(key, prompt.id, error)
+            else:
+                running.prompts.append([prompt])
+        self.host.results.queued(key, prompt.id, error)
 
     def cancel(self, key: JobKey) -> None:
         with self._lock:
@@ -154,6 +156,8 @@ class _Job:
         self.runtime: Runtime | None = None
         self.steer: Callable[[str], None] | None = None
         """How to prompt the agent, once it started."""
+        self.prompts: list[list[Prompt]] = []
+        """What its runtime took, one prompt at a time: the report says which ones the agent read."""
         self._kill: Callable[[], None] | None = None
         self._asked = False
 
@@ -201,3 +205,6 @@ class _Job:
 
     def handing_over(self) -> bool:
         return False
+
+    def queued(self) -> list[list[Prompt]]:
+        return self.prompts

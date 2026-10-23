@@ -14,6 +14,7 @@ from uuid import uuid4
 import httpx2 as httpx
 import pytest
 from covalence import Cid
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pytest_mock import MockerFixture
 
 from piloop.db.models import Campaign, LeaseState, NoLease, TokenScope
@@ -22,7 +23,9 @@ from piloop.ids import CampaignId, CommentId
 from piloop.net import tokens
 from piloop.net.server import Server, app
 from piloop.net.tokens import Tokens
+from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentKey, MissingBlobs, Prompt, RepoId
+from piloop.plugins.executor.kit import remote as remote_module
 from piloop.plugins.executor.kit.client import Dismissed, LeaseClient, Local, WorkerInfo
 from piloop.plugins.executor.kit.leases import (
     Answer,
@@ -114,7 +117,7 @@ def connect(request: pytest.FixtureRequest, db: Database, leases: Leases) -> Gen
 
     def remote(worker: str) -> LeaseClient:
         clients.append(http := dial(server.url, secret(db, worker)))
-        return Remote(http, threading.Event())
+        return Remote(http, threading.Event(), Tracer(None))
 
     yield remote
     for http in clients:
@@ -218,12 +221,12 @@ def test_a_worker_reads_work_for_every_worker_and_only_its_own_prompts_and_revok
     assert isinstance(stop, Revoke) and stop.lease == grant.lease
     assert w2.messages(works[-1].id, 0.01) == [], "another worker's prompts and revokes are not its own"
     with pytest.raises(NotAddressed, match=f'event#{prompt.id} is not a prompt for w2'):
-        w2.delivered(prompt.id, None)
+        w2.queued(prompt.id, None)
     with pytest.raises(NotAddressed):
-        w1.delivered(stop.id, None)
-    w1.delivered(prompt.id, None)
-    w1.delivered(prompt.id, None)
-    assert [c for c in recorder.calls if c[0] == 'delivered'] == [('delivered', job.agent_session, (7, None))], 'once'
+        w1.queued(stop.id, None)
+    w1.queued(prompt.id, None)
+    w1.queued(prompt.id, None)
+    assert [c for c in recorder.calls if c[0] == 'queued'] == [('queued', job.agent_session, (7, None))], 'once'
     assert w1.messages(works[-1].id, 0.01) == [stop], 'a prompt with its outcome is left out, though behind the cursor'
 
 
@@ -282,7 +285,7 @@ def remote(db: Database, server: Server, dial: Dial) -> Generator[Callable[..., 
 
     def make(name: str = 'w1', url: str | None = None, scope: TokenScope = TokenScope.WORKER) -> Remote:
         clients.append(http := dial(url or server.url, secret(db, name, scope)))
-        return Remote(http, threading.Event())
+        return Remote(http, threading.Event(), Tracer(None))
 
     yield make
     for http in clients:
@@ -313,9 +316,9 @@ def test_a_revoked_token_a_token_of_another_scope_and_the_servers_own_name_are_d
 
 def test_a_worker_of_another_protocol_is_dismissed_with_the_servers_version(remote: Callable[..., Remote]) -> None:
     with pytest.raises(
-        Dismissed, match=r'\(426\): the server runs piloop .+, with protocol 1, and the worker protocol 2'
+        Dismissed, match=r'\(426\): the server runs piloop .+, with protocol 2, and the worker protocol 1'
     ):
-        remote().register(INFO.model_copy(update={'protocol': 2}))
+        remote().register(INFO.model_copy(update={'protocol': 1}))
 
 
 def test_long_polls_hold_no_thread_of_the_server_so_a_heartbeat_still_answers(remote: Callable[..., Remote]) -> None:
@@ -352,7 +355,7 @@ def test_a_call_whose_answer_is_lost_is_sent_again_with_the_same_request_id(
 def test_a_call_to_a_server_that_does_not_answer_tries_again_with_backoff_until_the_self_stop(dial: Dial) -> None:
     """Doubling waits, and none that would end past the self-stop. Nothing listens on the discard port."""
     stop = Naps()
-    w1 = Remote(dial('http://127.0.0.1:9', 'plt_x'), stop)
+    w1 = Remote(dial('http://127.0.0.1:9', 'plt_x'), stop, Tracer(None))
     w1._retry_for = 1.0
     with pytest.raises(httpx.ConnectError):
         w1.heartbeat({}, HOST)
@@ -361,6 +364,23 @@ def test_a_call_to_a_server_that_does_not_answer_tries_again_with_backoff_until_
     with pytest.raises(httpx.ConnectError):
         w1.heartbeat({}, HOST)
     assert stop.naps == [0.2, 0.4, 0.8, 0.2], 'a stopping worker tries once'
+
+
+def test_a_worker_whose_server_does_not_answer_says_so_at_the_first_failure_then_once_a_minute(
+    dial: Dial, monkeypatch: pytest.MonkeyPatch, tracer: Tracer, spans: InMemorySpanExporter
+) -> None:
+    """Each call tries again for minutes. The worker's log says at once that the server is gone, not only at the end."""
+    stop = Naps()
+    monkeypatch.setattr(remote_module, 'monotonic', lambda: sum(stop.naps))
+    w1 = Remote(dial('http://127.0.0.1:9', 'plt_x'), stop, tracer)
+    w1._retry_for = 150
+    with pytest.raises(httpx.ConnectError):
+        w1.heartbeat({}, HOST)
+    with pytest.raises(httpx.ConnectError):
+        w1.acquire(uuid4().hex, HOST)
+    unreachable = [s.attributes or {} for s in spans.get_finished_spans() if s.name == 'worker.unreachable']
+    said = [(a['call'], a['seconds']) for a in unreachable]
+    assert said == [('heartbeat', 0), ('heartbeat', 61), ('heartbeat', 121), ('acquire', 182), ('acquire', 242)]
 
 
 class Naps(threading.Event):
@@ -386,7 +406,7 @@ def answering(*responses: httpx.Response) -> tuple[Remote, list[httpx.Request]]:
         return next(replies)
 
     http = httpx.Client(base_url='http://server', transport=httpx.MockTransport(reply))
-    return Remote(http, Naps()), sent
+    return Remote(http, Naps(), Tracer(None)), sent
 
 
 def test_a_5xx_408_or_429_is_tried_again_with_the_same_body_and_any_other_4xx_dismisses() -> None:

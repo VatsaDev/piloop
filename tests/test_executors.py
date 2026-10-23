@@ -18,7 +18,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select
 
 from piloop.actor import System
-from piloop.agents.results import DaemonStopped, Ended, PromptSettled, Ran
+from piloop.agents.results import DaemonStopped, Ended, PromptOutcome, Ran
 from piloop.campaign.campaigns import Sources, checkout_of
 from piloop.daemon.main import Daemon
 from piloop.daemon.run_controller import RunController
@@ -196,9 +196,7 @@ def test_a_prompt_reaches_the_running_agent_and_its_outcome_is_recorded(
     agent_session_id, ended = launch_in_thread(ex, db, campaign, tmp_path)
     wait_for_agent_session_handle_of(db, agent_session_id)
     ex.executor.prompt(AgentKey(agent_session_id), Prompt(CommentId(41), 'try lzma'))
-    wait_until(
-        lambda: outcomes(db, agent_session_id) == [PromptSettled(kind='comment.delivered', comment=CommentId(41))]
-    )
+    wait_until(lambda: outcomes(db, agent_session_id) == [PromptOutcome(kind='comment.queued', comment=CommentId(41))])
     assert runtime.prompts == ['try lzma']
     ex.executor.cancel(AgentKey(agent_session_id))
     wait_until(lambda: ended)
@@ -207,9 +205,9 @@ def test_a_prompt_reaches_the_running_agent_and_its_outcome_is_recorded(
     assert outcomes(db, agent_session_id)[1].kind == 'comment.undelivered' and runtime.prompts == ['try lzma']
 
 
-def outcomes(db: Database, agent_session_id: AgentSessionId) -> list[PromptSettled]:
+def outcomes(db: Database, agent_session_id: AgentSessionId) -> list[PromptOutcome]:
     with db.session() as s:
-        return [settled for _, settled in in_order(s, PromptSettled, Event.target_id == agent_session_id)]
+        return [settled for _, settled in in_order(s, PromptOutcome, Event.target_id == agent_session_id)]
 
 
 def wait_for_agent_session_handle_of(db: Database, agent_session_id: AgentSessionId) -> None:

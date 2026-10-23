@@ -181,12 +181,14 @@ field does not fail, but it finds nothing: read the new one.
 | `$.status` of `run.finished` | `$.end`, as in `runs.end` |
 | `$.error` of `agent_session.stop_ended` | `$.end` |
 | `$.error` of `agent_session.wrap_up` | `$.comment`, the note that carries the prompt; a prompt that did not reach the agent is that note's `comment.undelivered` |
+| `kind = 'comment.delivered'`: the agent's runtime took the prompt | `kind = 'comment.queued'`; `comment.delivered` says that the agent read it |
 | `$.key` of `anomaly.reported` | `$.subject` and `$.anomaly`; the line is `$.line` |
 | `$.kind` of `anomaly.startup` | `$.role` |
 | `$.kind` of `idea.linked` and `idea.unlinked` | `$.link_kind` |
 | `$.kind` of `comment.deleted` | `$.comment_kind` |
 | the payload of `agent_session.job_ended` | `$.ended` |
-| `$.status` `idle`, `blocked` or `working` of `<role>.finished` | `$.status = 'exited'` of `agent_session.finished` |
+| `$.status` `idle`, `blocked` or `working` of `<role>.finished` | `$.state = 'exited'` of `agent_session.finished` |
+| `$.status` of `agent_session.finished`, how the process ended | `$.state`, the row's `state`; the process is in `agent_session.job_ended` |
 | a payload that is not a JSON object | `$.invalid`, its stored text |
 
 ### Plugins: a provider is its own parameters

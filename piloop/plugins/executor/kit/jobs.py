@@ -30,6 +30,7 @@ from git import Repo
 from piloop import git
 from piloop.agents.capture import ENTIRE_INSTALL, MIN_ENTIRE, AttachError, attach_session, usable
 from piloop.config import BRIEF_FILE, TRANSCRIPT
+from piloop.ids import CommentId
 from piloop.mcp import RENDERERS, Launch, expand, forwarded_env
 from piloop.otel import Span
 from piloop.plugins.cas.contract import Cas
@@ -43,11 +44,12 @@ from piloop.plugins.executor.contract import (
     EvaluationJob,
     EvaluationReport,
     GitSource,
+    Prompt,
     RepoId,
     Sample,
 )
 from piloop.plugins.executor.kit.clones import Clones, Fetch
-from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, Handle, Runtime, StartFailed
+from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, Handle, Runtime, StartFailed, taken
 from piloop.proc import PILOOP_ARGV, child_env, kill_group
 from piloop.scoring.evaluate import SENT, EvalResult, run_evaluate
 from piloop.settings import INPUTS_DIR
@@ -210,6 +212,10 @@ class Control(Protocol):
         """Whether the daemon restarts in place: the agent keeps running, with its worktree, for the next one."""
         ...
 
+    def queued(self) -> list[list[Prompt]]:
+        """The prompts that the agent's runtime took, one list for each ``Runtime.prompt``, oldest first."""
+        ...
+
 
 def run_agent(job: AgentJob, runtime: Runtime, control: Control, site: Site, span: Span) -> AgentReport | None:
     """Make the artifact, start the agent, watch it to its end, and return its report.
@@ -355,11 +361,23 @@ def _finish(
     except Exception as e:  # a worktree that is gone: the report says what is known
         span.error(e)
         report.process = replace(report.process, error=report.process.error or f'{type(e).__name__}: {e}')
+    report.read, report.unread = _reads(control.queued(), log_dir)
     report.files = site.files(job)
     process = report.process
     head = report.commits.head if report.commits is not None else None
     span.set(status=process.status, error=process.error, head=head, checkpoint=report.checkpoint)
     return report
+
+
+def _reads(queued: list[list[Prompt]], log_dir: Path) -> tuple[list[CommentId], list[CommentId]]:
+    """Split the ``queued`` prompts into those that the agent took from its queue and those that wait in it (``taken``).
+
+    Each ``Runtime.prompt`` is one message of the queue, so the messages that wait are the newest prompts, and the ones
+    taken came just before. A runtime without the queue leaves both empty: its prompts stay queued.
+    """
+    read, waiting = taken(log_dir)
+    split = max(len(queued) - waiting, 0)
+    return [p.id for b in queued[max(split - read, 0) : split] for p in b], [p.id for b in queued[split:] for p in b]
 
 
 def remove(job: AgentJob | EvaluationJob, site: Site) -> None:

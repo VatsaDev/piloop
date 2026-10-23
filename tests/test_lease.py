@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.actor import System
-from piloop.agents.results import PromptSettled
+from piloop.agents.results import PromptOutcome
 from piloop.db import feed, session as db_session
 from piloop.db.events import emit, has, in_order
 from piloop.db.models import (
@@ -139,14 +139,14 @@ class Recorder:
         target = key.evaluation if isinstance(key, EvaluationKey) else key.agent_session
         self._apply(guard, ('lost', target, reason), change)
 
-    def delivered(self, key: AgentKey, prompt: CommentId, error: str | None) -> None:
+    def queued(self, key: AgentKey, prompt: CommentId, error: str | None) -> None:
         """Record the outcome once, as core does: an event that the leases read."""
         with self.db.session() as s:
-            if s.scalar(select(Event.id).where(has(PromptSettled, comment=prompt))) is None:
-                settled = PromptSettled(kind='comment.delivered', comment=prompt)
+            if s.scalar(select(Event.id).where(has(PromptOutcome, comment=prompt))) is None:
+                settled = PromptOutcome(kind='comment.queued', comment=prompt)
                 emit(s, settled, TargetRef(TargetKind.AGENT_SESSION, key.agent_session), System.DAEMON)
                 s.commit()
-                self.calls.append(('delivered', key.agent_session, (prompt, error)))
+                self.calls.append(('queued', key.agent_session, (prompt, error)))
 
 
 @pytest.fixture
@@ -594,7 +594,7 @@ def test_a_worker_that_restarts_resumes_from_its_cursor(
     leases.prompt(AgentKey(job.agent_session), Prompt(CommentId(1), 'one'))
     leases.prompt(AgentKey(job.agent_session), Prompt(CommentId(2), 'two'))
     [_, one, two] = w1.messages(start, 5)
-    w1.delivered(one.id, None)
+    w1.queued(one.id, None)
     assert w1.messages(one.id, 0.01) == [two], 'the first is answered: the worker reads after it, then dies'
     again = join(leases, 'w1', [])
     assert (again.cursor, [g.lease for g in again.held]) == (one.id, [grant.lease])
@@ -638,7 +638,7 @@ def test_a_prompt_for_an_agent_without_a_live_lease_is_undelivered_at_once(
     job = agent_job(db, campaign, tmp_path)
     queue(db, job)
     leases.prompt(AgentKey(job.agent_session), Prompt(CommentId(3), 'x'))
-    assert recorder.calls == [('delivered', job.agent_session, (3, 'the agent has no live lease'))]
+    assert recorder.calls == [('queued', job.agent_session, (3, 'the agent has no live lease'))]
 
 
 @dataclass

@@ -23,7 +23,14 @@ from sqlalchemy.exc import OperationalError
 
 from piloop import git, proc
 from piloop.actor import System
-from piloop.agents.results import AgentEnded, CampaignResults, PromptSettled, StartupAnomaly, WrapUp
+from piloop.agents.results import (
+    AgentEnded,
+    AgentSessionFinished,
+    CampaignResults,
+    PromptOutcome,
+    StartupAnomaly,
+    WrapUp,
+)
 from piloop.agents.roles import SQL_HINT, compose_brief
 from piloop.campaign.campaigns import sync
 from piloop.campaign.stop import Ending, request_cancel, request_stop, runs
@@ -31,7 +38,7 @@ from piloop.config import CampaignConfig, config_of, load_campaign_config
 from piloop.daemon.run_controller import UNCOMMITTED_SUMMARY, RunController, wrap_up_lead
 from piloop.daemon.scheduler import STARTUP_BREAKER, STARTUP_WINDOW, RunQueued, RunRerouted, Scheduler
 from piloop.db import sql
-from piloop.db.events import has, payload_of
+from piloop.db.events import has, in_order, payload_of
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
@@ -1010,6 +1017,8 @@ def test_stop_kills_in_flight_implementers_and_fails_their_runs(
             AgentSessionState.KILLED,
             RunEnd.DAEMON_STOPPED,
         )
+        [(_, finished)] = in_order(s, AgentSessionFinished, Event.target_id == 1)
+        assert finished.state is AgentSessionState.KILLED, 'its event says what its row says'
         assert s.scalars(select(Candidate).where(Candidate.run_id == 1)).all() == [], 'no scoring after stop'
     assert not (tmp_path / 'runs' / '1' / 'worktree').exists()
     assert dict(span_named(spans, 'run.aborted').attributes or {}) == {'run': 1, 'end': RunEnd.DAEMON_STOPPED}
@@ -1017,12 +1026,12 @@ def test_stop_kills_in_flight_implementers_and_fails_their_runs(
     assert (traced['status'], traced['end']) == (RunStatus.FAILED, RunEnd.DAEMON_STOPPED), "the row's values"
 
 
-def test_stop_keeps_the_work_of_the_runs_it_cuts_pinned_and_noted_for_the_next_attempt(
+def test_stop_keeps_the_work_of_the_runs_it_cuts_and_the_next_run_of_the_idea_starts_from_it(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    """A stop pins the commits and the uncommitted work of the runs it ends, and notes them for the next attempt.
+    """A stop pins the commits and the uncommitted work of the runs it ends, as ``recovered`` candidates.
 
-    The note reaches the brief of the next run on the same idea.
+    While the head has not moved past them, the idea's next run starts from the last one, as after a timed-out run.
     """
     harness = (
         '#!/bin/sh\necho step >> solve.txt\ngit commit -qam "step"\necho draft >> solve.txt\n'
@@ -1030,7 +1039,7 @@ def test_stop_keeps_the_work_of_the_runs_it_cuts_pinned_and_noted_for_the_next_a
     )
     write_toml(Path(campaign.path), harness, implementer_timeout=60)
     set_config(db, campaign)
-    add_ideas(db, campaign, 'long')
+    (idea,) = add_ideas(db, campaign, 'long')
     scheduler = make_scheduler(db, runtime, tmp_path)
     assert scheduler.tick() == [1]
     pid_file = tmp_path / 'runs' / '1' / 'child.pid'
@@ -1045,10 +1054,39 @@ def test_stop_keeps_the_work_of_the_runs_it_cuts_pinned_and_noted_for_the_next_a
         b'step\ndraft\n'
     ), 'the uncommitted line is its own recovered commit, as for any run'
     with db.session() as s:
-        (note,) = s.scalars(select(Comment).where(Comment.target_kind == TargetKind.RUN, Comment.target_id == 1)).all()
-        assert (note.author, note.kind) == (DAEMON_ACTOR, CommentKind.NOTE)
-        assert f'its 2 commits are pinned, unscored, at refs/piloop/demo/r1/<n> (head {head})' in note.body
-        assert s.scalars(select(Candidate).where(Candidate.run_id == 1)).all() == [], 'pinned, not scored'
+        cut = s.scalars(select(Candidate).where(Candidate.run_id == 1).order_by(Candidate.id)).all()
+        assert [(c.commit_sha, c.verdict) for c in cut] == [(step, Verdict.RECOVERED), (head, Verdict.RECOVERED)]
+        assert all(c.measurements == [] for c in cut), 'never measured'
+        assert (s.get_one(Run, 1).end, s.get_one(Idea, idea).status) == (RunEnd.DAEMON_STOPPED, IdeaStatus.READY)
+        assert s.get_one(Idea, idea).base_candidate_id == cut[-1].id
+        (note,) = s.scalars(select(Comment).where(Comment.author == DAEMON_ACTOR)).all()
+        assert note.body.startswith(f'requeued from candidate#{cut[-1].id}: run#1 ended daemon_stopped')
+
+    assert make_scheduler(db, runtime, tmp_path).tick() == [2]
+    with db.session() as s:
+        assert s.get_one(Run, 2).base_candidate_id == cut[-1].id
+
+
+def test_a_cut_run_whose_role_allows_no_requeue_keeps_its_base_and_a_known_tree_keeps_its_candidate(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """``recovery_requeues = 0`` holds for a stop too. A cut commit of a known tree, here the base's, is that candidate."""
+    harness = '#!/bin/sh\ngit commit -q --allow-empty -m "same tree"\nsleep 30 &\necho $! > ../child.pid\nwait\n'
+    write_toml(Path(campaign.path), harness, implementer_timeout=60)
+    with db.session() as s:
+        s.get_one(Campaign, campaign.id).config = load_campaign_config(
+            Path(campaign.path), roles={'implementer': {'recovery_requeues': 0}}
+        ).model_dump(mode='json')
+        s.commit()
+    (idea,) = add_ideas(db, campaign, 'long')
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    assert scheduler.tick() == [1]
+    wait_until((tmp_path / 'runs' / '1' / 'child.pid').exists)
+    scheduler.stop(timeout=10)
+    with db.session() as s:
+        assert s.scalars(select(Candidate).where(Candidate.run_id == 1)).all() == [], 'the base, not a new candidate'
+        assert s.get_one(Candidate, 1).verdict is Verdict.KEEP
+        assert (s.get_one(Idea, idea).status, s.get_one(Idea, idea).base_candidate_id) == (IdeaStatus.READY, None)
 
 
 @pytest.mark.parametrize('escalated', [False, True])
@@ -1724,7 +1762,7 @@ def settled(db: Database, kind: str) -> list[tuple[int, EventModel]]:
 
 @dataclass
 class Prompted:
-    """``Executor.prompt`` that records each prompt and, when ``answers``, records it delivered at once."""
+    """``Executor.prompt`` that records each prompt and, when ``answers``, records it queued at once."""
 
     results: CampaignResults
     answers: bool = True
@@ -1733,7 +1771,7 @@ class Prompted:
     def __call__(self, key: AgentKey, prompt: Prompt) -> None:
         self.prompts.append((key.agent_session, prompt))
         if self.answers:
-            self.results.delivered(key, prompt.id, None)
+            self.results.queued(key, prompt.id, None)
 
 
 def prompted(db: Database, scheduler: Scheduler, mocker: MockerFixture, *, answers: bool = True) -> Prompted:
@@ -1783,10 +1821,10 @@ def test_comments_for_a_running_agent_go_to_its_executor_once_each_until_they_ha
         ),
         (1, Prompt(direct, 'piloop prompt: the text as written\nall of it')),
     ]
-    assert settled(db, 'comment.delivered') == [
-        (1, PromptSettled(kind='comment.delivered', comment=c)) for c in (decision, note, direct)
+    assert settled(db, 'comment.queued') == [
+        (1, PromptOutcome(kind='comment.queued', comment=c)) for c in (decision, note, direct)
     ]
-    assert events(spans, 'comment.delivered') == [{'comment': c, 'agent_session': 1} for c in (decision, note, direct)]
+    assert events(spans, 'comment.queued') == [{'comment': c, 'agent_session': 1} for c in (decision, note, direct)]
     scheduler.tick()
     assert len(executor.prompts) == 3, 'settled by the events: nothing is sent twice'
 
@@ -1828,7 +1866,7 @@ def test_an_implementers_own_comments_are_not_echoed_back(
     comment(db, 'note', 'run', 1, 'signed the other documented way', author='run#1')
     comment(db, 'note', 'idea', idea, 'a 0.1.0 agent signs as before the upgrade', author='worker#1')
     scheduler.tick()
-    assert executor.prompts == [] and settled(db, 'comment.delivered') == []
+    assert executor.prompts == [] and settled(db, 'comment.queued') == []
     comment(db, 'note', 'idea', idea, 'a sibling implementer is not the author', author='implementer#2')
     scheduler.tick()
     assert [p.text.split(' — ')[0] for _, p in executor.prompts] == [
@@ -1853,9 +1891,9 @@ def test_a_comment_that_cannot_be_delivered_is_settled_as_undelivered_and_never_
     stuck = comment(db, 'decision', 'idea', idea, 'a headless implementer has no input channel')
     assert scheduler.tick() == []
     error = 'the agent has no live lease'
-    assert settled(db, 'comment.delivered') == []
+    assert settled(db, 'comment.queued') == []
     assert settled(db, 'comment.undelivered') == [
-        (1, PromptSettled(kind='comment.undelivered', comment=stuck, error=error))
+        (1, PromptOutcome(kind='comment.undelivered', comment=stuck, error=error))
     ]
     assert events(spans, 'comment.undelivered') == [{'comment': stuck, 'agent_session': 1, 'error': error}]
     scheduler.tick()

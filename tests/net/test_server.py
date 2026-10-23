@@ -1,5 +1,6 @@
 """The server of ``piloop serve --listen``: who may call it, TLS, and an executor's routes."""
 
+import logging
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -196,3 +197,22 @@ def test_more_long_polls_than_pool_threads_hold_none_and_a_quick_route_still_ans
         quiet = client.post('/v1/executor/renamed', json={'name': 'other', 'wait': 0.2})
         assert quiet.status_code == 204, 'nothing by the end of its wait'
         assert client.post('/v1/executor/renamed', json={'name': 'x', 'wait': 26}).status_code == 422
+
+
+def test_a_close_ends_a_parked_long_poll_at_once_with_204_and_logs_no_error(
+    serving: Serving,
+    token: Callable[..., str],
+    db: Database,
+    campaign: Campaign,
+    dial: Dial,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    route = Route.long_poll('renamed', TokenScope.WORKER, Poll, renamed_to(db), db.changed)
+    with serving([route]) as server, dial(server.url, token()) as client, ThreadPoolExecutor(1) as pool:
+        parked = pool.submit(client.post, '/v1/executor/renamed', json={'name': 'renamed', 'wait': 20})
+        time.sleep(0.5)  # the long-poll is parked
+        began = time.monotonic()
+        server.close()
+        assert time.monotonic() - began < 1, 'the close waits for no long-poll'
+        assert parked.result(timeout=5).status_code == 204
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []

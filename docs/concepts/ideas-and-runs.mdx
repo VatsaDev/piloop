@@ -82,10 +82,10 @@ The implementer commits, also when the idea did not work, and says so in the mes
 scores every new commit. piloop commits what the implementer left uncommitted as a `recovered` commit. It is never
 measured.
 
-Then the idea is `done`. When the run failed or timed out after it made commits, the idea goes back to `ready`, and the
-next attempt starts from its last commit, up to `[roles.implementer] recovery_requeues` times (2). When the head moved
-past that commit, the next attempt starts on the head, and a note on the idea gives the `git cherry-pick` of the
-commits. A run that failed with no commit sends the idea back to `ready` while it has attempts left (2 by default). A run whose agent never started to work is not an attempt. See
+Then the idea is `done`. When the run failed, timed out or was cut by `piloop stop` after it made commits, the idea
+goes back to `ready`, and the next attempt starts from its last commit, up to `[roles.implementer] recovery_requeues`
+times (2). The commits of a run that `piloop stop` cut are `recovered`, never measured. When the head moved past the
+last commit, the next attempt starts on the head, and a note on the idea gives the `git cherry-pick` of the commits. A run that failed with no commit sends the idea back to `ready` while it has attempts left (2 by default). A run whose agent never started to work is not an attempt. See
 [Run lifecycle](/architecture/run-lifecycle).
 
 An implementer asks for a decision with an `escalation` comment. If it stops while the escalation waits for an answer,

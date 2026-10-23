@@ -27,7 +27,7 @@ from piloop.plugins.executor.kit.leases import (
     Work,
 )
 
-PROTOCOL = 1
+PROTOCOL = 2
 """The version of the ``LeaseClient`` calls on the wire."""
 
 
@@ -106,8 +106,11 @@ class LeaseClient(Protocol):
         """The worker's messages after ``after``, its ack floor. A long-poll: it waits up to ``wait`` seconds for one."""
         ...
 
-    def delivered(self, message: int, error: str | None) -> None:
-        """Answer a ``PromptMessage``: the prompt reached the agent, or why it did not. Raises ``NotAddressed``."""
+    def queued(self, message: int, error: str | None) -> None:
+        """Answer a ``PromptMessage``: the prompt waits for the agent in its runtime, or why it does not.
+
+        Raises ``NotAddressed``.
+        """
         ...
 
 
@@ -143,5 +146,5 @@ class Local:
     def messages(self, after: int, wait: float) -> Sequence[Work | PromptMessage | Revoke]:
         return self._leases.messages(self._worker, after, wait)
 
-    def delivered(self, message: int, error: str | None) -> None:
-        self._leases.delivered(self._worker, message, error)
+    def queued(self, message: int, error: str | None) -> None:
+        self._leases.queued(self._worker, message, error)
