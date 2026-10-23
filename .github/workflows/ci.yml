@@ -24,6 +24,8 @@ jobs:
     name: lint and install
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      ENWIK8_SHA256: 547994d9980ebed1288380d652999f38a14fe291a6247c157c3d33d4932534bc
     steps:
       - uses: actions/checkout@v7
         with:
@@ -42,12 +44,29 @@ jobs:
           UV_NO_SYNC: "1"
       - run: git config --global user.name piloop-ci && git config --global user.email ci@piloop
       - run: PILOOP_SRC=. ./install.sh
+      # The examples' data host sometimes serves a corrupt archive: CI downloads it only on a cache miss, checked.
+      # `piloop init` skips a data file that is already in place.
+      - uses: actions/cache@v6
+        id: enwik8
+        with:
+          path: /tmp/enwik8.zip
+          key: enwik8-zip-${{ env.ENWIK8_SHA256 }}
+      - name: download enwik8 until its checksum matches
+        if: steps.enwik8.outputs.cache-hit != 'true'
+        run: |
+          for attempt in 1 2 3 4 5; do
+            curl -fsSL --retry 3 -o /tmp/enwik8.zip https://mattmahoney.net/dc/enwik8.zip &&
+              echo "$ENWIK8_SHA256  /tmp/enwik8.zip" | sha256sum -c - && exit 0
+            sleep $((attempt * 10))
+          done
+          exit 1
       - name: enwik8 example, headless (no Herdr on a runner)
         env:
           PILOOP_CAMPAIGN_RUNTIME: subprocess
           COLUMNS: 200
         run: |
           export PATH="$HOME/.local/bin:$PATH"
+          mkdir -p /tmp/enwik8/data && cp /tmp/enwik8.zip /tmp/enwik8/data/
           piloop init --example enwik8 /tmp/enwik8 | tee /tmp/init.txt
           grep -q "registered; baseline candidate#1" /tmp/init.txt
           piloop status enwik8
@@ -65,6 +84,7 @@ jobs:
           uv tool install --force --from . piloop $(printf -- '--with ./%s ' examples/plugins/*/)
           mkdir -p "$PILOOP_HOME" && printf '[storage.backend]\nkind = "dir"\nroot = "/tmp/plugins-store"\n' > "$PILOOP_HOME/config.toml"
           piloop serve --check
+          mkdir -p /tmp/enwik8-nice/data && cp /tmp/enwik8.zip /tmp/enwik8-nice/data/
           piloop init --example enwik8 /tmp/enwik8-nice
           piloop plugins | tee /tmp/plugins.txt
           grep -q "nice        piloop-nice 0.1.0, entry point nice = piloop_nice:NiceRuntime" /tmp/plugins.txt
