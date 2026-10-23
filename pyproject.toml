@@ -25,7 +25,7 @@ classifiers = [
 ]
 dependencies = [
     "alembic>=1.16",
-    "blake3>=1.0.11",
+    "covalence==0.1.0.dev6",
     "boto3>=1.43.112",
     "cyclopts>=3.20",
     "fastapi>=0.161",

@@ -328,7 +328,12 @@ def test_the_backup_is_the_database_before_the_migration(upgrade: Upgrade) -> No
 
 @needs(test_upgrade_with_an_agent_in_flight)
 def test_the_new_code_cancels_an_agent_of_the_release(upgrade: Upgrade) -> None:
-    """``piloop run cancel`` on the new code ends an agent that the release started."""
+    """``piloop run cancel`` on the new code ends an agent that the release started.
+
+    The run fails, unless the agent left its finding before the daemon ended it: a finding is the report that the run
+    is done, and wins over the cancel. That happens. Claude Code runs the agent's `sleep 900` in the background, and a
+    fast agent finishes its idea in about 40 seconds, about when the cancel comes.
+    """
     smoke = upgrade.smoke
     assert upgrade.before is not None
     [session] = [r['id'] for r in upgrade.before.tables['workers'] if r['run_id'] == upgrade.to_cancel]
@@ -337,7 +342,16 @@ def test_the_new_code_cancels_an_agent_of_the_release(upgrade: Upgrade) -> None:
     smoke.piloop('run', 'cancel', str(upgrade.to_cancel))
     wait_until(lambda: smoke.run_in('to cancel', OPEN, within=False), timeout=120)
     run = smoke.run_of('to cancel')
-    assert run is not None and run['status'] == 'failed', run and dict(run)
+    signatures = (f'worker#{session}', RENAMES.value('comments', 'author', f'worker#{session}'))
+    findings = smoke.sql("SELECT created_at FROM comments WHERE kind = 'finding' AND author IN (?, ?)", *signatures)
+    [ended] = smoke.sql(
+        "SELECT at FROM events WHERE kind = 'agent_session.stop_ended' AND target_kind = 'agent_session'"
+        ' AND target_id = ?',
+        session,
+    )
+    # the agent's raw INSERT stamps its finding to the second; one later than the end must have been refused
+    assert all(str(f['created_at']) <= str(ended['at']) for f in findings), 'a finding came after the end'
+    assert run is not None and run['status'] == ('succeeded' if findings else 'failed'), (run and dict(run), findings)
     home = f'PILOOP_HOME={smoke.home}'
 
     def left() -> list[str]:
@@ -351,7 +365,8 @@ def test_the_new_code_cancels_an_agent_of_the_release(upgrade: Upgrade) -> None:
     for line in upgrade.leftovers:  # so that the steps after this one see only their own processes
         with suppress(psutil.Error):
             psutil.Process(int(line.split()[0])).kill()
-    print(f'run {run["id"]} {run["status"]} ({run["error"]}); processes of worker#{session} left: {upgrade.leftovers}')
+    finished = 'after its finding' if findings else 'cancelled'
+    print(f'run {run["id"]} {run["status"]}, {finished}; processes of worker#{session} left: {upgrade.leftovers}')
 
 
 @needs(test_the_new_code_cancels_an_agent_of_the_release)

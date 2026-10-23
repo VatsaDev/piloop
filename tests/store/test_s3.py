@@ -34,7 +34,7 @@ def test_blobs_go_to_glacier_ir_unless_small_enough_that_standard_is_cheaper(cli
     small = store.put(io.BytesIO(b'{"a": 1}'))
     big = store.put(io.BytesIO(os.urandom(4096)))  # incompressible: above 1 KiB compressed
     for blob, expected in ((small, 'STANDARD'), (big, 'GLACIER_IR')):
-        head = client.head_object(Bucket=BUCKET, Key=f'piloop/store/{key(blob.hash)}')
+        head = client.head_object(Bucket=BUCKET, Key=f'piloop/store/{key(blob.cid)}')
         assert head.get('StorageClass', 'STANDARD') == expected
 
 

@@ -1,7 +1,9 @@
 import os
+import shutil
 from pathlib import Path
 
 import pytest
+from covalence import Cid
 from rich.console import Console
 from sqlalchemy import select
 
@@ -9,7 +11,7 @@ from piloop.campaign import campaigns as campaign_module
 from piloop.campaign.archive import Job, archive, prune
 from piloop.campaign.campaigns import workspace_dir
 from piloop.cli import common
-from piloop.db.models import Archive, IdeaStatus
+from piloop.db.models import Archive, Campaign, IdeaStatus
 from piloop.db.session import Database
 from piloop.ids import CampaignId
 from piloop.settings import BackendTable, Settings, StorageSettings
@@ -18,6 +20,7 @@ from piloop.store.config import open_store
 from tests.campaign.test_archive import add_idea, add_run, files, write
 from tests.cli.test_cli import run_cli
 from tests.conftest import at_head
+from tests.store.test_0_2_0_store import FIXTURE, MANIFEST
 
 
 @pytest.fixture(autouse=True)
@@ -139,3 +142,23 @@ def test_status_with_a_ready_idea_shows_nothing_archived(campaign_path: Path, ou
         == 'to archive: 0 done idea(s), 0 stopped campaign(s) (the daemon works through them in the background, one at a time)'
     )
     db.close()
+
+
+def test_migrate_stores_each_manifest_of_0_2_again_and_names_one_that_it_cannot_read(out) -> None:
+    shutil.copytree(FIXTURE / 'local', common.settings.store_dir)
+    db = Database(common.settings.database_url, actor=common.settings.actor)
+    with db.session() as s:
+        s.add(Campaign(name='c', path='/c', config={}))
+        s.flush()
+        s.add(Archive(campaign_id=1, manifest=MANIFEST))
+        s.commit()
+    run_cli(['migrate'])
+    assert out().splitlines()[-1] == 'manifests: 1 stored again in the new format'
+    run_cli(['migrate'])
+    assert 'manifests' not in out(), 'nothing left to do'
+    with db.session() as s:
+        s.add(Archive(campaign_id=1, manifest=Cid.of(b'gone')))
+        s.commit()
+    db.close()
+    with pytest.raises(SystemExit, match=f'archive 2: its manifest {Cid.of(b"gone")} could not be read'):
+        run_cli(['migrate'])

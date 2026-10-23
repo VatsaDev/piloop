@@ -119,13 +119,13 @@ def store_verify(ref: CampaignRef | None = None, /) -> None:
         if ref is not None:
             query = query.where(Archive.campaign_id == common.campaign(s, ref).id)
         manifests = [m for m in s.scalars(query).all() if m is not None]
-    hashes = set(manifests)
+    cids = set(manifests)
     for manifest in manifests:
         if store.check(manifest) == 'ok':
-            hashes |= store.manifest(manifest).blobs
-    found = Counter(store.check(h) for h in sorted(hashes))
+            cids |= store.manifest(manifest).blobs
+    found = Counter(store.check(cid) for cid in cids)
     common.console.print(
-        f'{len(manifests)} manifest(s), {len(hashes)} blob(s): {found["ok"]} ok, {found["missing"]} missing,'
+        f'{len(manifests)} manifest(s), {len(cids)} blob(s): {found["ok"]} ok, {found["missing"]} missing,'
         f' {found["corrupt"]} corrupt'
     )
     if found['missing'] or found['corrupt']:

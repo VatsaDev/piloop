@@ -23,6 +23,7 @@ from pathlib import Path, PurePosixPath
 from sqlalchemy import Select, exists, func, select
 from sqlalchemy.orm import Session
 
+from piloop import deprecated
 from piloop.campaign.campaigns import workspace_dir
 from piloop.db.models import (
     ENDED,
@@ -39,7 +40,7 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.ids import CampaignId, IdeaId
-from piloop.store import Entry, Manifest, Store, hash_file
+from piloop.store import DRISL, BlobCorrupt, BlobMissing, Entry, Manifest, Store, hash_file
 from piloop.store.tree import Materialised, Removed, Walk, materialise, put_walk, remove, walk
 
 IDEA_NAME = re.compile(r'idea(\d+)(?!\d)')
@@ -48,6 +49,10 @@ IDEA_NAME = re.compile(r'idea(\d+)(?!\d)')
 
 class NotArchived(RuntimeError):
     """The store lacks blobs of a manifest just stored: no row is recorded."""
+
+
+class ManifestNotMigrated(RuntimeError):
+    """The store could not give an archive's JSON manifest back, so its row still names it. The message says which."""
 
 
 def idea_of(name: str) -> IdeaId | None:
@@ -280,7 +285,7 @@ def _held(store: Store, workspace: Path, left: Walk) -> tuple[Walk, Walk]:
     held, rest = Walk(), Walk()
     for rel, st in left.files:
         try:
-            known = store.has(hash_file(workspace / rel).hash)
+            known = store.has(hash_file(workspace / rel).cid)
         except OSError as e:
             held.skipped[rel] = f'not readable ({e.strerror}): fix its permissions'
             continue
@@ -301,7 +306,7 @@ def _store_batch(
         complete=complete,
     )
     if stored.manifest.entries:
-        manifest = store.put_manifest(stored.manifest).hash
+        manifest = store.put_manifest(stored.manifest)
         if missing := store.missing([manifest, *stored.manifest.blobs]):
             raise NotArchived(f'the store lacks {len(missing)} blobs of manifest {manifest}, e.g. {missing[0]}')
         row.manifest = manifest
@@ -351,5 +356,37 @@ def restore(s: Session, store: Store, home: Path, campaign: Campaign, target: in
     elif target is not None:
         prefix = target.strip('/')
         entries = [e for e in entries if e.path == prefix or e.path.startswith(f'{prefix}/')]
-    done = materialise(store, Manifest(tuple(entries)), workspace_dir(home, campaign.id))
+    done = materialise(store, Manifest(entries=tuple(entries)), workspace_dir(home, campaign.id))
     return Restored(len(manifests), done)
+
+
+@deprecated.until(
+    '0.4.0',
+    'JSON manifests of piloop 0.2: delete migrate_manifests, its callers and ManifestNotMigrated, and make 0.4 refuse a'
+    ' home whose archives still name a raw CID (the schema revision does not tell)',
+)
+def migrate_manifests(db: Database, store: Store) -> int:
+    """Store each archive's JSON manifest again as a DASL one, and point its row at it. Returns how many.
+
+    ``piloop migrate`` and the daemon's start run it, and it skips the rows done already. The JSON manifest stays in the
+    store, which still reads it, so a database restored from its backup still works. It stops at a manifest that the
+    store cannot give back (``ManifestNotMigrated``): that row keeps its JSON manifest, and the next run tries again.
+    """
+    with db.session() as s:
+        rows = s.execute(select(Archive.id, Archive.manifest).where(Archive.manifest.is_not(None))).all()
+    done = 0
+    for archive_id, cid in rows:
+        if cid is None or cid.codec == DRISL:
+            continue
+        try:
+            dasl = store.put_manifest(store.manifest(cid))
+        except (BlobMissing, BlobCorrupt, OSError, ValueError) as e:
+            raise ManifestNotMigrated(
+                f'archive {archive_id}: its manifest {cid} could not be read from the store ({type(e).__name__}: {e}).'
+                ' Make the store reachable ([storage.backend] and its credentials), then run `piloop migrate` again'
+            ) from e
+        with db.session() as s:
+            s.get_one(Archive, archive_id).manifest = dasl
+            s.commit()
+        done += 1
+    return done

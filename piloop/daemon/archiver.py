@@ -128,11 +128,12 @@ class Archiver:
             if done is None:
                 return
             rows = done.rows
+            manifest = rows[-1].manifest if rows else None
             span.set(
                 archives=len(rows),
                 files=sum(r.files for r in rows),
                 bytes=sum(r.bytes for r in rows),
-                manifest=rows[-1].manifest if rows else None,
+                manifest=None if manifest is None else str(manifest),
                 skipped=len(done.skipped),
             )
             if done.skipped:  # left in the workspace: say which and why, so that a human can fix what lasts

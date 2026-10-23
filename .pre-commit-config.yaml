@@ -6,6 +6,7 @@ repos:
       - id: check-yaml
       - id: check-toml
       - id: end-of-file-fixer
+        exclude: ^tests/fixtures/store_0_2_0/
       - id: trailing-whitespace
       - id: check-added-large-files
         args: [--maxkb=1024, --enforce-all]

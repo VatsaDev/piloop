@@ -4,6 +4,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from covalence import Cid
 from sqlalchemy import delete, select
 
 from piloop.campaign import archive as archive_module
@@ -38,11 +39,12 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.ids import IMPLEMENTER, WATCHDOG, AgentSessionId, CampaignId, IdeaId, RoleName
-from piloop.store import Store, hash_file, key
+from piloop.store import Store, key
 from piloop.store.tree import Removed, Stored, Walk
 from tests.conftest import end_of
 
 LIVE = frozenset({'NOTES.md', 'research'})
+LOST = Cid.of(b'lost')
 
 
 def add_idea(db: Database, campaign_id: CampaignId, title: str, status: IdeaStatus = IdeaStatus.DONE) -> IdeaId:
@@ -250,8 +252,8 @@ def test_no_row_when_the_store_does_not_hold_every_blob(
     idea = add_idea(db, campaign.id, 'idea')
     add_run(db, idea)
     path = write(workspace_dir(home, campaign.id) / f'idea{idea}' / 'x.npy')
-    monkeypatch.setattr(Store, 'missing', lambda self, hashes: ['lost'])
-    with pytest.raises(NotArchived, match='the store lacks 1 blobs of manifest .*, e.g. lost'):
+    monkeypatch.setattr(Store, 'missing', lambda self, cids: [LOST])
+    with pytest.raises(NotArchived, match=f'the store lacks 1 blobs of manifest .*, e.g. {LOST}'):
         archive_job(db, store, home, Job(campaign.id, idea))
     assert path.exists()
     with db.session() as s:
@@ -453,7 +455,7 @@ def test_a_workspace_copy_of_a_blob_that_went_bad_in_the_store_is_not_pruned(
     """The intact workspace copy was deleted, leaving only a corrupt blob."""
     _, row = archived_idea(db, campaign, home, store, 'rotting')
     [path] = workspace_dir(home, campaign.id).rglob('*.npy')
-    (store.root / key(hash_file(path).hash)).write_bytes(b'rot')
+    (store.root / key(Cid.of_file(path))).write_bytes(b'rot')
     done = prune(db, store, home, row)
     assert done.removed == 0 and list(done.left.values()) == [
         'its blob in the store is missing or corrupt: run piloop store verify'

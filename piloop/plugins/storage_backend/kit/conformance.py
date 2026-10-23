@@ -50,10 +50,10 @@ def check_storage_backend(backend: StorageBackend, scratch: Path) -> None:
     prefixed = _Prefixed(backend, f'{base}/')
     store = Store(scratch / 'store', prefixed, evict_after=timedelta(0))
     blob = store.put(io.BytesIO(payload))
-    _require(prefixed.has(key(blob.hash)), 'a blob that a store puts is on the backend')
-    _require(not (scratch / 'store' / key(blob.hash)).exists(), 'a staging store keeps no local bytes once uploaded')
+    _require(prefixed.has(key(blob.cid)), 'a blob that a store puts is on the backend')
+    _require(not (scratch / 'store' / key(blob.cid)).exists(), 'a staging store keeps no local bytes once uploaded')
     out = io.BytesIO()
-    store.get(blob.hash, out)
+    store.get(blob.cid, out)
     _require(out.getvalue() == payload, 'a store reads back through the backend what it put')
 
 

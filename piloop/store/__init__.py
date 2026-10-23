@@ -1,14 +1,16 @@
 """The artifact store: a content-addressed store of blobs and the manifests that name them.
 
 Generic: it knows files and bytes, nothing of campaigns, ideas or workspaces (``piloop.campaign.archive`` does). A blob
-is addressed by the BLAKE3 hash of its whole content and kept zstd-compressed under ``blake3/<hash>/bytes.zst``, where
-``<hash>`` is the 32-byte digest in lowercase unpadded base32: covalence's ``KvCas`` layout (``blake3/<digest>/bytes``)
-with the compression in the name. A manifest is a blob too: a tree of paths, each with its blob, size and mode.
+is addressed by a covalence ``Cid``: raw, BLAKE3, the hash of its whole content and nothing else. It is kept
+zstd-compressed under ``blake3/<digest>/bytes.zst``, where ``<digest>`` is the 32-byte digest in lowercase unpadded
+base32: covalence's ``KvCas`` layout (``blake3/<digest>/bytes``) with the compression in the name. A CID of another
+codec with the same digest finds the same bytes. A manifest is a DASL value, a tree of paths, each with its blob, size
+and mode, stored as its DRISL encoding under its DRISL CID.
 
 The contract callers use is ``Store``'s: ``put``/``put_path``, ``open``/``get``/``get_path``, ``has``/``missing``,
 ``put_manifest``/``manifest``, and ``check``, ``usage`` and ``evict`` for upkeep. It never hands out a key or a path, so a backend that keeps many small
 blobs in one pack file (a hash → pack, offset, length index) fits behind it without changing a caller. Reads and
-writes stream in ``CHUNK``-sized pieces: a blob of any size is never held in memory.
+writes stream in pieces of 1 MiB: a blob of any size is never held in memory.
 
 The store's own directory always holds what is local; its remote, a ``StorageBackend`` (``piloop.plugins.storage_backend.s3``), mirrors
 it. Every blob put while a remote is set is uploaded and marked ``blake3/<hash>/remote``; ``evict`` uploads what is
@@ -25,6 +27,7 @@ digest spelling.
 """
 
 import base64
+import binascii
 import io
 import json
 import os
@@ -32,20 +35,20 @@ import shutil
 import tempfile
 import threading
 import time
-from collections.abc import Generator, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from compression.zstd import ZstdCompressor, ZstdError, ZstdFile
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import Protocol
+from typing import Annotated, BinaryIO, Protocol
 
-from blake3 import blake3
+from covalence import Cid, Codec, Hash, Value
+from pydantic import BaseModel, ConfigDict, PlainSerializer, PlainValidator, WithJsonSchema
 
+from piloop import deprecated
 from piloop.plugins.storage_backend.contract import StorageBackend
 
-CHUNK = 1 << 20
-"""Bytes read, hashed and compressed at a time."""
 BYTES = 'bytes.zst'
 REMOTE = 'remote'
 """An empty file beside a blob's bytes: the remote holds the blob. It stays when the bytes are evicted."""
@@ -54,7 +57,12 @@ BOUND = 'remote.url'
 """In the store's directory: the remote that its blobs' ``remote`` markers mean, written at the first upload."""
 LOCKS = 64
 """Stripes of the per-blob lock ``_push`` takes: blobs, not threads, so a few threads rarely wait on each other."""
-MANIFEST_VERSION = 1
+BLAKE3 = Hash('blake3')
+DRISL = Codec('drisl')
+RAW = Codec('raw')
+DIGEST = 32
+UNBOUNDED = (1 << 64) - 1
+"""``max_bytes`` for covalence's hashing: the store takes a blob of any size."""
 
 
 class BlobMissing(KeyError):
@@ -89,47 +97,83 @@ class Writer(Protocol):
         ...
 
 
+def _address(value: object) -> Cid:
+    cid = Cid(value) if isinstance(value, str) else value
+    if not isinstance(cid, Cid):
+        raise ValueError(f'an address is a CID or its text, not {type(value).__name__}')
+    if cid.hash != BLAKE3:
+        raise ValueError(f'{cid} is hashed with {cid.hash.name}: the store addresses by BLAKE3')
+    return cid
+
+
+type Address = Annotated[
+    Cid, PlainValidator(_address), PlainSerializer(str, when_used='json'), WithJsonSchema({'type': 'string'})
+]
+"""A blob's address: a BLAKE3 CID, hash only. JSON holds its text."""
+
+
 @dataclass(frozen=True)
 class Blob:
     """A stored content: its address and its size uncompressed."""
 
-    hash: str
+    cid: Cid
     size: int
 
 
-@dataclass(frozen=True)
-class Entry:
-    """One path of a manifest: a file's blob, size and mode, or a symlink's target (``hash`` None)."""
+class Entry(BaseModel):
+    """One path of a manifest: a file's blob, size and mode, or a symlink's target (``blob`` None)."""
+
+    model_config = ConfigDict(frozen=True, extra='forbid')
 
     path: str
     """Relative, ``/``-separated."""
     mode: int
     """Permission bits (``st_mode & 0o7777``)."""
     size: int = 0
-    hash: str | None = None
+    blob: Address | None = None
     link: str | None = None
 
 
-@dataclass(frozen=True)
-class Manifest:
-    """A tree as stored: its entries by path."""
+class Manifest(BaseModel):
+    """A tree as stored: its entries by path. A DASL value, so each entry links its blob."""
+
+    model_config = ConfigDict(frozen=True, extra='forbid')
 
     entries: tuple[Entry, ...]
 
-    def to_bytes(self) -> bytes:
-        rows = [{k: v for k, v in vars(e).items() if v is not None} for e in sorted(self.entries, key=lambda e: e.path)]
-        return json.dumps({'version': MANIFEST_VERSION, 'entries': rows}, separators=(',', ':')).encode()
+    def value(self) -> Value:
+        """The DASL value, entries sorted by path: one tree has one CID."""
+        entries = sorted(self.entries, key=lambda e: e.path)
+        return Value({'entries': [e.model_dump(exclude_none=True) for e in entries]})
 
     @classmethod
-    def from_bytes(cls, data: bytes) -> Manifest:
-        doc = json.loads(data)
-        if doc.get('version') != MANIFEST_VERSION:
-            raise ValueError(f'manifest version {doc.get("version")!r}, expected {MANIFEST_VERSION}')
-        return cls(tuple(Entry(**row) for row in doc['entries']))
+    def of(cls, value: Value) -> Manifest:
+        """The manifest that ``value`` holds; ``pydantic.ValidationError`` when it holds none."""
+        return cls.model_validate(value.to_native())
 
     @property
-    def blobs(self) -> set[str]:
-        return {e.hash for e in self.entries if e.hash is not None}
+    def blobs(self) -> set[Cid]:
+        return {e.blob for e in self.entries if e.blob is not None}
+
+
+@deprecated.until('0.4.0', 'JSON manifests of piloop 0.2: delete _json_manifest, its call and migrate_manifests')
+def _json_manifest(cid: Cid, data: bytes) -> Manifest:
+    """A manifest that piloop 0.2 stored: JSON, each file's blob a base32 digest."""
+    doc = json.loads(data)
+    if doc.get('version') != 1:
+        raise ValueError(f'{cid} names no manifest')
+    return Manifest(
+        entries=tuple(
+            Entry(
+                path=row['path'],
+                mode=row['mode'],
+                size=row.get('size', 0),
+                blob=named(row['hash']) if 'hash' in row else None,
+                link=row.get('link'),
+            )
+            for row in doc['entries']
+        )
+    )
 
 
 class _Sink:
@@ -139,24 +183,63 @@ class _Sink:
         return len(data)
 
 
-def address(digest: bytes) -> str:
-    """A digest as a blob's address: lowercase unpadded base32, as covalence spells it."""
-    return base64.b32encode(digest).decode().rstrip('=').lower()
+class _Once(io.RawIOBase, BinaryIO):
+    """``src`` as covalence's ``Cid.of_fileobj`` reads it, once from the start; each chunk also goes to ``sink``.
+
+    It lets one pass over a stream hash it and write it elsewhere, as covalence has no incremental hasher.
+    """
+
+    def __init__(self, src: Reader, sink: Callable[[bytes], object]) -> None:
+        self._src, self._sink, self.size = src, sink, 0
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET, /) -> int:
+        if (offset, whence, self.size) != (0, io.SEEK_SET, 0):
+            raise io.UnsupportedOperation('a stream is read once, from its start')
+        return 0
+
+    def read(self, size: int = -1, /) -> bytes:
+        chunk = self._src.read(size)
+        self.size += len(chunk)
+        self._sink(chunk)
+        return chunk
+
+
+def _hash(src: Reader, sink: Callable[[bytes], object]) -> Blob:
+    """The blob that ``src`` yields to its end, passing each chunk on to ``sink``."""
+    once = _Once(src, sink)
+    return Blob(Cid.of_fileobj(once, max_bytes=UNBOUNDED), once.size)
+
+
+def name(cid: Cid) -> str:
+    """The name of a blob's directory: its BLAKE3 digest in lowercase unpadded base32, as covalence spells it."""
+    _address(cid)
+    return base64.b32encode(cid.digest).decode().rstrip('=').lower()
+
+
+def named(text: str) -> Cid:
+    """The raw CID of the blob whose directory ``name`` is ``text``.
+
+    Raises:
+        ValueError: ``text`` is no such name.
+    """
+    try:
+        digest = base64.b32decode(text.upper() + '=' * (-len(text) % 8))
+    except binascii.Error as e:
+        raise ValueError(f'{text!r} is no base32 BLAKE3 digest') from e
+    if len(digest) != DIGEST or name(cid := Cid.from_parts('raw', BLAKE3, digest)) != text:
+        raise ValueError(f'{text!r} is no base32 BLAKE3 digest')
+    return cid
 
 
 def hash_file(path: Path) -> Blob:
     """The blob ``path`` would be, read in chunks (not mapped: a file truncated under a mapping is a SIGBUS)."""
-    hasher, size = blake3(), 0
     with path.open('rb') as src:
-        while chunk := src.read(CHUNK):
-            hasher.update(chunk)
-            size += len(chunk)
-    return Blob(address(hasher.digest()), size)
+        return _hash(src, _Sink().write)
 
 
-def key(hash: str) -> str:
+def key(cid: Cid) -> str:
     """The key of a blob's compressed bytes, here and on the remote."""
-    return f'blake3/{hash}/{BYTES}'
+    return f'blake3/{name(cid)}/{BYTES}'
 
 
 @dataclass
@@ -222,8 +305,8 @@ class Store:
             path = path.parent
         return shutil.disk_usage(path).free
 
-    def _dir(self, hash: str) -> Path:
-        return self.root / 'blake3' / hash
+    def _dir(self, cid: Cid) -> Path:
+        return self.root / 'blake3' / name(cid)
 
     def scratch(self) -> Path:
         """A directory of the store for temporary files, on the store's disk and outside every workspace."""
@@ -232,25 +315,24 @@ class Store:
         return tmp
 
     def _tmp(self) -> Path:
-        fd, name = tempfile.mkstemp(dir=self.scratch())
+        fd, path = tempfile.mkstemp(dir=self.scratch())
         os.close(fd)
-        return Path(name)
+        return Path(path)
 
-    def has(self, hash: str) -> bool:
+    def has(self, cid: Cid) -> bool:
         """Whether the store holds the blob, here or (as last confirmed) on the remote. No network."""
-        d = self._dir(hash)
+        d = self._dir(cid)
         return (d / BYTES).is_file() or (d / REMOTE).is_file()
 
-    def missing(self, hashes: Iterable[str]) -> list[str]:
-        """Those of ``hashes`` the store does not hold, in order."""
-        return [h for h in hashes if not self.has(h)]
+    def missing(self, cids: Iterable[Cid]) -> list[Cid]:
+        """Those of ``cids`` the store does not hold, in order."""
+        return [c for c in cids if not self.has(c)]
 
     def put(self, src: Reader) -> Blob:
         """Store what ``src`` yields to its end, hashing and compressing it in one pass."""
         tmp = self._tmp()
         try:
-            hasher, size = self._compress(src, tmp)
-            return self._commit(tmp, Blob(address(hasher.digest()), size))
+            return self._commit(tmp, self._compress(src, tmp))
         finally:
             tmp.unlink(missing_ok=True)
 
@@ -260,53 +342,49 @@ class Store:
         Raises ``Changed`` when the file changed between the hash and the compression.
         """
         blob = hash_file(path)
-        if self.has(blob.hash):
+        if self.has(blob.cid):
             if self.remote is not None:
-                self._push(blob.hash)
+                self._push(blob.cid)
             return blob
         tmp = self._tmp()
         try:
             with path.open('rb') as src:
-                again, _ = self._compress(src, tmp)
-            if address(again.digest()) != blob.hash:
+                again = self._compress(src, tmp)
+            if again != blob:
                 raise Changed(f'{path} changed while it was stored')
             return self._commit(tmp, blob)
         finally:
             tmp.unlink(missing_ok=True)
 
-    def _compress(self, src: Reader, dst: Path) -> tuple[blake3, int]:
-        hasher, size = blake3(), 0
+    def _compress(self, src: Reader, dst: Path) -> Blob:
         compressor = ZstdCompressor(self.level)
         with dst.open('wb') as out:
-            while chunk := src.read(CHUNK):
-                hasher.update(chunk)
-                size += len(chunk)
-                out.write(compressor.compress(chunk))
+            blob = _hash(src, lambda chunk: out.write(compressor.compress(chunk)))
             out.write(compressor.flush())
-        return hasher, size
+        return blob
 
     def _commit(self, tmp: Path, blob: Blob) -> Blob:
         """Move compressed bytes into place unless the store holds them already; upload them when there is a remote."""
-        d = self._dir(blob.hash)
-        if not self.has(blob.hash):
+        d = self._dir(blob.cid)
+        if not self.has(blob.cid):
             d.mkdir(parents=True, exist_ok=True)
             os.replace(tmp, d / BYTES)
         if self.remote is not None:
-            self._push(blob.hash)
+            self._push(blob.cid)
         return blob
 
-    def _push(self, hash: str) -> bool:
+    def _push(self, cid: Cid) -> bool:
         """Upload a blob the remote is not known to hold; drop its local bytes when staging. True if it uploaded.
 
         Under the blob's lock: when staging, a thread putting the same content would otherwise drop the bytes while
         another one's upload still reads them.
         """
         assert self.remote is not None
-        d = self._dir(hash)
+        d = self._dir(cid)
         uploaded = False
-        with self._locks[int(hash[:4], 36) % LOCKS]:  # base32 digits are base-36 digits
+        with self._locks[cid.digest[0] % LOCKS]:
             if not (d / REMOTE).is_file():
-                self.remote.upload(key(hash), d / BYTES)
+                self.remote.upload(key(cid), d / BYTES)
                 (self.root / BOUND).write_text(self.remote.url)
                 (d / REMOTE).touch()
                 uploaded = True
@@ -315,13 +393,13 @@ class Store:
         return uploaded
 
     @contextmanager
-    def open(self, hash: str) -> Generator[Reader]:
+    def open(self, cid: Cid) -> Generator[Reader]:
         """The blob's content as a stream, unchecked: from the directory, else fetched from the remote.
 
         A fetched blob is put back in the directory unless it is a staging area; there it is read from a temporary
         file that goes when the stream closes.
         """
-        local = self._dir(hash) / BYTES
+        local = self._dir(cid) / BYTES
         try:
             stream = ZstdFile(local, 'rb')
         except FileNotFoundError:
@@ -330,7 +408,7 @@ class Store:
             with stream:
                 yield stream
             return
-        tmp = self._fetch(hash)
+        tmp = self._fetch(cid)
         try:
             # opened before it is moved or removed: an eviction of the moved file meanwhile cannot pull it away
             with tmp.open('rb') as raw, ZstdFile(raw, 'rb') as stream:
@@ -340,74 +418,78 @@ class Store:
         finally:
             tmp.unlink(missing_ok=True)
 
-    def _fetch(self, hash: str) -> Path:
-        if self.remote is None or not (self._dir(hash) / REMOTE).is_file():
-            raise BlobMissing(hash)
+    def _fetch(self, cid: Cid) -> Path:
+        if self.remote is None or not (self._dir(cid) / REMOTE).is_file():
+            raise BlobMissing(cid)
         tmp, fetched = self._tmp(), False
         try:
-            if not self.remote.download(key(hash), tmp):
-                raise BlobMissing(hash)
+            if not self.remote.download(key(cid), tmp):
+                raise BlobMissing(cid)
             fetched = True
             return tmp
         finally:
             if not fetched:  # a missing object, or a download that failed half-way
                 tmp.unlink(missing_ok=True)
 
-    def get(self, hash: str, dst: Writer) -> int:
+    def get(self, cid: Cid, dst: Writer) -> int:
         """Copy the blob's content into ``dst``, checking it against its address; the bytes copied.
 
-        Raises ``BlobCorrupt`` after the copy when the content does not hash to ``hash``: the caller discards ``dst``.
+        Raises ``BlobCorrupt`` after the copy when the content does not hash to ``cid``: the caller discards ``dst``.
         """
-        hasher, size = blake3(), 0
-        with self.open(hash) as src:
-            while chunk := src.read(CHUNK):
-                hasher.update(chunk)
-                size += len(chunk)
-                dst.write(chunk)
-        if address(hasher.digest()) != hash:
-            raise BlobCorrupt(hash)
-        return size
+        with self.open(cid) as src:
+            blob = _hash(src, dst.write)
+        if blob.cid.digest != cid.digest:
+            raise BlobCorrupt(cid)
+        return blob.size
 
-    def get_path(self, hash: str, path: Path, mode: int = 0o644) -> int:
+    def get_path(self, cid: Cid, path: Path, mode: int = 0o644) -> int:
         """Write the blob to a new ``path`` with ``mode``: a checked copy beside it, linked into place.
 
         Raises:
             FileExistsError: Something is at ``path`` already, maybe written while the blob was read; it stays.
         """
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd, name = tempfile.mkstemp(dir=path.parent, prefix=f'.{path.name}.')
-        tmp = Path(name)
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f'.{path.name}.')
+        tmp = Path(tmp_name)
         try:
             with os.fdopen(fd, 'wb') as out:
-                size = self.get(hash, out)
+                size = self.get(cid, out)
             tmp.chmod(mode)
             os.link(tmp, path)  # unlike a rename, a link never replaces what is there
             return size
         finally:
             tmp.unlink(missing_ok=True)
 
-    def check(self, hash: str) -> str:
+    def check(self, cid: Cid) -> str:
         """``ok``, ``missing`` or ``corrupt``: local bytes are read and hashed, an evicted blob is asked of the remote."""
-        local = self._dir(hash) / BYTES
+        local = self._dir(cid) / BYTES
         if local.is_file():
             try:
-                self.get(hash, _Sink())
+                self.get(cid, _Sink())
             except BlobCorrupt, ZstdError:
                 return 'corrupt'
             return 'ok'
-        if self.remote is not None and (self._dir(hash) / REMOTE).is_file():
-            return 'ok' if self.remote.has(key(hash)) else 'missing'
+        if self.remote is not None and (self._dir(cid) / REMOTE).is_file():
+            return 'ok' if self.remote.has(key(cid)) else 'missing'
         return 'missing'
 
-    def put_manifest(self, manifest: Manifest) -> Blob:
-        """Store a manifest; its address names the tree."""
-        return self.put(io.BytesIO(manifest.to_bytes()))
+    def put_manifest(self, manifest: Manifest) -> Cid:
+        """Store a manifest as its DRISL encoding; its DRISL CID names the tree."""
+        value = manifest.value()
+        self.put(io.BytesIO(value.encode()))
+        return value.cid()
 
-    def manifest(self, hash: str) -> Manifest:
-        """The manifest stored under ``hash``, checked."""
+    def manifest(self, cid: Cid) -> Manifest:
+        """The manifest stored under ``cid``, checked: a DASL value, or the JSON of piloop 0.2 under a raw CID.
+
+        Raises:
+            ValueError: What ``cid`` names is not a manifest.
+        """
         out = io.BytesIO()
-        self.get(hash, out)
-        return Manifest.from_bytes(out.getvalue())
+        self.get(cid, out)
+        if cid.codec == RAW:
+            return _json_manifest(cid, out.getvalue())
+        return Manifest.of(Value.decode(out.getvalue()))
 
     def usage(self) -> Usage:
         """Count the blobs in the directory: one scan of it."""
@@ -420,10 +502,14 @@ class Store:
                 usage.local_bytes += stat.st_size
         return usage
 
-    def _scan(self) -> Iterator[tuple[str, Path, os.stat_result | None, bool]]:
-        """Every blob of the directory: its hash, bytes path, the bytes' stat (None when evicted), whether remote."""
+    def _scan(self) -> Iterator[tuple[Cid, Path, os.stat_result | None, bool]]:
+        """Every blob of the directory: its CID, bytes path, the bytes' stat (None when evicted), whether remote."""
         with suppress(FileNotFoundError), os.scandir(self.root / 'blake3') as it:
             for entry in it:
+                try:
+                    cid = named(entry.name)
+                except ValueError:  # not a blob's directory
+                    continue
                 d = Path(entry.path)
                 try:
                     stat: os.stat_result | None = (d / BYTES).stat()
@@ -431,7 +517,7 @@ class Store:
                     stat = None
                 remote = (d / REMOTE).is_file()
                 if stat is not None or remote:
-                    yield entry.name, d / BYTES, stat, remote
+                    yield cid, d / BYTES, stat, remote
 
     def evict(self) -> Evicted:
         """Upload every blob the remote is not known to hold, then drop local bytes the policy says to.
@@ -444,11 +530,11 @@ class Store:
         if self.remote is None:
             return done
         held: list[tuple[float, int, Path]] = []
-        for hash, bytes_path, stat, remote in self._scan():
+        for cid, bytes_path, stat, remote in self._scan():
             if stat is None:
                 continue
             if not remote:
-                done.uploaded += self._push(hash)
+                done.uploaded += self._push(cid)
                 if self.staging:
                     done.evicted, done.freed = done.evicted + 1, done.freed + stat.st_size
                     continue

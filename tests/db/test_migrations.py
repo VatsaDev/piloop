@@ -1,5 +1,6 @@
 """The schema at head: what the migrations create, that models and migrations agree, and that 0001 upgrades to head."""
 
+import base64
 import json
 import re
 import resource
@@ -16,6 +17,7 @@ import pytest
 from alembic import command
 from alembic.config import Config as AlembicConfig
 from alembic.script import ScriptDirectory
+from covalence import Cid
 from git import Repo
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.exc import IntegrityError
@@ -1221,3 +1223,25 @@ def test_0023_adds_the_lease_workers_and_keeps_the_fencing_tokens_of_the_leases(
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert con.execute("SELECT name FROM sqlite_master WHERE name = 'lease_workers'").fetchall() == []
         assert con.execute('SELECT unreachable_at FROM leases').fetchall() == [(None,)]
+
+
+def test_0027_spells_each_archived_manifest_as_its_raw_cid_and_downgrades(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0026')
+    digest = 'xwalomq5cvgoyxketuqee7k7loh6z6ljsj4hnzh5fawqloxwraiq'
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
+        con.execute(f"INSERT INTO archives (campaign_id, manifest) VALUES (1, '{digest}'), (1, NULL)")
+    command.upgrade(cfg, '0027')
+    cid = Cid.from_parts('raw', 'blake3', base64.b32decode(digest.upper() + '===='))
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT manifest FROM archives ORDER BY id').fetchall() == [(str(cid),), (None,)]
+    command.downgrade(cfg, '0026')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT manifest FROM archives ORDER BY id').fetchall() == [(digest,), (None,)]
+    command.upgrade(cfg, '0027')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute(f"UPDATE archives SET manifest = '{Cid.from_parts('drisl', 'blake3', cid.digest)}' WHERE id = 1")
+    with pytest.raises(RuntimeError, match='archive 1 names a DASL manifest .* restore the database backup'):
+        command.downgrade(cfg, '0026')

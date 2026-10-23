@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from piloop.actor import System
 from piloop.agents.capture import MIN_ENTIRE, AttachError, entire_version, usable
+from piloop.campaign.archive import ManifestNotMigrated, migrate_manifests
 from piloop.daemon.archiver import ArchivePolicy, Archiving
 from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
@@ -129,6 +130,7 @@ class Daemon:
         except SystemExit:
             self.db.close()
             raise
+        self._store = open_store(cfg)
         self.tracer = tracer()
         self._entire = _entire()
         self.controller = RunController(
@@ -143,7 +145,7 @@ class Daemon:
             self.controller,
             self.tracer,
             cfg.home,
-            archiving=Archiving(open_store(cfg), ArchivePolicy.of(cfg.storage)),
+            archiving=Archiving(self._store, ArchivePolicy.of(cfg.storage)),
         )
         self._restart = False
 
@@ -171,6 +173,7 @@ class Daemon:
             ) as span:
                 self._check_entire(span)
                 self._listen(span)
+                self._migrate_manifests(span)
                 self.scheduler.reap()
                 span.set(inherited_reaped=self._inherited.reap())
             self.scheduler.serve_forever(self._cfg.tick_seconds, also=self._inherited.reap)
@@ -208,6 +211,17 @@ class Daemon:
             raise SystemExit(f'{SECRETS_COMMAND_ENV} ({self._cfg.secrets_command}) failed: {e}') from e
         os.environ.update(values)
         return ','.join(sorted(values))
+
+    def _migrate_manifests(self, span: Span) -> None:
+        """Store the archives' manifests of piloop 0.2 again in the new format, or record why not on the start span.
+
+        A failure does not stop the start: an in-place restart must not leave its agents without a daemon, and the
+        store still reads the old manifests. The next start, or ``piloop migrate``, tries again.
+        """
+        try:
+            span.set(manifests_migrated=migrate_manifests(self.db, self._store))
+        except ManifestNotMigrated as e:
+            span.error(e)
 
     def _check_entire(self, span: Span) -> None:
         """Record Entire's version on the start span, or an event that says why no session will be attached."""

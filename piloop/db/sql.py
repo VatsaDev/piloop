@@ -35,7 +35,7 @@ from functools import cache
 from pathlib import Path
 from typing import assert_never
 
-from blake3 import blake3
+from covalence import Cid
 from sqlalchemy import MetaData
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateIndex, CreateTable
@@ -144,7 +144,7 @@ def _authorize(action: int, arg1: str | None, arg2: str | None, _db: str | None,
 
 def digest(text: str) -> str:
     """BLAKE3 of the UTF-8 bytes of ``text``, in lowercase hex: ``documents.hash``."""
-    return blake3(text.encode()).hexdigest()
+    return Cid.of(text.encode()).digest.hex()
 
 
 def _blake3(value: object) -> str | None:

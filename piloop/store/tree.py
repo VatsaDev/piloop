@@ -14,6 +14,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from covalence import Cid
+
 from piloop.store import Changed, Entry, Manifest, Store, hash_file
 
 WORKERS = 8
@@ -77,7 +79,7 @@ def walk(root: Path, names: Iterable[str]) -> Walk:
         path = root / rel
         st = path.lstat()
         if stat.S_ISLNK(st.st_mode):
-            found.links.append(Entry(rel, stat.S_IMODE(st.st_mode), link=os.readlink(path)))
+            found.links.append(Entry(path=rel, mode=stat.S_IMODE(st.st_mode), link=os.readlink(path)))
         elif stat.S_ISREG(st.st_mode):
             found.files.append((rel, st))
         elif stat.S_ISDIR(st.st_mode):
@@ -111,7 +113,7 @@ def put_walk(
     Files are put ``workers`` at a time: on a remote, each blob is its own upload, and one at a time spent most of a
     measured archiving waiting on S3. Raises ``Cancelled`` once ``stop`` is set, before the next file starts.
     """
-    stored = Stored(Manifest(()), skipped=dict(found.skipped))
+    stored = Stored(Manifest(entries=()), skipped=dict(found.skipped))
     entries = list(found.links)
 
     def put(rel: str, st: os.stat_result) -> Entry | str:
@@ -126,7 +128,7 @@ def put_walk(
             return f'not readable ({e.strerror}): fix its permissions'
         except FileNotFoundError:
             return 'gone since the walk: an agent or a prune removed it'
-        return Entry(rel, stat.S_IMODE(st.st_mode), blob.size, blob.hash)
+        return Entry(path=rel, mode=stat.S_IMODE(st.st_mode), size=blob.size, blob=blob.cid)
 
     files = found.files
     pool = ThreadPoolExecutor(workers, thread_name_prefix='put-tree')
@@ -140,7 +142,7 @@ def put_walk(
             entries.append(entry)
     finally:
         pool.shutdown(cancel_futures=True)
-    stored.manifest = Manifest(tuple(entries))
+    stored.manifest = Manifest(entries=tuple(entries))
     return stored
 
 
@@ -152,7 +154,7 @@ class Removed:
     left: dict[str, str] = field(default_factory=dict)
 
 
-def remove(root: Path, manifest: Manifest, keep: Collection[str] = ()) -> Removed:
+def remove(root: Path, manifest: Manifest, keep: Collection[Cid] = ()) -> Removed:
     """Remove the paths of ``manifest`` under ``root`` that still hold what it stored; then the directories left empty.
 
     A file whose content changed since (its size or its hash differs), or a symlink that points elsewhere, stays, and
@@ -174,12 +176,12 @@ def remove(root: Path, manifest: Manifest, keep: Collection[str] = ()) -> Remove
             same = stat.S_ISLNK(st.st_mode) and os.readlink(path) == entry.link
         elif not stat.S_ISREG(st.st_mode) or st.st_size != entry.size:
             same = False
-        elif entry.hash in keep:
+        elif entry.blob in keep:
             done.left[entry.path] = 'its blob in the store is missing or corrupt: run piloop store verify'
             continue
         else:
             try:
-                same = hash_file(path).hash == entry.hash
+                same = hash_file(path).cid == entry.blob
             except OSError as e:
                 done.left[entry.path] = f'not readable ({e.strerror}): fix its permissions'
                 continue
@@ -236,7 +238,7 @@ def materialise(
     path below a symlinked directory, or below a file where the manifest has a directory, is kept, not written.
     """
     done = Materialised()
-    missing: dict[str, list[Entry]] = {}
+    missing: dict[Cid, list[Entry]] = {}
     for entry in manifest.entries:
         if not wanted(entry):
             continue
@@ -254,26 +256,26 @@ def materialise(
             else:
                 done.kept.append(entry.path)
             continue
-        assert entry.hash is not None
+        assert entry.blob is not None
         if path.is_symlink() or path.exists():
-            same = path.is_file() and not path.is_symlink() and hash_file(path).hash == entry.hash
+            same = path.is_file() and not path.is_symlink() and hash_file(path).cid == entry.blob
             if same:
                 done.same += 1
             else:
                 done.kept.append(entry.path)
             continue
-        missing.setdefault(entry.hash, []).append(entry)
+        missing.setdefault(entry.blob, []).append(entry)
 
     def write(entries: list[Entry]) -> tuple[int, int, list[str]]:
         """One blob, read once into a checked file outside ``root``, then copied to each of its paths.
 
         Returns the paths written, their bytes, and the paths that something took or blocked meanwhile (kept).
         """
-        assert entries[0].hash is not None
+        assert entries[0].blob is not None
         written, kept = 0, []
         with tempfile.TemporaryDirectory(dir=store.scratch()) as scratch:
             source = Path(scratch) / 'blob'
-            size = store.get_path(entries[0].hash, source)
+            size = store.get_path(entries[0].blob, source)
             for entry in entries:
                 try:
                     _copy(source, root / entry.path, entry.mode)

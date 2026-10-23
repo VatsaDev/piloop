@@ -63,13 +63,13 @@ the workspace with other content is kept and listed, never overwritten. Agents m
 
 One store serves every campaign of a `PILOOP_HOME`, in `$PILOOP_HOME/store`.
 
-- **Content addressing.** A blob is addressed by the BLAKE3 hash of its whole content. A file that appears in many
-  places, or in two campaigns, is stored once.
+- **Content addressing.** A blob is addressed by a [CID](https://dasl.ing/cid.html) of the BLAKE3 hash of its whole
+  content. A file that appears in many places, or in two campaigns, is stored once.
 - **Compression.** Blobs are kept zstd-compressed. JSON and logs shrink about tenfold; arrays that are already
   compressed (`.npz`) barely shrink.
 - **Streaming.** Files of any size are read and written in 1 MiB pieces, never held in memory.
 - **Manifests.** A manifest lists the paths of one archiving, each with its blob, size and mode (or a symlink's
-  target). It is a blob too, and the `archives` table records its address.
+  target). It is a [DASL](https://dasl.ing) value that links each blob, and the `archives` table records its CID.
 
 Nothing is ever deleted from the store. There is no garbage collection.
 

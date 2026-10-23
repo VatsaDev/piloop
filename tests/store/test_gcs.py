@@ -72,7 +72,7 @@ def test_blobs_go_under_the_prefix_in_the_configured_class_and_come_back(
     remote = GcsConfig(bucket='piloop-test', prefix='/piloop/store/', storage_class='COLDLINE').open()
     assert (remote.url, remote.prefix) == ('gs://piloop-test/piloop/store', 'piloop/store/')
     blob = Store(tmp_path / 'store', remote).put(io.BytesIO(b'{"a": 1}'))
-    assert buckets['piloop-test'].objects[f'piloop/store/{key(blob.hash)}'][1] == 'COLDLINE'
+    assert buckets['piloop-test'].objects[f'piloop/store/{key(blob.cid)}'][1] == 'COLDLINE'
     assert GcsConfig(bucket='b').open().url == 'gs://b', 'a bucket root has no prefix'
 
 

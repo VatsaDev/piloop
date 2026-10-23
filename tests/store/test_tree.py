@@ -6,6 +6,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from covalence import Cid
 
 from piloop.store import Blob, Changed, Store, Writer, tree as tree_module
 from piloop.store.tree import Cancelled, Removed, materialise, put_tree, put_walk, remove, walk
@@ -55,7 +56,7 @@ def test_a_tree_is_stored_removed_and_materialised_back_byte_for_byte(tmp_path: 
     assert remove(workspace, stored.manifest) == Removed(5)
     assert tree(workspace) == {'NOTES.md': b'# Notes\n'}
     assert [p.name for p in (workspace / 'idea7').iterdir()] == ['empty'], 'a directory that it emptied goes'
-    done = materialise(store, store.manifest(store.put_manifest(stored.manifest).hash), workspace)
+    done = materialise(store, store.manifest(store.put_manifest(stored.manifest)), workspace)
     assert (done.written, done.bytes, done.same, done.kept) == (5, 2 * 1006 + 10 + 5, 0, [])
     assert tree(workspace) == before
     assert (workspace / 'idea7' / 'run.sh').stat().st_mode & 0o777 == 0o755
@@ -202,12 +203,12 @@ def test_a_restore_never_replaces_what_someone_wrote_while_the_blob_was_read(
     remove(workspace, stored.manifest)
     real = Store.get
 
-    def racing(self: Store, hash: str, dst: Writer) -> int:
+    def racing(self: Store, cid: Cid, dst: Writer) -> int:
         for name in ('x.npy', 'copy.npy'):  # an agent writes both paths of the shared blob meanwhile
             path = workspace / 'idea7' / 'arrays' / name if name == 'x.npy' else workspace / 'idea7' / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('agent')
-        return real(self, hash, dst)
+        return real(self, cid, dst)
 
     monkeypatch.setattr(Store, 'get', racing)
     done = materialise(store, stored.manifest, workspace, lambda e: e.path.endswith('.npy'))

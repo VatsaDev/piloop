@@ -40,7 +40,8 @@ The agent sets up the campaign, runs it, and asks you only what needs you. To tr
 
 ## Requirements
 
-- Linux or macOS.
+- Linux (x86-64 or ARM, glibc 2.28 or later) or macOS on Apple silicon. On an Intel Mac, installing builds
+  [covalence](https://pypi.org/project/covalence/) from source, which needs a recent Rust.
 - git 2.40 or later, with a commit identity.
 - [uv](https://docs.astral.sh/uv/). The installer installs it.
 - At least one of [Claude Code](https://code.claude.com), [Codex](https://github.com/openai/codex) or

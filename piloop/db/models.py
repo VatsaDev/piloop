@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Final
 
+from covalence import Cid
 from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter
 from sqlalchemy import (
     JSON,
@@ -84,6 +85,19 @@ class UTCDateTime(TypeDecorator[datetime]):
 
     def process_result_value(self, value: datetime | None, dialect: Dialect) -> datetime | None:
         return value.replace(tzinfo=UTC) if value is not None and value.tzinfo is None else value
+
+
+class CidText(TypeDecorator[Cid]):
+    """A covalence ``Cid``, stored as its text."""
+
+    impl = String
+    cache_ok = True
+
+    def process_bind_param(self, value: Cid | None, dialect: Dialect) -> str | None:
+        return None if value is None else str(value)
+
+    def process_result_value(self, value: str | None, dialect: Dialect) -> Cid | None:
+        return None if value is None else Cid(value)
 
 
 class CampaignStatus(StrEnum):
@@ -1068,8 +1082,8 @@ class Archive(Base):
     idea_id: Mapped[IdeaId | None]
     """The done idea whose subtree this is; NULL for what a stopped campaign left. Plain integer: the archive outlives
     a deleted idea."""
-    manifest: Mapped[str | None]
-    """Address of the stored manifest (path → blob, size, mode) in the artifact store; NULL when there was nothing
+    manifest: Mapped[Cid | None] = mapped_column(CidText)
+    """The CID of the stored manifest (path → blob, size, mode) in the artifact store; NULL when there was nothing
     to archive."""
     files: Mapped[int] = mapped_column(default=0, server_default=text('0'))
     """Files and symlinks archived."""
