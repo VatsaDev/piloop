@@ -3,12 +3,15 @@
 ``piloop serve`` runs one (``SERVE``). It reports each job when it ends. It reads no campaign table: everything
 comes in the job's description, and everything goes back in the report.
 
-It talks to its control plane only through a ``LeaseClient``: ``Local`` in ``piloop serve``. One thread sends a
-heartbeat with a host sample (``Timing.renew``), takes new jobs and resends unsent reports, from ``start`` until the
-worker stops. Another reads the worker's messages (a long-poll): a waiting job wakes the first at once, a revoke stops
+It talks to its control plane only through a ``LeaseClient``: ``Local`` in ``piloop serve``, ``Remote`` in ``piloop
+worker --server``. One thread sends a heartbeat with a host sample (``Timing.renew``), takes new jobs and resends
+unsent reports, from ``start`` until the worker stops. Another reads the worker's messages (a long-poll): a waiting job wakes the first at once, a revoke stops
 a job, and a prompt goes to its agent. Each job has a thread of its own.
 A worker that hears nothing back for ``Timing.self_stop`` stops its jobs and keeps their reports until it is heard
-again: by then the fence refuses them, and a person can still import what they made (``leases.StaleReport``).
+again: by then the fence refuses them, and a person can still import what they made (``leases.StaleReport``). A
+report is kept in the worker's spool (``Spool``) until the control plane took or refused it, so a worker that is
+killed sends it again when it starts. A worker that the control plane refuses for good (``Dismissed``) stops its jobs
+and ends.
 """
 
 import os
@@ -25,11 +28,13 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import assert_never
 
+from pydantic import BaseModel, ConfigDict
+
 from piloop.otel import Tracer
-from piloop.plugins.executor.contract import AgentJob, AgentReport, EvaluationJob, EvaluationReport
+from piloop.plugins.executor.contract import AgentJob, AgentReport, EvaluationJob, EvaluationReport, Report
 from piloop.plugins.executor.kit import jobs
 from piloop.plugins.executor.kit.capacity import sample
-from piloop.plugins.executor.kit.client import LeaseClient, WorkerInfo
+from piloop.plugins.executor.kit.client import Dismissed, LeaseClient, WorkerInfo
 from piloop.plugins.executor.kit.leases import (
     DEFAULT_TIMING,
     SERVE,
@@ -57,13 +62,40 @@ FAILING_TURNS = 3
 """How many of the worker's turns fail one after another before it says so (``WORKER_ANOMALY``)."""
 
 
-@dataclass(frozen=True)
-class Unsent:
+class Unsent(BaseModel):
     """A report to send, with its request id, and the agent's job whose worktree goes once it is out."""
 
+    model_config = ConfigDict(frozen=True)
+
     request_id: str
-    report: AgentReport | EvaluationReport
+    report: Report
     job: AgentJob | None
+
+
+class Spool:
+    """The reports that a worker has not sent yet: ``<lease>.json`` under ``root``, each an ``Unsent``.
+
+    A report goes in before it is first sent, and out once the control plane took or refused it.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+
+    def put(self, lease_id: int, unsent: Unsent) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        part = self.root / f'{lease_id}.json.part'
+        part.write_text(unsent.model_dump_json())
+        part.replace(self.root / f'{lease_id}.json')  # a worker killed while it writes leaves no half report
+
+    def remove(self, lease_id: int) -> None:
+        (self.root / f'{lease_id}.json').unlink(missing_ok=True)
+
+    def leases(self) -> set[int]:
+        """The leases whose reports wait."""
+        return {int(p.stem) for p in self.root.glob('*.json')}
+
+    def get(self, lease_id: int) -> Unsent:
+        return Unsent.model_validate_json((self.root / f'{lease_id}.json').read_text())
 
 
 @dataclass
@@ -119,8 +151,8 @@ class Worker:
         either asked to stop or never starts, and one that was starting kills its agent once the start returns."""
         self._jobs: dict[int, Running] = {}
         self._threads: dict[int, threading.Thread] = {}
-        self._unsent: dict[int, Unsent] = {}
-        """Reports that could not be sent, by lease: sent again on every turn of the loop."""
+        self.dismissed: Dismissed | None = None
+        """Why the control plane refused this worker for good. Then it stopped its jobs, and its loop ends."""
         self._loop: threading.Thread | None = None
         self._listener: threading.Thread | None = None
         self._wanted = threading.Event()
@@ -141,6 +173,15 @@ class Worker:
         """Notified when ``_starting`` falls: a hand-over waits for every start in flight to be recorded."""
         self._recovered = threading.Condition(self._lock)
         """Notified when a held job is registered again, or its thread ends: the listener waits for every one."""
+
+    @property
+    def spool(self) -> Spool:
+        """Reports not sent yet, under ``<home>/spool/<worker>``: workers that share a home never send each other's.
+
+        Each is sent again on every turn of the loop, also by the next process.
+        """
+        assert self.id is not None, 'a worker spools once it registered, which names it'
+        return Spool(self.home / 'spool' / self.id)
 
     def start(self) -> None:
         """Register, find this worker's leases again, then take jobs and read messages. Later calls do nothing.
@@ -167,12 +208,17 @@ class Worker:
         )
         try:
             registration = self.client.register(info)
+        except Dismissed as e:
+            self._dismiss(e)
+            return False
         except Exception as e:  # the database is locked, say: the next turn tries again
             self._tracer.event('worker.turn_failed', worker=self.id, error=f'{type(e).__name__}: {e}')
             return False
         self.id, self.timing, self._registered = registration.worker, registration.timing, True
+        spooled = self.spool.leases()
         for grant in registration.held:
-            self._spawn(grant, partial(self._recover, grant))
+            if grant.lease not in spooled:  # a job that ended: the loop sends its report
+                self._spawn(grant, partial(self._recover, grant))
         held = [grant.lease for grant in registration.held]
         self._listener = threading.Thread(
             target=self._listen, args=(registration.cursor, held), name=f'messages-{self.id}', daemon=True
@@ -183,6 +229,13 @@ class Worker:
     def _wake(self) -> None:
         """Make the loop turn now."""
         self._wanted.set()
+
+    def _dismiss(self, e: Dismissed) -> None:
+        """The control plane refuses this worker for good: stop its jobs. Their reports stay in the spool."""
+        if self.dismissed is None:
+            self._tracer.event('worker.dismissed', worker=self.id, error=str(e))
+            self.dismissed = e
+        self.stop()
 
     def _listen(self, after: int, held: list[int]) -> None:
         """Read the messages after the cursor ``after`` until the worker stops: wake the loop, stop jobs, prompt.
@@ -197,6 +250,9 @@ class Worker:
         while not self._stopping:
             try:
                 messages = self.client.messages(after, self.timing.renew)
+            except Dismissed as e:
+                self._dismiss(e)
+                return
             except Exception as e:  # the control plane does not answer: the heartbeat's loop decides what stops
                 self._tracer.event('worker.unheard', worker=self.id, error=str(e))
                 self._wanted.wait(self.timing.renew)
@@ -280,6 +336,13 @@ class Worker:
         if (loop := self._loop) is not None:
             loop.join(self.timing.renew)  # the daemon closes its database next
 
+    def wait(self) -> None:
+        """Wait until the loop ends: the worker stopped, and its jobs reported or it was dismissed."""
+        with self._lock:
+            loop = self._loop
+        if loop is not None:
+            loop.join()
+
     def join(self, timeout: float) -> None:
         """Wait up to ``timeout`` seconds for the jobs' threads and the loop to end."""
         deadline = time.monotonic() + timeout
@@ -292,7 +355,10 @@ class Worker:
             loop.join(max(deadline - time.monotonic(), 0))
 
     def _run_loop(self) -> None:
-        """Turn every ``Timing.renew``, or at once on a change, until the worker stopped and its jobs reported.
+        """Turn every ``Timing.renew``, or at once on a change, until the worker stopped and its jobs ended.
+
+        A report that a stopping worker could not send stays in its spool, for the next process: it does not wait for
+        the control plane.
 
         A turn that fails is tried again after ``Timing.renew``: it never ends the loop, which would let every lease of
         the worker expire.
@@ -300,26 +366,28 @@ class Worker:
         # after a hand-over the next daemon's worker has the leases, and this daemon's database may be closed
         while not self._handover:
             self._wanted.clear()  # before the turn: a change during it makes another turn at once
-            failed = not (self._registered or self._join()) or not self._guarded_turn()
+            if self._registered or self._join():
+                self._guarded_turn()
             with self._lock:
-                done = not self._threads and not self._unsent and (not failed or not self._registered)
-                if self._stopping and done:  # an unregistered worker has nothing to report
+                if self._stopping and not self._threads:
                     return
             self._wanted.wait(self.timing.renew)
 
-    def _guarded_turn(self) -> bool:
-        """Run a turn, and return whether it went through. A streak of ``FAILING_TURNS`` failures is an anomaly."""
+    def _guarded_turn(self) -> None:
+        """Run a turn. A streak of ``FAILING_TURNS`` failures is an anomaly."""
         try:
             self._turn()
+        except Dismissed as e:
+            self._dismiss(e)
+            return
         except Exception as e:  # the database is locked, a job that no longer validates, a bug
             self._failures += 1
             error = f'{type(e).__name__}: {e}'
             self._tracer.event('worker.turn_failed', worker=self.id, failures=self._failures, error=error)
             if self._failures == FAILING_TURNS:
                 self._tracer.event(WORKER_ANOMALY, worker=self.id, failures=self._failures, error=error)
-            return False
+            return
         self._failures = 0
-        return True
 
     def _turn(self) -> None:
         """Send the heartbeat with a host sample, act on its answers, send what is unsent, and take new jobs."""
@@ -335,6 +403,8 @@ class Worker:
             # the renewal is stamped inside the call, after ``sent``: a call that waited for the write lock must not
             # move the worker's own deadline past the lease's
             self._heard = sent
+        except Dismissed:  # an answer, and the end of this worker: not a partition
+            raise
         except Exception as e:  # a partition: the control plane does not answer
             self._tracer.event('worker.unheard', worker=self.id, error=str(e))
             if time.monotonic() - self._heard >= self.timing.self_stop:
@@ -343,9 +413,11 @@ class Worker:
         for lease_id, answer in answers.items():
             if answer is not Answer.RENEWED:
                 self._stop_job(lease_id, answer)
-        for lease_id, unsent in list(self._unsent.items()):
-            self._send(lease_id, unsent)
-        while not self._stopping and isinstance(grant := self.client.acquire(host), Grant):
+        with self._lock:  # a job's thread sends its own report first
+            waiting = self.spool.leases() - self._threads.keys()
+        for lease_id in sorted(waiting):
+            self._send(lease_id, self.spool.get(lease_id))
+        while not self._stopping and isinstance(grant := self.client.acquire(uuid.uuid4().hex, host), Grant):
             body = self._agent if isinstance(grant.job, AgentJob) else self._evaluation
             self._spawn(grant, partial(body, grant))
 
@@ -399,21 +471,23 @@ class Worker:
                 self._recovered.notify_all()
 
     def _send(self, lease_id: int, unsent: Unsent) -> None:
-        """Send a report. Once the control plane accepted or refused it, remove the agent's worktree.
+        """Send a spooled report. Once the control plane accepted or refused it, unspool it and remove the agent's worktree.
 
         A refused one is dropped: the control plane keeps it as a stale report. One that cannot be sent (a partition,
-        a database locked past its busy timeout) is kept and sent again on the next turn, and its worktree stays: a
-        worker killed meanwhile leaves its successor the ended agent in its worktree, which it reports.
+        a database locked past its busy timeout) stays in the spool and is sent again on the next turn, and its
+        worktree stays: a worker killed meanwhile leaves its successor the ended agent in its worktree, which it reports.
         """
         try:
             self.client.report(lease_id, unsent.request_id, unsent.report)
         except StaleLease as e:
             self._tracer.event('worker.report_refused', worker=self.id, lease=lease_id, error=str(e))
+        except Dismissed as e:
+            self._dismiss(e)
+            return
         except Exception as e:  # keep it and send it again
             self._tracer.event('worker.report_unsent', worker=self.id, lease=lease_id, error=str(e))
-            self._unsent[lease_id] = unsent
             return
-        self._unsent.pop(lease_id, None)
+        self.spool.remove(lease_id)
         if unsent.job is not None and not self._handover:
             jobs.remove(unsent.job)
 
@@ -423,7 +497,9 @@ class Worker:
             self._jobs.pop(lease_id, None)
         if self._handover:
             return
-        self._send(lease_id, Unsent(uuid.uuid4().hex, report, job))
+        unsent = Unsent(request_id=uuid.uuid4().hex, report=report, job=job)
+        self.spool.put(lease_id, unsent)
+        self._send(lease_id, unsent)
         self._wake()  # a slot is free
 
     def _register(self, lease_id: int, kill: Callable[[], None] | None, *, evaluation: bool = False) -> Running:
@@ -467,6 +543,8 @@ class Worker:
             self.client.lost(lease_id, reason)
         except StaleLease as e:
             self._tracer.event('worker.report_refused', worker=self.id, lease=lease_id, error=str(e))
+        except Dismissed as e:
+            self._dismiss(e)
 
     def _runtime(self, job: AgentJob) -> Runtime:
         return self.runtime_factory(job.runtime, campaign=job.campaign, campaign_path=job.campaign_path)

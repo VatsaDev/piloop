@@ -5,7 +5,9 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
+from functools import partial
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from pytest_mock import MockerFixture
@@ -61,9 +63,7 @@ from piloop.plugins.executor.kit.leases import (
     LeaseRevoked,
     Leases,
     LeaseUnreachable,
-    NotAddressed,
     PromptMessage,
-    Revoke,
     StaleLease,
     StaleReport,
     Timing,
@@ -91,7 +91,7 @@ def join(leases: Leases, worker: str, runners: list[str], pool: str = 'test') ->
 def take(leases: Leases, worker: str, runners: list[str], pool: str = 'test') -> Grant | None:
     """Register ``worker`` in ``pool`` with ``runners``, then acquire: the grant, or None when it gets no lease."""
     join(leases, worker, runners, pool)
-    grant = Local(leases, worker).acquire(HOST)
+    grant = Local(leases, worker).acquire(uuid4().hex, HOST)
     return grant if isinstance(grant, Grant) else None
 
 
@@ -251,7 +251,12 @@ def test_a_lease_is_acquired_started_renewed_and_reported_once_with_its_receipt(
         ('finished', job.agent_session, DONE),
     ], "it applied once, with the runtime's handle"
     row = lease_row(db, lease_id)
-    assert (row.state, row.worker, row.handle, row.request_id) == (LeaseState.REPORTED, 'w1', handle.model_dump(), 'r1')
+    assert (row.state, row.worker, row.handle, row.report_request) == (
+        LeaseState.REPORTED,
+        'w1',
+        handle.model_dump(),
+        'r1',
+    )
     with pytest.raises(StaleLease, match=f'lease#{lease_id} is reported'):
         Local(leases, 'w1').report(lease_id, 'r2', DONE)
 
@@ -558,42 +563,6 @@ def test_a_stop_leaves_an_agent_lease_that_a_worker_took_meanwhile_to_its_report
     assert (lease_row(db, lease_id).state, recorder.calls) == (LeaseState.ACQUIRED, [])
 
 
-def test_a_worker_reads_work_for_every_worker_and_only_its_own_prompts_and_revokes(
-    db: Database, campaign: Campaign, tmp_path: Path, leases: Leases, recorder: Recorder
-) -> None:
-    """The GitHub Actions runner's long-poll: it returns at once when a message waits. Each message is an event."""
-    w1, w2 = Local(leases, 'w1'), Local(leases, 'w2')
-    start = join(leases, 'w1', []).cursor
-    assert join(leases, 'w2', []).cursor == start, 'a new worker starts at the newest event'
-    assert w1.messages(start, 0.01) == [], 'nothing waits: it waits, then returns empty'
-    job = agent_job(db, campaign, tmp_path)
-    leases.submit(job)
-    leases.submit(agent_job(db, campaign, tmp_path))
-    works = w1.messages(start, 5)
-    assert [type(m) for m in works] == [Work, Work] and w2.messages(start, 5) == works, 'one Work for each job, to each'
-    assert w1.messages(works[-1].id, 0.01) == [], 'read past'
-    grant = w1.acquire(HOST)
-    assert isinstance(grant, Grant)
-    w1.started(grant.lease, HANDLE, None)
-    leases.prompt(AgentKey(job.agent_session), Prompt(CommentId(7), 'try lzma'))
-    leases.revoke(AgentKey(job.agent_session))
-    prompt, stop = w1.messages(works[-1].id, 5)
-    assert isinstance(prompt, PromptMessage) and (prompt.lease, prompt.prompt) == (
-        grant.lease,
-        Prompt(CommentId(7), 'try lzma'),
-    )
-    assert isinstance(stop, Revoke) and stop.lease == grant.lease
-    assert w2.messages(works[-1].id, 0.01) == [], "another worker's prompts and revokes are not its own"
-    with pytest.raises(NotAddressed, match=f'event#{prompt.id} is not a prompt for w2'):
-        w2.delivered(prompt.id, None)
-    with pytest.raises(NotAddressed):
-        w1.delivered(stop.id, None)
-    w1.delivered(prompt.id, None)
-    w1.delivered(prompt.id, None)
-    assert [c for c in recorder.calls if c[0] == 'delivered'] == [('delivered', job.agent_session, (7, None))], 'once'
-    assert w1.messages(works[-1].id, 0.01) == [stop], 'a prompt with its outcome is left out, though behind the cursor'
-
-
 def test_a_prompt_handed_over_again_is_not_written_again_and_survives_the_process(
     db: Database, campaign: Campaign, tmp_path: Path, recorder: Recorder
 ) -> None:
@@ -602,7 +571,7 @@ def test_a_prompt_handed_over_again_is_not_written_again_and_survives_the_proces
     first = Leases(db, recorder, TIMING, POOLS)
     start = join(first, 'w1', []).cursor
     queue(db, job)
-    grant = Local(first, 'w1').acquire(HOST)
+    grant = Local(first, 'w1').acquire(uuid4().hex, HOST)
     assert isinstance(grant, Grant)
     first.prompt(AgentKey(job.agent_session), Prompt(CommentId(7), 'try lzma'))
     second = Leases(db, recorder, TIMING, POOLS)  # the next daemon process
@@ -620,7 +589,7 @@ def test_a_worker_that_restarts_resumes_from_its_cursor(
     start = join(leases, 'w1', []).cursor
     queue(db, job)
     w1 = Local(leases, 'w1')
-    grant = w1.acquire(HOST)
+    grant = w1.acquire(uuid4().hex, HOST)
     assert isinstance(grant, Grant)
     leases.prompt(AgentKey(job.agent_session), Prompt(CommentId(1), 'one'))
     leases.prompt(AgentKey(job.agent_session), Prompt(CommentId(2), 'two'))
@@ -670,3 +639,34 @@ def test_a_prompt_for_an_agent_without_a_live_lease_is_undelivered_at_once(
     queue(db, job)
     leases.prompt(AgentKey(job.agent_session), Prompt(CommentId(3), 'x'))
     assert recorder.calls == [('delivered', job.agent_session, (3, 'the agent has no live lease'))]
+
+
+@dataclass
+class Overtaken(Recorder):
+    """A ``Results`` whose first ``finished`` runs ``first`` before it: the same report, applied meanwhile."""
+
+    first: Callable[[], object] | None = None
+
+    def finished(
+        self, job: AgentJob | EvaluationJob, report: AgentReport | EvaluationReport, *, guard: Guard | None = None
+    ) -> None:
+        if (first := self.first) is not None:
+            self.first = None
+            first()
+        super().finished(job, report, guard=guard)
+
+
+def test_a_report_sent_again_while_the_first_applies_gets_its_receipt_and_is_not_kept_as_stale(
+    db: Database, campaign: Campaign, tmp_path: Path
+) -> None:
+    """A worker that gave up waiting for an answer sends its report again while the server still applies the first."""
+    recorder = Overtaken(db)
+    leases = Leases(db, recorder, TIMING, POOLS)
+    join(leases, 'w1', [])
+    lease = queue(db, agent_job(db, campaign, tmp_path))
+    w1 = Local(leases, 'w1')
+    assert isinstance(w1.acquire(uuid4().hex, HOST), Grant)
+    recorder.first = partial(w1.report, lease, 'r1', DONE)
+    assert w1.report(lease, 'r1', DONE) == RECEIPT
+    assert events(db, StaleReport) == []
+    assert [c[0] for c in recorder.calls] == ['finished'], 'applied once'

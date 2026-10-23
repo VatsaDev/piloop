@@ -56,6 +56,10 @@ class Https(NetworkConfig):
     def open(self, host: NetworkHost) -> HttpsNetwork:
         return HttpsNetwork(host, self)
 
+    def client(self, server: str, token: str) -> httpx.Client:
+        """A client that trusts the system's certificates, or those of ``SSL_CERT_FILE`` when it is set."""
+        return httpx.Client(base_url=server, headers={'Authorization': f'Bearer {token}'}, timeout=TIMEOUT)
+
 
 class HttpsNetwork:
     """``Network``: a TCP socket, with TLS when ``tls`` names a certificate, and a bearer token on every request."""
@@ -86,7 +90,3 @@ class HttpsNetwork:
             return Refused('no bearer token: send Authorization: Bearer <token> (piloop token create)')
         caller = self.host.tokens.verify(secret)
         return caller if caller is not None else Refused('the token is unknown or revoked')
-
-    def client(self, server: str, token: str) -> httpx.Client:
-        """A client that trusts the system's certificates, or those of ``SSL_CERT_FILE`` when it is set."""
-        return httpx.Client(base_url=server, headers={'Authorization': f'Bearer {token}'}, timeout=TIMEOUT)

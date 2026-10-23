@@ -930,7 +930,8 @@ class Lease(Base):
         Index('ix_leases_state', 'state'),
         Index('ix_leases_agent_session', 'agent_session_id'),
         Index('ix_leases_evaluation', 'evaluation_id'),
-        *text_checks('leases', nullable=('worker', 'request_id')),
+        Index('ix_leases_acquire_request', 'acquire_request', unique=True),
+        *text_checks('leases', nullable=('worker', 'report_request')),
         {'sqlite_autoincrement': True},
     )
 
@@ -960,7 +961,9 @@ class Lease(Base):
     revoked_at: Mapped[datetime | None]
     """When the daemon asked the worker to stop the job: a kill or a cancel. The worker still reports it."""
     ended_at: Mapped[datetime | None]
-    request_id: Mapped[str | None]
+    acquire_request: Mapped[str | None]
+    """The request id of the acquire that took it. An acquire sent again with it gets this lease again."""
+    report_request: Mapped[str | None]
     """The request id of the report that applied. A report sent again with it gets the same ``receipt``."""
     receipt: Mapped[dict[str, object]] = mapped_column(default=dict, server_default=EMPTY_JSON)
     """What the report applied, or why the lease ended."""

@@ -101,3 +101,23 @@ def test_cut_response_lets_the_request_through_and_drops_one_answer(proxy: Proxy
     wait_until(lambda: echo.received == [b'request'])
     assert (proxy.cuts, proxy.toxic) == (1, None)
     assert _round_trip(proxy) == b'ping'
+
+
+def test_cut_response_of_a_request_drops_only_the_answer_to_that_request(proxy: Proxy, echo: _EchoServer) -> None:
+    proxy.toxic = CutResponse(b'report')
+    assert _round_trip(proxy, b'heartbeat') == b'heartbeat'
+    with _connect(proxy) as client:
+        client.sendall(b'report')
+        with pytest.raises(ConnectionResetError):
+            client.recv(1024)
+    assert (proxy.cuts, proxy.toxic) == (1, None)
+
+
+def test_cut_response_of_an_answer_lets_other_answers_to_that_request_through(proxy: Proxy) -> None:
+    proxy.toxic = CutResponse(b'acquire', b'grant')
+    assert _round_trip(proxy, b'acquire: nothing') == b'acquire: nothing'
+    with _connect(proxy) as client:
+        client.sendall(b'acquire: grant')
+        with pytest.raises(ConnectionResetError):
+            client.recv(1024)
+    assert proxy.cuts == 1

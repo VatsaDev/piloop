@@ -179,6 +179,10 @@ class Timing:
 DEFAULT_TIMING = Timing()
 
 
+class UnknownPool(ValueError):
+    """A worker registers in a pool that ``[plugins.executor.pools]`` does not have."""
+
+
 class StaleLease(Exception):
     """A worker's call on a lease that is not its live, newest lease: refused, and nothing changed. ``stale_lease``."""
 
@@ -400,10 +404,10 @@ class Leases:
         its leases are the truth then.
 
         Raises:
-            ValueError: no ``[plugins.executor.pools.<pool>]``.
+            UnknownPool: no ``[plugins.executor.pools.<pool>]``.
         """
         if pool not in self.pools:
-            raise ValueError(f'no pool {pool!r}: the pools are {", ".join(sorted(self.pools))}')
+            raise UnknownPool(f'no pool {pool!r}: the pools are {", ".join(sorted(self.pools))}')
         with self._db.session() as s:
             write_transaction(s)
             newest = feed.newest(s)
@@ -425,17 +429,22 @@ class Leases:
         if row.no_lease == NoLease.UNREACHABLE:
             row.no_lease = None
 
-    def acquire(self, worker: str, host: HostSample) -> Grant | NoLease:
+    def acquire(self, worker: str, request_id: str, host: HostSample) -> Grant | NoLease:
         """Take the oldest queued job that ``worker`` can run and that its pool admits, or say why there is none.
 
         Agent jobs go first. An evaluation job goes only to a worker with its runner. Core submits an evaluation only
         when it has a slot, in the order of its queue, so the order of the leases is that order. ``host`` is the
-        worker's sample now, which the gates read (``capacity.admits``).
+        worker's sample now, which the gates read (``capacity.admits``). An acquire sent again with its request id gets
+        the lease that it took, so a lost answer leaves no lease to expire.
         """
         with self._db.session() as s:
             write_transaction(s)
             row = s.get_one(LeaseWorker, worker)  # ``register`` wrote it
             self._heard(row, host)
+            taken = select(Lease).where(Lease.worker == worker, Lease.acquire_request == request_id)
+            if (lease := s.scalars(taken).first()) is not None:
+                s.commit()
+                return Grant.of(lease)
             pool = self.pools[row.pool]
             counts = Counter(
                 s.scalars(select(Lease.kind).where(Lease.worker == worker, Lease.state.in_(LIVE_LEASES))).all()
@@ -456,6 +465,7 @@ class Leases:
                         assert lease is not None  # the cases above take every other pair
                         now = utcnow()
                         lease.state, lease.worker, lease.acquired_at = LeaseState.ACQUIRED, worker, now
+                        lease.acquire_request = request_id
                         lease.renewed_at, lease.expires_at = now, now + timedelta(seconds=self.timing.toleration)
                         row.no_lease = None
                         s.commit()
@@ -578,13 +588,13 @@ class Leases:
             StaleLease: the fence refused it. It is kept as a ``StaleReport`` event, and nothing else changed.
         """
         lease = self._job(lease_id)
-        if lease.state is LeaseState.REPORTED and lease.request_id == request_id:
+        if lease.state is LeaseState.REPORTED and lease.report_request == request_id:
             return dict(lease.receipt)
         receipt: dict[str, object] = {'reported': report.kind}
 
         def mark(s: Session) -> None:
             live = self._live(s, lease_id, worker)
-            live.state, live.ended_at, live.request_id, live.receipt = (
+            live.state, live.ended_at, live.report_request, live.receipt = (
                 LeaseState.REPORTED,
                 utcnow(),
                 request_id,
@@ -594,6 +604,8 @@ class Leases:
         try:
             self._results.finished(JOB.validate_python(lease.job), report, guard=mark)
         except (StaleLease, Settled) as e:
+            if (applied := self._job(lease_id)).state is LeaseState.REPORTED and applied.report_request == request_id:
+                return dict(applied.receipt)  # the same report, sent again while the first was applied
             self._keep_stale(lease, worker, report, str(e))
             if isinstance(e, Settled):
                 raise StaleLease(f'stale_lease: {e}') from e

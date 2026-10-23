@@ -76,11 +76,42 @@ piloop limits unset executor.pools.serve.evaluations
  serve   serve  4s ago  44.1/32  113.3 GB  918.4 GB  0       0            nothing
 ```
 
+## A worker on another machine
+
+A worker on another machine takes the leases of its pool over HTTPS. A job names its files by their paths on the
+server's machine, so the worker must see the campaign's directories at the same paths, on a shared mount for example.
+
+On the server, add the pool, set `tls` in `[plugins.network]` (see [Networks](/architecture/extension-points#networks)),
+listen, and make the worker's token:
+
+```toml
+[plugins.executor.pools.gpu]
+agents = 0
+evaluations = 1
+```
+
+```bash
+piloop serve --listen 0.0.0.0:8443
+piloop token create gpu1
+```
+
+On the worker's machine, with the token that `create` printed:
+
+```bash
+PILOOP_TOKEN=<token> piloop worker --server https://piloop.example.com:8443 --pool gpu
+```
+
+The worker is the token's name. It calls the server, and the server never calls it.
+
+## Faults
+
 | What happens | What piloop does |
 |---|---|
 | A worker dies during a run | The run ends `worker_lost`. It is not an attempt. |
 | A worker dies during an evaluation | The evaluation is queued again. Partial output is never scored. |
 | A late report | It is refused, and kept as a `lease.stale_report` event with the ref of its commits. |
 | The same report twice | The second gets the first's answer. |
+| A worker stops or dies before it sends a report | The report waits in `$PILOOP_HOME/spool/<worker>`, and goes out when the worker starts again. |
+| A worker's token is revoked | The worker stops its jobs and exits. |
 | The machine sleeps | A gap longer than the grace period is the daemon's own absence: nothing expires. |
 | `piloop serve` restarts | Its worker finds its leases again and re-attaches to each agent whose worktree is there. |

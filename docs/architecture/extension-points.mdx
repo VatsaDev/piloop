@@ -200,8 +200,9 @@ job on this machine.
 
 ### Built in
 
-`workers`, the default, runs every job on a [lease](/architecture/leases), taken by its worker in `piloop serve`. It
-has no routes. Its keys are in the [configuration reference](/reference/configuration#plugins).
+`workers`, the default, runs every job on a [lease](/architecture/leases), taken by its worker in `piloop serve` or by
+a [worker on another machine](/architecture/leases#a-worker-on-another-machine). Its routes are the lease calls. Its
+keys are in the [configuration reference](/reference/configuration#plugins).
 
 ## Networks
 
@@ -211,11 +212,11 @@ executor with routes needs one.
 ### The contract
 
 The entry point names a subclass of `NetworkConfig`, which has `listen`: its fields are the other keys of
-`[plugins.network]`. The daemon calls its `open(host)` once, when it starts, to make the `Network`:
+`[plugins.network]`. Its `client(server, token)` is an HTTP client of the server that sends `token`: `piloop worker`
+dials with it. The daemon calls its `open(host)` once, when it starts, to make the server's `Network`:
 
 - `listener()` binds `listen`, and returns the socket with its TLS, or None when `listen` is unset.
 - `identify(headers)` returns the `Caller` of a request, or `Refused` with the reason. The server answers 401.
-- `client(server, token)` is an HTTP client of the server that sends `token`.
 
 ### Built in
 

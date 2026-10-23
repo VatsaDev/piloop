@@ -1,22 +1,26 @@
 """The ``workers`` executor, built in: lease-based workers (``piloop.plugins.executor.kit.leases``), in-process by default.
 
 ``[plugins.executor]`` in ``config.toml`` selects it (the default) and sets its fields (``Workers``). Its worker in
-``piloop serve`` takes every lease. Remote workers are to join it as a configuration of this executor, through the same
-lease operations, not as another executor.
+``piloop serve`` takes the leases of the pool ``serve``. A worker on another machine (``piloop worker --server``) takes
+those of its pool, through the same lease operations over HTTP (``piloop.plugins.executor.kit.remote``).
 """
 
+import threading
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Self
 
+import httpx2 as httpx
 from pydantic import Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.db.models import LIVE_LEASES, Lease, LeaseKind, LeaseWorker
 from piloop.net import Route
+from piloop.otel import Tracer
 from piloop.plugins.executor.contract import (
     AgentJob,
     AgentKey,
@@ -31,6 +35,7 @@ from piloop.plugins.executor.contract import (
 from piloop.plugins.executor.kit.capacity import HostSample, Pool
 from piloop.plugins.executor.kit.client import Local
 from piloop.plugins.executor.kit.leases import DEFAULT_POOLS, SERVE, Leases, Timing
+from piloop.plugins.executor.kit.remote import Remote, lease_routes
 from piloop.plugins.executor.workers.worker import Worker
 
 
@@ -77,6 +82,7 @@ class WorkersExecutor:
     def __init__(self, host: Host, config: Workers) -> None:
         timing = Timing(config.renew_seconds, config.grace_seconds, config.toleration_seconds)
         self.leases = Leases(host.db, host.results, timing, config.pools)
+        self._changed = host.db.changed
         self.worker = Worker(
             Local(self.leases, SERVE),
             host.tracer,
@@ -117,8 +123,8 @@ class WorkersExecutor:
         return refused
 
     def routes(self) -> Sequence[Route]:
-        """None yet: its only worker is the one in ``piloop serve``."""
-        return []
+        """The lease routes (``remote.lease_routes``), which workers on other machines call (``piloop worker``)."""
+        return lease_routes(self.leases, self._changed)
 
     def tick(self, now: datetime) -> datetime | None:
         """Expire the leases of a silent worker (``Leases.expire``), and return the next expiry."""
@@ -141,6 +147,14 @@ class WorkersExecutor:
 
     def close(self) -> None:
         """Nothing to release: the worker's threads end with the daemon process."""
+
+
+def remote_worker(http: httpx.Client, stop: threading.Event, tracer: Tracer, home: Path, pool: str) -> Worker:
+    """A worker on this machine that takes the leases of ``pool`` from a server through ``http`` (``piloop worker``).
+
+    Its calls give up trying again once ``stop`` is set.
+    """
+    return Worker(Remote(http, stop), tracer, home, pool=pool)
 
 
 @dataclass(frozen=True)

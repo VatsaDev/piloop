@@ -15,9 +15,10 @@ import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from piloop.db.models import TokenScope
-from piloop.net import InvalidBody, Route
+from piloop.net import InvalidBody, Refusal, Route
 from piloop.net.tokens import Caller
 from piloop.plugins.network.contract import Listener, Network, Refused
 
@@ -64,10 +65,13 @@ def _endpoint(network: Network, route: Route) -> Callable[[Request, Caller], Awa
         except InvalidBody as e:
             raise RequestValidationError(e.error.errors()) from e
         deadline, seen = time.monotonic() + call.wait, 0
-        while (answer := await run_in_threadpool(call.handle)) is None and route.changed is not None:
-            if (left := deadline - time.monotonic()) <= 0:
-                break
-            seen = await route.changed(seen, left)
+        try:
+            while (answer := await run_in_threadpool(call.handle)) is None and route.changed is not None:
+                if (left := deadline - time.monotonic()) <= 0:
+                    break
+                seen = await route.changed(seen, left)
+        except Refusal as e:
+            return JSONResponse({'error': e.error, 'detail': str(e)}, status_code=e.status)
         if answer is None:
             return Response(status_code=204)
         return Response(answer.model_dump_json(), media_type='application/json')

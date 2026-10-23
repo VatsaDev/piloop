@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Annotated
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
@@ -81,14 +82,14 @@ def test_with_two_evaluations_running_a_lowered_limit_starts_no_third_until_none
     job = evaluation_job(db, campaign, tmp_path)
     for n in range(3):
         queue(db, job.model_copy(update={'evaluation': job.evaluation + n}))
-    first, second = worker.acquire(HOST), worker.acquire(HOST)
-    assert isinstance(first, Grant) and isinstance(second, Grant) and worker.acquire(HOST) is NoLease.SLOTS
+    first, second = worker.acquire(uuid4().hex, HOST), worker.acquire(uuid4().hex, HOST)
+    assert isinstance(first, Grant) and isinstance(second, Grant) and worker.acquire(uuid4().hex, HOST) is NoLease.SLOTS
     applied = limits.applied(Workers(), [Limit(key=KEY, value=1)], 'executor')
     leases.pools = applied.pools  # what ``WorkersExecutor.configure`` does on the next tick
     worker.report(first.lease, 'r1', MEASURED)
-    assert worker.acquire(HOST) is NoLease.SLOTS, 'one runs, and one is the limit'
+    assert worker.acquire(uuid4().hex, HOST) is NoLease.SLOTS, 'one runs, and one is the limit'
     worker.report(second.lease, 'r2', MEASURED)
-    assert isinstance(worker.acquire(HOST), Grant)
+    assert isinstance(worker.acquire(uuid4().hex, HOST), Grant)
 
 
 class Nested(Parameters):

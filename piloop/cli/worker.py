@@ -1,4 +1,9 @@
-"""``piloop worker list``: the workers of the ``workers`` executor, their host samples, and why each got no lease."""
+"""``piloop worker --server URL --pool NAME``, a worker on this machine, and ``piloop worker list``, the workers."""
+
+import signal
+import threading
+from types import FrameType
+from typing import Annotated
 
 import cyclopts
 from rich.filesize import decimal
@@ -6,11 +11,44 @@ from rich.table import Table
 
 from piloop.cli import common
 from piloop.db.models import utcnow
+from piloop.otel import tracer
 from piloop.plugins.executor.contract import EXECUTORS
-from piloop.plugins.executor.workers import Workers, seen
+from piloop.plugins.executor.workers import Workers, remote_worker, seen
+from piloop.plugins.network.contract import NETWORKS
 from piloop.reports.overview import age
 
 app = cyclopts.App(name='worker', help='The workers that run jobs on leases.')
+
+
+@app.default
+def run(
+    *,
+    server: Annotated[str, cyclopts.Parameter(help='The URL of the server that `piloop serve --listen` runs.')],
+    pool: Annotated[str, cyclopts.Parameter(help='The pool of the server whose slots this machine has.')],
+) -> None:
+    """Take leases from a server, and run their jobs on this machine until it stops (Ctrl-C).
+
+    The worker's name is the name of its token, which ``PILOOP_TOKEN`` holds (``piloop token create`` on the server).
+    It exits non-zero when the server refuses it: a revoked token, another piloop protocol, an unknown pool.
+    """
+    settings = common.settings
+    if settings.token is None:
+        raise SystemExit('set PILOOP_TOKEN to the secret that `piloop token create <name>` printed on the server')
+    settings.home.mkdir(parents=True, exist_ok=True)  # its jobs' files, its spool and its free disk are there
+    stopping = threading.Event()
+    with NETWORKS.selected(settings.providers).client(server, settings.token.get_secret_value()) as http:
+        worker = remote_worker(http, stopping, tracer(), settings.home, pool)
+
+        def stop(signum: int, frame: FrameType | None) -> None:
+            stopping.set()
+            worker.stop()
+
+        signal.signal(signal.SIGTERM, stop)
+        signal.signal(signal.SIGINT, stop)
+        worker.start()
+        worker.wait()
+    if worker.dismissed is not None:
+        raise SystemExit(str(worker.dismissed))
 
 
 @app.command(name='list')

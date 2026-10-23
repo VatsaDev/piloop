@@ -2,7 +2,8 @@
 
 Host tier: a provider binds a socket and makes HTTP clients. ``[plugins.network] provider`` in ``config.toml`` selects
 one (``https`` by default). The entry point names a ``NetworkConfig`` class, whose fields are the other keys of the
-table and always have ``listen``, which ``piloop serve --listen`` overrides. Its ``open`` makes the ``Network``.
+table and always have ``listen``, which ``piloop serve --listen`` overrides. Its ``open`` makes the server's
+``Network``, and its ``client`` dials a server.
 
 What a caller may do once it is known is core's (``piloop.net``), not the provider's.
 """
@@ -88,10 +89,6 @@ class Network(Protocol):
         """Who sends a request with these headers (their names in lower case)."""
         ...
 
-    def client(self, server: str, token: str) -> httpx.Client:
-        """A client of the server at the URL ``server``, which calls it with ``token``."""
-        ...
-
 
 class NetworkConfig(Parameters, ABC):
     """A network's ``[plugins.network]``: core reads ``listen``, and the provider the other fields.
@@ -104,7 +101,11 @@ class NetworkConfig(Parameters, ABC):
 
     @abstractmethod
     def open(self, host: NetworkHost) -> Network:
-        """Make the network. The daemon calls it once, when it starts."""
+        """Make the server's side of the network. The daemon calls it once, when it starts."""
+
+    @abstractmethod
+    def client(self, server: str, token: str) -> httpx.Client:
+        """The dialing side, which needs no host: a client of the server at ``server`` that calls it with ``token``."""
 
     def listening(self, listen: Address | None) -> NetworkConfig:
         """This network, with ``listen`` (``piloop serve --listen``) in place of its own when it is not None.

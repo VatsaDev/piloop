@@ -11,6 +11,7 @@ from collections.abc import Callable
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import cyclopts
 import pytest
@@ -812,7 +813,7 @@ def test_worker_list_shows_each_worker_its_sample_its_jobs_and_why_it_got_no_lea
         leases = Leases(db, Recorder(db))
         host = HostSample(at=utcnow(), cpus=4, load1=2.0, memory_available=8 * GB, disk_free=100 * GB)
         leases.register('serve', 'serve', '0.2.0', ['process'], host)
-        leases.acquire('serve', host)
+        leases.acquire('serve', uuid4().hex, host)
     run_cli(['worker', 'list'])
     lines = out().splitlines()
     assert lines[0].split() == [

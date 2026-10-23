@@ -2,6 +2,7 @@
 
 from datetime import timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -66,17 +67,19 @@ def test_a_worker_takes_no_job_over_its_slots_or_under_pressure_and_its_row_says
         leases.register('w1', 'big', '0.2.0', ['process'], HOST)
     leases.register('w1', 'small', '0.2.0', ['process'], HOST)
     low = HOST.model_copy(update={'memory_available': 3 * GB})
-    assert leases.acquire('w1', HOST) is NoLease.NOTHING
-    assert leases.acquire('w1', low) is NoLease.MEMORY, 'pressure first, also with nothing queued'
+    assert leases.acquire('w1', uuid4().hex, HOST) is NoLease.NOTHING
+    assert leases.acquire('w1', uuid4().hex, low) is NoLease.MEMORY, 'pressure first, also with nothing queued'
     for _ in range(2):
         queue(db, agent_job(db, campaign, tmp_path / 'a'))
     queue(db, evaluation_job(db, campaign, tmp_path))
-    assert isinstance(leases.acquire('w1', HOST), Grant)
-    assert isinstance(grant := leases.acquire('w1', HOST), Grant) and grant.job.kind == 'evaluation', 'agents full'
-    assert leases.acquire('w1', HOST) is NoLease.SLOTS
+    assert isinstance(leases.acquire('w1', uuid4().hex, HOST), Grant)
+    assert isinstance(grant := leases.acquire('w1', uuid4().hex, HOST), Grant) and grant.job.kind == 'evaluation', (
+        'agents full'
+    )
+    assert leases.acquire('w1', uuid4().hex, HOST) is NoLease.SLOTS
     with db.session() as s:
         assert s.get_one(LeaseWorker, 'w1').no_lease == NoLease.SLOTS
-    assert leases.acquire('w1', low) is NoLease.MEMORY
+    assert leases.acquire('w1', uuid4().hex, low) is NoLease.MEMORY
 
 
 def test_capacity_sums_the_slots_of_the_reachable_workers_that_are_not_under_pressure(db: Database) -> None:
@@ -112,7 +115,7 @@ def test_capacity_is_the_free_slots_and_a_worker_under_pressure_starves_no_other
         queue(db, agent_job(db, campaign, tmp_path / 'a'))
     assert leases.capacity().agents == 2, 'a queued lease takes a slot'
     for _ in range(2):
-        assert isinstance(leases.acquire('w1', HOST), Grant)
+        assert isinstance(leases.acquire('w1', uuid4().hex, HOST), Grant)
     assert leases.capacity().agents == 2, 'w1 has no slot left, w2 has two'
     low = HOST.model_copy(update={'memory_available': 1 * GB})
     leases.heartbeat('w1', {}, low)
@@ -120,7 +123,7 @@ def test_capacity_is_the_free_slots_and_a_worker_under_pressure_starves_no_other
     for _ in range(2):
         queue(db, agent_job(db, campaign, tmp_path / 'a'))
     assert leases.capacity().agents == 0
-    assert leases.acquire('w1', low) is NoLease.MEMORY
+    assert leases.acquire('w1', uuid4().hex, low) is NoLease.MEMORY
     for _ in range(2):
-        assert isinstance(leases.acquire('w2', HOST), Grant), 'the healthy worker still gets jobs'
+        assert isinstance(leases.acquire('w2', uuid4().hex, HOST), Grant), 'the healthy worker still gets jobs'
     assert leases.capacity().agents == 0

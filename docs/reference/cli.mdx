@@ -71,9 +71,9 @@ daemon checks when it starts, its plugins and what `config.toml` binds, and fail
 start. See [How piloop loads plugins](/architecture/extension-points#how-piloop-loads-plugins).
 
 `--listen` serves the routes of the [executor](/architecture/extension-points#executors) to other machines on
-`HOST:PORT`, in place of `[plugins.network] listen` in `config.toml`. The built-in `workers` has none. Each caller
-sends a token of `piloop token`. An address that is not loopback needs `tls`: see
-[Networks](/architecture/extension-points#networks).
+`HOST:PORT`, in place of `[plugins.network] listen` in `config.toml`: for `workers`, the lease calls of
+[`piloop worker`](#piloop-worker). Each caller sends a token of `piloop token`. An address that is not loopback needs
+`tls`: see [Networks](/architecture/extension-points#networks).
 
 ### piloop token
 
@@ -111,6 +111,16 @@ limit: executor.pools.serve.evaluations = 1  (limit by human: the GPU is busy)
 ```
 
 See [Capacity](/architecture/leases#capacity).
+
+### piloop worker
+
+```text
+piloop worker --server URL --pool NAME
+```
+
+Takes the leases of the pool `NAME` from the server at `URL`, and runs their jobs on this machine until Ctrl-C.
+`PILOOP_TOKEN` holds the worker's token. It exits non-zero when the server refuses it. See
+[A worker on another machine](/architecture/leases#a-worker-on-another-machine).
 
 ### piloop worker list
 

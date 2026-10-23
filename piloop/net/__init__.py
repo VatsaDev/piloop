@@ -8,7 +8,9 @@ goes through it: workers read and write the artifact store's remote directly, an
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from functools import partial
+from http import HTTPStatus
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -91,4 +93,13 @@ class InvalidBody(ValueError):
 
     def __init__(self, error: ValidationError) -> None:
         super().__init__(str(error))
+        self.error = error
+
+
+class Refusal(Exception):
+    """A route refuses a request: the server answers ``status`` with ``{"error": error, "detail": detail}``."""
+
+    def __init__(self, status: HTTPStatus, error: StrEnum, detail: str) -> None:
+        super().__init__(detail)
+        self.status = status
         self.error = error

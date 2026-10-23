@@ -14,7 +14,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Annotated, Self
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, SecretStr, TypeAdapter, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     InitSettingsSource,
@@ -87,6 +87,10 @@ class Settings(BaseSettings):
     wherever you keep them. The daemon runs it when it starts and on every ``piloop restart``. The keys go into the
     daemon's environment only, never into a file or a log. When unset, the daemon has only the environment that
     ``piloop serve`` started with."""
+
+    token: SecretStr | None = None
+    """The bearer token that ``piloop worker --server`` calls the server with: the secret that ``piloop token create``
+    printed on the server's machine."""
 
     otel_exporter_otlp_endpoint: str | None = Field(default=None, validation_alias='OTEL_EXPORTER_OTLP_ENDPOINT')
     """The standard OTLP endpoint. piloop exports traces only when this is set."""

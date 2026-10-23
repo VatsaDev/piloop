@@ -7,7 +7,7 @@ does not change.
 """
 
 from collections.abc import Mapping, Sequence
-from typing import Literal, Protocol
+from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
 
@@ -22,8 +22,19 @@ from piloop.plugins.executor.kit.leases import (
     PromptMessage,
     Revoke,
     Timing,
+    UnknownPool,
     Work,
 )
+
+PROTOCOL = 1
+"""The version of the ``LeaseClient`` calls on the wire."""
+
+
+class Dismissed(Exception):
+    """The control plane refuses this worker for good: a revoked token, another protocol, an unknown pool.
+
+    The worker stops its jobs, keeps their reports, and exits with this message.
+    """
 
 
 class WorkerInfo(BaseModel):
@@ -31,7 +42,8 @@ class WorkerInfo(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    protocol: Literal[1] = 1
+    protocol: int = PROTOCOL
+    """The version of the calls that it makes. A server of another one refuses it (``Dismissed``)."""
     version: str
     """The piloop version that it runs."""
     pool: str
@@ -58,15 +70,15 @@ class LeaseClient(Protocol):
     """The calls of a worker on its leases.
 
     Each call that names a lease raises ``StaleLease`` when it is not the worker's live, newest lease: then the worker
-    stops the job.
+    stops the job. Any call raises ``Dismissed`` when the control plane refuses the worker itself.
     """
 
     def register(self, info: WorkerInfo) -> Registration:
         """Start a worker's session: record it, and return its timing and its live leases."""
         ...
 
-    def acquire(self, sample: HostSample) -> Grant | NoLease:
-        """Take a queued job, or say why there is none."""
+    def acquire(self, request_id: str, sample: HostSample) -> Grant | NoLease:
+        """Take a queued job, or say why there is none. Sent again with its request id, it gets the same lease."""
         ...
 
     def started(self, lease: int, handle: JobHandle, session_id: str | None) -> None:
@@ -102,11 +114,14 @@ class Local:
         self._worker = worker
 
     def register(self, info: WorkerInfo) -> Registration:
-        held, cursor = self._leases.register(self._worker, info.pool, info.version, info.runners, info.sample)
+        try:
+            held, cursor = self._leases.register(self._worker, info.pool, info.version, info.runners, info.sample)
+        except UnknownPool as e:
+            raise Dismissed(str(e)) from e
         return Registration(worker=self._worker, timing=self._leases.timing, held=held, cursor=cursor)
 
-    def acquire(self, sample: HostSample) -> Grant | NoLease:
-        return self._leases.acquire(self._worker, sample)
+    def acquire(self, request_id: str, sample: HostSample) -> Grant | NoLease:
+        return self._leases.acquire(self._worker, request_id, sample)
 
     def started(self, lease: int, handle: JobHandle, session_id: str | None) -> None:
         self._leases.started(lease, self._worker, handle, session_id)

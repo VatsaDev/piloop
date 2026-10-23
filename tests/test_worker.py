@@ -8,10 +8,11 @@ import json
 import shutil
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import psutil
 import pytest
@@ -54,8 +55,10 @@ from piloop.plugins.executor.contract import (
     Prompt,
 )
 from piloop.plugins.executor.kit.capacity import HostSample, sample
+from piloop.plugins.executor.kit.client import Dismissed, Local, Registration, WorkerInfo
 from piloop.plugins.executor.kit.leases import (
     SERVE,
+    Answer,
     Grant,
     LeasePrompted,
     Leases,
@@ -640,7 +643,7 @@ def test_a_worker_killed_between_the_start_and_its_record_leaves_no_worktree(
     results = CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False)
     killed = Leases(db, results)  # the killed worker's lease, which no worker watches
     killed.register(SERVE, SERVE, '0.2.0', [], sample(tmp_path))
-    killed.acquire(SERVE, sample(tmp_path))
+    killed.acquire(SERVE, uuid4().hex, sample(tmp_path))
     second = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
     workers_of(second).worker.start()
     wait_until(lambda: lease_state(db, agent_session_id) is LeaseState.EXPIRED)
@@ -948,12 +951,11 @@ def test_a_job_that_arrives_while_the_loop_ends_its_turn_is_taken_at_once(
     turned, release = threading.Event(), threading.Event()
     turn = worker._guarded_turn
 
-    def held_after_its_turn() -> bool:
-        went = turn()
+    def held_after_its_turn() -> None:
+        turn()
         if not turned.is_set():
             turned.set()
             assert release.wait(10)
-        return went
 
     monkeypatch.setattr(worker, '_guarded_turn', held_after_its_turn)
     serving(ex)  # its first turn finds nothing
@@ -962,3 +964,104 @@ def test_a_job_that_arrives_while_the_loop_ends_its_turn_is_taken_at_once(
     wait_until(lambda: worker._wanted.is_set(), timeout=5)  # the long-poll delivered its Work
     release.set()
     wait_until(lambda: lease_states(db) != [LeaseState.QUEUED], timeout=leases.timing.renew / 2)
+
+
+FAST = Timing(renew=0.2, grace=1.0, toleration=5.0)
+
+
+class Refusing(Local):
+    """``Local``, whose control plane refuses the worker for good (``Dismissed``) on each call that ``refused`` names."""
+
+    def __init__(self, leases: Leases, worker: str) -> None:
+        super().__init__(leases, worker)
+        self.refused: set[str] = set()
+
+    def _check(self, call: str) -> None:
+        if call in self.refused:
+            raise Dismissed(f'{call}: the token is unknown or revoked')
+
+    def heartbeat(self, leases: Mapping[int, str | None], sample: HostSample) -> dict[int, Answer]:
+        self._check('heartbeat')
+        return super().heartbeat(leases, sample)
+
+    def messages(self, after: int, wait: float) -> Sequence[Work | PromptMessage | Revoke]:
+        self._check('messages')
+        return super().messages(after, wait)
+
+    def report(self, lease: int, request_id: str, report: AgentReport | EvaluationReport) -> dict[str, object]:
+        self._check('report')
+        return super().report(lease, request_id, report)
+
+    def lost(self, lease: int, reason: str) -> None:
+        self._check('lost')
+        super().lost(lease, reason)
+
+
+@pytest.mark.parametrize(
+    ('refused', 'spooled'),
+    [(('heartbeat', 'report'), {1}), (('messages',), set())],
+    ids=['heartbeat', 'messages'],
+)
+def test_a_dismissed_worker_stops_its_job_keeps_an_unsent_report_in_its_spool_and_ends(
+    db: Database, campaign: Campaign, tmp_path: Path, refused: tuple[str, ...], spooled: set[int]
+) -> None:
+    """Dismissed at once, by its first refused call: not after the self-stop, as a silent control plane would be."""
+    leases = Leases(db, CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False), FAST)
+    hold = tmp_path / 'hold'
+    hold.touch()
+    job = evaluation_job(db, campaign, tmp_path)
+    leases.submit(job.model_copy(update={'command': ['sh', '-c', f'while [ -f {hold} ]; do sleep 0.05; done']}))
+    client = Refusing(leases, SERVE)
+    worker = Worker(client, Tracer(None), tmp_path, runners=('process',))
+    worker.start()
+    wait_until(lambda: lease_states(db) == [LeaseState.RUNNING])
+    client.refused |= set(refused)
+    began = time.monotonic()
+    worker.wait()
+    assert str(worker.dismissed) == f'{refused[0]}: the token is unknown or revoked'
+    assert time.monotonic() - began < FAST.self_stop
+    assert worker.spool.leases() == spooled, 'a report that it could not send waits for a worker that is taken again'
+
+
+class Unanswered(Local):
+    """``Local``, whose first two ``register`` calls get no answer, as a server that is not up yet."""
+
+    def __init__(self, leases: Leases, worker: str) -> None:
+        super().__init__(leases, worker)
+        self.registers = 0
+
+    def register(self, info: WorkerInfo) -> Registration:
+        self.registers += 1
+        if self.registers <= 2:
+            raise OSError('connection refused')
+        return super().register(info)
+
+
+def test_a_worker_whose_registration_failed_registers_on_a_later_turn_and_a_stop_ends_it(
+    db: Database, campaign: Campaign, tmp_path: Path
+) -> None:
+    leases = Leases(db, CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False), FAST)
+    client = Unanswered(leases, SERVE)
+    worker = Worker(client, Tracer(None), tmp_path, runners=('process',))
+    worker.start()  # its own try, then the loop's first
+    wait_until(lambda: client.registers == 2)
+    worker._wake()  # the loop's next turn, without the default heartbeat's wait
+    wait_until(lambda: worker.id == SERVE)
+    worker.stop()
+    worker.wait()
+    assert client.registers == 3
+
+
+def test_a_worker_dismissed_while_it_reports_a_job_it_cannot_find_again_ends(
+    db: Database, campaign: Campaign, tmp_path: Path
+) -> None:
+    leases = Leases(db, CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False), FAST)
+    leases.submit(evaluation_job(db, campaign, tmp_path))
+    client = Refusing(leases, SERVE)
+    client.register(WorkerInfo(version='0', pool=SERVE, runners=['process'], sample=sample(tmp_path)))
+    assert isinstance(client.acquire(uuid4().hex, sample(tmp_path)), Grant)  # an earlier process of it took the job
+    client.refused.add('lost')
+    worker = Worker(client, Tracer(None), tmp_path, runners=('process',))
+    worker.start()
+    worker.wait()
+    assert str(worker.dismissed) == 'lost: the token is unknown or revoked'

@@ -41,7 +41,14 @@ class Reset:
 
 @dataclass(frozen=True)
 class CutResponse:
-    """Forward the request, then close the client's connection instead of sending it the answer. Once."""
+    """Forward the request, then close the client's connection instead of sending it the answer. Once.
+
+    It cuts the first answer that contains ``answer``, to a request that contains ``request``: ``request=b'POST
+    /v1/executor/report'`` cuts a report's answer and lets the heartbeats through.
+    """
+
+    request: bytes = b''
+    answer: bytes = b''
 
 
 type Toxic = Latency | Blackhole | Reset | CutResponse
@@ -91,13 +98,16 @@ class Proxy:
                 continue
             with self._lock:
                 self._sockets |= {client, server}
-            threading.Thread(target=self._pump, args=(client, server, False), daemon=True).start()
-            threading.Thread(target=self._pump, args=(server, client, True), daemon=True).start()
+            exchange = _Exchange()
+            threading.Thread(target=self._pump, args=(client, server, False, exchange), daemon=True).start()
+            threading.Thread(target=self._pump, args=(server, client, True, exchange), daemon=True).start()
 
-    def _pump(self, src: socket.socket, dst: socket.socket, answer: bool) -> None:
+    def _pump(self, src: socket.socket, dst: socket.socket, answer: bool, exchange: _Exchange) -> None:
         """Copy ``src`` to ``dst`` through the toxic until either end closes. ``answer``: server to client."""
         try:
             while chunk := src.recv(CHUNK):
+                if not answer:  # kept whatever the toxic: a request sent before ``CutResponse`` was set is one too
+                    exchange.request = chunk if exchange.answered else (exchange.request + chunk)[:CHUNK]
                 match self.toxic:
                     case Latency(seconds=seconds):
                         time.sleep(seconds)
@@ -107,12 +117,15 @@ class Proxy:
                         _reset(src)
                         _reset(dst)
                         return
-                    case CutResponse() if answer and self._cut():
+                    case CutResponse(request=request, answer=wanted) if (
+                        answer and request in exchange.request and wanted in chunk and self._cut()
+                    ):
                         _reset(dst)
                         _close(src)
                         return
                     case CutResponse() | None:
                         pass
+                exchange.answered = answer
                 dst.sendall(chunk)
         except OSError:  # the other pump, close or a reset closed a socket: the connection is over
             pass
@@ -126,6 +139,17 @@ class Proxy:
             self.toxic = None
             self.cuts += 1
             return True
+
+
+@dataclass
+class _Exchange:
+    """Where a connection is in its request and answer, for ``CutResponse``. HTTP/1.1 clients send one request at a
+    time, so a chunk from the client after an answer starts the next request."""
+
+    request: bytes = b''
+    """The start of the request that the server answers now."""
+    answered: bool = False
+    """The last chunk was the server's."""
 
 
 def _reset(s: socket.socket) -> None:
