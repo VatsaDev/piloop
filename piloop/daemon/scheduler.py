@@ -118,6 +118,9 @@ STEER_LINE_CHARS = 200
 """The number of characters of a comment's first line that a ``[piloop]`` line quotes. The implementer can query the rest."""
 STOP_GRACE_SECONDS = 600
 """The seconds that an implementer that was told to wrap up has to commit its work before the daemon ends it."""
+WAIT_SECONDS = 120.0
+"""How long ``Scheduler.wait`` waits by default before it fails: generous for a loaded host, since it returns as soon
+as nothing is in flight."""
 WRAP_UP_PROMPT = (
     '[piloop] {what} ({cause}). Commit what you have now, with a message that says where it stands.'
     ' Leave your finding and stop. This session ends in {minutes:g} minutes.'
@@ -1379,8 +1382,19 @@ class Scheduler:
         """Make ``serve_forever`` return after the current tick. Idempotent, so it is safe in a signal handler."""
         self._stop.set()
 
-    def wait(self, timeout: float) -> None:
-        """Wait up to ``timeout`` seconds for the implementers in flight to finish."""
+    def wait(self, timeout: float = WAIT_SECONDS) -> None:
+        """Wait for the agents and the scoring in flight to finish. It returns as soon as they have.
+
+        Raises:
+            TimeoutError: some are still in flight after ``timeout`` seconds. The message names them.
+        """
+        self._await_in_flight(timeout)
+        if self._futures or self._scoring:
+            left = [f'agent_session#{i}' for i in self._futures] + [f'{kind}#{i}' for kind, i in self._scoring]
+            raise TimeoutError(f'still in flight after {timeout:g} s: {", ".join(left)}')
+
+    def _await_in_flight(self, timeout: float) -> None:
+        """Wait up to ``timeout`` seconds for the agents and the scoring in flight, then forget the finished ones."""
         wait([*self._futures.values(), *self._scoring.values()], timeout=timeout)
         self._collect()
 
@@ -1410,7 +1424,7 @@ class Scheduler:
         """
         self._stop.set()
         self._controller.stop(timeout)
-        self.wait(timeout)
+        self._await_in_flight(timeout)  # what is still open after it is written below
         self._fail_open(RunEnd.DAEMON_STOPPED, reaped=False)
         wait(self._archiving(), timeout=timeout)
         self._pool.shutdown(wait=False, cancel_futures=True)

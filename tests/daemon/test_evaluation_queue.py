@@ -306,7 +306,7 @@ def test_evaluations_that_wait_for_a_slot_never_hold_back_an_agent_launch(
     finally:
         release.set()
     assert all(f.result(5) for f in waiting)
-    scheduler.wait(30)
+    scheduler.wait()
     scheduler.stop(timeout=5)
 
 

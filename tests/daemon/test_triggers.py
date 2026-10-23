@@ -181,16 +181,16 @@ def test_an_anomaly_requests_an_incident_sweep_once_and_collapses_while_one_is_p
     ], 'one pending request absorbs later anomalies'
 
     release.touch()
-    sched.wait(10)
+    sched.wait()
     assert sched.tick() == [2], 'the slot frees; the pending request launches'
-    sched.wait(10)
+    sched.wait()
     assert sched.tick() == [3], 'the anomaly that came while a request was pending gets its own sweep'
     assert [(w, p['key']) for w, p in reported_events(db)] == [
         (1, 'run#1 failed'),
         (2, 'run#2 failed'),
         (3, 'run#3 failed'),
     ]
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
     again = scheduler(db, runtime, tmp_path)
     assert again.tick() == [], 'the events are the record: a restarted daemon replays nothing'
@@ -209,9 +209,9 @@ def test_an_anomaly_takes_the_tick_and_does_not_reset_the_timer(
     fail_a_run(db, campaign, 'broken')
     sched = scheduler(db, runtime, tmp_path)
     assert sched.tick() == [1]
-    sched.wait(10)
+    sched.wait()
     assert sched.tick() == [2], 'the incident sweep is not a progress review: the timer is still due'
-    sched.wait(10)
+    sched.wait()
     assert agent_sessions(db, WATCHDOG) == [
         (1, AgentSessionState.EXITED, 'anomaly: run#1 failed'),
         (2, AgentSessionState.EXITED, 'timer: 30s'),
@@ -252,11 +252,11 @@ def test_cron_fires_once_per_interval(db: Database, campaign: Campaign, runtime:
         s.commit()
     assert sched.tick() == [1]
     assert agent_sessions(db, WATCHDOG)[0][2] == 'timer: 30s'
-    sched.wait(10)
+    sched.wait()
     assert sched.tick() == [], 'not due again'
     backdate(db, AgentSessionId(1), 31)
     assert sched.tick() == [2]
-    sched.wait(10)
+    sched.wait()
 
     configure(db, campaign, watchdog={'interval': 0})
     backdate(db, AgentSessionId(2), 3600)
@@ -335,7 +335,7 @@ def test_low_water_keeps_a_slot_s_worth_plus_the_buffer_and_tops_it_up_on_new_re
     consume(db, first)
     assert sched.tick() == [1], 'below the target with no slot free: the first sweep needs nothing'
     assert last_reason(db) == '2 of 3 runnable ideas'
-    sched.wait(10)
+    sched.wait()
     take(db, AgentSessionId(1), seconds=600)
     assert sched.tick() == [], 'nothing finished since the sweep started, which defined nothing: research rests'
 
@@ -346,7 +346,7 @@ def test_low_water_keeps_a_slot_s_worth_plus_the_buffer_and_tops_it_up_on_new_re
     assert last_reason(db) == (
         '2 of 3 runnable ideas; 2 runs finished since agent_session#1 started (after 1 sweeps that defined no idea)'
     )
-    sched.wait(10)
+    sched.wait()
 
     add_ideas(db, campaign, 1, by='research#2')
     finish_a_run(db, campaign, 'three')
@@ -354,7 +354,7 @@ def test_low_water_keeps_a_slot_s_worth_plus_the_buffer_and_tops_it_up_on_new_re
     consume(db, IdeaId(first + 1))
     assert sched.tick() == [3], 'implementer#2 inserted an idea: the back-off is reset, one finished run is enough'
     assert last_reason(db) == '2 of 3 runnable ideas; 1 runs finished since agent_session#2 started'
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
 
 
@@ -370,17 +370,17 @@ def test_low_water_keeps_sweeping_a_short_backlog_though_every_slot_is_busy_rest
     sched = scheduler(db, runtime, tmp_path)
     occupy(db, campaign)
     assert sched.tick() == [1]
-    sched.wait(10)
+    sched.wait()
     add_ideas(db, campaign, 1, by='research#1')
     assert sched.tick() == [2], 'implementer#1 defined an idea, the backlog is still short: no result needed'
     assert last_reason(db) == '1 of 3 runnable ideas'
-    sched.wait(10)
+    sched.wait()
     take(db, AgentSessionId(2), seconds=60)
     assert sched.tick() == [], 'implementer#2 defined nothing: research rests as long as it took'
     take(db, AgentSessionId(2), seconds=60, ago=61)
     assert sched.tick() == [3]
     assert last_reason(db) == '1 of 3 runnable ideas; rested 60s after 1 sweeps that defined no idea'
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
 
 
@@ -399,7 +399,7 @@ def test_a_seed_fires_one_research_sweep_however_full_the_backlog_once(
     add_ideas(db, campaign, 1, by='watchdog#9', status=IdeaStatus.SEED)
     assert sched.tick() == [1]
     assert last_reason(db) == '1 new seeds to develop'
-    sched.wait(10)
+    sched.wait()
     assert sched.tick() == [], (
         'implementer#1 read the seed and left it: the next sweep, whatever fires it, lists it again'
     )
@@ -407,7 +407,7 @@ def test_a_seed_fires_one_research_sweep_however_full_the_backlog_once(
     add_ideas(db, campaign, 1, by='watchdog#3', status=IdeaStatus.SEED)
     assert sched.tick() == [2]
     assert last_reason(db) == '1 new seeds to develop'
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
 
 
@@ -429,7 +429,7 @@ def test_stalled_sweeps_on_new_results_however_full_the_backlog(
     finish_a_run(db, campaign, 'tried twice')
     assert sched.tick() == [1], 'stalled: the backlog holds no pivot'
     assert last_reason(db) == 'stalled, step 1'
-    sched.wait(10)
+    sched.wait()
     assert sched.tick() == [], 'research read every result'
 
     finish_a_run(db, campaign, 'tried again')
@@ -439,7 +439,7 @@ def test_stalled_sweeps_on_new_results_however_full_the_backlog(
     assert last_reason(db) == (
         'stalled, step 2; 2 runs finished since agent_session#1 started (after 1 sweeps that defined no idea)'
     )
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
 
 
@@ -453,7 +453,7 @@ def test_a_long_stall_gets_one_stalled_sweep_per_stall_step_and_a_keep_ends_it(
     for n in range(12):
         finish_a_run(db, campaign, f'tried {n}')
         sched.tick()
-        sched.wait(10)
+        sched.wait()
     reasons = [reason or '' for _, _, reason in agent_sessions(db, RESEARCH)]
     assert [r.split(';')[0] for r in reasons] == ['stalled, step 1', 'stalled, step 2', 'stalled, step 3']
 
@@ -461,7 +461,7 @@ def test_a_long_stall_gets_one_stalled_sweep_per_stall_step_and_a_keep_ends_it(
     for n in range(4):
         finish_a_run(db, campaign, f'after the keep {n}')
         sched.tick()
-        sched.wait(10)
+        sched.wait()
     assert len(agent_sessions(db, RESEARCH)) == 4, 'the keep ended the stall: four runs mark a new one'
     assert (last_reason(db) or '').startswith('stalled, step 1; 5 runs finished since agent_session#3 started')
     sched.stop(timeout=5)
@@ -481,10 +481,10 @@ def test_a_killed_sweep_s_seeds_are_retried_once_and_a_new_seed_waits_for_a_free
     occupy(db, campaign)
     add_ideas(db, campaign, 1, by='watchdog#9', status=IdeaStatus.SEED)
     assert sched.tick() == [1]
-    sched.wait(10)
+    sched.wait()
     assert sched.tick() == [2]
     assert last_reason(db) == '1 seeds to develop; retrying after agent_session#1 was killed: agent timeout after 0.5s'
-    sched.wait(10)
+    sched.wait()
     assert sched.tick() == [], 'a second killed batch is a systemic fault: no more retries'
 
     configure(db, campaign, BLOCKING.format(release=release), research={'max_ideas': 0, 'max_concurrent': 1})
@@ -494,7 +494,7 @@ def test_a_killed_sweep_s_seeds_are_retried_once_and_a_new_seed_waits_for_a_free
     add_ideas(db, campaign, 1, by='watchdog#11', status=IdeaStatus.SEED)
     assert sched.tick() == [], 'a new seed, but the only research slot is busy'
     release.touch()
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
 
 
@@ -517,7 +517,7 @@ def test_after_a_barren_sweep_research_never_waits_for_more_results_than_the_run
     sched = scheduler(db, runtime, tmp_path)
     in_flight = occupy(db, campaign)
     assert sched.tick() == [1]
-    sched.wait(10)
+    sched.wait()
     take(db, AgentSessionId(1), seconds=600, ago=60)
     assert sched.tick() == [], 'barren: two finished runs wanted, none yet, and the idle rest has 540 s to go'
     take(db, AgentSessionId(1), seconds=600, ago=601)
@@ -526,7 +526,7 @@ def test_after_a_barren_sweep_research_never_waits_for_more_results_than_the_run
         '3 free implementer slots without a runnable idea; 0 of 6 runnable ideas; rested 600s after 1 sweeps that defined'
         ' no idea'
     )
-    sched.wait(10)
+    sched.wait()
 
     take(db, AgentSessionId(2), seconds=600, ago=60)
     finish(db, in_flight)
@@ -535,7 +535,7 @@ def test_after_a_barren_sweep_research_never_waits_for_more_results_than_the_run
         '4 free implementer slots without a runnable idea; 0 of 6 runnable ideas; 1 runs finished since agent_session#2 started'
         ' (after 2 sweeps that defined no idea)'
     )
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
 
 
@@ -574,7 +574,7 @@ def test_low_water_sizes_the_batch_to_the_shortfall_net_of_the_sweeps_in_flight(
     ] * 3
     assert sched.tick() == [], 'the three in flight may insert the six: a fourth would overshoot'
     release.touch()
-    sched.wait(10)
+    sched.wait()
     with db.session() as s:
         picks = [(w.harness, w.model) for w in s.scalars(select(AgentSession).order_by(AgentSession.id))]
     assert picks == [('script', 'test-model'), ('b', 'mb'), ('c', 'mc')]
@@ -587,7 +587,7 @@ def test_low_water_sizes_the_batch_to_the_shortfall_net_of_the_sweeps_in_flight(
     assert last_reason(db) == (
         '3 free implementer slots without a runnable idea; 0 of 6 runnable ideas, 2 more from 1 sweeps in flight'
     )
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
 
 
@@ -627,7 +627,7 @@ def test_low_water_counts_ideas_waiting_only_on_a_prerequisite_in_flight_as_back
         s.commit()
     assert sched.tick() == [1]
     assert last_reason(db) == '0 of 3 runnable ideas, 2 more waiting on runs in flight'
-    sched.wait(10)
+    sched.wait()
     add_ideas(db, campaign, 1, by='research#1')
     assert sched.tick() == [], 'both slots busy, one idea runnable and two waiting on the run in flight: three'
     with db.session() as s:
@@ -635,7 +635,7 @@ def test_low_water_counts_ideas_waiting_only_on_a_prerequisite_in_flight_as_back
         s.commit()
     assert sched.tick() == [2], 'a parked prerequisite is no run in flight: the two behind it are blocked'
     assert last_reason(db) == '1 of 3 runnable ideas'
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
 
 
@@ -649,7 +649,7 @@ def test_low_water_requests_nothing_while_every_research_slot_is_busy(
     finish_a_run(db, campaign, 'one')
     assert sched.tick() == [], 'one sweep of one cannot fill a target of three, but the only research slot is busy'
     release.touch()
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
 
 
@@ -668,7 +668,7 @@ def test_low_water_wants_no_more_ideas_than_max_runs_leaves_to_run(
     assert sched.tick() == [1], 'a run of the first idea; one run left, one idea for it: no research'
     assert agent_sessions(db, RESEARCH) == []
     release.touch()
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
 
 
@@ -730,14 +730,14 @@ def test_low_water_retries_a_killed_batch_once(
     )
     sched = scheduler(db, runtime, tmp_path)
     assert sched.tick() == [1, 2, 3]
-    sched.wait(10)
+    sched.wait()
     assert {state for _, state, _ in agent_sessions(db, RESEARCH)} == {AgentSessionState.KILLED}
     assert sched.tick() == [4, 5, 6], 'the killed siblings are one batch, not three prior attempts'
     assert agent_sessions(db, RESEARCH)[3][2] == (
         '3 free implementer slots without a runnable idea; 0 of 5 runnable ideas; retrying after agent_session#3 was killed:'
         ' agent timeout after 0.2s'
     )
-    sched.wait(10)
+    sched.wait()
     assert sched.tick() == [], 'two killed batches in a row: six empty sweeps, a rest of 63 times the last one'
     finish_a_run(db, campaign, 'one')
     assert sched.tick() == [7, 8, 9], 'a run finished since: research is back, killed sweeps are not barren ones'
@@ -764,9 +764,9 @@ def test_manual_requests_are_launched_under_max_concurrent(
         (2, AgentSessionState.REQUESTED, None),
     ]
     release.touch()
-    sched.wait(10)
+    sched.wait()
     assert sched.tick() == [2]
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
     with db.session() as s:
         second = s.get_one(AgentSession, 2)
@@ -827,11 +827,11 @@ def test_no_research_sweep_while_the_queue_holds_its_runnable_ideas_for_the_head
         s.commit()
         new = evaluator.id
     assert sched.tick() == [], 'the head has no score from the new evaluator: the runnable idea is held'
-    sched.wait(10)
+    sched.wait()
     with db.session() as s:
         if not s.scalars(select(Measurement).where(Measurement.evaluator_id == new)).first():
             s.add(Measurement(candidate_id=1, evaluator_id=new, metrics={'score': 1.0}))
             s.commit()
     assert sched.tick() == [1], 'the head is measured: below the target, research sweeps again'
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)

@@ -221,10 +221,10 @@ def test_ready_ideas_become_runs_in_priority_order(
             f'idea#{high} is ready',
         )
     assert scheduler.tick() == [], 'max_concurrent=1: the second idea waits'
-    scheduler.wait(timeout=30)
+    scheduler.wait()
 
     assert scheduler.tick() == [2]
-    scheduler.wait(timeout=30)
+    scheduler.wait()
     scheduler.stop(timeout=1)
     with db.session() as s:
         assert [(i.id, i.status) for i in s.scalars(select(Idea).order_by(Idea.id))] == [
@@ -241,7 +241,7 @@ def test_a_sweep_checks_out_the_head(db: Database, campaign: Campaign, runtime: 
     scheduler = make_scheduler(db, runtime, tmp_path)
     add_ideas(db, campaign, 'more')
     assert scheduler.tick() == [1]
-    scheduler.wait(timeout=30)
+    scheduler.wait()
     with db.session() as s:
         best = s.get_one(Candidate, 2)
         assert best.verdict is Verdict.KEEP and best.commit_sha != s.get_one(Candidate, 1).commit_sha
@@ -250,7 +250,7 @@ def test_a_sweep_checks_out_the_head(db: Database, campaign: Campaign, runtime: 
     set_config(db, campaign)
     agent_session_id = request_watchdog(db, campaign)
     assert scheduler.tick() == [agent_session_id]
-    scheduler.wait(timeout=30)
+    scheduler.wait()
     head = tmp_path / 'projects' / str(campaign.id) / 'workspace' / 'head.txt'
     assert head.read_text().strip() == best_sha
     assert (
@@ -272,7 +272,7 @@ def test_a_sweep_checks_out_the_head(db: Database, campaign: Campaign, runtime: 
     brief = tmp_path / 'agent_sessions' / str(again) / 'brief.md'
     wait_until(brief.exists)
     hold.unlink()
-    scheduler.wait(timeout=30)
+    scheduler.wait()
     scheduler.stop(timeout=1)
     assert head.read_text().strip() == best_sha, (
         'a new evaluator: nothing is measured under it yet, and the head stays the latest trunk keep'
@@ -298,7 +298,7 @@ def test_harness_rotation_and_pinning(db: Database, campaign: Campaign, runtime:
     add_ideas(db, campaign, 'c', harness='script')
     scheduler = make_scheduler(db, runtime, tmp_path)
     assert scheduler.tick() == [1, 2, 3]
-    scheduler.wait(timeout=30)
+    scheduler.wait()
     scheduler.stop(timeout=1)
     with db.session() as s:
         assert [(r.harness, r.model) for r in s.scalars(select(Run).order_by(Run.id))] == snapshot(
@@ -554,12 +554,12 @@ def test_a_blocked_idea_waits_for_every_prerequisite_then_starts_from_the_head(
     with db.session() as s:
         assert s.get_one(Run, 1).idea_id == first, 'the urgent idea is blocked, so the lower priorities run first'
         assert s.get_one(Idea, third).status is IdeaStatus.READY, 'skipped, not touched'
-    scheduler.wait(timeout=30)
+    scheduler.wait()
     assert scheduler.tick() == [2]
     with db.session() as s:
         assert s.get_one(Run, 2).idea_id == second, 'one prerequisite done is not enough'
         assert s.get_one(Idea, third).status is IdeaStatus.READY
-    scheduler.wait(timeout=30)
+    scheduler.wait()
     with db.session() as s:
         assert [s.get_one(Candidate, c).verdict for c in (2, 3)] == [Verdict.KEEP] * 2, 'scores 2 and 3'
         # a human keeps a commit outside any run: the head is now candidate#4, which no prerequisite made
@@ -572,7 +572,7 @@ def test_a_blocked_idea_waits_for_every_prerequisite_then_starts_from_the_head(
         s.commit()
 
     assert scheduler.tick() == [3]
-    scheduler.wait(timeout=30)
+    scheduler.wait()
     scheduler.stop(timeout=1)
     with db.session() as s:
         run = s.get_one(Run, 3)
@@ -599,7 +599,7 @@ def test_a_prerequisite_that_is_not_done_keeps_blocking(
         s.get_one(Idea, rejected).status = IdeaStatus.DONE  # a human reconsidered; it never ran, so it kept nothing
         s.commit()
     assert scheduler.tick() == [1]
-    scheduler.wait(timeout=30)
+    scheduler.wait()
     scheduler.stop(timeout=1)
     with db.session() as s:
         run = s.get_one(Run, 1)
@@ -616,7 +616,7 @@ def test_low_water_does_not_count_blocked_ideas_as_backlog(
     add_ideas(db, campaign, 'behind the gate', after=(gate,))
     scheduler = make_scheduler(db, runtime, tmp_path)
     assert scheduler.tick() == [1]
-    scheduler.wait(timeout=30)
+    scheduler.wait()
     scheduler.stop(timeout=1)
     with db.session() as s:
         agent_session = s.get_one(AgentSession, 1)
@@ -850,7 +850,7 @@ def test_a_dead_thread_is_traced_and_its_row_closed(
     mocker.patch.object(scheduler._controller, 'execute', side_effect=RuntimeError('thread broke'))
     add_ideas(db, campaign, 'x')
     scheduler.tick()
-    scheduler.wait(30)
+    scheduler.wait()
     assert scheduler.active() == []
     died = span_named(spans, 'agent_session.thread_died')
     assert dict(died.attributes or {}) == {'agent_session': 1, 'error': 'thread broke'}, 'no open span: it gets its own'
@@ -1021,7 +1021,7 @@ def test_a_stop_after_the_implementer_left_its_finding_scores_its_run_on_the_nex
 
     restarted = make_scheduler(db, runtime, tmp_path)
     restarted.reap()
-    restarted.wait(30)
+    restarted.wait()
     with db.session() as s:
         [candidate] = s.scalars(select(Candidate).where(Candidate.run_id == 1)).all()
         assert (candidate.summary, candidate.verdict) == ('step', Verdict.KEEP)
@@ -1079,13 +1079,29 @@ def test_a_hand_over_leaves_a_sweep_running_and_the_next_scheduler_re_attaches_t
     second = make_scheduler(db, ScriptRuntime(), tmp_path)
     second.reap()
     hold.unlink()
-    second.wait(30)
-    first.wait(10)
+    second.wait()
+    first.wait()
     with db.session() as s:
         sweep = s.get_one(AgentSession, agent_session_id)
         assert (sweep.state, sweep.error) == (AgentSessionState.EXITED, None)
     wait_until(lambda: not (sweep_dir / 'worktree').exists())  # once its result is in
     second.stop(timeout=5)
+
+
+def test_a_wait_that_runs_out_names_what_is_still_in_flight(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gate = Gate()
+    monkeypatch.setattr('piloop.plugins.executor.kit.jobs.git.add_worktree', gate.wrap(git.add_worktree))
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    add_ideas(db, campaign, 'x')
+    assert scheduler.tick() == [1]
+    assert gate.entered.wait(10)
+    with pytest.raises(TimeoutError, match=r'^still in flight after 0.1 s: agent_session#1$'):
+        scheduler.wait(0.1)
+    gate.release.set()
+    scheduler.wait()
+    scheduler.stop(timeout=5)
 
 
 def test_stop_before_the_implementer_starts_never_starts_it(
@@ -1107,7 +1123,7 @@ def test_stop_before_the_implementer_starts_never_starts_it(
     scheduler.stop(timeout=0.5)  # the worker makes the worktree, before it starts the agent
     assert time.monotonic() - started < 3
     gate.release.set()
-    scheduler.wait(10)
+    scheduler.wait()
     with db.session() as s:
         run = s.get_one(Run, 1)
         assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.DAEMON_STOPPED)
@@ -1223,7 +1239,7 @@ def test_a_restart_during_an_evaluation_scores_the_run_on_start_and_never_runs_i
     hold.unlink()
     second = make_scheduler(db, runtime, tmp_path)
     second.reap()
-    second.wait(30)
+    second.wait()
     with db.session() as s:
         made = s.scalars(select(Candidate).where(Candidate.run_id == 1).order_by(Candidate.id)).all()
         assert [(c.summary, c.verdict, len(c.measurements)) for c in made] == [
@@ -1232,7 +1248,7 @@ def test_a_restart_during_an_evaluation_scores_the_run_on_start_and_never_runs_i
         ], 'the cut commit and the one never reached are both measured and judged'
         assert s.get_one(Idea, 1).status is IdeaStatus.DONE, 'settled by its one finished run'
     second.tick()
-    second.wait(30)
+    second.wait()
     with db.session() as s:
         assert s.scalar(select(func.count()).select_from(Run)) == 1, 'the idea was never queued again'
     second.stop(timeout=5)
@@ -1272,7 +1288,7 @@ def test_a_run_whose_scoring_cannot_resume_returns_its_idea_to_the_queue(
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path, tracer)
     sched.reap()
-    sched.wait(10)
+    sched.wait()
     with db.session() as s:
         assert s.get_one(Idea, idea).status is (after or before), 'attempts remain; a parked idea stays parked'
         assert s.scalar(select(Run.scoring)) is False
@@ -1298,7 +1314,7 @@ def test_a_new_evaluator_measures_the_head_runs_wait_for_it_and_older_keeps_only
     sched = make_scheduler(db, runtime, tmp_path)
     add_ideas(db, campaign, 'one more line')
     sched.tick()
-    sched.wait(30)
+    sched.wait()
     with db.session() as s:
         old = s.get_one(Campaign, campaign.id).evaluator_id
         kept = s.scalars(select(Candidate).where(Candidate.run_id == 1)).one()
@@ -1315,12 +1331,12 @@ def test_a_new_evaluator_measures_the_head_runs_wait_for_it_and_older_keeps_only
 
     assert sched.tick() == [], 'no keep has a score under the new evaluator: the run waits instead of being parked'
     assert statuses(db) == [IdeaStatus.DONE, IdeaStatus.READY]
-    sched.wait(30)
+    sched.wait()
     assert measured_by(db, kept.id) == [(old, 2.0, None), (new, 4.0, None)], 'the head first'
     assert measured_by(db, CandidateId(1)) == [(old, 1.0, None)], 'one at a time'
 
     assert sched.tick() == [2], 'the head has a score: the run starts from it'
-    sched.wait(30)
+    sched.wait()
     assert measured_by(db, CandidateId(1)) == [(old, 1.0, None)], (
         'the baseline is no base or bar of any run: nobody asked'
     )
@@ -1330,7 +1346,7 @@ def test_a_new_evaluator_measures_the_head_runs_wait_for_it_and_older_keeps_only
         request_remeasure(s, s.get_one(Candidate, 1), System.HUMAN)
         s.commit()
     sched.tick()
-    sched.wait(30)
+    sched.wait()
     assert measured_by(db, CandidateId(1)) == [(old, 1.0, None), (new, 2.0, None)], 'measured when asked'
     with db.session() as s:
         assert s.get_one(Candidate, 1).verdict is Verdict.KEEP
@@ -1346,10 +1362,10 @@ def test_after_a_new_evaluator_runs_start_from_the_head_once_the_head_alone_is_m
     sched = make_scheduler(db, runtime, tmp_path)
     add_ideas(db, campaign, 'first line')
     sched.tick()
-    sched.wait(30)
+    sched.wait()
     add_ideas(db, campaign, 'second line')
     sched.tick()
-    sched.wait(30)
+    sched.wait()
     with db.session() as s:
         older, newer = (s.scalars(select(Candidate).where(Candidate.run_id == r)).one().id for r in (1, 2))
     doubled = ['sh', '-c', 'echo METRIC score=$(( 2 * $(wc -l < solve.txt) )); echo METRIC size=1']
@@ -1366,7 +1382,7 @@ def test_after_a_new_evaluator_runs_start_from_the_head_once_the_head_alone_is_m
     assert sched.tick() == [3], 'the head has a score'
     with db.session() as s:
         assert (s.get_one(Run, 3).idea_id, s.get_one(Run, 3).base_candidate_id) == (free, newer)
-    sched.wait(30)
+    sched.wait()
     sched.stop(timeout=5)
 
 
@@ -1383,10 +1399,10 @@ def test_after_a_new_evaluator_no_run_starts_from_the_best_until_every_keep_is_m
     sched = make_scheduler(db, runtime, tmp_path)
     add_ideas(db, campaign, 'first line')
     sched.tick()
-    sched.wait(30)
+    sched.wait()
     (second,) = add_ideas(db, campaign, 'second line')
     sched.tick()
-    sched.wait(30)
+    sched.wait()
     with db.session() as s:
         older, newer = (s.scalars(select(Candidate).where(Candidate.run_id == r)).one().id for r in (1, 2))
         assert [s.get_one(Candidate, c).verdict for c in (older, newer)] == [Verdict.KEEP, Verdict.KEEP]
@@ -1404,7 +1420,7 @@ def test_after_a_new_evaluator_no_run_starts_from_the_best_until_every_keep_is_m
     (free,) = add_ideas(db, campaign, 'free')
 
     assert sched.tick() == [], 'the newer keep has no score: no base is known to be the best'
-    sched.wait(30)
+    sched.wait()
     assert measured_by(db, newer)[-1] == (new, 6.0, None)
     assert sorted(sched.tick()) == [3, 4]
     with db.session() as s:
@@ -1432,7 +1448,7 @@ def test_an_imported_reference_is_measured_by_the_daemon_and_stays_a_reference(
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)
     sched.tick()
-    sched.wait(30)
+    sched.wait()
     assert measured_by(db, reference) == [(evaluator, 3.0, None)]
     with db.session() as s:
         assert s.get_one(Candidate, reference).verdict is Verdict.REFERENCE, 'measured, never judged'
@@ -1457,11 +1473,11 @@ def test_a_keep_that_cannot_be_checked_out_is_measured_as_a_crash_once(
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)
     sched.tick()
-    sched.wait(10)
+    sched.wait()
     [(_, score, error)] = measured_by(db, CandidateId(2))
     assert score is None and error is not None and error.startswith('GitCommandError'), error
     sched.tick()
-    sched.wait(10)
+    sched.wait()
     assert len(measured_by(db, CandidateId(2))) == 1, 'a crash is an answer: not measured again'
     sched.stop(timeout=5)
 
@@ -1479,7 +1495,7 @@ def test_stop_before_a_sweep_starts_never_starts_it(
     scheduler.stop(timeout=0.5)  # the sweep thread is composing its brief, before its start window
     assert time.monotonic() - started < 3
     gate.release.set()
-    scheduler.wait(10)
+    scheduler.wait()
     with db.session() as s:
         agent_session = s.get_one(AgentSession, agent_session_id)
         assert (agent_session.state, agent_session.error, agent_session.harness, agent_session.handle) == (
@@ -1790,7 +1806,7 @@ def test_a_run_frees_its_slot_when_its_implementer_ends_and_its_idea_settles_onc
         assert s.scalars(select(Candidate).where(Candidate.run_id == 1)).one().verdict is Verdict.PENDING
     assert scheduler.tick() == [2], 'the one slot is free while run#1 is scored'
     go.touch()
-    scheduler.wait(20)
+    scheduler.wait()
     assert statuses(db) == [IdeaStatus.DONE, IdeaStatus.DONE]
     with db.session() as s:
         assert s.scalars(select(Candidate).where(Candidate.run_id == 1)).one().verdict is Verdict.KEEP
@@ -1893,7 +1909,7 @@ def test_an_implementer_that_the_stop_ends_mid_turn_closes_its_run_as_cut_by_the
     assert [kind for kind, _ in settled(db, 'agent_session.wrap_up')] == [1], 'told, but the turn goes on'
     monkeypatch.setattr('piloop.daemon.scheduler.STOP_GRACE_SECONDS', 0)
     scheduler.tick()
-    scheduler.wait(20)
+    scheduler.wait()
     scheduler.stop(timeout=5)
     with db.session() as s:
         run = s.get_one(Run, 1)
@@ -2000,7 +2016,7 @@ def test_a_cancelled_implementer_closes_its_run_as_cancelled_scores_its_commits_
         request_cancel(s, s.get_one(AgentSession, 1), System.HUMAN, wrap_up=False)
         s.commit()
     assert scheduler.tick() == []
-    scheduler.wait(20)
+    scheduler.wait()
     scheduler.stop(timeout=5)
     with db.session() as s:
         run = s.get_one(Run, 1)
@@ -2031,7 +2047,7 @@ def test_a_finding_that_lands_after_a_cancel_ended_the_implementer_is_refused_an
     scheduler.tick()
     with pytest.raises(sqlite3.IntegrityError, match='the agent session of this connection has ended'):
         comment(db, 'finding', 'idea', idea, 'done after all', author='implementer#1')
-    scheduler.wait(20)
+    scheduler.wait()
     scheduler.stop(timeout=5)
     with db.session() as s:
         run = s.get_one(Run, 1)
@@ -2054,7 +2070,7 @@ def test_an_implementer_cancelled_before_it_did_anything_is_not_a_failed_start(
         request_cancel(s, s.get_one(Run, 1), System.HUMAN, wrap_up=False)
         s.commit()
     assert scheduler.tick() == []
-    scheduler.wait(20)
+    scheduler.wait()
     scheduler.stop(timeout=5)
     with db.session() as s:
         assert s.scalars(select(Event).where(Event.kind == STARTUP_ANOMALY)).all() == []
@@ -2199,7 +2215,7 @@ def test_startup_deaths_pause_launches_and_escalate_until_they_age_out(
     wanted = request_watchdog(db, campaign)
     scheduler = make_scheduler(db, runtime, tmp_path)
     assert wanted in scheduler.tick(), 'two recent deaths: launches go on'
-    scheduler.wait(10)
+    scheduler.wait()
 
     died = [died_at_startup(db, campaign, WATCHDOG) for _ in range(2)]
     request_watchdog(db, campaign)
@@ -2233,7 +2249,7 @@ def test_startup_deaths_pause_launches_and_escalate_until_they_age_out(
             event.at -= STARTUP_WINDOW
         s.commit()
     assert scheduler.tick() != [], 'the deaths aged out of the window: launches resume'
-    scheduler.wait(10)
+    scheduler.wait()
 
     for _ in range(STARTUP_BREAKER):
         died_at_startup(db, campaign, WATCHDOG)
@@ -2485,13 +2501,13 @@ def test_a_stopped_campaign_is_measured_again_only_on_request(
     scheduler = make_scheduler(db, runtime, tmp_path)
     measured = mocker.patch.object(scheduler._controller, 'remeasure')
     scheduler.tick()
-    scheduler.wait(5)
+    scheduler.wait()
     measured.assert_not_called()
     with db.session() as s:
         request_remeasure(s, s.get_one(Candidate, 1), System.HUMAN)
         s.commit()
     scheduler.tick()
-    scheduler.wait(5)
+    scheduler.wait()
     measured.assert_called_once_with(1)
 
 
@@ -2505,5 +2521,5 @@ def test_the_daemon_measures_a_candidate_again_when_someone_asks(
         request_remeasure(s, s.get_one(Candidate, 1), System.ORCHESTRATOR)
         s.commit()
     scheduler.tick()
-    scheduler.wait(5)
+    scheduler.wait()
     measured.assert_called_once_with(1)

@@ -65,11 +65,11 @@ def test_a_pause_still_measures_what_the_evaluator_needs_unless_it_holds_the_eva
     sched = make_scheduler(db, runtime, tmp_path)
     pause(db, evals=True)
     sched.tick()
-    sched.wait(30)
+    sched.wait()
     assert measured_by(db, reference) == [], 'held'
     pause(db, evals=False)
     sched.tick()
-    sched.wait(30)
+    sched.wait()
     assert measured_by(db, reference) == [(1, 3.0, None)], 'a pause of the launches only still measures'
     sched.stop(timeout=5)
 
@@ -100,7 +100,7 @@ def test_the_daemon_judges_a_discard_again_with_a_measurement_by_hand(
     assert gate.entered.wait(10)
     sched.tick()
     gate.release.set()
-    sched.wait(30)
+    sched.wait()
     assert asked.call_count == 1, 'one judgement at a time in the campaign slot'
     with db.session() as s:
         c = s.get_one(Candidate, worse.id)

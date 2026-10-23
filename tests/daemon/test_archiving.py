@@ -45,7 +45,7 @@ def test_the_tick_archives_an_idea_once_its_run_is_judged_and_leaves_its_files_f
     assert idea == 1
     workspace = workspace_dir(tmp_path, campaign.id)
     assert scheduler.tick() == [1]
-    scheduler.wait(timeout=30)
+    scheduler.wait()
     assert files(workspace) == {'idea1/x.npy': b'array\n'}
 
     def archived() -> bool:

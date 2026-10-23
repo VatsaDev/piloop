@@ -137,9 +137,9 @@ def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt
         (2, AgentSessionState.REQUESTED, reason),
     ]
     release.touch()
-    sched.wait(10)
+    sched.wait()
     assert sched.tick() == [2], 'the slot is free'
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
 
     brief = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
@@ -173,12 +173,12 @@ def test_a_role_adds_its_incident_prompt_to_an_incident_sweep_and_its_routine_pr
     sched = scheduler(db, recording(runtime, []), tmp_path)
     fail_a_run(db, campaign, 'broken')
     assert sched.tick() == [1]
-    sched.wait(10)
+    sched.wait()
     with db.session() as s:
         s.add(AgentSession(kind='triage', campaign_id=campaign.id, reason='by hand'))
         s.commit()
     assert sched.tick() == [2]
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
     incident, routine = ((tmp_path / 'agent_sessions' / str(w) / 'brief.md').read_text() for w in (1, 2))
     assert incident.startswith('# Triage\n\n## An incident\n\n# Demo') and '## Incidents to investigate' in incident
@@ -201,7 +201,7 @@ def test_a_role_that_defines_ideas_is_told_how_many_its_sweep_may_add(
     configure(db, campaign, '#!/bin/sh\ntrue\n', ideator=ideator, research={'triggers': []}, watchdog={'triggers': []})
     sched = scheduler(db, recording(runtime, []), tmp_path)
     assert sched.tick() == [1], 'no runnable idea: the backlog is short'
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
     brief = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
     assert '- New ideas of your own in this sweep: at most 2 (`max_ideas`).' in brief
@@ -257,7 +257,7 @@ def test_a_role_that_does_runs_takes_its_ideas_with_its_own_prompt_and_its_commi
     (cheap,) = add_ideas(db, campaign, 'cheap', priority=3)
     sched = scheduler(db, recording(runtime, []), tmp_path)
     assert sorted(sched.tick()) == [1, 2]
-    sched.wait(30)
+    sched.wait()
     sched.stop(timeout=5)
     assert runs_by_role(db) == [(1, 'quick', cheap, 'quick'), (2, 'implementer', deep, 'implementer')]
     assert (tmp_path / 'runs' / '1' / 'brief.md').read_text().startswith('# Quick\nTry the idea')
@@ -304,7 +304,7 @@ def test_a_queued_run_of_a_role_that_piloop_toml_no_longer_has_fails_and_its_ide
         )
         assert idea.status is IdeaStatus.READY, 'the removed role was not an attempt at the idea'
     assert sched.tick() == [2]
-    sched.wait(30)
+    sched.wait()
     sched.stop(timeout=5)
     assert runs_by_role(db)[1:] == [(2, 'implementer', cheap, 'implementer')]
 
@@ -328,7 +328,7 @@ def test_a_built_in_role_takes_other_triggers(
         s.commit()
     decide(db, campaign, 'look again')
     assert sched.tick() == [1, 2]
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
     assert agent_sessions(db, WATCHDOG) == [(1, AgentSessionState.EXITED, 'timer: 30s')]
     assert agent_sessions(db, RESEARCH) == [(2, AgentSessionState.EXITED, f'sql: {REVIEW}')]
@@ -369,8 +369,8 @@ def test_a_hand_over_leaves_a_sweep_in_the_campaign_checkout_running_and_the_nex
     second = scheduler(db, recording(ScriptRuntime(), []), tmp_path)
     second.reap()
     hold.unlink()
-    second.wait(30)
-    first.wait(10)
+    second.wait()
+    first.wait()
     with db.session() as s:
         sweep = s.get_one(AgentSession, 1)
     assert (sweep.state, sweep.error) == (AgentSessionState.EXITED, None), 'the next daemon watched it to its end'
@@ -431,7 +431,7 @@ def test_a_package_adds_a_role_and_triggers_through_entry_points(
     configure(db, campaign, '#!/bin/sh\ntrue\n', auditor={'triggers': [{'kind': 'broken'}, {'kind': 'every_tick'}]})
     sched = scheduler(db, recording(runtime, []), tmp_path)
     assert sched.tick() == [1]
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
     assert agent_sessions(db, 'auditor') == [(1, AgentSessionState.EXITED, 'every tick for auditor')]
     brief = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
@@ -539,7 +539,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_store_backend_through_
     try:
         daemon.scheduler.reap()
         assert daemon.scheduler.tick() == [1]
-        daemon.scheduler.wait(30)
+        daemon.scheduler.wait()
     finally:
         daemon.shutdown(timeout=5)
     with db.session() as s:

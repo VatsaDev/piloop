@@ -53,7 +53,7 @@ def test_research_sweep_inserts_ideas_signed_with_its_implementer_id(
     scheduler = Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))
 
     assert scheduler.tick() == [1], 'a free implementer slot, no idea for it: low water requests a research sweep'
-    scheduler.wait(30)
+    scheduler.wait()
     scheduler.stop(timeout=5)
 
     with db.session() as s:
@@ -162,7 +162,7 @@ def test_a_seed_sweep_develops_one_seed_and_rejects_the_other_however_full_the_b
 
     assert scheduler.tick() == [1], 'the one slot is busy and the backlog is at its target, but two seeds wait'
     assert last_reason(db) == '2 new seeds to develop'
-    scheduler.wait(30)
+    scheduler.wait()
     scheduler.stop(timeout=5)
 
     brief = (tmp_path / 'agent_sessions' / '1' / 'brief.md').read_text()
@@ -208,7 +208,7 @@ def test_with_several_tracks_research_reads_them_and_which_are_short_of_their_sh
     controller = serving(RunController(db, Tracer(None), tmp_path, factory(runtime)))
     scheduler = Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))
     assert scheduler.tick() == [1]
-    scheduler.wait(30)
+    scheduler.wait()
     scheduler.stop(timeout=5)
     brief = (tmp_path / 'projects' / str(campaign.id) / 'workspace' / 'brief-seen.txt').read_text()
     assert '- Your cwd is a detached checkout of candidate#1, the head (score=1.0, size=5.0)' in brief

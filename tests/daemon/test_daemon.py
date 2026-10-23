@@ -58,7 +58,7 @@ def test_daemon_end_to_end(
 
     daemon.scheduler.reap()
     assert daemon.scheduler.tick() == [1]
-    daemon.scheduler.wait(30)
+    daemon.scheduler.wait()
     with daemon.db.session() as s:
         run = s.get_one(Run, 1)
         assert (run.status, run.updated_by) == (RunStatus.SUCCEEDED, ACTOR.signature)
@@ -70,9 +70,9 @@ def test_daemon_end_to_end(
         s.add(Idea(track='score', campaign_id=campaign.id, title='bad', hypothesis='bad', created_by='t', max_runs=1))
         s.commit()
     assert daemon.scheduler.tick() == [2]
-    daemon.scheduler.wait(30)
+    daemon.scheduler.wait()
     assert daemon.scheduler.tick() == [3], 'the failure requests a watchdog sweep, launched on the same tick'
-    daemon.scheduler.wait(30)
+    daemon.scheduler.wait()
     with daemon.db.session() as s:
         watchdog = s.get_one(AgentSession, 3)
         assert (watchdog.kind, watchdog.reason, watchdog.state, watchdog.harness) == (
@@ -324,7 +324,7 @@ def test_an_in_place_restart_leaves_the_agents_running_and_the_new_daemon_finish
     second = Daemon(cfg)
     second.scheduler.reap()
     hold.unlink()
-    second.scheduler.wait(30)
+    second.scheduler.wait()
     with second.db.session() as s:
         run = s.get_one(Run, 1)
         assert (run.status, run.error, s.get_one(AgentSession, 1).state) == (
@@ -339,7 +339,7 @@ def test_an_in_place_restart_leaves_the_agents_running_and_the_new_daemon_finish
     wait_until(lambda: not (cfg.home / 'runs' / '1' / 'worktree').exists())  # once the agent's result is in
     second.shutdown(timeout=5)
     # In a real restart the exec ends the old thread. Here it lives on, sees its agent end, and leaves the run alone.
-    first.scheduler.wait(10)
+    first.scheduler.wait()
 
 
 def test_serve_refuses_when_a_daemon_holds_the_pid_file(

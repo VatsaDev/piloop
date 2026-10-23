@@ -108,7 +108,7 @@ def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised
         ),
     ]
     hold.unlink()
-    scheduler.wait(30)
+    scheduler.wait()
     with db.session() as s:
         assert [(r.idea_id, r.status) for r in s.scalars(select(Run))] == [(first, RunStatus.SUCCEEDED)], (
             'what ran finished and was scored; nothing else was queued'
@@ -128,7 +128,7 @@ def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised
         sync(s, s.get_one(Campaign, campaign.id))  # This is what `piloop init` does.
         s.commit()
     assert len(scheduler.tick()) == 2, 'the limit raised: the watchdog and the next run launch'
-    scheduler.wait(30)
+    scheduler.wait()
 
 
 def test_a_failing_command_holds_launches_with_one_escalation_per_streak(
@@ -154,7 +154,7 @@ def test_a_failing_command_holds_launches_with_one_escalation_per_streak(
 
     bill(db, campaign, file, '12')
     assert scheduler.tick() == [1], 'a reading again: launches resume'
-    scheduler.wait(30)
+    scheduler.wait()
     bill(db, campaign, file, 'oops')
     scheduler.tick()
     assert len(daemon_comments(db)) == 2, 'a new streak, a new escalation'

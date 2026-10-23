@@ -75,11 +75,11 @@ def test_a_scout_sweep_fires_on_its_interval_as_a_row_of_its_own_beside_research
     assert sorted(sched.tick()) == [1, 2], 'a seed sweep and a scout sweep, each in a slot of its own role'
     assert agent_sessions(db, RESEARCH)[0][2] == '1 new seeds to develop'
     assert agent_sessions(db, SCOUT)[0][2] == 'timer: 60s'
-    sched.wait(10)
+    sched.wait()
     assert sched.tick() == [], 'the last scout started a moment ago'
     backdate(db, AgentSessionId(2), 61)
     assert sched.tick() == [3]
-    sched.wait(10)
+    sched.wait()
     sched.stop(timeout=5)
 
 
@@ -91,7 +91,7 @@ def test_a_scout_sweep_reads_its_context_signs_as_a_scout_and_files_only_seeds_a
     scout_due(db, campaign, 61)
     sched = scheduler(db, runtime, tmp_path)
     assert sched.tick() == [1]
-    sched.wait(30)
+    sched.wait()
     sched.stop(timeout=5)
 
     workspace = tmp_path / 'projects' / str(campaign.id) / 'workspace'
@@ -239,7 +239,7 @@ def test_a_scout_requested_by_hand_while_its_timer_is_off_files_the_default_numb
         s.commit()
     sched = scheduler(db, runtime, tmp_path)
     assert sched.tick() == [1]
-    sched.wait(30)
+    sched.wait()
     sched.stop(timeout=5)
     brief = (tmp_path / 'projects' / str(campaign.id) / 'workspace' / 'brief-seen.txt').read_text()
     assert f'- Seeds you may file: at most {ScoutRole().seeds};' in brief
