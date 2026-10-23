@@ -1,7 +1,9 @@
 """A live server of ``piloop serve --listen`` in the test's process, on a free loopback port."""
 
+import subprocess
 from collections.abc import Callable, Generator, Sequence
 from contextlib import AbstractContextManager, contextmanager
+from pathlib import Path
 
 import pytest
 
@@ -51,3 +53,18 @@ def token(db: Database) -> Callable[..., str]:
         return secret
 
     return make
+
+
+@pytest.fixture
+def certificate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
+    """A self-signed certificate for 127.0.0.1, which clients trust through ``SSL_CERT_FILE``."""
+    cert, key = tmp_path / 'cert.pem', tmp_path / 'key.pem'
+    subprocess.run(
+        ['openssl', 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-days',
+         '1', '-subj', '/CN=127.0.0.1', '-addext', 'subjectAltName=IP:127.0.0.1', '-keyout', str(key), '-out',
+         str(cert)],
+        check=True,
+        capture_output=True,
+    )  # fmt: skip
+    monkeypatch.setenv('SSL_CERT_FILE', str(cert))
+    return {'cert': str(cert), 'key': str(key)}

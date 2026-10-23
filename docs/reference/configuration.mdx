@@ -480,6 +480,12 @@ With `provider = "gcs"`:
 | `project` | string \| null | `null` | The Google Cloud project to bill. Unset: the project of the credentials. |
 | `credentials_file` | string \| null | `null` | A service account key file (JSON) to use instead of Application Default Credentials. A path, never the key. |
 
+With `provider = "http"`:
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `url` | string | required | The service: `https://host:port`. |
+
 With `provider = "s3"`:
 
 | Key | Type | Default | Description |

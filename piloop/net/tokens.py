@@ -1,4 +1,4 @@
-"""Bearer tokens of the server that ``piloop serve --listen`` runs: ``piloop token create|list|revoke``.
+"""Bearer tokens of ``piloop serve --listen`` and ``piloop cas serve``: ``piloop token create|list|revoke``.
 
 A secret is ``plt_`` and 32 random bytes. It is shown once, when it is made: the ``tokens`` table keeps its SHA-256
 only. A token's name is the caller's name, and its scope says which routes it may call.

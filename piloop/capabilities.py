@@ -26,6 +26,7 @@ from piloop.plugins.cas.disk import Disk, DiskCas
 from piloop.plugins.cas.cached import Cached, CachedCas
 from piloop.plugins.cas.s3 import S3
 from piloop.plugins.cas.gcs import Gcs
+from piloop.plugins.cas.http import Http
 
 from piloop.plugins.trigger.contract import TRIGGERS, Trigger, Tick, Fire
 from piloop.plugins.trigger.contract import Backlog, TrackBacklog, Incident

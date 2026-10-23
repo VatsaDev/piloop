@@ -80,7 +80,7 @@ def _endpoint(network: Network, route: Route) -> Callable[[Request, Caller], Awa
 
 
 class Server:
-    """uvicorn serving ``app`` on ``listener``, in a thread of this process, from ``start`` until ``close``."""
+    """uvicorn serving ``app`` on ``listener``: in this thread (``run``), or in its own from ``start`` until ``close``."""
 
     def __init__(self, app: FastAPI, listener: Listener) -> None:
         self.listener = listener
@@ -93,9 +93,7 @@ class Server:
             ssl_context_factory=_tls(listener.tls) if listener.tls is not None else None,
         )
         self._server = uvicorn.Server(config)
-        self._thread = threading.Thread(
-            target=self._server.run, kwargs={'sockets': [listener.socket]}, name='piloop-server', daemon=True
-        )
+        self._thread = threading.Thread(target=self.run, name='piloop-server', daemon=True)
 
     @property
     def url(self) -> str:
@@ -104,15 +102,24 @@ class Server:
         scheme = 'https' if self.listener.tls is not None else 'http'
         return f'{scheme}://[{host}]:{port}' if ':' in host else f'{scheme}://{host}:{port}'
 
+    def run(self) -> None:
+        """Serve in this thread, then close the socket. In the main thread, SIGINT and SIGTERM stop it.
+
+        uvicorn raises the signal again once it has shut down, so a Ctrl-C ends as ``KeyboardInterrupt``.
+        """
+        try:
+            self._server.run(sockets=[self.listener.socket])
+        finally:
+            self.listener.socket.close()
+
     def start(self) -> None:
-        """Serve. The socket listens already, so a request that comes before uvicorn accepts waits in its backlog."""
+        """Serve in a thread. The socket listens already, so a request that comes before uvicorn accepts waits."""
         self._thread.start()
 
     def close(self) -> None:
-        """Stop accepting, let the requests in flight finish for up to ``GRACE_SECONDS``, then close the socket."""
+        """Stop accepting, let the requests in flight finish for up to ``GRACE_SECONDS``; ``run`` closes the socket."""
         self._server.should_exit = True
         self._thread.join()
-        self.listener.socket.close()
 
 
 def _tls(context: ssl.SSLContext) -> Callable[[uvicorn.Config, Callable[[], ssl.SSLContext]], ssl.SSLContext]:

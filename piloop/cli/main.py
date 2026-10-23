@@ -62,6 +62,7 @@ app.command(agents.attach)
 app.command(memory.journal)
 app.command(memory.wake)
 app.command(daemon.serve)
+app.command('piloop.cli.cas:app', name='cas')  # lazy: FastAPI takes a fifth of a second to import
 app.command(daemon.stop)
 app.command(daemon.restart)
 app.command(daemon.service_unit_cmd, name='service-unit')

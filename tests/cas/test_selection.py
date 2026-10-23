@@ -13,6 +13,7 @@ from piloop.plugins.cas.cached import Cached, CachedCas
 from piloop.plugins.cas.contract import CAS, CasProvider
 from piloop.plugins.cas.disk import BOUND, Disk
 from piloop.plugins.cas.gcs import Gcs
+from piloop.plugins.cas.http import Http
 from piloop.plugins.cas.kit.objects import Dir, ObjectsCas, key
 from piloop.plugins.cas.s3 import S3
 from piloop.plugins.host import PluginError
@@ -91,7 +92,7 @@ def test_an_entry_point_must_name_a_new_provider_class(registered: list[EntryPoi
 
 
 def test_the_built_in_providers() -> None:
-    assert CAS.builtins() == {'cached': Cached, 'disk': Disk, 'gcs': Gcs, 's3': S3}
+    assert CAS.builtins() == {'cached': Cached, 'disk': Disk, 'gcs': Gcs, 'http': Http, 's3': S3}
 
 
 def test_cached_nests_a_local_tier_that_can_be_one(tmp_path: Path, registered: list[EntryPoint]) -> None:

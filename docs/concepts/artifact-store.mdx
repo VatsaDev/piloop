@@ -108,3 +108,21 @@ add a provider: see [CAS providers](/architecture/extension-points#cas-providers
 
 `piloop store verify` checks that every blob of every archive is still there. It hashes the local copies again and
 asks the remote for the evicted ones.
+
+## A store for other machines
+
+`piloop cas serve` serves this home's store over HTTP, so that workers on other machines read and write it. It runs
+apart from the daemon, on its own port, and takes the workers' tokens:
+
+```bash
+piloop cas serve --listen 0.0.0.0:7701       # needs tls in [plugins.network]
+```
+
+On the worker, a local cache over it. The worker dials it as it dials the server, through `[plugins.network]`:
+
+```toml
+[plugins.cas]
+provider = "cached"
+local_max_gb = 50
+remote = { provider = "http", url = "https://cas.example:7701" }
+```

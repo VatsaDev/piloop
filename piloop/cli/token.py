@@ -11,7 +11,7 @@ from piloop.cli import common
 from piloop.db.models import Token, TokenScope
 from piloop.net import tokens
 
-app = cyclopts.App(name='token', help='The bearer tokens of the server that `piloop serve --listen` runs.')
+app = cyclopts.App(name='token', help='The bearer tokens of `piloop serve --listen` and `piloop cas serve`.')
 
 
 @app.command

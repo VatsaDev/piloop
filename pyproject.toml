@@ -71,6 +71,7 @@ disk = "piloop.plugins.cas.disk:Disk"
 cached = "piloop.plugins.cas.cached:Cached"
 s3 = "piloop.plugins.cas.s3:S3"
 gcs = "piloop.plugins.cas.gcs:Gcs"
+http = "piloop.plugins.cas.http:Http"
 
 [project.entry-points."piloop.triggers"]
 anomaly = "piloop.plugins.trigger.anomaly:AnomalyTrigger"

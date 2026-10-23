@@ -1,6 +1,5 @@
 """The server of ``piloop serve --listen``: who may call it, TLS, and an executor's routes."""
 
-import subprocess
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -82,21 +81,6 @@ def test_an_executor_route_takes_its_model_and_answers_with_its_model_or_204(
         assert invalid.status_code == 422
         assert invalid.json()['detail'][0]['loc'] == ['text']
         assert client.post('/v1/executor/other', json={}).status_code == 404
-
-
-@pytest.fixture
-def certificate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
-    """A self-signed certificate for 127.0.0.1, which clients trust through ``SSL_CERT_FILE``."""
-    cert, key = tmp_path / 'cert.pem', tmp_path / 'key.pem'
-    subprocess.run(
-        ['openssl', 'req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-days',
-         '1', '-subj', '/CN=127.0.0.1', '-addext', 'subjectAltName=IP:127.0.0.1', '-keyout', str(key), '-out',
-         str(cert)],
-        check=True,
-        capture_output=True,
-    )  # fmt: skip
-    monkeypatch.setenv('SSL_CERT_FILE', str(cert))
-    return {'cert': str(cert), 'key': str(key)}
 
 
 def test_tls_with_a_certificate_that_the_client_trusts_through_ssl_cert_file(

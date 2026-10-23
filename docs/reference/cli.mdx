@@ -75,14 +75,25 @@ start. See [How piloop loads plugins](/architecture/extension-points#how-piloop-
 [`piloop worker`](#piloop-worker). Each caller sends a token of `piloop token`. An address that is not loopback needs
 `tls`: see [Networks](/architecture/extension-points#networks).
 
+### piloop cas serve
+
+```text
+piloop cas serve --listen HOST:PORT
+```
+
+Serves the CAS that `[plugins.cas]` selects to workers on other machines, on `HOST:PORT`, in a process of its own. A
+worker reaches it with the [`http` provider](/concepts/artifact-store#a-store-for-other-machines), with its token of
+`piloop token`. TLS is that of `[plugins.network]`: an address that is not loopback needs `tls`.
+
 ### piloop token
 
 ```text
 piloop token create NAME | list | revoke NAME
 ```
 
-`create` prints a new token for the worker `NAME`. Copy it then: piloop keeps only its hash. `list` shows the names,
-never the tokens. `revoke` deletes a token, and its next call gets 401.
+`create` prints a new token for the worker `NAME`, which calls `piloop serve --listen` and `piloop cas serve`. Copy it
+then: piloop keeps only its hash. `list` shows the names, never the tokens. `revoke` deletes a token, and its next call
+gets 401.
 
 ### piloop stop
 

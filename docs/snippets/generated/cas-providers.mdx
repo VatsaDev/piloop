@@ -5,4 +5,5 @@
 | `cached` | A local tier over `remote`, evicted by age and by size. | `remote`, `local`, `evict_after_days`, `local_max_gb` |
 | `disk` | The blobs in a directory. | `path` |
 | `gcs` | A bucket, a prefix in it, and the storage class of each blob. | `bucket`, `prefix`, `storage_class`, `project`, `credentials_file` |
+| `http` | A CAS service, dialed through this home's network. | `url` |
 | `s3` | A bucket and prefix, and the storage class of each blob. | `url`, `storage_class`, `standard_below` |
