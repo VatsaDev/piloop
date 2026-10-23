@@ -94,6 +94,19 @@ def test_staging_keeps_nothing_local_and_reads_through(tmp_path: Path) -> None:
     assert cas.usage() == TierUsage(blobs=2, local=0, local_bytes=0, remote=2, where=URL)
 
 
+@pytest.mark.parametrize('evict_after', [None, timedelta(0)])
+def test_a_blob_that_another_store_put_on_the_remote_is_found_read_and_marked(
+    tmp_path: Path, evict_after: timedelta | None
+) -> None:
+    remote = Counted()
+    server, worker = cached(tmp_path / 'server', remote, evict_after), cached(tmp_path / 'worker', remote, evict_after)
+    put, never = worker.put(b'a log file'), Cid.of(b'never put')
+    assert server.missing([put, never]) == [never] and server.has(put), 'asked of the remote, then marked'
+    other = worker.put(b'a bundle')
+    assert server.get(other) == b'a bundle' and server.has(other)
+    assert server.integrity(worker.put(b'more')) is Integrity.OK and server.get(never) is None
+
+
 def test_a_put_of_a_blob_the_remote_holds_does_not_bring_back_its_local_copy(tmp_path: Path) -> None:
     remote = Counted()
     cas = cached(tmp_path, remote, max_local_bytes=0)

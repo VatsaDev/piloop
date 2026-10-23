@@ -21,7 +21,7 @@ stateDiagram-v2
 
 | Word | Meaning |
 |---|---|
-| Job | One agent session or one evaluation: what to check out, what to run, what to bring back. |
+| Job | One agent session or one evaluation: what to check out, what to run, what to bring back. It names no path: its commit, its inputs and its results go by address in the [CAS](/concepts/artifact-store). |
 | Worker | A process that takes leases and runs their jobs. `piloop serve` has one, called `serve`. |
 | Pool | The slots and thresholds of each worker in it: `[plugins.executor.pools.<name>]`. |
 | Heartbeat | The worker renews its leases every `renew_seconds`. |
@@ -78,8 +78,11 @@ piloop limits unset executor.pools.serve.evaluations
 
 ## A worker on another machine
 
-A worker on another machine takes the leases of its pool over HTTPS. A job names its files by their paths on the
-server's machine, so the worker must see the campaign's directories at the same paths, on a shared mount for example.
+A worker on another machine takes the leases of its pool over HTTPS. A job names its data by address in the CAS, and
+the worker reads and writes the CAS itself, so give it the server's `[plugins.cas]` (an `s3` or `gcs` bucket, or
+`cached` over one). It keeps clones of the campaign's repo under its home, filled from the CAS. Its agents' `workspace/`
+is a directory on the worker's machine, empty at first: the server's agents and other machines never see what they
+write there.
 
 On the server, add the pool, set `tls` in `[plugins.network]` (see [Networks](/architecture/extension-points#networks)),
 listen, and make the worker's token:
@@ -109,8 +112,10 @@ The worker is the token's name. It calls the server, and the server never calls 
 |---|---|
 | A worker dies during a run | The run ends `worker_lost`. It is not an attempt. |
 | A worker dies during an evaluation | The evaluation is queued again. Partial output is never scored. |
-| A late report | It is refused, and kept as a `lease.stale_report` event with the ref of its commits. |
+| A late report | It is refused, and kept as a `lease.stale_report` event. Its commits and logs stay in the CAS, by address. |
 | The same report twice | The second gets the first's answer. |
+| A worker whose `[plugins.cas]` is not the server's | It is refused when it registers, and exits. |
+| A report names blobs that the server's CAS lacks | The job is lost, with the blobs it names. |
 | A worker stops or dies before it sends a report | The report waits in `$PILOOP_HOME/spool/<worker>`, and goes out when the worker starts again. |
 | A worker's token is revoked | The worker stops its jobs and exits. |
 | The machine sleeps | A gap longer than the grace period is the daemon's own absence: nothing expires. |

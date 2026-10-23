@@ -395,8 +395,8 @@ class CampaignConfig(BaseModel):
     """The settings of each role (``[roles.implementer]``, ``[roles.watchdog]``, ``[roles.research]``, ``[roles.scout]``),
     and the roles that you define (``[roles.<name>]``)."""
     link: list[str] = []
-    """Repo-relative paths, ignored by git, that piloop symlinks into every worktree, for example data or virtual
-    environments."""
+    """Repo-relative paths, ignored by git, that piloop puts into every worktree read-only, for example data or virtual
+    environments. Each job gets them as they are when it is made."""
     context: list[str] = []
     """Repo-relative files or globs (for example ``docs/error-analysis-*.md``) that hold the campaign's analysis:
     error analyses, comparisons with a reference, evaluation reports. The research pack lists each one with its

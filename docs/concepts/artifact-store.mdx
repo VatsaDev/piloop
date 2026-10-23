@@ -30,7 +30,8 @@ The daemon removes the workspace copies of an archiving later, and records when 
 
 - **By age**: 7 days after the archiving.
 - **Under disk pressure**: while the disk of `PILOOP_HOME` has less than `min_free_gb` (`[storage]`, 20 GB by default)
-  free, the oldest archivings first.
+  free, the oldest archivings first. Before them go the copies of `link` inputs that no running job uses, oldest
+  first: the next job that needs one makes it again from the store.
 
 It removes only a file that still holds what was stored (same size and hash), and a symlink that still points where
 it did. A file that an agent wrote since stays, and so does its directory. It checks age and pressure every hour,

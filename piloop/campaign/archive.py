@@ -14,7 +14,6 @@ hundreds of gigabytes in millions of files, most of them copies. What the store 
 """
 
 import re
-import shutil
 import threading
 from collections.abc import Collection, Iterable
 from dataclasses import dataclass, field
@@ -42,6 +41,7 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.ids import CampaignId, IdeaId
 from piloop.plugins.cas.contract import Cas, Integrity, integrity
+from piloop.settings import INPUTS_DIR
 from piloop.store.tree import (
     DRISL,
     Entry,
@@ -51,6 +51,8 @@ from piloop.store.tree import (
     Removed,
     Walk,
     cid_of,
+    evict_unlinked,
+    free,
     materialise,
     put_walk,
     remove,
@@ -189,6 +191,8 @@ class Pruned:
 
     archivings: int = 0
     left: dict[str, str] = field(default_factory=dict)
+    inputs: int = 0
+    """The shared copies of linked inputs that ``make_room`` removed (``evict_unlinked``)."""
 
     def add(self, done: Removed) -> None:
         if not done.left:
@@ -209,27 +213,25 @@ def prune_older(db: Database, cas: Cas, home: Path, than: datetime, stop: thread
 
 
 def make_room(db: Database, cas: Cas, home: Path, reserve: int, stop: threading.Event | None = None) -> Pruned:
-    """While the store's disk has less than ``reserve`` bytes free, ``prune`` the next archiving, oldest first.
+    """While the store's disk has less than ``reserve`` bytes free, free room, oldest first: inputs, then archivings.
 
-    The workspaces and the store share the disk of ``PILOOP_HOME``. Each archiving is tried once per call, so one with a
-    file it cannot read does not stop the others. It ends early once ``stop`` is set.
+    It removes the shared copies of linked inputs that no worktree links (``evict_unlinked``), then ``prune``s the next
+    archiving. The workspaces, the inputs and the store share the disk of ``PILOOP_HOME``. A copy of an input goes
+    first: the CAS holds its blob, and the next job that needs it makes it again. Each archiving is tried once per call,
+    so one with a file it cannot read does not stop the others. It ends early once ``stop`` is set.
     """
+
+    def enough() -> bool:
+        return free(home) >= reserve or (stop is not None and stop.is_set())
+
+    pruned = Pruned(inputs=evict_unlinked(home / INPUTS_DIR, reserve, stop))
     with db.session() as s:
         ids = s.scalars(_unpruned().with_only_columns(Archive.id)).all()
-    pruned = Pruned()
     for archive_id in ids:
-        if free(home) >= reserve or (stop is not None and stop.is_set()):
+        if enough():
             break
         pruned.add(prune(db, cas, home, archive_id))
     return pruned
-
-
-def free(home: Path) -> int:
-    """Bytes free on the filesystem of ``home``, where the workspaces and a local CAS are, or of its nearest parent."""
-    path = home
-    while not path.exists():
-        path = path.parent
-    return shutil.disk_usage(path).free
 
 
 @dataclass(frozen=True)

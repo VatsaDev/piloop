@@ -6,13 +6,16 @@ that links each blob, stored as its DRISL encoding under its DRISL CID.
 """
 
 import base64
+import contextlib
+import errno
+import fcntl
 import json
 import os
 import shutil
 import stat
 import tempfile
 import threading
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -114,6 +117,16 @@ def cid_of(path: Path) -> Cid:
 
 WORKERS = 8
 """Files ``put_tree`` stores, and blobs ``materialise`` reads, at once: on a remote each is a request."""
+LOCKS = 64
+"""Stripes of ``Copies``' per-blob lock: blobs, not threads, so a few threads rarely wait on each other."""
+FICLONE = 0x40049409
+"""Linux's ioctl that makes a file a copy-on-write clone of another (``ioctl_ficlone(2)``)."""
+NO_REFLINK = frozenset({errno.EOPNOTSUPP, errno.ENOTTY, errno.EXDEV, errno.EINVAL, errno.ENOSYS})
+"""What a reflink fails with on a filesystem or a system that has none: a hard link is made instead."""
+
+type Seen = dict[tuple[int, int, int, int, int], tuple[Cid, int]]
+"""The blobs (and sizes) of files that ``put_walk`` stored, by device, inode, size, and modification and change times
+in ns. A file whose stat is the same is not read again, as git's index does."""
 
 
 class Cancelled(RuntimeError):
@@ -193,19 +206,32 @@ def walk(root: Path, names: Iterable[str]) -> Walk:
 
 
 def put_tree(
-    cas: Cas, root: Path, names: Iterable[str], stop: threading.Event | None = None, *, workers: int = WORKERS
+    cas: Cas,
+    root: Path,
+    names: Iterable[str],
+    stop: threading.Event | None = None,
+    *,
+    workers: int = WORKERS,
+    seen: Seen | None = None,
 ) -> Stored:
     """Store every file and symlink under ``root/<name>`` for each of ``names``: ``put_walk`` of ``walk``."""
-    return put_walk(cas, root, walk(root, names), stop, workers=workers)
+    return put_walk(cas, root, walk(root, names), stop, workers=workers, seen=seen)
 
 
 def put_walk(
-    cas: Cas, root: Path, found: Walk, stop: threading.Event | None = None, *, workers: int = WORKERS
+    cas: Cas,
+    root: Path,
+    found: Walk,
+    stop: threading.Event | None = None,
+    *,
+    workers: int = WORKERS,
+    seen: Seen | None = None,
 ) -> Stored:
     """Store the files and symlinks of ``found`` (paths relative to ``root``).
 
     Files are put ``workers`` at a time: on a remote, each blob is its own upload, and one at a time spent most of a
-    measured archiving waiting on S3. Raises ``Cancelled`` once ``stop`` is set, before the next file starts.
+    measured archiving waiting on S3. Raises ``Cancelled`` once ``stop`` is set, before the next file starts. With
+    ``seen``, a file stored before with the same stat is not read again, and each file stored is added to it.
     """
     stored = Stored(Manifest(entries=()), skipped=dict(found.skipped))
     entries = list(found.links)
@@ -214,6 +240,9 @@ def put_walk(
         """The entry of a stored file, or why it was left out: each is a reason for the caller to report, not a fault."""
         if stop is not None and stop.is_set():
             raise Cancelled(rel)
+        stat_key = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+        if seen is not None and (known := seen.get(stat_key)) is not None and cas.has(known[0]):
+            return Entry(path=rel, mode=stat.S_IMODE(st.st_mode), size=known[1], blob=known[0])
         try:
             with (root / rel).open('rb') as file:
                 size = os.fstat(file.fileno()).st_size
@@ -224,6 +253,8 @@ def put_walk(
             return f'not readable ({e.strerror}): fix its permissions'
         except FileNotFoundError:
             return 'gone since the walk: an agent or a prune removed it'
+        if seen is not None:
+            seen[stat_key] = (cid, size)
         return Entry(path=rel, mode=stat.S_IMODE(st.st_mode), size=size, blob=cid)
 
     files = found.files
@@ -292,9 +323,18 @@ def remove(root: Path, manifest: Manifest, keep: Collection[Cid] = ()) -> Remove
     return done
 
 
-def _blocked(root: Path, rel: Path) -> bool:
-    """Whether something other than a directory stands where ``rel`` needs a directory: its parents cannot be made."""
-    return any((root / parent).exists() and not (root / parent).is_dir() for parent in rel.parents if parent != Path())
+def _blocked(root: Path, rel: Path, clear: set[Path]) -> bool:
+    """Whether something other than a directory stands where ``rel`` needs a directory: its parents cannot be made.
+
+    ``clear`` holds the parents found free so far (a directory, or nothing yet), so a large tree checks each one once.
+    """
+    for parent in rel.parents:
+        if parent == Path() or parent in clear:
+            continue
+        if (root / parent).exists() and not (root / parent).is_dir():
+            return True
+        clear.add(parent)
+    return False
 
 
 def _within(root: Path, rel: Path) -> bool:
@@ -317,6 +357,10 @@ class Materialised:
     bytes: int = 0
     same: int = 0
     kept: list[str] = field(default_factory=list)
+    copies: dict[str, Copy] = field(default_factory=dict)
+    """The files written as read-only copies (``Copies``), by path: how each must stay (``Copy.holds``)."""
+    rebuilt: list[Cid] = field(default_factory=list)
+    """The blobs whose shared copy had changed since it was made, and was made again (``Copies.place``)."""
 
 
 def materialise(
@@ -326,20 +370,24 @@ def materialise(
     wanted: Callable[[Entry], bool] = lambda _: True,
     *,
     workers: int = WORKERS,
+    into: Copies | None = None,
 ) -> Materialised:
     """Write the ``wanted`` entries of ``manifest`` under ``root``; a path that exists with other content is kept.
 
     Each blob is read once (a download on a remote), into a checked file beside ``root``, ``workers`` at a time.
     Each path then gets a copy of that file, linked into place, which never replaces what someone wrote meanwhile. A
     path below a symlinked directory, or below a file where the manifest has a directory, is kept, not written.
+
+    With ``into``, each file is instead a read-only copy that ``into`` keeps and trees share: inputs.
     """
     done = Materialised()
     missing: dict[Cid, list[Entry]] = {}
+    clear: set[Path] = set()
     for entry in manifest.entries:
         if not wanted(entry):
             continue
         path = root / entry.path
-        if not _within(root, Path(entry.path)) or _blocked(root, Path(entry.path)):
+        if not _within(root, Path(entry.path)) or _blocked(root, Path(entry.path), clear):
             done.kept.append(entry.path)
             continue
         if entry.link is not None:
@@ -368,6 +416,8 @@ def materialise(
         Returns the paths written, their bytes, and the paths that something took or blocked meanwhile (kept).
         """
         assert entries[0].blob is not None
+        if into is not None:
+            return _place_all(into, entries, root, done)
         written, kept = 0, []
         root.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=root.parent, prefix=f'.{root.name}.') as scratch:
@@ -407,3 +457,193 @@ def _copy(src: Path, path: Path, mode: int) -> None:
         os.link(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _place_all(into: Copies, entries: list[Entry], root: Path, done: Materialised) -> tuple[int, int, list[str]]:
+    """``materialise``'s write of one blob's entries as read-only copies that ``into`` keeps."""
+    blob = entries[0].blob
+    assert blob is not None
+    written, kept = 0, []
+    for entry in entries:
+        try:
+            placed = into.place(blob, entry.mode, root / entry.path)
+        except FileExistsError, NotADirectoryError:  # someone wrote there meanwhile: theirs wins
+            kept.append(entry.path)
+            continue
+        done.copies[entry.path] = placed.copy
+        if placed.rebuilt:
+            done.rebuilt.append(blob)
+        written += 1
+    return written, entries[0].size * written, kept
+
+
+def write_files(cas: Cas, files: Mapping[str, Cid], root: Path) -> None:
+    """Write each of ``files`` at its relative path under ``root``, replacing a file there that holds other content.
+
+    Raises:
+        Missing: The CAS does not hold one of them.
+    """
+    for rel, blob in files.items():
+        path = root / rel
+        if path.is_file() and cid_of(path) == blob:
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if cas.get_file(blob, path) is None:
+            raise Missing(f'the blob {blob} of {rel} is not in the CAS')
+
+
+@dataclass(frozen=True)
+class Copy:
+    """A file put from a blob, as it was when it was made: what it must still be."""
+
+    blob: Cid
+    size: int
+    mode: int
+    mtime_ns: int
+    ino: int
+
+    @classmethod
+    def of(cls, blob: Cid, path: Path) -> Copy:
+        st = path.stat()
+        return cls(blob, st.st_size, stat.S_IMODE(st.st_mode), st.st_mtime_ns, st.st_ino)
+
+    def unchanged(self, path: Path) -> bool:
+        """Whether ``path`` has the size, mode, modification time and inode it was made with. No read."""
+        try:
+            return Copy.of(self.blob, path) == self
+        except FileNotFoundError:
+            return False
+
+    def holds(self, path: Path) -> bool:
+        """Whether ``path`` still holds its blob: unchanged, or else read again and hashed to it."""
+        if self.unchanged(path):
+            return True
+        try:
+            return cid_of(path) == self.blob
+        except FileNotFoundError:
+            return False
+
+
+@dataclass(frozen=True)
+class Placed:
+    """A copy put at a path, and whether the shared copy had changed and was made again."""
+
+    copy: Copy
+    rebuilt: bool
+
+
+class Copies:
+    """Read-only copies of blobs that trees share, under ``root``: a job's linked inputs.
+
+    A tree gets a reflink of a copy, a copy-on-write clone where the filesystem has them (btrfs, XFS), else a hard link
+    to it. The CAS keeps blobs compressed, so a tree cannot link its bytes: these are the plain copies that it links.
+    A job runs as the same user as piloop, so read-only is a mode that it can change: through a hard link, a ``chmod``
+    and a write change the shared copy, and every tree that links it. So each copy is recorded as it was made
+    (``Copy``) and checked on each reuse: one that changed is read again, and one whose content is no longer its blob's
+    is refused and made again from ``cas``. A tree checks its own copies the same way (``Copy.holds``).
+    """
+
+    def __init__(self, cas: Cas, root: Path) -> None:
+        self._cas = cas
+        self.root = root
+        self._made: dict[str, Copy] = {}
+        """How each copy was when this process made or checked it."""
+        self._locks = [threading.Lock() for _ in range(LOCKS)]
+
+    def place(self, blob: Cid, mode: int, path: Path) -> Placed:
+        """Put a read-only copy of the blob at a new ``path``, with the execute bits of ``mode``.
+
+        Raises ``FileExistsError`` when ``path`` is taken.
+        """
+        mode &= 0o555
+        path.parent.mkdir(parents=True, exist_ok=True)
+        while True:
+            source, rebuilt = self._copy(blob, mode)
+            try:
+                try:
+                    _reflink(source, path, mode)
+                except OSError as e:
+                    if e.errno not in NO_REFLINK:
+                        raise
+                    _link(source, path, mode)
+            except FileNotFoundError:  # someone removed it meanwhile: make it again
+                continue
+            return Placed(Copy.of(blob, path), rebuilt)
+
+    def _copy(self, blob: Cid, mode: int) -> tuple[Path, bool]:
+        """The shared copy of the blob with ``mode``, checked if it was made before; True when it was made again."""
+        path = self.root / f'{blob}.{mode:o}'
+        with self._locks[hash(path.name) % LOCKS]:
+            made = self._made.get(path.name)
+            if made is not None and made.unchanged(path):
+                return path, False
+            held = path.exists() and cid_of(path) == blob
+            rebuilt = path.exists() and not held
+            if held:
+                path.chmod(mode)
+            else:
+                path.unlink(missing_ok=True)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if self._cas.get_file(blob, path) is None:
+                    raise Missing(f'the blob {blob} is not in the CAS')
+                path.chmod(mode)
+            self._made[path.name] = Copy.of(blob, path)
+            return path, rebuilt
+
+
+def free(home: Path) -> int:
+    """Bytes free on the filesystem of ``home``, where the workspaces and a local CAS are, or of its nearest parent."""
+    path = home
+    while not path.exists():
+        path = path.parent
+    return shutil.disk_usage(path).free
+
+
+def evict_unlinked(root: Path, reserve: int, stop: threading.Event | None = None) -> int:
+    """While the disk of ``root`` has less than ``reserve`` bytes free, remove its copies that no tree links, oldest first.
+
+    ``root`` holds the shared copies of ``Copies``. Return how many went. The one eviction of linked inputs: the daemon's ``make_room`` and each worker after a job call it, with
+    ``[storage] min_free_gb``. A copy that a worktree hard-links has more than one link, and stays. One that it
+    reflinks has one, and can go: the reflink is a file of its own. ``Copies`` makes a copy that went again from the
+    CAS. It ends early once ``stop`` is set.
+    """
+
+    def enough() -> bool:
+        return free(root) >= reserve or (stop is not None and stop.is_set())
+
+    if not root.is_dir() or enough():
+        return 0
+    copies = sorted((entry.stat().st_mtime_ns, entry.path) for entry in os.scandir(root) if entry.is_file())
+    evicted = 0
+    for _, path in copies:
+        if enough():
+            break
+        with contextlib.suppress(FileNotFoundError):
+            if os.stat(path).st_nlink == 1:  # a tree that links it meanwhile keeps its link: no data goes
+                os.unlink(path)
+                evicted += 1
+    return evicted
+
+
+def _reflink(source: Path, path: Path, mode: int) -> None:
+    """Make ``path`` a copy-on-write clone of ``source`` with ``mode``. Raises ``FileExistsError`` when it is taken."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with source.open('rb') as src:
+            fcntl.ioctl(fd, FICLONE, src.fileno())
+        os.fchmod(fd, mode)
+    except BaseException:
+        path.unlink()
+        raise
+    finally:
+        os.close(fd)
+
+
+def _link(source: Path, path: Path, mode: int) -> None:
+    """A hard link to ``source`` at ``path``, or a copy with ``mode`` on another filesystem."""
+    try:
+        os.link(source, path)
+    except OSError as e:
+        if e.errno != errno.EXDEV:
+            raise
+        _copy(source, path, mode)

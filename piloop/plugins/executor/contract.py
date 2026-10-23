@@ -20,64 +20,99 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
-from typing import Annotated, Literal, Protocol, Self
+from pathlib import Path, PurePosixPath
+from typing import Annotated, Literal, NewType, Protocol, Self
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from covalence import Cid
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter
 from sqlalchemy.orm import Session
 
 from piloop.db.models import Usage
 from piloop.db.session import Database
-from piloop.ids import AgentSessionId, CandidateId, CommentId, RunId
+from piloop.ids import AgentSessionId, CampaignId, CandidateId, CommentId, RunId
 from piloop.mcp import McpServer
 from piloop.net import Route
 from piloop.otel import Tracer
+from piloop.plugins.cas.contract import BlobAddress, Cas
 from piloop.plugins.host import Capability, Choice, Parameters, Scope
-from piloop.plugins.runtime.contract import AgentExit, AgentSpec
+from piloop.plugins.runtime.contract import AgentExit, AgentStart
 from piloop.runtime.factory import RuntimeFactory
 from piloop.usage import UsageSpec
 
 
-class GitTree(BaseModel):
-    """An artifact: the tree of ``commit`` in ``repo``, made into a worktree at the job's ``cwd`` with its ``links``."""
+def _relative(place: str) -> str:
+    if not place or PurePosixPath(place).is_absolute() or '..' in PurePosixPath(place).parts:
+        raise ValueError(f'{place!r} is not a relative path inside a home')
+    return place
+
+
+type Place = Annotated[str, AfterValidator(_relative)]
+"""Where a job's files go, relative to a home (``runs/12``): the worker makes it under its own home, and core puts
+what comes back under its own. A runner's ``_work/<name>``: the job names the directory, the machine roots it."""
+
+RepoId = NewType('RepoId', CampaignId)
+"""A repo of record: the campaign whose checkout it is. Two campaigns on clones of one project have two, and so do
+two tenants' forks: git's own identity (a root commit) is the same for all of them."""
+
+
+class GitSource(BaseModel):
+    """An artifact: the tree of ``commit`` in ``repo``, as a worktree at the job's place, with ``links`` in it."""
 
     model_config = ConfigDict(frozen=True)
 
-    kind: Literal['git-tree'] = 'git-tree'
-    repo: Path
+    kind: Literal['git'] = 'git'
+    repo: RepoId
     commit: str
-    links: dict[str, Path] = Field(default_factory=dict)
-    """Paths linked into the worktree (``git.add_worktree``): data and environments that are not committed."""
+    links: dict[str, BlobAddress] = Field(default_factory=dict)
+    """Inputs that are not committed (data, environments), by name in the worktree: each the manifest of its tree in
+    the CAS, put there read-only (``piloop.store.tree.Copies``)."""
+    workspace: Place | None = None
+    """The place of the campaign's shared workspace under the worker's home, linked into the worktree. None: none."""
 
 
 class Checkout(BaseModel):
-    """An artifact that is already there: the campaign checkout, for a sweep whose ``workdir`` is the repo."""
+    """An artifact that is already there: the repo's own checkout, for a sweep whose ``workdir`` is the repo."""
 
     model_config = ConfigDict(frozen=True)
 
     kind: Literal['checkout'] = 'checkout'
-    path: Path
+    repo: RepoId
 
 
-type Artifact = Annotated[GitTree | Checkout, Field(discriminator='kind')]
+type Artifact = Annotated[GitSource | Checkout, Field(discriminator='kind')]
+
+
+class Bundle(BaseModel):
+    """Commits in the CAS: a git bundle of what ``head`` has beyond the job's commit."""
+
+    model_config = ConfigDict(frozen=True)
+
+    blob: BlobAddress
+    head: str
+
+
+class MissingBlobs(Exception):
+    """A report names blobs that the CAS does not hold: sending it again never applies it, so its worker loses the job.
+
+    A worker puts every blob before it reports, so a blob missing then is in another CAS, or lost.
+    """
 
 
 class Commits(BaseModel):
-    """How an agent's commits come back: what it left uncommitted is committed on its own, then the head is pinned."""
+    """How an agent's commits come back: what it left uncommitted is committed on its own, then they go as a bundle."""
 
     model_config = ConfigDict(frozen=True)
 
     message: str
     """The message of the commit of what the agent left uncommitted."""
-    ref: str
-    """Where the head is pinned before the worktree goes. Core pins the run's commits from it, then deletes it."""
 
 
 class AgentJob(BaseModel):
     """The description of an agent's job: everything a worker needs, so it reads no campaign table.
 
-    Secrets go by name: the MCP ``servers`` name the variables, and the worker takes their values from its own
-    environment. The worker renders the servers into the argv (``{mcp}``) in the materialized ``cwd``.
+    It names no path of the machine that made it. The worker makes the job's ``place`` under its own home: the log
+    directory, with the worktree in it. Secrets go by name: the MCP ``servers`` name the variables, and the worker takes
+    their values from its own environment and renders the servers into the argv (``{mcp}``).
     """
 
     model_config = ConfigDict(frozen=True)
@@ -88,17 +123,16 @@ class AgentJob(BaseModel):
     """The runtime that starts the agent on the worker's host (``runtime`` in ``piloop.toml``)."""
     campaign: str
     """The campaign's name, which a runtime can name what it makes after (Herdr's workspace)."""
-    campaign_path: Path
     artifact: Artifact
-    cwd: Path
-    log_dir: Path
+    place: Place
     timeout: float
     """The seconds the agent may run, counted from its start, also across a restart of its worker."""
     brief: str | None
-    """The agent's brief, which the worker writes to ``log_dir`` before the start: its first prompt names the file."""
-    spec: AgentSpec | None
-    """What the runtime starts. None for an agent that a previous daemon process left (``LeftJob``): it is
-    re-attached, never started."""
+    """The agent's brief, which the worker writes to its log directory before the start: its first prompt names the
+    file."""
+    spec: AgentStart | None
+    """What the runtime starts, once the worker fills in its places. None for an agent that a previous daemon process
+    left (``LeftJob``): it is re-attached, never started."""
     mcp: str | None = None
     """The renderer of the harness's MCP servers (``Harness.mcp``), or None for a harness that takes none."""
     servers: dict[str, McpServer] = Field(default_factory=dict)
@@ -121,7 +155,7 @@ class Bar(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     candidate: CandidateId
-    artifact: GitTree
+    artifact: GitSource
 
 
 class EvaluationJob(BaseModel):
@@ -141,15 +175,13 @@ class EvaluationJob(BaseModel):
     """The run whose commit it measures, named on the measurement's event. None for a measurement on request."""
     runner: str
     """The evaluator runner (``evaluators.runner``). A worker takes only jobs of the runners that it has."""
-    artifact: GitTree
-    cwd: Path
-    log_dir: Path
+    artifact: GitSource
+    place: Place
+    """Its log directory under the worker's home: each run of the evaluator has a directory of its own in it."""
     command: list[str]
     timeout: float
     required: list[str]
     """The metrics the evaluate command must print."""
-    units_file: Path
-    """Where the evaluate command writes its per-unit results (``UNITS_ENV``)."""
     bar: Bar | None = None
     """The bar to run next to the candidate. None: the candidate alone."""
     repeats: int = Field(default=1, ge=1)
@@ -170,8 +202,14 @@ class AgentFinished(BaseModel):
     checkpoint: str | None = None
     changed: bool = True
     """Whether the agent changed its checkout: a commit, or an uncommitted change outside the links."""
-    head: str | None = None
-    """The head of its commits, pinned at ``Commits.ref``, when the job asked for them back and there are some."""
+    commits: Bundle | None = None
+    """Its commits, when the job asked for them back and there are some."""
+    files: dict[str, BlobAddress] = Field(default_factory=dict)
+    """Its log directory's files by relative path: core puts them in the job's place under its own home."""
+
+    def blobs(self) -> list[Cid]:
+        """Every blob that it names: what the CAS holds before core applies it."""
+        return [*self.files.values(), *([self.commits.blob] if self.commits is not None else [])]
 
 
 class AgentNotStarted(BaseModel):
@@ -181,6 +219,12 @@ class AgentNotStarted(BaseModel):
     reason: str
     seconds: float = 0
     """How long it tried."""
+    files: dict[str, BlobAddress] = Field(default_factory=dict)
+    """Its log directory's files by relative path (``AgentFinished.files``): a failed start's screen, say."""
+
+    def blobs(self) -> list[Cid]:
+        """Every blob that it names: what the CAS holds before core applies it."""
+        return list(self.files.values())
 
 
 type AgentReport = AgentFinished | AgentNotStarted
@@ -204,6 +248,12 @@ class EvaluationReport(BaseModel):
     """The candidate's samples. The first one ran first."""
     bar_samples: list[Sample] = Field(default_factory=list)
     """The bar's samples of a paired evaluation: the i-th ran next to the i-th of ``samples``."""
+    files: dict[str, BlobAddress] = Field(default_factory=dict)
+    """Its log directory's files by relative path (``AgentFinished.files``)."""
+
+    def blobs(self) -> list[Cid]:
+        """Every blob that it names: what the CAS holds before core applies it."""
+        return list(self.files.values())
 
 
 type Report = Annotated[AgentFinished | AgentNotStarted | EvaluationReport, Field(discriminator='kind')]
@@ -313,8 +363,15 @@ class Host:
     results: Results
     tracer: Tracer
     home: Path
+    cas: Cas
+    """The CAS that jobs' inputs and results go through: a job names blobs, never paths."""
+    repos: Callable[[RepoId], Path]
+    """The checkout of a repo of record (``GitSource.repo``). Raises ``KeyError`` for a campaign that is gone."""
     runtimes: RuntimeFactory
     """Makes the runtime of a job (``AgentJob.runtime``) on this machine."""
+    reserve: int
+    """Bytes kept free on the disk of ``home`` (``[storage] min_free_gb``): below it, a job's end evicts the linked
+    inputs that no job uses (``Site.evict_inputs``)."""
     entire_version: str | None = None
     """What ``entire version`` printed on this machine when the daemon started, or None without ``entire``: the
     attach is still tried then, and the event says why it failed. Below ``MIN_ENTIRE``, no session is attached."""

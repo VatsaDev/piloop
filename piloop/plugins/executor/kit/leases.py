@@ -7,7 +7,7 @@ its worker in ``piloop serve``; remote workers take leases through the same oper
   description. A worker acquires it, starts the job, renews the lease with a heartbeat, and reports.
 - A **fencing token** is a number that grows with each new lease of a job: the lease id. A report with an old token
   is refused (``StaleLease``), so a worker that was presumed dead can't overwrite newer work. Its report stays as a
-  ``lease.stale_report`` event on the job's row, with what it brought back.
+  ``lease.stale_report`` event on the job's row, with the addresses of what it brought back in the CAS.
 - The **grace period** (``Timing.grace``, 50 s) is the silence after which a worker is unreachable: its slots count
   zero until it is heard again. After the **toleration** (``Timing.toleration``,
   300 s) its leases **expire**: a run ends ``worker_lost``, which is not an attempt, and an evaluation is queued
@@ -70,7 +70,6 @@ from piloop.db.session import Database, write_transaction
 from piloop.ids import AgentSessionId, CommentId, TargetKind, TargetRef
 from piloop.plugins.executor.contract import (
     JOB,
-    AgentFinished,
     AgentJob,
     AgentKey,
     AgentNotStarted,
@@ -110,8 +109,7 @@ class StaleReport(EventModel):
     worker: str
     reason: str
     report: Report
-    ref: str | None = None
-    """The ref of the agent's commits, when it made some."""
+    """What it brought back, by address: its commits and files stay in the CAS."""
 
 
 class LeaseUnreachable(EventModel):
@@ -292,23 +290,16 @@ def _message(event: Event) -> Work | PromptMessage | Revoke:
 
 
 def _granted(lease: Lease) -> AgentJob | EvaluationJob:
-    """The lease's job, as its worker runs it. An evaluation gets files of this lease's own, under ``lease-<id>``.
+    """The lease's job, as its worker runs it. An evaluation gets a place of this lease's own, ``<place>/lease-<id>``.
 
     Its job is queued again on a new lease while the old one's may still run (a lease that expired before its
-    evaluator started): with the same worktree, log and units file, the stale job would remove, overwrite or read the
+    evaluator started): with the same worktree and logs, the stale job would remove, overwrite or read the
     replacement's. An agent's job is never queued again: a re-attached agent goes on in its worktree.
     """
     job = JOB.validate_python(lease.job)
     if isinstance(job, AgentJob):
         return job
-    own = f'lease-{lease.id}'
-    return job.model_copy(
-        update={
-            'cwd': job.cwd.parent / own / job.cwd.name,
-            'log_dir': job.log_dir / own,
-            'units_file': job.units_file.with_stem(f'{job.units_file.stem}.{own}'),
-        }
-    )
+    return job.model_copy(update={'place': f'{job.place}/lease-{lease.id}'})
 
 
 def enqueue(s: Session, job: AgentJob | EvaluationJob) -> Lease:
@@ -592,6 +583,7 @@ class Leases:
 
         Raises:
             StaleLease: the fence refused it. It is kept as a ``StaleReport`` event, and nothing else changed.
+            MissingBlobs: the CAS lacks a blob that it names. Nothing changed.
         """
         lease = self._job(lease_id)
         if lease.state is LeaseState.REPORTED and lease.report_request == request_id:
@@ -608,7 +600,7 @@ class Leases:
             )
 
         try:
-            self._results.finished(JOB.validate_python(lease.job), report, guard=mark)
+            self._results.finished(_granted(lease), report, guard=mark)
         except (StaleLease, Settled) as e:
             if (applied := self._job(lease_id)).state is LeaseState.REPORTED and applied.report_request == request_id:
                 return dict(applied.receipt)  # the same report, sent again while the first was applied
@@ -619,11 +611,8 @@ class Leases:
         return receipt
 
     def _keep_stale(self, lease: Lease, worker: str, report: AgentReport | EvaluationReport, reason: str) -> None:
-        """Keep a refused report as a ``StaleReport`` event on its job's row, with the ref of its commits."""
-        job, ref = JOB.validate_python(lease.job), None
-        if isinstance(job, AgentJob) and job.commits is not None and isinstance(report, AgentFinished) and report.head:
-            ref = job.commits.ref
-        stale = StaleReport(lease=lease.id, worker=worker, reason=reason, report=report, ref=ref)
+        """Keep a refused report as a ``StaleReport`` event on its job's row: what it made stays in the CAS."""
+        stale = StaleReport(lease=lease.id, worker=worker, reason=reason, report=report)
         with self._db.session() as s:
             emit(s, stale, _target(lease), System.DAEMON)
             s.commit()
@@ -882,7 +871,7 @@ def _adopt_running(s: Session, left: LeftJob, worker: str, timing: Timing) -> bo
 
     It keeps running, and its work is scored. False for every other job without a lease.
     """
-    if left.job is None or left.handle is None or not left.job.cwd.is_dir():
+    if left.job is None or left.handle is None:
         return False
     lease = enqueue(s, left.job)
     now = utcnow()

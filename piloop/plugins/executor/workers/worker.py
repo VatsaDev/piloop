@@ -1,7 +1,7 @@
 """A worker of the ``workers`` executor: takes leases (``piloop.plugins.executor.kit.leases``) and runs their jobs on this machine (``piloop.plugins.executor.kit.jobs``).
 
 ``piloop serve`` runs one (``SERVE``). It reports each job when it ends. It reads no campaign table: everything
-comes in the job's description, and everything goes back in the report.
+comes in the job's description, and everything goes back in the report, by address in the CAS (``jobs.Site``).
 
 It talks to its control plane only through a ``LeaseClient``: ``Local`` in ``piloop serve``, ``Remote`` in ``piloop
 worker --server``. One thread sends a heartbeat with a host sample (``Timing.renew``), takes new jobs and resends
@@ -31,7 +31,14 @@ from typing import assert_never
 from pydantic import BaseModel, ConfigDict
 
 from piloop.otel import Tracer
-from piloop.plugins.executor.contract import AgentJob, AgentReport, EvaluationJob, EvaluationReport, Report
+from piloop.plugins.executor.contract import (
+    AgentJob,
+    AgentReport,
+    EvaluationJob,
+    EvaluationReport,
+    MissingBlobs,
+    Report,
+)
 from piloop.plugins.executor.kit import jobs
 from piloop.plugins.executor.kit.capacity import sample
 from piloop.plugins.executor.kit.client import Dismissed, LeaseClient, WorkerInfo
@@ -122,7 +129,7 @@ class Worker:
         self,
         client: LeaseClient,
         tracer: Tracer,
-        home: Path,
+        site: jobs.Site,
         *,
         pool: str = SERVE,
         runtime_factory: RuntimeFactory = make_runtime,
@@ -132,8 +139,8 @@ class Worker:
         self.id: str | None = None
         """The worker's name, which its registration gives."""
         self.pool = pool
-        self.home = home
-        """Where the worker's host sample reads the free disk."""
+        self.site = site
+        """The machine it runs jobs on: its home, under which its host sample reads the free disk, its CAS and repos."""
         self.client = client
         """The worker's seam to its control plane."""
         self.timing = DEFAULT_TIMING
@@ -183,7 +190,7 @@ class Worker:
         Each is sent again on every turn of the loop, also by the next process.
         """
         assert self.id is not None, 'a worker spools once it registered, which names it'
-        return Spool(self.home / 'spool' / self.id)
+        return Spool(self.site.home / 'spool' / self.id)
 
     def start(self) -> None:
         """Register, find this worker's leases again, then take jobs and read messages. Later calls do nothing.
@@ -205,15 +212,19 @@ class Worker:
 
     def _join(self) -> bool:
         """Register, recover the leases that this worker holds, and start reading messages. Return whether it did."""
-        info = WorkerInfo(
-            version=version('piloop'), pool=self.pool, runners=list(self.runners), sample=sample(self.home)
-        )
         try:
+            info = WorkerInfo(
+                version=version('piloop'),
+                pool=self.pool,
+                runners=list(self.runners),
+                sample=sample(self.site.home),
+                cas_probe=self.site.cas.put(f'piloop worker cas probe {uuid.uuid4().hex}\n'.encode()),
+            )
             registration = self.client.register(info)
         except Dismissed as e:
             self._dismiss(e)
             return False
-        except Exception as e:  # the database is locked, say: the next turn tries again
+        except Exception as e:  # the database is locked or the CAS unreachable, say: the next turn tries again
             self._tracer.event('worker.turn_failed', worker=self.id, error=f'{type(e).__name__}: {e}')
             return False
         self.id, self.timing, self._registered = registration.worker, registration.timing, True
@@ -407,7 +418,7 @@ class Worker:
 
     def _turn(self) -> None:
         """Send the heartbeat with a host sample, act on its answers, send what is unsent, and take new jobs."""
-        host = sample(self.home)
+        host = sample(self.site.home)
         try:
             with self._lock:  # every lease it holds, a job that is still starting too
                 sessions = {
@@ -487,7 +498,9 @@ class Worker:
     def _send(self, lease_id: int, unsent: Unsent) -> None:
         """Send a spooled report. Once the control plane accepted or refused it, unspool it and remove the agent's worktree.
 
-        A refused one is dropped: the control plane keeps it as a stale report. One that cannot be sent (a partition,
+        A refused one is dropped: the control plane keeps it as a stale report. One that names blobs that the CAS lacks
+        never applies, so its job is lost with why: a worker whose ``[plugins.cas]`` is not the server's says so at its
+        first job. One that cannot be sent (a partition,
         a database locked past its busy timeout) stays in the spool and is sent again on the next turn, and its
         worktree stays: a worker killed meanwhile leaves its successor the ended agent in its worktree, which it reports.
         """
@@ -495,6 +508,9 @@ class Worker:
             self.client.report(lease_id, unsent.request_id, unsent.report)
         except StaleLease as e:
             self._tracer.event('worker.report_refused', worker=self.id, lease=lease_id, error=str(e))
+        except MissingBlobs as e:
+            self._tracer.event('worker.report_refused', worker=self.id, lease=lease_id, error=str(e))
+            self._lost(lease_id, f'worker lost: {e}')  # if this raises, the report stays in the spool
         except Dismissed as e:
             self._dismiss(e)
             return
@@ -503,7 +519,8 @@ class Worker:
             return
         self.spool.remove(lease_id)
         if unsent.job is not None and not self._handover:
-            jobs.remove(unsent.job)
+            jobs.remove(unsent.job, self.site)
+        self.site.evict_inputs()  # once the job's worktree no longer links its copies
 
     def _report(self, lease_id: int, report: AgentReport | EvaluationReport, job: AgentJob | None = None) -> None:
         """Send the report of a job that ended, then remove ``job``'s worktree. Nothing after a hand-over."""
@@ -530,13 +547,13 @@ class Worker:
                     with suppress(ProcessLookupError):
                         os.killpg(pgid, signal.SIGKILL)
             self._lost(grant.lease, GONE.format(what='evaluator'))
-            jobs.remove(job)  # its worktree is this lease's own: no later lease removes it
+            jobs.remove(job, self.site)  # its worktree is this lease's own: no later lease removes it
             return
         if grant.started_at is None or not isinstance(grant.handle, AgentHandle):  # it never started, or unrecorded
-            jobs.remove(job)
+            jobs.remove(job, self.site)
             self._lost(grant.lease, GONE.format(what='agent'))
             return
-        if not job.cwd.is_dir():
+        if not self.site.cwd(job).is_dir():
             self._lost(grant.lease, GONE.format(what='agent'))
             return
         runtime = self._runtime(job)
@@ -548,7 +565,9 @@ class Worker:
             self._recovered.notify_all()
         with self._tracer.span('piloop.job', lease=grant.lease, agent_session=job.agent_session) as span:
             span.set(reattached=True)
-            report = jobs.watch_agent(job, runtime, handle, elapsed, _Control(self, grant.lease, runtime), span)
+            report = jobs.watch_agent(
+                job, runtime, handle, elapsed, _Control(self, grant.lease, runtime), self.site, span
+            )
         if report is not None:  # after the span ends: what waits for the report reads a finished span
             self._report(grant.lease, report, job)
 
@@ -561,7 +580,9 @@ class Worker:
             self._dismiss(e)
 
     def _runtime(self, job: AgentJob) -> Runtime:
-        return self.runtime_factory(job.runtime, campaign=job.campaign, campaign_path=job.campaign_path)
+        return self.runtime_factory(
+            job.runtime, campaign=job.campaign, campaign_path=self.site.clones.path(job.artifact)
+        )
 
     def _agent(self, grant: Grant) -> None:
         """Run an agent's job (``jobs.run_agent``), and report it once the job's span ends.
@@ -572,7 +593,7 @@ class Worker:
         assert isinstance(job, AgentJob)
         runtime = self._runtime(job)
         with self._tracer.span('piloop.job', lease=grant.lease, agent_session=job.agent_session) as span:
-            report = jobs.run_agent(job, runtime, _Control(self, grant.lease, runtime), span)
+            report = jobs.run_agent(job, runtime, _Control(self, grant.lease, runtime), self.site, span)
         if report is not None:
             self._report(grant.lease, report, job)
 
@@ -583,7 +604,7 @@ class Worker:
         with self._lock:  # a stop that comes before the evaluator starts kills it when it starts
             self._register(grant.lease, None, evaluation=True)
         with self._tracer.span('piloop.job', lease=grant.lease, evaluation=job.evaluation) as span:
-            report = jobs.run_evaluation(job, _Control(self, grant.lease), span)
+            report = jobs.run_evaluation(job, _Control(self, grant.lease), self.site, span)
         self._report(grant.lease, report)
 
 

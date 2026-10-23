@@ -10,6 +10,7 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Self
 
@@ -21,6 +22,7 @@ from sqlalchemy.orm import Session
 from piloop.db.models import LIVE_LEASES, Lease, LeaseKind, LeaseWorker
 from piloop.net import Route
 from piloop.otel import Tracer
+from piloop.plugins.cas.contract import Cas
 from piloop.plugins.executor.contract import (
     AgentJob,
     AgentKey,
@@ -32,6 +34,7 @@ from piloop.plugins.executor.contract import (
     LeftJob,
     Prompt,
 )
+from piloop.plugins.executor.kit import jobs
 from piloop.plugins.executor.kit.capacity import HostSample, Pool
 from piloop.plugins.executor.kit.client import Local
 from piloop.plugins.executor.kit.leases import DEFAULT_POOLS, SERVE, Leases, Timing
@@ -83,10 +86,13 @@ class WorkersExecutor:
         timing = Timing(config.renew_seconds, config.grace_seconds, config.toleration_seconds)
         self.leases = Leases(host.db, host.results, timing, config.pools)
         self._changed = host.db.changed
+        self._cas = host.cas
+        self._bundle = partial(jobs.bundle_of_record, host.cas, host.repos)
+        """What the ``bundle`` route does: a bundle from the repo of record, into the CAS."""
         self.worker = Worker(
             Local(self.leases, SERVE),
             host.tracer,
-            host.home,
+            jobs.local_site(host.home, host.cas, host.repos, host.reserve),
             runtime_factory=host.runtimes,
             entire_version=host.entire_version,
         )
@@ -123,7 +129,7 @@ class WorkersExecutor:
 
     def routes(self) -> Sequence[Route]:
         """The lease routes (``remote.lease_routes``), which workers on other machines call (``piloop worker``)."""
-        return lease_routes(self.leases, self._changed)
+        return lease_routes(self.leases, self._changed, self._cas, self._bundle)
 
     def tick(self, now: datetime) -> datetime | None:
         """Expire the leases of a silent worker (``Leases.expire``), and return the next expiry."""
@@ -148,12 +154,17 @@ class WorkersExecutor:
         """Nothing to release: the worker's threads end with the daemon process."""
 
 
-def remote_worker(http: httpx.Client, stop: threading.Event, tracer: Tracer, home: Path, pool: str) -> Worker:
+def remote_worker(
+    http: httpx.Client, stop: threading.Event, tracer: Tracer, home: Path, cas: Cas, pool: str, reserve: int
+) -> Worker:
     """A worker on this machine that takes the leases of ``pool`` from a server through ``http`` (``piloop worker``).
 
-    Its calls give up trying again once ``stop`` is set.
+    It reads and writes ``cas``, the CAS that the server shares, and keeps clones of its own. After each job it keeps
+    ``reserve`` bytes free on its home's disk (``Site.evict_inputs``). Its calls give up trying
+    again once ``stop`` is set.
     """
-    return Worker(Remote(http, stop), tracer, home, pool=pool)
+    client = Remote(http, stop)
+    return Worker(client, tracer, jobs.remote_site(home, cas, client.bundle, reserve), pool=pool)
 
 
 @dataclass(frozen=True)

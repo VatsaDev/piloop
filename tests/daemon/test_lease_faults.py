@@ -20,11 +20,11 @@ from pathlib import Path
 
 import psutil
 import pytest
+from git import Repo
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from pytest_mock import MockerFixture
 from sqlalchemy import delete, func, select
 
-from piloop.agents.launcher import AGENT_REFS
 from piloop.campaign.stop import attempts
 from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
@@ -49,11 +49,13 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.ids import RunId, TargetKind
 from piloop.otel import Tracer
+from piloop.plugins.cas.contract import CAS
 from piloop.plugins.executor.contract import AgentFinished, AgentReport, EvaluationReport
 from piloop.plugins.executor.kit.leases import NOT_TAKEN, SERVE, Leases, StaleReport, Timing
 from piloop.plugins.executor.workers import Workers
 from piloop.proc import alive, started
 from piloop.settings import Settings
+from piloop.store import commits as store_commits
 from tests.conftest import (
     WRITE_PID,
     ScriptRuntime,
@@ -240,7 +242,8 @@ def test_a_late_report_of_a_frozen_worker_is_refused_and_kept_as_a_stale_report(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, hold: Path
 ) -> None:
     """A worker frozen past the toleration (``SIGSTOP``) wakes up, finds its lease gone and stops its job. Its report
-    is refused: nothing of it applies, and the commit it brought back stays at its ref for a person to import."""
+    is refused: nothing of it applies, and the commit it brought back stays in the CAS, as a bundle that the kept
+    report names, for a person to import."""
     write_toml(Path(campaign.path), COMMIT_THEN_HOLD.format(hold=hold))
     reload_campaign(db, campaign)
     run_id = make_run(db, campaign)
@@ -260,17 +263,18 @@ def test_a_late_report_of_a_frozen_worker_is_refused_and_kept_as_a_stale_report(
 
         wait_until(stale)
     [payload] = stale()
-    assert (payload.lease, payload.worker, payload.ref) == (1, 'w2', f'{AGENT_REFS}1')
+    assert (payload.lease, payload.worker) == (1, 'w2')
     report = payload.report
-    assert isinstance(report, AgentFinished) and report.head is not None
+    assert isinstance(report, AgentFinished) and report.commits is not None
+    commits = report.commits
     run = run_row(db, run_id)
     assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.WORKER_LOST), 'the late report changed nothing'
     with db.session() as s:
         assert s.scalars(select(Candidate).where(Candidate.run_id == run_id)).all() == []
-    repo_ref = subprocess.run(
-        ['git', 'rev-parse', f'{AGENT_REFS}1'], cwd=campaign.path, capture_output=True, text=True, check=True
-    )
-    assert repo_ref.stdout.strip() == report.head, 'its commit is kept'
+    other = tmp_path / 'other'
+    subprocess.run(['git', 'clone', '-q', campaign.path, str(other)], check=True)
+    store_commits.unbundle(CAS.selected({}).open(tmp_path), Repo(other), commits.blob, commits.head)
+    assert Repo(other).commit(commits.head).summary == 'a line', 'its commit is kept, by the digest of its bundle'
 
 
 def test_a_report_whose_answer_was_lost_is_sent_again_and_applies_once(
@@ -398,12 +402,6 @@ def test_a_daemon_killed_during_a_run_keeps_the_lease_and_the_next_daemon_finish
             .count('agent_session.finished')
             == 1
         )
-    assert (
-        subprocess.run(
-            ['git', 'rev-parse', '--verify', '--quiet', f'{AGENT_REFS}1'], cwd=campaign.path, check=False
-        ).returncode
-        != 0
-    ), 'the ref is deleted once the run pinned its commits'
 
 
 def test_a_real_daemon_killed_during_a_run_is_followed_by_one_that_finishes_it_on_the_same_lease(

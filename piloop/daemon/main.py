@@ -138,6 +138,8 @@ class Daemon:
             cfg.home,
             executor=EXECUTORS.selected(cfg.providers),
             entire_version=self._entire if isinstance(self._entire, str) else None,
+            cas=self._cas,
+            reserve=cfg.storage.reserve,
         )
         self.scheduler = Scheduler(
             self.db,

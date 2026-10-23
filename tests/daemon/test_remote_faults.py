@@ -2,8 +2,8 @@
 
 Three processes on one machine, as on three hosts. Core runs in the test process: it submits evaluations and expires
 leases. The lease routes run in a server process (``tests/fixtures/server_process.py``). The worker is ``piloop worker
---server``, with a home of its own, and it reaches the server only through the proxy. The jobs are evaluations, whose
-files are on this machine.
+--server``, with a home and clones of its own, and it reaches the server only through the proxy; it shares the server's
+CAS, as a worker on another host shares an S3 bucket. The jobs are evaluations.
 """
 
 import os
@@ -28,6 +28,7 @@ from piloop.plugins.executor.kit.capacity import Pool
 from piloop.plugins.executor.kit.leases import StaleReport
 from piloop.plugins.executor.workers import Workers
 from piloop.proc import alive
+from piloop.settings import STORE_DIR
 from tests.conftest import ScriptRuntime, baseline, factory, wait_until, workers_of
 from tests.daemon.test_evaluation_queue import held_evaluate
 from tests.daemon.test_run_controller import set_config
@@ -75,7 +76,10 @@ class Net:
     def start_worker(self) -> subprocess.Popen[str]:
         """Start ``piloop worker --server`` in the pool ``gpu``, and wait until it registered."""
         assert self.proxy is not None
-        env = os.environ | {'PILOOP_HOME': str(self.tmp_path / 'worker'), 'PILOOP_HTTPS_TOKEN': self.token}
+        home = self.tmp_path / 'worker'
+        home.mkdir(exist_ok=True)  # the server's CAS, which a worker reads and writes itself
+        (home / 'config.toml').write_text(f'[plugins.cas]\nprovider = "disk"\npath = "{self.tmp_path / STORE_DIR}"\n')
+        env = os.environ | {'PILOOP_HOME': str(home), 'PILOOP_HTTPS_TOKEN': self.token}
         url = f'http://127.0.0.1:{self.proxy.port}'
         argv = [sys.executable, '-m', 'piloop', 'worker', '--server', url, '--pool', 'gpu']
         before = _seen(self.db)
@@ -198,7 +202,10 @@ def test_a_remote_worker_measures_an_evaluation_once_and_its_logs_are_on_the_ser
     assert measured(db, held) == 2, 'the baseline, then one measurement'
     row = lease(db, 1)
     assert row is not None and (row.state, row.worker) == (LeaseState.REPORTED, WORKER)
-    assert list(Path(str(row.job['log_dir'])).glob('lease-1/*')), "the evaluator's logs"
+    place = f'{row.job["place"]}/lease-1'
+    assert list((net.tmp_path / place).glob('*/eval.stdout')), "the evaluator's logs, back through the CAS"
+    assert list((net.tmp_path / 'worker' / place).glob('*/eval.stdout')), 'where the worker wrote them'
+    assert list((net.tmp_path / 'worker' / 'clones').iterdir()), 'its own clone, filled from a bundle in the CAS'
     assert state(db, 2) is None
 
 

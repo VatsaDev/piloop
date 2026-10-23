@@ -6,10 +6,10 @@ The run closes when its implementer ends, so the implementer slot is free while 
 
 import json
 import re
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Literal, assert_never
 
@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from piloop import deprecated, git
 from piloop.actor import Actor, Agent, System
-from piloop.agents.launcher import AGENT_REFS, Launcher
+from piloop.agents.launcher import Launcher
 from piloop.agents.results import (
     AgentEnded,
     CampaignResults,
@@ -32,7 +32,7 @@ from piloop.agents.results import (
     record,
 )
 from piloop.agents.roles import compose_brief, role
-from piloop.campaign.campaigns import WORKSPACE, campaign_dir, worktree_links
+from piloop.campaign.campaigns import WORKSPACE, Sources, campaign_dir, checkout_of
 from piloop.campaign.stop import attempts, park_cancelled, run_cancel
 from piloop.config import TRANSCRIPT, CampaignConfig, Track, config_of
 from piloop.db.events import emit, has
@@ -73,15 +73,17 @@ from piloop.ids import (
 )
 from piloop.otel import Span, Tracer
 from piloop.plugins import limits
+from piloop.plugins.cas.contract import CAS, Cas
 from piloop.plugins.executor.contract import (
     EXECUTORS,
     Bar,
+    Bundle,
     Commits,
     EvaluationJob,
     EvaluationKey,
     Executor,
     ExecutorConfig,
-    GitTree,
+    GitSource,
     Host,
     Sample,
 )
@@ -112,6 +114,8 @@ from piloop.scoring.ledger import (
     score,
     skipped,
 )
+from piloop.settings import StorageSettings
+from piloop.store import commits as store_commits
 
 UNCOMMITTED_SUMMARY = 'piloop: uncommitted implementer changes'
 RECOVERED_TRAILER = 'Piloop-Recovered'
@@ -121,6 +125,8 @@ NO_CHANGES = 'implementer produced no commits'
 INTERRUPTED = (
     'implementer stopped without a commit or a finding of its own; its uncommitted changes are a recovered candidate'
 )
+RUNS = 'runs'
+"""The directory under the home of each run's place: ``runs/<id>``, its implementer's log directory and worktree."""
 
 
 class RecoveryRequeued(EventModel):
@@ -183,18 +189,25 @@ class RunController:
         *,
         executor: ExecutorConfig,
         entire_version: str | None = None,
+        cas: Cas | None = None,
+        reserve: int = StorageSettings().reserve,
     ) -> None:
         self._db = db
         self._tracer = tracer
-        self._runs_dir = home / 'runs'
+        self._runs_dir = home / RUNS
         self._home = home
         self._units_dir = home / 'units'
+        self._cas = cas if cas is not None else CAS.selected({}).open(home)
+        self.sources = Sources(self._cas)
+        """The artifacts of jobs: a campaign's repo of record, and its linked inputs in the CAS."""
         self._config = executor
         """The executor's ``[plugins.executor]``, as ``config.toml`` has it."""
         self._limits: tuple[tuple[str, str, datetime], ...] = ()
         """The limits that the executor has, as read: ``configure`` hands it the parameters when they change."""
-        results = CampaignResults(db, tracer, self._units_dir, lambda: self.launcher.cancelled.is_set())
-        host = Host(db, results, tracer, home, runtime_factory, entire_version)
+        results = CampaignResults(db, tracer, home, self._cas, lambda: self.launcher.cancelled.is_set())
+        host = Host(
+            db, results, tracer, home, self._cas, partial(checkout_of, db), runtime_factory, reserve, entire_version
+        )
         self.executor: Executor[ExecutorConfig] = self._config.open(host)
         self.launcher = Launcher(db, tracer, home, self.executor)
         self.configure()
@@ -351,7 +364,6 @@ class RunController:
                         idea,
                         base,
                         Agent(role=run.role, session=agent_session_id).signature,
-                        self._runs_dir / str(run_id) / 'worktree',
                     ),
                     track=cfg.track(idea.track),
                     wake=lessons_overview(s, campaign, cfg.wake_budget(run.role)),
@@ -390,8 +402,6 @@ class RunController:
             )
         log_dir = self._runs_dir / str(run_id)
         repo = git.open_repo(campaign_path)
-        wt_path = log_dir / 'worktree'
-        links = worktree_links(cfg, campaign_path, campaign_dir(self._home, campaign_id))
         span.set(idea=idea_id, agent_session=agent_session_id, harness=harness, model=model)
         if brief is None:
             ended = self.launcher.reattach(agent_session_id)
@@ -399,20 +409,19 @@ class RunController:
             ended = self.launcher.launch(
                 agent_session_id,
                 brief=brief,
-                cwd=wt_path,
-                log_dir=log_dir,
-                artifact=GitTree(repo=campaign_path, commit=base_sha, links=links),
-                commits=commits_of(run_id, agent_session_id),
+                place=run_place(run_id),
+                artifact=self._source(campaign_id, base_sha),
+                commits=commits_of(run_id),
             )
         # a daemon stop owns the rows, also when it came just after the report applied
         stopping = self.launcher.cancelled.is_set()
         match ended:
             case HandedOver():  # the next daemon waits for the agent again
                 span.set(status='handed_over')
-            case DaemonStopped(head=head):
-                self._cut(span, run_id, idea_id, agent_session_id, cfg.name, repo, base_sha, head)
-            case Ran(head=head) if stopping:
-                self._cut(span, run_id, idea_id, agent_session_id, cfg.name, repo, base_sha, head)
+            case DaemonStopped(commits=commits):
+                self._cut(span, run_id, idea_id, agent_session_id, cfg.name, repo, base_sha, commits)
+            case Ran(commits=commits) if stopping:
+                self._cut(span, run_id, idea_id, agent_session_id, cfg.name, repo, base_sha, commits)
             case NotStarted() | Lost() if stopping:
                 self._cut(span, run_id, idea_id, agent_session_id, cfg.name, repo, base_sha, None)
             case Lost(reason=reason):
@@ -438,12 +447,11 @@ class RunController:
         name: str,
         repo: Repo,
         base_sha: str,
-        head: str | None,
+        commits: Bundle | None,
     ) -> None:
         """Keep the work of a run that a daemon stop cut (``_keep_cut_work``). The stop writes the rows."""
         cut = not self._left_finding(run_id, idea_id, agent_session_id)  # else the stop closed it as handed off
-        self._keep_cut_work(run_id, name, repo, base_sha, head, noted=cut)
-        self._release(repo, agent_session_id, head)
+        self._keep_cut_work(run_id, name, repo, base_sha, self._commits(repo, base_sha, commits), noted=cut)
         self._stopped(span, run_id)
 
     def _stopped(self, span: Span, run_id: RunId) -> None:
@@ -470,7 +478,7 @@ class RunController:
     ) -> None:
         """Close the run of an agent that worked (``run_outcome``), score its commits and settle its idea."""
         outcome = ended.process
-        shas = _commits(repo, base_sha, ended.head)
+        shas = self._commits(repo, base_sha, ended.commits)
         finding = self._left_finding(run_id, idea_id, agent_session_id)
         with self._db.session() as s:
             asked = open_escalation(s, s.get_one(Run, run_id))
@@ -494,7 +502,6 @@ class RunController:
         self._close(span, run_id, end, error)
         # Score all commits, even if the implementer then timed out or crashed.
         recovered = self._score(run_id, campaign_id, repo, shas, log_dir) if shas else None
-        self._release(repo, agent_session_id, ended.head)
         self._settle(span, run_id, idea_id, end, startup_failed=False, recovered=recovered)
 
     def _relaunch(self, span: Span, run_id: RunId, agent_session_id: AgentSessionId, log_dir: Path) -> bool:
@@ -538,18 +545,17 @@ class RunController:
         return True
 
     def _keep_cut_work(
-        self, run_id: RunId, name: str, repo: Repo, base_sha: str, head: str | None, *, noted: bool
+        self, run_id: RunId, name: str, repo: Repo, base_sha: str, shas: list[str], *, noted: bool
     ) -> None:
         """Pin the work of a run that a daemon stop interrupted, uncommitted work included, and add a note on the run.
 
-        What the agent left uncommitted was committed, and ``head`` pinned (``commits_of``).
+        What the agent left uncommitted was committed on its own (``commits_of``).
 
         The stop owns the rows. A run that the stop cut is not an attempt (``RunEnd.attempt``): its work is not
         scored, and the note (``noted``) goes into the brief of the idea's next run, which can start from those
         commits. A run whose implementer had left its finding was handed off: the stop closed it as finished, and the next
         daemon scores the pinned commits (``resume``), so no note sends a new run to them.
         """
-        shas = _commits(repo, base_sha, head)
         if not shas:
             return
         prefix = f'refs/piloop/{name}/r{run_id}/'
@@ -569,10 +575,24 @@ class RunController:
             )
             s.commit()
 
-    def _release(self, repo: Repo, agent_session_id: AgentSessionId, head: str | None) -> None:
-        """Delete the ref at which the agent's head was pinned (``commits_of``), now that the run's refs pin its commits."""
-        if head is not None:
-            git.unpin(repo, f'{AGENT_REFS}{agent_session_id}')
+    def _commits(self, repo: Repo, base_sha: str, commits: Bundle | None) -> list[str]:
+        """Import the run's commits into the repo of record (``commits.unbundle``), and return them, oldest first.
+
+        They are the first-parent history from the base: a line that the implementer merges in is not the run's, so a
+        merge's parent is the commit that it merged onto, and the merged line's commits are not scored again. The
+        worker committed the uncommitted work first, on its own commit with the ``RECOVERED_TRAILER``, so its
+        candidate is ``recovered`` (``_score``).
+        """
+        if commits is None:
+            return []
+        store_commits.unbundle(self._cas, repo, commits.blob, commits.head)
+        return [c.hexsha for c in repo.iter_commits(f'{base_sha}..{commits.head}', first_parent=True)][::-1]
+
+    def _source(self, campaign_id: CampaignId, commit: str) -> GitSource:
+        """``Sources.git`` outside every transaction: it puts the linked inputs into the CAS, minutes the first time."""
+        with self._db.session() as s:
+            campaign = s.get_one(Campaign, campaign_id)
+        return self.sources.git(campaign, commit)
 
     def _left_finding(self, run_id: RunId, idea_id: IdeaId, agent_session_id: AgentSessionId) -> bool:
         """Return True if the agent signed a ``finding`` on its idea or its run (``left_finding``)."""
@@ -857,6 +877,7 @@ class RunController:
         be checked out say, is a crash like one that fails, so every request ends with a measurement. A cancelled
         evaluation records nothing: ``queue.cancel`` recorded its crash.
         """
+        artifact = self._source(campaign_id, sha)
         with self.launcher.lock:
             if self.launcher.cancelled.is_set():
                 return False
@@ -864,26 +885,20 @@ class RunController:
                 evaluation, mine = queue.request(s, candidate_id, evaluator_id)
                 job = None
                 if mine:
-                    links = worktree_links(cfg, Path(repo.working_dir), campaign_dir(self._home, campaign_id))
-                    tree = Path(repo.working_dir)
                     paired = None
                     if bar is not None:
-                        paired = Bar(
-                            candidate=bar,
-                            artifact=GitTree(repo=tree, commit=s.get_one(Candidate, bar).commit_sha, links=links),
-                        )
+                        bar_commit = s.get_one(Candidate, bar).commit_sha
+                        paired = Bar(candidate=bar, artifact=artifact.model_copy(update={'commit': bar_commit}))
                     job = EvaluationJob(
                         evaluation=evaluation.id,
                         candidate=candidate_id,
                         run=run_id,
                         runner=s.get_one(Evaluator, evaluator_id).runner,
-                        artifact=GitTree(repo=Path(repo.working_dir), commit=sha, links=links),
-                        cwd=eval_dir / 'worktree',
-                        log_dir=eval_dir,
+                        artifact=artifact,
+                        place=eval_dir.relative_to(self._home).as_posix(),
                         command=cfg.evaluate,
                         timeout=cfg.evaluate_timeout,
                         required=[m.name for m in cfg.metrics],
-                        units_file=self._units_dir / f'{uuid.uuid4().hex}.pending',
                         bar=paired,
                         repeats=repeats,
                     )
@@ -1102,9 +1117,7 @@ class RunController:
                         idea.status = IdeaStatus.DONE
                 s.commit()
 
-    def _context(
-        self, s: Session, cfg: CampaignConfig, idea: Idea, base: Candidate, author: str, worktree: Path
-    ) -> str:
+    def _context(self, s: Session, cfg: CampaignConfig, idea: Idea, base: Candidate, author: str) -> str:
         """Return the implementer's context: its worktree, the idea, its base, and the comments on the idea and its runs.
 
         A comment on a run is about the idea too. Examples are a human's decision during attempt 1, or a watchdog's
@@ -1121,8 +1134,8 @@ class RunController:
         comments = s.scalars(select(Comment).where(on_idea | on_its_runs).order_by(Comment.id)).all()
         at_base = ', '.join(f'{t.primary.name}={score(base, evaluator_id, t.primary)}' for t in cfg.all_tracks)
         lines = [
-            f'- Your cwd is your worktree, {worktree}: make every edit, run every evaluation and make every commit'
-            f' there. Only its commits are scored. The campaign repo, {idea.campaign.path}, is read-only for you: read'
+            '- Your cwd is your worktree: make every edit, run every evaluation and make every commit there.'
+            f' Only its commits are scored. The campaign repo, {idea.campaign.path}, is read-only for you: read'
             ' its history and candidates, never edit, run or commit in it.',
             f'- Starting from candidate#{base.id}: {at_base} — {base.summary}',
         ]
@@ -1315,28 +1328,14 @@ def _requeues(s: Session, idea: Idea) -> int:
     return s.scalar(query) or 0
 
 
-def commits_of(run_id: RunId, agent_session_id: AgentSessionId) -> Commits:
-    """How a run's implementer's commits come back: the uncommitted work on a commit of its own, the head pinned.
-
-    The commit has the ``RECOVERED_TRAILER``, and the head is pinned at ``AGENT_REFS``.
-    """
-    return Commits(
-        message=f'{UNCOMMITTED_SUMMARY}\n\n{RECOVERED_TRAILER}: run#{run_id}', ref=f'{AGENT_REFS}{agent_session_id}'
-    )
+def commits_of(run_id: RunId) -> Commits:
+    """How a run's implementer's commits come back: the uncommitted work on a commit of its own (``RECOVERED_TRAILER``)."""
+    return Commits(message=f'{UNCOMMITTED_SUMMARY}\n\n{RECOVERED_TRAILER}: run#{run_id}')
 
 
-def _commits(repo: Repo, base_sha: str, head: str | None) -> list[str]:
-    """Return the run's commits up to the ``head`` its worker returned, oldest first: none without a head.
-
-    The worker committed the uncommitted work first, on its own commit, never amended into the implementer's last
-    commit, which is scored as the implementer made it. That commit has the ``RECOVERED_TRAILER``, so its candidate is
-    ``recovered`` (``_score``). The commits are the first-parent history from the base: a line that the implementer
-    merges in is not the run's, so a merge's parent is the commit that it merged onto, and the merged line's commits
-    are not scored again.
-    """
-    if head is None:
-        return []
-    return [c.hexsha for c in repo.iter_commits(f'{base_sha}..{head}', first_parent=True)][::-1]
+def run_place(run_id: int) -> str:
+    """The place of a run's implementer under the daemon's home: its log directory, ``runs/<id>``."""
+    return f'{RUNS}/{run_id}'
 
 
 def implementer_of(s: Session, run_id: RunId) -> Actor:

@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from covalence import Cid
 from pytest_mock import MockerFixture
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -43,10 +44,11 @@ from piloop.plugins.executor.contract import (
     EvaluationJob,
     EvaluationKey,
     EvaluationReport,
-    GitTree,
+    GitSource,
     Guard,
     JobKey,
     Prompt,
+    RepoId,
     Sample,
     Settled,
 )
@@ -81,11 +83,15 @@ TIMING = Timing(renew=10, grace=50, toleration=300)
 POOLS = {'test': Pool(evaluations=99)}
 """A pool whose slots no test fills, unless it says so."""
 HOST = HostSample(at=utcnow(), cpus=4, load1=0.5, memory_available=8 * GB, disk_free=100 * GB)
+PROBE = Cid.of(b'piloop worker cas probe\n')
+"""A worker's ``cas_probe``: the CAS of a server that checks it holds these bytes."""
 
 
 def join(leases: Leases, worker: str, runners: list[str], pool: str = 'test') -> Registration:
     """Register ``worker`` in ``pool`` with ``runners``, as its ``LeaseClient`` does."""
-    return Local(leases, worker).register(WorkerInfo(version='0.2.0', pool=pool, runners=runners, sample=HOST))
+    return Local(leases, worker).register(
+        WorkerInfo(version='0.2.0', pool=pool, runners=runners, sample=HOST, cas_probe=PROBE)
+    )
 
 
 def take(leases: Leases, worker: str, runners: list[str], pool: str = 'test') -> Grant | None:
@@ -163,10 +169,8 @@ def agent_job(db: Database, campaign: Campaign, tmp_path: Path) -> AgentJob:
         agent_session=agent_session_id,
         runtime='subprocess',
         campaign=campaign.name,
-        campaign_path=Path(campaign.path),
-        artifact=Checkout(path=tmp_path),
-        cwd=tmp_path,
-        log_dir=tmp_path / 'logs',
+        artifact=Checkout(repo=RepoId(campaign.id)),
+        place='logs',
         timeout=60,
         brief='b',
         spec=None,
@@ -184,13 +188,11 @@ def evaluation_job(db: Database, campaign: Campaign, tmp_path: Path, runner: str
         evaluation=evaluation_id,
         candidate=base.id,
         runner=runner,
-        artifact=GitTree(repo=Path(campaign.path), commit=base.commit_sha),
-        cwd=tmp_path / 'wt',
-        log_dir=tmp_path,
+        artifact=GitSource(repo=RepoId(campaign.id), commit=base.commit_sha),
+        place='eval',
         command=['true'],
         timeout=60,
         required=['score'],
-        units_file=tmp_path / 'units.pending',
     )
 
 
@@ -381,13 +383,11 @@ def evaluation_job_for_another_candidate(db: Database, campaign: Campaign, tmp_p
         evaluation=evaluation_id,
         candidate=candidate_id,
         runner='process',
-        artifact=GitTree(repo=Path(campaign.path), commit=base.commit_sha),
-        cwd=tmp_path / 'wt2',
-        log_dir=tmp_path,
+        artifact=GitSource(repo=RepoId(campaign.id), commit=base.commit_sha),
+        place='eval2',
         command=['true'],
         timeout=60,
         required=['score'],
-        units_file=tmp_path / 'units2.pending',
     )
 
 

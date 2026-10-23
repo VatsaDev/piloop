@@ -5,12 +5,14 @@ an agent that ends, one that runs out of time, a start that fails, and a worker 
 """
 
 import json
+import os
 import shutil
 import threading
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
+from functools import partial
 from pathlib import Path
 from uuid import uuid4
 
@@ -25,6 +27,7 @@ from sqlalchemy.exc import OperationalError
 from piloop import git
 from piloop.actor import System
 from piloop.agents.results import CampaignResults, DaemonStopped, Ended, Lost, NotStarted, PromptSettled, Ran
+from piloop.campaign.campaigns import checkout_of
 from piloop.daemon.run_controller import RunController
 from piloop.db.events import emit, in_order
 from piloop.db.models import (
@@ -48,14 +51,15 @@ from piloop.plugins.executor.contract import (
     AgentJob,
     AgentKey,
     AgentReport,
-    Checkout,
     Commits,
     EvaluationReport,
-    GitTree,
+    GitSource,
+    MissingBlobs,
     Prompt,
 )
 from piloop.plugins.executor.kit.capacity import HostSample, sample
 from piloop.plugins.executor.kit.client import Dismissed, Local, Registration, WorkerInfo
+from piloop.plugins.executor.kit.jobs import bundle_of_record, local_site, remote_site
 from piloop.plugins.executor.kit.leases import (
     SERVE,
     Answer,
@@ -78,11 +82,24 @@ from piloop.plugins.executor.workers.worker import WORKER_ANOMALY, Unsent, Worke
 from piloop.plugins.runtime.contract import ExitStatus, Handle
 from piloop.plugins.runtime.herdr import HerdrSettings
 from piloop.runtime.factory import RuntimeFactory, make_runtime
-from tests.conftest import Gate, ScriptRuntime, baseline, factory, serving, timed, wait_until, workers_of, write_toml
+from piloop.settings import INPUTS_DIR
+from piloop.store import tree as tree_module
+from tests.conftest import (
+    Gate,
+    ScriptRuntime,
+    baseline,
+    disk,
+    factory,
+    serving,
+    timed,
+    wait_until,
+    workers_of,
+    write_toml,
+)
 from tests.daemon.test_evaluation_queue import held_evaluate
 from tests.daemon.test_run_controller import execute, make_run, reload_campaign, set_config
 from tests.test_executors import Steerable
-from tests.test_lease import agent_job, evaluation_job
+from tests.test_lease import PROBE, agent_job, evaluation_job
 
 NO_JOBS = {'error': {'code': 'pane_not_found', 'message': 'gone'}}
 """What the fake ``herdr`` answers for the agent's jobs: none, so an idle agent is finished."""
@@ -137,12 +154,16 @@ def request_agent(db: Database, campaign: Campaign) -> AgentSessionId:
         return w.id
 
 
+def head_of(ex: RunController, agent_session_id: AgentSessionId) -> GitSource:
+    """The HEAD of the agent's campaign, as its artifact."""
+    with ex.launcher.db.session() as s:
+        campaign = s.get_one(Campaign, s.get_one(AgentSession, agent_session_id).campaign_id)
+        return ex.sources.git(campaign, Repo(campaign.path).head.commit.hexsha)
+
+
 def launch(ex: RunController, agent_session_id: AgentSessionId, tmp_path: Path) -> Ended:
-    cwd = tmp_path / 'cwd'
-    cwd.mkdir(exist_ok=True)
-    return ex.launcher.launch(
-        agent_session_id, brief='b', cwd=cwd, log_dir=tmp_path / 'logs', artifact=Checkout(path=cwd)
-    )
+    """Launch the agent in ``logs`` under the home ``tmp_path``, its worktree in ``logs/worktree``."""
+    return ex.launcher.launch(agent_session_id, brief='b', place='logs', artifact=head_of(ex, agent_session_id))
 
 
 def lease_state(db: Database, agent_session_id: AgentSessionId) -> LeaseState | None:
@@ -274,6 +295,21 @@ def test_a_worker_whose_own_code_fails_loses_the_job_so_that_nothing_waits_for_e
     )  # a lease that is no longer the worker's: refused, and the worker goes on
 
 
+def test_a_report_that_names_blobs_the_cas_lacks_loses_the_job_with_why_and_is_not_sent_again(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), '#!/bin/sh\necho done\n')
+    lacks = MissingBlobs('its report names blobs that the CAS lacks: bafk')
+    finished = mocker.patch.object(CampaignResults, 'finished', side_effect=lacks)
+    ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
+    agent_session_id = request_agent(db, campaign)
+    outcome = launch(ex, agent_session_id, tmp_path)
+    assert outcome == Lost('worker lost: its report names blobs that the CAS lacks: bafk')
+    assert rows(db, agent_session_id)[1].state is LeaseState.EXPIRED and finished.call_count == 1
+    wait_until(lambda: not (tmp_path / 'logs' / 'worktree').exists())  # removed once the job is lost
+    assert workers_of(ex).worker.spool.leases() == set(), 'not sent again'
+
+
 def test_a_restarted_worker_reports_an_agent_whose_worktree_is_gone(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
@@ -287,7 +323,7 @@ def test_a_restarted_worker_reports_an_agent_whose_worktree_is_gone(
     wait_until(lambda: lease_state(db, agent_session_id) is LeaseState.RUNNING)
     first.hand_over()
     launching.join(30)
-    shutil.rmtree(tmp_path / 'cwd')
+    shutil.rmtree(tmp_path / 'logs' / 'worktree')
     second = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     workers_of(second).worker.start()
     outcome = second.launcher.reattach(agent_session_id)
@@ -349,18 +385,14 @@ def test_an_agent_that_removes_its_own_worktree_is_still_reported(
     use(db, campaign, Contract('subprocess', factory(runtime), pytest.MonkeyPatch()), '#!/bin/sh\nrm -rf "$PWD"\n')
     ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     agent_session_id = request_agent(db, campaign)
-    with db.session() as s:
-        base = s.get_one(Campaign, campaign.id)
-        repo, commit = Path(base.path), Repo(base.path).head.commit.hexsha
     outcome = ex.launcher.launch(
         agent_session_id,
         brief='b',
-        cwd=tmp_path / 'wt',
-        log_dir=tmp_path / 'logs',
-        artifact=GitTree(repo=repo, commit=commit),
-        commits=Commits(message='leftovers', ref='refs/piloop/agents/1'),
+        place='logs',
+        artifact=head_of(ex, agent_session_id),
+        commits=Commits(message='leftovers'),
     )
-    assert isinstance(outcome, Ran) and outcome.process.error is not None and outcome.head is None, (
+    assert isinstance(outcome, Ran) and outcome.process.error is not None and outcome.commits is None, (
         'the report says what is known'
     )
     assert rows(db, agent_session_id)[1].state is LeaseState.REPORTED
@@ -487,12 +519,10 @@ def launching(
 ) -> AgentSessionId:
     """Launch an agent on a thread, and return its row."""
     agent_session_id = request_agent(db, campaign)
-    cwd = tmp_path / name
-    cwd.mkdir()
     thread = threading.Thread(
         target=ex.launcher.launch,
         args=(agent_session_id,),
-        kwargs={'brief': 'b', 'cwd': cwd, 'log_dir': tmp_path / f'{name}-logs', 'artifact': Checkout(path=cwd)},
+        kwargs={'brief': 'b', 'place': name, 'artifact': head_of(ex, agent_session_id)},
     )
     threads.append(thread)
     thread.start()
@@ -621,31 +651,28 @@ def test_a_worker_killed_between_the_start_and_its_record_leaves_no_worktree(
 ) -> None:
     """The lease is acquired and the worktree made, but the start was never recorded: the next worker removes it."""
     agent_session_id = request_agent(db, campaign)
-    with db.session() as s:
-        base = s.get_one(Campaign, campaign.id)
-        repo, commit = Path(base.path), Repo(base.path).head.commit.hexsha
-    cwd = tmp_path / 'wt'
+    repo, cwd = Path(campaign.path), tmp_path / 'logs' / 'worktree'
+    second = RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers())
+    source = head_of(second, agent_session_id)
     job = AgentJob(
         agent_session=agent_session_id,
         runtime='subprocess',
         campaign=campaign.name,
-        campaign_path=repo,
-        artifact=GitTree(repo=repo, commit=commit),
-        cwd=cwd,
-        log_dir=tmp_path / 'logs',
+        artifact=source,
+        place='logs',
         timeout=60,
         brief=None,
         spec=None,
     )
-    git.add_worktree(git.open_repo(repo), cwd, commit, {})
+    git.add_worktree(git.open_repo(repo), cwd, source.commit, {})
     with db.session() as s:
         enqueue(s, job)
         s.commit()
-    results = CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False)
+    results = CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False)
     killed = Leases(db, results)  # the killed worker's lease, which no worker watches
     killed.register(SERVE, SERVE, '0.2.0', [], sample(tmp_path))
     killed.acquire(SERVE, uuid4().hex, sample(tmp_path))
-    second = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
+    serving(second)
     workers_of(second).worker.start()
     wait_until(lambda: lease_state(db, agent_session_id) is LeaseState.EXPIRED)
     workers_of(second).worker.join(10)
@@ -1048,13 +1075,18 @@ def test_a_dismissed_worker_stops_its_job_keeps_an_unsent_report_in_its_spool_an
     db: Database, campaign: Campaign, tmp_path: Path, refused: tuple[str, ...], spooled: set[int]
 ) -> None:
     """Dismissed at once, by its first refused call: not after the self-stop, as a silent control plane would be."""
-    leases = Leases(db, CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False), FAST)
+    leases = Leases(db, CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False), FAST)
     hold = tmp_path / 'hold'
     hold.touch()
     job = evaluation_job(db, campaign, tmp_path)
     leases.submit(job.model_copy(update={'command': ['sh', '-c', f'while [ -f {hold} ]; do sleep 0.05; done']}))
     client = Refusing(leases, SERVE)
-    worker = Worker(client, Tracer(None), tmp_path, runners=('process',))
+    worker = Worker(
+        client,
+        Tracer(None),
+        local_site(tmp_path, disk(tmp_path), partial(checkout_of, db), reserve=0),
+        runners=('process',),
+    )
     worker.start()
     wait_until(lambda: lease_states(db) == [LeaseState.RUNNING])
     client.refused |= set(refused)
@@ -1063,6 +1095,35 @@ def test_a_dismissed_worker_stops_its_job_keeps_an_unsent_report_in_its_spool_an
     assert str(worker.dismissed) == f'{refused[0]}: the token is unknown or revoked'
     assert time.monotonic() - began < FAST.self_stop
     assert worker.spool.leases() == spooled, 'a report that it could not send waits for a worker that is taken again'
+
+
+def test_a_worker_elsewhere_short_of_disk_drops_the_input_copies_that_no_worktree_links_after_a_job(
+    db: Database, campaign: Campaign, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The eviction of ``make_room``, on a worker that has no archiver: its own home, its own clones, the shared CAS."""
+    cas = disk(tmp_path)
+    leases = Leases(db, CampaignResults(db, Tracer(None), tmp_path, cas, lambda: False), FAST)
+    home = tmp_path / 'worker'
+    inputs, worktree = home / INPUTS_DIR, home / 'runs' / '1' / 'worktree'
+    inputs.mkdir(parents=True)
+    worktree.mkdir(parents=True)
+    for name in ('used', 'old', 'new'):
+        (inputs / name).write_bytes(os.urandom(1000))
+    os.link(inputs / 'used', worktree / 'data')  # a job that still runs links it
+    monkeypatch.setattr(tree_module, 'free', lambda _: 0)  # always short: only the linked copy may stay
+    site = remote_site(home, cas, partial(bundle_of_record, cas, partial(checkout_of, db)), reserve=1)
+    worker = Worker(Local(leases, 'w1'), Tracer(None), site, runners=('process',))
+    job = evaluation_job(db, campaign, tmp_path)
+    with db.session() as s:
+        s.get_one(Evaluation, job.evaluation).started_at = utcnow()  # as the scheduler starts it
+        s.commit()
+    leases.submit(job)
+    worker.start()
+    wait_until(lambda: lease_states(db) == [LeaseState.REPORTED])
+    wait_until(lambda: sorted(p.name for p in inputs.iterdir()) == ['used'])
+    assert (worktree / 'data').samefile(inputs / 'used')
+    worker.stop()
+    worker.join(10)
 
 
 class Unanswered(Local):
@@ -1082,9 +1143,14 @@ class Unanswered(Local):
 def test_a_worker_whose_registration_failed_registers_on_a_later_turn_and_a_stop_ends_it(
     db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
-    leases = Leases(db, CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False), FAST)
+    leases = Leases(db, CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False), FAST)
     client = Unanswered(leases, SERVE)
-    worker = Worker(client, Tracer(None), tmp_path, runners=('process',))
+    worker = Worker(
+        client,
+        Tracer(None),
+        local_site(tmp_path, disk(tmp_path), partial(checkout_of, db), reserve=0),
+        runners=('process',),
+    )
     worker.start()  # its own try, then the loop's first
     wait_until(lambda: client.registers == 2)
     worker._wake()  # the loop's next turn, without the default heartbeat's wait
@@ -1097,13 +1163,18 @@ def test_a_worker_whose_registration_failed_registers_on_a_later_turn_and_a_stop
 def test_a_worker_dismissed_while_it_reports_a_job_it_cannot_find_again_ends(
     db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
-    leases = Leases(db, CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False), FAST)
+    leases = Leases(db, CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False), FAST)
     leases.submit(evaluation_job(db, campaign, tmp_path))
     client = Refusing(leases, SERVE)
-    client.register(WorkerInfo(version='0', pool=SERVE, runners=['process'], sample=sample(tmp_path)))
+    client.register(WorkerInfo(version='0', pool=SERVE, runners=['process'], sample=sample(tmp_path), cas_probe=PROBE))
     assert isinstance(client.acquire(uuid4().hex, sample(tmp_path)), Grant)  # an earlier process of it took the job
     client.refused.add('lost')
-    worker = Worker(client, Tracer(None), tmp_path, runners=('process',))
+    worker = Worker(
+        client,
+        Tracer(None),
+        local_site(tmp_path, disk(tmp_path), partial(checkout_of, db), reserve=0),
+        runners=('process',),
+    )
     worker.start()
     worker.wait()
     assert str(worker.dismissed) == 'lost: the token is unknown or revoked'

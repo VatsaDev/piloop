@@ -4,8 +4,6 @@ Roles differ in data (``piloop.agents.roles``) and in the content of their brief
 that starts, waits for and closes an agent process. It never raises: a failure goes on the agent session row and its span.
 """
 
-import os
-import shlex
 import threading
 from pathlib import Path
 from uuid import uuid4
@@ -33,14 +31,9 @@ from piloop.harnesses import SESSION_ENV, SESSION_ID, Invocation, fill, takes_se
 from piloop.ids import AgentSessionId, TargetKind, TargetRef
 from piloop.otel import Span, Tracer
 from piloop.plugins.executor.contract import AgentJob, AgentKey, Artifact, Commits, Executor, ExecutorConfig, LeftJob
-from piloop.plugins.runtime.contract import RUNTIMES, AgentSpec
-from piloop.proc import PILOOP_ARGV, child_env
+from piloop.plugins.runtime.contract import RUNTIMES, AgentStart
 from piloop.text import cell
 
-AGENT_REFS = 'refs/piloop/agents/'
-"""Where an agent's head is pinned before its worktree goes, ``refs/piloop/agents/<agent session id>``
-(``Commits.ref``). Its run pins the commits under refs of its own, then deletes this one. A refused report's ref stays:
-a person can import a commit from it."""
 PROMPT = 'Your brief is in {path}. Read all of it, in parts if a read comes back cut short, then follow it.'
 """An agent's first prompt, on its argv or Herdr's (``agent prompt``).
 
@@ -50,23 +43,6 @@ It names the brief's file instead of holding the brief. The prompt is one argume
 TAB_TITLE_CHARS = 30
 """How many characters of the idea's title go in an implementer's tab label: enough to tell tabs apart in Herdr."""
 
-CLI_SHIM = '#!/bin/sh\nPILOOP_HOME={home} exec {argv} "$@"\n'
-"""``<home>/bin/piloop``: this home's piloop, the daemon's own code on the daemon's home. Agents get it as ``PILOOP_BIN``,
-which the briefs use, and its directory first on their PATH, for the prompts' plain ``piloop``. Another install can
-come first on the user's PATH (a release next to a build of ``main``), and a harness's shell can run the user's rc
-files again, which can put it back in front."""
-
-
-def own_cli(home: Path) -> Path:
-    """Write the ``CLI_SHIM`` for this process's piloop under ``home``, and return its path."""
-    shim = home / 'bin' / 'piloop'
-    text = CLI_SHIM.format(home=shlex.quote(str(home)), argv=shlex.join(PILOOP_ARGV))
-    if not shim.is_file() or shim.read_text() != text:
-        shim.parent.mkdir(parents=True, exist_ok=True)
-        shim.write_text(text)
-        shim.chmod(0o755)
-    return shim
-
 
 class Launcher:
     """Turns an ``agent_sessions`` row into a job of the executor, and waits for the result that closes the row."""
@@ -75,7 +51,6 @@ class Launcher:
         self.db = db
         self.tracer = tracer
         self.home = home
-        self.cli = own_cli(home)
         self.executor = executor
         self.cancelled = threading.Event()
         """Set when the daemon stops. No job is submitted after it, and the results that come in then close their rows
@@ -103,23 +78,23 @@ class Launcher:
         agent_session_id: AgentSessionId,
         *,
         brief: str,
-        cwd: Path,
-        log_dir: Path,
+        place: str,
         artifact: Artifact,
         commits: Commits | None = None,
     ) -> Ended:
         """Run agent session row ``agent_session_id`` to the end on the executor, and return how it ended.
 
         The steps are: pick the harness and model, fill in the row, submit the agent's job, and wait for its result,
-        which closes the row (``piloop.agents.results``). The executor materializes ``artifact`` at ``cwd`` (a
-        worktree), starts the agent, and removes the worktree after. With ``commits``, they come back: ``Ended.head``.
+        which closes the row (``piloop.agents.results``). The executor makes the job's ``place`` (its log directory),
+        materializes ``artifact`` in it (a worktree), starts the agent, and removes the worktree after. Its log files
+        come back into ``place`` under this home. With ``commits``, they come back too: ``Ended.commits``.
         """
         with self.tracer.span('piloop.agent', agent_session=agent_session_id) as span:
             with self.lock:
                 try:
                     if self.cancelled.is_set():
                         return DaemonStopped()
-                    job = self._prepare(agent_session_id, span, brief, cwd, log_dir, artifact, commits)
+                    job = self._prepare(agent_session_id, span, brief, place, artifact, commits)
                     self.executor.submit(job)
                 except Exception as e:  # a harness or a runtime that piloop.toml no longer has, an executor's refusal
                     span.error(e)
@@ -165,8 +140,7 @@ class Launcher:
         agent_session_id: AgentSessionId,
         span: Span,
         brief: str,
-        cwd: Path,
-        log_dir: Path,
+        place: str,
         artifact: Artifact,
         commits: Commits | None,
     ) -> AgentJob:
@@ -188,52 +162,28 @@ class Launcher:
             session_id = str(uuid4()) if definition.captures_session and takes_session_id(template) else None
             kind, reason = w.kind, w.reason
             span.set(kind=kind, harness=harness, model=model, reason=reason, session_id=session_id)
-            prompt = PROMPT.format(path=log_dir / BRIEF_FILE)
-            # A Herdr pane does not inherit the daemon's environment. Pass the daemon's PATH, where the harness CLIs and
-            # uv were found, after the daemon's own piloop. The worker adds the variables that the MCP servers name.
+            prompt = PROMPT.format(path=f'{{log_dir}}/{BRIEF_FILE}')
+            # A Herdr pane does not inherit the daemon's environment: the worker adds its PATH and its piloop
+            # (``jobs.Site.env``), and the variables that the MCP servers name.
             env = {
-                # the shim sets it too, but a harness shell that runs the user's rc files can put another install's
-                # piloop first on PATH: with the variable, that one still uses this home's database, never the default
-                'PILOOP_HOME': str(self.home),
                 'PILOOP_ACTOR': Agent(role=kind, session=agent_session_id).signature,
-                'PILOOP_BIN': str(self.cli),
-                'PATH': f'{self.cli.parent}{os.pathsep}{child_env()["PATH"]}',
                 # empty, not unset: a Herdr pane can only override what its server inherited
                 **dict.fromkeys(SESSION_ENV | {*definition.session_env}, ''),
             }
-            argv = [
-                fill(
-                    a,
-                    model=model,
-                    effort=effort,
-                    prompt=prompt,
-                    log_dir=str(log_dir),
-                    session_id=session_id or '',
-                    cwd=str(cwd),
-                )
-                for a in template
-            ]
+            # {cwd} and {log_dir} stay for the worker, which makes them (``AgentStart.at``)
+            argv = [fill(a, model=model, effort=effort, prompt=prompt, session_id=session_id or '') for a in template]
             # {prompt} stays for the queued messages, and {session_id} for the id that a harness reports while it runs
             resume = [
-                fill(
-                    a,
-                    model=model,
-                    effort=effort,
-                    log_dir=str(log_dir),
-                    session_id=session_id or SESSION_ID,
-                    cwd=str(cwd),
-                )
+                fill(a, model=model, effort=effort, session_id=session_id or SESSION_ID)
                 for a in (definition.resume if invocation is Invocation.HEADLESS else [])
             ]
             busy, failed, queue, composer = definition.screens
-            spec = AgentSpec(
+            spec = AgentStart(
                 name=f'{kind}-{agent_session_id}',
                 label=_label(s, w),
                 executable=definition.executable,
                 args=argv,
                 prompt=prompt,
-                cwd=cwd,
-                log_dir=log_dir,
                 env=env,
                 startup_dialogs=definition.startup_dialogs,
                 busy_screens=busy,
@@ -247,10 +197,8 @@ class Launcher:
                 agent_session=agent_session_id,
                 runtime=runtime_kind,
                 campaign=campaign.name,
-                campaign_path=Path(campaign.path),
                 artifact=artifact,
-                cwd=cwd,
-                log_dir=log_dir,
+                place=place,
                 timeout=cfg.role(kind).timeout,
                 brief=brief,
                 spec=spec,
@@ -262,7 +210,7 @@ class Launcher:
                 session_id=session_id,
                 commits=commits,
             )
-            w.harness, w.model, w.runtime, w.log_dir = harness, model, runtime_kind, str(log_dir)
+            w.harness, w.model, w.runtime, w.log_dir = harness, model, runtime_kind, str(self.home / place)
             w.state, w.started_at = AgentSessionState.STARTING, utcnow()
             started = AgentSessionStarted(role=kind, harness=harness, model=model, reason=reason)
             emit(s, started, TargetRef(TargetKind.AGENT_SESSION, agent_session_id), System.DAEMON)
@@ -275,7 +223,7 @@ class Launcher:
         'an agent that a daemon before leases started: delete Launcher.left, Scheduler._left, LeftJob.job and'
         ' LeftJob.handle, and a None AgentJob.spec',
     )
-    def left(self, s: Session, w: AgentSession, artifact: Artifact, cwd: Path, commits: Commits | None) -> LeftJob:
+    def left(self, s: Session, w: AgentSession, artifact: Artifact, place: str, commits: Commits | None) -> LeftJob:
         """The ``LeftJob`` of a running agent, with its job as its row has it: no spec, so it is re-attached, never started.
 
         Only an agent that a daemon before leases started needs it: an executor finds its own jobs again.
@@ -288,10 +236,8 @@ class Launcher:
             agent_session=w.id,
             runtime=w.runtime,
             campaign=campaign.name,
-            campaign_path=Path(campaign.path),
             artifact=artifact,
-            cwd=cwd,
-            log_dir=Path(w.log_dir),
+            place=place,
             timeout=cfg.role(w.kind).timeout,
             brief=None,
             spec=None,

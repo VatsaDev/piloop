@@ -13,7 +13,7 @@ from typing import Annotated, ClassVar, Protocol, TypeIs
 from pydantic import AfterValidator
 
 from piloop import deprecated
-from piloop.harnesses import Invocation, QueueKey
+from piloop.harnesses import Invocation, QueueKey, fill
 from piloop.plugins.host import Capability, Scope, Selection
 
 
@@ -37,8 +37,11 @@ class ExitStatus(StrEnum):
 
 
 @dataclass(frozen=True)
-class AgentSpec:
-    """Everything needed to start one agent."""
+class AgentStart:
+    """What starts one agent, on any machine.
+
+    ``args``, ``prompt`` and ``resume_args`` can hold ``{cwd}`` and ``{log_dir}``: ``at`` fills in where it runs.
+    """
 
     name: str
     """A unique name that matches ``[a-z][a-z0-9_-]{0,31}`` (Herdr's rule for agent names), e.g. ``r12-claude``."""
@@ -53,8 +56,6 @@ class AgentSpec:
 
     Herdr delivers it with ``agent prompt`` after the start. The subprocess runtime has it in ``args``.
     """
-    cwd: Path
-    log_dir: Path
     env: dict[str, str] = field(default_factory=dict)
     startup_dialogs: list[tuple[str, list[str]]] = field(default_factory=list)
     """First-launch dialogs to answer in order before the agent is ready: the text to find and the keys to send."""
@@ -72,6 +73,35 @@ class AgentSpec:
     """Arguments after the executable that continue the agent's session with a new prompt (``Harness.resume``), for
     the subprocess runtime. ``{prompt}`` is still in them, and ``{session_id}`` when the harness reports its id. Empty
     when the harness cannot continue a session: the agent then takes no message while it runs."""
+
+    def at(self, cwd: Path, log_dir: Path, env: dict[str, str]) -> AgentSpec:
+        """The spec of this start in ``cwd``, writing to ``log_dir``, with ``env`` added to its environment."""
+        places = {'cwd': str(cwd), 'log_dir': str(log_dir)}
+        return AgentSpec(
+            name=self.name,
+            label=self.label,
+            executable=self.executable,
+            args=[fill(a, **places) for a in self.args],
+            prompt=fill(self.prompt, **places),
+            env=self.env | env,
+            startup_dialogs=self.startup_dialogs,
+            busy_screens=self.busy_screens,
+            failed_turn_screens=self.failed_turn_screens,
+            queue_key=self.queue_key,
+            composer=self.composer,
+            session_id_pattern=self.session_id_pattern,
+            resume_args=[fill(a, **places) for a in self.resume_args],
+            cwd=cwd,
+            log_dir=log_dir,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class AgentSpec(AgentStart):
+    """Everything needed to start one agent: its start, where it runs and where its logs go."""
+
+    cwd: Path
+    log_dir: Path
 
 
 @dataclass(frozen=True)

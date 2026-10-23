@@ -49,22 +49,27 @@ from piloop.ids import (
     TargetRef,
 )
 from piloop.otel import Tracer
+from piloop.plugins.cas.contract import Cas
 from piloop.plugins.executor.contract import (
     AgentFinished,
     AgentJob,
     AgentKey,
     AgentNotStarted,
     AgentReport,
+    Bundle,
     EvaluationJob,
     EvaluationKey,
     EvaluationReport,
     Guard,
     JobKey,
+    MissingBlobs,
     Sample,
     Settled,
 )
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
 from piloop.scoring.ledger import MeasurementRecorded, save_units
+from piloop.settings import UNITS_DIR
+from piloop.store.tree import write_files
 
 STARTUP_SECONDS = 120
 """An agent that ends sooner than this and leaves nothing did not start to work: a dialog, a crash, broken tools.
@@ -171,8 +176,8 @@ class Ran:
     """The agent started to work, and its process ended."""
 
     process: AgentExit
-    head: str | None = None
-    """The head of its commits, pinned at the job's ``Commits.ref``, when it was asked for them and made some."""
+    commits: Bundle | None = None
+    """Its commits in the CAS, when it was asked for them and made some."""
     kind: Literal['ran'] = 'ran'
 
 
@@ -200,8 +205,8 @@ class Lost:
 class DaemonStopped:
     """The daemon stopped before the agent started or while it ran. The stop writes the rows."""
 
-    head: str | None = None
-    """The head of its commits, when it ran, was asked for them and made some."""
+    commits: Bundle | None = None
+    """Its commits in the CAS, when it ran, was asked for them and made some."""
     kind: Literal['daemon_stopped'] = 'daemon_stopped'
 
 
@@ -262,12 +267,17 @@ SIGNED: TypeAdapter[SignedAgent] = TypeAdapter(SignedAgent)
 
 
 class CampaignResults:
-    """``Results``: what an agent's or an evaluation's end changes in the campaign's rows."""
+    """``Results``: what an agent's or an evaluation's end changes in the campaign's rows.
 
-    def __init__(self, db: Database, tracer: Tracer, units_dir: Path, stopping: Callable[[], bool]) -> None:
+    A job's files come back in ``cas``, and go into its place under ``home``, where the readers of logs look.
+    """
+
+    def __init__(self, db: Database, tracer: Tracer, home: Path, cas: Cas, stopping: Callable[[], bool]) -> None:
         self._db = db
         self._tracer = tracer
-        self._units_dir = units_dir
+        self._home = home
+        self._units_dir = home / UNITS_DIR
+        self._cas = cas
         self._stopping = stopping
         """Whether the daemon stops: an agent that ends then closes as killed by the stop, and a measurement is not
         recorded (the next daemon measures it again)."""
@@ -304,6 +314,13 @@ class CampaignResults:
     def finished(
         self, job: AgentJob | EvaluationJob, report: AgentReport | EvaluationReport, *, guard: Guard | None = None
     ) -> None:
+        """Apply the report once the CAS holds every blob that it names, else raise ``MissingBlobs``.
+
+        Its files go into the job's place in the transaction that applies it: what reads the row closed finds them.
+        """
+        if missing := self._cas.missing(report.blobs()):
+            raise MissingBlobs(f'its report names blobs that the CAS lacks: {", ".join(map(str, missing))}')
+
         def change(s: Session) -> None:
             if isinstance(job, AgentJob):
                 assert isinstance(report, AgentFinished | AgentNotStarted)
@@ -311,6 +328,7 @@ class CampaignResults:
             else:
                 assert isinstance(report, EvaluationReport)
                 self._measured(s, job, report)
+            write_files(self._cas, report.files, self._home / job.place)
 
         self._apply(guard, change)
 
@@ -365,7 +383,7 @@ class CampaignResults:
                 learn(s, w, report.session_id)
                 w.usage = report.usage
                 if self._stopping():
-                    self._stopped(s, w, report.head)
+                    self._stopped(s, w, report.commits)
                     return
                 asked = _asked_to_end(s, w.id)
                 ending = w.state is AgentSessionState.ENDING  # its error says why the daemon ended it
@@ -377,7 +395,7 @@ class CampaignResults:
                 w.error = w.error if ending else process.error
                 w.checkpoint_id, seconds = report.checkpoint, process.seconds
                 worked = asked or not _never_worked(s, w, report)
-                ended = Ran(process, report.head) if worked else NotStarted(process.error or NEVER_WORKED)
+                ended = Ran(process, report.commits) if worked else NotStarted(process.error or NEVER_WORKED)
             case _:
                 assert_never(report)
         session_finished(s, w, None if process is None else process.status)
@@ -394,9 +412,9 @@ class CampaignResults:
         _ended(s, w.id, ended)
 
     @staticmethod
-    def _stopped(s: Session, w: AgentSession, head: str | None) -> None:
+    def _stopped(s: Session, w: AgentSession, commits: Bundle | None) -> None:
         w.state, w.error = AgentSessionState.KILLED, RunEnd.DAEMON_STOPPED
-        _ended(s, w.id, DaemonStopped(head))
+        _ended(s, w.id, DaemonStopped(commits))
 
     def _measured(self, s: Session, job: EvaluationJob, report: EvaluationReport) -> None:
         """Record each sample of an evaluation as one measurement, and take the evaluation out of the queue.

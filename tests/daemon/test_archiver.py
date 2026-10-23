@@ -203,7 +203,7 @@ def test_with_nothing_due_the_upkeep_prunes_by_age_and_pressure_and_evicts_hourl
     monkeypatch.setattr(archive_module, 'free', lambda _: 1 << 40)
     archiver = upkept(Archiver(db, store, home, POLICY, tracer, pool, threading.Event()))
     assert spans_named(spans, 'piloop.store.upkeep') == [
-        {'pruned_by_age': 1, 'pruned_by_pressure': 0, 'uploaded': 0, 'evicted': 0, 'freed': 0}
+        {'pruned_by_age': 1, 'pruned_by_pressure': 0, 'inputs_evicted': 0, 'uploaded': 0, 'evicted': 0, 'freed': 0}
     ], 'the first tick of a daemon is the upkeep'
     assert sorted(p.name for p in workspace.iterdir()) == ['idea2'], 'the older archiving went by age'
     archiver.tick()
@@ -215,7 +215,7 @@ def test_with_nothing_due_the_upkeep_prunes_by_age_and_pressure_and_evicts_hourl
     archiver.tick()
     settle(archiver)
     last = [s for s in spans.get_finished_spans() if s.name == 'piloop.store.upkeep'][-1]
-    assert dict(last.attributes or {}) == {'pruned_by_age': 0, 'pruned_by_pressure': 1}
+    assert dict(last.attributes or {}) == {'pruned_by_age': 0, 'pruned_by_pressure': 1, 'inputs_evicted': 0}
     assert last.status.description == 'OSError: remote down'
     assert files(workspace) == {}, 'the disk is short: the newer archiving went too'
     jobs = archiver._job

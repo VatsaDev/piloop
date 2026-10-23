@@ -42,12 +42,14 @@ from piloop.db.session import Database
 from piloop.ids import IMPLEMENTER, WATCHDOG, AgentSessionId, CampaignId, IdeaId, RoleName
 from piloop.plugins.cas.disk import DiskCas
 from piloop.plugins.cas.kit.objects import ObjectsCas, key
+from piloop.settings import INPUTS_DIR
+from piloop.store import tree as tree_module
 from piloop.store.tree import Manifest, Removed, Stored, Walk
 from tests.conftest import end_of
 
 LIVE = frozenset({'NOTES.md', 'research'})
 LOST = Cid.of(b'lost')
-REAL_FREE = archive_module.free
+REAL_FREE = tree_module.free
 """Captured before ``conftest.plenty_of_disk`` replaces it for every test."""
 
 
@@ -296,6 +298,30 @@ def test_local_copies_go_by_age_and_under_disk_pressure_the_oldest_archiving_fir
         assert all(a.pruned_at is not None for a in s.scalars(select(Archive)))
 
 
+def test_under_disk_pressure_the_unlinked_copies_of_inputs_go_first_oldest_first_and_a_linked_copy_stays(
+    db: Database, campaign: Campaign, home: Path, store: ObjectsCas, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, row = archived_idea(db, campaign, home, store, 'kept')
+    inputs, worktree = home / INPUTS_DIR, home / 'runs' / '1' / 'worktree'
+    worktree.mkdir(parents=True)
+    for age, name in enumerate(['used', 'old', 'mid', 'new']):
+        write(inputs / name, os.urandom(1000))
+        os.utime(inputs / name, ns=(age, age))
+    os.link(inputs / 'used', worktree / 'data')  # a worktree that runs links it
+
+    def left(_: Path) -> int:
+        return 10_000 - 1000 * len(list(inputs.iterdir()))
+
+    monkeypatch.setattr(archive_module, 'free', left)
+    monkeypatch.setattr(tree_module, 'free', left)
+    assert make_room(db, store, home, reserve=8000) == Pruned(inputs=2), 'the two oldest that no worktree links'
+    assert sorted(p.name for p in inputs.iterdir()) == ['new', 'used']
+    assert make_room(db, store, home, reserve=99_000) == Pruned(1, inputs=1), 'then the archivings'
+    assert [p.name for p in inputs.iterdir()] == ['used'] and (worktree / 'data').samefile(inputs / 'used')
+    with db.session() as s:
+        assert s.get_one(Archive, row).pruned_at is not None
+
+
 def big_idea(db: Database, campaign: Campaign, home: Path) -> tuple[IdeaId, dict[str, bytes]]:
     """A done idea whose workspace holds three 4000-byte files in nested directories and a symlink."""
     idea = add_idea(db, campaign.id, 'big')
@@ -492,7 +518,7 @@ def test_free_space_is_measured_where_the_home_is_or_will_be(tmp_path: Path, mon
         asked.append(path)
         return shutil._ntuple_diskusage(100, 40, 60)
 
-    monkeypatch.setattr(archive_module.shutil, 'disk_usage', usage)
+    monkeypatch.setattr(tree_module.shutil, 'disk_usage', usage)
     assert REAL_FREE(tmp_path / 'not' / 'yet') == 60
     (tmp_path / 'not' / 'yet').mkdir(parents=True)
     REAL_FREE(tmp_path / 'not' / 'yet')

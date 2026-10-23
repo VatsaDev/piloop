@@ -18,7 +18,6 @@ from pydantic import (
     PlainValidator,
     TypeAdapter,
     model_serializer,
-    model_validator,
 )
 from sqlalchemy import (
     JSON,
@@ -391,9 +390,8 @@ class EventModel(BaseModel):
     The stored rows keep their shape, and SQL reads them as stored, so a model changes in these ways only:
 
     - A new field has a default, so the rows before it still load.
-    - A field that goes away is listed in ``retired_fields``. The rows before keep it, and the loader drops it.
     - A field whose meaning changes is a new kind, such as ``run.finished.v2``.
-    - A rename is a migration that rewrites the rows, and a line in the upgrade guide.
+    - A field that goes away, or a rename, is a migration that rewrites the rows, and a line in the upgrade guide.
 
     A kind that nothing writes any more is retired (``retire``), so that no model takes its name again.
     """
@@ -402,18 +400,12 @@ class EventModel(BaseModel):
 
     kind: str
 
-    retired_fields: ClassVar[frozenset[str]] = frozenset()
-    """The fields that the model had, like protobuf's ``reserved``: dropped on load, and no field may take the name."""
-
     _registry: ClassVar[dict[str, type[EventModel]]] = {}
     _retired_kinds: ClassVar[set[str]] = set()
 
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
         super().__pydantic_init_subclass__(**kwargs)
-        reused = cls.retired_fields & {field.alias or name for name, field in cls.model_fields.items()}
-        if reused:
-            raise TypeError(f'{cls.__qualname__}: the fields {sorted(reused)} are retired')
         for kind in cls.kinds():
             if kind in EventModel._retired_kinds:
                 raise TypeError(f'{cls.__qualname__}: event kind {kind!r} is retired')
@@ -436,13 +428,6 @@ class EventModel(BaseModel):
     def retired_kinds(cls) -> frozenset[str]:
         """The kinds that are retired."""
         return frozenset(EventModel._retired_kinds)
-
-    @model_validator(mode='before')
-    @classmethod
-    def _drop_retired(cls, value: object) -> object:
-        if isinstance(value, dict) and cls.retired_fields:
-            return {k: v for k, v in value.items() if k not in cls.retired_fields}
-        return value
 
     @classmethod
     def kinds(cls) -> tuple[str, ...]:

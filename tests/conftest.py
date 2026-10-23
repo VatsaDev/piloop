@@ -43,6 +43,7 @@ from piloop.db.session import Database, migrate
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.ids import CampaignId
 from piloop.otel import Tracer
+from piloop.plugins.cas.contract import CAS, Cas
 from piloop.plugins.executor.kit.leases import Timing
 from piloop.plugins.executor.workers import Workers, WorkersExecutor
 from piloop.plugins.executor.workers.worker import Worker
@@ -53,6 +54,7 @@ from piloop.runtime.factory import RuntimeFactory
 from piloop.scoring.evaluate import run_evaluate
 from piloop.scoring.ledger import DAEMON, current_evaluator
 from piloop.settings import Settings, env_names
+from piloop.store import tree as tree_module
 
 # Harness stand-ins: any argv that edits the worktree and commits.
 HARNESS_APPEND = '#!/bin/sh\necho line >> solve.txt\ngit commit -qam "add a line"\n'
@@ -475,6 +477,11 @@ def workers_of(controller: RunController) -> WorkersExecutor:
     return controller.executor
 
 
+def disk(home: Path) -> Cas:
+    """The default CAS of the home ``home``: ``disk``, under ``<home>/store``."""
+    return CAS.selected({}).open(home)
+
+
 def factory(rt: Runtime) -> RuntimeFactory:
     def make(_kind: str, *, campaign: str, campaign_path: Path) -> Runtime:
         return rt
@@ -486,6 +493,7 @@ def factory(rt: Runtime) -> RuntimeFactory:
 def plenty_of_disk(monkeypatch: pytest.MonkeyPatch) -> None:
     """The archiver keeps ``[storage] min_free_gb`` free: a test must not depend on the free space of its machine."""
     monkeypatch.setattr(archive_module, 'free', lambda home: 1 << 50)
+    monkeypatch.setattr(tree_module, 'free', lambda home: 1 << 50)
 
 
 @pytest.fixture(autouse=True)

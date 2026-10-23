@@ -20,7 +20,7 @@ PROMPTS = Path(__file__).resolve().parent / 'prompts'
 PROCEDURES = 'sql_procedures.md'
 """The database procedures of every role's brief."""
 PILOOP_HINT = '"$PILOOP_BIN"'
-"""How a brief runs piloop: the daemon sets ``PILOOP_BIN`` for every agent (``piloop.agents.launcher.own_cli``)."""
+"""How a brief runs piloop: the worker sets ``PILOOP_BIN`` for every agent (``piloop.plugins.executor.kit.jobs.own_cli``)."""
 SQL_HINT = f'{PILOOP_HINT} sql'
 
 

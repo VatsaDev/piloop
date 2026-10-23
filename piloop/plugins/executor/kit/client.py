@@ -12,6 +12,7 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict
 
 from piloop.db.models import NoLease
+from piloop.plugins.cas.contract import BlobAddress
 from piloop.plugins.executor.contract import AgentReport, EvaluationReport
 from piloop.plugins.executor.kit.capacity import HostSample
 from piloop.plugins.executor.kit.leases import (
@@ -50,6 +51,9 @@ class WorkerInfo(BaseModel):
     runners: list[str]
     """The evaluator runners that it has."""
     sample: HostSample
+    cas_probe: BlobAddress
+    """A tiny blob, unique to this start, that the worker just put in its CAS. A server whose CAS lacks it refuses the
+    worker: the two must share one CAS. Nothing deletes it: one blob of about 50 bytes per start."""
 
 
 class Registration(BaseModel):
@@ -70,7 +74,8 @@ class LeaseClient(Protocol):
     """The calls of a worker on its leases.
 
     Each call that names a lease raises ``StaleLease`` when it is not the worker's live, newest lease: then the worker
-    stops the job. Any call raises ``Dismissed`` when the control plane refuses the worker itself.
+    stops the job. Any call raises ``Dismissed`` when the control plane refuses the worker itself. ``report`` raises
+    ``MissingBlobs`` when the CAS lacks what the report names: then the worker loses the job.
     """
 
     def register(self, info: WorkerInfo) -> Registration:

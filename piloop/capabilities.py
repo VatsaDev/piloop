@@ -7,7 +7,7 @@ from piloop.plugins.host import MissingProvider, Provider, PythonSource
 from piloop.plugins.host import Live
 
 from piloop.plugins.runtime.contract import RUNTIMES
-from piloop.plugins.runtime.contract import AgentSpec, AgentStatus, Check, Handle
+from piloop.plugins.runtime.contract import AgentSpec, AgentStart, AgentStatus, Check, Handle
 from piloop.plugins.runtime.contract import NotAttachable, NotSteerable
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
 from piloop.plugins.runtime.contract import Runtime, RuntimeFailure, StartFailed
@@ -64,8 +64,8 @@ from piloop.plugins.executor.contract import AgentReport, EvaluationReport, Samp
 from piloop.plugins.executor.contract import AgentFinished, AgentNotStarted
 from piloop.plugins.executor.contract import AgentKey, EvaluationKey, JobKey
 from piloop.plugins.executor.contract import key_of, Capacity, Prompt
-from piloop.plugins.executor.contract import GitTree, Checkout, Commits, Bar
-from piloop.plugins.executor.kit.jobs import Control, run_agent, remove
+from piloop.plugins.executor.contract import GitSource, Checkout, Commits, Bar, RepoId, Bundle, MissingBlobs
+from piloop.plugins.executor.kit.jobs import Control, Site, local_site, run_agent, remove
 from piloop.plugins.executor.kit.jobs import run_evaluation
 from piloop.plugins.executor.kit.leases import Leases, Timing, Grant, Answer
 from piloop.plugins.executor.kit.leases import StaleLease

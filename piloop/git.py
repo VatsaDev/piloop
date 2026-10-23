@@ -3,6 +3,7 @@
 import re
 import shutil
 import threading
+from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
@@ -40,12 +41,17 @@ def add_worktree(repo: Repo, path: Path, sha: str, links: dict[str, Path]) -> Re
     return Repo(path)
 
 
-def linked(path: Path, links: dict[str, Path]) -> list[str]:
-    """The ``links`` that are not part of the worktree's tree: the ones ``add_worktree`` symlinked in or did not create.
+def has(repo: Repo, sha: str) -> bool:
+    """Whether ``repo`` has commit ``sha``."""
+    status, _, _ = repo.git.cat_file('-e', f'{sha}^{{commit}}', with_extended_output=True, with_exceptions=False)
+    return status == 0
 
-    A linked name that the tree also has (``.entire`` after ``piloop init``) belongs to the commit and is not returned.
-    """
-    return [rel for rel in links if not (path / rel).exists() or (path / rel).is_symlink()]
+
+def untracked(repo: Repo, sha: str, names: Iterable[str]) -> list[str]:
+    """The ``names`` that commit ``sha`` does not track: what was put in its worktree from elsewhere, not its tree's."""
+    names = list(names)
+    tracked = set(repo.git.ls_tree('--name-only', sha, '--', *names).splitlines()) if names else set()
+    return [name for name in names if name not in tracked]
 
 
 def remove_worktree(repo: Repo, path: Path) -> None:
@@ -87,11 +93,6 @@ def _worktrees_under(repo: Repo, root: Path) -> list[Path]:
 def pin(repo: Repo, ref: str, sha: str) -> None:
     """Point ``ref`` at ``sha``, so that garbage collection keeps the commit without adding a branch."""
     repo.git.update_ref(ref, sha)
-
-
-def unpin(repo: Repo, ref: str) -> None:
-    """Delete ``ref``, which ``pin`` made. Do nothing when it is gone already."""
-    repo.git.update_ref('-d', ref)
 
 
 def pinned(repo: Repo, prefix: str) -> list[str]:

@@ -7,20 +7,22 @@ The last tests are of ``Remote`` alone: what only a network does.
 import json
 import threading
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Sequence
 from pathlib import Path
 from uuid import uuid4
 
 import httpx2 as httpx
 import pytest
+from covalence import Cid
+from pytest_mock import MockerFixture
 
 from piloop.db.models import Campaign, LeaseState, NoLease, TokenScope
 from piloop.db.session import Database
-from piloop.ids import CommentId
+from piloop.ids import CampaignId, CommentId
 from piloop.net import tokens
 from piloop.net.server import Server, app
 from piloop.net.tokens import Tokens
-from piloop.plugins.executor.contract import AgentKey, Prompt
+from piloop.plugins.executor.contract import AgentKey, MissingBlobs, Prompt, RepoId
 from piloop.plugins.executor.kit.client import Dismissed, LeaseClient, Local, WorkerInfo
 from piloop.plugins.executor.kit.leases import (
     Answer,
@@ -36,13 +38,14 @@ from piloop.plugins.executor.kit.leases import (
 from piloop.plugins.executor.kit.remote import Remote, lease_routes
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import Https, HttpsNetwork
-from tests.conftest import Dial
+from tests.conftest import Dial, disk
 from tests.fixtures.netfault import CutResponse, Proxy
 from tests.test_lease import (
     DONE,
     HANDLE,
     HOST,
     POOLS,
+    PROBE,
     RECEIPT,
     TIMING,
     Recorder,
@@ -54,7 +57,16 @@ from tests.test_lease import (
 )
 
 type Connect = Callable[[str], LeaseClient]
-INFO = WorkerInfo(version='0.2.0', pool='test', runners=['process'], sample=HOST)
+INFO = WorkerInfo(version='0.2.0', pool='test', runners=['process'], sample=HOST, cas_probe=PROBE)
+
+
+BUNDLES: list[tuple[RepoId, str, list[str]]] = []
+
+
+def bundled(repo: RepoId, commit: str, have: Sequence[str]) -> Cid | None:
+    """The server's half of ``bundle``, which records what it was asked: a commit that the caller has is None."""
+    BUNDLES.append((repo, commit, list(have)))
+    return None if commit in have else Cid.of(commit.encode())
 
 
 @pytest.fixture
@@ -73,10 +85,12 @@ def network(db: Database) -> HttpsNetwork:
 
 
 @pytest.fixture
-def server(network: HttpsNetwork, leases: Leases, db: Database) -> Generator[Server]:
+def server(network: HttpsNetwork, leases: Leases, db: Database, tmp_path: Path) -> Generator[Server]:
     listener = network.listener()
     assert listener is not None
-    server = Server(app(network, lease_routes(leases, db.changed)), listener)
+    cas = disk(tmp_path / 'server')
+    assert cas.put(b'piloop worker cas probe\n') == PROBE, 'the workers share it'
+    server = Server(app(network, lease_routes(leases, db.changed, cas, bundled)), listener)
     server.start()
     yield server
     server.close()
@@ -237,6 +251,19 @@ def test_a_lost_job_ends_its_lease_and_a_second_lost_is_stale(
         w1.lost(lease, 'gone')
 
 
+def test_a_report_that_names_blobs_the_cas_lacks_is_refused_once_and_not_tried_again(
+    connect: Connect, db: Database, campaign: Campaign, tmp_path: Path, recorder: Recorder, mocker: MockerFixture
+) -> None:
+    w1 = connect('w1')
+    w1.register(INFO)
+    lease = queue(db, evaluation_job(db, campaign, tmp_path))
+    assert isinstance(w1.acquire(uuid4().hex, HOST), Grant)
+    finished = mocker.patch.object(recorder, 'finished', side_effect=MissingBlobs('the CAS lacks x'))
+    with pytest.raises(MissingBlobs, match='the CAS lacks x'):
+        w1.report(lease, uuid4().hex, DONE)
+    assert finished.call_count == 1 and lease_row(db, lease).state is LeaseState.ACQUIRED
+
+
 def test_a_worker_in_a_pool_that_the_server_lacks_is_dismissed(connect: Connect) -> None:
     with pytest.raises(Dismissed, match="no pool 'gpu'"):
         connect('w1').register(INFO.model_copy(update={'pool': 'gpu'}))
@@ -260,6 +287,12 @@ def remote(db: Database, server: Server, dial: Dial) -> Generator[Callable[..., 
     yield make
     for http in clients:
         http.close()
+
+
+def test_a_worker_whose_cas_is_not_the_servers_is_dismissed_at_register(remote: Callable[..., Remote]) -> None:
+    elsewhere = INFO.model_copy(update={'cas_probe': Cid.of(b'put in another CAS')})
+    with pytest.raises(Dismissed, match=r"\(412\): this worker's CAS is not the server's"):
+        remote().register(elsewhere)
 
 
 def test_a_revoked_token_a_token_of_another_scope_and_the_servers_own_name_are_dismissed(
@@ -378,3 +411,12 @@ def test_a_long_poll_waits_no_longer_than_the_server_holds_one() -> None:
     w1, sent = answering(httpx.Response(204))
     assert w1.messages(0, 60) == []
     assert json.loads(sent[0].content) == {'wait': 25, 'after': 0}
+
+
+def test_a_worker_asks_the_server_for_a_bundle_and_gets_its_address_in_the_cas(remote: Callable[..., Remote]) -> None:
+    """No bytes come through the route: the server puts the bundle in the CAS, and the worker reads it from there."""
+    worker = remote('w1')
+    BUNDLES.clear()
+    assert worker.bundle(RepoId(CampaignId(3)), 'c2', ['c1']) == Cid.of(b'c2')
+    assert worker.bundle(RepoId(CampaignId(3)), 'c1', ['c1']) is None, 'the clone has it'
+    assert BUNDLES == [(3, 'c2', ['c1']), (3, 'c1', ['c1'])]

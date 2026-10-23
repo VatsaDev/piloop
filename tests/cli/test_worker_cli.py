@@ -2,10 +2,11 @@
 
 import signal
 import threading
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Sequence
 from pathlib import Path
 
 import pytest
+from covalence import Cid
 
 from piloop.cli import common
 from piloop.db.models import LeaseWorker, TokenScope
@@ -13,6 +14,7 @@ from piloop.db.session import Database
 from piloop.net import tokens
 from piloop.net.server import Server, app
 from piloop.net.tokens import Tokens
+from piloop.plugins.executor.contract import RepoId
 from piloop.plugins.executor.kit.capacity import Pool
 from piloop.plugins.executor.kit.leases import Leases
 from piloop.plugins.executor.kit.remote import lease_routes
@@ -20,17 +22,22 @@ from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import TOKEN_ENV, Https
 from piloop.settings import Settings
 from tests.cli.test_cli import run_cli
-from tests.conftest import wait_until
+from tests.conftest import disk, wait_until
 from tests.test_lease import Recorder
 
 
+def no_bundle(repo: RepoId, commit: str, have: Sequence[str]) -> Cid | None:
+    return None
+
+
 @pytest.fixture
-def server(db: Database) -> Generator[str]:
-    """The URL of a server whose only pool is ``gpu``, on the test's database."""
+def server(db: Database, tmp_path: Path) -> Generator[str]:
+    """The URL of a server whose only pool is ``gpu``, on the test's database, sharing the worker's CAS."""
     network = Https.model_validate({'listen': '127.0.0.1:0'}).open(NetworkHost(Tokens(db)))
     listener = network.listener()
     assert listener is not None
-    server = Server(app(network, lease_routes(Leases(db, Recorder(db), pools={'gpu': Pool()}), db.changed)), listener)
+    leases = Leases(db, Recorder(db), pools={'gpu': Pool()})
+    server = Server(app(network, lease_routes(leases, db.changed, disk(tmp_path / 'worker'), no_bundle)), listener)
     server.start()
     yield server.url
     server.close()

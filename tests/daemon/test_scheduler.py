@@ -88,6 +88,7 @@ from tests.conftest import (
     HARNESS_TWO_COMMITS,
     Gate,
     ScriptRuntime,
+    disk,
     events,
     factory,
     register,
@@ -1737,7 +1738,7 @@ class Prompted:
 
 def prompted(db: Database, scheduler: Scheduler, mocker: MockerFixture, *, answers: bool = True) -> Prompted:
     """Replace the executor's ``prompt`` of ``scheduler`` with a ``Prompted``."""
-    fake = Prompted(CampaignResults(db, Tracer(None), Path('units'), lambda: False), answers)
+    fake = Prompted(CampaignResults(db, Tracer(None), scheduler._home, disk(scheduler._home), lambda: False), answers)
     mocker.patch.object(scheduler._controller.executor, 'prompt', side_effect=fake)
     return fake
 

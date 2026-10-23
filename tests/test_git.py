@@ -135,7 +135,8 @@ def test_a_checkout_changed_by_an_edit_a_new_file_or_a_commit_not_by_what_was_li
     target.mkdir()
     links = {'shared': target}
     wt = git.add_worktree(repo, wt_path, repo.head.commit.hexsha, links)
-    ignore = git.linked(wt_path, links)
+    ignore = git.untracked(repo, repo.head.commit.hexsha, [*links, 'piloop.toml'])
+    assert ignore == ['shared'], 'a name that the commit tracks is not left out'
     assert not git.changed(wt_path, ignore), 'a link that .gitignore does not name is no change of the agent'
     assert git.changed(wt_path, []), 'without the links, it is an untracked file'
     (wt_path / 'new.txt').write_text('x')

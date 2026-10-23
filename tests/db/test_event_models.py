@@ -119,23 +119,6 @@ def test_every_trigger_writes_an_event_that_loads_as_the_model_that_renders_it(
     )
 
 
-def test_a_retired_field_is_dropped_on_load_and_no_field_takes_its_name() -> None:
-    class Trimmed(EventModel):
-        kind: Literal['test.trimmed'] = 'test.trimmed'
-        retired_fields = frozenset({'status'})
-        end: str
-
-    assert EVENT.validate_python({'kind': 'test.trimmed', 'end': 'x', 'status': 'old'}) == Trimmed(end='x')
-    with pytest.raises(ValidationError, match='Extra inputs are not permitted'):
-        EVENT.validate_python({'kind': 'test.trimmed', 'end': 'x', 'other': 1})
-    with pytest.raises(TypeError, match=r"Reused: the fields \['status'\] are retired"):
-
-        class Reused(EventModel):
-            kind: Literal['test.reused'] = 'test.reused'
-            retired_fields = frozenset({'status'})
-            status: str
-
-
 def test_a_retired_kind_loads_as_an_unknown_event_and_no_model_takes_it() -> None:
     EventModel.retire('test.gone')
     assert 'test.gone' in EventModel.retired_kinds()

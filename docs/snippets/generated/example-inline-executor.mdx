@@ -38,6 +38,7 @@ from piloop.capabilities import (
     Settled,
     key_of,
     kill_group,
+    local_site,
     remove,
     run_agent,
     run_evaluation,
@@ -56,6 +57,7 @@ class InlineExecutor:
 
     def __init__(self, host: Host) -> None:
         self.host = host
+        self.site = local_site(host.home, host.cas, host.repos, host.reserve)
         self._lock = threading.Lock()
         self._jobs: dict[JobKey, _Job] = {}
         self.stopping = False
@@ -130,16 +132,18 @@ class InlineExecutor:
         try:
             with self.host.tracer.span('piloop.job', job=job.kind) as span:
                 if isinstance(job, AgentJob):
-                    runtime = self.host.runtimes(job.runtime, campaign=job.campaign, campaign_path=job.campaign_path)
+                    path = self.site.clones.path(job.artifact)
+                    runtime = self.host.runtimes(job.runtime, campaign=job.campaign, campaign_path=path)
                     running.runtime = runtime
-                    report: AgentReport | EvaluationReport | None = run_agent(job, runtime, running, span)
+                    report: AgentReport | EvaluationReport | None = run_agent(job, runtime, running, self.site, span)
+                    running.steer = None  # the agent ended: a prompt from now on is undelivered
                 else:
-                    report = run_evaluation(job, running, span)
+                    report = run_evaluation(job, running, self.site, span)
             if report is not None:
                 with suppress(Settled):  # its row closed meanwhile: a stop
                     results.finished(job, report)
             if isinstance(job, AgentJob):
-                remove(job)
+                remove(job, self.site)
         except Exception as e:  # a fault of the executor: nothing must wait for this job forever
             with suppress(Settled):
                 results.lost(key, f'{type(e).__name__}: {e}')

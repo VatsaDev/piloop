@@ -8,22 +8,47 @@ and it still reports, and a stop closes a running agent as stopped.
 import subprocess
 import threading
 from collections.abc import Iterator
-from pathlib import Path
+from dataclasses import is_dataclass
+from pathlib import Path, PurePath
+from typing import get_args, get_type_hints
 
 import pytest
+from git import Repo
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import func, select
 
 from piloop.actor import System
 from piloop.agents.results import DaemonStopped, Ended, PromptSettled, Ran
+from piloop.campaign.campaigns import Sources, checkout_of
 from piloop.daemon.main import Daemon
 from piloop.daemon.run_controller import RunController
 from piloop.db.events import in_order
-from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Candidate, Event, Measurement, RunEnd
+from piloop.db.models import (
+    LIVE,
+    AgentSession,
+    AgentSessionState,
+    Campaign,
+    Candidate,
+    Event,
+    Lease,
+    Measurement,
+    RunEnd,
+)
 from piloop.db.session import Database
-from piloop.ids import WATCHDOG, AgentSessionId, CommentId
+from piloop.ids import WATCHDOG, AgentSessionId, CampaignId, CommentId
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins
-from piloop.plugins.executor.contract import EXECUTORS, AgentKey, Capacity, Checkout, Prompt
+from piloop.plugins.executor.contract import (
+    EXECUTORS,
+    JOB,
+    AgentJob,
+    AgentKey,
+    Capacity,
+    EvaluationJob,
+    GitSource,
+    Prompt,
+    RepoId,
+)
 from piloop.plugins.runtime.contract import Handle
 from piloop.scoring.ledger import request_remeasure
 from piloop.settings import Settings
@@ -31,6 +56,7 @@ from tests.conftest import (
     HARNESS_SLEEPS,
     ScriptRuntime,
     baseline,
+    disk,
     example,
     factory,
     package,
@@ -65,16 +91,11 @@ def launch_in_thread(
         s.add(w)
         s.commit()
         agent_session_id = w.id
-    cwd = tmp_path / 'cwd'
-    cwd.mkdir()
+    source = ex.sources.git(campaign, Repo(campaign.path).head.commit.hexsha)
     ended: list[Ended] = []
 
     def launch() -> None:
-        ended.append(
-            ex.launcher.launch(
-                agent_session_id, brief='b', cwd=cwd, log_dir=tmp_path / 'w', artifact=Checkout(path=cwd)
-            )
-        )
+        ended.append(ex.launcher.launch(agent_session_id, brief='b', place='w', artifact=source))
 
     threading.Thread(target=launch, daemon=True).start()
     return agent_session_id, ended
@@ -253,3 +274,94 @@ def test_config_toml_refuses_a_plugins_table_that_no_capability_of_the_home_decl
         SystemExit, match=r'verdict_rule\n  Value error, no capability has that name; there is cas, executor'
     ):
         Daemon(Settings(home=tmp_path))
+
+
+def path_types(annotation: object, seen: set[type]) -> list[str]:
+    """The fields under ``annotation`` that hold a ``Path``, by dotted name: a walk of the type, not of a value."""
+    found: list[str] = []
+    if annotation is Path or (isinstance(annotation, type) and issubclass(annotation, PurePath)):
+        return ['']
+    if (
+        isinstance(annotation, type)
+        and annotation not in seen
+        and (issubclass(annotation, BaseModel) or is_dataclass(annotation))
+    ):
+        seen.add(annotation)
+        hints = get_type_hints(annotation)
+        for name, hint in hints.items():
+            found += [f'{name}{"." + rest if rest else ""}' for rest in path_types(hint, seen)]
+        return found
+    for arg in get_args(getattr(annotation, '__value__', annotation)):
+        found += path_types(arg, seen)
+    return found
+
+
+def test_no_field_of_a_job_holds_a_path() -> None:
+    """A job names its tree, its inputs and its place by address and by name: no path of the machine that made it."""
+    assert path_types(AgentJob, set()) == [] and path_types(EvaluationJob, set()) == []
+
+
+def strings(value: object) -> Iterator[str]:
+    match value:
+        case str():
+            yield value
+        case dict():
+            for item in value.values():
+                yield from strings(item)
+        case list():
+            for item in value:
+                yield from strings(item)
+        case _:
+            pass
+
+
+def test_a_job_that_the_daemon_queues_names_no_path_under_its_home(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """The jobs of a run and of its measurement, as they are queued: no string of theirs names the daemon's home."""
+    run_id = make_run(db, campaign)
+    home = tmp_path / 'home'
+    ex = controller(db, runtime, home, 'workers')
+    execute(ex, db, run_id)
+    with db.session() as s:
+        jobs = [JOB.validate_python(lease.job) for lease in s.scalars(select(Lease).order_by(Lease.id))]
+    assert {job.kind for job in jobs} == {'agent', 'evaluation'}
+    assert (
+        run_row(db, run_id).status.value == 'succeeded' and (home / 'runs' / str(run_id) / 'transcript.txt').is_file()
+    )
+    for job in jobs:
+        dumped = JOB.dump_python(job, mode='json')
+        assert [line for text in strings(dumped) for line in text.splitlines() if str(home) in line] == [], job.kind
+
+
+@pytest.mark.parametrize('place', ['', '/home/me/.piloop/runs/1', 'runs/../../etc'])
+def test_a_place_is_a_relative_path_that_stays_inside_a_home(place: str) -> None:
+    with pytest.raises(ValidationError, match='is not a relative path inside a home'):
+        EvaluationJob(
+            evaluation=1,
+            candidate=1,
+            runner='process',
+            artifact=GitSource(repo=RepoId(CampaignId(1)), commit='c'),
+            place=place,
+            command=['true'],
+            timeout=1,
+            required=[],
+        )
+
+
+def test_two_campaigns_on_clones_of_one_repo_get_their_own_checkouts(
+    db: Database, campaign: Campaign, tmp_path: Path
+) -> None:
+    """git's identity (a root commit) is one for every clone and fork: the repo of record is the campaign's."""
+    clone = tmp_path / 'clone'
+    subprocess.run(['git', 'clone', '-q', campaign.path, str(clone)], check=True)
+    with db.session() as s:
+        other = Campaign(name='other', path=str(clone), repo='other', config=campaign.config)
+        s.add(other)
+        s.commit()
+        sources = Sources(disk(tmp_path))
+        first, second = sources.checkout(s.get_one(Campaign, campaign.id)), sources.checkout(other)
+    assert first.repo != second.repo
+    assert (checkout_of(db, first.repo), checkout_of(db, second.repo)) == (Path(campaign.path), clone)
+    with pytest.raises(KeyError, match='is gone'):
+        checkout_of(db, RepoId(CampaignId(999)))

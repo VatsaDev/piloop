@@ -31,7 +31,7 @@ section.
 | `max_concurrent` | dict\[string, integer\] | `{}` | The maximum number of agents of one harness, across all roles of the campaign, that are started or queued to start. Example: `{claude = 2}` when the provider of its model limits the request rate. When it is the turn of a harness at its limit, the slot goes to the next harness of the rotation. An idea or request that pins that harness waits. When unset, only the limits of the roles apply. |
 | `evaluate_timeout` | number | `600` | The number of seconds before the evaluate command is stopped. The evaluation is then a crash. |
 | `roles` | [Roles](#roles) | `{}` | The settings of each role (`[roles.implementer]`, `[roles.watchdog]`, `[roles.research]`, `[roles.scout]`), and the roles that you define (`[roles.<name>]`). |
-| `link` | list\[string\] | `[]` | Repo-relative paths, ignored by git, that piloop symlinks into every worktree, for example data or virtual environments. |
+| `link` | list\[string\] | `[]` | Repo-relative paths, ignored by git, that piloop puts into every worktree read-only, for example data or virtual environments. Each job gets them as they are when it is made. |
 | `context` | list\[string\] | `[]` | Repo-relative files or globs (for example `docs/error-analysis-*.md`) that hold the campaign's analysis: error analyses, comparisons with a reference, evaluation reports. The research pack lists each one with its outline, newest first, so that every sweep that reads the pack reads them before it proposes work. |
 | `mcp` | dict\[string, [McpServer](#mcpserver)\] | `{}` | `[mcp.<name>]`: the MCP servers that a role can list in `[roles.<name>] mcp`. |
 | `stop` | [Stop](#stop) | `{}` | `[stop]`: conditions that end the campaign. None by default. |
@@ -445,7 +445,7 @@ trigger. The reason is `campaign stopped: <the condition>`.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `min_free_gb` | number | `20` | Free space, in GB, that archiving keeps on the disk of PILOOP_HOME. Storing a file writes its compressed copy first, so the daemon removes the workspace copies of archived files, oldest archive first, while the disk has less than this free, and it archives in batches that fit above it. |
+| `min_free_gb` | number | `20` | Free space, in GB, that archiving keeps on the disk of PILOOP_HOME. Storing a file writes its compressed copy first, so the daemon removes the copies of linked inputs that no job uses, then the workspace copies of archived files, oldest first, while the disk has less than this free, and it archives in batches that fit above it. A worker removes the copies of linked inputs that no job uses after each job, under the same rule. |
 
 ### `[plugins]`
 

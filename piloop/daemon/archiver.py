@@ -22,7 +22,7 @@ from piloop.db.session import Database
 from piloop.ids import IdeaId, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import Cas, Upkeep
-from piloop.settings import GB, StorageSettings
+from piloop.settings import StorageSettings
 from piloop.store.tree import Cancelled
 
 
@@ -65,7 +65,7 @@ class ArchivePolicy:
     @classmethod
     def of(cls, storage: StorageSettings) -> ArchivePolicy:
         """The policy that ``[storage]`` sets, with the defaults for the rest."""
-        return cls(reserve=int(storage.min_free_gb * GB))
+        return cls(reserve=storage.reserve)
 
 
 class Archiving(NamedTuple):
@@ -184,6 +184,7 @@ class Archiver:
             span.set(
                 pruned_by_age=aged.archivings if aged is not None else None,
                 pruned_by_pressure=pressed.archivings if pressed is not None else None,
+                inputs_evicted=pressed.inputs if pressed is not None else None,
             )
             left = {**(aged.left if aged else {}), **(pressed.left if pressed else {})}
             if left:  # they stay, and their archivings stay unpruned until the next prune can act on them

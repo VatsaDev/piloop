@@ -12,6 +12,7 @@ from rich.table import Table
 from piloop.cli import common
 from piloop.db.models import utcnow
 from piloop.otel import tracer
+from piloop.plugins.cas.contract import CAS
 from piloop.plugins.executor.contract import EXECUTORS
 from piloop.plugins.executor.workers import Workers, remote_worker, seen
 from piloop.plugins.network.contract import NETWORKS, NoCredential
@@ -40,7 +41,8 @@ def run(
     settings.home.mkdir(parents=True, exist_ok=True)  # its jobs' files, its spool and its free disk are there
     stopping = threading.Event()
     with client as http:
-        worker = remote_worker(http, stopping, tracer(), settings.home, pool)
+        cas = CAS.selected(settings.providers).open(settings.home)
+        worker = remote_worker(http, stopping, tracer(), settings.home, cas, pool, settings.storage.reserve)
 
         def stop(signum: int, frame: FrameType | None) -> None:
             stopping.set()

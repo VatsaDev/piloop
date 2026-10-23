@@ -1,8 +1,10 @@
+import fcntl
 import json
 import math
 import os
 import random
 import re
+import sqlite3
 import subprocess
 import threading
 from pathlib import Path
@@ -75,7 +77,9 @@ from piloop.ids import (
 )
 from piloop.otel import Span, Tracer
 from piloop.plugins import host
+from piloop.plugins.executor.contract import GitSource
 from piloop.plugins.executor.kit import jobs
+from piloop.plugins.executor.kit.jobs import CHANGED_INPUTS, INPUTS_CHANGED, INPUTS_REBUILT
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.executor.workers.worker import _Control
 from piloop.plugins.runtime.contract import AgentExit, Handle, StartFailed
@@ -99,6 +103,7 @@ from piloop.scoring.ledger import (
     units,
 )
 from piloop.settings import Settings
+from piloop.store.tree import FICLONE
 from piloop.usage.jsonl import CWD_ENCODERS
 from tests.conftest import (
     HARNESS_APPEND,
@@ -129,7 +134,7 @@ from tests.usage.test_usage import PI_SPEC, SESSIONS
 
 HARNESS_READS_ENTIRE = '#!/bin/sh\ncat .entire/settings.json > seen.json\n'
 HARNESS_COMMITS_ENTIRE = (
-    '#!/bin/sh\nrm .entire\nmkdir .entire\necho "{}" > .entire/settings.json\ngit add .entire\n'
+    '#!/bin/sh\nrm -r .entire\nmkdir .entire\necho "{}" > .entire/settings.json\ngit add .entire\n'
     'git commit -qm "entire settings"\necho more >> solve.txt\n'
 )
 
@@ -989,15 +994,14 @@ def test_brief_carries_history_and_comments(
 def test_an_implementer_brief_names_its_worktree_as_the_place_to_work_and_the_campaign_repo_as_read_only(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
-    """Given only the campaign repo's path, an implementer edited and committed there: never scored, and main moved."""
-    write_toml(Path(campaign.path), HARNESS_APPEND.replace('\n', '\npwd > ../cwd.txt\n', 1))
-    reload_campaign(db, campaign)
+    """Given only the campaign repo's path, an implementer edited and committed there: never scored, and main moved.
+
+    The brief names no path of the worktree: the worker makes it, on whichever machine runs the job."""
     run_id = make_run(db, campaign)
     execute(controller(db, runtime, tmp_path), db, run_id)
-    cwd = (tmp_path / 'runs' / str(run_id) / 'cwd.txt').read_text().strip()
     brief = run_row(db, run_id).brief or ''
     assert (
-        f'- Your cwd is your worktree, {cwd}: make every edit, run every evaluation and make every commit there.'
+        '- Your cwd is your worktree: make every edit, run every evaluation and make every commit there.'
         f' Only its commits are scored. The campaign repo, {campaign.path}, is read-only for you: read its history'
         ' and candidates, never edit, run or commit in it.'
     ) in brief
@@ -1848,7 +1852,7 @@ def test_a_stop_between_the_implementers_end_and_the_runs_close_leaves_the_row_t
         ex.launcher.cancel()
         raise RuntimeError('worktree pulled away')
 
-    mocker.patch('piloop.daemon.run_controller._commits', side_effect=stopped_meanwhile)
+    mocker.patch.object(RunController, '_commits', side_effect=stopped_meanwhile)
     run_id = make_run(db, campaign)
     execute(ex, db, run_id)
     run = run_row(db, run_id)
@@ -2079,7 +2083,7 @@ def test_without_per_unit_results_the_aggregate_decides_and_the_reason_says_so(
         assert (c.verdict, c.verdict_reason) == snapshot(
             (Verdict.KEEP, 'against candidate#1: score 2 vs 1 (+1; aggregate: no per-unit results)')
         )
-    assert list((tmp_path / 'units').iterdir()) == []
+    assert list((tmp_path / 'units').glob('*')) == []
 
 
 def test_guardrails_are_enforced_by_the_daemon_even_after_the_campaign_stopped(
@@ -2974,3 +2978,71 @@ def test_a_stop_that_comes_just_after_the_report_leaves_the_run_to_the_stop(
     assert git.pinned(git.open_repo(Path(campaign.path)), f'refs/piloop/{config_of(campaign).name}/r{run_id}/'), (
         'its commit is kept'
     )
+
+
+def test_linked_inputs_go_into_the_store_while_no_transaction_holds_the_write_lock(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    """The first snapshot of a large ``link`` takes minutes: the daemon's other writers must not wait on it."""
+    ex = controller(db, runtime, tmp_path)
+    real = ex.sources.git
+    locked: list[bool] = []
+
+    def git_source(c: Campaign, commit: str) -> GitSource:
+        # another thread's write (the worker's heartbeat) ends within the wait; one of this thread's never would
+        other = sqlite3.connect(db.engine.url.database or '', timeout=5)
+        try:
+            other.execute('BEGIN IMMEDIATE')
+            locked.append(False)
+        except sqlite3.OperationalError:
+            locked.append(True)
+        finally:
+            other.close()
+        return real(c, commit)
+
+    mocker.patch.object(ex.sources, 'git', side_effect=git_source)
+    ex.remeasure(baseline(db, campaign.id).id)
+    assert locked == [False]
+
+
+def test_an_evaluation_that_changes_a_linked_input_is_a_crash_and_the_shared_copy_is_made_again(
+    db: Database,
+    campaign: Campaign,
+    runtime: ScriptRuntime,
+    tmp_path: Path,
+    tracer: Tracer,
+    spans: InMemorySpanExporter,
+) -> None:
+    """Read-only is a mode that the evaluate command can change. What it measured on inputs it changed is no
+    measurement, and the next job does not get the changed copy."""
+    cooks = 'chmod u+w data/x.csv && echo 0 > data/x.csv && echo METRIC score=9 && echo METRIC size=1'
+    set_config(db, campaign, link=['data'], evaluate=['sh', '-c', cooks])
+    candidate = baseline(db, campaign.id).id
+    ex = controller(db, runtime, tmp_path, tracer)
+    ex.remeasure(candidate)
+    with db.session() as s:
+        measured = s.scalars(select(Measurement).where(Measurement.candidate_id == candidate)).all()[-1]
+    assert (measured.metrics, measured.error) == ({}, f'{CHANGED_INPUTS}: data/x.csv')
+    assert [e['paths'] for e in events(spans, INPUTS_CHANGED)] == ['data/x.csv']
+    set_config(
+        db,
+        campaign,
+        link=['data'],
+        evaluate=['sh', '-c', 'echo METRIC score=$(cat data/x.csv); echo METRIC size=1'],
+    )
+    ex.remeasure(candidate)
+    with db.session() as s:
+        measured = s.scalars(select(Measurement).where(Measurement.candidate_id == candidate)).all()[-1]
+    assert measured.metrics['score'] == 1.0, 'the input as it was put in the store'
+    assert len(events(spans, INPUTS_REBUILT)) == (0 if reflinks(tmp_path) else 1), 'a hard link carried the change'
+
+
+def reflinks(tmp_path: Path) -> bool:
+    """Whether the filesystem of ``tmp_path`` makes copy-on-write clones."""
+    (tmp_path / 'probe').write_text('x')
+    try:
+        with (tmp_path / 'probe').open('rb') as src, (tmp_path / 'clone').open('wb') as dst:
+            fcntl.ioctl(dst.fileno(), FICLONE, src.fileno())
+    except OSError:
+        return False
+    return True

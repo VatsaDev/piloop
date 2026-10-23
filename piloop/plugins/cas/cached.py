@@ -4,8 +4,9 @@ The local tier is any ``LocalProvider`` (``disk`` by default), the remote any pr
 and marked ``blake3/<digest>/remote`` under the local tier's root, beside its bytes on a ``disk``: the layout of
 piloop 0.2, whose homes open in place. ``remote.url`` there names the remote that the markers mean. ``flush`` (``Upkeep``) uploads what is not
 marked yet, then drops the local bytes of marked blobs by age and by the directory's size. A read of a dropped blob
-fetches it back. With ``evict_after_days = 0`` the local tier is a staging area: a put goes to the remote alone, and a
-read streams from it.
+fetches it back, and so does a read of a blob that another store put on the remote: a server and its workers share
+one bucket, each through a store of its own. With ``evict_after_days = 0`` the local tier is a staging area: a put
+goes to the remote alone, and a read streams from it.
 
 Blobs move between the tiers through the ``Cas`` protocol, as content: each upload and each fetch decompresses and
 compresses again, through a temporary file of the blob's full size. A flush uploaded a 512 MiB JSON blob (145 MiB
@@ -19,7 +20,7 @@ import os
 import tempfile
 import threading
 import time
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import timedelta
@@ -122,6 +123,14 @@ class CachedCas(StreamCas):
         """Here, or (as last confirmed) on the remote. No network."""
         return self.local.has(cid) or self._marker(cid).is_file()
 
+    def missing(self, cids: Sequence[Cid]) -> list[Cid]:
+        """Those that neither tier holds: one that this store does not know is asked of the remote, and marked."""
+        unknown = [cid for cid in cids if not self.has(cid)]
+        lacking = self.remote.missing(unknown) if unknown else []
+        for cid in set(unknown) - set(lacking):
+            self._mark(cid)
+        return lacking
+
     def put_fileobj(self, file: BinaryIO, *, max_bytes: int, expected_length: int | None = None) -> Cid:
         cid = Cid.of_fileobj(file, max_bytes=max_bytes, expected_length=expected_length)
         with self._locks[cid.digest[0] % LOCKS]:  # threads that put one content upload it once
@@ -136,14 +145,16 @@ class CachedCas(StreamCas):
     def get_to(self, cid: Cid, writer: Writer, *, max_bytes: int, expected_length: int | None = None) -> int | None:
         if (size := self.local.get_to(cid, writer, max_bytes=max_bytes, expected_length=expected_length)) is not None:
             return size
-        if not self._marker(cid).is_file():
-            return None
         if self.staging:
-            return self.remote.get_to(cid, writer, max_bytes=max_bytes, expected_length=expected_length)
+            size = self.remote.get_to(cid, writer, max_bytes=max_bytes, expected_length=expected_length)
+            if size is not None:
+                self._mark(cid)
+            return size
         with self._scratch() as fetched:
             if self.remote.get_file(cid, fetched) is None:
                 return None
             self.local.put_file(fetched)
+            self._mark(cid)
             # from the fetched file: an eviction may drop the local copy before it is read
             with fetched.open('rb') as src:
                 return stream(src, write_all(writer), max_bytes=max_bytes, expected_length=expected_length).size
@@ -171,8 +182,6 @@ class CachedCas(StreamCas):
             found = integrity(self.local, cid)
             if found is not Integrity.MISSING:  # else evicted since
                 return found
-        if not self._marker(cid).is_file():
-            return Integrity.MISSING
         if isinstance(self.remote, Upkeep):  # a store of tiers itself: it checks without fetching too
             return self.remote.integrity(cid)
         return Integrity.OK if self.remote.has(cid) else Integrity.MISSING

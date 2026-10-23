@@ -105,9 +105,10 @@ judged.
 
 ## Shared files
 
-- `link` lists paths that git ignores, such as `data` or `.venv`. piloop symlinks them into every worktree.
+- `link` lists paths that git ignores, such as `data` or `.venv`. Every worktree gets them read-only, as they were when
+  its job was made. A write in place to a linked file fails. New files stay in the worktree.
 - `workspace/` is a directory that every agent of the campaign shares, for notes, caches and plots. It is never
-  committed.
+  committed. An agent on [another machine](/architecture/leases#a-worker-on-another-machine) gets one of its own.
 
 ## Where the results are
 

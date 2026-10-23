@@ -216,7 +216,6 @@ V030_DEV: list[Row] = [
         {
             'kind': 'ran',
             'process': {'status': 'exited', 'seconds': 12.5, 'exit_code': 0, 'error': None},
-            'head': 'abc',
         },
     ),
     ('agent_session.job_ended', 'agent_session', 2, 'daemon', {'kind': 'not_started', 'reason': 'no pane'}),
@@ -468,7 +467,7 @@ def test_the_shapes_of_main_before_typed_events_are_rewritten_to_the_models(tmp_
             ),
             (
                 'JobEnded',
-                '{"ended":{"kind":"ran","process":{"status":"exited","seconds":12.5,"exit_code":0,"error":null},"head":"abc"},"kind":"agent_session.job_ended"}',
+                '{"ended":{"kind":"ran","process":{"status":"exited","seconds":12.5,"exit_code":0,"error":null}},"kind":"agent_session.job_ended"}',
             ),
             ('JobEnded', '{"ended":{"kind":"not_started","reason":"no pane"},"kind":"agent_session.job_ended"}'),
             ('RunFinished', '{"end":"worker_lost","error":"worker lost","kind":"run.finished"}'),

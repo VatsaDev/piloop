@@ -6,33 +6,38 @@ body says. A refusal has a typed body, ``RefusalBody``. What ``Remote`` does wit
 
 | Status | The worker |
 |---|---|
-| 409 with an ``error`` of ``CONFLICTS`` | raises its exception: ``StaleLease`` stops the job, ``NotAddressed`` drops an answer to a message that was not its, ``Dismissed`` ends the worker (no such pool) |
+| 409 with an ``error`` of ``CONFLICTS`` | raises its exception: ``StaleLease`` stops the job, ``NotAddressed`` drops an answer to a message that was not its, ``MissingBlobs`` loses the job whose report names blobs that the server's CAS lacks, ``Dismissed`` ends the worker (no such pool) |
 | 408, 429, 5xx, or no answer (``RETRIED``) | tries again with backoff, with the same body and so the same request id |
-| any other 4xx | ``Dismissed``: stops its jobs, keeps their reports, and exits. 401: the token is unknown or revoked. 403: a token of another scope, or one named ``serve``. 404: the server's executor takes no workers. 422 or 426: another piloop |
+| any other 4xx | ``Dismissed``: stops its jobs, keeps their reports, and exits. 401: the token is unknown or revoked. 403: a token of another scope, or one named ``serve``. 404: the server's executor takes no workers. 412: the worker's CAS is not the server's. 422 or 426: another piloop |
 
 ``messages`` is a long-poll: the server awaits a commit between two reads (``Route.long_poll``), and holds no thread.
 
 After the GitHub Actions runner (``acquirejob``, ``renewjob``) and Buildkite agent v3 (``accept``, ``start``,
-``finish``). A job names its files by their paths on the server's machine: a worker elsewhere runs only the jobs whose
-paths it reaches.
+``finish``). A job names its data by address in the CAS, which the worker reads and writes itself: no bytes come through
+these routes. ``bundle`` asks the server to put a commit that the worker's clone lacks into the CAS, and answers its
+address.
 """
 
 import threading
 from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
+from functools import partial
 from http import HTTPStatus
 from importlib.metadata import version
 from time import monotonic
 
 import httpx2 as httpx
+from covalence import Cid
 from pydantic import BaseModel, RootModel, ValidationError
 
 from piloop.db.models import NoLease, TokenScope
 from piloop.net import MAX_POLL_SECONDS, Changed, Polled, Refusal, Route
 from piloop.net.tokens import Caller
-from piloop.plugins.executor.contract import AgentReport, EvaluationReport, Report
+from piloop.plugins.cas.contract import BlobAddress, Cas
+from piloop.plugins.executor.contract import AgentReport, EvaluationReport, MissingBlobs, RepoId, Report
 from piloop.plugins.executor.kit.capacity import HostSample
 from piloop.plugins.executor.kit.client import PROTOCOL, Dismissed, Local, Registration, WorkerInfo
+from piloop.plugins.executor.kit.clones import Fetch
 from piloop.plugins.executor.kit.leases import (
     DEFAULT_TIMING,
     SERVE,
@@ -60,14 +65,17 @@ class Failure(StrEnum):
 
     STALE_LEASE = 'stale_lease'
     NOT_ADDRESSED = 'not_addressed'
+    MISSING_BLOBS = 'missing_blobs'
     DISMISSED = 'dismissed'
     RESERVED = 'reserved'
     PROTOCOL = 'protocol'
+    OTHER_CAS = 'other_cas'
 
 
 CONFLICTS: dict[type[Exception], Failure] = {
     StaleLease: Failure.STALE_LEASE,
     NotAddressed: Failure.NOT_ADDRESSED,
+    MissingBlobs: Failure.MISSING_BLOBS,
     Dismissed: Failure.DISMISSED,
 }
 """What a lease call raises, and the ``error`` of the 409 that it becomes. ``Remote`` raises it again."""
@@ -142,14 +150,28 @@ class Delivered(BaseModel):
     error: str | None
 
 
-def lease_routes(leases: Leases, changed: Changed) -> list[Route]:
-    """The routes of the ``LeaseClient`` calls, each made on ``Local`` as the caller.
+class BundleAsked(BaseModel):
+    """The body of ``bundle``: a commit of a repo of record, and the commits that the worker's clone has."""
+
+    repo: RepoId
+    commit: str
+    have: list[str]
+
+
+class BundleMade(RootModel[BlobAddress | None]):
+    """The answer of ``bundle``: the bundle's address in the CAS, or None when the clone has the commit already."""
+
+
+def lease_routes(leases: Leases, changed: Changed, cas: Cas, bundle: Fetch) -> list[Route]:
+    """The routes of the ``LeaseClient`` calls, each made on ``Local`` as the caller, and ``bundle``.
 
     ``changed`` is ``Database.changed`` of the leases' database: what ``messages`` awaits between two reads.
+    ``cas`` is the server's, which ``register`` checks that the worker shares (``WorkerInfo.cas_probe``). ``bundle``
+    builds a bundle from the repo of record into it (``jobs.bundle_of_record``).
     """
     worker = TokenScope.WORKER
     return [
-        Route('register', worker, WorkerInfo, _as_caller(leases, _register)),
+        Route('register', worker, WorkerInfo, _as_caller(leases, partial(_register, cas))),
         Route('acquire', worker, Acquire, _as_caller(leases, _acquire)),
         Route('started', worker, Started, _as_caller(leases, _started)),
         Route('heartbeat', worker, Heartbeat, _as_caller(leases, _heartbeat)),
@@ -157,7 +179,12 @@ def lease_routes(leases: Leases, changed: Changed) -> list[Route]:
         Route('lost', worker, Lost, _as_caller(leases, _lost)),
         Route.long_poll('messages', worker, Read, _as_caller(leases, _messages), changed),
         Route('delivered', worker, Delivered, _as_caller(leases, _delivered)),
+        Route('bundle', worker, BundleAsked, partial(_bundle, bundle)),
     ]
+
+
+def _bundle(bundle: Fetch, caller: Caller, body: BundleAsked) -> BundleMade:
+    return BundleMade(bundle(body.repo, body.commit, body.have))
 
 
 def _as_caller[I: BaseModel](
@@ -179,13 +206,20 @@ def _as_caller[I: BaseModel](
     return handle
 
 
-def _register(worker: Local, info: WorkerInfo) -> Registration:
+def _register(cas: Cas, worker: Local, info: WorkerInfo) -> Registration:
     if info.protocol != PROTOCOL:
         raise Refusal(
             HTTPStatus.UPGRADE_REQUIRED,
             Failure.PROTOCOL,
             f'the server runs piloop {version("piloop")}, with protocol {PROTOCOL}, and the worker protocol'
             f' {info.protocol}: install the same piloop on both machines',
+        )
+    if cas.missing([info.cas_probe]):
+        raise Refusal(
+            HTTPStatus.PRECONDITION_FAILED,
+            Failure.OTHER_CAS,
+            f"this worker's CAS is not the server's: the server's lacks {info.cas_probe}, which the worker just put"
+            " in its own. Give the worker the server's [plugins.cas]",
         )
     return worker.register(info)
 
@@ -269,6 +303,12 @@ class Remote:
 
     def delivered(self, message: int, error: str | None) -> None:
         self._post('delivered', Delivered(message=message, error=error))
+
+    def bundle(self, repo: RepoId, commit: str, have: Sequence[str]) -> Cid | None:
+        """``Clones``' fetch: the server puts a bundle of ``commit`` beyond ``have`` into the CAS, and names it."""
+        return BundleMade.model_validate_json(
+            self._post('bundle', BundleAsked(repo=repo, commit=commit, have=list(have)))
+        ).root
 
     def _post(self, path: str, body: BaseModel, wait: float = 0) -> bytes:
         """POST ``body`` until the server answers it, and return the body of its success.

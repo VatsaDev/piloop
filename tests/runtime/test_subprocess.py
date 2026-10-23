@@ -5,13 +5,14 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
 from dirty_equals import IsPositive, IsStr
 
 from piloop.plugins.runtime import subprocess as subprocess_runtime
-from piloop.plugins.runtime.contract import AgentSpec, AgentStatus, ExitStatus, Handle, NotSteerable
+from piloop.plugins.runtime.contract import AgentSpec, AgentStart, AgentStatus, ExitStatus, Handle, NotSteerable
 from piloop.plugins.runtime.subprocess import SubprocessRuntime
 from piloop.proc import alive, started
 
@@ -391,3 +392,29 @@ def test_a_start_that_fails_after_the_spawn_kills_and_waits_for_the_process(
         rt.start(spec(tmp_path, script(tmp_path, 'sleep 30')))
     assert rt._procs == {}, 'not kept: nothing would ever wait for it'
     assert spawned[0].returncode is not None, 'killed and waited for'
+
+
+def test_a_start_is_a_spec_once_the_worker_fills_in_where_it_runs(tmp_path: Path) -> None:
+    """``AgentStart`` names no place of the machine that made it: ``at`` fills ``{cwd}`` and ``{log_dir}``."""
+    start = AgentStart(
+        name='w1',
+        label='w1',
+        executable='pi',
+        args=['--log', '{log_dir}/pi.log', 'Your brief is in {log_dir}/brief.md'],
+        prompt='Your brief is in {log_dir}/brief.md',
+        env={'PILOOP_ACTOR': 'implementer#1'},
+        busy_screens=('busy',),
+        session_id_pattern='id=(\\S+)',
+        resume_args=['--cd', '{cwd}', '{prompt}'],
+    )
+    spec = start.at(tmp_path / 'wt', tmp_path / 'logs', {'PILOOP_HOME': str(tmp_path)})
+    assert spec.args == ['--log', f'{tmp_path}/logs/pi.log', f'Your brief is in {tmp_path}/logs/brief.md']
+    assert (spec.prompt, spec.resume_args) == (
+        f'Your brief is in {tmp_path}/logs/brief.md',
+        ['--cd', f'{tmp_path}/wt', '{prompt}'],
+    )
+    assert spec.env == {'PILOOP_ACTOR': 'implementer#1', 'PILOOP_HOME': str(tmp_path)}
+    filled = {'args', 'prompt', 'resume_args', 'env'}
+    assert {f.name: getattr(spec, f.name) for f in fields(AgentStart) if f.name not in filled} == {
+        f.name: getattr(start, f.name) for f in fields(AgentStart) if f.name not in filled
+    }, 'every other field of the start, as it is'

@@ -9,7 +9,7 @@ evaluate = ["uv", "run", "python", "evaluate.py"]  # required; run in a clean wo
 evaluate_timeout = 600                    # seconds; a slower evaluation is stopped and recorded as a crash
 runtime = "subprocess"                    # subprocess: a background process per agent · herdr: a pane per agent · or a package's runtime
 harnesses = ["pi", "claude", "codex"]     # not the default, which is ["pi"]; runs use these in turn, unless an idea names one
-link = []                                 # gitignored paths to symlink into every worktree, for example "data" or ".venv"
+link = []                                 # gitignored paths put into every worktree read-only, for example "data" or ".venv"
 context = []                              # analysis files that every sweep reads first, for example ["docs/error-analysis.md"]
 confidence = 0.95                         # a keep needs the primary metric's gain to be above zero at this confidence
 

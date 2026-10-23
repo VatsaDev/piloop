@@ -20,7 +20,7 @@ ENTIRE_DIR = '.entire'
 
 ``settings.json`` stores checkpoints as git refs, never pushes sessions and turns telemetry off. ``piloop init``
 commits the directory. Entire reads it from the tree of the worktree it runs in. A worktree of an older tree that does
-not have it gets a link to the campaign's (``piloop.campaign.campaigns.worktree_links``).
+not have it gets the campaign's (``piloop.campaign.campaigns.links_of``).
 """
 ENTIRE_INSTALL = 'curl -fsSL https://entire.io/install.sh | bash'
 MIN_ENTIRE = '0.10.6'

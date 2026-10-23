@@ -1,3 +1,4 @@
+import errno
 import os
 import shutil
 import threading
@@ -14,6 +15,7 @@ from piloop.plugins.cas.kit.objects import ObjectsCas
 from piloop.store import tree as tree_module
 from piloop.store.tree import (
     Cancelled,
+    Copies,
     Entry,
     Manifest,
     Missing,
@@ -23,6 +25,7 @@ from piloop.store.tree import (
     put_walk,
     remove,
     walk,
+    write_files,
 )
 
 
@@ -293,3 +296,226 @@ def test_a_blob_that_the_cas_lost_stops_a_restore(tmp_path: Path, workspace: Pat
     remove(workspace, stored.manifest)
     with pytest.raises(Missing, match='of idea7.log is not in the CAS'):
         materialise(disk(tmp_path / 'other'), stored.manifest, workspace)
+
+
+@pytest.fixture
+def no_reflink(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A filesystem without copy-on-write clones (ext4): a tree gets hard links to the shared copies."""
+
+    def unsupported(fd: int, request: int, arg: int) -> None:
+        raise OSError(errno.EOPNOTSUPP, 'Operation not supported')
+
+    monkeypatch.setattr(tree_module.fcntl, 'ioctl', unsupported)
+
+
+@pytest.fixture
+def reflink(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A filesystem with copy-on-write clones (btrfs, XFS): a clone is a copy of its own, which this fakes."""
+
+    def clone(fd: int, request: int, src: int) -> None:
+        assert request == tree_module.FICLONE
+        os.sendfile(fd, src, 0, os.fstat(src).st_size)
+
+    monkeypatch.setattr(tree_module.fcntl, 'ioctl', clone)
+
+
+def copies(tmp_path: Path) -> Path:
+    return tmp_path / 'inputs'
+
+
+def shared(cas: ObjectsCas, tmp_path: Path) -> Copies:
+    return Copies(cas, copies(tmp_path))
+
+
+@pytest.mark.usefixtures('no_reflink')
+def test_without_reflinks_trees_share_hard_links_to_read_only_copies(tmp_path: Path, workspace: Path) -> None:
+    cas = disk(tmp_path)
+    into = shared(cas, tmp_path)
+    stored = put_tree(cas, workspace, ['idea7'])
+    first, second = tmp_path / 'first', tmp_path / 'second'
+    for root in (first, second):
+        done = materialise(cas, stored.manifest, root, into=into)
+        assert (done.written, done.kept, done.rebuilt, len(done.copies)) == (4, [], [], 3)
+    assert tree(first) == tree(second) == {rel: v for rel, v in tree(workspace).items() if rel.startswith('idea7/')}
+    x = first / 'idea7' / 'arrays' / 'x.npy'
+    assert x.stat().st_ino == (second / 'idea7' / 'arrays' / 'x.npy').stat().st_ino, 'one copy, linked into both'
+    assert oct(x.stat().st_mode & 0o777) == oct(0o444) and (first / 'idea7' / 'run.sh').stat().st_mode & 0o777 == 0o555
+    with pytest.raises(PermissionError):
+        x.write_bytes(b'a change in place')
+    (first / 'idea7' / 'arrays' / 'new.npy').write_bytes(b'a new file')  # the directories are the tree's own
+    assert not (second / 'idea7' / 'arrays' / 'new.npy').exists()
+
+
+@pytest.mark.usefixtures('no_reflink')
+def test_a_copy_that_a_job_changed_through_its_hard_link_is_refused_and_made_again(
+    tmp_path: Path, workspace: Path
+) -> None:
+    """Read-only is a mode, and a job that runs as piloop's user can change it: the next use finds the change."""
+    cas = disk(tmp_path)
+    into = shared(cas, tmp_path)
+    stored = put_tree(cas, workspace, ['idea7.log'])
+    done = materialise(cas, stored.manifest, tmp_path / 'first', into=into)
+    linked = tmp_path / 'first' / 'idea7.log'
+    linked.chmod(0o644)
+    linked.write_text('cooked\n')
+    assert not done.copies['idea7.log'].holds(linked)
+    again = materialise(cas, stored.manifest, tmp_path / 'second', into=into)
+    assert again.rebuilt == [stored.manifest.entries[0].blob]
+    assert (tmp_path / 'second' / 'idea7.log').read_text() == 'done\n', 'made again from the CAS'
+
+
+@pytest.mark.usefixtures('no_reflink')
+def test_a_copy_touched_but_not_changed_is_read_again_and_kept(tmp_path: Path, workspace: Path) -> None:
+    cas = disk(tmp_path)
+    into = shared(cas, tmp_path)
+    stored = put_tree(cas, workspace, ['idea7.log'])
+    done = materialise(cas, stored.manifest, tmp_path / 'first', into=into)
+    linked = tmp_path / 'first' / 'idea7.log'
+    os.utime(linked, (0, 0))
+    assert not done.copies['idea7.log'].unchanged(linked) and done.copies['idea7.log'].holds(linked)
+    assert materialise(cas, stored.manifest, tmp_path / 'second', into=into).rebuilt == []
+    linked.unlink()
+    assert not done.copies['idea7.log'].holds(linked) and not done.copies['idea7.log'].unchanged(linked)
+
+
+@pytest.mark.usefixtures('reflink')
+def test_with_reflinks_a_change_to_one_tree_stays_in_it(tmp_path: Path, workspace: Path) -> None:
+    cas = disk(tmp_path)
+    into = shared(cas, tmp_path)
+    stored = put_tree(cas, workspace, ['idea7.log'])
+    materialise(cas, stored.manifest, tmp_path / 'first', into=into)
+    linked = tmp_path / 'first' / 'idea7.log'
+    assert linked.stat().st_nlink == 1 and linked.stat().st_mode & 0o777 == 0o444, 'a clone of its own'
+    linked.chmod(0o644)
+    linked.write_text('cooked\n')
+    again = materialise(cas, stored.manifest, tmp_path / 'second', into=into)
+    assert again.rebuilt == [] and (tmp_path / 'second' / 'idea7.log').read_text() == 'done\n'
+
+
+def test_a_copy_removed_between_its_check_and_its_link_is_made_again(
+    tmp_path: Path, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cas = disk(tmp_path)
+    into = shared(cas, tmp_path)
+    stored = put_tree(cas, workspace, ['idea7.log'])
+    real = tree_module._reflink
+    calls: list[Path] = []
+
+    def removed_once(source: Path, path: Path, mode: int) -> None:
+        calls.append(source)
+        if len(calls) == 1:
+            source.unlink()
+        real(source, path, mode)
+
+    monkeypatch.setattr(tree_module, '_reflink', removed_once)
+    done = materialise(cas, stored.manifest, tmp_path / 'out', into=into)
+    assert len(calls) == 2 and done.written == 1 and (tmp_path / 'out' / 'idea7.log').read_text() == 'done\n'
+
+
+def test_a_shared_copy_of_a_blob_the_cas_lost_stops_the_tree(tmp_path: Path, workspace: Path) -> None:
+    stored = put_tree(disk(tmp_path), workspace, ['idea7.log'])
+    with pytest.raises(Missing):
+        materialise(disk(tmp_path), stored.manifest, tmp_path / 'out', into=shared(disk(tmp_path / 'empty'), tmp_path))
+
+
+@pytest.mark.usefixtures('no_reflink')
+def test_a_copy_on_another_filesystem_is_a_read_only_copy_not_a_link(
+    tmp_path: Path, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    link = os.link
+
+    def cross_device(src: Path, dst: Path) -> None:
+        if Path(src).parent == copies(tmp_path) != Path(dst).parent:
+            raise OSError(errno.EXDEV, 'Invalid cross-device link')
+        link(src, dst)
+
+    cas = disk(tmp_path)
+    into = shared(cas, tmp_path)
+    stored = put_tree(cas, workspace, ['idea7.log'])
+    monkeypatch.setattr(tree_module.os, 'link', cross_device)
+    done = materialise(cas, stored.manifest, tmp_path / 'out', into=into)
+    out = tmp_path / 'out' / 'idea7.log'
+    assert done.written == 1 and out.read_text() == 'done\n' and out.stat().st_mode & 0o777 == 0o444
+
+
+def test_a_link_or_a_reflink_that_fails_otherwise_is_an_error(
+    tmp_path: Path, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refused(*args: object) -> None:
+        raise OSError(errno.EPERM, 'Operation not permitted')
+
+    cas = disk(tmp_path)
+    into = shared(cas, tmp_path)
+    stored = put_tree(cas, workspace, ['idea7.log'])
+    monkeypatch.setattr(tree_module.fcntl, 'ioctl', refused)
+    with pytest.raises(PermissionError):
+        materialise(cas, stored.manifest, tmp_path / 'out', into=into)
+    assert not (tmp_path / 'out' / 'idea7.log').exists(), 'no half-made file'
+    link = os.link
+
+    def no_link(src: Path, dst: Path) -> None:
+        if Path(src).parent == copies(tmp_path) != Path(dst).parent:
+            raise OSError(errno.EPERM, 'Operation not permitted')
+        link(src, dst)
+
+    def no_reflink(*args: object) -> None:
+        raise OSError(errno.ENOTTY, 'Inappropriate ioctl for device')
+
+    monkeypatch.setattr(tree_module.fcntl, 'ioctl', no_reflink)
+    monkeypatch.setattr(tree_module.os, 'link', no_link)
+    with pytest.raises(PermissionError):
+        materialise(cas, stored.manifest, tmp_path / 'out', into=into)
+
+
+@pytest.mark.usefixtures('no_reflink')
+def test_a_path_taken_meanwhile_is_kept_when_placing(
+    tmp_path: Path, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cas = disk(tmp_path)
+    into = shared(cas, tmp_path)
+    stored = put_tree(cas, workspace, ['idea7.log'])
+    real = Copies.place
+
+    def taken(self: Copies, blob: Cid, mode: int, path: Path) -> object:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('written meanwhile')
+        return real(self, blob, mode, path)
+
+    monkeypatch.setattr(Copies, 'place', taken)
+    done = materialise(cas, stored.manifest, tmp_path / 'out', into=into)
+    assert (done.written, done.kept) == (0, ['idea7.log'])
+    assert (tmp_path / 'out' / 'idea7.log').read_text() == 'written meanwhile'
+
+
+def test_a_file_stored_before_with_the_same_stat_is_not_read_again(
+    tmp_path: Path, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cas, seen = disk(tmp_path), {}
+    first = put_tree(cas, workspace, ['idea7'], seen=seen)
+    puts: list[str] = []
+    real = DiskCas.put_fileobj
+
+    def counting(self: DiskCas, file: BinaryIO, *, max_bytes: int, expected_length: int | None = None) -> Cid:
+        puts.append(file.name)
+        return real(self, file, max_bytes=max_bytes, expected_length=expected_length)
+
+    monkeypatch.setattr(DiskCas, 'put_fileobj', counting)
+    (workspace / 'idea7' / 'run.sh').write_text('#!/bin/sh\necho changed\n')
+    again = put_tree(cas, workspace, ['idea7'], seen=seen)
+    assert puts == [str(workspace / 'idea7' / 'run.sh')], 'only the file whose stat changed'
+    assert first.manifest != again.manifest
+
+
+def test_files_are_written_under_a_root_and_replace_other_content(tmp_path: Path) -> None:
+    cas = disk(tmp_path)
+    same, other = cas.put(b'same'), cas.put(b'new')
+    root = tmp_path / 'root'
+    (root / 'logs').mkdir(parents=True)
+    (root / 'same.txt').write_bytes(b'same')
+    (root / 'logs' / 'eval.stdout').write_bytes(b'old')
+    before = (root / 'same.txt').stat().st_ino
+    write_files(cas, {'same.txt': same, 'logs/eval.stdout': other, 'new/brief.md': other}, root)
+    assert tree(root) == {'logs/eval.stdout': b'new', 'new/brief.md': b'new', 'same.txt': b'same'}
+    assert (root / 'same.txt').stat().st_ino == before, 'what holds the content already stays'
+    with pytest.raises(Missing):
+        write_files(disk(tmp_path / 'empty'), {'lost.txt': other}, root)

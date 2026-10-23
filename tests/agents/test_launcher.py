@@ -1,11 +1,13 @@
 import json
 import os
 import re
+import shutil
 import tomllib
 from pathlib import Path
 
 import pytest
 from dirty_equals import IsFloat
+from git import Repo
 from inline_snapshot import snapshot
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace import StatusCode
@@ -38,7 +40,7 @@ from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, AgentSessionId, RoleName, TargetKind, TargetRef
 from piloop.mcp import MCP
 from piloop.otel import Tracer
-from piloop.plugins.executor.contract import Checkout, GitTree
+from piloop.plugins.executor.contract import Checkout, GitSource, RepoId
 from piloop.plugins.executor.kit.capacity import HostSample
 from piloop.plugins.executor.kit.leases import Answer, LeaseQueued, Leases
 from piloop.plugins.executor.workers import Workers
@@ -100,12 +102,8 @@ def launch(
         brief = compose_brief(
             role_in(campaign), campaign, Agent(role='watchdog', session=agent_session_id), reason='test', context=''
         )
-    cwd = tmp_path / 'cwd'
-    cwd.mkdir(exist_ok=True)
     ctl = controller(db, runtime, tmp_path, tracer)
-    ended = ctl.launcher.launch(
-        agent_session_id, brief=brief, cwd=cwd, log_dir=tmp_path / 'w', artifact=Checkout(path=cwd)
-    )
+    ended = ctl.launcher.launch(agent_session_id, brief=brief, place='w', artifact=checkout(campaign))
     # its worker heartbeats until it stops: left running, it takes the next launch's job, with this host's entire
     ctl.stop(5)
     return ended
@@ -115,6 +113,13 @@ def exit_of(ended: Ended) -> AgentExit:
     """How the agent's process ended: the agent ran."""
     assert isinstance(ended, Ran), ended
     return ended.process
+
+
+def checkout(campaign: Campaign) -> Checkout:
+    """The campaign's checkout as the artifact: the agent runs there, and what the test harnesses write stays, ignored
+    by git, so it is no change of the agent's."""
+    (Path(campaign.path) / '.git' / 'info' / 'exclude').write_text('*.txt\njson.py\npiloop/\n')
+    return Checkout(repo=RepoId(campaign.id))
 
 
 def agent_session(db: Database, agent_session_id: AgentSessionId) -> AgentSession:
@@ -202,7 +207,7 @@ def test_launch_runs_the_row_through_its_lifecycle(
         None,
     )
     assert w.handle['pid'] and w.ended_at is not None and w.ended_at >= w.started_at
-    assert (tmp_path / 'cwd' / 'prompt.txt').read_text() == PROMPT.format(path=tmp_path / 'w' / 'brief.md')
+    assert (Path(campaign.path) / 'prompt.txt').read_text() == PROMPT.format(path=tmp_path / 'w' / 'brief.md')
     assert (tmp_path / 'w' / 'brief.md').read_text().startswith('# Watchdog')
     assert (tmp_path / 'w' / 'transcript.txt').is_file()
     assert runtime.killed, 'the runtime is told to release the implementer'
@@ -214,7 +219,7 @@ def test_launch_runs_the_row_through_its_lifecycle(
         (1, AgentSessionFinished(role=WATCHDOG, reason='test', status=ExitStatus.EXITED, error=None)),
     ]
     [ended] = [payload.ended for _, payload in events if isinstance(payload, JobEnded)]
-    assert isinstance(ended, Ran) and ended.head is None, 'how it ended, for what waits for it'
+    assert isinstance(ended, Ran) and ended.commits is None, 'how it ended, for what waits for it'
     [span] = [span for span in spans.get_finished_spans() if span.name == 'piloop.agent']
     assert dict(span.attributes or {}) == {
         'agent_session': 1,
@@ -280,7 +285,7 @@ def test_an_agents_piloop_is_the_daemons_whatever_comes_first_on_path_or_sits_in
     (other / 'piloop').write_text('#!/bin/sh\necho "another piloop" >&2\nexit 9\n')
     (other / 'piloop').chmod(0o755)
     monkeypatch.setenv('PATH', f'{other}:{os.environ["PATH"]}')
-    cwd = tmp_path / 'cwd'
+    cwd = Path(campaign.path)
     (cwd / 'piloop').mkdir(parents=True)
     for module in (cwd / 'json.py', cwd / 'piloop' / '__init__.py'):
         module.write_text("raise SystemExit('SHADOWED')\n")
@@ -453,15 +458,11 @@ def test_a_cwd_that_cannot_be_made_is_a_failed_start(
         role_in(campaign), campaign, Agent(role='watchdog', session=agent_session_id), reason='test', context=''
     )
     mocker.patch(
-        'piloop.plugins.executor.kit.jobs.git.add_worktree', side_effect=OSError(28, 'No space left on device')
+        'piloop.plugins.executor.kit.clones.git.add_worktree', side_effect=OSError(28, 'No space left on device')
     )
-    outcome = launcher(db, runtime, tmp_path).launch(
-        agent_session_id,
-        brief=brief,
-        cwd=tmp_path / 'wt',
-        log_dir=tmp_path / 'w',
-        artifact=GitTree(repo=Path(campaign.path), commit='HEAD'),
-    )
+    lc = launcher(db, runtime, tmp_path)
+    artifact = GitSource(repo=RepoId(campaign.id), commit=Repo(campaign.path).head.commit.hexsha)
+    outcome = lc.launch(agent_session_id, brief=brief, place='w', artifact=artifact)
     w = agent_session(db, agent_session_id)
     assert (isinstance(outcome, NotStarted), w.state, w.error) == (
         True,
@@ -475,9 +476,7 @@ def test_nothing_starts_after_cancel(campaign: Campaign, db: Database, runtime: 
     agent_session_id = request(db, campaign)
     lc = launcher(db, runtime, tmp_path)
     lc.cancel()
-    outcome = lc.launch(
-        agent_session_id, brief='x', cwd=tmp_path, log_dir=tmp_path / 'w', artifact=Checkout(path=tmp_path)
-    )
+    outcome = lc.launch(agent_session_id, brief='x', place='w', artifact=checkout(campaign))
     w = agent_session(db, agent_session_id)
     assert (outcome, w.state, w.harness) == (DaemonStopped(), AgentSessionState.REQUESTED, None), 'stop() closes rows'
     assert not (tmp_path / 'w').exists()
@@ -500,7 +499,7 @@ def test_a_harness_with_an_entire_agent_gets_a_minted_session_id_in_its_argv_and
     launch(db, runtime, tmp_path, agent_session_id, tracer)
     w = agent_session(db, agent_session_id)
     assert w.session_id is not None and UUID.match(w.session_id), 'a uuid4, as pi and claude --session-id take'
-    assert (tmp_path / 'cwd' / 'session.txt').read_text() == w.session_id
+    assert (Path(campaign.path) / 'session.txt').read_text() == w.session_id
     assert dict(span_attributes(spans, 'piloop.agent', agent_session_id))['session_id'] == w.session_id
 
 
@@ -599,8 +598,8 @@ def test_the_session_is_attached_to_entire_from_the_cwd_when_the_agent_ends(
     w = agent_session(db, agent_session_id)
     assert w.checkpoint_id == CHECKPOINT
     assert entire_log() == [
-        {'argv': ['session', 'attach', w.session_id, '--agent', 'pi'], 'cwd': str(tmp_path / 'cwd')},
-        {'argv': ['session', 'info', w.session_id, '--json'], 'cwd': str(tmp_path / 'cwd')},
+        {'argv': ['session', 'attach', w.session_id, '--agent', 'pi'], 'cwd': str(Path(campaign.path))},
+        {'argv': ['session', 'info', w.session_id, '--json'], 'cwd': str(Path(campaign.path))},
     ], "from the agent's own cwd: pi and claude key their session stores by it; the id comes from info's JSON"
     assert events(spans, 'agent_session.session_attached') == [
         {
@@ -650,11 +649,8 @@ def test_the_daemons_entire_version_gates_attach_and_is_on_the_event(
     run = controller(db, runtime, tmp_path, tracer)
     gated = run.launcher
     workers_of(run).worker.entire_version = '0.10.5'
-    (tmp_path / 'cwd').mkdir()
     old = request(db, campaign)
-    gated.launch(
-        old, brief='b', cwd=tmp_path / 'cwd', log_dir=tmp_path / 'logs', artifact=Checkout(path=tmp_path / 'cwd')
-    )
+    gated.launch(old, brief='b', place='logs', artifact=checkout(campaign))
     assert entire_log() == [] and agent_session(db, old).checkpoint_id is None, 'an untested entire is not asked'
     w = agent_session(db, old)
     assert events(spans, 'agent_session.session_unattached') == [
@@ -666,9 +662,7 @@ def test_the_daemons_entire_version_gates_attach_and_is_on_the_event(
     ], 'nothing is attached until entire is upgraded'
     workers_of(run).worker.entire_version = '0.11.0'
     new = request(db, campaign)
-    gated.launch(
-        new, brief='b', cwd=tmp_path / 'cwd', log_dir=tmp_path / 'logs', artifact=Checkout(path=tmp_path / 'cwd')
-    )
+    gated.launch(new, brief='b', place='logs', artifact=checkout(campaign))
     assert agent_session(db, new).checkpoint_id == CHECKPOINT
     assert events(spans, 'agent_session.session_attached')[0]['entire'] == '0.11.0'
 
@@ -691,7 +685,10 @@ def test_attach_failures_are_events_and_never_touch_the_row(
     monkeypatch.setenv('FAKE_ENTIRE_MODE', 'silent')
     silent = request(db, campaign)
     launch(db, runtime, tmp_path, silent, tracer)
-    monkeypatch.setenv('PATH', str(tmp_path))
+    only_git = tmp_path / 'only-git'
+    only_git.mkdir()
+    (only_git / 'git').symlink_to(shutil.which('git') or 'git')
+    monkeypatch.setenv('PATH', str(only_git))
     missing = request(db, campaign)
     launch(db, runtime, tmp_path, missing, tracer)
     assert [(e['agent_session'], e['error']) for e in events(spans, 'agent_session.session_unattached')] == [
@@ -718,7 +715,7 @@ def test_the_agents_token_usage_is_summed_from_its_session_file_when_it_ends(
 ) -> None:
     home = tmp_path / 'home'
     monkeypatch.setenv('HOME', str(home))
-    folder = home / '.pi' / 'agent' / 'sessions' / CWD_ENCODERS['dash_separators_wrapped'](tmp_path / 'cwd')
+    folder = home / '.pi' / 'agent' / 'sessions' / CWD_ENCODERS['dash_separators_wrapped'](Path(campaign.path))
     writes_session = (
         f'#!/bin/sh\nmkdir -p {folder}\ncp {SESSIONS / "pi.jsonl"} "{folder}/2026-09-09T05-48-14-300Z_$2.jsonl"\n'
     )
@@ -772,7 +769,7 @@ def test_a_killed_agents_usage_is_read_too(
     """The usage of an agent killed at its timeout is read too: it spent its whole budget."""
     home = tmp_path / 'home'
     monkeypatch.setenv('HOME', str(home))
-    folder = home / '.pi' / 'agent' / 'sessions' / CWD_ENCODERS['dash_separators_wrapped'](tmp_path / 'cwd')
+    folder = home / '.pi' / 'agent' / 'sessions' / CWD_ENCODERS['dash_separators_wrapped'](Path(campaign.path))
     writes_then_hangs = (
         f'#!/bin/sh\nmkdir -p {folder}\ncp {SESSIONS / "pi.jsonl"} "{folder}/2026-09-09T05-48-14-300Z_$2.jsonl"\n'
         'sleep 30 &\necho $! > ../child.pid\nwait\n'
@@ -811,7 +808,7 @@ def test_fill_keeps_literal_braces() -> None:
 def test_the_argv_gets_the_agents_cwd(campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path) -> None:
     use_harness(db, campaign, RECORDS_ARGV_AND_ENV, headless=['--cd', '{cwd}', '{prompt}'])
     launch(db, runtime, tmp_path, request(db, campaign))
-    assert (tmp_path / 'cwd' / 'argv.txt').read_text().splitlines()[:2] == ['--cd', str(tmp_path / 'cwd')]
+    assert (Path(campaign.path) / 'argv.txt').read_text().splitlines()[:2] == ['--cd', campaign.path]
 
 
 def test_codex_trusts_the_agents_worktree_and_gives_its_tool_shells_the_agents_env() -> None:
@@ -839,10 +836,9 @@ def test_a_brief_past_the_limit_of_one_argument_reaches_the_agent_as_a_file(
     """
     use_harness(db, campaign, RECORDS_ARGV_AND_ENV)
     brief = 'x' * 200 * 1024 + '\n'
-    cwd = tmp_path / 'cwd'
-    cwd.mkdir()
+    cwd = Path(campaign.path)
     outcome = launcher(db, runtime, tmp_path).launch(
-        request(db, campaign), brief=brief, cwd=cwd, log_dir=tmp_path / 'w', artifact=Checkout(path=cwd)
+        request(db, campaign), brief=brief, place='w', artifact=checkout(campaign)
     )
     assert (exit_of(outcome).status, exit_of(outcome).error) == (ExitStatus.EXITED, None)
     assert (cwd / 'argv.txt').read_text().splitlines() == [PROMPT.format(path=tmp_path / 'w' / 'brief.md')]
@@ -863,9 +859,8 @@ def test_a_herdr_agent_is_prompted_with_where_its_brief_is(
     launcher(db, runtime, tmp_path).launch(
         request(db, campaign),
         brief='y' * 200 * 1024,
-        cwd=tmp_path,
-        log_dir=tmp_path / 'w',
-        artifact=Checkout(path=tmp_path),
+        place='w',
+        artifact=checkout(campaign),
     )
     [spec] = specs
     assert (spec.prompt, spec.args) == (PROMPT.format(path=tmp_path / 'w' / 'brief.md'), [])
@@ -897,7 +892,7 @@ def test_the_mcp_element_expands_to_the_roles_servers_and_their_env_reaches_the_
     monkeypatch.setattr(runtime, 'start', lambda spec: specs.append(spec) or start(spec))
     agent_session_id = request(db, campaign)
     launch(db, runtime, tmp_path, agent_session_id)
-    argv = (tmp_path / 'cwd' / 'argv.txt').read_text().splitlines()
+    argv = (Path(campaign.path) / 'argv.txt').read_text().splitlines()
     config = tmp_path / 'w' / 'mcp.json'
     assert argv[:5] == ['--no-extensions', '-e', 'npm:pi-mcp-adapter@4.0.0', '--mcp-config', str(config)]
     assert json.loads(config.read_text()) == {
@@ -906,7 +901,7 @@ def test_the_mcp_element_expands_to_the_roles_servers_and_their_env_reaches_the_
     [spec] = specs
     assert spec.env['PROBE_KEY'] == 'probe-value', "in the spec's own env: a Herdr pane does not inherit the daemon's"
     assert 'probe-value' not in ' '.join(spec.args) and 'probe-value' not in config.read_text()
-    assert 'PI_MCP_CONFIG_MODE=exclusive' in (tmp_path / 'cwd' / 'env.txt').read_text().splitlines()
+    assert 'PI_MCP_CONFIG_MODE=exclusive' in (Path(campaign.path) / 'env.txt').read_text().splitlines()
     assert agent_session(db, agent_session_id).error is None
 
 
@@ -923,7 +918,7 @@ def test_a_variable_a_roles_server_names_but_the_daemon_lacks_fails_the_launch_n
     assert w.error.startswith(
         "McpError: MCP servers ['probe'] need PROBE_TOKEN in the environment piloop serve runs in"
     )
-    assert not (tmp_path / 'cwd' / 'argv.txt').exists(), 'never started'
+    assert not (Path(campaign.path) / 'argv.txt').exists(), 'never started'
 
 
 def test_servers_that_cannot_be_rendered_fail_the_launch_on_the_row(

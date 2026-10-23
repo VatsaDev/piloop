@@ -28,18 +28,22 @@ from piloop.plugins.executor.contract import (
     AgentFinished,
     AgentJob,
     AgentKey,
+    AgentNotStarted,
     AgentReport,
+    Bundle,
     Checkout,
     EvaluationJob,
     EvaluationKey,
     EvaluationReport,
-    GitTree,
+    GitSource,
+    MissingBlobs,
+    RepoId,
     Sample,
     Settled,
 )
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
 from tests.agents.test_launcher import MINTED_HARNESS, agent_session, launch, request, use_harness
-from tests.conftest import HARNESS_PROMPT_TO_FILE, ScriptRuntime, baseline
+from tests.conftest import HARNESS_PROMPT_TO_FILE, ScriptRuntime, baseline, disk
 
 RESEARCH_SESSION = '0c5b9f9e-3a43-4c39-9a51-6f0cfa1a3b0e'
 
@@ -47,7 +51,7 @@ RESEARCH_SESSION = '0c5b9f9e-3a43-4c39-9a51-6f0cfa1a3b0e'
 def test_an_evaluation_that_left_the_queue_or_never_started_is_settled(
     db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
-    results = CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False)
+    results = CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False)
     base = baseline(db, campaign.id)
     with db.session() as s:
         evaluation = Evaluation(candidate_id=base.id, evaluator_id=s.get_one(Campaign, campaign.id).evaluator_id)
@@ -58,13 +62,11 @@ def test_an_evaluation_that_left_the_queue_or_never_started_is_settled(
         evaluation=waiting,
         candidate=base.id,
         runner='process',
-        artifact=GitTree(repo=Path(campaign.path), commit=base.commit_sha),
-        cwd=tmp_path / 'wt',
-        log_dir=tmp_path,
+        artifact=GitSource(repo=RepoId(campaign.id), commit=base.commit_sha),
+        place='eval',
         command=['true'],
         timeout=60,
         required=['score'],
-        units_file=tmp_path / 'units.pending',
     )
     report = EvaluationReport(samples=[Sample(metrics={'score': 1.0}, seconds=1)])
     with pytest.raises(Settled, match='is not running'):
@@ -78,7 +80,7 @@ def test_a_start_report_moves_a_starting_agent_to_running_and_leaves_an_ending_o
 ) -> None:
     """A start that the executor reports after the daemon ended the agent does not undo the end: its finding stays
     refused. The report still updates the handle and the session id."""
-    results = CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False)
+    results = CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False)
     with db.session() as s:
         rows = [
             AgentSession(kind=WATCHDOG, campaign_id=campaign.id, harness='script', state=state)
@@ -103,7 +105,7 @@ def test_two_results_for_one_job_in_plain_sessions_close_its_row_once_and_measur
 ) -> None:
     """A second result comes while the first is between its check and its commit, as two calls of an executor without
     a fence of its own make them: the second waits for the first's commit, then finds the row settled."""
-    results = CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False)
+    results = CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False)
     base = baseline(db, campaign.id)
     with db.session() as s:
         w = AgentSession(kind=WATCHDOG, campaign_id=campaign.id, state=AgentSessionState.RUNNING, reason='t')
@@ -117,10 +119,8 @@ def test_two_results_for_one_job_in_plain_sessions_close_its_row_once_and_measur
         agent_session=agent_session_id,
         runtime='subprocess',
         campaign=campaign.name,
-        campaign_path=Path(campaign.path),
-        artifact=Checkout(path=tmp_path),
-        cwd=tmp_path,
-        log_dir=tmp_path,
+        artifact=Checkout(repo=RepoId(campaign.id)),
+        place='agent',
         timeout=60,
         brief=None,
         spec=None,
@@ -129,13 +129,11 @@ def test_two_results_for_one_job_in_plain_sessions_close_its_row_once_and_measur
         evaluation=evaluation_id,
         candidate=base.id,
         runner='process',
-        artifact=GitTree(repo=Path(campaign.path), commit=base.commit_sha),
-        cwd=tmp_path / 'wt',
-        log_dir=tmp_path,
+        artifact=GitSource(repo=RepoId(campaign.id), commit=base.commit_sha),
+        place='eval',
         command=['true'],
         timeout=60,
         required=['score'],
-        units_file=tmp_path / 'units.pending',
     )
     reports: list[tuple[AgentJob | EvaluationJob, AgentReport | EvaluationReport]] = [
         (agent, AgentFinished(process=AgentExit(ExitStatus.EXITED, 200, 0))),
@@ -192,10 +190,8 @@ def agent_job(campaign: Campaign, agent_session_id: AgentSessionId, tmp_path: Pa
         agent_session=agent_session_id,
         runtime='subprocess',
         campaign=campaign.name,
-        campaign_path=Path(campaign.path),
-        artifact=Checkout(path=tmp_path),
-        cwd=tmp_path,
-        log_dir=tmp_path,
+        artifact=Checkout(repo=RepoId(campaign.id)),
+        place='agent',
         timeout=60,
         brief=None,
         spec=None,
@@ -234,7 +230,7 @@ def test_a_reported_session_id_is_identified_once_whatever_repeats_it(
     campaign: Campaign, db: Database, tmp_path: Path
 ) -> None:
     """Heartbeats and the final report repeat the id: only an id that is new to the row emits the event."""
-    results = CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False)
+    results = CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False)
     research = request(db, campaign, RESEARCH, harness='script', state=AgentSessionState.STARTING)
     key = AgentKey(research)
     results.started(key, {}, None)
@@ -262,7 +258,7 @@ def test_a_reported_session_id_is_identified_once_whatever_repeats_it(
 def test_an_id_that_only_the_final_report_carries_is_identified(
     campaign: Campaign, db: Database, tmp_path: Path
 ) -> None:
-    results = CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False)
+    results = CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False)
     watchdog = request(db, campaign, harness='script', state=AgentSessionState.RUNNING)
     report = AgentFinished(process=AgentExit(ExitStatus.EXITED, 200, 0), session_id='at-the-end')
     results.finished(agent_job(campaign, watchdog, tmp_path), report)
@@ -293,7 +289,7 @@ def test_the_proposer_is_an_agent_only(
     implementer, _, _ = implementer_of(
         db, campaign, created_by.format(research=research), harness='script', state=AgentSessionState.RUNNING
     )
-    CampaignResults(db, Tracer(None), tmp_path / 'units', lambda: False).session(AgentKey(implementer), 'x')
+    CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False).session(AgentKey(implementer), 'x')
     [event] = identified(db, implementer)
     expected = (
         None if proposed_by is None else {**proposed_by, 'actor': str(proposed_by['actor']).format(research=research)}
@@ -308,3 +304,50 @@ def test_the_event_commits_with_the_session_id_or_not_at_all(campaign: Campaign,
         s.rollback()
     assert agent_session(db, watchdog).session_id is None
     assert identified(db, watchdog) == []
+
+
+def test_a_report_naming_a_blob_the_cas_lacks_is_refused_until_it_is_there_then_its_files_land_in_its_place(
+    db: Database, campaign: Campaign, tmp_path: Path
+) -> None:
+    """REAPI's completeness check: nothing applies while a named blob is missing, and the same report applies after."""
+    cas = disk(tmp_path)
+    results = CampaignResults(db, Tracer(None), tmp_path, cas, lambda: False)
+    base = baseline(db, campaign.id)
+    with db.session() as s:
+        evaluation = Evaluation(
+            candidate_id=base.id, evaluator_id=s.get_one(Campaign, campaign.id).evaluator_id, started_at=utcnow()
+        )
+        s.add(evaluation)
+        s.commit()
+        evaluation_id = evaluation.id
+    job = EvaluationJob(
+        evaluation=evaluation_id,
+        candidate=base.id,
+        runner='process',
+        artifact=GitSource(repo=RepoId(campaign.id), commit=base.commit_sha),
+        place='runs/1/eval-0',
+        command=['true'],
+        timeout=60,
+        required=['score'],
+    )
+    stdout = disk(tmp_path / 'worker').put(b'METRIC score=1\n')
+    report = EvaluationReport(samples=[Sample(metrics={'score': 1.0}, seconds=1)], files={'eval.stdout': stdout})
+    with pytest.raises(MissingBlobs, match=str(stdout)):
+        results.finished(job, report)
+    with db.session() as s:
+        assert s.get(Evaluation, evaluation_id) is not None, 'nothing applied'
+    assert cas.put(b'METRIC score=1\n') == stdout  # the worker puts it in the CAS
+    results.finished(job, report)
+    assert (tmp_path / 'runs' / '1' / 'eval-0' / 'eval.stdout').read_bytes() == b'METRIC score=1\n'
+    with db.session() as s:
+        assert s.get(Evaluation, evaluation_id) is None, 'measured'
+
+
+def test_the_blobs_of_a_report_are_its_files_and_its_bundle(tmp_path: Path) -> None:
+    cas = disk(tmp_path)
+    brief, bundle = cas.put(b'brief'), cas.put(b'bundle')
+    finished = AgentFinished(
+        process=AgentExit(ExitStatus.EXITED, 1), commits=Bundle(blob=bundle, head='h'), files={'brief.md': brief}
+    )
+    assert finished.blobs() == [brief, bundle]
+    assert AgentNotStarted(reason='r', files={'brief.md': brief}).blobs() == [brief]

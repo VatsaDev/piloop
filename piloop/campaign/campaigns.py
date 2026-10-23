@@ -9,6 +9,7 @@ from typing import Literal
 from uuid import uuid4
 
 import httpx2 as httpx
+from covalence import Cid
 from git import Repo
 from git.exc import InvalidGitRepositoryError, NoSuchPathError
 from rich.console import Console
@@ -18,14 +19,18 @@ from sqlalchemy.orm import Session
 from piloop import deprecated, git
 from piloop.actor import Actor
 from piloop.agents.capture import ENTIRE_DIR
-from piloop.config import CONFIG_FILE, CampaignConfig, load_campaign_config
+from piloop.config import CONFIG_FILE, CampaignConfig, config_of, load_campaign_config
 from piloop.db.events import emit
 from piloop.db.models import Campaign, CampaignStatus, EventModel, Measurement, Verdict
+from piloop.db.session import Database
 from piloop.ids import CampaignId, CandidateId, TargetKind, TargetRef
+from piloop.plugins.cas.contract import CAS, Cas
+from piloop.plugins.executor.contract import Checkout, GitSource, RepoId
 from piloop.proc import child_env
 from piloop.scoring.evaluate import run_evaluate
 from piloop.scoring.ledger import DAEMON, current_evaluator, resolve, save_units
-from piloop.settings import settings
+from piloop.settings import INPUTS_DIR, settings
+from piloop.store.tree import Copies, Manifest, Seen, materialise, put_tree
 
 console = Console(stderr=True)
 
@@ -189,8 +194,14 @@ def register(s: Session, path: Path, actor: Actor) -> tuple[Campaign, Measuremen
     log_dir = staging / 'baseline'
     log_dir.mkdir(parents=True)
     wt = log_dir / 'worktree'
+    cas = CAS.selected(settings.providers).open(settings.home)
+    workspace = staging / WORKSPACE
+    workspace.mkdir()
     try:
-        git.add_worktree(repo, wt, sha, worktree_links(cfg, path.resolve(), staging))
+        git.add_worktree(repo, wt, sha, {WORKSPACE: workspace})
+        copies = Copies(cas, settings.home / INPUTS_DIR)
+        for blob in links_of(cas, cfg, path.resolve()).values():
+            materialise(cas, Manifest.get(cas, blob), wt, into=copies)
         settings.units_dir.mkdir(parents=True, exist_ok=True)
         result = run_evaluate(
             cfg.evaluate,
@@ -307,17 +318,50 @@ def workspace_dir(home: Path, campaign_id: CampaignId) -> Path:
     return campaign_dir(home, campaign_id) / WORKSPACE
 
 
-def worktree_links(cfg: CampaignConfig, campaign_path: Path, campaign_dir: Path) -> dict[str, Path]:
-    """Return worktree-relative name → target for the linked paths, the shared workspace and Entire's settings.
+def links_of(cas: Cas, cfg: CampaignConfig, path: Path, seen: Seen | None = None) -> dict[str, Cid]:
+    """Put the linked inputs of the checkout at ``path`` into ``cas``: each as the manifest of its tree, by name.
 
-    ``.entire`` is linked only into a worktree whose tree does not have it, for example a candidate made before
-    ``piloop init`` added it. Entire reads its settings from the worktree it runs in. Without them, it silently
-    falls back to a shadow branch.
+    They are the ``link`` paths that exist, and Entire's committed settings (``ENTIRE_DIR``), for a worktree whose
+    tree does not have them, for example a candidate made before ``piloop init`` added them. Entire reads its settings
+    from the worktree it runs in. Without them, it silently falls back to a shadow branch. With ``seen``, a file stored
+    before is not read again.
     """
-    workspace = campaign_dir / WORKSPACE
-    workspace.mkdir(parents=True, exist_ok=True)
-    return {
-        **{rel: campaign_path / rel for rel in cfg.link},
-        WORKSPACE: workspace,
-        ENTIRE_DIR: campaign_path / ENTIRE_DIR,
-    }
+    entire = [rel for rel in _template_files(BLANK / ENTIRE_DIR, ENTIRE_DIR) if (path / rel).is_file()]
+    names = {rel: [rel] for rel in cfg.link if (path / rel).exists()} | ({ENTIRE_DIR: entire} if entire else {})
+    return {name: put_tree(cas, path, rels, seen=seen).manifest.put(cas) for name, rels in names.items()}
+
+
+class Sources:
+    """The artifacts of a campaign's jobs, by address: its repo of record, and its linked inputs put into the CAS."""
+
+    def __init__(self, cas: Cas) -> None:
+        self._cas = cas
+        self._seen: Seen = {}
+        """The files of linked inputs stored so far: a job made later reads only those that changed."""
+
+    def git(self, campaign: Campaign, commit: str) -> GitSource:
+        """``commit`` of the campaign's repo, with its links and its shared workspace."""
+        path = Path(campaign.path)
+        return GitSource(
+            repo=RepoId(campaign.id),
+            commit=commit,
+            links=links_of(self._cas, config_of(campaign), path, self._seen),
+            workspace=f'{PROJECTS}/{campaign.id}/{WORKSPACE}',
+        )
+
+    def checkout(self, campaign: Campaign) -> Checkout:
+        """The campaign's checkout itself."""
+        return Checkout(repo=RepoId(campaign.id))
+
+
+def checkout_of(db: Database, repo: RepoId) -> Path:
+    """The checkout of the repo of record ``repo``: its campaign's.
+
+    Raises:
+        KeyError: The campaign is gone.
+    """
+    with db.session() as s:
+        campaign = s.get(Campaign, CampaignId(repo))
+        if campaign is None:
+            raise KeyError(f'no campaign#{repo}: its repo of record is gone')
+        return Path(campaign.path)

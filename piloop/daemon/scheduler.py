@@ -42,7 +42,7 @@ from piloop.agents.results import AgentEnded, PromptSettled, StartupAnomaly, Wra
 from piloop.agents.roles import compose_brief, role_of
 from piloop.campaign import spend
 from piloop.campaign.anomaly import AnomalyReported
-from piloop.campaign.campaigns import WORKSPACE, campaign_dir, workspace_dir, worktree_links
+from piloop.campaign.campaigns import WORKSPACE, workspace_dir
 from piloop.campaign.ideas import defined_by, park_stranded, runnable, supersede, waiting
 from piloop.campaign.memory import sync_documents
 from piloop.campaign.spend import SpendError
@@ -63,11 +63,13 @@ from piloop.campaign.stop import (
 from piloop.config import CampaignConfig, ClosingReview, Spend, config_of
 from piloop.daemon.archiver import Archiver, Archiving
 from piloop.daemon.run_controller import (
+    RUNS,
     RunController,
     close_run,
     commits_of,
     handed_off,
     left_finding,
+    run_place,
 )
 from piloop.db.events import emit, has, in_order
 from piloop.db.models import (
@@ -98,7 +100,7 @@ from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.ids import AgentSessionId, CandidateId, CommentId, IdeaId, RoleName, RunId, TargetKind, TargetRef, TrackName
 from piloop.otel import Tracer
-from piloop.plugins.executor.contract import AgentKey, Artifact, Checkout, GitTree, LeftJob, Prompt
+from piloop.plugins.executor.contract import AgentKey, Artifact, LeftJob, Prompt
 from piloop.plugins.role.contract import Files, ImplementerRole, SweepRole, Workdir, ideas_taken
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.scout import ScoutRole
@@ -113,6 +115,8 @@ from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, run
 from piloop.scoring.ledger import bar_of, checkout_candidate, due, head, head_unmeasured, rejudges, score
 from piloop.text import cell
 
+AGENT_SESSIONS = 'agent_sessions'
+"""The directory under the home of each sweep's place: ``agent_sessions/<id>``."""
 NO_RUN_ERROR = 'an implementer needs a run; the scheduler requests them from ready ideas'
 PUSHED_KINDS = tuple(kind for kind in CommentKind if kind is not CommentKind.ESCALATION)
 """Comment kinds that are sent to a running implementer. Escalations are not sent, because they are for the human."""
@@ -213,8 +217,8 @@ class Scheduler:
         self._controller = controller
         self._tracer = tracer
         self._home = home
-        self._runs_dir = home / 'runs'
-        self._agent_sessions_dir = home / 'agent_sessions'
+        self._runs_dir = home / RUNS
+        self._agent_sessions_dir = home / AGENT_SESSIONS
         self._runtime_factory = runtime_factory
         # No bound: a run's thread waits in the evaluation queue while it scores, and a bound would let those waits
         # hold back agent launches. The roles' max_concurrent and the executor's slots bound the work itself.
@@ -292,22 +296,20 @@ class Scheduler:
         campaign = s.get(Campaign, w.campaign_id) if w.campaign_id is not None else None
         if campaign is None:
             return None
-        cfg = config_of(campaign)
-        links = worktree_links(cfg, Path(campaign.path), campaign_dir(self._home, campaign.id))
+        sources = self._controller.sources
         if w.run_id is not None:
             run = s.get_one(Run, w.run_id)
-            cwd = self._runs_dir / str(w.run_id) / 'worktree'
-            if run.status is not RunStatus.RUNNING or not cwd.is_dir():
+            if run.status is not RunStatus.RUNNING or not (self._runs_dir / str(w.run_id) / 'worktree').is_dir():
                 return None
-            artifact: Artifact = GitTree(repo=Path(campaign.path), commit=run.base.commit_sha, links=links)
-            return self._controller.launcher.left(s, w, artifact, cwd, commits_of(w.run_id, w.id))
-        checkout = Path(campaign.path) if self._in_campaign(campaign, w.kind) else None
-        cwd = checkout or self._agent_sessions_dir / str(w.id) / 'worktree'
+            artifact: Artifact = sources.git(campaign, run.base.commit_sha)
+            return self._controller.launcher.left(s, w, artifact, run_place(w.run_id), commits_of(w.run_id))
+        in_campaign = self._in_campaign(campaign, w.kind)
+        cwd = Path(campaign.path) if in_campaign else self._agent_sessions_dir / str(w.id) / 'worktree'
         if not cwd.is_dir():
             return None
         head = checkout_candidate(s, campaign).commit_sha
-        artifact = Checkout(path=cwd) if checkout else GitTree(repo=Path(campaign.path), commit=head, links=links)
-        return self._controller.launcher.left(s, w, artifact, cwd, None)
+        artifact = sources.checkout(campaign) if in_campaign else sources.git(campaign, head)
+        return self._controller.launcher.left(s, w, artifact, sweep_place(w.id), None)
 
     def _fail_open(self, end: RunEnd, *, reaped: bool, sparing: Collection[AgentSessionId] = ()) -> None:
         """End each run in flight as ``end`` and queue its idea again. Close each live agent except ``sparing``.
@@ -1331,15 +1333,10 @@ class Scheduler:
                 incident=bool(incidents),
                 wake=lessons_overview(s, campaign, cfg.wake_budget(role.kind)),
             )
-            campaign_path, campaign_id, base_sha = Path(campaign.path), campaign.id, base.commit_sha
-        log_dir = self._agent_sessions_dir / str(agent_session_id)
-        if in_campaign:
-            artifact: Artifact = Checkout(path=campaign_path)
-            cwd = campaign_path
-        else:
-            links = worktree_links(cfg, campaign_path, campaign_dir(self._home, campaign_id))
-            artifact, cwd = GitTree(repo=campaign_path, commit=base_sha, links=links), log_dir / 'worktree'
-        self._controller.launcher.launch(agent_session_id, brief=brief, cwd=cwd, log_dir=log_dir, artifact=artifact)
+        sources = self._controller.sources  # outside the session: it puts the linked inputs into the CAS
+        artifact = sources.checkout(campaign) if in_campaign else sources.git(campaign, base.commit_sha)
+        place = sweep_place(agent_session_id)
+        self._controller.launcher.launch(agent_session_id, brief=brief, place=place, artifact=artifact)
 
     def _context(
         self, s: Session, campaign: Campaign, cfg: CampaignConfig, agent_session: AgentSession, now: datetime
@@ -1526,6 +1523,11 @@ class RoleTick:
             has(AnomalyReported), Event.target_kind == TargetKind.AGENT_SESSION, Event.target_id == AgentSession.id
         )
         return self.s.scalars(self._mine().where(~given).order_by(AgentSession.id.desc()).limit(1)).first()
+
+
+def sweep_place(agent_session_id: AgentSessionId) -> str:
+    """The place of a sweep under the daemon's home: its log directory, with its worktree in it."""
+    return f'{AGENT_SESSIONS}/{agent_session_id}'
 
 
 def done_by(role: RoleName) -> ColumnElement[bool]:

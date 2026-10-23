@@ -35,6 +35,9 @@ UNDER_TEST_ENV = 'PILOOP_UNDER_TEST'
 install, so a test can never open, let alone migrate, the database of a user's piloop."""
 CONFIG_FILE = 'config.toml'
 STORE_DIR = 'store'
+UNITS_DIR = 'units'
+INPUTS_DIR = 'inputs'
+"""The read-only copies of the blobs of linked inputs that worktrees share (``piloop.store.tree.Copies``)."""
 GB = 1024**3
 
 
@@ -45,8 +48,14 @@ class StorageSettings(BaseModel):
 
     min_free_gb: float = Field(default=20, ge=0)
     """Free space, in GB, that archiving keeps on the disk of PILOOP_HOME. Storing a file writes its compressed copy
-    first, so the daemon removes the workspace copies of archived files, oldest archive first, while the disk has
-    less than this free, and it archives in batches that fit above it."""
+    first, so the daemon removes the copies of linked inputs that no job uses, then the workspace copies of archived
+    files, oldest first, while the disk has less than this free, and it archives in batches that fit above it. A
+    worker removes the copies of linked inputs that no job uses after each job, under the same rule."""
+
+    @property
+    def reserve(self) -> int:
+        """``min_free_gb`` in bytes."""
+        return int(self.min_free_gb * GB)
 
 
 class Settings(BaseSettings):
@@ -174,7 +183,7 @@ class Settings(BaseSettings):
 
         Never inside a worktree.
         """
-        return self.home / 'units'
+        return self.home / UNITS_DIR
 
     @property
     def pid_file(self) -> Path:
