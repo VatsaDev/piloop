@@ -115,11 +115,11 @@ def test_the_pack_of_a_campaign(db: Database, campaign: Campaign, tmp_path: Path
 
 ## Research pack: what was tried, by mechanism family (ideas.family)
 
-| family | ideas | keep | interesting | discard/crash | not run | ideas and outcomes |
-|---|---|---|---|---|---|---|
-| appending | 2 | 1 | 0 | 1 | 0 | #2 discard, #1 keep |
-| padding | 2 | 0 | 0 | 0 | 2 | #6 parked, #4 seed |
-| — | 2 | 0 | 1 | 0 | 1 | #5 proposed, #3 interesting |
+| family | ideas | keep | interesting | discard/crash | not run |
+|---|---|---|---|---|---|
+| appending | 2 | 1 | 0 | 1 | 0 |
+| padding | 2 | 0 | 0 | 0 | 2 |
+| — | 2 | 0 | 1 | 0 | 1 |
 
 
 ## Research pack: seeds to develop (oldest first)
@@ -127,16 +127,14 @@ def test_the_pack_of_a_campaign(db: Database, campaign: Campaign, tmp_path: Path
 
 """)
     assert tail == snapshot("""\
-- research#4: batch 1: rejected deleting
+- comment#4 research#4: batch 1: rejected deleting
 
 ## Research pack: latest implementer findings (newest first)
-- comment#1 implementer#1 on idea#2: NEGATIVE: fewer lines lose score
-  because score counts lines
+- comment#1 implementer#1 on idea#2: NEGATIVE: fewer lines lose score (+1 lines)
 
 ## Research pack: orchestrator and human digests and decisions (newest first)
 - comment#3 decision by human on campaign#1: no external data
-- comment#2 finding by orchestrator on campaign#1: digest: best #2 +2 over the start
-  by slice: …
+- comment#2 finding by orchestrator on campaign#1: digest: best #2 +2 over the start (+1 lines)
 """)
     assert '| #2 | #1 | 3 | +2 | idea#1 (orchestrator) |' in rest, (
         'the lineage shows the gain of each keep and who proposed its idea'
@@ -150,7 +148,9 @@ def test_an_idea_whose_commits_were_all_skipped_is_unmeasured_not_a_dead_end(
         scaffold = idea(s, campaign, 'scaffold only', family='scaffolding', created_by='research#4')
         scored(s, scaffold, 1, (Verdict.UNMEASURED, {}, None))
         s.commit()
-    assert f'| scaffolding | 1 | 0 | 0 | 0 | 0 | #{scaffold.id} unmeasured |' in render(db, campaign, None)
+    text = render(db, campaign, None)
+    assert '| scaffolding | 1 | 0 | 0 | 0 | 0 |' in text, 'no discard or crash'
+    assert '| research#4 | scaffolding | — | 2 | scaffold only | unmeasured (candidate#2) |' in text
 
 
 def test_an_empty_pack_says_what_is_missing(db: Database, campaign: Campaign, tmp_path: Path) -> None:

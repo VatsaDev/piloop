@@ -23,10 +23,10 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.ids import IMPLEMENTER, TargetKind, TargetRef
 from piloop.reports.history import (
-    FINDING_CHARS,
     FINDINGS_IN_HISTORY,
+    FIRST_LINE_CHARS,
     IDEAS_IN_HISTORY,
-    block,
+    comment_line,
     history,
 )
 from piloop.text import CELL_CHARS, cell
@@ -182,11 +182,10 @@ def test_history_lists_every_idea_with_its_outcome_the_lineage_and_the_findings(
 
 
 ## History: findings on the campaign (last 10)
-- research#1: batch 1: extend appending
-  rejected: deleting
-- watchdog#2: idle: best is #2; try longer lines
-- research#3: batch 2: nothing new worth proposing
-- reviewer#7: the cache keep holds on fresh data
+- comment#4 research#1: batch 1: extend appending (+1 lines)
+- comment#5 watchdog#2: idle: best is #2; try longer lines
+- comment#6 research#3: batch 2: nothing new worth proposing
+- comment#7 reviewer#7: the cache keep holds on fresh data
 """)
 
 
@@ -202,8 +201,8 @@ def test_history_is_bounded_and_counts_what_it_omits(db: Database, campaign: Cam
     assert rendered.startswith(f'## History: ideas ({IDEAS_IN_HISTORY} of {IDEAS_IN_HISTORY + 3}; 3 older omitted)')
     assert [r.split(' | ')[0] for r in rows[:2]] == ['| 4', '| 5'], 'the newest ideas are kept, the oldest dropped'
     assert len(rows) == IDEAS_IN_HISTORY
-    findings = [line for line in rendered.splitlines() if line.startswith('- research#1: ')]
-    assert findings[0] == '- research#1: finding 2' and len(findings) == FINDINGS_IN_HISTORY
+    findings = [line for line in rendered.splitlines() if ' research#1: finding' in line]
+    assert findings[0].endswith(' research#1: finding 2') and len(findings) == FINDINGS_IN_HISTORY
 
 
 def test_history_worst_case_stays_under_the_documented_size(db: Database, campaign: Campaign) -> None:
@@ -223,7 +222,7 @@ def test_history_worst_case_stays_under_the_documented_size(db: Database, campai
         'every link, both ways'
     )
     assert len(raw(db, campaign)) < 64_000
-    assert len(rendered) < 27_000
+    assert len(rendered) < 18_000
 
 
 def test_history_when_a_human_kept_an_unscored_commit_and_an_idea_builds_on_it(
@@ -253,10 +252,10 @@ def test_cell_is_one_bounded_line() -> None:
     assert len(cell('x' * 500, 40)) == 40
 
 
-def test_block_keeps_whole_lines_and_counts_the_rest() -> None:
-    assert block('  \n') == '—'
-    assert block('a\nb\n\nc') == 'a\nb\n\nc'
-    assert block('a\n' + 'b' * 10 + '\nc\nd', 8) == 'a\n… (3 more lines)'
-    assert block('x' * 500 + '\ny', 8) == 'xxxxxxx…\n… (1 more lines)'
-    assert block('\n'.join(['r' * 79] * 30)) == '\n'.join(['r' * 79] * 10) + '\n… (20 more lines)'
-    assert len(block('x' * 2000)) == FINDING_CHARS
+def test_a_comment_is_its_id_and_first_line_and_counts_the_rest() -> None:
+    def line(body: str) -> str:
+        return comment_line(Comment(id=7, body=body), 'research#1').plain
+
+    assert line('  \n') == '- comment#7 research#1: —'
+    assert line('done\nrejected: a\nrejected: b') == '- comment#7 research#1: done (+2 lines)'
+    assert line('x' * 500) == f'- comment#7 research#1: {"x" * (FIRST_LINE_CHARS - 1)}…'

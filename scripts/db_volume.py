@@ -2,7 +2,7 @@
 
 The hot paths are the real functions: the triggers and the take of a scheduler tick, the stop conditions, the
 overview and history renderers, and the orchestrator's inbox wait. They run under a listener that records every
-SELECT that the ORM sends. The example queries that ``sql_procedures.md`` gives the agents are added too. The test
+SELECT that the ORM sends. The example queries of the procedures (``piloop schema``) are added too. The test
 runs ``EXPLAIN QUERY PLAN`` on each statement against a small populated file, and fails on a SCAN of a table that
 grows. So the rule "index what the tick and the status filter on" is checked by a test.
 """
@@ -21,9 +21,11 @@ from sqlalchemy import Engine, event, select
 from sqlalchemy.engine import Connection
 
 from piloop.actor import System
+from piloop.agents.roles import PROCEDURES, PROMPTS
 from piloop.campaign import inbox
 from piloop.campaign.campaigns import BLANK
 from piloop.campaign.stop import check
+from piloop.cli.database import ORCHESTRATOR_PROCEDURES
 from piloop.config import CampaignConfig, config_of, load_campaign_config
 from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
@@ -35,7 +37,6 @@ from piloop.plugins.stop_rule.contract import Hold
 from piloop.reports import history, overview
 
 ROOT = Path(__file__).resolve().parent.parent
-PROCEDURES = ROOT / 'piloop' / 'agents' / 'prompts' / 'sql_procedures.md'
 HOT_INDEXES = (
     'ix_ideas_campaign_status_priority',
     'ix_runs_status',
@@ -333,19 +334,22 @@ def hot_statements(db: Database, home: Path) -> list[Statement]:
     with HotPaths(db, home) as paths:
         for origin, body in paths.items():
             recorded += record(db.engine, origin, body)
-    recorded += [Statement(f'sql_procedures.md #{i}', sql, ()) for i, sql in enumerate(documented_queries(), 1)]
+    recorded += [Statement(origin, sql, ()) for origin, sql in documented_queries()]
     distinct: dict[str, Statement] = {}
     for st in recorded:
         distinct.setdefault(re.sub(r'\s+', ' ', st.sql).strip(), st)
     return list(distinct.values())
 
 
-def documented_queries(text: str | None = None) -> list[str]:
-    """Return the SELECTs in the ``sql`` fences of ``sql_procedures.md``: the queries that agents are told to run."""
-    text = PROCEDURES.read_text() if text is None else text
-    fences = re.findall(r'```sql\n(.*?)```', text, flags=re.S)
-    statements = (s.strip() for fence in fences for s in re.sub(r'^--.*$', '', fence, flags=re.M).split(';'))
-    return [s for s in statements if s.upper().startswith('SELECT')]
+def documented_queries() -> list[tuple[str, str]]:
+    """Return the SELECTs in the ``sql`` fences of the procedures, each with its origin (``sql_procedures.md #1``)."""
+    queries = []
+    for name in (PROCEDURES, ORCHESTRATOR_PROCEDURES):
+        fences = re.findall(r'```sql\n(.*?)```', (PROMPTS / name).read_text(), flags=re.S)
+        statements = (s.strip() for fence in fences for s in re.sub(r'^--.*$', '', fence, flags=re.M).split(';'))
+        selects = [s for s in statements if s.upper().startswith('SELECT')]
+        queries += [(f'{name} #{i}', sql) for i, sql in enumerate(selects, 1)]
+    return queries
 
 
 def explain(con: sqlite3.Connection, st: Statement) -> list[str]:

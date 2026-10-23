@@ -25,7 +25,16 @@ worked, what did not, and whether the result can be trusted. Then write one esca
 the stop conditions, change them, or finish.
 
 Then leave the next campaign its lessons: one row of `lessons` on the campaign for each mechanism family that this
-campaign tried, with its status (dead, promising or untested) and the best effect measured with its metric. In the
-body, say what was tried, on which evaluator, and why it stopped. A few lines each, and cite idea or candidate ids for
-every claim. First read the lessons already on this repo (the procedures show how), and write one only where yours
-says something new.
+campaign tried. First read the lessons already on this repo (the procedures show how), and write one only where yours
+says something new:
+
+```sql
+INSERT INTO lessons (campaign_id, family, status, effect, metric, body, created_by)
+VALUES (<campaign id>, '<family>', 'dead', 0.002, '<metric>', '<what was tried, on which evaluator, why it stopped, with ids>', '<you>');
+```
+
+- `status` is `dead`, `promising` or `untested`.
+- `effect` is the best effect measured, in the units of `metric` and with its sign. Leave both NULL when none was
+  measured.
+- The body is a few lines. Cite idea or candidate ids for every claim.
+- A lesson is never changed: a new conclusion is a new row.

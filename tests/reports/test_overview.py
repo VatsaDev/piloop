@@ -33,7 +33,7 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, RoleName, RunId, TargetKind, TargetRef
 from piloop.reports import overview as overview_module
-from piloop.reports.overview import anomalies, overview
+from piloop.reports.overview import LINKED_CHARS, anomalies, block, overview
 from piloop.scoring.ledger import IdeaCreated
 from tests.conftest import end_of, spent
 from tests.runtime.test_herdr import Response, calls, scripted
@@ -745,3 +745,12 @@ def test_progress_lists_only_the_configured_conditions(db: Database, campaign: C
         assert overview_module.progress(s, p, config({}), NOW) == 'run 0 · 0.0h'
         s.get_one(Candidate, 1).verdict = Verdict.PENDING
         assert overview_module.progress(s, p, config({'target': 0.5}), NOW) == 'run 0 · 0.0h · target ≥ 0.5 (head —)'
+
+
+def test_block_keeps_whole_lines_and_counts_the_rest() -> None:
+    assert block('  \n') == '—'
+    assert block('a\nb\n\nc') == 'a\nb\n\nc'
+    assert block('a\n' + 'b' * 10 + '\nc\nd', 8) == 'a\n… (3 more lines)'
+    assert block('x' * 500 + '\ny', 8) == 'xxxxxxx…\n… (1 more lines)'
+    assert block('\n'.join(['r' * 79] * 30)) == '\n'.join(['r' * 79] * 10) + '\n… (20 more lines)'
+    assert len(block('x' * 2000)) == LINKED_CHARS

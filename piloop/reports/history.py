@@ -8,10 +8,10 @@ The history has four parts:
   session that made it, and the tokens that session used. An agent can run ``git show`` and
   ``entire checkpoint explain`` on these.
 - The starting points: imported references that a pinned idea can start from.
-- The latest findings on the campaign, of every role.
+- The latest findings on the campaign, of every role, by id and first line.
 
-The size is bounded. 60 idea rows of about 300 characters and 10 findings of about 850 characters come to
-about 27 KB (about 7k tokens). Each kept candidate adds one line of about 230 characters.
+The size is bounded. 60 idea rows of about 250 characters and 10 findings of up to about 250 characters come to
+about 18 KB (about 4.5k tokens). Each kept candidate adds one line of about 230 characters.
 """
 
 import io
@@ -34,7 +34,8 @@ from piloop.usage import human
 IDEAS_IN_HISTORY = 60
 FINDINGS_IN_HISTORY = 10
 FAMILY_CHARS = 30
-FINDING_CHARS = 800
+FIRST_LINE_CHARS = 200
+"""How much of a comment's first line a brief shows. The rest is a query away: ``comment#<id>`` names the row."""
 BRIEF_WIDTH = 1000
 """Wide enough that no bounded cell wraps. A wrapped cell breaks the markdown table."""
 SHORT_SHA = 7
@@ -57,10 +58,9 @@ def renderables(
 
     The agent brief (``history``, with ``heading='## '``) and ``piloop history`` use the same renderables.
 
-    The findings are those on the campaign of every agent, whatever its role (an author ``<role>#<id>``). Each keeps up
-    to ``FINDING_CHARS`` of its body. The lines after the first of a research finding list the directions that the
-    sweep rejected, and the next sweep must read them. The findings of the orchestrator and the human are in the pack's
-    digests, and the latest implementer findings in the pack's findings. The ``links`` column shows what blocks an idea
+    The findings are those on the campaign of every agent, whatever its role (an author ``<role>#<id>``), each by its id
+    and its first line. The findings of the orchestrator and the human are in the pack's digests, and the latest
+    implementer findings in the pack's findings. The ``links`` column shows what blocks an idea
     and which idea replaces which. This stops a sweep from proposing a superseded idea again or waiting on an idea that
     will never run.
     """
@@ -141,7 +141,7 @@ def renderables(
             cell(c.summary or NONE),
         )
     title = Text(f'{heading}History: findings on the campaign (last {FINDINGS_IN_HISTORY})', style='bold')
-    bodies = [Text(f'- {c.author}: {block(c.body).replace(chr(10), chr(10) + "  ")}') for c in campaign_findings]
+    bodies = [comment_line(c, c.author) for c in campaign_findings]
     starts = _starting_points(s, campaign, cfg, table_box, heading)
     return [ideas_table, Text(), lineage, Text(), *starts, title, *bodies]
 
@@ -188,23 +188,11 @@ def text_row(table: Table, *cells: str, style: str | None = None) -> None:
     table.add_row(*map(Text, cells), style=style)
 
 
-def block(text: str, chars: int = FINDING_CHARS) -> str:
-    """Return whole lines of ``text`` up to ``chars`` characters, then ``… (N more lines)`` for the rest.
-
-    If the first line is longer than ``chars``, it is cut short, so that a one-line finding always shows.
-    """
-    lines = text.strip().splitlines() or [NONE]
-    kept: list[str] = []
-    used = 0
-    for line in lines:
-        if used + len(line) > chars:
-            break
-        kept.append(line)
-        used += len(line) + 1
-    if not kept:
-        kept = [lines[0][: chars - 1] + '…']
-    omitted = len(lines) - len(kept)
-    return '\n'.join([*kept, f'… ({omitted} more lines)'] if omitted else kept)
+def comment_line(c: Comment, head: str) -> Text:
+    """One line for a comment in a brief: ``- comment#<id> <head>: <first line>``, and how many lines it leaves out."""
+    lines = c.body.strip().splitlines() or [NONE]
+    more = f' (+{len(lines) - 1} lines)' if len(lines) > 1 else ''
+    return Text(f'- comment#{c.id} {head}: {cell(lines[0], FIRST_LINE_CHARS)}{more}')
 
 
 def _value(c: Candidate, primary: Metric, evaluator_id: EvaluatorId | None) -> str:

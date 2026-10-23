@@ -138,6 +138,7 @@ def test_brief_is_role_prompt_campaign_brief_procedures_then_context(campaign: C
         p = s.get_one(Campaign, campaign.id)
         brief = compose_brief(role_in(p), p, Agent(role='watchdog', session=7), reason='timer', context='- extra line')
     assert brief.startswith((PROMPTS / 'watchdog.md').read_text()[:40])
+    assert "The orchestrator's procedures" not in brief and 'piloop pause' not in brief, 'only `piloop schema` has them'
     assert (
         brief.index('# Watchdog')
         < brief.index('# Demo')
@@ -152,7 +153,6 @@ def test_brief_is_role_prompt_campaign_brief_procedures_then_context(campaign: C
 - Why this agent started (context, not a scope): timer
 - piloop: `{PILOOP_HINT}` is this daemon's piloop. Run every `piloop` command of this brief with it.
 - SQL tool: `{SQL_HINT} -`, with the statement on stdin from a quoted heredoc (`<<'EOF'`).
-- Sweeping roles (`agent_sessions.kind` of a request): watchdog, research, scout.
 - File a seed: `{PILOOP_HINT} idea seed demo '<hunch, one line>' --from '<pointers: ids, paths, numbers>'` (`--base\
  <candidate>` when it is about that tree): research checks it against the existing work and develops it into an idea,\
  or rejects it with the reason.

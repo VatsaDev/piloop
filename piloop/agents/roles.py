@@ -18,6 +18,7 @@ from piloop.plugins.role.contract import Files, SweepRole
 
 PROMPTS = Path(__file__).resolve().parent / 'prompts'
 PROCEDURES = 'sql_procedures.md'
+"""The database procedures of every role's brief."""
 PILOOP_HINT = '"$PILOOP_BIN"'
 """How a brief runs piloop: the daemon sets ``PILOOP_BIN`` for every agent (``piloop.agents.launcher.own_cli``)."""
 SQL_HINT = f'{PILOOP_HINT} sql'
@@ -157,7 +158,6 @@ def compose_brief(
                 f'- Why this agent started (context, not a scope): {reason}',
                 f"- piloop: `{PILOOP_HINT}` is this daemon's piloop. Run every `piloop` command of this brief with it.",
                 f"- SQL tool: `{SQL_HINT} -`, with the statement on stdin from a quoted heredoc (`<<'EOF'`).",
-                f'- Sweeping roles (`agent_sessions.kind` of a request): {", ".join(cfg.roles.sweeping())}.',
                 *([tracks_line(cfg, track)] if cfg.multitrack else []),
                 role.ideas.format(piloop=PILOOP_HINT, campaign=campaign.name),
                 *([f'- You may write: {", ".join(sorted(role.writes))}.'] if role.writes else []),

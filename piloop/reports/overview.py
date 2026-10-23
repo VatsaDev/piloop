@@ -60,7 +60,7 @@ from piloop.db.models import (
 from piloop.ids import AgentSessionId, CampaignId, EvaluatorId, TargetKind, TargetRef
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import Files
-from piloop.reports.history import IDEAS_IN_HISTORY, block
+from piloop.reports.history import IDEAS_IN_HISTORY
 from piloop.runtime.factory import handle_for, runtime_for, view_of
 from piloop.scoring.ledger import (
     NOTE,
@@ -88,6 +88,8 @@ EVENTS_SHOWN = 5
 EVALS_IN_TREND = 5
 """How many of the first and of the latest measurements the evaluation-time trend compares."""
 DETAIL_CHARS = 160
+LINKED_CHARS = 800
+"""How much of each linked comment ``piloop inbox show`` prints under an item."""
 SILENT_SECONDS = 3600
 """How long an implementer with jobs in flight can go without a comment or a commit before it is ``silent``.
 
@@ -374,6 +376,25 @@ def scored(c: Candidate, evaluator_id: EvaluatorId | None, primary: Metric) -> t
     parent = score(c.parent, evaluator_id, primary) if c.parent is not None else None
     delta = metric(value - parent, signed=True) if value is not None and parent is not None else NONE
     return NONE if value is None else metric(value), delta
+
+
+def block(text: str, chars: int = LINKED_CHARS) -> str:
+    """Return whole lines of ``text`` up to ``chars`` characters, then ``… (N more lines)`` for the rest.
+
+    If the first line is longer than ``chars``, it is cut short, so that a one-line comment always shows.
+    """
+    lines = text.strip().splitlines() or [NONE]
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        if used + len(line) > chars:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    if not kept:
+        kept = [lines[0][: chars - 1] + '…']
+    omitted = len(lines) - len(kept)
+    return '\n'.join([*kept, f'… ({omitted} more lines)'] if omitted else kept)
 
 
 def item_lines(s: Session, c: Comment, now: datetime) -> tuple[str, list[str]]:

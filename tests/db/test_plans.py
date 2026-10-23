@@ -79,7 +79,7 @@ def test_the_recording_covers_every_hot_path(populated: tuple[Path, list[Stateme
     """The assertion above is only as good as what was recorded: every hot path issued at least one statement."""
     _, statements = populated
     assert {st.origin for st in statements} >= HOT_PATHS
-    assert len(documented_queries()) >= 6, 'the sql fences of sql_procedures.md were not parsed'
+    assert len(documented_queries()) >= 6, 'the sql fences of the procedures were not parsed'
     assert len(statements) > 30
 
 

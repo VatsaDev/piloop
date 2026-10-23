@@ -8,12 +8,13 @@ repo when a research sweep or a progress review starts. ``piloop history`` print
   with an outline;
 - what was tried, by family (``ideas.family``), and the seeds that other roles filed for research to develop;
 - the history (``piloop.reports.history``);
-- the latest implementer findings, and the digests and decisions of the orchestrator and the human.
+- the latest implementer findings, and the digests and decisions of the orchestrator and the human, by id and first
+  line.
 
 The ideas by source and the open escalations are in the campaign overview, which every sweep also reads.
 
-The size is bounded. Each list keeps its latest rows, each body keeps a fixed number of characters, and files are
-pointers, not inlined content. On top of the history, the pack adds at most about 40 KB (about 10k tokens).
+The size is bounded. Each list keeps its latest rows, a comment is its first line, and files are pointers, not inlined
+content. On top of the history, the pack adds at most about 15 KB (about 4k tokens).
 """
 
 import heapq
@@ -36,7 +37,7 @@ from piloop.config import CampaignConfig, MetricRole
 from piloop.db.models import Campaign, Candidate, Comment, CommentKind, Idea, IdeaStatus, Verdict
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.ids import TargetKind
-from piloop.reports.history import BRIEF_WIDTH, block, renderables as history, text_row, titled_table
+from piloop.reports.history import BRIEF_WIDTH, comment_line, renderables as history, text_row, titled_table
 from piloop.scoring.ledger import head, metrics
 from piloop.text import HEADING, NONE, cell, metric
 
@@ -52,10 +53,7 @@ MARKDOWN = ('.md', '.markdown')
 SEEDS_SHOWN = 20
 POINTERS_CHARS = 400
 FINDINGS_SHOWN = 8
-FINDING_CHARS = 800
 DIGESTS_SHOWN = 5
-DIGEST_CHARS = 1000
-FAMILY_IDEAS_CHARS = 200
 OUTCOMES = (
     Verdict.KEEP,
     Verdict.INTERESTING,
@@ -247,7 +245,7 @@ def _outline(text: str) -> str:
 
 
 def _families(s: Session, campaign: Campaign, table_box: box.Box, heading: str) -> Table:
-    """Show what was tried, by family: how many ideas, their outcomes, and which ideas.
+    """Show what was tried, by family: how many ideas, and their outcomes. The history's ideas table lists the ideas.
 
     The outcome of an idea is the best verdict of the candidates of its runs. An idea that never ran shows its status.
     Ideas without a family share the ``—`` row. Families with a keep come first, then the families with more ideas.
@@ -258,7 +256,7 @@ def _families(s: Session, campaign: Campaign, table_box: box.Box, heading: str) 
         by_family[idea.family or NONE].append((idea, _outcome(idea)))
     table = titled_table(
         f'{heading}Research pack: what was tried, by mechanism family (ideas.family)',
-        ['family', 'ideas', 'keep', 'interesting', 'discard/crash', 'not run', 'ideas and outcomes'],
+        ['family', 'ideas', 'keep', 'interesting', 'discard/crash', 'not run'],
         table_box,
     )
 
@@ -267,7 +265,6 @@ def _families(s: Session, campaign: Campaign, table_box: box.Box, heading: str) 
 
     order = sorted(by_family.items(), key=lambda kv: (-count(kv[1], Verdict.KEEP), -len(kv[1]), kv[0]))
     for family, rows in order:
-        listed = ', '.join(f'#{i.id} {outcome}' for i, outcome in reversed(rows))
         text_row(
             table,
             cell(family, 40),
@@ -276,7 +273,6 @@ def _families(s: Session, campaign: Campaign, table_box: box.Box, heading: str) 
             str(count(rows, Verdict.INTERESTING)),
             str(count(rows, Verdict.DISCARD, Verdict.CRASH)),
             str(sum(not i.runs for i, _ in rows)),
-            cell(listed, FAMILY_IDEAS_CHARS),
         )
     return table
 
@@ -309,7 +305,7 @@ def _seeds(s: Session, campaign: Campaign, heading: str) -> list[RenderableType]
 
 
 def _agent_session_findings(s: Session, campaign: Campaign, cfg: CampaignConfig, heading: str) -> list[RenderableType]:
-    """List the latest findings of the agents that did runs, with more text than the ideas table shows."""
+    """List the latest findings of the agents that did runs."""
     by_runs = or_(*(Comment.author.startswith(f'{name}#', autoescape=True) for name in cfg.roles.doing_runs()))
     rows = s.scalars(
         select(Comment)
@@ -319,7 +315,7 @@ def _agent_session_findings(s: Session, campaign: Campaign, cfg: CampaignConfig,
         .limit(FINDINGS_SHOWN)
     ).all()
     title = Text(f'{heading}Research pack: latest implementer findings (newest first)', style='bold')
-    lines = [_body_line(f'comment#{c.id} {c.author} on idea#{c.target_id}', c.body, FINDING_CHARS) for c in rows]
+    lines = [comment_line(c, f'{c.author} on idea#{c.target_id}') for c in rows]
     return [title, *(lines or [Text('- None yet.')]), Text()]
 
 
@@ -337,12 +333,8 @@ def _digests(s: Session, campaign: Campaign, heading: str) -> list[RenderableTyp
         .limit(DIGESTS_SHOWN)
     ).all()
     title = Text(f'{heading}Research pack: orchestrator and human digests and decisions (newest first)', style='bold')
-    lines = [_body_line(f'comment#{c.id} {c.kind} by {c.author} on {c.target}', c.body, DIGEST_CHARS) for c in rows]
+    lines = [comment_line(c, f'{c.kind} by {c.author} on {c.target}') for c in rows]
     return [title, *(lines or [Text('- None yet.')])]
-
-
-def _body_line(head: str, body: str, chars: int) -> Text:
-    return Text(f'- {head}: ' + block(body, chars).replace('\n', '\n  '))
 
 
 def _num(value: float | None) -> str:

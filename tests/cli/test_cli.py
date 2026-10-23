@@ -1713,6 +1713,9 @@ def test_schema_prints_the_procedures_and_tables_pi_puts_in_its_sql_tool(out) ->
     run_cli(['schema'])
     text = out()
     assert text.startswith('# Working with the piloop database') and 'CREATE TABLE comments (' in text
+    assert (
+        text.index('## Operating procedures') < text.index("## The orchestrator's procedures") < text.index('### Spend')
+    )
 
 
 def test_with_several_tracks_every_idea_and_seed_names_its_track(campaign_path: Path, out) -> None:
