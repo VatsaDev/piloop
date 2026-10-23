@@ -21,8 +21,10 @@ from dataclasses import dataclass
 from sqlalchemy import ColumnElement, case, distinct, exists, func, select
 from sqlalchemy.orm import Session, aliased
 
+from piloop.db.events import has
 from piloop.db.models import Candidate, Comment, CommentKind, Event, Idea, IdeaLink, IdeaStatus, LinkKind, Run, Verdict
 from piloop.db.triggers import DAEMON_ACTOR
+from piloop.db.triggers.changelog import IdeaStatusChanged
 from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TargetRef
 
 NEVER_RAN = (IdeaStatus.SEED, IdeaStatus.PROPOSED, IdeaStatus.READY)
@@ -237,8 +239,7 @@ def defined_by(s: Session, campaign_id: CampaignId) -> set[str]:
     The agent that filed a seed did not define anything. A research sweep that did neither added no ideas, whatever
     else it wrote.
     """
-    from_seed = (Event.target_kind == TargetKind.IDEA) & (Event.kind == 'idea.status')
-    from_seed &= Event.payload['old'].as_string() == IdeaStatus.SEED.value
+    from_seed = (Event.target_kind == TargetKind.IDEA) & has(IdeaStatusChanged, old=IdeaStatus.SEED)
     was_seed = exists().where(from_seed, Event.target_id == Idea.id)
     inserted = select(Idea.created_by).where(Idea.campaign_id == campaign_id, Idea.status != IdeaStatus.SEED, ~was_seed)
     developed = (
@@ -246,7 +247,7 @@ def defined_by(s: Session, campaign_id: CampaignId) -> set[str]:
         .join(Idea, Idea.id == Event.target_id)
         .where(
             from_seed,
-            Event.payload['new'].as_string().in_((IdeaStatus.READY.value, IdeaStatus.PROPOSED.value)),
+            has(IdeaStatusChanged, new=(IdeaStatus.READY, IdeaStatus.PROPOSED)),
             Idea.campaign_id == campaign_id,
         )
     )

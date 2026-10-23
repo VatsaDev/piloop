@@ -4,10 +4,11 @@ Each id is a ``NewType`` of ``int``, so an idea's id does not type-check where a
 ``NewType`` of ``str``. A ``TargetRef`` is a kind and an id, written ``idea#12``.
 """
 
+import re
 from enum import StrEnum
-from typing import Final, NewType
+from typing import Annotated, Final, NewType
 
-from pydantic import PositiveInt
+from pydantic import BeforeValidator, PlainSerializer, PositiveInt
 from pydantic.dataclasses import dataclass
 
 CampaignId = NewType('CampaignId', int)
@@ -57,3 +58,18 @@ class TargetRef:
 
     def __str__(self) -> str:
         return f'{self.kind}#{self.id}'
+
+
+REF_PATTERN = re.compile(r'(?P<kind>[a-z_]+)#(?P<id>[0-9]+)')
+
+
+def _parsed(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    if (found := REF_PATTERN.fullmatch(value)) is None:
+        raise ValueError(f'{value!r} is not a reference like idea#12')
+    return {'kind': found['kind'], 'id': int(found['id'])}
+
+
+type Ref = Annotated[TargetRef, BeforeValidator(_parsed), PlainSerializer(str, return_type=str)]
+"""A ``TargetRef`` that a model holds as its text, ``idea#12``."""

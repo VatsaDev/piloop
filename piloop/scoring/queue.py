@@ -17,9 +17,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor
-from piloop.db.events import emit
+from piloop.db.events import emit, has
 from piloop.db.models import Campaign, Candidate, Evaluation, Event, Measurement
-from piloop.ids import CandidateId, EvaluatorId, TargetKind
+from piloop.ids import CandidateId, EvaluatorId, TargetKind, TargetRef
 from piloop.scoring import ledger
 from piloop.scoring.ledger import head
 
@@ -84,7 +84,7 @@ def requested(s: Session) -> list[tuple[Candidate, datetime]]:
             select(Evaluation.candidate_id, Evaluation.evaluator_id).where(Evaluation.cancelled_by.is_(None))
         ).all()
     )
-    kind = (Event.kind == ledger.REMEASURE_REQUESTED, Event.target_kind == TargetKind.CANDIDATE)
+    kind = (has(ledger.RemeasureRequested), Event.target_kind == TargetKind.CANDIDATE)
     asked = dict(s.execute(select(Event.target_id, func.max(Event.at)).where(*kind).group_by(Event.target_id)).all())
     return [
         (candidate, asked[candidate.id])
@@ -116,8 +116,8 @@ def cancel(s: Session, candidate_id: CandidateId, actor: Actor) -> int:
         measurement = Measurement(candidate=s.get_one(Candidate, candidate_id), evaluator_id=evaluator_id, error=error)
         s.add(measurement)
         s.flush()
-        payload: dict[str, object] = {'candidate': candidate_id, 'metrics': {}, 'error': error, 'run': None}
-        emit(s, 'measurement.recorded', TargetKind.MEASUREMENT, measurement.id, payload=payload, actor=actor)
+        recorded = ledger.MeasurementRecorded(candidate=candidate_id, metrics={}, error=error, run=None)
+        emit(s, recorded, TargetRef(TargetKind.MEASUREMENT, measurement.id), actor)
     for evaluation in found:
         if evaluation.started_at is None:  # its executor finds it gone when a slot comes (``Results.started``)
             s.delete(evaluation)

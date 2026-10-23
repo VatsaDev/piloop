@@ -12,9 +12,10 @@ from sqlalchemy import select
 from piloop.actor import System
 from piloop.campaign import campaigns as campaign_module
 from piloop.cli import common
+from piloop.db.events import has
 from piloop.db.models import Campaign, Candidate, Event, Idea, IdeaLink, IdeaStatus, Measurement, Run, Verdict
 from piloop.db.session import Database
-from piloop.scoring.ledger import REJUDGE_REQUESTED
+from piloop.scoring.ledger import RejudgeRequested
 from piloop.settings import Settings
 from tests.cli.test_cli import research_files, run_cli
 from tests.conftest import at_head
@@ -147,7 +148,7 @@ def test_measurement_add_records_a_report_and_asks_for_a_judgement_again_unless_
             (c, {'score': 3.0, 'size': 7.5}, 2500.0),
             (1, {'score': 1.0, 'size': 4.0}, None),
         ]
-        [ask] = s.scalars(select(Event).where(Event.kind == REJUDGE_REQUESTED)).all()
+        [ask] = s.scalars(select(Event).where(has(RejudgeRequested))).all()
         assert (ask.actor, ask.target_id) == ('human', c)
     report.write_text('{"metrics": {"score": "high"}}')
     with pytest.raises(SystemExit, match=re.escape('the report is not {"metrics": {…}, "seconds": …, "error": …}')):

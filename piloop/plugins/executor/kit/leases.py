@@ -43,13 +43,23 @@ from sqlalchemy import ColumnElement, func, select, update
 from sqlalchemy.orm import Session
 
 from piloop import deprecated
+from piloop.actor import System
 from piloop.db.events import emit
-from piloop.db.models import LIVE_LEASES, OPEN_LEASES, Lease, LeaseKind, LeaseState, LeaseWorker, NoLease, utcnow
+from piloop.db.models import (
+    LIVE_LEASES,
+    OPEN_LEASES,
+    EventModel,
+    Lease,
+    LeaseKind,
+    LeaseState,
+    LeaseWorker,
+    NoLease,
+    utcnow,
+)
 from piloop.db.session import Database, write_transaction
-from piloop.ids import AgentSessionId, CommentId, TargetKind
+from piloop.ids import AgentSessionId, CommentId, TargetKind, TargetRef
 from piloop.plugins.executor.contract import (
     JOB,
-    REPORT,
     AgentFinished,
     AgentJob,
     AgentKey,
@@ -64,6 +74,7 @@ from piloop.plugins.executor.contract import (
     JobKey,
     LeftJob,
     Prompt,
+    Report,
     Results,
     Settled,
 )
@@ -75,14 +86,37 @@ leases again."""
 DEFAULT_POOLS: Mapping[str, Pool] = {SERVE: Pool()}
 UNREPORTED = 'the daemon stopped, and the job did not report in time'
 NOT_TAKEN = 'the daemon stopped before a worker took the job'
-STALE_REPORT = 'lease.stale_report'
-"""An event on the job's row (the agent session, or the evaluated candidate): a report that the fence refused."""
-UNREACHABLE = 'lease.unreachable'
-"""An event on the job's row: its worker was silent past ``grace_seconds``."""
 KINDS = (LeaseKind.AGENT, LeaseKind.EVALUATION)
 """The order in which a worker takes jobs: agents first."""
-EXPIRED = 'lease.expired'
-"""An event on the job's row: the lease expired, or its worker reported the job gone. ``reason`` says which."""
+
+
+class StaleReport(EventModel):
+    """On the job's row (the agent session, or the evaluated candidate): a report that the fence refused."""
+
+    kind: Literal['lease.stale_report'] = 'lease.stale_report'
+    lease: int
+    worker: str
+    reason: str
+    report: Report
+    ref: str | None = None
+    """The ref of the agent's commits, when it made some."""
+
+
+class LeaseUnreachable(EventModel):
+    """On the job's row: its worker was silent past ``grace_seconds``."""
+
+    kind: Literal['lease.unreachable'] = 'lease.unreachable'
+    lease: int
+    worker: str | None
+
+
+class LeaseExpired(EventModel):
+    """On the job's row: the lease expired, or its worker reported the job gone. ``reason`` says which."""
+
+    kind: Literal['lease.expired'] = 'lease.expired'
+    lease: int
+    worker: str | None
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -249,13 +283,13 @@ def cancel(s: Session, lease: Lease, reason: str) -> None:
         lease.state, lease.ended_at, lease.receipt = LeaseState.CANCELLED, utcnow(), receipt
 
 
-def _target(lease: Lease) -> tuple[TargetKind, int]:
+def _target(lease: Lease) -> TargetRef:
     """The row that a lease's events go on: its agent session, or the candidate that its evaluation measures."""
     if lease.agent_session_id is not None:
-        return TargetKind.AGENT_SESSION, lease.agent_session_id
+        return TargetRef(TargetKind.AGENT_SESSION, lease.agent_session_id)
     job = JOB.validate_python(lease.job)
     assert isinstance(job, EvaluationJob)
-    return TargetKind.CANDIDATE, job.candidate
+    return TargetRef(TargetKind.CANDIDATE, job.candidate)
 
 
 def _job_of(lease: Lease) -> ColumnElement[bool]:
@@ -474,7 +508,7 @@ class Leases:
         """Apply the job's result, and return the receipt. A report sent again with its request id gets the same receipt.
 
         Raises:
-            StaleLease: the fence refused it. It is kept as a ``STALE_REPORT`` event, and nothing else changed.
+            StaleLease: the fence refused it. It is kept as a ``StaleReport`` event, and nothing else changed.
         """
         lease = self._job(lease_id)
         if lease.state is LeaseState.REPORTED and lease.request_id == request_id:
@@ -500,19 +534,13 @@ class Leases:
         return receipt
 
     def _keep_stale(self, lease: Lease, worker: str, report: AgentReport | EvaluationReport, reason: str) -> None:
-        """Keep a refused report as a ``STALE_REPORT`` event on its job's row, with the ref of its commits."""
-        payload: dict[str, object] = {
-            'lease': lease.id,
-            'worker': worker,
-            'reason': reason,
-            'report': REPORT.dump_python(report, mode='json'),
-        }
-        job = JOB.validate_python(lease.job)
-        if isinstance(job, AgentJob) and job.commits is not None and isinstance(report, AgentFinished):
-            payload['ref'] = job.commits.ref if report.head is not None else None
-        kind, target = _target(lease)
+        """Keep a refused report as a ``StaleReport`` event on its job's row, with the ref of its commits."""
+        job, ref = JOB.validate_python(lease.job), None
+        if isinstance(job, AgentJob) and job.commits is not None and isinstance(report, AgentFinished) and report.head:
+            ref = job.commits.ref
+        stale = StaleReport(lease=lease.id, worker=worker, reason=reason, report=report, ref=ref)
         with self._db.session() as s:
-            emit(s, STALE_REPORT, kind, target, payload=payload)
+            emit(s, stale, _target(lease), System.DAEMON)
             s.commit()
 
     def lost(self, lease_id: int, worker: str, reason: str) -> None:
@@ -530,8 +558,7 @@ class Leases:
         def mark(s: Session) -> None:
             lease = fence(s)
             lease.state, lease.ended_at, lease.receipt = LeaseState.EXPIRED, utcnow(), receipt
-            kind, target = _target(lease)
-            emit(s, EXPIRED, kind, target, payload={'lease': lease.id, 'worker': lease.worker, 'reason': reason})
+            emit(s, LeaseExpired(lease=lease.id, worker=lease.worker, reason=reason), _target(lease), System.DAEMON)
 
         lease = self._job(lease_id)
         key: JobKey
@@ -576,8 +603,8 @@ class Leases:
                 for worker in s.scalars(select(LeaseWorker).where(newly_silent)).all():
                     worker.no_lease = NoLease.UNREACHABLE
                     for lease in s.scalars(select(Lease).where(live, Lease.worker == worker.id).order_by(Lease.id)):
-                        kind, target = _target(lease)
-                        emit(s, UNREACHABLE, kind, target, payload={'lease': lease.id, 'worker': lease.worker})
+                        unreachable = LeaseUnreachable(lease=lease.id, worker=lease.worker)
+                        emit(s, unreachable, _target(lease), System.DAEMON)
                 for lease in s.scalars(select(Lease).where(live, Lease.expires_at <= now).order_by(Lease.id)).all():
                     assert lease.renewed_at is not None  # set by acquire
                     silence = round((now - lease.renewed_at).total_seconds())

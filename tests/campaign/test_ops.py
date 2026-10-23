@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from piloop.actor import Agent, System
 from piloop.campaign import ops
 from piloop.config import load_campaign_config
-from piloop.db.events import emit
+from piloop.db.events import emit, has, in_order
 from piloop.db.models import (
     Campaign,
     CampaignStatus,
@@ -23,6 +23,7 @@ from piloop.db.models import (
     Comment,
     CommentKind,
     Event,
+    EventModel,
     Idea,
     IdeaLink,
     IdeaStatus,
@@ -34,8 +35,24 @@ from piloop.db.models import (
     Verdict,
 )
 from piloop.db.session import Database
-from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TrackName
-from piloop.scoring.ledger import DAEMON, REJUDGE_FAILED, REJUDGE_REQUESTED, head, rejudges
+from piloop.db.triggers.changelog import (
+    CampaignParentChanged,
+    CampaignPausedChanged,
+    IdeaBaseChanged,
+    IdeaLinked,
+    IdeaTrackChanged,
+    VerdictChanged,
+)
+from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TargetRef, TrackName
+from piloop.scoring.ledger import (
+    DAEMON,
+    CandidateJudged,
+    MeasurementRecorded,
+    RejudgeFailed,
+    RejudgeRequested,
+    head,
+    rejudges,
+)
 from tests.conftest import end_of
 
 ACTOR = System.ORCHESTRATOR
@@ -49,7 +66,7 @@ def me(db: Database, campaign: Campaign, tmp_path: Path) -> Iterator[Database]:
     database.close()
 
 
-def kinds(db: Database, target_kind: TargetKind, target_id: int) -> list[tuple[str, str, dict[str, object]]]:
+def kinds(db: Database, target_kind: TargetKind, target_id: int) -> list[tuple[str, str, EventModel]]:
     with db.session() as s:
         rows = s.scalars(
             select(Event).where(Event.target_kind == target_kind, Event.target_id == target_id).order_by(Event.id)
@@ -140,14 +157,14 @@ def test_a_pause_holds_launches_or_everything_with_its_reason_and_a_resume_clear
         (
             'campaign.paused',
             ACTOR.signature,
-            {'old': None, 'new': 'launches', 'paused_reason': 'wait for evaluator v2'},
+            CampaignPausedChanged(old=None, new=Pause.LAUNCHES, paused_reason='wait for evaluator v2'),
         ),
         (
             'campaign.paused',
             ACTOR.signature,
-            {'old': 'launches', 'new': 'all', 'paused_reason': 'and the evaluations'},
+            CampaignPausedChanged(old=Pause.LAUNCHES, new=Pause.ALL, paused_reason='and the evaluations'),
         ),
-        ('campaign.paused', ACTOR.signature, {'old': 'all', 'new': None, 'paused_reason': None}),
+        ('campaign.paused', ACTOR.signature, CampaignPausedChanged(old=Pause.ALL, new=None, paused_reason=None)),
     ], 'the trigger logs each change, signed by the connection, and nothing else does'
     with me.session() as s:
         assert s.scalars(select(Comment)).all() == [], 'a pause is not an escalation'
@@ -200,12 +217,9 @@ def test_a_verdict_override_is_the_actors_with_the_reason_in_its_event(me: Datab
             ACTOR.signature,
             'measured by hand: +3',
         )
-    payload = {
-        'old': 'discard',
-        'new': 'keep',
-        'verdict_by': ACTOR.signature,
-        'verdict_reason': 'measured by hand: +3',
-    }
+    payload = VerdictChanged(
+        old=Verdict.DISCARD, new=Verdict.KEEP, verdict_by=ACTOR.signature, verdict_reason='measured by hand: +3'
+    )
     assert kinds(me, TargetKind.CANDIDATE, c) == [('candidate.verdict', ACTOR.signature, payload)]
     pending = run_candidate(me, campaign, Verdict.PENDING, by=None)
     with me.session() as s:
@@ -299,18 +313,20 @@ def test_a_measurement_by_hand_is_recorded_and_asks_the_daemon_to_judge_its_cand
         (
             'measurement.recorded',
             ACTOR.signature,
-            {'candidate': c, 'metrics': {'score': 3.0, 'size': 9.0}, 'error': None, 'run': None},
+            MeasurementRecorded(candidate=c, metrics={'score': 3.0, 'size': 9.0}, error=None, run=None),
         )
     ], 'shaped like the daemon event'
-    assert kinds(me, TargetKind.CANDIDATE, c) == [(REJUDGE_REQUESTED, ACTOR.signature, {'measurement': measurement.id})]
+    requested = RejudgeRequested(measurement=measurement.id)
+    assert kinds(me, TargetKind.CANDIDATE, c) == [('candidate.rejudge_requested', ACTOR.signature, requested)]
     with me.session() as s:
-        emit(s, 'candidate.judged', TargetKind.CANDIDATE, c)
+        judged = CandidateJudged(verdict=Verdict.DISCARD, score=None, reason='judged again')
+        emit(s, judged, TargetRef(TargetKind.CANDIDATE, c), System.DAEMON)
         s.commit()
         assert rejudges(s, s.get_one(Campaign, 1)) == [], 'a later judgement answers the request'
         ops.add_measurement(s, c, ops.Report(metrics={}, error='timeout'), actor=ACTOR)
         s.commit()
         assert [x.id for x in rejudges(s, s.get_one(Campaign, 1))] == [c], 'a failed one counts too'
-        emit(s, REJUDGE_FAILED, TargetKind.CANDIDATE, c, payload={'error': 'gone'})
+        emit(s, RejudgeFailed(error='gone'), TargetRef(TargetKind.CANDIDATE, c), System.DAEMON)
         s.commit()
         assert rejudges(s, s.get_one(Campaign, 1)) == [], 'so does a failure'
 
@@ -328,8 +344,8 @@ def test_a_measurement_by_hand_of_a_keep_or_of_someones_verdict_leaves_the_verdi
         human = ops.add_measurement(s, mine, ops.Report(metrics={'score': 1.0, 'size': 5.0}), actor=ACTOR)
         assert (human.rejudged, human.effect) == (False, 'its verdict stays: discard, set by human')
         s.commit()
-        assert s.scalars(select(Event).where(Event.kind == REJUDGE_REQUESTED)).all() == []
-        emit(s, REJUDGE_REQUESTED, TargetKind.CANDIDATE, mine)
+        assert s.scalars(select(Event).where(has(RejudgeRequested))).all() == []
+        emit(s, RejudgeRequested(measurement=keep.measurement.id), TargetRef(TargetKind.CANDIDATE, mine), ACTOR)
         s.commit()
         assert rejudges(s, s.get_one(Campaign, 1)) == [], 'a request for a verdict that someone set is dropped'
         with pytest.raises(ops.Refused, match='the report has no size: give every metric, or the error'):
@@ -446,9 +462,9 @@ def test_links_are_validated_kept_acyclic_and_leave_events(me: Database, campaig
             (b, LinkKind.AFTER, c),
             (running, LinkKind.SUPERSEDES, c),
         ]
-    assert kinds(me, TargetKind.IDEA, a) == [('idea.linked', ACTOR.signature, {'target': b, 'kind': 'after'})], (
-        'a trigger'
-    )
+    assert kinds(me, TargetKind.IDEA, a) == [
+        ('idea.linked', ACTOR.signature, IdeaLinked(kind='idea.linked', target=b, link_kind=LinkKind.AFTER))
+    ], 'a trigger'
     with me.session() as s:
         assert [c.body for c in s.scalars(select(Comment).where(Comment.target_id == a))] == [
             f'after idea#{b}: b lands the parser'
@@ -479,7 +495,11 @@ def test_links_are_validated_kept_acyclic_and_leave_events(me: Database, campaig
             ops.unlink(s, a, LinkKind.AFTER, b, reason='again', actor=ACTOR)
         with pytest.raises(ops.Refused, match='a reason is required'):
             ops.unlink(s, b, LinkKind.AFTER, c, reason='', actor=ACTOR)
-    assert kinds(me, TargetKind.IDEA, a)[-1] == ('idea.unlinked', ACTOR.signature, {'target': b, 'kind': 'after'})
+    assert kinds(me, TargetKind.IDEA, a)[-1] == (
+        'idea.unlinked',
+        ACTOR.signature,
+        IdeaLinked(kind='idea.unlinked', target=b, link_kind=LinkKind.AFTER),
+    )
 
 
 def test_a_raw_sql_link_or_base_change_is_logged_like_the_commands(me: Database, campaign: Campaign) -> None:
@@ -490,9 +510,9 @@ def test_a_raw_sql_link_or_base_change_is_logged_like_the_commands(me: Database,
         s.execute(text(f'UPDATE ideas SET base_candidate_id = 1 WHERE id = {a}'))
         s.commit()
     assert kinds(me, TargetKind.IDEA, a) == [
-        ('idea.linked', ACTOR.signature, {'target': b, 'kind': 'after'}),
-        ('idea.unlinked', ACTOR.signature, {'target': b, 'kind': 'after'}),
-        ('idea.base_candidate_id', ACTOR.signature, {'old': None, 'new': 1}),
+        ('idea.linked', ACTOR.signature, IdeaLinked(kind='idea.linked', target=b, link_kind=LinkKind.AFTER)),
+        ('idea.unlinked', ACTOR.signature, IdeaLinked(kind='idea.unlinked', target=b, link_kind=LinkKind.AFTER)),
+        ('idea.base_candidate_id', ACTOR.signature, IdeaBaseChanged(old=None, new=CandidateId(1))),
     ]
 
 
@@ -514,8 +534,8 @@ def test_a_base_pins_a_candidate_of_the_campaign_or_clears_the_pin(me: Database,
         with pytest.raises(ops.Refused, match='a reason is required'):
             ops.set_base(s, idea, None, reason='', actor=ACTOR)
     assert kinds(me, TargetKind.IDEA, idea) == [
-        ('idea.base_candidate_id', ACTOR.signature, {'old': None, 'new': 1}),
-        ('idea.base_candidate_id', ACTOR.signature, {'old': 1, 'new': None}),
+        ('idea.base_candidate_id', ACTOR.signature, IdeaBaseChanged(old=None, new=CandidateId(1))),
+        ('idea.base_candidate_id', ACTOR.signature, IdeaBaseChanged(old=CandidateId(1), new=None)),
     ]
     with me.session() as s:
         assert [c.body for c in s.scalars(select(Comment).order_by(Comment.id))][:2] == [
@@ -560,7 +580,7 @@ def test_a_track_must_be_in_the_config_and_its_move_says_why(me: Database, campa
         with pytest.raises(ops.Refused, match='demo has tracks score, size: name one with --track'):
             ops.track_for(s.get_one(Campaign, 1), None)
     assert [(k, a, p) for k, a, p in kinds(me, TargetKind.IDEA, idea) if k == 'idea.track'] == [
-        ('idea.track', ACTOR.signature, {'old': 'score', 'new': 'size'})
+        ('idea.track', ACTOR.signature, IdeaTrackChanged(old=TrackName('score'), new=TrackName('size')))
     ]
 
 
@@ -594,12 +614,12 @@ def test_a_campaign_has_one_parent_never_itself_or_a_descendant_and_each_change_
             ops.set_parent(s, c.id, None)
         s.commit()
         assert parents(s) == {'demo': None, 'b': 'demo', 'c': None, 'd': 'demo'}
-        changes = s.scalars(select(Event).where(Event.kind == 'campaign.parent_id').order_by(Event.id)).all()
-        assert [(e.target_id, e.actor, e.payload) for e in changes] == [
-            (b.id, ACTOR.signature, {'old': None, 'new': a.id}),
-            (c.id, ACTOR.signature, {'old': None, 'new': b.id}),
-            (d.id, ACTOR.signature, {'old': None, 'new': a.id}),
-            (c.id, ACTOR.signature, {'old': b.id, 'new': None}),
+        changes = in_order(s, CampaignParentChanged)
+        assert [(e.target_id, e.actor, change) for e, change in changes] == [
+            (b.id, ACTOR.signature, CampaignParentChanged(old=None, new=a.id)),
+            (c.id, ACTOR.signature, CampaignParentChanged(old=None, new=b.id)),
+            (d.id, ACTOR.signature, CampaignParentChanged(old=None, new=a.id)),
+            (c.id, ACTOR.signature, CampaignParentChanged(old=b.id, new=None)),
         ], 'the trigger logs each change, and a refused one leaves no event'
         with pytest.raises(IntegrityError, match='FOREIGN KEY'):
             s.execute(text('DELETE FROM campaigns WHERE id = :id'), {'id': a.id})

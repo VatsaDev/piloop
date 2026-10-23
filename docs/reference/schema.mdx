@@ -65,11 +65,11 @@ CREATE INDEX ix_comments_target ON comments (target_kind, target_id);
 CREATE TABLE events (
 	id INTEGER NOT NULL,
 	at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
-	kind VARCHAR NOT NULL,
+	kind VARCHAR NOT NULL GENERATED ALWAYS AS (json_extract(payload, '$.kind')),
 	actor VARCHAR NOT NULL,
 	target_kind VARCHAR(16) NOT NULL,
 	target_id INTEGER NOT NULL,
-	payload JSON DEFAULT '{}' NOT NULL,
+	payload JSON NOT NULL,
 	PRIMARY KEY (id),
 	CONSTRAINT targetkind CHECK (target_kind IN ('campaign', 'idea', 'run', 'candidate', 'measurement', 'agent_session', 'comment'))
 );

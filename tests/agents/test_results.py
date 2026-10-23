@@ -8,7 +8,8 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop.agents.results import IDENTIFIED_EVENT, CampaignResults, learn
+from piloop.agents.results import AgentSessionFinished, CampaignResults, Identified, learn
+from piloop.db.events import in_order
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
@@ -159,15 +160,16 @@ def test_two_results_for_one_job_in_plain_sessions_close_its_row_once_and_measur
         first.join(30)
         assert second == ['settled']
     with db.session() as s:
-        finished = s.scalars(select(Event).where(Event.kind == 'watchdog.finished')).all()
+        finished = in_order(s, AgentSessionFinished)
         measured = s.scalars(select(Measurement).where(Measurement.candidate_id == base.id)).all()
     assert (len(finished), len(measured)) == (1, 2), 'one close, and one measurement besides the baseline'
 
 
 def identified(db: Database, agent_session_id: AgentSessionId) -> list[dict[str, object]]:
+    """The ``Identified`` events of the row, as they are stored, without their kind."""
     with db.session() as s:
-        on_row = (Event.kind == IDENTIFIED_EVENT) & (Event.target_id == agent_session_id)
-        return [e.payload for e in s.scalars(select(Event).where(on_row).order_by(Event.id))]
+        found = in_order(s, Identified, Event.target_id == agent_session_id)
+        return [e.model_dump(mode='json', exclude={'kind'}) for _, e in found]
 
 
 def implementer_of(

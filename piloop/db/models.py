@@ -7,14 +7,24 @@ timestamps or statuses. ``docs/reference/schema.mdx`` (the DDL) is generated fro
 import sys
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Final
+from typing import Annotated, ClassVar, Final, Literal, get_args, get_origin
 
 from covalence import Cid
-from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    JsonValue,
+    PlainSerializer,
+    PlainValidator,
+    TypeAdapter,
+    model_serializer,
+    model_validator,
+)
 from sqlalchemy import (
     JSON,
     CheckConstraint,
     Column,
+    Computed,
     DateTime,
     Enum,
     FetchedValue,
@@ -368,6 +378,117 @@ class Usage(BaseModel):
     """Where the numbers came from: the session file that was read."""
 
 
+class EventModel(BaseModel):
+    """The payload of one kind of event, with its ``kind``: one model for each kind, or for a few that share a shape.
+
+    ``kind`` is a ``Literal`` of the kinds that the model is for. Defining the model registers each of them, and a kind
+    that two models register fails at import. Each layer declares the events that it writes, next to the code that
+    writes them, and a plugin declares its own the same way. Readers ``match`` on the classes that they import.
+
+    ``kind`` is only the event's own. A field that holds the kind of a row is named after its type, such as
+    ``comment_kind: CommentKind`` or ``link_kind: LinkKind``. An agent's kind is its ``role: RoleName``.
+
+    The stored rows keep their shape, and SQL reads them as stored, so a model changes in these ways only:
+
+    - A new field has a default, so the rows before it still load.
+    - A field that goes away is listed in ``retired_fields``. The rows before keep it, and the loader drops it.
+    - A field whose meaning changes is a new kind, such as ``run.finished.v2``.
+    - A rename is a migration that rewrites the rows, and a line in the upgrade guide.
+
+    A kind that nothing writes any more is retired (``retire``), so that no model takes its name again.
+    """
+
+    model_config = ConfigDict(frozen=True, extra='forbid', serialize_by_alias=True, validate_by_name=True)
+
+    kind: str
+
+    retired_fields: ClassVar[frozenset[str]] = frozenset()
+    """The fields that the model had, like protobuf's ``reserved``: dropped on load, and no field may take the name."""
+
+    _registry: ClassVar[dict[str, type[EventModel]]] = {}
+    _retired_kinds: ClassVar[set[str]] = set()
+
+    @classmethod
+    def __pydantic_init_subclass__(cls, **kwargs: object) -> None:
+        super().__pydantic_init_subclass__(**kwargs)
+        reused = cls.retired_fields & {field.alias or name for name, field in cls.model_fields.items()}
+        if reused:
+            raise TypeError(f'{cls.__qualname__}: the fields {sorted(reused)} are retired')
+        for kind in cls.kinds():
+            if kind in EventModel._retired_kinds:
+                raise TypeError(f'{cls.__qualname__}: event kind {kind!r} is retired')
+            known = EventModel._registry.setdefault(kind, cls)
+            if known is not cls:
+                raise TypeError(f'{cls.__qualname__}: event kind {kind!r} is {known.__module__}.{known.__qualname__}')
+
+    @classmethod
+    def retire(cls, kind: str) -> None:
+        """Retire ``kind``: a release wrote it, and nothing writes it now. Its rows load as an ``UnknownEvent``.
+
+        Raises:
+            TypeError: a model registers it.
+        """
+        if (known := EventModel._registry.get(kind)) is not None:
+            raise TypeError(f'event kind {kind!r} is {known.__module__}.{known.__qualname__}: it cannot be retired')
+        EventModel._retired_kinds.add(kind)
+
+    @classmethod
+    def retired_kinds(cls) -> frozenset[str]:
+        """The kinds that are retired."""
+        return frozenset(EventModel._retired_kinds)
+
+    @model_validator(mode='before')
+    @classmethod
+    def _drop_retired(cls, value: object) -> object:
+        if isinstance(value, dict) and cls.retired_fields:
+            return {k: v for k, v in value.items() if k not in cls.retired_fields}
+        return value
+
+    @classmethod
+    def kinds(cls) -> tuple[str, ...]:
+        """The kinds that the model is for: the values of its ``kind`` literal. Empty for a base model."""
+        annotation = cls.model_fields['kind'].annotation
+        return get_args(annotation) if get_origin(annotation) is Literal else ()
+
+
+class UnknownEvent(EventModel):
+    """An event of a kind that no loaded module registers, such as the event of a plugin that is not installed.
+
+    Its payload is the stored JSON without ``kind``. No reader matches it.
+    """
+
+    payload: dict[str, JsonValue]
+
+    @model_serializer
+    def _flat(self) -> dict[str, JsonValue]:
+        return {'kind': self.kind, **self.payload}
+
+
+def _event(value: object) -> EventModel:
+    match value:
+        case EventModel():
+            return value
+        case {'kind': str(kind)}:
+            model = EventModel._registry.get(kind)
+            if model is not None:
+                return model.model_validate(value)
+            return UnknownEvent.model_validate(
+                {'kind': kind, 'payload': {k: v for k, v in value.items() if k != 'kind'}}
+            )
+        case _:
+            raise ValueError(f'an event is a JSON object with its kind in "kind", not {value!r}')
+
+
+def _dumped(event: EventModel) -> dict[str, object]:
+    return event.model_dump(mode='json')
+
+
+EVENT: TypeAdapter[EventModel] = TypeAdapter(Annotated[EventModel, PlainValidator(_event), PlainSerializer(_dumped)])
+"""Load the payload of an ``events`` row as the model that registers its kind, or as an ``UnknownEvent``.
+
+A registered kind validates strictly: a payload that does not fit its model raises."""
+
+
 class Base(DeclarativeBase):
     """The declarative base, with the mappings for JSON, UTC datetimes and enums stored by value."""
 
@@ -386,6 +507,7 @@ class Base(DeclarativeBase):
         dict[str, float]: JSON,
         dict[str, object]: JSON,
         Usage: PydanticJSON(TypeAdapter(Usage)),
+        EventModel: PydanticJSON(EVENT),
         list[str]: JSON,
         CampaignStatus: _values(CampaignStatus),
         Pause: _values(Pause),
@@ -1155,17 +1277,9 @@ class AgentSession(Tracked, Base):
 class Event(Base):
     """The append-only feed of what happened. The daemon pushes comments to implementers from it, reading from a cursor.
 
-    It has two writers. The daemon writes what only it knows: ``run.started``, ``measurement.recorded``,
-    ``candidate.judged`` with the score, ``comment.delivered``, ``comment.undelivered``, ``agent_session.wrap_up`` and
-    ``agent_session.stop_ended`` on an implementer, ``<role>.started``, ``agent_session.identified`` and
-    ``<role>.finished``, and ``anomaly.*`` for faults in the environment such as ``anomaly.startup``. Triggers write what any connection does to the rows. The persistent
-    trigger writes ``comment.escalation``. The TEMP triggers of each connection (``piloop/db/actor_triggers.sql``,
-    generated from ``piloop.db.triggers.TEMP``) write the change log, signed by the connection's actor:
-    ``idea.status``, ``idea.priority``, ``idea.track``, ``idea.base_candidate_id``, ``candidate.verdict``, ``run.brief``,
-    ``campaign.status`` and ``campaign.paused`` as ``{old, new}``, ``idea.linked`` and ``idea.unlinked`` with the target
-    and the kind of an ``idea_links`` row, ``<kind>.deleted`` for deleted rows, and ``comment.<kind>``. The CLI also
-    writes the requests that the daemon acts on: ``campaign.stop_requested`` (``piloop campaign stop``),
-    ``run.cancel_requested`` (``piloop run cancel``) and ``agent_session.cancel_requested`` (``piloop agent cancel``).
+    It has two writers: ``piloop.db.events.emit``, for what only piloop knows, and the triggers of the change log
+    (``piloop.db.triggers.changelog``), for what any connection does to the rows. The authorizer of ``piloop sql``
+    denies any other insert. The payload is an ``EventModel``, with its ``kind``.
     """
 
     __tablename__ = 'events'
@@ -1173,14 +1287,14 @@ class Event(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
-    kind: Mapped[str]
-    """``<subject>.<what>``, for example ``run.started``, ``candidate.judged``, ``idea.status``, ``comment.decision``,
-    ``idea.deleted`` or ``<role>.finished``."""
+    kind: Mapped[str] = mapped_column(Computed("json_extract(payload, '$.kind')"))
+    """``<subject>.<what>``, for example ``run.started``, ``candidate.judged``, ``idea.status``, ``comment.decision``
+    or ``idea.deleted``: the payload's ``kind``."""
     actor: Mapped[str]
     target_kind: Mapped[TargetKind]
     target_id: Mapped[int]
     target: Mapped[TargetRef] = composite('target_kind', 'target_id')
-    payload: Mapped[dict[str, object]] = mapped_column(default=dict, server_default=EMPTY_JSON)
+    payload: Mapped[EventModel]
 
 
 _warned: set[tuple[str, str, str]] = set()

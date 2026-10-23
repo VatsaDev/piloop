@@ -1,37 +1,214 @@
 """The change log: the decisions that leave a record in ``events``, whoever makes them.
 
-Every trigger here inserts one ``events`` row through ``event_insert``. The event kind is ``<table singular>.<column>``
-for a change, ``<singular>.deleted`` for a tombstone and ``comment.<kind>`` for a comment. ``target_kind`` is the
-table's singular, which is also a ``TargetKind`` value. Payloads have the old and new values, never a large body.
+Every trigger here inserts one ``events`` row through ``event_insert``, with the payload of its event model: the
+trigger renders its JSON from the model (``payload``), so the SQL and the model cannot drift. The event kind is
+``<table singular>.<column>`` for a change, ``<singular>.deleted`` for a tombstone and ``comment.<kind>`` for a
+comment. ``target_kind`` is the table's singular, which is also a ``TargetKind`` value. Payloads never have a large
+body.
 """
 
-from typing import Literal
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Annotated, Literal
 
+from piloop.db.models import (
+    CampaignStatus,
+    CommentKind,
+    EventModel,
+    IdeaStatus,
+    LinkKind,
+    Pause,
+    Verdict,
+)
 from piloop.db.triggers.ddl import Event, Trigger
 from piloop.db.triggers.provenance import DAEMON_ACTOR, SESSION_ACTOR
+from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TrackName
+
+type Row = Literal['NEW', 'OLD']
 
 
-def singular(table: str) -> str:
-    """``ideas`` → ``idea``: the prefix of the event kind, and the ``TargetKind`` value. The table names are regular."""
-    return table.removesuffix('s')
+@dataclass(frozen=True)
+class Sql:
+    """The SQL that a trigger writes into a field of its event, when that is not the column of the same name.
+
+    ``{row}`` stands for ``NEW`` or ``OLD``, the row of the trigger.
+    """
+
+    expression: str
 
 
-def event_insert(kind: str, actor: str, target_kind: str, target_id: str, payload: str) -> str:
-    """The INSERT that every event trigger runs. Each argument is a SQL expression."""
+class Changed[T](EventModel):
+    """A change of the column that the kind names: ``idea.status`` is a change of ``ideas.status``.
+
+    Other fields are the columns of the same name in the new row.
+    """
+
+    old: T | None
+    new: T | None
+
+
+class IdeaStatusChanged(Changed[IdeaStatus]):
+    """An idea's status changed."""
+
+    kind: Literal['idea.status'] = 'idea.status'
+
+
+class IdeaPriorityChanged(Changed[int]):
+    """An idea's priority changed."""
+
+    kind: Literal['idea.priority'] = 'idea.priority'
+
+
+class IdeaTrackChanged(Changed[TrackName]):
+    """An idea moved to another track."""
+
+    kind: Literal['idea.track'] = 'idea.track'
+
+
+class IdeaBaseChanged(Changed[CandidateId]):
+    """An idea's pinned base changed."""
+
+    kind: Literal['idea.base_candidate_id'] = 'idea.base_candidate_id'
+
+
+class VerdictChanged(Changed[Verdict]):
+    """A candidate's verdict changed, by the daemon or by an override."""
+
+    kind: Literal['candidate.verdict'] = 'candidate.verdict'
+    verdict_by: str | None
+    verdict_reason: str | None
+
+
+class CampaignStatusChanged(Changed[CampaignStatus]):
+    """A campaign stopped, or was set active again."""
+
+    kind: Literal['campaign.status'] = 'campaign.status'
+    stopped_reason: str | None
+    """Set in the same statement as the status: a stop says why, and a resume says null."""
+
+
+class CampaignTypeChanged(Changed[str]):
+    """A campaign's type changed."""
+
+    kind: Literal['campaign.type'] = 'campaign.type'
+
+
+class CampaignParentChanged(Changed[CampaignId]):
+    """A campaign moved under another campaign, or to the top."""
+
+    kind: Literal['campaign.parent_id'] = 'campaign.parent_id'
+
+
+class CampaignPausedChanged(Changed[Pause]):
+    """``piloop pause`` and ``piloop resume``: the reason is set with the pause and cleared with it."""
+
+    kind: Literal['campaign.paused'] = 'campaign.paused'
+    paused_reason: str | None
+
+
+class CommentAcked(Changed[datetime]):
+    """An inbox item was acknowledged. The actor of the event is who did it, whatever ``acked_by`` says."""
+
+    kind: Literal['comment.acked_at'] = 'comment.acked_at'
+    acked_by: str | None
+
+
+class RunBriefChanged(EventModel):
+    """A brief was written or replaced: a steer. The lengths only, because a brief has thousands of characters."""
+
+    kind: Literal['run.brief'] = 'run.brief'
+    old_length: Annotated[int | None, Sql('length(OLD.brief)')]
+    new_length: Annotated[int | None, Sql('length(NEW.brief)')]
+
+
+class IdeaLinked(EventModel):
+    """An ``idea_links`` row was inserted or deleted. The event is on the idea that links."""
+
+    kind: Literal['idea.linked', 'idea.unlinked']
+    target: Annotated[IdeaId, Sql('{row}.target_id')]
+    link_kind: Annotated[LinkKind, Sql('{row}.kind')]
+
+
+class IdeaDeleted(EventModel):
+    """An idea was deleted."""
+
+    kind: Literal['idea.deleted'] = 'idea.deleted'
+    title: str
+    status: IdeaStatus
+    hypothesis: str
+
+
+class CommentDeleted(EventModel):
+    """A comment was deleted."""
+
+    kind: Literal['comment.deleted'] = 'comment.deleted'
+    target_kind: TargetKind
+    target_id: int
+    author: str
+    comment_kind: Annotated[CommentKind, Sql('{row}.kind')]
+    body: str
+
+
+class CandidateDeleted(EventModel):
+    """A candidate was deleted."""
+
+    kind: Literal['candidate.deleted'] = 'candidate.deleted'
+    tree_sha: str
+    commit_sha: str
+    verdict: Verdict
+
+
+class Commented(EventModel):
+    """A comment was written: ``comment.<its kind>``, on the comment, with what the comment is about."""
+
+    kind: Literal['comment.note', 'comment.finding', 'comment.decision', 'comment.escalation']
+    target_kind: TargetKind
+    target_id: int
+
+
+def plural(subject: str) -> str:
+    """``idea`` → ``ideas``: the table of an event kind's subject."""
+    return f'{subject}s'
+
+
+def payload(model: type[EventModel], row: Row, kind: str | None = None, **fields: str) -> str:
+    """The ``json_object`` of an event of ``model``, as a SQL expression.
+
+    Args:
+        model: The event. Each field is the column of the same name in ``row``, or its ``Sql``.
+        row: The row of the trigger.
+        kind: The SQL of the kind, when the model is for more than one. Otherwise its one kind.
+        fields: The SQL of fields that the caller knows: the ``old`` and ``new`` of a ``Changed``.
+    """
+    if kind is None:
+        (only,) = model.kinds()
+        kind = f"'{only}'"
+    pairs = [f"'kind', {kind}"]
+    for name, field in model.model_fields.items():
+        if name == 'kind':
+            continue
+        sql = next((m.expression for m in field.metadata if isinstance(m, Sql)), f'{{row}}.{name}')
+        pairs.append(f"'{field.alias or name}', {fields.get(name, sql).format(row=row)}")
+    return f'json_object({", ".join(pairs)})'
+
+
+def event_insert(actor: str, target_kind: str, target_id: str, payload: str) -> str:
+    """The INSERT that every event trigger runs. Each argument is a SQL expression. The kind is in the payload."""
     return (
-        'INSERT INTO events (kind, actor, target_kind, target_id, payload)\n'
-        f'VALUES ({kind}, {actor}, {target_kind}, {target_id}, {payload})'
+        'INSERT INTO events (actor, target_kind, target_id, payload)\n'
+        f'VALUES ({actor}, {target_kind}, {target_id}, {payload})'
     )
 
 
-def changed(table: str, column: str, *extra: str) -> Trigger:
-    """TEMP: log a change of ``column`` as a ``<singular>.<column>`` event.
+def changed[T](model: type[Changed[T]]) -> Trigger:
+    """TEMP: log a change of the column that ``model``'s kind names, ``<singular>.<column>``.
 
-    The payload has ``old`` and ``new``, and the ``extra`` columns of the new row. ``AFTER UPDATE OF`` fires only when
-    a statement names the column, so the ``updated_at`` and ``updated_by`` triggers (which SET their own column) never
-    fire it. The WHEN clause ignores a SET to the value already there.
+    ``AFTER UPDATE OF`` fires only when a statement names the column, so the ``updated_at`` and ``updated_by`` triggers
+    (which SET their own column) never fire it. The WHEN clause ignores a SET to the value already there.
     """
-    pairs = ', '.join([f"'old', OLD.{column}", f"'new', NEW.{column}", *(f"'{c}', NEW.{c}" for c in extra)])
+    (kind,) = model.kinds()
+    subject, column = kind.split('.')
+    table = plural(subject)
     return Trigger(
         f'{table}_{column}_event',
         table,
@@ -39,27 +216,27 @@ def changed(table: str, column: str, *extra: str) -> Trigger:
         of=(column,),
         when=f'OLD.{column} IS NOT NEW.{column}',
         body=event_insert(
-            f"'{singular(table)}.{column}'", SESSION_ACTOR, f"'{singular(table)}'", 'NEW.id', f'json_object({pairs})'
+            SESSION_ACTOR, f"'{subject}'", 'NEW.id', payload(model, 'NEW', old=f'OLD.{column}', new=f'NEW.{column}')
         ),
         temp=True,
     )
 
 
-def tombstone(table: str, *columns: str) -> Trigger:
-    """TEMP: log a deleted row as a ``<singular>.deleted`` event with ``columns`` of the old row."""
-    pairs = ', '.join(f"'{c}', OLD.{c}" for c in columns)
+def tombstone(model: type[EventModel]) -> Trigger:
+    """TEMP: log a deleted row as a ``<singular>.deleted`` event with the columns of the old row that ``model`` has."""
+    (kind,) = model.kinds()
+    subject = kind.removesuffix('.deleted')
+    table = plural(subject)
     return Trigger(
         f'{table}_deleted_event',
         table,
         'AFTER DELETE',
-        body=event_insert(
-            f"'{singular(table)}.deleted'", SESSION_ACTOR, f"'{singular(table)}'", 'OLD.id', f'json_object({pairs})'
-        ),
+        body=event_insert(SESSION_ACTOR, f"'{subject}'", 'OLD.id', payload(model, 'OLD')),
         temp=True,
     )
 
 
-COMMENT_PAYLOAD = "json_object('target_kind', NEW.target_kind, 'target_id', NEW.target_id)"
+COMMENT_KIND = "'comment.' || NEW.kind"
 
 
 def comment_event() -> Trigger:
@@ -69,7 +246,7 @@ def comment_event() -> Trigger:
         'comments',
         'AFTER INSERT',
         when="NEW.kind != 'escalation'",
-        body=event_insert("'comment.' || NEW.kind", 'NEW.author', "'comment'", 'NEW.id', COMMENT_PAYLOAD),
+        body=event_insert('NEW.author', "'comment'", 'NEW.id', payload(Commented, 'NEW', COMMENT_KIND)),
         temp=True,
     )
 
@@ -81,77 +258,57 @@ def escalation() -> Trigger:
         'comments',
         'AFTER INSERT',
         when="NEW.kind = 'escalation'",
-        body=event_insert("'comment.escalation'", 'NEW.author', "'comment'", 'NEW.id', COMMENT_PAYLOAD),
+        body=event_insert('NEW.author', "'comment'", 'NEW.id', payload(Commented, 'NEW', COMMENT_KIND)),
     )
 
 
 # The one exception to `changed`: when the daemon writes a brief where there was none, the run starts (`run.started`),
-# and that is not a steer. Anyone else who writes a brief, or the daemon replacing one, steers the run. The payload has
-# the lengths only, because a brief has thousands of characters.
+# and that is not a steer. Anyone else who writes a brief, or the daemon replacing one, steers the run.
 RUN_BRIEF = Trigger(
     'runs_brief_event',
     'runs',
     'AFTER UPDATE',
     of=('brief',),
     when=f"OLD.brief IS NOT NEW.brief AND NOT (OLD.brief IS NULL AND {SESSION_ACTOR} = '{DAEMON_ACTOR}')",
-    body=event_insert(
-        "'run.brief'",
-        SESSION_ACTOR,
-        "'run'",
-        'NEW.id',
-        "json_object('old_length', length(OLD.brief), 'new_length', length(NEW.brief))",
-    ),
+    body=event_insert(SESSION_ACTOR, "'run'", 'NEW.id', payload(RunBriefChanged, 'NEW')),
     temp=True,
 )
 
 
-def link_event(kind: str, row: Literal['NEW', 'OLD']) -> Trigger:
+def link_event(row: Row) -> Trigger:
     """TEMP: log an inserted (``idea.linked``) or a deleted (``idea.unlinked``) ``idea_links`` row on its idea.
 
     The rows have no id, so the event is on the idea that links, with the target and the kind in the payload. A cascade
     (deleting an idea) fires it for each link that goes with the idea.
     """
     event: Event = 'AFTER INSERT' if row == 'NEW' else 'AFTER DELETE'
+    kind = 'idea.linked' if row == 'NEW' else 'idea.unlinked'
     return Trigger(
-        f'idea_links_{kind}_event',
+        f'idea_links_{kind.removeprefix("idea.")}_event',
         'idea_links',
         event,
-        body=event_insert(
-            f"'idea.{kind}'",
-            SESSION_ACTOR,
-            "'idea'",
-            f'{row}.idea_id',
-            f"json_object('target', {row}.target_id, 'kind', {row}.kind)",
-        ),
+        body=event_insert(SESSION_ACTOR, "'idea'", f'{row}.idea_id', payload(IdeaLinked, row, f"'{kind}'")),
         temp=True,
     )
 
 
 CHANGES = (
-    changed('ideas', 'status'),
-    changed('ideas', 'priority'),
-    changed('ideas', 'track'),
-    changed('ideas', 'base_candidate_id'),
-    link_event('linked', 'NEW'),
-    link_event('unlinked', 'OLD'),
-    changed('candidates', 'verdict', 'verdict_by', 'verdict_reason'),
+    changed(IdeaStatusChanged),
+    changed(IdeaPriorityChanged),
+    changed(IdeaTrackChanged),
+    changed(IdeaBaseChanged),
+    link_event('NEW'),
+    link_event('OLD'),
+    changed(VerdictChanged),
     RUN_BRIEF,
-    # stopped_reason is set in the same statement as the status, so a stop says why and a resume says null
-    changed('campaigns', 'status', 'stopped_reason'),
-    # the campaign type and the campaign tree: who changed a campaign's type or moved it under another
-    changed('campaigns', 'type'),
-    changed('campaigns', 'parent_id'),
-    # piloop pause and piloop resume: the reason is set with the pause and cleared with it
-    changed('campaigns', 'paused', 'paused_reason'),
-    # an inbox item was acknowledged: the actor of the event is who did it, whatever acked_by says
-    changed('comments', 'acked_at', 'acked_by'),
+    changed(CampaignStatusChanged),
+    changed(CampaignTypeChanged),
+    changed(CampaignParentChanged),
+    changed(CampaignPausedChanged),
+    changed(CommentAcked),
 )
-"""The decisions that are logged. To log another column, add it here and run ``make docs``."""
-TOMBSTONES = (
-    tombstone('ideas', 'title', 'status', 'hypothesis'),
-    tombstone('comments', 'target_kind', 'target_id', 'author', 'kind', 'body'),
-    tombstone('candidates', 'tree_sha', 'commit_sha', 'verdict'),
-)
+"""The decisions that are logged. To log another column, add its ``Changed`` model here and run ``make docs``."""
+TOMBSTONES = (tombstone(IdeaDeleted), tombstone(CommentDeleted), tombstone(CandidateDeleted))
 """The deletes that are logged, with the key columns, so the feed can still say what was there."""
 COMMENTS = (comment_event(),)
 """The forum (``comment.note``, ``comment.finding``, ``comment.decision``), which the daemon pushes to implementers."""

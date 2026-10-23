@@ -19,6 +19,7 @@ from alembic.config import Config as AlembicConfig
 from alembic.script import ScriptDirectory
 from covalence import Cid
 from git import Repo
+from inline_snapshot import snapshot
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.exc import IntegrityError
 
@@ -141,6 +142,173 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
 def schema(path: Path) -> list[tuple[str, ...]]:
     with closing(sqlite3.connect(f'file:{path}?mode=ro', uri=True)) as con:
         return con.execute('SELECT type, name, sql FROM sqlite_master ORDER BY name').fetchall()
+
+
+def test_the_sql_of_every_persistent_trigger_is_pinned() -> None:
+    """A database keeps the persistent triggers that its migrations installed, so a change to their SQL (to an event
+    model that one renders, for example) reaches no database that is already migrated."""
+    assert {t.name: t.sql() for t in PERSISTENT} == snapshot(
+        {
+            'campaigns_updated_at': """\
+CREATE TRIGGER campaigns_updated_at AFTER UPDATE ON campaigns
+WHEN NEW.updated_at IS OLD.updated_at AND NEW.updated_by IS OLD.updated_by
+BEGIN
+  UPDATE campaigns SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = NEW.id;
+END;\
+""",
+            'ideas_updated_at': """\
+CREATE TRIGGER ideas_updated_at AFTER UPDATE ON ideas
+WHEN NEW.updated_at IS OLD.updated_at AND NEW.updated_by IS OLD.updated_by
+BEGIN
+  UPDATE ideas SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = NEW.id;
+END;\
+""",
+            'runs_updated_at': """\
+CREATE TRIGGER runs_updated_at AFTER UPDATE ON runs
+WHEN NEW.updated_at IS OLD.updated_at AND NEW.updated_by IS OLD.updated_by
+BEGIN
+  UPDATE runs SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = NEW.id;
+END;\
+""",
+            'candidates_updated_at': """\
+CREATE TRIGGER candidates_updated_at AFTER UPDATE ON candidates
+WHEN NEW.updated_at IS OLD.updated_at AND NEW.updated_by IS OLD.updated_by
+BEGIN
+  UPDATE candidates SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = NEW.id;
+END;\
+""",
+            'comments_updated_at': """\
+CREATE TRIGGER comments_updated_at AFTER UPDATE ON comments
+WHEN NEW.updated_at IS OLD.updated_at AND NEW.updated_by IS OLD.updated_by
+BEGIN
+  UPDATE comments SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = NEW.id;
+END;\
+""",
+            'agent_sessions_updated_at': """\
+CREATE TRIGGER agent_sessions_updated_at AFTER UPDATE ON agent_sessions
+WHEN NEW.updated_at IS OLD.updated_at AND NEW.updated_by IS OLD.updated_by
+BEGIN
+  UPDATE agent_sessions SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = NEW.id;
+END;\
+""",
+            'documents_updated_at': """\
+CREATE TRIGGER documents_updated_at AFTER UPDATE ON documents
+WHEN NEW.updated_at IS OLD.updated_at AND NEW.updated_by IS OLD.updated_by
+BEGIN
+  UPDATE documents SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = NEW.id;
+END;\
+""",
+            'comments_escalation_event': """\
+CREATE TRIGGER comments_escalation_event AFTER INSERT ON comments
+WHEN NEW.kind = 'escalation'
+BEGIN
+  INSERT INTO events (actor, target_kind, target_id, payload)
+  VALUES (NEW.author, 'comment', NEW.id, json_object('kind', 'comment.' || NEW.kind, 'target_kind', NEW.target_kind, 'target_id', NEW.target_id));
+END;\
+""",
+            'idea_links_campaign': """\
+CREATE TRIGGER idea_links_campaign BEFORE INSERT ON idea_links
+WHEN (SELECT campaign_id FROM ideas WHERE id = NEW.idea_id) IS NOT (SELECT campaign_id FROM ideas WHERE id = NEW.target_id)
+BEGIN
+  SELECT RAISE(ABORT, 'idea_links: idea_id and target_id must be ideas of the same campaign');
+END;\
+""",
+            'agent_sessions_kind': """\
+CREATE TRIGGER agent_sessions_kind BEFORE INSERT ON agent_sessions
+WHEN NEW.kind NOT IN ('implementer', 'watchdog', 'research', 'scout') AND (SELECT json_type(config, '$.roles.' || json_quote(NEW.kind)) FROM campaigns WHERE id = NEW.campaign_id) IS NULL
+BEGIN
+  SELECT RAISE(ABORT, 'agent_sessions.kind must be a role of the campaign: implementer, watchdog, research, scout or a [roles.<name>] table of its piloop.toml');
+END;\
+""",
+            'campaigns_parent_insert': """\
+CREATE TRIGGER campaigns_parent_insert AFTER INSERT ON campaigns
+WHEN NEW.parent_id IS NOT NULL AND NEW.id IN (WITH RECURSIVE up(id) AS (SELECT NEW.parent_id UNION SELECT p.parent_id FROM campaigns p JOIN up ON p.id = up.id WHERE p.parent_id IS NOT NULL) SELECT id FROM up)
+BEGIN
+  SELECT RAISE(ABORT, 'campaigns.parent_id: a campaign cannot be under itself or under one of its descendants');
+END;\
+""",
+            'campaigns_parent_update': """\
+CREATE TRIGGER campaigns_parent_update AFTER UPDATE OF parent_id ON campaigns
+WHEN NEW.parent_id IS NOT NULL AND NEW.id IN (WITH RECURSIVE up(id) AS (SELECT NEW.parent_id UNION SELECT p.parent_id FROM campaigns p JOIN up ON p.id = up.id WHERE p.parent_id IS NOT NULL) SELECT id FROM up)
+BEGIN
+  SELECT RAISE(ABORT, 'campaigns.parent_id: a campaign cannot be under itself or under one of its descendants');
+END;\
+""",
+            'journal_no_replace': """\
+CREATE TRIGGER journal_no_replace BEFORE INSERT ON journal
+WHEN EXISTS (SELECT 1 FROM journal WHERE id = NEW.id)
+BEGIN
+  SELECT RAISE(ABORT, 'journal rows are never replaced: insert a new row');
+END;\
+""",
+            'lessons_no_replace': """\
+CREATE TRIGGER lessons_no_replace BEFORE INSERT ON lessons
+WHEN EXISTS (SELECT 1 FROM lessons WHERE id = NEW.id)
+BEGIN
+  SELECT RAISE(ABORT, 'lessons rows are never replaced: insert a new row');
+END;\
+""",
+            'ideas_fts_insert': """\
+CREATE TRIGGER ideas_fts_insert AFTER INSERT ON ideas
+BEGIN
+  INSERT INTO ideas_fts (rowid, title, hypothesis, plan) VALUES (NEW.id, NEW.title, NEW.hypothesis, NEW.plan);
+END;\
+""",
+            'ideas_fts_delete': """\
+CREATE TRIGGER ideas_fts_delete AFTER DELETE ON ideas
+BEGIN
+  INSERT INTO ideas_fts (ideas_fts, rowid, title, hypothesis, plan) VALUES ('delete', OLD.id, OLD.title, OLD.hypothesis, OLD.plan);
+END;\
+""",
+            'ideas_fts_update': """\
+CREATE TRIGGER ideas_fts_update AFTER UPDATE OF id, title, hypothesis, plan ON ideas
+BEGIN
+  INSERT INTO ideas_fts (ideas_fts, rowid, title, hypothesis, plan) VALUES ('delete', OLD.id, OLD.title, OLD.hypothesis, OLD.plan);
+  INSERT INTO ideas_fts (rowid, title, hypothesis, plan) VALUES (NEW.id, NEW.title, NEW.hypothesis, NEW.plan);
+END;\
+""",
+            'comments_fts_insert': """\
+CREATE TRIGGER comments_fts_insert AFTER INSERT ON comments
+BEGIN
+  INSERT INTO comments_fts (rowid, body) VALUES (NEW.id, NEW.body);
+END;\
+""",
+            'comments_fts_delete': """\
+CREATE TRIGGER comments_fts_delete AFTER DELETE ON comments
+BEGIN
+  INSERT INTO comments_fts (comments_fts, rowid, body) VALUES ('delete', OLD.id, OLD.body);
+END;\
+""",
+            'comments_fts_update': """\
+CREATE TRIGGER comments_fts_update AFTER UPDATE OF id, body ON comments
+BEGIN
+  INSERT INTO comments_fts (comments_fts, rowid, body) VALUES ('delete', OLD.id, OLD.body);
+  INSERT INTO comments_fts (rowid, body) VALUES (NEW.id, NEW.body);
+END;\
+""",
+            'documents_fts_insert': """\
+CREATE TRIGGER documents_fts_insert AFTER INSERT ON documents
+BEGIN
+  INSERT INTO documents_fts (rowid, title, body) VALUES (NEW.id, NEW.title, NEW.body);
+END;\
+""",
+            'documents_fts_delete': """\
+CREATE TRIGGER documents_fts_delete AFTER DELETE ON documents
+BEGIN
+  INSERT INTO documents_fts (documents_fts, rowid, title, body) VALUES ('delete', OLD.id, OLD.title, OLD.body);
+END;\
+""",
+            'documents_fts_update': """\
+CREATE TRIGGER documents_fts_update AFTER UPDATE OF id, title, body ON documents
+BEGIN
+  INSERT INTO documents_fts (documents_fts, rowid, title, body) VALUES ('delete', OLD.id, OLD.title, OLD.body);
+  INSERT INTO documents_fts (rowid, title, body) VALUES (NEW.id, NEW.title, NEW.body);
+END;\
+""",
+        }
+    ), (
+        'a persistent trigger changed: add a migration that recreates it (recreate or install), then update this snapshot'
+    )
 
 
 def test_a_database_at_a_revision_this_build_does_not_have_is_refused_and_left_as_it_was(tmp_path: Path) -> None:
@@ -947,7 +1115,7 @@ def at_0017(con: sqlite3.Connection) -> None:
     con.execute(
         'INSERT INTO events (kind, actor, target_kind, target_id, payload) VALUES'
         " ('worker.wrap_up', 'daemon', 'worker', 1, '{}'),"
-        " ('worker.started', 'daemon', 'worker', 1, '{\"kind\": \"worker\"}'),"
+        " ('worker.started', 'daemon', 'worker', 1, '{\"reason\": \"worker\"}'),"
         " ('research.finished', 'daemon', 'worker', 2, '{}'),"
         " ('candidate.verdict', 'worker#1', 'candidate', 1, '{\"verdict_by\": \"worker#1\"}'),"
         " ('run.relaunched', 'daemon', 'run', 1, '{\"worker\": 1, \"launches\": 1}')"
@@ -982,7 +1150,7 @@ def test_0018_renames_workers_agent_sessions_and_the_worker_role_implementer_wit
         ], 'a body keeps its text'
         assert con.execute('SELECT kind, actor, target_kind, payload FROM events ORDER BY id').fetchall() == [
             ('agent_session.wrap_up', 'daemon', 'agent_session', '{}'),
-            ('implementer.started', 'daemon', 'agent_session', '{"kind": "worker"}'),
+            ('implementer.started', 'daemon', 'agent_session', '{"reason": "worker"}'),
             ('research.finished', 'daemon', 'agent_session', '{}'),
             ('candidate.verdict', 'implementer#1', 'candidate', '{"verdict_by": "implementer#1"}'),
             ('run.relaunched', 'daemon', 'run', '{"launches":1,"agent_session":1}'),
@@ -1004,9 +1172,12 @@ def test_0018_renames_workers_agent_sessions_and_the_worker_role_implementer_wit
         con.execute("INSERT INTO runs (idea_id, attempt, base_candidate_id, harness, model) VALUES (1, 3, 1, 'c', 'm')")
         assert con.execute('SELECT role FROM runs WHERE id = 3').fetchone() == ('implementer',), 'the new default'
         assert con.execute("SELECT count(*) FROM comments_fts WHERE comments_fts MATCH 'worker'").fetchone() == (1,)
+        later = tuple(stage for stage in legacy.STAGES if stage.revision > '0018')
         for t in PERSISTENT:
             sql = con.execute('SELECT sql FROM sqlite_master WHERE name = ?', (t.name,)).fetchone()[0]
-            assert sql + ';' == t.sql(), f'{t.name}: the migration installs what the package renders'
+            assert sql + ';' == legacy.rendered(t, later)[3], (
+                f'{t.name}: the migration installs what the package renders'
+            )
         con.execute('DELETE FROM agent_sessions WHERE id = 3')
         con.execute('DELETE FROM runs WHERE id = 3')
     command.upgrade(cfg, 'head')

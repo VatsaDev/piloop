@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, select, text, update
 
+from piloop.actor import System
 from piloop.campaign import ops
 from piloop.db.events import emit
 from piloop.db.models import (
@@ -26,12 +27,16 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.ids import CampaignId, TargetKind, TargetRef
 from piloop.reports import feed
+from piloop.scoring.ledger import IdeaCreated
 
-RAW = "INSERT INTO events (kind, actor, target_kind, target_id, payload) VALUES ('{kind}', 'plugin', '{target}', {id}, '{payload}')"
+RAW = (
+    'INSERT INTO events (actor, target_kind, target_id, payload)'
+    " VALUES ('plugin', '{target}', {id}, json_set('{payload}', '$.kind', '{kind}'))"
+)
 
 
 def raw(db: Database, kind: str, payload: str, target: str = 'campaign', target_id: int = 1) -> int:
-    """Insert an event the way an agent's ``piloop sql`` can: any kind, any payload text."""
+    """Insert an event of a kind that piloop does not register, as a plugin's ``emit`` does: any JSON object."""
     with db.engine.begin() as conn:
         return conn.execute(text(RAW.format(kind=kind, target=target, id=target_id, payload=payload))).lastrowid or 0
 
@@ -54,7 +59,7 @@ def newest(db: Database) -> int:
 def test_a_read_transaction_sees_one_state_and_refuses_unflushed_changes(db: Database, campaign: Campaign) -> None:
     with db.session() as s, db.session() as other:
         with feed.snapshot(s) as cursor:
-            emit(other, 'run.started', TargetKind.CAMPAIGN, campaign.id)
+            emit(other, IdeaCreated(), TargetRef(TargetKind.IDEA, 1), System.DAEMON)
             other.commit()
             assert feed.newest(s) == cursor, 'a commit after the first read is not seen'
         assert feed.newest(s) == cursor + 1, 'the transaction ended: the commit is seen'
@@ -78,8 +83,6 @@ def test_the_envelope_normalizes_history_without_inventing_and_keeps_unknown_kin
         s.commit()
         idea_id = idea.id
     unknown = raw(db, 'myplugin.observed', '{"nested": {"a": [1, 2]}}')
-    scalar = raw(db, 'myplugin.count', '7')
-    broken = raw(db, 'myplugin.broken', 'not json {')
     with db.session() as s:
         batch = feed.read(s, 0)
     by_id = {e['id']: e for e in batch['events']}
@@ -90,21 +93,22 @@ def test_the_envelope_normalizes_history_without_inventing_and_keeps_unknown_kin
         'subject': {'kind': 'idea', 'id': idea_id, 'campaign': campaign.id},
         'actor': 'daemon',
         'time': status['time'],
-        'payload': {'old': 'ready', 'new': 'parked'},
+        'payload': {'kind': 'idea.status', 'old': 'ready', 'new': 'parked'},
     }, 'its payload as stored, its campaign resolved from its subject'
     assert (at := status['time']) is not None and at.endswith('Z') and 'T' in at
     paused = next(e for e in batch['events'] if e['kind'] == 'campaign.paused')
     assert paused['subject'] == {'kind': 'campaign', 'id': campaign.id, 'campaign': campaign.id}
-    assert paused['payload'] == {'old': None, 'new': 'launches', 'paused_reason': 'a quiet night'}
+    assert paused['payload'] == {
+        'kind': 'campaign.paused',
+        'old': None,
+        'new': 'launches',
+        'paused_reason': 'a quiet night',
+    }
     reply = next(e for e in batch['events'] if e['kind'] == 'comment.note')
     assert reply['subject'] == {'kind': 'comment', 'id': reply['subject']['id'], 'campaign': None}, (
         'a subject with no campaign says so; nothing is guessed'
     )
-    assert by_id[unknown]['payload'] == {'nested': {'a': [1, 2]}}
-    assert by_id[scalar]['payload'] == 7, 'any JSON value passes through'
-    assert by_id[broken]['payload'] is None and by_id[broken]['invalid'] == {'payload': 'not json {'}, (
-        'a payload that is not JSON is shown as stored, not dropped and not a failure'
-    )
+    assert by_id[unknown]['payload'] == {'nested': {'a': [1, 2]}, 'kind': 'myplugin.observed'}, 'opaque, as stored'
     assert 'invalid' not in by_id[unknown]
     json.dumps(batch, allow_nan=False)
 
@@ -113,24 +117,27 @@ def test_a_row_that_an_older_piloop_let_through_never_stops_the_reader(db: Datab
     start = newest(db)
     with sqlite3.connect(db.engine.url.database or '', isolation_level=None) as con:  # no checks on this connection
         for row in (
-            "('a.time', 'x', 'campaign', 1, 'not a date', '{}')",
-            "('a.number', 'x', 'campaign', 1, 2460000, '{}')",
-            "(x'622e626c6f62', x'78', 'campaign', 1, '2026-10-20 08:00:00', '{}')",
-            "('a.huge', 'x', 'campaign', 1, '2026-10-20 08:00:00+02:00', '{\"v\": 1e400}')",
-            "('a.nan', 'x', 'campaign', 1, '2026-10-20 08:00:00', '{\"v\": NaN}')",
-            "('a.blob', 'x', 'campaign', 1, '2026-10-20 08:00:00', x'00ff')",
+            """('x', 'campaign', 1, 'not a date', '{"kind": "a.time"}')""",
+            """('x', 'campaign', 1, 2460000, '{"kind": "a.number"}')""",
+            """(x'78', 'campaign', 1, '2026-10-20 08:00:00', '{"kind": "b.blob"}')""",
+            """('x', 'campaign', 1, '2026-10-20 08:00:00+02:00', '{"kind": "a.huge", "v": 1e400}')""",
+            """('x', 'campaign', 1, '2026-10-20 08:00:00', '{"kind": "a.nan", "v": NaN}')""",
         ):
-            con.execute(f'INSERT INTO events (kind, actor, target_kind, target_id, at, payload) VALUES {row}')
+            con.execute(f'INSERT INTO events (actor, target_kind, target_id, at, payload) VALUES {row}')
+        for payload, error in (("x'00ff'", 'malformed JSON'), ("'not json {'", 'malformed JSON'), ("'[]'", 'NOT NULL')):
+            with pytest.raises(sqlite3.Error, match=error):  # the generated kind reads every payload
+                con.execute(
+                    f"INSERT INTO events (actor, target_kind, target_id, payload) VALUES ('x', 'campaign', 1, {payload})"
+                )
     con.close()
     with db.session() as s:
         batch = feed.read(s, start)
     assert [(e['kind'], e['time'], e['payload'], e.get('invalid')) for e in batch['events']] == [
-        ('a.time', None, {}, {'time': 'not a date'}),
-        ('a.number', None, {}, {'time': '2460000'}),
-        ('b.blob', '2026-10-20T08:00:00Z', {}, None),
-        ('a.huge', '2026-10-20T06:00:00Z', None, {'payload': '{"v": 1e400}'}),
-        ('a.nan', '2026-10-20T08:00:00Z', None, {'payload': '{"v": NaN}'}),
-        ('a.blob', '2026-10-20T08:00:00Z', None, {'payload': "X'00FF'"}),
+        ('a.time', None, {'kind': 'a.time'}, {'time': 'not a date'}),
+        ('a.number', None, {'kind': 'a.number'}, {'time': '2460000'}),
+        ('b.blob', '2026-10-20T08:00:00Z', {'kind': 'b.blob'}, None),
+        ('a.huge', '2026-10-20T06:00:00Z', None, {'payload': '{"kind": "a.huge", "v": 1e400}'}),
+        ('a.nan', '2026-10-20T08:00:00Z', None, {'payload': '{"kind": "a.nan", "v": NaN}'}),
     ], 'each field that does not read is null, with its stored text under invalid; the next rows still read'
     assert batch['events'][2]['actor'] == 'x'
     json.dumps(batch, allow_nan=False)
@@ -180,7 +187,7 @@ def test_a_campaign_filter_follows_each_subject_to_its_campaign(
             (TargetKind.CANDIDATE, candidate.id),
             (TargetKind.CAMPAIGN, other.id),
         ):
-            emit(s, 'x.y', kind, target)
+            emit(s, IdeaCreated(), TargetRef(kind, target), System.DAEMON)
         s.commit()
         batch = feed.read(s, start, campaign_id=campaign.id)
         assert [(e['subject']['kind'], e['subject']['campaign']) for e in batch['events']] == [

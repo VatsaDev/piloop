@@ -48,8 +48,6 @@ LEAVES: dict[str, frozenset[str] | None] = {
     'cli/skills.py': frozenset({'claude', 'codex', 'pi'}),
     'cli/idea.py': frozenset({'seed'}),
     'cli/main.py': frozenset({'sql'}),
-    'campaign/inbox.py': frozenset({'anomaly'}),
-    'reports/overview.py': frozenset({'anomaly'}),
     'daemon/archiver.py': frozenset({'research'}),
 }
 """The files that may name entries, and which ones (None: any). The reasons:
@@ -63,8 +61,6 @@ LEAVES: dict[str, frozenset[str] | None] = {
 - ``deprecated.py``: the bridges rewrite the keys of earlier releases, which named built-in roles and triggers.
 - ``cli/skills.py``: the skill folder of each agent CLI, which is not the harness registry.
 - ``cli/idea.py`` and ``cli/main.py``: the commands ``piloop idea seed`` and ``piloop sql``.
-- ``campaign/inbox.py`` and ``reports/overview.py``: the key ``anomaly`` of the payload of ``anomaly.reported``, not an
-  entry.
 - ``daemon/archiver.py``: ``research/`` is a folder of the shared workspace, not the role.
 """
 

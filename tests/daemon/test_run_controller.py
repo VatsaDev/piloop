@@ -21,7 +21,7 @@ from sqlalchemy import func, insert, select
 from piloop import git
 from piloop.actor import System
 from piloop.agents.capture import ENTIRE_DIR
-from piloop.agents.results import STARTUP_ANOMALY, Ended, Lost, NotStarted
+from piloop.agents.results import Ended, Lost, NotStarted, StartupAnomaly
 from piloop.agents.roles import SQL_HINT
 from piloop.campaign import stop
 from piloop.campaign.campaigns import sync
@@ -35,8 +35,10 @@ from piloop.daemon.run_controller import (
     UNCOMMITTED_SUMMARY,
     RunController,
     RunFacts,
+    RunRelaunched,
     run_outcome,
 )
+from piloop.db.events import has, in_order
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
@@ -79,8 +81,10 @@ from piloop.plugins.runtime.contract import AgentExit, Handle, StartFailed
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES
 from piloop.scoring.ledger import (
     DAEMON,
-    REBASED,
     SKIPPED,
+    CandidateJudged,
+    MeasurementRecorded,
+    Rebased,
     branches,
     current_evaluator,
     due,
@@ -294,8 +298,8 @@ def test_successful_run_scores_the_commit(
     assert kinds == snapshot(
         [
             'run.started',
-            'implementer.started',
-            'implementer.finished',
+            'agent_session.started',
+            'agent_session.finished',
             'agent_session.job_ended',
             'run.finished',
             'measurement.recorded',
@@ -857,7 +861,7 @@ def test_a_remeasure_runs_pairs_of_the_candidate_and_its_bar_and_judges_it_again
         paired = [(m.metrics, m.pair.candidate_id, m.pair.metrics) for m in candidate.measurements if m.pair]
         assert paired == [({'score': 2.0, 'seconds': 40.0}, 1, {'score': 1.0, 'seconds': 40.0})] * 3
         assert head(s, s.get_one(Campaign, campaign.id)) == candidate
-        recorded = [e.payload['pair'] for e in s.scalars(select(Event).where(Event.kind == 'measurement.recorded'))]
+        recorded = [p.pair for _, p in in_order(s, MeasurementRecorded)]
         bars = [m.pair_id for m in candidate.measurements if m.pair]
         assert recorded[-6:] == [None, None, None, *bars], 'the event names the pair too'
 
@@ -1275,8 +1279,8 @@ def test_an_implementer_that_never_got_going_is_relaunched_on_its_run_then_the_r
         assert (tmp_path / 'runs' / str(run_id) / f'transcript-implementer{rows[-2].id}.txt').read_text() == 'Welcome\n'
     execute(ex, db, run_id)
     with db.session() as s:
-        relaunched = s.scalars(select(Event).where(Event.kind == 'run.relaunched')).all()
-        assert [e.payload['launches'] for e in relaunched] == [1, 2]
+        relaunched = in_order(s, RunRelaunched)
+        assert [p.launches for _, p in relaunched] == [1, 2]
         idea = s.get_one(Idea, run_row(db, run_id).idea_id)
         assert idea.status is IdeaStatus.PARKED, 'no agent of its run started to work'
         [note] = s.scalars(select(Comment).where(Comment.target_id == idea.id)).all()
@@ -1318,7 +1322,7 @@ def test_a_worktree_that_cannot_be_made_is_a_failed_start_that_frees_the_slot(
         rows = s.scalars(select(AgentSession).where(AgentSession.run_id == run_id).order_by(AgentSession.id)).all()
         assert [w.state for w in rows] == [AgentSessionState.KILLED] * 3
         assert all('Could not write new index file' in (w.error or '') for w in rows)
-        assert s.scalars(select(Event.target_id).where(Event.kind == STARTUP_ANOMALY)).all() == [w.id for w in rows]
+        assert s.scalars(select(Event.target_id).where(has(StartupAnomaly))).all() == [w.id for w in rows]
         run = s.get_one(Run, run_id)
         assert (run.status, run.end, run.idea.status) == (RunStatus.FAILED, RunEnd.NOT_STARTED, IdeaStatus.PARKED)
 
@@ -1369,7 +1373,7 @@ def test_an_implementer_that_spends_tokens_but_ends_at_once_with_nothing_did_not
             16478,
             AgentSessionState.REQUESTED,
         )
-        assert s.scalars(select(Event.target_id).where(Event.kind == STARTUP_ANOMALY)).all() == [dead.id]
+        assert s.scalars(select(Event.target_id).where(has(StartupAnomaly))).all() == [dead.id]
         run = s.get_one(Run, run_id)
         assert (run.status, run.error, run.idea.status) == (RunStatus.QUEUED, None, IdeaStatus.SCHEDULED), (
             'the same run'
@@ -1389,9 +1393,9 @@ def test_a_cancel_made_while_the_implementer_starts_survives_a_failed_start(
             run = s.get_one(Run, run_id)
             [agent_session] = s.scalars(select(AgentSession).where(AgentSession.run_id == run_id)).all()
             if on == 'run':
-                stop.request_cancel(s, run, System.HUMAN, wrap_up=False)
+                stop.request_cancel(s, run, System.HUMAN, ending=stop.Ending.NOW)
             else:
-                stop.request_cancel(s, agent_session, System.HUMAN, wrap_up=False)
+                stop.request_cancel(s, agent_session, System.HUMAN, ending=stop.Ending.NOW)
             s.commit()
         raise StartFailed('HerdrError: prompt_lost: no pickup', 'Welcome\n')
 
@@ -1412,7 +1416,7 @@ def test_a_cancelled_run_whose_implementer_ends_by_itself_first_closes_as_cancel
     """The daemon ends a cancelled implementer on its next tick; one that ends before that does not requeue its idea."""
     run_id = make_run(db, campaign)
     with db.session() as s:
-        stop.request_cancel(s, s.get_one(Run, run_id), System.HUMAN, wrap_up=False)
+        stop.request_cancel(s, s.get_one(Run, run_id), System.HUMAN, ending=stop.Ending.NOW)
         s.commit()
     execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
@@ -1476,7 +1480,7 @@ def test_a_fast_implementer_whose_tokens_are_unknown_is_no_startup_death_when_it
         assert s.scalar(select(func.count()).select_from(AgentSession).where(AgentSession.run_id == run_id)) == 1, (
             'no relaunch'
         )
-        assert not s.scalars(select(Event).where(Event.kind.in_(['run.relaunched', STARTUP_ANOMALY]))).all()
+        assert not s.scalars(select(Event).where(has(RunRelaunched) | has(StartupAnomaly))).all()
 
 
 @pytest.mark.parametrize('edit', ['echo line >> solve.txt', 'echo note > new.txt'])
@@ -1501,7 +1505,7 @@ def test_a_fast_implementer_that_left_uncommitted_work_started_and_its_work_is_r
         assert s.scalar(select(func.count()).select_from(AgentSession).where(AgentSession.run_id == run_id)) == 1, (
             'no relaunch'
         )
-        assert not s.scalars(select(Event).where(Event.kind == STARTUP_ANOMALY)).all()
+        assert not s.scalars(select(Event).where(has(StartupAnomaly))).all()
 
 
 def test_a_startup_death_during_a_stop_leaves_the_run_to_the_stop(
@@ -2049,8 +2053,8 @@ def test_per_unit_results_decide_the_verdict_and_live_outside_the_database(
         assert c.verdict_reason == snapshot(
             'against candidate#1: score 2 vs 1 (+1; 95% worst case -2 over 2 units): the gain is not significant'
         )
-        judged = s.scalars(select(Event).where(Event.kind == 'candidate.judged')).one()
-        assert judged.payload['reason'] == c.verdict_reason
+        [(_, judged)] = in_order(s, CandidateJudged)
+        assert judged.reason == c.verdict_reason
         assert m.metrics.keys() == {'score', 'size'}, 'per-unit results are not a column any agent can SELECT'
     assert json.loads((units_dir / f'{m.id}.json').read_text()) == {'score': {'a': 3, 'b': -1}}
     assert sorted(p.name for p in units_dir.iterdir()) == [f'{base_measurement}.json', f'{m.id}.json'], (
@@ -2169,8 +2173,8 @@ def test_a_commit_marked_skip_is_a_candidate_without_an_evaluation_and_moves_no_
         ('work', Verdict.KEEP, IsStr(regex=r'against candidate#1: score 3 vs 1 .*'), 1, skip_id),
     ], 'the next commit descends from the scaffold and is judged against the bar, the baseline'
     with db.session() as s:
-        judged = s.scalars(select(Event).where(Event.kind == 'candidate.judged').order_by(Event.id)).first()
-        assert judged is not None and judged.payload == {'verdict': 'unmeasured', 'score': None, 'reason': SKIPPED}
+        judged = in_order(s, CandidateJudged)[0][1]
+        assert judged == CandidateJudged(verdict=Verdict.UNMEASURED, score=None, reason=SKIPPED)
 
 
 def test_a_skipped_tree_reached_again_without_the_trailer_is_measured_and_judged(
@@ -2279,7 +2283,7 @@ def test_a_run_whose_history_holds_the_head_is_judged_against_the_head_itself(
         assert s.get_one(Candidate, reference).verdict is Verdict.REFERENCE, 'the starting point is never judged'
         trunk = head(s, s.get_one(Campaign, campaign.id))
         assert trunk is not None and trunk.summary == 'second'
-        assert not s.scalars(select(Event).where(Event.kind == REBASED)).all(), 'nothing was merged'
+        assert not s.scalars(select(Event).where(has(Rebased))).all(), 'nothing was merged'
 
 
 def test_a_branch_run_is_judged_against_its_own_base_and_its_keep_never_moves_the_head(
@@ -2474,10 +2478,10 @@ def test_a_keep_that_lost_the_race_to_the_head_is_merged_onto_it_and_judged_ther
         )
         trunk = head(s, s.get_one(Campaign, campaign.id))
         assert trunk is not None and trunk.id == final.id, 'the last merge is the head'
-        rebased = s.scalars(select(Event).where(Event.kind == REBASED).order_by(Event.id)).all()
+        rebased = s.scalars(select(Event).where(has(Rebased)).order_by(Event.id)).all()
         assert [(e.target_id, e.payload) for e in rebased] == [
-            (x.id, {'head': h2, 'rebased': merged.id}),
-            (merged.id, {'head': h3.id, 'rebased': final.id}),
+            (x.id, Rebased(head=h2, rebased=merged.id)),
+            (merged.id, Rebased(head=h3.id, rebased=final.id)),
         ]
         assert [p.hexsha for p in repo.commit(final.commit_sha).parents] == [h3.commit_sha, merged.commit_sha]
         assert sorted((Path(campaign.path) / '.git' / 'refs' / 'piloop' / 'demo' / 'rebase').iterdir()) == [
@@ -2535,8 +2539,8 @@ def test_a_keep_whose_merge_onto_the_head_conflicts_stays_interesting_and_files_
             f'Follow-up of candidate#{x.id} (add a line): it kept against its own bar but its merge onto the head'
             f' candidate#{h2} conflicts in solve.txt: from the head, git merge {x.commit_sha} and resolve the conflicts'
         )
-        [event] = s.scalars(select(Event).where(Event.kind == REBASED)).all()
-        assert (event.target_id, event.payload) == (x.id, {'head': h2, 'conflicts': ['solve.txt']})
+        [event] = s.scalars(select(Event).where(has(Rebased))).all()
+        assert (event.target_id, event.payload) == (x.id, Rebased(head=h2, conflicts=['solve.txt']))
         trunk = head(s, s.get_one(Campaign, campaign.id))
         assert trunk is not None and trunk.id == h2
 
@@ -2622,8 +2626,8 @@ def test_a_keep_whose_merge_onto_the_head_is_the_head_already_changes_nothing(
         ),
     )
     with db.session() as s:
-        [event] = s.scalars(select(Event).where(Event.kind == REBASED)).all()
-        assert event.payload == {'head': h2, 'known': h2}
+        [event] = s.scalars(select(Event).where(has(Rebased))).all()
+        assert event.payload == Rebased(head=h2, known=h2)
 
 
 def test_a_keep_that_lands_while_another_run_measures_its_tree_is_not_judged_again(

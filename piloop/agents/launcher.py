@@ -14,14 +14,23 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from piloop import deprecated
-from piloop.actor import Agent
-from piloop.agents.results import DaemonStopped, Ended, HandedOver, NotStarted, ended_of, learn
+from piloop.actor import Agent, System
+from piloop.agents.results import (
+    AgentSessionStarted,
+    DaemonStopped,
+    Ended,
+    HandedOver,
+    NotStarted,
+    ended_of,
+    learn,
+    session_finished,
+)
 from piloop.config import BRIEF_FILE, config_of, harness_of
 from piloop.db.events import emit
 from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Run, utcnow
 from piloop.db.session import Database
 from piloop.harnesses import SESSION_ENV, SESSION_ID, Invocation, fill, takes_session_id
-from piloop.ids import AgentSessionId, TargetKind
+from piloop.ids import AgentSessionId, TargetKind, TargetRef
 from piloop.otel import Span, Tracer
 from piloop.plugins.executor.contract import AgentJob, AgentKey, Artifact, Commits, Executor, LeftJob
 from piloop.plugins.runtime.contract import RUNTIMES, AgentSpec
@@ -148,8 +157,7 @@ class Launcher:
         with self.db.session() as s:
             w = s.get_one(AgentSession, agent_session_id)
             w.state, w.ended_at, w.error = AgentSessionState.KILLED, utcnow(), error
-            payload: dict[str, object] = {'reason': w.reason, 'status': None, 'error': error}
-            emit(s, f'{w.kind}.finished', TargetKind.AGENT_SESSION, agent_session_id, payload=payload)
+            session_finished(s, w, None)
             s.commit()
 
     def _prepare(
@@ -256,13 +264,8 @@ class Launcher:
             )
             w.harness, w.model, w.runtime, w.log_dir = harness, model, runtime_kind, str(log_dir)
             w.state, w.started_at = AgentSessionState.STARTING, utcnow()
-            emit(
-                s,
-                f'{kind}.started',
-                TargetKind.AGENT_SESSION,
-                agent_session_id,
-                payload={'harness': harness, 'model': model, 'reason': reason},
-            )
+            started = AgentSessionStarted(role=kind, harness=harness, model=model, reason=reason)
+            emit(s, started, TargetRef(TargetKind.AGENT_SESSION, agent_session_id), System.DAEMON)
             learn(s, w, session_id)
             s.commit()
             return job

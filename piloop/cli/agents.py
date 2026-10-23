@@ -8,13 +8,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop.agents import results
-from piloop.campaign.stop import CANCELLABLE, request_cancel
+from piloop.campaign.stop import CANCELLABLE, Ending, request_cancel
 from piloop.cli import common
 from piloop.cli.common import HARNESS_HELP, CampaignRef
 from piloop.config import TRANSCRIPT, config_of
+from piloop.db.events import has, latest
 from piloop.db.models import OPEN_RUNS, AgentSession, AgentSessionState, Event, Run, TargetKind
 from piloop.db.session import Database
-from piloop.ids import AgentSessionId, CommentId, RoleName, RunId
+from piloop.ids import AgentSessionId, CommentId, RoleName, RunId, TargetRef
 from piloop.plugins.runtime.contract import Handle, NotAttachable, Runtime, RuntimeFailure
 from piloop.runtime.factory import handle_for, runtime_for
 
@@ -90,27 +91,21 @@ def prompt(
                 f'comment#{comment_id}: queued for agent_session#{agent_session_id}; the daemon delivers it once it runs',
                 markup=False,
             )
-        case results.DELIVERED, _:
+        case results.PromptSettled(error=None):
             common.console.print(f'prompted agent_session#{agent_session_id} (comment#{comment_id})', markup=False)
         case _:
-            raise SystemExit(f'agent_session#{agent_session_id} did not get comment#{comment_id}: {outcome[1]}')
+            raise SystemExit(f'agent_session#{agent_session_id} did not get comment#{comment_id}: {outcome.error}')
 
 
-def _outcome(agent_session_id: AgentSessionId, comment_id: CommentId) -> tuple[str, object] | None:
-    """Wait up to ``DELIVERY_WAIT`` for the comment's outcome on the agent: its event kind and its error."""
-    found: list[tuple[str, object]] = []
+def _outcome(agent_session_id: AgentSessionId, comment_id: CommentId) -> results.PromptSettled | None:
+    """Wait up to ``DELIVERY_WAIT`` for the comment's outcome on the agent."""
+    found: list[results.PromptSettled] = []
+    on_agent = Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id)
 
     def settled(s: Session) -> bool:
-        event = s.scalars(
-            select(Event).where(
-                Event.target_kind == TargetKind.AGENT_SESSION,
-                Event.target_id == agent_session_id,
-                Event.kind.in_(results.SETTLED),
-                Event.payload['comment'].as_integer() == comment_id,
-            )
-        ).first()
+        event = latest(s, results.PromptSettled, on_agent, has(results.PromptSettled, comment=comment_id))
         if event is not None:
-            found.append((event.kind, event.payload.get('error')))
+            found.append(event[1])
         return event is not None
 
     db = Database(common.settings.database_url, actor=common.settings.actor)
@@ -175,7 +170,7 @@ def agent_cancel(
         agent_session = s.get(AgentSession, agent_session_id)
         if agent_session is None or agent_session.state not in CANCELLABLE:
             raise SystemExit(f'agent_session#{agent_session_id} is not requested, starting or running')
-        request_cancel(s, agent_session, common.settings.actor, wrap_up=wrap_up)
+        request_cancel(s, agent_session, common.settings.actor, ending=Ending.WRAP_UP if wrap_up else Ending.NOW)
         s.commit()
     common.console.print(f'cancel requested for agent_session#{agent_session_id}: the daemon acts on its next tick')
 
@@ -195,6 +190,6 @@ def run_cancel(
         run = s.get(Run, run_id)
         if run is None or run.status not in OPEN_RUNS:
             raise SystemExit(f'run#{run_id} is not queued or running')
-        request_cancel(s, run, common.settings.actor, wrap_up=wrap_up)
+        request_cancel(s, run, common.settings.actor, ending=Ending.WRAP_UP if wrap_up else Ending.NOW)
         s.commit()
     common.console.print(f'cancel requested for run#{run_id}: the daemon acts on its next tick')

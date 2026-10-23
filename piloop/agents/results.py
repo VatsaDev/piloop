@@ -2,7 +2,7 @@
 
 Each checks the domain only: a job's row closes once (``Settled``). Each holds the write lock from its check to the
 commit, in a write transaction of its own, so two calls for one job never both pass the check. Fencing a result that comes late, or twice, is
-the executor's (``piloop.plugins.executor.contract``). An agent's end is an ``ENDED`` event on its row: what waits for
+the executor's (``piloop.plugins.executor.contract``). An agent's end is a ``JobEnded`` event on its row: what waits for
 the agent reads it there (``Launcher.launch``), whichever process applied it.
 """
 
@@ -16,9 +16,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop import deprecated
-from piloop.actor import Agent, SignedAgent
+from piloop.actor import Agent, SignedAgent, System
 from piloop.config import harness_of
-from piloop.db.events import emit
+from piloop.db.events import emit, has, latest
 from piloop.db.models import (
     LIVE,
     AgentSession,
@@ -28,6 +28,7 @@ from piloop.db.models import (
     CommentKind,
     Evaluation,
     Event,
+    EventModel,
     Idea,
     Measurement,
     Run,
@@ -63,7 +64,7 @@ from piloop.plugins.executor.contract import (
     Settled,
 )
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
-from piloop.scoring.ledger import save_units
+from piloop.scoring.ledger import MeasurementRecorded, save_units
 
 STARTUP_SECONDS = 120
 """An agent that ends sooner than this and leaves nothing did not start to work: a dialog, a crash, broken tools.
@@ -72,29 +73,77 @@ Longer than the default Herdr ``startup_grace_seconds``: a Herdr agent that neve
 the whole grace, and must still count as a failed start, not as a run that worked and left nothing."""
 NEVER_WORKED = f'it ended within {STARTUP_SECONDS}s and left nothing'
 """Why an agent that ended with no error did not start to work (``_never_worked``)."""
-STARTUP_ANOMALY = 'anomaly.startup'
-"""The event on an implementer that did not start to work (``NotStarted``): an environment fault, not bad work."""
-WRAP_UP = 'agent_session.wrap_up'
-"""Event on an implementer of a stopped campaign, or of a run cancelled with its wrap-up: the implementer was told to commit and stop.
 
-The daemon ends the implementer ``STOP_GRACE_SECONDS`` later."""
-STOP_ENDED = 'agent_session.stop_ended'
-"""Event on an agent that the daemon ended for a stop or a cancel, with the ``reason`` and the run's ``error``.
 
-An implementer of a stopped campaign is ended when the grace period after its wrap-up prompt is over, or at once for a stop
-that kills. An implementer in the middle of a turn takes a message only when the turn ends, so it may never have read the
-prompt. The scheduler sets the row ``ending`` and commits it with the event before the kill, so a finding that the
-agent writes after it is refused. The run ends ``campaign_stopped`` or ``cancelled`` unless its implementer left its
-finding before."""
-ASKED_TO_END = (WRAP_UP, STOP_ENDED)
-"""Events on an agent that the daemon told to stop or ended. Such an agent never counts as a failed start."""
-ENDED_EVENT = 'agent_session.job_ended'
-"""The event on an agent's row that says how its job ended (``Ended``)."""
-DELIVERED = 'comment.delivered'
-UNDELIVERED = 'comment.undelivered'
-"""The event on an agent whose prompt did not reach it, with the ``error``."""
-SETTLED = (DELIVERED, UNDELIVERED)
-"""The outcomes of a prompt: events on the agent, with the comment id in the payload. Each comment gets one."""
+class AgentSessionStarted(EventModel):
+    """The launcher started an agent: its row is ``starting``."""
+
+    kind: Literal['agent_session.started'] = 'agent_session.started'
+    role: RoleName
+    harness: str
+    model: str | None
+    reason: str | None
+    """The row's ``reason``: why it was requested."""
+
+
+class AgentSessionFinished(EventModel):
+    """An agent's row closed: its process ended, or its job never started or was lost."""
+
+    kind: Literal['agent_session.finished'] = 'agent_session.finished'
+    role: RoleName
+    reason: str | None
+    """The row's ``reason``: why it was requested."""
+    status: ExitStatus | None
+    """How its process ended. None when no process ran or none came back."""
+    error: str | None
+
+
+class StartupAnomaly(EventModel):
+    """An agent did not start to work (``NotStarted``): an environment fault, not bad work."""
+
+    kind: Literal['anomaly.startup'] = 'anomaly.startup'
+    role: RoleName
+    harness: str | None
+    run: RunId | None
+    seconds: float
+    error: str | None
+    """Why it did not start. None only in an event of 0.1.0, which did not always know."""
+
+
+class WrapUp(EventModel):
+    """An implementer of a stopped campaign, or of a run cancelled with its wrap-up, was told to commit and stop.
+
+    The daemon ends the implementer ``STOP_GRACE_SECONDS`` later.
+    """
+
+    kind: Literal['agent_session.wrap_up'] = 'agent_session.wrap_up'
+    reason: str
+    error: str | None = None
+    """Why the prompt did not reach the agent. The grace period starts anyway."""
+
+
+class AgentEnded(EventModel):
+    """The daemon ended an agent for a stop or a cancel, with the ``reason`` and the run's ``end``.
+
+    An implementer of a stopped campaign is ended when the grace period after its wrap-up prompt is over, or at once for
+    a stop that ends it now. An implementer in the middle of a turn takes a message only when the turn ends, so it may
+    never have read the prompt. The scheduler sets the row ``ending`` and commits it with the event before the kill, so
+    a finding that the agent writes after it is refused. The run ends ``campaign_stopped`` or ``cancelled`` unless its
+    implementer left its finding before.
+    """
+
+    kind: Literal['agent_session.stop_ended'] = 'agent_session.stop_ended'
+    reason: str
+    end: RunEnd
+
+
+class PromptSettled(EventModel):
+    """The outcome of a prompt to an agent, on the agent: each comment gets one."""
+
+    kind: Literal['comment.delivered', 'comment.undelivered']
+    comment: CommentId
+    error: str | None = None
+    """Why it did not reach the agent: only on ``comment.undelivered``."""
 
 
 def queue_prompt(s: Session, agent_session_id: AgentSessionId, text: str, author: str) -> CommentId | None:
@@ -165,11 +214,13 @@ class HandedOver:
 
 type Ended = Annotated[Ran | NotStarted | Lost | DaemonStopped | HandedOver, Field(discriminator='kind')]
 """How an agent's job ended, for what waits for it. Only ``Ran`` has a process exit: only then did a process end."""
-ENDED: TypeAdapter[Ended] = TypeAdapter(Ended)
-"""How an ``ENDED_EVENT`` holds an ``Ended``."""
 
-IDENTIFIED_EVENT = 'agent_session.identified'
-"""The event on an agent's row when its harness session id is new to the row (``learn``), with an ``Identified``."""
+
+class JobEnded(EventModel):
+    """How an agent's job ended, on its row: what waits for the agent reads it there (``Launcher.launch``)."""
+
+    kind: Literal['agent_session.job_ended'] = 'agent_session.job_ended'
+    ended: Ended
 
 
 @dataclass(frozen=True)
@@ -185,10 +236,10 @@ class Proposer:
     """Its harness's session id. None until piloop knows it, or when its row is gone."""
 
 
-@dataclass(frozen=True)
-class Identified:
-    """An agent's harness session, and what the agent does in the campaign."""
+class Identified(EventModel):
+    """An agent's harness session is new to its row (``learn``), with what the agent does in the campaign."""
 
+    kind: Literal['agent_session.identified'] = 'agent_session.identified'
     session_id: str
     """The harness's own session id."""
     harness: str
@@ -206,8 +257,6 @@ class Identified:
     without a run."""
 
 
-IDENTIFIED: TypeAdapter[Identified] = TypeAdapter(Identified)
-"""How an ``IDENTIFIED_EVENT`` holds an ``Identified``."""
 SIGNED: TypeAdapter[SignedAgent] = TypeAdapter(SignedAgent)
 """Reads an agent from its signature, such as an ``ideas.created_by``."""
 
@@ -275,32 +324,28 @@ class CampaignResults:
                 return
             w = _open(s, key)
             w.state, w.ended_at, w.error = AgentSessionState.KILLED, utcnow(), reason
-            payload: dict[str, object] = {'reason': w.reason, 'status': None, 'error': reason}
-            emit(s, f'{w.kind}.finished', TargetKind.AGENT_SESSION, w.id, payload=payload)
+            session_finished(s, w, None)
             _ended(s, w.id, Lost(reason))
 
         self._apply(guard, change)
 
     def delivered(self, key: AgentKey, prompt: CommentId, error: str | None) -> None:
-        """Record ``DELIVERED`` or ``UNDELIVERED`` on the agent, unless the comment has its outcome already."""
-        kind = DELIVERED if error is None else UNDELIVERED
-        payload: dict[str, object] = {'comment': prompt} if error is None else {'comment': prompt, 'error': error}
+        """Record ``comment.delivered`` or ``comment.undelivered`` on the agent, unless the comment has its outcome."""
+        settled = PromptSettled(
+            kind='comment.delivered' if error is None else 'comment.undelivered', comment=prompt, error=error
+        )
+        on_agent = TargetRef(TargetKind.AGENT_SESSION, key.agent_session)
 
         def change(s: Session) -> None:
-            outcome = select(Event.id).where(
-                Event.target_kind == TargetKind.AGENT_SESSION,
-                Event.target_id == key.agent_session,
-                Event.kind.in_(SETTLED),
-                Event.payload['comment'].as_integer() == prompt,
-            )
+            outcome = select(Event.id).where(Event.target == on_agent, has(PromptSettled, comment=prompt))
             if s.scalar(outcome.limit(1)) is None:
-                emit(s, kind, TargetKind.AGENT_SESSION, key.agent_session, payload=payload)
+                emit(s, settled, on_agent, System.DAEMON)
 
         self._apply(None, change)
-        self._tracer.event(kind, comment=prompt, agent_session=key.agent_session, error=error)
+        self._tracer.event(settled.kind, comment=prompt, agent_session=key.agent_session, error=error)
 
     def _agent(self, s: Session, job: AgentJob, report: AgentReport) -> None:
-        """Close the row from the report, and emit ``<kind>.finished``, ``ENDED_EVENT`` and ``STARTUP_ANOMALY``.
+        """Close the row from the report, and emit ``AgentSessionFinished``, ``JobEnded`` and ``StartupAnomaly``.
 
         The anomaly only when the agent did not start to work (``NotStarted``): its job did not start, or it ended
         within ``STARTUP_SECONDS`` and left nothing (``_never_worked``), unless the daemon told it to stop or ended it.
@@ -330,19 +375,17 @@ class CampaignResults:
                 ended = Ran(process, report.head) if worked else NotStarted(process.error or NEVER_WORKED)
             case _:
                 assert_never(report)
-        status = None if process is None else process.status
-        payload: dict[str, object] = {'reason': w.reason, 'status': status, 'error': w.error}
-        emit(s, f'{w.kind}.finished', TargetKind.AGENT_SESSION, w.id, payload=payload)
+        session_finished(s, w, None if process is None else process.status)
         if isinstance(ended, NotStarted):
-            anomaly: dict[str, object] = {
-                'kind': w.kind,
-                'harness': w.harness,
-                'run': w.run_id,
-                'seconds': round(seconds, 1),
-                'error': ended.reason,
-            }
-            emit(s, STARTUP_ANOMALY, TargetKind.AGENT_SESSION, w.id, payload=anomaly)
-            self._tracer.event(STARTUP_ANOMALY, agent_session=w.id, harness=w.harness, error=ended.reason)
+            anomaly = StartupAnomaly(
+                role=w.kind,
+                harness=w.harness,
+                run=w.run_id,
+                seconds=round(seconds, 1),
+                error=ended.reason,
+            )
+            emit(s, anomaly, TargetRef(TargetKind.AGENT_SESSION, w.id), System.DAEMON)
+            self._tracer.event(anomaly.kind, agent_session=w.id, harness=w.harness, error=ended.reason)
         _ended(s, w.id, ended)
 
     @staticmethod
@@ -386,7 +429,7 @@ def _open(s: Session, key: AgentKey) -> AgentSession:
 
 
 def learn(s: Session, w: AgentSession, session_id: str | None) -> None:
-    """Put ``session_id`` on the row. When the row did not have it, emit ``IDENTIFIED_EVENT``. The caller commits.
+    """Put ``session_id`` on the row. When the row did not have it, emit ``Identified``. The caller commits.
 
     Each write of an agent's session id goes through here: the launcher's minted id, and the ids that its executor
     reports at the start, in each heartbeat and in the final report.
@@ -409,7 +452,7 @@ def learn(s: Session, w: AgentSession, session_id: str | None) -> None:
         idea=None if idea is None else idea.id,
         proposed_by=None if idea is None else _proposer(s, idea.created_by),
     )
-    emit(s, IDENTIFIED_EVENT, TargetKind.AGENT_SESSION, w.id, payload=IDENTIFIED.dump_python(identified, mode='json'))
+    emit(s, identified, TargetRef(TargetKind.AGENT_SESSION, w.id), System.DAEMON)
 
 
 def _proposer(s: Session, created_by: str) -> Proposer | None:
@@ -425,28 +468,32 @@ def _proposer(s: Session, created_by: str) -> Proposer | None:
     return Proposer(agent, row.harness, None if definition is None else definition.executable, row.session_id)
 
 
+def session_finished(s: Session, w: AgentSession, status: ExitStatus | None) -> None:
+    """Emit ``AgentSessionFinished`` for the row that just closed. The caller commits."""
+    event = AgentSessionFinished(role=w.kind, reason=w.reason, status=status, error=w.error)
+    emit(s, event, TargetRef(TargetKind.AGENT_SESSION, w.id), System.DAEMON)
+
+
 def _ended(s: Session, agent_session_id: AgentSessionId, ended: Ended) -> None:
-    emit(s, ENDED_EVENT, TargetKind.AGENT_SESSION, agent_session_id, payload=ENDED.dump_python(ended, mode='json'))
+    emit(
+        s,
+        JobEnded(ended=ended),
+        TargetRef(TargetKind.AGENT_SESSION, agent_session_id),
+        System.DAEMON,
+    )
 
 
 def ended_of(s: Session, agent_session_id: AgentSessionId) -> Ended | None:
-    """Return how the agent's job ended (``ENDED_EVENT``), or None when no result closed its row: a stop did."""
-    payload = s.scalar(
-        select(Event.payload)
-        .where(
-            Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id),
-            Event.kind == ENDED_EVENT,
-        )
-        .order_by(Event.id.desc())
-        .limit(1)
-    )
-    return None if payload is None else ENDED.validate_python(payload)
+    """Return how the agent's job ended (``JobEnded``), or None when no result closed its row: a stop did."""
+    found = latest(s, JobEnded, Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id))
+    return None if found is None else found[1].ended
 
 
-def _asked_to_end(s: Session, agent_session_id: AgentSessionId) -> set[str]:
-    """Return the ``ASKED_TO_END`` events on the agent: a stop or a cancel ended it, not a failed start."""
+def _asked_to_end(s: Session, agent_session_id: AgentSessionId) -> bool:
+    """Whether the daemon told the agent to stop or ended it (``WrapUp``, ``AgentEnded``): no failed start then."""
     on_agent_session = Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id)
-    return set(s.scalars(select(Event.kind).where(on_agent_session, Event.kind.in_(ASKED_TO_END))))
+    asked = select(Event.id).where(on_agent_session, has(WrapUp) | has(AgentEnded))
+    return s.scalar(asked.limit(1)) is not None
 
 
 def _never_worked(s: Session, w: AgentSession, report: AgentFinished) -> bool:
@@ -499,12 +546,8 @@ def record(
     s.add(measurement)
     s.flush()
     save_units(units_dir, measurement.id, sample.units)
-    payload: dict[str, object] = {
-        'candidate': candidate_id,
-        'metrics': sample.metrics,
-        'error': sample.error,
-        'run': run_id,
-        'pair': pair,
-    }
-    emit(s, 'measurement.recorded', TargetKind.MEASUREMENT, measurement.id, payload=payload)
+    recorded = MeasurementRecorded(
+        candidate=candidate_id, metrics=sample.metrics, error=sample.error, run=run_id, pair=pair
+    )
+    emit(s, recorded, TargetRef(TargetKind.MEASUREMENT, measurement.id), System.DAEMON)
     return measurement.id

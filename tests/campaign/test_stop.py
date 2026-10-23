@@ -16,6 +16,8 @@ from sqlalchemy import func, select
 from piloop.actor import Agent, System
 from piloop.campaign.ops import pause
 from piloop.campaign.stop import (
+    Ending,
+    StopRequested,
     check as check_campaign,
     hours,
     request_stop,
@@ -26,6 +28,8 @@ from piloop.campaign.stop import (
     stall,
 )
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
+from piloop.daemon.run_controller import RunFinished
+from piloop.db.events import in_order
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
@@ -39,6 +43,7 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Measurement,
+    Pause,
     Run,
     RunEnd,
     RunStatus,
@@ -46,6 +51,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
+from piloop.db.triggers.changelog import CampaignPausedChanged, CampaignStatusChanged
 from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, CandidateId, RunId, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins import host
@@ -317,12 +323,11 @@ def test_the_time_a_campaign_was_paused_does_not_count_toward_max_hours(db: Data
     assert reason(db, campaign) == 'max_hours: 12.5h since the first run'
     now = utcnow()
 
-    def paused(hours_ago: float, new: str | None) -> None:
+    def paused(hours_ago: float, new: Pause | None) -> None:
         with db.session() as s:
-            payload: dict[str, object] = {'old': None, 'new': new, 'paused_reason': None}
+            payload = CampaignPausedChanged(old=None, new=new, paused_reason=None)
             s.add(
                 Event(
-                    kind='campaign.paused',
                     actor='t',
                     target=TargetRef(TargetKind.CAMPAIGN, campaign.id),
                     payload=payload,
@@ -331,10 +336,10 @@ def test_the_time_a_campaign_was_paused_does_not_count_toward_max_hours(db: Data
             )
             s.commit()
 
-    paused(14, 'launches')  # before the first run: only its last half hour counts
+    paused(14, Pause.LAUNCHES)  # before the first run: only its last half hour counts
     paused(12, None)
-    paused(9, 'all')
-    paused(8.9, 'launches')  # a change of what it holds goes on with the same pause
+    paused(9, Pause.ALL)
+    paused(8.9, Pause.LAUNCHES)  # a change of what it holds goes on with the same pause
     paused(8.75, None)
 
     def elapsed() -> float | None:
@@ -343,7 +348,7 @@ def test_the_time_a_campaign_was_paused_does_not_count_toward_max_hours(db: Data
             return None if value is None else round(value, 2)
 
     assert (elapsed(), reason(db, campaign)) == (11.75, None), '12.5h less half an hour and a quarter paused'
-    paused(1, 'launches')  # still paused: up to now
+    paused(1, Pause.LAUNCHES)  # still paused: up to now
     assert elapsed() == 10.75
 
 
@@ -527,8 +532,8 @@ def test_stopping_drains_the_requests_and_queued_runs_pending_at_that_moment(
         run = s.get_one(Run, 2)
         assert (run.status, run.end, run.finished_at is not None) == (RunStatus.FAILED, RunEnd.CAMPAIGN_STOPPED, True)
         assert s.get_one(Idea, idea).status is IdeaStatus.READY
-        [event] = s.scalars(select(Event).where(Event.kind == 'run.finished')).all()
-        assert (event.target_id, event.payload) == (2, {'status': 'failed', 'end': 'campaign_stopped', 'error': None})
+        [(event, finished)] = in_order(s, RunFinished)
+        assert (event.target_id, finished) == (2, RunFinished(end=RunEnd.CAMPAIGN_STOPPED, error=None))
         s.add(AgentSession(kind=RESEARCH, campaign_id=campaign.id, reason='by hand, after the stop'))
         s.commit()
     assert sched.tick() == [4], 'a request made after the stop is explicit and launches'
@@ -552,7 +557,7 @@ def test_a_requested_stop_ends_the_campaign_as_a_stop_condition_does(
         s.add(run)
         s.flush()
         s.add(AgentSession(kind=IMPLEMENTER, campaign_id=campaign.id, run_id=run.id, harness='script', model='m'))
-        request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='machine needed', kill=False)
+        request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='machine needed', ending=Ending.WRAP_UP)
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)
     assert sched.tick() == [2], 'only the closing watchdog launches'
@@ -568,11 +573,16 @@ def test_a_requested_stop_ends_the_campaign_as_a_stop_condition_does(
     sched.stop(timeout=5)
     assert campaign_state(db, campaign)[0] is CampaignStatus.ACTIVE
     with db.session() as s:
-        request_stop(s, s.get_one(Campaign, campaign.id), Agent(role='implementer', session=3), reason='', kill=True)
+        request_stop(
+            s, s.get_one(Campaign, campaign.id), Agent(role='implementer', session=3), reason='', ending=Ending.NOW
+        )
         s.commit()
         assert requested(s, s.get_one(Campaign, campaign.id)) == (Stop('stopped by implementer#3'))
-        event = requested_stop(s, s.get_one(Campaign, campaign.id))
-        assert event is not None and (event.actor, event.payload) == ('implementer#3', {'reason': '', 'kill': True})
+        request = requested_stop(s, s.get_one(Campaign, campaign.id))
+        assert request is not None and (request[0].actor, request[1]) == (
+            'implementer#3',
+            StopRequested(reason='', ending=Ending.NOW),
+        )
 
 
 def stop_while_held(db: Database, campaign: Campaign, hold: str, review: str | None = None) -> int:
@@ -590,7 +600,7 @@ def stop_while_held(db: Database, campaign: Campaign, hold: str, review: str | N
         s.add(Run(idea_id=idea, attempt=1, base_candidate_id=1, harness='script', model='m'))
         if hold == 'pause':
             pause(s, campaign.id, evals=False, reason='too expensive')
-        request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='over budget', kill=False)
+        request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='over budget', ending=Ending.WRAP_UP)
         s.commit()
     return idea
 
@@ -713,11 +723,13 @@ def test_a_stopped_campaign_gets_one_closing_watchdog_and_no_trigger_requests(
             'requested exactly once, and no implementer or research request follows'
         )
         assert s.scalars(select(Run)).all() and s.get_one(Idea, 2).status is IdeaStatus.READY, 'idea b never ran'
-        [event] = s.scalars(select(Event).where(Event.kind == 'campaign.status')).all()
-        assert (event.actor, event.target_id, event.payload) == (
+        [(event, change)] = in_order(s, CampaignStatusChanged)
+        assert (event.actor, event.target_id, change) == (
             'daemon',
             campaign.id,
-            {'old': 'active', 'new': 'stopped', 'stopped_reason': 'max_runs: 1 runs'},
+            CampaignStatusChanged(
+                old=CampaignStatus.ACTIVE, new=CampaignStatus.STOPPED, stopped_reason='max_runs: 1 runs'
+            ),
         ), 'the change log trigger records the stop, reason included; the daemon emits nothing by hand'
     assert dict(span_named(spans, 'campaign.stopped').attributes or {}) == {
         'campaign': 'demo',

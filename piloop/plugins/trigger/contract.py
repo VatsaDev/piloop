@@ -14,16 +14,17 @@ from typing import Annotated, ClassVar, NamedTuple, Protocol
 from pydantic import BaseModel, BeforeValidator, ConfigDict, SerializeAsAny
 from sqlalchemy.orm import Session
 
-from piloop.db.models import AgentSession, AgentSessionState, Campaign
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, EventModel
 from piloop.plugins.host import Capability
 
 
 class Incident(NamedTuple):
     """An incident-class anomaly that no agent has received yet."""
 
-    key: str
-    line: str
-    """The anomaly in one line, as the brief of the agent that gets it shows it."""
+    name: str
+    """The anomaly in a few words: ``run#36 failed``."""
+    event: EventModel
+    """The event that gives it to the agent that the trigger requests."""
 
 
 @dataclass(frozen=True)
@@ -196,8 +197,8 @@ class Fire:
     Such a fire is requested alone when it is the first fire of the tick. After another fire, it waits for a later
     tick.
     """
-    events: tuple[tuple[str, dict[str, object]], ...] = ()
-    """``(kind, payload)`` of the events to emit on the first requested row."""
+    events: tuple[EventModel, ...] = ()
+    """The events to emit on the first requested row."""
 
 
 class Trigger(BaseModel, ABC):

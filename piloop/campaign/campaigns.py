@@ -5,6 +5,7 @@ import shutil
 import subprocess
 from contextlib import suppress
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 import httpx2 as httpx
@@ -19,14 +20,22 @@ from piloop.actor import Actor
 from piloop.agents.capture import ENTIRE_DIR
 from piloop.config import CONFIG_FILE, CampaignConfig, load_campaign_config
 from piloop.db.events import emit
-from piloop.db.models import Campaign, CampaignStatus, Measurement, Verdict
-from piloop.ids import CampaignId, TargetKind
+from piloop.db.models import Campaign, CampaignStatus, EventModel, Measurement, Verdict
+from piloop.ids import CampaignId, CandidateId, TargetKind, TargetRef
 from piloop.proc import child_env
 from piloop.scoring.evaluate import run_evaluate
 from piloop.scoring.ledger import DAEMON, current_evaluator, resolve, save_units
 from piloop.settings import settings
 
 console = Console(stderr=True)
+
+
+class CampaignAdded(EventModel):
+    """A campaign was added (``piloop init``), with its baseline candidate."""
+
+    kind: Literal['campaign.added'] = 'campaign.added'
+    baseline: CandidateId
+
 
 WORKSPACE = 'workspace'
 """A per-campaign directory, linked into every worktree, for files that runs share. It is never committed."""
@@ -213,14 +222,7 @@ def register(s: Session, path: Path, actor: Actor) -> tuple[Campaign, Measuremen
     s.add(measurement)
     s.flush()
     save_units(settings.units_dir, measurement.id, result.units)
-    emit(
-        s,
-        'campaign.added',
-        TargetKind.CAMPAIGN,
-        campaign.id,
-        actor=actor,
-        payload={'baseline': baseline.id},
-    )
+    emit(s, CampaignAdded(baseline=baseline.id), TargetRef(TargetKind.CAMPAIGN, campaign.id), actor)
     s.commit()
     return campaign, measurement
 

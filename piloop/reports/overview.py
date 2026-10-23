@@ -16,7 +16,6 @@ from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from enum import StrEnum
 from pathlib import Path
 from statistics import median
 
@@ -25,13 +24,14 @@ from sqlalchemy.orm import Session
 
 from piloop import deprecated, git
 from piloop.actor import Agent
-from piloop.agents.results import STARTUP_ANOMALY
+from piloop.agents.results import StartupAnomaly
 from piloop.campaign import inbox
+from piloop.campaign.anomaly import AnomalyKind, AnomalyReported
 from piloop.campaign.ideas import defined_by, links, runnable, superseded_by, yields
 from piloop.campaign.inbox import campaign_of
 from piloop.campaign.stop import attempt, held, hours, runs, runs_without_keep
 from piloop.config import TRANSCRIPT, CampaignConfig, Metric, Track, harness_of
-from piloop.db.events import ANOMALY_EVENT
+from piloop.db.events import in_order
 from piloop.db.models import (
     ENDED,
     FINISHED_RUNS,
@@ -107,16 +107,6 @@ cut, which also removes the status bar under the prompt.
 """
 
 
-class AnomalyKind(StrEnum):
-    """A kind of anomaly that the daemon detects. The value follows the row reference: ``run#36 failed``."""
-
-    RUN_FAILED = 'failed'
-    DEAD_AT_STARTUP = 'dead at startup'
-    SAME_AS_PARENT = 'scored exactly its parent'
-    IDLE_QUEUE = 'idle'
-    SILENT = 'silent while its jobs run'
-
-
 INCIDENTS = frozenset(
     {
         AnomalyKind.RUN_FAILED,
@@ -138,7 +128,7 @@ class Anomaly:
     """One problem that the daemon found, with the time it began and the evidence in one line."""
 
     kind: AnomalyKind
-    ref: str
+    ref: TargetRef
     """The row that the anomaly is about: ``run#36``, ``agent_session#12``, ``measurement#117``, ``campaign#3``."""
     at: datetime
     """When the anomaly began, for example the end of a failed run or the exit of an agent."""
@@ -149,8 +139,13 @@ class Anomaly:
     escalates that fault instead."""
 
     @property
-    def key(self) -> str:
+    def key(self) -> tuple[TargetRef, AnomalyKind]:
         """Identify the anomaly across ticks: the same row with the same kind is one anomaly."""
+        return self.ref, self.kind
+
+    @property
+    def name(self) -> str:
+        """The anomaly in a few words: ``run#36 failed``."""
         return f'{self.ref} {self.kind}'
 
     @property
@@ -159,7 +154,11 @@ class Anomaly:
 
     def line(self, now: datetime) -> str:
         tag = '[incident] ' if self.incident else ''
-        return f'- {tag}{self.key}, {age(self.at, now)} ago: {self.detail}'
+        return f'- {tag}{self.name}, {age(self.at, now)} ago: {self.detail}'
+
+    def reported(self, now: datetime) -> AnomalyReported:
+        """The event that gives the anomaly to an agent, on the agent's row."""
+        return AnomalyReported(subject=self.ref, anomaly=self.kind, line=self.line(now))
 
 
 def overview(
@@ -412,29 +411,21 @@ def anomalies(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime
     return sorted(found, key=lambda a: a.at, reverse=True)
 
 
-def reported(s: Session, campaign_id: CampaignId) -> set[str]:
+def reported(s: Session, campaign_id: CampaignId) -> set[tuple[TargetRef, AnomalyKind]]:
     """Return the keys of the anomalies that are already assigned to a watchdog of the campaign."""
-    rows = s.scalars(
-        select(Event.payload).where(
-            Event.kind == ANOMALY_EVENT,
-            Event.target_kind == TargetKind.AGENT_SESSION,
-            Event.target_id.in_(select(AgentSession.id).where(AgentSession.campaign_id == campaign_id)),
-        )
+    rows = in_order(
+        s,
+        AnomalyReported,
+        Event.target_kind == TargetKind.AGENT_SESSION,
+        Event.target_id.in_(select(AgentSession.id).where(AgentSession.campaign_id == campaign_id)),
     )
-    return {str(payload['key']) for payload in rows}
+    return {(a.subject, a.anomaly) for _, a in rows}
 
 
 def assigned(s: Session, agent_session_id: AgentSessionId) -> list[str]:
     """Return the anomaly lines assigned to a watchdog, in order. A progress sweep has none."""
-    rows = s.scalars(
-        select(Event.payload)
-        .where(
-            Event.kind == ANOMALY_EVENT,
-            Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id),
-        )
-        .order_by(Event.id)
-    )
-    return [str(payload['anomaly']) for payload in rows]
+    rows = in_order(s, AnomalyReported, Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id))
+    return [a.line for _, a in rows]
 
 
 def _goal(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> list[str]:
@@ -725,7 +716,7 @@ def _anomalies(found: list[Anomaly], now: datetime) -> list[str]:
         if len(same) == 1:
             lines.append(same[0].line(now))
         elif same:
-            refs = ', '.join(a.ref for a in same[:REFS_SHOWN]) + (', …' if len(same) > REFS_SHOWN else '')
+            refs = ', '.join(str(a.ref) for a in same[:REFS_SHOWN]) + (', …' if len(same) > REFS_SHOWN else '')
             lines.append(f'- {len(same)} × {kind} ({refs}); the latest, {age(same[0].at, now)} ago: {same[0].detail}')
     return lines
 
@@ -793,7 +784,7 @@ def _failed_runs(s: Session, campaign: Campaign) -> list[Anomaly]:
     return [
         Anomaly(
             AnomalyKind.RUN_FAILED,
-            f'run#{run.id}',
+            TargetRef(TargetKind.RUN, run.id),
             run.finished_at or run.created_at,
             f'{run.end} on {run.harness} (idea#{run.idea_id}): {cell(run.error or "no error recorded", DETAIL_CHARS)}',
         )
@@ -802,20 +793,19 @@ def _failed_runs(s: Session, campaign: Campaign) -> list[Anomaly]:
 
 
 def _dead_at_startup(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Anomaly]:
-    """Find agents of any role that the launcher found dead at startup (``launcher.STARTUP_ANOMALY``)."""
+    """Find agents of any role that did not start to work (``StartupAnomaly``)."""
     investigators = {name for name, role in cfg.roles.sweeping().items() if any(t.INVESTIGATES for t in role.triggers)}
-    events = select(Event).where(
-        Event.kind == STARTUP_ANOMALY,
+    events = in_order(
+        s,
+        StartupAnomaly,
         Event.target_kind == TargetKind.AGENT_SESSION,
         Event.target_id.in_(select(AgentSession.id).where(AgentSession.campaign_id == campaign.id)),
     )
     found: list[Anomaly] = []
-    for e in s.scalars(events):
-        p = e.payload
-        error = cell(str(p.get('error') or 'no error recorded'), DETAIL_CHARS)
-        detail = f'{p.get("kind")} on {p.get("harness")} failed to start ({p.get("seconds")}s): {error}'
-        investigator = p.get('kind') in investigators
-        found.append(Anomaly(AnomalyKind.DEAD_AT_STARTUP, f'agent_session#{e.target_id}', e.at, detail, investigator))
+    for e, p in events:
+        error = cell(p.error or 'no error recorded', DETAIL_CHARS)
+        detail = f'{p.role} on {p.harness} failed to start ({p.seconds}s): {error}'
+        found.append(Anomaly(AnomalyKind.DEAD_AT_STARTUP, e.target, e.at, detail, p.role in investigators))
     return found
 
 
@@ -840,7 +830,8 @@ def _same_as_parent(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list
             f'scored what candidate#{c.parent_id} did on {primary} and on {same} of {len(others)} other metrics;'
             f' {_minutes(sum(m.seconds or 0 for m in rows))} of evaluation'
         )
-        found.append(Anomaly(AnomalyKind.SAME_AS_PARENT, f'candidate#{c.id}', min(m.created_at for m in rows), detail))
+        at = min(m.created_at for m in rows)
+        found.append(Anomaly(AnomalyKind.SAME_AS_PARENT, TargetRef(TargetKind.CANDIDATE, c.id), at, detail))
     return found
 
 
@@ -875,7 +866,7 @@ def _idle_queue(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Ano
         or f'no {" or ".join(kinds) or "defining"} sweep pending'
     )
     detail = f'{free} free implementer slots and no runnable idea; {sweeps}'
-    return [Anomaly(AnomalyKind.IDLE_QUEUE, f'campaign#{campaign.id}', max(moments), detail)]
+    return [Anomaly(AnomalyKind.IDLE_QUEUE, TargetRef(TargetKind.CAMPAIGN, campaign.id), max(moments), detail)]
 
 
 def _silent(s: Session, campaign: Campaign, now: datetime, jobs: JobsProbe) -> list[Anomaly]:
@@ -915,7 +906,8 @@ def _silent(s: Session, campaign: Campaign, now: datetime, jobs: JobsProbe) -> l
             f'run#{run.id} idea#{run.idea_id}: no comment or commit for {age(last, now)} ({what});'
             f' {len(running)} jobs in flight, e.g. {cell(running[0], DETAIL_CHARS)}'
         )
-        found.append(Anomaly(AnomalyKind.SILENT, f'agent_session#{agent_session.id}', last + limit, detail))
+        ref = TargetRef(TargetKind.AGENT_SESSION, agent_session.id)
+        found.append(Anomaly(AnomalyKind.SILENT, ref, last + limit, detail))
     return found
 
 

@@ -43,12 +43,13 @@ EVENTS = (
         body=';\n'.join(
             [
                 f'{NEXT_ID} WHERE NEW.id != -1',
-                "SELECT RAISE(ABORT, 'events.kind and events.actor are text')"
-                " WHERE typeof(NEW.kind) != 'text' OR typeof(NEW.actor) != 'text'",
+                "SELECT RAISE(ABORT, 'events.actor is text') WHERE typeof(NEW.actor) != 'text'",
                 "SELECT RAISE(ABORT, 'events.target_id is an integer') WHERE typeof(NEW.target_id) != 'integer'",
                 "SELECT RAISE(ABORT, 'events.at is a time in text, like 2026-10-20 08:00:00')"
                 " WHERE typeof(NEW.at) != 'text' OR julianday(NEW.at) IS NULL",
                 "SELECT RAISE(ABORT, 'events.payload is JSON text, not a blob') WHERE typeof(NEW.payload) = 'blob'",
+                "SELECT RAISE(ABORT, 'events.payload is a JSON object with its kind in $.kind')"
+                " WHERE json_type(NEW.payload, '$.kind') IS NOT 'text'",
             ]
         ),
         temp=True,
@@ -57,6 +58,5 @@ EVENTS = (
 )
 """TEMP: an event takes the next id, and its columns have the types that a reader of the feed reads.
 
-Every piloop connection has them, so they also hold for ``piloop sql``. The payload may still be any text: the daemon
-writes what ``json.dumps`` gives, ``NaN`` included, and the reader of the feed shows a payload that is not JSON as
-stored."""
+Every piloop connection has them. The payload is an object with its kind. SQLite reads JSON5, so a payload may still
+hold ``NaN``, which the reader of the feed shows as stored."""

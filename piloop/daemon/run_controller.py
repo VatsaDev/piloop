@@ -11,7 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import assert_never
+from typing import Literal, assert_never
 
 from git import Repo
 from pydantic import ValidationError
@@ -22,7 +22,7 @@ from piloop import deprecated, git
 from piloop.actor import Actor, Agent, System
 from piloop.agents.launcher import AGENT_REFS, Launcher
 from piloop.agents.results import (
-    STOP_ENDED,
+    AgentEnded,
     CampaignResults,
     DaemonStopped,
     HandedOver,
@@ -35,7 +35,7 @@ from piloop.agents.roles import compose_brief, role
 from piloop.campaign.campaigns import WORKSPACE, campaign_dir, worktree_links
 from piloop.campaign.stop import attempts, park_cancelled, run_cancel
 from piloop.config import TRANSCRIPT, CampaignConfig, Track, config_of
-from piloop.db.events import emit
+from piloop.db.events import emit, has
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
@@ -46,6 +46,7 @@ from piloop.db.models import (
     Evaluation,
     Evaluator,
     Event,
+    EventModel,
     Idea,
     IdeaStatus,
     Limit,
@@ -91,8 +92,9 @@ from piloop.scoring import queue
 from piloop.scoring.ledger import (
     DAEMON,
     MOVED,
-    REJUDGE_FAILED,
     SKIPPED,
+    CandidateJudged,
+    RejudgeFailed,
     bar_of,
     current_evaluator,
     head,
@@ -118,10 +120,45 @@ NO_CHANGES = 'implementer produced no commits'
 INTERRUPTED = (
     'implementer stopped without a commit or a finding of its own; its uncommitted changes are a recovered candidate'
 )
-RECOVERY_REQUEUED = 'idea.recovery_requeued'
-"""The event on an idea that ``_settle`` requeued from recovered work, with ``{run, candidate}``. Counting these events
-caps the requeues (the ``recovery_requeues`` of the run's role): candidates cannot, because two runs that leave the
-same tree share one candidate."""
+
+
+class RecoveryRequeued(EventModel):
+    """``_settle`` requeued an idea from the recovered work of a run.
+
+    Counting these events caps the requeues (the ``recovery_requeues`` of the run's role): candidates cannot, because
+    two runs that leave the same tree share one candidate.
+    """
+
+    kind: Literal['idea.recovery_requeued'] = 'idea.recovery_requeued'
+    run: RunId
+    candidate: CandidateId
+
+
+class RunStarted(EventModel):
+    """A run's implementer was launched, with its brief: the run is ``running``."""
+
+    kind: Literal['run.started'] = 'run.started'
+    harness: str
+    model: str
+
+
+class RunRelaunched(EventModel):
+    """A run's implementer failed to start, and the daemon launched another."""
+
+    kind: Literal['run.relaunched'] = 'run.relaunched'
+    agent_session: AgentSessionId
+    """The implementer that failed to start."""
+    launches: int
+
+
+class RunFinished(EventModel):
+    """A run closed (``close_run``): how it ended, and the text that says why."""
+
+    kind: Literal['run.finished'] = 'run.finished'
+    end: RunEnd
+    error: str | None
+
+
 STARTUP_RELAUNCHES = 2
 """How many times a run is queued again with a new implementer after its implementer failed to start. Then the run fails.
 
@@ -323,7 +360,12 @@ class RunController:
                 # A relaunch keeps the start time, so comments since then are sent to the new implementer again.
                 run.started_at = run.started_at or utcnow()
                 run.log_dir = str(self._runs_dir / str(run_id))
-                emit(s, 'run.started', TargetKind.RUN, run_id, payload={'harness': run.harness, 'model': run.model})
+                emit(
+                    s,
+                    RunStarted(harness=run.harness, model=run.model),
+                    TargetRef(TargetKind.RUN, run_id),
+                    System.DAEMON,
+                )
                 s.commit()
         self._finish(run_id, agent_session_id, brief, span)
 
@@ -423,8 +465,7 @@ class RunController:
             asked = open_escalation(s, s.get_one(Run, run_id))
             stop_ended = s.scalar(
                 select(Event.id).where(
-                    Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id),
-                    Event.kind == STOP_ENDED,
+                    Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session_id), has(AgentEnded)
                 )
             )
             cancelled = run_cancel(s, run_id) is not None
@@ -476,13 +517,8 @@ class RunController:
                 # Edit the brief, do not compose it again: a human may have changed it (``UPDATE runs SET brief``).
                 signed = rf'\b({re.escape(run.role)})#{agent_session_id}\b'
                 run.brief = re.sub(signed, rf'\g<1>#{agent_session.id}', run.brief or '')
-                emit(
-                    s,
-                    'run.relaunched',
-                    TargetKind.RUN,
-                    run_id,
-                    payload={'agent_session': agent_session_id, 'launches': launches},
-                )
+                relaunched = RunRelaunched(agent_session=agent_session_id, launches=launches)
+                emit(s, relaunched, TargetRef(TargetKind.RUN, run_id), System.DAEMON)
                 s.commit()
             transcript = log_dir / TRANSCRIPT
             if transcript.exists():
@@ -595,7 +631,7 @@ class RunController:
     def rejudge(self, candidate_id: CandidateId) -> None:
         """Judge again a candidate that someone measured by hand (``ledger.rejudges``), with all its measurements.
 
-        Never raises. When the judgement fails, for example because the repo is gone, a ``REJUDGE_FAILED`` event with
+        Never raises. When the judgement fails, for example because the repo is gone, a ``RejudgeFailed`` event with
         the error answers the request, so it is not tried on every tick.
         """
         with self._db.session() as s:
@@ -606,10 +642,10 @@ class RunController:
             self._rejudge(candidate_id, git.open_repo(campaign_path), eval_dir)
         except Exception as e:
             with self._db.session() as s:
-                payload: dict[str, object] = {'error': f'{type(e).__name__}: {e}'}
-                emit(s, REJUDGE_FAILED, TargetKind.CANDIDATE, candidate_id, payload=payload)
+                failed = RejudgeFailed(error=f'{type(e).__name__}: {e}')
+                emit(s, failed, TargetRef(TargetKind.CANDIDATE, candidate_id), System.DAEMON)
                 s.commit()
-            self._tracer.event(REJUDGE_FAILED, candidate=candidate_id, error=str(e))
+            self._tracer.event(failed.kind, candidate=candidate_id, error=str(e))
 
     def _rejudge(self, candidate_id: CandidateId, repo: Repo, log_dir: Path) -> None:
         """Judge again a run's candidate that is ``rejudgeable``, now that it has a new measurement.
@@ -914,17 +950,12 @@ class RunController:
                         found = rebase(s, scope.cfg, scope.repo, candidate, onto)
                         merged = found.id if found is not None else None
                 candidate.verdict_by = DAEMON
-                emit(
-                    s,
-                    'candidate.judged',
-                    TargetKind.CANDIDATE,
-                    candidate_id,
-                    payload={
-                        'verdict': candidate.verdict,
-                        'score': score(candidate, scope.evaluator_id, scope.track.primary),
-                        'reason': candidate.verdict_reason,
-                    },
+                judged = CandidateJudged(
+                    verdict=candidate.verdict,
+                    score=score(candidate, scope.evaluator_id, scope.track.primary),
+                    reason=candidate.verdict_reason,
                 )
+                emit(s, judged, TargetRef(TargetKind.CANDIDATE, candidate_id), System.DAEMON)
                 if not (skip or recovered):
                     why = '; '.join(notes)
                     if why and not moved and candidate.verdict in (Verdict.DISCARD, Verdict.INTERESTING):
@@ -994,7 +1025,7 @@ class RunController:
         fail the same way, and ``done`` would let the ideas that wait for it start without its result.
 
         A run that did not succeed and left ``recovered`` work requeues its idea from that work, attempts left or not,
-        up to ``recovery_requeues`` times of the run's role (``RECOVERY_REQUEUED`` events): the idea's base becomes the
+        up to ``recovery_requeues`` times of the run's role (``RecoveryRequeued`` events): the idea's base becomes the
         recovered candidate, so a new implementer starts from it and finishes it, and that run is judged as any other. A
         note on the idea says so.
 
@@ -1032,8 +1063,8 @@ class RunController:
                         and _requeues(s, idea) < role.recovery_requeues
                     ):
                         idea.status, idea.base_candidate_id = IdeaStatus.READY, recovered
-                        payload: dict[str, object] = {'run': run_id, 'candidate': recovered}
-                        emit(s, RECOVERY_REQUEUED, TargetKind.IDEA, idea.id, payload=payload)
+                        requeued = RecoveryRequeued(run=run_id, candidate=recovered)
+                        emit(s, requeued, TargetRef(TargetKind.IDEA, idea.id), System.DAEMON)
                         s.add(
                             Comment(
                                 target=TargetRef(TargetKind.IDEA, idea.id),
@@ -1181,7 +1212,7 @@ class RunFacts:
     finding: bool = False
     """The implementer left its own finding (``left_finding``): its report that it is done."""
     ended: bool = False
-    """The daemon ended the implementer for a stop or a cancel (``STOP_ENDED``)."""
+    """The daemon ended the implementer for a stop or a cancel (``AgentEnded``)."""
     cancelled: bool = False
     """Someone cancelled the run (``run_cancel``)."""
     timed_out: bool = False
@@ -1231,12 +1262,12 @@ def run_outcome(facts: RunFacts) -> tuple[RunEnd, str | None]:
 
 
 def close_run(s: Session, run: Run, end: RunEnd, error: str | None) -> Run:
-    """Close ``run`` as ``end``: its status, end, error and finish time, and the ``run.finished`` event. The caller commits.
+    """Close ``run`` as ``end``: its status, end, error and finish time, and ``RunFinished``. The caller commits.
 
     Every writer of a run's end goes through here.
     """
     run.status, run.end, run.error, run.finished_at = end.status, end, error, utcnow()
-    emit(s, 'run.finished', TargetKind.RUN, run.id, payload={'status': run.status, 'end': end, 'error': error})
+    emit(s, RunFinished(end=end, error=error), TargetRef(TargetKind.RUN, run.id), System.DAEMON)
     return run
 
 
@@ -1264,10 +1295,8 @@ def open_escalation(s: Session, run: Run) -> CommentId | None:
 
 
 def _requeues(s: Session, idea: Idea) -> int:
-    """How many times ``_settle`` requeued the idea from recovered work (its ``RECOVERY_REQUEUED`` events)."""
-    query = select(func.count()).where(
-        Event.target == TargetRef(TargetKind.IDEA, idea.id), Event.kind == RECOVERY_REQUEUED
-    )
+    """How many times ``_settle`` requeued the idea from recovered work (its ``RecoveryRequeued`` events)."""
+    query = select(func.count()).where(Event.target == TargetRef(TargetKind.IDEA, idea.id), has(RecoveryRequeued))
     return s.scalar(query) or 0
 
 

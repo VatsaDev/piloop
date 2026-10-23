@@ -11,10 +11,11 @@ from piloop.actor import System
 from piloop.campaign import ops
 from piloop.config import load_campaign_config
 from piloop.daemon.run_controller import RunController
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Comment, Event, IdeaStatus, Verdict
+from piloop.db.events import in_order
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Comment, IdeaStatus, Verdict
 from piloop.db.session import Database
 from piloop.ids import CampaignId, TargetKind
-from piloop.scoring.ledger import DAEMON, REJUDGE_FAILED, head, import_reference, rejudges
+from piloop.scoring.ledger import DAEMON, RejudgeFailed, head, import_reference, rejudges
 from tests.conftest import HARNESS_WORSE, Gate, ScriptRuntime, write_script
 from tests.daemon.test_run_controller import candidates, controller, execute, make_run
 from tests.daemon.test_scheduler import add_ideas, make_scheduler, measured_by, request_watchdog, statuses
@@ -126,11 +127,11 @@ def test_a_judgement_again_that_fails_answers_the_request_with_the_error(
     mocker.patch('piloop.daemon.run_controller.git.open_repo', side_effect=OSError('the repo is gone'))
     ex.rejudge(worse.id)
     with db.session() as s:
-        [failed] = s.scalars(select(Event).where(Event.kind == REJUDGE_FAILED)).all()
-        assert (failed.target_kind, failed.target_id, failed.payload) == (
+        [(failed, payload)] = in_order(s, RejudgeFailed)
+        assert (failed.target_kind, failed.target_id, payload) == (
             TargetKind.CANDIDATE,
             worse.id,
-            {'error': 'OSError: the repo is gone'},
+            RejudgeFailed(error='OSError: the repo is gone'),
         )
         assert s.get_one(Candidate, worse.id).verdict is Verdict.DISCARD
         assert rejudges(s, s.get_one(Campaign, campaign.id)) == [], 'not tried on every tick'

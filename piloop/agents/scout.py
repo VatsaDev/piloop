@@ -17,9 +17,24 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop.db.models import AgentSession, Candidate, Event, Idea, IdeaStatus, Run, Technique, Verdict, count
+from piloop.db.events import has
+from piloop.db.models import (
+    AgentSession,
+    Candidate,
+    Event,
+    EventModel,
+    Idea,
+    IdeaStatus,
+    Run,
+    Technique,
+    Verdict,
+    count,
+)
+from piloop.db.triggers.changelog import IdeaStatusChanged
 from piloop.ids import AgentSessionId, CampaignId, RoleName, TargetKind
 from piloop.text import cell
+
+EventModel.retire('scout.requested')  # 0.1.0 requested a sweep with it; a sweep is an agent_sessions row now
 
 WATCH_RUNS = 5
 """How many scout sweeps a source stays on the watch list after its last payoff. A source with a keep stays."""
@@ -70,11 +85,9 @@ def watch_list(s: Session, campaign_id: CampaignId, role: RoleName) -> list[Watc
         idea_id: at
         for idea_id, at in s.execute(
             select(Event.target_id, Event.at).where(
-                Event.kind == 'idea.status',
+                has(IdeaStatusChanged, old=IdeaStatus.SEED, new=(IdeaStatus.READY, IdeaStatus.PROPOSED)),
                 Event.target_kind == TargetKind.IDEA,
                 Event.target_id.in_([i.id for i in seeds]),
-                Event.payload['old'].as_string() == IdeaStatus.SEED.value,
-                Event.payload['new'].as_string().in_((IdeaStatus.READY.value, IdeaStatus.PROPOSED.value)),
             )
         )
     }

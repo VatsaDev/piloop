@@ -29,6 +29,7 @@ from piloop.campaign.stop import attempts
 from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
 from piloop.daemon.serve import SERVE_ARGV
+from piloop.db.events import has, in_order
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
@@ -48,8 +49,8 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.ids import RunId, TargetKind
 from piloop.otel import Tracer
-from piloop.plugins.executor.contract import AgentReport, EvaluationReport
-from piloop.plugins.executor.kit.leases import NOT_TAKEN, SERVE, STALE_REPORT, Leases, Timing
+from piloop.plugins.executor.contract import AgentFinished, AgentReport, EvaluationReport
+from piloop.plugins.executor.kit.leases import NOT_TAKEN, SERVE, Leases, StaleReport, Timing
 from piloop.proc import alive, started
 from piloop.settings import Settings
 from tests.conftest import (
@@ -250,15 +251,15 @@ def test_a_late_report_of_a_frozen_worker_is_refused_and_kept_as_a_stale_report(
         thread.join(30)
         os.kill(proc.pid, signal.SIGCONT)
 
-        def stale() -> list[dict[str, object]]:
+        def stale() -> list[StaleReport]:
             with db.session() as s:
-                return [e.payload for e in s.scalars(select(Event).where(Event.kind == STALE_REPORT))]
+                return [p for _, p in in_order(s, StaleReport)]
 
         wait_until(stale)
     [payload] = stale()
-    assert (payload['lease'], payload['worker'], payload['ref']) == (1, 'w2', f'{AGENT_REFS}1')
-    report = payload['report']
-    assert isinstance(report, dict) and report['head'] is not None
+    assert (payload.lease, payload.worker, payload.ref) == (1, 'w2', f'{AGENT_REFS}1')
+    report = payload.report
+    assert isinstance(report, AgentFinished) and report.head is not None
     run = run_row(db, run_id)
     assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.WORKER_LOST), 'the late report changed nothing'
     with db.session() as s:
@@ -266,7 +267,7 @@ def test_a_late_report_of_a_frozen_worker_is_refused_and_kept_as_a_stale_report(
     repo_ref = subprocess.run(
         ['git', 'rev-parse', f'{AGENT_REFS}1'], cwd=campaign.path, capture_output=True, text=True, check=True
     )
-    assert repo_ref.stdout.strip() == report['head'], 'its commit is kept'
+    assert repo_ref.stdout.strip() == report.head, 'its commit is kept'
 
 
 def test_a_report_whose_answer_was_lost_is_sent_again_and_applies_once(
@@ -296,7 +297,7 @@ def test_a_report_whose_answer_was_lost_is_sent_again_and_applies_once(
     assert sent[0] == sent[1], 'sent again with its request id'
     assert receipts[1] == receipts[0] == {'reported': 'evaluation'}, "the first's receipt, not a refusal"
     with db.session() as s:
-        assert s.scalars(select(Event).where(Event.kind == STALE_REPORT)).all() == [], 'not refused as stale'
+        assert s.scalars(select(Event).where(has(StaleReport))).all() == [], 'not refused as stale'
         count = s.scalar(select(func.count()).select_from(Measurement).where(Measurement.candidate_id == candidate))
         assert count == 2, 'the baseline and one measurement: applied once'
         recorded = s.scalar(select(func.count()).select_from(Event).where(Event.kind == 'measurement.recorded'))
@@ -354,7 +355,7 @@ def test_a_partitioned_worker_stops_its_job_before_its_lease_expires_and_its_rep
 
     def stale() -> int:
         with db.session() as s:
-            return s.scalar(select(func.count()).select_from(Event).where(Event.kind == STALE_REPORT)) or 0
+            return s.scalar(select(func.count()).select_from(Event).where(has(StaleReport))) or 0
 
     wait_until(stale)
     run = run_row(db, run_id)
@@ -391,7 +392,7 @@ def test_a_daemon_killed_during_a_run_keeps_the_lease_and_the_next_daemon_finish
         assert (
             s.scalars(select(Event.kind).where(Event.target_kind == TargetKind.AGENT_SESSION))
             .all()
-            .count('implementer.finished')
+            .count('agent_session.finished')
             == 1
         )
     assert (

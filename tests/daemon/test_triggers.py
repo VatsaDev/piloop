@@ -10,18 +10,19 @@ import pytest
 from sqlalchemy import select
 
 from piloop.actor import System
+from piloop.campaign.anomaly import AnomalyKind, AnomalyReported
 from piloop.config import load_campaign_config
 from piloop.daemon.main import ACTOR
 from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import NO_RUN_ERROR, Scheduler
 from piloop.db import sql
+from piloop.db.events import in_order
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
     Campaign,
     Candidate,
     Evaluator,
-    Event,
     Idea,
     IdeaLink,
     IdeaStatus,
@@ -34,9 +35,9 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, AgentSessionId, IdeaId, RunId
+from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, AgentSessionId, IdeaId, RunId, TargetKind, TargetRef
 from piloop.otel import Tracer
-from piloop.reports.overview import ANOMALY_EVENT, anomalies
+from piloop.reports.overview import anomalies
 from tests.conftest import (
     HARNESS_NOOP,
     HARNESS_PROMPT_TO_FILE,
@@ -146,10 +147,9 @@ def backdate(db: Database, agent_session_id: AgentSessionId, seconds: float) -> 
         s.commit()
 
 
-def reported_events(db: Database) -> list[tuple[int, dict[str, object]]]:
+def reported_events(db: Database) -> list[tuple[int, AnomalyReported]]:
     with db.session() as s:
-        rows = s.scalars(select(Event).where(Event.kind == ANOMALY_EVENT).order_by(Event.id))
-        return [(e.target_id, e.payload) for e in rows]
+        return [(e.target_id, p) for e, p in in_order(s, AnomalyReported)]
 
 
 def test_an_anomaly_requests_an_incident_sweep_once_and_collapses_while_one_is_pending(
@@ -164,8 +164,12 @@ def test_an_anomaly_requests_an_incident_sweep_once_and_collapses_while_one_is_p
     assert sched.tick() == [1], 'requested and launched on the same tick'
     assert sched.tick() == [], 'the same failure does not fire twice'
     [(agent_session, payload)] = reported_events(db)
-    assert (agent_session, payload['key']) == (1, 'run#1 failed')
-    line = str(payload['anomaly'])
+    assert (agent_session, payload.subject, payload.anomaly) == (
+        1,
+        TargetRef(TargetKind.RUN, 1),
+        AnomalyKind.RUN_FAILED,
+    )
+    line = payload.line
     assert line.startswith('- [incident] run#1 failed, ') and line.endswith(
         ' ago: failed on h (idea#1): no error recorded'
     )
@@ -185,10 +189,10 @@ def test_an_anomaly_requests_an_incident_sweep_once_and_collapses_while_one_is_p
     assert sched.tick() == [2], 'the slot frees; the pending request launches'
     sched.wait()
     assert sched.tick() == [3], 'the anomaly that came while a request was pending gets its own sweep'
-    assert [(w, p['key']) for w, p in reported_events(db)] == [
-        (1, 'run#1 failed'),
-        (2, 'run#2 failed'),
-        (3, 'run#3 failed'),
+    assert [(w, str(p.subject), p.anomaly) for w, p in reported_events(db)] == [
+        (1, 'run#1', AnomalyKind.RUN_FAILED),
+        (2, 'run#2', AnomalyKind.RUN_FAILED),
+        (3, 'run#3', AnomalyKind.RUN_FAILED),
     ]
     sched.wait()
     sched.stop(timeout=5)
@@ -237,7 +241,7 @@ def test_only_incident_anomalies_request_a_sweep(
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         [idle] = anomalies(s, p, load_campaign_config(Path(campaign.path)), utcnow(), lambda w: [])
-    assert idle.key == 'campaign#1 idle' and not idle.incident
+    assert idle.name == 'campaign#1 idle' and not idle.incident
     assert sched.tick() == []
     assert agent_sessions(db, WATCHDOG) == []
     sched.stop(timeout=1)

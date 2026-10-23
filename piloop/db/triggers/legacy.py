@@ -2,9 +2,10 @@
 
 The migrations create the persistent triggers that the package renders today (``recreate``). Revision 0016 renamed
 ``projects`` to ``campaigns``, with its ``_id`` columns, and revision 0018 renamed ``workers`` to ``agent_sessions``
-and the worker role to the implementer. A migration before a renaming runs on a schema that still has the old names,
-so ``rendered`` gives a trigger its old name and its old identifiers there. Only identifiers and the role names that a
-trigger lists change: any other string literal keeps its text.
+and the worker role to the implementer. Revision 0028 generated ``events.kind`` from the payload, so an event trigger
+before it inserts the kind itself. A migration before such a change runs on a schema that still has the old form, so
+``rendered`` gives a trigger its old name, its old identifiers and its old text there. Only identifiers, the role names
+that a trigger lists and the event insert change: any other string literal keeps its text.
 """
 
 import re
@@ -19,25 +20,50 @@ from piloop.db.triggers.ddl import Trigger
 deprecated.until('0.3.0', 'old migrations need the old trigger names: squash 0001-0018 at a 0.2.0 floor, delete legacy')
 
 
+def has_table(name: str) -> str:
+    """A query that finds the table ``name``."""
+    return f"SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '{name}'"
+
+
 @dataclass(frozen=True)
 class Stage:
-    """One renaming of the schema: the old table that shows a schema from before it, and what it renamed."""
+    """One change of the schema: the query that finds a schema from before it, and what it changed."""
 
     revision: str
-    """The revision that renamed the schema."""
-    table: str
-    """The table of the old schema that the renaming renamed: a schema that has it is older than the renaming."""
-    names: dict[str, str]
+    """The revision that changed the schema."""
+    older: str
+    """A query that returns a row on a schema from before the change, such as one that finds a table it renamed."""
+    names: dict[str, str] = field(default_factory=dict)
     """Each identifier of the new schema, with the one that it had before."""
-    words: dict[str, str]
+    words: dict[str, str] = field(default_factory=dict)
     """The words of the names of triggers and indexes, new then old."""
     literals: dict[str, str] = field(default_factory=dict)
-    """The string literals of the triggers, new then old: the role names that a trigger lists."""
+    """The text of the triggers, new then old: the role names that a trigger lists, the insert of an event."""
 
 
+EVENT_INSERT = (
+    "INSERT INTO events (actor, target_kind, target_id, payload)\n  VALUES (NEW.author, 'comment', NEW.id,"
+    " json_object('kind', 'comment.' || NEW.kind, "
+)
 STAGES = (
-    Stage('0018', 'workers', {'agent_sessions': 'workers'}, {'agent_session': 'worker'}, {"'implementer'": "'worker'"}),
-    Stage('0016', 'projects', {'campaigns': 'projects', 'campaign_id': 'project_id'}, {'campaign': 'project'}),
+    Stage(
+        '0028',
+        "SELECT 1 FROM pragma_table_xinfo('events') WHERE name = 'kind' AND hidden = 0",
+        literals={
+            EVENT_INSERT: 'INSERT INTO events (kind, actor, target_kind, target_id, payload)\n'
+            "  VALUES ('comment.escalation', NEW.author, 'comment', NEW.id, json_object("
+        },
+    ),
+    Stage(
+        '0018',
+        has_table('workers'),
+        {'agent_sessions': 'workers'},
+        {'agent_session': 'worker'},
+        {"'implementer'": "'worker'"},
+    ),
+    Stage(
+        '0016', has_table('projects'), {'campaigns': 'projects', 'campaign_id': 'project_id'}, {'campaign': 'project'}
+    ),
 )
 """The renamings, newest first: a trigger of today takes the names before each in turn."""
 TOKEN = re.compile(r"""'(?:[^']|'')*'|--[^\n]*|/\*.*?(?:\*/|$)|"(?:[^"]|"")*"|`[^`]*`|\[[^\]]*\]|\w+""", re.DOTALL)
@@ -67,9 +93,8 @@ def old_name(name: str, stages: tuple[Stage, ...] = STAGES) -> str:
 
 
 def stages(op: Operations) -> tuple[Stage, ...]:
-    """Return the renamings that the schema that ``op`` migrates is older than: those whose old table it has."""
-    query = text("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :name")
-    return tuple(s for s in STAGES if op.get_bind().execute(query, {'name': s.table}).scalar() is not None)
+    """Return the changes that the schema that ``op`` migrates is older than: those whose ``older`` finds a row."""
+    return tuple(s for s in STAGES if op.get_bind().execute(text(s.older)).scalar() is not None)
 
 
 def rendered(trigger: Trigger, old: tuple[Stage, ...]) -> tuple[str, str, str | None, str]:

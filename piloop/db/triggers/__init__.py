@@ -25,6 +25,7 @@ from piloop.db.triggers.provenance import DAEMON_ACTOR, TRACKED_TABLES
 
 __all__ = [
     'DAEMON_ACTOR',
+    'EVENT_TRIGGER_NAMES',
     'PERSISTENT',
     'TEMP',
     'TRACKED_TABLES',
@@ -59,6 +60,8 @@ TEMP: tuple[Trigger, ...] = (
     *immutable.EVENTS,
 )
 """The triggers in ``sqlite_temp_master`` of every connection, in the order that ``actor_triggers.sql`` creates them."""
+EVENT_TRIGGER_NAMES = frozenset(t.name for t in (*PERSISTENT, *TEMP) if t.body.startswith('INSERT INTO events'))
+"""The triggers that write events: the only statements of ``piloop sql`` that the authorizer lets insert into them."""
 
 
 def recreate(op: Operations, table: str) -> None:

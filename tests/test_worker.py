@@ -24,13 +24,13 @@ from sqlalchemy.exc import OperationalError
 from piloop import git
 from piloop.agents.results import CampaignResults, DaemonStopped, Ended, Lost, NotStarted, Ran
 from piloop.daemon.run_controller import RunController
+from piloop.db.events import in_order
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
     Campaign,
     Candidate,
     Evaluation,
-    Event,
     Lease,
     LeaseState,
     Measurement,
@@ -54,11 +54,11 @@ from piloop.plugins.executor.contract import (
 from piloop.plugins.executor.kit.capacity import HostSample, sample
 from piloop.plugins.executor.kit.leases import (
     SERVE,
-    STALE_REPORT,
     Grant,
     Leases,
     PromptMessage,
     StaleLease,
+    StaleReport,
     Timing,
     cancel,
     enqueue,
@@ -402,7 +402,7 @@ def test_an_evaluation_whose_lease_expired_before_its_evaluator_started_kills_it
 
     def stale() -> list[object]:
         with db.session() as s:
-            return [e.payload['lease'] for e in s.scalars(select(Event).where(Event.kind == STALE_REPORT))]
+            return [stale.lease for _, stale in in_order(s, StaleReport)]
 
     wait_until(stale)
     assert stale() == [1], 'its evaluator was killed at once; its report is refused'
@@ -439,7 +439,7 @@ def test_a_stale_evaluation_never_touches_the_files_of_the_lease_that_replaced_i
 
     def stale() -> list[object]:
         with db.session() as s:
-            return [e.payload['lease'] for e in s.scalars(select(Event).where(Event.kind == STALE_REPORT))]
+            return [stale.lease for _, stale in in_order(s, StaleReport)]
 
     wait_until(stale)
     assert tree.is_dir(), 'the stale job left the tree of the lease that replaced it'

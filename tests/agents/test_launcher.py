@@ -12,28 +12,30 @@ from opentelemetry.trace import StatusCode
 from pytest_mock import MockerFixture
 from sqlalchemy import select
 
-from piloop.actor import Agent
+from piloop.actor import Agent, System
 from piloop.agents import capture
 from piloop.agents.capture import ENTIRE_INSTALL, MIN_ENTIRE
 from piloop.agents.launcher import PROMPT, Launcher, fill
 from piloop.agents.results import (
-    ENDED_EVENT,
     NEVER_WORKED,
-    STARTUP_ANOMALY,
-    WRAP_UP,
+    AgentSessionFinished,
+    AgentSessionStarted,
     DaemonStopped,
     Ended,
+    JobEnded,
     NotStarted,
     Ran,
+    StartupAnomaly,
+    WrapUp,
 )
 from piloop.agents.roles import PILOOP_HINT, PROMPTS, SQL_HINT, Role, compose_brief, role
 from piloop.config import CampaignConfig, config_of, load_campaign_config
 from piloop.daemon.run_controller import RunController
-from piloop.db.events import emit
+from piloop.db.events import emit, in_order
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, Event, Usage
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES
-from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, AgentSessionId, RoleName, TargetKind
+from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, AgentSessionId, RoleName, TargetKind, TargetRef
 from piloop.mcp import MCP
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import Checkout, GitTree
@@ -202,15 +204,13 @@ def test_launch_runs_the_row_through_its_lifecycle(
     assert (tmp_path / 'w' / 'transcript.txt').is_file()
     assert runtime.killed, 'the runtime is told to release the implementer'
     with db.session() as s:
-        events = [(e.kind, e.target_id, e.payload) for e in s.scalars(select(Event).order_by(Event.id))]
-    assert [e for e in events if e[0] != ENDED_EVENT] == snapshot(
-        [
-            ('watchdog.started', 1, {'harness': 'script', 'model': 'watchdog-model', 'reason': 'test'}),
-            ('watchdog.finished', 1, {'reason': 'test', 'status': 'exited', 'error': None}),
-        ]
-    )
-    [ended] = [payload for kind, _, payload in events if kind == ENDED_EVENT]
-    assert (ended['kind'], ended['head']) == ('ran', None), 'how it ended, for what waits for it'
+        events = [(e.target_id, e.payload) for e in s.scalars(select(Event).order_by(Event.id))]
+    assert [e for e in events if not isinstance(e[1], JobEnded)] == [
+        (1, AgentSessionStarted(role=WATCHDOG, harness='script', model='watchdog-model', reason='test')),
+        (1, AgentSessionFinished(role=WATCHDOG, reason='test', status=ExitStatus.EXITED, error=None)),
+    ]
+    [ended] = [payload.ended for _, payload in events if isinstance(payload, JobEnded)]
+    assert isinstance(ended, Ran) and ended.head is None, 'how it ended, for what waits for it'
     [span] = [span for span in spans.get_finished_spans() if span.name == 'piloop.agent']
     assert dict(span.attributes or {}) == {
         'agent_session': 1,
@@ -345,8 +345,8 @@ def test_runtime_failure_is_isolated(
     assert job.status.status_code is StatusCode.ERROR, "the worker's span has the error"
     assert span_attributes(spans, 'piloop.agent', agent_session_id)['state'] == 'killed'
     with db.session() as s:
-        [finished] = s.scalars(select(Event).where(Event.kind == 'watchdog.finished')).all()
-    assert finished.payload['error'] == 'RuntimeError: no server'
+        [(_, finished)] = in_order(s, AgentSessionFinished)
+    assert (finished.role, finished.error) == (WATCHDOG, 'RuntimeError: no server')
 
 
 def test_a_failed_start_leaves_its_screen_as_the_transcript_and_its_last_lines_in_the_error(
@@ -367,9 +367,9 @@ def test_a_failed_start_leaves_its_screen_as_the_transcript_and_its_last_lines_i
     assert launch(db, runtime, tmp_path, request(db, campaign)) == NotStarted(error), 'a blank screen adds nothing'
 
 
-def anomalies(db: Database) -> list[tuple[int, dict[str, object]]]:
+def anomalies(db: Database) -> list[tuple[int, StartupAnomaly]]:
     with db.session() as s:
-        return [(e.target_id, e.payload) for e in s.scalars(select(Event).where(Event.kind == STARTUP_ANOMALY))]
+        return [(e.target_id, anomaly) for e, anomaly in in_order(s, StartupAnomaly)]
 
 
 def test_an_agent_that_never_got_going_is_an_anomaly(
@@ -389,18 +389,17 @@ def test_an_agent_that_never_got_going_is_an_anomaly(
     dialog = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, dialog)
     assert (isinstance(outcome, NotStarted), agent_session(db, dialog).state) == (True, AgentSessionState.KILLED)
-    assert anomalies(db) == [
-        (
-            dialog,
-            {
-                'kind': 'watchdog',
-                'harness': 'script',
-                'run': None,
-                'seconds': IsFloat(ge=0),
-                'error': 'RuntimeError: agent_not_ready: Trust this folder?',
-            },
-        )
-    ]
+    [(on, anomaly)] = anomalies(db)
+    assert (on, anomaly.model_dump(exclude={'kind'})) == (
+        dialog,
+        {
+            'role': 'watchdog',
+            'harness': 'script',
+            'run': None,
+            'seconds': IsFloat(ge=0),
+            'error': 'RuntimeError: agent_not_ready: Trust this folder?',
+        },
+    )
     mocker.stopall()
 
     monkeypatch.setenv('HOME', str(tmp_path / 'home'))
@@ -430,7 +429,7 @@ def test_an_agent_told_to_wrap_up_that_stops_with_nothing_is_not_a_failed_start(
     use_harness(db, campaign, HARNESS_PROMPT_TO_FILE, **counted)
     told = request(db, campaign)
     with db.session() as s:
-        emit(s, WRAP_UP, TargetKind.AGENT_SESSION, told)
+        emit(s, WrapUp(reason='cancelled'), TargetRef(TargetKind.AGENT_SESSION, told), System.DAEMON)
         s.commit()
     outcome = launch(db, runtime, tmp_path, told)
     assert (isinstance(outcome, NotStarted), agent_session(db, told).state, anomalies(db)) == (
@@ -590,10 +589,8 @@ def test_the_session_is_attached_to_entire_from_the_cwd_when_the_agent_ends(
     ]
     assert span_attributes(spans, 'piloop.job', agent_session_id)['checkpoint'] == CHECKPOINT
     with db.session() as s:
-        [finished] = s.scalars(
-            select(Event).where(Event.kind == 'watchdog.finished', Event.target_id == agent_session_id)
-        )
-        assert finished.payload['status'] == 'exited'
+        [(_, finished)] = in_order(s, AgentSessionFinished, Event.target_id == agent_session_id)
+        assert (finished.role, finished.status) == (WATCHDOG, ExitStatus.EXITED)
     for mode in ('added', 'existing'):
         monkeypatch.setenv('FAKE_ENTIRE_MODE', mode)
         other = request(db, campaign)

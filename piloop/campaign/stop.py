@@ -6,6 +6,8 @@ any client of the database can make one.
 """
 
 from datetime import datetime, timedelta
+from enum import StrEnum
+from typing import Literal
 
 from sqlalchemy import ColumnElement, exists, func, select
 from sqlalchemy.orm import Session
@@ -13,7 +15,7 @@ from sqlalchemy.orm import Session
 from piloop.actor import Actor
 from piloop.campaign.spend import review_waits
 from piloop.config import CampaignConfig
-from piloop.db.events import emit
+from piloop.db.events import emit, has, in_order, latest
 from piloop.db.models import (
     ATTEMPTS,
     FINISHED_RUNS,
@@ -27,6 +29,7 @@ from piloop.db.models import (
     Comment,
     CommentKind,
     Event,
+    EventModel,
     Idea,
     IdeaStatus,
     Measurement,
@@ -36,27 +39,49 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.triggers import DAEMON_ACTOR
+from piloop.db.triggers.changelog import CampaignPausedChanged, CampaignStatusChanged
 from piloop.ids import RunId, TargetKind, TargetRef
 from piloop.plugins.stop_rule.contract import STOP_RULES, Fact, Go, Hold, Progress, Stop, StopCase
 from piloop.scoring.ledger import head, keeps, score
 from piloop.usage import campaign_tokens
 
-STOP_REQUESTED = 'campaign.stop_requested'
-"""Event on a campaign that someone asked to stop (``piloop campaign stop``), with ``reason`` and ``kill``.
 
-On its next tick, the daemon stops the campaign as for a ``[stop]`` condition (``check``). With ``kill``, it
-ends the campaign's implementers at once, without the wrap-up prompt. A request made before the campaign was last set
-``active`` is spent."""
+class Ending(StrEnum):
+    """How the daemon ends the agents of a stop or a cancel that someone requested."""
+
+    WRAP_UP = 'wrap_up'
+    """After the wrap-up prompt and its grace period: the agent may commit first."""
+    NOW = 'now'
+    """At once."""
+
+
+class StopRequested(EventModel):
+    """Someone asked to stop a campaign (``piloop campaign stop``).
+
+    On its next tick, the daemon stops the campaign as for a ``[stop]`` condition (``check``), and ends its implementers
+    as ``ending`` says. A request made before the campaign was last set ``active`` is spent.
+    """
+
+    kind: Literal['campaign.stop_requested'] = 'campaign.stop_requested'
+    reason: str
+    """Why, or empty."""
+    ending: Ending
+
+
+class CancelRequested(EventModel):
+    """Someone asked to cancel a run (``piloop run cancel``) or an agent (``piloop agent cancel``).
+
+    The daemon closes a requested row with its queued run. It ends a running agent with everything it started, as
+    ``ending`` says. A starting agent waits until it runs, and a run whose agent then fails to start is not launched
+    again. The run ends ``cancelled`` unless its implementer left its finding, and its commits are scored.
+    """
+
+    kind: Literal['run.cancel_requested', 'agent_session.cancel_requested']
+    ending: Ending
+
+
 CANCELLABLE = (AgentSessionState.REQUESTED, *LIVE)
 """The states of an agent that a cancel acts on: requested, starting (once it runs) and running."""
-CANCEL_REQUESTED = ('run.cancel_requested', 'agent_session.cancel_requested')
-"""Events on a run (``piloop run cancel``) and on an agent (``piloop agent cancel``) that someone asked to cancel, with
-``wrap_up``.
-
-The daemon closes a requested row with its queued run. It ends a running agent with everything it started, at once,
-or with ``wrap_up`` after the wrap-up prompt and its grace period. A starting agent waits until it runs, and a run
-whose agent then fails to start is not launched again. The run ends ``cancelled`` unless its implementer left its
-finding, and its commits are scored."""
 
 
 def attempt() -> ColumnElement[bool]:
@@ -93,40 +118,33 @@ def attempts(idea: Idea) -> int:
     return sum(run.end is None or run.end.attempt for run in idea.runs)
 
 
-def request_stop(s: Session, campaign: Campaign, actor: Actor, *, reason: str, kill: bool) -> None:
-    """Ask the daemon to stop ``campaign`` (``STOP_REQUESTED``). The caller commits."""
-    emit(s, STOP_REQUESTED, TargetKind.CAMPAIGN, campaign.id, actor=actor, payload={'reason': reason, 'kill': kill})
+def request_stop(s: Session, campaign: Campaign, actor: Actor, *, reason: str, ending: Ending) -> None:
+    """Ask the daemon to stop ``campaign`` (``StopRequested``). The caller commits."""
+    event = StopRequested(reason=reason, ending=ending)
+    emit(s, event, TargetRef(TargetKind.CAMPAIGN, campaign.id), actor)
 
 
-def requested_stop(s: Session, campaign: Campaign) -> Event | None:
+def requested_stop(s: Session, campaign: Campaign) -> tuple[Event, StopRequested] | None:
     """Return the latest stop request since the campaign was last set ``active``, or None."""
+    on_campaign = Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id)
     reactivated = s.scalar(
-        select(func.max(Event.id)).where(
-            Event.kind == 'campaign.status',
-            Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id),
-            Event.payload['new'].as_string() == CampaignStatus.ACTIVE.value,
-        )
+        select(func.max(Event.id)).where(on_campaign, has(CampaignStatusChanged, new=CampaignStatus.ACTIVE))
     )
-    return s.scalars(
-        select(Event)
-        .where(Event.kind == STOP_REQUESTED, Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id))
-        .where(Event.id > (reactivated or 0))
-        .order_by(Event.id.desc())
-        .limit(1)
-    ).first()
+    return latest(s, StopRequested, on_campaign, Event.id > (reactivated or 0))
 
 
-def request_cancel(s: Session, target: Run | AgentSession, actor: Actor, *, wrap_up: bool) -> None:
-    """Ask the daemon to cancel a run or an agent (``CANCEL_REQUESTED``). The caller commits."""
-    kind, on = (
-        (CANCEL_REQUESTED[0], TargetKind.RUN)
+def request_cancel(s: Session, target: Run | AgentSession, actor: Actor, *, ending: Ending) -> None:
+    """Ask the daemon to cancel a run or an agent (``CancelRequested``). The caller commits."""
+    on = (
+        TargetRef(TargetKind.RUN, target.id)
         if isinstance(target, Run)
-        else (CANCEL_REQUESTED[1], TargetKind.AGENT_SESSION)
+        else TargetRef(TargetKind.AGENT_SESSION, target.id)
     )
-    emit(s, kind, on, target.id, actor=actor, payload={'wrap_up': wrap_up})
+    kind = 'run.cancel_requested' if on.kind is TargetKind.RUN else 'agent_session.cancel_requested'
+    emit(s, CancelRequested(kind=kind, ending=ending), on, actor)
 
 
-def run_cancel(s: Session, run_id: RunId) -> Event | None:
+def run_cancel(s: Session, run_id: RunId) -> tuple[Event, CancelRequested] | None:
     """Return the latest cancel of a run: requested on the run, or on any of its agents, or None.
 
     A cancel on an agent holds for its run, so an implementer that a relaunch puts in the place of one that failed to start
@@ -135,26 +153,21 @@ def run_cancel(s: Session, run_id: RunId) -> Event | None:
     on_run = Event.target == TargetRef(TargetKind.RUN, run_id)
     agents = select(AgentSession.id).where(AgentSession.run_id == run_id)
     on_agent = (Event.target_kind == TargetKind.AGENT_SESSION) & Event.target_id.in_(agents)
-    return _latest_cancel(s, on_run | on_agent)
+    return latest(s, CancelRequested, on_run | on_agent)
 
 
-def agent_cancel(s: Session, agent_session: AgentSession) -> Event | None:
+def agent_cancel(s: Session, agent_session: AgentSession) -> tuple[Event, CancelRequested] | None:
     """Return the latest cancel of an agent, or None: its run's (``run_cancel``) for an implementer, its own for a sweep."""
     if agent_session.run_id is not None:
         return run_cancel(s, agent_session.run_id)
-    return _latest_cancel(s, Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id))
-
-
-def _latest_cancel(s: Session, target: ColumnElement[bool]) -> Event | None:
-    query = select(Event).where(Event.kind.in_(CANCEL_REQUESTED), target).order_by(Event.id.desc()).limit(1)
-    return s.scalars(query).first()
+    return latest(s, CancelRequested, Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id))
 
 
 def park_cancelled(s: Session, run: Run) -> None:
     """Park the idea of a cancelled run, with a note on the idea: a run is cancelled because it is not wanted now."""
     cancel = run_cancel(s, run.id)
     run.idea.status = IdeaStatus.PARKED
-    by = f' by {cancel.actor}' if cancel is not None else ''
+    by = f' by {cancel[0].actor}' if cancel is not None else ''
     body = f'parked: run#{run.id} was cancelled{by}; set the idea ready to run it again'
     s.add(
         Comment(target=TargetRef(TargetKind.IDEA, run.idea_id), author=DAEMON_ACTOR, kind=CommentKind.NOTE, body=body)
@@ -192,8 +205,8 @@ def requested(s: Session, campaign: Campaign) -> Stop | None:
     """Return the stop that someone requested (``requested_stop``), or None. It wins over every answer of the rule."""
     if (request := requested_stop(s, campaign)) is None:
         return None
-    why = request.payload.get('reason')
-    return Stop(f'stopped by {request.actor}: {why}' if why else f'stopped by {request.actor}')
+    event, stop = request
+    return Stop(f'stopped by {event.actor}: {stop.reason}' if stop.reason else f'stopped by {event.actor}')
 
 
 def asked(s: Session, campaign: Campaign, cfg: CampaignConfig) -> bool:
@@ -246,13 +259,9 @@ def hours(s: Session, campaign: Campaign, now: datetime) -> float | None:
 
 def paused_for(s: Session, campaign: Campaign, since: datetime, now: datetime) -> timedelta:
     """Return how long the campaign was paused between ``since`` and ``now``."""
-    changes = s.execute(
-        select(Event.at, Event.payload['new'].as_string())
-        .where(Event.kind == 'campaign.paused', Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id))
-        .order_by(Event.id)
-    ).all()
+    changes = in_order(s, CampaignPausedChanged, Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id))
     total, start = timedelta(), None
-    for at, new in changes:
+    for at, new in ((e.at, change.new) for e, change in changes):
         if new is not None and start is None:
             start = at
         elif new is None and start is not None:
@@ -277,9 +286,8 @@ def runs_without_keep(s: Session, campaign: Campaign, before: datetime | None = 
     )
     reactivated = s.scalar(
         select(func.max(Event.at)).where(
-            Event.kind == 'campaign.status',
+            has(CampaignStatusChanged, new=CampaignStatus.ACTIVE),
             Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id),
-            Event.payload['new'].as_string() == CampaignStatus.ACTIVE.value,
         )
     )
     since = max((t for t in (last_keep, reactivated) if t is not None), default=None)

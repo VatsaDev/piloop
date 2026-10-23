@@ -345,7 +345,8 @@ Each command takes `--reason '<why>'`, signs the change with your actor and reco
 
 ### What not to change
 
-- Never change `runs.status`, `events`, or `agent_sessions` rows, except to insert a request. The daemon owns those.
+- Never change `runs.status` or `agent_sessions` rows, except to insert a request. The daemon owns those. Only piloop
+  writes `events`: an insert is refused.
 - If they look wrong, write a comment of kind `escalation` on the run. The orchestrator reconciles.
 
 ### Provenance is automatic
@@ -355,7 +356,8 @@ Each command takes `--reason '<why>'`, signs the change with your actor and reco
   `daemon`, `research#12` …), so a value you write there is overwritten.
 - Never set them by hand. Read them to see who changed a row and when. `updated_by IS NULL` means the row is unchanged
   since its insert.
-- The same triggers keep a change log in `events`, signed by the same actor, each with `{old, new}` in the payload:
+- The same triggers keep a change log in `events`, signed by the same actor. Each payload has its `kind`, and these have
+  `old` and `new`:
   `idea.status`, `idea.priority`, `idea.track`, `idea.base_candidate_id`, `candidate.verdict` (with `verdict_by` and
   `verdict_reason`), `run.brief` (lengths only), `campaign.status` (with `stopped_reason`), `campaign.paused` (with
   `paused_reason`). An inserted or deleted `idea_links` row is `idea.linked` or `idea.unlinked` on its idea, with the

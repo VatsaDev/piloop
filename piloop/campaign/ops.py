@@ -46,7 +46,17 @@ from piloop.db.models import (
 )
 from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TargetRef, TrackName
 from piloop.plugins.role.contract import Files
-from piloop.scoring.ledger import REJUDGE_REQUESTED, NoteRefused, follow_up, head, note, rejudgeable, track_of
+from piloop.scoring.ledger import (
+    IdeaCreated,
+    MeasurementRecorded,
+    NoteRefused,
+    RejudgeRequested,
+    follow_up,
+    head,
+    note,
+    rejudgeable,
+    track_of,
+)
 
 
 class Refused(Exception):
@@ -235,7 +245,7 @@ class Added:
 
     measurement: Measurement
     rejudged: bool
-    """Whether the daemon judges the candidate again (``REJUDGE_REQUESTED``)."""
+    """Whether the daemon judges the candidate again (``RejudgeRequested``)."""
     effect: str
     """What happens to the verdict, in one line: when the daemon judges it again, or why the verdict stays."""
 
@@ -247,7 +257,7 @@ def add_measurement(s: Session, candidate_id: CandidateId, report: Report, *, ac
     a run (``ledger.rejudgeable``), with every measurement under the current evaluator. It does that when it measures
     the campaign again: not while the campaign is paused with its evaluations, or held by its stop rule. Any
     other verdict stays, and a keep's mean, which later runs from it must beat, includes the new measurement. Emits
-    ``measurement.recorded``, shaped like the daemon's, and the request (``REJUDGE_REQUESTED``).
+    ``MeasurementRecorded``, shaped like the daemon's, and the request (``RejudgeRequested``).
 
     Raises:
         Refused: the campaign has no evaluator yet, the candidate is pending (the daemon is measuring and judging it),
@@ -275,16 +285,11 @@ def add_measurement(s: Session, candidate_id: CandidateId, report: Report, *, ac
     )
     s.add(measurement)
     s.flush()
-    payload: dict[str, object] = {
-        'candidate': candidate.id,
-        'metrics': report.metrics,
-        'error': report.error,
-        'run': None,
-    }
-    emit(s, 'measurement.recorded', TargetKind.MEASUREMENT, measurement.id, actor=actor, payload=payload)
+    recorded = MeasurementRecorded(candidate=candidate.id, metrics=report.metrics, error=report.error, run=None)
+    emit(s, recorded, TargetRef(TargetKind.MEASUREMENT, measurement.id), actor)
     if not rejudgeable(candidate):
         return Added(measurement, False, _stays(candidate))
-    emit(s, REJUDGE_REQUESTED, TargetKind.CANDIDATE, candidate.id, actor=actor, payload={'measurement': measurement.id})
+    emit(s, RejudgeRequested(measurement=measurement.id), TargetRef(TargetKind.CANDIDATE, candidate.id), actor)
     later = measuring_held(s, campaign, cfg)
     return Added(measurement, True, f'the daemon judges it again with all its measurements{later}')
 
@@ -483,7 +488,7 @@ def note_candidate(
 def _create(s: Session, idea: Idea, actor: Actor) -> None:
     s.add(idea)
     s.flush()
-    emit(s, 'idea.created', TargetKind.IDEA, idea.id, actor=actor)
+    emit(s, IdeaCreated(), TargetRef(TargetKind.IDEA, idea.id), actor)
 
 
 def _link_all(s: Session, idea: Idea, after: Sequence[IdeaId], supersedes: Sequence[IdeaId]) -> None:

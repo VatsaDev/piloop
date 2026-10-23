@@ -8,7 +8,8 @@ from git import Repo
 from inline_snapshot import snapshot
 from sqlalchemy.orm import Session
 
-from piloop.agents.results import STARTUP_ANOMALY
+from piloop.agents.results import StartupAnomaly
+from piloop.campaign.anomaly import AnomalyKind
 from piloop.config import CampaignConfig, load_campaign_config
 from piloop.db.models import (
     AgentSession,
@@ -32,7 +33,8 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, RoleName, RunId, TargetKind, TargetRef
 from piloop.reports import overview as overview_module
-from piloop.reports.overview import AnomalyKind, anomalies, overview
+from piloop.reports.overview import anomalies, overview
+from piloop.scoring.ledger import IdeaCreated
 from tests.conftest import end_of, spent
 from tests.runtime.test_herdr import Response, calls, scripted
 
@@ -151,10 +153,9 @@ def live_campaign(db: Database, campaign: Campaign) -> None:
         bad = idea(s, p, 'crash it', IdeaStatus.REJECTED)
         failed = run(s, bad, RunStatus.FAILED, 1, 30, 40, error='boom\nand the rest')
         dead = agent(s, p, IMPLEMENTER, 30, 5, run_id=failed.id, state=AgentSessionState.KILLED, error='dialog')
-        startup = {'kind': 'implementer', 'harness': 'script', 'run': failed.id, 'seconds': 5.0, 'error': 'dialog'}
+        startup = StartupAnomaly(role=IMPLEMENTER, harness='script', run=failed.id, seconds=5.0, error='dialog')
         s.add(
             Event(
-                kind=STARTUP_ANOMALY,
                 actor='daemon',
                 target=TargetRef(TargetKind.AGENT_SESSION, dead.id),
                 payload=startup,
@@ -318,7 +319,9 @@ def test_a_run_that_the_daemon_stopped_is_not_a_failed_run(db: Database, campaig
         run = s.get_one(Run, 3)
         run.status, run.end, run.finished_at = RunStatus.FAILED, RunEnd.DAEMON_STOPPED, at(70)
         s.commit()
-        assert f'run#{run.id}' not in {a.ref for a in found(s, campaign) if a.kind is AnomalyKind.RUN_FAILED}
+        assert TargetRef(TargetKind.RUN, run.id) not in {
+            a.ref for a in found(s, campaign) if a.kind is AnomalyKind.RUN_FAILED
+        }
 
 
 def test_a_run_blocked_on_its_implementers_escalation_is_not_a_failed_run(db: Database, campaign: Campaign) -> None:
@@ -328,7 +331,9 @@ def test_a_run_blocked_on_its_implementers_escalation_is_not_a_failed_run(db: Da
         run = s.get_one(Run, 3)
         run.status, run.end, run.error, run.finished_at = RunStatus.FAILED, RunEnd.AWAITING_ANSWER, 'comment#9', at(70)
         s.commit()
-        assert f'run#{run.id}' not in {a.ref for a in found(s, campaign) if a.kind is AnomalyKind.RUN_FAILED}
+        assert TargetRef(TargetKind.RUN, run.id) not in {
+            a.ref for a in found(s, campaign) if a.kind is AnomalyKind.RUN_FAILED
+        }
 
 
 def found(s: Session, campaign: Campaign, now: datetime = NOW) -> list[overview_module.Anomaly]:
@@ -337,7 +342,7 @@ def found(s: Session, campaign: Campaign, now: datetime = NOW) -> list[overview_
 
 
 def test_a_short_life_without_the_launcher_event_is_not_a_startup_death(db: Database, campaign: Campaign) -> None:
-    """The launcher decides that an agent died at startup (``STARTUP_ANOMALY``). The overview only reports it."""
+    """The launcher decides that an agent died at startup (``StartupAnomaly``). The overview only reports it."""
     with db.session() as s:
         agent(s, s.get_one(Campaign, campaign.id), WATCHDOG, 0, 5)
         s.commit()
@@ -353,17 +358,16 @@ def test_an_agent_that_investigates_incidents_dead_at_startup_is_no_incident(db:
     with db.session() as s:
         for kind in (WATCHDOG, RESEARCH):
             dead = agent(s, s.get_one(Campaign, campaign.id), kind, 0, 35, state=AgentSessionState.KILLED)
-            payload = {'kind': kind, 'harness': 'script', 'run': None, 'seconds': 35.0, 'error': 'prompt_lost'}
+            payload = StartupAnomaly(role=kind, harness='script', run=None, seconds=35.0, error='prompt_lost')
             s.add(
                 Event(
-                    kind=STARTUP_ANOMALY,
                     actor='daemon',
                     target=TargetRef(TargetKind.AGENT_SESSION, dead.id),
                     payload=payload,
                 )
             )
         s.commit()
-        dead_at_startup = {a.key: a.incident for a in found(s, campaign) if a.kind is AnomalyKind.DEAD_AT_STARTUP}
+        dead_at_startup = {a.name: a.incident for a in found(s, campaign) if a.kind is AnomalyKind.DEAD_AT_STARTUP}
         assert dead_at_startup == {'agent_session#1 dead at startup': False, 'agent_session#2 dead at startup': True}
 
 
@@ -477,7 +481,7 @@ def test_an_implementer_quiet_for_an_hour_with_jobs_in_flight_is_an_incident(
     with db.session() as s:
         busy(s, campaign, tmp_path / 'run', said=30)
         [quiet] = silent(s, campaign, jobs)
-    assert (quiet.key, quiet.at, quiet.incident) == ('agent_session#1 silent while its jobs run', at(90), True)
+    assert (quiet.name, quiet.at, quiet.incident) == ('agent_session#1 silent while its jobs run', at(90), True)
     assert quiet.detail == snapshot(
         'run#1 idea#1: no comment or commit for 1h (its last comment); 2 jobs in flight, e.g. 4242 python train.py --epochs 90'
     )
@@ -578,7 +582,7 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, campai
                 AgentSession(kind=WATCHDOG, campaign_id=p.id, state=AgentSessionState.REQUESTED, reason='cron'),
             ]
         )
-        s.add(Event(kind='idea.created', actor='cli', target=TargetRef(TargetKind.IDEA, newer.id), at=at(110)))
+        s.add(Event(actor='cli', target=TargetRef(TargetKind.IDEA, newer.id), payload=IdeaCreated(), at=at(110)))
         s.commit()
     text = render(db, campaign)
     now = text[text.index('### Now') : text.index('### Anomalies')]

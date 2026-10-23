@@ -12,12 +12,13 @@ from pytest_mock import MockerFixture
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from piloop.db.events import in_order
 from piloop.db.models import (
     AgentSession,
     Campaign,
     Candidate,
     Evaluation,
-    Event,
+    EventModel,
     Lease,
     LeaseState,
     LeaseWorker,
@@ -46,17 +47,17 @@ from piloop.plugins.executor.contract import (
 from piloop.plugins.executor.kit.capacity import GB, HostSample, Pool
 from piloop.plugins.executor.kit.client import Local, Registration, WorkerInfo
 from piloop.plugins.executor.kit.leases import (
-    EXPIRED,
     NOT_TAKEN,
-    STALE_REPORT,
-    UNREACHABLE,
     AgentHandle,
     Answer,
     Grant,
+    LeaseExpired,
     Leases,
+    LeaseUnreachable,
     PromptMessage,
     Revoke,
     StaleLease,
+    StaleReport,
     Timing,
     Work,
     cancel,
@@ -196,9 +197,9 @@ def lease_row(db: Database, lease_id: int) -> Lease:
         return s.get_one(Lease, lease_id)
 
 
-def events(db: Database, kind: str) -> list[tuple[TargetKind, int, dict[str, object]]]:
+def events[M: EventModel](db: Database, model: type[M]) -> list[tuple[TargetKind, int, M]]:
     with db.session() as s:
-        return [(e.target_kind, e.target_id, e.payload) for e in s.scalars(select(Event).where(Event.kind == kind))]
+        return [(e.target_kind, e.target_id, payload) for e, payload in in_order(s, model)]
 
 
 DONE = AgentFinished(process=AgentExit(ExitStatus.EXITED, 1.0, 0))
@@ -257,9 +258,9 @@ def test_a_report_with_an_old_fencing_token_is_refused_and_kept_as_a_stale_repor
         Local(leases, 'w1').report(first, 'late', MEASURED)
     assert Local(leases, 'w1').heartbeat({first: None}, HOST) == {first: Answer.STALE}
     assert [c[0] for c in recorder.calls] == ['lost'], 'nothing of the late report applied'
-    [(kind, target, payload)] = events(db, STALE_REPORT)
-    assert (kind, target, payload['lease'], payload['worker']) == (TargetKind.CANDIDATE, job.candidate, first, 'w1')
-    assert payload['report'] == MEASURED.model_dump(mode='json')
+    [(kind, target, payload)] = events(db, StaleReport)
+    assert (kind, target, payload.lease, payload.worker) == (TargetKind.CANDIDATE, job.candidate, first, 'w1')
+    assert payload.report == MEASURED
     assert Local(leases, 'w2').report(second.lease, 'r', MEASURED) == {'reported': 'evaluation'}
 
 
@@ -287,11 +288,11 @@ def test_a_silent_worker_is_unreachable_after_the_grace_period_and_its_leases_ex
     now = utcnow()
     expiry = leases.expire(now + timedelta(seconds=49))
     assert expiry is not None and timedelta(seconds=299) < expiry - now < timedelta(seconds=301), 'the next deadline'
-    assert events(db, UNREACHABLE) == []
+    assert events(db, LeaseUnreachable) == []
     leases.expire(now + timedelta(seconds=51))
     leases.expire(now + timedelta(seconds=52))
-    assert events(db, UNREACHABLE) == [
-        (TargetKind.AGENT_SESSION, job.agent_session, {'lease': lease_id, 'worker': 'w1'})
+    assert events(db, LeaseUnreachable) == [
+        (TargetKind.AGENT_SESSION, job.agent_session, LeaseUnreachable(lease=lease_id, worker='w1'))
     ], 'once per silence'
     assert worker_row(db, 'w1').no_lease == NoLease.UNREACHABLE
     Local(leases, 'w1').heartbeat({lease_id: None}, HOST)
@@ -302,8 +303,8 @@ def test_a_silent_worker_is_unreachable_after_the_grace_period_and_its_leases_ex
     assert leases.expire(heard + timedelta(seconds=301)) is None
     row = lease_row(db, lease_id)
     assert row.state is LeaseState.EXPIRED and str(row.receipt['lost']).startswith('worker lost: w1 was silent for')
-    [(_, _, payload)] = events(db, EXPIRED)
-    assert payload['lease'] == lease_id and recorder.calls[-1][:2] == ('lost', job.agent_session)
+    [(_, _, payload)] = events(db, LeaseExpired)
+    assert payload.lease == lease_id and recorder.calls[-1][:2] == ('lost', job.agent_session)
 
 
 def test_a_restarted_daemon_gives_every_live_lease_a_full_period(
@@ -405,7 +406,7 @@ def test_a_revoke_or_a_cancel_changes_only_a_lease_it_applies_to(
 def test_a_report_on_a_lease_that_never_was_is_refused_and_kept_nowhere(db: Database, leases: Leases) -> None:
     with pytest.raises(StaleLease, match='there is no lease#9'):
         Local(leases, 'w1').report(9, 'r', DONE)
-    assert events(db, STALE_REPORT) == []
+    assert events(db, StaleReport) == []
 
 
 def test_the_fence_and_the_write_are_one_transaction_so_an_expiry_cannot_slip_between_them(
@@ -438,7 +439,7 @@ def test_the_fence_and_the_write_are_one_transaction_so_an_expiry_cannot_slip_be
     expiries[0].join(30)
     with db.session() as s:
         assert [lease.state for lease in s.scalars(select(Lease))] == [LeaseState.REPORTED], 'not queued again'
-    assert other.calls == [] and events(db, EXPIRED) == []
+    assert other.calls == [] and events(db, LeaseExpired) == []
 
 
 def test_a_daemon_that_was_away_longer_than_the_grace_period_renews_the_leases_before_it_expires_any(
@@ -451,7 +452,7 @@ def test_a_daemon_that_was_away_longer_than_the_grace_period_renews_the_leases_b
     leases.expire(now)
     leases.expire(now + timedelta(hours=1))  # the first tick after the resume
     assert (lease_row(db, lease_id).state, recorder.calls) == (LeaseState.ACQUIRED, [])
-    assert events(db, UNREACHABLE) == [], 'and not unreachable either'
+    assert events(db, LeaseUnreachable) == [], 'and not unreachable either'
 
 
 def test_an_unreachable_worker_counts_no_slot_until_it_is_heard_again(
@@ -490,8 +491,8 @@ def test_a_job_whose_row_is_settled_is_refused_as_stale_and_its_lease_ends_all_t
     )
     with pytest.raises(StaleLease, match='stale_lease: agent_session#1 is closed'):
         Local(leases, 'w1').report(lease_id, 'r', DONE)
-    [(_, _, payload)] = events(db, STALE_REPORT)
-    assert payload['reason'] == 'agent_session#1 is closed'
+    [(_, _, payload)] = events(db, StaleReport)
+    assert payload.reason == 'agent_session#1 is closed'
     Local(leases, 'w1').lost(lease_id, 'gone')
     assert lease_row(db, lease_id).receipt == {'lost': 'gone', 'settled': 'agent_session#1 is closed'}
 

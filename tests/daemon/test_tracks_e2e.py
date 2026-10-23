@@ -10,8 +10,10 @@ from git import Repo
 from sqlalchemy import select
 
 from piloop.daemon.main import Daemon
-from piloop.db.models import Campaign, Candidate, Event, Idea, Verdict
-from piloop.scoring.ledger import REBASED, head
+from piloop.daemon.scheduler import RunQueued
+from piloop.db.events import in_order
+from piloop.db.models import Campaign, Candidate, Idea, Verdict
+from piloop.scoring.ledger import Rebased, head
 from piloop.settings import Settings
 from tests.conftest import ScriptRuntime, factory, register, workers_of, write_script
 
@@ -120,10 +122,9 @@ def test_two_tracks_rebase_a_keep_that_lost_the_race_and_refuse_one_past_the_oth
             ' (+0; aggregate: no per-unit results) within its margin 1'
         ), 'judged on the head, where both tracks gained'
         assert [p.hexsha for p in repo.commit(merged.commit_sha).parents] == [trimmed.commit_sha, raced.commit_sha]
-        [rebased] = s.scalars(select(Event).where(Event.kind == REBASED)).all()
-        assert (rebased.target_id, rebased.payload) == (raced.id, {'head': trimmed.id, 'rebased': merged.id})
-        queued = s.scalars(select(Event).where(Event.kind == 'run.queued').order_by(Event.id)).all()
-        assert sorted(str(e.payload['track']) for e in queued) == ['accuracy', 'cost']
+        [(rebased, payload)] = in_order(s, Rebased)
+        assert (rebased.target_id, payload) == (raced.id, Rebased(head=trimmed.id, rebased=merged.id))
+        assert sorted(p.track for _, p in in_order(s, RunQueued)) == ['accuracy', 'cost']
         trunk = head(s, s.get_one(Campaign, campaign.id))
         assert trunk is not None and trunk.id == merged.id
         s.add(Idea(campaign_id=campaign.id, track='accuracy', title='heavy accuracy', hypothesis='h', created_by='t'))

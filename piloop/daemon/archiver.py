@@ -12,20 +12,33 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import NamedTuple
+from typing import Literal, NamedTuple
 
+from piloop.actor import System
 from piloop.campaign.archive import Job, archive, due, make_room, prune_older
 from piloop.db.events import emit
-from piloop.db.models import utcnow
+from piloop.db.models import EventModel, utcnow
 from piloop.db.session import Database
-from piloop.ids import TargetKind
+from piloop.ids import IdeaId, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import Cas, Upkeep
 from piloop.settings import GB, StorageSettings
 from piloop.store.tree import Cancelled
 
-DISK_ANOMALY = 'anomaly.disk'
-"""An event on a campaign: an archiving left files unstored because the store's disk was too full."""
+
+class DiskAnomaly(EventModel):
+    """On a campaign: an archiving left files unstored because the store's disk was too full."""
+
+    kind: Literal['anomaly.disk'] = 'anomaly.disk'
+    needed: int
+    """The bytes that were left."""
+    free: int
+    reserve: int
+    idea: IdeaId | None
+    retry_seconds: float
+    """When the archiver tries again."""
+
+
 SKIPPED_EVENT = 'archive.skipped'
 """A span event: the paths that an archiving left out, and why. Only the first ``SKIPPED_SHOWN``."""
 SKIPPED_SHOWN = 20
@@ -143,16 +156,16 @@ class Archiver:
                 return
             self._pause()
             self._upkept_at = -math.inf  # after the pause, evict and prune before this job is tried again
-            short = {
-                'needed': done.short.needed,
-                'free': done.short.free,
-                'reserve': done.short.reserve,
-                'idea': job.idea_id,
-                'retry_seconds': self._policy.retry.total_seconds(),
-            }
-            span.event(DISK_ANOMALY, **short)
+            short = DiskAnomaly(
+                needed=done.short.needed,
+                free=done.short.free,
+                reserve=done.short.reserve,
+                idea=job.idea_id,
+                retry_seconds=self._policy.retry.total_seconds(),
+            )
+            span.event(short.kind, **short.model_dump(exclude={'kind'}))
             with self._db.session() as s:
-                emit(s, DISK_ANOMALY, TargetKind.CAMPAIGN, job.campaign_id, payload=dict(short))
+                emit(s, short, TargetRef(TargetKind.CAMPAIGN, job.campaign_id), System.DAEMON)
                 s.commit()
 
     def _upkeep(self) -> None:

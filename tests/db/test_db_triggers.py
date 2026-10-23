@@ -113,7 +113,7 @@ def test_every_trigger_is_one_statement_named_table_what_and_references_real_col
 
 def test_the_change_log_is_the_event_kinds_the_feed_documents() -> None:
     events = [t for t in (*TEMP, *PERSISTENT) if t.body.startswith('INSERT INTO events')]
-    kinds = [m[1] for t in events if (m := re.search(r'VALUES \((.+?), ', t.body))]
+    kinds = [m[1] for t in events if (m := re.search(r"json_object\('kind', (.+?), ", t.body))]
     assert kinds == snapshot(
         [
             "'idea.status'",
@@ -133,17 +133,16 @@ def test_the_change_log_is_the_event_kinds_the_feed_documents() -> None:
             "'comment.deleted'",
             "'candidate.deleted'",
             "'comment.' || NEW.kind",
-            "'comment.escalation'",
+            "'comment.' || NEW.kind",
         ]
     )
-    targets = {m[1] for t in events if (m := re.search(r"VALUES \(.+?, .+?, '(\w+)', ", t.body))}
+    targets = {m[1] for t in events if (m := re.search(r"VALUES \(.+?, '(\w+)', ", t.body))}
     assert len(targets) > 1 and targets <= {k.value for k in TargetKind}, (
         'the event target_kind (the table singular, or the idea of a link) must pass the CHECK constraint'
     )
     assert changelog.RUN_BRIEF in changelog.CHANGES and f"= '{provenance.DAEMON_ACTOR}'" in (
         changelog.RUN_BRIEF.when or ''
     )
-    assert changelog.singular('ideas') == 'idea'
 
 
 def test_recreate_is_a_filter_over_persistent_that_honours_requires(

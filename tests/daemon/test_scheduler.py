@@ -23,14 +23,15 @@ from sqlalchemy.exc import OperationalError
 
 from piloop import git, proc
 from piloop.actor import System
-from piloop.agents.results import STARTUP_ANOMALY, CampaignResults
+from piloop.agents.results import AgentEnded, CampaignResults, PromptSettled, StartupAnomaly, WrapUp
 from piloop.agents.roles import SQL_HINT, compose_brief
 from piloop.campaign.campaigns import sync
-from piloop.campaign.stop import request_cancel, request_stop, runs
+from piloop.campaign.stop import Ending, request_cancel, request_stop, runs
 from piloop.config import CampaignConfig, load_campaign_config
 from piloop.daemon.run_controller import UNCOMMITTED_SUMMARY, RunController
-from piloop.daemon.scheduler import STARTUP_BREAKER, STARTUP_WINDOW, Scheduler
+from piloop.daemon.scheduler import STARTUP_BREAKER, STARTUP_WINDOW, JobsLeft, RunQueued, RunRerouted, Scheduler
 from piloop.db import sql
+from piloop.db.events import has, payload_of
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
@@ -41,6 +42,7 @@ from piloop.db.models import (
     CommentKind,
     Evaluation,
     Event,
+    EventModel,
     Idea,
     IdeaLink,
     IdeaStatus,
@@ -57,6 +59,7 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
+from piloop.db.triggers.changelog import IdeaStatusChanged
 from piloop.ids import (
     IMPLEMENTER,
     RESEARCH,
@@ -414,7 +417,7 @@ def test_a_queued_run_whose_harness_left_the_rotation_launches_on_the_new_one_un
             ('script', 'm', AgentSessionState.STARTING),
         ], 'b waits for a pi slot; the pin is launched where it was pinned'
         [rerouted] = s.scalars(select(Event).where(Event.kind == 'run.rerouted')).all()
-        assert (rerouted.target_id, rerouted.payload) == (runs[0].id, {'from': 'script', 'to': 'pi'})
+        assert (rerouted.target_id, rerouted.payload) == (runs[0].id, RunRerouted(from_='script', to='pi'))
 
 
 def test_idea_without_a_base_is_parked(
@@ -475,7 +478,8 @@ def test_a_pin_is_honored_over_the_after_link_and_the_run_records_both_bases(
         run = s.scalars(select(Run).where(Run.idea_id == branch)).one()
         assert run.base_candidate_id == 1, 'the pin, not the head candidate#2 that the run would otherwise start from'
         queued = s.scalars(select(Event).where(Event.kind == 'run.queued', Event.target_id == run.id)).one()
-        assert (queued.payload['pinned_base'], queued.payload['computed_base']) == (1, 2)
+        pinned = payload_of(queued, RunQueued)
+        assert (pinned.pinned_base, pinned.computed_base) == (1, 2)
         assert run.branch, 'a pin other than the computed base: a branch run, judged against its own base'
         assert s.get_one(Idea, missing).status is IdeaStatus.PARKED, 'a pin to a candidate that does not exist'
         assert s.scalars(select(Run).where(Run.idea_id == missing)).all() == []
@@ -674,8 +678,8 @@ def test_a_superseded_idea_that_never_ran_is_rejected_on_tick_and_one_that_ran_i
     with db.session() as s:
         logged = s.scalars(select(Event).where(Event.kind == 'idea.status').order_by(Event.id)).all()
         assert [(e.target_id, e.actor, e.payload) for e in logged] == [
-            (ready, 'daemon', {'old': 'ready', 'new': 'rejected'}),
-            (proposed, 'daemon', {'old': 'proposed', 'new': 'rejected'}),
+            (ready, 'daemon', IdeaStatusChanged(old=IdeaStatus.READY, new=IdeaStatus.REJECTED)),
+            (proposed, 'daemon', IdeaStatusChanged(old=IdeaStatus.PROPOSED, new=IdeaStatus.REJECTED)),
         ], 'the change-log trigger is the only writer of idea.status; the daemon emits nothing by hand'
         notes = s.scalars(select(Comment).where(Comment.author == 'daemon').order_by(Comment.id)).all()
         superseded = 'rejected: superseded by idea#{0}. It does not run, even if idea#{0} has not run yet.'
@@ -1504,7 +1508,7 @@ def test_stop_before_a_sweep_starts_never_starts_it(
             'script',
             {},
         )
-        assert s.scalars(select(Event).where(Event.kind == 'watchdog.started')).all() == []
+        assert s.scalars(select(Event).where(Event.kind == 'agent_session.started')).all() == []
     assert not (tmp_path / 'agent_sessions' / str(agent_session_id)).exists(), 'nothing was started'
 
 
@@ -1641,7 +1645,7 @@ def comment(
         )
 
 
-def settled(db: Database, kind: str) -> list[tuple[int, dict[str, object]]]:
+def settled(db: Database, kind: str) -> list[tuple[int, EventModel]]:
     with db.session() as s:
         return [(e.target_id, e.payload) for e in s.scalars(select(Event).where(Event.kind == kind))]
 
@@ -1707,7 +1711,9 @@ def test_comments_for_a_running_agent_go_to_its_executor_once_each_until_they_ha
         ),
         (1, Prompt(direct, 'piloop prompt: the text as written\nall of it')),
     ]
-    assert settled(db, 'comment.delivered') == [(1, {'comment': c}) for c in (decision, note, direct)]
+    assert settled(db, 'comment.delivered') == [
+        (1, PromptSettled(kind='comment.delivered', comment=c)) for c in (decision, note, direct)
+    ]
     assert events(spans, 'comment.delivered') == [{'comment': c, 'agent_session': 1} for c in (decision, note, direct)]
     scheduler.tick()
     assert len(executor.prompts) == 3, 'settled by the events: nothing is sent twice'
@@ -1776,7 +1782,9 @@ def test_a_comment_that_cannot_be_delivered_is_settled_as_undelivered_and_never_
     assert scheduler.tick() == []
     error = 'the agent has no live lease'
     assert settled(db, 'comment.delivered') == []
-    assert settled(db, 'comment.undelivered') == [(1, {'comment': stuck, 'error': error})]
+    assert settled(db, 'comment.undelivered') == [
+        (1, PromptSettled(kind='comment.undelivered', comment=stuck, error=error))
+    ]
     assert events(spans, 'comment.undelivered') == [{'comment': stuck, 'agent_session': 1, 'error': error}]
     scheduler.tick()
     assert len(settled(db, 'comment.undelivered')) == 1 and len(events(spans, 'comment.undelivered')) == 1, (
@@ -1857,7 +1865,7 @@ def test_implementers_of_a_stopped_campaign_are_told_to_wrap_up_then_ended_after
             )
         ]
     ), 'a sweep is bounded by its timeout and the closing watchdog is one: only implementers are wound down'
-    assert settled(db, 'agent_session.wrap_up') == [(1, {'reason': 'max_runs: 2 runs'})]
+    assert settled(db, 'agent_session.wrap_up') == [(1, WrapUp(reason='max_runs: 2 runs'))]
     scheduler.tick()
     assert (len(runtime.prompts), revoked(db)) == (1, []), 'told once; ended only when the grace is over'
 
@@ -1875,9 +1883,9 @@ def test_a_headless_implementer_of_a_stopped_campaign_cannot_be_told_and_is_just
     lease_running(db)
     scheduler = make_scheduler(db, runtime, tmp_path)
     scheduler.tick()
-    assert settled(db, 'agent_session.wrap_up') == [
-        (1, {'reason': 'plateau: 5 runs without a keep', 'error': IsStr(regex='subprocess agent pid 4242 cannot.*')})
-    ]
+    [(target, told)] = settled(db, 'agent_session.wrap_up')
+    assert isinstance(told, WrapUp) and (target, told.reason) == (1, 'plateau: 5 runs without a keep')
+    assert told.error == IsStr(regex='subprocess agent pid 4242 cannot.*')
     scheduler.tick()
     assert revoked(db) == ['implementer-1']
 
@@ -1917,7 +1925,7 @@ def test_an_implementer_that_the_stop_ends_mid_turn_closes_its_run_as_cut_by_the
         [ended] = s.scalars(select(Event).where(Event.kind == 'agent_session.stop_ended')).all()
         assert (ended.target_id, ended.payload) == (
             1,
-            {'reason': 'plateau: 5 runs without a keep', 'end': RunEnd.CAMPAIGN_STOPPED},
+            AgentEnded(reason='plateau: 5 runs without a keep', end=RunEnd.CAMPAIGN_STOPPED),
         )
         verdicts = [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == 1).order_by(Candidate.id))]
         assert verdicts == [Verdict.KEEP, Verdict.RECOVERED], 'its commit is scored, its draft recovered'
@@ -1934,19 +1942,19 @@ def test_a_stop_with_kill_ends_the_implementers_at_once_and_a_graceful_one_can_b
     lease_running(db)
     scheduler = make_scheduler(db, runtime, tmp_path)
     with db.session() as s:
-        request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='machine needed', kill=False)
+        request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='machine needed', ending=Ending.WRAP_UP)
         s.commit()
     scheduler.tick()  # stops the campaign; its implementers wind down from the next tick, as for a [stop] condition
     scheduler.tick()
     assert (len(runtime.prompts), revoked(db)) == (1, []), 'graceful: told, and the grace runs'
     with db.session() as s:
-        request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='now', kill=True)
+        request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='now', ending=Ending.NOW)
         s.commit()
     scheduler.tick()
     assert revoked(db) == ['implementer-1'], 'a stopped campaign can still be killed'
     scheduler.tick()
     assert settled(db, 'agent_session.stop_ended') == [
-        (1, {'reason': 'stopped by human: machine needed', 'end': RunEnd.CAMPAIGN_STOPPED})
+        (1, AgentEnded(reason='stopped by human: machine needed', end=RunEnd.CAMPAIGN_STOPPED))
     ], 'one event, however many ticks the kill takes to land'
     scheduler.stop(timeout=5)
 
@@ -1967,8 +1975,8 @@ def test_a_cancelled_run_is_told_to_wrap_up_and_ended_after_the_grace(
         )
         s.add(sweep)
         s.flush()
-        request_cancel(s, s.get_one(Run, 1), System.HUMAN, wrap_up=True)
-        request_cancel(s, sweep, System.ORCHESTRATOR, wrap_up=True)
+        request_cancel(s, s.get_one(Run, 1), System.HUMAN, ending=Ending.WRAP_UP)
+        request_cancel(s, sweep, System.ORCHESTRATOR, ending=Ending.WRAP_UP)
         s.commit()
     lease_running(db)
     scheduler = make_scheduler(db, runtime, tmp_path)
@@ -1991,8 +1999,8 @@ def test_a_cancelled_run_is_told_to_wrap_up_and_ended_after_the_grace(
     scheduler.tick()
     assert revoked(db) == ['implementer-1', 'research-3']
     assert settled(db, 'agent_session.stop_ended') == [
-        (1, {'reason': 'cancelled by human', 'end': RunEnd.CANCELLED}),
-        (3, {'reason': 'cancelled by orchestrator', 'end': RunEnd.CANCELLED}),
+        (1, AgentEnded(reason='cancelled by human', end=RunEnd.CANCELLED)),
+        (3, AgentEnded(reason='cancelled by orchestrator', end=RunEnd.CANCELLED)),
     ]
     scheduler.stop(timeout=5)
 
@@ -2013,7 +2021,7 @@ def test_a_cancelled_implementer_closes_its_run_as_cancelled_scores_its_commits_
         assert time.monotonic() < deadline
         time.sleep(0.05)
     with db.session() as s:
-        request_cancel(s, s.get_one(AgentSession, 1), System.HUMAN, wrap_up=False)
+        request_cancel(s, s.get_one(AgentSession, 1), System.HUMAN, ending=Ending.NOW)
         s.commit()
     assert scheduler.tick() == []
     scheduler.wait()
@@ -2042,7 +2050,7 @@ def test_a_finding_that_lands_after_a_cancel_ended_the_implementer_is_refused_an
     assert scheduler.tick() == [1]
     wait_for_agent_session_handle(db)
     with db.session() as s:
-        request_cancel(s, s.get_one(Run, 1), System.HUMAN, wrap_up=False)
+        request_cancel(s, s.get_one(Run, 1), System.HUMAN, ending=Ending.NOW)
         s.commit()
     scheduler.tick()
     with pytest.raises(sqlite3.IntegrityError, match='the agent session of this connection has ended'):
@@ -2067,13 +2075,13 @@ def test_an_implementer_cancelled_before_it_did_anything_is_not_a_failed_start(
     assert scheduler.tick() == [1]
     wait_for_agent_session_handle(db)
     with db.session() as s:
-        request_cancel(s, s.get_one(Run, 1), System.HUMAN, wrap_up=False)
+        request_cancel(s, s.get_one(Run, 1), System.HUMAN, ending=Ending.NOW)
         s.commit()
     assert scheduler.tick() == []
     scheduler.wait()
     scheduler.stop(timeout=5)
     with db.session() as s:
-        assert s.scalars(select(Event).where(Event.kind == STARTUP_ANOMALY)).all() == []
+        assert s.scalars(select(Event).where(has(StartupAnomaly))).all() == []
         assert s.get_one(AgentSession, 1).state is AgentSessionState.KILLED
         run = s.get_one(Run, 1)
         assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.CANCELLED)
@@ -2101,9 +2109,9 @@ def test_a_cancelled_request_never_launches_and_a_cancelled_sweep_is_ended(
         requested = AgentSession(kind=RESEARCH, campaign_id=campaign.id, reason='low_water')
         s.add_all([queued, sweep, requested])
         s.flush()
-        request_cancel(s, queued, System.HUMAN, wrap_up=True)
-        request_cancel(s, sweep, System.HUMAN, wrap_up=False)
-        request_cancel(s, requested, System.HUMAN, wrap_up=False)
+        request_cancel(s, queued, System.HUMAN, ending=Ending.WRAP_UP)
+        request_cancel(s, sweep, System.HUMAN, ending=Ending.NOW)
+        request_cancel(s, requested, System.HUMAN, ending=Ending.NOW)
         s.commit()
     lease_running(db)
     scheduler = make_scheduler(db, runtime, tmp_path)
@@ -2176,16 +2184,15 @@ def died_at_startup(db: Database, campaign: Campaign, kind: RoleName, minutes_ag
         )
         s.add(agent_session)
         s.flush()
-        payload: dict[str, object] = {
-            'kind': kind,
-            'harness': 'script',
-            'run': None,
-            'seconds': 35.0,
-            'error': f'HerdrError: prompt_lost: {kind}-{agent_session.id} did not start working\nIts screen ended with:\n> brief',
-        }
+        payload = StartupAnomaly(
+            role=kind,
+            harness='script',
+            run=None,
+            seconds=35.0,
+            error=f'HerdrError: prompt_lost: {kind}-{agent_session.id} did not start working\nIts screen ended with:\n> brief',
+        )
         s.add(
             Event(
-                kind=STARTUP_ANOMALY,
                 actor='daemon',
                 target=TargetRef(TargetKind.AGENT_SESSION, agent_session.id),
                 payload=payload,
@@ -2245,7 +2252,7 @@ def test_startup_deaths_pause_launches_and_escalate_until_they_age_out(
     )
 
     with db.session() as s:
-        for event in s.scalars(select(Event).where(Event.kind == STARTUP_ANOMALY)):
+        for event in s.scalars(select(Event).where(has(StartupAnomaly))):
             event.at -= STARTUP_WINDOW
         s.commit()
     assert scheduler.tick() != [], 'the deaths aged out of the window: launches resume'
@@ -2338,7 +2345,7 @@ TWO_TRACKS: dict[str, object] = {
 """The test campaign's two metrics as two tracks: accuracy (``score``) and cost (``size``), three slots to one."""
 
 
-def queue(db: Database, scheduler: Scheduler, campaign: Campaign) -> list[tuple[int, dict[str, object]]]:
+def queue(db: Database, scheduler: Scheduler, campaign: Campaign) -> list[tuple[int, RunQueued]]:
     """Run one ``_queue`` pass.
 
     Returns:
@@ -2349,8 +2356,8 @@ def queue(db: Database, scheduler: Scheduler, campaign: Campaign) -> list[tuple[
         scheduler._queue(s, p, CampaignConfig.model_validate(p.config))
         s.commit()
     with db.session() as s:
-        rows = s.scalars(select(Event).where(Event.kind == 'run.queued').order_by(Event.id)).all()
-        return [(int(str(e.payload['idea'])), e.payload) for e in rows]
+        rows = s.scalars(select(Event).where(has(RunQueued)).order_by(Event.id)).all()
+        return [(p.idea, p) for p in (payload_of(e, RunQueued) for e in rows)]
 
 
 def test_a_free_slot_goes_to_the_track_furthest_below_its_share_whatever_the_priorities(
@@ -2363,7 +2370,7 @@ def test_a_free_slot_goes_to_the_track_furthest_below_its_share_whatever_the_pri
     assert [idea for idea, _ in queued] == [*accuracy[:3], cost], (
         'three of four slots for the 0.75 share, the fourth for cost although its idea is the least urgent'
     )
-    assert [(p['track'], p.get('priority_pick')) for _, p in queued] == [
+    assert [(p.track, p.priority_pick) for _, p in queued] == [
         ('accuracy', None),
         ('accuracy', None),
         ('accuracy', None),
@@ -2378,7 +2385,7 @@ def test_a_track_with_nothing_runnable_gives_its_slot_away(
     accuracy = add_ideas(db, campaign, 'a1', 'a2', 'a3', 'a4', track='accuracy')
     queued = queue(db, make_scheduler(db, runtime, tmp_path), campaign)
     assert [idea for idea, _ in queued] == accuracy, 'no cost idea: its slot goes to accuracy'
-    assert all('priority_pick' not in p for _, p in queued)
+    assert all(p.priority_pick is None for _, p in queued)
 
 
 def test_an_idea_on_a_track_the_config_does_not_name_is_parked_and_a_track_at_share_zero_waits(
@@ -2467,7 +2474,7 @@ def test_an_idle_implementer_that_left_its_finding_is_told_once_which_of_its_job
         )
     ], 'once'
     jobs = ['4243 zsh -c until ! pgrep -f "train.py --plan"; do sleep 5; done']
-    assert settled(db, 'agent_session.jobs_left') == [(1, {'jobs': jobs})]
+    assert settled(db, 'agent_session.jobs_left') == [(1, JobsLeft(jobs=jobs))]
     assert dict(span_named(spans, 'agent_session.jobs_left').attributes or {}) == {'agent_session': 1, 'jobs': 1}
 
 
@@ -2483,7 +2490,7 @@ def test_an_implementer_that_cannot_take_the_list_of_its_jobs_is_not_asked_again
     scheduler.tick()
     jobs = ['4243 zsh -c until ! pgrep -f "train.py --plan"; do sleep 5; done']
     assert settled(db, 'agent_session.jobs_left') == [
-        (1, {'jobs': jobs, 'error': 'agent implementer-1 is blocked on an approval or question'})
+        (1, JobsLeft(jobs=jobs, error='agent implementer-1 is blocked on an approval or question'))
     ]
 
 

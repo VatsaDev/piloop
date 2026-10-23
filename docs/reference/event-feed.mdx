@@ -39,6 +39,8 @@ reader misses none of its events, and may get a few of other campaigns.
 
 Every document has `protocol`, the version of the documents and of the event envelope: `1`. Within a version, piloop
 may add fields. Ignore the fields that you do not know. A change that removes or changes a field is a new version.
+A payload is not part of the protocol: it has the shape of its kind, and the
+[upgrade guide](/guides/upgrading) lists each change to one.
 
 A read of events:
 
@@ -52,7 +54,7 @@ A read of events:
       "subject": {"kind": "idea", "id": 7, "campaign": 1},
       "actor": "orchestrator",
       "time": "2026-10-19T12:00:00.123456Z",
-      "payload": {"old": "ready", "new": "parked"}
+      "payload": {"kind": "idea.status", "old": "ready", "new": "parked"}
     }
   ],
   "next": 42,
@@ -86,17 +88,17 @@ Every event has the same fields, whatever its kind.
 | `subject` | The row that the event is about: its `kind` (`campaign`, `idea`, `run`, `candidate`, `measurement`, `agent_session` or `comment`), its `id` and its `campaign`. |
 | `actor` | Who wrote it: `daemon`, `human`, `orchestrator`, or an agent such as `implementer#12`. |
 | `time` | When it was written, in UTC. |
-| `payload` | The details, as stored: any JSON value. |
+| `payload` | The details, as stored: a JSON object with the event's `kind`. |
 | `invalid` | Only when a stored value is not of its type: its stored text, under `time` or `payload`. That field is then null. |
 
 The envelope shows each stored event as it is. It rewrites no row and invents no field. `subject.campaign` is looked up
 when the event is read, so it is null when the row is gone (a deleted idea, its older events and its `idea.deleted`
 included) or has no campaign (a reply to a reply).
 
-piloop checks the types of an event when it is written, through any piloop command, `piloop sql` included. A
-payload can still be text that is not strict JSON, such as `NaN` or `1e400`, and a row that an older piloop let
-through can have a time that is not a time. Such a value comes as null with its stored text under `invalid`, and the
-events after it read as usual. The documents are always strict JSON.
+Only piloop writes events: `piloop sql` cannot insert one, and each payload has the shape of its kind. A row that an
+older piloop let through can still have a payload that is not strict JSON, such as `1e400`, or a time that is not a
+time. Such a value comes as null with its stored text under `invalid`, and the events after it read as usual. The
+documents are always strict JSON.
 
 `agent_session.identified` comes once for each harness session id of an agent, with `session_id`, `harness`,
 `executable`, `role`, `model`, `campaign`, `run`, `idea` and `proposed_by` (the agent that proposed the idea, with

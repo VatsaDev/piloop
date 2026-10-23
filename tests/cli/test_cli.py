@@ -22,14 +22,17 @@ from rich.console import Console
 from sqlalchemy import create_engine, select
 
 from piloop.actor import Actor, Agent, System
+from piloop.agents.results import PromptSettled
 from piloop.campaign import campaigns as campaign_module, inbox
+from piloop.campaign.campaigns import CampaignAdded
 from piloop.campaign.ideas import defined_by, runnable
+from piloop.campaign.stop import CancelRequested, Ending, StopRequested
 from piloop.cli import agents as agents_cli, campaign as campaign_cli, common, inbox as inbox_cli, install, main as cli
 from piloop.config import ConfigError
 from piloop.daemon.main import Daemon
 from piloop.daemon.serve import acquire, running_pid
 from piloop.db import session, sql
-from piloop.db.events import emit
+from piloop.db.events import emit, has
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
@@ -51,13 +54,14 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database, migrate
-from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, CampaignId, CandidateId, TargetKind
+from piloop.db.triggers.changelog import CampaignStatusChanged
+from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, CampaignId, CandidateId, CommentId, TargetKind, TargetRef
 from piloop.plugins import host
 from piloop.plugins.executor.kit.capacity import GB, HostSample
 from piloop.plugins.executor.kit.leases import Leases
 from piloop.plugins.runtime import herdr
 from piloop.plugins.runtime.herdr import HerdrSettings
-from piloop.scoring.ledger import REMEASURE_REQUESTED
+from piloop.scoring.ledger import CandidateImported, RemeasureRequested
 from piloop.settings import Settings
 from piloop.version import direct_url, installed
 from tests.conftest import at_head, example, hold_lock, wait_until
@@ -336,13 +340,19 @@ def test_status_shows_why_a_campaign_stopped_and_init_resumes_it_when_the_stop_t
             (e.kind, e.actor, e.payload)
             for e in s.scalars(select(Event).where(Event.target_kind == TargetKind.CAMPAIGN))
         ] == [
-            ('campaign.added', 'human', {'baseline': 1}),
+            ('campaign.added', 'human', CampaignAdded(baseline=CandidateId(1))),
             (
                 'campaign.status',
                 'human',
-                {'old': 'active', 'new': 'stopped', 'stopped_reason': 'target: score 3.0000 ≥ 3'},
+                CampaignStatusChanged(
+                    old=CampaignStatus.ACTIVE, new=CampaignStatus.STOPPED, stopped_reason='target: score 3.0000 ≥ 3'
+                ),
             ),
-            ('campaign.status', 'human', {'old': 'stopped', 'new': 'active', 'stopped_reason': None}),
+            (
+                'campaign.status',
+                'human',
+                CampaignStatusChanged(old=CampaignStatus.STOPPED, new=CampaignStatus.ACTIVE, stopped_reason=None),
+            ),
         ], 'the stop and the resume are the same change-log event, whoever wrote the row'
     db.close()
 
@@ -724,7 +734,11 @@ def test_candidate_import_registers_a_reference_shown_apart_and_refuses_a_bad_re
         )
         assert (c.run_id, c.parent_id, c.commit_sha, c.measurements) == (None, None, sha, [])
         [event] = s.scalars(select(Event).where(Event.kind == 'candidate.imported')).all()
-        assert (event.actor, event.target_id, event.payload) == ('human', 2, {'ref': 'elsewhere', 'commit': sha})
+        assert (event.actor, event.target_id, event.payload) == (
+            'human',
+            2,
+            CandidateImported(ref='elsewhere', commit=sha),
+        )
     repo.git.branch('-qD', 'elsewhere')
     assert repo.git.rev_parse('refs/piloop/demo/reference/2') == sha, 'pinned: it outlives its branch'
 
@@ -759,12 +773,12 @@ def test_candidate_remeasure_asks_the_daemon_to_measure_a_candidate_again_and_re
         'the baseline has no bar'
     )
     with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
-        [event] = s.scalars(select(Event).where(Event.kind == REMEASURE_REQUESTED)).all()
+        [event] = s.scalars(select(Event).where(has(RemeasureRequested))).all()
         assert (event.actor, event.target_kind, event.target_id, event.payload) == (
             'human',
             TargetKind.CANDIDATE,
             1,
-            {'repeats': 3},
+            RemeasureRequested(repeats=3),
         )
         s.add(Candidate(campaign_id=1, commit_sha='0' * 40, tree_sha='1' * 40, verdict=Verdict.UNMEASURED))
         s.add(Candidate(campaign_id=1, commit_sha='2' * 40, tree_sha='3' * 40, verdict=Verdict.DISCARD, parent_id=1))
@@ -1061,9 +1075,12 @@ def test_prompt_is_a_note_on_the_agent_and_says_whether_it_arrived(
             )
         )
         s.commit()
-        for comment, kind, error in ((2, 'comment.delivered', None), (3, 'comment.undelivered', 'a dialog is open')):
-            payload: dict[str, object] = {'comment': comment} | ({'error': error} if error else {})
-            emit(s, kind, TargetKind.AGENT_SESSION, 1, payload=payload)  # the daemon's answers to the next notes
+        answers = (  # the daemon's answers to the next notes
+            PromptSettled(kind='comment.delivered', comment=CommentId(2)),
+            PromptSettled(kind='comment.undelivered', comment=CommentId(3), error='a dialog is open'),
+        )
+        for answer in answers:
+            emit(s, answer, TargetRef(TargetKind.AGENT_SESSION, 1), System.DAEMON)
         s.commit()
     db.close()
     monkeypatch.setattr(agents_cli, 'DELIVERY_WAIT', 0.1)
@@ -1126,10 +1143,20 @@ def test_campaign_stop_and_cancels_are_requests_that_the_daemon_acts_on(campaign
     with db.session() as s:
         requests = [(e.kind, e.target_id, e.actor, e.payload) for e in s.scalars(select(Event).where(Event.id > 0))]
         assert [r for r in requests if r[0].endswith('_requested')] == [
-            ('run.cancel_requested', 1, 'human', {'wrap_up': True}),
-            ('agent_session.cancel_requested', 3, 'human', {'wrap_up': False}),
-            ('agent_session.cancel_requested', 1, 'human', {'wrap_up': True}),
-            ('campaign.stop_requested', 1, 'human', {'reason': 'machine needed', 'kill': False}),
+            ('run.cancel_requested', 1, 'human', CancelRequested(kind='run.cancel_requested', ending=Ending.WRAP_UP)),
+            (
+                'agent_session.cancel_requested',
+                3,
+                'human',
+                CancelRequested(kind='agent_session.cancel_requested', ending=Ending.NOW),
+            ),
+            (
+                'agent_session.cancel_requested',
+                1,
+                'human',
+                CancelRequested(kind='agent_session.cancel_requested', ending=Ending.WRAP_UP),
+            ),
+            ('campaign.stop_requested', 1, 'human', StopRequested(reason='machine needed', ending=Ending.WRAP_UP)),
         ]
         s.get_one(Campaign, 1).status, s.get_one(Campaign, 1).stopped_reason = CampaignStatus.STOPPED, 'by hand'
         s.commit()

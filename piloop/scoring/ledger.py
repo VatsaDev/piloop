@@ -10,10 +10,11 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import fmean
+from typing import Literal
 
 from git import Repo
 from git.exc import BadName
-from pydantic import BaseModel, Field
+from pydantic import Field
 from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -21,7 +22,7 @@ from sqlalchemy.orm import Session
 from piloop import git
 from piloop.actor import Actor, System
 from piloop.config import CampaignConfig, Metric, Track
-from piloop.db.events import emit
+from piloop.db.events import emit, has, latest
 from piloop.db.models import (
     OPEN_RUNS,
     PROCESS,
@@ -31,13 +32,14 @@ from piloop.db.models import (
     Candidate,
     Evaluator,
     Event,
+    EventModel,
     Idea,
     IdeaStatus,
     Run,
     Verdict,
     latest_agent_session,
 )
-from piloop.ids import CampaignId, EvaluatorId, MeasurementId, RunId, TargetKind, TargetRef, TrackName
+from piloop.ids import CampaignId, CandidateId, EvaluatorId, MeasurementId, RunId, TargetKind, TargetRef, TrackName
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Case, Criterion, Side, VerdictRule
 from piloop.scoring.evaluate import UNITS, Units
 from piloop.text import metric
@@ -197,15 +199,14 @@ def head_unmeasured(s: Session, campaign: Campaign) -> bool:
     return trunk is not None and not measured(trunk, campaign.evaluator_id)
 
 
-REMEASURE_REQUESTED = 'candidate.remeasure_requested'
-"""The event on a candidate that someone asked the daemon to measure again (``request_remeasure``), with ``Remeasure``."""
 REPEATS = 3
 """The pairs of a remeasure that asks for no number: the 95% bound of 3 pairs is near their worst pair."""
 
 
-class Remeasure(BaseModel):
-    """The payload of ``REMEASURE_REQUESTED``."""
+class RemeasureRequested(EventModel):
+    """Someone asked the daemon to measure a candidate again (``request_remeasure``)."""
 
+    kind: Literal['candidate.remeasure_requested'] = 'candidate.remeasure_requested'
     repeats: int = Field(default=REPEATS, ge=1)
     """How many samples of the candidate, each next to one of its bar."""
 
@@ -218,7 +219,7 @@ def request_remeasure(s: Session, candidate: Candidate, actor: Actor, repeats: i
     """Ask the daemon to measure ``candidate`` again with the current evaluator, next to its bar. The caller commits.
 
     Use it for a measurement that a fault of the host spoiled (a full disk, a lost GPU), or that load made noisy. The
-    request is the ``REMEASURE_REQUESTED`` event, and ``requested`` lists it until a newer measurement exists. The
+    request is the ``RemeasureRequested`` event, and ``requested`` lists it until a newer measurement exists. The
     daemon runs ``repeats`` pairs of the candidate and its bar (``bar_of`` its parent), then judges it again when it is
     ``rejudgeable`` (``RunController.remeasure``). A candidate without a parent, the baseline or a reference, gets
     ``repeats`` samples alone.
@@ -228,21 +229,15 @@ def request_remeasure(s: Session, candidate: Candidate, actor: Actor, repeats: i
     """
     if candidate.verdict in (Verdict.PENDING, Verdict.UNMEASURED, Verdict.RECOVERED):
         raise RemeasureRefused(f'candidate#{candidate.id} is {candidate.verdict}: the daemon never measures it again')
-    payload = Remeasure(repeats=repeats).model_dump()
-    emit(s, REMEASURE_REQUESTED, TargetKind.CANDIDATE, candidate.id, actor=actor, payload=payload)
+    emit(s, RemeasureRequested(repeats=repeats), TargetRef(TargetKind.CANDIDATE, candidate.id), actor)
 
 
-def remeasure_asked(s: Session, campaign: Campaign, candidate: Candidate) -> Remeasure | None:
+def remeasure_asked(s: Session, campaign: Campaign, candidate: Candidate) -> RemeasureRequested | None:
     """Return the latest request to measure ``candidate`` again that no measurement answered yet, or None."""
     if candidate not in requested(s, campaign):
         return None
-    payload = s.scalar(
-        select(Event.payload)
-        .where(Event.kind == REMEASURE_REQUESTED, Event.target == TargetRef(TargetKind.CANDIDATE, candidate.id))
-        .order_by(Event.id.desc())
-        .limit(1)
-    )
-    return Remeasure.model_validate(payload)
+    found = latest(s, RemeasureRequested, Event.target == TargetRef(TargetKind.CANDIDATE, candidate.id))
+    return None if found is None else found[1]
 
 
 def requested(s: Session, campaign: Campaign) -> list[Candidate]:
@@ -254,11 +249,7 @@ def requested(s: Session, campaign: Campaign) -> list[Candidate]:
     asks = s.execute(
         select(Event.target_id, func.max(Event.at))
         .join(Candidate, Candidate.id == Event.target_id)
-        .where(
-            Event.kind == REMEASURE_REQUESTED,
-            Event.target_kind == TargetKind.CANDIDATE,
-            Candidate.campaign_id == campaign.id,
-        )
+        .where(has(RemeasureRequested), Event.target_kind == TargetKind.CANDIDATE, Candidate.campaign_id == campaign.id)
         .group_by(Event.target_id)
         .order_by(func.max(Event.id))
     ).all()
@@ -270,10 +261,48 @@ def requested(s: Session, campaign: Campaign) -> list[Candidate]:
     return found
 
 
-REJUDGE_REQUESTED = 'candidate.rejudge_requested'
-"""The event on a candidate that someone measured by hand (``piloop measurement add``): the daemon judges it again."""
-REJUDGE_FAILED = 'candidate.rejudge_failed'
-"""The daemon's event on a candidate that it could not judge again, with the error. It answers the request."""
+class RejudgeRequested(EventModel):
+    """Someone measured a candidate by hand (``piloop measurement add``): the daemon judges it again."""
+
+    kind: Literal['candidate.rejudge_requested'] = 'candidate.rejudge_requested'
+    measurement: MeasurementId
+
+
+class RejudgeFailed(EventModel):
+    """The daemon could not judge a candidate again. It answers the request."""
+
+    kind: Literal['candidate.rejudge_failed'] = 'candidate.rejudge_failed'
+    error: str
+
+
+class CandidateJudged(EventModel):
+    """The daemon judged a candidate: its verdict, the primary metric's score and the reason."""
+
+    kind: Literal['candidate.judged'] = 'candidate.judged'
+    verdict: Verdict
+    score: float | None
+    reason: str | None
+
+
+class MeasurementRecorded(EventModel):
+    """A measurement of a candidate was recorded: by the daemon, or by hand (``piloop measurement add``)."""
+
+    kind: Literal['measurement.recorded'] = 'measurement.recorded'
+    candidate: CandidateId
+    metrics: dict[str, float]
+    error: str | None
+    run: RunId | None
+    """The run that the daemon measured it for. None for a measurement by hand or a cancelled evaluation."""
+    pair: MeasurementId | None = None
+    """The bar's measurement that ran next to it in a paired evaluation."""
+
+
+class IdeaCreated(EventModel):
+    """An idea was added: by hand, by an agent, or as a follow-up seed."""
+
+    kind: Literal['idea.created'] = 'idea.created'
+
+
 REJUDGED = (Verdict.CRASH, Verdict.DISCARD, Verdict.INTERESTING)
 """The daemon's verdicts that a measurement by hand has judged again. A keep stays: runs started from it as a bar."""
 
@@ -289,16 +318,12 @@ def rejudgeable(candidate: Candidate) -> bool:
 def rejudges(s: Session, campaign: Campaign) -> list[Candidate]:
     """Return the candidates to judge again: still ``rejudgeable``, asked after their last judgement, oldest first.
 
-    A request is answered by a later ``candidate.judged`` event, or by a ``REJUDGE_FAILED`` one.
+    A request is answered by a later ``CandidateJudged`` event, or by a ``RejudgeFailed`` one.
     """
     asks = s.execute(
         select(Event.target_id, func.max(Event.id))
         .join(Candidate, Candidate.id == Event.target_id)
-        .where(
-            Event.kind == REJUDGE_REQUESTED,
-            Event.target_kind == TargetKind.CANDIDATE,
-            Candidate.campaign_id == campaign.id,
-        )
+        .where(has(RejudgeRequested), Event.target_kind == TargetKind.CANDIDATE, Candidate.campaign_id == campaign.id)
         .group_by(Event.target_id)
         .order_by(func.max(Event.id))
     ).all()
@@ -306,7 +331,7 @@ def rejudges(s: Session, campaign: Campaign) -> list[Candidate]:
     for candidate_id, asked in asks:
         answered = s.scalar(
             select(func.max(Event.id)).where(
-                Event.kind.in_(('candidate.judged', REJUDGE_FAILED)),
+                has(CandidateJudged) | has(RejudgeFailed),
                 Event.target == TargetRef(TargetKind.CANDIDATE, candidate_id),
             )
         )
@@ -466,13 +491,31 @@ def same(track: Track, mine: dict[str, float], theirs: dict[str, float]) -> bool
     return track.primary.name in mine and all(mine.get(m.name) == theirs.get(m.name) for m in deciding)
 
 
-REBASED = 'candidate.rebased'
-"""The event on a candidate that kept against its own bar after the head moved on.
+class Rebased(EventModel):
+    """A candidate that kept against its own bar after the head moved on was merged onto the head.
 
-Its payload has ``head``, the head it was merged onto, and one of: ``rebased`` (the merged candidate, which is
-measured and judged against that head next), ``known`` (the merged tree is already a candidate) or ``conflicts`` (the
-paths).
-"""
+    Only one of ``rebased``, ``known`` and ``conflicts`` is set.
+    """
+
+    kind: Literal['candidate.rebased'] = 'candidate.rebased'
+    head: CandidateId
+    """The head that it was merged onto."""
+    rebased: CandidateId | None = None
+    """The merged candidate, which is measured and judged against that head next."""
+    known: CandidateId | None = None
+    """The candidate that the merged tree is already."""
+    conflicts: list[str] | None = None
+    """The paths that conflict."""
+
+
+class CandidateImported(EventModel):
+    """A reference candidate was imported (``piloop candidate import``)."""
+
+    kind: Literal['candidate.imported'] = 'candidate.imported'
+    ref: str
+    commit: str
+
+
 REBASED_SUFFIX = re.compile(r' \(rebased onto candidate#\d+\)$')
 """How the subject of a merge commit ends. A merge that is rebased again keeps the run commit's subject, with the
 new head."""
@@ -489,11 +532,10 @@ def rebase(s: Session, cfg: CampaignConfig, repo: Repo, candidate: Candidate, on
     candidate of the same run, with ``onto`` as its parent. A merge that conflicts files a seed on the run's track to
     compose the two by hand, unless the campaign stopped. The seed is not pinned, so it runs from the head
     (``follow_up``). A merged tree that is already a candidate (the head had the change) gives no new candidate. Emits
-    ``REBASED``.
+    ``Rebased``.
     """
     subject = REBASED_SUFFIX.sub('', candidate.summary or '')
     merged = git.merge(repo, onto.commit_sha, candidate.commit_sha, f'{subject} (rebased onto candidate#{onto.id})')
-    payload: dict[str, object] = {'head': onto.id}
     found: Candidate | None = None
     if isinstance(merged, list):
         paths = ', '.join(merged)
@@ -518,20 +560,20 @@ def rebase(s: Session, cfg: CampaignConfig, repo: Repo, candidate: Candidate, on
         )
         filed = f': seed idea#{seeds[0].id} composes it by hand' if seeds else ''
         candidate.verdict_reason = f'{candidate.verdict_reason}; its merge onto the head conflicts in {paths}{filed}'
-        payload['conflicts'] = merged
+        rebased = Rebased(head=onto.id, conflicts=merged)
     else:
         git.pin(repo, f'refs/piloop/{cfg.name}/rebase/{candidate.id}', merged)
         found, created = resolve(s, candidate.campaign_id, repo, merged, parent=onto, run_id=candidate.run_id)
         if created:
             candidate.verdict_reason = f'{candidate.verdict_reason}; rebased onto the head as candidate#{found.id}'
-            payload['rebased'] = found.id
+            rebased = Rebased(head=onto.id, rebased=found.id)
         else:
             candidate.verdict_reason = (
                 f'{candidate.verdict_reason}; its merge onto the head is candidate#{found.id} already ({found.verdict})'
             )
-            payload['known'] = found.id
+            rebased = Rebased(head=onto.id, known=found.id)
             found = None
-    emit(s, REBASED, TargetKind.CANDIDATE, candidate.id, payload=payload)
+    emit(s, rebased, TargetRef(TargetKind.CANDIDATE, candidate.id), System.DAEMON)
     return found
 
 
@@ -622,7 +664,8 @@ def import_reference(
     candidate.verdict, candidate.verdict_by = Verdict.REFERENCE, actor.signature
     candidate.verdict_reason = f'imported from {ref} ({sha[:7]})'
     git.pin(repo, f'refs/piloop/{cfg.name}/reference/{candidate.id}', sha)
-    emit(s, 'candidate.imported', TargetKind.CANDIDATE, candidate.id, actor=actor, payload={'ref': ref, 'commit': sha})
+    imported = CandidateImported(ref=ref, commit=sha)
+    emit(s, imported, TargetRef(TargetKind.CANDIDATE, candidate.id), actor)
     return candidate
 
 
@@ -697,7 +740,7 @@ def follow_up(
         )
         s.add(idea)
         s.flush()
-        emit(s, 'idea.created', TargetKind.IDEA, idea.id, actor=actor)
+        emit(s, IdeaCreated(), TargetRef(TargetKind.IDEA, idea.id), actor)
         ideas.append(idea)
     return ideas
 

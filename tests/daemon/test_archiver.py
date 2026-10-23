@@ -18,8 +18,9 @@ from piloop.campaign import archive as archive_module
 from piloop.campaign.archive import Archived, Job, Pruned, archive, due, make_room
 from piloop.campaign.campaigns import workspace_dir
 from piloop.daemon import archiver as archiver_module
-from piloop.daemon.archiver import DISK_ANOMALY, ArchivePolicy, Archiver
-from piloop.db.models import Archive, Campaign, Event, Run, utcnow
+from piloop.daemon.archiver import ArchivePolicy, Archiver, DiskAnomaly
+from piloop.db.events import in_order
+from piloop.db.models import Archive, Campaign, Run, utcnow
 from piloop.db.session import Database
 from piloop.ids import TargetKind
 from piloop.otel import Tracer
@@ -242,10 +243,10 @@ def test_a_job_the_disk_is_too_full_for_writes_one_disk_anomaly_and_pauses(
     assert files(workspace_dir(home, campaign.id)) == before
     with db.session() as s:
         assert s.scalars(select(Archive)).all() == [] and due(s) == Job(campaign.id, idea), 'still due'
-        [event] = s.scalars(select(Event).where(Event.kind == DISK_ANOMALY)).all()
+        [(event, short)] = in_order(s, DiskAnomaly)
         assert (event.target_kind, event.target_id) == (TargetKind.CAMPAIGN, campaign.id)
-        assert event.payload == {'needed': 12000, 'free': GB + 100, 'reserve': GB, 'idea': idea, 'retry_seconds': 600}
-    assert events(spans, DISK_ANOMALY)[0]['needed'] == 12000
+        assert short == DiskAnomaly(needed=12000, free=GB + 100, reserve=GB, idea=idea, retry_seconds=600)
+    assert events(spans, short.kind)[0]['needed'] == 12000
     jobs = archiver._job
     archiver.tick()
     assert archiver._job is jobs, 'it waits'

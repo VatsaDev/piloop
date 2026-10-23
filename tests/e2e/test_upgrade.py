@@ -12,6 +12,7 @@ archived.
 Claude only: the release does not know the other harnesses' flags of today. About 6 minutes and 0.5 USD.
 """
 
+import importlib
 import json
 import os
 import re
@@ -30,6 +31,7 @@ import psutil
 import pytest
 import tomli_w
 
+from piloop.db.models import EVENT, UnknownEvent
 from piloop.plugins.runtime.kit.tags import tagged
 from tests.conftest import wait_until
 from tests.e2e.campaign import CHEAPEST_MODEL, OPEN, ROOT, Smoke, merged, needs
@@ -479,12 +481,35 @@ def opened(inventory: Inventory, renames: Renames = RENAMES) -> set[tuple[str, o
 
 def allowed(change: Changed, open_rows: set[tuple[str, object]]) -> bool:
     """A change of a row the campaign still changes; for the campaign row, only its time, signer and the documented
-    rewrite of its stored config."""
+    rewrite of its stored config; for an event, the documented rewrite to its model."""
     if change.table == 'campaigns':
         if change.column == 'config':
             return config_keys(change.before, change.after) <= CONFIG_REWRITES
         return change.column in {'updated_at', 'updated_by'}
+    if change.table == 'events':
+        return typed(change)
     return (change.table, change.rowid) in open_rows
+
+
+def typed(change: Changed) -> bool:
+    """An event that revision 0028 rewrote: a role's own events are the session's, and the payload loads as its model.
+
+    ``tests/db/test_event_history.py`` checks each rewrite. This checks that the rows of a real campaign load, and that
+    a kind that nothing registers only gained its ``kind``.
+    """
+    importlib.import_module('piloop.daemon.scheduler')  # registers the events of every layer
+    match change.column:
+        case 'kind':
+            return str(change.after) == f'agent_session.{str(change.before).rpartition(".")[2]}'
+        case 'payload':
+            event = EVENT.validate_json(str(change.after))
+            before = json.loads(str(change.before))
+            return not isinstance(event, UnknownEvent) or json.loads(str(change.after)) == {
+                **before,
+                'kind': event.kind,
+            }
+        case _:
+            return False
 
 
 def config_keys(before: object, after: object) -> set[str]:

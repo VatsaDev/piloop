@@ -167,6 +167,27 @@ of these texts does not fail, but it finds only old runs: compare `end` instead.
 | `error = 'no agent of the run started to work'` | `end = 'not_started'` |
 | `error LIKE 'blocked on escalation%'` | `end = 'awaiting_answer'` |
 
+### Event payloads
+
+Each event's payload has its `kind`, and `events.kind` is read from it. Only piloop writes events: `piloop sql`
+refuses an `INSERT INTO events`. The upgrade rewrites the old events to the shapes below. A query that reads an old
+field does not fail, but it finds nothing: read the new one.
+
+| Before 0.3.0 | Since 0.3.0 |
+|---|---|
+| `kind = 'implementer.finished'`, and `<role>.started` of any role | `kind = 'agent_session.finished' AND payload->>'$.role' = 'implementer'` |
+| `$.kill` of `campaign.stop_requested` | `$.ending`: `now` or `wrap_up` |
+| `$.wrap_up` of `run.cancel_requested` and `agent_session.cancel_requested` | `$.ending`: `wrap_up` or `now` |
+| `$.status` of `run.finished` | `$.end`, as in `runs.end` |
+| `$.error` of `agent_session.stop_ended` | `$.end` |
+| `$.key` of `anomaly.reported` | `$.subject` and `$.anomaly`; the line is `$.line` |
+| `$.kind` of `anomaly.startup` | `$.role` |
+| `$.kind` of `idea.linked` and `idea.unlinked` | `$.link_kind` |
+| `$.kind` of `comment.deleted` | `$.comment_kind` |
+| the payload of `agent_session.job_ended` | `$.ended` |
+| `$.status` `idle`, `blocked` or `working` of `<role>.finished` | `$.status = 'exited'` of `agent_session.finished` |
+| a payload that is not a JSON object | `$.invalid`, its stored text |
+
 ### Plugins: a provider is its own parameters
 
 A provider of a `[plugins.<name>]` table is now a class: a pydantic model that subclasses the contract of its

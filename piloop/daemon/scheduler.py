@@ -26,26 +26,29 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
+from typing import Literal
 
 from git.exc import GitError, InvalidGitRepositoryError, NoSuchPathError
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 from sqlalchemy import Boolean, ColumnElement, Select, delete, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from piloop import deprecated, git
-from piloop.actor import Agent
+from piloop.actor import Agent, System
 from piloop.agents import scout
 from piloop.agents.launcher import rotate
 from piloop.agents.refill import usage_of
-from piloop.agents.results import SETTLED, STARTUP_ANOMALY, STOP_ENDED, WRAP_UP
+from piloop.agents.results import AgentEnded, PromptSettled, StartupAnomaly, WrapUp
 from piloop.agents.roles import compose_brief, role_of
 from piloop.campaign import spend
+from piloop.campaign.anomaly import AnomalyReported
 from piloop.campaign.campaigns import WORKSPACE, campaign_dir, workspace_dir, worktree_links
 from piloop.campaign.ideas import defined_by, runnable, supersede, waiting
 from piloop.campaign.memory import sync_documents
 from piloop.campaign.spend import SpendError
 from piloop.campaign.stop import (
-    CANCEL_REQUESTED,
+    CancelRequested,
+    Ending,
     agent_cancel,
     asked,
     attempts,
@@ -68,7 +71,7 @@ from piloop.daemon.run_controller import (
     open_escalation,
     run_outcome,
 )
-from piloop.db.events import ANOMALY_EVENT, emit
+from piloop.db.events import emit, has, in_order
 from piloop.db.models import (
     LIVE,
     OPEN_RUNS,
@@ -81,6 +84,7 @@ from piloop.db.models import (
     CommentKind,
     Evaluation,
     Event,
+    EventModel,
     Idea,
     IdeaStatus,
     Pause,
@@ -94,7 +98,7 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
-from piloop.ids import AgentSessionId, RoleName, RunId, TargetKind, TargetRef
+from piloop.ids import AgentSessionId, CandidateId, CommentId, IdeaId, RoleName, RunId, TargetKind, TargetRef, TrackName
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentKey, Artifact, Checkout, GitTree, LeftJob, Prompt
 from piloop.plugins.role.contract import Files, ImplementerRole, SweepRole, Workdir, ideas_taken
@@ -125,11 +129,20 @@ WRAP_UP_PROMPT = (
     '[piloop] {what} ({cause}). Commit what you have now, with a message that says where it stands.'
     ' Leave your finding and stop. This session ends in {minutes:g} minutes.'
 )
-JOBS_LEFT = 'agent_session.jobs_left'
-"""Event on an implementer that left its finding and went idle while jobs that it started still ran.
 
-The daemon told it which jobs keep its run open (``JOBS_LEFT_PROMPT``). The payload has ``jobs``, and ``error`` when the
-prompt failed. It is sent once per implementer."""
+
+class JobsLeft(EventModel):
+    """An implementer left its finding and went idle while jobs that it started still ran.
+
+    The daemon told it which jobs keep its run open (``JOBS_LEFT_PROMPT``). It is sent once per implementer.
+    """
+
+    kind: Literal['agent_session.jobs_left'] = 'agent_session.jobs_left'
+    jobs: list[str]
+    error: str | None = None
+    """Why the prompt failed."""
+
+
 JOBS_LEFT_PROMPT = (
     '[piloop] You left your finding, but your run stays open while these jobs that you started still run: {jobs}.'
     ' Kill the ones that you no longer need: your run ends when you stop with nothing left running.'
@@ -141,10 +154,49 @@ STARTUP_BREAKER = 3
 
 A host that is too loaded to start agents makes every new agent fail, and each failure costs a start window."""
 STARTUP_WINDOW = timedelta(minutes=10)
-LAUNCH_PAUSED = 'launch.paused'
-"""Event on a campaign whose launches the startup breaker paused. ``comment`` in the payload is the escalation."""
-LAUNCH_RESUMED = 'launch.resumed'
-"""Event on a campaign whose paused launches resumed. It ends the pause that ``LAUNCH_PAUSED`` started."""
+
+
+class LaunchPaused(EventModel):
+    """The startup breaker paused a campaign's launches."""
+
+    kind: Literal['launch.paused'] = 'launch.paused'
+    comment: CommentId
+    """The escalation."""
+    deaths: int
+    load: str
+    """The load average when launches paused."""
+
+
+class LaunchResumed(EventModel):
+    """A campaign's paused launches resumed. It ends the pause that ``LaunchPaused`` started."""
+
+    kind: Literal['launch.resumed'] = 'launch.resumed'
+    comment: CommentId
+    """The escalation of the pause."""
+
+
+class RunQueued(EventModel):
+    """The daemon queued a run of an idea."""
+
+    kind: Literal['run.queued'] = 'run.queued'
+    idea: IdeaId
+    attempt: int
+    harness: str
+    track: TrackName
+    priority_pick: IdeaId | None = None
+    """The idea that the priority alone would have picked, when it is another one."""
+    pinned_base: CandidateId | None = None
+    """The idea's pinned base, when it has one."""
+    computed_base: CandidateId | None = None
+    """The base that the daemon would have picked, when the idea is pinned."""
+
+
+class RunRerouted(EventModel):
+    """The daemon moved a queued run to another harness of the rotation, because its own was at its cap."""
+
+    kind: Literal['run.rerouted'] = 'run.rerouted'
+    from_: str = Field(alias='from')
+    to: str
 
 
 class Scheduler:
@@ -478,7 +530,7 @@ class Scheduler:
     def _push_comments(self) -> None:
         """Hand each running agent's executor the comments that the agent has no outcome for (``Executor.prompt``).
 
-        The events table records each outcome: ``SETTLED`` events on the agent, with the comment id in the payload. A
+        The events table records each outcome: ``PromptSettled`` events on the agent, with the comment id. A
         comment is handed over once per daemon process (``_prompted``). One without an outcome after a restart goes
         again, and the executor answers it as it did the first time. An agent whose row is still ``starting`` (brief
         composed, pane not yet up) gets the comments once it runs. A failed delivery is recorded and not retried: the
@@ -533,15 +585,8 @@ class Scheduler:
             on_idea = (Comment.target_kind == TargetKind.IDEA) & (Comment.target_id == run.idea_id)
             on_agent = on_agent | on_run | on_idea
             own, since = (*own, f'run#{run.id}'), run.started_at or since
-        settled = {
-            e.payload.get('comment')
-            for e in s.scalars(
-                select(Event).where(
-                    Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id),
-                    Event.kind.in_(SETTLED),
-                )
-            )
-        }
+        on_agent_session = Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id)
+        settled = {p.comment for _, p in in_order(s, PromptSettled, on_agent_session)}
         comments = s.scalars(
             select(Comment)
             .where(on_agent, Comment.kind.in_(PUSHED_KINDS))
@@ -556,14 +601,13 @@ class Scheduler:
         An idle agent is finished only when nothing that it started still runs (``Runtime.wait``). That keeps a run
         open while its training job works. But an implementer that left its finding believes that it is done, and it cannot
         see what the runtime sees: a job that it forgot, or a waiter that never ends, such as a ``pgrep -f`` loop that
-        finds its own command line. ``JOBS_LEFT`` on the implementer records the prompt, also when it failed. A runtime that
+        finds its own command line. ``JobsLeft`` on the implementer records the prompt, also when it failed. A runtime that
         reports no jobs (the subprocess runtime) never gets this prompt.
         """
         with self._db.session() as s:
             for agent_session in self._running_agent_sessions(s):
                 told = select(Event.id).where(
-                    Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id),
-                    Event.kind == JOBS_LEFT,
+                    Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id), has(JobsLeft)
                 )
                 if s.scalar(told) is not None or not left_finding(
                     s, s.get_one(Run, agent_session.run_id), agent_session
@@ -577,23 +621,23 @@ class Scheduler:
                 )
                 if runtime.status(handle) is not AgentStatus.IDLE:  # it may still stop them in this turn
                     continue
-                payload: dict[str, object] = {'jobs': jobs}
                 named = '; '.join(cell(job, STEER_LINE_CHARS) for job in jobs[:JOBS_LEFT_SHOWN])
+                left = JobsLeft(jobs=jobs)
                 try:
                     runtime.prompt(handle, JOBS_LEFT_PROMPT.format(jobs=named))
                 except Exception as e:  # NotSteerable, a blocked agent or a closed pane. The daemon goes on.
-                    payload['error'] = str(e)
-                emit(s, JOBS_LEFT, TargetKind.AGENT_SESSION, agent_session.id, payload=payload)
-                self._tracer.event(JOBS_LEFT, agent_session=agent_session.id, jobs=len(jobs))
+                    left = JobsLeft(jobs=jobs, error=str(e))
+                emit(s, left, TargetRef(TargetKind.AGENT_SESSION, agent_session.id), System.DAEMON)
+                self._tracer.event(left.kind, agent_session=agent_session.id, jobs=len(jobs))
             s.commit()
 
     def _wind_down(self) -> None:
-        """Wind down the implementers of stopped campaigns and the agents that someone cancelled (``CANCEL_REQUESTED``).
+        """Wind down the implementers of stopped campaigns and the agents that someone cancelled (``CancelRequested``).
 
-        An implementer of a stopped campaign is told to commit and stop (``WRAP_UP``), and ended after the grace period
-        (``STOP_GRACE_SECONDS``), or at once when the stop request asked to ``kill``. The runs then close and their
+        An implementer of a stopped campaign is told to commit and stop (``WrapUp``), and ended after the grace period
+        (``STOP_GRACE_SECONDS``), or at once when the stop request asked to end it ``now``. The runs then close and their
         commits are scored. An implementer in the middle of a turn takes the prompt only when the turn ends, which can be
-        after the grace period. An implementer that the daemon ends (``STOP_ENDED``) without its finding closes its run as
+        after the grace period. An implementer that the daemon ends (``AgentEnded``) without its finding closes its run as
         cut by the stop (``RunEnd.CAMPAIGN_STOPPED``), not as a failed attempt. Sweeps of a stopped campaign are not
         changed, because their timeouts limit them and the closing review is one of them.
 
@@ -603,7 +647,7 @@ class Scheduler:
         runs; if its start fails, the run is not launched again (``RunController._relaunch``).
         """
         with self._db.session() as s:
-            requested = select(Event.target_id).where(Event.kind.in_(CANCEL_REQUESTED))
+            requested = select(Event.target_id).where(has(CancelRequested))
             on_agents = requested.where(Event.target_kind == TargetKind.AGENT_SESSION)
             on_runs = requested.where(Event.target_kind == TargetKind.RUN)
             runs_of_agents = select(AgentSession.run_id).where(
@@ -626,14 +670,15 @@ class Scheduler:
             ).all()
             for agent_session in agent_sessions:
                 if (cancel := agent_cancel(s, agent_session)) is not None:
-                    reason, end = f'cancelled by {cancel.actor}', RunEnd.CANCELLED
+                    event, asked = cancel
+                    reason, end = f'cancelled by {event.actor}', RunEnd.CANCELLED
                     what = 'Your run was cancelled' if agent_session.run_id is not None else 'This sweep was cancelled'
-                    cause, wrap_up = f'by {cancel.actor}', bool(cancel.payload.get('wrap_up'))
+                    cause, ending = f'by {event.actor}', asked.ending
                 else:
                     campaign = s.get_one(Campaign, agent_session.campaign_id)
                     reason, end = campaign.stopped_reason or 'campaign stopped', RunEnd.CAMPAIGN_STOPPED
                     what, cause, request = 'The campaign stopped', reason, requested_stop(s, campaign)
-                    wrap_up = request is None or not request.payload.get('kill')
+                    ending = Ending.WRAP_UP if request is None else request[1].ending
                 if agent_session.state is AgentSessionState.REQUESTED:
                     self._close(s, agent_session, end)
                     if agent_session.run_id is not None:
@@ -641,11 +686,10 @@ class Scheduler:
                     continue
                 told = s.scalar(
                     select(Event.at).where(
-                        Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id),
-                        Event.kind == WRAP_UP,
+                        Event.target == TargetRef(TargetKind.AGENT_SESSION, agent_session.id), has(WrapUp)
                     )
                 )
-                if not wrap_up or agent_session.state is AgentSessionState.ENDING:
+                if ending is Ending.NOW or agent_session.state is AgentSessionState.ENDING:
                     self._end(s, agent_session, reason, end)
                 elif told is None:
                     text = WRAP_UP_PROMPT.format(what=what, cause=cause, minutes=STOP_GRACE_SECONDS / 60)
@@ -656,23 +700,28 @@ class Scheduler:
 
     def _wrap_up(self, s: Session, agent_session: AgentSession, reason: str, text: str) -> None:
         """Send the wrap-up prompt. The grace period starts even if the prompt fails, as for a headless implementer."""
-        payload: dict[str, object] = {'reason': reason}
+        told = WrapUp(reason=reason)
         try:
             runtime_for(s, agent_session, self._runs_dir, self._runtime_factory).prompt(handle_for(agent_session), text)
         except Exception as e:  # NotSteerable (subprocess), a blocked agent or a closed pane.
-            payload['error'] = str(e)
-        emit(s, WRAP_UP, TargetKind.AGENT_SESSION, agent_session.id, payload=payload)
-        self._tracer.event(WRAP_UP, agent_session=agent_session.id, **{k: str(v) for k, v in payload.items()})
+            told = WrapUp(reason=reason, error=str(e))
+        emit(s, told, TargetRef(TargetKind.AGENT_SESSION, agent_session.id), System.DAEMON)
+        self._tracer.event(told.kind, agent_session=agent_session.id, reason=reason, error=told.error)
 
     def _end(self, s: Session, agent_session: AgentSession, reason: str, end: RunEnd) -> None:
         """Kill a wound-down agent, once ``ending``: its executor stops it, and it reports.
 
-        The row is ``ending``, with ``STOP_ENDED``, in a commit before the first kill. SQLite has one writer at a time,
+        The row is ``ending``, with ``AgentEnded``, in a commit before the first kill. SQLite has one writer at a time,
         so a finding that the agent writes either committed before, and the agent finished first, or is refused.
         """
         if agent_session.state is not AgentSessionState.ENDING:
             agent_session.state = AgentSessionState.ENDING
-            emit(s, STOP_ENDED, TargetKind.AGENT_SESSION, agent_session.id, payload={'reason': reason, 'end': end})
+            emit(
+                s,
+                AgentEnded(reason=reason, end=end),
+                TargetRef(TargetKind.AGENT_SESSION, agent_session.id),
+                System.DAEMON,
+            )
             self._tracer.event('agent_session.ended', agent_session=agent_session.id, reason=reason)
         # before the kill: the run that the kill ends reads it when it closes, and the executor writes in a session of
         # its own, which waits for this one's write lock
@@ -774,8 +823,8 @@ class Scheduler:
         s.add_all(rows)
         s.flush()
         for fire in fires:
-            for kind, payload in fire.events:
-                emit(s, kind, TargetKind.AGENT_SESSION, rows[0].id, payload=payload)
+            for event in fire.events:
+                emit(s, event, TargetRef(TargetKind.AGENT_SESSION, rows[0].id), System.DAEMON)
         self._tracer.event('agent_session.requested', campaign=campaign.name, kind=name, reason=reason, count=count)
 
     def _tick(self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: RoleName, role: SweepRole) -> RoleTick:
@@ -803,7 +852,7 @@ class Scheduler:
         given = reported(s, campaign.id)
         now = utcnow()
         found = [
-            Incident(a.key, a.line(now))
+            Incident(a.name, a.reported(now))
             for a in anomalies(s, campaign, cfg, now, partial(self._jobs, s))
             if a.incident and a.key not in given
         ]
@@ -1030,12 +1079,16 @@ class Scheduler:
         s.add(run)
         idea.status = IdeaStatus.SCHEDULED
         s.flush()
-        payload: dict[str, object] = {'idea': idea.id, 'attempt': attempt, 'harness': harness, 'track': idea.track}
-        if by_priority is not None and by_priority is not idea:
-            payload['priority_pick'] = by_priority.id
-        if pin is not None:
-            payload |= {'pinned_base': base.id, 'computed_base': computed.id if computed is not None else None}
-        emit(s, 'run.queued', TargetKind.RUN, run.id, payload=payload)
+        queued = RunQueued(
+            idea=idea.id,
+            attempt=attempt,
+            harness=harness,
+            track=idea.track,
+            priority_pick=by_priority.id if by_priority is not None and by_priority is not idea else None,
+            pinned_base=base.id if pin is not None else None,
+            computed_base=computed.id if pin is not None and computed is not None else None,
+        )
+        emit(s, queued, TargetRef(TargetKind.RUN, run.id), System.DAEMON)
         s.add(
             AgentSession(
                 kind=role,
@@ -1163,7 +1216,7 @@ class Scheduler:
         harness = free_harness(rotation, rotate(s, agent_session, rotation), full)
         if harness is None:
             return False
-        emit(s, 'run.rerouted', TargetKind.RUN, run.id, payload={'from': run.harness, 'to': harness})
+        emit(s, RunRerouted(from_=run.harness, to=harness), TargetRef(TargetKind.RUN, run.id), System.DAEMON)
         run.harness = agent_session.harness = harness
         run.model = agent_session.model = cfg.role_models(agent_session.kind)[harness]
         return True
@@ -1177,36 +1230,33 @@ class Scheduler:
         means that the human saw it. A new escalation is posted only after launches resume and pause again.
         """
         agent_sessions = select(AgentSession.id).where(AgentSession.campaign_id == campaign.id)
-        deaths = s.scalars(
-            select(Event)
-            .where(
-                Event.kind == STARTUP_ANOMALY,
-                Event.target_kind == TargetKind.AGENT_SESSION,
-                Event.target_id.in_(agent_sessions),
-            )
-            .where(Event.at >= utcnow() - STARTUP_WINDOW)
-            .order_by(Event.id)
-        ).all()
+        deaths = in_order(
+            s,
+            StartupAnomaly,
+            Event.target_kind == TargetKind.AGENT_SESSION,
+            Event.target_id.in_(agent_sessions),
+            Event.at >= utcnow() - STARTUP_WINDOW,
+        )
+        on_campaign = TargetRef(TargetKind.CAMPAIGN, campaign.id)
         latest = s.scalars(
             select(Event)
-            .where(Event.kind.in_((LAUNCH_PAUSED, LAUNCH_RESUMED)))
-            .where(Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id))
+            .where(has(LaunchPaused) | has(LaunchResumed), Event.target == on_campaign)
             .order_by(Event.id.desc())
             .limit(1)
         ).first()
-        pause = latest if latest is not None and latest.kind == LAUNCH_PAUSED else None
+        pause = latest.payload if latest is not None and isinstance(latest.payload, LaunchPaused) else None
         if len(deaths) < STARTUP_BREAKER:
             if pause is not None:
-                emit(s, LAUNCH_RESUMED, TargetKind.CAMPAIGN, campaign.id, payload={'comment': pause.payload['comment']})
+                emit(s, LaunchResumed(comment=pause.comment), on_campaign, System.DAEMON)
             return False
-        escalation = s.get(Comment, pause.payload['comment']) if pause is not None else None
+        escalation = s.get(Comment, pause.comment) if pause is not None else None
         if pause is None or escalation is None:
             self._escalate_pause(s, campaign, deaths)
         else:
-            escalation.body = pause_body(deaths, str(pause.payload['load']))
+            escalation.body = pause_body(deaths, pause.load)
         return True
 
-    def _escalate_pause(self, s: Session, campaign: Campaign, deaths: Sequence[Event]) -> None:
+    def _escalate_pause(self, s: Session, campaign: Campaign, deaths: Sequence[tuple[Event, StartupAnomaly]]) -> None:
         load = ' / '.join(f'{x:.1f}' for x in os.getloadavg())
         comment = Comment(
             target=TargetRef(TargetKind.CAMPAIGN, campaign.id),
@@ -1217,9 +1267,9 @@ class Scheduler:
         )
         s.add(comment)
         s.flush()
-        payload: dict[str, object] = {'comment': comment.id, 'deaths': len(deaths), 'load': load}
-        emit(s, LAUNCH_PAUSED, TargetKind.CAMPAIGN, campaign.id, payload=payload)
-        self._tracer.event(LAUNCH_PAUSED, campaign=campaign.name, deaths=len(deaths), load=load)
+        paused = LaunchPaused(comment=comment.id, deaths=len(deaths), load=load)
+        emit(s, paused, TargetRef(TargetKind.CAMPAIGN, campaign.id), System.DAEMON)
+        self._tracer.event(paused.kind, campaign=campaign.name, deaths=len(deaths), load=load)
 
     def _sweep(self, agent_session_id: AgentSessionId) -> None:
         """Run a sweep, an agent without a run, in its role's ``workdir``, with a brief made from its row.
@@ -1467,9 +1517,7 @@ class RoleTick:
 
     def routine(self) -> AgentSession | None:
         given = exists().where(
-            Event.kind == ANOMALY_EVENT,
-            Event.target_kind == TargetKind.AGENT_SESSION,
-            Event.target_id == AgentSession.id,
+            has(AnomalyReported), Event.target_kind == TargetKind.AGENT_SESSION, Event.target_id == AgentSession.id
         )
         return self.s.scalars(self._mine().where(~given).order_by(AgentSession.id.desc()).limit(1)).first()
 
@@ -1516,7 +1564,7 @@ def steer_line(comment: Comment) -> str:
     )
 
 
-def pause_body(deaths: Sequence[Event], load: str) -> str:
+def pause_body(deaths: Sequence[tuple[Event, StartupAnomaly]], load: str) -> str:
     """Format the pause escalation: the number of failures, the load average and the latest failures' errors."""
     minutes = STARTUP_WINDOW.total_seconds() / 60
     lines = [
@@ -1524,10 +1572,7 @@ def pause_body(deaths: Sequence[Event], load: str) -> str:
         f' {load} on {os.cpu_count()} CPUs when launches paused. Launches resume automatically when fewer than'
         f' {STARTUP_BREAKER} deaths are that recent. If the host is overloaded, stop what overloads it. The latest'
         ' deaths:',
-        *(
-            f'- agent_session#{e.target_id} ({e.payload.get("kind")} on {e.payload.get("harness")}): {e.payload.get("error")}'
-            for e in deaths[-STARTUP_BREAKER:]
-        ),
+        *(f'- {e.target} ({death.role} on {death.harness}): {death.error}' for e, death in deaths[-STARTUP_BREAKER:]),
     ]
     return '\n'.join(lines)
 

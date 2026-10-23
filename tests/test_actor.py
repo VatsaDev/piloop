@@ -9,7 +9,8 @@ from piloop.db import sql
 from piloop.db.events import emit
 from piloop.db.models import Event
 from piloop.db.session import Database
-from piloop.ids import TargetKind
+from piloop.ids import TargetKind, TargetRef
+from piloop.scoring.ledger import IdeaCreated
 from tests.conftest import at_head
 
 ACTORS: TypeAdapter[Actor] = TypeAdapter(Actor)
@@ -45,7 +46,7 @@ def test_an_actor_is_written_as_its_signature(tmp_path: Path, schema: Path) -> N
     at_head(schema, tmp_path / 'piloop.db')
     scout = Agent(role='scout', session=3)
     with closing(Database(f'sqlite:///{tmp_path / "piloop.db"}', actor=scout)) as db, db.session() as s:
-        emit(s, 'test.event', TargetKind.CAMPAIGN, 1, actor=scout)
+        emit(s, IdeaCreated(), TargetRef(TargetKind.IDEA, 1), scout)
         s.commit()
         assert [ACTORS.validate_python(e.actor) for e in s.query(Event)] == [scout]
     with closing(sql.connect(tmp_path / 'piloop.db', actor=scout)) as con:

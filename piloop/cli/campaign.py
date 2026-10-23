@@ -27,7 +27,7 @@ from piloop.campaign.campaigns import (
     workspace_dir,
 )
 from piloop.campaign.memory import sync_documents
-from piloop.campaign.stop import request_stop
+from piloop.campaign.stop import Ending, request_stop
 from piloop.cli import common, limits as limits_cli
 from piloop.cli.common import CampaignRef, JsonFlag
 from piloop.cli.daemon import daemon_line
@@ -270,7 +270,7 @@ def stop(
             raise SystemExit(
                 f'{campaign.name} is stopped already ({campaign.stopped_reason}); --kill ends its implementers at once'
             )
-        request_stop(s, campaign, common.settings.actor, reason=reason, kill=kill)
+        request_stop(s, campaign, common.settings.actor, reason=reason, ending=Ending.NOW if kill else Ending.WRAP_UP)
         s.commit()
         how = 'ends its implementers at once' if kill else 'tells its implementers to commit and stop'
         common.console.print(f'stop requested for {campaign.name}: the daemon {how} on its next tick', markup=False)

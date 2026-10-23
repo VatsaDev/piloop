@@ -14,9 +14,10 @@ import pytest
 from sqlalchemy import func, select
 
 from piloop.actor import System
-from piloop.agents.results import SETTLED, DaemonStopped, Ended, Ran
+from piloop.agents.results import DaemonStopped, Ended, PromptSettled, Ran
 from piloop.daemon.main import Daemon
 from piloop.daemon.run_controller import RunController
+from piloop.db.events import in_order
 from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, Candidate, Event, Measurement, RunEnd
 from piloop.db.session import Database
 from piloop.ids import WATCHDOG, AgentSessionId, CommentId
@@ -174,21 +175,20 @@ def test_a_prompt_reaches_the_running_agent_and_its_outcome_is_recorded(
     agent_session_id, ended = launch_in_thread(ex, db, campaign, tmp_path)
     wait_for_agent_session_handle_of(db, agent_session_id)
     ex.executor.prompt(AgentKey(agent_session_id), Prompt(CommentId(41), 'try lzma'))
-    wait_until(lambda: outcomes(db, agent_session_id) == [('comment.delivered', {'comment': 41})])
+    wait_until(
+        lambda: outcomes(db, agent_session_id) == [PromptSettled(kind='comment.delivered', comment=CommentId(41))]
+    )
     assert runtime.prompts == ['try lzma']
     ex.executor.cancel(AgentKey(agent_session_id))
     wait_until(lambda: ended)
     ex.executor.prompt(AgentKey(agent_session_id), Prompt(CommentId(42), 'too late'))
     wait_until(lambda: len(outcomes(db, agent_session_id)) == 2)
-    assert outcomes(db, agent_session_id)[1][0] == 'comment.undelivered' and runtime.prompts == ['try lzma']
+    assert outcomes(db, agent_session_id)[1].kind == 'comment.undelivered' and runtime.prompts == ['try lzma']
 
 
-def outcomes(db: Database, agent_session_id: AgentSessionId) -> list[tuple[str, dict[str, object]]]:
+def outcomes(db: Database, agent_session_id: AgentSessionId) -> list[PromptSettled]:
     with db.session() as s:
-        rows = s.scalars(
-            select(Event).where(Event.target_id == agent_session_id, Event.kind.in_(SETTLED)).order_by(Event.id)
-        )
-        return [(e.kind, e.payload) for e in rows]
+        return [settled for _, settled in in_order(s, PromptSettled, Event.target_id == agent_session_id)]
 
 
 def wait_for_agent_session_handle_of(db: Database, agent_session_id: AgentSessionId) -> None:

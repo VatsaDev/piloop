@@ -18,7 +18,7 @@ from sqlalchemy import ColumnElement, ScalarSelect, case, select
 from sqlalchemy.orm import Mapped, Session, aliased
 
 from piloop.actor import Actor
-from piloop.db.events import ANOMALY_EVENT
+from piloop.campaign.anomaly import AnomalyReported
 from piloop.db.models import (
     AgentSession,
     Campaign,
@@ -33,16 +33,13 @@ from piloop.db.models import (
     Run,
     utcnow,
 )
+from piloop.db.triggers.changelog import CampaignStatusChanged, Commented
 from piloop.ids import CampaignId, CommentId, TargetKind, TargetRef
-from piloop.scoring.ledger import SKIPPED
+from piloop.scoring.ledger import SKIPPED, CandidateJudged, IdeaCreated
 from piloop.text import cell
 
 CITATION = re.compile(r'comment#(\d+)')
 """How a comment refers to another comment in its body. ``thread`` follows these references in both directions."""
-COMMENT_EVENTS = frozenset(f'comment.{kind}' for kind in CommentKind)
-"""The events that a new comment writes.
-
-An escalation writes two events: one from the persistent trigger and one from the connection's trigger."""
 
 
 def items(
@@ -98,7 +95,7 @@ def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, me: A
     events = s.scalars(select(Event).where(Event.id > after).order_by(Event.id)).all()
     if not events:
         return after, []
-    fresh = {e.target_id for e in events if e.kind in COMMENT_EVENTS}
+    fresh = {e.target_id for e in events if isinstance(e.payload, Commented)}
     lines = [
         f'comment#{c.id} {c.kind} p{c.priority} on {c.target}'
         f' ({campaign.name if campaign else "—"}) by {c.author}: {cell(c.body)}'
@@ -106,24 +103,23 @@ def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, me: A
         if c.id in fresh and c.author != me.signature
     ]
     for e in events:
-        if e.kind == 'campaign.status' and e.payload.get('new') == CampaignStatus.STOPPED:
-            campaign = s.get(Campaign, e.target_id)
-            if campaign is not None and campaign_id in (None, campaign.id):
-                lines.append(f'campaign {campaign.name} stopped: {e.payload.get("stopped_reason")}')
-        elif e.kind == ANOMALY_EVENT:
-            agent_session = s.get(AgentSession, e.target_id)
-            if agent_session is not None and campaign_id in (None, agent_session.campaign_id):
-                lines.append(f'anomaly, {agent_session.kind}#{agent_session.id} requested: {e.payload.get("anomaly")}')
-        elif e.kind == 'idea.created' and e.actor != me.signature:
-            idea = s.get(Idea, e.target_id)
-            if idea is not None and idea.status is IdeaStatus.SEED and campaign_id in (None, idea.campaign_id):
-                lines.append(seed_line(idea, idea.campaign))
-        elif e.kind == 'candidate.judged' and e.payload.get('reason') != SKIPPED:
-            candidate = s.get(Candidate, e.target_id)
-            if candidate is not None and campaign_id in (None, candidate.campaign_id):
-                lines.append(
-                    f'candidate#{candidate.id} {e.payload.get("verdict")}: {cell(str(e.payload.get("reason")))}'
-                )
+        match e.payload:
+            case CampaignStatusChanged(new=CampaignStatus.STOPPED, stopped_reason=why):
+                campaign = s.get(Campaign, e.target_id)
+                if campaign is not None and campaign_id in (None, campaign.id):
+                    lines.append(f'campaign {campaign.name} stopped: {why}')
+            case AnomalyReported(line=line):
+                agent_session = s.get(AgentSession, e.target_id)
+                if agent_session is not None and campaign_id in (None, agent_session.campaign_id):
+                    lines.append(f'anomaly, {agent_session.kind}#{agent_session.id} requested: {line}')
+            case IdeaCreated() if e.actor != me.signature:
+                idea = s.get(Idea, e.target_id)
+                if idea is not None and idea.status is IdeaStatus.SEED and campaign_id in (None, idea.campaign_id):
+                    lines.append(seed_line(idea, idea.campaign))
+            case CandidateJudged(verdict=verdict, reason=reason) if reason != SKIPPED:
+                candidate = s.get(Candidate, e.target_id)
+                if candidate is not None and campaign_id in (None, candidate.campaign_id):
+                    lines.append(f'candidate#{candidate.id} {verdict}: {cell(str(reason))}')
     return events[-1].id, lines
 
 

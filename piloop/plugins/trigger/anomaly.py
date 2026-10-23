@@ -1,6 +1,5 @@
 from typing import ClassVar, Literal
 
-from piloop.db.events import ANOMALY_EVENT
 from piloop.plugins.trigger.contract import Fire, Tick, Trigger
 
 
@@ -18,6 +17,5 @@ class AnomalyTrigger(Trigger):
         incidents = tick.incidents()
         if not incidents:
             return None
-        payloads: list[dict[str, object]] = [{'key': i.key, 'anomaly': i.line} for i in incidents]
-        events = tuple((ANOMALY_EVENT, payload) for payload in payloads)
-        return Fire('anomaly: ' + ', '.join(i.key for i in incidents), alone=True, events=events)
+        events = tuple(i.event for i in incidents)
+        return Fire('anomaly: ' + ', '.join(i.name for i in incidents), alone=True, events=events)

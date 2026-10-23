@@ -119,7 +119,9 @@ def test_documented_procedures_work_verbatim(con: sqlite3.Connection) -> None:
     events = sql.run(
         con, "SELECT kind, actor, target_kind, target_id, payload FROM events WHERE kind = 'comment.escalation'"
     )
-    assert events.rows == snapshot([('comment.escalation', 'me', 'comment', 1, '{"target_kind":"idea","target_id":1}')])
+    assert events.rows == snapshot(
+        [('comment.escalation', 'me', 'comment', 1, '{"kind":"comment.escalation","target_kind":"idea","target_id":1}')]
+    )
     with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed'):
         sql.run(con, "UPDATE ideas SET status = 'urgent'")
 
@@ -270,7 +272,9 @@ def test_one_update_of_a_tracked_column_is_one_event_and_the_provenance_stamps_s
     )
     (created,) = sql.run(con, 'SELECT updated_at FROM ideas').rows[0]
     sql.run(con, "UPDATE ideas SET status = 'parked' WHERE id = 1")
-    assert events(con) == snapshot([('idea.status', 'human', 'idea', 1, '{"old":"ready","new":"parked"}')])
+    assert events(con) == snapshot(
+        [('idea.status', 'human', 'idea', 1, '{"kind":"idea.status","old":"ready","new":"parked"}')]
+    )
     updated_at, updated_by = sql.run(con, 'SELECT updated_at, updated_by FROM ideas').rows[0]
     assert updated_at != created and updated_by == 'human'
     sql.run(con, "UPDATE ideas SET status = 'parked' WHERE id = 1")
@@ -279,8 +283,8 @@ def test_one_update_of_a_tracked_column_is_one_event_and_the_provenance_stamps_s
     sql.run(con, "UPDATE ideas SET priority = 0, status = 'ready' WHERE id = 1")
     assert events(con, since=1) == snapshot(
         [
-            ('idea.priority', 'human', 'idea', 1, '{"old":2,"new":0}'),
-            ('idea.status', 'human', 'idea', 1, '{"old":"parked","new":"ready"}'),
+            ('idea.priority', 'human', 'idea', 1, '{"kind":"idea.priority","old":2,"new":0}'),
+            ('idea.status', 'human', 'idea', 1, '{"kind":"idea.status","old":"parked","new":"ready"}'),
         ]
     )
 
@@ -308,22 +312,34 @@ def test_verdict_brief_and_campaign_status_changes_carry_what_the_feed_needs(
                 'human',
                 'candidate',
                 1,
-                '{"old":"pending","new":"interesting","verdict_by":"human","verdict_reason":"not a win, a lead"}',
+                '{"kind":"candidate.verdict","old":"pending","new":"interesting","verdict_by":"human","verdict_reason":"not a win, a lead"}',
             ),
-            ('run.brief', 'human', 'run', 1, '{"old_length":null,"new_length":12}'),
-            ('campaign.status', 'human', 'campaign', 1, '{"old":"active","new":"stopped","stopped_reason":"enough"}'),
-            ('campaign.status', 'human', 'campaign', 1, '{"old":"stopped","new":"active","stopped_reason":null}'),
+            ('run.brief', 'human', 'run', 1, '{"kind":"run.brief","old_length":null,"new_length":12}'),
+            (
+                'campaign.status',
+                'human',
+                'campaign',
+                1,
+                '{"kind":"campaign.status","old":"active","new":"stopped","stopped_reason":"enough"}',
+            ),
+            (
+                'campaign.status',
+                'human',
+                'campaign',
+                1,
+                '{"kind":"campaign.status","old":"stopped","new":"active","stopped_reason":null}',
+            ),
         ]
     )
     with closing(sql.connect(tmp_path / 'piloop.db', actor=ACTOR)) as daemon:
         sql.run(daemon, 'UPDATE runs SET brief = NULL WHERE id = 1')
         sql.run(daemon, "UPDATE runs SET brief = 'the composed brief' WHERE id = 1")
         assert events(daemon, since=4) == snapshot(
-            [('run.brief', 'daemon', 'run', 1, '{"old_length":12,"new_length":null}')]
+            [('run.brief', 'daemon', 'run', 1, '{"kind":"run.brief","old_length":12,"new_length":null}')]
         ), 'the daemon composing a brief where there was none is the run starting, not a steer; replacing one is'
         sql.run(daemon, "UPDATE runs SET brief = 'the brief, revised' WHERE id = 1")
         assert events(daemon, since=5) == snapshot(
-            [('run.brief', 'daemon', 'run', 1, '{"old_length":18,"new_length":18}')]
+            [('run.brief', 'daemon', 'run', 1, '{"kind":"run.brief","old_length":18,"new_length":18}')]
         )
     assert f"= '{ACTOR}'" in sql.ACTOR_TRIGGERS, 'the SQL names the daemon by its actor string'
 
@@ -343,16 +359,28 @@ def test_deletes_leave_tombstones_and_cascades_too(con: sqlite3.Connection) -> N
     sql.run(con, 'DELETE FROM campaigns WHERE id = 1')
     assert events(con) == snapshot(
         [
-            ('comment.note', 'me', 'comment', 1, '{"target_kind":"idea","target_id":1}'),
+            ('comment.note', 'me', 'comment', 1, '{"kind":"comment.note","target_kind":"idea","target_id":1}'),
             (
                 'comment.deleted',
                 'human',
                 'comment',
                 1,
-                '{"target_kind":"idea","target_id":1,"author":"me","kind":"note","body":"hi"}',
+                '{"kind":"comment.deleted","target_kind":"idea","target_id":1,"author":"me","comment_kind":"note","body":"hi"}',
             ),
-            ('candidate.deleted', 'human', 'candidate', 1, '{"tree_sha":"tree","commit_sha":"sha","verdict":"keep"}'),
-            ('idea.deleted', 'human', 'idea', 1, '{"title":"t","status":"ready","hypothesis":"h"}'),
+            (
+                'candidate.deleted',
+                'human',
+                'candidate',
+                1,
+                '{"kind":"candidate.deleted","tree_sha":"tree","commit_sha":"sha","verdict":"keep"}',
+            ),
+            (
+                'idea.deleted',
+                'human',
+                'idea',
+                1,
+                '{"kind":"idea.deleted","title":"t","status":"ready","hypothesis":"h"}',
+            ),
         ]
     ), 'a cascade deletes the child rows too, and each one leaves a tombstone'
 
@@ -366,10 +394,16 @@ def test_every_comment_kind_is_an_event_shaped_like_the_escalation_one(con: sqli
         )
     assert events(con) == snapshot(
         [
-            ('comment.note', 'pi', 'comment', 1, '{"target_kind":"run","target_id":7}'),
-            ('comment.finding', 'pi', 'comment', 2, '{"target_kind":"run","target_id":7}'),
-            ('comment.decision', 'pi', 'comment', 3, '{"target_kind":"run","target_id":7}'),
-            ('comment.escalation', 'pi', 'comment', 4, '{"target_kind":"run","target_id":7}'),
+            ('comment.note', 'pi', 'comment', 1, '{"kind":"comment.note","target_kind":"run","target_id":7}'),
+            ('comment.finding', 'pi', 'comment', 2, '{"kind":"comment.finding","target_kind":"run","target_id":7}'),
+            ('comment.decision', 'pi', 'comment', 3, '{"kind":"comment.decision","target_kind":"run","target_id":7}'),
+            (
+                'comment.escalation',
+                'pi',
+                'comment',
+                4,
+                '{"kind":"comment.escalation","target_kind":"run","target_id":7}',
+            ),
         ]
     ), 'one event per comment: the persistent escalation trigger and the per-connection one never both fire'
 
@@ -476,16 +510,36 @@ def test_a_journal_line_is_never_deleted_but_a_lesson_goes_with_its_campaign(con
     assert sql.run(con, 'SELECT count(*) FROM lessons').rows == [(0,)]
 
 
-EVENT = "INSERT INTO events (kind, actor, target_kind, target_id{cols}) VALUES ('x.y', 'a', 'campaign', 1{vals})"
+EVENT = """INSERT INTO events (actor, target_kind, target_id, payload{cols}) VALUES ('a', 'campaign', 1, '{{"kind": "x.y"}}'{vals})"""
+
+
+@pytest.fixture
+def daemon_con(db: Database, tmp_path: Path) -> Iterator[sqlite3.Connection]:
+    """A connection with the actor's TEMP triggers and no authorizer, as the daemon's engine has."""
+    connection = sql.connect(tmp_path / 'piloop.db', actor=ACTOR)
+    connection.set_authorizer(None)
+    yield connection
+    connection.close()
 
 
 def event(con: sqlite3.Connection, cols: str = '', vals: str = '', verb: str = 'INSERT') -> None:
     sql.run(con, EVENT.format(cols=cols, vals=vals).replace('INSERT', verb, 1))
 
 
-def test_events_are_append_only_so_an_id_is_never_reused_nor_moved(con: sqlite3.Connection) -> None:
-    for _ in range(3):
+def test_only_a_trigger_writes_an_event_through_piloop_sql(con: sqlite3.Connection) -> None:
+    """So every event that an agent's statement writes has the shape of its model."""
+    with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
         event(con)
+    sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
+    sql.run(con, "UPDATE campaigns SET status = 'stopped' WHERE id = 1")
+    assert [kind for (kind,) in sql.run(con, 'SELECT kind FROM events').rows] == ['campaign.status']
+
+
+def test_events_are_append_only_so_an_id_is_never_reused_nor_moved(
+    con: sqlite3.Connection, daemon_con: sqlite3.Connection
+) -> None:
+    for _ in range(3):
+        event(daemon_con)
     for statement in (
         'DELETE FROM events',
         'UPDATE events SET id = -1 WHERE id = (SELECT max(id) FROM events)',
@@ -493,6 +547,7 @@ def test_events_are_append_only_so_an_id_is_never_reused_nor_moved(con: sqlite3.
     ):
         with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
             sql.run(con, statement)
+    con = daemon_con
     for cols, vals, verb in (
         (', id', ', 2', 'INSERT OR REPLACE'),
         (', id', ', 3', 'REPLACE'),
@@ -508,26 +563,30 @@ def test_events_are_append_only_so_an_id_is_never_reused_nor_moved(con: sqlite3.
     assert sql.run(con, 'SELECT max(id) FROM events').rows == [(4,)], 'without an id, an event takes the next one'
 
 
-def test_an_event_that_piloop_could_not_read_is_refused(con: sqlite3.Connection) -> None:
+def test_an_event_that_piloop_could_not_read_is_refused(daemon_con: sqlite3.Connection) -> None:
+    con = daemon_con
     for cols, vals, message in (
         ('', '', None),
         (', at', ", '2026-10-20T08:00:00+02:00'", None),
         (', at', ", 'not a date'", 'events.at is a time'),
         (', at', ', 2460000', 'events.at is a time'),
-        (', payload', ", x'7b7d'", 'events.payload is JSON text, not a blob'),
     ):
         if message is None:
             event(con, cols, vals)
         else:
             with pytest.raises(sqlite3.IntegrityError, match=message):
                 event(con, cols, vals)
-    for statement, message in (
-        ("INSERT INTO events (kind, actor, target_kind, target_id) VALUES (x'6b', 'a', 'campaign', 1)", 'kind'),
-        ("INSERT INTO events (kind, actor, target_kind, target_id) VALUES ('k', x'61', 'campaign', 1)", 'actor'),
-        ("INSERT INTO events (kind, actor, target_kind, target_id) VALUES ('k', 'a', 'campaign', 'one')", 'target_id'),
+    insert = 'INSERT INTO events (actor, target_kind, target_id, payload) VALUES '
+    for values, message in (
+        ("""(x'61', 'campaign', 1, '{"kind": "k"}')""", 'actor'),
+        ("""('a', 'campaign', 'one', '{"kind": "k"}')""", 'target_id'),
+        ("('a', 'campaign', 1, x'7b7d')", 'events.payload is JSON text, not a blob'),
+        ("""('a', 'campaign', 1, '{"kind": 1}')""", 'its kind in'),
+        ("('a', 'campaign', 1, '[]')", 'its kind in'),
+        ("('a', 'campaign', 1, 'oops')", 'malformed JSON'),
     ):
-        with pytest.raises(sqlite3.IntegrityError, match=message):
-            sql.run(con, statement)
+        with pytest.raises(sqlite3.Error, match=message):
+            sql.run(con, insert + values)
 
 
 def test_the_journal_takes_short_lines(con: sqlite3.Connection) -> None:
@@ -548,7 +607,15 @@ def test_acknowledging_an_inbox_item_is_logged_with_the_connection_actor(con: sq
     sql.run(con, "UPDATE comments SET acked_at = '2026-10-01 12:00:00', acked_by = 'human' WHERE id = 1")
     sql.run(con, "UPDATE comments SET acked_by = 'human' WHERE id = 1")
     assert events(con)[1:] == snapshot(
-        [('comment.acked_at', 'human', 'comment', 1, '{"old":null,"new":"2026-10-01 12:00:00","acked_by":"human"}')]
+        [
+            (
+                'comment.acked_at',
+                'human',
+                'comment',
+                1,
+                '{"kind":"comment.acked_at","old":null,"new":"2026-10-01 12:00:00","acked_by":"human"}',
+            )
+        ]
     )
 
 

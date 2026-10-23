@@ -17,7 +17,8 @@ connection without these limits.
 Every connection, here and in the daemon's engine, has an actor. ``install_actor`` creates the TEMP objects of
 ``piloop/db/actor_triggers.sql`` before the authorizer is turned on, because after that ``SQLITE_CREATE_TEMP_TRIGGER``
 is denied. From then on, every UPDATE sets ``updated_by``, and the tracked changes, deletes and comments go into
-``events``. The authorizer lets inserts into ``events`` pass, so the INSERTs of the trigger bodies do.
+``events``. The authorizer lets only those trigger bodies insert into ``events``, so every event has the shape of its
+model (``piloop.db.models.EventModel``).
 
 Rows of the orchestrator's ``journal`` and of ``lessons`` never change: an agent's UPDATE of them is denied, and so is
 a DELETE of the journal. ``events`` is append-only: an UPDATE or a DELETE of it is denied, and TEMP triggers refuse an
@@ -43,6 +44,7 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 from piloop import deprecated
 from piloop.actor import Actor, Agent, System
 from piloop.db.models import Base
+from piloop.db.triggers import EVENT_TRIGGER_NAMES
 from piloop.db.triggers.fts import FTS_COLUMNS, FTS_TABLES, FTS_TRIGGER_NAMES, fts_table
 from piloop.db.triggers.immutable import APPEND_ONLY, IMMUTABLE, UNDELETABLE
 from piloop.proc import command_line
@@ -132,6 +134,8 @@ def _authorize(action: int, arg1: str | None, arg2: str | None, _db: str | None,
     if action in WRITES and arg1 in PROTECTED_TABLES:
         return sqlite3.SQLITE_DENY
     if action in WRITES and arg1 in FTS_TABLES and source not in FTS_TRIGGER_NAMES:
+        return sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_INSERT and arg1 in APPEND_ONLY and source not in EVENT_TRIGGER_NAMES:
         return sqlite3.SQLITE_DENY
     if action == sqlite3.SQLITE_UPDATE and (arg1, arg2) in DAEMON_COLUMNS:
         return sqlite3.SQLITE_DENY

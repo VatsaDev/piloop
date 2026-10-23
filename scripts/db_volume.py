@@ -233,13 +233,13 @@ def _agent_sessions(con: sqlite3.Connection, v: Volume, rng: random.Random) -> N
 
 
 def _events(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
-    kinds = [
-        'run.started',
-        'run.finished',
-        'measurement.recorded',
-        'candidate.judged',
-        'idea.status',
-        'implementer.started',
+    payloads = [
+        {'kind': 'run.started', 'harness': 'claude', 'model': 'm'},
+        {'kind': 'run.finished', 'end': 'finished', 'error': None},
+        {'kind': 'measurement.recorded', 'candidate': 1, 'metrics': {'score': 0.5}, 'error': None, 'run': 1},
+        {'kind': 'candidate.judged', 'verdict': 'discard', 'score': 0.5, 'reason': 'no gain'},
+        {'kind': 'idea.status', 'old': 'ready', 'new': 'scheduled'},
+        {'kind': 'agent_session.started', 'role': 'implementer', 'harness': 'claude', 'model': 'm', 'reason': None},
     ]
     targets = {
         'run': v.runs,
@@ -249,9 +249,9 @@ def _events(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
         'agent_session': v.agent_sessions,
     }
     con.executemany(
-        "INSERT INTO events (kind, actor, target_kind, target_id, payload) VALUES (?, 'daemon', ?, ?, '{}')",
+        "INSERT INTO events (actor, target_kind, target_id, payload) VALUES ('daemon', ?, ?, ?)",
         (
-            (rng.choice(kinds), t, rng.randint(1, targets[t]))
+            (t, rng.randint(1, targets[t]), json.dumps(rng.choice(payloads)))
             for t in (rng.choice(list(targets)) for _ in range(v.events))
         ),
     )

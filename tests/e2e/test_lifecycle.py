@@ -46,7 +46,7 @@ EXIT_GRACE = 10
 """Seconds that a process of the stopped campaign may take to end."""
 REQUIRED_EVENTS = (
     'campaign.paused',
-    'implementer.started',
+    'agent_session.started',
     'run.started',
     'run.cancel_requested',
     'measurement.recorded',

@@ -24,15 +24,11 @@ from piloop.ids import CampaignId, IdeaId, TargetKind, TargetRef
 from piloop.reports import feed
 from piloop.settings import Settings
 
-UNKNOWN = (
-    "INSERT INTO events (kind, actor, target_kind, target_id, payload) VALUES ('acme.observed', 'acme', 'campaign', 1, "
-    '\'{"latency_ms": 12.5, "tags": ["a"]}\')'
-)
-BROKEN = "INSERT INTO events (kind, actor, target_kind, target_id, payload) VALUES ('acme.raw', 'acme', 'campaign', 1, 'oops')"
-HUGE = (
-    "INSERT INTO events (kind, actor, target_kind, target_id, payload) VALUES ('acme.huge', 'acme', 'campaign', 1, "
-    '\'{"v": 1e400}\')'
-)
+EVENT = "INSERT INTO events (actor, target_kind, target_id, payload) VALUES ('acme', 'campaign', 1, '{}')"
+"""An event of a plugin's kind, which piloop does not register, as the plugin's ``emit`` writes it."""
+UNKNOWN = EVENT.format('{"kind": "acme.observed", "latency_ms": 12.5, "tags": ["a"]}')
+BROKEN = EVENT.format('{"kind": "acme.raw", "v": NaN}')
+HUGE = EVENT.format('{"kind": "acme.huge", "v": 1e400}')
 
 
 def run_cli(tokens: list[str]) -> None:
@@ -152,24 +148,31 @@ def test_events_reads_after_a_cursor_with_filters_and_says_how_to_read_on(
     batch = document(EventsDocument, out())
     kinds = [e['kind'] for e in batch['events']]
     assert kinds == ['acme.observed', 'acme.raw'], 'an idea insert logs no event; unknown kinds pass through'
-    assert batch['events'][0]['payload'] == {'latency_ms': 12.5, 'tags': ['a']}
-    assert batch['events'][1]['payload'] is None and batch['events'][1]['invalid'] == {'payload': 'oops'}
+    assert batch['events'][0]['payload'] == {'kind': 'acme.observed', 'latency_ms': 12.5, 'tags': ['a']}
+    assert batch['events'][1]['payload'] is None
+    assert batch['events'][1]['invalid'] == {'payload': '{"kind": "acme.raw", "v": NaN}'}
     end = batch['next']
 
     run_cli(['events', '--after', '0', '--limit', '1'])
     lines = out().splitlines()
-    assert lines[0].startswith('event#1 ') and ' acme.observed campaign#1 by acme: {"latency_ms": 12.5' in lines[0]
+    assert (
+        lines[0].startswith('event#1 ')
+        and ' acme.observed campaign#1 by acme: {"kind": "acme.observed", "latency_ms": 12.5' in lines[0]
+    )
     assert lines[1] == 'next: piloop events --after 1 (more now)'
     run_cli(['events', '--after', '1', '--campaign', 'demo', '--kind', 'acme.raw', '--kind', 'idea.status'])
     lines = out().splitlines()
-    assert lines[0].endswith('acme.raw campaign#1 by acme: "oops"'), 'a payload that is not JSON prints as stored'
+    assert lines[0].endswith('acme.raw campaign#1 by acme: "{\\"kind\\": \\"acme.raw\\", \\"v\\": NaN}"'), (
+        'a payload that is not strict JSON prints as stored'
+    )
     assert lines[1] == f'next: piloop events --after {end} --campaign demo --kind acme.raw --kind idea.status'
 
     monkeypatch.setattr(feed, 'POLL_SECONDS', 0.01)
     threading.Timer(0.3, write, [db, f"UPDATE ideas SET status = 'parked' WHERE id = {first}"]).start()
     run_cli(['events', '--after', str(end), '--follow', '--timeout', '30', '--json', '--kind', 'idea.status'])
     [parked] = document(EventsDocument, out())['events']
-    assert parked['payload'] == {'old': 'ready', 'new': 'parked'} and parked['subject']['campaign'] == campaign.id
+    assert parked['payload'] == {'kind': 'idea.status', 'old': 'ready', 'new': 'parked'}
+    assert parked['subject']['campaign'] == campaign.id
     run_cli(['events', '--after', str(parked['id']), '--follow', '--timeout', '0'])
     assert out().splitlines() == [f'next: piloop events --after {parked["id"]}']
 
@@ -182,9 +185,11 @@ def test_a_payload_that_json_cannot_say_prints_as_stored_text_never_as_infinity(
     text_out = out()
     assert 'Infinity' not in text_out
     [event] = document(EventsDocument, text_out)['events']
-    assert event['payload'] is None and event['invalid'] == {'payload': '{"v": 1e400}'}
+    assert event['payload'] is None and event['invalid'] == {'payload': '{"kind": "acme.huge", "v": 1e400}'}
     run_cli(['events'])
-    assert out().splitlines()[0].endswith('acme.huge campaign#1 by acme: "{\\"v\\": 1e400}"')
+    assert (
+        out().splitlines()[0].endswith('acme.huge campaign#1 by acme: "{\\"kind\\": \\"acme.huge\\", \\"v\\": 1e400}"')
+    )
 
 
 def test_a_cursor_ahead_of_the_feed_is_an_error_a_program_can_act_on(db: Database, campaign: Campaign, out) -> None:
@@ -277,8 +282,8 @@ def test_a_separate_process_joins_a_snapshot_to_the_feed_and_resumes_after_a_dis
     )
     kinds = {e['kind']: e for e in last['events']}
     assert {'idea.priority', 'idea.status', 'campaign.paused', 'acme.observed', 'acme.raw'} <= kinds.keys()
-    assert kinds['acme.observed']['payload'] == {'latency_ms': 12.5, 'tags': ['a']}
-    assert kinds['acme.raw']['invalid'] == {'payload': 'oops'}
+    assert kinds['acme.observed']['payload'] == {'kind': 'acme.observed', 'latency_ms': 12.5, 'tags': ['a']}
+    assert kinds['acme.raw']['invalid'] == {'payload': '{"kind": "acme.raw", "v": NaN}'}
 
     ahead = controller(tmp_path, 'events', '--after', str(checkpoint + 100), '--json')
     assert ahead.returncode == 1 and 'read a new snapshot' in ahead.stderr

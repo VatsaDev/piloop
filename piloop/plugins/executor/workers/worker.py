@@ -8,7 +8,7 @@ heartbeat with a host sample (``Timing.renew``), takes new jobs and resends unse
 worker stops. Another reads the worker's messages (a long-poll): a waiting job wakes the first at once, a revoke stops
 a job, and a prompt goes to its agent. Each job has a thread of its own.
 A worker that hears nothing back for ``Timing.self_stop`` stops its jobs and keeps their reports until it is heard
-again: by then the fence refuses them, and a person can still import what they made (``leases.STALE_REPORT``).
+again: by then the fence refuses them, and a person can still import what they made (``leases.StaleReport``).
 """
 
 import os

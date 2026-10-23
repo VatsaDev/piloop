@@ -7,7 +7,8 @@ from sqlalchemy import func, select
 
 from piloop.actor import System
 from piloop.campaign import inbox
-from piloop.db.events import ANOMALY_EVENT, emit
+from piloop.campaign.anomaly import AnomalyKind, AnomalyReported
+from piloop.db.events import emit, in_order
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
@@ -20,11 +21,13 @@ from piloop.db.models import (
     IdeaStatus,
     Measurement,
     Run,
+    Verdict,
     utcnow,
 )
 from piloop.db.session import Database
+from piloop.db.triggers.changelog import CommentAcked
 from piloop.ids import WATCHDOG, CommentId, TargetKind, TargetRef
-from piloop.scoring.ledger import SKIPPED
+from piloop.scoring.ledger import SKIPPED, CandidateJudged, IdeaCreated
 from tests.reports.test_history import idea
 from tests.reports.test_overview import render
 from tests.test_actor import ACTORS
@@ -125,8 +128,8 @@ def test_most_urgent_first_narrowed_by_kind_until_acknowledged(db: Database, cam
             'requeued idea#4',
             'half the sweeps add nothing',
         ]
-        acked = s.scalars(select(Event).where(Event.kind == 'comment.acked_at').order_by(Event.id)).all()
-        assert [(e.target_id, e.payload['acked_by']) for e in acked] == [(3, 'human'), (1, 'human')]
+        acked = in_order(s, CommentAcked)
+        assert [(e.target_id, a.acked_by) for e, a in acked] == [(3, 'human'), (1, 'human')]
 
 
 def test_thread_follows_citations_both_ways_and_the_replies_not_the_rest_of_the_target(
@@ -216,17 +219,14 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
         s.add_all(seeds)
         s.flush()
         for idea in seeds:
-            emit(s, 'idea.created', TargetKind.IDEA, idea.id, actor=ACTORS.validate_python(idea.created_by))
-        emit(
-            s,
-            ANOMALY_EVENT,
-            TargetKind.AGENT_SESSION,
-            watchdog.id,
-            payload={'key': 'k', 'anomaly': 'run#3 failed: boom'},
-        )
-        judged: dict[str, object] = {'verdict': 'keep', 'score': 2.0, 'reason': 'score +1 over candidate#1\nmore'}
-        emit(s, 'candidate.judged', TargetKind.CANDIDATE, 1, payload=judged)
-        emit(s, 'candidate.judged', TargetKind.CANDIDATE, 1, payload={'verdict': 'unmeasured', 'reason': SKIPPED})
+            emit(s, IdeaCreated(), TargetRef(TargetKind.IDEA, idea.id), ACTORS.validate_python(idea.created_by))
+        run3 = TargetRef(TargetKind.RUN, 3)
+        reported = AnomalyReported(subject=run3, anomaly=AnomalyKind.RUN_FAILED, line='run#3 failed: boom')
+        emit(s, reported, TargetRef(TargetKind.AGENT_SESSION, watchdog.id), System.DAEMON)
+        judged = CandidateJudged(verdict=Verdict.KEEP, score=2.0, reason='score +1 over candidate#1\nmore')
+        candidate = TargetRef(TargetKind.CANDIDATE, 1)
+        emit(s, judged, candidate, System.DAEMON)
+        emit(s, CandidateJudged(verdict=Verdict.UNMEASURED, score=None, reason=SKIPPED), candidate, System.DAEMON)
         s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
         s.get_one(Campaign, campaign.id).stopped_reason = 'max_tokens 100 reached'
         s.commit()
