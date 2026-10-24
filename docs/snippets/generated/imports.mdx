@@ -28,7 +28,6 @@ flowchart TB
     net --> plugins
     otel --> settings
     reports --> campaign
-    runtime --> plugins
     settings --> plugins
     store --> plugins
     usage --> settings
@@ -42,7 +41,7 @@ The graph leaves out the shared modules `actor.py`, `deprecated.py`, `ids.py`, `
 | `actor.py` | `ids.py` |
 | `agents/` | `actor.py`, `config.py`, `db/`, `deprecated.py`, `harnesses.py`, `ids.py`, `otel.py`, `plugins/`, `scoring/`, `settings.py`, `store/`, `text.py`, `usage/` |
 | `campaign/` | `actor.py`, `agents/`, `config.py`, `db/`, `deprecated.py`, `ids.py`, `plugins/`, `proc.py`, `scoring/`, `settings.py`, `store/`, `text.py`, `usage/` |
-| `capabilities.py` | `mcp/`, `net/`, `otel.py`, `plugins/`, `proc.py`, `runtime/`, `settings.py`, `usage/` |
+| `capabilities.py` | `mcp/`, `net/`, `otel.py`, `plugins/`, `proc.py`, `runtime/`, `usage/` |
 | `cli/` | `actor.py`, `agents/`, `campaign/`, `config.py`, `daemon/`, `db/`, `deprecated.py`, `harnesses.py`, `ids.py`, `mcp/`, `net/`, `otel.py`, `plugins/`, `proc.py`, `reports/`, `scoring/`, `settings.py`, `store/`, `text.py`, `version.py`, `watch/` |
 | `config.py` | `db/`, `deprecated.py`, `harnesses.py`, `ids.py`, `mcp/`, `plugins/` |
 | `daemon/` | `actor.py`, `agents/`, `campaign/`, `config.py`, `db/`, `deprecated.py`, `harnesses.py`, `ids.py`, `net/`, `otel.py`, `plugins/`, `proc.py`, `reports/`, `runtime/`, `scoring/`, `settings.py`, `store/` |
@@ -56,7 +55,7 @@ The graph leaves out the shared modules `actor.py`, `deprecated.py`, `ids.py`, `
 | `plugins/` | `actor.py`, `agents/`, `config.py`, `db/`, `deprecated.py`, `harnesses.py`, `ids.py`, `mcp/`, `net/`, `otel.py`, `proc.py`, `runtime/`, `scoring/`, `settings.py`, `store/`, `usage/` |
 | `proc.py` | nothing |
 | `reports/` | `agents/`, `campaign/`, `config.py`, `db/`, `ids.py`, `plugins/`, `runtime/`, `scoring/`, `text.py`, `usage/` |
-| `runtime/` | `db/`, `plugins/` |
+| `runtime/` | `db/`, `plugins/`, `settings.py` |
 | `scoring/` | `actor.py`, `config.py`, `db/`, `ids.py`, `plugins/`, `proc.py`, `text.py` |
 | `settings.py` | `actor.py`, `deprecated.py`, `plugins/` |
 | `store/` | `deprecated.py`, `plugins/` |

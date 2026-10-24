@@ -8,7 +8,6 @@ import subprocess
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import ClassVar
 from uuid import uuid4
 
 from piloop import deprecated
@@ -16,12 +15,14 @@ from piloop.harnesses import fill
 from piloop.plugins.runtime.contract import (
     MESSAGES_ENV,
     QUEUE,
+    RUNTIMES,
     TAG_ENV,
     AgentExit,
     AgentSpec,
     ExitStatus,
     Handle,
     NotSteerable,
+    RuntimeConfig,
     put,
     take,
 )
@@ -46,6 +47,13 @@ OLD_CURRENT = 'worker.current'
 """``CURRENT`` before 0.2.0: an agent that an older daemon resumed outlives an upgrade with it."""
 
 
+class Subprocess(RuntimeConfig):
+    """``subprocess``: each agent as a background process on this machine. It has no settings."""
+
+    def open(self) -> SubprocessRuntime:
+        return SubprocessRuntime(RUNTIMES.name_of(self))
+
+
 class SubprocessRuntime:
     """Each agent as a background process without a terminal, one process per turn of the agent.
 
@@ -61,9 +69,9 @@ class SubprocessRuntime:
     another process can still be observed and killed by its pid and start time, but has no exit code.
     """
 
-    kind: ClassVar[str] = 'subprocess'
-
-    def __init__(self) -> None:
+    def __init__(self, name: str) -> None:
+        """``name``: the runtime's, which its handles carry."""
+        self.name = name
         self._procs: dict[int, subprocess.Popen[bytes]] = {}
         """The process of each agent's latest turn, by the pid of its first process (the handle's)."""
         self._specs: dict[int, AgentSpec] = {}
@@ -81,7 +89,7 @@ class SubprocessRuntime:
             if spec.resume_args:
                 (spec.log_dir / RESUMER).touch()
             handle = Handle(
-                self.kind,
+                self.name,
                 {
                     'pid': proc.pid,
                     # start_new_session makes the child its group's leader. os.getpgid would ask the system, and

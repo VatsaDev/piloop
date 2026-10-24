@@ -24,21 +24,18 @@ import piloop_stop_after_keeps
 
 from piloop import capabilities
 from piloop.plugins import metric
-from piloop.plugins.host import BUILT_IN, CAPABILITIES, Capability, Selection, Tier
+from piloop.plugins.host import BUILT_IN, CAPABILITIES, Capability, Parameters, Tier
 from piloop.plugins.runtime.contract import NotSteerable
 
 HELPERS: set[object] = {
     capabilities.MissingProvider,
     capabilities.Live,
     NotSteerable,
-    capabilities.runtime_settings,
     capabilities.check_cas,
     capabilities.ContractBroken,
     capabilities.integrity,
     capabilities.UNBOUNDED,
-    capabilities.Nested,
     capabilities.NoCredential,
-    capabilities.NestedLocal,
     capabilities.LocalProvider,  # what a local tier's provider and store are, and what eviction sees
     capabilities.LocalCas,
     capabilities.Evictable,
@@ -75,6 +72,8 @@ HELPERS: set[object] = {
     capabilities.Answer,
     capabilities.StaleLease,
     capabilities.WorkersExecutor,  # what a built-in provider's open makes, which a plugin's may wrap
+    capabilities.SubprocessRuntime,
+    capabilities.TriggerEntry,  # the type of a role's triggers, which a plugin's role declares
     capabilities.HttpsNetwork,
     capabilities.Revision,  # a NewType
     capabilities.Fetch,  # type aliases
@@ -85,15 +84,13 @@ HELPERS: set[object] = {
     capabilities.GitRepository,  # what a built-in provider's open makes
 }
 """What a provider raises, calls or returns that no signature of a contract names."""
-WITHHELD: set[type] = {Selection}
-"""What a contract names and the module does not export: deprecated, so that no plugin adopts it before it goes."""
 
 
 def _own(group: str) -> list[EntryPoint]:
     return [ep for ep in entry_points(group=group) if ep.dist is not None and ep.dist.name == BUILT_IN]
 
 
-def _declared() -> list[Capability[object]]:
+def _declared() -> list[Capability[Parameters]]:
     loaded = [ep.load() for ep in _own(CAPABILITIES)]
     found = [c for c in loaded if isinstance(c, Capability)]
     assert len(found) == len(loaded)
@@ -131,7 +128,7 @@ def _contracts() -> set[type]:
     found: set[type] = set()
     for capability in _declared():
         found |= {type(capability), capability.contract}
-        found |= {type(c) for c in (capability.choice, capability.selection) if c is not None}
+        found |= {type(c) for c in (capability.choice, capability.entry, capability.named, capability.tables()) if c}
         for provider in capability.builtins().values():
             found |= {b for b in provider.__mro__[1:] if capability.contract in b.__mro__}
     queue = list(found)
@@ -139,7 +136,7 @@ def _contracts() -> set[type]:
         new = _named(queue.pop()) - found
         found |= new
         queue += new
-    return found - WITHHELD
+    return found
 
 
 def _exports() -> dict[str, object]:

@@ -61,7 +61,7 @@ def scheduler(db: Database, runtime: ScriptRuntime, tmp_path: Path) -> Scheduler
 
 def low_water(buffer: int) -> list[dict[str, object]]:
     """Research's ``low_water`` trigger, with ``buffer``, and its ``seed`` trigger."""
-    return [{'kind': 'low_water', 'buffer': buffer}, {'kind': 'seed'}]
+    return [{'provider': 'low_water', 'buffer': buffer}, {'provider': 'seed'}]
 
 
 def configure(db: Database, campaign: Campaign, harness_body: str = HARNESS_NOOP, **roles: dict[str, object]) -> None:
@@ -424,7 +424,7 @@ def test_stalled_sweeps_on_new_results_however_full_the_backlog(
 
     The next sweep waits for the next stall step, and for the new results that the back-off of empty sweeps wants.
     """
-    triggers = [*low_water(0), {'kind': 'stalled'}]
+    triggers = [*low_water(0), {'provider': 'stalled'}]
     configure(db, campaign, implementer={'max_concurrent': 1}, research={'max_ideas': 1, 'triggers': triggers})
     sched = scheduler(db, runtime, tmp_path)
     occupy(db, campaign)
@@ -453,7 +453,7 @@ def test_a_long_stall_gets_one_stalled_sweep_per_stall_step_and_a_keep_ends_it(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """A stall of N runs gets N / mark sweeps of ``stalled``, not N: one at each mark of runs without a keep."""
-    triggers = [{'kind': 'stalled'}]
+    triggers = [{'provider': 'stalled'}]
     configure(db, campaign, implementer={'max_concurrent': 2}, research={'max_ideas': 1, 'triggers': triggers})
     sched = scheduler(db, runtime, tmp_path)  # The stall mark is two rounds of 2 run slots: 4 runs.
     for n in range(12):

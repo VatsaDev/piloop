@@ -102,9 +102,10 @@ runtime's settings.
 
 ### The contract
 
-A runtime is a class with the methods of the `Runtime` protocol, and one class attribute: `kind`, its name (the name
-of its entry point). Its constructor takes no arguments. It starts the `headless` argv of a harness, with the first
-prompt in it. [Runtimes](/concepts/roles#runtimes) says what a runtime does for you.
+A runtime is a pydantic model, a subclass of `RuntimeConfig`: the name of its entry point is its name, and its fields
+are the keys of `[runtimes.<name>]`. Its `open()` returns an object with the methods of the `Runtime` protocol. That
+object starts the `headless` argv of a harness, with the first prompt in it. [Runtimes](/concepts/roles#runtimes)
+says what a runtime does for you.
 
 <RuntimeProtocol />
 
@@ -136,7 +137,7 @@ path = "/var/lib/piloop/blobs.sqlite"
 A provider is a pydantic model, a subclass of `CasProvider`: the name of its entry point is its `provider`, and its
 fields are the other keys of `[plugins.cas]`. Its `open(home)` returns the store, and `where(home)` names where the
 blobs are, such as `s3://bucket/prefix`. A key whose value is another provider's table, as the `remote` of `cached`,
-is a `Nested` field (`piloop.plugins.cas.kit.nested`).
+is a `Annotated[CasProvider, CAS.entry]` field.
 
 The store is a `Cas`: the methods of covalence's Python `Cas` that piloop calls, with the same signatures, so a
 `covalence.Cas` is a store as it is. A blob's address is a raw BLAKE3 CID of its content. A missing blob reads as
@@ -149,7 +150,7 @@ The store is a `Cas`: the methods of covalence's Python `Cas` that piloop calls,
 A store with a local tier over a remote one also implements `Upkeep` (`usage`, `flush`, `integrity`), which
 `piloop store` and the daemon's hourly upkeep use. A store that can be such a local tier is `Evictable`: `held()` lists
 each blob it holds (`Held`: CID, stored size, modified time) and `release(cid)` drops one. Its provider is a
-`LocalProvider`, and a `NestedLocal` key, as `cached`'s `local`, takes only those. `ObjectsCas` (`piloop.plugins.cas.kit.objects`) is a store of
+`LocalProvider`, and an `Annotated[LocalProvider, CAS.entry]` key, as `cached`'s `local`, takes only those. `ObjectsCas` (`piloop.plugins.cas.kit.objects`) is a store of
 compressed objects over anything that puts, opens and finds whole files by key: `disk`, `s3` and `gcs` are three.
 
 `check_cas(cas, scratch)` runs the contract against a store, as piloop's tests do with each built-in provider and
@@ -341,7 +342,7 @@ and writes a plan for it, one agent at a time:
 [roles.planner]
 prompt = "briefs/planner.md"
 triggers = [
-  { kind = "sql", when = "SELECT id FROM comments WHERE kind = 'escalation' AND acked_at IS NULL AND created_at > :since" },
+  { provider = "sql", when = "SELECT id FROM comments WHERE kind = 'escalation' AND acked_at IS NULL AND created_at > :since" },
 ]
 max_concurrent = 1
 timeout = 1200
@@ -402,18 +403,16 @@ was kept for some hours. It also adds a role, `auditor`, that uses this trigger:
 ```python
 from datetime import timedelta
 from pathlib import Path
-from typing import Literal
 
 from sqlalchemy import func, select
 
-from piloop.capabilities import Fire, SweepRole, Tick, Trigger
+from piloop.capabilities import Fire, SweepRole, Tick, Trigger, TriggerEntry
 from piloop.db.models import Candidate, Verdict, utcnow
 
 
 class NoKeep(Trigger):
     """``no_keep``: no new keep for ``hours`` hours, once per agent of the role."""
 
-    kind: Literal['no_keep'] = 'no_keep'
     hours: float = 6
 
     def fire(self, tick: Tick) -> Fire | None:
@@ -431,7 +430,7 @@ class Auditor(SweepRole):
     """``auditor``: the role's defaults are its fields' defaults."""
 
     prompt: str | None = str(Path(__file__).parent / 'auditor.md')
-    triggers: list[Trigger] = [NoKeep()]
+    triggers: list[TriggerEntry] = [NoKeep()]
     timeout: float = 1800
 ```
 
@@ -443,7 +442,7 @@ no_keep = "my_package:NoKeep"
 auditor = "my_package:Auditor"
 ```
 
-Any campaign can then use `{ kind = "no_keep", hours = 12 }` in the triggers of a role, and gets the `auditor` role,
+Any campaign can then use `{ provider = "no_keep", hours = 12 }` in the triggers of a role, and gets the `auditor` role,
 with its table in `piloop.toml` over the package's defaults, at its next `piloop init`.
 
 ### The contract
@@ -468,7 +467,7 @@ code of its own comes from a plugin: see `no_keep` above.
 
 ### The contract
 
-A trigger is an entry of `[roles.<name>] triggers`: `{ kind = "<trigger>", <parameter> = <value> }`. A plugin's
+A trigger is an entry of `[roles.<name>] triggers`: `{ provider = "<trigger>", <parameter> = <value> }`. A plugin's
 trigger is a subclass of `Trigger`: its fields are its parameters. On each tick, for each sweeping role
 without a pending request, the daemon calls `fire(tick)` of each trigger of the role in order. It returns a `Fire`
 (the reason, how many agents) or None, and reads with `tick` (a `Tick`: the session, the campaign, the role and the
@@ -711,9 +710,9 @@ providers of that capability. Other plugins add providers to the capability, and
 1. Make a `Capability` with its name and its contract, an abstract class. Import both from `piloop.capabilities`.
    Its providers are entry points in the group `piloop.<name>s`.
 2. Add an entry point in `piloop.capabilities` with the same name that names it.
-3. Call a provider with `get(name).model`. piloop loads and checks all the providers when you first call `get`.
-4. Check the names of the providers when the configuration loads, for example in a validator of a field of your
-   provider. `get` fails on a name that no provider has, and the error lists the names that exist.
+3. Give your provider a field of the providers that it calls: `Annotated[P, CAP.entry]` takes a table
+   `{ provider = "<name>", <its parameters> }`. piloop loads and checks the providers when the file loads, and refuses
+   a name that no provider has: the error lists the names that exist.
 
 ```python
 class VerdictCheck(Parameters, ABC):
@@ -724,12 +723,12 @@ class VerdictCheck(Parameters, ABC):
 VERDICT_CHECKS = Capability('verdict_check', VerdictCheck, tier=Tier.PURE)  # providers: piloop.verdict_checks
 
 
-class Checked(Bootstrap):  # a verdict rule that calls the checks that its field `checks` names
-    checks: list[Annotated[str, AfterValidator(lambda n: VERDICT_CHECKS.get(n).name)]]  # step 4: refused at load
+class Checked(Bootstrap):  # a verdict rule that calls the checks of its field `checks`
+    checks: list[Annotated[VerdictCheck, VERDICT_CHECKS.entry]]  # step 3: each one a table, refused at load
 
     def decide(self, case: Case) -> Judgement:
         judged = super().decide(case)
-        held = [why for n in self.checks if (why := VERDICT_CHECKS.get(n).model().check(case)) is not None]
+        held = [why for check in self.checks if (why := check.check(case)) is not None]
         return Judgement(Outcome.INTERESTING, '; '.join(held)) if judged.verdict is Outcome.KEEP and held else judged
 ```
 
@@ -754,10 +753,12 @@ The **plugin host** is the part of piloop that finds, checks and loads plugins (
 - **The same checks elsewhere.** `piloop serve --check`, `piloop doctor` and `piloop plugins` do the same checks.
   `piloop restart` and `piloop upgrade` do them first, and keep the daemon running if it would not start again.
   A broken CAS provider that nothing selects is only a warning.
-- **Selection.** Each capability says where the configuration selects its provider. The runtime has its own key. A new capability uses a table, `[plugins.<name>]`: `provider` is the name of the
-  provider, and the other keys are its parameters. piloop validates the table into the provider's class when it loads
-  the file, and the capability gets that instance. If no provider has that name, the error names the key and lists the
-  names that exist.
+- **Selection.** A table selects a provider: `provider` is its name, and the other keys are its parameters. One
+  provider per file is `[plugins.<name>]`; a provider in a list or under another key, such as a trigger, is a field
+  `Annotated[P, CAP.entry]`. A key that only names a provider, such as `runtime`, is `Annotated[str, CAP.named]`, and
+  a table of every provider by its name, such as `[runtimes]`, is `Annotated[dict[str, P], CAP.tables()]`. piloop
+  validates each table into the provider's class when it loads the file, and passes on that instance. If no provider
+  has that name, the error names the key and lists the names that exist.
 - **Two kinds of contract.** A provider of a `host` capability, such as a runtime, can get live objects of piloop:
   processes, files, a database session. A provider of a `pure` capability gets data only. piloop loads, selects and
   lists both kinds in the same way.

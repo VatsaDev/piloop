@@ -1,5 +1,3 @@
-from typing import Literal
-
 from piloop.plugins.trigger.contract import Fire, Tick, Trigger
 from piloop.plugins.trigger.kit.reasons import futile, news
 
@@ -14,8 +12,6 @@ class StalledTrigger(Trigger):
     killed sweep is retried at the next step. As with ``low_water``, nothing is requested while every slot of the role
     is busy, while its ``max_ideas`` is 0, or while the queue holds its ideas for the head (``Backlog.on_hold``).
     """
-
-    kind: Literal['stalled'] = 'stalled'
 
     def fire(self, tick: Tick) -> Fire | None:
         step = tick.stall_step(None)

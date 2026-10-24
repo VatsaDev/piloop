@@ -30,6 +30,7 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.ids import RESEARCH, SCOUT, AgentSessionId
 from piloop.plugins.role.scout import ScoutRole
+from piloop.plugins.trigger.cron import CronTrigger
 from piloop.reports.history import history
 from piloop.reports.overview import overview
 from tests.conftest import ScriptRuntime, write_toml
@@ -60,7 +61,7 @@ def test_the_scout_is_off_until_it_has_an_interval(campaign: Campaign) -> None:
     scout = load_campaign_config(Path(campaign.path)).roles.scout
     assert (scout.interval, scout.seeds, scout.files) == (0, ScoutRole().seeds, 'seeds')
     on = load_campaign_config(Path(campaign.path), roles={'scout': {'interval': 3600}}).roles.scout
-    assert (on.interval, [t.kind for t in on.triggers]) == (3600, ['cron'])
+    assert (on.interval, on.triggers) == (3600, [CronTrigger()])
 
 
 def test_a_scout_sweep_fires_on_its_interval_as_a_row_of_its_own_beside_research(

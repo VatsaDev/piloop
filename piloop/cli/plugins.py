@@ -1,13 +1,15 @@
 """``piloop plugins``: every capability, its providers, and which provider the configuration selects."""
 
 from pathlib import Path
+from typing import Annotated, get_args, get_origin
+
+from pydantic import BaseModel
 
 from piloop.cli import common
 from piloop.cli.doctor import stored_campaigns
 from piloop.config import CampaignConfig
 from piloop.daemon.main import preflight, unbound_failures
-from piloop.plugins.host import Capability, Choice, PluginError, Plugins, Scope, Selection, declared, lookup
-from piloop.plugins.role.contract import ROLES
+from piloop.plugins.host import Capability, Choice, Named, Parameters, PluginError, Plugins, Scope, declared
 from piloop.settings import CONFIG_FILE, Settings
 
 
@@ -50,19 +52,19 @@ def selections(cfg: Settings) -> list[str]:
     ]
     found: list[str] = []
     for capability in declared():
-        match capability.choice, capability.selection:
-            case Choice(scope=Scope.HOME), _:
+        match capability.choice:
+            case None:
+                for stored, campaign in campaigns:
+                    found += _named_in(capability, campaign, stored)
+            case Choice(scope=Scope.HOME):
                 found += _chosen(capability, cfg.providers, f'in {config}')
-            case Choice(scope=Scope.CAMPAIGN), _:
+            case _:  # a [plugins] table of piloop.toml
                 for stored, campaign in campaigns:
                     found += _chosen(capability, campaign.plugins, stored, f'{campaign.name}: ')
-            case _, Selection() as selection:
-                for stored, campaign in campaigns:
-                    found += _in_campaign(capability, selection, campaign, stored, cfg)
     return found
 
 
-def _chosen(capability: Capability[object], plugins: Plugins, where: str, who: str = '') -> list[str]:
+def _chosen(capability: Capability[Parameters], plugins: Plugins, where: str, who: str = '') -> list[str]:
     """What ``[plugins.<name>]`` of one file chooses: nothing without the table."""
     if (provider := plugins.get(capability.name)) is None:
         return []
@@ -70,37 +72,28 @@ def _chosen(capability: Capability[object], plugins: Plugins, where: str, who: s
     return [f'{who}{_provider(capability, name)} ([plugins.{capability.name}] provider, {where})']
 
 
-def _in_campaign(
-    capability: Capability[object], selection: Selection, campaign: CampaignConfig, stored: str, cfg: Settings
-) -> list[str]:
-    """What one campaign selects: for each role, when a role's table can select too."""
-    data = campaign.model_dump(mode='json')
-    field = CampaignConfig.model_fields.get(selection.key)
-    default = field.default if field is not None else None
-    roles = data['roles'] if selection.per_role else {}
-    found: list[str] = []
-    for role in roles or [None]:
-        package = ROLES.providers().get(role) if role is not None else None
-        if role is not None and (name := lookup(roles[role], selection.key)) is not None:
-            from_package = package is not None and not package.source.built_in
-            if from_package and lookup(package.model().model_dump(mode='json'), selection.key) == name:
-                key = f'the default of the {role} role from {package.source.release}'
-            else:
-                key = f'[roles.{role}] {selection.key}'
-        else:  # the runtime: the campaign always has one
-            name = lookup(data, selection.key)
-            key = f'{_key(selection)}, its default' if name == default else _key(selection)
-        settings = selection.settings
-        given = settings and lookup(cfg.model_dump(mode='json'), f'{settings}.{name}') is not None
-        extra = f'; its settings: [{settings}.{name}] in {cfg.home / CONFIG_FILE}' if given else ''
-        who = f'{campaign.name} {role}' if role is not None else campaign.name
-        found.append(f'{who}: {_provider(capability, str(name))} ({key}, {stored}{extra})')
+def _named_in(capability: Capability[Parameters], campaign: CampaignConfig, stored: str) -> list[str]:
+    """What the keys of one campaign that name a provider of ``capability`` name: at the top, then in each role."""
+    roles = [(f'{campaign.name} {name}', f'[roles.{name}] ', role) for name, role in campaign.roles.all().items()]
+    tables: list[tuple[str, str, BaseModel]] = [(campaign.name, '', campaign), *roles]
+    return [
+        f'{who}: {_provider(capability, name)} ({table}{key}, {stored})'
+        for who, table, model in tables
+        for key, name in _names(model, capability).items()
+    ]
+
+
+def _names(model: BaseModel, capability: Capability[Parameters]) -> dict[str, str]:
+    """The fields of ``model`` that name a provider of ``capability`` (``Named``) and are set, with the name."""
+    found: dict[str, str] = {}
+    for field, info in type(model).model_fields.items():
+        optional = [m for h in get_args(info.annotation) if get_origin(h) is Annotated for m in h.__metadata__]
+        metadata = [*info.metadata, *optional]
+        named = any(isinstance(m, Named) and m.capability is capability for m in metadata)
+        if named and isinstance(value := getattr(model, field), str):
+            found[field] = value
     return found
 
 
-def _key(selection: Selection) -> str:
-    return f'[{selection.table}] {selection.key.rpartition(".")[2]}' if selection.table else selection.key
-
-
-def _provider(capability: Capability[object], name: str) -> str:
+def _provider(capability: Capability[Parameters], name: str) -> str:
     return f'{capability.noun} {name}, from {capability.sources()[name].release}'

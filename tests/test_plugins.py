@@ -11,7 +11,7 @@ from typing import IO, Any
 
 import piloop_min_gain
 import pytest
-from piloop_nice import NiceRuntime
+from piloop_nice import Nice, NiceRuntime
 from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy.orm import Session
 
@@ -40,14 +40,15 @@ from piloop.plugins.host import (
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import ROLES, SweepRole
 from piloop.plugins.runtime.contract import RUNTIMES
+from piloop.plugins.runtime.subprocess import Subprocess
 from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Case, Criterion, Judgement, Outcome, Side, VerdictRule
-from piloop.runtime.factory import make_runtime
+from piloop.runtime.factory import RUNTIME_TABLES, make_runtime
 from piloop.settings import HOME_PLUGINS, Settings
 from tests.conftest import example, package
 from tests.daemon.test_roles import PLUGIN, installed
-from tests.fixtures.plugin import Checked, EveryTick, Typed
+from tests.fixtures.plugin import Checked, EveryTick, NoUnitRegression, Typed
 
 
 @pytest.fixture(autouse=True)
@@ -63,9 +64,9 @@ def test_an_installed_package_mounts_its_runtime_and_shows_where_it_comes_from(
 ) -> None:
     example(tmp_path, 'nice-runtime')
     monkeypatch.syspath_prepend(tmp_path)
-    assert RUNTIMES.get('nice').model is NiceRuntime
+    assert RUNTIMES.get('nice').model is Nice
     assert isinstance(make_runtime('nice'), NiceRuntime)
-    assert RUNTIMES.sources()['nice'] == PythonSource('piloop-nice', '0.1.0', 'nice = piloop_nice:NiceRuntime')
+    assert RUNTIMES.sources()['nice'] == PythonSource('piloop-nice', '0.1.0', 'nice = piloop_nice:Nice')
     built_in = RUNTIMES.sources()['subprocess']
     assert (built_in.release.split()[0], built_in.built_in) == ('piloop', True)
     assert next(c for c in doctor.checks(Settings(home=tmp_path)) if c.name == 'plugins').found.endswith(
@@ -80,9 +81,24 @@ def test_an_installed_package_mounts_its_runtime_and_shows_where_it_comes_from(
     assert lines[runtimes : runtimes + 3] == [
         'runtimes (host tier, piloop.runtimes):',
         f'  subprocess  {built_in}',
-        '  nice        piloop-nice 0.1.0, entry point nice = piloop_nice:NiceRuntime',
+        '  nice        piloop-nice 0.1.0, entry point nice = piloop_nice:Nice',
     ]
     assert lines[-1] == 'selected:', 'no campaign and no remote: nothing is selected'
+
+
+def test_the_runtimes_of_config_toml_hold_every_runtime_with_its_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    example(tmp_path, 'nice-runtime')
+    monkeypatch.syspath_prepend(tmp_path)
+    tables = RUNTIME_TABLES.validate_python({'nice': {'niceness': 5}})
+    assert tables == {'subprocess': Subprocess(), 'nice': Nice(niceness=5)}, 'every runtime, over its defaults'
+    assert RUNTIME_TABLES.validate_python(tables) == tables
+    assert RUNTIME_TABLES.dump_python(tables) == {'subprocess': {}, 'nice': {'niceness': 5}}
+    with pytest.raises(ValidationError, match=r'\nnice\.niceness\n  Input should be a valid integer'):
+        RUNTIME_TABLES.validate_python({'nice': {'niceness': 'low'}})
+    with pytest.raises(ValidationError, match='a table of tables'):
+        RUNTIME_TABLES.validate_python(3)
 
 
 def test_two_packages_with_the_same_name_fail_before_the_daemon_starts(
@@ -117,7 +133,8 @@ def test_two_packages_with_the_same_name_fail_before_the_daemon_starts(
     [
         (
             '[runtimes.tmux]\nx = 1\n',
-            r'config.toml: \[runtimes.tmux\]: no runtime has that name; registered runtimes:',
+            r'config.toml: 1 validation error for \[runtimes\]\ntmux\n  Value error, no runtime has that name; registered'
+            r' runtimes: subprocess',
         ),
         (
             '[plugins.cas]\nprovider = "azure"\n',
@@ -171,7 +188,7 @@ def test_a_failed_composition_unregisters_what_it_activated_and_keeps_what_was_a
     assert 'typed' in RUNTIMES.providers(), 'the next use activates again'
 
 
-def declared(*names: str) -> list[Capability[object]]:
+def declared(*names: str) -> list[Capability[Parameters]]:
     """The capabilities called ``names``, in that order."""
     by_name = {c.name: c for c in plugins.declared()}
     return [by_name[name] for name in names]
@@ -233,11 +250,11 @@ def test_an_entry_point_that_needs_its_own_capability_while_it_loads_fails(monke
     assert not any(c.active for c in plugins.declared())
 
 
-class Fake(Capability[object]):
+class Fake(Capability[Parameters]):
     """A capability that records when it activates and when its registration is undone."""
 
     def __init__(self, name: str, log: list[str], *, fails: bool = False) -> None:
-        super().__init__(name, object)
+        super().__init__(name, Parameters)
         self.log = log
         self.fails = fails
         self.on = False
@@ -441,19 +458,15 @@ def test_a_plugin_declares_a_capability_calls_its_providers_and_another_package_
         ],
     )
     checks = next(c for c in plugins.declared() if c.name == 'verdict_check')
-    assert (checks.tier, checks.group, checks.choice, checks.selection) == (
-        Tier.PURE,
-        'piloop.verdict_checks',
-        None,
-        None,
-    )
+    assert (checks.tier, checks.group, checks.choice) == (Tier.PURE, 'piloop.verdict_checks', None)
     with pytest.raises(
         ConfigError, match=re.escape("unknown verdict check 'none'; registered verdict checks: no_unit")
     ):
-        load_campaign_config(campaign_path, plugins={'verdict_rule': {'provider': 'checked', 'checks': ['none']}})
-    table = {'provider': 'checked', 'checks': ['no_unit_regression']}
+        none = {'provider': 'checked', 'checks': [{'provider': 'none'}]}
+        load_campaign_config(campaign_path, plugins={'verdict_rule': none})
+    table = {'provider': 'checked', 'checks': [{'provider': 'no_unit_regression'}]}
     rule = VERDICT_RULES.selected(load_campaign_config(campaign_path, plugins={'verdict_rule': table}).plugins)
-    assert rule == Checked(checks=['no_unit_regression'])
+    assert rule == Checked(checks=[NoUnitRegression()])
     units = {f'u{i}': 1.0 for i in range(30)}
     better = {**units, **{f'u{i}': 2.0 for i in range(1, 30)}}
 
@@ -522,8 +535,6 @@ def test_a_capability_selects_the_table_of_its_file_else_its_default_else_nothin
         chosen.selected({})
     with pytest.raises(ValueError, match='^provider: missing; registered odds: $'):
         chosen.validated({})
-    with pytest.raises(TypeError, match=r'^object is chosen by \[plugins.odd\], so it subclasses Parameters$'):
-        Capability('odd', object, choice=Choice(Scope.HOME))
 
 
 def test_a_role_takes_trigger_objects_as_its_defaults_do() -> None:

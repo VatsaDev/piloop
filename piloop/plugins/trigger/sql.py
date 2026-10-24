@@ -1,5 +1,4 @@
 from datetime import datetime
-from typing import Literal
 
 from pydantic import field_validator
 
@@ -24,7 +23,6 @@ class SqlTrigger(Trigger):
     one statement that only reads.
     """
 
-    kind: Literal['sql'] = 'sql'
     when: str
     """The query, for example ``SELECT 1 FROM candidates WHERE campaign_id = :campaign AND verdict = 'keep' AND
     created_at > :since``."""

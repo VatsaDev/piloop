@@ -40,7 +40,6 @@ LEAVES: dict[str, frozenset[str] | None] = {
     'usage/__init__.py': frozenset({'jsonl'}),
     'usage/jsonl.py': frozenset({'jsonl'}),
     'usage/tallies/*.py': None,
-    'plugins/runtime/subprocess.py': frozenset({'subprocess'}),
     'config.py': frozenset({'subprocess', 'pi'}),
     'plugins/role/research.py': frozenset({'claude', 'codex'}),
     'deprecated.py': None,
@@ -55,7 +54,6 @@ LEAVES: dict[str, frozenset[str] | None] = {
 - ``harnesses.py``, the triggers (``plugins/trigger/``), ``ids.py`` (the built-in roles), the MCP renderers and the
   usage readers and tallies define the entries. The migrations are history.
 - ``db/models.py``: the states ``seed`` and ``stopped``, which share a name with a trigger.
-- ``plugins/runtime/subprocess.py`` defines its runtime.
 - ``config.py``: the defaults of ``runtime`` and ``harnesses``.
 - ``plugins/role/research.py``: the default ``model`` of research.
 - ``deprecated.py``: the bridges rewrite the keys of earlier releases, which named built-in roles and triggers.

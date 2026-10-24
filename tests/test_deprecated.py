@@ -19,6 +19,11 @@ import pytest
 from piloop import deprecated
 from piloop.config import ConfigError, load_campaign_config
 from piloop.deprecated import PiloopDeprecationWarning
+from piloop.plugins.trigger.contract import TRIGGERS
+from piloop.plugins.trigger.cron import CronTrigger
+from piloop.plugins.trigger.low_water import LowWaterTrigger
+from piloop.plugins.trigger.seed import SeedTrigger
+from piloop.plugins.trigger.stalled import StalledTrigger
 from piloop.version import Version
 from tests.conftest import HARNESS_APPEND, write_toml
 
@@ -112,14 +117,15 @@ def test_a_scout_table_wins_over_what_the_bridge_copies_from_research(campaign_p
 
 def test_the_scout_trigger_of_research_goes(campaign_path: Path) -> None:
     toml = deprecated_config(
-        campaign_path, '[roles.research]\ntriggers = [{ kind = "low_water" }, { kind = "seed" }, { kind = "scout" }]\n'
+        campaign_path,
+        '[roles.research]\ntriggers = [{ provider = "low_water" }, { provider = "seed" }, { provider = "scout" }]\n',
     )
     toml.write_text(
-        toml.read_text().replace('[roles.watchdog]\n', '[roles.watchdog]\ntriggers = [{ kind = "cron" }]\n')
+        toml.read_text().replace('[roles.watchdog]\n', '[roles.watchdog]\ntriggers = [{ provider = "cron" }]\n')
     )
     with pytest.warns(PiloopDeprecationWarning, match='the scout trigger is deprecated') as record:
         cfg = load_campaign_config(campaign_path)
-    assert [t.kind for t in cfg.roles.research.triggers] == ['low_water', 'seed']
+    assert [TRIGGERS.name_of(t) for t in cfg.roles.research.triggers] == ['low_water', 'seed']
     assert record[0].lineno == toml.read_text().splitlines().index('[roles.research]') + 2, 'research, not the watchdog'
 
 
@@ -133,20 +139,15 @@ def test_research_buffer_is_the_buffer_of_its_low_water_triggers(campaign_path: 
     deprecated_config(campaign_path, '[roles.research]\nbuffer = 5\n')
     with pytest.warns(PiloopDeprecationWarning, match=r'\[roles.research\] buffer is deprecated'):
         cfg = load_campaign_config(campaign_path)
-    assert [t.model_dump() for t in cfg.roles.research.triggers] == [
-        {'kind': 'low_water', 'buffer': 5},
-        {'kind': 'seed'},
-        {'kind': 'stalled'},
-    ], 'the default triggers, with the buffer'
+    assert cfg.roles.research.triggers == [LowWaterTrigger(buffer=5), SeedTrigger(), StalledTrigger()], (
+        'the default triggers, with the buffer'
+    )
     deprecated_config(
         campaign_path, '[roles.research]\nbuffer = 0\ntriggers = [{ kind = "low_water" }, { kind = "cron" }]\n'
     )
     with pytest.warns(PiloopDeprecationWarning):
         cfg = load_campaign_config(campaign_path)
-    assert [t.model_dump() for t in cfg.roles.research.triggers] == [
-        {'kind': 'low_water', 'buffer': 0},
-        {'kind': 'cron'},
-    ]
+    assert cfg.roles.research.triggers == [LowWaterTrigger(buffer=0), CronTrigger()]
 
 
 def test_research_context_is_the_top_level_context(campaign_path: Path) -> None:
@@ -211,8 +212,8 @@ def test_a_piloop_toml_that_an_earlier_template_wrote_still_loads(
     with pytest.warns(PiloopDeprecationWarning):
         cfg = load_campaign_config(tmp_path)
     research = cfg.roles.research
-    assert [t.kind for t in research.triggers] == triggers
-    assert research.triggers[0].model_dump() == {'kind': 'low_water', 'buffer': 2}
+    assert [TRIGGERS.name_of(t) for t in research.triggers] == triggers
+    assert research.triggers[0] == LowWaterTrigger(buffer=2)
     assert (cfg.context, research.max_ideas) == ([], 1)
     assert (cfg.roles.scout.interval, cfg.roles.scout.seeds) == ((86400, 3) if scout_table else (0, 3))
 

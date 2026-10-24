@@ -679,7 +679,7 @@ def test_the_closing_sweep_is_each_stopped_trigger_and_none_without_one(
 ) -> None:
     """``[roles.watchdog] triggers = []`` drops the closing review; a ``stopped`` trigger of another role fires once."""
     (Path(campaign.path) / 'closer.md').write_text('# Close\n')
-    closer = {'prompt': 'closer.md', 'triggers': [{'kind': 'stopped'}]}
+    closer = {'prompt': 'closer.md', 'triggers': [{'provider': 'stopped'}]}
     configure(db, campaign, harness=HARNESS_WORSE, roles={'watchdog': {'triggers': []}, 'closer': closer}, max_runs=1)
     add_ideas(db, campaign, 'a')
     sched = make_scheduler(db, runtime, tmp_path)

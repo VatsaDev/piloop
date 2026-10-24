@@ -5,17 +5,27 @@ The agents of a long campaign then leave the CPU to your own work first. ``[runt
 """
 
 from dataclasses import replace
-from typing import ClassVar
 
-from piloop.capabilities import AgentSpec, Handle, SubprocessRuntime, runtime_settings
+from piloop.capabilities import RUNTIMES, AgentSpec, Handle, Subprocess, SubprocessRuntime
+
+
+class Nice(Subprocess):
+    """``nice``: background processes, like ``subprocess``, at a lower CPU priority."""
+
+    niceness: int = 10
+    """How much lower than piloop's own priority the agents run."""
+
+    def open(self) -> NiceRuntime:
+        return NiceRuntime(RUNTIMES.name_of(self), self.niceness)
 
 
 class NiceRuntime(SubprocessRuntime):
-    """``nice``: background processes, like ``subprocess``, at a lower CPU priority."""
+    """Starts each agent under ``nice -n <niceness>``."""
 
-    kind: ClassVar[str] = 'nice'
+    def __init__(self, name: str, niceness: int) -> None:
+        super().__init__(name)
+        self.niceness = niceness
 
     def start(self, spec: AgentSpec) -> Handle:
-        niceness = str(runtime_settings(self.kind).get('niceness', 10))
-        args = ['-n', niceness, spec.executable, *spec.args]
+        args = ['-n', str(self.niceness), spec.executable, *spec.args]
         return super().start(replace(spec, executable='nice', args=args))

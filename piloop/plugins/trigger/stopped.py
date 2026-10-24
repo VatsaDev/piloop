@@ -1,4 +1,4 @@
-from typing import ClassVar, Literal
+from typing import ClassVar
 
 from piloop.plugins.trigger.contract import Fire, Tick, Trigger
 
@@ -11,7 +11,6 @@ class StoppedTrigger(Trigger):
     """
 
     ON_STOP: ClassVar[bool] = True
-    kind: Literal['stopped'] = 'stopped'
 
     def fire(self, tick: Tick) -> Fire | None:
         return Fire(f'campaign stopped: {tick.campaign.stopped_reason}')

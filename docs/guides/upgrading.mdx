@@ -256,10 +256,19 @@ it loads the file. A plugin of 0.2.0 fails to load until you change it:
 | A role's entry point names `SweepRole(...)` | A subclass of `SweepRole` or `ImplementerRole` whose fields have the role's defaults |
 | `Capability(noun, group=..., check=...)`, `PureCapability(noun, group=..., contract=...)` | `Capability(name, contract)`, `tier=Tier.PURE` for a pure one: `name` is its entry point in `piloop.capabilities`, and its providers are in `piloop.<name>s` |
 | `get(name)` returns the provider | `get(name).model` is the provider's class |
+| A runtime class with `kind` and a constructor without arguments | A subclass of `RuntimeConfig` whose fields are `[runtimes.<name>]` and whose `open()` returns the runtime |
+| `runtime_settings(name)` | The runtime's fields |
+| `kind: Literal['<name>']` on a trigger | Nothing: the name of its entry point is its name |
+| `Selection`, `lookup`, `check_selection`, `Capability(check=...)` | The field that names a provider: `Annotated[P, CAP.entry]` for a table, `Annotated[str, CAP.named]` for a name, `Annotated[dict[str, P], CAP.tables()]` for a table of each provider |
 
 The examples in [`examples/plugins/`](https://github.com/hiloopai/piloop/tree/main/examples/plugins) show each one.
-`piloop.toml` and `config.toml` do not change. A `[plugins.<name>]` table without `provider` now sets the parameters
-of the default provider.
+A `[plugins.<name>]` table without `provider` now sets the parameters of the default provider.
+
+### Triggers name their provider
+
+An entry of `[roles.<name>] triggers` names its trigger with `provider`, as a `[plugins.<name>]` table does:
+`triggers = [{ provider = "cron" }]`. `kind` still works, with a warning, until 0.4.0. The upgrade changes the stored
+configs.
 
 ### Archived manifests
 
@@ -373,7 +382,7 @@ Each of these still works in 0.2.0, with a `PiloopDeprecationWarning`. piloop 0.
 | `[roles.worker]` | `[roles.implementer]` |
 | `PILOOP_PROJECT_<KEY>` | `PILOOP_CAMPAIGN_<KEY>`. When both are set, `PILOOP_CAMPAIGN_<KEY>` wins. |
 | `[roles.research.scout]` | `[roles.scout]`. The keys of `[roles.research]` that the scout used (`runtime`, `harnesses`, `model`, `timeout`, `mcp`, `addendum`) move with it. |
-| `[roles.research] buffer` | `buffer` on research's `low_water` trigger: `triggers = [{ kind = "low_water", buffer = 2 }, { kind = "seed" }, { kind = "stalled" }]` |
+| `[roles.research] buffer` | `buffer` on research's `low_water` trigger: `triggers = [{ provider = "low_water", buffer = 2 }, { provider = "seed" }, { provider = "stalled" }]` |
 | `[roles.research] context` | The top-level `context` |
 | `{claude_config_dir}` in `[harness.<name>.usage] file` | `{env:CLAUDE_CONFIG_DIR:~/.claude}` |
 | `{codex_home}` in `[harness.<name>.usage] file` | `{env:CODEX_HOME:~/.codex}` |

@@ -173,7 +173,7 @@ name defines a new role, and needs `prompt` and `triggers`.
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `runs` | boolean | `false` | The agents of this role do no runs. Set `runs = true` in a new table to define a role that does runs. |
-| `triggers` | list\[[Trigger](#trigger)\] | required | When the daemon requests an agent of this role: a list of `{ kind = "<trigger>", ... }` entries, checked in order on each tick. A package can add triggers. An empty list means that agents start only on request (`piloop launch`). Built in: `anomaly`, `cron`, `low_water`, `seed`, `sql`, `stalled`, `stopped`. |
+| `triggers` | list\[object\] | required | When the daemon requests an agent of this role: a list of `{ provider = "<trigger>", ... }` entries, checked in order on each tick. A package can add triggers. An empty list means that agents start only on request (`piloop launch`). Built in: `anomaly`, `cron`, `low_water`, `seed`, `sql`, `stalled`, `stopped`. |
 | `interval` | number | `0` | The number of seconds between two routine sweeps of the `cron` trigger, counted from the start of the last one. A sweep that investigates an anomaly is not a routine sweep. 0 turns the timer off. |
 | `max_ideas` | integer | `1` | The maximum number of new ideas one sweep may insert, as its brief states it. The seeds it develops do not count. `low_water` requests enough sweeps to fill the backlog at this many ideas each. 0 pauses the role's new ideas: `low_water` is off, and an idea that a sweep of the role adds (`piloop idea add`) is `proposed`, so it waits for a review, also from a sweep that started before the change. |
 | `incident_prompt` | string \| null | `null` | A file that follows `prompt` in the brief of an incident sweep, a sweep that got anomalies (the `anomaly` trigger): a path relative to the repo root, or an absolute path. When unset, a built-in role uses its built-in file (the watchdog's `watchdog_incident.md`), and another role adds nothing. |
@@ -187,18 +187,17 @@ name defines a new role, and needs `prompt` and `triggers`.
 |---|---|---|---|
 | `writes` | list\[string\] | `["comments(escalation, finding, note)", "lessons on the campaign once it stopped", "seeds via idea seed"]` | What a watchdog may write, as its brief states it. |
 | `wake_budget` | integer \| null | `0` | The size in tokens of the lessons overview that opens a watchdog's brief. Off by default: the closing review reads the lessons itself before it writes its own. |
-| `triggers` | list\[[Trigger](#trigger)\] | `[{"kind": "anomaly"}, {"kind": "cron"}, {"kind": "stopped"}]` | An anomaly requests an incident sweep, the timer requests a progress review, and the campaign's stop requests the closing review. |
+| `triggers` | list\[object\] | `[{"provider": "anomaly"}, {"provider": "cron"}, {"provider": "stopped"}]` | An anomaly requests an incident sweep, the timer requests a progress review, and the campaign's stop requests the closing review. |
 | `interval` | number | `1800` | The number of seconds between two progress reviews, counted from the last review. A sweep that investigates an anomaly is not a review. 0 turns the reviews off. |
 
 ## Trigger
 
-One entry of `[roles.<name>] triggers`: `{ kind = "<trigger>", <parameter> = <value> }`.
+One entry of `[roles.<name>] triggers`: `{ provider = "<trigger>", <parameter> = <value> }`.
 
 The daemon checks the entries in the order of the list.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | required | The name of the trigger. A package can add triggers. Built in: `anomaly`, `cron`, `low_water`, `seed`, `sql`, `stalled`, `stopped`. |
 
 ## ResearchRole
 
@@ -211,7 +210,7 @@ The daemon checks the entries in the order of the list.
 | `max_concurrent` | integer | `1` | The maximum number of sweeps that run at the same time, each on the next harness of the rotation. The default is 1: sweeps that run at the same time read the same evidence and often duplicate each other, and two of them can race to develop the same seed. |
 | `writes` | list\[string\] | `["seeds via idea develop, or their status to rejected with a note", "ideas via idea add", "comments(finding, escalation) on the campaign", "comments(note) on an idea"]` | What a research sweep may write, as its brief states it. |
 | `files` | `nothing` \| `seeds` \| `ideas` | `"ideas"` | Research develops seeds into ideas and adds ideas of its own. |
-| `triggers` | list\[[Trigger](#trigger)\] | `[{"kind": "low_water", "buffer": 2}, {"kind": "seed"}, {"kind": "stalled"}]` | A short backlog, a new seed, and a stall. |
+| `triggers` | list\[object\] | `[{"provider": "low_water"}, {"provider": "seed"}, {"provider": "stalled"}]` | A short backlog, a new seed, and a stall. |
 
 ## ScoutRole
 
@@ -228,7 +227,7 @@ Experimental: the scout.
 |---|---|---|---|
 | `timeout` | number | `900` | The number of seconds one sweep may run before it is stopped. |
 | `writes` | list\[string\] | `["seeds via idea seed (at most the count under Context)", "techniques (the library), by INSERT", "one comments(finding) on the campaign"]` | What a scout sweep may write, as its brief states it. |
-| `triggers` | list\[[Trigger](#trigger)\] | `[{"kind": "cron"}]` | The timer: a scout sweep every `interval` seconds. |
+| `triggers` | list\[object\] | `[{"provider": "cron"}]` | The timer: a scout sweep every `interval` seconds. |
 | `interval` | number | `0` | The number of seconds between two scout sweeps, counted from the start of the last one. The first sweep counts from the registration of the campaign. 0 (the default) turns the scout off. |
 | `seeds` | integer | `3` | The maximum number of seeds one scout sweep may file. The other techniques it finds go to the library. |
 
@@ -315,7 +314,6 @@ sweep.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | `"anomaly"` |  |
 
 ## CronTrigger
 
@@ -325,7 +323,6 @@ The first one counts from the registration of the campaign. An `interval` of 0 t
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | `"cron"` |  |
 
 ## LowWaterTrigger
 
@@ -357,7 +354,6 @@ no idea that a sweep adds could run sooner.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | `"low_water"` |  |
 | `buffer` | integer | `2` | The number of ready ideas to keep in addition to one for each run slot (the `max_concurrent` of every role that does runs). With this backlog, a free slot finds an idea at once and does not wait for a sweep. A larger value makes implementers wait less for the role, but the ideas they run are older. |
 
 ## SeedTrigger
@@ -371,7 +367,6 @@ seed filed in that moment waits for the next sweep.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | `"seed"` |  |
 
 ## SqlTrigger
 
@@ -384,7 +379,6 @@ one statement that only reads.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | `"sql"` |  |
 | `when` | string | required | The query, for example `SELECT 1 FROM candidates WHERE campaign_id = :campaign AND verdict = 'keep' AND created_at > :since`. |
 
 ## StalledTrigger
@@ -400,7 +394,6 @@ is busy, while its `max_ideas` is 0, or while the queue holds its ideas for the 
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | `"stalled"` |  |
 
 ## StoppedTrigger
 
@@ -411,7 +404,6 @@ trigger. The reason is `campaign stopped: <the condition>`.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `kind` | string | `"stopped"` |  |
 
 ## Global settings: `config.toml`
 
@@ -438,7 +430,7 @@ With `provider = "cached"`:
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `remote` | object | required | The CAS that holds every blob: a table with its `provider` and parameters, `{ provider = "s3", url = … }`. |
-| `local` | object | `{}` | The local tier: a table of a provider that can be one, `{ provider = "disk", path = … }`. Unset: `disk`. |
+| `local` | object | `{"provider": "disk"}` | The local tier: a table of a provider that can be one, `{ provider = "disk", path = … }`. Unset: `disk`. |
 | `evict_after_days` | number \| null | `null` | Drop the local copy of a blob once it is this old (since it was stored or fetched); 0 keeps no local copy, so every read fetches. Unset: by age never. |
 | `local_max_gb` | number \| null | `null` | Drop the local copies of the oldest blobs until the local tier is at most this size. |
 
@@ -518,12 +510,13 @@ The server's certificate chain and its private key, as PEM files.
 
 ### `[runtimes.<name>]`
 
-The settings of a runtime that a package adds, which it reads with `runtime_settings`.
+The settings of the runtime `<name>` on this machine: the fields of its provider class. The built-in runtime `subprocess` has none.
 
 ## Deprecated keys
 
 These keys still work. Each one shows a `PiloopDeprecationWarning` that names the file, the key, its replacement and the release that removes it. The changelog lists them too.
 
+- `kind` in an entry of `[roles.<name>] triggers` is `provider`: `{ provider = "cron" }`.
 - `[roles.worker]` is `[roles.implementer]`: the role that runs one idea in its own worktree. A key that `[roles.implementer]` sets too keeps its value there.
 - `[roles.research.scout]` is `[roles.scout]`, a role of its own. The keys of `[roles.research]` that the scout used (`runtime`, `harnesses`, `model`, `timeout`, `mcp` and `addendum`) are copied into it, unless `[roles.scout]` sets them.
 - The `scout` trigger of `[roles.research] triggers` is gone: the scout is a role with its own `cron`.

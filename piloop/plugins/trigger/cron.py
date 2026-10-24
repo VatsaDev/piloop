@@ -1,5 +1,4 @@
 from datetime import timedelta
-from typing import Literal
 
 from piloop.db.models import utcnow
 from piloop.plugins.trigger.contract import Fire, Tick, Trigger
@@ -10,8 +9,6 @@ class CronTrigger(Trigger):
 
     The first one counts from the registration of the campaign. An ``interval`` of 0 turns it off.
     """
-
-    kind: Literal['cron'] = 'cron'
 
     def fire(self, tick: Tick) -> Fire | None:
         if tick.interval <= 0:

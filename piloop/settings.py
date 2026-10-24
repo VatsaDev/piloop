@@ -137,9 +137,9 @@ class Settings(BaseSettings):
     storage: StorageSettings = StorageSettings()
     """``[storage]`` in ``config.toml``: how archiving uses the disk of this home."""
 
-    runtimes: dict[str, dict[str, object]] = {}
-    """``[runtimes.<name>]`` in ``config.toml``: the settings of a runtime that a package adds, which it reads with
-    ``runtime_settings``."""
+    runtimes: dict[str, dict[str, JsonValue]] = {}
+    """``[runtimes.<name>]`` in ``config.toml``: the settings of each runtime on this machine, by its name.
+    ``piloop.runtime.factory.runtimes`` validates them."""
 
     @classmethod
     def settings_customise_sources(
@@ -221,13 +221,6 @@ def config_file(home: Path) -> dict[str, object]:
     raw = tomllib.loads(path.read_text())
     deprecated.bridge(path, raw, deprecated.CONFIG_BRIDGES)
     return raw
-
-
-def runtime_settings(name: str) -> dict[str, object]:
-    """Return the ``[runtimes.<name>]`` table of the ``config.toml`` under the home that the environment names."""
-    table = config_file(home_of_env()).get('runtimes', {})
-    found = table.get(name, {}) if isinstance(table, dict) else {}
-    return found if isinstance(found, dict) else {}
 
 
 ENV_PLACEHOLDER = re.compile(r'\{env:(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?::(?P<default>[^}]*))?\}')

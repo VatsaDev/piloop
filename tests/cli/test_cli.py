@@ -1732,14 +1732,17 @@ def test_restart_and_upgrade_keep_the_daemon_running_when_the_code_would_not_sta
     monkeypatch.setattr(
         common, 'settings', Settings(home=common.settings.home, uv_tool_dir=common.settings.uv_tool_dir)
     )
-    cause = f'the daemon cannot start: {common.settings.home}/config.toml: \\[runtimes.gone\\]: no runtime has that'
+    cause = (
+        f'the daemon cannot start: {common.settings.home}/config.toml: 1 validation error for \\[runtimes\\]\\ngone\\n'
+        '  Value error, no runtime has that name'
+    )
     with pytest.raises(SystemExit, match=f'^{cause}'):
         run_cli(['serve', '--check'])
     with pytest.raises(SystemExit, match=f'^daemon pid {pid} not restarted, and it keeps running: {cause}'):
         run_cli(['restart'])
     with pytest.raises(
         SystemExit,
-        match=f'^daemon: pid {pid} not restarted, and it keeps running the old code: {cause}.*`piloop restart`$',
+        match=f'(?s)^daemon: pid {pid} not restarted, and it keeps running the old code: {cause}.*`piloop restart`$',
     ):
         run_cli(['upgrade'])
     assert alive(pid) and common.settings.pid_file.stat().st_mtime_ns == started, 'never signalled'

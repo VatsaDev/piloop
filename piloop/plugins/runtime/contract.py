@@ -1,24 +1,26 @@
 """Where agent processes run and how piloop talks to them.
 
 The daemon and the CLI depend only on the ``Runtime`` protocol, and never on the name of a runtime. To add a runtime
-(a container, a remote host), implement the protocol in a class and register the class with an entry point in
-the group of ``RUNTIMES``.
+(a container, a remote host), subclass ``RuntimeConfig``, whose ``open`` returns your ``Runtime``, and register the
+subclass with an entry point in the group of ``RUNTIMES``. Its fields are its settings, from ``[runtimes.<name>]`` of
+``config.toml``: they depend on the machine, not on the campaign.
 """
 
 import fcntl
 import json
+from abc import ABC, abstractmethod
 from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, ClassVar, Protocol, TypeIs
+from typing import Annotated, Protocol
 
-from pydantic import AfterValidator
+from pydantic import BeforeValidator
 
 from piloop import deprecated
 from piloop.harnesses import fill
-from piloop.plugins.host import Capability, Scope, Selection
+from piloop.plugins.host import Capability, Parameters
 
 
 @deprecated.until('0.3.0', 'AgentStatus, which a 0.2.0 runtime returned from status and wait: delete it with Outcome')
@@ -104,14 +106,7 @@ class NotSteerable(RuntimeError):
 
 
 class Runtime(Protocol):
-    """Start, watch, steer and stop agents.
-
-    The registry (``RUNTIMES``) holds the classes. ``kind`` says what the runtime is before it is constructed: config
-    validation reads it, and a constructor can fail when the runtime is not installed.
-    """
-
-    kind: ClassVar[str]
-    """The name of the runtime: ``runtime`` in ``piloop.toml``, and ``agent_sessions.runtime``."""
+    """Start, watch, steer and stop agents. ``RuntimeConfig.open`` makes one."""
 
     def start(self, spec: AgentSpec) -> Handle:
         """Start the agent from a ``AgentSpec`` (argv with its first prompt, working directory) and return once it runs.
@@ -211,37 +206,26 @@ OLD_TAG_ENV = 'PILOOP_WORKER_TOKEN'
 outlives an upgrade."""
 
 
-def _is_runtime(loaded: object, name: str) -> TypeIs[type[Runtime]]:
-    """Check the class attribute of a runtime. The methods are checked by the type checker of the package."""
-    return isinstance(loaded, type) and getattr(loaded, 'kind', None) == name
+class RuntimeConfig(Parameters, ABC):
+    """A runtime, with its settings: ``[runtimes.<name>]`` of ``config.toml``.
+
+    Its name is ``runtime`` in ``piloop.toml``, and ``agent_sessions.runtime``.
+    """
+
+    @abstractmethod
+    def open(self) -> Runtime:
+        """Make the runtime. Raise when it cannot run on this machine."""
 
 
-def _check(name: str, loaded: object) -> type[Runtime]:
-    if _is_runtime(loaded, name):
-        return loaded
-    raise TypeError(f'is not a piloop runtime class: it needs kind = {name!r}')
+RUNTIMES = Capability('runtime', RuntimeConfig)
+"""Every runtime by name."""
 
 
-deprecated.until(
-    '0.3.0',
-    'a runtime is a provider class of its contract, selected by the annotation of its field: delete Selection, lookup'
-    ' and check_selection in the host, the check argument of Capability, and _check and _is_runtime here',
-)
-RUNTIMES = Capability(
-    'runtime',
-    Runtime,
-    check=_check,
-    selection=Selection(Scope.CAMPAIGN, 'runtime', per_role=True, settings='runtimes'),
-)
-"""Every runtime by name. Each entry point of the group names a ``Runtime`` class whose ``kind`` is its name."""
-
-
-def _registered_runtime(name: str) -> str:
-    if (removed := deprecated.removed_runtime(name)) is not None:
+def _not_removed(name: object) -> object:
+    if isinstance(name, str) and (removed := deprecated.removed_runtime(name)) is not None:
         raise ValueError(removed)
-    RUNTIMES.get(name)
     return name
 
 
-RuntimeName = Annotated[str, AfterValidator(_registered_runtime)]
+RuntimeName = Annotated[str, RUNTIMES.named, BeforeValidator(_not_removed)]
 """The name of a registered runtime (``RUNTIMES``): ``subprocess``, or one that a package adds."""

@@ -3,10 +3,11 @@
 Terms:
 
 - A **capability** is a public interface with a registry of named providers: the executors, the verdict rules, the
-  runtimes. It declares its contract, a class, and where the configuration chooses a provider (``Choice``).
+  runtimes. It declares its contract, a class, and where the configuration chooses a provider: a ``[plugins.<name>]``
+  table (``Choice``), or a field that names one (``Entry``, ``Named``, ``Tables``).
 - A **provider** is a class that subclasses the contract, named by an entry point whose name is the provider's name.
-  The provider of a ``[plugins.<name>]`` table is a ``Parameters`` model: its fields are its parameters, and its
-  methods are the contract. The host validates the table into it once, when the file loads (``PluginTables``).
+  It is a ``Parameters`` model: its fields are its parameters, and its methods are the contract. The host validates
+  its table into it once, when the file loads.
 - A **plugin** is an installed Python package whose entry points name providers. piloop's own providers are entry
   points of the ``piloop`` package, in the same groups. A provider's ``PythonSource`` says which one, and its version.
 - A **tier** is what the contract of a capability lets cross to a provider (``Tier``): live objects of the host, or
@@ -155,25 +156,7 @@ class Choice:
 
 
 @dataclass(frozen=True)
-class Selection:
-    """Where a key outside ``[plugins]`` names the provider of a capability: the runtime."""
-
-    scope: Scope
-    key: str
-    """The dotted key whose value is the provider's name: ``runtime``."""
-    per_role: bool = False
-    """A role's own table can set the key too, for its agents: ``[roles.<role>] runtime``."""
-    settings: str | None = None
-    """The table of ``config.toml`` with a table of settings for each provider, by its name: ``runtimes``."""
-
-    @property
-    def table(self) -> str | None:
-        """The table that holds the key, whose other keys are the parameters of the provider."""
-        return self.key.rpartition('.')[0] or None
-
-
-@dataclass(frozen=True)
-class Provider[P]:
+class Provider[P: Parameters]:
     """One entry of a capability's registry."""
 
     name: str
@@ -200,7 +183,7 @@ CAPABILITIES = 'piloop.capabilities'
 """The entry point group that declares the capabilities: piloop's own, and a plugin's. Each names a ``Capability``."""
 
 
-class Capability[P]:
+class Capability[P: Parameters]:
     """A public interface, and the registry of its providers by name: the classes that subclass its contract."""
 
     def __init__(
@@ -210,41 +193,37 @@ class Capability[P]:
         *,
         tier: Tier = Tier.HOST,
         choice: Choice | None = None,
-        selection: Selection | None = None,
         group: str | None = None,
-        check: Callable[[str, object], type[P]] | None = None,
         noun: str | None = None,
     ) -> None:
         """Declare a capability.
 
         Args:
             name: Its entry point in ``piloop.capabilities``, and the key of its ``[plugins.<name>]`` table.
-            contract: The class that a provider subclasses. A pure contract takes and returns data only
-                (``data_errors``). A contract that a ``Choice`` chooses subclasses ``Parameters``.
+            contract: The class that a provider subclasses: its fields are the provider's parameters. A pure contract
+                takes and returns data only (``data_errors``).
             tier: What the contract lets cross to a provider.
-            choice: The ``[plugins.<name>]`` table that chooses the provider.
-            selection: Where a key outside ``[plugins]`` names the provider.
+            choice: The ``[plugins.<name>]`` table that chooses the provider. Without it, the fields of the configuration
+                that name a provider say where it is used (``entry``, ``named``, ``tables``).
             group: The entry point group of its providers, piloop's own included. ``piloop.<name>s`` by default.
-            check: Return the provider that an entry point called ``name`` loaded, or raise ``TypeError`` with what it
-                is not: in place of ``issubclass``, for a contract that is a protocol.
             noun: What one provider is, for messages, when ``name`` does not say it: ``CAS provider``.
 
         Raises:
-            TypeError: A pure contract is not data in, data out, or a chosen one is not ``Parameters``.
+            TypeError: A pure contract is not data in, data out.
         """
         if tier is Tier.PURE and (errors := data_errors(contract)):
             raise TypeError(f'{contract.__qualname__} is not a pure contract: {"; ".join(errors)}')
-        if choice is not None and not issubclass(contract, Parameters):
-            raise TypeError(f'{contract.__qualname__} is chosen by [plugins.{name}], so it subclasses Parameters')
         self.name = name
         self.noun = noun or name.replace('_', ' ')
         """What one provider is, for messages: ``verdict rule``."""
         self.contract = contract
         self.tier = tier
         self.choice = choice
-        self.selection = selection
         self.group = group or f'piloop.{name}s'
-        self._check = check
+        self.entry = Entry(self)
+        """``Annotated[P, CAP.entry]``: a table ``{ provider = "<name>", <its parameters> }``."""
+        self.named = Named(self)
+        """``Annotated[str, CAP.named]``: the name of a provider."""
         self._providers: dict[str, Provider[P]] | None = None
         self.activating = False
         """Whether its providers are being loaded now."""
@@ -311,8 +290,8 @@ class Capability[P]:
             raise MissingProvider(f'no [plugins.{self.name}] chooses a {self.noun}, and there is no default')
         return self.get(self.choice.default).model()
 
-    def validated(self, table: object) -> Parameters:
-        """Validate a ``[plugins.<name>]`` table as the provider that its ``provider`` key names, else the default.
+    def validated(self, table: object) -> P:
+        """Validate a table as the provider that its ``provider`` key names, else the default.
 
         Raises:
             ValidationError: The provider refuses its parameters.
@@ -324,12 +303,25 @@ class Capability[P]:
         name = table.get('provider', self.choice.default if self.choice is not None else None)
         if name is None:
             raise ValueError(f'provider: missing; registered {self.noun}s: {", ".join(self.providers())}')
+        return self.model_of(str(name), f'provider = {name!r}: ').model_validate(keys)
+
+    def dumped(self, provider: P, mode: str) -> dict[str, object]:
+        """``provider`` as a table that ``validated`` reads back: its name, then the parameters that were set."""
+        return {'provider': self.name_of(provider), **provider.model_dump(mode=mode, exclude_unset=True)}
+
+    def model_of(self, name: str, where: str = '') -> type[P]:
+        """The class of the provider called ``name``. Raises ``ValueError``, after ``where``, when there is none."""
         try:
-            model = self.get(str(name)).model
+            return self.get(name).model
         except MissingProvider as e:
-            raise ValueError(f'provider = {name!r}: {e}') from e
-        assert issubclass(model, Parameters)  # __init__ refuses a choice of another contract
-        return model.model_validate(keys)
+            raise ValueError(f'{where}{e}') from e
+
+    def tables(self) -> Tables[P]:
+        """``Annotated[dict[str, P], CAP.tables()]``: one table for each provider, by its name, over its defaults.
+
+        Every provider is in the result, in registry order. A table with a name that no provider has is refused.
+        """
+        return Tables(self)
 
     def activate(self, stack: ExitStack) -> None:
         """Load and check every provider, then register them all, with their unregistration on ``stack``.
@@ -355,11 +347,6 @@ class Capability[P]:
 
     def _provider(self, ep: EntryPoint, loaded: object) -> type[P]:
         """The provider that ``ep`` names: a concrete subclass of the contract."""
-        if self._check is not None:
-            try:
-                return self._check(ep.name, loaded)
-            except TypeError as e:
-                raise PluginError(f'{_where(ep)} {e}') from e
         contract = f'{self.contract.__module__}.{self.contract.__qualname__}'
         if not isinstance(loaded, type) or not issubclass(loaded, self.contract):
             raise PluginError(f'{_where(ep)} is not a subclass of {contract}')
@@ -377,7 +364,7 @@ type Plugins = dict[str, Parameters]
 
 
 @dataclass(frozen=True)
-class Chosen[P]:
+class Chosen[P: Parameters]:
     """``Annotated[P, Chosen(capability)]``: a provider of ``capability`` with its parameters, as its table.
 
     The table is a ``[plugins.<name>]`` table: its ``provider`` key and its parameters. Data that a file's choice reaches
@@ -428,7 +415,7 @@ class PluginTables:
     def __get_pydantic_json_schema__(self, schema: CoreSchema, handler: GetJsonSchemaHandler) -> JsonSchemaValue:
         return {'type': 'object', 'additionalProperties': {'type': 'object'}}
 
-    def _capabilities(self) -> dict[str, Capability[object]]:
+    def _capabilities(self) -> dict[str, Capability[Parameters]]:
         """The capabilities that a table of the file chooses, by name."""
         return {c.name: c for c in declared() if c.choice is not None and c.choice.scope is self.scope}
 
@@ -451,7 +438,7 @@ class PluginTables:
         return found
 
     @staticmethod
-    def _table(known: Mapping[str, Capability[object]], name: str, table: object) -> Parameters:
+    def _table(known: Mapping[str, Capability[Parameters]], name: str, table: object) -> Parameters:
         if (capability := known.get(name)) is None:
             raise ValueError(f'no capability has that name; there is {", ".join(sorted(known)) or "none"}')
         found = Chosen(capability).validate(table)
@@ -461,6 +448,94 @@ class PluginTables:
     def dump(self, plugins: Plugins, info: core_schema.SerializationInfo) -> dict[str, dict[str, object]]:
         known = self._capabilities()
         return {name: Chosen(known[name]).dump(provider, info) for name, provider in plugins.items()}
+
+
+@dataclass(frozen=True)
+class Entry[P: Parameters]:
+    """``Annotated[P, CAP.entry]``: a table ``{ provider = "<name>", <its parameters> }``, as the provider it names.
+
+    The table is validated as a ``[plugins.<name>]`` table is (``Capability.validated``: without ``provider``, the
+    default), and dumped back with its ``provider``. ``P`` may be narrower than the contract: a provider that is not a
+    ``P`` is refused. A trigger of a role, and the remote of the ``cached`` CAS, are entries.
+    """
+
+    capability: Capability[P]
+
+    def __get_pydantic_core_schema__(self, source: type[object], handler: GetCoreSchemaHandler) -> CoreSchema:
+        def validate(value: object) -> object:
+            found = value if isinstance(value, self.capability.contract) else self.capability.validated(value)
+            if not isinstance(found, source):
+                raise ValueError(
+                    f'{self.capability.name_of(found)} cannot be here: this key takes a {source.__qualname__}'
+                )
+            return found
+
+        return core_schema.no_info_plain_validator_function(
+            validate, serialization=core_schema.plain_serializer_function_ser_schema(self.dump, info_arg=True)
+        )
+
+    def __get_pydantic_json_schema__(self, schema: CoreSchema, handler: GetJsonSchemaHandler) -> JsonSchemaValue:
+        return {'type': 'object'}
+
+    def dump(self, provider: P, info: core_schema.SerializationInfo) -> dict[str, object]:
+        return self.capability.dumped(provider, info.mode)
+
+
+@dataclass(frozen=True)
+class Named[P: Parameters]:
+    """``Annotated[str, CAP.named]``: the name of a provider of ``capability``."""
+
+    capability: Capability[P]
+
+    def __get_pydantic_core_schema__(self, source: type[object], handler: GetCoreSchemaHandler) -> CoreSchema:
+        return core_schema.no_info_after_validator_function(self.validate, handler(source))
+
+    def validate(self, name: str) -> str:
+        """Raises ``MissingProvider``, a ``ValueError``, when no provider has that name."""
+        self.capability.get(name)
+        return name
+
+
+@dataclass(frozen=True)
+class Tables[P: Parameters]:
+    """``Annotated[dict[str, P], CAP.tables()]``: a table for each provider, by its name, over the provider's defaults.
+
+    Every provider is in the result, in registry order. A name that no provider has is refused at its key. The
+    runtimes of ``config.toml`` are tables (``[runtimes.<name>]``).
+    """
+
+    capability: Capability[P]
+
+    def __get_pydantic_core_schema__(self, source: object, handler: GetCoreSchemaHandler) -> CoreSchema:
+        return core_schema.no_info_plain_validator_function(
+            self.validate,
+            serialization=core_schema.plain_serializer_function_ser_schema(self.dump, info_arg=True),
+        )
+
+    def validate(self, value: object) -> dict[str, P]:
+        """Validate each table. A refused one is an error at its key: ``<name>.<field>``."""
+        if not isinstance(value, Mapping):
+            raise ValueError('a table of tables')
+        providers, noun = self.capability.providers(), self.capability.noun
+        unknown = ValueError(f'no {noun} has that name; registered {noun}s: {", ".join(providers)}')
+        errors = [
+            InitErrorDetails(type='value_error', loc=(str(name),), input=table, ctx={'error': unknown})
+            for name, table in value.items()
+            if name not in providers
+        ]
+        found: dict[str, P] = {}
+        for name in providers:
+            model, table = self.capability.model_of(name), value.get(name, {})
+            try:
+                found[name] = table if isinstance(table, model) else model.model_validate(table)
+            except ValidationError as e:
+                errors += [_at((name, *err['loc']), err) for err in e.errors()]
+        if errors:
+            raise ValidationError.from_exception_data(self.capability.name, errors)
+        return found
+
+    def dump(self, tables: Mapping[str, P], info: core_schema.SerializationInfo) -> dict[str, object]:
+        return {name: p.model_dump(mode=info.mode, exclude_unset=True) for name, p in tables.items()}
 
 
 CORE_ERRORS = frozenset(get_args(ErrorType))
@@ -583,7 +658,7 @@ def _loaded(ep: EntryPoint) -> object:
 
 
 @cache
-def declared() -> tuple[Capability[object], ...]:
+def declared() -> tuple[Capability[Parameters], ...]:
     """Every capability that an installed package declares in ``CAPABILITIES``, piloop included, by provider group.
 
     A plugin declares a capability for a seam of its own the same way that piloop declares its own: an entry point
@@ -597,7 +672,7 @@ def declared() -> tuple[Capability[object], ...]:
         PluginError: An entry point does not load, does not name a capability, names one of another name, or names a
             capability whose provider group another one has.
     """
-    found: dict[str, Capability[object]] = {}
+    found: dict[str, Capability[Parameters]] = {}
     for ep in entry_points(group=CAPABILITIES):
         loaded = _loaded(ep)
         if not isinstance(loaded, Capability):
@@ -610,31 +685,7 @@ def declared() -> tuple[Capability[object], ...]:
     return tuple(sorted(found.values(), key=lambda c: c.group))
 
 
-def lookup(data: object, key: str) -> object | None:
-    """The value at the dotted ``key`` of a parsed configuration, or None."""
-    for part in key.split('.'):
-        data = data.get(part) if isinstance(data, dict) else None
-    return data
-
-
-def check_selection(capability: Capability[object], data: dict[str, object], scope: Scope) -> None:
-    """Check the ``settings`` tables of ``config.toml`` for ``capability``'s ``Selection``: they name only providers.
-
-    Raises:
-        ValueError: The configuration names a provider that there is not. The message names the key.
-    """
-    selection = capability.selection
-    if selection is None:
-        return
-    tables = lookup(data, selection.settings) if selection.settings and scope is Scope.HOME else None
-    if isinstance(tables, dict) and (unknown := sorted(set(tables) - set(capability.sources()))):
-        raise ValueError(
-            f'[{selection.settings}.{unknown[0]}]: no {capability.noun} has that name; registered'
-            f' {capability.noun}s: {", ".join(capability.sources())}'
-        )
-
-
-def compose[P](*capabilities: Capability[P]) -> None:
+def compose[P: Parameters](*capabilities: Capability[P]) -> None:
     """Activate the capabilities that are not active yet, in order.
 
     Raises:
@@ -647,7 +698,7 @@ def compose[P](*capabilities: Capability[P]) -> None:
         _process.enter_context(stack.pop_all())
 
 
-def _activate[P](capability: Capability[P], stack: ExitStack) -> None:
+def _activate[P: Parameters](capability: Capability[P], stack: ExitStack) -> None:
     if capability.active:
         return
     if capability.activating:

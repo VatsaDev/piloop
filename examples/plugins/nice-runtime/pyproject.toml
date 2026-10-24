@@ -6,7 +6,7 @@ requires-python = ">=3.14"
 dependencies = ["piloop"]
 
 [project.entry-points."piloop.runtimes"]
-nice = "piloop_nice:NiceRuntime"
+nice = "piloop_nice:Nice"
 
 [build-system]
 requires = ["hatchling"]

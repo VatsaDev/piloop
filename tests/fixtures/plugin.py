@@ -3,14 +3,12 @@ its own with a provider and a verdict rule that calls it, and objects of the wro
 
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import ClassVar, Literal
-
-from pydantic import field_validator
+from typing import Annotated
 
 from piloop.plugins.host import Capability, Parameters, Tier
 from piloop.plugins.role.contract import ImplementerRole, SweepRole
-from piloop.plugins.runtime.contract import Handle, RuntimeName
-from piloop.plugins.runtime.subprocess import SubprocessRuntime
+from piloop.plugins.runtime.contract import RUNTIMES, Handle, RuntimeName
+from piloop.plugins.runtime.subprocess import Subprocess, SubprocessRuntime
 from piloop.plugins.stop_rule.contract import GO, Fact, Go, Hold, Limits, Stop, StopCase, StopRule
 from piloop.plugins.trigger.contract import Fire, Tick, Trigger, TriggerEntry
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap
@@ -20,7 +18,6 @@ from piloop.plugins.verdict_rule.contract import Case, Judgement, Outcome, Verdi
 class EveryTick(Trigger):
     """``every_tick``: fires on every tick, with ``label`` as the reason."""
 
-    kind: Literal['every_tick'] = 'every_tick'
     label: str = 'every tick'
 
     def fire(self, tick: Tick) -> Fire | None:
@@ -30,23 +27,22 @@ class EveryTick(Trigger):
 class Broken(Trigger):
     """``broken``: a trigger whose check always fails."""
 
-    kind: Literal['broken'] = 'broken'
-
     def fire(self, tick: Tick) -> Fire | None:
         raise RuntimeError('the probe is down')
 
 
-class Typed(SubprocessRuntime):
+class Typed(Subprocess):
     """``typed``: a background process, like ``subprocess``, under a name of its own."""
 
-    kind: ClassVar[str] = 'typed'
 
-
-class Shown(SubprocessRuntime):
+class Shown(Subprocess):
     """``shown``: a background process, like ``subprocess``, whose output is one line that names its pid."""
 
-    kind: ClassVar[str] = 'shown'
+    def open(self) -> ShownRuntime:
+        return ShownRuntime(RUNTIMES.name_of(self))
 
+
+class ShownRuntime(SubprocessRuntime):
     def read(self, handle: Handle, lines: int = 80) -> str:
         return f'pane {handle.data["pid"]}'
 
@@ -108,18 +104,11 @@ class NoUnitRegression(VerdictCheck):
 class Checked(Bootstrap):
     """``checked``: what ``bootstrap`` decides, but a keep that one of ``checks`` refuses is ``interesting``."""
 
-    checks: list[str]
-
-    @field_validator('checks')
-    @classmethod
-    def _known(cls, checks: list[str]) -> list[str]:
-        for name in checks:
-            VERDICT_CHECKS.get(name)
-        return checks
+    checks: list[Annotated[VerdictCheck, VERDICT_CHECKS.entry]]
 
     def decide(self, case: Case) -> Judgement:
         judged = super().decide(case)
-        held = [f'{n}: {why}' for n in self.checks if (why := VERDICT_CHECKS.get(n).model().check(case)) is not None]
+        held = [f'{VERDICT_CHECKS.name_of(c)}: {why}' for c in self.checks if (why := c.check(case)) is not None]
         if judged.verdict is not Outcome.KEEP or not held:
             return judged
         return Judgement(Outcome.INTERESTING, f'{judged.reason}; held by {"; ".join(held)}')

@@ -3,11 +3,11 @@
 from enum import StrEnum
 from typing import Annotated, ClassVar, Literal, Self
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
+from pydantic import BeforeValidator, Field, field_validator, model_validator
 
 from piloop import deprecated
 from piloop.db.sql import sql_error
-from piloop.plugins.host import Capability
+from piloop.plugins.host import Capability, Parameters
 from piloop.plugins.runtime.contract import RuntimeName
 from piloop.plugins.trigger.contract import TriggerEntry
 
@@ -23,10 +23,8 @@ class Files(StrEnum):
     """Defined ideas (``piloop idea add``, ``piloop idea develop``) and seeds."""
 
 
-class RoleConfig(BaseModel):
+class RoleConfig(Parameters):
     """The keys that every ``[roles.<name>]`` table accepts. Each role's table below adds keys and sets defaults."""
-
-    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
 
     @model_validator(mode='before')
     @classmethod
@@ -140,7 +138,7 @@ class SweepRole(RoleConfig):
     runs: Literal[False] = False
     """The agents of this role do no runs. Set ``runs = true`` in a new table to define a role that does runs."""
     triggers: list[TriggerEntry]
-    """When the daemon requests an agent of this role: a list of ``{ kind = "<trigger>", ... }`` entries, checked in
+    """When the daemon requests an agent of this role: a list of ``{ provider = "<trigger>", ... }`` entries, checked in
     order on each tick. A package can add triggers. An empty list means that agents start only on request
     (``piloop launch``)."""
     interval: float = Field(default=0, ge=0)

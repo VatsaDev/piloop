@@ -305,12 +305,12 @@ def _watch(
         if not reported:
             try:
                 if (session_id := _session(runtime, handle, control, span)) is None:
-                    span.event('agent_session.session_unknown', agent_session=job.agent_session, runtime=runtime.kind)
+                    span.event('agent_session.session_unknown', agent_session=job.agent_session, runtime=handle.runtime)
             except Exception as e:  # the pane or the server can be gone; releasing the agent comes first
                 span.event(
                     'agent_session.session_unknown',
                     agent_session=job.agent_session,
-                    runtime=runtime.kind,
+                    runtime=handle.runtime,
                     error=str(e),
                 )
         if not control.handing_over():

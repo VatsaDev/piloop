@@ -56,7 +56,7 @@ every hour, and once when the campaign stops:
 
 ```toml
 [roles.watchdog]
-triggers = [{ kind = "cron" }, { kind = "stopped" }]
+triggers = [{ provider = "cron" }, { provider = "stopped" }]
 interval = 3600
 ```
 
@@ -74,7 +74,7 @@ reviewer reads each new keep and files a seed when it finds a problem:
 [roles.reviewer]
 prompt = "briefs/reviewer.md"
 triggers = [
-  { kind = "sql", when = "SELECT id FROM candidates WHERE campaign_id = :campaign AND verdict = 'keep' AND created_at > :since" },
+  { provider = "sql", when = "SELECT id FROM candidates WHERE campaign_id = :campaign AND verdict = 'keep' AND created_at > :since" },
 ]
 max_concurrent = 1
 timeout = 900

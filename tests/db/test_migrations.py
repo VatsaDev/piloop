@@ -45,6 +45,9 @@ from piloop.db.session import (
 )
 from piloop.db.triggers import PERSISTENT, campaigns, legacy
 from piloop.db.triggers.roles import known_role
+from piloop.plugins.trigger.contract import TRIGGERS
+from piloop.plugins.trigger.low_water import LowWaterTrigger
+from piloop.plugins.trigger.seed import SeedTrigger
 from piloop.version import Version, installed
 from tests.test_deprecated import piloop_version
 
@@ -858,15 +861,16 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
         assert (p.roles.scout.mcp, p.roles.scout.timeout, p.roles.scout.addendum) == (['xai'], 1200, 'research.md'), (
             'the keys of research that the scout used'
         )
-        assert [t.model_dump() for t in p.roles.research.triggers] == [
-            {'kind': 'low_water', 'buffer': 5},
-            {'kind': 'seed'},
-        ], 'the scout trigger leaves, and the buffer moves into low_water'
+        assert p.roles.research.triggers == [LowWaterTrigger(buffer=5), SeedTrigger()], (
+            'the scout trigger leaves, and the buffer moves into low_water'
+        )
         assert p.roles.research.max_ideas == 2
         assert p.context == ['docs/analysis-*.md'], 'research context is the project context'
         usage = p.harness['mine'].usage
         assert usage is not None and usage.file == '{env:CLAUDE_CONFIG_DIR:~/.claude}/projects/{cwd}/{session_id}.jsonl'
-        assert [t.kind for t in p.roles.watchdog.triggers] == ['anomaly', 'cron', 'stopped'], 'the closing review stays'
+        assert [TRIGGERS.name_of(t) for t in p.roles.watchdog.triggers] == ['anomaly', 'cron', 'stopped'], (
+            'the closing review stays'
+        )
         con.execute("INSERT INTO workers (kind, project_id) VALUES ('scout', 2)")
         sql = con.execute("SELECT sql FROM sqlite_master WHERE name = 'workers_kind'").fetchone()[0]
         assert sql + ';' == legacy.rendered(known_role(), legacy.STAGES)[3], (
@@ -884,14 +888,13 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
 
 
 def upgraded(config: dict[str, object]) -> object:
-    """``config`` as revisions 0034 (no herdr), 0035 (no ``workdir``) and 0036 (no Entire) store it, so that today's
-    piloop reads it."""
+    """``config`` as revisions 0034 (no herdr), 0035 (no ``workdir``), 0036 (no Entire) and 0038 (a trigger's
+    ``provider``) store it, so that today's piloop reads it."""
     revisions = ScriptDirectory(str(MIGRATIONS))
-    return revisions.get_revision('0036').module.upgraded(
-        revisions.get_revision('0035').module.upgraded(
-            revisions.get_revision('0034').module.upgraded(config, stopped=False)
-        )
-    )
+    config = revisions.get_revision('0034').module.upgraded(config, stopped=False)
+    config = revisions.get_revision('0035').module.upgraded(config)
+    config = revisions.get_revision('0036').module.upgraded(config)
+    return revisions.get_revision('0038').module.renamed(config, 'kind', 'provider')
 
 
 def test_0012_leaves_the_cached_input_out_of_the_input_of_codex_rows_and_downgrades(tmp_path: Path) -> None:
@@ -1628,3 +1631,31 @@ def test_0037_names_the_vcs_and_the_revision_of_each_jobs_artifact_drops_documen
             {**evaluation, 'artifact': source},
         ]
         assert con.execute('SELECT commit_sha FROM documents').fetchall() == [(None,)]
+
+
+def test_0038_names_each_stored_trigger_with_provider_and_downgrades(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    before = str(ScriptDirectory(str(MIGRATIONS)).get_revision('0038').down_revision)
+    command.upgrade(cfg, before)
+    roles = {'watchdog': {'triggers': [{'kind': 'cron'}, {'kind': 'sql', 'when': 'SELECT 1'}]}, 'scout': {}}
+    old = {'roles': roles, 'runtime': 'subprocess'}
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', ?)", (dumps(old),))
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('q', '/q', '{\"roles\": 3}')")
+    command.upgrade(cfg, '0038')
+    configs = 'SELECT config FROM campaigns ORDER BY id'
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert [loads(c) for (c,) in con.execute(configs)] == [
+            {
+                'roles': {
+                    'watchdog': {'triggers': [{'provider': 'cron'}, {'provider': 'sql', 'when': 'SELECT 1'}]},
+                    'scout': {},
+                },
+                'runtime': 'subprocess',
+            },
+            {'roles': 3},
+        ]
+    command.downgrade(cfg, before)
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert [loads(c) for (c,) in con.execute(configs)] == [old, {'roles': 3}]

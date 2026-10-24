@@ -3,6 +3,7 @@
 import os
 import signal
 import sys
+from functools import partial
 from types import FrameType
 from typing import TYPE_CHECKING
 
@@ -28,6 +29,7 @@ from piloop.plugins.cas import contract as cas
 from piloop.plugins.executor.contract import EXECUTORS
 from piloop.plugins.network import contract as network
 from piloop.proc import Inherited
+from piloop.runtime.factory import make_runtime, runtimes
 from piloop.settings import CONFIG_FILE, Settings, settings
 
 if TYPE_CHECKING:
@@ -37,15 +39,15 @@ ACTOR = System.DAEMON
 """The actor that the daemon's connections record in ``updated_by``. The change-log triggers use this name."""
 
 
-def bound(cfg: Settings) -> list[plugins.Capability[object]]:
+def bound(cfg: Settings) -> list[plugins.Capability[plugins.Parameters]]:
     """The capabilities that the daemon uses: every one, but one of the home only when ``config.toml`` selects it.
 
     A broken package of a capability that nothing selects does not stop the daemon (``unbound_failures``).
     """
 
-    def used(c: plugins.Capability[object]) -> bool:
-        match c.choice, c.selection:
-            case plugins.Choice(scope=plugins.Scope.HOME, default=default), _:
+    def used(c: plugins.Capability[plugins.Parameters]) -> bool:
+        match c.choice:
+            case plugins.Choice(scope=plugins.Scope.HOME, default=default):
                 return default is not None or c.name in cfg.plugins
             case _:
                 return True
@@ -53,9 +55,9 @@ def bound(cfg: Settings) -> list[plugins.Capability[object]]:
     return [c for c in plugins.declared() if used(c)]
 
 
-def unbound_failures(cfg: Settings) -> dict[plugins.Capability[object], str]:
+def unbound_failures(cfg: Settings) -> dict[plugins.Capability[plugins.Parameters], str]:
     """The capabilities that the daemon does not use and that do not load, with why. ``piloop doctor`` warns."""
-    failed: dict[plugins.Capability[object], str] = {}
+    failed: dict[plugins.Capability[plugins.Parameters], str] = {}
     for capability in plugins.declared():
         if capability not in bound(cfg):
             try:
@@ -75,13 +77,11 @@ def preflight(cfg: Settings, listen: network.Address | None = None) -> network.N
 
     Raises:
         PluginError: A provider does not compose, or ``config.toml`` selects a provider that there is not, or one
-            that refuses its parameters, or the network refuses ``listen``.
+            that refuses its parameters (``[plugins]``, ``[runtimes]``), or the network refuses ``listen``.
     """
     plugins.compose(*bound(cfg))
-    home = cfg.model_dump(mode='json')
     try:
-        for capability in bound(cfg):
-            plugins.check_selection(capability, home, plugins.Scope.HOME)
+        runtimes(cfg)
         return network.NETWORKS.selected(cfg.providers).listening(listen)
     except ValueError as e:
         raise plugins.PluginError(f'{cfg.home / CONFIG_FILE}: {e}') from e
@@ -122,6 +122,7 @@ class Daemon:
             raise
         self._cas = cas.CAS.selected(cfg.providers).open(cfg.home)
         self.tracer = tracer()
+        opened = partial(make_runtime, cfg=cfg)
         self.controller = RunController(
             self.db,
             self.tracer,
@@ -129,6 +130,7 @@ class Daemon:
             executor=EXECUTORS.selected(cfg.providers),
             cas=self._cas,
             reserve=cfg.storage.reserve,
+            runtime_factory=opened,
         )
         self.scheduler = Scheduler(
             self.db,
@@ -136,6 +138,7 @@ class Daemon:
             self.tracer,
             cfg.home,
             archiving=Archiving(self._cas, ArchivePolicy.of(cfg.storage)),
+            runtime_factory=opened,
         )
         self._restart = False
 

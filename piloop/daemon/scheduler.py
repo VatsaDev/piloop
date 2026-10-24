@@ -106,7 +106,7 @@ from piloop.plugins.role.contract import Files, ImplementerRole, SweepRole, idea
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.scout import ScoutRole
 from piloop.plugins.stop_rule.contract import GO, Go, Hold, Stop
-from piloop.plugins.trigger.contract import Backlog, Fire, Incident, TrackBacklog
+from piloop.plugins.trigger.contract import TRIGGERS, Backlog, Fire, Incident, TrackBacklog
 from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.vcs.contract import NotARepository, Revision
 from piloop.reports.overview import anomalies, assigned, overview, reported
@@ -799,7 +799,7 @@ class Scheduler:
                 fire = trigger.fire(tick)
             except Exception as e:  # A trigger of a package, or a query that the schema no longer runs.
                 self._tracer.event(
-                    'trigger.failed', campaign=campaign.name, role=name, trigger=trigger.kind, error=str(e)
+                    'trigger.failed', campaign=campaign.name, role=name, trigger=TRIGGERS.name_of(trigger), error=str(e)
                 )
                 continue
             if fire is not None:

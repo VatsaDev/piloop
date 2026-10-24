@@ -6,7 +6,7 @@
 | executor: `EXECUTORS` (`piloop.executors`) | host | `[plugins.executor] provider` in `config.toml` | `workers`: `Workers` |
 | network: `NETWORKS` (`piloop.networks`) | host | `[plugins.network] provider` in `config.toml` | `https`: `Https` |
 | role: `ROLES` (`piloop.roles`) | host | its name, where the configuration uses it | `implementer`: `ImplementerRole`<br/>`research`: `ResearchRole`<br/>`scout`: `ScoutRole`<br/>`watchdog`: `WatchdogRole` |
-| runtime: `RUNTIMES` (`piloop.runtimes`) | host | `runtime` | `subprocess`: `SubprocessRuntime` |
+| runtime: `RUNTIMES` (`piloop.runtimes`) | host | its name, where the configuration uses it | `subprocess`: `Subprocess` |
 | stop rule: `STOP_RULES` (`piloop.stop_rules`) | pure | `[plugins.stop_rule] provider` | `limits`: `FirstLimit` |
 | trigger: `TRIGGERS` (`piloop.triggers`) | host | its name, where the configuration uses it | `anomaly`: `AnomalyTrigger`<br/>`cron`: `CronTrigger`<br/>`low_water`: `LowWaterTrigger`<br/>`seed`: `SeedTrigger`<br/>`sql`: `SqlTrigger`<br/>`stalled`: `StalledTrigger`<br/>`stopped`: `StoppedTrigger` |
 | vcs: `VCS` (`piloop.vcs`) | host | `[plugins.vcs] provider` | `git`: `Git` |

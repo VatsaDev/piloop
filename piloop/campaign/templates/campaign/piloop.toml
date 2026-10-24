@@ -60,7 +60,7 @@ recovery_requeues = 2                     # times an idea is requeued from the l
 # writes = ["comments(finding)"]          # what the brief says the role may write; default: what piloop expects of it
 # files = "seeds"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role: its triggers start it and nothing it commits is scored
-triggers = [{ kind = "anomaly" }, { kind = "cron" }, { kind = "stopped" }]  # an anomaly, the timer below, the stop
+triggers = [{ provider = "anomaly" }, { provider = "cron" }, { provider = "stopped" }]  # an anomaly, the timer below, the stop
 wake_budget = 0                           # the lessons overview is off: the closing review reads the lessons itself
 interval = 1800                           # seconds between two progress reviews of the cron trigger; 0 turns it off
 # incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies; default: watchdog_incident.md
@@ -80,7 +80,7 @@ max_concurrent = 1
 # writes = ["ideas via idea add"]         # what the brief says the role may write; default: what piloop expects of it
 # files = "ideas"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role
-triggers = [{ kind = "low_water", buffer = 2 }, { kind = "seed" }, { kind = "stalled" }]  # a short backlog (buffer: ideas beyond one per run slot), a new seed, a stall
+triggers = [{ provider = "low_water", buffer = 2 }, { provider = "seed" }, { provider = "stalled" }]  # a short backlog (buffer: ideas beyond one per run slot), a new seed, a stall
 # interval = 0                            # seconds between two sweeps of a cron trigger, if you add one
 # wake_budget = 400                       # tokens of the lessons overview that opens the brief; if not set: [memory]'s
 # incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies, if you add that trigger
@@ -100,7 +100,7 @@ max_concurrent = 1                        # sweeps at the same time; more than o
 # writes = ["seeds via idea seed"]        # what the brief says the role may write; default: what piloop expects of it
 # files = "seeds"                         # what its agents may file with `piloop idea`: nothing, seeds or ideas
 runs = false                              # a sweeping role
-triggers = [{ kind = "cron" }]            # the timer below
+triggers = [{ provider = "cron" }]            # the timer below
 interval = 0                              # seconds between two scout sweeps; 0 (the default) turns the scout off
 # incident_prompt = "briefs/incident.md"  # follows the prompt in a sweep that got anomalies, if you add that trigger
 # routine_prompt = "briefs/routine.md"    # follows the prompt in every other sweep; none by default
@@ -112,7 +112,7 @@ max_concurrent = 1
 
 # [roles.reviewer]                        # a role of your own: any new name; it needs a prompt and triggers
 # prompt = "briefs/reviewer.md"           # the file that starts its brief
-# triggers = [{ kind = "sql", when = "SELECT 1 FROM candidates WHERE campaign_id = :campaign AND verdict = 'keep' AND created_at > :since" }]
+# triggers = [{ provider = "sql", when = "SELECT 1 FROM candidates WHERE campaign_id = :campaign AND verdict = 'keep' AND created_at > :since" }]
 # max_concurrent = 1                      # it takes every key of [roles.watchdog] except its defaults
 
 # [roles.quick]                           # a role of your own that does runs: any new name with runs = true

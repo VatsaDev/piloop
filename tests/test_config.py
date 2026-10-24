@@ -14,6 +14,9 @@ from piloop.plugins.role.contract import Files, ImplementerRole
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.watchdog import WatchdogRole
 from piloop.plugins.trigger.contract import TRIGGERS
+from piloop.plugins.trigger.low_water import LowWaterTrigger
+from piloop.plugins.trigger.seed import SeedTrigger
+from piloop.plugins.trigger.stalled import StalledTrigger
 
 
 def test_load_precedence(campaign_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -84,11 +87,7 @@ def test_roles_are_typed_per_kind(campaign_path: Path) -> None:
     assert (defaults.watchdog.harnesses, defaults.watchdog.model) == (None, None), 'the campaign rotation and models'
     assert (defaults.watchdog.timeout, defaults.watchdog.interval) == (600, 1800)
     assert (defaults.research.timeout, defaults.research.max_ideas) == (900, 1)
-    assert [t.model_dump() for t in defaults.research.triggers] == [
-        {'kind': 'low_water', 'buffer': 2},
-        {'kind': 'seed'},
-        {'kind': 'stalled'},
-    ]
+    assert defaults.research.triggers == [LowWaterTrigger(buffer=2), SeedTrigger(), StalledTrigger()]
     assert defaults.research.max_concurrent == 1, 'concurrent sweeps duplicate each other and race on seeds'
 
 
@@ -391,7 +390,7 @@ def test_default_claude_takes_the_queued_messages_after_each_tool_call(tmp_path:
 def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_triggers(campaign_path: Path) -> None:
     (campaign_path / 'reviewer.md').write_text('# Review\n')
     when = 'SELECT 1 FROM ideas WHERE campaign_id = :campaign AND created_at > :since'
-    good = {'prompt': 'reviewer.md', 'triggers': [{'kind': 'sql', 'when': when}], 'runtime': 'subprocess'}
+    good = {'prompt': 'reviewer.md', 'triggers': [{'provider': 'sql', 'when': when}], 'runtime': 'subprocess'}
     cfg = load_campaign_config(campaign_path, roles={'reviewer': good})
     assert list(cfg.roles.all()) == ['implementer', 'watchdog', 'research', 'scout', 'reviewer']
     assert list(cfg.roles.sweeping()) == ['watchdog', 'research', 'scout', 'reviewer'], (
@@ -417,19 +416,17 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
     )
     assert "roles.reviewer.prompt = 'missing.md': no such file" in fails(reviewer(prompt='missing.md'))
     assert (
-        f"roles.reviewer.triggers[0]: unknown trigger 'nope'; registered triggers: {', '.join(TRIGGERS.providers())}"
-        in fails(reviewer(triggers=[{'kind': 'nope'}]))
+        "roles.reviewer.triggers[0]: provider = 'nope': unknown trigger 'nope'; registered triggers:"
+        f' {", ".join(TRIGGERS.providers())}' in fails(reviewer(triggers=[{'provider': 'nope'}]))
     )
     assert 'roles.reviewer.triggers[0].every = 3: Extra inputs are not permitted' in fails(
-        reviewer(triggers=[{'kind': 'cron', 'every': 3}])
+        reviewer(triggers=[{'provider': 'cron', 'every': 3}])
     )
     filler = load_campaign_config(
-        campaign_path, roles=reviewer(triggers=[{'kind': 'low_water', 'buffer': 1}], files='ideas')
+        campaign_path, roles=reviewer(triggers=[{'provider': 'low_water', 'buffer': 1}], files='ideas')
     )
     assert cfg.roles.sweeping()[RoleName('reviewer')].max_ideas == 1, 'any sweeping role can fill the backlog'
-    assert [t.model_dump() for t in filler.roles.sweeping()[RoleName('reviewer')].triggers] == [
-        {'kind': 'low_water', 'buffer': 1}
-    ]
+    assert filler.roles.sweeping()[RoleName('reviewer')].triggers == [LowWaterTrigger(buffer=1)]
     for workdir in ('repo', 'head'):
         assert fails(reviewer(workdir=workdir)) == snapshot(
             '  roles.reviewer: workdir is removed in piloop 0.3.0: every agent works in a worktree of its own, never in the campaign checkout. Delete the key (https://piloop.autoresearch.inc/guides/upgrading#workdir). Fix: https://piloop.autoresearch.inc/reference/configuration describes the key'
@@ -444,7 +441,7 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
         'SELECT 1; SELECT 2': 'You can only execute one statement at a time',
     }.items():
         assert f'the query does not run on the piloop database: {error}' in fails(
-            reviewer(triggers=[{'kind': 'sql', 'when': query}])
+            reviewer(triggers=[{'provider': 'sql', 'when': query}])
         ), query
     for name in ('run', 'Review Bot'):
         assert f'{name!r} is not a role name: use lowercase letters, digits, _ and -' in fails({name: good})

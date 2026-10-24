@@ -1,4 +1,4 @@
-from typing import ClassVar, Literal
+from typing import ClassVar
 
 from piloop.plugins.trigger.contract import Fire, Tick, Trigger
 
@@ -11,7 +11,6 @@ class AnomalyTrigger(Trigger):
     """
 
     INVESTIGATES: ClassVar[bool] = True
-    kind: Literal['anomaly'] = 'anomaly'
 
     def fire(self, tick: Tick) -> Fire | None:
         incidents = tick.incidents()

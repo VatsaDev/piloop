@@ -332,7 +332,7 @@ class ScriptRuntime(SubprocessRuntime):
     """The real subprocess runtime, recording kills so tests can assert on them."""
 
     def __init__(self) -> None:
-        super().__init__()
+        super().__init__('subprocess')
         self.killed: list[Handle] = []
 
     def kill(self, handle: Handle) -> None:

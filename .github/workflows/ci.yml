@@ -87,8 +87,8 @@ jobs:
           mkdir -p /tmp/enwik8-nice/data && cp /tmp/enwik8.zip /tmp/enwik8-nice/data/
           piloop init --example enwik8 /tmp/enwik8-nice
           piloop plugins | tee /tmp/plugins.txt
-          grep -q "nice        piloop-nice 0.1.0, entry point nice = piloop_nice:NiceRuntime" /tmp/plugins.txt
-          grep -q "enwik8 implementer: runtime nice, from piloop-nice 0.1.0" /tmp/plugins.txt
+          grep -q "nice        piloop-nice 0.1.0, entry point nice = piloop_nice:Nice$" /tmp/plugins.txt
+          grep -q "enwik8: runtime nice, from piloop-nice 0.1.0" /tmp/plugins.txt
           grep -q "CAS provider sqlite, from piloop-sqlite-cas 0.1.0" /tmp/plugins.txt
           grep -q "enwik8: verdict rule min_gain, from piloop-min-gain 0.1.0" /tmp/plugins.txt
           grep -q "enwik8: stop rule after_keeps, from piloop-stop-after-keeps 0.1.0" /tmp/plugins.txt

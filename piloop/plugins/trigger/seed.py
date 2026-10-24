@@ -1,5 +1,3 @@
-from typing import Literal
-
 from sqlalchemy import select
 
 from piloop.db.models import Idea, IdeaStatus, count
@@ -15,8 +13,6 @@ class SeedTrigger(Trigger):
     whatever trigger fires it. Gotcha: a sweep's brief is read a moment before its row's ``started_at`` is set, so a
     seed filed in that moment waits for the next sweep.
     """
-
-    kind: Literal['seed'] = 'seed'
 
     def fire(self, tick: Tick) -> Fire | None:
         if tick.live() >= tick.max_concurrent:

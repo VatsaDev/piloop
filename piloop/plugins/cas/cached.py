@@ -25,25 +25,26 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import BinaryIO
+from typing import Annotated, BinaryIO
 
 from covalence import Cid
 from pydantic import Field
 
 from piloop.plugins.cas.contract import (
+    CAS,
     Cas,
     CasProvider,
     Flushed,
     Held,
     Integrity,
     LocalCas,
+    LocalProvider,
     TierUsage,
     Upkeep,
     Writer,
     integrity,
 )
 from piloop.plugins.cas.disk import BOUND, BoundElsewhere, Disk
-from piloop.plugins.cas.kit.nested import Nested, NestedLocal
 from piloop.plugins.cas.kit.objects import StreamCas, name, named, stream, write_all
 from piloop.settings import GB
 
@@ -56,9 +57,9 @@ LOCKS = 64
 class Cached(CasProvider):
     """``[plugins.cas] provider = "cached"``: a local tier over ``remote``, evicted by age and by size."""
 
-    remote: Nested
+    remote: Annotated[CasProvider, CAS.entry]
     """The CAS that holds every blob: a table with its ``provider`` and parameters, ``{ provider = "s3", url = … }``."""
-    local: NestedLocal = Disk()
+    local: Annotated[LocalProvider, CAS.entry] = Disk()
     """The local tier: a table of a provider that can be one, ``{ provider = "disk", path = … }``. Unset: ``disk``."""
     evict_after_days: float | None = Field(default=None, ge=0)
     """Drop the local copy of a blob once it is this old (since it was stored or fetched); 0 keeps no local copy, so

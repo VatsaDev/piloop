@@ -114,7 +114,7 @@ def test_a_role_that_piloop_toml_defines_runs_on_its_sql_trigger_with_its_prompt
     harness = f'#!/bin/sh\npwd > {tmp_path}/cwd.txt\n' + BLOCKING.format(release=release).removeprefix('#!/bin/sh\n')
     reviewer: dict[str, object] = {
         'prompt': 'reviewer.md',
-        'triggers': [{'kind': 'sql', 'when': REVIEW}],
+        'triggers': [{'provider': 'sql', 'when': REVIEW}],
         'runtime': 'typed',
         'harnesses': ['script'],
         'max_concurrent': 1,
@@ -165,7 +165,7 @@ def test_a_role_adds_its_incident_prompt_to_an_incident_sweep_and_its_routine_pr
         (repo / name).write_text(text + '\n')
     triage: dict[str, object] = {
         'prompt': 'triage.md',
-        'triggers': [{'kind': 'anomaly'}],
+        'triggers': [{'provider': 'anomaly'}],
         'incident_prompt': 'incident.md',
         'routine_prompt': 'routine.md',
     }
@@ -194,7 +194,7 @@ def test_a_role_that_defines_ideas_is_told_how_many_its_sweep_may_add(
     (Path(campaign.path) / 'ideator.md').write_text('# Ideate\n')
     ideator: dict[str, object] = {
         'prompt': 'ideator.md',
-        'triggers': [{'kind': 'low_water', 'buffer': 1}],
+        'triggers': [{'provider': 'low_water', 'buffer': 1}],
         'files': 'ideas',
         'max_ideas': 2,
     }
@@ -317,8 +317,8 @@ def test_a_built_in_role_takes_other_triggers(
         db,
         campaign,
         '#!/bin/sh\ntrue\n',
-        watchdog={'triggers': [{'kind': 'cron'}], 'interval': 30},
-        research={'triggers': [{'kind': 'sql', 'when': REVIEW}]},
+        watchdog={'triggers': [{'provider': 'cron'}], 'interval': 30},
+        research={'triggers': [{'provider': 'sql', 'when': REVIEW}]},
     )
     sched = scheduler(db, recording(runtime, []), tmp_path)
     fail_a_run(db, campaign, 'broken')
@@ -430,13 +430,15 @@ def test_a_package_adds_a_role_and_triggers_through_entry_points(
     """
     cfg = load_campaign_config(Path(campaign.path))
     auditor = cfg.roles.sweeping()[RoleName('auditor')]
-    assert (auditor.timeout, auditor.triggers[0].kind) == (5, 'every_tick')
+    assert (auditor.timeout, TRIGGERS.name_of(auditor.triggers[0])) == (5, 'every_tick')
     toml = Path(campaign.path) / 'piloop.toml'
     toml.write_text(toml.read_text() + '\n[roles.auditor]\ntimeout = 9\n')
     assert load_campaign_config(Path(campaign.path)).roles.sweeping()[RoleName('auditor')].timeout == 9, (
         'the table goes over'
     )
-    configure(db, campaign, '#!/bin/sh\ntrue\n', auditor={'triggers': [{'kind': 'broken'}, {'kind': 'every_tick'}]})
+    configure(
+        db, campaign, '#!/bin/sh\ntrue\n', auditor={'triggers': [{'provider': 'broken'}, {'provider': 'every_tick'}]}
+    )
     sched = scheduler(db, recording(runtime, []), tmp_path)
     assert sched.tick() == [1]
     sched.wait()
@@ -491,8 +493,10 @@ def test_a_package_role_takes_its_defaults_and_a_roles_value_that_is_not_a_table
             'is not a subclass of piloop.plugins.role.contract.RoleConfig',
         ),
         (EntryPoint('research', f'{PLUGIN}:Auditor', ROLE_GROUP), "'research' is a role already, from piloop "),
-        (EntryPoint('typed', f'{PLUGIN}:NOT_A_RUNTIME', RUNTIME_GROUP), 'is not a piloop runtime class'),
-        (EntryPoint('other', f'{PLUGIN}:Typed', RUNTIME_GROUP), "it needs kind = 'other'"),
+        (
+            EntryPoint('typed', f'{PLUGIN}:NOT_A_RUNTIME', RUNTIME_GROUP),
+            'is not a subclass of piloop.plugins.runtime.contract.RuntimeConfig',
+        ),
         (EntryPoint('subprocess', f'{PLUGIN}:Typed', RUNTIME_GROUP), "'subprocess' is a runtime already"),
     ],
 )
@@ -534,7 +538,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_cas_through_the_config
     example(tmp_path / 'site', 'sqlite-cas')
     package(tmp_path / 'site', 'piloop-fast-role', '1.0', f'[piloop.roles]\nfast = {PLUGIN}:Fast\n')
     monkeypatch.syspath_prepend(tmp_path / 'site')
-    monkeypatch.setenv('PILOOP_HOME', str(tmp_path))  # where the runtime reads its [runtimes.nice] settings
+    monkeypatch.setenv('PILOOP_HOME', str(tmp_path))  # where the harness writes its niceness
     forget_loaded()
     write_toml(Path(campaign.path), HARNESS_NICENESS)
     with db.session() as s:
@@ -566,30 +570,23 @@ def test_example_plugins_replace_the_built_in_runtime_and_cas_through_the_config
         *(f'{c.noun}s ({c.tier} tier, {c.group}):' for c in plugins_module.declared()),
         'selected:',
     ]
-    assert '  nice        piloop-nice 0.1.0, entry point nice = piloop_nice:NiceRuntime' in lines
+    assert '  nice        piloop-nice 0.1.0, entry point nice = piloop_nice:Nice' in lines
     toml, config = Path(campaign.path) / 'piloop.toml', tmp_path / 'config.toml'
     store = f'CAS provider sqlite, from piloop-sqlite-cas 0.1.0 ([plugins.cas] provider, in {config})'
     stored = f'in the config of demo that the last `piloop init` stored from {toml}'
-    settings = f'; its settings: [runtimes.nice] in {config}'
-    keys = {
-        'implementer': 'runtime',
-        'watchdog': '[roles.watchdog] runtime',
-        'research': 'runtime',
-        'scout': 'runtime',
-        'fast': 'the default of the fast role from piloop-fast-role 1.0',
-    }
+    nice = 'runtime nice, from piloop-nice 0.1.0'
     assert lines[lines.index('selected:') + 1 :] == [
         f'  {store}',
-        *(f'  demo {k}: runtime nice, from piloop-nice 0.1.0 ({key}, {stored}{settings})' for k, key in keys.items()),
+        f'  demo: {nice} (runtime, {stored})',
+        f'  demo watchdog: {nice} ([roles.watchdog] runtime, {stored})',
+        f'  demo fast: {nice} ([roles.fast] runtime, {stored})',
     ]
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
         row.config = {**row.config, 'runtime': 'subprocess'}
         s.commit()
     built_in = RUNTIMES.sources()['subprocess'].release
-    assert (
-        selections(home)[1] == f'demo implementer: runtime subprocess, from {built_in} (runtime, its default, {stored})'
-    )
+    assert selections(home)[1] == f'demo: runtime subprocess, from {built_in} (runtime, {stored})'
     with db.session() as s:
         s.get_one(Campaign, campaign.id).config = {}
         s.commit()

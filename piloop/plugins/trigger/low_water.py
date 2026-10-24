@@ -1,5 +1,3 @@
-from typing import Literal
-
 from pydantic import Field
 
 from piloop.db.models import AgentSessionState, utcnow
@@ -35,7 +33,6 @@ class LowWaterTrigger(Trigger):
     no idea that a sweep adds could run sooner.
     """
 
-    kind: Literal['low_water'] = 'low_water'
     buffer: int = Field(default=2, ge=0)
     """The number of ready ideas to keep in addition to one for each run slot (the ``max_concurrent`` of every role
     that does runs). With this backlog, a free slot finds an idea at once and does not wait for a sweep. A larger value

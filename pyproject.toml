@@ -64,7 +64,7 @@ network = "piloop.plugins.network.contract:NETWORKS"
 vcs = "piloop.plugins.vcs.contract:VCS"
 
 [project.entry-points."piloop.runtimes"]
-subprocess = "piloop.plugins.runtime.subprocess:SubprocessRuntime"
+subprocess = "piloop.plugins.runtime.subprocess:Subprocess"
 
 [project.entry-points."piloop.cas"]
 disk = "piloop.plugins.cas.disk:Disk"

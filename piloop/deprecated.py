@@ -101,26 +101,60 @@ def scout_trigger(toml: Path, raw: dict[str, object]) -> None:
     """The ``scout`` trigger of ``[roles.research] triggers`` is gone: the scout is a role with its own ``cron``."""
     research = _table(raw, 'roles', 'research')
     triggers = research.get('triggers') if research is not None else None
-    if research is None or not isinstance(triggers, list) or not any(_is_scout(t) for t in triggers):
+    if research is None or not isinstance(triggers, list) or not any(_is(t, 'scout') for t in triggers):
         return
-    research['triggers'] = [t for t in triggers if not _is_scout(t)]
-    lines = toml.read_text().splitlines()
-    header = next((n for n, line in enumerate(lines) if line.strip() == '[roles.research]'), len(lines))
-    nth = sum(line.partition('=')[0].strip() == 'triggers' for line in lines[:header])
+    research['triggers'] = [t for t in triggers if not _is(t, 'scout')]
     warn(
         toml,
         'roles.research.triggers',
         'the scout trigger is deprecated; delete it: the scout is [roles.scout], with its own cron trigger',
         removed_in=REMOVED_IN,
-        nth=nth,
+        nth=_nth(toml, 'roles.research', 'triggers'),
     )
 
 
-def _is_scout(trigger: object) -> bool:
-    return isinstance(trigger, dict) and trigger.get('kind') == 'scout'
+def _is(trigger: object, name: str) -> bool:
+    """Whether ``trigger`` is an entry of the trigger ``name``: ``trigger_kind`` has made ``kind`` its ``provider``."""
+    return isinstance(trigger, dict) and trigger.get('provider') == name
 
 
-RESEARCH_TRIGGERS = ({'kind': 'low_water'}, {'kind': 'seed'}, {'kind': 'stalled'})
+def _nth(toml: Path, table: str, key: str) -> int:
+    """How many lines of ``toml`` set ``key`` before the header of ``table``: ``warn``'s ``nth`` for ``table.key``."""
+    lines = toml.read_text().splitlines()
+    header = next((n for n, line in enumerate(lines) if line.strip() == f'[{table}]'), len(lines))
+    return sum(line.partition('=')[0].strip() == key for line in lines[:header])
+
+
+TRIGGER_KIND_REMOVED_IN = Version(0, 4, 0)
+"""The release that ``warn`` names for ``kind`` in a trigger entry, which 0.2.0 configs set."""
+
+
+@until('0.4.0', 'kind in a trigger entry is provider: delete the trigger_kind bridge and TRIGGER_KIND_REMOVED_IN')
+def trigger_kind(toml: Path, raw: dict[str, object]) -> None:
+    """``kind`` in an entry of ``[roles.<name>] triggers`` is ``provider``: ``{ provider = "cron" }``."""
+    for name in _table(raw, 'roles') or {}:
+        role = _table(raw, 'roles', name)
+        triggers = role.get('triggers') if role is not None else None
+        if (
+            role is None
+            or not isinstance(triggers, list)
+            or not any(isinstance(t, dict) and 'kind' in t for t in triggers)
+        ):
+            continue
+        role['triggers'] = [
+            {('provider' if k == 'kind' else k): v for k, v in t.items()} if isinstance(t, dict) else t
+            for t in triggers
+        ]
+        warn(
+            toml,
+            f'roles.{name}.triggers',
+            'kind in a trigger is deprecated; write { provider = "<trigger>", … }',
+            removed_in=TRIGGER_KIND_REMOVED_IN,
+            nth=_nth(toml, f'roles.{name}', 'triggers'),
+        )
+
+
+RESEARCH_TRIGGERS = ({'provider': 'low_water'}, {'provider': 'seed'}, {'provider': 'stalled'})
 """The default triggers of research."""
 
 
@@ -136,14 +170,12 @@ def research_buffer(toml: Path, raw: dict[str, object]) -> None:
     buffer = research.pop('buffer')
     triggers = research.get('triggers', RESEARCH_TRIGGERS)
     if isinstance(triggers, list | tuple):
-        research['triggers'] = [
-            t | {'buffer': buffer} if isinstance(t, dict) and t.get('kind') == 'low_water' else t for t in triggers
-        ]
+        research['triggers'] = [t | {'buffer': buffer} if _is(t, 'low_water') else t for t in triggers]
     warn(
         toml,
         'roles.research.buffer',
         '[roles.research] buffer is deprecated; write triggers ='
-        ' [{ kind = "low_water", buffer = … }, { kind = "seed" }, { kind = "stalled" }]',
+        ' [{ provider = "low_water", buffer = … }, { provider = "seed" }, { provider = "stalled" }]',
         removed_in=REMOVED_IN,
     )
 
@@ -209,6 +241,7 @@ def worker_role(toml: Path, raw: dict[str, object]) -> None:
 
 
 BRIDGES: tuple[Bridge, ...] = (
+    trigger_kind,
     worker_role,
     research_scout,
     scout_trigger,
@@ -330,7 +363,10 @@ HERDR_UPGRADE = 'https://piloop.autoresearch.inc/guides/upgrading#the-herdr-runt
 """What to do about the removed herdr runtime."""
 
 
-@until('0.4.0', 'runtime = "herdr" of a 0.2 piloop.toml: delete removed_runtime, HERDR and HERDR_UPGRADE')
+@until(
+    '0.4.0',
+    'runtime = "herdr" of a 0.2 piloop.toml: delete removed_runtime, HERDR, HERDR_UPGRADE and the runtime\'s _not_removed',
+)
 def removed_runtime(name: str) -> str | None:
     """Why ``runtime = <name>`` does not load when piloop removed that runtime, else None."""
     if name != HERDR:

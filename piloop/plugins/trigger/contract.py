@@ -1,6 +1,6 @@
 """The triggers of the roles: the conditions that make the daemon request an agent (https://piloop.autoresearch.inc/concepts/roles#triggers).
 
-A trigger is a pydantic model. Its fields are its parameters, from its entry in ``[roles.<name>] triggers``. On each
+A trigger is a provider of ``TRIGGERS``: its fields are its parameters, from its entry in ``[roles.<name>] triggers``. On each
 tick, for each campaign and each sweeping role without a pending request, the scheduler calls ``Trigger.fire`` of each
 trigger of the role, in the order of the list. On the tick that stops the campaign, it calls only the triggers with
 ``ON_STOP``, and while the campaign runs, only the others. A package adds a trigger with an entry point in the group of ``TRIGGERS``.
@@ -11,11 +11,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Annotated, ClassVar, NamedTuple, Protocol
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, SerializeAsAny
 from sqlalchemy.orm import Session
 
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, EventModel
-from piloop.plugins.host import Capability
+from piloop.plugins.host import Capability, Parameters
 
 
 class Incident(NamedTuple):
@@ -205,13 +204,11 @@ class Fire:
     """The events to emit on the first requested row."""
 
 
-class Trigger(BaseModel, ABC):
-    """One entry of ``[roles.<name>] triggers``: ``{ kind = "<trigger>", <parameter> = <value> }``.
+class Trigger(Parameters, ABC):
+    """One entry of ``[roles.<name>] triggers``: ``{ provider = "<trigger>", <parameter> = <value> }``.
 
     The daemon checks the entries in the order of the list.
     """
-
-    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
 
     ON_STOP: ClassVar[bool] = False
     """The daemon checks the trigger once, on the tick that stops the campaign, instead of on every tick while it runs."""
@@ -219,25 +216,13 @@ class Trigger(BaseModel, ABC):
     """The agent that the trigger requests gets incidents to investigate. An agent of a role with such a trigger that
     dies at startup is then no incident: the agent that it would request could die the same way, and so on."""
 
-    kind: str
-    """The name of the trigger. A package can add triggers."""
-
     @abstractmethod
     def fire(self, tick: Tick) -> Fire | None:
         """Return the request that the trigger makes now, or None."""
 
 
 TRIGGERS = Capability('trigger', Trigger)
-"""Every trigger by kind. Each entry point of the group names a ``Trigger`` subclass, and its name is the ``kind``.
-The roles name triggers by kind, so no single key selects one."""
+"""Every trigger by name. The roles name their triggers in their entries, so no single key selects one."""
 
-
-def _parse(entry: object) -> object:
-    """Validate a ``triggers`` entry as the trigger that its ``kind`` names."""
-    if not isinstance(entry, dict):
-        return entry
-    return TRIGGERS.get(str(entry.get('kind'))).model.model_validate(entry)
-
-
-TriggerEntry = Annotated[SerializeAsAny[Trigger], BeforeValidator(_parse)]
-"""The type of one ``triggers`` entry: the model of the trigger that its ``kind`` names, dumped with its parameters."""
+TriggerEntry = Annotated[Trigger, TRIGGERS.entry]
+"""The type of one ``triggers`` entry: the trigger that its ``provider`` names, with its parameters."""

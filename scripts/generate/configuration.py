@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 from piloop.config import CampaignConfig
 from piloop.deprecated import BRIDGES, CONFIG_BRIDGES
-from piloop.plugins.host import Scope, declared
+from piloop.plugins.host import Parameters, Scope, declared
 from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.settings import StorageSettings
 from scripts.generate import ROOT, header
@@ -82,7 +82,7 @@ def generate() -> str:
             return ''
         shown.append(model)
         base = model.__mro__[1]
-        if base is BaseModel or not issubclass(base, BaseModel):
+        if base in (BaseModel, Parameters) or not issubclass(base, BaseModel):
             return _section(model, defs)
         return show(base) + _section(model, defs, _own_keys(model, base))
 
@@ -102,8 +102,8 @@ def global_section() -> str:
     )
     out += home_plugins()
     out += (
-        '\n### `[runtimes.<name>]`\n\nThe settings of a runtime that a package adds, which it reads with'
-        ' `runtime_settings`.\n'
+        '\n### `[runtimes.<name>]`\n\nThe settings of the runtime `<name>` on this machine: the fields of its'
+        ' provider class. The built-in runtime `subprocess` has none.\n'
     )
     return out
 

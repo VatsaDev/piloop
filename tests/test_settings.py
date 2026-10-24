@@ -9,7 +9,7 @@ from piloop import settings as settings_module
 from piloop.actor import Agent, System
 from piloop.deprecated import PiloopDeprecationWarning
 from piloop.harnesses import DEFAULT_HARNESSES, SESSION_ENV
-from piloop.settings import UNDER_TEST_ENV, Settings, StorageSettings, env_names, expand_env, runtime_settings
+from piloop.settings import UNDER_TEST_ENV, Settings, StorageSettings, env_names, expand_env
 
 
 def test_the_test_session_runs_in_a_temporary_home() -> None:
@@ -117,7 +117,7 @@ def test_the_storage_backend_of_config_toml_is_the_remote_of_a_cached_cas(
         Settings()
 
 
-def test_a_runtimes_value_that_is_no_table_of_tables_is_refused_and_gives_the_runtime_nothing(
+def test_a_runtimes_value_that_is_no_table_of_tables_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv('PILOOP_HOME', str(tmp_path))
@@ -125,7 +125,6 @@ def test_a_runtimes_value_that_is_no_table_of_tables_is_refused_and_gives_the_ru
         (tmp_path / 'config.toml').write_text(text)
         with pytest.raises(ValidationError, match='runtimes'):
             Settings()
-        assert runtime_settings('nice') == {}, text
 
 
 def test_the_signature_of_an_implementer_from_before_0_2_0_is_its_new_signature(

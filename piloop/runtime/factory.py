@@ -1,21 +1,42 @@
-"""The runtime registry, and the runtime of a launched agent session row."""
+"""The runtimes of this machine, and the runtime of a launched agent session row."""
 
-from typing import Protocol
+from typing import Annotated, Protocol
+
+from pydantic import ConfigDict, TypeAdapter
 
 from piloop.db.models import AgentSession
-from piloop.plugins.runtime.contract import RUNTIMES, Handle, Runtime
+from piloop.plugins.runtime.contract import RUNTIMES, Handle, Runtime, RuntimeConfig
+from piloop.settings import Settings, settings
+
+RUNTIME_TABLES: TypeAdapter[dict[str, RuntimeConfig]] = TypeAdapter(
+    Annotated[dict[str, RuntimeConfig], RUNTIMES.tables()], config=ConfigDict(title='[runtimes]')
+)
 
 
-def make_runtime(kind: str) -> Runtime:
-    """Create the runtime called ``kind``."""
-    return RUNTIMES.get(kind).model()
+def runtimes(cfg: Settings = settings) -> dict[str, RuntimeConfig]:
+    """Every runtime, with its settings from ``[runtimes.<name>]`` of ``config.toml``.
+
+    Raises:
+        ValidationError: A table names no runtime, or settings that its runtime refuses.
+    """
+    return RUNTIME_TABLES.validate_python(cfg.runtimes)
+
+
+def make_runtime(name: str, cfg: Settings = settings) -> Runtime:
+    """Open the runtime called ``name``, with its settings in ``cfg``.
+
+    Raises:
+        MissingProvider: No runtime has that name.
+    """
+    RUNTIMES.get(name)
+    return runtimes(cfg)[name].open()
 
 
 class RuntimeFactory(Protocol):
     """The signature of ``make_runtime``. Tests substitute their own."""
 
-    def __call__(self, kind: str, /) -> Runtime:
-        """Create the runtime called ``kind``."""
+    def __call__(self, name: str, /) -> Runtime:
+        """Open the runtime called ``name``."""
         ...
 
 

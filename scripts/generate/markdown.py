@@ -12,7 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
-from pydantic.json_schema import GenerateJsonSchema
+from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
+from pydantic_core import SchemaSerializer, core_schema
 from pydantic_settings import BaseSettings
 
 from piloop.harnesses import DEFAULT_HARNESSES
@@ -27,7 +28,6 @@ BUILT_IN: dict[tuple[str, str], Iterable[str]] = {
     ('RoleConfig', 'runtime'): RUNTIMES.builtins(),
     ('CampaignConfig', 'harnesses'): DEFAULT_HARNESSES,
     ('SweepRole', 'triggers'): TRIGGERS.builtins(),
-    ('Trigger', 'kind'): TRIGGERS.builtins(),
     ('Harness', 'mcp'): RENDERERS,
     ('UsageSpec', 'reader'): READERS,
     ('UsageSpec', 'tally'): TALLIES,
@@ -114,9 +114,24 @@ def meanings(model: type[BaseModel], only: Iterable[str] | None = None) -> str:
     return '\n'.join(rows) + '\n'
 
 
+class AsDumped(GenerateJsonSchema):
+    """Each default of a field with a serializer of its own as the field dumps it: a ``CAP.entry`` with its ``provider``.
+
+    pydantic encodes a default by its own type, which leaves the field's serializer out.
+    """
+
+    def default_schema(self, schema: core_schema.WithDefaultSchema) -> JsonSchemaValue:
+        found = super().default_schema(schema)
+        inner = schema['schema']
+        items = inner.get('items_schema', {}) if inner['type'] == 'list' else {}
+        if 'default' in found and ('serialization' in inner or 'serialization' in items):
+            found['default'] = SchemaSerializer(inner).to_python(self.get_default_value(schema), mode='json')
+        return found
+
+
 def json_schema(model: type[BaseModel]) -> JsonSchema:
     """Return the JSON schema of ``model``."""
-    return model.model_json_schema(schema_generator=GenerateJsonSchema)
+    return model.model_json_schema(schema_generator=AsDumped)
 
 
 def doc(obj: object, what: str) -> str:
