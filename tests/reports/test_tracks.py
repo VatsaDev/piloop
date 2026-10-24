@@ -4,9 +4,10 @@ from inline_snapshot import snapshot
 
 from piloop.actor import System
 from piloop.config import CampaignConfig
-from piloop.db.models import Campaign, Candidate, Run, Verdict
+from piloop.db.models import Campaign, Candidate, Run
 from piloop.db.session import Database
 from piloop.ids import TrackName
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.history import history
 from piloop.reports.pack import pack
 from piloop.watch.panels import PANELS, Context, campaigns, header
@@ -33,7 +34,7 @@ def two_tracks(db: Database, campaign: Campaign) -> CampaignConfig:
         s.add(lighter)
         s.flush()
         s.get_one(Candidate, 1).measurements[0].metrics = {'score': 1.0, 'size': 12.0}
-        kept = candidate(s, p, 2, Verdict.KEEP, 3, 60, run_id=lighter.id)
+        kept = candidate(s, p, 2, Outcome.KEEP, 3, 60, run_id=lighter.id)
         kept.measurements[0].metrics = {'score': 3.0, 'size': 8.0}
         lighter.idea.track = TrackName('size')
         s.commit()
@@ -121,7 +122,7 @@ def test_lineages_show_every_track_primary_of_their_latest_keep(db: Database, ca
         branch = Run(idea_id=1, attempt=2, base_candidate_id=1, harness='script', model='m', branch=True)
         s.add(branch)
         s.flush()
-        candidate(s, s.get_one(Campaign, campaign.id), 1, Verdict.KEEP, 2, 70, run_id=branch.id)
+        candidate(s, s.get_one(Campaign, campaign.id), 1, Outcome.KEEP, 2, 70, run_id=branch.id)
         s.commit()
     lines = [
         line for line in render(db, campaign).splitlines() if line.startswith('  - ') and 'from candidate#' in line

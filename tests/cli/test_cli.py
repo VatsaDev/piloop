@@ -50,9 +50,9 @@ from piloop.db.models import (
     IdeaStatus,
     LinkKind,
     Measurement,
+    Origin,
     Run,
     RunStatus,
-    Verdict,
     utcnow,
 )
 from piloop.db.session import Database, migrate
@@ -61,6 +61,7 @@ from piloop.ids import CampaignId, CandidateId, CommentId, TargetKind, TargetRef
 from piloop.plugins import host
 from piloop.plugins.executor.kit.capacity import GB, HostSample
 from piloop.plugins.executor.kit.leases import Leases
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import CandidateImported, RemeasureRequested
 from piloop.settings import Settings
 from piloop.version import direct_url, installed
@@ -727,9 +728,9 @@ def test_candidate_import_registers_a_reference_shown_apart_and_refuses_a_bad_re
     )
     with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
         c = s.get_one(Candidate, 2)
-        assert (c.verdict, c.verdict_by, c.verdict_reason) == (
-            Verdict.REFERENCE,
-            'human',
+        assert (c.origin, c.verdict, c.verdict_reason) == (
+            Origin.REFERENCE,
+            None,
             f'imported from elsewhere ({sha[:7]})',
         )
         assert (c.run_id, c.parent_id, c.commit_sha, c.measurements) == (None, None, sha, [])
@@ -780,8 +781,8 @@ def test_candidate_remeasure_asks_the_daemon_to_measure_a_candidate_again_and_re
             1,
             RemeasureRequested(repeats=3),
         )
-        s.add(Candidate(campaign_id=1, commit_sha='0' * 40, tree_sha='1' * 40, verdict=Verdict.PENDING))
-        s.add(Candidate(campaign_id=1, commit_sha='2' * 40, tree_sha='3' * 40, verdict=Verdict.DISCARD, parent_id=1))
+        s.add(Candidate(campaign_id=1, commit_sha='0' * 40, tree_sha='1' * 40))
+        s.add(Candidate(campaign_id=1, commit_sha='2' * 40, tree_sha='3' * 40, verdict=Outcome.DISCARD, parent_id=1))
         s.commit()
     run_cli(['candidate', 'remeasure', '3', '--repeats', '5'])
     assert (
@@ -931,11 +932,11 @@ def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_
     run_cli(['idea', 'add', 'demo', 'try again'])
     out()
     with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
-        for tree, verdict in (('worse', Verdict.DISCARD), ('waiting', Verdict.PENDING)):
+        for tree, verdict in (('worse', Outcome.DISCARD), ('waiting', None)):
             c = Candidate(
                 campaign_id=1, tree_sha=tree, commit_sha=tree, summary=tree, verdict=verdict, verdict_by='daemon'
             )
-            c.verdict_reason = 'against candidate#1: score 0 vs 1' if verdict is Verdict.DISCARD else None
+            c.verdict_reason = 'against candidate#1: score 0 vs 1' if verdict is Outcome.DISCARD else None
             s.add(c)
             s.flush()
             s.add(Measurement(candidate_id=c.id, evaluator_id=1, metrics={'score': 0.0, 'size': 0.0}))
@@ -943,7 +944,7 @@ def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_
 
     run_cli(['candidate', 'note', '2', 'halves the eval time', '--follow-up', 'try again', '--follow-up', 'cache it'])
     assert out().splitlines() == [
-        'candidate#2 interesting: note: halves the eval time; against candidate#1: score 0 vs 1',
+        'candidate#2 interesting (note): halves the eval time; against candidate#1: score 0 vs 1',
         'idea#2 seed, pinned to candidate#2: try again (from candidate#2)',
         'idea#3 seed, pinned to candidate#2: cache it',
     ]
@@ -958,14 +959,14 @@ def test_candidate_note_keeps_a_regressed_result_in_view_with_follow_ups_pinned_
         )
     run_cli(['candidate', 'note', '2', 'and more', '--follow-up', 'try again'])
     assert out().splitlines() == [
-        'candidate#2 interesting: note: and more; note: halves the eval time; against candidate#1: score 0 vs 1'
+        'candidate#2 interesting (note): and more; halves the eval time; against candidate#1: score 0 vs 1'
     ], 'a follow-up already filed from this candidate is not filed twice'
 
     with pytest.raises(SystemExit, match=r'candidate#1 is keep \(no reason\): only a measured discard or interesting'):
         run_cli(['candidate', 'note', '1', 'why'])
     with pytest.raises(SystemExit, match=r'candidate#3 is pending'):
         run_cli(['candidate', 'note', '3', 'why'])
-    with pytest.raises(SystemExit, match='a note needs a reason'):
+    with pytest.raises(SystemExit, match='a reason is required'):
         run_cli(['candidate', 'note', '2', ' '])
     with pytest.raises(SystemExit, match='no candidate#99'):
         run_cli(['candidate', 'note', '99', 'why'])
@@ -1344,7 +1345,7 @@ def test_status_without_results(campaign_path: Path, out, mocker: MockerFixture)
     db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
         for c in s.scalars(select(Candidate)):
-            c.verdict = Verdict.DISCARD
+            c.verdict = Outcome.DISCARD
         idea = Idea(
             track='score', campaign_id=1, title='x', hypothesis='x', created_by='t', status=IdeaStatus.SCHEDULED
         )
@@ -1710,7 +1711,7 @@ def test_with_several_tracks_every_idea_and_seed_names_its_track(campaign_path: 
     run_cli(['idea', 'add', 'demo', 'shorter lines', '--track', 'size'])
     run_cli(['idea', 'seed', 'demo', 'more lines', '--from', 'run#1', '--track', 'score'])
     with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
-        worse = Candidate(campaign_id=1, tree_sha='w', commit_sha='w', summary='w', verdict=Verdict.DISCARD)
+        worse = Candidate(campaign_id=1, tree_sha='w', commit_sha='w', summary='w', verdict=Outcome.DISCARD)
         s.add(worse)
         s.commit()
     run_cli(['candidate', 'note', '2', 'cheaper', '--follow-up', 'trim it', '--track', 'size'])

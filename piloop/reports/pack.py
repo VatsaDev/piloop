@@ -34,12 +34,13 @@ from sqlalchemy.orm import Session
 
 from piloop.campaign.inbox import campaign_of
 from piloop.config import CampaignConfig, MetricRole
-from piloop.db.models import Campaign, Candidate, Comment, CommentKind, Idea, IdeaStatus, Verdict
+from piloop.db.models import Campaign, Candidate, Comment, CommentKind, Idea, IdeaStatus, Origin
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.ids import TargetKind
-from piloop.plugins.verdict_rule.contract import VERDICT_RULES
+from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Outcome
 from piloop.reports.history import BRIEF_WIDTH, comment_line, renderables as history, text_row, titled_table
 from piloop.scoring.ledger import head, metrics
+from piloop.scoring.verdict import PENDING, label
 from piloop.text import HEADING, NONE, cell, metric
 
 ARTIFACTS_SHOWN = 12
@@ -55,16 +56,9 @@ SEEDS_SHOWN = 20
 POINTERS_CHARS = 400
 FINDINGS_SHOWN = 8
 DIGESTS_SHOWN = 5
-OUTCOMES = (
-    Verdict.KEEP,
-    Verdict.INTERESTING,
-    Verdict.DISCARD,
-    Verdict.CRASH,
-    Verdict.RECOVERED,
-    Verdict.UNMEASURED,
-    Verdict.PENDING,
-)
-"""Verdicts, best first. The outcome of an idea is the first verdict in this list that one of its candidates has."""
+OUTCOMES = (*Outcome, Origin.RECOVERED, Origin.SKIPPED, PENDING)
+"""Labels of candidates (``verdict.label``), best first. The outcome of an idea is the first in this list that one of
+its candidates has."""
 
 
 def pack(s: Session, campaign: Campaign, cfg: CampaignConfig, *, workspace: Path | None) -> str:
@@ -104,7 +98,7 @@ def _metrics(s: Session, campaign: Campaign, cfg: CampaignConfig, table_box: box
     evaluator_id = campaign.evaluator_id
     start = s.scalars(
         select(Candidate)
-        .where(Candidate.campaign_id == campaign.id, Candidate.verdict != Verdict.REFERENCE)
+        .where(Candidate.campaign_id == campaign.id, Candidate.origin != Origin.REFERENCE)
         .order_by(Candidate.id)
         .limit(1)
     ).first()
@@ -266,23 +260,23 @@ def _families(s: Session, campaign: Campaign, table_box: box.Box, heading: str) 
     def count(rows: list[tuple[Idea, str]], *outcomes: str) -> int:
         return sum(outcome in outcomes for _, outcome in rows)
 
-    order = sorted(by_family.items(), key=lambda kv: (-count(kv[1], Verdict.KEEP), -len(kv[1]), kv[0]))
+    order = sorted(by_family.items(), key=lambda kv: (-count(kv[1], Outcome.KEEP), -len(kv[1]), kv[0]))
     for family, rows in order:
         text_row(
             table,
             cell(family, 40),
             str(len(rows)),
-            str(count(rows, Verdict.KEEP)),
-            str(count(rows, Verdict.INTERESTING)),
-            str(count(rows, Verdict.DISCARD, Verdict.CRASH)),
+            str(count(rows, Outcome.KEEP)),
+            str(count(rows, Outcome.INTERESTING)),
+            str(count(rows, Outcome.DISCARD, Outcome.CRASH)),
             str(sum(not i.runs for i, _ in rows)),
         )
     return table
 
 
 def _outcome(idea: Idea) -> str:
-    verdicts = {c.verdict for run in idea.runs for c in run.candidates}
-    return next((str(v) for v in OUTCOMES if v in verdicts), str(idea.status))
+    labels = {label(c) for run in idea.runs for c in run.candidates}
+    return next((str(v) for v in OUTCOMES if v in labels), str(idea.status))
 
 
 def _seeds(s: Session, campaign: Campaign, heading: str) -> list[RenderableType]:

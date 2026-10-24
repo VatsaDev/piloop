@@ -21,11 +21,7 @@ from piloop.plugins.metric import Direction
 
 
 class Outcome(StrEnum):
-    """The verdicts that a rule gives. Each is the ``Verdict`` of the same value.
-
-    The other verdicts are not judgements, and only piloop sets them: ``pending``, ``reference``, ``unmeasured`` and
-    ``recovered``.
-    """
+    """A verdict: what a rule gives, and what ``candidates.verdict`` holds. The column is NULL until a candidate is judged."""
 
     KEEP = 'keep'
     INTERESTING = 'interesting'

@@ -31,7 +31,6 @@ from piloop.db.models import (
     Run,
     RunEnd,
     RunStatus,
-    Verdict,
     utcnow,
 )
 from piloop.db.session import Database
@@ -267,7 +266,7 @@ def test_a_role_that_does_runs_takes_its_ideas_with_its_own_prompt_and_its_commi
     with db.session() as s:
         assert s.get_one(Run, 1).status is RunStatus.SUCCEEDED
         candidate = s.scalars(select(Candidate).where(Candidate.run_id == 1)).one()
-        assert candidate.verdict is not Verdict.PENDING
+        assert candidate.verdict is not None
         assert s.scalars(select(Measurement).where(Measurement.candidate_id == candidate.id)).all() != []
 
 

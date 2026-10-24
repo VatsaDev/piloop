@@ -12,11 +12,12 @@ from piloop.campaign import ops
 from piloop.config import load_campaign_config
 from piloop.daemon.run_controller import RunController
 from piloop.db.events import in_order
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Comment, IdeaStatus, Verdict
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Comment, IdeaStatus, Origin
 from piloop.db.session import Database
 from piloop.ids import CampaignId, TargetKind
 from piloop.plugins.vcs.git import GitRepository
-from piloop.scoring.ledger import DAEMON, RejudgeFailed, head, import_reference, rejudges, request_remeasure
+from piloop.plugins.verdict_rule.contract import Outcome
+from piloop.scoring.ledger import RejudgeFailed, head, import_reference, rejudges, request_remeasure
 from tests.conftest import HARNESS_WORSE, Gate, ScriptRuntime, write_script
 from tests.daemon.test_run_controller import candidates, controller, execute, make_run
 from tests.daemon.test_scheduler import add_ideas, make_scheduler, measured_by, request_watchdog, statuses
@@ -90,7 +91,7 @@ def test_the_daemon_judges_a_discard_again_with_a_measurement_by_hand(
     run_id = make_run(db, campaign)
     execute(controller(db, runtime, tmp_path), db, run_id)
     [worse] = candidates(db, run_id)
-    assert worse.verdict is Verdict.DISCARD
+    assert worse.verdict is Outcome.DISCARD
     with db.session() as s:
         again = ops.add_measurement(
             s, worse.id, ops.Report(metrics={'score': 5.0, 'size': 1.0}), actor=System.ORCHESTRATOR
@@ -108,7 +109,7 @@ def test_the_daemon_judges_a_discard_again_with_a_measurement_by_hand(
     assert asked.call_count == 1, 'one judgement at a time in the campaign slot'
     with db.session() as s:
         c = s.get_one(Candidate, worse.id)
-        assert (c.verdict, c.verdict_by) == (Verdict.KEEP, DAEMON), 'a mean of 2.5 against the 1 of the baseline'
+        assert (c.verdict, c.verdict_by) == (Outcome.KEEP, System.DAEMON), 'a mean of 2.5 against the 1 of the baseline'
         p = s.get_one(Campaign, campaign.id)
         trunk = head(s, p)
         assert trunk is not None and trunk.id == worse.id
@@ -128,10 +129,10 @@ def test_the_daemon_judges_a_skipped_commit_with_a_measurement_by_hand(
     run_id = make_run(db, campaign)
     execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
-        scaffold_id, verdict = s.execute(
-            select(Candidate.id, Candidate.verdict).where(Candidate.run_id == run_id)
+        scaffold_id, origin, verdict = s.execute(
+            select(Candidate.id, Candidate.origin, Candidate.verdict).where(Candidate.run_id == run_id)
         ).one()
-        assert verdict is Verdict.UNMEASURED
+        assert (origin, verdict) == (Origin.SKIPPED, None)
         added = ops.add_measurement(
             s, scaffold_id, ops.Report(metrics={'score': 5.0, 'size': 1.0}), actor=System.ORCHESTRATOR
         )
@@ -141,7 +142,8 @@ def test_the_daemon_judges_a_skipped_commit_with_a_measurement_by_hand(
     sched.tick()
     sched.wait()
     with db.session() as s:
-        assert s.get_one(Candidate, scaffold_id).verdict is Verdict.KEEP, (
+        judged = s.get_one(Candidate, scaffold_id)
+        assert (judged.origin, judged.verdict) == (Origin.RUN, Outcome.KEEP), (
             'against the baseline, as its run would judge it'
         )
     sched.stop(timeout=5)
@@ -164,7 +166,9 @@ def test_a_skipped_commit_is_measured_on_request_and_judged(
     sched.wait()
     with db.session() as s:
         again = s.get_one(Candidate, scaffold_id)
-        assert (again.verdict, len(again.measurements)) == (Verdict.KEEP, 1), 'next to its bar, the baseline'
+        assert (again.origin, again.verdict, len(again.measurements)) == (Origin.RUN, Outcome.KEEP, 1), (
+            'next to its bar, the baseline'
+        )
     sched.stop(timeout=5)
 
 
@@ -188,5 +192,5 @@ def test_a_judgement_again_that_fails_answers_the_request_with_the_error(
             worse.id,
             RejudgeFailed(error='OSError: the repo is gone'),
         )
-        assert s.get_one(Candidate, worse.id).verdict is Verdict.DISCARD
+        assert s.get_one(Candidate, worse.id).verdict is Outcome.DISCARD
         assert rejudges(s, s.get_one(Campaign, campaign.id)) == [], 'not tried on every tick'

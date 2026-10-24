@@ -20,7 +20,7 @@ from piloop.actor import Actor
 from piloop.campaign import inbox
 from piloop.campaign.ideas import links, superseded_by
 from piloop.config import CampaignConfig, config_of
-from piloop.db.models import AgentSession, Campaign, CampaignStatus, Candidate, Comment, Idea, IdeaStatus, Verdict
+from piloop.db.models import AgentSession, Campaign, CampaignStatus, Candidate, Comment, Idea, IdeaStatus, Origin
 from piloop.ids import CampaignId, TargetKind, TargetRef
 from piloop.reports.overview import (
     age,
@@ -39,6 +39,7 @@ from piloop.reports.overview import (
     tracks_lines,
 )
 from piloop.scoring.ledger import metrics, references, score, track_of, trunk_keeps
+from piloop.scoring.verdict import label
 from piloop.text import NONE, cell, metric
 from piloop.usage import campaign_tokens, human
 
@@ -256,7 +257,7 @@ class CandidatesPanel:
     """Panel 4: the recent candidates, newest first, under the sparkline of each track. The detail is the verdict."""
 
     def title(self, s: Session, ctx: Context, items: Sequence[Item]) -> str:
-        starts = sum(1 for i in items if i.cells[1] == Verdict.REFERENCE)
+        starts = sum(1 for i in items if i.cells[1] == Origin.REFERENCE)
         points = f' · {starts} starting point{"s" if starts != 1 else ""}' if starts else ''
         lines = kept_scores(s, ctx.campaign, ctx.cfg)
         if not ctx.cfg.multitrack:
@@ -268,7 +269,7 @@ class CandidatesPanel:
         evaluator = ctx.campaign.evaluator_id
         recent = s.scalars(
             select(Candidate)
-            .where(Candidate.campaign_id == ctx.campaign.id, Candidate.verdict != Verdict.REFERENCE)
+            .where(Candidate.campaign_id == ctx.campaign.id, Candidate.origin != Origin.REFERENCE)
             .order_by(Candidate.id.desc())
             .limit(CANDIDATE_ROWS)
         ).all()
@@ -279,7 +280,7 @@ class CandidatesPanel:
                     c.id,
                     (
                         f'#{c.id}',
-                        str(c.verdict),
+                        label(c),
                         *scored(c, evaluator, track_of(ctx.cfg, c).primary),
                         f'run#{c.run_id}' if c.run_id else NONE,
                         age(c.created_at, ctx.now),
@@ -295,7 +296,7 @@ class CandidatesPanel:
         mine = metrics(c, evaluator)
         theirs = metrics(c.parent, evaluator) if c.parent is not None else {}
         body = [
-            f'verdict {c.verdict} by {c.verdict_by or NONE}: {c.verdict_reason or NONE}',
+            f'verdict {label(c)} by {c.verdict_by or NONE}: {c.verdict_reason or NONE}',
             f'parent {f"candidate#{c.parent_id}" if c.parent_id else NONE} · run {f"#{c.run_id}" if c.run_id else NONE}'
             f' · commit {c.commit_sha[:12]} · {age(c.created_at, ctx.now)} ago',
             '',

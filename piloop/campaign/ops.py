@@ -12,7 +12,7 @@ into a ``note`` on the row. An operation emits the events of the changes that no
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Annotated, assert_never
+from typing import Annotated, Literal, assert_never
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -31,6 +31,7 @@ from piloop.db.models import (
     Base,
     Campaign,
     Candidate,
+    Cause,
     Comment,
     CommentKind,
     Idea,
@@ -40,22 +41,20 @@ from piloop.db.models import (
     Measurement,
     Pause,
     Run,
-    Verdict,
 )
 from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TargetRef, TrackName
 from piloop.plugins.role.contract import Files
 from piloop.plugins.vcs.contract import Revision, VcsError
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import (
     IdeaCreated,
     MeasurementRecorded,
-    NoteRefused,
     RejudgeRequested,
     follow_up,
     head,
-    note,
-    rejudgeable,
     track_of,
 )
+from piloop.scoring.verdict import Refusal, label, override, pending, refusal, rejudgeable
 
 
 class Refused(Exception):
@@ -159,41 +158,53 @@ def review_first(campaign: Campaign, actor: Actor, *, new: bool) -> str | None:
     return None
 
 
-OVERRIDES = (Verdict.KEEP, Verdict.INTERESTING, Verdict.DISCARD, Verdict.CRASH)
-"""The judgements: what ``set_verdict`` sets, and what it overrides. The other verdicts are states: ``pending`` (the
-daemon judges it now), ``reference`` (an import), ``unmeasured`` and ``recovered`` (nothing was measured)."""
-
-
-def set_verdict(s: Session, candidate_id: CandidateId, verdict: Verdict, *, reason: str, actor: Actor) -> Verdict:
-    """Override a candidate's judgement with ``actor``'s, and return the verdict it had.
+def set_verdict(
+    s: Session,
+    candidate_id: CandidateId,
+    to: Outcome,
+    *,
+    cause: Literal[Cause.NOTE] | None = None,
+    reason: str,
+    actor: Actor,
+) -> str:
+    """Set ``actor``'s verdict on a candidate, and return the verdict it had. The one way to override a verdict.
 
     The verdict is ``actor``'s now, so the daemon never changes it. The ``candidate.verdict`` event (a trigger) has the
     reason. A keep of a trunk run must build on the head (``missing_head``): the head is the newest trunk keep, and a
     keep that lacks the head's changes would drop them from the trunk. A keep of a branch run never moves the head.
+    With ``Cause.NOTE``, it keeps a regressed result in view as a lead: an ``interesting`` verdict whose reason is
+    followed by the one that it notes.
 
     Raises:
-        Refused: the reason is blank, the old or the new verdict is not a judgement, the candidate has that verdict
-            already, or it would be a trunk keep that does not build on the head.
+        Refused: the reason is blank, ``verdict.refusal`` refuses it, or it would be a trunk keep that does not build
+            on the head.
     """
     candidate = _get(s, Candidate, candidate_id, 'candidate')
     why = _reason(reason)
-    if verdict not in OVERRIDES:
-        raise Refused(f'{verdict} is not a judgement: give {", ".join(OVERRIDES)}')
-    if candidate.verdict is Verdict.PENDING:
-        raise Refused(f'candidate#{candidate.id} is pending: the daemon judges it now; override it once it is judged')
-    if candidate.verdict not in OVERRIDES:
+    name = f'candidate#{candidate.id}'
+    match refused := refusal(candidate, to, cause):
+        case Refusal.PENDING:
+            raise Refused(f'{name} is pending: the daemon judges it now; set its verdict once it is judged')
+        case Refusal.NOT_JUDGED:
+            raise Refused(f'{name} is {candidate.origin}, which is never judged: only a judgement is overridden')
+        case Refusal.SAME:
+            raise Refused(f'{name} is {to} already ({candidate.verdict_reason or "no reason"})')
+        case Refusal.NO_RESULT:
+            raise Refused(
+                f'{name} is {candidate.verdict} ({candidate.verdict_reason or "no reason"}):'
+                ' only a measured discard or interesting takes a note'
+            )
+        case None:
+            pass
+        case _:
+            assert_never(refused)
+    if to is Outcome.KEEP and (trunk := missing_head(s, candidate)) is not None:
         raise Refused(
-            f'candidate#{candidate.id} is {candidate.verdict}, not a judgement: only a judgement is overridden'
-        )
-    if candidate.verdict is verdict:
-        raise Refused(f'candidate#{candidate.id} is {verdict} already ({candidate.verdict_reason or "no reason"})')
-    if verdict is Verdict.KEEP and (trunk := missing_head(s, candidate)) is not None:
-        raise Refused(
-            f'candidate#{candidate.id} does not build on the head candidate#{trunk.id}: as a keep it would drop what'
+            f'{name} does not build on the head candidate#{trunk.id}: as a keep it would drop what'
             ' the head kept. Mark it interesting, or add an idea that merges it onto the head'
         )
-    old = candidate.verdict
-    candidate.verdict, candidate.verdict_by, candidate.verdict_reason = verdict, actor.signature, why
+    old = label(candidate)
+    override(candidate, to, cause=cause, reason=why, by=actor)
     return old
 
 
@@ -253,7 +264,8 @@ def add_measurement(s: Session, candidate_id: CandidateId, report: Report, *, ac
     """Record ``report`` as a measurement of the candidate under the campaign's current evaluator.
 
     The daemon judges the candidate again when its verdict is the daemon's ``crash``, ``discard`` or ``interesting``
-    on a run, or a run's commit that it never measured (``ledger.rejudgeable``), with every measurement under the current evaluator. It does that when it measures
+    on a run, or it is a run's commit that the daemon never measured (``verdict.rejudgeable``), with every measurement
+    under the current evaluator. It does that when it measures
     the campaign again: not while the campaign is paused with its evaluations, or held by its stop rule. Any
     other verdict stays, and a keep's mean, which later runs from it must beat, includes the new measurement. Emits
     ``MeasurementRecorded``, shaped like the daemon's, and the request (``RejudgeRequested``).
@@ -266,7 +278,7 @@ def add_measurement(s: Session, candidate_id: CandidateId, report: Report, *, ac
     campaign = s.get_one(Campaign, candidate.campaign_id)
     if campaign.evaluator_id is None:
         raise Refused(f'campaign {campaign.name} has no evaluator yet: run `piloop init`')
-    if candidate.verdict is Verdict.PENDING:
+    if pending(candidate):
         raise Refused(f'candidate#{candidate.id} is pending: the daemon judges it now; add the measurement after that')
     cfg = config_of(campaign)
     names = {m.name for m in cfg.metrics}
@@ -294,9 +306,9 @@ def add_measurement(s: Session, candidate_id: CandidateId, report: Report, *, ac
 
 
 def _stays(candidate: Candidate) -> str:
-    if candidate.verdict is Verdict.KEEP:
+    if candidate.verdict is Outcome.KEEP:
         return 'its keep stays; the runs that start from it must beat its new mean'
-    return f'its verdict stays: {candidate.verdict}, set by {candidate.verdict_by or "nobody"}'
+    return f'its verdict stays: {label(candidate)}, set by {candidate.verdict_by or "nobody"}'
 
 
 def measuring_held(s: Session, campaign: Campaign, cfg: CampaignConfig) -> str:
@@ -464,7 +476,7 @@ def note_candidate(
     follow_ups: Sequence[str] = (),
     track: TrackName | None = None,
 ) -> tuple[Candidate, list[Idea]]:
-    """Keep a regressed result in view as a lead (``ledger.note``), with a seed pinned to it per follow-up.
+    """Keep a regressed result in view as a lead (``set_verdict``, ``Cause.NOTE``), with a seed pinned to it per follow-up.
 
     The follow-ups are on ``track``, else on the track of the candidate's run. Returns the candidate and the new seeds.
 
@@ -476,10 +488,7 @@ def note_candidate(
     campaign = s.get_one(Campaign, candidate.campaign_id)
     if follow_ups:
         files(campaign, actor)
-    try:
-        note(candidate, reason, actor)
-    except NoteRefused as e:
-        raise Refused(str(e)) from e
+    set_verdict(s, candidate.id, Outcome.INTERESTING, cause=Cause.NOTE, reason=reason, actor=actor)
     on = track_for(campaign, track) if track is not None else track_of(config_of(campaign), candidate).name
     return candidate, follow_up(s, candidate, follow_ups, reason, actor, track=on)
 

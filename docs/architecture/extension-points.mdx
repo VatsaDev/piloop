@@ -406,8 +406,8 @@ from importlib.resources import files
 
 from sqlalchemy import func, select
 
-from piloop.capabilities import Fire, SweepRole, Tick, Trigger, TriggerEntry
-from piloop.db.models import Candidate, Verdict, utcnow
+from piloop.capabilities import Fire, Outcome, SweepRole, Tick, Trigger, TriggerEntry
+from piloop.db.models import Candidate, utcnow
 
 
 class NoKeep(Trigger):
@@ -417,7 +417,7 @@ class NoKeep(Trigger):
 
     def fire(self, tick: Tick) -> Fire | None:
         keeps = select(func.max(Candidate.created_at)).where(
-            Candidate.campaign_id == tick.campaign.id, Candidate.verdict == Verdict.KEEP
+            Candidate.campaign_id == tick.campaign.id, Candidate.verdict == Outcome.KEEP
         )
         latest = tick.s.scalar(keeps) or tick.campaign.created_at
         started = tick.last.started_at if tick.last is not None else latest

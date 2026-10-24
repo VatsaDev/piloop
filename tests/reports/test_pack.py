@@ -9,10 +9,11 @@ from sqlalchemy.orm import Session
 from piloop.agents.roles import files_of
 from piloop.campaign.ideas import Yield, source, yields
 from piloop.config import CampaignConfig, load_campaign_config
-from piloop.db.models import Campaign, Comment, CommentKind, IdeaStatus, Verdict
+from piloop.db.models import Campaign, Comment, CommentKind, IdeaStatus, Origin
 from piloop.db.session import Database
 from piloop.ids import TargetKind, TargetRef
 from piloop.plugins.role.contract import Files
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.pack import (
     ARTIFACTS_SHOWN,
     DIGESTS_SHOWN,
@@ -70,11 +71,11 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Path:
     write(workspace / 'research' / 'losses-c2.md', '# Losses of candidate#2\n', 5)
     with db.session() as s:
         kept = idea(s, campaign, 'more lines', family='appending', created_by='orchestrator', priority=1)
-        e2 = scored(s, kept, 1, (Verdict.KEEP, {'score': 3, 'size': 12}, None))
+        e2 = scored(s, kept, 1, (Outcome.KEEP, {'score': 3, 'size': 12}, None))
         worse = idea(s, campaign, 'fewer lines', family='appending', created_by='research#4')
-        scored(s, worse, e2.id, (Verdict.DISCARD, {'score': 2, 'size': 8}, None))
+        scored(s, worse, e2.id, (Outcome.DISCARD, {'score': 2, 'size': 8}, None))
         odd = idea(s, campaign, 'odd lines', created_by='research#4')
-        scored(s, odd, e2.id, (Verdict.INTERESTING, {'score': 3, 'size': 9}, None))
+        scored(s, odd, e2.id, (Outcome.INTERESTING, {'score': 3, 'size': 9}, None))
         idea(s, campaign, 'pad lines', IdeaStatus.SEED, family='padding', created_by='watchdog#7', provenance='run#1')
         idea(s, campaign, 'ask the human', IdeaStatus.PROPOSED, created_by='human')
         idea(s, campaign, 'parked lines', IdeaStatus.PARKED, family='padding', created_by='watchdog#3')
@@ -141,16 +142,17 @@ def test_the_pack_of_a_campaign(db: Database, campaign: Campaign, tmp_path: Path
     )
 
 
-def test_an_idea_whose_commits_were_all_skipped_is_unmeasured_not_a_dead_end(
+def test_an_idea_whose_commits_were_all_skipped_is_skipped_not_a_dead_end(
     db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
     with db.session() as s:
         scaffold = idea(s, campaign, 'scaffold only', family='scaffolding', created_by='research#4')
-        scored(s, scaffold, 1, (Verdict.UNMEASURED, {}, None))
+        skipped = scored(s, scaffold, 1, (Outcome.DISCARD, {}, None))
+        skipped.verdict, skipped.origin = None, Origin.SKIPPED
         s.commit()
     text = render(db, campaign, None)
     assert '| scaffolding | 1 | 0 | 0 | 0 | 0 |' in text, 'no discard or crash'
-    assert '| research#4 | scaffolding | — | 2 | scaffold only | unmeasured (candidate#2) |' in text
+    assert '| research#4 | scaffolding | — | 2 | scaffold only | skipped (candidate#2) |' in text
 
 
 def test_an_empty_pack_says_what_is_missing(db: Database, campaign: Campaign, tmp_path: Path) -> None:
@@ -197,11 +199,11 @@ def test_the_pack_is_bounded(db: Database, campaign: Campaign, tmp_path: Path) -
 def test_yields_count_ideas_runs_keeps_and_interesting_per_source(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
         a = idea(s, campaign, 'a', created_by='research#1')
-        c = scored(s, a, 1, (Verdict.KEEP, {'score': 2, 'size': 1}, None), (Verdict.INTERESTING, {'score': 2}, None))
-        scored(s, a, c.id, (Verdict.KEEP, {'score': 3, 'size': 1}, None))
+        c = scored(s, a, 1, (Outcome.KEEP, {'score': 2, 'size': 1}, None), (Outcome.INTERESTING, {'score': 2}, None))
+        scored(s, a, c.id, (Outcome.KEEP, {'score': 3, 'size': 1}, None))
         idea(s, campaign, 'b', created_by='research#2')
         d = idea(s, campaign, 'd', created_by='orchestrator')
-        scored(s, d, 1, (Verdict.INTERESTING, {'score': 1}, None))
+        scored(s, d, 1, (Outcome.INTERESTING, {'score': 1}, None))
         s.commit()
         assert yields(s, campaign.id) == [
             Yield('research', ideas=2, ran=1, keeps=2, interesting=1),

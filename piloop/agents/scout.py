@@ -27,11 +27,11 @@ from piloop.db.models import (
     IdeaStatus,
     Run,
     Technique,
-    Verdict,
     count,
 )
 from piloop.db.triggers.changelog import IdeaStatusChanged
 from piloop.ids import AgentSessionId, CampaignId, RoleName, TargetKind
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.text import cell
 
 EventModel.retire('scout.requested')  # 0.1.0 requested a sweep with it; a sweep is an agent_sessions row now
@@ -94,7 +94,7 @@ def watch_list(s: Session, campaign_id: CampaignId, role: RoleName) -> list[Watc
     keeps = s.execute(
         select(Run.idea_id, Candidate.created_at)
         .join(Candidate, Candidate.run_id == Run.id)
-        .where(Run.idea_id.in_(list(developed)), Candidate.verdict == Verdict.KEEP)
+        .where(Run.idea_id.in_(list(developed)), Candidate.verdict == Outcome.KEEP)
     )
     kept: defaultdict[int, list[datetime]] = defaultdict(list)
     for idea_id, at in keeps:

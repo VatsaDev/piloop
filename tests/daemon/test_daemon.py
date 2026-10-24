@@ -27,9 +27,9 @@ from piloop.db.models import (
     Run,
     RunEnd,
     RunStatus,
-    Verdict,
 )
 from piloop.db.session import Database, migrate
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.proc import Inherited, alive, started
 from piloop.settings import Settings
 from tests.conftest import (
@@ -328,7 +328,7 @@ def test_an_in_place_restart_leaves_the_agents_running_and_the_new_daemon_finish
             AgentSessionState.EXITED,
         )
         made = s.scalars(select(Candidate).where(Candidate.run_id == 1).order_by(Candidate.id)).all()
-        assert [(c.summary, c.verdict) for c in made] == [('first', Verdict.KEEP), ('second', Verdict.KEEP)]
+        assert [(c.summary, c.verdict) for c in made] == [('first', Outcome.KEEP), ('second', Outcome.KEEP)]
         assert s.get_one(Idea, 1).status is IdeaStatus.DONE
         assert s.scalar(select(func.count()).select_from(Run)) == 1, 'the idea never ran again'
     wait_until(lambda: not (cfg.home / 'runs' / '1' / 'worktree').exists())  # once the agent's result is in

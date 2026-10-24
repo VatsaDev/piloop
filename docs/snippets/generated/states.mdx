@@ -6,4 +6,6 @@
 | `RunStatus` | `runs.status` | `queued`, `running`, `succeeded`, `failed`, `timed_out` |
 | `RunEnd` | `runs.end` | `finished`, `failed`, `timed_out`, `awaiting_answer`, `cancelled`, `campaign_stopped`, `daemon_stopped`, `stale`, `role_removed`, `not_started`, `worker_lost` |
 | `AgentSessionState` | `agent_sessions.state` | `requested`, `starting`, `running`, `ending`, `exited`, `killed` |
-| `Verdict` | `candidates.verdict` | `pending`, `keep`, `interesting`, `discard`, `crash`, `reference`, `unmeasured`, `recovered` |
+| `Outcome` | `candidates.verdict` | `keep`, `interesting`, `discard`, `crash` |
+| `Origin` | `candidates.origin` | `baseline`, `run`, `reference`, `recovered`, `skipped` |
+| `Cause` | `candidates.cause` | `note`, `moved` |

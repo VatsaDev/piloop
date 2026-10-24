@@ -29,7 +29,7 @@ from piloop.campaign.stop import (
     stall,
 )
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
-from piloop.daemon.run_controller import RunFinished
+from piloop.daemon.run_controller import SKIPPED_REASON, RunFinished
 from piloop.db.events import in_order
 from piloop.db.models import (
     AgentSession,
@@ -44,11 +44,11 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Measurement,
+    Origin,
     Pause,
     Run,
     RunEnd,
     RunStatus,
-    Verdict,
     utcnow,
 )
 from piloop.db.session import Database
@@ -61,8 +61,8 @@ from piloop.plugins.metric import Direction
 from piloop.plugins.stop_rule import limits as limits_module
 from piloop.plugins.stop_rule.contract import GO, STOP_RULES, Fact, Hold, Progress, Stop, StopCase, StopRule
 from piloop.plugins.stop_rule.limits import Limits
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.overview import progress
-from piloop.scoring.ledger import SKIPPED
 from tests.conftest import (
     HARNESS_APPEND,
     HARNESS_NOOP,
@@ -143,7 +143,7 @@ def add_run(
         s.add(run)
         s.commit()
     if keep_score is not None or (measured and not in_flight):
-        verdict = Verdict.DISCARD if keep_score is None else Verdict.KEEP
+        verdict = Outcome.DISCARD if keep_score is None else Outcome.KEEP
         candidate_id = add_candidate(db, campaign, run.id, verdict)
         with db.session() as s:
             evaluator_id = s.get_one(Campaign, campaign.id).evaluator_id or 0
@@ -153,9 +153,14 @@ def add_run(
 
 
 def add_candidate(
-    db: Database, campaign: Campaign, run_id: RunId, verdict: Verdict, why: str | None = None
+    db: Database, campaign: Campaign, run_id: RunId, state: Outcome | Origin, why: str | None = None
 ) -> CandidateId:
-    """Add an unmeasured candidate of run ``run_id``, a child of the baseline."""
+    """Add an unmeasured candidate of run ``run_id``, a child of the baseline: with a verdict, or of an origin."""
+    match state:
+        case Outcome():
+            origin, verdict = Origin.RUN, state
+        case Origin():
+            origin, verdict = state, None
     with db.session() as s:
         candidate = Candidate(
             campaign_id=campaign.id,
@@ -163,6 +168,7 @@ def add_candidate(
             parent_id=1,
             tree_sha=f'tree{run_id}',
             commit_sha=f'commit{run_id}',
+            origin=origin,
             verdict=verdict,
             verdict_reason=why,
         )
@@ -203,30 +209,32 @@ def test_no_stop_table_means_open_ended(db: Database, campaign: Campaign) -> Non
 def test_target_on_the_best_kept_candidate_in_the_metric_direction(db: Database, campaign: Campaign) -> None:
     configure(db, campaign, target=3.0)
     with db.session() as s:
-        s.get_one(Candidate, 1).verdict = Verdict.DISCARD
+        s.get_one(Candidate, 1).verdict = Outcome.DISCARD
         s.commit()
     assert reason(db, campaign) is None, 'nothing kept'
     with db.session() as s:
-        s.get_one(Candidate, 1).verdict = Verdict.KEEP
+        s.get_one(Candidate, 1).verdict = Outcome.KEEP
         s.commit()
     assert reason(db, campaign) is None, 'the baseline scores 1'
     add_run(db, campaign, keep_score=2.9)
     assert reason(db, campaign) is None
     with db.session() as s:
-        s.get_one(Candidate, 2).verdict = Verdict.DISCARD
+        s.get_one(Candidate, 2).verdict = Outcome.DISCARD
         s.commit()
     add_run(db, campaign, keep_score=3.0)
     assert reason(db, campaign) == 'target: score 3 ≥ 3'
     with db.session() as s:
-        s.get_one(Candidate, 3).verdict = Verdict.INTERESTING
+        s.get_one(Candidate, 3).verdict = Outcome.INTERESTING
         s.commit()
     assert reason(db, campaign) is None, 'only a keep counts'
     with db.session() as s:
-        s.get_one(Candidate, 3).verdict = Verdict.REFERENCE
+        c = s.get_one(Candidate, 3)
+        c.verdict, c.origin = None, Origin.REFERENCE
         s.commit()
     assert reason(db, campaign) is None, 'a reference is never the best'
     with db.session() as s:
-        s.get_one(Candidate, 3).verdict = Verdict.KEEP
+        c = s.get_one(Candidate, 3)
+        c.verdict, c.origin = Outcome.KEEP, Origin.RUN
         for m in s.scalars(select(Measurement).where(Measurement.candidate_id == 3)):
             m.metrics = {'score': 3.4}
         s.commit()
@@ -278,7 +286,7 @@ def test_max_runs_waits_for_a_finished_run_whose_commits_are_scored(db: Database
 
     assert scoring(True, IdeaStatus.SCHEDULED) == (None, 1), 'its candidates do not exist yet, but it keeps its place'
     assert scoring(True, IdeaStatus.PARKED) == (None, 1), 'parked meanwhile: it still keeps its place'
-    add_candidate(db, campaign, run_id, Verdict.UNMEASURED, SKIPPED)
+    add_candidate(db, campaign, run_id, Origin.SKIPPED, SKIPPED_REASON)
     assert scoring(False, IdeaStatus.DONE) == (None, 0), 'only skip commits: it does not count, and another run starts'
     assert scoring(False, IdeaStatus.SCHEDULED) == (None, 0), 'scored: the status of its idea does not matter'
 
@@ -393,7 +401,7 @@ def test_plateau_counts_finished_runs_since_the_last_keep(db: Database, campaign
     add_run(db, campaign, status=RunStatus.SUCCEEDED)
     assert reason(db, campaign) == 'plateau: 2 runs without a keep'
     with db.session() as s:
-        s.add(Candidate(campaign_id=campaign.id, tree_sha='imported', commit_sha='c', verdict=Verdict.REFERENCE))
+        s.add(Candidate(campaign_id=campaign.id, tree_sha='imported', commit_sha='c', origin=Origin.REFERENCE))
         s.commit()
     assert reason(db, campaign) == 'plateau: 2 runs without a keep', 'an imported reference resets nothing'
 
@@ -407,13 +415,13 @@ def test_only_runs_that_produced_a_measured_candidate_count_toward_max_runs(db: 
     """
     configure(db, campaign, max_runs=3)
     add_run(db, campaign, status=RunStatus.FAILED, error='implementer produced no commits', measured=False)
-    add_candidate(db, campaign, add_run(db, campaign, measured=False), Verdict.UNMEASURED, SKIPPED)
+    add_candidate(db, campaign, add_run(db, campaign, measured=False), Origin.SKIPPED, SKIPPED_REASON)
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
         assert (runs(s, row), runs_without_keep(s, row)) == (0, 0)
     add_run(db, campaign)
     assert reason(db, campaign) is None, 'one measured run'
-    add_candidate(db, campaign, add_run(db, campaign, measured=False), Verdict.PENDING)
+    add_candidate(db, campaign, add_run(db, campaign, measured=False), Origin.RUN)
     assert reason(db, campaign) is None, 'two'
     add_run(db, campaign, status=RunStatus.RUNNING)
     with db.session() as s:
@@ -430,11 +438,11 @@ def test_plateau_counts_the_runs_that_max_runs_counts(db: Database, campaign: Ca
     configure(db, campaign, plateau=2)
     add_run(db, campaign, keep_score=5.0)
     add_run(db, campaign, status=RunStatus.FAILED, error='implementer produced no commits', measured=False)
-    add_candidate(db, campaign, add_run(db, campaign, measured=False), Verdict.UNMEASURED, SKIPPED)
+    add_candidate(db, campaign, add_run(db, campaign, measured=False), Origin.SKIPPED, SKIPPED_REASON)
     add_run(db, campaign, status=RunStatus.SUCCEEDED, measured=False)
     add_run(db, campaign, status=RunStatus.FAILED, error='agent exit 1', measured=False)
     assert reason(db, campaign) is None, 'four runs without a keep, none of them measured'
-    add_candidate(db, campaign, add_run(db, campaign, measured=False), Verdict.PENDING)
+    add_candidate(db, campaign, add_run(db, campaign, measured=False), Origin.RUN)
     assert reason(db, campaign) is None, 'one waits for its measurement'
     add_run(db, campaign, status=RunStatus.FAILED, error='agent exit 1')
     assert reason(db, campaign) == 'plateau: 2 runs without a keep', 'a failed run whose commit was measured counts'

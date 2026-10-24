@@ -333,7 +333,7 @@ def test_verdict_brief_and_campaign_status_changes_carry_what_the_feed_needs(
                 'human',
                 'candidate',
                 1,
-                '{"kind":"candidate.verdict","old":"pending","new":"interesting","verdict_by":"human","verdict_reason":"not a win, a lead"}',
+                '{"kind":"candidate.verdict","old":null,"new":"interesting","verdict_by":"human","verdict_reason":"not a win, a lead"}',
             ),
             ('run.brief', 'human', 'run', 1, '{"kind":"run.brief","old_length":null,"new_length":12}'),
             (
@@ -393,7 +393,7 @@ def test_deletes_leave_tombstones_and_cascades_too(con: sqlite3.Connection) -> N
                 'human',
                 'candidate',
                 1,
-                '{"kind":"candidate.deleted","tree_sha":"tree","commit_sha":"sha","verdict":"keep"}',
+                '{"kind":"candidate.deleted","tree_sha":"tree","commit_sha":"sha","origin":"run","verdict":"keep"}',
             ),
             (
                 'idea.deleted',

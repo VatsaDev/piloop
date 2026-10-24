@@ -21,13 +21,13 @@ from piloop.db.models import (
     IdeaStatus,
     Measurement,
     Run,
-    Verdict,
     utcnow,
 )
 from piloop.db.session import Database
 from piloop.db.triggers.changelog import CommentAcked
 from piloop.ids import CommentId, TargetKind, TargetRef
-from piloop.scoring.ledger import SKIPPED, CandidateJudged, IdeaCreated
+from piloop.plugins.verdict_rule.contract import Outcome
+from piloop.scoring.ledger import CandidateJudged, IdeaCreated
 from tests.conftest import WATCHDOG
 from tests.reports.test_history import idea
 from tests.reports.test_overview import render
@@ -224,10 +224,9 @@ def test_news_is_what_happened_since_the_cursor_that_the_orchestrator_did_not_wr
         run3 = TargetRef(TargetKind.RUN, 3)
         reported = AnomalyReported(subject=run3, anomaly=AnomalyKind.RUN_FAILED, line='run#3 failed: boom')
         emit(s, reported, TargetRef(TargetKind.AGENT_SESSION, watchdog.id), System.DAEMON)
-        judged = CandidateJudged(verdict=Verdict.KEEP, score=2.0, reason='score +1 over candidate#1\nmore')
+        judged = CandidateJudged(verdict=Outcome.KEEP, score=2.0, reason='score +1 over candidate#1\nmore')
         candidate = TargetRef(TargetKind.CANDIDATE, 1)
         emit(s, judged, candidate, System.DAEMON)
-        emit(s, CandidateJudged(verdict=Verdict.UNMEASURED, score=None, reason=SKIPPED), candidate, System.DAEMON)
         s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
         s.get_one(Campaign, campaign.id).stopped_reason = 'max_tokens 100 reached'
         s.commit()

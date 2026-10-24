@@ -6,7 +6,18 @@ from pathlib import Path
 import pytest
 from inline_snapshot import snapshot
 
-from piloop.scoring.evaluate import EvalResult, parse_metrics, run_evaluate
+from piloop.scoring.evaluate import (
+    BadUnits,
+    EvalResult,
+    Exited,
+    Failed,
+    Killed,
+    Measured,
+    MissingMetrics,
+    TimedOut,
+    parse_metrics,
+    run_evaluate,
+)
 
 
 def test_parse_metrics() -> None:
@@ -18,7 +29,7 @@ def test_evaluate_ok(tmp_path: Path) -> None:
     r = run_evaluate(
         ['sh', '-c', 'echo METRIC a=1; echo METRIC b=2'], cwd=tmp_path, log_dir=tmp_path, timeout=5, required={'a'}
     )
-    assert (r.metrics, r.error) == ({'a': 1.0, 'b': 2.0}, None)
+    assert isinstance(r, Measured) and (r.metrics, r.units) == ({'a': 1.0, 'b': 2.0}, {})
     assert (tmp_path / 'eval.stdout').read_text() == 'METRIC a=1\nMETRIC b=2\n'
 
 
@@ -30,8 +41,8 @@ def test_evaluate_nonzero_exit_drops_metrics(tmp_path: Path) -> None:
         timeout=5,
         required={'a'},
     )
-    assert r.metrics == {}
-    assert r.error == snapshot('evaluate exit 2: boom')
+    assert isinstance(r, Failed) and r.why == Exited(2, 'boom')
+    assert (r.error, r.printed) == (snapshot('evaluate exit 2: boom'), {})
 
 
 def test_evaluate_killed_by_a_signal_names_the_signal(tmp_path: Path) -> None:
@@ -43,7 +54,8 @@ def test_evaluate_killed_by_a_signal_names_the_signal(tmp_path: Path) -> None:
         timeout=5,
         required={'a'},
     )
-    assert (r.metrics, r.signal) == ({}, signal.SIGTERM)
+    assert isinstance(r, Failed) and r.why == Killed(signal.SIGTERM, 'boom')
+    assert isinstance(r.why, Killed) and r.why.sent, 'another process sent it: the evaluate measured nothing'
     assert r.error == snapshot('evaluate killed by SIGTERM (exit -15), not by its own exit: boom')
 
 
@@ -51,17 +63,20 @@ def test_evaluate_killed_by_a_signal_names_the_signal(tmp_path: Path) -> None:
 def test_evaluate_killed_by_a_signal_with_no_name_gives_its_number(tmp_path: Path) -> None:
     unnamed = signal.SIGRTMIN + 1
     r = run_evaluate(['sh', '-c', f'kill -{unnamed} $$'], cwd=tmp_path, log_dir=tmp_path, timeout=5, required=set())
+    assert isinstance(r, Failed) and isinstance(r.why, Killed) and not r.why.sent
     assert r.error == f'evaluate killed by signal {unnamed} (exit -{unnamed}), not by its own exit: '
 
 
 def test_evaluate_missing_metric(tmp_path: Path) -> None:
     r = run_evaluate(['sh', '-c', 'echo METRIC a=1'], cwd=tmp_path, log_dir=tmp_path, timeout=5, required={'a', 'b'})
-    assert r.error == snapshot('evaluate printed no METRIC line for: b')
+    assert isinstance(r, Failed) and r.why == MissingMetrics(('b',), {'a': 1.0})
+    assert (r.error, r.printed) == (snapshot('evaluate printed no METRIC line for: b'), {'a': 1.0})
 
 
 def test_evaluate_timeout_kills_grandchildren_and_keeps_logs(tmp_path: Path) -> None:
     cmd = ['sh', '-c', 'echo partial; sleep 30 & echo $! > child.pid; wait']
     r = run_evaluate(cmd, cwd=tmp_path, log_dir=tmp_path, timeout=0.3, required=set())
+    assert isinstance(r, Failed) and r.why == TimedOut(0.3)
     assert r.error == snapshot('evaluate timeout after 0.3s')
     assert (tmp_path / 'eval.stdout').read_text() == 'partial\n'
     assert_dead(int((tmp_path / 'child.pid').read_text()))
@@ -89,17 +104,17 @@ def test_the_daemon_evaluation_gets_a_units_file_and_takes_it_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     r, path = evaluate_with_units(tmp_path, monkeypatch, '{"a": {"x": 1, "y": 2.0}}')
-    assert (r.metrics, r.error, r.units) == ({'a': 3.0, 'b': 1.0}, None, {'a': {'x': 1.0, 'y': 2.0}})
+    assert isinstance(r, Measured) and (r.metrics, r.units) == ({'a': 3.0, 'b': 1.0}, {'a': {'x': 1.0, 'y': 2.0}})
     assert not path.exists(), 'the file never outlives the evaluation'
 
 
 def test_no_units_file_written_or_asked_for_is_no_units(tmp_path: Path) -> None:
     script = ['sh', '-c', 'echo METRIC a=1; echo "${PILOOP_UNITS_FILE:-unset}" > seen']
     r = run_evaluate(script, cwd=tmp_path, log_dir=tmp_path, timeout=5, required={'a'}, units_file=tmp_path / 'u')
-    assert (r.error, r.units) == (None, {})
+    assert isinstance(r, Measured) and (r.metrics, r.units) == ({'a': 1.0}, {})
     assert (tmp_path / 'seen').read_text().strip() == str(tmp_path / 'u')
     r = run_evaluate(script, cwd=tmp_path, log_dir=tmp_path, timeout=5, required={'a'})
-    assert (r.error, r.units) == (None, {})
+    assert isinstance(r, Measured) and (r.metrics, r.units) == ({'a': 1.0}, {})
     assert (tmp_path / 'seen').read_text().strip() == 'unset', 'an implementer running evaluate itself gets no path'
 
 
@@ -119,12 +134,13 @@ def test_a_bad_units_file_is_an_evaluation_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, units: str, error: str
 ) -> None:
     r, path = evaluate_with_units(tmp_path, monkeypatch, units)
-    assert r.error is not None and r.error.startswith(f'evaluate wrote a bad PILOOP_UNITS_FILE: {error}')
-    assert (r.metrics, r.units) == ({'a': 3.0, 'b': 1.0}, {})
+    assert isinstance(r, Failed) and isinstance(r.why, BadUnits)
+    assert r.error.startswith(f'evaluate wrote a bad PILOOP_UNITS_FILE: {error}')
+    assert r.printed == {'a': 3.0, 'b': 1.0}, 'the measurement keeps what it printed, and no units'
     assert not path.exists()
 
 
 def test_a_rounded_metric_line_still_matches_its_units(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     thirds = ', '.join(f'"r{i}": {1 / 3}' for i in range(9))  # 3.0000000000000004 in floats; the line says 3
     r, _ = evaluate_with_units(tmp_path, monkeypatch, f'{{"a": {{{thirds}}}}}')
-    assert r.error is None and len(r.units['a']) == 9
+    assert isinstance(r, Measured) and len(r.units['a']) == 9

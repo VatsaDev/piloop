@@ -369,8 +369,8 @@ def test_the_shapes_of_0_1_0_are_rewritten_to_the_models(tmp_path: Path) -> None
             ('IdeaPriorityChanged', '{"old":2,"new":0,"kind":"idea.priority"}'),
             ('IdeaTrackChanged', '{"old":"a","new":"b","kind":"idea.track"}'),
             (
-                'VerdictChanged',
-                '{"old":"pending","new":"reference","verdict_by":"human","verdict_reason":null,"kind":"candidate.verdict"}',
+                'OriginChanged',
+                '{"kind":"candidate.origin","old":"run","new":"reference"}',
             ),
             ('RunBriefChanged', '{"old_length":null,"new_length":12,"kind":"run.brief"}'),
             (
@@ -383,7 +383,10 @@ def test_the_shapes_of_0_1_0_are_rewritten_to_the_models(tmp_path: Path) -> None
                 'CommentDeleted',
                 '{"target_kind":"agent_session","target_id":1,"author":"me","body":"hi","comment_kind":"note","kind":"comment.deleted"}',
             ),
-            ('CandidateDeleted', '{"tree_sha":"t","commit_sha":"c","verdict":"crash","kind":"candidate.deleted"}'),
+            (
+                'CandidateDeleted',
+                '{"tree_sha":"t","commit_sha":"c","verdict":"crash","kind":"candidate.deleted","origin":"run"}',
+            ),
             ('Commented', '{"target_kind":"campaign","target_id":1,"kind":"comment.note"}'),
             ('Commented', '{"target_kind":"run","target_id":1,"kind":"comment.finding"}'),
             ('Commented', '{"target_kind":"idea","target_id":1,"kind":"comment.decision"}'),
@@ -427,7 +430,7 @@ def test_the_shapes_of_0_2_0_are_rewritten_to_the_models(tmp_path: Path) -> None
             ),
             ('RunRelaunched', '{"agent_session":4,"launches":2,"kind":"run.relaunched"}'),
             ('RejudgeFailed', '{"error":"GitError: gone","kind":"candidate.rejudge_failed"}'),
-            ('CandidateJudged', '{"verdict":"unmeasured","score":null,"reason":"skipped","kind":"candidate.judged"}'),
+            ('OriginChanged', '{"kind":"candidate.origin","old":"run","new":"skipped"}'),
             ('RunFinished', '{"error":"cancelled","end":"cancelled","kind":"run.finished"}'),
             ('RecoveryRequeued', '{"run":1,"candidate":9,"kind":"idea.recovery_requeued"}'),
             ('UnknownEvent', '{"jobs":["12 python train.py"],"kind":"agent_session.jobs_left"}'),
@@ -447,8 +450,8 @@ def test_the_shapes_of_0_2_0_are_rewritten_to_the_models(tmp_path: Path) -> None
             ('CampaignParentChanged', '{"old":null,"new":2,"kind":"campaign.parent_id"}'),
             ('CampaignPausedChanged', '{"old":null,"new":"launches","paused_reason":"gpu","kind":"campaign.paused"}'),
             (
-                'VerdictChanged',
-                '{"old":"pending","new":"recovered","verdict_by":"daemon","verdict_reason":"recovered","kind":"candidate.verdict"}',
+                'OriginChanged',
+                '{"kind":"candidate.origin","old":"run","new":"recovered"}',
             ),
         ]
     )

@@ -61,10 +61,10 @@ from piloop.db.models import (
     LeaseState,
     LinkKind,
     Measurement,
+    Origin,
     Run,
     RunEnd,
     RunStatus,
-    Verdict,
     utcnow,
 )
 from piloop.db.session import Database
@@ -81,6 +81,7 @@ from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.runtime.contract import Handle
 from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.vcs.git import GitRepository, commands as git
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import current_evaluator, due, head, import_reference, request_remeasure
 from tests.conftest import (
     HARNESS_APPEND,
@@ -271,7 +272,7 @@ def test_a_sweep_checks_out_the_head(db: Database, campaign: Campaign, runtime: 
     scheduler.wait()
     with db.session() as s:
         best = s.get_one(Candidate, 2)
-        assert best.verdict is Verdict.KEEP and best.commit_sha != s.get_one(Candidate, 1).commit_sha
+        assert best.verdict is Outcome.KEEP and best.commit_sha != s.get_one(Candidate, 1).commit_sha
         best_sha = best.commit_sha
     write_toml(Path(campaign.path), '#!/bin/sh\ngit rev-parse HEAD > workspace/head.txt\n')
     set_config(db, campaign)
@@ -449,7 +450,7 @@ def test_idea_without_a_base_is_parked(
 ) -> None:
     with db.session() as s:
         for c in s.scalars(select(Candidate)):
-            c.verdict = Verdict.DISCARD
+            c.verdict = Outcome.DISCARD
         s.commit()
     (idea,) = add_ideas(db, campaign, 'orphan')
     scheduler = make_scheduler(db, runtime, tmp_path)
@@ -465,7 +466,7 @@ def test_a_run_starts_from_the_best_as_of_its_start_not_as_of_the_idea(
     (idea,) = add_ideas(db, campaign, 'written while the baseline was best')
     with db.session() as s:
         s.add(
-            Candidate(campaign_id=campaign.id, tree_sha='b', commit_sha='b', verdict=Verdict.KEEP, verdict_by='human')
+            Candidate(campaign_id=campaign.id, tree_sha='b', commit_sha='b', verdict=Outcome.KEEP, verdict_by='human')
         )
         s.flush()
         s.add(Measurement(candidate_id=2, evaluator_id=1, metrics={'score': 9, 'size': 9}))
@@ -487,7 +488,7 @@ def test_a_pin_is_honored_over_the_after_link_and_the_run_records_both_bases(
     (done,) = add_ideas(db, campaign, 'prerequisite', status=IdeaStatus.DONE)
     (branch,) = add_ideas(db, campaign, 'branch from the baseline', after=(done,))
     (missing,) = add_ideas(db, campaign, 'pinned to nothing', priority=3)
-    commit_candidate(db, campaign, 1, {'other.txt': 'x\n'}, Verdict.KEEP)
+    commit_candidate(db, campaign, 1, {'other.txt': 'x\n'}, Outcome.KEEP)
     with db.session() as s:
         s.add(Measurement(candidate_id=2, evaluator_id=1, metrics={'score': 9, 'size': 9}))
         s.get_one(Idea, branch).base_candidate_id = CandidateId(1)
@@ -510,7 +511,7 @@ def test_a_pin_is_honored_over_the_after_link_and_the_run_records_both_bases(
 
 
 def commit_candidate(
-    db: Database, campaign: Campaign, parent: int, files: dict[str, str], verdict: Verdict
+    db: Database, campaign: Campaign, parent: int, files: dict[str, str], verdict: Outcome
 ) -> CandidateId:
     """Commit ``files`` on candidate ``parent``'s commit, and add the commit as a candidate with ``verdict``."""
     repo = Repo(campaign.path)
@@ -550,10 +551,10 @@ def test_a_run_pinned_to_a_non_keep_is_a_branch_run_only_when_its_nearest_keep_i
     on_head, on_older, on_compose = add_ideas(
         db, campaign, 'on a note of the head', 'on a discard of the baseline', 'on a compose of the head'
     )
-    k = commit_candidate(db, campaign, 1, {'other.txt': 'x\n'}, Verdict.KEEP)
-    n = commit_candidate(db, campaign, k, {'notes.txt': 'n\n'}, Verdict.INTERESTING)
-    d = commit_candidate(db, campaign, 1, {'solve.txt': 'base\nd\n'}, Verdict.DISCARD)
-    c = commit_candidate(db, campaign, 1, {'solve.txt': 'base\nc\n', 'other.txt': 'x\n'}, Verdict.INTERESTING)
+    k = commit_candidate(db, campaign, 1, {'other.txt': 'x\n'}, Outcome.KEEP)
+    n = commit_candidate(db, campaign, k, {'notes.txt': 'n\n'}, Outcome.INTERESTING)
+    d = commit_candidate(db, campaign, 1, {'solve.txt': 'base\nd\n'}, Outcome.DISCARD)
+    c = commit_candidate(db, campaign, 1, {'solve.txt': 'base\nc\n', 'other.txt': 'x\n'}, Outcome.INTERESTING)
     with db.session() as s:
         s.add(Measurement(candidate_id=k, evaluator_id=1, metrics={'score': 9, 'size': 9}))
         s.get_one(Idea, on_head).base_candidate_id = n
@@ -589,11 +590,11 @@ def test_a_blocked_idea_waits_for_every_prerequisite_then_starts_from_the_head(
         assert s.get_one(Idea, third).status is IdeaStatus.READY
     scheduler.wait()
     with db.session() as s:
-        assert [s.get_one(Candidate, c).verdict for c in (2, 3)] == [Verdict.KEEP] * 2, 'scores 2 and 3'
+        assert [s.get_one(Candidate, c).verdict for c in (2, 3)] == [Outcome.KEEP] * 2, 'scores 2 and 3'
         # a human keeps a commit outside any run: the head is now candidate#4, which no prerequisite made
         sha = s.get_one(Candidate, 3).commit_sha
         s.add(
-            Candidate(campaign_id=campaign.id, tree_sha='h', commit_sha=sha, verdict=Verdict.KEEP, verdict_by='human')
+            Candidate(campaign_id=campaign.id, tree_sha='h', commit_sha=sha, verdict=Outcome.KEEP, verdict_by='human')
         )
         s.flush()
         s.add(Measurement(candidate_id=4, evaluator_id=1, metrics={'score': 9, 'size': 9}))
@@ -629,7 +630,7 @@ def test_a_prerequisite_that_ended_without_a_keep_parks_the_ideas_after_it_with_
             (proposed, IdeaStatus.PROPOSED),
         ):
             s.get_one(Idea, idea_id).status = status
-        for idea_id, verdict in ((parked, None), (nothing, Verdict.DISCARD), (kept, Verdict.KEEP)):
+        for idea_id, verdict in ((parked, None), (nothing, Outcome.DISCARD), (kept, Outcome.KEEP)):
             run = Run(
                 idea_id=idea_id,
                 attempt=1,
@@ -1107,7 +1108,10 @@ def test_stop_keeps_the_work_of_the_runs_it_cuts_and_the_next_run_of_the_idea_st
     ), 'the uncommitted line is its own recovered commit, as for any run'
     with db.session() as s:
         cut = s.scalars(select(Candidate).where(Candidate.run_id == 1).order_by(Candidate.id)).all()
-        assert [(c.commit_sha, c.verdict) for c in cut] == [(step, Verdict.RECOVERED), (head, Verdict.RECOVERED)]
+        assert [(c.commit_sha, c.origin, c.verdict) for c in cut] == [
+            (step, Origin.RECOVERED, None),
+            (head, Origin.RECOVERED, None),
+        ]
         assert all(c.measurements == [] for c in cut), 'never measured'
         assert (s.get_one(Run, 1).end, s.get_one(Idea, idea).status) == (RunEnd.DAEMON_STOPPED, IdeaStatus.READY)
         assert s.get_one(Idea, idea).base_candidate_id == cut[-1].id
@@ -1137,7 +1141,7 @@ def test_a_cut_run_whose_role_allows_no_requeue_keeps_its_base_and_a_known_tree_
     scheduler.stop(timeout=10)
     with db.session() as s:
         assert s.scalars(select(Candidate).where(Candidate.run_id == 1)).all() == [], 'the base, not a new candidate'
-        assert s.get_one(Candidate, 1).verdict is Verdict.KEEP
+        assert s.get_one(Candidate, 1).verdict is Outcome.KEEP
         assert (s.get_one(Idea, idea).status, s.get_one(Idea, idea).base_candidate_id) == (IdeaStatus.READY, None)
 
 
@@ -1188,7 +1192,7 @@ def test_a_stop_after_the_implementer_left_its_finding_scores_its_run_on_the_nex
     restarted.wait()
     with db.session() as s:
         [candidate] = s.scalars(select(Candidate).where(Candidate.run_id == 1)).all()
-        assert (candidate.summary, candidate.verdict) == ('step', Verdict.KEEP)
+        assert (candidate.summary, candidate.verdict) == ('step', Outcome.KEEP)
         assert s.get_one(Idea, idea).status is (IdeaStatus.PARKED if escalated else IdeaStatus.DONE)
         assert s.get_one(Run, 1).scoring is False
 
@@ -1376,8 +1380,8 @@ def test_stop_kills_the_evaluator_and_scores_nothing_more(
         )
         made = s.scalars(select(Candidate).where(Candidate.run_id == 1).order_by(Candidate.id)).all()
         assert [(c.summary, c.verdict, c.measurements) for c in made] == [
-            ('first', Verdict.PENDING, []),
-            ('second', Verdict.PENDING, []),
+            ('first', None, []),
+            ('second', None, []),
         ], 'both trees are candidates; the measurement of the first was killed and nothing judged them'
     measured = [sp for sp in spans.get_finished_spans() if sp.name == 'piloop.measure']
     assert len(measured) == 1, 'the second commit is never measured'
@@ -1407,7 +1411,7 @@ def test_a_restart_during_an_evaluation_scores_the_run_on_start_and_never_runs_i
     first.stop(timeout=10)
     with db.session() as s:
         assert s.get_one(Idea, 1).status is IdeaStatus.SCHEDULED
-        assert [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == 1))] == [Verdict.PENDING] * 2
+        assert [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == 1))] == [None] * 2
 
     hold.unlink()
     second = make_scheduler(db, runtime, tmp_path)
@@ -1416,8 +1420,8 @@ def test_a_restart_during_an_evaluation_scores_the_run_on_start_and_never_runs_i
     with db.session() as s:
         made = s.scalars(select(Candidate).where(Candidate.run_id == 1).order_by(Candidate.id)).all()
         assert [(c.summary, c.verdict, len(c.measurements)) for c in made] == [
-            ('first', Verdict.KEEP, 1),
-            ('second', Verdict.KEEP, 1),
+            ('first', Outcome.KEEP, 1),
+            ('second', Outcome.KEEP, 1),
         ], 'the cut commit and the one never reached are both measured and judged'
         assert s.get_one(Idea, 1).status is IdeaStatus.DONE, 'settled by its one finished run'
     second.tick()
@@ -1491,7 +1495,7 @@ def test_a_new_evaluator_measures_the_head_runs_wait_for_it_and_older_keeps_only
     with db.session() as s:
         old = s.get_one(Campaign, campaign.id).evaluator_id
         kept = s.scalars(select(Candidate).where(Candidate.run_id == 1)).one()
-        assert kept.verdict is Verdict.KEEP
+        assert kept.verdict is Outcome.KEEP
     doubled = ['sh', '-c', 'echo METRIC score=$(( 2 * $(wc -l < solve.txt) )); echo METRIC size=1']
     write_toml(Path(campaign.path), HARNESS_APPEND, evaluate=doubled)
     with db.session() as s:
@@ -1515,14 +1519,14 @@ def test_a_new_evaluator_measures_the_head_runs_wait_for_it_and_older_keeps_only
     )
     with db.session() as s:
         assert s.get_one(Run, 2).base_candidate_id == kept.id
-        assert s.get_one(Candidate, kept.id).verdict is Verdict.KEEP, 'measuring again judges nothing again'
+        assert s.get_one(Candidate, kept.id).verdict is Outcome.KEEP, 'measuring again judges nothing again'
         request_remeasure(s, s.get_one(Candidate, 1), System.HUMAN, repeats=1)
         s.commit()
     sched.tick()
     sched.wait()
     assert measured_by(db, CandidateId(1)) == [(old, 1.0, None), (new, 2.0, None)], 'measured when asked'
     with db.session() as s:
-        assert s.get_one(Candidate, 1).verdict is Verdict.KEEP
+        assert s.get_one(Candidate, 1).verdict is Outcome.KEEP
 
 
 def test_after_a_new_evaluator_runs_start_from_the_head_once_the_head_alone_is_measured(
@@ -1578,7 +1582,7 @@ def test_after_a_new_evaluator_no_run_starts_from_the_best_until_every_keep_is_m
     sched.wait()
     with db.session() as s:
         older, newer = (s.scalars(select(Candidate).where(Candidate.run_id == r)).one().id for r in (1, 2))
-        assert [s.get_one(Candidate, c).verdict for c in (older, newer)] == [Verdict.KEEP, Verdict.KEEP]
+        assert [s.get_one(Candidate, c).verdict for c in (older, newer)] == [Outcome.KEEP, Outcome.KEEP]
     doubled = ['sh', '-c', 'echo METRIC score=$(( 2 * $(wc -l < solve.txt) )); echo METRIC size=1']
     write_toml(Path(campaign.path), HARNESS_APPEND, max_implementers=2, evaluate=doubled)
     with db.session() as s:
@@ -1626,7 +1630,7 @@ def test_an_imported_reference_is_measured_by_the_daemon_and_stays_a_reference(
     sched.wait()
     assert measured_by(db, reference) == [(evaluator, 3.0, None)]
     with db.session() as s:
-        assert s.get_one(Candidate, reference).verdict is Verdict.REFERENCE, 'measured, never judged'
+        assert s.get_one(Candidate, reference).verdict is None, 'measured, never judged'
         trunk = head(s, s.get_one(Campaign, campaign.id))
         assert trunk is not None and trunk.id == 1, "it scores 3 to the baseline's 1 and is still not the head"
     sched.stop(timeout=5)
@@ -1641,7 +1645,7 @@ def test_a_keep_that_cannot_be_checked_out_is_measured_as_a_crash_once(
                 campaign_id=campaign.id,
                 tree_sha='0' * 40,
                 commit_sha='0' * 40,
-                verdict=Verdict.KEEP,
+                verdict=Outcome.KEEP,
                 verdict_by='human',
             )
         )
@@ -1982,13 +1986,13 @@ def test_a_run_frees_its_slot_when_its_implementer_ends_and_its_idea_settles_onc
         run = s.get_one(Run, 1)
         assert (run.status, run.finished_at is not None) == (RunStatus.SUCCEEDED, True), 'closed: its implementer ended'
         assert s.get_one(Idea, first).status is IdeaStatus.SCHEDULED, 'its commit is not judged yet'
-        assert s.scalars(select(Candidate).where(Candidate.run_id == 1)).one().verdict is Verdict.PENDING
+        assert s.scalars(select(Candidate).where(Candidate.run_id == 1)).one().verdict is None
     assert scheduler.tick() == [2], 'the one slot is free while run#1 is scored'
     go.touch()
     scheduler.wait()
     assert statuses(db) == [IdeaStatus.DONE, IdeaStatus.DONE]
     with db.session() as s:
-        assert s.scalars(select(Candidate).where(Candidate.run_id == 1)).one().verdict is Verdict.KEEP
+        assert s.scalars(select(Candidate).where(Candidate.run_id == 1)).one().verdict is Outcome.KEEP
         assert s.get_one(Idea, second).status is IdeaStatus.DONE
 
 
@@ -2093,8 +2097,10 @@ def test_an_implementer_that_the_stop_ends_mid_turn_closes_its_run_as_cut_by_the
             1,
             AgentEnded(reason='plateau: 5 runs without a keep', end=RunEnd.CAMPAIGN_STOPPED),
         )
-        verdicts = [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == 1).order_by(Candidate.id))]
-        assert verdicts == [Verdict.KEEP, Verdict.RECOVERED], 'its commit is scored, its draft recovered'
+        made = s.scalars(select(Candidate).where(Candidate.run_id == 1).order_by(Candidate.id))
+        assert [(c.origin, c.verdict) for c in made] == [(Origin.RUN, Outcome.KEEP), (Origin.RECOVERED, None)], (
+            'its commit is scored, its draft recovered'
+        )
         assert s.get_one(Idea, idea).status is IdeaStatus.READY, 'requeued from the recovered draft'
         assert runs(s, s.get_one(Campaign, campaign.id)) == 0, 'cut by the stop: no run limit counts it'
 
@@ -2201,7 +2207,7 @@ def test_a_cancelled_implementer_closes_its_run_as_cancelled_scores_its_commits_
         run = s.get_one(Run, 1)
         assert (run.status, run.end) == (RunStatus.FAILED, RunEnd.CANCELLED)
         verdicts = [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == 1))]
-        assert verdicts == [Verdict.KEEP], 'what it committed is scored'
+        assert verdicts == [Outcome.KEEP], 'what it committed is scored'
         assert s.get_one(Idea, idea).status is IdeaStatus.PARKED
         [note] = s.scalars(select(Comment).where(Comment.target_kind == TargetKind.IDEA)).all()
         assert note.body == 'parked: run#1 was cancelled by human; set the idea ready to run it again'
@@ -2405,7 +2411,7 @@ def explore_setup(db: Database, campaign: Campaign, explore_every: int) -> tuple
     urgent, level, explore = (
         add_ideas(db, campaign, t, priority=p)[0] for t, p in (('urgent', 0), ('level', 1), ('explore', 4))
     )
-    commit_candidate(db, campaign, 1, {'other.txt': 'x\n'}, Verdict.KEEP)
+    commit_candidate(db, campaign, 1, {'other.txt': 'x\n'}, Outcome.KEEP)
     with db.session() as s:
         s.add(Measurement(candidate_id=2, evaluator_id=1, metrics={'score': 9, 'size': 9}))
         s.get_one(Idea, level).base_candidate_id = CandidateId(2)

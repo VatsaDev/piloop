@@ -18,10 +18,10 @@ from piloop.db.models import (
     Run,
     RunEnd,
     RunStatus,
-    Verdict,
 )
 from piloop.db.session import Database
 from piloop.ids import IMPLEMENTER, TargetKind, TargetRef
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.history import (
     FINDINGS_IN_HISTORY,
     FIRST_LINE_CHARS,
@@ -65,7 +65,7 @@ def scored(
     s: Session,
     row: Idea,
     base: int,
-    *outcomes: tuple[Verdict, dict[str, float], str | None],
+    *outcomes: tuple[Outcome, dict[str, float], str | None],
     tokens: int | None = None,
 ) -> Candidate:
     """Add one run of ``row`` from candidate ``base`` with one measured candidate per outcome. Return the last."""
@@ -127,18 +127,18 @@ def test_history_lists_every_idea_with_its_outcome_the_lineage_and_the_findings(
             s,
             kept,
             1,
-            (Verdict.KEEP, {'score': 3, 'size': 12}, None),
+            (Outcome.KEEP, {'score': 3, 'size': 12}, None),
             tokens=234_444,
         )
         comment(s, TargetKind.IDEA, kept.id, 'appending works | keep appending\nsecond line is not shown')
         worse = idea(s, campaign, 'fewer lines', family='appending', created_by='implementer#4')
-        scored(s, worse, e2.id, (Verdict.DISCARD, {'score': 2, 'size': 8}, None))
+        scored(s, worse, e2.id, (Outcome.DISCARD, {'score': 2, 'size': 8}, None))
         crashed = idea(s, campaign, 'delete solve.txt', IdeaStatus.REJECTED, priority=3)
-        scored(s, crashed, e2.id, (Verdict.CRASH, {}, 'no such file'))
+        scored(s, crashed, e2.id, (Outcome.CRASH, {}, 'no such file'))
         comment(s, TargetKind.IDEA, crashed.id, 'first attempt: evaluate needs the file')
         comment(s, TargetKind.IDEA, crashed.id, 'second attempt agrees; rejected', author='watchdog#2')
         mixed = idea(s, campaign, 'two commits', after=(kept.id,))
-        scored(s, mixed, e2.id, (Verdict.CRASH, {}, 'syntax'), (Verdict.KEEP, {'score': 4, 'size': 16}, None))
+        scored(s, mixed, e2.id, (Outcome.CRASH, {}, 'syntax'), (Outcome.KEEP, {'score': 4, 'size': 16}, None))
         idea(s, campaign, 'a' * 200, IdeaStatus.READY, 'h' * 200, priority=0, after=(crashed.id, kept.id))
         idea(s, campaign, 'human should look', IdeaStatus.PROPOSED, 'the metric | is wrong\nsecond line')
         idea(s, campaign, 'fewer but longer lines', IdeaStatus.READY, supersedes=(worse.id,), after=(mixed.id, kept.id))
@@ -205,7 +205,7 @@ def test_history_worst_case_stays_under_the_documented_size(db: Database, campai
         for n in range(IDEAS_IN_HISTORY):
             links = (previous.id,) if previous is not None else ()
             row = idea(s, campaign, f'{n} ' + 't' * 200, IdeaStatus.REJECTED, 'h' * 200, after=links, supersedes=links)
-            scored(s, row, 1, (Verdict.DISCARD, {'score': 0.123456, 'size': 1}, None))
+            scored(s, row, 1, (Outcome.DISCARD, {'score': 0.123456, 'size': 1}, None))
             comment(s, TargetKind.IDEA, row.id, 'f' * 200)
             previous = row
         for _ in range(FINDINGS_IN_HISTORY):
@@ -224,12 +224,12 @@ def test_history_when_a_human_kept_an_unscored_commit_and_an_idea_builds_on_it(
 ) -> None:
     with db.session() as s:
         unscored = Candidate(
-            campaign_id=campaign.id, tree_sha='y', commit_sha='y', verdict=Verdict.KEEP, verdict_by='human:t'
+            campaign_id=campaign.id, tree_sha='y', commit_sha='y', verdict=Outcome.KEEP, verdict_by='human:t'
         )
         s.add(unscored)
         s.flush()
         row = idea(s, campaign, 'from an unscored base')
-        scored(s, row, unscored.id, (Verdict.KEEP, {'score': 5, 'size': 1}, None))
+        scored(s, row, unscored.id, (Outcome.KEEP, {'score': 5, 'size': 1}, None))
         s.commit()
     rendered = render(db, campaign)
     assert '| 1 | done | t | — | — | 2 | from an unscored base | keep 5 (candidate#3) |' in rendered, (

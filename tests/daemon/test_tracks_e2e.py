@@ -12,7 +12,8 @@ from sqlalchemy import select
 from piloop.daemon.main import Daemon
 from piloop.daemon.scheduler import RunQueued
 from piloop.db.events import in_order
-from piloop.db.models import Campaign, Candidate, Idea, Verdict
+from piloop.db.models import Campaign, Candidate, Idea
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import Rebased, head
 from piloop.settings import Settings
 from tests.conftest import ScriptRuntime, factory, register, workers_of, write_script
@@ -97,7 +98,7 @@ def test_two_tracks_rebase_a_keep_that_lost_the_race_and_refuse_one_past_the_oth
     daemon.scheduler.reap()
     assert len(daemon.scheduler.tick()) == 2, 'one slot per track'
     deadline = time.monotonic() + 120  # four evaluations and a rebase; a macOS runner is slow
-    while _verdicts(daemon) != [Verdict.KEEP, Verdict.KEEP]:
+    while _verdicts(daemon) != [Outcome.KEEP, Outcome.KEEP]:
         assert time.monotonic() < deadline, 'the cost keep never landed'
         time.sleep(0.05)
     go.touch()
@@ -106,10 +107,10 @@ def test_two_tracks_rebase_a_keep_that_lost_the_race_and_refuse_one_past_the_oth
     with daemon.db.session() as s:
         rows = s.scalars(select(Candidate).order_by(Candidate.id)).all()
         assert [(c.summary, c.verdict, c.parent_id) for c in rows] == [
-            ('baseline', Verdict.KEEP, None),
-            ('trim cost', Verdict.KEEP, 1),
-            ('slow accuracy', Verdict.INTERESTING, 1),
-            ('slow accuracy (rebased onto candidate#2)', Verdict.KEEP, 2),
+            ('baseline', Outcome.KEEP, None),
+            ('trim cost', Outcome.KEEP, 1),
+            ('slow accuracy', Outcome.INTERESTING, 1),
+            ('slow accuracy (rebased onto candidate#2)', Outcome.KEEP, 2),
         ]
         _, trimmed, raced, merged = rows
         assert raced.verdict_reason == (
@@ -136,7 +137,7 @@ def test_two_tracks_rebase_a_keep_that_lost_the_race_and_refuse_one_past_the_oth
         heavy = s.scalars(select(Candidate).order_by(Candidate.id.desc()).limit(1)).one()
         assert (heavy.summary, heavy.verdict, heavy.verdict_reason, heavy.parent_id) == (
             'heavy accuracy',
-            Verdict.DISCARD,
+            Outcome.DISCARD,
             'floor: cost 6 past its floor 5',
             merged.id,
         ), 'accuracy 3 beats the head, but the cost track holds its floor'
@@ -145,6 +146,6 @@ def test_two_tracks_rebase_a_keep_that_lost_the_race_and_refuse_one_past_the_oth
     daemon.shutdown(timeout=5)
 
 
-def _verdicts(daemon: Daemon) -> list[Verdict]:
+def _verdicts(daemon: Daemon) -> list[Outcome | None]:
     with daemon.db.session() as s:
-        return list(s.scalars(select(Candidate.verdict).where(Candidate.verdict == Verdict.KEEP)))
+        return list(s.scalars(select(Candidate.verdict).where(Candidate.verdict == Outcome.KEEP)))

@@ -5,7 +5,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Literal
+from typing import Literal, assert_never
 from uuid import uuid4
 
 import httpx2 as httpx
@@ -15,19 +15,20 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop import deprecated
-from piloop.actor import Actor
+from piloop.actor import Actor, System
 from piloop.config import CONFIG_FILE, CampaignConfig, config_of, load_campaign_config
 from piloop.db.events import emit
-from piloop.db.models import Campaign, CampaignStatus, Candidate, EventModel, Measurement, Verdict
+from piloop.db.models import Campaign, CampaignStatus, Candidate, EventModel, Measurement, Origin
 from piloop.db.session import Database
 from piloop.ids import CampaignId, CandidateId, TargetKind, TargetRef
 from piloop.plugins.cas.contract import CAS, Cas
 from piloop.plugins.executor.contract import RepoId, Source, Workspace
 from piloop.plugins.stop_rule.contract import STOP_RULES
 from piloop.plugins.vcs.contract import VCS, Repository, Revision, Vcs
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.proc import child_env
-from piloop.scoring.evaluate import run_evaluate
-from piloop.scoring.ledger import DAEMON, current_evaluator, resolve, save_units
+from piloop.scoring.evaluate import Failed, Measured, run_evaluate
+from piloop.scoring.ledger import current_evaluator, resolve, save_units
 from piloop.settings import INPUTS_DIR, settings
 from piloop.store.tree import Copies, Manifest, Seen, materialise, put_tree
 
@@ -196,8 +197,13 @@ def register(s: Session, path: Path, actor: Actor) -> tuple[Campaign, Measuremen
         )
     finally:
         repo.discard(wt)
-    if result.error is not None:
-        raise CampaignError(f'baseline failed to evaluate: {result.error}; its log is in {log_dir}')
+    match result:
+        case Failed() as failed:
+            raise CampaignError(f'baseline failed to evaluate: {failed.error}; its log is in {log_dir}')
+        case Measured() as measured:
+            pass
+        case _:
+            assert_never(result)
     campaign = Campaign(
         name=cfg.name,
         path=str(path.resolve()),
@@ -208,17 +214,17 @@ def register(s: Session, path: Path, actor: Actor) -> tuple[Campaign, Measuremen
     s.flush()
     shutil.copytree(staging, campaign_dir(settings.home, campaign.id), symlinks=True, dirs_exist_ok=True)
     shutil.rmtree(staging)
-    baseline, _ = resolve(s, campaign.id, version, parent=None, run_id=None)
-    baseline.verdict, baseline.verdict_by = Verdict.KEEP, DAEMON
+    baseline, _ = resolve(s, campaign.id, version, parent=None, run_id=None, origin=Origin.BASELINE)
+    baseline.verdict, baseline.verdict_by = Outcome.KEEP, System.DAEMON.signature
     measurement = Measurement(
         candidate_id=baseline.id,
         evaluator_id=current_evaluator(s, campaign, cfg).id,
-        metrics=result.metrics,
-        seconds=result.seconds,
+        metrics=measured.metrics,
+        seconds=measured.seconds,
     )
     s.add(measurement)
     s.flush()
-    save_units(settings.units_dir, measurement.id, result.units)
+    save_units(settings.units_dir, measurement.id, measured.units)
     emit(s, CampaignAdded(baseline=baseline.id), TargetRef(TargetKind.CAMPAIGN, campaign.id), actor)
     s.commit()
     return campaign, measurement

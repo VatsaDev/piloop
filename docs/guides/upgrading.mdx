@@ -214,6 +214,25 @@ of these texts does not fail, but it finds only old runs: compare `end` instead.
 | `error = 'no agent of the run started to work'` | `end = 'not_started'` |
 | `error LIKE 'blocked on escalation%'` | `end = 'awaiting_answer'` |
 
+### A candidate's verdict
+
+`candidates.verdict` is only a judgement: `keep`, `interesting`, `discard` or `crash`, and NULL until the daemon judges
+the candidate. `candidates.origin` says where a candidate comes from, and `candidates.cause` why an `interesting` is
+not the verdict rule's own. The upgrade rewrites every candidate. A query that compares `verdict` to an old value does
+not fail, but it finds nothing: rewrite it, also in a trigger with `provider = "sql"`.
+
+| Before 0.3.0 | Since 0.3.0 |
+|---|---|
+| `verdict = 'pending'` | `verdict IS NULL AND origin IN ('baseline', 'run')` |
+| `verdict = 'reference'` | `origin = 'reference'` |
+| `verdict = 'unmeasured'` | `origin = 'skipped'` |
+| `verdict = 'recovered'` | `origin = 'recovered'` |
+| `verdict_reason LIKE 'note: %'` | `cause = 'note'` |
+| `verdict_reason LIKE 'keeps against its own bar, but the head moved on%'` | `cause = 'moved'` |
+
+`piloop candidate verdict` and `piloop candidate note` print and refuse with these names. A new note no longer starts
+its reason with `note: `.
+
 ### Event payloads
 
 Each event's payload has its `kind`, and `events.kind` is read from it. Only piloop writes events: `piloop sql`
@@ -237,6 +256,9 @@ field does not fail, but it finds nothing: read the new one.
 | `$.status` `idle`, `blocked` or `working` of `<role>.finished` | `$.state = 'exited'` of `agent_session.finished` |
 | `$.status` of `agent_session.finished`, how the process ended | `$.state`, the row's `state`; the process is in `agent_session.job_ended` |
 | a payload that is not a JSON object | `$.invalid`, its stored text |
+| `$.old` or `$.new` of `candidate.verdict` that is not a judgement | null; a change between two of them is `kind = 'candidate.origin'` |
+| `candidate.judged` of an `unmeasured` or `recovered` verdict | `kind = 'candidate.origin'`, from `run` |
+| `$.verdict` of `candidate.deleted` that is not a judgement | null, with `$.origin` |
 
 ### Plugins: a provider is its own parameters
 

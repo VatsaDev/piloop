@@ -10,17 +10,18 @@ from piloop.campaign.campaigns import repository
 from piloop.cli import common
 from piloop.cli.common import CampaignRef
 from piloop.config import config_of
-from piloop.db.models import Campaign, Candidate, Verdict
+from piloop.db.models import Campaign, Candidate
 from piloop.ids import CandidateId, TrackName
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import (
     REPEATS,
     ImportRefused,
     RemeasureRefused,
     bar_of,
     import_reference,
-    rejudgeable,
     request_remeasure,
 )
+from piloop.scoring.verdict import label, rejudgeable
 
 app = cyclopts.App(
     name='candidate',
@@ -82,7 +83,7 @@ def candidate_remeasure(
     daemon runs the evaluate command on the candidate and on its bar, one after the other, `--repeats` times, and judges
     a `crash`, `discard` or `interesting` that it gave again on these pairs. A keep, and a verdict that someone set,
     stay. It measures soon, after the head and the bars that runs need, also when the campaign is stopped: not while it
-    is paused with `--evals`, or held by its stop rule. A commit that the daemon never measured, `unmeasured` or
+    is paused with `--evals`, or held by its stop rule. A commit that the daemon never measured, `skipped` or
     `recovered`, is measured and judged. A pending candidate is refused: its run measures and judges it.
     """
     with common.session() as s:
@@ -99,7 +100,7 @@ def candidate_remeasure(
         bar = f'next to its bar candidate#{bar_of(candidate.parent).id}' if candidate.parent is not None else 'alone'
         effect = 'then judges it again' if rejudgeable(candidate) else 'its verdict stays'
         common.console.print(
-            f'candidate#{candidate.id} {candidate.verdict}: the daemon measures it {repeats} times {bar}{later}; {effect}',
+            f'candidate#{candidate.id} {label(candidate)}: the daemon measures it {repeats} times {bar}{later}; {effect}',
             markup=False,
         )
 
@@ -127,8 +128,8 @@ def candidate_note(
 ) -> None:
     """Keep a regressed result in view as a lead, with follow-up seeds pinned to it.
 
-    The verdict becomes `interesting`, with the reason `note: <reason>`. The candidate is not kept and sets no bar,
-    but it stays listed and ideas can start from it. Each `--follow-up` is a seed whose `base_candidate_id` is the
+    The verdict becomes `interesting`, with the cause `note` and your reason before the daemon's. The candidate is not
+    kept and sets no bar, but it stays listed and ideas can start from it. Each `--follow-up` is a seed whose `base_candidate_id` is the
     candidate. An implementer files no follow-ups. When its candidate does not exist yet, an implementer ends its commit message
     with a `Piloop-Note: <reason>` trailer instead, and the daemon applies the note when it judges the commit.
     """
@@ -137,7 +138,9 @@ def candidate_note(
             s, candidate_id, reason, actor=common.settings.actor, follow_ups=follow_ups, track=track
         )
         s.commit()
-        common.console.print(f'candidate#{candidate.id} interesting: {candidate.verdict_reason}', markup=False)
+        common.console.print(
+            f'candidate#{candidate.id} interesting ({candidate.cause}): {candidate.verdict_reason}', markup=False
+        )
         for idea in ideas:
             common.console.print(f'idea#{idea.id} seed, pinned to candidate#{candidate.id}: {idea.title}', markup=False)
 
@@ -145,7 +148,7 @@ def candidate_note(
 @app.command(name='verdict')
 def candidate_verdict(
     candidate_id: Annotated[CandidateId, cyclopts.Parameter(help='The candidate.')],
-    verdict: Annotated[Verdict, cyclopts.Parameter(help='keep, interesting, discard or crash.')],
+    verdict: Annotated[Outcome, cyclopts.Parameter(help='keep, interesting, discard or crash.')],
     /,
     *,
     reason: Annotated[str, cyclopts.Parameter(help='Why, with ids: what the number does not say.')],
@@ -153,8 +156,8 @@ def candidate_verdict(
     """Override a candidate's judgement, with the reason.
 
     The verdict is then yours, signed as PILOOP_ACTOR, so the daemon never changes it. The `candidate.verdict` event
-    records the old and new verdict with the reason. Only a judgement is overridden: pending, reference, unmeasured and
-    recovered candidates are refused. A keep of a trunk run must build on the head, or it would drop what the head
+    records the old and new verdict with the reason. Only a judgement is overridden: pending, reference, recovered and
+    skipped candidates are refused. A keep of a trunk run must build on the head, or it would drop what the head
     kept.
     """
     with common.refused(), common.session() as s:

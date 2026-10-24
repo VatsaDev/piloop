@@ -10,9 +10,11 @@ from pathlib import Path
 
 from inline_snapshot import snapshot
 from piloop_min_gain import MinGain
+from sqlalchemy import Enum
 
+from piloop.actor import System
 from piloop.config import CampaignConfig, Metric, MetricRole, Track, TrackConfig
-from piloop.db.models import Verdict
+from piloop.db.models import Candidate, Cause, Origin
 from piloop.ids import TrackName
 from piloop.plugins.host import data_errors
 from piloop.plugins.metric import Direction
@@ -22,6 +24,7 @@ from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Outcome, Side, V
 from piloop.scoring import ledger
 from piloop.scoring.evaluate import Units
 from piloop.scoring.ledger import criterion, same
+from piloop.scoring.verdict import PENDING, Refusal, daemon_owned, judgeable, label, override, refusal, write
 
 BAR = 'candidate#73'
 
@@ -35,7 +38,7 @@ def decide(
     theirs_units: Units,
     *,
     bar: str,
-) -> tuple[Verdict, str]:
+) -> tuple[Outcome, str]:
     """The built-in rule's verdict on a candidate of ``track`` against ``bar``, as the daemon asks for it."""
     return ledger.decide(
         Bootstrap(confidence=confidence), track, Side('candidate#74', mine, mine_units), Side(bar, theirs, theirs_units)
@@ -84,7 +87,7 @@ BROAD = [2] * 16 + [1] * 4 + [-1] * 12 + [0] * 37
 def test_a_gain_carried_by_three_units_is_interesting_not_keep() -> None:
     assert (len(CONCENTRATED), sum(CONCENTRATED), sum(CONCENTRATED[:3])) == (69, 24, 19)
     verdict, reason = decide(*rule(config()), *scored(*records(CONCENTRATED)), bar=BAR)
-    assert verdict is Verdict.INTERESTING
+    assert verdict is Outcome.INTERESTING
     assert reason == snapshot(
         'against candidate#73: accuracy 93 vs 69 (+24; 95% worst case -1 over 69 units): the gain is not significant'
     )
@@ -93,7 +96,7 @@ def test_a_gain_carried_by_three_units_is_interesting_not_keep() -> None:
 def test_the_same_gain_spread_over_many_units_keeps() -> None:
     assert (len(BROAD), sum(BROAD)) == (69, 24)
     verdict, reason = decide(*rule(config()), *scored(*records(BROAD)), bar=BAR)
-    assert verdict is Verdict.KEEP
+    assert verdict is Outcome.KEEP
     assert reason == snapshot('against candidate#73: accuracy 93 vs 69 (+24; 95% worst case +10 over 69 units)')
 
 
@@ -101,13 +104,13 @@ def test_the_bootstrap_is_seeded_so_a_verdict_is_reproducible() -> None:
     assert [lower_bound([float(d) for d in CONCENTRATED], 0.95) for _ in range(3)] == [-1.0, -1.0, -1.0]
     assert lower_bound([float(d) for d in CONCENTRATED], 0.80) > lower_bound([float(d) for d in CONCENTRATED], 0.95)
     verdict, _ = decide(*rule(config(confidence=0.8)), *scored(*records(CONCENTRATED)), bar=BAR)
-    assert verdict is Verdict.KEEP, 'a laxer confidence admits the concentrated gain'
+    assert verdict is Outcome.KEEP, 'a laxer confidence admits the concentrated gain'
 
 
 def test_without_units_the_aggregates_decide_and_the_reason_says_so() -> None:
     assert decide(*rule(config()), {'accuracy': 93}, {'accuracy': 69}, {}, {}, bar=BAR) == snapshot(
         (
-            Verdict.KEEP,
+            Outcome.KEEP,
             'against candidate#73: accuracy 93 vs 69 (+24; aggregate: no per-unit results)',
         )
     )
@@ -126,17 +129,17 @@ def test_without_units_the_aggregates_decide_and_the_reason_says_so() -> None:
 
 def test_no_gain_or_a_loss_discards() -> None:
     assert decide(*rule(config()), {'accuracy': 69}, {'accuracy': 69}, {}, {}, bar=BAR) == snapshot(
-        (Verdict.DISCARD, 'against candidate#73: accuracy 69 vs 69 (+0; aggregate: no per-unit results)')
+        (Outcome.DISCARD, 'against candidate#73: accuracy 69 vs 69 (+0; aggregate: no per-unit results)')
     )
     assert decide(*rule(config()), *scored(*records([-1, 0, 0])), bar=BAR) == snapshot(
-        (Verdict.DISCARD, 'against candidate#73: accuracy 2 vs 3 (-1; 95% worst case -2 over 3 units)')
+        (Outcome.DISCARD, 'against candidate#73: accuracy 2 vs 3 (-1; 95% worst case -2 over 3 units)')
     )
 
 
 def test_a_crash_and_an_unscored_bar() -> None:
-    assert decide(*rule(config()), {}, {'accuracy': 1}, {}, {}, bar=BAR) == (Verdict.CRASH, 'no successful measurement')
+    assert decide(*rule(config()), {}, {'accuracy': 1}, {}, {}, bar=BAR) == (Outcome.CRASH, 'no successful measurement')
     assert decide(*rule(config()), {'accuracy': 1}, {}, {}, {}, bar=BAR) == snapshot(
-        (Verdict.KEEP, 'candidate#73 has no score under the current evaluator')
+        (Outcome.KEEP, 'candidate#73 has no score under the current evaluator')
     )
 
 
@@ -149,10 +152,10 @@ def test_a_floor_breach_discards_whatever_the_primary_did() -> None:
     mine = {'accuracy': 200.0, 'coverage': 990.0, 'errors': 745.0}
     theirs = {'accuracy': 80.0, 'coverage': 1000.0, 'errors': 300.0}
     assert decide(*rule(config(COVERAGE, ERRORS)), mine, theirs, {}, {}, bar=BAR) == snapshot(
-        (Verdict.DISCARD, 'floor: coverage 990 past its floor 1000; errors 745 past its floor 450')
+        (Outcome.DISCARD, 'floor: coverage 990 past its floor 1000; errors 745 past its floor 450')
     )
     on_floor = {'accuracy': 200.0, 'coverage': 1000.0, 'errors': 450.0}
-    assert decide(*rule(config(COVERAGE, ERRORS)), on_floor, {}, {}, {}, bar=BAR)[0] is Verdict.KEEP, (
+    assert decide(*rule(config(COVERAGE, ERRORS)), on_floor, {}, {}, {}, bar=BAR)[0] is Outcome.KEEP, (
         'the floor itself is allowed, and floors apply even against an unscored bar'
     )
 
@@ -162,14 +165,14 @@ def test_a_guardrail_regression_within_its_margin_keeps_beyond_it_is_interesting
     within = {'accuracy': 90.0, 'coverage': 1010.0, 'errors': 350.0}
     assert decide(*rule(config(COVERAGE, ERRORS)), within, theirs, {}, {}, bar=BAR) == snapshot(
         (
-            Verdict.KEEP,
+            Outcome.KEEP,
             'against candidate#73: accuracy 90 vs 80 (+10; aggregate: no per-unit results); guardrails: coverage 1010 vs 1020 (-10; aggregate: no per-unit results) within its margin 10; errors 350 vs 300 (+50; aggregate: no per-unit results) within its margin 50',
         )
     )
     beyond = {'accuracy': 90.0, 'coverage': 1009.0, 'errors': 351.0}
     assert decide(*rule(config(COVERAGE, ERRORS)), beyond, theirs, {}, {}, bar=BAR) == snapshot(
         (
-            Verdict.INTERESTING,
+            Outcome.INTERESTING,
             'against candidate#73: accuracy 90 vs 80 (+10; aggregate: no per-unit results); guardrails: coverage 1009 vs 1020 (-11; aggregate: no per-unit results) beyond its margin 10; errors 351 vs 300 (+51; aggregate: no per-unit results) beyond its margin 50',
         )
     )
@@ -189,7 +192,7 @@ def test_a_guardrail_with_units_is_tested_on_its_bootstrap_worst_case() -> None:
         {'accuracy': theirs_accuracy, 'errors': theirs_errors},
         bar=BAR,
     )
-    assert verdict is Verdict.INTERESTING
+    assert verdict is Outcome.INTERESTING
     assert reason == snapshot(
         'against candidate#73: accuracy 40 vs 20 (+20; 95% worst case +20 over 20 units); guardrails: errors 5 vs 0 (+5; 95% worst case +15 over 20 units) beyond its margin 6'
     )
@@ -201,7 +204,7 @@ def test_a_guardrail_with_units_is_tested_on_its_bootstrap_worst_case() -> None:
         {'accuracy': theirs_accuracy, 'errors': theirs_errors},
         bar=BAR,
     )
-    assert untouched[0] is Verdict.KEEP, 'paired: units that did not move add no noise'
+    assert untouched[0] is Outcome.KEEP, 'paired: units that did not move add no noise'
 
 
 SECONDS = Metric(name='seconds', direction=Direction.LOWER, role=MetricRole.GUARDRAIL, margin=1)
@@ -221,7 +224,7 @@ def test_pairs_judge_a_metric_without_units_on_the_worst_case_of_the_mean_pair_d
     unpaired = ledger.decide(
         Bootstrap(confidence=confidence), track, Side('candidate#74', stale[0], {}), Side(BAR, stale[1], {})
     )
-    assert unpaired[0] is Verdict.INTERESTING
+    assert unpaired[0] is Outcome.INTERESTING
     paired = ledger.decide(
         Bootstrap(confidence=confidence),
         track,
@@ -230,7 +233,7 @@ def test_pairs_judge_a_metric_without_units_on_the_worst_case_of_the_mean_pair_d
     )
     assert paired == snapshot(
         (
-            Verdict.KEEP,
+            Outcome.KEEP,
             'against candidate#73: accuracy 2 vs 1 (+1; 95% worst case +1 over 3 pairs); guardrails: seconds 6.5 vs 6.133 (+0.3667; 95% worst case +0.6667 over 3 pairs) within its margin 1',
         )
     )
@@ -249,7 +252,7 @@ def test_units_decide_a_metric_that_has_them_also_when_it_has_pairs() -> None:
     )
     assert (verdict, reason) == snapshot(
         (
-            Verdict.INTERESTING,
+            Outcome.INTERESTING,
             'against candidate#73: accuracy 93 vs 69 (+24; 95% worst case -1 over 69 units): the gain is not significant',
         )
     )
@@ -264,14 +267,14 @@ def test_samples_of_one_side_only_are_no_pairs() -> None:
         Side(BAR, {'accuracy': 1}, {}),
     )
     assert only == snapshot(
-        (Verdict.KEEP, 'against candidate#73: accuracy 2 vs 1 (+1; aggregate: no per-unit results)')
+        (Outcome.KEEP, 'against candidate#73: accuracy 2 vs 1 (+1; aggregate: no per-unit results)')
     )
 
 
 def test_a_guardrail_neither_side_measured_holds_the_keep_back() -> None:
     assert decide(*rule(config(ERRORS)), {'accuracy': 2}, {'accuracy': 1}, {}, {}, bar=BAR) == snapshot(
         (
-            Verdict.INTERESTING,
+            Outcome.INTERESTING,
             'against candidate#73: accuracy 2 vs 1 (+1; aggregate: no per-unit results); guardrails: errors unmeasured',
         )
     )
@@ -287,7 +290,7 @@ def test_a_lower_is_better_primary_reads_in_its_own_direction() -> None:
     theirs = {f'u{i}': 1.0 for i in range(30)}
     mine = {f'u{i}': 0.5 for i in range(30)}
     assert decide(*rule(cfg), {'loss': 15}, {'loss': 30}, {'loss': mine}, {'loss': theirs}, bar=BAR) == snapshot(
-        (Verdict.KEEP, 'against candidate#73: loss 15 vs 30 (-15; 95% worst case -15 over 30 units)')
+        (Outcome.KEEP, 'against candidate#73: loss 15 vs 30 (-15; 95% worst case -15 over 30 units)')
     )
     assert compare(criterion(cfg.all_tracks[0].primary), 15, 30, mine, theirs, 0.95).gain == 15
 
@@ -342,19 +345,19 @@ def test_every_other_track_primary_is_a_guardrail_with_its_margin_and_floor() ->
     neutral = {'acc': 94.0, 'cost': 8.0, 'errors': 300.0}
     assert decide(serving, 0.95, neutral, theirs, {}, {}, bar=BAR) == snapshot(
         (
-            Verdict.KEEP,
+            Outcome.KEEP,
             'against candidate#73: cost 8 vs 10 (-2; aggregate: no per-unit results); guardrails: errors 300 vs 300 (+0; aggregate: no per-unit results) within its margin 50; acc 94 vs 95 (-1; aggregate: no per-unit results) within its margin 2',
         )
     )
     costly = {'acc': 92.0, 'cost': 8.0, 'errors': 300.0}
-    assert decide(serving, 0.95, costly, theirs, {}, {}, bar=BAR)[0] is Verdict.INTERESTING, 'accuracy beyond margin'
+    assert decide(serving, 0.95, costly, theirs, {}, {}, bar=BAR)[0] is Outcome.INTERESTING, 'accuracy beyond margin'
     floored = {'acc': 89.0, 'cost': 1.0, 'errors': 300.0}
     assert decide(serving, 0.95, floored, {**theirs, 'acc': 89.5}, {}, {}, bar=BAR) == snapshot(
-        (Verdict.DISCARD, 'floor: acc 89 past its floor 90')
+        (Outcome.DISCARD, 'floor: acc 89 past its floor 90')
     )
     pricier = {'acc': 99.0, 'cost': 11.5, 'errors': 300.0}
-    assert decide(accuracy, 0.95, pricier, theirs, {}, {}, bar=BAR)[0] is Verdict.INTERESTING, 'cost beyond margin'
-    assert decide(accuracy, 0.95, {**pricier, 'cost': 10.5}, theirs, {}, {}, bar=BAR)[0] is Verdict.KEEP
+    assert decide(accuracy, 0.95, pricier, theirs, {}, {}, bar=BAR)[0] is Outcome.INTERESTING, 'cost beyond margin'
+    assert decide(accuracy, 0.95, {**pricier, 'cost': 10.5}, theirs, {}, {}, bar=BAR)[0] is Outcome.KEEP
     assert same(serving, {**theirs, 'eval_seconds': 3.0}, theirs)
     assert not same(serving, {**theirs, 'acc': 96.0}, theirs), "another track's primary decides too"
 
@@ -369,7 +372,7 @@ def test_every_guardrail_past_its_margin_is_in_the_reason_whatever_the_primary_d
     flat = {'accuracy': 80.0, 'coverage': 1005.0, 'errors': 420.0}
     assert decide(*rule(cfg), flat, theirs, {}, {}, bar=BAR) == snapshot(
         (
-            Verdict.DISCARD,
+            Outcome.DISCARD,
             'against candidate#73: accuracy 80 vs 80 (+0; aggregate: no per-unit results); guardrails past their margin: coverage 1005 vs 1020 (-15; aggregate: no per-unit results) beyond its margin 10; errors 420 vs 300 (+120; aggregate: no per-unit results) beyond its margin 50',
         )
     )
@@ -384,19 +387,19 @@ def test_every_guardrail_past_its_margin_is_in_the_reason_whatever_the_primary_d
     )
     assert noisy == snapshot(
         (
-            Verdict.INTERESTING,
+            Outcome.INTERESTING,
             'against candidate#73: accuracy 93 vs 69 (+24; 95% worst case -1 over 69 units): the gain is not significant; guardrails past their margin: errors 420 vs 300 (+120; aggregate: no per-unit results) beyond its margin 50',
         )
     )
     floored = {'accuracy': 90.0, 'coverage': 990.0, 'errors': 420.0}
     assert decide(*rule(cfg), floored, theirs, {}, {}, bar=BAR) == snapshot(
         (
-            Verdict.DISCARD,
+            Outcome.DISCARD,
             'floor: coverage 990 past its floor 1000; guardrails past their margin: errors 420 vs 300 (+120; aggregate: no per-unit results) beyond its margin 50',
         )
     )
     assert decide(*rule(cfg), floored, {}, {}, {}, bar=BAR) == snapshot(
-        (Verdict.DISCARD, 'floor: coverage 990 past its floor 1000')
+        (Outcome.DISCARD, 'floor: coverage 990 past its floor 1000')
     ), 'an unscored bar has no margins to compare'
     within = {'accuracy': 80.0, 'coverage': 1015.0, 'errors': 320.0}
     assert decide(*rule(cfg), within, theirs, {}, {}, bar=BAR)[1] == snapshot(
@@ -407,9 +410,8 @@ def test_every_guardrail_past_its_margin_is_in_the_reason_whatever_the_primary_d
 def test_the_contract_of_a_rule_is_data_in_data_out_and_its_verdicts_are_verdicts() -> None:
     """A rule can move out of process or to a Wasm component: nothing live crosses its contract."""
     assert data_errors(VerdictRule) == []
-    assert {Verdict(o) for o in Outcome} == {Verdict.KEEP, Verdict.INTERESTING, Verdict.DISCARD, Verdict.CRASH}, (
-        'a rule judges; pending, reference, unmeasured and recovered are not judgements'
-    )
+    column = Candidate.__table__.c.verdict.type
+    assert isinstance(column, Enum) and column.enum_class is Outcome, 'a candidate holds what a rule gives'
 
 
 def test_the_built_in_rule_imports_only_the_standard_library_pydantic_its_contract_and_the_metric_types() -> None:
@@ -427,7 +429,7 @@ def test_the_example_rule_min_gain_delegates_to_bootstrap_and_holds_back_a_small
     """``examples/plugins/min-gain``: it calls the built-in rule and changes one thing, through the host's contract."""
     track = rule(config(COVERAGE))[0]
 
-    def judged(mine: dict[str, float], theirs: dict[str, float], with_rule: VerdictRule) -> tuple[Verdict, str]:
+    def judged(mine: dict[str, float], theirs: dict[str, float], with_rule: VerdictRule) -> tuple[Outcome, str]:
         return ledger.decide(with_rule, track, Side('candidate#74', mine, {}), Side(BAR, theirs, {}))
 
     bar = {'accuracy': 10.0, 'coverage': 1000.0}
@@ -442,7 +444,66 @@ def test_the_example_rule_min_gain_delegates_to_bootstrap_and_holds_back_a_small
             'the built-in verdict stays'
         )
     assert judged({'accuracy': 11.0, 'coverage': 1000.0}, bar, MinGain(min_gain=2)) == (
-        Verdict.INTERESTING,
+        Outcome.INTERESTING,
         'against candidate#73: accuracy 11 vs 10 (+1; aggregate: no per-unit results); guardrails: coverage 1000 vs'
         ' 1000 (+0; aggregate: no per-unit results) within its margin 10; the gain is below min_gain 2',
     )
+
+
+def test_only_a_judgement_is_overridden_and_a_note_needs_a_regressed_result() -> None:
+    """``refusal`` is the one table of who may set which verdict by hand."""
+
+    def of(origin: Origin, verdict: Outcome | None) -> Candidate:
+        return Candidate(campaign_id=1, tree_sha='t', commit_sha='c', origin=origin, verdict=verdict)
+
+    note = Cause.NOTE
+    assert [
+        refusal(of(Origin.RUN, None), Outcome.KEEP, None),
+        refusal(of(Origin.BASELINE, None), Outcome.KEEP, note),
+        *(refusal(of(o, None), Outcome.KEEP, None) for o in (Origin.REFERENCE, Origin.RECOVERED, Origin.SKIPPED)),
+        refusal(of(Origin.RUN, Outcome.KEEP), Outcome.KEEP, None),
+        refusal(of(Origin.RUN, Outcome.KEEP), Outcome.INTERESTING, note),
+        refusal(of(Origin.RUN, Outcome.CRASH), Outcome.INTERESTING, note),
+    ] == [
+        Refusal.PENDING,
+        Refusal.PENDING,
+        Refusal.NOT_JUDGED,
+        Refusal.NOT_JUDGED,
+        Refusal.NOT_JUDGED,
+        Refusal.SAME,
+        Refusal.NO_RESULT,
+        Refusal.NO_RESULT,
+    ]
+    assert refusal(of(Origin.RUN, Outcome.DISCARD), Outcome.INTERESTING, note) is None
+    assert refusal(of(Origin.RUN, Outcome.INTERESTING), Outcome.INTERESTING, note) is None, 'a second note'
+    assert refusal(of(Origin.BASELINE, Outcome.KEEP), Outcome.DISCARD, None) is None
+
+
+def test_a_note_keeps_the_reason_it_notes_and_a_judged_skip_is_a_runs() -> None:
+    lead = Candidate(origin=Origin.RUN, verdict=Outcome.DISCARD, verdict_reason='against candidate#1: 2 vs 3')
+    override(lead, Outcome.INTERESTING, cause=Cause.NOTE, reason='a lead', by=System.HUMAN)
+    assert (lead.verdict, lead.cause, lead.verdict_by, lead.verdict_reason) == (
+        Outcome.INTERESTING,
+        Cause.NOTE,
+        'human',
+        'a lead; against candidate#1: 2 vs 3',
+    )
+    skipped = Candidate(origin=Origin.SKIPPED)
+    assert label(skipped) == 'skipped'
+    write(skipped, Outcome.KEEP, cause=None, reason='measured at last', by=System.DAEMON)
+    assert (skipped.origin, label(skipped), daemon_owned(skipped)) == (Origin.RUN, 'keep', True)
+    assert label(Candidate(origin=Origin.BASELINE)) == PENDING
+
+
+def test_the_daemon_judges_what_has_no_verdict_or_its_own_changeable_one_but_never_a_reference() -> None:
+    def of(origin: Origin, verdict: Outcome | None, by: str | None) -> Candidate:
+        return Candidate(origin=origin, verdict=verdict, verdict_by=by)
+
+    assert [
+        judgeable(of(Origin.RUN, None, None)),
+        judgeable(of(Origin.SKIPPED, None, None)),
+        judgeable(of(Origin.RUN, Outcome.DISCARD, 'daemon')),
+        judgeable(of(Origin.RUN, Outcome.KEEP, 'daemon')),
+        judgeable(of(Origin.RUN, Outcome.DISCARD, 'human')),
+        judgeable(of(Origin.REFERENCE, None, None)),
+    ] == [True, True, True, False, False, False], "a keep stays, and so does anyone else's verdict"

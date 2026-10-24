@@ -59,6 +59,7 @@ from piloop.ids import (
     TargetRef,
     TrackName,
 )
+from piloop.plugins.verdict_rule.contract import Outcome
 
 
 def utcnow() -> datetime:
@@ -207,29 +208,37 @@ END_STATUS: Final = {RunEnd.FINISHED: RunStatus.SUCCEEDED, RunEnd.TIMED_OUT: Run
 """The status of a run by its end, where it is not ``failed``."""
 
 
-class Verdict(StrEnum):
-    """The judgement on a candidate, made from its measurements against its bar (see https://piloop.autoresearch.inc/concepts/verdict).
+class Origin(StrEnum):
+    """Where a candidate comes from. Only a candidate from the ``baseline`` or a ``run`` is judged.
 
-    The daemon sets a verdict when it scores a candidate. Any agent or human may change it, and should say why in a
-    comment. ``reference`` is not a judgement: it marks a starting point imported with ``piloop candidate import``.
-    The daemon measures it with the current evaluator, and a pinned run may start from it. But it is never the head or
-    a bar, and nothing that counts keeps counts it (the status, the sparkline, ``[stop]``). An ``interesting`` verdict
-    whose reason starts with ``note:`` is an agent's note (``piloop candidate note``, the ``Piloop-Note`` trailer): the
-    result got worse, but the tree is worth starting from. ``unmeasured`` is not a judgement either: the commit asked not
-    to be evaluated (``Piloop-Eval: skip``), so nothing was measured and it says nothing about the idea. ``recovered``
-    is not a judgement either: the daemon committed what an implementer left uncommitted when it stopped, or a daemon stop
-    cut its run, a tree the implementer never declared ready. It is not measured, and a new run of the idea starts from
-    it to finish it.
+    ``baseline``: the repo's HEAD when the campaign was registered. ``run``: an implementer's commit. ``reference``: a
+    starting point imported with ``piloop candidate import``, measured but never the head or a bar. ``recovered``: the
+    daemon's commit of what an implementer left uncommitted when it stopped, or where a daemon stop cut its run, never
+    declared ready, so never measured; a new run of the idea starts from it. ``skipped``: a commit marked
+    ``Piloop-Eval: skip``, never measured. A ``recovered`` or ``skipped`` tree that a later commit reaches without the
+    mark is measured and judged like a new one, and becomes ``run``.
     """
 
-    PENDING = 'pending'
-    KEEP = 'keep'
-    INTERESTING = 'interesting'
-    DISCARD = 'discard'
-    CRASH = 'crash'
+    BASELINE = 'baseline'
+    RUN = 'run'
     REFERENCE = 'reference'
-    UNMEASURED = 'unmeasured'
     RECOVERED = 'recovered'
+    SKIPPED = 'skipped'
+
+
+JUDGED: Final = frozenset({Origin.BASELINE, Origin.RUN})
+"""The origins of the candidates that get a verdict. ``verdict IS NULL`` on one of them means that it is pending."""
+
+
+class Cause(StrEnum):
+    """Why an ``interesting`` verdict is not the verdict rule's own.
+
+    ``note``: an agent marked a regressed result as a lead (``piloop candidate note``, the ``Piloop-Note`` trailer).
+    ``moved``: it kept against its own bar, but the head moved on, so it was merged onto the head.
+    """
+
+    NOTE = 'note'
+    MOVED = 'moved'
 
 
 class CommentKind(StrEnum):
@@ -499,7 +508,9 @@ class Base(DeclarativeBase):
         LinkKind: _values(LinkKind),
         RunStatus: _values(RunStatus),
         RunEnd: _values(RunEnd),
-        Verdict: _values(Verdict),
+        Outcome: _values(Outcome),
+        Origin: _values(Origin),
+        Cause: _values(Cause),
         TargetKind: _values(TargetKind),
         CommentKind: _values(CommentKind),
         LessonStatus: _values(LessonStatus),
@@ -820,6 +831,13 @@ class Candidate(Tracked, Base):
         # the FK check on every delete of a candidate (deleting a campaign deletes thousands)
         Index('ix_candidates_parent', 'parent_id'),
         *text_checks('candidates', nullable=('summary', 'verdict_by', 'verdict_reason')),
+        CheckConstraint(
+            f'verdict IS NULL OR origin IN ({", ".join(repr(o.value) for o in sorted(JUDGED))})',
+            name='candidates.verdict needs a judged origin',
+        ),
+        CheckConstraint(
+            f"cause IS NULL OR verdict = '{Outcome.INTERESTING}'", name='candidates.cause needs interesting'
+        ),
     )
 
     id: Mapped[CandidateId] = mapped_column(primary_key=True)
@@ -833,9 +851,14 @@ class Candidate(Tracked, Base):
     """One commit that has this tree, pinned under ``refs/piloop/``."""
     summary: Mapped[str | None]
     """The first line of the commit message."""
-    verdict: Mapped[Verdict] = mapped_column(default=Verdict.PENDING, server_default=Verdict.PENDING.value)
+    origin: Mapped[Origin] = mapped_column(default=Origin.RUN, server_default=Origin.RUN.value)
+    verdict: Mapped[Outcome | None]
+    """The judgement against the candidate's bar. NULL while it is pending, and on a candidate whose origin is not
+    judged."""
+    cause: Mapped[Cause | None]
     verdict_by: Mapped[str | None]
     verdict_reason: Mapped[str | None]
+    """The reason of the verdict, for a human."""
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
 
     run: Mapped[Run | None] = relationship(back_populates='candidates', foreign_keys=[run_id])

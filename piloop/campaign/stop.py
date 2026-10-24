@@ -35,7 +35,6 @@ from piloop.db.models import (
     IdeaStatus,
     Measurement,
     Run,
-    Verdict,
     campaign_runs,
     utcnow,
 )
@@ -44,6 +43,7 @@ from piloop.db.triggers.changelog import CampaignPausedChanged, CampaignStatusCh
 from piloop.ids import RunId, TargetKind, TargetRef
 from piloop.plugins.stop_rule.contract import STOP_RULES, Fact, Go, Hold, Progress, Stop, StopCase
 from piloop.scoring.ledger import head, keeps, score
+from piloop.scoring.verdict import pending_clause
 from piloop.usage import campaign_tokens
 
 
@@ -94,7 +94,7 @@ def scored() -> ColumnElement[bool]:
     """Select the runs that have a candidate that is measured or waiting for a verdict."""
     return exists().where(
         Candidate.run_id == Run.id,
-        (Candidate.verdict == Verdict.PENDING) | exists().where(Measurement.candidate_id == Candidate.id),
+        pending_clause() | exists().where(Measurement.candidate_id == Candidate.id),
     )
 
 

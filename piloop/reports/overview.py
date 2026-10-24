@@ -43,16 +43,17 @@ from piloop.db.models import (
     Campaign,
     CampaignStatus,
     Candidate,
+    Cause,
     Comment,
     CommentKind,
     Event,
     Idea,
     IdeaStatus,
     Measurement,
+    Origin,
     Pause,
     Run,
     RunEnd,
-    Verdict,
     campaign_runs,
     count,
     latest_agent_session,
@@ -65,17 +66,19 @@ from piloop.plugins.vcs.contract import VCS, prompted
 from piloop.reports.history import IDEAS_IN_HISTORY
 from piloop.runtime.factory import handle_for, runtime_for
 from piloop.scoring.ledger import (
-    NOTE,
+    Branch,
+    Trunk,
     baseline,
-    branches,
     head,
     keeps,
+    lineages,
     metrics,
     references,
     score,
     track_of,
     trunk_keeps,
 )
+from piloop.scoring.verdict import label, pending_clause
 from piloop.text import NONE, cell, metric
 from piloop.usage import campaign_tokens, human
 
@@ -297,7 +300,7 @@ def _against(
 
 def produced(campaign: Campaign) -> Select[Candidate]:
     """Select the candidates of the campaign: the baseline and the commits of its runs, not imported references."""
-    return select(Candidate).where(Candidate.campaign_id == campaign.id, Candidate.verdict != Verdict.REFERENCE)
+    return select(Candidate).where(Candidate.campaign_id == campaign.id, Candidate.origin != Origin.REFERENCE)
 
 
 def live_agent_sessions(s: Session, campaign: Campaign) -> Sequence[AgentSession]:
@@ -547,22 +550,29 @@ def _values(c: Candidate, cfg: CampaignConfig, evaluator_id: EvaluatorId | None)
 
 def _branches(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[str]:
     """List the lineages of keeps if there is more than one, then the latest notes: other places a run can start."""
-    found = branches(s, campaign)
+    found = lineages(s, campaign)
     evaluator_id = campaign.evaluator_id
     lines = []
     if len(found) > 1:
         lines.append('- Lineages (latest keep of each; a branch keep never moves the head):')
-        lines += [
-            f'  - {"branch" if b.branched else "trunk"} from candidate#{b.root.id} ({b.root.verdict}):'
-            f' latest candidate#{b.latest.id} {_values(b.latest, cfg, evaluator_id)}, {b.keeps} kept'
-            for b in found
-        ]
+        for line in found:
+            match line.lineage:
+                case Trunk():
+                    root = baseline(s, campaign)
+                    start = f'trunk from candidate#{root.id} ({label(root)})'
+                case Branch(root=root):
+                    start = f'branch from candidate#{root.id} ({label(root)})'
+                case _:
+                    assert_never(line.lineage)
+            lines.append(
+                f'  - {start}: latest candidate#{line.latest.id} {_values(line.latest, cfg, evaluator_id)},'
+                f' {line.keeps} kept'
+            )
     noted = s.scalars(
         select(Candidate)
         .where(
             Candidate.campaign_id == campaign.id,
-            Candidate.verdict == Verdict.INTERESTING,
-            Candidate.verdict_reason.startswith(NOTE),
+            Candidate.cause == Cause.NOTE,
         )
         .order_by(Candidate.id.desc())
         .limit(STEPS_SHOWN)
@@ -571,7 +581,7 @@ def _branches(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[str]:
         lines.append('- Notes (regressed, kept in view as leads; pin one with base_candidate_id):')
         lines += [
             f'  - candidate#{c.id} {_num(score(c, evaluator_id, track_of(cfg, c).primary))} by {c.verdict_by}:'
-            f' {cell((c.verdict_reason or "").removeprefix(NOTE), 100)}'
+            f' {cell(c.verdict_reason or "", 100)}'
             for c in noted
         ]
     return lines
@@ -670,9 +680,7 @@ def _evaluations(s: Session, campaign: Campaign) -> str:
     ).all()
     crashed = sum(m.error is not None for m in rows)
     seconds = [m.seconds for m in rows if m.seconds is not None]
-    waiting = count(
-        s, select(Candidate).where(Candidate.campaign_id == campaign.id, Candidate.verdict == Verdict.PENDING)
-    )
+    waiting = count(s, select(Candidate).where(Candidate.campaign_id == campaign.id, pending_clause()))
     timing = ''
     if seconds:
         timing = (
@@ -694,7 +702,7 @@ def _candidates(s: Session, campaign: Campaign, cfg: CampaignConfig, now: dateti
         run = f'run#{c.run_id}' if c.run_id else 'no run'
         tag = f' [{track.name}]' if cfg.multitrack else ''
         lines.append(
-            f'- candidate#{c.id} {c.verdict}{tag} {value} ({delta}), {run}, {age(c.created_at, now)} ago:'
+            f'- candidate#{c.id} {label(c)}{tag} {value} ({delta}), {run}, {age(c.created_at, now)} ago:'
             f' {cell(c.summary or NONE)}'
         )
     return lines

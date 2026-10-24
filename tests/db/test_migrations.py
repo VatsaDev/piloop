@@ -1742,3 +1742,118 @@ def test_0041_closes_each_stopped_campaign_whose_closing_sweeps_an_older_daemon_
     command.downgrade(cfg, before)
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert con.execute(closed).fetchall() == []
+
+
+def test_0043_splits_each_verdict_into_a_judgement_an_origin_and_a_cause_with_its_events_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0042')
+    rows = [  # (run, parent, verdict, reason) before, then (verdict, origin, cause) after
+        ((None, None, 'keep', None), ('keep', 'baseline', None)),
+        ((1, 1, 'pending', None), (None, 'run', None)),
+        ((1, 1, 'keep', 'against candidate#1'), ('keep', 'run', None)),
+        ((1, 1, 'interesting', 'note: a lead; against candidate#1'), ('interesting', 'run', 'note')),
+        (
+            (1, 1, 'interesting', 'keeps against its own bar, but the head moved on to candidate#3: x'),
+            ('interesting', 'run', 'moved'),
+        ),
+        ((1, 1, 'interesting', 'a gain that is not significant'), ('interesting', 'run', None)),
+        ((1, 1, 'discard', None), ('discard', 'run', None)),
+        ((1, 1, 'crash', None), ('crash', 'run', None)),
+        ((None, None, 'reference', 'imported from main'), (None, 'reference', None)),
+        ((1, 1, 'unmeasured', 'not evaluated: Piloop-Eval: skip'), (None, 'skipped', None)),
+        ((1, 1, 'recovered', 'recovered: what the implementer left'), (None, 'recovered', None)),
+    ]
+    events = [
+        ('candidate.verdict', {'old': 'pending', 'new': 'keep', 'verdict_by': 'daemon', 'verdict_reason': 'r'}),
+        ('candidate.verdict', {'old': 'pending', 'new': 'unmeasured', 'verdict_by': 'daemon', 'verdict_reason': 's'}),
+        ('candidate.judged', {'verdict': 'keep', 'score': 1.0, 'reason': 'r'}),
+        ('candidate.judged', {'verdict': 'recovered', 'score': None, 'reason': 'recovered: …'}),
+        ('candidate.deleted', {'tree_sha': 't', 'commit_sha': 'c', 'verdict': 'reference'}),
+        ('candidate.deleted', {'tree_sha': 't', 'commit_sha': 'c', 'verdict': 'discard'}),
+    ]
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
+        con.execute(
+            "INSERT INTO ideas (campaign_id, title, hypothesis, track, created_by) VALUES (1, 'i', 'h', 't', 'h')"
+        )
+        con.execute(
+            "INSERT INTO runs (idea_id, attempt, base_candidate_id, harness, model) VALUES (1, 1, 1, 'pi', 'm')"
+        )
+        for n, ((run, parent, verdict, reason), _) in enumerate(rows):
+            con.execute(
+                'INSERT INTO candidates (campaign_id, run_id, parent_id, tree_sha, commit_sha, verdict, verdict_reason)'
+                ' VALUES (1, ?, ?, ?, ?, ?, ?)',
+                (run, parent, f't{n}', f'c{n}', verdict, reason),
+            )
+        for kind, payload in events:
+            con.execute(
+                "INSERT INTO events (actor, target_kind, target_id, payload) VALUES ('daemon', 'candidate', 2, ?)",
+                (dumps({'kind': kind, **payload}),),
+            )
+        before = con.execute('SELECT id, updated_at FROM candidates ORDER BY id').fetchall()
+    command.upgrade(cfg, '0043')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT verdict, origin, cause FROM candidates ORDER BY id').fetchall() == [
+            after for _, after in rows
+        ]
+        assert con.execute('SELECT id, updated_at FROM candidates ORDER BY id').fetchall() == before, 'none updated'
+        assert [(k, loads(p)) for k, p in con.execute('SELECT kind, payload FROM events ORDER BY id')] == [
+            (
+                'candidate.verdict',
+                {
+                    'kind': 'candidate.verdict',
+                    'old': None,
+                    'new': 'keep',
+                    'verdict_by': 'daemon',
+                    'verdict_reason': 'r',
+                },
+            ),
+            ('candidate.origin', {'kind': 'candidate.origin', 'old': 'run', 'new': 'skipped'}),
+            ('candidate.judged', {'kind': 'candidate.judged', 'verdict': 'keep', 'score': 1.0, 'reason': 'r'}),
+            ('candidate.origin', {'kind': 'candidate.origin', 'old': 'run', 'new': 'recovered'}),
+            (
+                'candidate.deleted',
+                {
+                    'kind': 'candidate.deleted',
+                    'tree_sha': 't',
+                    'commit_sha': 'c',
+                    'verdict': None,
+                    'origin': 'reference',
+                },
+            ),
+            (
+                'candidate.deleted',
+                {
+                    'kind': 'candidate.deleted',
+                    'tree_sha': 't',
+                    'commit_sha': 'c',
+                    'verdict': 'discard',
+                    'origin': 'run',
+                },
+            ),
+        ]
+        for check, statement in (
+            ('outcome', "UPDATE candidates SET verdict = 'pending' WHERE id = 2"),
+            ('candidates.verdict needs a judged origin', "UPDATE candidates SET verdict = 'keep' WHERE id = 9"),
+            ('candidates.cause needs interesting', "UPDATE candidates SET cause = 'note' WHERE id = 3"),
+            ('origin', "UPDATE candidates SET origin = 'pending' WHERE id = 2"),
+        ):
+            with pytest.raises(sqlite3.IntegrityError, match=check):
+                con.execute(statement)
+        triggers = "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'candidates'"
+        assert {t for (t,) in con.execute(triggers)} == {t.name for t in PERSISTENT if t.table == 'candidates'}
+        con.execute("UPDATE candidates SET verdict_reason = 'a new lead' WHERE id = 4")
+    command.downgrade(cfg, '0042')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT verdict FROM candidates ORDER BY id').fetchall() == [
+            (verdict,) for (_, _, verdict, _), _ in rows
+        ]
+        assert con.execute('SELECT verdict_reason FROM candidates WHERE id = 4').fetchone() == ('note: a new lead',)
+        deleted = "SELECT payload FROM events WHERE kind = 'candidate.deleted' ORDER BY id"
+        assert [loads(p) for (p,) in con.execute(deleted)] == [
+            {'kind': 'candidate.deleted', 'tree_sha': 't', 'commit_sha': 'c', 'verdict': 'reference'},
+            {'kind': 'candidate.deleted', 'tree_sha': 't', 'commit_sha': 'c', 'verdict': 'discard'},
+        ], 'the tombstones of an older piloop'

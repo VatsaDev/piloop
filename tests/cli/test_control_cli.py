@@ -5,6 +5,7 @@ import re
 from contextlib import closing
 from pathlib import Path
 
+import cyclopts
 import pytest
 from rich.console import Console
 from sqlalchemy import select
@@ -13,8 +14,9 @@ from piloop.actor import System
 from piloop.campaign import campaigns as campaign_module
 from piloop.cli import common
 from piloop.db.events import has
-from piloop.db.models import Campaign, Candidate, Event, Idea, IdeaLink, IdeaStatus, Measurement, Run, Verdict
+from piloop.db.models import Campaign, Candidate, Event, Idea, IdeaLink, IdeaStatus, Measurement, Run
 from piloop.db.session import Database
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import RejudgeRequested
 from piloop.settings import Settings
 from tests.cli.test_cli import research_files, run_cli
@@ -103,8 +105,8 @@ def test_candidate_verdict_overrides_with_the_reason_and_refuses_what_is_not_a_j
     assert out().strip() == 'candidate#1 keep → interesting: a lucky seed'
     with database() as db, db.session() as s:
         c = s.get_one(Candidate, 1)
-        assert (c.verdict, c.verdict_by, c.verdict_reason) == (Verdict.INTERESTING, 'human', 'a lucky seed')
-    with pytest.raises(SystemExit, match='pending is not a judgement'):
+        assert (c.verdict, c.verdict_by, c.verdict_reason) == (Outcome.INTERESTING, 'human', 'a lucky seed')
+    with pytest.raises(cyclopts.CoercionError, match='Choose from: "keep", "interesting", "discard", "crash"'):
         run_cli(['candidate', 'verdict', '1', 'pending', '--reason', 'why'])
     with pytest.raises(SystemExit, match='no candidate#9'):
         run_cli(['candidate', 'verdict', '9', 'keep', '--reason', 'why'])
@@ -124,7 +126,7 @@ def crashed(campaign_path: Path) -> int:
             parent_id=1,
             tree_sha='t',
             commit_sha='c',
-            verdict=Verdict.CRASH,
+            verdict=Outcome.CRASH,
             verdict_by='daemon',
         )
         s.add(c)

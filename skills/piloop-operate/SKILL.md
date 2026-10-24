@@ -273,7 +273,7 @@ piloop candidate note <c> '<why>' --follow-up '<hunch>'
 ```
 
 - `--follow-up` is repeatable.
-- It changes a measured `discard` or `interesting` candidate to `interesting` with the reason `note: <why>`.
+- It changes a measured `discard` or `interesting` candidate to `interesting` with the cause `note` and your reason.
 - It files each follow-up as a seed pinned to the candidate. Research develops the seeds.
 - It is not a keep and not a bar.
 - Implementers note a lead with a `Piloop-Note:` commit trailer, without follow-ups.
@@ -428,8 +428,8 @@ The bar:
 
 - The bar is the run's last keep, or its base, on the track of its idea.
 - With several tracks, the primary metric of every other track is one more guardrail.
-- A keep against a bar that the head has passed is merged onto the head by the daemon, and judged there. Its reason
-  starts with `keeps against its own bar, but the head moved on`.
+- A keep against a bar that the head has passed is `interesting` with the cause `moved`. The daemon merges it onto the
+  head and judges it there.
 - If that merge conflicts, the daemon files a seed `Compose candidate#N onto the head`.
 - The floors and margins of a track change only through an edit to `piloop.toml`. That is a decision: record it.
 
@@ -440,8 +440,8 @@ PILOOP_ACTOR=orchestrator piloop candidate verdict <c> interesting --reason '<wh
 ```
 
 - The daemon never overwrites a verdict that it did not set.
-- `keep|interesting|discard|crash`, and only over a judgement: a pending, reference, unmeasured or recovered
-  candidate is refused. A keep must build on the head (unless its run is a branch run): a keep from an older bar
+- `keep|interesting|discard|crash`, and only over a judgement: a pending candidate, and a `reference`, `skipped` or
+  `recovered` one, is refused. A keep must build on the head (unless its run is a branch run): a keep from an older bar
   would drop what the head kept. To land such a result, add an idea that merges it onto the head.
 - You measured it yourself (the daemon's evaluation timed out, say): `piloop measurement add <c> --report <file>`,
   with `{"metrics": {"<name>": <value>}, "seconds": <s>}` in the file. The daemon judges its `crash`, `discard` or

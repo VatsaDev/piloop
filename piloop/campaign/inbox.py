@@ -35,7 +35,7 @@ from piloop.db.models import (
 )
 from piloop.db.triggers.changelog import CampaignStatusChanged, Commented
 from piloop.ids import CampaignId, CommentId, TargetKind, TargetRef
-from piloop.scoring.ledger import SKIPPED, CandidateJudged, IdeaCreated
+from piloop.scoring.ledger import CandidateJudged, IdeaCreated
 from piloop.text import cell
 
 CITATION = re.compile(r'comment#(\d+)')
@@ -88,7 +88,7 @@ def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, me: A
     - seeds that someone else filed.
     - campaigns that the daemon stopped.
     - anomalies that the daemon gave to a watchdog.
-    - verdicts on measured candidates. Skipped commits (``unmeasured``) are not reported.
+    - the daemon's verdicts.
 
     ``campaign_id`` filters all of them. The returned id is the cursor for the next call, so no event is missed.
     """
@@ -116,7 +116,7 @@ def news(s: Session, after: int, *, campaign_id: CampaignId | None = None, me: A
                 idea = s.get(Idea, e.target_id)
                 if idea is not None and idea.status is IdeaStatus.SEED and campaign_id in (None, idea.campaign_id):
                     lines.append(seed_line(idea, idea.campaign))
-            case CandidateJudged(verdict=verdict, reason=reason) if reason != SKIPPED:
+            case CandidateJudged(verdict=verdict, reason=reason):
                 candidate = s.get(Candidate, e.target_id)
                 if candidate is not None and campaign_id in (None, candidate.campaign_id):
                     lines.append(f'candidate#{candidate.id} {verdict}: {cell(str(reason))}')

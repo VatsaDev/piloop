@@ -4,11 +4,12 @@ from enum import StrEnum
 
 from sqlalchemy import Enum
 
-from piloop.db.models import AgentSessionState, Base, IdeaStatus, RunEnd, RunStatus, Verdict
+from piloop.db.models import AgentSessionState, Base, Cause, IdeaStatus, Origin, RunEnd, RunStatus
+from piloop.plugins.verdict_rule.contract import Outcome
 from scripts.generate import SNIPPETS, header
 
 PATH = SNIPPETS / 'states.mdx'
-STATE_ENUMS: tuple[type[StrEnum], ...] = (IdeaStatus, RunStatus, RunEnd, AgentSessionState, Verdict)
+STATE_ENUMS: tuple[type[StrEnum], ...] = (IdeaStatus, RunStatus, RunEnd, AgentSessionState, Outcome, Origin, Cause)
 
 
 def generate() -> str:

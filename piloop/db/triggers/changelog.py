@@ -17,12 +17,13 @@ from piloop.db.models import (
     EventModel,
     IdeaStatus,
     LinkKind,
+    Origin,
     Pause,
-    Verdict,
 )
 from piloop.db.triggers.ddl import Event, Trigger
 from piloop.db.triggers.provenance import DAEMON_ACTOR, NOW, SESSION_ACTOR
 from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TrackName
+from piloop.plugins.verdict_rule.contract import Outcome
 
 type Row = Literal['NEW', 'OLD']
 
@@ -71,12 +72,18 @@ class IdeaBaseChanged(Changed[CandidateId]):
     kind: Literal['idea.base_candidate_id'] = 'idea.base_candidate_id'
 
 
-class VerdictChanged(Changed[Verdict]):
+class VerdictChanged(Changed[Outcome]):
     """A candidate's verdict changed, by the daemon or by an override."""
 
     kind: Literal['candidate.verdict'] = 'candidate.verdict'
     verdict_by: str | None
     verdict_reason: str | None
+
+
+class OriginChanged(Changed[Origin]):
+    """A candidate's origin changed: the daemon did not measure a commit, or measured a tree that it had not."""
+
+    kind: Literal['candidate.origin'] = 'candidate.origin'
 
 
 class CampaignStatusChanged(Changed[CampaignStatus]):
@@ -155,7 +162,8 @@ class CandidateDeleted(EventModel):
     kind: Literal['candidate.deleted'] = 'candidate.deleted'
     tree_sha: str
     commit_sha: str
-    verdict: Verdict
+    origin: Origin
+    verdict: Outcome | None
 
 
 class Commented(EventModel):
@@ -303,6 +311,7 @@ CHANGES = (
     link_event('NEW'),
     link_event('OLD'),
     changed(VerdictChanged),
+    changed(OriginChanged),
     RUN_BRIEF,
     changed(CampaignStatusChanged),
     changed(CampaignTypeChanged),

@@ -22,10 +22,11 @@ from sqlalchemy import ColumnElement, case, distinct, exists, func, select
 from sqlalchemy.orm import Session, aliased
 
 from piloop.db.events import has
-from piloop.db.models import Candidate, Comment, CommentKind, Event, Idea, IdeaLink, IdeaStatus, LinkKind, Run, Verdict
+from piloop.db.models import Candidate, Comment, CommentKind, Event, Idea, IdeaLink, IdeaStatus, LinkKind, Run
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.db.triggers.changelog import IdeaStatusChanged
 from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TargetRef
+from piloop.plugins.verdict_rule.contract import Outcome
 
 NEVER_RAN = (IdeaStatus.SEED, IdeaStatus.PROPOSED, IdeaStatus.READY)
 """The statuses in which the daemon can reject a superseded idea. The idea must also have no run.
@@ -82,7 +83,7 @@ def park_stranded(s: Session, campaign_id: CampaignId) -> dict[IdeaId, IdeaId]:
     """
     link, target = aliased(IdeaLink), aliased(Idea)
     ran = exists().where(Run.idea_id == target.id)
-    kept = exists().where(Candidate.run_id == Run.id, Run.idea_id == target.id, Candidate.verdict == Verdict.KEEP)
+    kept = exists().where(Candidate.run_id == Run.id, Run.idea_id == target.id, Candidate.verdict == Outcome.KEEP)
     ended = target.status.in_((IdeaStatus.PARKED, IdeaStatus.REJECTED)) | (
         (target.status == IdeaStatus.DONE) & ran & ~kept
     )
@@ -331,8 +332,8 @@ def yields(s: Session, campaign_id: CampaignId) -> list[Yield]:
         select(
             Idea.created_by,
             func.count(distinct(Run.id)),
-            func.count(distinct(case((verdict == Verdict.KEEP, Candidate.id)))),
-            func.count(distinct(case((verdict == Verdict.INTERESTING, Candidate.id)))),
+            func.count(distinct(case((verdict == Outcome.KEEP, Candidate.id)))),
+            func.count(distinct(case((verdict == Outcome.INTERESTING, Candidate.id)))),
         )
         .outerjoin(Run, Run.idea_id == Idea.id)
         .outerjoin(Candidate, Candidate.run_id == Run.id)

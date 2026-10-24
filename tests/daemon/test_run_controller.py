@@ -34,6 +34,7 @@ from piloop.daemon.run_controller import (
     INTERRUPTED,
     NO_CHANGES,
     RECOVERED_REASON,
+    SKIPPED_REASON,
     UNCOMMITTED_SUMMARY,
     RecoveryRequeued,
     RunController,
@@ -48,6 +49,7 @@ from piloop.db.models import (
     Campaign,
     CampaignStatus,
     Candidate,
+    Cause,
     Comment,
     Evaluator,
     Event,
@@ -56,13 +58,14 @@ from piloop.db.models import (
     Lesson,
     LessonStatus,
     Measurement,
+    Origin,
     Run,
     RunEnd,
     RunStatus,
-    Verdict,
     utcnow,
 )
 from piloop.db.session import Database
+from piloop.db.triggers.changelog import OriginChanged
 from piloop.harnesses import SESSION_ENV
 from piloop.ids import (
     IMPLEMENTER,
@@ -79,25 +82,26 @@ from piloop.otel import Span, Tracer
 from piloop.plugins import host
 from piloop.plugins.executor.contract import Source
 from piloop.plugins.executor.kit import jobs
-from piloop.plugins.executor.kit.jobs import CHANGED_INPUTS, INPUTS_CHANGED, INPUTS_REBUILT
+from piloop.plugins.executor.kit.jobs import INPUTS_CHANGED, INPUTS_REBUILT
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.executor.workers.worker import _Control
 from piloop.plugins.runtime.contract import AgentExit, Handle
 from piloop.plugins.vcs.contract import Revision
 from piloop.plugins.vcs.git import GitRepository, commands as git
 from piloop.plugins.vcs.git.commands import pin as git_pin
-from piloop.plugins.verdict_rule.contract import VERDICT_RULES
+from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Outcome
+from piloop.scoring.evaluate import CHANGED_INPUTS
 from piloop.scoring.ledger import (
-    DAEMON,
-    SKIPPED,
+    Branch,
     CandidateJudged,
     MeasurementRecorded,
     Rebased,
-    branches,
+    Trunk,
     current_evaluator,
     due,
     head,
     import_reference,
+    lineages,
     pairs as ledger_pairs,
     request_remeasure,
     requested,
@@ -106,6 +110,7 @@ from piloop.scoring.ledger import (
     supersede_composed,
     units,
 )
+from piloop.scoring.verdict import PENDING, label, pending
 from piloop.settings import Settings
 from piloop.store.tree import FICLONE
 from piloop.usage.jsonl import CWD_ENCODERS
@@ -291,7 +296,7 @@ def test_successful_run_scores_the_commit(
     assert run.brief is not None and run.brief.startswith('# Implementer') and '### Plan\nappend one line' in run.brief
     assert 'lines are good\n\nProposed by test, prompted by: finding comment#3: short files lose\n' in run.brief
     [e] = candidates(db, run_id)
-    assert (e.verdict, e.summary, e.metrics) == (Verdict.KEEP, 'add a line', {'score': 2.0, 'size': IsPositive()})
+    assert (e.verdict, e.summary, e.metrics) == (Outcome.KEEP, 'add a line', {'score': 2.0, 'size': IsPositive()})
     assert e.parent_id == baseline(db, campaign.id).id
     with db.session() as s:
         assert s.get_one(Idea, run.idea_id).status is IdeaStatus.DONE
@@ -361,10 +366,10 @@ def test_every_commit_is_scored_and_lineage_follows_keeps(
     run_id = make_run(db, campaign)
     execute(controller(db, runtime, tmp_path), db, run_id)
     first, second = candidates(db, run_id)
-    assert (first.summary, first.verdict, first.metrics['score']) == ('first', Verdict.KEEP, 2.0)
+    assert (first.summary, first.verdict, first.metrics['score']) == ('first', Outcome.KEEP, 2.0)
     assert (second.summary, second.verdict, second.metrics['score'], second.parent_id) == (
         'second',
-        Verdict.KEEP,
+        Outcome.KEEP,
         3.0,
         first.id,
     )
@@ -380,7 +385,7 @@ def test_every_commit_of_a_run_is_a_candidate_before_the_first_is_measured(
     run_id = make_run(db, campaign)
     ex = controller(db, runtime, tmp_path)
     measure = ex._measure
-    seen: list[list[tuple[str | None, Verdict, int | None]]] = []
+    seen: list[list[tuple[str | None, str, int | None]]] = []
 
     def watched(
         run: RunId | None,
@@ -396,14 +401,14 @@ def test_every_commit_of_a_run_is_a_candidate_before_the_first_is_measured(
     ) -> bool:
         with db.session() as s:
             rows = s.scalars(select(Candidate).where(Candidate.run_id == run_id).order_by(Candidate.id)).all()
-            seen.append([(c.summary, c.verdict, c.parent_id) for c in rows])
+            seen.append([(c.summary, label(c), c.parent_id) for c in rows])
         return measure(run, campaign_id, cfg, sha, candidate_id, evaluator_id, eval_dir, bar=bar, repeats=repeats)
 
     monkeypatch.setattr(ex, '_measure', watched)
     execute(ex, db, run_id)
     first, second = candidates(db, run_id)
-    assert seen[0] == [('first', Verdict.PENDING, 1), ('second', Verdict.PENDING, first.id)], 'all at once, in order'
-    assert (first.verdict, second.verdict, second.metrics['score']) == (Verdict.KEEP, Verdict.KEEP, 3.0)
+    assert seen[0] == [('first', PENDING, 1), ('second', PENDING, first.id)], 'all at once, in order'
+    assert (first.verdict, second.verdict, second.metrics['score']) == (Outcome.KEEP, Outcome.KEEP, 3.0)
 
 
 @pytest.mark.parametrize('moved_to', [None, IdeaStatus.PARKED, IdeaStatus.REJECTED])
@@ -444,7 +449,7 @@ def test_worse_commit_is_discarded(db: Database, campaign: Campaign, runtime: Sc
     run_id = make_run(db, campaign)
     execute(controller(db, runtime, tmp_path), db, run_id)
     [e] = candidates(db, run_id)
-    assert (e.verdict, e.verdict_by) == (Verdict.DISCARD, DAEMON)
+    assert (e.verdict, e.verdict_by) == (Outcome.DISCARD, System.DAEMON)
     assert run_row(db, run_id).status is RunStatus.SUCCEEDED
 
 
@@ -480,7 +485,7 @@ def test_a_verdict_rule_from_a_plugin_replaces_the_built_in_one_through_piloop_t
         [e] = candidates(db, run_id)
         with db.session() as s:
             reason = s.get_one(Candidate, e.id).verdict_reason
-        assert (e.verdict, e.verdict_by, e.metrics['score']) == (Verdict.INTERESTING, DAEMON, 2.0)
+        assert (e.verdict, e.verdict_by, e.metrics['score']) == (Outcome.INTERESTING, System.DAEMON, 2.0)
         assert reason == snapshot(
             'against candidate#1: score 2 vs 1 (+1; aggregate: no per-unit results); the gain is below min_gain 2'
         )
@@ -510,7 +515,7 @@ def test_work_a_stopped_implementer_left_uncommitted_is_recovered_and_a_new_run_
     [(summary, verdict, reason, measurements, _)] = scored(db, run_id)
     assert (summary, verdict, reason, measurements) == (
         UNCOMMITTED_SUMMARY,
-        Verdict.RECOVERED,
+        Origin.RECOVERED,
         RECOVERED_REASON.format(run=run_id),
         0,
     )
@@ -550,7 +555,7 @@ def test_work_a_stopped_implementer_left_uncommitted_is_recovered_and_a_new_run_
     [done] = candidates(db, finishing)
     assert (done.summary, done.verdict, done.metrics['score'], done.parent_id) == (
         'add a line',
-        Verdict.KEEP,
+        Outcome.KEEP,
         3.0,
         recovered_id,
     ), 'judged against the nearest keep below the recovered work, the baseline'
@@ -627,7 +632,7 @@ def test_a_failed_run_whose_commits_the_head_moved_past_is_retried_on_the_head_w
             f'requeued on the head: run#{slow} ended failed after its commits, and the head moved past them. To start'
             f' from them, run git cherry-pick {base}..{second.commit_sha}'
         )
-    assert wipe.verdict is Verdict.DISCARD
+    assert wipe.verdict is Outcome.DISCARD
 
 
 def test_dirt_after_a_commit_is_recovered_on_its_own_and_the_commit_is_scored_as_made(
@@ -638,8 +643,8 @@ def test_dirt_after_a_commit_is_recovered_on_its_own_and_the_commit_is_scored_as
     run_id = make_run(db, campaign)
     execute(controller(db, runtime, tmp_path), db, run_id)
     assert [(c[0], c[1], c[3]) for c in scored(db, run_id)] == [
-        ('the idea', Verdict.KEEP, 1),
-        (UNCOMMITTED_SUMMARY, Verdict.RECOVERED, 0),
+        ('the idea', Outcome.KEEP, 1),
+        (UNCOMMITTED_SUMMARY, Origin.RECOVERED, 0),
     ], 'never amended: the implementer declared its commit, not the dirt after it'
     [e] = [c for c in candidates_measured(db, run_id)]
     assert e.metrics['score'] == 2.0
@@ -688,7 +693,7 @@ def test_an_idea_whose_implementers_keep_dying_is_requeued_from_its_recovered_wo
         execute(ex, db, run_id)
     with db.session() as s:
         idea = s.get_one(Idea, run_row(db, run_id).idea_id)
-        recovered = s.scalars(select(Candidate).where(Candidate.verdict == Verdict.RECOVERED)).all()
+        recovered = s.scalars(select(Candidate).where(Candidate.origin == Origin.RECOVERED)).all()
         assert (idea.status, len(idea.runs), len(recovered)) == (IdeaStatus.DONE, 3, 2), (
             'two requeues (the default), three runs, two recovered trees'
         )
@@ -787,7 +792,7 @@ def test_evaluate_failure_is_a_crash_verdict(
     run_id = make_run(db, campaign)
     execute(controller(db, runtime, tmp_path), db, run_id)
     [e] = candidates(db, run_id)
-    assert (e.verdict, e.metrics) == (Verdict.CRASH, {})
+    assert (e.verdict, e.metrics) == (Outcome.CRASH, {})
     assert e.error is not None and e.error.startswith('evaluate exit 9')
     assert run_row(db, run_id).status is RunStatus.SUCCEEDED, (
         'the implementer did its job; the candidate carries the verdict'
@@ -816,14 +821,14 @@ def test_a_crash_from_a_fault_of_the_host_is_measured_again_on_request_and_judge
     fault.touch()
     execute(ex, db, run_id)
     [crashed] = candidates(db, run_id)
-    assert crashed.verdict is Verdict.CRASH
+    assert crashed.verdict is Outcome.CRASH
     with db.session() as s:
         request_remeasure(s, s.get_one(Candidate, crashed.id), System.ORCHESTRATOR)
         s.commit()
     ex.remeasure(crashed.id)
     with db.session() as s:
         c = s.get_one(Candidate, crashed.id)
-        assert (c.verdict, len(c.measurements)) == (Verdict.CRASH, 2), 'the fault is still there: a crash again'
+        assert (c.verdict, len(c.measurements)) == (Outcome.CRASH, 2), 'the fault is still there: a crash again'
         assert len(s.get_one(Candidate, baseline(db, campaign.id).id).measurements) == 2, (
             'its first run crashed, so its bar never ran'
         )
@@ -845,7 +850,7 @@ def test_a_crash_from_a_fault_of_the_host_is_measured_again_on_request_and_judge
     ex.remeasure(crashed.id)
     with db.session() as s:
         c = s.get_one(Candidate, crashed.id)
-        assert (c.verdict, c.verdict_by) == (Verdict.INTERESTING, DAEMON)
+        assert (c.verdict, c.verdict_by) == (Outcome.INTERESTING, System.DAEMON)
         assert c.verdict_reason is not None and c.verdict_reason.startswith(
             f'keeps against its own bar, but the head moved on to candidate#{moved.id}: against candidate#1: score 2 vs 1'
             ' (+1; 95% worst case +1 over 3 pairs)'
@@ -857,7 +862,7 @@ def test_a_crash_from_a_fault_of_the_host_is_measured_again_on_request_and_judge
         assert merged is not None and (merged.parent_id, merged.run_id, merged.verdict) == (
             moved.id,
             run_id,
-            Verdict.KEEP,
+            Outcome.KEEP,
         )
 
         request_remeasure(s, merged, System.ORCHESTRATOR)
@@ -866,7 +871,7 @@ def test_a_crash_from_a_fault_of_the_host_is_measured_again_on_request_and_judge
     ex.remeasure(merged_id)
     with db.session() as s:
         c = s.get_one(Candidate, merged_id)
-        assert (len(c.measurements), c.verdict) == (4, Verdict.KEEP), 'a repeat of a keep keeps its verdict'
+        assert (len(c.measurements), c.verdict) == (4, Outcome.KEEP), 'a repeat of a keep keeps its verdict'
         assert {m.pair.candidate_id for m in c.measurements if m.pair} == {moved.id}, (
             'its bar is the head it merged onto'
         )
@@ -888,7 +893,7 @@ def test_a_crash_on_the_evaluate_timeout_is_measured_again_on_request_once_the_t
     run_id = make_run(db, campaign)
     execute(ex, db, run_id)
     [crashed] = candidates(db, run_id)
-    assert (crashed.verdict, crashed.error) == (Verdict.CRASH, 'evaluate timeout after 0.2s')
+    assert (crashed.verdict, crashed.error) == (Outcome.CRASH, 'evaluate timeout after 0.2s')
     with db.session() as s:
         evaluator_id = s.get_one(Campaign, campaign.id).evaluator_id
     toml.write_text(toml.read_text().replace('evaluate_timeout = 0.2', 'evaluate_timeout = 30'))
@@ -901,8 +906,8 @@ def test_a_crash_on_the_evaluate_timeout_is_measured_again_on_request_once_the_t
         c = s.get_one(Candidate, crashed.id)
         assert [m.evaluator_id == evaluator_id for m in c.measurements] == [True, True], 'the same evaluator'
         assert (c.verdict, c.verdict_by, c.verdict_reason) == (
-            Verdict.KEEP,
-            DAEMON,
+            Outcome.KEEP,
+            System.DAEMON,
             'against candidate#1: score 2 vs 1 (+1; 95% worst case +1 over 1 pairs)',
         )
         assert head(s, s.get_one(Campaign, campaign.id)) == c
@@ -955,7 +960,7 @@ def test_a_remeasure_runs_pairs_of_the_candidate_and_its_bar_and_judges_it_again
         candidate = s.get_one(Candidate, c.id)
         assert (candidate.verdict, candidate.verdict_by, candidate.verdict_reason) == snapshot(
             (
-                Verdict.KEEP,
+                Outcome.KEEP,
                 'daemon',
                 'against candidate#1: score 2 vs 1 (+1; 95% worst case +1 over 3 pairs); guardrails: seconds 40 vs 40 (+0; 95% worst case +0 over 3 pairs) within its margin 5',
             )
@@ -1028,7 +1033,7 @@ def test_an_a_a_test_under_load_keeps_a_gain_of_the_same_speed_only_when_it_is_p
     execute(ex, db, run_id)
     with db.session() as s:
         c = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).one()
-        assert (c.verdict, len(c.measurements)) == ((Verdict.KEEP, 3) if repeats else (Verdict.INTERESTING, 1))
+        assert (c.verdict, len(c.measurements)) == ((Outcome.KEEP, 3) if repeats else (Outcome.INTERESTING, 1))
 
 
 def test_a_remeasure_that_a_stop_cancels_records_and_judges_nothing(
@@ -1039,7 +1044,7 @@ def test_a_remeasure_that_a_stop_cancels_records_and_judges_nothing(
     ex.remeasure(baseline(db, campaign.id).id)
     with db.session() as s:
         c = s.get_one(Candidate, baseline(db, campaign.id).id)
-        assert (len(c.measurements), c.verdict) == (1, Verdict.KEEP), 'the stop owns the rows'
+        assert (len(c.measurements), c.verdict) == (1, Outcome.KEEP), 'the stop owns the rows'
 
 
 def test_brief_carries_history_and_comments(
@@ -1188,14 +1193,15 @@ def test_the_head_is_the_latest_trunk_keep_whatever_it_scores(db: Database, camp
         s.flush()
         rows = {}
         for tree, verdict, run_id, score in (
-            ('a', Verdict.KEEP, None, 9.0),
-            ('b', Verdict.KEEP, None, 1.0),
-            ('c', Verdict.INTERESTING, None, 99.0),
-            ('d', Verdict.KEEP, branch.id, 50.0),
-            ('r', Verdict.REFERENCE, None, 5.0),
+            ('a', Outcome.KEEP, None, 9.0),
+            ('b', Outcome.KEEP, None, 1.0),
+            ('c', Outcome.INTERESTING, None, 99.0),
+            ('d', Outcome.KEEP, branch.id, 50.0),
+            ('r', None, None, 5.0),
         ):
+            origin = Origin.RUN if verdict else Origin.REFERENCE
             rows[tree] = c = Candidate(
-                campaign_id=campaign.id, tree_sha=tree, commit_sha=tree, verdict=verdict, run_id=run_id
+                campaign_id=campaign.id, tree_sha=tree, commit_sha=tree, origin=origin, verdict=verdict, run_id=run_id
             )
             s.add(c)
             s.flush()
@@ -1207,7 +1213,7 @@ def test_the_head_is_the_latest_trunk_keep_whatever_it_scores(db: Database, camp
             ' run keep (d) never moves the head and a reference is never one'
         )
         assert head(s, proj, excluding=rows['b']) == rows['a'], 'the candidate being judged is never its own bar'
-        unscored = Candidate(campaign_id=campaign.id, tree_sha='u', commit_sha='u', verdict=Verdict.REFERENCE)
+        unscored = Candidate(campaign_id=campaign.id, tree_sha='u', commit_sha='u', origin=Origin.REFERENCE)
         s.add(unscored)
         s.flush()
         assert [c.tree_sha for c in due(s, proj)] == ['u'], 'a reference that no evaluator measured'
@@ -1237,13 +1243,14 @@ def test_a_new_evaluator_measures_what_a_verdict_needs_then_what_someone_asked_f
         s.flush()
         rows: dict[str, Candidate] = {}
 
-        def add(tree: str, verdict: Verdict, parent: str | None = None, run: Run | None = None) -> Candidate:
+        def add(tree: str, verdict: Outcome | None, parent: str | None = None, run: Run | None = None) -> Candidate:
             rows[tree] = c = Candidate(
                 campaign_id=campaign.id,
                 tree_sha=tree,
                 commit_sha=tree,
+                origin=Origin.RUN if verdict else Origin.REFERENCE,
                 verdict=verdict,
-                verdict_by=DAEMON,
+                verdict_by=System.DAEMON,
                 parent_id=rows[parent].id if parent else None,
                 run_id=run.id if run else None,
             )
@@ -1253,17 +1260,17 @@ def test_a_new_evaluator_measures_what_a_verdict_needs_then_what_someone_asked_f
             return c
 
         for tree in ('k1', 'k2', 'k3', 'k4', 'k5'):
-            add(tree, Verdict.KEEP, parent='k1' if tree != 'k1' else None)
-        add('lead', Verdict.INTERESTING, parent='k1')
-        add('ref', Verdict.REFERENCE)
+            add(tree, Outcome.KEEP, parent='k1' if tree != 'k1' else None)
+        add('lead', Outcome.INTERESTING, parent='k1')
+        add('ref', None)
         done = Run(idea_id=idea.id, attempt=1, base_candidate_id=rows['k2'].id, harness='h', model='m')
         done.status, done.end = RunStatus.SUCCEEDED, RunEnd.FINISHED
         s.add_all([done, Run(idea_id=idea.id, attempt=2, base_candidate_id=rows['lead'].id, harness='h', model='m')])
         s.flush()
-        add('crash', Verdict.CRASH, parent='k2', run=done)
-        add('repeat', Verdict.DISCARD, parent='k3', run=done)
-        add('head', Verdict.KEEP, parent='k5')
-        fresh = Candidate(campaign_id=campaign.id, tree_sha='fresh', commit_sha='fresh', verdict=Verdict.REFERENCE)
+        add('crash', Outcome.CRASH, parent='k2', run=done)
+        add('repeat', Outcome.DISCARD, parent='k3', run=done)
+        add('head', Outcome.KEEP, parent='k5')
+        fresh = Candidate(campaign_id=campaign.id, tree_sha='fresh', commit_sha='fresh', origin=Origin.REFERENCE)
         s.add(fresh)
         s.add(
             Idea(
@@ -1357,7 +1364,7 @@ def test_lineage_follows_the_actual_predecessor(
     run_id = make_run(db, campaign)
     execute(controller(db, runtime, tmp_path), db, run_id)
     worse, better = candidates(db, run_id)
-    assert (worse.verdict, better.verdict) == (Verdict.DISCARD, Verdict.KEEP)
+    assert (worse.verdict, better.verdict) == (Outcome.DISCARD, Outcome.KEEP)
     assert better.parent_id == worse.id, 'built on the discarded commit, judged against the last keep'
 
 
@@ -1528,7 +1535,7 @@ def test_a_cancelled_run_whose_implementer_ends_by_itself_first_closes_as_cancel
     with db.session() as s:
         run = s.get_one(Run, run_id)
         assert (run.status, run.end, run.idea.status) == (RunStatus.FAILED, RunEnd.CANCELLED, IdeaStatus.PARKED)
-        assert [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == run_id))] == [Verdict.KEEP]
+        assert [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == run_id))] == [Outcome.KEEP]
 
 
 def test_a_relaunched_implementer_signs_as_itself_and_its_finding_without_a_commit_is_a_result(
@@ -1606,7 +1613,7 @@ def test_a_fast_implementer_that_left_uncommitted_work_started_and_its_work_is_r
     execute(controller(db, runtime, tmp_path), db, run_id)
     assert (run_row(db, run_id).status, run_row(db, run_id).error) == (RunStatus.FAILED, INTERRUPTED)
     [(summary, verdict, *_)] = scored(db, run_id)
-    assert (summary, verdict) == (UNCOMMITTED_SUMMARY, Verdict.RECOVERED)
+    assert (summary, verdict) == (UNCOMMITTED_SUMMARY, Origin.RECOVERED)
     with db.session() as s:
         assert s.scalar(select(func.count()).select_from(AgentSession).where(AgentSession.run_id == run_id)) == 1, (
             'no relaunch'
@@ -1783,7 +1790,7 @@ def test_an_implementer_that_left_its_finding_has_finished_its_run_however_its_p
         assert s.get_one(AgentSession, agent_session_id).error == (
             'agent timeout after 0.5s' if timed_out else 'agent exit 1'
         )
-        assert [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == run_id))] == [Verdict.KEEP]
+        assert [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == run_id))] == [Outcome.KEEP]
 
 
 @pytest.mark.parametrize('role', ['implementer', 'worker'])
@@ -1825,7 +1832,7 @@ def test_an_implementer_that_stops_on_its_open_escalation_is_blocked_and_its_ide
         assert s.get_one(Idea, idea_id).status is IdeaStatus.PARKED
         note = s.scalars(select(Comment).where(Comment.author == 'daemon', Comment.target_id == idea_id)).one()
         assert f'escalation comment#{escalation}' in note.body and 'set the idea ready' in note.body
-        assert [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == run_id))] == [Verdict.KEEP], (
+        assert [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == run_id))] == [Outcome.KEEP], (
             'its commits are scored as any run'
         )
 
@@ -1913,7 +1920,7 @@ def test_uncommitted_changes_without_a_finding_are_scored_but_not_an_attempt_tha
     run = run_row(db, run_id)
     assert (run.status, run.error) == (RunStatus.FAILED, INTERRUPTED)
     [(summary, verdict, *_)] = scored(db, run_id)
-    assert (summary, verdict) == (UNCOMMITTED_SUMMARY, Verdict.RECOVERED), 'what it left is kept, not judged'
+    assert (summary, verdict) == (UNCOMMITTED_SUMMARY, Origin.RECOVERED), 'what it left is kept, not judged'
     with db.session() as s:
         assert s.get_one(Idea, run.idea_id).status is IdeaStatus.READY
 
@@ -2020,7 +2027,7 @@ def test_a_commit_that_reverts_to_a_known_tree_is_that_candidate_and_is_not_meas
     run_id = make_run(db, campaign)
     execute(controller(db, runtime, tmp_path, tracer), db, run_id)
     [tried] = candidates(db, run_id)
-    assert (tried.summary, tried.verdict, tried.metrics['score']) == ('try', Verdict.KEEP, 2.0)
+    assert (tried.summary, tried.verdict, tried.metrics['score']) == ('try', Outcome.KEEP, 2.0)
     base = baseline(db, campaign.id)
     with db.session() as s:
         assert s.scalar(select(func.count()).select_from(Candidate)) == 2, 'the revert is the baseline, not a third row'
@@ -2065,8 +2072,10 @@ def test_a_changed_evaluator_measures_again_and_old_numbers_do_not_count(
         assert [m.metrics['score'] for m in base.measurements] == [2.0, 4.0], (
             'the revert resolved to the base, which the new evaluator had not seen: measured once more, under it'
         )
-        assert base.verdict is Verdict.KEEP, 'a known candidate keeps its verdict; the revert says nothing new about it'
-        assert (tried.verdict, tried.verdict_by) == (Verdict.KEEP, DAEMON), 'an unmeasured bar is beaten by any score'
+        assert base.verdict is Outcome.KEEP, 'a known candidate keeps its verdict; the revert says nothing new about it'
+        assert (tried.verdict, tried.verdict_by) == (Outcome.KEEP, System.DAEMON), (
+            'an unmeasured bar is beaten by any score'
+        )
         trunk = head(s, proj)
         assert trunk is not None and trunk.id == tried.id
 
@@ -2136,7 +2145,7 @@ def test_per_unit_results_decide_the_verdict_and_live_outside_the_database(
     with db.session() as s:
         c = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).one()
         [m] = c.measurements
-        assert (c.verdict, c.verdict_by) == (Verdict.INTERESTING, DAEMON)
+        assert (c.verdict, c.verdict_by) == (Outcome.INTERESTING, System.DAEMON)
         assert c.verdict_reason == snapshot(
             'against candidate#1: score 2 vs 1 (+1; 95% worst case -2 over 2 units): the gain is not significant'
         )
@@ -2157,7 +2166,7 @@ def test_without_per_unit_results_the_aggregate_decides_and_the_reason_says_so(
     with db.session() as s:
         c = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).one()
         assert (c.verdict, c.verdict_reason) == snapshot(
-            (Verdict.KEEP, 'against candidate#1: score 2 vs 1 (+1; aggregate: no per-unit results)')
+            (Outcome.KEEP, 'against candidate#1: score 2 vs 1 (+1; aggregate: no per-unit results)')
         )
     assert list((tmp_path / 'units').glob('*')) == []
 
@@ -2179,7 +2188,7 @@ def test_guardrails_are_enforced_by_the_daemon_even_after_the_campaign_stopped(
     execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         c = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).one()
-        assert (c.verdict, c.verdict_reason) == snapshot((Verdict.DISCARD, 'floor: size 10 past its floor 8'))
+        assert (c.verdict, c.verdict_reason) == snapshot((Outcome.DISCARD, 'floor: size 10 past its floor 8'))
 
 
 def test_units_of_a_candidate_are_the_mean_per_unit_over_its_measurements(
@@ -2237,11 +2246,13 @@ HARNESS_SCAFFOLD_THEN_WORK = (
 )
 
 
-def scored(db: Database, run_id: RunId) -> list[tuple[str | None, Verdict, str | None, int, int | None]]:
-    """``(summary, verdict, reason, measurements, parent)`` of each candidate the run produced, in order."""
+def scored(db: Database, run_id: RunId) -> list[tuple[str | None, str, str | None, int, int | None]]:
+    """``(summary, verdict, reason, measurements, parent)`` of each candidate the run produced, in order.
+
+    The verdict is its ``label``: the origin of one that is never judged."""
     with db.session() as s:
         rows = s.scalars(select(Candidate).where(Candidate.run_id == run_id).order_by(Candidate.id)).all()
-        return [(c.summary, c.verdict, c.verdict_reason, len(c.measurements), c.parent_id) for c in rows]
+        return [(c.summary, label(c), c.verdict_reason, len(c.measurements), c.parent_id) for c in rows]
 
 
 def test_a_commit_marked_skip_is_a_candidate_without_an_evaluation_and_moves_no_bar(
@@ -2256,12 +2267,13 @@ def test_a_commit_marked_skip_is_a_candidate_without_an_evaluation_and_moves_no_
         assert first is not None
         skip_id = first.id
     assert scored(db, run_id) == [
-        ('scaffold', Verdict.UNMEASURED, SKIPPED, 0, 1),
-        ('work', Verdict.KEEP, IsStr(regex=r'against candidate#1: score 3 vs 1 .*'), 1, skip_id),
+        ('scaffold', Origin.SKIPPED, SKIPPED_REASON, 0, 1),
+        ('work', Outcome.KEEP, IsStr(regex=r'against candidate#1: score 3 vs 1 .*'), 1, skip_id),
     ], 'the next commit descends from the scaffold and is judged against the bar, the baseline'
     with db.session() as s:
-        judged = in_order(s, CandidateJudged)[0][1]
-        assert judged == CandidateJudged(verdict=Verdict.UNMEASURED, score=None, reason=SKIPPED)
+        assert [e for _, e in in_order(s, OriginChanged)] == [OriginChanged(old=Origin.RUN, new=Origin.SKIPPED)]
+        [(_, judged)] = in_order(s, CandidateJudged)
+        assert judged.verdict is Outcome.KEEP, 'a skipped commit is not judged'
 
 
 def test_a_skipped_tree_reached_again_without_the_trailer_is_measured_and_judged(
@@ -2276,8 +2288,8 @@ def test_a_skipped_tree_reached_again_without_the_trailer_is_measured_and_judged
     run_id = make_run(db, campaign)
     execute(controller(db, runtime, tmp_path), db, run_id)
     [scaffold, work] = scored(db, run_id)
-    assert scaffold[1:4] == (Verdict.DISCARD, IsStr(regex=r'against candidate#\d+: score 2 vs 3 .*'), 1)
-    assert work[1] is Verdict.KEEP
+    assert scaffold[1:4] == (Outcome.DISCARD, IsStr(regex=r'against candidate#\d+: score 2 vs 3 .*'), 1)
+    assert work[1] is Outcome.KEEP
 
 
 def test_a_skip_commit_on_a_known_tree_keeps_its_verdict_unmeasured(
@@ -2290,7 +2302,7 @@ def test_a_skip_commit_on_a_known_tree_keeps_its_verdict_unmeasured(
     execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
         base = s.get_one(Candidate, baseline(db, campaign.id).id)
-        assert (base.verdict, base.verdict_reason, len(base.measurements)) == (Verdict.KEEP, None, 1)
+        assert (base.verdict, base.verdict_reason, len(base.measurements)) == (Outcome.KEEP, None, 1)
 
 
 def test_dirt_after_a_skip_commit_is_committed_on_its_own_and_evaluated(
@@ -2302,8 +2314,8 @@ def test_dirt_after_a_skip_commit_is_committed_on_its_own_and_evaluated(
     run_id = make_run(db, campaign)
     execute(controller(db, runtime, tmp_path), db, run_id)
     assert [(c[0], c[1], c[3]) for c in scored(db, run_id)] == [
-        ('scaffold', Verdict.UNMEASURED, 0),
-        (UNCOMMITTED_SUMMARY, Verdict.RECOVERED, 0),
+        ('scaffold', Origin.SKIPPED, 0),
+        (UNCOMMITTED_SUMMARY, Origin.RECOVERED, 0),
     ], 'the work after a skip commit is recovered on its own: never amended into the commit'
 
 
@@ -2316,7 +2328,7 @@ def test_a_commit_that_moves_no_deciding_metric_says_no_op(
     execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, verdict, reason, _, _)] = scored(db, run_id)
     assert (verdict, reason) == (
-        Verdict.DISCARD,
+        Outcome.DISCARD,
         snapshot(
             'no-op: score identical to parent candidate#1; against candidate#1: score 1 vs 1 (+0; aggregate: no per-unit results)'
         ),
@@ -2357,19 +2369,19 @@ def test_a_run_whose_history_holds_the_head_is_judged_against_the_head_itself(
     [(_, first, first_reason, _, parent), (_, second, second_reason, _, _)] = scored(db, run_id)
     assert parent == reference
     assert (first, first_reason) == (
-        Verdict.DISCARD,
+        Outcome.DISCARD,
         snapshot(
             'the head candidate#1 is in its history: against candidate#1: score 1 vs 1 (+0; aggregate: no per-unit results)'
         ),
     ), 'level with the head: a gain over its own base only'
     assert (second, second_reason) == (
-        Verdict.KEEP,
+        Outcome.KEEP,
         snapshot(
             'the head candidate#1 is in its history: against candidate#1: score 2 vs 1 (+1; aggregate: no per-unit results)'
         ),
     ), 'above the head: kept, the new head'
     with db.session() as s:
-        assert s.get_one(Candidate, reference).verdict is Verdict.REFERENCE, 'the starting point is never judged'
+        assert s.get_one(Candidate, reference).verdict is None, 'the starting point is never judged'
         trunk = head(s, s.get_one(Campaign, campaign.id))
         assert trunk is not None and trunk.summary == 'second'
         assert not s.scalars(select(Event).where(has(Rebased))).all(), 'nothing was merged'
@@ -2392,13 +2404,13 @@ def test_a_branch_run_is_judged_against_its_own_base_and_its_keep_never_moves_th
     execute(ex, db, run_id)
     [(_, first, first_reason, _, _), (_, second, second_reason, _, _)] = scored(db, run_id)
     assert (first, first_reason) == (
-        Verdict.KEEP,
+        Outcome.KEEP,
         snapshot(
             'against candidate#2: score 1 vs 0 (+1; aggregate: no per-unit results); a branch keep, not above the head candidate#1 (score 1)'
         ),
     ), 'a gain over its own base keeps on the branch'
     assert (second, second_reason) == (
-        Verdict.KEEP,
+        Outcome.KEEP,
         snapshot(
             'against candidate#3: score 2 vs 1 (+1; aggregate: no per-unit results); a branch keep, above the head candidate#1 (score 1)'
         ),
@@ -2407,9 +2419,9 @@ def test_a_branch_run_is_judged_against_its_own_base_and_its_keep_never_moves_th
         proj = s.get_one(Campaign, campaign.id)
         trunk = head(s, proj)
         assert trunk is not None and trunk.id == 1, 'a branch keep never moves the head, however it scores'
-        assert [(b.root.id, b.branched, b.latest.summary, b.keeps) for b in branches(s, proj)] == [
-            (1, False, 'baseline', 1),
-            (reference, True, 'second', 2),
+        assert [(line.lineage, line.latest.summary, line.keeps) for line in lineages(s, proj)] == [
+            (Trunk(), 'baseline', 1),
+            (Branch(s.get_one(Candidate, reference)), 'second', 2),
         ], "two lineages: the trunk first, then the reference's branch"
 
 
@@ -2421,7 +2433,7 @@ def keep_elsewhere(
     metrics: dict[str, float],
     *,
     on: int = 1,
-    verdict: Verdict = Verdict.KEEP,
+    verdict: Outcome = Outcome.KEEP,
     run_id: RunId | None = None,
 ) -> CandidateId:
     """Add a trunk keep made outside any run.
@@ -2441,7 +2453,9 @@ def keep_elsewhere(
         sha = repo.head.commit.hexsha
         repo.git.checkout('-q', 'main')
         git_pin(repo, f'refs/piloop/demo/elsewhere/{summary.replace(" ", "-")}', sha)
-        candidate, _ = resolve(s, campaign.id, GitRepository(repo).version(sha), parent=parent, run_id=run_id)
+        candidate, _ = resolve(
+            s, campaign.id, GitRepository(repo).version(sha), parent=parent, run_id=run_id, origin=Origin.RUN
+        )
         candidate.verdict, candidate.verdict_by = verdict, 'orchestrator'
         evaluator_id = s.get_one(Campaign, campaign.id).evaluator_id
         assert evaluator_id is not None
@@ -2481,14 +2495,14 @@ def test_a_trunk_run_that_merges_a_branch_keep_is_judged_against_the_head_not_th
     execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, verdict, reason, _, parent)] = scored(db, run_id)
     assert (verdict, reason, parent) == (
-        Verdict.KEEP,
+        Outcome.KEEP,
         f'against candidate#{trunk}: score 3 vs 1 (+2; aggregate: no per-unit results)',
         trunk,
     ), 'judged against the head it merged onto'
     with db.session() as s:
         new_head = head(s, s.get_one(Campaign, campaign.id))
         assert new_head is not None and new_head.run_id == run_id, 'the merge is the new head'
-        assert s.get_one(Candidate, kept).verdict is Verdict.KEEP, 'the branch keep keeps its verdict'
+        assert s.get_one(Candidate, kept).verdict is Outcome.KEEP, 'the branch keep keeps its verdict'
 
 
 def test_a_run_pinned_to_a_non_keep_is_judged_against_its_nearest_keep_on_every_metric(
@@ -2500,7 +2514,7 @@ def test_a_run_pinned_to_a_non_keep_is_judged_against_its_nearest_keep_on_every_
     the head it grew from, so its keep moves the head.
     """
     lead = keep_elsewhere(
-        db, campaign, 'lead', {'solve.txt': 'base\nx\n'}, {'score': 9.0, 'size': 1.0}, verdict=Verdict.INTERESTING
+        db, campaign, 'lead', {'solve.txt': 'base\nx\n'}, {'score': 9.0, 'size': 1.0}, verdict=Outcome.INTERESTING
     )
     run_id = make_run(db, campaign)
     with db.session() as s:
@@ -2510,7 +2524,7 @@ def test_a_run_pinned_to_a_non_keep_is_judged_against_its_nearest_keep_on_every_
     execute(ex, db, run_id)
     [(_, verdict, reason, _, parent)] = scored(db, run_id)
     assert (verdict, reason, parent) == (
-        Verdict.KEEP,
+        Outcome.KEEP,
         'against candidate#1: score 3 vs 1 (+2; aggregate: no per-unit results)',
         lead,
     ), "the lead's 9 is no bar: the head's 1 is"
@@ -2549,12 +2563,12 @@ def test_a_keep_that_lost_the_race_to_the_head_is_merged_onto_it_and_judged_ther
         rows = s.scalars(select(Candidate).order_by(Candidate.id)).all()
         assert [(c.id, c.summary, c.verdict, c.parent_id, c.run_id) for c in rows] == snapshot(
             [
-                (1, 'baseline', Verdict.KEEP, None, None),
-                (2, 'notes', Verdict.KEEP, 1, None),
-                (3, 'add a line', Verdict.INTERESTING, 1, 1),
-                (4, 'add a line (rebased onto candidate#2)', Verdict.INTERESTING, 2, 1),
-                (5, 'docs', Verdict.KEEP, 2, None),
-                (6, 'add a line (rebased onto candidate#5)', Verdict.KEEP, 5, 1),
+                (1, 'baseline', Outcome.KEEP, None, None),
+                (2, 'notes', Outcome.KEEP, 1, None),
+                (3, 'add a line', Outcome.INTERESTING, 1, 1),
+                (4, 'add a line (rebased onto candidate#2)', Outcome.INTERESTING, 2, 1),
+                (5, 'docs', Outcome.KEEP, 2, None),
+                (6, 'add a line (rebased onto candidate#5)', Outcome.KEEP, 5, 1),
             ]
         )
         x, merged, h3, final = rows[2], rows[3], rows[4], rows[5]
@@ -2609,7 +2623,7 @@ def test_a_keep_whose_merge_onto_the_head_conflicts_stays_interesting_and_files_
     execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, verdict, reason, _, _)] = scored(db, run_id)
     assert (verdict, reason) == (
-        Verdict.INTERESTING,
+        Outcome.INTERESTING,
         snapshot(
             'keeps against its own bar, but the head moved on to candidate#2: against candidate#1: score 2 vs 1 (+1; aggregate: no per-unit results); its merge onto the head conflicts in solve.txt: seed idea#2 composes it by hand'
         ),
@@ -2621,7 +2635,7 @@ def test_a_keep_whose_merge_onto_the_head_conflicts_stays_interesting_and_files_
             f'Compose candidate#{x.id} onto the head',
             'score',
             None,
-            DAEMON,
+            System.DAEMON,
             f'candidate#{x.id}',
         ), 'unpinned, so it runs from the head, on the run track'
         assert seed.hypothesis == (
@@ -2672,7 +2686,7 @@ def test_a_conflicting_merge_in_a_stopped_campaign_files_no_seed(
         s.commit()
     execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, verdict, reason, _, _)] = scored(db, run_id)
-    assert verdict is Verdict.INTERESTING
+    assert verdict is Outcome.INTERESTING
     assert reason is not None and reason.endswith('its merge onto the head conflicts in solve.txt')
     with db.session() as s:
         assert s.scalars(select(Idea).where(Idea.status == IdeaStatus.SEED)).all() == []
@@ -2718,9 +2732,13 @@ def test_two_sessions_that_register_one_new_tree_share_one_candidate(
             return None
 
         monkeypatch.setattr(b, 'scalar', stale)
-        first, _ = resolve(a, campaign.id, GitRepository(repo).version(sha), parent=parent, run_id=None)
+        first, _ = resolve(
+            a, campaign.id, GitRepository(repo).version(sha), parent=parent, run_id=None, origin=Origin.RUN
+        )
         a.commit()
-        found, created = resolve(b, campaign.id, GitRepository(repo).version(sha), parent=parent, run_id=None)
+        found, created = resolve(
+            b, campaign.id, GitRepository(repo).version(sha), parent=parent, run_id=None, origin=Origin.RUN
+        )
         b.commit()
         assert (found.id, created) == (first.id, False)
     with db.session() as s:
@@ -2736,7 +2754,7 @@ def test_a_keep_whose_merge_onto_the_head_is_the_head_already_changes_nothing(
     execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, verdict, reason, _, _)] = scored(db, run_id)
     assert (verdict, reason) == (
-        Verdict.INTERESTING,
+        Outcome.INTERESTING,
         snapshot(
             'keeps against its own bar, but the head moved on to candidate#2: against candidate#1: score 2 vs 1 (+1; aggregate: no per-unit results); its merge onto the head is candidate#2 already (keep)'
         ),
@@ -2766,13 +2784,13 @@ def test_a_keep_that_lands_while_another_run_measures_its_tree_is_not_judged_aga
     first = make_run(db, campaign, track='accuracy')
     execute(ex, db, first)
     [kept] = candidates(db, first)
-    assert kept.verdict is Verdict.KEEP
+    assert kept.verdict is Outcome.KEEP
     with db.session() as s:  # back to while the first run measures its commit
         candidate = s.get_one(Candidate, kept.id)
         [measurement] = candidate.measurements
         evaluator_id = measurement.evaluator_id
         s.delete(measurement)
-        candidate.verdict = Verdict.PENDING
+        candidate.verdict = None
         s.commit()
     track = jobs._track
 
@@ -2782,14 +2800,14 @@ def test_a_keep_that_lands_while_another_run_measures_its_tree_is_not_judged_aga
             with db.session() as s:
                 s.add(Measurement(candidate_id=kept.id, evaluator_id=evaluator_id, metrics=kept.metrics))
                 c = s.get_one(Candidate, kept.id)
-                c.verdict, c.verdict_reason = Verdict.KEEP, 'kept on accuracy'
+                c.verdict, c.verdict_reason = Outcome.KEEP, 'kept on accuracy'
                 s.commit()
 
     monkeypatch.setattr(jobs, '_track', kept_meanwhile)
     execute(ex, db, make_run(db, campaign, title='the same line, on the cost track', track='cost'))
     with db.session() as s:
         again = s.get_one(Candidate, kept.id)
-        assert (again.verdict, again.verdict_reason) == (Verdict.KEEP, 'kept on accuracy')
+        assert (again.verdict, again.verdict_reason) == (Outcome.KEEP, 'kept on accuracy')
 
 
 def test_a_known_non_keep_that_another_run_reaches_again_is_judged_again_on_that_runs_bar(
@@ -2806,14 +2824,14 @@ def test_a_known_non_keep_that_another_run_reaches_again_is_judged_again_on_that
     [known] = candidates(db, first)
     with db.session() as s:
         c = s.get_one(Candidate, known.id)
-        c.verdict, c.verdict_reason = Verdict.INTERESTING, 'its merge onto the head conflicts in solve.txt'
+        c.verdict, c.verdict_reason = Outcome.INTERESTING, 'its merge onto the head conflicts in solve.txt'
         s.commit()
     execute(ex, db, make_run(db, campaign, title='a compose that reproduces the tree'))
     with db.session() as s:
         again = s.get_one(Candidate, known.id)
         assert (again.verdict, again.verdict_by, again.verdict_reason) == (
-            Verdict.KEEP,
-            DAEMON,
+            Outcome.KEEP,
+            System.DAEMON,
             'against candidate#1: score 2 vs 1 (+1; aggregate: no per-unit results)',
         )
         assert len(again.measurements) == 1, 'judged with the measurement it has'
@@ -2830,7 +2848,7 @@ def test_a_merge_commit_descends_from_its_first_parent_the_runs_base(
     candidate as its parent, the merge did not build on the head, and a keep by hand was refused.
     """
     metrics = {'score': 1.0, 'size': 5.0}
-    side = keep_elsewhere(db, campaign, 'notes', {'notes.txt': 'n\n'}, metrics, verdict=Verdict.INTERESTING)
+    side = keep_elsewhere(db, campaign, 'notes', {'notes.txt': 'n\n'}, metrics, verdict=Outcome.INTERESTING)
     trunk = keep_elsewhere(db, campaign, 'docs', {'docs.txt': 'd\n'}, metrics)
     with db.session() as s:
         side_sha = s.get_one(Candidate, side).commit_sha
@@ -2842,12 +2860,12 @@ def test_a_merge_commit_descends_from_its_first_parent_the_runs_base(
         s.commit()
     execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, verdict, _, measurements, parent)] = scored(db, run_id)
-    assert (verdict, measurements, parent) == (Verdict.DISCARD, 1, trunk)
+    assert (verdict, measurements, parent) == (Outcome.DISCARD, 1, trunk)
     with db.session() as s:
         [merge] = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).all()
         assert (
-            set_verdict(s, merge.id, Verdict.KEEP, reason='the notes are worth it', actor=System.HUMAN)
-            is Verdict.DISCARD
+            set_verdict(s, merge.id, Outcome.KEEP, reason='the notes are worth it', actor=System.HUMAN)
+            is Outcome.DISCARD
         )
         assert len(s.get_one(Candidate, side).measurements) == 1, 'the merged line is not measured again'
 
@@ -2869,7 +2887,7 @@ def test_a_keep_that_has_the_heads_changes_without_its_history_is_judged_against
     execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, verdict, reason, _, _)] = scored(db, run_id)
     assert (verdict, reason) == (
-        Verdict.KEEP,
+        Outcome.KEEP,
         f'the head candidate#{h2} is in its history: against candidate#{h2}: score 2 vs 1'
         ' (+1; aggregate: no per-unit results)',
     )
@@ -2908,15 +2926,15 @@ def test_a_merge_a_stop_left_unjudged_is_measured_and_judged_when_the_run_resume
     execute(ex, db, run_id)
     with db.session() as s:
         merged = s.get_one(Candidate, merged_id)
-        assert (merged.verdict, merged.measurements, merged.parent_id) == (Verdict.PENDING, [], 2)
+        assert (label(merged), merged.measurements, merged.parent_id) == (PENDING, [], 2)
     ex.resume(run_id)  # stopped again on the merge
     with db.session() as s:
-        assert s.get_one(Candidate, merged_id).verdict is Verdict.PENDING
+        assert pending(s.get_one(Candidate, merged_id))
     monkeypatch.setattr(ex, '_measure', measure)
     ex.resume(run_id)
     with db.session() as s:
         merged = s.get_one(Candidate, merged_id)
-        assert (merged.verdict, len(merged.measurements)) == (Verdict.KEEP, 1)
+        assert (merged.verdict, len(merged.measurements)) == (Outcome.KEEP, 1)
 
 
 def test_a_tree_two_runs_reach_is_never_judged_against_itself(
@@ -2931,13 +2949,13 @@ def test_a_tree_two_runs_reach_is_never_judged_against_itself(
     first = make_run(db, campaign)
     execute(ex, db, first)
     [kept] = candidates(db, first)
-    assert kept.verdict is Verdict.KEEP
+    assert kept.verdict is Outcome.KEEP
     with db.session() as s:  # rewind to before the first run's measurement landed
         candidate = s.get_one(Candidate, kept.id)
         [measurement] = candidate.measurements
         evaluator_id = measurement.evaluator_id
         s.delete(measurement)
-        candidate.verdict = Verdict.PENDING
+        candidate.verdict = None
         s.commit()
     track = jobs._track
 
@@ -2947,7 +2965,7 @@ def test_a_tree_two_runs_reach_is_never_judged_against_itself(
         if proc is None:
             with db.session() as s:
                 s.add(Measurement(candidate_id=kept.id, evaluator_id=evaluator_id, metrics=kept.metrics))
-                s.get_one(Candidate, kept.id).verdict = Verdict.KEEP
+                s.get_one(Candidate, kept.id).verdict = Outcome.KEEP
                 s.commit()
 
     monkeypatch.setattr(jobs, '_track', kept_meanwhile)
@@ -2956,7 +2974,7 @@ def test_a_tree_two_runs_reach_is_never_judged_against_itself(
         again = s.get_one(Candidate, kept.id)
         assert (len(again.measurements), again.verdict, again.verdict_reason) == (
             2,
-            Verdict.KEEP,
+            Outcome.KEEP,
             snapshot('against candidate#1: score 2 vs 1 (+1; aggregate: no per-unit results)'),
         ), 'judged against the bar it beat, the best but for itself'
 
@@ -2978,18 +2996,18 @@ def test_a_piloop_note_keeps_a_regressed_commit_in_view_files_no_follow_up_and_m
     execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, wipe, wipe_reason, _, _), (_, refill, refill_reason, _, _)] = scored(db, run_id)
     assert (wipe, wipe_reason) == (
-        Verdict.INTERESTING,
+        Outcome.INTERESTING,
         snapshot(
-            'note: faster, though it scores less; against candidate#1: score 0 vs 1 (-1; aggregate: no per-unit results)'
+            'faster, though it scores less; against candidate#1: score 0 vs 1 (-1; aggregate: no per-unit results)'
         ),
     )
     assert (refill, refill_reason) == (
-        Verdict.KEEP,
+        Outcome.KEEP,
         snapshot('against candidate#1: score 2 vs 1 (+1; aggregate: no per-unit results)'),
     ), 'judged against the baseline: the note moved no bar, and a keep keeps its verdict'
     with db.session() as s:
         noted = s.scalars(select(Candidate).where(Candidate.run_id == run_id).order_by(Candidate.id)).first()
-        assert noted is not None and noted.verdict_by == 'implementer#1', (
+        assert noted is not None and (noted.cause, noted.verdict_by) == (Cause.NOTE, 'implementer#1'), (
             "the note is its implementer's: the daemon never judges a noted commit again"
         )
         follow_ups = s.scalars(select(Idea).where(Idea.base_candidate_id.is_not(None))).all()
@@ -3019,7 +3037,7 @@ def test_a_keep_on_one_track_must_hold_the_other_track_primaries_and_its_brief_c
     run_id = make_run(db, campaign, track='accuracy')
     execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, verdict, reason, _, _)] = scored(db, run_id)
-    assert (verdict, reason) == (Verdict.DISCARD, 'floor: size 10 past its floor 8'), 'score 2 > 1, but size 10 > 8'
+    assert (verdict, reason) == (Outcome.DISCARD, 'floor: size 10 past its floor 8'), 'score 2 > 1, but size 10 > 8'
     brief = run_row(db, run_id).brief or ''
     assert '# Accuracy track\nOnly add lines that are right.' in brief, "the track's addendum"
     assert (
@@ -3047,7 +3065,7 @@ def test_recovered_work_whose_tree_is_already_a_candidate_still_requeues_its_ide
     with db.session() as s:
         idea = s.get_one(Idea, run_row(db, run_id).idea_id)
         assert (idea.status, idea.base_candidate_id) == (IdeaStatus.READY, known.id)
-        assert s.get_one(Candidate, known.id).verdict is Verdict.KEEP, 'a known tree keeps its verdict'
+        assert s.get_one(Candidate, known.id).verdict is Outcome.KEEP, 'a known tree keeps its verdict'
 
 
 def test_every_evaluator_has_the_process_runner_and_an_uninstalled_runner_is_refused(
@@ -3175,8 +3193,8 @@ def test_a_resumed_run_scores_the_versions_that_it_received(
     monkeypatch.setattr(ex, '_measure', stopped)
     execute(ex, db, run_id)
     with db.session() as s:
-        [pending] = s.scalars(select(Candidate.verdict).where(Candidate.run_id == run_id)).all()
-    assert pending is Verdict.PENDING
+        [waiting] = s.scalars(select(Candidate.verdict).where(Candidate.run_id == run_id)).all()
+    assert waiting is None
     repo = Repo(campaign.path)
     if recorded:
         for ref in repo.git.for_each_ref('--format=%(refname)', f'refs/piloop/demo/r{run_id}/').split():
@@ -3187,4 +3205,4 @@ def test_a_resumed_run_scores_the_versions_that_it_received(
     monkeypatch.setattr(ex, '_measure', measure)
     ex.resume(run_id)
     [scored] = candidates(db, run_id)
-    assert scored.verdict is Verdict.KEEP
+    assert scored.verdict is Outcome.KEEP

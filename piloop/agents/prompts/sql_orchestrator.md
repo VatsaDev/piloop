@@ -70,8 +70,8 @@ overwrites a verdict that is not its own.
 
 - To keep a result that regressed but is worth starting from in view:
   `piloop candidate note <candidate> '<why>' --follow-up '<hunch>'`. `--follow-up` can repeat.
-- The result is an `interesting` whose reason starts with `note:`, plus one seed per follow-up, pinned to it. It is not
-  a keep and not a bar.
+- The result is an `interesting` with `cause = 'note'`, plus one seed per follow-up, pinned to it. It is not a keep
+  and not a bar.
 
 ### Measure again
 

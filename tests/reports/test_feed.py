@@ -25,10 +25,10 @@ from piloop.db.models import (
     IdeaStatus,
     Run,
     UnknownEvent,
-    Verdict,
 )
 from piloop.db.session import Database
 from piloop.ids import CampaignId, TargetKind, TargetRef
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports import feed
 from piloop.scoring.ledger import IdeaCreated
 
@@ -354,7 +354,7 @@ def test_snapshots_carry_the_cursor_they_were_read_at(db: Database, campaign: Ca
 
 def test_a_campaign_without_a_keep_has_no_head(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
-        s.execute(update(Candidate).values(verdict=Verdict.DISCARD))
+        s.execute(update(Candidate).values(verdict=Outcome.DISCARD))
         s.commit()
         [state] = feed.status_view(s, [s.get_one(Campaign, campaign.id)])
     assert state['head'] is None and state['kept'] == 0

@@ -24,13 +24,13 @@ from piloop.db.models import (
     RunEnd,
     RunStatus,
     Technique,
-    Verdict,
     utcnow,
 )
 from piloop.db.session import Database
 from piloop.ids import AgentSessionId
 from piloop.plugins.role.scout import ScoutRole
 from piloop.plugins.trigger.cron import CronTrigger
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.history import history
 from piloop.reports.overview import overview
 from tests.conftest import RESEARCH, SCOUT, ScriptRuntime, role_of, write_toml
@@ -167,7 +167,7 @@ def developed_seed(db: Database, campaign: Campaign, title: str, pointers: str, 
                     parent_id=1,
                     commit_sha='a' * 40,
                     tree_sha='b' * 40,
-                    verdict=Verdict.KEEP,
+                    verdict=Outcome.KEEP,
                 )
             )
             s.commit()

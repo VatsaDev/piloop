@@ -86,14 +86,13 @@ stateDiagram-v2
     direction LR
     [*] --> pending: a new commit
     [*] --> keep: the baseline
-    [*] --> reference: candidate import
     pending --> keep: a significant gain, guardrails hold
-    pending --> interesting: a gain that is not significant, a guardrail breached, or a keep to rebase
+    pending --> interesting: a gain that is not significant, a guardrail breached, or a keep to rebase (cause moved)
     pending --> discard: no gain, or a guardrail past its floor
-    pending --> unmeasured: a Piloop-Eval: skip commit
     pending --> crash: no primary value
-    discard --> interesting: a note
+    discard --> interesting: a note (cause note)
 ```
 
-The daemon sets a verdict once. Anyone may change it later, and should say why in a comment. See
+A pending candidate has no verdict yet. A `reference`, `skipped` or `recovered` candidate (`candidates.origin`) never
+gets one. The daemon sets a verdict once. Anyone may change it later, and should say why in a comment. See
 [the verdict](/concepts/verdict).

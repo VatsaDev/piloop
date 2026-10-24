@@ -11,12 +11,13 @@ from sqlalchemy import delete, select
 
 from piloop.actor import System
 from piloop.daemon.run_controller import RunController
-from piloop.db.models import Campaign, Candidate, Evaluation, Run, RunStatus, Verdict, utcnow
+from piloop.db.models import Campaign, Candidate, Evaluation, Run, RunStatus, utcnow
 from piloop.db.session import Database
 from piloop.ids import CandidateId, RunId
 from piloop.otel import Tracer
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.vcs.git import commands as git
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring import queue
 from piloop.scoring.ledger import measured, request_remeasure
 from tests.conftest import ScriptRuntime, baseline, factory, serving, workers_of, write_script
@@ -69,7 +70,7 @@ def queued_executor(db: Database, runtime: ScriptRuntime, tmp_path: Path, slots:
     return serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=executor))
 
 
-def errors(db: Database, candidate_id: CandidateId) -> tuple[list[str | None], Verdict]:
+def errors(db: Database, candidate_id: CandidateId) -> tuple[list[str | None], Outcome | None]:
     with db.session() as s:
         c = s.get_one(Candidate, candidate_id)
         return [m.error for m in c.measurements], c.verdict
@@ -93,7 +94,7 @@ def test_two_runs_that_reach_one_tree_share_one_evaluation_and_its_crash(
     two.join(30)
     [candidate] = run_candidates(db, first)
     assert run_candidates(db, second) == [], 'the second run reached the tree of the first'
-    assert errors(db, candidate.id) == (['evaluate exit 7: '], Verdict.CRASH)
+    assert errors(db, candidate.id) == (['evaluate exit 7: '], Outcome.CRASH)
     assert len(evaluated(tmp_path)) == 1, 'evaluated once'
     assert rows(db) == [], 'the queue is empty'
 
@@ -120,7 +121,7 @@ def test_a_shared_evaluation_that_cannot_start_is_a_crash_for_every_request(
     one.join(30)
     two.join(30)
     [candidate] = run_candidates(db, first)
-    assert errors(db, candidate.id) == (['RuntimeError: cannot check out the commit'], Verdict.CRASH)
+    assert errors(db, candidate.id) == (['RuntimeError: cannot check out the commit'], Outcome.CRASH)
     with db.session() as s:
         assert [s.get_one(Run, r).status for r in (first, second)] == [RunStatus.SUCCEEDED] * 2
     assert rows(db) == []
@@ -149,8 +150,8 @@ def test_a_cancelled_evaluation_is_a_crash_that_names_who_cancelled_it_at_once(
     two.join(30)
     ex.stop_cancelled()
     one.join(30)
-    assert errors(db, running.id) == (['evaluation cancelled by human'], Verdict.CRASH)
-    assert errors(db, waiting.id) == (['evaluation cancelled by orchestrator'], Verdict.CRASH)
+    assert errors(db, running.id) == (['evaluation cancelled by human'], Outcome.CRASH)
+    assert errors(db, waiting.id) == (['evaluation cancelled by orchestrator'], Outcome.CRASH)
     assert len(evaluated(tmp_path)) == 1, 'the waiting evaluation never started'
     assert rows(db) == []
 
@@ -321,7 +322,7 @@ def test_a_remeasure_whose_repo_is_gone_is_a_crash(
     queued_executor(db, runtime, tmp_path, slots=1).remeasure(base)
     found, verdict = errors(db, base)
     assert found[-1] is not None and found[-1].startswith('NotARepository'), 'it cannot start: a crash, asked again'
-    assert verdict is Verdict.KEEP, "a keep's verdict stays"
+    assert verdict is Outcome.KEEP, "a keep's verdict stays"
     assert rows(db) == []
 
 

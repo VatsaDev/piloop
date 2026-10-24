@@ -16,6 +16,7 @@ from piloop.db.models import (
     Campaign,
     CampaignStatus,
     Candidate,
+    Cause,
     Comment,
     CommentKind,
     Event,
@@ -27,10 +28,10 @@ from piloop.db.models import (
     Run,
     RunEnd,
     RunStatus,
-    Verdict,
 )
 from piloop.db.session import Database
 from piloop.ids import IMPLEMENTER, RoleName, RunId, TargetKind, TargetRef
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports import overview as overview_module
 from piloop.reports.overview import LINKED_CHARS, anomalies, block, overview
 from piloop.scoring.ledger import IdeaCreated
@@ -107,7 +108,7 @@ def agent(
 
 
 def candidate(
-    s: Session, campaign: Campaign, parent: int, verdict: Verdict, value: float, when: float, **kw: object
+    s: Session, campaign: Campaign, parent: int, verdict: Outcome, value: float, when: float, **kw: object
 ) -> Candidate:
     row = Candidate(
         campaign_id=campaign.id,
@@ -142,8 +143,8 @@ def live_campaign(db: Database, campaign: Campaign) -> None:
         good = idea(s, p, 'longer lines', IdeaStatus.DONE)
         first = run(s, good, RunStatus.SUCCEEDED, 1, 5, 20)
         agent(s, p, IMPLEMENTER, 5, 600, run_id=first.id, usage=spent(1000))
-        kept = candidate(s, p, 1, Verdict.KEEP, 3, 18, run_id=first.id)
-        candidate(s, p, kept.id, Verdict.DISCARD, 3, 19, run_id=first.id)
+        kept = candidate(s, p, 1, Outcome.KEEP, 3, 18, run_id=first.id)
+        candidate(s, p, kept.id, Outcome.DISCARD, 3, 19, run_id=first.id)
         bad = idea(s, p, 'crash it', IdeaStatus.REJECTED)
         failed = run(s, bad, RunStatus.FAILED, 1, 30, 40, error='boom\nand the rest')
         dead = agent(s, p, IMPLEMENTER, 30, 5, run_id=failed.id, state=AgentSessionState.KILLED, error='dialog')
@@ -264,7 +265,7 @@ def test_a_fresh_campaign_has_little_to_say(db: Database, campaign: Campaign) ->
     cfg = load_campaign_config(Path(campaign.path), plugins={'stop_rule': stop})
     with db.session() as s:
         s.get_one(Campaign, campaign.id).created_at = T
-        s.get_one(Candidate, 1).verdict = Verdict.PENDING
+        s.get_one(Candidate, 1).verdict = None
         s.commit()
     text = render(db, campaign, cfg)
     assert '- Campaign: active. Progress: run 0 · 0.0h/4h · 0/2 runs without a keep.' in text
@@ -370,7 +371,7 @@ def test_an_agent_that_investigates_incidents_dead_at_startup_is_no_incident(db:
 def test_a_crashed_measurement_or_an_unmeasured_parent_is_not_same_as_parent(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        orphan = Candidate(campaign_id=p.id, parent_id=1, tree_sha='x', commit_sha='x', verdict=Verdict.CRASH)
+        orphan = Candidate(campaign_id=p.id, parent_id=1, tree_sha='x', commit_sha='x', verdict=Outcome.CRASH)
         s.add(orphan)
         s.flush()
         s.add(Measurement(candidate_id=orphan.id, evaluator_id=p.evaluator_id, metrics={}, error='died'))
@@ -396,7 +397,7 @@ def test_costs_of_one_kind_share_a_line(db: Database, campaign: Campaign) -> Non
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         for n in range(overview_module.REFS_SHOWN):
-            candidate(s, p, 2, Verdict.DISCARD, 3, 30 + n, run_id=1)
+            candidate(s, p, 2, Outcome.DISCARD, 3, 30 + n, run_id=1)
         s.commit()
     [line] = [x for x in render(db, campaign).splitlines() if 'scored exactly its parent' in x]
     assert line == snapshot(
@@ -441,11 +442,11 @@ def test_branches_and_notes_say_where_else_a_run_may_start(db: Database, campaig
         p = s.get_one(Campaign, campaign.id)
         explore = idea(s, p, 'from the baseline', IdeaStatus.DONE, base_candidate_id=1)
         branch = run(s, explore, RunStatus.SUCCEEDED, 1, 60, 70, branch=True)
-        candidate(s, p, 1, Verdict.KEEP, 2, 65, run_id=branch.id)
-        noted = candidate(s, p, 1, Verdict.INTERESTING, 0.5, 66, run_id=branch.id, verdict_by=f'run#{branch.id}')
-        noted.verdict_reason = 'note: halves the eval time; against candidate#1: score 0.5 vs 1'
+        candidate(s, p, 1, Outcome.KEEP, 2, 65, run_id=branch.id)
+        noted = candidate(s, p, 1, Outcome.INTERESTING, 0.5, 66, run_id=branch.id, verdict_by=f'run#{branch.id}')
+        noted.cause, noted.verdict_reason = Cause.NOTE, 'halves the eval time; against candidate#1: score 0.5 vs 1'
         s.add(
-            Candidate(campaign_id=p.id, tree_sha='unmeasured', commit_sha='u', verdict=Verdict.KEEP, run_id=branch.id)
+            Candidate(campaign_id=p.id, tree_sha='unmeasured', commit_sha='u', verdict=Outcome.KEEP, run_id=branch.id)
         )
         s.commit()
     trajectory = render(db, campaign).split('### Trajectory\n')[1].split('### Now')[0]
@@ -619,7 +620,7 @@ def test_progress_lists_only_the_configured_conditions(db: Database, campaign: C
             == 'run 0 · 0.0h · target ≤ 0.5 (head 1)'
         )
         assert overview_module.progress(s, p, config({}), NOW) == 'run 0 · 0.0h'
-        s.get_one(Candidate, 1).verdict = Verdict.PENDING
+        s.get_one(Candidate, 1).verdict = None
         assert overview_module.progress(s, p, config({'target': 0.5}), NOW) == 'run 0 · 0.0h · target ≥ 0.5 (head —)'
 
 

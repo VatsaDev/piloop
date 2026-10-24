@@ -7,7 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, assert_never
 
 from pydantic import Field, TypeAdapter, ValidationError
 
@@ -19,6 +19,8 @@ SENT = frozenset({signal.SIGHUP, signal.SIGINT, signal.SIGTERM, signal.SIGKILL})
 The others, SIGSEGV or SIGABRT, are the evaluate's own fault, and a measurement like a non-zero exit.
 """
 
+CHANGED_INPUTS = 'evaluate changed its linked inputs'
+"""How the error of an evaluation that changed a linked input that it read starts (``InputsChanged``)."""
 UNITS_SUM_TOLERANCE = 1e-3
 """The allowed relative difference between a metric's per-unit sum and its METRIC line, which can be rounded."""
 
@@ -66,16 +68,117 @@ def _run(
 
 
 @dataclass(frozen=True)
-class EvalResult:
-    """The result of one run of the evaluate command."""
+class Measured:
+    """The evaluate command exited cleanly and printed every metric."""
 
     metrics: dict[str, float]
     seconds: float
-    error: str | None
     units: Units = field(default_factory=dict)
     """The per-unit results the evaluate wrote to ``UNITS_ENV``. Empty when it wrote none or was not asked to."""
-    signal: int | None = None
-    """The signal that ended the evaluate command, when one did. None after its own exit and after a timeout."""
+
+
+@dataclass(frozen=True)
+class TimedOut:
+    """The evaluate command ran past its timeout, and was killed."""
+
+    timeout: float
+
+
+@dataclass(frozen=True)
+class Exited:
+    """The evaluate command exited with a non-zero code."""
+
+    code: int
+    stderr: str
+
+
+@dataclass(frozen=True)
+class Killed:
+    """A signal ended the evaluate command."""
+
+    signal: int
+    stderr: str
+
+    @property
+    def sent(self) -> bool:
+        """Whether another process sent it (``SENT``): then the evaluate measured nothing of the candidate."""
+        return self.signal in SENT
+
+
+@dataclass(frozen=True)
+class MissingMetrics:
+    """The evaluate command printed no ``METRIC`` line for some metrics."""
+
+    names: tuple[str, ...]
+    printed: dict[str, float]
+    """The metrics that it printed."""
+
+
+@dataclass(frozen=True)
+class BadUnits:
+    """The evaluate command wrote per-unit results that do not fit its ``METRIC`` lines (``read_units``)."""
+
+    why: str
+    printed: dict[str, float]
+
+
+@dataclass(frozen=True)
+class InputsChanged:
+    """The evaluate command changed a linked input that it read, so what it measured does not count."""
+
+    paths: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class NotRun:
+    """The evaluate command could not run: its worktree or its inputs could not be made."""
+
+    error: str
+
+
+type Why = TimedOut | Exited | Killed | MissingMetrics | BadUnits | InputsChanged | NotRun
+
+
+@dataclass(frozen=True)
+class Failed:
+    """An evaluation that measured nothing that counts, and why."""
+
+    why: Why
+    seconds: float
+
+    @property
+    def error(self) -> str:
+        """The error that the measurement stores."""
+        match self.why:
+            case TimedOut(timeout=timeout):
+                return f'evaluate timeout after {timeout:g}s'
+            case Exited(code=code, stderr=stderr):
+                return f'evaluate exit {code}: {stderr}'
+            case Killed(signal=signum, stderr=stderr):
+                return f'evaluate killed by {_name(signum)} (exit {-signum}), not by its own exit: {stderr}'
+            case MissingMetrics(names=names):
+                return f'evaluate printed no METRIC line for: {", ".join(names)}'
+            case BadUnits(why=why):
+                return f'evaluate wrote a bad {UNITS_ENV}: {why}'
+            case InputsChanged(paths=paths):
+                return f'{CHANGED_INPUTS}: {", ".join(paths)}'
+            case NotRun(error=error):
+                return error
+            case _:
+                assert_never(self.why)
+
+    @property
+    def printed(self) -> dict[str, float]:
+        """What the evaluate command printed before it failed. The measurement keeps it, next to the error."""
+        match self.why:
+            case MissingMetrics(printed=printed) | BadUnits(printed=printed):
+                return printed
+            case _:
+                return {}
+
+
+type EvalResult = Measured | Failed
+"""The result of one run of the evaluate command."""
 
 
 def run_evaluate(
@@ -91,31 +194,28 @@ def run_evaluate(
     """Run the evaluate command and parse its ``METRIC name=value`` lines. A non-zero exit gives no metrics.
 
     With ``units_file``, which must not exist yet, the command also gets ``UNITS_ENV`` set to that path. What it writes
-    there is validated into ``EvalResult.units``. The file is then removed, so it never outlives the call.
+    there is validated into ``Measured.units``. The file is then removed, so it never outlives the call.
     """
     env = child_env() | ({UNITS_ENV: str(units_file)} if units_file is not None else {})
     try:
         done = _run(cmd, cwd=cwd, log_dir=log_dir, prefix='eval', timeout=timeout, track=track, env=env)
-        if done.returncode is None:
-            return EvalResult({}, done.seconds, f'evaluate timeout after {timeout:g}s')
-        if done.returncode != 0:
-            stderr = (log_dir / 'eval.stderr').read_text(errors='replace').strip()[-STDERR_IN_ERROR:]
-            if done.returncode > 0:
-                return EvalResult({}, done.seconds, f'evaluate exit {done.returncode}: {stderr}')
-            how = f'evaluate killed by {_name(-done.returncode)} (exit {done.returncode}), not by its own exit'
-            return EvalResult({}, done.seconds, f'{how}: {stderr}', signal=-done.returncode)
+        match done.returncode:
+            case None:
+                return Failed(TimedOut(timeout), done.seconds)
+            case 0:
+                pass
+            case code:
+                stderr = (log_dir / 'eval.stderr').read_text(errors='replace').strip()[-STDERR_IN_ERROR:]
+                return Failed(Exited(code, stderr) if code > 0 else Killed(-code, stderr), done.seconds)
         metrics = parse_metrics((log_dir / 'eval.stdout').read_text(errors='replace'))
-        missing = required - metrics.keys()
-        if missing:
-            error = f'evaluate printed no METRIC line for: {", ".join(sorted(missing))}'
-            return EvalResult(metrics, done.seconds, error)
+        if missing := required - metrics.keys():
+            return Failed(MissingMetrics(tuple(sorted(missing)), metrics), done.seconds)
         if units_file is None or not units_file.exists():
-            return EvalResult(metrics, done.seconds, None)
+            return Measured(metrics, done.seconds)
         try:
-            units = read_units(units_file, metrics)
+            return Measured(metrics, done.seconds, read_units(units_file, metrics))
         except ValueError as e:
-            return EvalResult(metrics, done.seconds, f'evaluate wrote a bad {UNITS_ENV}: {e}')
-        return EvalResult(metrics, done.seconds, None, units)
+            return Failed(BadUnits(str(e), metrics), done.seconds)
     finally:
         if units_file is not None:
             units_file.unlink(missing_ok=True)

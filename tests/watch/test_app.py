@@ -35,14 +35,15 @@ from piloop.db.models import (
     Idea,
     IdeaStatus,
     Measurement,
+    Origin,
     Run,
     RunEnd,
     RunStatus,
-    Verdict,
     utcnow,
 )
 from piloop.db.session import Database
 from piloop.ids import IMPLEMENTER, CommentId, IdeaId, TargetKind, TargetRef
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.watch.app import CampaignScreen, CampaignsScreen, CandidatesTable, Watch
 from piloop.watch.panels import PANELS, Context, kept_scores
 from tests.conftest import RESEARCH, WATCHDOG, spent, wait_until
@@ -123,7 +124,7 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Campaign:
         s.add(run)
         s.flush()
         for n, (verdict, value, minutes) in enumerate(
-            [(Verdict.KEEP, 3, 90), (Verdict.DISCARD, 2, 70), (Verdict.KEEP, 4, 60)], start=2
+            [(Outcome.KEEP, 3, 90), (Outcome.DISCARD, 2, 70), (Outcome.KEEP, 4, 60)], start=2
         ):
             s.add(
                 Candidate(
@@ -223,7 +224,7 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Campaign:
         )
         s.add(other)
         s.flush()
-        s.add(Candidate(campaign_id=other.id, tree_sha='o1', commit_sha='o', verdict=Verdict.PENDING))
+        s.add(Candidate(campaign_id=other.id, tree_sha='o1', commit_sha='o'))
         s.commit()
         for e in s.scalars(select(Event)):  # trigger-written events are stamped to the second
             e.at = ago(minutes=1)
@@ -645,7 +646,7 @@ def test_imported_references_are_listed_apart_as_starting_points(db: Database, l
                 tree_sha='r1',
                 commit_sha='r',
                 summary='paper repro',
-                verdict=Verdict.REFERENCE,
+                origin=Origin.REFERENCE,
                 created_at=utcnow() - timedelta(hours=2),  # a fixed age: "0s" became "1s" on a slow machine
             )
         )
@@ -837,7 +838,7 @@ def test_the_sparkline_is_the_head_after_each_trunk_keep_so_a_branch_keep_leaves
             tree_sha='b',
             commit_sha='b',
             summary='b',
-            verdict=Verdict.KEEP,
+            verdict=Outcome.KEEP,
         )
         s.add(below)
         s.flush()

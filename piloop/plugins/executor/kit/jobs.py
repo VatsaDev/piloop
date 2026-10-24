@@ -23,7 +23,7 @@ from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import partial
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, assert_never
 
 from covalence import Cid
 
@@ -49,7 +49,7 @@ from piloop.plugins.executor.kit.relay import RELAY_ARGV
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, Handle, Runtime, taken
 from piloop.plugins.vcs.contract import Repository, Revision
 from piloop.proc import PILOOP_ARGV, child_env, kill_group
-from piloop.scoring.evaluate import SENT, EvalResult, run_evaluate
+from piloop.scoring.evaluate import EvalResult, Failed, InputsChanged, Killed, Measured, NotRun, run_evaluate
 from piloop.settings import INPUTS_DIR
 from piloop.store.tree import Materialised, Seen, evict_unlinked, put_tree
 from piloop.usage import UsageError, read_usage
@@ -64,7 +64,6 @@ INPUTS_REBUILT = 'inputs.rebuilt'
 """An event: a shared copy of a linked input no longer held its blob (a job changed it), and was made again."""
 INPUTS_CHANGED = 'inputs.changed'
 """An event: an evaluation changed a linked input that it read, so what it measured is a crash, not a measurement."""
-CHANGED_INPUTS = 'evaluate changed its linked inputs'
 SHOWN = 10
 """How many paths or blobs an event or an error names."""
 CLI_SHIM = '#!/bin/sh\nPILOOP_HOME={home} exec {argv} "$@"\n'
@@ -390,9 +389,9 @@ def run_evaluation(job: EvaluationJob, control: Control, site: Site, span: Span)
         n = len(samples[side])
         artifact = job.artifact if side is Tree.CANDIDATE or job.bar is None else job.bar.artifact
         one = job.model_copy(update={'artifact': artifact, 'place': f'{job.place}/{side}-{n}'})
-        result = _evaluate(one, control, site, span)
-        sample = Sample(metrics=result.metrics, seconds=result.seconds, error=result.error, units=result.units)
-        samples[side].append(sample)
+        result = sample(_evaluate(one, control, site, span))
+        span.set(error=result.error)
+        samples[side].append(result)
         if result.error is not None or control.asked() or control.stopping():
             break
     return EvaluationReport(samples=samples[Tree.CANDIDATE], bar_samples=samples[Tree.BAR], files=site.files(job))
@@ -424,11 +423,24 @@ def _evaluate(job: EvaluationJob, control: Control, site: Site, span: Span) -> E
     once more, in a new worktree. The executor's own kills (a cancel, its stop) are not run again.
     """
     result = _evaluate_once(job, control, site, span)
-    if result.signal in SENT and not control.asked() and not control.stopping():
-        span.event('evaluation.retry', evaluation=job.evaluation, error=result.error)
-        result = _evaluate_once(job, control, site, span)
-    span.set(error=result.error)
+    match result:
+        case Failed(why=Killed() as killed) if killed.sent and not control.asked() and not control.stopping():
+            span.event('evaluation.retry', evaluation=job.evaluation, error=result.error)
+            result = _evaluate_once(job, control, site, span)
+        case _:
+            pass
     return result
+
+
+def sample(result: EvalResult) -> Sample:
+    """What the report says of one run of the evaluate command: what it measured, or why it failed."""
+    match result:
+        case Measured(metrics=metrics, seconds=seconds, units=units):
+            return Sample(metrics=metrics, seconds=seconds, error=None, units=units)
+        case Failed(seconds=seconds) as failed:
+            return Sample(metrics=failed.printed, seconds=seconds, error=failed.error)
+        case _:
+            assert_never(result)
 
 
 def _evaluate_once(job: EvaluationJob, control: Control, site: Site, span: Span) -> EvalResult:
@@ -451,11 +463,11 @@ def _evaluate_once(job: EvaluationJob, control: Control, site: Site, span: Span)
         )
         if changed := sorted(rel for rel, copy in links.copies.items() if not copy.holds(cwd / rel)):
             span.event(INPUTS_CHANGED, evaluation=job.evaluation, paths=', '.join(changed[:SHOWN]))
-            return replace(result, metrics={}, units={}, error=f'{CHANGED_INPUTS}: {", ".join(changed[:SHOWN])}')
+            return Failed(InputsChanged(tuple(changed[:SHOWN])), result.seconds)
         return result
     except Exception as e:
         span.error(e)
-        return EvalResult({}, 0.0, f'{type(e).__name__}: {e}')
+        return Failed(NotRun(f'{type(e).__name__}: {e}'), 0.0)
     finally:
         remove(job, site)
 

@@ -29,10 +29,10 @@ from piloop.db.models import (
     IdeaStatus,
     LinkKind,
     Measurement,
+    Origin,
     Pause,
     Run,
     RunStatus,
-    Verdict,
 )
 from piloop.db.session import Database
 from piloop.db.triggers.changelog import (
@@ -44,8 +44,8 @@ from piloop.db.triggers.changelog import (
     VerdictChanged,
 )
 from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TargetRef, TrackName
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import (
-    DAEMON,
     CandidateJudged,
     MeasurementRecorded,
     RejudgeFailed,
@@ -107,9 +107,9 @@ def run_idea(db: Database, status: IdeaStatus, run: RunStatus, *, scoring: bool 
 def run_candidate(
     db: Database,
     campaign: Campaign,
-    verdict: Verdict,
+    verdict: Outcome | None,
     *,
-    by: str | None = DAEMON,
+    by: str | None = System.DAEMON,
     parent: int = 1,
     branch: bool = False,
     commit: str | None = None,
@@ -207,36 +207,34 @@ def test_only_a_sweeping_agent_files_its_ideas_for_review_while_the_campaign_is_
 
 
 def test_a_verdict_override_is_the_actors_with_the_reason_in_its_event(me: Database, campaign: Campaign) -> None:
-    c = run_candidate(me, campaign, Verdict.DISCARD)
+    c = run_candidate(me, campaign, Outcome.DISCARD)
     with me.session() as s:
-        assert ops.set_verdict(s, c, Verdict.KEEP, reason=' measured by hand: +3 ', actor=ACTOR) is Verdict.DISCARD
+        assert ops.set_verdict(s, c, Outcome.KEEP, reason=' measured by hand: +3 ', actor=ACTOR) is Outcome.DISCARD
         s.commit()
         candidate = s.get_one(Candidate, c)
         assert (candidate.verdict, candidate.verdict_by, candidate.verdict_reason) == (
-            Verdict.KEEP,
+            Outcome.KEEP,
             ACTOR.signature,
             'measured by hand: +3',
         )
     payload = VerdictChanged(
-        old=Verdict.DISCARD, new=Verdict.KEEP, verdict_by=ACTOR.signature, verdict_reason='measured by hand: +3'
+        old=Outcome.DISCARD, new=Outcome.KEEP, verdict_by=ACTOR.signature, verdict_reason='measured by hand: +3'
     )
     assert kinds(me, TargetKind.CANDIDATE, c) == [('candidate.verdict', ACTOR.signature, payload)]
-    pending = run_candidate(me, campaign, Verdict.PENDING, by=None)
+    pending = run_candidate(me, campaign, None, by=None)
     with me.session() as s:
         with pytest.raises(ops.Refused, match=r'candidate#\d+ is keep already \(measured by hand: \+3\)'):
-            ops.set_verdict(s, c, Verdict.KEEP, reason='again', actor=ACTOR)
-        with pytest.raises(ops.Refused, match='reference is not a judgement: give keep, interesting, discard, crash'):
-            ops.set_verdict(s, c, Verdict.REFERENCE, reason='why', actor=ACTOR)
+            ops.set_verdict(s, c, Outcome.KEEP, reason='again', actor=ACTOR)
         with pytest.raises(ops.Refused, match=f'candidate#{pending} is pending: the daemon judges it now'):
-            ops.set_verdict(s, pending, Verdict.KEEP, reason='why', actor=ACTOR)
+            ops.set_verdict(s, pending, Outcome.KEEP, reason='why', actor=ACTOR)
         with pytest.raises(ops.Refused, match='a reason is required'):
-            ops.set_verdict(s, c, Verdict.CRASH, reason='', actor=ACTOR)
+            ops.set_verdict(s, c, Outcome.CRASH, reason='', actor=ACTOR)
         with pytest.raises(ops.Refused, match='no candidate#99'):
-            ops.set_verdict(s, CandidateId(99), Verdict.CRASH, reason='why', actor=ACTOR)
-        for state in (Verdict.REFERENCE, Verdict.UNMEASURED, Verdict.RECOVERED):
-            s.get_one(Candidate, pending).verdict = state
-            with pytest.raises(ops.Refused, match=f'candidate#{pending} is {state}, not a judgement'):
-                ops.set_verdict(s, pending, Verdict.KEEP, reason='why', actor=ACTOR)
+            ops.set_verdict(s, CandidateId(99), Outcome.CRASH, reason='why', actor=ACTOR)
+        for origin in (Origin.REFERENCE, Origin.RECOVERED, Origin.SKIPPED):
+            s.get_one(Candidate, pending).origin = origin
+            with pytest.raises(ops.Refused, match=f'candidate#{pending} is {origin}, which is never judged'):
+                ops.set_verdict(s, pending, Outcome.KEEP, reason='why', actor=ACTOR)
 
 
 def commit_on(campaign: Campaign, on: str, files: dict[str, str], *, merge: str | None = None) -> str:
@@ -258,17 +256,17 @@ def test_a_hand_keep_must_build_on_the_head_unless_its_run_is_a_branch(me: Datab
     """The head is the newest trunk keep, so a keep from an older bar would drop what the head kept since."""
     base = Repo(campaign.path).head.commit.hexsha
     old_sha, trunk_sha = commit_on(campaign, base, {'old.txt': 'o\n'}), commit_on(campaign, base, {'t.txt': 't\n'})
-    old = run_candidate(me, campaign, Verdict.DISCARD, commit=old_sha)
-    trunk = run_candidate(me, campaign, Verdict.KEEP, commit=trunk_sha)
-    on_head = run_candidate(me, campaign, Verdict.DISCARD, parent=trunk)
-    after_it = run_candidate(me, campaign, Verdict.INTERESTING, parent=on_head)
-    branch = run_candidate(me, campaign, Verdict.DISCARD, branch=True)
+    old = run_candidate(me, campaign, Outcome.DISCARD, commit=old_sha)
+    trunk = run_candidate(me, campaign, Outcome.KEEP, commit=trunk_sha)
+    on_head = run_candidate(me, campaign, Outcome.DISCARD, parent=trunk)
+    after_it = run_candidate(me, campaign, Outcome.INTERESTING, parent=on_head)
+    branch = run_candidate(me, campaign, Outcome.DISCARD, branch=True)
     with me.session() as s:
         with pytest.raises(ops.Refused, match=f'candidate#{old} does not build on the head candidate#{trunk}'):
-            ops.set_verdict(s, old, Verdict.KEEP, reason='measured by hand', actor=ACTOR)
-        ops.set_verdict(s, old, Verdict.INTERESTING, reason='a lead', actor=ACTOR)
-        ops.set_verdict(s, after_it, Verdict.KEEP, reason='its parent builds on the head', actor=ACTOR)
-        ops.set_verdict(s, branch, Verdict.KEEP, reason='a branch keep never moves the head', actor=ACTOR)
+            ops.set_verdict(s, old, Outcome.KEEP, reason='measured by hand', actor=ACTOR)
+        ops.set_verdict(s, old, Outcome.INTERESTING, reason='a lead', actor=ACTOR)
+        ops.set_verdict(s, after_it, Outcome.KEEP, reason='its parent builds on the head', actor=ACTOR)
+        ops.set_verdict(s, branch, Outcome.KEEP, reason='a branch keep never moves the head', actor=ACTOR)
         s.commit()
         now = head(s, s.get_one(Campaign, 1))
         assert now is not None and now.id == after_it, 'the newest trunk keep'
@@ -281,26 +279,26 @@ def test_a_hand_keep_builds_on_the_head_by_git_where_the_parent_links_miss_it(me
     """
     base = Repo(campaign.path).head.commit.hexsha
     side_sha, trunk_sha = commit_on(campaign, base, {'side.txt': 's\n'}), commit_on(campaign, base, {'t.txt': 't\n'})
-    side = run_candidate(me, campaign, Verdict.INTERESTING, commit=side_sha)
-    trunk = run_candidate(me, campaign, Verdict.KEEP, commit=trunk_sha)
+    side = run_candidate(me, campaign, Outcome.INTERESTING, commit=side_sha)
+    trunk = run_candidate(me, campaign, Outcome.KEEP, commit=trunk_sha)
     merge_sha = commit_on(campaign, trunk_sha, {}, merge=side_sha)
-    merged = run_candidate(me, campaign, Verdict.DISCARD, parent=side, commit=merge_sha)
+    merged = run_candidate(me, campaign, Outcome.DISCARD, parent=side, commit=merge_sha)
     with me.session() as s:
-        ops.set_verdict(s, merged, Verdict.KEEP, reason='its commit merges the head', actor=ACTOR)
+        ops.set_verdict(s, merged, Outcome.KEEP, reason='its commit merges the head', actor=ACTOR)
         s.commit()
         now = head(s, s.get_one(Campaign, 1))
         assert now is not None and now.id == merged, f'a trunk keep newer than candidate#{trunk}'
-        lost = run_candidate(me, campaign, Verdict.DISCARD)
+        lost = run_candidate(me, campaign, Outcome.DISCARD)
         with pytest.raises(
             ops.Refused, match=f'the vcs cannot tell if candidate#{lost} builds on the head candidate#{merged}'
         ):
-            ops.set_verdict(s, lost, Verdict.KEEP, reason='its commit is gone', actor=ACTOR)
+            ops.set_verdict(s, lost, Outcome.KEEP, reason='its commit is gone', actor=ACTOR)
 
 
 def test_a_measurement_by_hand_is_recorded_and_asks_the_daemon_to_judge_its_candidate_again(
     me: Database, campaign: Campaign
 ) -> None:
-    c = run_candidate(me, campaign, Verdict.CRASH)
+    c = run_candidate(me, campaign, Outcome.CRASH)
     report = ops.Report(metrics={'score': 3.0, 'size': 9.0}, seconds=12.5)
     with me.session() as s:
         added = ops.add_measurement(s, c, report, actor=ACTOR)
@@ -319,7 +317,7 @@ def test_a_measurement_by_hand_is_recorded_and_asks_the_daemon_to_judge_its_cand
     requested = RejudgeRequested(measurement=measurement.id)
     assert kinds(me, TargetKind.CANDIDATE, c) == [('candidate.rejudge_requested', ACTOR.signature, requested)]
     with me.session() as s:
-        judged = CandidateJudged(verdict=Verdict.DISCARD, score=None, reason='judged again')
+        judged = CandidateJudged(verdict=Outcome.DISCARD, score=None, reason='judged again')
         emit(s, judged, TargetRef(TargetKind.CANDIDATE, c), System.DAEMON)
         s.commit()
         assert rejudges(s, s.get_one(Campaign, 1)) == [], 'a later judgement answers the request'
@@ -334,7 +332,7 @@ def test_a_measurement_by_hand_is_recorded_and_asks_the_daemon_to_judge_its_cand
 def test_a_measurement_by_hand_of_a_keep_or_of_someones_verdict_leaves_the_verdict(
     me: Database, campaign: Campaign
 ) -> None:
-    mine = run_candidate(me, campaign, Verdict.DISCARD, by='human')
+    mine = run_candidate(me, campaign, Outcome.DISCARD, by='human')
     with me.session() as s:
         keep = ops.add_measurement(s, CandidateId(1), ops.Report(metrics={'score': 1.0, 'size': 5.0}), actor=ACTOR)
         assert (keep.rejudged, keep.effect) == (
@@ -379,8 +377,8 @@ def test_a_report_is_validated_at_the_boundary(text: str) -> None:
 def test_a_measurement_by_hand_says_when_the_daemon_judges_again_and_waits_for_a_pending_judgement(
     me: Database, campaign: Campaign
 ) -> None:
-    crashed = run_candidate(me, campaign, Verdict.CRASH)
-    pending = run_candidate(me, campaign, Verdict.PENDING, by=None)
+    crashed = run_candidate(me, campaign, Outcome.CRASH)
+    pending = run_candidate(me, campaign, None, by=None)
     report = ops.Report(metrics={'score': 2.0, 'size': 4.0})
     with me.session() as s:
         with pytest.raises(ops.Refused, match=f'candidate#{pending} is pending: the daemon judges it now'):

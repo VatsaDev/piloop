@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import Literal, assert_never
+from typing import Final, Literal, assert_never
 
 from pydantic import ValidationError
 from sqlalchemy import func, select, update
@@ -41,6 +41,7 @@ from piloop.db.models import (
     AgentSessionState,
     Campaign,
     Candidate,
+    Cause,
     Comment,
     CommentKind,
     Evaluation,
@@ -51,10 +52,10 @@ from piloop.db.models import (
     IdeaStatus,
     Limit,
     Measurement,
+    Origin,
     Run,
     RunEnd,
     RunStatus,
-    Verdict,
     latest_agent_session,
     utcnow,
 )
@@ -88,38 +89,41 @@ from piloop.plugins.executor.contract import (
 )
 from piloop.plugins.runtime.contract import ExitStatus
 from piloop.plugins.vcs.contract import Repository, Revision, RunVersion, Transfer, Version
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.history import history
 from piloop.reports.wake import lessons_overview
 from piloop.runtime.factory import RuntimeFactory, make_runtime
 from piloop.scoring import queue
 from piloop.scoring.ledger import (
-    DAEMON,
     MOVED,
-    SKIPPED,
     CandidateJudged,
+    Lineage,
     RejudgeFailed,
+    Trunk,
     bar_of,
     current_evaluator,
     head,
     judge,
-    judgeable,
     measured,
-    note,
     raises_bar,
     rebase,
-    rejudgeable,
     remeasure_asked,
     reproposed,
     resolve,
     score,
-    skipped,
+    side,
 )
+from piloop.scoring.verdict import UNMEASURED, judgeable, label, override, pending, refusal, rejudgeable, write
 from piloop.settings import StorageSettings
 
 UNCOMMITTED_SUMMARY = 'piloop: uncommitted implementer changes'
 """The summary of the version that the worker saves of what an implementer left unsaved (``commits_of``)."""
 RECOVERED_REASON = 'recovered: what the implementer of run#{run} left uncommitted, never declared ready; not measured'
 CUT_REASON = 'recovered: where run#{run} was when a daemon stop cut it, never declared ready; not measured'
+SKIPPED_REASON = 'not evaluated: Piloop-Eval: skip'
+type Unmeasured = Literal[Origin.RECOVERED, Origin.SKIPPED]
+"""A commit that the daemon does not measure: its recovered work, or one marked ``Piloop-Eval: skip``."""
+UNMEASURED_REASONS: Final[dict[Unmeasured, str]] = {Origin.RECOVERED: RECOVERED_REASON, Origin.SKIPPED: SKIPPED_REASON}
 NO_CHANGES = 'implementer produced no commits'
 INTERRUPTED = (
     'implementer stopped without a commit or a finding of its own; its uncommitted changes are a recovered candidate'
@@ -561,7 +565,7 @@ class RunController:
         What the agent left unsaved was saved on its own (``commits_of``).
 
         The stop owns the run's row. A run that the stop ``cut`` is not an attempt (``RunEnd.attempt``), so its
-        commits are not measured: each new one is a ``recovered`` candidate (``CUT_REASON``), and its idea is requeued
+        commits are not measured: each new one is ``recovered`` (``CUT_REASON``), and its idea is requeued
         from the last one (``_requeue``), as after a timed-out run. A run whose implementer had left its finding was
         handed off: the stop closed it as finished, and the next daemon scores the pinned commits (``resume``).
         """
@@ -575,12 +579,11 @@ class RunController:
             run = s.get_one(Run, run_id)
             candidate = run.base
             for version in versions:
-                candidate, created = resolve(s, run.idea.campaign_id, version, parent=candidate, run_id=run_id)
+                candidate, created = resolve(
+                    s, run.idea.campaign_id, version, parent=candidate, run_id=run_id, origin=Origin.RECOVERED
+                )
                 if created:
-                    candidate.verdict, candidate.verdict_by = Verdict.RECOVERED, DAEMON
                     candidate.verdict_reason = CUT_REASON.format(run=run_id)
-                    judged = CandidateJudged(verdict=candidate.verdict, score=None, reason=candidate.verdict_reason)
-                    emit(s, judged, TargetRef(TargetKind.CANDIDATE, candidate.id), System.DAEMON)
             if _requeuable(s, run):
                 _requeue(s, run, candidate, RunEnd.DAEMON_STOPPED)
             s.commit()
@@ -714,15 +717,13 @@ class RunController:
                 cfg.track(run.idea.track),
                 repo,
                 current_evaluator(s, run.idea.campaign, cfg).id,
-                run.branch,
+                side(run),
             )
             s.commit()
             bar_id, sha = bar_of(candidate.parent).id, candidate.commit_sha
         with self._tracer.span('piloop.candidate', run=scope.run_id, commit=sha, candidate=candidate_id) as span:
             notes = list(repo.version(Revision(sha)).notes)
-            judged = self._judge(
-                scope, candidate_id, bar_id, span, judge_now=True, skip=False, recovered=False, notes=notes
-            )
+            judged = self._judge(scope, candidate_id, bar_id, span, judge_now=True, unmeasured=None, notes=notes)
         if judged.merged is not None:
             self._follow(scope, judged.merged, log_dir)
 
@@ -748,11 +749,11 @@ class RunController:
         keeps its verdict, unless another run reached it (``ledger.reproposed``): then it is judged again on this
         run's bar.
 
-        A version that asks to be skipped (``Version.skip``) is not measured. A new candidate gets the daemon's
-        ``unmeasured`` verdict, which moves no bar. So a later version that does not ask, with the same tree, is
-        measured and judged like a new one. Its notes are applied when it is judged (``_judge``). The version the worker
-        saved of the implementer's unsaved work (``Version.recovered``) is not measured either: it gets the daemon's
-        ``recovered`` verdict, which moves no bar, and the same tree saved later is measured and judged like a new one.
+        A version that asks to be skipped (``Version.skip``) is not measured: a new candidate is ``skipped``, with no
+        verdict, and moves no bar. So a later version that does not ask, with the same tree, is measured and judged like
+        a new one. Its notes are applied when it is judged (``_judge``). The version the worker saved of the
+        implementer's unsaved work (``Version.recovered``) is not measured either: it is ``recovered``, and the same tree
+        saved later is measured and judged like a new one.
         """
         with self._db.session() as s:
             run = s.get_one(Run, run_id)
@@ -764,28 +765,27 @@ class RunController:
                 cfg.track(run.idea.track),
                 repo,
                 current_evaluator(s, run.idea.campaign, cfg).id,
-                run.branch,
+                side(run),
             )
             bar_id = bar_of(run.base).id
             candidate = run.base
             ids: list[CandidateId] = []
             for version in versions:
-                candidate, _ = resolve(s, campaign_id, version, parent=candidate, run_id=run_id)
+                candidate, _ = resolve(s, campaign_id, version, parent=candidate, run_id=run_id, origin=Origin.RUN)
                 ids.append(candidate.id)
             s.commit()
         for i, version in enumerate(versions):
             repo.keep(version.revision, RunVersion(cfg.name, run_id, i))
         for i, (version, candidate_id) in enumerate(zip(versions, ids, strict=True)):
-            sha, skip, recovered = version.revision, version.skip, version.recovered
+            sha, unmeasured = version.revision, unmeasured_of(version)
             with self._db.session() as s:
                 candidate = s.get_one(Candidate, candidate_id)
-                unmeasured = skip or recovered
-                again = skipped(candidate) or reproposed(candidate, s.get_one(Run, run_id))
-                judge_now = candidate.verdict is Verdict.PENDING or (not unmeasured and again)
-                needs_measurement = not unmeasured and not measured(candidate, scope.evaluator_id)
+                again = candidate.origin in UNMEASURED or reproposed(candidate, s.get_one(Run, run_id))
+                judge_now = pending(candidate) or (unmeasured is None and again)
+                needs_measurement = unmeasured is None and not measured(candidate, scope.evaluator_id)
             with self._tracer.span('piloop.candidate', run=run_id, commit=sha, candidate=candidate_id) as span:
-                if unmeasured:
-                    span.set(status='recovered' if recovered else 'skipped')
+                if unmeasured is not None:
+                    span.set(status=unmeasured)
                 elif not needs_measurement:
                     span.set(status='known')
                     self._tracer.event('candidate.known', run=run_id, commit=sha, candidate=candidate_id)
@@ -808,8 +808,7 @@ class RunController:
                     bar_id,
                     span,
                     judge_now=judge_now,
-                    skip=skip,
-                    recovered=recovered,
+                    unmeasured=unmeasured,
                     notes=list(version.notes),
                 )
             if judged.merged is not None and not self._follow(scope, judged.merged, log_dir):
@@ -818,7 +817,12 @@ class RunController:
                 bar_id = candidate_id
         with self._db.session() as s:
             shas = [v.revision for v in versions]
-            mine = (Candidate.run_id == run_id, Candidate.verdict == Verdict.PENDING, Candidate.commit_sha.not_in(shas))
+            mine = (
+                Candidate.run_id == run_id,
+                Candidate.origin == Origin.RUN,
+                Candidate.verdict.is_(None),
+                Candidate.commit_sha.not_in(shas),
+            )
             left = s.scalars(select(Candidate.id).where(*mine).order_by(Candidate.id)).all()
         for candidate_id in left:  # Rebased candidates that a daemon stop left unjudged.
             if not self._follow(scope, candidate_id, log_dir):
@@ -837,7 +841,7 @@ class RunController:
                 candidate = s.get_one(Candidate, current)
                 sha, parent_id = Revision(candidate.commit_sha), candidate.parent_id
                 needs_measurement = not measured(candidate, scope.evaluator_id)
-                judge_now = candidate.verdict is Verdict.PENDING
+                judge_now = pending(candidate)
             assert parent_id is not None  # A rebased candidate's parent is the head it was merged onto.
             with self._tracer.span('piloop.candidate', run=scope.run_id, commit=sha, candidate=current) as span:
                 span.set(rebased=True)
@@ -854,9 +858,7 @@ class RunController:
                 ):
                     span.set(status='cancelled')
                     return False
-                judged = self._judge(
-                    scope, current, parent_id, span, judge_now=judge_now, skip=False, recovered=False, notes=[]
-                )
+                judged = self._judge(scope, current, parent_id, span, judge_now=judge_now, unmeasured=None, notes=[])
             current = judged.merged
         return True
 
@@ -944,67 +946,66 @@ class RunController:
         span: Span,
         *,
         judge_now: bool,
-        skip: bool,
-        recovered: bool,
+        unmeasured: Unmeasured | None,
         notes: list[str],
     ) -> Judged:
         """Set the daemon's verdict on a candidate while it is ``judgeable``, if ``judge_now``. Return the result.
 
         A known candidate keeps its verdict, because the same tree again (a revert) says nothing new about it, unless
         another run proposes it again (``_score``). ``judgeable`` is read in the transaction that judges, so a keep
-        that another run made meanwhile, of the same tree, stays. With
-        ``skip``, the verdict is ``unmeasured`` (``SKIPPED``) instead of the rule's verdict, and when ``recovered``, it
-        is ``recovered`` (``RECOVERED_REASON``).
+        that another run made meanwhile, of the same tree, stays. An ``unmeasured`` commit gets no verdict: its origin
+        is ``recovered`` or ``skipped`` instead, with the reason of ``UNMEASURED_REASONS``.
 
         A keep against a bar that is no longer the head stays off the trunk, unless the run is a branch run. The head
-        moved while the run worked or while the daemon measured. The candidate becomes ``interesting`` (``MOVED``) and
-        is merged onto the head in the same transaction (``ledger.rebase``). The merge is judged next
-        (``Judged.merged``). See ``_verdict``.
+        moved while the run worked or while the daemon measured. The candidate becomes ``interesting``
+        (``Cause.MOVED``) and is merged onto the head in the same transaction (``ledger.rebase``). The merge is judged
+        next (``Judged.merged``). See ``_verdict``.
 
         Otherwise the commit's ``Piloop-Note`` ``notes`` are added after the verdict, signed by the run. They turn a
-        discard or an interesting candidate into a noted ``interesting`` (``ledger.note``). A keep or a crash keeps
-        its verdict.
+        discard or an interesting candidate into a noted ``interesting`` (``Cause.NOTE``). A keep or a crash keeps
+        its verdict (``verdict.refusal``).
         """
         merged: CandidateId | None = None
         moved = False
         with self._db.session() as s:
             candidate = s.get_one(Candidate, candidate_id)
             if judge_now and judgeable(candidate):
-                if recovered:
-                    candidate.verdict = Verdict.RECOVERED
-                    candidate.verdict_reason = RECOVERED_REASON.format(run=scope.run_id)
-                elif skip:
-                    candidate.verdict, candidate.verdict_reason = Verdict.UNMEASURED, SKIPPED
-                else:
-                    verdict, reason, onto = self._verdict(s, scope, candidate, bar_id)
-                    candidate.verdict, candidate.verdict_reason = verdict, reason
-                    if onto is not None:
-                        moved = True
-                        found = rebase(s, scope.cfg, scope.repo, candidate, onto)
-                        merged = found.id if found is not None else None
-                candidate.verdict_by = DAEMON
-                judged = CandidateJudged(
-                    verdict=candidate.verdict,
-                    score=score(candidate, scope.evaluator_id, scope.track.primary),
-                    reason=candidate.verdict_reason,
-                )
-                emit(s, judged, TargetRef(TargetKind.CANDIDATE, candidate_id), System.DAEMON)
-                if not (skip or recovered):
-                    why = '; '.join(notes)
-                    if why and not moved and candidate.verdict in (Verdict.DISCARD, Verdict.INTERESTING):
-                        note(candidate, why, implementer_of(s, scope.run_id))
+                match unmeasured:
+                    case Origin() as origin:
+                        candidate.origin = origin
+                        candidate.verdict_reason = UNMEASURED_REASONS[origin].format(run=scope.run_id)
+                    case None:
+                        verdict, reason, onto = self._verdict(s, scope, candidate, bar_id)
+                        cause = Cause.MOVED if onto is not None else None
+                        write(candidate, verdict, cause=cause, reason=reason, by=System.DAEMON)
+                        if onto is not None:
+                            moved = True
+                            found = rebase(s, scope.cfg, scope.repo, candidate, onto)
+                            merged = found.id if found is not None else None
+                        judged = CandidateJudged(
+                            verdict=verdict,
+                            score=score(candidate, scope.evaluator_id, scope.track.primary),
+                            reason=candidate.verdict_reason,
+                        )
+                        emit(s, judged, TargetRef(TargetKind.CANDIDATE, candidate_id), System.DAEMON)
+                        why = '; '.join(notes)
+                        if why and not moved and refusal(candidate, Outcome.INTERESTING, Cause.NOTE) is None:
+                            by = implementer_of(s, scope.run_id)
+                            override(candidate, Outcome.INTERESTING, cause=Cause.NOTE, reason=why, by=by)
+                    case _:
+                        assert_never(unmeasured)
                 s.commit()
-            verdict, advanced = candidate.verdict, raises_bar(candidate, branch=scope.branch) or moved
+            advanced = raises_bar(candidate, scope.side) or moved
             span.set(
-                verdict=verdict,
+                verdict=label(candidate),
                 summary=candidate.summary,
                 score=score(candidate, scope.evaluator_id, scope.track.primary),
             )
-        return Judged(verdict, advanced=advanced, merged=merged)
+        return Judged(advanced=advanced, merged=merged)
 
     def _verdict(
         self, s: Session, scope: Scope, candidate: Candidate, bar_id: CandidateId
-    ) -> tuple[Verdict, str, Candidate | None]:
+    ) -> tuple[Outcome, str, Candidate | None]:
         """Return the rule's verdict and reason against the run's bar, and the head to rebase onto if needed.
 
         A rebase is needed for a keep against a bar that is no longer the head, unless the run is a branch run. A
@@ -1019,16 +1020,25 @@ class RunController:
             scope.track,
             self._units_dir,
             head=trunk,
-            branch=scope.branch,
+            side=scope.side,
         )
-        if verdict is not Verdict.KEEP or scope.branch or trunk is None or trunk.id == bar_id:
-            return verdict, reason, None
-        if scope.repo.contains(Revision(candidate.commit_sha), Revision(trunk.commit_sha)):
-            verdict, reason = judge(
-                candidate, trunk, scope.evaluator_id, scope.cfg, scope.track, self._units_dir, head=trunk, branch=False
-            )
-            return verdict, f'the head candidate#{trunk.id} is in its history: {reason}', None
-        return Verdict.INTERESTING, MOVED.format(head=trunk.id) + reason, trunk
+        match scope.side, verdict, trunk:
+            case Trunk(), Outcome.KEEP, Candidate() as moved if moved.id != bar_id:
+                if not scope.repo.contains(Revision(candidate.commit_sha), Revision(moved.commit_sha)):
+                    return Outcome.INTERESTING, MOVED.format(head=moved.id) + reason, moved
+                again, why = judge(
+                    candidate,
+                    moved,
+                    scope.evaluator_id,
+                    scope.cfg,
+                    scope.track,
+                    self._units_dir,
+                    head=moved,
+                    side=Trunk(),
+                )
+                return again, f'the head candidate#{moved.id} is in its history: {why}', None
+            case _:
+                return verdict, reason, None
 
     def _close(self, span: Span, run_id: RunId, end: RunEnd, error: str | None) -> None:
         """Record the run's end when its implementer ends, so the slot is free while the commits are scored (``scoring``)."""
@@ -1133,8 +1143,7 @@ class RunController:
             f'- Starting from candidate#{base.id}: {at_base} — {base.summary}',
         ]
         if base.run_id is not None and s.get_one(Run, base.run_id).idea_id == idea.id:
-            recovered = base.verdict is Verdict.RECOVERED
-            unmeasured = ' It was never measured.' if recovered else ''
+            unmeasured = ' It was never measured.' if base.origin is Origin.RECOVERED else ''
             lines.append(
                 f'- candidate#{base.id} is where run#{base.run_id}, an earlier run of this idea, stopped.{unmeasured}'
                 ' Read its diff against its parent, finish the work, and commit what you would ship.'
@@ -1186,14 +1195,13 @@ class Scope:
     track: Track
     repo: Repository
     evaluator_id: EvaluatorId
-    branch: bool
+    side: Lineage
 
 
 @dataclass(frozen=True)
 class Judged:
-    """The result of ``_judge``: the verdict, whether the run's bar moves to it, and the merge to judge next."""
+    """The result of ``_judge``: whether the run's bar moves to the candidate, and the merge to judge next."""
 
-    verdict: Verdict
     advanced: bool
     """It kept against the run's bar, on the trunk or for a rebase. The run's next commit is judged against it."""
     merged: CandidateId | None
@@ -1382,6 +1390,15 @@ def branches(campaign: Campaign, pinned: Candidate | None, computed: Candidate |
 def _kept(repo: Repository, name: str, run_id: RunId) -> list[Version]:
     """The versions of a run that a daemon before 0.3.0 kept, which recorded no ``RunReceived``."""
     return repo.kept(name, run_id)
+
+
+def unmeasured_of(version: Version) -> Unmeasured | None:
+    """Return why the daemon does not measure ``version``: it is the saved unsaved work, or it asks to be skipped."""
+    if version.recovered:
+        return Origin.RECOVERED
+    if version.skip:
+        return Origin.SKIPPED
+    return None
 
 
 def commits_of(run_id: RunId) -> Commits:

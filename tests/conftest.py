@@ -22,6 +22,7 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from sqlalchemy import select
 
+from piloop.actor import System
 from piloop.campaign import archive as archive_module, campaigns as campaign_module
 from piloop.config import CampaignConfig, load_campaign_config
 from piloop.daemon.main import ACTOR
@@ -32,10 +33,10 @@ from piloop.db.models import (
     Campaign,
     Candidate,
     Measurement,
+    Origin,
     RunEnd,
     RunStatus,
     Usage,
-    Verdict,
 )
 from piloop.db.session import Database, migrate
 from piloop.harnesses import DEFAULT_HARNESSES
@@ -49,9 +50,10 @@ from piloop.plugins.network.https import TOKEN_ENV, Https
 from piloop.plugins.role.contract import RoleConfig
 from piloop.plugins.runtime.contract import Handle, Runtime
 from piloop.plugins.runtime.subprocess import SubprocessRuntime
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.runtime.factory import RuntimeFactory
-from piloop.scoring.evaluate import run_evaluate
-from piloop.scoring.ledger import DAEMON, current_evaluator
+from piloop.scoring.evaluate import Measured, run_evaluate
+from piloop.scoring.ledger import current_evaluator
 from piloop.settings import Settings, env_names
 from piloop.store import tree as tree_module
 
@@ -299,6 +301,7 @@ def register(db: Database, campaign_path: Path) -> Campaign:
         timeout=30,
         required={m.name for m in cfg.metrics},
     )
+    assert isinstance(result, Measured), result
     with db.session() as s:
         proj = Campaign(name=cfg.name, path=str(campaign_path), config=cfg.model_dump(mode='json'))
         s.add(proj)
@@ -309,8 +312,9 @@ def register(db: Database, campaign_path: Path) -> Campaign:
             tree_sha=repo.head.commit.tree.hexsha,
             commit_sha=sha,
             summary='baseline',
-            verdict=Verdict.KEEP,
-            verdict_by=DAEMON,
+            origin=Origin.BASELINE,
+            verdict=Outcome.KEEP,
+            verdict_by=System.DAEMON,
         )
         s.add(base)
         s.flush()

@@ -41,6 +41,9 @@ piloop idea status 12 parked --reason 'waits for idea#9, see comment#31'
   a new evaluator row. A candidate can have many measurements: repeats, or a newer evaluator.
 - A candidate's **verdict** (`keep`, `interesting`, `discard` or `crash`) is the daemon's judgement of its mean score
   against its bar. The bar is the run's last keep, starting at its base. The orchestrator or a human may override it.
+  `verdict IS NULL` until the candidate is judged.
+- A candidate's **origin** says where it comes from: `baseline`, `run`, `reference`, `recovered` or `skipped`. Only
+  the first two are judged. A pending candidate is `verdict IS NULL AND origin IN ('baseline', 'run')`.
   {vcs:skip}
 - Every run that pins no base starts from the **head**: the latest *trunk keep*, which is a keep that no branch run
   made. So the trunk is a chain of keeps.
@@ -51,7 +54,7 @@ piloop idea status 12 parked --reason 'waits for idea#9, see comment#31'
   against its own base only. Its keep is a *branch keep*, which never moves the head.
 - A non-keep is not a bar. A run pinned to one (a note, a discard) starts from its tree and is judged against its
   nearest kept ancestor. It is a trunk run when that ancestor is the head.
-- A `reference` is not a judgement. It is a starting point imported with `piloop candidate import`, with no run and no
+- A `reference` (`origin = 'reference'`) is a starting point imported with `piloop candidate import`, with no run and no
   parent. The daemon measures it. An idea can pin it as `base_candidate_id`. It is never the head and never counts as a
   keep.
 - A campaign can have several **tracks** (objectives), each with its own primary metric. `ideas.track` names an idea's
@@ -169,12 +172,10 @@ starting at its base. The daemon writes why in `verdict_reason`:
 Special reasons:
 
 - A reason that starts with `no-op:` means the primary and the guardrails equal the parent's exactly.
-- `not evaluated: Piloop-Eval: skip` is the reason of an `unmeasured` commit, one that asked not to be evaluated
-  (scaffolding). It has no measurement and says nothing about the idea.
-- A reason that starts with `recovered:` is a `recovered` candidate: what an implementer left uncommitted when it stopped.
-  It has no measurement. If its run did not finish, the next run of its idea starts from it.
-- A reason that starts with `keeps against its own bar, but the head moved on` is a keep that was rebased. The rest of
-  the reason names the merged candidate or the conflict.
+- `cause = 'moved'` is a keep that was rebased: it kept against its own bar, but the head moved on. The reason names
+  the merged candidate or the conflict.
+- `cause = 'note'` is a regressed result that an agent kept in view as a lead.
+- A `skipped` commit asked not to be evaluated (scaffolding). It has no measurement and says nothing about the idea.
 
 Roles, tracks, margins and floors are in `campaigns.config`.
 
@@ -217,7 +218,7 @@ Roles, tracks, margins and floors are in `campaigns.config`.
 - The same triggers keep a change log in `events`, signed by the same actor. Each payload has its `kind`, and these have
   `old` and `new`:
   `idea.status`, `idea.priority`, `idea.track`, `idea.base_candidate_id`, `candidate.verdict` (with `verdict_by` and
-  `verdict_reason`), `run.brief` (lengths only), `campaign.status` (with `stopped_reason`), `campaign.paused` (with
+  `verdict_reason`), `candidate.origin`, `run.brief` (lengths only), `campaign.status` (with `stopped_reason`), `campaign.paused` (with
   `paused_reason`). An inserted or deleted `idea_links` row is `idea.linked` or `idea.unlinked` on its idea, with the
   target and the kind.
 - A DELETE of an idea, comment or candidate leaves a `<kind>.deleted` event with the row's key columns.

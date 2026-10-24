@@ -28,7 +28,8 @@ its bar: the merge must still beat the head.
 
 ## The verdict
 
-The daemon gives each measured candidate one verdict:
+The daemon gives each measured candidate one verdict (`candidates.verdict`). Until then, the verdict is NULL: the
+candidate is **pending**.
 
 | Verdict | Meaning |
 |---|---|
@@ -36,9 +37,18 @@ The daemon gives each measured candidate one verdict:
 | `interesting` | The primary metric improved, but without enough confidence, or a guardrail got worse by more than its margin. |
 | `discard` | The primary metric did not improve, or a guardrail went past its floor. |
 | `crash` | The candidate has no successful measurement: the evaluate command failed or timed out, wrote a bad per-unit results file, or did not print every metric in `piloop.toml`. |
-| `reference` | A starting point imported with `piloop candidate import`. It is never judged. |
-| `unmeasured` | A commit marked `Piloop-Eval: skip`. It is never measured or judged, and says nothing about its idea. |
-| `recovered` | What an implementer left uncommitted when it stopped, committed by the daemon (`Piloop-Recovered: run#<id>`). The implementer never declared it ready, so it is never measured, judged or kept. If its run did not succeed, the next attempt starts from it, as from the last commit of any such run ([Ideas and runs](/concepts/ideas-and-runs)). |
+
+Only the `baseline` and the commits of a `run` are judged. The **origin** of a candidate (`candidates.origin`) says
+where it comes from. Three origins never get a verdict:
+
+| Origin | Meaning |
+|---|---|
+| `reference` | A starting point imported with `piloop candidate import`. |
+| `skipped` | A commit marked `Piloop-Eval: skip`. It is never measured, and says nothing about its idea. |
+| `recovered` | What an implementer left uncommitted when it stopped, committed by the daemon (`Piloop-Recovered: run#<id>`). The implementer never declared it ready, so it is never measured or kept. If its run did not succeed, the next attempt starts from it, as from the last commit of any such run ([Ideas and runs](/concepts/ideas-and-runs)). |
+
+A later commit of a `skipped` or `recovered` tree without its mark is measured and judged, and its origin becomes
+`run`.
 
 The rule, in order:
 
@@ -137,7 +147,7 @@ note. [Verdict rules](/architecture/extension-points#verdict-rules) has the deta
 ## When the head moves during a run
 
 Two runs can start from the same head. When the first one keeps, the head moves. If the second one then beats its own
-bar, it is `interesting`, with a reason that starts with `keeps against its own bar, but the head moved on`.
+bar, it is `interesting`, with the cause `moved`.
 
 The daemon then merges the second candidate onto the new head, as a commit with two parents. The merge is a new
 candidate of the same run, and the daemon measures and judges it against the new head. A run that started from a
@@ -158,10 +168,9 @@ piloop candidate remeasure 42
 
 The daemon measures the candidate in pairs with its bar, 3 times each (`--repeats`), with the current evaluator,
 after the head and the bars that runs need. It stops at the first run that fails. A `crash`, `discard` or
-`interesting` that the daemon gave is then judged again on these pairs, as its run would have judged it. So is an
-`unmeasured` or `recovered` commit, which gets its first measurement. A keep, and a verdict that someone set, stay.
-The baseline and a reference have no bar: they run alone. A `pending` candidate is refused: its run measures and
-judges it.
+`interesting` that the daemon gave is then judged again on these pairs, as its run would have judged it. So is a
+`skipped` or `recovered` commit, which gets its first measurement. A keep, and a verdict that someone set, stay. The
+baseline and a reference have no bar: they run alone. A pending candidate is refused: its run measures and judges it.
 
 A stopped campaign is measured too, but only what someone asked for, so you can measure a result again when you
 review a campaign. A campaign paused with `--evals`, or held by its stop rule, is measured once the hold ends. The
@@ -212,9 +221,9 @@ piloop measurement add 42 --report report.json
 ```
 
 `report.json` is `{"metrics": {"accuracy": 0.853}, "seconds": 600}`, with the metrics of `piloop.toml`. The
-measurement counts under the current evaluator. When the verdict is the daemon's `crash`, `discard`, `interesting` or
-`unmeasured` (a commit marked `Piloop-Eval: skip`), the daemon judges the candidate again with all its measurements,
-as its run would have judged it. A keep stays: runs started from it as their bar, and they must now beat its new
+measurement counts under the current evaluator. When the verdict is the daemon's `crash`, `discard` or `interesting`,
+or the commit is `skipped` or `recovered`, the daemon judges the candidate again with all its measurements, as its run
+would have judged it. A keep stays: runs started from it as their bar, and they must now beat its new
 mean. A pending candidate is refused until the daemon has judged it.
 
 ## Notes
@@ -225,6 +234,7 @@ A result that regressed can still be a good starting point. A **note** keeps it 
 piloop candidate note 42 "faster tokenizer, but loses accuracy on long inputs" --follow-up "fix the long-input case"
 ```
 
-The candidate becomes `interesting`, with a reason that starts with `note:`, followed by its earlier reason. Each
+The candidate becomes `interesting`, with the cause `note` (`candidates.cause`) and your reason before its earlier
+reason. Each
 `--follow-up` files a seed pinned to the candidate. A note is not a keep, and it does not move a bar. An implementer notes its
 own commit with a `Piloop-Note: <why>` trailer in the commit message.

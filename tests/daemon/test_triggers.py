@@ -32,13 +32,13 @@ from piloop.db.models import (
     Run,
     RunEnd,
     RunStatus,
-    Verdict,
     utcnow,
 )
 from piloop.db.session import Database
 from piloop.ids import IMPLEMENTER, AgentSessionId, IdeaId, RunId, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins.executor.workers import Workers
+from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.overview import anomalies
 from tests.conftest import (
     HARNESS_NOOP,
@@ -108,7 +108,7 @@ def fail_a_run(db: Database, campaign: Campaign, title: str, status: RunStatus =
         return run.id
 
 
-def finish_a_run(db: Database, campaign: Campaign, title: str, verdict: Verdict = Verdict.DISCARD) -> RunId:
+def finish_a_run(db: Database, campaign: Campaign, title: str, verdict: Outcome = Outcome.DISCARD) -> RunId:
     """Add a run that succeeded just now with a measured candidate, a discard by default.
 
     The research trigger sees a new result. The watchdog trigger sees no failure.
@@ -465,7 +465,7 @@ def test_a_long_stall_gets_one_stalled_sweep_per_stall_step_and_a_keep_ends_it(
     reasons = [reason or '' for _, _, reason in agent_sessions(db, RESEARCH)]
     assert [r.split(';')[0] for r in reasons] == ['stalled, step 1', 'stalled, step 2', 'stalled, step 3']
 
-    finish_a_run(db, campaign, 'kept', Verdict.KEEP)
+    finish_a_run(db, campaign, 'kept', Outcome.KEEP)
     for n in range(4):
         finish_a_run(db, campaign, f'after the keep {n}')
         sched.tick()

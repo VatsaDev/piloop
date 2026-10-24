@@ -10,7 +10,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import fmean
-from typing import Literal
+from typing import Literal, assert_never
 
 from pydantic import Field
 from sqlalchemy import Select, func, select
@@ -34,8 +34,8 @@ from piloop.db.models import (
     IdeaLink,
     IdeaStatus,
     LinkKind,
+    Origin,
     Run,
-    Verdict,
     latest_agent_session,
 )
 from piloop.ids import CampaignId, CandidateId, EvaluatorId, MeasurementId, RunId, TargetKind, TargetRef, TrackName
@@ -48,20 +48,13 @@ from piloop.plugins.vcs.contract import (
     UnknownRevision,
     Version,
 )
-from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Case, Criterion, Side, VerdictRule
+from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Case, Criterion, Outcome, Side, VerdictRule
 from piloop.scoring.evaluate import UNITS, Units
+from piloop.scoring.verdict import judgeable, label, pending, rejudgeable
 from piloop.text import metric
 
 type Samples = dict[str, list[float]]
 """The samples of a paired evaluation: metric name → the value of each sample, in the order of the pairs."""
-
-DAEMON = System.DAEMON
-"""The ``verdict_by`` of a verdict that the daemon set. The daemon never overwrites a verdict by anyone else."""
-SKIPPED = 'not evaluated: Piloop-Eval: skip'
-"""The ``verdict_reason`` of the daemon's ``unmeasured`` verdict on a commit that asked not to be evaluated.
-
-When a commit without the trailer reaches the same tree, the daemon measures and judges it (``skipped``).
-"""
 
 
 def current_evaluator(s: Session, campaign: Campaign, cfg: CampaignConfig) -> Evaluator:
@@ -141,19 +134,24 @@ def bar_of(candidate: Candidate) -> Candidate:
     candidate would be held to that candidate's numbers, which a fix to it could never beat. A run pinned to a
     non-keep starts from its tree and must beat the latest keep of its lineage.
     """
-    while candidate.verdict not in (Verdict.KEEP, Verdict.REFERENCE) and candidate.parent is not None:
+    while not (candidate.verdict is Outcome.KEEP or candidate.origin is Origin.REFERENCE) and candidate.parent:
         candidate = candidate.parent
     return candidate
 
 
-def raises_bar(candidate: Candidate, *, branch: bool) -> bool:
-    """Whether a run's commit that is ``candidate`` becomes the run's bar for its next commits.
+def raises_bar(candidate: Candidate, side: Lineage) -> bool:
+    """Whether a run's commit that is ``candidate`` becomes the bar for its next commits, on the run's ``side``.
 
-    A keep does, and a known keep that the run reached again too. On a trunk run, a branch keep does not: a trunk run
+    A keep does, and a known keep that the run reached again too. On the trunk, a branch keep does not: a trunk run
     that merges a branch keep onto the head must beat the head, so a branch's numbers are never a trunk run's bar.
     """
-    trunk = candidate.run is None or not candidate.run.branch
-    return candidate.verdict is Verdict.KEEP and (branch or trunk)
+    match side:
+        case Branch():
+            return candidate.verdict is Outcome.KEEP
+        case Trunk():
+            return candidate.verdict is Outcome.KEEP and (candidate.run is None or not candidate.run.branch)
+        case _:
+            assert_never(side)
 
 
 def track_of(cfg: CampaignConfig, candidate: Candidate) -> Track:
@@ -187,7 +185,7 @@ def due(s: Session, campaign: Campaign) -> list[Candidate]:
     open_runs = select(Run).join(Idea).where(Idea.campaign_id == campaign.id, Run.status.in_(OPEN_RUNS))
     pins = select(Candidate).join(Idea, Idea.base_candidate_id == Candidate.id)
     new_references = select(Candidate).where(
-        Candidate.campaign_id == campaign.id, Candidate.verdict == Verdict.REFERENCE, ~Candidate.measurements.any()
+        Candidate.campaign_id == campaign.id, Candidate.origin == Origin.REFERENCE, ~Candidate.measurements.any()
     )
     asked = requested(s, campaign)
     active = campaign.status is CampaignStatus.ACTIVE
@@ -230,13 +228,13 @@ def request_remeasure(s: Session, candidate: Candidate, actor: Actor, repeats: i
     request is the ``RemeasureRequested`` event, and ``requested`` lists it until a newer measurement exists. The
     daemon runs ``repeats`` pairs of the candidate and its bar (``bar_of`` its parent), then judges it again when it is
     ``rejudgeable`` (``RunController.remeasure``). A candidate without a parent, the baseline or a reference, gets
-    ``repeats`` samples alone. A commit that the daemon never measured (``skipped``) gets its first measurement, to
+    ``repeats`` samples alone. A commit that the daemon never measured (``skipped`` or ``recovered``) gets its first measurement, to
     isolate a regression to it, say.
 
     Raises:
-        RemeasureRefused: the candidate is ``pending``: its run measures and judges it.
+        RemeasureRefused: the candidate is pending: its run measures and judges it.
     """
-    if candidate.verdict is Verdict.PENDING:
+    if pending(candidate):
         raise RemeasureRefused(f'candidate#{candidate.id} is pending: the daemon measures and judges it already')
     emit(s, RemeasureRequested(repeats=repeats), TargetRef(TargetKind.CANDIDATE, candidate.id), actor)
 
@@ -288,7 +286,7 @@ class CandidateJudged(EventModel):
     """The daemon judged a candidate: its verdict, the primary metric's score and the reason."""
 
     kind: Literal['candidate.judged'] = 'candidate.judged'
-    verdict: Verdict
+    verdict: Outcome
     score: float | None
     reason: str | None
 
@@ -310,21 +308,6 @@ class IdeaCreated(EventModel):
     """An idea was added: by hand, by an agent, or as a follow-up seed."""
 
     kind: Literal['idea.created'] = 'idea.created'
-
-
-REJUDGED = (Verdict.CRASH, Verdict.DISCARD, Verdict.INTERESTING)
-"""The daemon's verdicts that a measurement by hand has judged again. A keep stays: runs started from it as a bar."""
-
-
-def rejudgeable(candidate: Candidate) -> bool:
-    """Return whether the daemon judges the candidate again after a measurement by hand.
-
-    Only a candidate of a run, whose verdict is the daemon's: one of ``REJUDGED``, or a commit that it never measured
-    (``skipped``), which the measurement is the first of. Anyone else's verdict stays.
-    """
-    return candidate.run_id is not None and (
-        (candidate.verdict_by == DAEMON and candidate.verdict in REJUDGED) or skipped(candidate)
-    )
 
 
 def rejudges(s: Session, campaign: Campaign) -> list[Candidate]:
@@ -355,13 +338,13 @@ def rejudges(s: Session, campaign: Campaign) -> list[Candidate]:
 
 def references(s: Session, campaign: Campaign) -> list[Candidate]:
     """Return the campaign's imported starting points (``piloop candidate import``), oldest first."""
-    query = select(Candidate).where(Candidate.campaign_id == campaign.id, Candidate.verdict == Verdict.REFERENCE)
+    query = select(Candidate).where(Candidate.campaign_id == campaign.id, Candidate.origin == Origin.REFERENCE)
     return list(s.scalars(query.order_by(Candidate.id)))
 
 
 def keeps(campaign: Campaign) -> Select[Candidate]:
     """Select the campaign's kept candidates. The baseline is one while its verdict is ``keep``."""
-    return select(Candidate).where(Candidate.campaign_id == campaign.id, Candidate.verdict == Verdict.KEEP)
+    return select(Candidate).where(Candidate.campaign_id == campaign.id, Candidate.verdict == Outcome.KEEP)
 
 
 def baseline(s: Session, campaign: Campaign) -> Candidate:
@@ -440,16 +423,16 @@ def judge(
     units_dir: Path,
     *,
     head: Candidate | None,
-    branch: bool,
-) -> tuple[Verdict, str]:
+    side: Lineage,
+) -> tuple[Outcome, str]:
     """Return the daemon's verdict on ``candidate``, a candidate of ``track``, against ``own``, and the reason.
 
     ``own`` is the run's bar: its last keep, or its last candidate that kept against its bar and was rebased. It
     starts as the run's base. The run controller keeps a run's candidate on the trunk only while ``own`` is the head. A keep
     against an ``own`` that the head has moved past is rebased onto the head instead (``rebase``).
 
-    A branch run (``runs.branch``: its idea pinned another starting point) keeps what beats ``own``: a branch keep.
-    Its reason also says whether it is above ``head`` on the track's primary.
+    On a ``Branch`` (``runs.branch``: its idea pinned another starting point), a run keeps what beats ``own``: a branch
+    keep. Its reason also says whether it is above ``head`` on the track's primary.
 
     The campaign's verdict rule gives the verdict (``decide``): ``[plugins.verdict_rule]``, else ``bootstrap``. When
     the deciding metrics equal the parent's (``same``), the reason says so first: the change did not affect what the
@@ -465,10 +448,13 @@ def judge(
     )
     primary = track.primary
     leader = metrics(head, evaluator_id).get(primary.name) if head is not None else None
-    # a rule from a plugin may keep a candidate that has no primary value
-    if branch and verdict is Verdict.KEEP and head is not None and leader is not None and primary.name in mine:
-        where = 'above' if primary.better(mine[primary.name], leader) else 'not above'
-        reason += f'; a branch keep, {where} the head candidate#{head.id} ({primary.name} {metric(leader)})'
+    match side, verdict:
+        # a rule from a plugin may keep a candidate that has no primary value
+        case Branch(), Outcome.KEEP if head is not None and leader is not None and primary.name in mine:
+            where = 'above' if primary.better(mine[primary.name], leader) else 'not above'
+            reason += f'; a branch keep, {where} the head candidate#{head.id} ({primary.name} {metric(leader)})'
+        case _:
+            pass
     parent = candidate.parent
     if parent is not None and same(track, mine, metrics(parent, evaluator_id)):
         which = 'primary and guardrails' if track.guardrails else primary.name
@@ -481,15 +467,15 @@ def criterion(m: Metric) -> Criterion:
     return Criterion(m.name, m.direction, m.margin, m.floor)
 
 
-def decide(rule: VerdictRule, track: Track, candidate: Side, bar: Side) -> tuple[Verdict, str]:
+def decide(rule: VerdictRule, track: Track, candidate: Side, bar: Side) -> tuple[Outcome, str]:
     """Return ``rule``'s verdict on ``candidate``, a candidate of ``track``, against ``bar``, and the reason.
 
     The rule gets the case as data (``piloop.plugins.verdict_rule.contract.Case``): the track's primary and guardrails,
-    and both sides' results. Its outcome is the ``Verdict`` of the same value.
+    and both sides' results.
     """
     guardrails = tuple(map(criterion, track.guardrails))
     judged = rule.decide(Case(criterion(track.primary), guardrails, candidate, bar))
-    return Verdict(judged.verdict), judged.reason
+    return judged.verdict, judged.reason
 
 
 def same(track: Track, mine: dict[str, float], theirs: dict[str, float]) -> bool:
@@ -531,7 +517,8 @@ REBASED_SUFFIX = re.compile(r' \(rebased onto candidate#\d+\)$')
 """How the subject of a merge commit ends. A merge that is rebased again keeps the run commit's subject, with the
 new head."""
 MOVED = 'keeps against its own bar, but the head moved on to candidate#{head}: '
-"""How the reason of a candidate to rebase starts. The candidate is ``interesting``, never a keep off the trunk."""
+"""How the reason of a candidate to rebase starts. The candidate is ``interesting`` (``Cause.MOVED``), never a keep off
+the trunk."""
 
 
 def rebase(
@@ -539,7 +526,7 @@ def rebase(
 ) -> Candidate | None:
     """Merge ``candidate``'s version onto the head ``onto``. Return the merged candidate to measure and judge, or None.
 
-    ``candidate`` kept against its own bar after the head moved on. So it is ``interesting`` (``MOVED``), and its
+    ``candidate`` kept against its own bar after the head moved on. So it is ``interesting`` (``Cause.MOVED``), and its
     reason ends with the result of the merge. The merge is a version made without a checkout (``Repository.merge``),
     and kept (``RebaseVersion``). A new tree becomes a pending
     candidate of the same run, with ``onto`` as its parent. A merge that conflicts files a seed on the run's track to
@@ -568,7 +555,7 @@ def rebase(
                 candidate,
                 [f'Compose candidate#{candidate.id} onto the head'],
                 why,
-                DAEMON,
+                System.DAEMON,
                 track=candidate.run.idea.track,
                 pin=False,
             )
@@ -580,13 +567,15 @@ def rebase(
         rebased = Rebased(head=onto.id, conflicts=list(merged.paths))
     else:
         repo.keep(merged.revision, RebaseVersion(cfg.name, candidate.id))
-        found, created = resolve(s, candidate.campaign_id, merged, parent=onto, run_id=candidate.run_id)
+        found, created = resolve(
+            s, candidate.campaign_id, merged, parent=onto, run_id=candidate.run_id, origin=Origin.RUN
+        )
         if created:
             candidate.verdict_reason = f'{candidate.verdict_reason}; rebased onto the head as candidate#{found.id}'
             rebased = Rebased(head=onto.id, rebased=found.id)
         else:
             candidate.verdict_reason = (
-                f'{candidate.verdict_reason}; its merge onto the head is candidate#{found.id} already ({found.verdict})'
+                f'{candidate.verdict_reason}; its merge onto the head is candidate#{found.id} already ({label(found)})'
             )
             rebased = Rebased(head=onto.id, known=found.id)
             found = None
@@ -605,32 +594,13 @@ def supersede_composed(s: Session, repo: Repository, candidate: Candidate, seed:
     composes = select(Idea).where(
         Idea.campaign_id == candidate.campaign_id,
         Idea.status == IdeaStatus.SEED,
-        Idea.created_by == DAEMON,
+        Idea.created_by == System.DAEMON,
         Idea.provenance.in_(by_provenance),
     )
     for old in s.scalars(composes):
         assert old.provenance is not None  # the IN clause matched it
         if repo.contains(Revision(candidate.commit_sha), Revision(by_provenance[old.provenance].commit_sha)):
             s.add(IdeaLink(idea_id=seed.id, target_id=old.id, kind=LinkKind.SUPERSEDES))
-
-
-def skipped(candidate: Candidate) -> bool:
-    """Return whether the candidate has the daemon's ``unmeasured`` or ``recovered`` verdict.
-
-    A measurement may replace either: a later commit of the same tree is measured and judged like a new one.
-    """
-    return candidate.verdict_by == DAEMON and candidate.verdict in (Verdict.UNMEASURED, Verdict.RECOVERED)
-
-
-def judgeable(candidate: Candidate) -> bool:
-    """Return whether the daemon may set its verdict on ``candidate`` now: no keep, and nobody else's verdict.
-
-    That is a pending candidate, or a verdict of the daemon that a measurement can change (``REJUDGED``, ``skipped``).
-    A keep stays: runs started from it as their bar, and it may be the head. The daemon checks it in the transaction
-    that judges, so another run's keep that landed during a measurement is never judged over.
-    """
-    judgements = (Verdict.PENDING, *REJUDGED, Verdict.UNMEASURED, Verdict.RECOVERED)
-    return candidate.verdict_by in (None, DAEMON) and candidate.verdict in judgements
 
 
 def reproposed(candidate: Candidate, run: Run) -> bool:
@@ -646,9 +616,15 @@ def reproposed(candidate: Candidate, run: Run) -> bool:
 
 
 def resolve(
-    s: Session, campaign_id: CampaignId, version: Version, *, parent: Candidate | None, run_id: RunId | None
+    s: Session,
+    campaign_id: CampaignId,
+    version: Version,
+    *,
+    parent: Candidate | None,
+    run_id: RunId | None,
+    origin: Origin,
 ) -> tuple[Candidate, bool]:
-    """Return the candidate for the tree of ``version``: the existing one, or a new row with ``parent`` as its parent.
+    """Return the candidate for the tree of ``version``: the existing one, or a new row of ``origin`` under ``parent``.
 
     Returns ``(candidate, created)``. An existing candidate is returned unchanged: a version that reverts to a known
     state is that state, whatever run or version reached it. Two runs that reach one new tree at once share it: the
@@ -665,6 +641,7 @@ def resolve(
         tree_sha=version.tree,
         commit_sha=version.revision,
         summary=version.summary,
+        origin=origin,
     )
     try:
         with s.begin_nested():
@@ -691,7 +668,7 @@ def import_reference(
     """Register the tree of ``ref`` (a version of the campaign's repo, in its vcs's terms) as a ``reference`` candidate.
 
     Like the baseline, it has no run and no parent. The version is kept (``ReferenceVersion``), so it outlives what named it.
-    The daemon measures it under the current evaluator (``unmeasured``).
+    The daemon measures it under the current evaluator (``due``).
 
     Raises:
         ImportRefused: ``ref`` names no version, or its tree is already a candidate of the campaign.
@@ -701,48 +678,15 @@ def import_reference(
     except UnknownRevision as e:
         raise ImportRefused(str(e)) from e
     sha = version.revision
-    candidate, created = resolve(s, campaign.id, version, parent=None, run_id=None)
+    candidate, created = resolve(s, campaign.id, version, parent=None, run_id=None, origin=Origin.REFERENCE)
     if not created:
-        raise ImportRefused(f'the tree of {ref!r} already is candidate#{candidate.id} ({candidate.verdict})')
+        raise ImportRefused(f'the tree of {ref!r} already is candidate#{candidate.id} ({label(candidate)})')
     candidate.summary = summary or candidate.summary
-    candidate.verdict, candidate.verdict_by = Verdict.REFERENCE, actor.signature
     candidate.verdict_reason = f'imported from {ref} ({sha[:7]})'
     repo.keep(sha, ReferenceVersion(cfg.name, candidate.id))
     imported = CandidateImported(ref=ref, commit=sha)
     emit(s, imported, TargetRef(TargetKind.CANDIDATE, candidate.id), actor)
     return candidate
-
-
-NOTE = 'note: '
-"""How the reason of a noted candidate starts. An agent marked a regressed result as a lead (``note``)."""
-
-
-class NoteRefused(Exception):
-    """``note`` cannot mark the candidate. The message says why."""
-
-
-def note(candidate: Candidate, reason: str, actor: Actor) -> None:
-    """Mark a measured ``discard`` or ``interesting`` as a lead: ``interesting``, with ``reason`` before the daemon's.
-
-    The result regressed, but the tree is worth starting from. It stays pinnable and in view. Like any
-    ``interesting``, it is not a keep and moves no bar. The verdict is now ``actor``'s, so the daemon never overwrites
-    it.
-
-    Raises:
-        NoteRefused: the reason is empty, or the candidate is not a measured discard or interesting. A keep needs no
-            note. A pending, crashed, unmeasured, recovered or reference candidate has no result to note.
-    """
-    if not reason.strip():
-        raise NoteRefused('a note needs a reason: what the follow-ups from this tree are')
-    if candidate.verdict not in (Verdict.DISCARD, Verdict.INTERESTING):
-        raise NoteRefused(
-            f'candidate#{candidate.id} is {candidate.verdict} ({candidate.verdict_reason or "no reason"}):'
-            ' only a measured discard or interesting takes a note'
-        )
-    candidate.verdict, candidate.verdict_by = Verdict.INTERESTING, actor.signature
-    candidate.verdict_reason = (
-        NOTE + reason.strip() + (f'; {candidate.verdict_reason}' if candidate.verdict_reason else '')
-    )
 
 
 def follow_up(
@@ -790,38 +734,55 @@ def follow_up(
 
 
 @dataclass(frozen=True)
+class Trunk:
+    """The lineage of the head: the keeps that no branch run made, from the baseline."""
+
+
+@dataclass(frozen=True)
 class Branch:
-    """One lineage of keeps: the starting point it grew from, and its latest keep."""
+    """A lineage that a branch run started from ``root``: its keeps never move the head."""
 
     root: Candidate
-    branched: bool
-    """True when a branch run started the lineage at ``root``. False for the trunk."""
+
+
+type Lineage = Trunk | Branch
+"""Where a candidate grew, or where a run keeps (``runs.branch``)."""
+
+
+def side(run: Run) -> Lineage:
+    """Return where ``run`` keeps: on a branch from its base, or on the trunk."""
+    return Branch(run.base) if run.branch else Trunk()
+
+
+def lineage(candidate: Candidate) -> Lineage:
+    """Return the lineage of ``candidate``: the branch of the nearest branch run among its ancestors, else the trunk.
+
+    A branch from the baseline is a different lineage from the trunk that grew from it.
+    """
+    while (run := candidate.run) is not None:
+        if run.branch:
+            return Branch(run.base)
+        candidate = run.base
+    return Trunk()
+
+
+@dataclass(frozen=True)
+class Line:
+    """One lineage of keeps, with its latest keep."""
+
+    lineage: Lineage
     latest: Candidate
     keeps: int
 
 
-def branch_root(candidate: Candidate) -> tuple[Candidate, bool]:
-    """Return the starting point of ``candidate``'s lineage, and whether a branch run started the lineage there.
-
-    The starting point is the base of the nearest branch run among its ancestors. Without one, it is the first
-    ancestor without a run: the baseline, or a reference that a trunk run started from. A branch from the baseline is
-    a different lineage from the trunk that grew from it, so the flag tells them apart.
-    """
-    while (run := candidate.run) is not None:
-        if run.branch:
-            return run.base, True
-        candidate = run.base
-    return candidate, False
-
-
-def branches(s: Session, campaign: Campaign) -> list[Branch]:
+def lineages(s: Session, campaign: Campaign) -> list[Line]:
     """Return every lineage of keeps: the trunk first (its latest keep is the head), then the branches, newest first."""
-    found: dict[tuple[int, bool], Branch] = {}
+    found: dict[Lineage, Line] = {}
     for c in s.scalars(keeps(campaign).order_by(Candidate.id)):
-        root, branched = branch_root(c)
-        known = found.get((root.id, branched))
-        found[root.id, branched] = Branch(root, branched, c, (known.keeps if known else 0) + 1)
-    return sorted(found.values(), key=lambda b: (b.branched, -b.latest.id))
+        at = lineage(c)
+        known = found.get(at)
+        found[at] = Line(at, c, (known.keeps if known else 0) + 1)
+    return sorted(found.values(), key=lambda line: (isinstance(line.lineage, Branch), -line.latest.id))
 
 
 def session_agent_session(s: Session, candidate: Candidate) -> AgentSession | None:

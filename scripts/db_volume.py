@@ -163,23 +163,23 @@ def _runs(con: sqlite3.Connection, v: Volume, rng: random.Random) -> None:
 
 def _candidates(con: sqlite3.Connection, v: Volume, rng: random.Random) -> dict[int, int]:
     """Insert the candidates, each chained to the previous one of its campaign; returns candidate id → campaign id."""
-    verdicts = ['discard'] * 75 + ['keep'] * 12 + ['crash'] * 10 + ['interesting'] * 2 + ['pending'] * 1
+    verdicts = ['discard'] * 75 + ['keep'] * 12 + ['crash'] * 10 + ['interesting'] * 2 + [None] * 1
     last: dict[int, int] = {}
     owners: dict[int, int] = {}
     rows = []
     for c in range(1, v.candidates + 1):
         if c <= v.campaigns:  # the baselines: no run, no parent, kept
-            rows.append((c, c, None, None, f'tree{c}', f'commit{c}', 'baseline', 'keep'))
+            rows.append((c, c, None, None, f'tree{c}', f'commit{c}', 'baseline', 'baseline', 'keep'))
             last[c] = owners[c] = c
             continue
         run = rng.randint(1, v.runs)
         p = _campaign_of((run - 1) % v.ideas + 1, v)
-        rows.append((c, p, run, last[p], f'tree{c}', f'commit{c}', f'summary {c}', rng.choice(verdicts)))
+        rows.append((c, p, run, last[p], f'tree{c}', f'commit{c}', f'summary {c}', 'run', rng.choice(verdicts)))
         last[p] = c
         owners[c] = p
     con.executemany(
-        'INSERT INTO candidates (id, campaign_id, run_id, parent_id, tree_sha, commit_sha, summary, verdict)'
-        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO candidates (id, campaign_id, run_id, parent_id, tree_sha, commit_sha, summary, origin, verdict)'
+        ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
         rows,
     )
     return owners

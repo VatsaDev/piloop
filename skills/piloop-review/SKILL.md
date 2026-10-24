@@ -104,7 +104,7 @@ Before you trust the results:
 WITH s AS (SELECT c.id, c.run_id, c.parent_id, c.verdict, c.created_at,
                   AVG(json_extract(m.metrics, '$.<m>')) AS score, COUNT(*) AS n
            FROM candidates c JOIN measurements m ON m.candidate_id = c.id
-           WHERE c.campaign_id = <p> AND c.verdict != 'reference' AND m.error IS NULL
+           WHERE c.campaign_id = <p> AND c.origin != 'reference' AND m.error IS NULL
              AND m.evaluator_id = (SELECT evaluator_id FROM campaigns WHERE id = <p>)
            GROUP BY c.id)
 SELECT *, MAX(score) OVER (ORDER BY created_at ROWS UNBOUNDED PRECEDING) AS best FROM s ORDER BY created_at;
@@ -113,7 +113,8 @@ SELECT *, MAX(score) OVER (ORDER BY created_at ROWS UNBOUNDED PRECEDING) AS best
 SELECT 'idea', status, COUNT(*) FROM ideas WHERE campaign_id = <p> GROUP BY status
 UNION ALL SELECT 'run', r.status, COUNT(*) FROM runs r JOIN ideas i ON i.id = r.idea_id
           WHERE i.campaign_id = <p> GROUP BY r.status
-UNION ALL SELECT 'candidate', verdict, COUNT(*) FROM candidates WHERE campaign_id = <p> GROUP BY verdict;
+UNION ALL SELECT 'candidate', coalesce(verdict, origin), COUNT(*) FROM candidates WHERE campaign_id = <p>
+          GROUP BY coalesce(verdict, origin);
 
 -- Keeps that break a guardrail (floor from the config or the brief)
 SELECT c.id, c.verdict_by, json_extract(m.metrics, '$.<guard>') AS guard

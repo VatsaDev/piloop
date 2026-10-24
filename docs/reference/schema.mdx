@@ -314,7 +314,9 @@ CREATE TABLE candidates (
 	tree_sha VARCHAR NOT NULL,
 	commit_sha VARCHAR NOT NULL,
 	summary VARCHAR,
-	verdict VARCHAR(16) DEFAULT 'pending' NOT NULL,
+	origin VARCHAR(16) DEFAULT 'run' NOT NULL,
+	verdict VARCHAR(16),
+	cause VARCHAR(16),
 	verdict_by VARCHAR,
 	verdict_reason VARCHAR,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -325,10 +327,14 @@ CREATE TABLE candidates (
 	CONSTRAINT "candidates.summary must be a text value" CHECK (typeof(summary) IN ('text', 'null')),
 	CONSTRAINT "candidates.verdict_by must be a text value" CHECK (typeof(verdict_by) IN ('text', 'null')),
 	CONSTRAINT "candidates.verdict_reason must be a text value" CHECK (typeof(verdict_reason) IN ('text', 'null')),
+	CONSTRAINT "candidates.verdict needs a judged origin" CHECK (verdict IS NULL OR origin IN ('baseline', 'run')),
+	CONSTRAINT "candidates.cause needs interesting" CHECK (cause IS NULL OR verdict = 'interesting'),
 	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE,
 	FOREIGN KEY(run_id) REFERENCES runs (id) ON DELETE SET NULL,
 	FOREIGN KEY(parent_id) REFERENCES candidates (id),
-	CONSTRAINT verdict CHECK (verdict IN ('pending', 'keep', 'interesting', 'discard', 'crash', 'reference', 'unmeasured', 'recovered'))
+	CONSTRAINT origin CHECK (origin IN ('baseline', 'run', 'reference', 'recovered', 'skipped')),
+	CONSTRAINT outcome CHECK (verdict IN ('keep', 'interesting', 'discard', 'crash')),
+	CONSTRAINT cause CHECK (cause IN ('note', 'moved'))
 );
 CREATE INDEX ix_candidates_campaign_verdict ON candidates (campaign_id, verdict);
 CREATE INDEX ix_candidates_parent ON candidates (parent_id);

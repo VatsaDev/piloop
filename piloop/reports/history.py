@@ -27,6 +27,7 @@ from piloop.config import CampaignConfig, Metric
 from piloop.db.models import Campaign, Candidate, Comment, CommentKind, Idea, count
 from piloop.ids import EvaluatorId, TargetKind, TargetRef
 from piloop.scoring.ledger import fallback_track, keeps, references, score, session_tokens, track_of
+from piloop.scoring.verdict import label
 from piloop.text import NONE, cell, metric
 from piloop.usage import human
 
@@ -217,8 +218,8 @@ def _outcome(s: Session, idea: Idea, primary: Metric, evaluator_id: EvaluatorId 
             best = (value, c, run.base_candidate_id)
     if best is None:  # Every commit crashed in measurement or was skipped (Piloop-Eval: skip).
         c, _ = produced[-1]
-        return f'{c.verdict} (candidate#{c.id})'
+        return f'{label(c)} (candidate#{c.id})'
     value, c, base_id = best
     base = score(s.get_one(Candidate, base_id), evaluator_id, primary)
     delta = f' ({value - base:+g} vs candidate#{base_id})' if base is not None else ''
-    return f'{c.verdict} {metric(value)}{delta} (candidate#{c.id})'
+    return f'{label(c)} {metric(value)}{delta} (candidate#{c.id})'

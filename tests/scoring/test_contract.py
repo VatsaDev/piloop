@@ -12,7 +12,7 @@ import pytest
 from piloop.plugins.metric import Direction
 from piloop.plugins.verdict_rule.bootstrap import RESAMPLES, SEED, Over, compare, lower_bound
 from piloop.plugins.verdict_rule.contract import Criterion
-from piloop.scoring.evaluate import UNITS_SUM_TOLERANCE, parse_metrics, read_units, run_evaluate
+from piloop.scoring.evaluate import UNITS_SUM_TOLERANCE, Failed, Measured, parse_metrics, read_units, run_evaluate
 
 DIFFS = [0.137, -0.052, 0.311, 0.009, -0.274, 0.198, 0.066, -0.013, 0.245, 0.102, -0.087, 0.029]
 
@@ -75,7 +75,11 @@ def test_a_failed_or_incomplete_evaluation_gives_an_error(tmp_path: Path) -> Non
         r = run_evaluate(
             ['sh', '-c', script], cwd=tmp_path, log_dir=tmp_path, timeout=5, required={'errors', 'seconds'}
         )
-        return r.metrics, r.error
+        match r:
+            case Measured(metrics=metrics):
+                return metrics, None
+            case Failed() as failed:
+                return failed.printed, failed.error
 
     assert evaluate('echo METRIC errors=3; echo METRIC seconds=2') == ({'errors': 3.0, 'seconds': 2.0}, None)
     assert evaluate('echo METRIC errors=3; echo boom >&2; exit 1') == ({}, 'evaluate exit 1: boom'), (
