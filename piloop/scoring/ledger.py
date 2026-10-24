@@ -230,13 +230,14 @@ def request_remeasure(s: Session, candidate: Candidate, actor: Actor, repeats: i
     request is the ``RemeasureRequested`` event, and ``requested`` lists it until a newer measurement exists. The
     daemon runs ``repeats`` pairs of the candidate and its bar (``bar_of`` its parent), then judges it again when it is
     ``rejudgeable`` (``RunController.remeasure``). A candidate without a parent, the baseline or a reference, gets
-    ``repeats`` samples alone.
+    ``repeats`` samples alone. A commit that the daemon never measured (``skipped``) gets its first measurement, to
+    isolate a regression to it, say.
 
     Raises:
-        RemeasureRefused: the daemon never measures the candidate (``pending``, ``unmeasured`` or ``recovered``).
+        RemeasureRefused: the candidate is ``pending``: its run measures and judges it.
     """
-    if candidate.verdict in (Verdict.PENDING, Verdict.UNMEASURED, Verdict.RECOVERED):
-        raise RemeasureRefused(f'candidate#{candidate.id} is {candidate.verdict}: the daemon never measures it again')
+    if candidate.verdict is Verdict.PENDING:
+        raise RemeasureRefused(f'candidate#{candidate.id} is pending: the daemon measures and judges it already')
     emit(s, RemeasureRequested(repeats=repeats), TargetRef(TargetKind.CANDIDATE, candidate.id), actor)
 
 
@@ -318,9 +319,12 @@ REJUDGED = (Verdict.CRASH, Verdict.DISCARD, Verdict.INTERESTING)
 def rejudgeable(candidate: Candidate) -> bool:
     """Return whether the daemon judges the candidate again after a measurement by hand.
 
-    Only a candidate of a run, whose verdict is the daemon's and one of ``REJUDGED``. Anyone else's verdict stays.
+    Only a candidate of a run, whose verdict is the daemon's: one of ``REJUDGED``, or a commit that it never measured
+    (``skipped``), which the measurement is the first of. Anyone else's verdict stays.
     """
-    return candidate.run_id is not None and candidate.verdict_by == DAEMON and candidate.verdict in REJUDGED
+    return candidate.run_id is not None and (
+        (candidate.verdict_by == DAEMON and candidate.verdict in REJUDGED) or skipped(candidate)
+    )
 
 
 def rejudges(s: Session, campaign: Campaign) -> list[Candidate]:

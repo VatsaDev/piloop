@@ -229,7 +229,7 @@ demo · head score 3 (candidate#2, +2 vs baseline) · 2 kept / 3 candidates · 4
 - [incident] run#2 failed, 1h ago: failed on script (idea#2): boom
 - [incident] agent_session#2 dead at startup, 1h ago: implementer on script failed to start (5.0s): dialog
 - candidate#3 scored exactly its parent, 1h ago: scored what candidate#2 did on score and on 1 of 1 other metrics; 3.0 min of evaluation
-### Inbox (1 unacknowledged), decisions and escalations
+### Inbox (1 unacknowledged; 1 escalation, the oldest comment#1 1h old), decisions and escalations
 - comment#2 decision on campaign#1 by pi, 1h ago: keep going
 - comment#1 escalation (p1, unacknowledged) on run#2 by watchdog#9, 1h ago: run#2 died in a dialog
 ### Recent events
@@ -515,7 +515,7 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, campai
 - candidate#3 discard 3 (+0), run#1, 0s ago: score 3
 """)
     assert text[text.index('### Inbox') :].split('### Tools')[0] == snapshot("""\
-### Inbox (1 unacknowledged), decisions and escalations
+### Inbox (1 unacknowledged; 1 escalation, the oldest comment#1 1h old), decisions and escalations
 - comment#2 decision on campaign#1 by pi, 1h ago: keep going
 - comment#1 escalation (p1, unacknowledged) on run#2 by watchdog#9, 1h ago: run#2 died in a dialog
 ### Recent events

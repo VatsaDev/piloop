@@ -16,6 +16,7 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from operator import attrgetter
 from pathlib import Path
 from statistics import median
 from typing import assert_never
@@ -732,14 +733,23 @@ def _comments(s: Session, campaign: Campaign, now: datetime) -> list[str]:
         .order_by(Comment.id.desc())
         .limit(COMMENTS_SHOWN)
     ).all()
-    waiting = len(inbox.items(s, campaign_id=campaign.id))
+    waiting = inbox.items(s, campaign_id=campaign.id)
+    asked = [c for c, _ in waiting if c.kind is CommentKind.ESCALATION]
+    # an escalation that waits drops off the newest-first list below when more comments follow it, so count it here
+    oldest = min(asked, key=attrgetter('id'), default=None)
+    escalations = (
+        f'; {len(asked)} escalation{"s" if len(asked) > 1 else ""}, the oldest comment#{oldest.id}'
+        f' {age(oldest.created_at, now)} old'
+        if oldest is not None
+        else ''
+    )
     lines = [
         f'- comment#{c.id} {c.kind}{f" (p{c.priority}, unacknowledged)" if c.priority is not None and c.acked_at is None else ""}'
         f' on {c.target} by {c.author}, {age(c.created_at, now)} ago: {cell(c.body, DETAIL_CHARS)}'
         for c in rows
     ]
     return [
-        f'### Inbox ({waiting} unacknowledged), decisions and escalations',
+        f'### Inbox ({len(waiting)} unacknowledged{escalations}), decisions and escalations',
         *(lines or ['- None.']),
     ]
 

@@ -483,6 +483,10 @@ def test_sql(campaign_path: Path, out) -> None:
         run_cli(['sql', 'SELECT id FROM projects'])
     with pytest.raises(SystemExit, match='^sql error: no such table: nope$'):
         run_cli(['sql', 'SELECT id FROM nope'])
+    with pytest.raises(SystemExit, match=r'^sql error: \.tables is a command of the sqlite3 shell, not SQL: '):
+        run_cli(['sql', ' .tables'])
+    run_cli(['sql', 'PRAGMA table_list'])
+    assert 'campaigns' in out(), 'what the error points to works for an agent'
     many = (
         'WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 501) '
         'INSERT INTO comments (target_kind, target_id, author, kind, body, created_at) '
@@ -776,7 +780,7 @@ def test_candidate_remeasure_asks_the_daemon_to_measure_a_candidate_again_and_re
             1,
             RemeasureRequested(repeats=3),
         )
-        s.add(Candidate(campaign_id=1, commit_sha='0' * 40, tree_sha='1' * 40, verdict=Verdict.UNMEASURED))
+        s.add(Candidate(campaign_id=1, commit_sha='0' * 40, tree_sha='1' * 40, verdict=Verdict.PENDING))
         s.add(Candidate(campaign_id=1, commit_sha='2' * 40, tree_sha='3' * 40, verdict=Verdict.DISCARD, parent_id=1))
         s.commit()
     run_cli(['candidate', 'remeasure', '3', '--repeats', '5'])
@@ -793,7 +797,7 @@ def test_candidate_remeasure_asks_the_daemon_to_measure_a_candidate_again_and_re
         'candidate#1 keep: the daemon measures it 3 times alone once campaign demo is resumed'
         ' (its evaluations are paused); its verdict stays'
     )
-    with pytest.raises(SystemExit, match=r'candidate#2 is unmeasured: the daemon never measures it'):
+    with pytest.raises(SystemExit, match=r'candidate#2 is pending: the daemon measures and judges it already'):
         run_cli(['candidate', 'remeasure', '2'])
     with pytest.raises(SystemExit, match='no candidate#99'):
         run_cli(['candidate', 'remeasure', '99'])

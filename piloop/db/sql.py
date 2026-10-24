@@ -323,6 +323,18 @@ def with_renamed(error: str) -> str:
     return f'{error.rstrip(".")}: `{old}` is `{RENAMED[old]}` since piloop 0.2.0; see {UPGRADE_NOTES}'
 
 
+DOT_COMMAND = (
+    '{command} is a command of the sqlite3 shell, not SQL: `PRAGMA table_list` lists the tables, and'
+    ' `PRAGMA table_info(<table>)` gives the columns of one'
+)
+"""Why a statement that starts with a dot fails. An agent that gets only ``near "."`` opens the file in sqlite3."""
+
+
+def dot_command(sql: str) -> str | None:
+    """Return why ``sql`` is not SQL when it is a command of the sqlite3 shell (``.tables``), else None."""
+    return DOT_COMMAND.format(command=sql.split()[0]) if sql.lstrip().startswith('.') else None
+
+
 def run(con: sqlite3.Connection, sql: str, limit: int = ROW_LIMIT) -> Result:
     """Run one statement. Errors, including denials of the authorizer, are raised as ``sqlite3.Error``."""
     cur = con.execute(sql)

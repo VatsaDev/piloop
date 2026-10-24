@@ -9,7 +9,7 @@ import subprocess
 import threading
 from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import DEFAULT
 
 import pytest
@@ -22,7 +22,7 @@ from pytest_mock import MockerFixture
 from sqlalchemy import func, insert, select
 
 from piloop.actor import System
-from piloop.agents.results import NEVER_WORKED, Ended, Lost, NotStarted, StartupAnomaly
+from piloop.agents.results import NEVER_WORKED, Ended, Lost, NotStarted, PromptOutcome, StartupAnomaly
 from piloop.agents.roles import SQL_HINT
 from piloop.campaign import stop
 from piloop.campaign.campaigns import sync
@@ -41,7 +41,7 @@ from piloop.daemon.run_controller import (
     RunRelaunched,
     run_outcome,
 )
-from piloop.db.events import has, in_order
+from piloop.db.events import emit, has, in_order
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
@@ -1830,23 +1830,37 @@ def test_an_implementer_that_stops_on_its_open_escalation_is_blocked_and_its_ide
         )
 
 
-def test_an_escalation_answered_before_the_implementer_stops_does_not_block_its_run(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+@pytest.mark.parametrize(
+    ('reply', 'blocked'),
+    [
+        pytest.param(None, True, id='acked-without-a-reply'),
+        pytest.param('comment.undelivered', True, id='reply-never-reached-it'),
+        pytest.param('comment.delivered', False, id='reply-read'),
+    ],
+)
+def test_an_escalation_is_answered_once_a_reply_reaches_the_implementer_not_once_it_is_acked(
+    db: Database,
+    campaign: Campaign,
+    runtime: ScriptRuntime,
+    tmp_path: Path,
+    reply: Literal['comment.delivered', 'comment.undelivered'] | None,
+    blocked: bool,
 ) -> None:
+    """An orchestrator acked an escalation and answered it while the implementer was exiting. The answer never reached
+    it, the run ended finished and its idea done, so the answer was lost."""
     run_id = make_run(db, campaign, max_runs=2)
     with db.session() as s:
         idea_id, agent_session_id = run_row(db, run_id).idea_id, s.scalars(select(AgentSession.id)).one()
-        s.add(
-            Comment(
-                target=TargetRef(TargetKind.RUN, run_id),
-                author=f'implementer#{agent_session_id}',
-                kind='escalation',
-                priority=1,
-                body='may I use the cache?',
-                acked_at=utcnow(),
-                acked_by='orchestrator',
-            )
+        escalation = Comment(
+            target=TargetRef(TargetKind.RUN, run_id),
+            author=f'implementer#{agent_session_id}',
+            kind='escalation',
+            priority=1,
+            body='may I use the cache?',
+            acked_at=utcnow(),
+            acked_by='orchestrator',
         )
+        s.add(escalation)
         s.add(
             Comment(
                 target=TargetRef(TargetKind.IDEA, idea_id),
@@ -1856,11 +1870,32 @@ def test_an_escalation_answered_before_the_implementer_stops_does_not_block_its_
                 body='not the implementer',
             )
         )
+        wrap_up = Comment(
+            target=TargetRef(TargetKind.AGENT_SESSION, agent_session_id), author='daemon', kind='note', body='wrap up'
+        )
+        s.add(wrap_up)
+        s.flush()
+        on_agent = TargetRef(TargetKind.AGENT_SESSION, agent_session_id)
+        emit(s, PromptOutcome(kind='comment.delivered', comment=wrap_up.id), on_agent, System.DAEMON)
+        if reply is not None:
+            answer = Comment(
+                target=TargetRef(TargetKind.IDEA, idea_id), author='orchestrator', kind='decision', body='yes'
+            )
+            s.add(answer)
+            s.flush()
+            emit(s, PromptOutcome(kind=reply, comment=answer.id), on_agent, System.DAEMON)
         s.commit()
+        escalation_id = escalation.id
     execute(controller(db, runtime, tmp_path), db, run_id)
-    assert (run_row(db, run_id).status, run_row(db, run_id).error) == (RunStatus.SUCCEEDED, None)
+    run = run_row(db, run_id)
     with db.session() as s:
-        assert s.get_one(Idea, idea_id).status is IdeaStatus.DONE
+        idea = s.get_one(Idea, idea_id).status
+    if blocked:
+        assert (run.end, run.error, idea) == (RunEnd.AWAITING_ANSWER, f'comment#{escalation_id}', IdeaStatus.PARKED), (
+            "an ack is not an answer, nor is the daemon's own note"
+        )
+    else:
+        assert (run.end, run.error, idea) == (RunEnd.FINISHED, None, IdeaStatus.DONE)
 
 
 def test_uncommitted_changes_without_a_finding_are_scored_but_not_an_attempt_that_finished(

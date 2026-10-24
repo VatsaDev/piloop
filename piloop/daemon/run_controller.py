@@ -27,6 +27,7 @@ from piloop.agents.results import (
     HandedOver,
     Lost,
     NotStarted,
+    PromptOutcome,
     Ran,
     record,
 )
@@ -34,7 +35,7 @@ from piloop.agents.roles import compose_brief, role
 from piloop.campaign.campaigns import WORKSPACE, Sources, campaign_dir, checkout_of, record_of, repository, vcs_of
 from piloop.campaign.stop import attempts, park_cancelled, run_cancel
 from piloop.config import TRANSCRIPT, CampaignConfig, Track, config_of
-from piloop.db.events import emit, has, latest
+from piloop.db.events import emit, has, in_order, latest
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
@@ -1298,26 +1299,31 @@ def handed_off(s: Session, run: Run) -> tuple[RunEnd, str | None]:
 
 
 def open_escalation(s: Session, run: Run) -> CommentId | None:
-    """Return the id of the first escalation that an implementer of ``run`` wrote on its run or idea and nobody acknowledged.
+    """Return the id of the first escalation that an implementer of ``run`` wrote on its run or idea and no reply answered.
 
-    The implementer asked for something that it cannot do itself, and the answer has not come. An implementer signs as
-    ``<role>#<id>`` or ``run#<id>``. Escalations of other agents on the same idea do not block the run.
+    The implementer asked for something that it cannot do itself, and the answer has not reached it. An ack is not an
+    answer: an orchestrator can ack and reply while the implementer exits, and the reply then never reaches it. So
+    an escalation is answered when it is acked and a later comment that is not the daemon's reached an agent of the run
+    (``comment.delivered``). An implementer signs as ``<role>#<id>`` or ``run#<id>``. Escalations of other agents on the
+    same idea do not block the run.
     """
-    sessions = s.scalars(select(AgentSession).where(AgentSession.run_id == run.id))
+    sessions = s.scalars(select(AgentSession).where(AgentSession.run_id == run.id)).all()
     signed = [name for w in sessions for name in deprecated.signatures(Agent(role=w.kind, session=w.id))]
     on_idea = Comment.target == TargetRef(TargetKind.IDEA, run.idea_id)
     on_run = Comment.target == TargetRef(TargetKind.RUN, run.id)
-    return s.scalar(
-        select(Comment.id)
+    asked = s.scalars(
+        select(Comment)
         .where(
             on_idea | on_run,
             Comment.kind == CommentKind.ESCALATION,
-            Comment.acked_at.is_(None),
             Comment.author.in_([*signed, f'run#{run.id}']),
         )
         .order_by(Comment.id)
-        .limit(1)
-    )
+    ).all()
+    on_agents = Event.target_kind == TargetKind.AGENT_SESSION, Event.target_id.in_([w.id for w in sessions])
+    read = [p.comment for _, p in in_order(s, PromptOutcome, *on_agents) if p.kind == 'comment.delivered']
+    replies = s.scalars(select(Comment.id).where(Comment.id.in_(read), Comment.author != DAEMON_ACTOR)).all()
+    return next((e.id for e in asked if e.acked_at is None or not any(r > e.id for r in replies)), None)
 
 
 def _requeues(s: Session, idea: Idea) -> int:

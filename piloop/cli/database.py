@@ -44,6 +44,8 @@ def sql_cmd(
         statement = sys.stdin.read()
         if not statement.strip():
             raise SystemExit('piloop sql - read no statement from stdin')
+    if (shell := sql.dot_command(statement)) is not None:
+        raise SystemExit(f'sql error: {shell}')
     common.refuse_other_schema()
     database = common.settings.home / 'piloop.db'
     with closing(sql.connect(database, actor=common.settings.actor)) as con:

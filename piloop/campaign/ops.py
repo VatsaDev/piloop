@@ -252,8 +252,8 @@ class Added:
 def add_measurement(s: Session, candidate_id: CandidateId, report: Report, *, actor: Actor) -> Added:
     """Record ``report`` as a measurement of the candidate under the campaign's current evaluator.
 
-    The daemon judges the candidate again when its verdict is the daemon's ``crash``, ``discard`` or ``interesting`` on
-    a run (``ledger.rejudgeable``), with every measurement under the current evaluator. It does that when it measures
+    The daemon judges the candidate again when its verdict is the daemon's ``crash``, ``discard`` or ``interesting``
+    on a run, or a run's commit that it never measured (``ledger.rejudgeable``), with every measurement under the current evaluator. It does that when it measures
     the campaign again: not while the campaign is paused with its evaluations, or held by its stop rule. Any
     other verdict stays, and a keep's mean, which later runs from it must beat, includes the new measurement. Emits
     ``MeasurementRecorded``, shaped like the daemon's, and the request (``RejudgeRequested``).

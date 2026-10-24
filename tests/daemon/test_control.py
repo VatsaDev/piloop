@@ -16,7 +16,7 @@ from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidat
 from piloop.db.session import Database
 from piloop.ids import CampaignId, TargetKind
 from piloop.plugins.vcs.git import GitRepository
-from piloop.scoring.ledger import DAEMON, RejudgeFailed, head, import_reference, rejudges
+from piloop.scoring.ledger import DAEMON, RejudgeFailed, head, import_reference, rejudges, request_remeasure
 from tests.conftest import HARNESS_WORSE, Gate, ScriptRuntime, write_script
 from tests.daemon.test_run_controller import candidates, controller, execute, make_run
 from tests.daemon.test_scheduler import add_ideas, make_scheduler, measured_by, request_watchdog, statuses
@@ -113,6 +113,58 @@ def test_the_daemon_judges_a_discard_again_with_a_measurement_by_hand(
         trunk = head(s, p)
         assert trunk is not None and trunk.id == worse.id
         assert rejudges(s, p) == [], 'judged since the request'
+    sched.stop(timeout=5)
+
+
+SKIP = '#!/bin/sh\necho a >> solve.txt\ngit commit -qam scaffold -m "Piloop-Eval: skip"\n'
+"""A run whose one commit is marked skip, so the daemon never measures it."""
+
+
+def test_the_daemon_judges_a_skipped_commit_with_a_measurement_by_hand(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """A tree committed with ``Piloop-Eval: skip`` that an orchestrator measured by hand was recorded, never judged."""
+    write_script(Path(campaign.path).parent / 'harness.sh', SKIP)
+    run_id = make_run(db, campaign)
+    execute(controller(db, runtime, tmp_path), db, run_id)
+    with db.session() as s:
+        scaffold_id, verdict = s.execute(
+            select(Candidate.id, Candidate.verdict).where(Candidate.run_id == run_id)
+        ).one()
+        assert verdict is Verdict.UNMEASURED
+        added = ops.add_measurement(
+            s, scaffold_id, ops.Report(metrics={'score': 5.0, 'size': 1.0}), actor=System.ORCHESTRATOR
+        )
+        s.commit()
+    assert added.rejudged and 'judges it' in added.effect
+    sched = make_scheduler(db, runtime, tmp_path)
+    sched.tick()
+    sched.wait()
+    with db.session() as s:
+        assert s.get_one(Candidate, scaffold_id).verdict is Verdict.KEEP, (
+            'against the baseline, as its run would judge it'
+        )
+    sched.stop(timeout=5)
+
+
+def test_a_skipped_commit_is_measured_on_request_and_judged(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """``candidate remeasure`` refused a skipped commit, so isolating a regression to it took a measurement by hand."""
+    write_script(Path(campaign.path).parent / 'harness.sh', SKIP)
+    run_id = make_run(db, campaign)
+    execute(controller(db, runtime, tmp_path), db, run_id)
+    with db.session() as s:
+        scaffold = s.scalars(select(Candidate).where(Candidate.run_id == run_id)).one()
+        request_remeasure(s, scaffold, System.ORCHESTRATOR, repeats=1)
+        s.commit()
+        scaffold_id = scaffold.id
+    sched = make_scheduler(db, runtime, tmp_path)
+    sched.tick()
+    sched.wait()
+    with db.session() as s:
+        again = s.get_one(Candidate, scaffold_id)
+        assert (again.verdict, len(again.measurements)) == (Verdict.KEEP, 1), 'next to its bar, the baseline'
     sched.stop(timeout=5)
 
 

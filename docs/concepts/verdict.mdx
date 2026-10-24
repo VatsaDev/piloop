@@ -158,9 +158,10 @@ piloop candidate remeasure 42
 
 The daemon measures the candidate in pairs with its bar, 3 times each (`--repeats`), with the current evaluator,
 after the head and the bars that runs need. It stops at the first run that fails. A `crash`, `discard` or
-`interesting` that the daemon gave is then judged again on these pairs, as its run would have judged it. A keep, and
-a verdict that someone set, stay. The baseline and a reference have no bar: they run alone. A `pending`, `unmeasured`
-or `recovered` candidate is never measured this way.
+`interesting` that the daemon gave is then judged again on these pairs, as its run would have judged it. So is an
+`unmeasured` or `recovered` commit, which gets its first measurement. A keep, and a verdict that someone set, stay.
+The baseline and a reference have no bar: they run alone. A `pending` candidate is refused: its run measures and
+judges it.
 
 A stopped campaign is measured too, but only what someone asked for, so you can measure a result again when you
 review a campaign. A campaign paused with `--evals`, or held by its stop rule, is measured once the hold ends. The
@@ -211,10 +212,10 @@ piloop measurement add 42 --report report.json
 ```
 
 `report.json` is `{"metrics": {"accuracy": 0.853}, "seconds": 600}`, with the metrics of `piloop.toml`. The
-measurement counts under the current evaluator. When the verdict is the daemon's `crash`, `discard` or `interesting`,
-the daemon judges the candidate again with all its measurements, as its run would have judged it. A keep stays: runs
-started from it as their bar, and they must now beat its new mean. A pending candidate is refused until the daemon
-has judged it.
+measurement counts under the current evaluator. When the verdict is the daemon's `crash`, `discard`, `interesting` or
+`unmeasured` (a commit marked `Piloop-Eval: skip`), the daemon judges the candidate again with all its measurements,
+as its run would have judged it. A keep stays: runs started from it as their bar, and they must now beat its new
+mean. A pending candidate is refused until the daemon has judged it.
 
 ## Notes
 

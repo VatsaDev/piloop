@@ -82,7 +82,8 @@ def candidate_remeasure(
     daemon runs the evaluate command on the candidate and on its bar, one after the other, `--repeats` times, and judges
     a `crash`, `discard` or `interesting` that it gave again on these pairs. A keep, and a verdict that someone set,
     stay. It measures soon, after the head and the bars that runs need, also when the campaign is stopped: not while it
-    is paused with `--evals`, or held by its stop rule. A pending, unmeasured or recovered candidate is never measured.
+    is paused with `--evals`, or held by its stop rule. A commit that the daemon never measured, `unmeasured` or
+    `recovered`, is measured and judged. A pending candidate is refused: its run measures and judges it.
     """
     with common.session() as s:
         candidate = s.get(Candidate, candidate_id)

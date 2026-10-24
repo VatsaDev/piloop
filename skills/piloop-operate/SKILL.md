@@ -228,8 +228,9 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
   the note is queued.
 - A comment on the campaign reaches no implementer. When a decision changes the work of a running implementer, write it on its
   run, not on the campaign.
-- An implementer asks for what it cannot do itself with an escalation. When its run ends before the answer, the run ends
-  `awaiting_answer` and its idea is parked. Answer with a `decision` on the idea, then set it `ready`.
+- An implementer asks for what it cannot do itself with an escalation. When its run ends before your answer reaches it,
+  the run ends `awaiting_answer` and its idea is parked, also when you acked the escalation. The next run reads your
+  `decision` on the idea in its brief: set the idea `ready`.
 
 ### Cancel a run, stop a campaign
 

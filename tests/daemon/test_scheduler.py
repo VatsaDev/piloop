@@ -1350,7 +1350,10 @@ def test_stop_kills_the_evaluator_and_scores_nothing_more(
 ) -> None:
     pid_file = tmp_path / 'evaluator.pid'
     write_toml(Path(campaign.path), HARNESS_TWO_COMMITS)
-    set_config(db, campaign, evaluate=['sh', '-c', f'echo $$ > {pid_file}; exec sleep 30'])
+    # by a rename: `>` creates the file before echo writes it, and the test would read it empty
+    set_config(
+        db, campaign, evaluate=['sh', '-c', f'echo $$ > {pid_file}.part; mv {pid_file}.part {pid_file}; exec sleep 30']
+    )
     scheduler = make_scheduler(db, runtime, tmp_path, tracer)
     add_ideas(db, campaign, 'two commits')
     scheduler.tick()
