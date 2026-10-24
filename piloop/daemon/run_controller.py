@@ -34,7 +34,7 @@ from piloop.agents.roles import compose_brief, role
 from piloop.campaign.campaigns import WORKSPACE, Sources, campaign_dir, checkout_of, record_of, repository, vcs_of
 from piloop.campaign.stop import attempts, park_cancelled, run_cancel
 from piloop.config import TRANSCRIPT, CampaignConfig, Track, config_of
-from piloop.db.events import emit, has
+from piloop.db.events import emit, has, latest
 from piloop.db.models import (
     AgentSession,
     AgentSessionState,
@@ -154,6 +154,13 @@ class RunRelaunched(EventModel):
     agent_session: AgentSessionId
     """The implementer that failed to start."""
     launches: int
+
+
+class RunReceived(EventModel):
+    """The run's versions came into the repo of record, oldest first: what ``resume`` scores after a stop."""
+
+    kind: Literal['run.received'] = 'run.received'
+    revisions: list[Revision]
 
 
 class RunFinished(EventModel):
@@ -454,7 +461,7 @@ class RunController:
     ) -> None:
         """Keep the work of a run that a daemon stop cut (``_keep_cut_work``). The stop writes the rows."""
         cut = not self._left_finding(run_id, idea_id, agent_session_id)  # else the stop closed it as handed off
-        self._keep_cut_work(run_id, name, repo, self._commits(repo, base_sha, commits), cut=cut)
+        self._keep_cut_work(run_id, name, repo, self._commits(run_id, repo, base_sha, commits), cut=cut)
         self._stopped(span, run_id)
 
     def _stopped(self, span: Span, run_id: RunId) -> None:
@@ -481,7 +488,7 @@ class RunController:
     ) -> None:
         """Close the run of an agent that worked (``run_outcome``), score its versions and settle its idea."""
         outcome = ended.process
-        versions = self._commits(repo, base_sha, ended.commits)
+        versions = self._commits(run_id, repo, base_sha, ended.commits)
         finding = self._left_finding(run_id, idea_id, agent_session_id)
         with self._db.session() as s:
             asked = open_escalation(s, s.get_one(Run, run_id))
@@ -577,15 +584,18 @@ class RunController:
                 _requeue(s, run, candidate, RunEnd.DAEMON_STOPPED)
             s.commit()
 
-    def _commits(self, repo: Repository, base_sha: Revision, commits: Transfer | None) -> list[Version]:
+    def _commits(self, run_id: RunId, repo: Repository, base_sha: Revision, commits: Transfer | None) -> list[Version]:
         """Take the run's versions into the repo of record (``Repository.receive``), and return them, oldest first.
 
-        The worker saved the unsaved work first, as a version of its own, so its candidate is ``recovered``
+        They are recorded (``RunReceived``), for ``resume``. The worker saved the unsaved work first, as a version of its own, so its candidate is ``recovered``
         (``_score``).
         """
-        if commits is None:
-            return []
-        return repo.receive(self._cas, commits, base_sha)
+        versions = repo.receive(self._cas, commits, base_sha) if commits is not None else []
+        with self._db.session() as s:
+            received = RunReceived(revisions=[v.revision for v in versions])
+            emit(s, received, TargetRef(TargetKind.RUN, run_id), System.DAEMON)
+            s.commit()
+        return versions
 
     def _campaign(self, campaign_id: CampaignId) -> Campaign:
         """The campaign's row, for ``Sources``, which runs outside every transaction: minutes the first time."""
@@ -600,7 +610,7 @@ class RunController:
     def resume(self, run_id: RunId) -> None:
         """Score the commits of a closed run and settle its idea, after a daemon stopped while it scored them.
 
-        The commits are the ones that ``_score`` pinned. Never raises. If scoring cannot resume, for example because
+        The versions are the ones that the run received (``RunReceived``). Never raises. If scoring cannot resume, for example because
         the repo is gone, the run settles as failed. The idea then goes back to the queue if it has attempts left.
         """
         with self._tracer.span('piloop.resume', run=run_id) as span:
@@ -609,10 +619,14 @@ class RunController:
                 campaign = run.idea.campaign
                 end, idea_id, campaign_id = run.end, run.idea_id, campaign.id
                 name, vcs, campaign_path = config_of(campaign).name, vcs_of(campaign), Path(campaign.path)
+                received = latest(s, RunReceived, Event.target == TargetRef(TargetKind.RUN, run_id))
             last = None
             try:
                 repo = vcs.open(campaign_path)
-                versions = repo.kept(name, run_id)
+                if received is not None:
+                    versions = [repo.version(revision) for revision in received[1].revisions]
+                else:
+                    versions = _kept(repo, name, run_id)
                 span.set(commits=len(versions))
                 last = self._score(run_id, campaign_id, repo, versions, self._runs_dir / str(run_id))
             except Exception as e:
@@ -1356,6 +1370,12 @@ def branches(campaign: Campaign, pinned: Candidate | None, computed: Candidate |
     if bar_of(pinned).id == computed.id:
         return False
     return not repository(campaign).contains(Revision(pinned.commit_sha), Revision(computed.commit_sha))
+
+
+@deprecated.until('0.4.0', 'a run that a daemon before 0.3.0 received has no RunReceived: delete Repository.kept')
+def _kept(repo: Repository, name: str, run_id: RunId) -> list[Version]:
+    """The versions of a run that a daemon before 0.3.0 kept, which recorded no ``RunReceived``."""
+    return repo.kept(name, run_id)
 
 
 def commits_of(run_id: RunId) -> Commits:

@@ -25,6 +25,7 @@ from piloop.plugins.vcs.contract import (
     Fetch,
     Keep,
     NotARepository,
+    Part,
     RebaseVersion,
     ReferenceVersion,
     Repository,
@@ -46,6 +47,8 @@ NOTE = 'Piloop-Note'
 """The trailer of a note on a commit, applied when it is judged."""
 RECOVERED = 'Piloop-Recovered'
 """The trailer of the commit that ``capture`` makes of what an agent left uncommitted: ``Piloop-Recovered: run#<id>``."""
+PROMPTS = Path(__file__).parent / 'prompts'
+"""What the built-in prompts say about each ``Part``, one file each."""
 FETCHED = 'refs/piloop/fetched/'
 """Where a clone pins each commit that came as a bundle: it stays, and the next fetch names it as a commit it has."""
 
@@ -203,6 +206,10 @@ class Git(Vcs):
     def changed(self, path: Path, ignore: Sequence[str]) -> bool:
         """A commit or a reset moved HEAD (the reflog has more than one entry), or the worktree is dirty."""
         return git.changed(path, list(ignore))
+
+    def prompt(self, part: Part) -> str:
+        """The text of ``prompts/<part>.md``."""
+        return (PROMPTS / f'{part}.md').read_text().removesuffix('\n')
 
     @classmethod
     def checks(cls) -> list[Check]:

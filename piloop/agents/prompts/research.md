@@ -10,7 +10,7 @@ The Context's "Why this agent started" line says why the sweep started, not what
 
 - Start from the newest loss table for the head under `./workspace/research/`. The head is the latest trunk keep.
 - If the head did not move and no data arrived since the table was written, use it as it is.
-- Otherwise, update it. Every candidate's commit is in your cwd (`git diff <base> <sha>`). Run cheap analyses, a few
+- Otherwise, update it. {vcs:read} Run cheap analyses, a few
   minutes of compute, on the data the brief allows, never on the scored panel's labels. Save the table as a short
   markdown file named with the date and the candidate.
 
@@ -44,7 +44,7 @@ expected gain uses a slot and does not keep.
 Where the gains come from:
 
 - Interesting candidates and branch keeps whose change the head does not have: port it onto the head
-  (`git diff <parent> <sha>`). Changes whose gains are in different loss buckets stack best.
+  {vcs:port}. Changes whose gains are in different loss buckets stack best.
 - The biggest loss buckets, and the mechanism that loses them.
 - What just changed: a new keep, new data, a finding nobody followed up.
 - Removals: a component of the head that costs more than it earns.

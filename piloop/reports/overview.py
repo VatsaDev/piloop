@@ -57,6 +57,7 @@ from piloop.db.models import (
 from piloop.ids import AgentSessionId, CampaignId, EvaluatorId, TargetKind, TargetRef
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import Files
+from piloop.plugins.vcs.contract import VCS, prompted
 from piloop.reports.history import IDEAS_IN_HISTORY
 from piloop.runtime.factory import handle_for, runtime_for
 from piloop.scoring.ledger import (
@@ -162,7 +163,7 @@ def overview(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime,
         _events(s, campaign, now),
     ]
     if tools:
-        sections += ['### Tools', *TOOLS, *_schema()]
+        sections += ['### Tools', *(prompted(line, VCS.selected(cfg.plugins)) for line in TOOLS), *_schema()]
     return '\n'.join(sections) + '\n'
 
 
@@ -750,8 +751,7 @@ TOOLS = [
     f' `piloop history` prints the latest {IDEAS_IN_HISTORY} ideas with their outcomes.',
     f'- Transcripts: `<runs.log_dir>/{TRANSCRIPT}` (an implementer), `<agent_sessions.log_dir>/{TRANSCRIPT}` and `brief.md`'
     " beside it (any agent); the whole session: the harness's own file, `json_extract(agent_sessions.usage, '$.source')`.",
-    '- Code: `git -C <repo> show <candidates.commit_sha>`; a candidate against its parent:'
-    ' `git -C <repo> diff <parent commit_sha> <commit_sha>`.',
+    '{vcs:code}',
     "- Who changed what: `SELECT at, actor, kind, payload FROM events WHERE target_kind='idea' AND target_id=12`.",
     '- Full-text search: `ideas_fts` (title, hypothesis, plan), `comments_fts` (body); see the procedures above.',
     '- Tables and columns:',

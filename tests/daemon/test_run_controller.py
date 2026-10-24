@@ -7,6 +7,7 @@ import re
 import sqlite3
 import subprocess
 import threading
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 from unittest.mock import DEFAULT
@@ -302,6 +303,7 @@ def test_successful_run_scores_the_commit(
             'lease.queued',
             'agent_session.finished',
             'agent_session.job_ended',
+            'run.received',
             'run.finished',
             'lease.queued',
             'measurement.recorded',
@@ -3084,3 +3086,41 @@ def reflinks(tmp_path: Path) -> bool:
     except OSError:
         return False
     return True
+
+
+@pytest.mark.parametrize('recorded', [True, False], ids=['received', 'before-0.3.0'])
+def test_a_resumed_run_scores_the_versions_that_it_received(
+    db: Database,
+    campaign: Campaign,
+    runtime: ScriptRuntime,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    recorded: bool,
+) -> None:
+    """A stop during scoring leaves the run's versions recorded: the next daemon scores them, whatever refs say.
+
+    A run that a daemon before 0.3.0 received has no ``RunReceived``: its versions are the ones that the vcs kept.
+    """
+    run_id = make_run(db, campaign)
+    ex = controller(db, runtime, tmp_path)
+    measure = ex._measure
+
+    def stopped(*args: object, **kwargs: object) -> bool:
+        return False  # what a stop does to the evaluation in flight
+
+    monkeypatch.setattr(ex, '_measure', stopped)
+    execute(ex, db, run_id)
+    with db.session() as s:
+        [pending] = s.scalars(select(Candidate.verdict).where(Candidate.run_id == run_id)).all()
+    assert pending is Verdict.PENDING
+    repo = Repo(campaign.path)
+    if recorded:
+        for ref in repo.git.for_each_ref('--format=%(refname)', f'refs/piloop/demo/r{run_id}/').split():
+            repo.git.update_ref('-d', ref)
+    else:
+        with closing(sqlite3.connect(db.engine.url.database or '')) as con, con:
+            con.execute("DELETE FROM events WHERE kind = 'run.received'")
+    monkeypatch.setattr(ex, '_measure', measure)
+    ex.resume(run_id)
+    [scored] = candidates(db, run_id)
+    assert scored.verdict is Verdict.KEEP

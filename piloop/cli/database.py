@@ -16,6 +16,7 @@ from piloop.campaign.archive import ManifestNotMigrated, migrate_manifests
 from piloop.cli import common
 from piloop.db import sql
 from piloop.db.session import Database, backups, revision
+from piloop.plugins.vcs.contract import VCS, prompted
 
 ORCHESTRATOR_PROCEDURES = 'sql_orchestrator.md'
 """The procedures in ``PROMPTS`` that ``schema`` adds for the orchestrator. No brief has them."""
@@ -65,8 +66,14 @@ def sql_cmd(
 
 
 def schema() -> None:
-    """Print the guide to the database: what `piloop sql` accepts, every procedure, and every table."""
-    procedures = '\n\n'.join((PROMPTS / name).read_text().strip() for name in (PROCEDURES, ORCHESTRATOR_PROCEDURES))
+    """Print the guide to the database: what `piloop sql` accepts, every procedure, and every table.
+
+    The procedures say what the default vcs provider writes in a brief: no campaign chooses one here.
+    """
+    vcs = VCS.selected({})
+    procedures = '\n\n'.join(
+        prompted((PROMPTS / name).read_text().strip(), vcs) for name in (PROCEDURES, ORCHESTRATOR_PROCEDURES)
+    )
     text = f'{procedures}\n\n## Schema\n\n```sql\n{sql.schema_ddl()}\n```'
     common.console.print(text, markup=False, highlight=False, soft_wrap=True)
 

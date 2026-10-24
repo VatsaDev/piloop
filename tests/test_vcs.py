@@ -1,9 +1,16 @@
 """The vcs seam: core reaches git only through the contract, so the ``git`` provider is the only code that runs it."""
 
 import ast
+import hashlib
 from pathlib import Path
 
+import pytest
+
 import piloop
+from piloop.agents.roles import PROMPTS
+from piloop.plugins.vcs.contract import PART, VCS, Part, prompted
+from piloop.plugins.vcs.git import PROMPTS as GIT_PROMPTS
+from piloop.reports.overview import TOOLS
 
 ROOT = Path(piloop.__file__).parent
 PROVIDER = ROOT / 'plugins' / 'vcs' / 'git'
@@ -65,3 +72,36 @@ def test_the_allowed_files_still_need_their_exception() -> None:
     for rel in ALLOWED:
         tree = ast.parse((ROOT / rel).read_text())
         assert any(map(_git, _imports(tree))) or _git_argv(tree), f'{rel} no longer reaches git: delete it from ALLOWED'
+
+
+BEFORE = {
+    'TOOLS.txt': '66fdaa7a94533bed170a1cf9205102d2fcd8565f8d6ec4e8b252ce3cc4233d4e',
+    'implementer.md': '5d886da05bcee55fb5c87b48df3f69e3b7e08973213322a7f1874c2623de1b2d',
+    'research.md': '9e6c8f3071daf8cd35475ce2bc3645d7161650acd1591828328a7b30a012e680',
+    'scout.md': '93b669faacc78e1333b5bd71e875e1369923781ff820d30ec5e7bbcd48f38947',
+    'sql_orchestrator.md': 'a0ef82bf1adf3b4d7bea60262070ad60db70558bb41adc2b0560661254a3bb42',
+    'sql_procedures.md': '75c0974dca5fd2fbad83384b186a3bf29ccabb93a918112140a26bda50ebd7c1',
+    'watchdog.md': '2278c57e18f1bbfb79f4a4a0f567465141f755acdefd6e38e22a14f4d18fbad1',
+    'watchdog_incident.md': '9b3ed86a60bbef091f7327f5c21e1d70be5ab8d97fe6170289b797a35c3d0870',
+    'watchdog_progress.md': '3a717f95296438d6efe4dc5fd995293bd05bcdc69fdafadb6c6334abf3c5aa53',
+}
+"""The SHA-256 of each built-in prompt, and of the tools of the context, before the ``git`` provider wrote its parts."""
+
+
+def test_the_git_provider_writes_the_built_in_prompts_byte_for_byte_as_they_were() -> None:
+    """Moving the git parts into the provider changed no brief. Edit a prompt on purpose: update its line."""
+    vcs = VCS.selected({})
+    rendered = {p.name: prompted(p.read_text(), vcs) for p in PROMPTS.glob('*.md')}
+    rendered['TOOLS.txt'] = '\n'.join(prompted(line, vcs) for line in TOOLS)
+    assert {name: hashlib.sha256(text.encode()).hexdigest() for name, text in rendered.items()} == BEFORE
+
+
+def test_each_part_is_in_a_built_in_prompt_and_the_git_provider_writes_each() -> None:
+    texts = '\n'.join([*(p.read_text() for p in PROMPTS.glob('*.md')), *TOOLS])
+    assert set(PART.findall(texts)) == set(Part), 'a part that no prompt has is dead'
+    assert {p.stem for p in GIT_PROMPTS.glob('*.md')} == set(Part)
+
+
+def test_a_prompt_that_names_a_part_that_there_is_not_is_refused() -> None:
+    with pytest.raises(ValueError, match="'nope' is not a valid Part"):
+        prompted('{vcs:nope}', VCS.selected({}))

@@ -15,6 +15,7 @@ from piloop.config import BRIEF_FILE, CampaignConfig, Track, config_of
 from piloop.db.models import AgentSession, Campaign
 from piloop.ids import RoleName
 from piloop.plugins.role.contract import Files, SweepRole
+from piloop.plugins.vcs.contract import VCS, prompted
 
 PROMPTS = Path(__file__).resolve().parent / 'prompts'
 PROCEDURES = 'sql_procedures.md'
@@ -141,14 +142,15 @@ def compose_brief(
     cfg = config_of(campaign)
     addendum = cfg.role(role.kind).addendum
     follows = role.incident if incident else role.routine
+    vcs = VCS.selected(cfg.plugins)
     parts = [
-        role.prompt.read_text().rstrip(),
-        follows.read_text().rstrip() if follows is not None else '',
+        prompted(role.prompt.read_text().rstrip(), vcs),
+        prompted(follows.read_text().rstrip(), vcs) if follows is not None else '',
         wake.rstrip(),
         (repo / BRIEF_FILE).read_text().rstrip(),
         (repo / addendum).read_text().rstrip() if addendum else '',
         (repo / track.addendum).read_text().rstrip() if track is not None and track.addendum else '',
-        (PROMPTS / PROCEDURES).read_text().rstrip(),
+        prompted((PROMPTS / PROCEDURES).read_text().rstrip(), vcs),
         '\n'.join(
             [
                 '# Context',

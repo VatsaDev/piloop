@@ -84,4 +84,5 @@ from piloop.plugins.network.https import Https, HttpsNetwork
 from piloop.plugins.vcs.contract import VCS, Vcs, Repository, Version, Revision, Conflicts, Transfer, Fetch
 from piloop.plugins.vcs.contract import Keep, RunVersion, RebaseVersion, ReferenceVersion
 from piloop.plugins.vcs.contract import VcsError, NotARepository, UnknownRevision
+from piloop.plugins.vcs.contract import Part
 from piloop.plugins.vcs.git import Git, GitRepository

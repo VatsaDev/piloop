@@ -25,9 +25,9 @@ piloop idea status 12 parked --reason 'waits for idea#9, see comment#31'
 
 ## The model
 
-- A **campaign** is a git repo with a `piloop.toml`.
+- A **campaign** is {vcs:repo} with a `piloop.toml`.
 - **Ideas** are things worth trying. When an idea is `ready`, the scheduler creates a **run**: one attempt, on one
-  harness and model. It starts an **implementer** process in a fresh git worktree at the run's base **candidate**.
+  harness and model. It starts an **implementer** process in {vcs:checkout} at the run's base **candidate**.
   `runs.end` says how a finished run ended, and `runs.error` gives the detail. Only `finished`, `failed`, `timed_out`
   and `awaiting_answer` count as attempts: `cancelled`, `campaign_stopped`, `daemon_stopped`, `stale`, `worker_lost`,
   `role_removed` and `not_started` say that something else ended the run.
@@ -35,15 +35,13 @@ piloop idea status 12 parked --reason 'waits for idea#9, see comment#31'
   - `after`: the idea waits for its prerequisites. It stays `ready` but is not taken until all of them are `done`. Then
     it starts from the head, which has what they kept.
   - `supersedes`: the idea is a sharper version of older ideas. The daemon rejects the older ones that never ran.
-- The implementer commits. Every new commit becomes a candidate: a distinct state of the code, identified by its git tree.
-  A commit that reverts to a known state *is* that candidate.
+- {vcs:versions}
 - The daemon scores each new candidate with the campaign's **evaluator** into a **measurement** (metrics, or an
   error). The evaluator is the evaluate command and the metric definitions as of the last config sync. A change makes
   a new evaluator row. A candidate can have many measurements: repeats, or a newer evaluator.
 - A candidate's **verdict** (`keep`, `interesting`, `discard` or `crash`) is the daemon's judgement of its mean score
   against its bar. The bar is the run's last keep, starting at its base. The orchestrator or a human may override it.
-  A commit marked `Piloop-Eval: skip` is `unmeasured`: no judgement at all. What an implementer left uncommitted when it
-  stopped is `recovered`: committed by the daemon, never measured; if the run did not finish, a new run starts from it.
+  {vcs:skip}
 - Every run that pins no base starts from the **head**: the latest *trunk keep*, which is a keep that no branch run
   made. So the trunk is a chain of keeps.
 - A candidate that keeps against its bar after the head moved on (another run kept meanwhile) is not kept. It is
@@ -127,7 +125,7 @@ ORDER BY bm25(ideas_fts) LIMIT 20;
 
 - An implementation to copy, from any campaign: drop the `p.repo` filter, keep what kept or was noted (`JOIN runs r ON
   r.idea_id = i.id JOIN candidates c ON c.run_id = r.id WHERE c.verdict IN ('keep', 'interesting')`) and select
-  `p.path, c.commit_sha`. Then `git -C <path> show <commit_sha>`.
+  `p.path, c.commit_sha`. {vcs:show}
 - How a past idea was worked: `SELECT w.id, json_extract(w.usage, '$.source'), w.log_dir FROM agent_sessions w JOIN
   runs r ON r.id = w.run_id WHERE r.idea_id = <idea>`. The source is the harness's own file of the session.
   `<log_dir>/transcript.txt` is its screen. An archived workspace can be

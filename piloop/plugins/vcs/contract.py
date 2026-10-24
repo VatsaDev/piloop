@@ -11,9 +11,11 @@ between machines through the CAS (``Transfer``).
 Like Jujutsu's ``Backend`` and Sapling's storage: core asks the contract for versions, never the tool behind it.
 """
 
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import NewType, Protocol
 
@@ -92,6 +94,36 @@ type Keep = RunVersion | RebaseVersion | ReferenceVersion
 type Fetch = Callable[[Sequence[Revision], Sequence[Revision]], Cid | None]
 """Ask the repo of record to put what ``revisions`` have beyond the revisions that a clone has into the CAS, and return
 its address (``Repository.send``). None: nothing is missing."""
+
+
+class Part(StrEnum):
+    """A part of the built-in prompts that the vcs provider writes, where a prompt has ``{vcs:<part>}``."""
+
+    REPO = 'repo'
+    """What a campaign's files are kept in."""
+    CHECKOUT = 'checkout'
+    """What an implementer works in."""
+    SAVE = 'save'
+    """The implementer's section on how to save its work, and what of it is scored."""
+    VERSIONS = 'versions'
+    """How saved versions become candidates."""
+    SKIP = 'skip'
+    """How a version asks not to be measured, and what happens to unsaved work."""
+    EARLIER = 'earlier'
+    """The implementer's section on how to read earlier candidates."""
+    OLD_FILES = 'old_files'
+    """How to read an older file without copying the tree."""
+    SHOW = 'show'
+    """How to read a candidate of another campaign, at ``<path>``."""
+    READ = 'read'
+    """How the research agent reads a candidate against its base."""
+    PORT = 'port'
+    """How to read a candidate's change against its parent, to port it."""
+    CODE = 'code'
+    """The tool line on how to read a candidate's code."""
+
+
+PART = re.compile(r'\{vcs:(\w+)\}')
 
 
 class VcsError(Exception):
@@ -229,10 +261,27 @@ class Vcs(Parameters, ABC):
         False when there is no checkout there.
         """
 
+    @abstractmethod
+    def prompt(self, part: Part) -> str:
+        """What the built-in prompts say about ``part`` for this provider (``prompted``)."""
+
     @classmethod
     @abstractmethod
     def checks(cls) -> list[Check]:
         """Check that the provider can work on this machine. ``piloop doctor`` shows the result. Read only."""
+
+
+def prompted(text: str, vcs: Vcs) -> str:
+    """``text`` with each ``{vcs:<part>}`` replaced by what ``vcs`` writes for that part (``Vcs.prompt``).
+
+    Raises:
+        ValueError: ``text`` names a part that there is not.
+    """
+
+    def part(found: re.Match[str]) -> str:
+        return vcs.prompt(Part(found[1]))
+
+    return PART.sub(part, text)
 
 
 VCS = Capability('vcs', Vcs, choice=Choice(Scope.CAMPAIGN, default='git'), group='piloop.vcs', noun='vcs provider')
