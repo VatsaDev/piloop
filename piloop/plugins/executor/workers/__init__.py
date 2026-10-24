@@ -2,7 +2,8 @@
 
 ``[plugins.executor]`` in ``config.toml`` selects it (the default) and sets its fields (``Workers``). Its worker in
 ``piloop serve`` takes the leases of the pool ``serve``. A worker on another machine (``piloop worker --server``) takes
-those of its pool, through the same lease operations over HTTP (``piloop.plugins.executor.kit.remote``).
+those of its pool, through the same lease operations over HTTP (``piloop.plugins.executor.kit.remote``). A pool with a
+provisioner gets its workers started and stopped on demand (``piloop.plugins.executor.kit.scaling``).
 """
 
 import threading
@@ -19,7 +20,7 @@ from pydantic import Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop.db.models import LIVE_LEASES, Lease, LeaseKind, LeaseWorker
+from piloop.db.models import LIVE_LEASES, Lease, LeaseKind, LeaseWorker, WorkerInstance, WorkerInstanceState
 from piloop.net import Route
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import Cas
@@ -35,11 +36,12 @@ from piloop.plugins.executor.contract import (
     Prompt,
 )
 from piloop.plugins.executor.kit import jobs
-from piloop.plugins.executor.kit.capacity import HostSample, Pool
+from piloop.plugins.executor.kit.capacity import HostSample, Pool, Provisioner
 from piloop.plugins.executor.kit.client import Local
 from piloop.plugins.executor.kit.leases import DEFAULT_POOLS, SERVE, Leases, Timing
 from piloop.plugins.executor.kit.relay import Relay, Runner
 from piloop.plugins.executor.kit.remote import Remote, lease_routes
+from piloop.plugins.executor.kit.scaling import Scaler
 from piloop.plugins.executor.workers.worker import Worker
 
 
@@ -99,6 +101,10 @@ class WorkersExecutor:
             runtime_factory=host.runtimes,
         )
         """The worker inside ``piloop serve``, in the pool ``serve``."""
+        self.scaler = Scaler.of(
+            host.db, lambda: self.leases.pools, host.network, host.tracer, timing, host.home, _worker_argv
+        )
+        """Starts and stops the workers of the pools that have a provisioner."""
 
     def configure(self, config: Workers) -> None:
         """Take the pools with the live limits applied: the next ``acquire`` and ``capacity`` read them."""
@@ -134,8 +140,9 @@ class WorkersExecutor:
         return lease_routes(self.leases, self._changed, self._cas, self._send, self._cli)
 
     def tick(self, now: datetime) -> datetime | None:
-        """Expire the leases of a silent worker (``Leases.expire``), and return the next expiry."""
-        return self.leases.expire(now)
+        """Expire the leases of a silent worker (``Leases.expire``), scale the provisioned pools, and return when next."""
+        due = [d for d in (self.leases.expire(now), self.scaler.tick(now)) if d is not None]
+        return min(due, default=None)
 
     def stop(self, timeout: float) -> None:
         """End the agent leases that no worker took, stop the worker's jobs, and wait for their reports.
@@ -148,26 +155,47 @@ class WorkersExecutor:
         self.worker.join(timeout)
         self.worker.stop()
         self.leases.end_unreported()
+        self.scaler.join(timeout)
 
     def hand_over(self) -> None:
         self.worker.hand_over()
+        self.scaler.join(self.leases.timing.renew)  # the next daemon process lists the instances again
 
     def close(self) -> None:
         """Nothing to release: the worker's threads end with the daemon process."""
 
 
+def _worker_argv(server: str, pool: str, policy: Provisioner) -> list[str]:
+    """What a provisioned instance runs: ``piloop worker`` of ``pool``, on ``server``."""
+    once = ['--once'] if policy.once else []
+    orphan = policy.orphan_exit_seconds
+    idle = ['--orphan-exit', f'{orphan:g}'] if orphan is not None else []
+    return ['piloop', 'worker', '--server', server, '--pool', pool, *once, *idle]
+
+
 def remote_worker(
-    http: httpx.Client, stop: threading.Event, tracer: Tracer, home: Path, cas: Cas, pool: str, reserve: int
+    http: httpx.Client,
+    stop: threading.Event,
+    tracer: Tracer,
+    home: Path,
+    cas: Cas,
+    pool: str,
+    reserve: int,
+    *,
+    once: bool = False,
+    orphan_exit: float | None = None,
 ) -> Worker:
     """A worker on this machine that takes the leases of ``pool`` from a server through ``http`` (``piloop worker``).
 
     It reads and writes ``cas``, the CAS that the server shares, and keeps clones of its own. After each job it keeps
     ``reserve`` bytes free on its home's disk (``Site.evict_inputs``). Its calls give up trying
-    again once ``stop`` is set. Its agents' ``piloop`` calls go to the server through it (``relay``).
+    again once ``stop`` is set. Its agents' ``piloop`` calls go to the server through it (``relay``). With ``once``, it
+    takes one lease and ends once it reported. With ``orphan_exit``, it ends after that many seconds without an answer of the server.
     """
     client = Remote(http, stop, tracer)
     site = jobs.remote_site(home, cas, client.send, reserve)
-    return Worker(client, tracer, site, pool=pool, relay=Relay(home, client.cli))
+    relay = Relay(home, client.cli)
+    return Worker(client, tracer, site, pool=pool, relay=relay, once=once, orphan_exit=orphan_exit)
 
 
 @dataclass(frozen=True)
@@ -191,3 +219,9 @@ def seen(s: Session) -> list[Seen]:
         )
         for row in s.scalars(select(LeaseWorker).order_by(LeaseWorker.id))
     ]
+
+
+def instances(s: Session) -> Sequence[WorkerInstance]:
+    """The workers that a provisioner started and that have not ended, oldest first."""
+    live = WorkerInstance.state != WorkerInstanceState.ENDED
+    return s.scalars(select(WorkerInstance).where(live).order_by(WorkerInstance.id)).all()

@@ -57,7 +57,7 @@ CREATE TABLE comments (
 	CONSTRAINT escalation_needs_priority CHECK (kind != 'escalation' OR priority IS NOT NULL),
 	CONSTRAINT "comments.author must be a text value" CHECK (typeof(author) IN ('text')),
 	CONSTRAINT "comments.body must be a text value" CHECK (typeof(body) IN ('text')),
-	CONSTRAINT targetkind CHECK (target_kind IN ('campaign', 'idea', 'run', 'candidate', 'measurement', 'agent_session', 'comment')),
+	CONSTRAINT targetkind CHECK (target_kind IN ('campaign', 'idea', 'run', 'candidate', 'measurement', 'agent_session', 'comment', 'instance')),
 	CONSTRAINT commentkind CHECK (kind IN ('note', 'finding', 'decision', 'escalation'))
 );
 CREATE INDEX ix_comments_inbox ON comments (priority, id) WHERE priority IS NOT NULL AND acked_at IS NULL;
@@ -71,7 +71,7 @@ CREATE TABLE events (
 	target_id INTEGER NOT NULL,
 	payload JSON NOT NULL,
 	PRIMARY KEY (id),
-	CONSTRAINT targetkind CHECK (target_kind IN ('campaign', 'idea', 'run', 'candidate', 'measurement', 'agent_session', 'comment'))
+	CONSTRAINT targetkind CHECK (target_kind IN ('campaign', 'idea', 'run', 'candidate', 'measurement', 'agent_session', 'comment', 'instance'))
 );
 CREATE INDEX ix_events_target ON events (target_kind, target_id, id);
 CREATE TABLE journal (
@@ -92,11 +92,12 @@ CREATE TABLE lease_workers (
 	seen_at DATETIME NOT NULL,
 	no_lease VARCHAR(16),
 	cursor INTEGER DEFAULT 0 NOT NULL,
+	drained_at DATETIME,
 	PRIMARY KEY (id),
 	CONSTRAINT "lease_workers.id must be a text value" CHECK (typeof(id) IN ('text')),
 	CONSTRAINT "lease_workers.pool must be a text value" CHECK (typeof(pool) IN ('text')),
 	CONSTRAINT "lease_workers.version must be a text value" CHECK (typeof(version) IN ('text')),
-	CONSTRAINT nolease CHECK (no_lease IN ('memory', 'load', 'slots', 'nothing', 'unreachable'))
+	CONSTRAINT nolease CHECK (no_lease IN ('draining', 'memory', 'load', 'slots', 'nothing', 'unreachable'))
 );
 CREATE TABLE limits (
 	"key" VARCHAR NOT NULL,
@@ -120,6 +121,24 @@ CREATE TABLE tokens (
 	CONSTRAINT tokenscope CHECK (scope IN ('worker')),
 	UNIQUE (sha256)
 );
+CREATE TABLE worker_instances (
+	id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+	name VARCHAR NOT NULL,
+	pool VARCHAR NOT NULL,
+	state VARCHAR(16) DEFAULT 'starting' NOT NULL,
+	handle JSON DEFAULT '{}' NOT NULL,
+	requested_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+	registered_at DATETIME,
+	ended_at DATETIME,
+	"end" VARCHAR(16),
+	CONSTRAINT "worker_instances.an ended one says why" CHECK ((state = 'ended') = ("end" IS NOT NULL)),
+	CONSTRAINT "worker_instances.name must be a text value" CHECK (typeof(name) IN ('text')),
+	CONSTRAINT "worker_instances.pool must be a text value" CHECK (typeof(pool) IN ('text')),
+	UNIQUE (name),
+	CONSTRAINT workerinstancestate CHECK (state IN ('starting', 'running', 'draining', 'ended')),
+	CONSTRAINT instanceend CHECK ("end" IN ('drained', 'register_timeout', 'start_refused', 'lost', 'gone'))
+);
+CREATE INDEX ix_worker_instances_state ON worker_instances (state);
 CREATE TABLE archives (
 	id INTEGER NOT NULL,
 	campaign_id INTEGER NOT NULL,

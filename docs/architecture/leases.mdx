@@ -81,6 +81,15 @@ piloop limits unset executor.pools.serve.evaluations
 `piloop worker` takes the leases of its pool over HTTPS. It reads and writes the CAS itself, and keeps clones of the
 campaign's repo under its home, filled from the CAS. [Workers on other machines](/guides/remote-workers) sets one up.
 
+## Workers that the server starts
+
+A pool with a **provisioner** starts its own workers when jobs wait, and stops them when they idle. The pool counts
+the slots of its `max` workers, so its jobs wait on leases, and each waiting lease that no free slot takes starts a
+worker. One that held no lease for `idle_seconds` is drained: it takes no more jobs, and the server stops it once it
+holds none. One that cannot reach its server for `orphan_exit_seconds` exits by itself once it holds no job, so it never
+outlives a stopped server.
+[Workers that the server starts](/guides/remote-workers#workers-that-the-server-starts) sets a pool up.
+
 ## Faults
 
 | What happens | What piloop does |
@@ -95,3 +104,7 @@ campaign's repo under its home, filled from the CAS. [Workers on other machines]
 | An agent runs `piloop` after its lease ended | The call is refused. |
 | The machine sleeps | A gap longer than the grace period is the daemon's own absence: nothing expires. |
 | `piloop serve` restarts | Its worker finds its leases again and re-attaches to each agent whose worktree is there. |
+| A started worker does not register within `register_seconds` | It is stopped, and the pool waits 30 s, doubling to 10 minutes, before it starts another. |
+| The platform refuses a start: a quota, no GPU | The pool backs off the same way. Three refusals in a row are an escalation in the inbox. |
+| The platform loses a worker, or it goes silent | It is stopped. Its jobs come back as for any lost worker, and the pool starts another if they still wait. |
+| The platform has a worker that the server has no record of | It is stopped. Two servers on one account never stop each other's: each tags its own. |

@@ -111,6 +111,7 @@ HOST_CONTRACTS = {
     'role': 'a role holds trigger objects and names a runtime',
     'executor': 'runs jobs on machines, and applies their results to the database through Results',
     'network': 'binds a socket, and makes HTTP clients',
+    'provisioner': 'starts and stops machines on a platform',
     'vcs provider': 'runs the version control tool on checkouts, and moves versions through the CAS',
 }
 """The capabilities whose contract passes live objects of the host, and why. Every other one is pure."""

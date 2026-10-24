@@ -24,6 +24,7 @@ from piloop.actor import System
 from piloop.agents.results import CampaignResults, DaemonStopped, Ended, Lost, NotStarted, PromptOutcome, Ran
 from piloop.campaign.campaigns import checkout_of, record_of
 from piloop.daemon.run_controller import RunController
+from piloop.db import feed
 from piloop.db.events import emit, in_order
 from piloop.db.models import (
     AgentSession,
@@ -34,6 +35,7 @@ from piloop.db.models import (
     Event,
     Lease,
     LeaseState,
+    LeaseWorker,
     Measurement,
     Run,
     RunStatus,
@@ -47,6 +49,7 @@ from piloop.plugins.executor.contract import (
     AgentKey,
     AgentReport,
     Commits,
+    EvaluationJob,
     EvaluationReport,
     MissingBlobs,
     Prompt,
@@ -59,6 +62,7 @@ from piloop.plugins.executor.kit.jobs import local_site, remote_site, send_of_re
 from piloop.plugins.executor.kit.leases import (
     SERVE,
     Answer,
+    Drain,
     Grant,
     LeasePrompted,
     Leases,
@@ -70,6 +74,7 @@ from piloop.plugins.executor.kit.leases import (
     Timing,
     Work,
     cancel,
+    drain,
     enqueue,
     revoke,
 )
@@ -837,7 +842,7 @@ def held_reads(mocker: MockerFixture, leases: Leases) -> threading.Event:
     reading, release = threading.Event(), threading.Event()
     messages = leases.messages
 
-    def held(worker: str, after: int, wait: float) -> list[Work | PromptMessage | Revoke]:
+    def held(worker: str, after: int, wait: float) -> list[Work | PromptMessage | Revoke | Drain]:
         reading.set()
         assert release.wait(10)
         return messages(worker, after, wait)
@@ -1071,7 +1076,7 @@ class Refusing(Local):
         self._check('heartbeat')
         return super().heartbeat(leases, sample)
 
-    def messages(self, after: int, wait: float) -> Sequence[Work | PromptMessage | Revoke]:
+    def messages(self, after: int, wait: float) -> Sequence[Work | PromptMessage | Revoke | Drain]:
         self._check('messages')
         return super().messages(after, wait)
 
@@ -1196,3 +1201,96 @@ def test_a_worker_dismissed_while_it_reports_a_job_it_cannot_find_again_ends(
     worker.start()
     worker.wait()
     assert str(worker.dismissed) == 'lost: the token is unknown or revoked'
+
+
+def started_evaluation(db: Database, campaign: Campaign, tmp_path: Path) -> EvaluationJob:
+    """An evaluation's job whose queue row has its slot, as core's dispatch gives it."""
+    job = evaluation_job(db, campaign, tmp_path)
+    with db.session() as s:
+        s.get_one(Evaluation, job.evaluation).started_at = utcnow()
+        s.commit()
+    return job
+
+
+def worker_on(leases: Leases, db: Database, tmp_path: Path, *, once: bool = False) -> Worker:
+    site = local_site(tmp_path, disk(tmp_path), partial(checkout_of, db), partial(record_of, db), reserve=0)
+    return Worker(Local(leases, SERVE), Tracer(None), site, runners=('process',), once=once)
+
+
+def test_a_drained_worker_reports_its_job_takes_no_other_and_ends(
+    db: Database, campaign: Campaign, tmp_path: Path
+) -> None:
+    leases = Leases(db, CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False), FAST)
+    hold = tmp_path / 'hold'
+    hold.touch()
+    job = started_evaluation(db, campaign, tmp_path)
+    leases.submit(job.model_copy(update={'command': ['sh', '-c', f'while [ -f {hold} ]; do sleep 0.05; done']}))
+    worker = worker_on(leases, db, tmp_path)
+    worker.start()
+    wait_until(lambda: lease_states(db) == [LeaseState.RUNNING])
+    with db.session() as s:
+        drain(s, SERVE, TargetRef(TargetKind.INSTANCE, 1))
+        s.commit()
+    leases.submit(job.model_copy(update={'evaluation': job.evaluation + 1000}))
+    hold.unlink()
+    worker.wait()
+    assert lease_states(db) == [LeaseState.REPORTED, LeaseState.QUEUED]
+
+
+def test_a_worker_once_runs_one_job_and_ends(db: Database, campaign: Campaign, tmp_path: Path) -> None:
+    leases = Leases(db, CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False), FAST)
+    job = started_evaluation(db, campaign, tmp_path)
+    leases.submit(job)
+    leases.submit(job.model_copy(update={'evaluation': job.evaluation + 1000}))
+    worker = worker_on(leases, db, tmp_path, once=True)
+    worker.start()
+    worker.wait()
+    assert lease_states(db) == [LeaseState.REPORTED, LeaseState.QUEUED]
+
+
+def test_a_worker_drained_before_it_starts_takes_no_job_and_ends(
+    db: Database, campaign: Campaign, tmp_path: Path
+) -> None:
+    leases = Leases(db, CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False), FAST)
+    leases.submit(started_evaluation(db, campaign, tmp_path))
+    leases.register(SERVE, SERVE, '0.2.0', ['process'], sample(tmp_path))
+    on = TargetRef(TargetKind.INSTANCE, 1)
+    with db.session() as s:
+        drain(s, 'never-registered', on)
+        drain(s, SERVE, on)
+        drain(s, SERVE, on)
+        s.commit()
+        assert [e.target for e in s.scalars(select(Event).where(Event.kind == 'worker.drained'))] == [on]
+        s.get_one(LeaseWorker, SERVE).cursor = feed.newest(s)  # past the message: its acquire alone tells it
+        s.commit()
+    worker = worker_on(leases, db, tmp_path)
+    worker.start()
+    worker.wait()
+    assert lease_states(db) == [LeaseState.QUEUED]
+
+
+class ServerGone(Local):
+    """``Local``, whose server stops answering once the worker registered."""
+
+    def heartbeat(self, leases: Mapping[int, str | None], sample: HostSample) -> dict[int, Answer]:
+        raise ConnectionError('connection refused')
+
+
+def test_a_worker_with_an_orphan_exit_stays_while_its_server_answers_and_ends_once_it_does_not(
+    db: Database, tmp_path: Path
+) -> None:
+    """Idle with its server there: only the server's drain ends it, so a warm worker of ``min`` stays."""
+    leases = Leases(db, CampaignResults(db, Tracer(None), tmp_path, disk(tmp_path), lambda: False), FAST)
+    site = local_site(tmp_path, disk(tmp_path), partial(checkout_of, db), partial(record_of, db), reserve=0)
+    answered = Worker(Local(leases, SERVE), Tracer(None), site, runners=('process',), orphan_exit=0.3)
+    answered.start()
+    assert answered._loop is not None
+    answered._loop.join(1.5)
+    assert answered._loop.is_alive(), 'idle past its orphan exit, with its server there'
+    answered.stop()
+    answered.wait()
+    gone = Worker(ServerGone(leases, 'gone'), Tracer(None), site, runners=('process',), orphan_exit=0.3)
+    began = time.monotonic()
+    gone.start()
+    gone.wait()
+    assert 0.3 <= time.monotonic() - began < FAST.self_stop

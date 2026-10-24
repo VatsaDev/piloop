@@ -3,7 +3,7 @@
 # ruff: noqa: F401  # this module only re-exports: every import is unused here
 
 from piloop.plugins.host import Capability, Tier, Parameters, Choice, Scope, Check
-from piloop.plugins.host import MissingProvider, Provider, PythonSource
+from piloop.plugins.host import MissingProvider, Provider, PythonSource, ContractBroken
 from piloop.plugins.host import Live
 from piloop.plugins.host import Entry, Named, Tables
 
@@ -17,7 +17,7 @@ from piloop.plugins.runtime.subprocess import Subprocess, SubprocessRuntime
 from piloop.plugins.cas.contract import CAS, Cas, CasProvider, BlobAddress, Writer
 from piloop.plugins.cas.contract import Upkeep, TierUsage, Flushed, Integrity, integrity, UNBOUNDED
 from piloop.plugins.cas.contract import Held, Evictable, LocalCas, LocalProvider
-from piloop.plugins.cas.kit.conformance import check_cas, ContractBroken
+from piloop.plugins.cas.kit.conformance import check_cas
 from piloop.plugins.cas.kit.objects import Objects, ObjectsCas, StreamCas, Dir
 from piloop.plugins.cas.disk import Disk, DiskCas
 from piloop.plugins.cas.cached import Cached, CachedCas
@@ -77,6 +77,7 @@ from piloop.net import Route
 from piloop.plugins.network.contract import NETWORKS, Network, NetworkHost
 from piloop.plugins.network.contract import NetworkConfig, Address
 from piloop.plugins.network.contract import Listener, NoCredential, Peer, Refused
+from piloop.plugins.network.contract import Enrollment, NotEnrolled
 from piloop.net.tokens import Caller, Tokens
 from piloop.plugins.network.https import Https, HttpsNetwork
 
@@ -85,3 +86,9 @@ from piloop.plugins.vcs.contract import Keep, RunVersion, RebaseVersion, Referen
 from piloop.plugins.vcs.contract import VcsError, NotARepository, UnknownRevision
 from piloop.plugins.vcs.contract import Part
 from piloop.plugins.vcs.git import Git, GitRepository
+
+from piloop.plugins.provisioner.contract import PROVISIONERS, ProvisionerConfig, ProvisionerHost, Provisioning
+from piloop.plugins.provisioner.contract import Launch, Instance, InstanceState
+from piloop.plugins.provisioner.contract import StartRefused
+from piloop.plugins.provisioner.kit.conformance import check_provisioning
+from piloop.plugins.provisioner.modal import Modal

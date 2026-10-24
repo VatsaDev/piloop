@@ -121,6 +121,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
             'sqlite_sequence',
             'techniques',
             'tokens',
+            'worker_instances',
         ], 'an external-content FTS5 index has no _content shadow: the text stays in the base table only'
         triggers = [t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name")]
         assert triggers == sorted(t.name for t in PERSISTENT), 'the package lists what the migrations install'
@@ -1857,3 +1858,46 @@ def test_0043_splits_each_verdict_into_a_judgement_an_origin_and_a_cause_with_it
             {'kind': 'candidate.deleted', 'tree_sha': 't', 'commit_sha': 'c', 'verdict': 'reference'},
             {'kind': 'candidate.deleted', 'tree_sha': 't', 'commit_sha': 'c', 'verdict': 'discard'},
         ], 'the tombstones of an older piloop'
+
+
+def test_0044_adds_the_worker_instances_and_events_on_them_keeping_every_row_and_trigger_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    before = str(ScriptDirectory(str(MIGRATIONS)).get_revision('0044').down_revision)
+    command.upgrade(cfg, before)
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
+        con.execute("INSERT INTO comments (target_kind, target_id, author, body) VALUES ('campaign', 1, 'human', 'hi')")
+        con.execute(
+            "INSERT INTO events (actor, target_kind, target_id, payload) VALUES ('daemon', 'campaign', 1, ?)",
+            (dumps({'kind': 'campaign.added'}),),
+        )
+        con.execute("INSERT INTO lease_workers (id, pool, version, seen_at) VALUES ('gpu1', 'gpu', '0.2.0', '2026')")
+        kinds = con.execute('SELECT id, kind FROM events ORDER BY id').fetchall()
+    command.upgrade(cfg, '0044')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT id, kind FROM events ORDER BY id').fetchall() == kinds
+        assert con.execute("SELECT rowid FROM comments_fts WHERE comments_fts MATCH 'hi'").fetchall() == [(1,)]
+        con.execute("INSERT INTO worker_instances (name, pool) VALUES ('gpu-1', 'gpu')")
+        con.execute(
+            "INSERT INTO events (actor, target_kind, target_id, payload) VALUES ('daemon', 'instance', 1, ?)",
+            (dumps({'kind': 'instance.started'}),),
+        )
+        con.execute(
+            'INSERT INTO comments (target_kind, target_id, author, kind, body, priority)'
+            " VALUES ('instance', 1, 'daemon', 'escalation', 'refused', 1)"
+        )
+        assert con.execute("SELECT count(*) FROM events WHERE kind = 'comment.escalation'").fetchone() == (1,)
+        con.execute("UPDATE lease_workers SET no_lease = 'draining', drained_at = '2026'")
+        with pytest.raises(sqlite3.IntegrityError, match='an ended one says why'):
+            con.execute("UPDATE worker_instances SET state = 'ended'")
+    command.downgrade(cfg, before)
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT id, kind FROM events ORDER BY id').fetchall() == kinds
+        assert con.execute('SELECT target_kind FROM comments').fetchall() == [('campaign',)]
+        assert con.execute('SELECT no_lease FROM lease_workers').fetchall() == [(None,)]
+        assert sorted(t for (t,) in con.execute("SELECT name FROM sqlite_master WHERE type = 'trigger'")) == (
+            triggers_at(before)
+        )

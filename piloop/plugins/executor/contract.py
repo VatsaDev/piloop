@@ -34,6 +34,7 @@ from piloop.net import Route
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import BlobAddress, Cas
 from piloop.plugins.host import Capability, Choice, Chosen, Parameters, Scope
+from piloop.plugins.network.contract import Network
 from piloop.plugins.runtime.contract import AgentExit, AgentStart
 from piloop.plugins.vcs.contract import VCS, Repository, Revision, Transfer, Vcs
 from piloop.runtime.factory import RuntimeFactory
@@ -396,6 +397,8 @@ class Host:
     reserve: int
     """Bytes kept free on the disk of ``home`` (``[storage] min_free_gb``): below it, a job's end evicts the linked
     inputs that no job uses (``Site.evict_inputs``)."""
+    network: Network
+    """The server's network: what gives a machine that the executor starts its credential (``Network.enroll``)."""
 
 
 @dataclass(frozen=True)

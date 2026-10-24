@@ -23,11 +23,20 @@ from piloop.db.session import Database
 from piloop.net import Polled, Route, cas_server, tokens
 from piloop.net.cas import route
 from piloop.net.server import App, Server, app
-from piloop.net.tokens import Caller
+from piloop.net.tokens import Caller, Tokens
 from piloop.plugins import host as plugins
 from piloop.plugins.cas.contract import BLAKE3
 from piloop.plugins.cas.disk import DiskCas
-from piloop.plugins.network.contract import NETWORKS, Address, Listener, Network, Peer
+from piloop.plugins.network.contract import (
+    NETWORKS,
+    Address,
+    Enrollment,
+    Listener,
+    Network,
+    NetworkHost,
+    NotEnrolled,
+    Peer,
+)
 from piloop.plugins.network.https import Https
 from piloop.settings import Settings
 from tests.conftest import Dial, package
@@ -108,6 +117,12 @@ class Recording:
     def identify(self, headers: Mapping[str, str], peer: Peer) -> Caller:
         self.peers.append(peer)
         return Caller('gpu1', TokenScope.WORKER)
+
+    def enroll(self, principal: str, scope: TokenScope) -> Enrollment:
+        raise NotEnrolled('it admits every caller')
+
+    def revoke(self, principal: str) -> None:
+        raise NotEnrolled('it admits every caller')
 
 
 @dataclass(frozen=True)
@@ -295,3 +310,20 @@ def test_a_close_ends_a_parked_long_poll_at_once_with_204_and_logs_no_error(
         assert time.monotonic() - began < 1, 'the close waits for no long-poll'
         assert parked.result(timeout=5).status_code == 204
     assert [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR] == []
+
+
+def test_https_enrolls_a_machine_with_a_token_that_its_client_dials_with_until_it_is_revoked(
+    db: Database, serving: Serving, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(NotEnrolled, match='set url'):
+        Https().open(NetworkHost(Tokens(db))).enroll('gpu-1', TokenScope.WORKER)
+    with serving([ECHO]) as server:
+        network = Https(url=server.url).open(NetworkHost(Tokens(db)))
+        enrolled = network.enroll('gpu-1', TokenScope.WORKER)
+        for name, value in enrolled.env.items():
+            monkeypatch.setenv(name, value.get_secret_value())
+        with Https().client(enrolled.server) as client:
+            assert client.post(ECHOED, json=HI).status_code == 200
+            network.revoke('gpu-1')
+            network.revoke('gpu-1')
+            assert client.post(ECHOED, json=HI).status_code == 401

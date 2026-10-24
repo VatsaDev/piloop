@@ -16,9 +16,10 @@ from piloop.plugins.cas.cached import CachedCas
 from piloop.plugins.cas.contract import UNBOUNDED, Cas
 from piloop.plugins.cas.disk import Disk, DiskCas
 from piloop.plugins.cas.gcs import Gcs
-from piloop.plugins.cas.kit.conformance import ContractBroken, check_cas
+from piloop.plugins.cas.kit.conformance import check_cas
 from piloop.plugins.cas.kit.objects import ObjectsCas
 from piloop.plugins.cas.s3 import S3, S3Objects
+from piloop.plugins.host import ContractBroken
 from tests.cas.test_gcs import FakeClient
 
 BUCKET = 'piloop-contract'

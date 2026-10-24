@@ -72,6 +72,7 @@ from piloop.ids import (
     TargetKind,
     TargetRef,
 )
+from piloop.net.tokens import Tokens
 from piloop.otel import Span, Tracer
 from piloop.plugins import limits
 from piloop.plugins.cas.contract import CAS, Cas
@@ -87,6 +88,7 @@ from piloop.plugins.executor.contract import (
     Host,
     Sample,
 )
+from piloop.plugins.network.contract import NETWORKS, Network, NetworkHost
 from piloop.plugins.runtime.contract import ExitStatus
 from piloop.plugins.vcs.contract import Repository, Revision, RunVersion, Transfer, Version
 from piloop.plugins.verdict_rule.contract import Outcome
@@ -202,6 +204,7 @@ class RunController:
         executor: ExecutorConfig,
         cas: Cas | None = None,
         reserve: int = StorageSettings().reserve,
+        network: Network | None = None,
     ) -> None:
         self._db = db
         self._tracer = tracer
@@ -216,6 +219,7 @@ class RunController:
         self._limits: tuple[tuple[str, str, datetime], ...] = ()
         """The limits that the executor has, as read: ``configure`` hands it the parameters when they change."""
         results = CampaignResults(db, tracer, home, self._cas, lambda: self.launcher.cancelled.is_set())
+        network = network if network is not None else NETWORKS.selected({}).open(NetworkHost(Tokens(db)))
         host = Host(
             db,
             results,
@@ -226,6 +230,7 @@ class RunController:
             partial(record_of, db),
             runtime_factory,
             reserve,
+            network,
         )
         self.executor: Executor[ExecutorConfig] = self._config.open(host)
         self.launcher = Launcher(db, tracer, home, self.executor)

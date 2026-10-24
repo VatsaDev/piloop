@@ -139,5 +139,5 @@ def home_plugins() -> str:
                 out += f'\nWith `provider = "{provider}"`:\n\n{table(schema, schema.get("$defs", {}))}'
                 for inner in [m for m in _nested(model, []) if m.__name__ in schema.get('$defs', {})]:
                     nested = json_schema(inner)
-                    out += f'\n#### {inner.__name__}\n\n{mdx(nested.get("description", ""))}\n\n{table(nested, {})}'
+                    out += f'\n#### {inner.__name__}\n\n{mdx(nested.get("description", ""))}\n\n{table(nested, nested.get("$defs", {}))}'
     return out

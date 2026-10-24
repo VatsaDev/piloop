@@ -14,7 +14,7 @@ from piloop.db.models import utcnow
 from piloop.otel import tracer
 from piloop.plugins.cas.contract import CAS
 from piloop.plugins.executor.contract import EXECUTORS
-from piloop.plugins.executor.workers import Workers, remote_worker, seen
+from piloop.plugins.executor.workers import Workers, instances, remote_worker, seen
 from piloop.plugins.network.contract import NETWORKS, NoCredential
 from piloop.reports.overview import age
 
@@ -26,12 +26,17 @@ def run(
     *,
     server: Annotated[str, cyclopts.Parameter(help='The URL of the server that `piloop serve --listen` runs.')],
     pool: Annotated[str, cyclopts.Parameter(help='The pool of the server whose slots this machine has.')],
+    once: Annotated[bool, cyclopts.Parameter(help='Take one lease, run its job, and exit.')] = False,
+    orphan_exit: Annotated[
+        float | None,
+        cyclopts.Parameter(help='Exit after this many seconds without an answer of the server, once no job runs.'),
+    ] = None,
 ) -> None:
     """Take leases from a server, and run their jobs on this machine until it stops (Ctrl-C).
 
     The network (``[plugins.network]``) gives it its credential, and its name is the one that the server knows that
-    credential by. It exits non-zero when the server refuses it: a revoked credential, another piloop protocol, an
-    unknown pool.
+    credential by. It exits once the server drains it and its jobs reported. It exits non-zero when the server refuses
+    it: a revoked credential, another piloop protocol, an unknown pool.
     """
     settings = common.settings
     try:
@@ -42,7 +47,10 @@ def run(
     stopping = threading.Event()
     with client as http:
         cas = CAS.selected(settings.providers).open(settings.home)
-        worker = remote_worker(http, stopping, tracer(), settings.home, cas, pool, settings.storage.reserve)
+        reserve = settings.storage.reserve
+        worker = remote_worker(
+            http, stopping, tracer(), settings.home, cas, pool, reserve, once=once, orphan_exit=orphan_exit
+        )
 
         def stop(signum: int, frame: FrameType | None) -> None:
             stopping.set()
@@ -58,10 +66,14 @@ def run(
 
 @app.command(name='list')
 def worker_list() -> None:
-    """List each worker: its pool, when it was last heard, its host sample, its jobs, and why it got no lease."""
+    """List each worker: its pool, when it was last heard, its host sample, its jobs, and why it got no lease.
+
+    Then each worker that a provisioner starts, until it ends: its pool, its state, and when it was asked for.
+    """
     with common.session() as s:
         now = utcnow()
         workers = seen(s)
+        started = instances(s)
         table = Table('worker', 'pool', 'seen', 'load', 'memory', 'disk', 'agents', 'evaluations', 'no lease', box=None)
         for w in workers:
             table.add_row(
@@ -82,3 +94,8 @@ def worker_list() -> None:
         common.console.print(table)
     else:
         common.console.print('no worker yet: `piloop serve` starts one', markup=False)
+    if started:
+        provisioned = Table('instance', 'pool', 'state', 'asked', box=None)
+        for row in started:
+            provisioned.add_row(row.name, row.pool, row.state, f'{age(row.requested_at, now)} ago')
+        common.console.print(provisioned)

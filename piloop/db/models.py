@@ -315,6 +315,8 @@ class NoLease(StrEnum):
     Declared in order of precedence: of the reasons for each kind of job, the first one declared is the worker's.
     """
 
+    DRAINING = 'draining'
+    """The server drained it: it takes no more jobs, and exits once it holds none."""
     MEMORY = 'memory'
     """Its memory available is below ``min_memory_gb``."""
     LOAD = 'load'
@@ -325,6 +327,34 @@ class NoLease(StrEnum):
     """Nothing is queued that it can run."""
     UNREACHABLE = 'unreachable'
     """It was silent past ``grace_seconds``."""
+
+
+class WorkerInstanceState(StrEnum):
+    """The lifecycle of a worker that a provisioner starts (``worker_instances``).
+
+    ``starting`` until its worker registers, then ``running``. ``draining`` takes no more jobs: it ends once it holds
+    none. ``ended`` says why in ``end``.
+    """
+
+    STARTING = 'starting'
+    RUNNING = 'running'
+    DRAINING = 'draining'
+    ENDED = 'ended'
+
+
+class InstanceEnd(StrEnum):
+    """Why a worker instance ended."""
+
+    DRAINED = 'drained'
+    """It held no lease when it ended: the pool drained it, or its worker lost its server (``orphan_exit_seconds``)."""
+    REGISTER_TIMEOUT = 'register_timeout'
+    """Its worker did not register within ``register_seconds``."""
+    START_REFUSED = 'start_refused'
+    """The provisioner refused to start it: a quota, no capacity, a bad image."""
+    LOST = 'lost'
+    """Its worker was silent past ``toleration_seconds``."""
+    GONE = 'gone'
+    """It ended with a lease, or before its worker registered: it crashed, was preempted, or was deleted by hand."""
 
 
 LIVE_LEASES = (LeaseState.ACQUIRED, LeaseState.RUNNING)
@@ -502,6 +532,8 @@ class Base(DeclarativeBase):
         LeaseState: _values(LeaseState),
         TokenScope: _values(TokenScope),
         NoLease: _values(NoLease),
+        WorkerInstanceState: _values(WorkerInstanceState),
+        InstanceEnd: _values(InstanceEnd),
     }
 
 
@@ -1005,6 +1037,40 @@ class LeaseWorker(Base):
     """Why its last request got no lease, or that it went silent. NULL after a grant."""
     cursor: Mapped[int] = mapped_column(default=0, server_default=text('0'))
     """The event after which it reads its messages: its ack floor. A new worker starts at the newest event."""
+    drained_at: Mapped[datetime | None]
+    """When the server drained it (``lease.drained``): it takes no more leases. NULL while it takes them."""
+
+
+class WorkerInstance(Base):
+    """A worker that a provisioner starts for a pool (``piloop.plugins.executor.kit.scaling``).
+
+    The row commits before the provisioner's ``start``, so a daemon that restarts finds every instance that it asked
+    for. Its name is the worker's everywhere: its credential, its ``lease_workers`` row, the provider's tag. The table
+    is in core's schema until a plugin can own tables, as the leases are.
+    """
+
+    __tablename__ = 'worker_instances'
+    __table_args__ = (
+        CheckConstraint('(state = \'ended\') = ("end" IS NOT NULL)', name='worker_instances.an ended one says why'),
+        Index('ix_worker_instances_state', 'state'),
+        *text_checks('worker_instances', 'name', 'pool'),
+        {'sqlite_autoincrement': True},
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(unique=True)
+    """The worker's name, which core picks: ``<pool>-<8 hex digits>``."""
+    pool: Mapped[str]
+    state: Mapped[WorkerInstanceState] = mapped_column(
+        default=WorkerInstanceState.STARTING, server_default=WorkerInstanceState.STARTING.value
+    )
+    handle: Mapped[dict[str, object]] = mapped_column(default=dict, server_default=EMPTY_JSON)
+    """The provider's own id of it, as its ``list`` last showed it: a sandbox id, a pod uid."""
+    requested_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)
+    registered_at: Mapped[datetime | None]
+    """When its worker first registered."""
+    ended_at: Mapped[datetime | None]
+    end: Mapped[InstanceEnd | None]
 
 
 class Limit(Base):

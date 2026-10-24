@@ -45,6 +45,7 @@ from piloop.plugins.executor.kit.leases import (
     DEFAULT_TIMING,
     SERVE,
     Answer,
+    Drain,
     Grant,
     JobHandle,
     Leases,
@@ -324,7 +325,7 @@ class Remote:
     def lost(self, lease: int, reason: str) -> None:
         self._post('lost', Lost(lease=lease, reason=reason))
 
-    def messages(self, after: int, wait: float) -> Sequence[Work | PromptMessage | Revoke]:
+    def messages(self, after: int, wait: float) -> Sequence[Work | PromptMessage | Revoke | Drain]:
         wait = min(wait, MAX_POLL_SECONDS)
         answer = self._post('messages', Read(after=after, wait=wait), wait)
         return Messages.model_validate_json(answer).root if answer else []

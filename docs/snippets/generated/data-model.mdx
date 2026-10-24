@@ -146,6 +146,18 @@ erDiagram
         datetime seen_at
         NoLease no_lease
         integer cursor
+        datetime drained_at
+    }
+    worker_instances {
+        integer id PK
+        varchar name UK
+        varchar pool
+        WorkerInstanceState state
+        json handle
+        datetime requested_at
+        datetime registered_at
+        datetime ended_at
+        InstanceEnd end
     }
     limits {
         varchar key PK

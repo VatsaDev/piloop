@@ -48,11 +48,14 @@ from piloop.db.models import (
     Idea,
     IdeaLink,
     IdeaStatus,
+    InstanceEnd,
     LinkKind,
     Measurement,
     Origin,
     Run,
     RunStatus,
+    WorkerInstance,
+    WorkerInstanceState,
     utcnow,
 )
 from piloop.db.session import Database, migrate
@@ -829,6 +832,14 @@ def test_worker_list_shows_each_worker_its_sample_its_jobs_and_why_it_got_no_lea
         'lease',
     ]
     assert re.fullmatch(r'serve serve \d+s ago 2\.0/4 8\.0 GB 100\.0 GB 0 0 nothing', ' '.join(lines[1].split()))
+    with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db, db.session() as s:
+        s.add(WorkerInstance(name='gpu-0123abcd', pool='gpu'))
+        s.add(WorkerInstance(name='gpu-ended', pool='gpu', state=WorkerInstanceState.ENDED, end=InstanceEnd.GONE))
+        s.commit()
+    run_cli(['worker', 'list'])
+    started = [' '.join(line.split()) for line in out().splitlines()[2:]]
+    assert started[0] == 'instance pool state asked' and re.fullmatch(r'gpu-0123abcd gpu starting \d+s ago', started[1])
+    assert len(started) == 2, 'an ended one is not listed'
 
 
 def test_worker_list_says_when_another_executor_is_selected(
@@ -1518,7 +1529,7 @@ def test_upgrade_reinstalls_migrates_and_restarts_the_daemon(
         cli_check(),
         f'ok    daemon: pid {pid} runs the installed {installed()}',
         f'ok    database: {common.settings.home}/piloop.db at schema {HEAD}, current',
-        'ok    plugins: 5 CAS providers, 1 executor, 1 network, 4 roles, 1 runtime, 1 stop rule, 7 triggers, 1 vcs provider, 1 verdict rule; all built in',
+        'ok    plugins: 5 CAS providers, 1 executor, 1 network, 1 provisioner, 4 roles, 1 runtime, 1 stop rule, 7 triggers, 1 vcs provider, 1 verdict rule; all built in',
         f'ok    secrets: from the environment of the daemon (pid {pid}) only (PILOOP_SECRETS_COMMAND unset)',
         f'ok    skills (pi): current in {common.settings.agent_skills_dir}',
         'ok    harnesses: on PATH: none configured',
@@ -1546,7 +1557,7 @@ def test_upgrade_of_a_checkout_install_without_a_daemon_creates_the_schema(fake_
         cli_check(),
         'ok    daemon: not running',
         f'ok    database: {common.settings.home}/piloop.db at schema {HEAD}, current',
-        'ok    plugins: 5 CAS providers, 1 executor, 1 network, 4 roles, 1 runtime, 1 stop rule, 7 triggers, 1 vcs provider, 1 verdict rule; all built in',
+        'ok    plugins: 5 CAS providers, 1 executor, 1 network, 1 provisioner, 4 roles, 1 runtime, 1 stop rule, 7 triggers, 1 vcs provider, 1 verdict rule; all built in',
         'ok    secrets: from the environment of this shell only (PILOOP_SECRETS_COMMAND unset)',
         'ok    skills: none of claude, codex, pi, gemini, cursor-agent is on PATH: nothing to check',
         'ok    harnesses: on PATH: none configured',

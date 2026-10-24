@@ -11,7 +11,8 @@ A worker that hears nothing back for ``Timing.self_stop`` stops its jobs and kee
 again: by then the fence refuses them, and a person can still import what they made (``leases.StaleReport``). A
 report is kept in the worker's spool (``Spool``) until the control plane took or refused it, so a worker that is
 killed sends it again when it starts. A worker that the control plane refuses for good (``Dismissed``) stops its jobs
-and ends.
+and ends. A drained one (``Drain``, ``NoLease.DRAINING``), one that runs ``once``, and one that held no lease for
+``orphan_exit`` seconds (its server did not answer), takes no more jobs, and ends once each job reported.
 """
 
 import os
@@ -30,6 +31,7 @@ from typing import assert_never
 
 from pydantic import BaseModel, ConfigDict
 
+from piloop.db.models import NoLease
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import (
     AgentJob,
@@ -48,6 +50,7 @@ from piloop.plugins.executor.kit.leases import (
     SERVE,
     AgentHandle,
     Answer,
+    Drain,
     Grant,
     NotAddressed,
     ProcessHandle,
@@ -139,6 +142,8 @@ class Worker:
         runtime_factory: RuntimeFactory = make_runtime,
         runners: tuple[str, ...] | None = None,
         relay: Relay | None = None,
+        once: bool = False,
+        orphan_exit: float | None = None,
     ) -> None:
         self.id: str | None = None
         """The worker's name, which its registration gives."""
@@ -154,6 +159,11 @@ class Worker:
         self.runners = runners if runners is not None else evaluator_runners()
         self.relay = relay
         """How its agents' ``piloop`` calls reach the server, on a worker elsewhere. None: they run here."""
+        self.once = once
+        """Take one lease, then drain: ``piloop worker --once``."""
+        self.orphan_exit = orphan_exit
+        """Drain after this many seconds without an answer of its server: ``piloop worker --orphan-exit``. None:
+        never."""
         self._lock = threading.RLock()
         """Guards ``_jobs``, ``_threads`` and the flags, briefly: never across a slow call (a start, a kill, the
         database), so a heartbeat never waits for one. Re-entrant.
@@ -173,6 +183,8 @@ class Worker:
         because its answer did not land, is answered the same, and not given to its agent again."""
         self._started = False
         self._stopping = False
+        self._draining = False
+        """It takes no more jobs, and ends once each one reported: the server drained it, or it ran ``once``."""
         self._handover = False
         self._heard = time.monotonic()
         """When the last heartbeat that came back was sent. The worker stops its jobs ``Timing.self_stop`` after it."""
@@ -300,6 +312,8 @@ class Worker:
                         self._wake()
                     case Revoke(lease=lease):
                         self._stop_job(lease, 'revoke')
+                    case Drain():
+                        self._drain()
                     case PromptMessage(lease=lease):
                         prompts.setdefault(lease, []).append(message)
                     case never:
@@ -343,6 +357,11 @@ class Worker:
                 self._tracer.event('worker.queued_unsent', worker=self.id, message=message.id, error=str(e))
                 unanswered.append(message.id)
         return unanswered
+
+    def _drain(self) -> None:
+        """Take no more jobs: the loop ends the worker once each job reported."""
+        self._draining = True
+        self._wake()
 
     def stop(self) -> None:
         """Take no more jobs, and stop the running ones. Each still reports how it ended.
@@ -411,6 +430,13 @@ class Worker:
                 with self._lock:
                     if self._stopping and not self._threads:
                         return
+                    # its server is gone: an instance must not outlive it, nor wait to send what it would refuse
+                    orphaned = self.orphan_exit is not None and time.monotonic() - self._heard >= self.orphan_exit
+                    drained = not self._threads and (orphaned or self._draining and not self.spool.leases())
+                if drained:  # a drained instance has no next process to send what is left
+                    self._tracer.event('worker.drained', worker=self.id)
+                    self.stop()
+                    return
                 self._wanted.wait(self.timing.renew)
         finally:
             if self.relay is not None:
@@ -458,9 +484,17 @@ class Worker:
             waiting = self.spool.leases() - self._threads.keys()
         for lease_id in sorted(waiting):
             self._send(lease_id, self.spool.get(lease_id))
-        while not self._stopping and isinstance(grant := self.client.acquire(uuid.uuid4().hex, host), Grant):
-            body = self._agent if isinstance(grant.job, AgentJob) else self._evaluation
-            self._spawn(grant, partial(body, grant))
+        while not self._stopping and not self._draining:
+            match self.client.acquire(uuid.uuid4().hex, host):
+                case Grant() as grant:
+                    body = self._agent if isinstance(grant.job, AgentJob) else self._evaluation
+                    self._spawn(grant, partial(body, grant))
+                    if self.once:
+                        self._drain()
+                case NoLease.DRAINING:
+                    self._drain()
+                case _:
+                    return
 
     def _stop_jobs(self, why: str) -> None:
         with self._lock:

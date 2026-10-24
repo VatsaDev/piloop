@@ -61,6 +61,42 @@ your system does not trust, set `SSL_CERT_FILE`. On the server, `piloop worker l
 The server refuses a worker with another piloop protocol, an unknown pool, a revoked token, or a `[plugins.cas]` that
 is not the server's. The worker then stops its jobs and exits with the reason.
 
+## Workers that the server starts
+
+A pool with a provisioner starts its workers when its jobs wait, and stops them when they idle. On Modal, each worker
+is a sandbox of an image with `piloop` in it:
+
+```toml
+[plugins.network]
+listen = "0.0.0.0:8443"
+tls = "proxy"
+url = "https://piloop.example.com:8443"
+
+[plugins.executor.pools.gpu]
+agents = 0
+evaluations = 1
+runners = ["process"]
+
+[plugins.executor.pools.gpu.provisioner]
+max = 4
+
+[plugins.executor.pools.gpu.provisioner.compute]
+provider = "modal"
+image = "ghcr.io/acme/piloop-worker:0.3"
+gpu = "A100"
+secrets = ["piloop-cas"]
+```
+
+Each worker gets a token of its own, and dials `url`. Give it the server's `[plugins.cas]` in its image, or as
+`PILOOP_PLUGINS` in the provider's `env`. The server needs Modal's credentials and `piloop[modal]`. To stop every
+worker of the pool, drain them:
+
+```bash
+piloop limits set executor.pools.gpu.provisioner.max=0 --reason "the GPU budget is spent"
+```
+
+`piloop worker list` shows each worker that the server started, until it ends.
+
 ## What an agent on a worker gets
 
 - The environment of the worker, with the keys that its [MCP servers](/guides/mcp-servers) need.

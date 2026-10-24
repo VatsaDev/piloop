@@ -132,6 +132,7 @@ class Daemon:
             cas=self._cas,
             reserve=cfg.storage.reserve,
             runtime_factory=opened,
+            network=self.network,
         )
         self.scheduler = Scheduler(
             self.db,

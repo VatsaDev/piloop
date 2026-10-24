@@ -90,6 +90,7 @@ def test_schema_ddl_lists_every_table_with_its_indexes_and_runs(tmp_path: Path) 
             'runs',
             'techniques',
             'tokens',
+            'worker_instances',
         ]
     )
     assert 'CREATE TRIGGER' not in ddl

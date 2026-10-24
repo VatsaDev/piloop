@@ -71,3 +71,17 @@ class Tokens:
         """The caller that ``secret`` is the token of, or None for an unknown or revoked one."""
         with self.db.session() as s:
             return verify(s, secret)
+
+    def mint(self, name: str, scope: TokenScope) -> str:
+        """Add a token called ``name`` in place of the one that has that name, and return its secret."""
+        with self.db.session() as s:
+            s.execute(delete(Token).where(Token.name == name))
+            secret = create(s, name, scope)
+            s.commit()
+        return secret
+
+    def revoke(self, name: str) -> None:
+        """Delete the token called ``name``, if there is one: its next call gets 401."""
+        with self.db.session() as s:
+            s.execute(delete(Token).where(Token.name == name))
+            s.commit()

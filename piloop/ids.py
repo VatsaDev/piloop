@@ -41,6 +41,8 @@ class TargetKind(StrEnum):
     MEASUREMENT = 'measurement'
     AGENT_SESSION = 'agent_session'
     COMMENT = 'comment'
+    INSTANCE = 'instance'
+    """A worker that a provisioner started (``worker_instances``)."""
 
 
 @dataclass(frozen=True)

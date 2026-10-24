@@ -39,6 +39,9 @@ HELPERS: set[object] = {
     capabilities.integrity,
     capabilities.UNBOUNDED,
     capabilities.NoCredential,
+    capabilities.NotEnrolled,
+    capabilities.StartRefused,
+    capabilities.check_provisioning,
     capabilities.LocalProvider,  # what a local tier's provider and store are, and what eviction sees
     capabilities.LocalCas,
     capabilities.Evictable,

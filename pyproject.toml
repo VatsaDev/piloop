@@ -55,6 +55,7 @@ piloop = "piloop.cli.main:main"
 [project.entry-points."piloop.capabilities"]
 runtime = "piloop.plugins.runtime.contract:RUNTIMES"
 cas = "piloop.plugins.cas.contract:CAS"
+provisioner = "piloop.plugins.provisioner.contract:PROVISIONERS"
 trigger = "piloop.plugins.trigger.contract:TRIGGERS"
 role = "piloop.plugins.role.contract:ROLES"
 verdict_rule = "piloop.plugins.verdict_rule.contract:VERDICT_RULES"
@@ -94,6 +95,9 @@ workers = "piloop.plugins.executor.workers:Workers"
 [project.entry-points."piloop.networks"]
 https = "piloop.plugins.network.https:Https"
 
+[project.entry-points."piloop.provisioners"]
+modal = "piloop.plugins.provisioner.modal:Modal"
+
 [project.entry-points."piloop.vcs"]
 git = "piloop.plugins.vcs.git:Git"
 
@@ -115,6 +119,7 @@ default-groups = ["dev", "lint"]
 
 [project.optional-dependencies]
 gcs = ["google-cloud-storage>=3.0"]
+modal = ["modal>=1.6"]
 
 [dependency-groups]
 dev = [
@@ -123,6 +128,7 @@ dev = [
     "dirty-equals>=0.9",
     "google-cloud-storage>=3.0",
     "inline-snapshot>=0.23",
+    "modal>=1.6",
     "moto[s3]>=5.2.4",
     "pytest>=8.4",
     "pytest-cov>=7.1.0",

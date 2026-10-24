@@ -13,10 +13,7 @@ from pathlib import Path
 from covalence import Cid
 
 from piloop.plugins.cas.contract import UNBOUNDED, Cas
-
-
-class ContractBroken(AssertionError):
-    """A CAS does not do what piloop relies on. The message says what."""
+from piloop.plugins.host import ContractBroken
 
 
 def _require(ok: bool, rule: str) -> None:

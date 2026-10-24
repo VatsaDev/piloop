@@ -48,3 +48,12 @@ def test_piloop_sql_reads_the_tokens_but_cannot_write_one(db: Database, tmp_path
         assert tuple(con.execute('SELECT count(*) FROM tokens').fetchone()) == (0,)
         with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
             con.execute("INSERT INTO tokens (name, scope, sha256) VALUES ('agent', 'worker', 'x')")
+
+
+def test_mint_replaces_the_token_of_its_name_and_revoke_of_a_gone_one_is_a_success(db: Database) -> None:
+    first = Tokens(db).mint('gpu-1', TokenScope.WORKER)
+    second = Tokens(db).mint('gpu-1', TokenScope.WORKER)
+    assert (Tokens(db).verify(first), Tokens(db).verify(second)) == (None, Caller('gpu-1', TokenScope.WORKER))
+    Tokens(db).revoke('gpu-1')
+    Tokens(db).revoke('gpu-1')
+    assert Tokens(db).verify(second) is None

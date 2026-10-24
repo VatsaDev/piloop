@@ -9,7 +9,8 @@ tls = { cert = "/etc/piloop/cert.pem", key = "/etc/piloop/key.pem" }
 
 A server that other machines can reach and that has no TLS would send its tokens in the clear: an address that is not
 loopback needs ``tls``. ``tls = "proxy"`` says that TLS ends in front of the server, at a reverse proxy or an SSH
-tunnel. A machine that dials the server sends the token in ``PILOOP_HTTPS_TOKEN``.
+tunnel. A machine that dials the server sends the token in ``PILOOP_HTTPS_TOKEN``. A worker that the server starts gets
+a token of its own, and dials ``url``.
 """
 
 import os
@@ -19,10 +20,20 @@ from collections.abc import Mapping
 from typing import Literal, Self, assert_never
 
 import httpx2 as httpx
-from pydantic import BaseModel, ConfigDict, FilePath, model_validator
+from pydantic import BaseModel, ConfigDict, FilePath, SecretStr, model_validator
 
+from piloop.db.models import TokenScope
 from piloop.net.tokens import Caller
-from piloop.plugins.network.contract import Listener, NetworkConfig, NetworkHost, NoCredential, Peer, Refused
+from piloop.plugins.network.contract import (
+    Enrollment,
+    Listener,
+    NetworkConfig,
+    NetworkHost,
+    NoCredential,
+    NotEnrolled,
+    Peer,
+    Refused,
+)
 
 TIMEOUT = httpx.Timeout(30, connect=10)
 TOKEN_ENV = 'PILOOP_HTTPS_TOKEN'
@@ -46,6 +57,9 @@ class Https(NetworkConfig):
     tls: Certificate | Literal['proxy'] | None = None
     """The server ends TLS with a certificate, or ``"proxy"``: a reverse proxy or an SSH tunnel ends it. None: plain
     HTTP, which only a loopback ``listen`` may use."""
+    url: str | None = None
+    """Where other machines reach this server, such as ``https://piloop.example.com:8443``: what a worker that the
+    server starts dials. None: the server starts none."""
 
     @model_validator(mode='after')
     def _secured(self) -> Self:
@@ -98,3 +112,13 @@ class HttpsNetwork:
             return Refused('no bearer token: send Authorization: Bearer <token> (piloop token create)')
         caller = self.host.tokens.verify(secret)
         return caller if caller is not None else Refused('the token is unknown or revoked')
+
+    def enroll(self, principal: str, scope: TokenScope) -> Enrollment:
+        """A token called ``principal``, in place of the one that has that name, in ``TOKEN_ENV``."""
+        if self.config.url is None:
+            raise NotEnrolled('set url in [plugins.network] to where other machines reach this server')
+        secret = self.host.tokens.mint(principal, scope)
+        return Enrollment(server=self.config.url, env={TOKEN_ENV: SecretStr(secret)})
+
+    def revoke(self, principal: str) -> None:
+        self.host.tokens.revoke(principal)

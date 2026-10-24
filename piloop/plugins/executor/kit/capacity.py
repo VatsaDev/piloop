@@ -11,11 +11,12 @@ from pathlib import Path
 from typing import Annotated
 
 import psutil
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from piloop.db.models import LeaseKind, NoLease, utcnow
 from piloop.plugins.executor.contract import Capacity
 from piloop.plugins.host import Live
+from piloop.plugins.provisioner.contract import PROVISIONERS, ProvisionerConfig
 
 GB = 10**9
 
@@ -46,6 +47,46 @@ def sample(home: Path) -> HostSample:
     )
 
 
+class Provisioner(BaseModel):
+    """``[plugins.executor.pools.<name>.provisioner]``: start the pool's workers on demand, between ``min`` and ``max``.
+
+    These keys are the scaling policy, the same for every provider (the Nomad autoscaler's split of policy and
+    target). ``compute`` is the provider that starts and stops the workers.
+    """
+
+    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
+
+    compute: Annotated[ProvisionerConfig, PROVISIONERS.entry]
+    """The provisioner and its keys, as a table: ``[plugins.executor.pools.<name>.provisioner.compute]``, with its
+    ``provider``."""
+    max: Annotated[int, Field(ge=0), Live]
+    """The most workers at once: the hard bound of the cost. 0 starts none, and drains those that run."""
+    min: Annotated[int, Field(ge=0), Live] = 0
+    """The workers that run when no job waits. GitHub's ARC: ``minRunners``."""
+    idle_seconds: Annotated[float, Field(gt=0), Live] = 300
+    """A worker past ``min`` that held no lease for this long is drained, and stopped. Ray: ``idle_timeout_minutes``
+    of 5."""
+    max_starting: Annotated[int, Field(ge=1), Live] = 4
+    """The most workers that start at once, before they register. Ray: ``max_concurrent_launches``."""
+    register_seconds: float = Field(default=600, gt=0)
+    """A worker that does not register this long after its start is stopped, and the pool backs off before it starts
+    another. Slurm: ``ResumeTimeout``."""
+    max_worker_hours_per_day: Annotated[float | None, Field(gt=0), Live] = None
+    """The pool starts no worker once its workers ran this many hours in the last 24. No bound when unset."""
+    once: bool = False
+    """Each worker takes one lease, runs it and exits (``piloop worker --once``): for a platform that bills per call or
+    cannot keep a process."""
+    orphan_exit_seconds: float | None = Field(default=600, gt=0)
+    """A worker that cannot reach its server for this long exits by itself once it holds no job (``piloop worker
+    --orphan-exit``): so it never outlives a stopped server. While the server answers, its drain decides. None: never."""
+
+    @model_validator(mode='after')
+    def _ordered(self) -> Provisioner:
+        if self.min > self.max:
+            raise ValueError(f'min = {self.min} is more than max = {self.max}')
+        return self
+
+
 class Pool(BaseModel):
     """The capacity of each worker in a pool. Kubernetes: a node pool's allocatable, and its eviction thresholds."""
 
@@ -59,6 +100,17 @@ class Pool(BaseModel):
     """A worker with less memory available takes no job, and its slots count zero."""
     max_load: Annotated[float | None, Live] = None
     """The 1-minute load per CPU above which a worker takes no job, and its slots count zero."""
+    runners: list[str] = []
+    """The evaluator runners that its workers have, before any of them runs: the evaluations that a provisioned pool
+    starts a worker for."""
+    provisioner: Provisioner | None = None
+    """Start and stop its workers on demand. None: they start by hand (``piloop worker``)."""
+
+    @model_validator(mode='after')
+    def _runners(self) -> Pool:
+        if self.provisioner is not None and self.evaluations and not self.runners:
+            raise ValueError('a pool with a provisioner names the evaluator runners of its workers: runners = [...]')
+        return self
 
 
 def slots(capacity: Pool | Capacity, kind: LeaseKind) -> int | None:
@@ -78,3 +130,18 @@ def admits(pool: Pool, host: HostSample, running: Capacity, kind: LeaseKind) -> 
         (NoLease.SLOTS, bound is not None and (slots(running, kind) or 0) >= bound),
     )
     return next((reason for reason, refused in gates if refused), None)
+
+
+def add(a: int | None, b: int | None) -> int | None:
+    """Add two numbers of slots. None, no bound, absorbs."""
+    return None if a is None or b is None else a + b
+
+
+def less(free: int | None, taken: int) -> int | None:
+    """``free`` slots less ``taken``, never below zero. None, no bound, stays None."""
+    return None if free is None else max(free - taken, 0)
+
+
+def times(slots: int | None, workers: int) -> int | None:
+    """The slots of ``workers`` workers of ``slots`` each. None, no bound, stays None but for no worker."""
+    return 0 if workers == 0 else None if slots is None else slots * workers

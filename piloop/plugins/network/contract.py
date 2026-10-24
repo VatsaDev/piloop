@@ -17,8 +17,9 @@ from dataclasses import dataclass
 from typing import Annotated, Protocol
 
 import httpx2 as httpx
-from pydantic import BaseModel, ConfigDict, Field, WithJsonSchema, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, WithJsonSchema, model_validator
 
+from piloop.db.models import TokenScope
 from piloop.net.tokens import Caller, Tokens
 from piloop.plugins.host import Capability, Choice, Parameters, Scope
 
@@ -82,6 +83,22 @@ class NoCredential(Exception):
     """This machine has no credential to dial the server with. The message says how to give it one."""
 
 
+class Enrollment(BaseModel):
+    """How a machine that the server starts dials it: the server's URL, and the environment that holds its credential.
+
+    The provider's ``client`` on that machine reads ``env``. It never goes into an event, a span or an argv.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    server: str
+    env: dict[str, SecretStr]
+
+
+class NotEnrolled(Exception):
+    """The network cannot give a machine a credential to dial the server with. The message says why."""
+
+
 @dataclass(frozen=True)
 class Listener:
     """A socket that is bound and listening, and the TLS that the server ends on it, or None for plain HTTP."""
@@ -107,6 +124,21 @@ class Network(Protocol):
 
     def identify(self, headers: Mapping[str, str], peer: Peer) -> Caller | Refused:
         """Who sends a request with these headers (their names in lower case), from ``peer``."""
+        ...
+
+    def enroll(self, principal: str, scope: TokenScope) -> Enrollment:
+        """Give the machine called ``principal`` a credential of ``scope``, in place of any that it had.
+
+        ``identify`` then knows its calls as ``principal``'s. A provisioner's instance gets one when it starts (ARC's
+        just-in-time runner config).
+
+        Raises:
+            NotEnrolled: The network cannot give one.
+        """
+        ...
+
+    def revoke(self, principal: str) -> None:
+        """End the credential of ``principal``: its next call is refused. One that is gone already is a success."""
         ...
 
 

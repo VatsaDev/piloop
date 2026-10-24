@@ -21,8 +21,9 @@ Each worker has a row in ``lease_workers``: its pool (``capacity.Pool``) and the
 takes a job only while ``capacity.admits`` it, and ``Leases.capacity`` sums the slots of the reachable workers that
 are not under pressure.
 
-A worker's messages are events on the job's row (``LeaseQueued``, ``LeasePrompted``, ``LeaseRevoked``), each written
-in the transaction of the change that it announces: a transactional outbox. A worker reads those of its ``topics``
+A worker's messages are events on the job's row (``LeaseQueued``, ``LeasePrompted``, ``LeaseRevoked``), or on the
+worker's instance (``WorkerDrained``), each written in the transaction of the change that it announces: a
+transactional outbox. A worker reads those of its ``topics``
 after its cursor (``piloop.db.feed``), which it moves past a prompt only once it answered ``queued``, as a NATS
 JetStream consumer moves its ack floor. So a message survives a restart of the daemon or the worker.
 
@@ -87,7 +88,7 @@ from piloop.plugins.executor.contract import (
     Results,
     Settled,
 )
-from piloop.plugins.executor.kit.capacity import HostSample, Pool, admits, slots
+from piloop.plugins.executor.kit.capacity import HostSample, Pool, add, admits, less, slots, times
 
 SERVE = 'serve'
 """The id of the worker inside ``piloop serve``, and its pool. The id is stable, so the next daemon's worker finds its
@@ -155,9 +156,25 @@ class LeaseRevoked(EventModel):
     worker: str
 
 
+class WorkerDrained(EventModel):
+    """On the worker's instance, a message for the worker (``Drain``): take no more jobs, and exit once you hold none.
+
+    After the Buildkite agent's ``disconnect-after-idle-timeout``: the worker decides inside its own acquire loop, so a
+    lease is never granted to a worker that is on its way out (``NoLease.DRAINING``).
+    """
+
+    kind: Literal['worker.drained'] = 'worker.drained'
+    worker: str
+
+
 def topics(worker: str) -> tuple[Topic, ...]:
     """The events that are messages of ``worker``."""
-    return Topic(LeaseQueued), Topic(LeasePrompted, to=worker), Topic(LeaseRevoked, to=worker)
+    return (
+        Topic(LeaseQueued),
+        Topic(LeasePrompted, to=worker),
+        Topic(LeaseRevoked, to=worker),
+        Topic(WorkerDrained, to=worker),
+    )
 
 
 @dataclass(frozen=True)
@@ -267,17 +284,24 @@ class Revoke(BaseModel):
     lease: int
 
 
-type Message = Annotated[Work | PromptMessage | Revoke, Field(discriminator='kind')]
+class Drain(BaseModel):
+    """A message: take no more jobs, and exit once every job reported (``WorkerDrained``)."""
+
+    kind: Literal['drain'] = 'drain'
+    id: int
+
+
+type Message = Annotated[Work | PromptMessage | Revoke | Drain, Field(discriminator='kind')]
 
 
 class NotAddressed(Exception):
     """A worker's answer to a message that is not a prompt for it: refused, and nothing changed. ``not_addressed``."""
 
 
-def _message(event: Event) -> Work | PromptMessage | Revoke:
+def _message(event: Event) -> Work | PromptMessage | Revoke | Drain:
     """The message that ``event``, of one of ``topics``, carries."""
     payload = event.payload
-    assert isinstance(payload, LeaseQueued | LeasePrompted | LeaseRevoked)  # what ``topics`` select
+    assert isinstance(payload, LeaseQueued | LeasePrompted | LeaseRevoked | WorkerDrained)  # what ``topics`` select
     match payload:
         case LeaseQueued():
             return Work(id=event.id)
@@ -285,6 +309,8 @@ def _message(event: Event) -> Work | PromptMessage | Revoke:
             return PromptMessage(id=event.id, lease=lease, prompt=Prompt(comment, text))
         case LeaseRevoked(lease=lease):
             return Revoke(id=event.id, lease=lease)
+        case WorkerDrained():
+            return Drain(id=event.id)
         case never:
             assert_never(never)
 
@@ -343,6 +369,17 @@ def revoke(s: Session, lease: Lease) -> None:
         lease.revoked_at = utcnow()
         assert lease.worker is not None  # a live lease has its worker
         emit(s, LeaseRevoked(lease=lease.id, worker=lease.worker), _target(lease), System.DAEMON)
+
+
+def drain(s: Session, worker: str, on: TargetRef) -> None:
+    """Drain ``worker``: ``acquire`` refuses it from now on (``NoLease.DRAINING``), and it gets ``WorkerDrained``.
+
+    The event goes on ``on``. A worker without a row, which never registered, has nothing to drain. The caller commits.
+    """
+    row = s.get(LeaseWorker, worker)
+    if row is not None and row.drained_at is None:
+        row.drained_at = utcnow()
+        emit(s, WorkerDrained(worker=worker), on, System.DAEMON)
 
 
 def cancel(s: Session, lease: Lease, reason: str) -> None:
@@ -440,6 +477,10 @@ class Leases:
             if (lease := s.scalars(taken).first()) is not None:
                 s.commit()
                 return Grant.of(lease)
+            if row.drained_at is not None:
+                row.no_lease = NoLease.DRAINING
+                s.commit()
+                return NoLease.DRAINING
             pool = self.pools[row.pool]
             counts = Counter(
                 s.scalars(select(Lease.kind).where(Lease.worker == worker, Lease.state.in_(LIVE_LEASES))).all()
@@ -474,20 +515,27 @@ class Leases:
     def capacity(self) -> Capacity:
         """The free slots of the reachable workers that their pools admit now, less the queued leases.
 
-        A worker under pressure counts zero, and its live leases take nothing from another worker's slots.
+        A worker under pressure counts zero, and its live leases take nothing from another worker's slots. A pool
+        with a provisioner counts the slots of its ``max`` workers, whether they run or not, less its live leases: a
+        job then waits on a queued lease, which is the demand that starts a worker (``scaling``). GitHub's ARC and
+        Buildkite queue jobs the same way, whether a runner exists or not.
         """
         since = utcnow() - timedelta(seconds=self.timing.grace)
         # one snapshot: a lease that a worker takes between two reads would otherwise count in neither
         with self._db.session() as s, read_transaction(s):
-            reachable = s.execute(
-                select(LeaseWorker.id, LeaseWorker.pool, LeaseWorker.sample).where(LeaseWorker.seen_at > since)
-            ).all()
+            workers = s.execute(select(LeaseWorker.id, LeaseWorker.pool, LeaseWorker.sample, LeaseWorker.seen_at)).all()
             leased = s.execute(select(Lease.worker, Lease.kind).where(Lease.state.in_(LIVE_LEASES))).all()
             live = Counter((worker, kind) for worker, kind in leased)
             queued = Counter(s.scalars(select(Lease.kind).where(Lease.state == LeaseState.QUEUED)))
         free: dict[LeaseKind, int | None] = dict.fromkeys(KINDS, 0)
-        for worker, pool_name, sample in reachable:
-            if (pool := self.pools.get(pool_name)) is None:
+        pool_of = {worker: pool for worker, pool, _, _ in workers}
+        for name, pool in self.pools.items():
+            if pool.provisioner is not None:
+                for kind in KINDS:
+                    taken = sum(n for (worker, k), n in live.items() if k is kind and pool_of.get(worker) == name)
+                    free[kind] = add(free[kind], less(times(slots(pool, kind), pool.provisioner.max), taken))
+        for worker, pool_name, sample, seen_at in workers:
+            if seen_at <= since or (pool := self.pools.get(pool_name)) is None or pool.provisioner is not None:
                 continue
             running = Capacity(live[worker, LeaseKind.AGENT], live[worker, LeaseKind.EVALUATION])
             host = HostSample.model_validate(sample)
@@ -495,9 +543,9 @@ class Leases:
                 if admits(pool, host, running, kind) is None:
                     bound = slots(pool, kind)
                     left = None if bound is None else bound - (slots(running, kind) or 0)
-                    free[kind] = _sum(free[kind], left)
+                    free[kind] = add(free[kind], left)
         agent, evaluation = LeaseKind.AGENT, LeaseKind.EVALUATION
-        return Capacity(_less(free[agent], queued[agent]), _less(free[evaluation], queued[evaluation]))
+        return Capacity(less(free[agent], queued[agent]), less(free[evaluation], queued[evaluation]))
 
     def _live(self, s: Session, lease_id: int, worker: str) -> Lease:
         """Return the lease if it is ``worker``'s, live and the newest of its job: the fence. Else raise.
@@ -766,16 +814,19 @@ class Leases:
                 return
         self._results.queued(key, prompt.id, 'the agent has no live lease')
 
-    def messages(self, worker: str, after: int, wait: float) -> list[Work | PromptMessage | Revoke]:
+    def messages(self, worker: str, after: int, wait: float) -> list[Work | PromptMessage | Revoke | Drain]:
         """Store ``after`` as the worker's cursor, and return its messages after it, waiting up to ``wait`` seconds.
 
         A long-poll, after the GitHub Actions runner: it returns at once when a message waits, and reads again on each
         commit (``Database.wait_until``). A prompt whose comment has its outcome is left out: the worker answered it.
+        A worker whose row went (``scaling`` ended its instance) gets none.
         """
-        found: list[Work | PromptMessage | Revoke] = []
+        found: list[Work | PromptMessage | Revoke | Drain] = []
 
         def read(s: Session) -> bool:
-            row = s.get_one(LeaseWorker, worker)  # ``register`` wrote it
+            row = s.get(LeaseWorker, worker)
+            if row is None:  # its instance ended while it waited: its credential is revoked, so its next call fails
+                return True
             if row.cursor != after:
                 row.cursor = after
                 s.commit()
@@ -873,16 +924,6 @@ def _unanswered() -> ColumnElement[bool]:
         func.json_extract(outcome.payload, '$.comment') == func.json_extract(Event.payload, '$.comment'),
     )
     return Event.kind.not_in(LeasePrompted.kinds()) | ~answered
-
-
-def _sum(a: int | None, b: int | None) -> int | None:
-    """Add two numbers of slots. None, no bound, absorbs."""
-    return None if a is None or b is None else a + b
-
-
-def _less(free: int | None, taken: int) -> int | None:
-    """``free`` slots less ``taken``, never below zero. None, no bound, stays None."""
-    return None if free is None else max(free - taken, 0)
 
 
 @deprecated.until('0.3.0', 'an agent that a daemon before leases started: delete _adopt_running')

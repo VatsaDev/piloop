@@ -89,6 +89,10 @@ class PluginError(Exception):
     """
 
 
+class ContractBroken(AssertionError):
+    """A provider does not do what piloop relies on: a capability's conformance check says which rule it breaks."""
+
+
 class MissingProvider(ValueError):
     """A capability has no provider of that name. A ``ValueError``, so that a config validator reports it on its key."""
 
