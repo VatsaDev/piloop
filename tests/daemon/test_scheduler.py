@@ -4,6 +4,7 @@ import threading
 import time
 from contextlib import closing
 from datetime import timedelta
+from importlib.metadata import EntryPoints
 from pathlib import Path
 
 import pytest
@@ -57,6 +58,7 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.otel import Tracer
+from piloop.plugins import host as plugins
 from piloop.reports.overview import SILENT_SECONDS
 from piloop.runtime import AgentStatus, Handle, NotSteerable
 from piloop.scoring.ledger import current_evaluator, due, head, import_reference, request_remeasure
@@ -792,6 +794,25 @@ def test_a_dead_thread_is_traced_and_its_row_closed(
     with db.session() as s:
         agent_session = s.get_one(AgentSession, 1)
     assert (agent_session.state, agent_session.error) == (AgentSessionState.KILLED, 'RuntimeError: thread broke')
+
+
+def test_a_tick_reads_no_entry_points(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The installed packages do not change while a process runs: a tick reads each campaign's config without a scan."""
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    scheduler.tick()
+    scans: list[str] = []
+    found = plugins.entry_points
+
+    def entry_points(*, group: str) -> EntryPoints:
+        scans.append(group)
+        return found(group=group)
+
+    monkeypatch.setattr(plugins, 'entry_points', entry_points)
+    scheduler.tick()
+    scheduler.tick()
+    assert scans == []
 
 
 def test_invalid_campaign_config_is_skipped_not_fatal(

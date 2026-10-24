@@ -5,6 +5,16 @@ All notable changes to piloop are in this file. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before 1.0, a minor release may contain breaking changes.
 A deprecated configuration key shows a warning for at least one minor release before it is removed.
 
+## [0.2.1](https://github.com/hiloopai/piloop/compare/v0.2.0...v0.2.1) - 2026-10-24
+
+Upgrade to 0.2.1 before you upgrade to 0.3.0: `uv tool install 'piloop==0.2.1'`, then `piloop restart`. The running
+agents keep going.
+
+### Fixed
+
+- The daemon reads the installed entry points once per process, not on every tick. A 0.2.0 daemon reads them while
+  `piloop upgrade` installs 0.3.0, loads the plugins of 0.3.0 into its own code, and stops, with its agents.
+
 ## [0.2.0](https://github.com/hiloopai/piloop/compare/v0.1.0...v0.2.0) - 2026-10-21
 
 This release has breaking changes, marked **Breaking** below. Read
