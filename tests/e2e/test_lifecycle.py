@@ -36,7 +36,7 @@ CONFIG = {
         'research': {'triggers': []},
         'watchdog': {'triggers': []},
     },
-    'stop': {'max_runs': 5, 'max_hours': 1, 'max_tokens': 20_000_000},
+    'plugins': {'stop_rule': {'max_runs': 5, 'max_hours': 1, 'max_tokens': 20_000_000}},
 }
 """Over the template's ``piloop.toml``: two implementers, no sweeps (the tests add the ideas), and stop conditions only as a
 backstop (the tests stop the campaign)."""

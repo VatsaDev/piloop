@@ -1,10 +1,11 @@
-"""Stop conditions: decide when a campaign's ``[stop]`` table, or a request, ends the campaign.
+"""Stop conditions: decide when a campaign's stop rule, or a request, ends the campaign.
 
 The scheduler checks every active campaign once per tick. The reason goes into ``campaigns.stopped_reason`` and into
 the trigger of the closing watchdog. A stop or a cancel that someone requests is an event that the daemon acts on, so
 any client of the database can make one.
 """
 
+import math
 from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Literal
@@ -174,16 +175,21 @@ def park_cancelled(s: Session, run: Run) -> None:
     )
 
 
+def limits(cfg: CampaignConfig) -> dict[Fact, float]:
+    """The limits of the campaign's stop rule, by fact (``StopRule.limits``)."""
+    return STOP_RULES.selected(cfg.plugins).limits()
+
+
 def check(s: Session, campaign: Campaign, cfg: CampaignConfig) -> Go | Hold | Stop:
     """Ask the campaign's stop rule whether ``campaign`` goes on, holds, or stops now.
 
     The rule is ``[plugins.stop_rule]``, else ``limits``. Only the facts that it reads are gathered
-    (``StopRule.reads``). ``head`` is the first track's primary at the head: config validation rejects ``target`` for
-    a campaign with more than one track. A stop request is not the rule's: see ``requested``.
+    (``StopRule.reads``). ``head`` is the first track's primary at the head: config validation rejects a limit on it
+    for a campaign with more than one track. A stop request is not the rule's: see ``requested``.
     """
     rule = STOP_RULES.selected(cfg.plugins)
-    primary, limits = cfg.all_tracks[0].primary, cfg.limits()
-    reads = set(rule.reads(limits))
+    primary = cfg.all_tracks[0].primary
+    reads = set(rule.reads())
     trunk = head(s, campaign) if Fact.HEAD in reads else None
     counting = Fact.RUNS in reads
     spending = Fact.SPEND in reads
@@ -198,7 +204,7 @@ def check(s: Session, campaign: Campaign, cfg: CampaignConfig) -> Go | Hold | St
         spend=campaign.spend_usd if spending else None,
         spend_error=campaign.spend_error if spending else None,
     )
-    return rule.check(StopCase(primary.name, primary.direction, limits, progress))
+    return rule.check(StopCase(primary.name, primary.direction, progress))
 
 
 def requested(s: Session, campaign: Campaign) -> Stop | None:
@@ -299,10 +305,10 @@ def runs_without_keep(s: Session, campaign: Campaign, before: datetime | None = 
 def stall(cfg: CampaignConfig) -> tuple[int, str]:
     """Return the number of runs without a keep after which research must pivot, and how it was derived.
 
-    The number is half of ``plateau``, so half of the campaign's patience remains after the pivot. Without
-    ``plateau``, it is two rounds of the run slots (``CampaignConfig.run_slots``).
+    The number is half of the stop rule's limit on runs without a keep, so half of the campaign's patience remains after
+    the pivot. Without that limit, it is two rounds of the run slots (``CampaignConfig.run_slots``).
     """
-    if cfg.stop.plateau is not None:
-        return -(-cfg.stop.plateau // 2), f'half of [stop] plateau = {cfg.stop.plateau}'
+    if (plateau := limits(cfg).get(Fact.WITHOUT_KEEP)) is not None:
+        return math.ceil(plateau / 2), f"half of the stop rule's limit of {plateau:g} runs without a keep"
     slots = ' + '.join(f'[roles.{name}] max_concurrent' for name in cfg.roles.doing_runs())
     return 2 * cfg.run_slots, f'two rounds of {slots} = {cfg.run_slots}'

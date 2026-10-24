@@ -1,4 +1,4 @@
-{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the fields of `Stop` in `piloop/config.py` if you want to change anything here. */}
+{/* WARNING: This file is auto-generated (uv run -m scripts.generate_all). Update the fields of `Limits` in `piloop/plugins/stop_rule/limits.py` if you want to change anything here. */}
 
 | Key | Meaning |
 |---|---|
@@ -7,3 +7,4 @@
 | `max_hours` | Stop after this many hours of wall-clock time since the first run of the campaign started. The time that the campaign was paused (`piloop pause`) does not count. |
 | `max_tokens` | Stop when all the agents of the campaign together spent this many tokens (the `total` of `agent_sessions.usage`), summed over the agents that ended. |
 | `plateau` | Stop after this many finished runs that reached the evaluator without a new `keep` candidate. The count starts again at each keep, and when the campaign is set `active` after a stop (`piloop init`, or an UPDATE of `campaigns.status`), so a reactivated campaign gets this many runs again. A new evaluator alone does not reset it. |
+| `max_spend` | Hold the campaign when the spend that `[spend] command` prints reaches this many USD: the daemon launches no agent and starts no evaluation. Work that already runs finishes and is scored. Needs `[spend]`. To resume, raise it and run `piloop init`. |

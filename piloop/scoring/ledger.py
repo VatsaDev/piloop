@@ -454,7 +454,6 @@ def judge(
     verdict, reason = decide(
         VERDICT_RULES.selected(cfg.plugins),
         track,
-        cfg.confidence,
         Side(f'candidate#{candidate.id}', mine, units(candidate, evaluator_id, units_dir), mine_samples),
         Side(f'candidate#{own.id}', metrics(own, evaluator_id), units(own, evaluator_id, units_dir), theirs_samples),
     )
@@ -476,14 +475,14 @@ def criterion(m: Metric) -> Criterion:
     return Criterion(m.name, m.direction, m.margin, m.floor)
 
 
-def decide(rule: VerdictRule, track: Track, confidence: float, candidate: Side, bar: Side) -> tuple[Verdict, str]:
+def decide(rule: VerdictRule, track: Track, candidate: Side, bar: Side) -> tuple[Verdict, str]:
     """Return ``rule``'s verdict on ``candidate``, a candidate of ``track``, against ``bar``, and the reason.
 
     The rule gets the case as data (``piloop.plugins.verdict_rule.contract.Case``): the track's primary and guardrails,
-    the confidence and both sides' results. Its outcome is the ``Verdict`` of the same value.
+    and both sides' results. Its outcome is the ``Verdict`` of the same value.
     """
     guardrails = tuple(map(criterion, track.guardrails))
-    judged = rule.decide(Case(criterion(track.primary), guardrails, confidence, candidate, bar))
+    judged = rule.decide(Case(criterion(track.primary), guardrails, candidate, bar))
     return Verdict(judged.verdict), judged.reason
 
 

@@ -50,9 +50,9 @@ from piloop.plugins.metric import number
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap
 
 from piloop.plugins.stop_rule.contract import STOP_RULES, StopRule, StopCase
-from piloop.plugins.stop_rule.contract import Limits, Progress, Fact
+from piloop.plugins.stop_rule.contract import Progress, Fact
 from piloop.plugins.stop_rule.contract import Go, GO, Hold, Stop
-from piloop.plugins.stop_rule.limits import FirstLimit
+from piloop.plugins.stop_rule.limits import Limits
 
 from piloop.plugins.executor.contract import EXECUTORS, Executor, ExecutorConfig, Host
 from piloop.plugins.executor.contract import Results, Settled

@@ -27,7 +27,7 @@ CONFIG = {
         'research': {'triggers': []},
         'watchdog': {'triggers': []},
     },
-    'stop': {'max_runs': 5, 'max_hours': 1, 'max_tokens': 20_000_000},
+    'plugins': {'stop_rule': {'max_runs': 5, 'max_hours': 1, 'max_tokens': 20_000_000}},
 }
 OTHERS = ('enwik8-b', 'enwik8-c')
 """The two campaigns that join the first one's home."""

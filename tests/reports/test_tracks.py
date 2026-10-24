@@ -48,7 +48,7 @@ def test_status_names_every_track_its_head_its_floor_and_what_works_on_it(db: Da
 demo · head candidate#4: score 3 (+2), size 8 (-4) · 3 kept / 4 candidates · 4k tok · evaluator #1, 0s old
 ### Goal
 - Tracks, each a primary its keeps improve while holding the others: score (score, higher, margin 1, floor 0.5, share 0.75); size (size, lower, margin 2, floor 20, share 0.25)
-- Campaign: active. Progress: run 3 · 1.9h (no [stop] condition: open-ended).
+- Campaign: active. Progress: run 3 · 1.9h (no limit stops it: open-ended).
 - The goal in words is the campaign's brief.md: weigh the metric against it.
 ### Tracks
 - score: score 3 at the head (+2 on the start); floor 0.5, 2.5 to spare; 1 trunk keeps, the latest candidate#2 1h ago; share 0.75 of 1 slots, 0 running; 0 runnable ideas.

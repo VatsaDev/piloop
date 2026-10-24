@@ -27,7 +27,7 @@ CONFIG = {
         'research': {'triggers': []},
         'watchdog': {'triggers': []},
     },
-    'stop': {'max_runs': 3, 'max_hours': 1, 'max_tokens': 5_000_000},
+    'plugins': {'stop_rule': {'max_runs': 3, 'max_hours': 1, 'max_tokens': 5_000_000}},
 }
 PLAN = (
     'This idea tests the time limit, not the compressor. Do ten steps in this one turn. Each step is one Bash tool'

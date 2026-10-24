@@ -67,8 +67,6 @@ class Case:
     primary: Criterion
     guardrails: tuple[Criterion, ...]
     """The campaign's guardrails, then the primary of every other track."""
-    confidence: float
-    """``confidence`` in ``piloop.toml``: the confidence level that a gain must reach, between 0.5 and 1."""
     candidate: Side
     bar: Side
 

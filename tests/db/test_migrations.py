@@ -888,13 +888,14 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
 
 
 def upgraded(config: dict[str, object]) -> object:
-    """``config`` as revisions 0034 (no herdr), 0035 (no ``workdir``), 0036 (no Entire) and 0038 (a trigger's
-    ``provider``) store it, so that today's piloop reads it."""
+    """``config`` as revisions 0034 (no herdr), 0035 (no ``workdir``), 0036 (no Entire), 0038 (a trigger's
+    ``provider``) and 0039 (the rules' limits) store it, so that today's piloop reads it."""
     revisions = ScriptDirectory(str(MIGRATIONS))
     config = revisions.get_revision('0034').module.upgraded(config, stopped=False)
     config = revisions.get_revision('0035').module.upgraded(config)
     config = revisions.get_revision('0036').module.upgraded(config)
-    return revisions.get_revision('0038').module.renamed(config, 'kind', 'provider')
+    config = revisions.get_revision('0038').module.renamed(config, 'kind', 'provider')
+    return revisions.get_revision('0039').module.upgraded(config)
 
 
 def test_0012_leaves_the_cached_input_out_of_the_input_of_codex_rows_and_downgrades(tmp_path: Path) -> None:
@@ -1659,3 +1660,43 @@ def test_0038_names_each_stored_trigger_with_provider_and_downgrades(tmp_path: P
     command.downgrade(cfg, before)
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert [loads(c) for (c,) in con.execute(configs)] == [old, {'roles': 3}]
+
+
+def test_0039_moves_the_stop_keys_the_spend_limit_and_the_confidence_into_the_rules_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0038')
+    stop = {'target': None, 'max_runs': 20, 'max_hours': None, 'max_tokens': None, 'plateau': 5}
+    old = {'stop': stop, 'spend': {'command': ['true'], 'limit': 300.0}, 'confidence': 0.9, 'plugins': {}}
+    plain = {'stop': {'target': None}, 'confidence': 0.95}
+    kept = {'stop': {'max_runs': 9}, 'plugins': {'stop_rule': {'provider': 'after_keeps', 'keeps': 2, 'max_runs': 3}}}
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        for name, config in (('a', old), ('b', plain), ('c', kept)):
+            con.execute(
+                'INSERT INTO campaigns (name, path, config) VALUES (?, ?, ?)', (name, f'/{name}', dumps(config))
+            )
+    command.upgrade(cfg, '0039')
+    configs = 'SELECT config FROM campaigns ORDER BY id'
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert [loads(c) for (c,) in con.execute(configs)] == [
+            {
+                'spend': {'command': ['true']},
+                'plugins': {
+                    'stop_rule': {'max_runs': 20, 'plateau': 5, 'max_spend': 300.0},
+                    'verdict_rule': {'confidence': 0.9},
+                },
+            },
+            {},
+            {'plugins': {'stop_rule': {'provider': 'after_keeps', 'keeps': 2, 'max_runs': 3}}},
+        ], "only the keys that are set move, and a key of the rule's table keeps its value"
+    command.downgrade(cfg, '0038')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        [first, *_] = [loads(c) for (c,) in con.execute(configs)]
+        assert first == {
+            'spend': {'command': ['true'], 'limit': 300.0},
+            'plugins': {'stop_rule': {}, 'verdict_rule': {}},
+            'stop': {'max_runs': 20, 'plateau': 5},
+            'confidence': 0.9,
+        }

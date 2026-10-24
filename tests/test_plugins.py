@@ -293,7 +293,6 @@ def test_activation_goes_in_order_teardown_newest_first_and_a_failure_undoes_onl
 CASE = Case(
     Criterion('score', Direction.HIGHER),
     (),
-    0.95,
     Side('candidate#2', {'score': 13.0}, {}),
     Side('candidate#1', {'score': 10.0}, {}),
 )
@@ -356,7 +355,7 @@ def test_a_pure_plugin_is_installed_selected_by_config_and_answers_with_data(
             f'{PLUGIN}:Undecided',
             'does not implement piloop.plugins.verdict_rule.contract.VerdictRule: it has no decide$',
         ),
-        ('piloop.plugins.stop_rule.limits:FirstLimit', 'is not a subclass of piloop.plugins.verdict_rule.contract'),
+        ('piloop.plugins.stop_rule.limits:Limits', 'is not a subclass of piloop.plugins.verdict_rule.contract'),
     ],
 )
 def test_a_provider_is_a_class_that_implements_its_contract(
@@ -472,7 +471,7 @@ def test_a_plugin_declares_a_capability_calls_its_providers_and_another_package_
 
     def case(mine: dict[str, float]) -> Case:
         sides = Side('candidate#2', {'score': sum(mine.values())}, {'score': mine})
-        return Case(Criterion('score', Direction.HIGHER), (), 0.95, sides, Side('candidate#1', {'score': 30.0}, {}))
+        return Case(Criterion('score', Direction.HIGHER), (), sides, Side('candidate#1', {'score': 30.0}, {}))
 
     assert rule.decide(case(better)).verdict is Outcome.KEEP, 'no unit got worse'
     worse = rule.decide(

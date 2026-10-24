@@ -8,14 +8,13 @@ raises the limit or the command works again.
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 from sqlalchemy import select
 
 from piloop.campaign import spend
 from piloop.campaign.campaigns import sync
 from piloop.campaign.spend import SpendError
 from piloop.campaign.stop import check
-from piloop.config import CampaignConfig, Spend
+from piloop.config import CampaignConfig, ConfigError, load_campaign_config
 from piloop.db.models import AgentSession, Campaign, CampaignStatus, Comment, Idea, IdeaStatus, Run, RunStatus
 from piloop.db.session import Database
 from piloop.ids import WATCHDOG
@@ -25,9 +24,18 @@ from tests.conftest import ScriptRuntime, write_toml
 from tests.daemon.test_scheduler import add_ideas, make_scheduler, request_watchdog, set_config, stop_campaign
 
 
-def test_notices_must_be_below_the_limit() -> None:
-    with pytest.raises(ValidationError, match=r'notices \[100.0, 150.0\] are not below the limit 100'):
-        Spend(command=['true'], limit=100, notices=[50, 100, 150])
+def limited(limit: float, **spend: object) -> dict[str, object]:
+    """The overrides of a ``[spend]`` table and of the stop rule's limit on the spend."""
+    return {'spend': {'command': ['true']} | spend, 'plugins': {'stop_rule': {'max_spend': limit}}}
+
+
+def test_notices_must_be_below_the_limit_and_a_limit_needs_the_spend(campaign: Campaign) -> None:
+    with pytest.raises(ConfigError, match=r'\[spend\] notices \[100.0, 150.0\] are not below the spend limit 100'):
+        load_campaign_config(Path(campaign.path), **limited(100, notices=[50, 100, 150]))
+    with pytest.raises(ConfigError, match=r"the stop rule 'limits' reads the spend: add \[spend\]"):
+        load_campaign_config(Path(campaign.path), plugins={'stop_rule': {'max_spend': 100}})
+    notices = load_campaign_config(Path(campaign.path), spend={'command': ['true'], 'notices': [50]}).spend
+    assert notices is not None and notices.notices == [50], 'notices alone, without a limit'
 
 
 @pytest.mark.parametrize(
@@ -79,8 +87,7 @@ def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised
         Path(campaign.path),
         f'#!/bin/sh\nwhile [ -f {hold} ]; do sleep 0.05; done\necho line >> solve.txt\ngit commit -qam "add a line"\n',
     )
-    budget = {'command': ['cat', str(file)], 'limit': 300, 'notices': [100, 200]}
-    set_config(db, campaign, spend=budget)
+    set_config(db, campaign, **limited(300, command=['cat', str(file)], notices=[100, 200]))
     first, second = add_ideas(db, campaign, 'first', 'second')
     scheduler = make_scheduler(db, runtime, tmp_path)
 
@@ -104,7 +111,8 @@ def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised
             'escalation',
             0,
             'Spend limit reached: $1,012.00 spent, limit $300.00. Nothing launches and no evaluation starts. Runs in'
-            ' progress finish and are scored. To resume, raise [spend] limit in piloop.toml and run `piloop init`.',
+            ' progress finish and are scored. To resume, raise [plugins.stop_rule] max_spend in piloop.toml and run'
+            ' `piloop init`.',
         ),
     ]
     hold.unlink()
@@ -122,7 +130,8 @@ def test_notices_once_then_at_the_limit_nothing_starts_until_the_limit_is_raised
     assert scheduler.tick() == [] and len(daemon_comments(db)) == 3, 'one escalation for the limit'
 
     (Path(campaign.path) / 'piloop.toml').write_text(
-        (Path(campaign.path) / 'piloop.toml').read_text() + f'\n[spend]\ncommand = ["cat", "{file}"]\nlimit = 2000\n'
+        (Path(campaign.path) / 'piloop.toml').read_text()
+        + f'\n[spend]\ncommand = ["cat", "{file}"]\n\n[plugins.stop_rule]\nmax_spend = 2000\n'
     )
     with db.session() as s:
         sync(s, s.get_one(Campaign, campaign.id))  # This is what `piloop init` does.
@@ -135,7 +144,7 @@ def test_a_failing_command_holds_launches_with_one_escalation_per_streak(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     file = tmp_path / 'bill'
-    set_config(db, campaign, spend={'command': ['cat', str(file)], 'limit': 300})
+    set_config(db, campaign, **limited(300, command=['cat', str(file)]))
     add_ideas(db, campaign, 'idea')
     scheduler = make_scheduler(db, runtime, tmp_path)
 
@@ -165,7 +174,7 @@ def test_progress_says_when_a_campaign_has_no_reading_yet(db: Database, campaign
         p = s.get_one(Campaign, campaign.id)
         line = progress(s, p, CampaignConfig.model_validate(p.config), p.created_at)
     assert 'spend' not in line and 'held' not in line, 'no [spend]: nothing to show'
-    set_config(db, campaign, spend={'command': ['true'], 'limit': 10})
+    set_config(db, campaign, **limited(10))
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         assert progress(s, p, CampaignConfig.model_validate(p.config), p.created_at).endswith(
@@ -175,7 +184,7 @@ def test_progress_says_when_a_campaign_has_no_reading_yet(db: Database, campaign
 
 def test_a_stopped_campaign_is_held_only_while_its_closing_review_waits(db: Database, campaign: Campaign) -> None:
     """piloop asks the stop rule about a stopped campaign only while its review waits for the hold (``wait``)."""
-    set_config(db, campaign, spend={'command': ['true'], 'limit': 10, 'closing_review': 'wait'})
+    set_config(db, campaign, **limited(10, closing_review='wait'))
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         cfg = CampaignConfig.model_validate(p.config)
@@ -191,9 +200,7 @@ def test_a_closing_review_waits_only_on_a_stopped_campaign_with_wait_and_a_reque
     db: Database, campaign: Campaign
 ) -> None:
     def waits(**spend_table: object) -> bool:
-        set_config(
-            db, campaign, **({'spend': {'command': ['true'], 'limit': 10, **spend_table}} if spend_table else {})
-        )
+        set_config(db, campaign, **(limited(10, **spend_table) if spend_table else {}))
         with db.session() as s:
             p = s.get_one(Campaign, campaign.id)
             return spend.review_waits(s, p, CampaignConfig.model_validate(p.config))

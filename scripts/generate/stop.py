@@ -1,6 +1,6 @@
-"""Generate ``docs/snippets/generated/stop.mdx``: the keys of the ``[stop]`` table."""
+"""Generate ``docs/snippets/generated/stop.mdx``: the limits of the built-in stop rule ``limits``."""
 
-from piloop.config import Stop
+from piloop.plugins.stop_rule.limits import Limits
 from scripts.generate import SNIPPETS, header
 from scripts.generate.markdown import meanings
 
@@ -8,5 +8,5 @@ PATH = SNIPPETS / 'stop.mdx'
 
 
 def generate() -> str:
-    """Return the table of the keys of ``[stop]``, from the fields of ``Stop``."""
-    return header('the fields of `Stop` in `piloop/config.py`') + '\n' + meanings(Stop)
+    """Return the table of the keys of ``[plugins.stop_rule]`` for ``limits``, from the fields of ``Limits``."""
+    return header('the fields of `Limits` in `piloop/plugins/stop_rule/limits.py`') + '\n' + meanings(Limits)

@@ -13,6 +13,7 @@ from piloop.campaign import campaigns as campaign_module
 from piloop.campaign.campaigns import BLANK, TEMPLATES, create_campaign_repo, register, registered, stub_untouched
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
 from piloop.db.session import Database
+from piloop.plugins.host import Scope, declared
 from tests.conftest import HARNESS_APPEND, write_toml
 
 
@@ -102,7 +103,7 @@ def model_in(annotation: object) -> tuple[type[BaseModel], bool] | None:
 
 
 def unnamed_keys(template: str) -> list[str]:
-    """The keys of ``CampaignConfig``, at every depth, that a ``piloop.toml`` text does not name.
+    """The keys of ``CampaignConfig``, at every depth, and of each default rule, that a ``piloop.toml`` text does not name.
 
     A key is named by an assignment (``key =`` or ``# key =``) in its table, or by a header (``[table]``,
     ``# [table]``) at its path. A table that lists its keys in a ``keys:`` comment may name a key there instead. A
@@ -134,7 +135,14 @@ def unnamed_keys(template: str) -> list[str]:
                 missing += walk(nested[0], table, where + ('.<name>' if nested[1] else ''), own or text)
         return missing
 
-    return walk(CampaignConfig, '', '', sections.get('', ''))
+    missing = walk(CampaignConfig, '', '', sections.get('', ''))
+    for capability in declared():
+        if capability.choice is None or capability.choice.scope is not Scope.CAMPAIGN:
+            continue
+        default = capability.get(str(capability.choice.default)).model
+        table = f'plugins.{capability.name}'
+        missing += walk(default, re.escape(table), table, sections.get(table, ''))
+    return missing
 
 
 def test_the_campaign_template_names_every_key_of_the_config() -> None:
@@ -149,7 +157,7 @@ def test_the_campaign_template_names_every_key_of_the_config() -> None:
         'harness.<name>.usage.tally',
         'roles.implementer.explore_every',
         'mcp.<name>.bearer_token_env',
-        'stop.plateau',
+        'plugins.stop_rule.plateau',
     ], 'the check finds a key missing from a table, from a keys: comment, and from a nested table without a header'
 
 

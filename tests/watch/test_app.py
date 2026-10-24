@@ -106,7 +106,7 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Campaign:
     (implementer_log / 'agent_session.stdout').write_text('hello from the agent\n')
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        p.config = {**p.config, 'stop': STOP}
+        p.config = {**p.config, 'plugins': {'stop_rule': STOP}}
         s.get_one(Candidate, 1).created_at = ago(hours=3)
         done = idea(s, p, 'more lines', IdeaStatus.DONE, created_at=ago(hours=3))
         run = Run(

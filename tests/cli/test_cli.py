@@ -325,7 +325,7 @@ def test_status_shows_why_a_campaign_stopped_and_init_resumes_it_when_the_stop_t
     assert state() == (CampaignStatus.STOPPED, 'target: score 3.0000 ≥ 3'), 'the same conditions: still stopped'
 
     toml = campaign_path / 'piloop.toml'
-    toml.write_text(toml.read_text() + '\n[stop]\ntarget = 4\n')
+    toml.write_text(toml.read_text() + '\n[plugins.stop_rule]\ntarget = 4\n')
     run_cli(['init', str(campaign_path)])
     assert out().strip() == (
         'campaign demo #1 already registered; config re-read from piloop.toml; resumed: stop conditions changed'

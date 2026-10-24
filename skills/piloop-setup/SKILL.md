@@ -118,7 +118,7 @@ Map each answer to its keys:
   - Each primary may have a `floor`: a value it never goes past. Only an edit to `piloop.toml` moves it.
   - Each track has a `[tracks.<name>]` table with its `share` (the shares sum to 1) and an optional `addendum` (a brief
     file for the runs of that track).
-  - piloop refuses `[stop] target` when there are several tracks.
+  - piloop refuses a `target` in `[plugins.stop_rule]` when there are several tracks.
 - **Measurement → `evaluate`, `evaluate_timeout`.**
 - **Budget → `[roles.implementer]` `timeout` and `max_concurrent`, and `[roles.research]`.**
 - **Compute on other machines (a GPU box) → a pool in `config.toml`, and `piloop worker` there:**
@@ -132,13 +132,14 @@ Map each answer to its keys:
     daemon's environment.
 - **Harnesses → `harnesses`, `[model]`.** Remove the harnesses that the human does not have.
 - **`link`:** gitignored data or virtualenvs that the evaluate command needs inside a worktree.
-- **Objective target and budget → `[stop]`:** `target`, `max_runs`, `max_hours`, `max_tokens`, and `plateau` when the
-  human wants the campaign to end by itself. Leave `[stop]` out only if the human explicitly wants an open-ended
-  campaign.
+- **Objective target and budget → `[plugins.stop_rule]`:** `target`, `max_runs`, `max_hours`, `max_tokens`, and
+  `plateau` when the human wants the campaign to end by itself. Leave them out only if the human explicitly wants an
+  open-ended campaign. Never write `[stop]`: it is deprecated.
 - **Money spent outside piloop (a GPU cloud, a paid API) → `[spend]`:**
   - `command` prints the spend so far in USD.
   - `notices` are thresholds that post a note.
-  - `limit` is hard: at the limit the daemon stops launches. Never write the budget only in a brief.
+  - `max_spend` in `[plugins.stop_rule]` is hard: at it the daemon stops launches. Never write the budget only in a
+    brief.
   - Put the secrets of the command in the environment of the daemon, never in the repo.
 
 The file lists every key. A key that is set shows its default, unless its comment says otherwise, and the optional keys

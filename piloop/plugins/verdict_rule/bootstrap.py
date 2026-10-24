@@ -1,7 +1,7 @@
 """``bootstrap``: the built-in verdict rule. It keeps a candidate when the primary metric beats the bar with confidence.
 
 Each guardrail metric can get worse by at most its margin, and never past its floor. The rule imports only the Python
-standard library and its contract, as a rule from a plugin does. It is an entry point of piloop's own
+standard library, pydantic and its contract, as a rule from a plugin does. It is an entry point of piloop's own
 ``pyproject.toml``, in ``piloop.verdict_rules``. https://piloop.autoresearch.inc/concepts/verdict describes the rule.
 """
 
@@ -9,6 +9,8 @@ import random
 from dataclasses import dataclass
 from enum import StrEnum
 from statistics import fmean
+
+from pydantic import Field
 
 from piloop.plugins.metric import Direction, number
 from piloop.plugins.verdict_rule.contract import Case, Criterion, Judgement, Outcome, VerdictRule
@@ -113,6 +115,10 @@ def compare(
 class Bootstrap(VerdictRule):
     """``bootstrap``: the primary must beat the bar with confidence, and the guardrails may regress a little."""
 
+    confidence: float = Field(default=0.95, gt=0.5, lt=1)
+    """The confidence level of the paired bootstrap behind the verdict. For a ``keep``, the lower bound of the
+    primary's gain must be above zero at this level. A guardrail's margin is tested on the bound at this level too."""
+
     def decide(self, case: Case) -> Judgement:
         """Return the verdict on the candidate, and the reason.
 
@@ -142,13 +148,13 @@ class Bootstrap(VerdictRule):
             if floors:
                 return Judgement(Outcome.DISCARD, floored)
             return Judgement(Outcome.KEEP, f'{case.bar.name} has no score under the current evaluator')
-        guards = _guardrails(case)
+        guards = _guardrails(case, self.confidence)
         beyond = [t for m, t, held in guards if held and m.name in mine and m.name in theirs and m.name not in floors]
         past = f'; guardrails past their margin: {"; ".join(beyond)}' if beyond else ''
         if floors:
             return Judgement(Outcome.DISCARD, floored + past)
-        p = _compare(case, primary)
-        reason = f'against {case.bar.name}: {p.text(case.confidence)}'
+        p = _compare(case, primary, self.confidence)
+        reason = f'against {case.bar.name}: {p.text(self.confidence)}'
         if p.gain <= 0:
             return Judgement(Outcome.DISCARD, reason + past)
         if p.worst <= 0:
@@ -158,7 +164,7 @@ class Bootstrap(VerdictRule):
         return Judgement(Outcome.INTERESTING if any(held for _, _, held in guards) else Outcome.KEEP, reason)
 
 
-def _compare(case: Case, criterion: Criterion) -> Comparison:
+def _compare(case: Case, criterion: Criterion, confidence: float) -> Comparison:
     """Compare the candidate with the bar on ``criterion``, which both sides measured."""
     name = criterion.name
     mine, theirs = case.candidate, case.bar
@@ -168,13 +174,13 @@ def _compare(case: Case, criterion: Criterion) -> Comparison:
         theirs.means[name],
         mine.units.get(name),
         theirs.units.get(name),
-        case.confidence,
+        confidence,
         mine_samples=mine.samples.get(name),
         theirs_samples=theirs.samples.get(name),
     )
 
 
-def _guardrails(case: Case) -> list[tuple[Criterion, str, bool]]:
+def _guardrails(case: Case, confidence: float) -> list[tuple[Criterion, str, bool]]:
     """Compare each guardrail with the bar. Return it, the text of the comparison, and whether it holds the keep back.
 
     A guardrail holds the keep back when its worst case is beyond its margin, or when one side did not measure it.
@@ -184,9 +190,9 @@ def _guardrails(case: Case) -> list[tuple[Criterion, str, bool]]:
         if m.name not in case.candidate.means or m.name not in case.bar.means:
             found.append((m, f'{m.name} unmeasured', True))
             continue
-        g = _compare(case, m)
+        g = _compare(case, m, confidence)
         margin = m.margin or 0
         breached = g.worst < -margin
-        text = f'{g.text(case.confidence)} {"beyond" if breached else "within"} its margin {number(margin)}'
+        text = f'{g.text(confidence)} {"beyond" if breached else "within"} its margin {number(margin)}'
         found.append((m, text, breached))
     return found

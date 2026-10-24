@@ -47,7 +47,7 @@ from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.scout import ScoutRole
 from piloop.plugins.role.watchdog import WatchdogRole
 from piloop.plugins.runtime.contract import RuntimeName
-from piloop.plugins.stop_rule.contract import STOP_RULES, Fact, Limits
+from piloop.plugins.stop_rule.contract import STOP_RULES, Fact
 
 CONFIG_FILE = 'piloop.toml'
 BRIEF_FILE = 'brief.md'
@@ -173,50 +173,6 @@ RESERVED_NAMES = frozenset({'run', 'orchestrator', 'human', 'daemon'})
 """Names that already sign writes: a run, and the actors that are not roles."""
 
 
-class Stop(BaseModel):
-    """``[stop]``: conditions that end the campaign. One is enough. Without the table, the campaign has no end.
-
-    The daemon checks the conditions on every tick, before it requests anything. When one holds, the campaign is
-    ``stopped`` (``campaigns.status``, ``stopped_reason``). Running implementers are told to commit and stop, and are ended
-    10 minutes later. What they committed is scored. Most harnesses read the message only when the turn
-    ends: an implementer that is ended before it left its finding ends its run ``campaign_stopped``, which does not
-    count toward ``max_runs`` or ``plateau``. Pending requests and queued runs are dropped
-    (``campaign_stopped``). The ``stopped`` triggers fire once, which by default requests the watchdog's closing
-    review, and the triggers request nothing more. The daemon files no seeds for the campaign either. An agent that you
-    request with ``piloop launch`` after the stop still starts.
-
-    ``piloop campaign stop`` stops a campaign the same way on the next tick, whatever this table says. With ``--kill``,
-    the implementers are ended at once instead of told. ``piloop init`` resumes a stopped campaign when this table changed.
-
-    ``max_runs`` and ``plateau`` count the same runs: those that reached the evaluator, with a candidate that is
-    measured or waits for its measurement. A run that ended at a cheap check with no commit, with only
-    ``Piloop-Eval: skip`` commits, or before it committed because of a harness or host fault, says nothing about the
-    metric, so it counts toward neither. A run that a daemon stop, a daemon crash or a campaign stop ended does not
-    count either. ``[spend]``, ``max_tokens`` and ``max_hours`` stay hard limits on what all runs cost.
-    """
-
-    model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
-
-    target: float | None = None
-    """Stop when the primary metric at the head (the latest keep on the trunk) reaches this value, in its direction.
-    Only for a campaign with one track."""
-    max_runs: int | None = Field(default=None, ge=1)
-    """Stop after this many runs that count, once none is queued, running or being scored. A run counts when it reached
-    the evaluator, and also while it is queued, running or being scored, so piloop never starts more runs than this. A
-    finished run that does not count frees its place, and piloop starts another run in it."""
-    max_hours: float | None = Field(default=None, gt=0)
-    """Stop after this many hours of wall-clock time since the first run of the campaign started. The time that the
-    campaign was paused (``piloop pause``) does not count."""
-    max_tokens: int | None = Field(default=None, ge=1)
-    """Stop when all the agents of the campaign together spent this many tokens (the ``total`` of ``agent_sessions.usage``),
-    summed over the agents that ended."""
-    plateau: int | None = Field(default=None, ge=1)
-    """Stop after this many finished runs that reached the evaluator without a new ``keep`` candidate. The count starts
-    again at each keep, and when the campaign is set ``active`` after a stop (``piloop init``, or an UPDATE of
-    ``campaigns.status``), so a reactivated campaign gets this many runs again. A new evaluator alone does not reset
-    it."""
-
-
 class ClosingReview(StrEnum):
     """What happens to the closing review of a campaign that stops while ``[spend]`` holds its launches."""
 
@@ -229,15 +185,13 @@ class ClosingReview(StrEnum):
 
 
 class Spend(BaseModel):
-    """``[spend]``: a hard budget in USD on what the campaign costs outside piloop, for example GPUs or APIs.
+    """``[spend]``: what the campaign costs outside piloop, for example GPUs or APIs, in USD.
 
     Every ``interval`` seconds, the daemon runs ``command`` to read the spend from the campaign (``campaigns.spend_usd``,
     ``spend_error``, ``spend_at``). When the spend passes a ``notices`` threshold, the daemon posts one note to the
-    inbox at priority 1. At ``limit``, the daemon posts one escalation at priority 0, and the stop rule holds the
-    campaign: the daemon launches no agent and starts no evaluation (no request, no re-measure). Work that already
-    runs finishes and is scored. A command that fails holds the campaign in the same way, with one escalation for each
-    series of failures: an unknown spend is never read as $0. To resume, raise ``limit`` and run ``piloop init``. The
-    built-in stop rule ``limits`` holds; a stop rule of a plugin must read the spend, or ``piloop.toml`` is refused.
+    inbox at priority 1. ``[plugins.stop_rule] max_spend`` is the limit: there, the daemon posts one escalation at
+    priority 0, and the stop rule holds the campaign. A command that fails holds the campaign in the same way, with one
+    escalation for each series of failures: an unknown spend is never read as $0.
     """
 
     model_config = ConfigDict(extra='forbid', frozen=True, use_attribute_docstrings=True)
@@ -246,21 +200,13 @@ class Spend(BaseModel):
     """The command (argv) that prints the campaign's spend so far in USD, as one number. It runs at the repo root with
     the daemon's environment, which is where its secrets come from. It must exit with code 0 within one minute.
     Example: ``["uv", "run", "scripts/spend.py"]``."""
-    limit: float = Field(gt=0)
-    """The spend in USD at which launches and evaluations hold."""
     notices: list[Annotated[float, Field(gt=0)]] = []
-    """Amounts in USD below ``limit``. When the spend passes one, the daemon posts one note to the inbox."""
+    """Amounts in USD below the spend limit. When the spend passes one, the daemon posts one note to the inbox."""
     interval: float = Field(default=300, gt=0)
     """The number of seconds between two runs of ``command``."""
     closing_review: ClosingReview = ClosingReview.RUN
     """What happens to the closing review when the campaign stops while launches are held (``piloop campaign
     stop``): ``run`` it anyway, ``skip`` it, or ``wait`` until the hold ends."""
-
-    @model_validator(mode='after')
-    def _check(self) -> Self:
-        if above := [n for n in self.notices if n >= self.limit]:
-            raise ValueError(f'notices {above} are not below the limit {self.limit:g}')
-        return self
 
 
 class Memory(BaseModel):
@@ -368,9 +314,6 @@ class CampaignConfig(BaseModel):
     with one track has exactly one."""
     tracks: dict[TrackName, TrackConfig] = {}
     """``[tracks.<name>]``: the share and addendum of each track. Needed only with several primaries."""
-    confidence: float = Field(default=0.95, gt=0.5, lt=1)
-    """The confidence level of the paired bootstrap behind the verdict. For a ``keep``, the lower bound of the
-    primary's gain must be above zero at this level. A guardrail's margin is tested on the bound at this level too."""
     evaluate: list[str] = Field(min_length=1)
     """The command (argv) that scores a commit. It runs in a clean worktree of the commit and must print
     ``METRIC <name>=<value>`` lines."""
@@ -403,10 +346,8 @@ class CampaignConfig(BaseModel):
     outline, newest first, so that every sweep that reads the pack reads them before it proposes work."""
     mcp: dict[ServerName, McpServer] = {}
     """``[mcp.<name>]``: the MCP servers that a role can list in ``[roles.<name>] mcp``."""
-    stop: Stop = Stop()
-    """``[stop]``: conditions that end the campaign. None by default."""
     spend: Spend | None = None
-    """``[spend]``: a hard budget on what the campaign spends outside piloop. None by default."""
+    """``[spend]``: how the daemon reads what the campaign spends outside piloop. None by default."""
     memory: Memory = Memory()
     """``[memory]``: documents to search and the lessons overview in briefs."""
     plugins: Annotated[Plugins, PluginTables(Scope.CAMPAIGN)] = {}
@@ -417,7 +358,7 @@ class CampaignConfig(BaseModel):
     @model_validator(mode='after')
     def _check(self) -> Self:
         self._check_tracks()
-        self._check_spend()
+        self._check_limits()
         self._check_harnesses(self.harnesses, self.model, 'campaign')
         if unknown := [h for h in self.max_concurrent if h not in DEFAULT_HARNESSES and h not in self.harness]:
             raise ValueError(f'max_concurrent: unknown harnesses {unknown}; built-ins are {sorted(DEFAULT_HARNESSES)}')
@@ -433,26 +374,22 @@ class CampaignConfig(BaseModel):
                 raise ValueError(f'{rel!r} must be a relative path inside the repo')
         return self
 
-    def _check_spend(self) -> None:
-        """``[spend] limit`` holds launches only through the stop rule, so the selected rule must read the spend."""
+    def _check_limits(self) -> None:
+        """Check the stop rule's limits against the rest of the file, by fact."""
         rule = STOP_RULES.selected(self.plugins)
-        if self.spend is not None and Fact.SPEND not in rule.reads(self.limits()):
-            raise ValueError(
-                f'[spend] limit holds only through the stop rule, and {STOP_RULES.name_of(rule)!r} does not read the'
-                ' spend: select a rule that does, or remove [spend]'
-            )
-
-    def limits(self) -> Limits:
-        """The limits that the stop rule gets: the keys of ``[stop]``, and ``[spend] limit``."""
-        stop = self.stop
-        spend = self.spend.limit if self.spend is not None else None
-        return Limits(stop.target, stop.max_runs, stop.max_hours, stop.max_tokens, stop.plateau, spend)
+        limits, name = rule.limits(), STOP_RULES.name_of(rule)
+        if Fact.HEAD in limits and self.multitrack:
+            raise ValueError(f'the stop rule {name!r} limits the head, which needs a campaign of one track')
+        if Fact.SPEND in rule.reads() and self.spend is None:
+            raise ValueError(f'the stop rule {name!r} reads the spend: add [spend] with the command that prints it')
+        spend = limits.get(Fact.SPEND)
+        if self.spend is not None and spend is not None and (above := [n for n in self.spend.notices if n >= spend]):
+            raise ValueError(f'[spend] notices {above} are not below the spend limit {spend:g}')
 
     def _check_tracks(self) -> None:
         """Check that each track has one primary.
 
-        With several tracks, each primary also needs a margin, each track needs a table, the shares must sum to 1,
-        and ``[stop] target`` is not allowed.
+        With several tracks, each primary also needs a margin, each track needs a table, and the shares must sum to 1.
         """
         primaries = [m for m in self.metrics if m.role is MetricRole.PRIMARY]
         if not primaries:
@@ -467,8 +404,6 @@ class CampaignConfig(BaseModel):
                 raise ValueError(f'primaries {unguarded} need a margin: with several tracks each guards the others')
             if untabled := [n for n in names if n not in self.tracks]:
                 raise ValueError(f'tracks {untabled} need a [tracks.<name>] table with their share')
-            if self.stop.target is not None:
-                raise ValueError('[stop] target needs a campaign of one track: per-track targets are not supported')
         if unknown := sorted(set(self.tracks) - set(names)):
             raise ValueError(f'[tracks] {unknown} name no track a primary declares; tracks are {names}')
         total = sum(self.tracks[n].share if n in self.tracks else 1 for n in names)
@@ -568,7 +503,7 @@ class CampaignConfig(BaseModel):
     def evaluator_definition(self) -> dict[str, object]:
         """What decides a score: the evaluate command, the names and directions of the metrics, and the linked inputs.
 
-        Roles, margins, floors and ``confidence`` are the policy of the verdict, not part of the score. A change to
+        Roles, margins, floors and the verdict rule are the policy of the verdict, not part of the score. A change to
         them does not change a verdict already given and needs no new measurements.
         """
         include = {'evaluate': True, 'link': True, 'metrics': {'__all__': {'name', 'direction'}}}
@@ -666,7 +601,7 @@ def load_campaign_config(campaign: Path, **overrides: object) -> CampaignConfig:
         raw = tomllib.loads(toml.read_text())
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f'{toml} is not valid TOML: {e}') from e
-    deprecated.bridge(toml, raw)
+    deprecated.apply(toml, raw)
     deprecated.old_env(toml, os.environ)
     with_registered_roles(raw)
 

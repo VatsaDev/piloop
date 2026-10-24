@@ -19,28 +19,36 @@ import pytest
 from piloop import deprecated
 from piloop.config import ConfigError, load_campaign_config
 from piloop.deprecated import PiloopDeprecationWarning
+from piloop.plugins.stop_rule.contract import STOP_RULES
+from piloop.plugins.stop_rule.limits import Limits
 from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.plugins.trigger.cron import CronTrigger
 from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.trigger.seed import SeedTrigger
 from piloop.plugins.trigger.stalled import StalledTrigger
+from piloop.plugins.verdict_rule.bootstrap import Bootstrap
+from piloop.plugins.verdict_rule.contract import VERDICT_RULES
 from piloop.version import Version
 from tests.conftest import HARNESS_APPEND, write_toml
 
+TEST_BRIDGES: list[deprecated.Bridge] = []
 
-def rename_size(toml: Path, raw: dict[str, object]) -> None:
+
+@deprecated.bridge('9.0.0', 'size is width: delete rename_size', TEST_BRIDGES)
+def rename_size(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
     """``size = …`` is ``width = …``."""
     if 'size' in raw:
         raw['width'] = raw.pop('size')
-        deprecated.warn(toml, 'size', 'size is deprecated; write width instead', removed_in=Version(9, 0, 0))
+        deprecated.warn(toml, 'size', 'size is deprecated; write width instead', removed_in=removed_in)
 
 
 def test_a_bridge_rewrites_the_key_and_warns_at_the_line_that_set_it(tmp_path: Path) -> None:
     toml = tmp_path / 'piloop.toml'
     toml.write_text('name = "p"\nsize = 3\n')
     raw: dict[str, object] = {'name': 'p', 'size': 3}
+    assert [rename_size] == TEST_BRIDGES, 'the declaration registers it'
     with pytest.warns(PiloopDeprecationWarning) as record:
-        deprecated.bridge(toml, raw, (rename_size,))
+        deprecated.apply(toml, raw, TEST_BRIDGES)
     assert raw == {'name': 'p', 'width': 3}
     assert [(w.filename, w.lineno, str(w.message)) for w in record] == [
         (str(toml), 2, 'size is deprecated; write width instead; removed in piloop 9.0.0')
@@ -255,11 +263,12 @@ class Marker:
 
 
 def _is_marker(node: ast.Call, module: str) -> bool:
-    """Whether ``node`` calls ``until``: ``x.until(…)`` under any name ``x``, or ``until(…)`` in its own module."""
+    """Whether ``node`` calls ``until``: ``x.until(…)`` under any name ``x``, or ``until(…)`` or ``bridge(…)`` in its own
+    module."""
     func = node.func
     if isinstance(func, ast.Attribute):
         return func.attr == 'until'
-    return module == 'piloop/deprecated.py' and isinstance(func, ast.Name) and func.id == 'until'
+    return module == 'piloop/deprecated.py' and isinstance(func, ast.Name) and func.id in ('until', 'bridge')
 
 
 def _hides_until(node: ast.ImportFrom, alias: ast.alias) -> bool:
@@ -276,7 +285,7 @@ def _marker(node: ast.Call, where: str) -> Marker | str:
     ):
         return f'{where}: write deprecated.until(...), so that the scan finds it'
     match node.args, node.keywords:
-        case [ast.Constant(value=str(version)), ast.Constant(value=str(reason))], [] if reason.strip():
+        case [ast.Constant(value=str(version)), ast.Constant(value=str(reason)), *_], [] if reason.strip():
             try:
                 return Marker(where, Version.parse(version), reason)
             except ValueError as e:
@@ -460,3 +469,47 @@ def test_until_leaves_what_it_marks_as_it_is() -> None:
         return 1
 
     assert deprecated.until('0.3.0', 'r')(f) is f
+
+
+def test_stop_the_spend_limit_and_confidence_are_keys_of_the_rules(campaign_path: Path) -> None:
+    toml = deprecated_config(
+        campaign_path,
+        '[stop]\nmax_runs = 7\nplateau = 4\n\n[spend]\ncommand = ["true"]\nlimit = 300\n\n[plugins.stop_rule]\nplateau = 9\n',
+    )
+    toml.write_text('confidence = 0.9\n' + toml.read_text())
+    with pytest.warns(PiloopDeprecationWarning) as record:
+        cfg = load_campaign_config(campaign_path)
+    assert STOP_RULES.selected(cfg.plugins) == Limits(max_runs=7, plateau=9, max_spend=300), 'the table keeps its own'
+    assert VERDICT_RULES.selected(cfg.plugins) == Bootstrap(confidence=0.9)
+    lines = toml.read_text().splitlines()
+    assert sorted((w.lineno, str(w.message).partition(';')[0]) for w in record) == [
+        (1, 'confidence is deprecated'),
+        (lines.index('[stop]') + 1, '[stop] is deprecated'),
+        (lines.index('limit = 300') + 1, '[spend] limit is deprecated'),
+    ]
+    toml = deprecated_config(campaign_path, '[stop]\nmax_runs = 7\n')
+    toml.write_text('plugins = 3\n' + toml.read_text())
+    with pytest.warns(PiloopDeprecationWarning), pytest.raises(ConfigError, match='plugins'):
+        load_campaign_config(campaign_path)
+
+
+def test_the_variables_of_stop_and_confidence_set_the_rules_and_win_over_the_file(
+    campaign_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    deprecated_config(campaign_path, '[plugins.stop_rule]\nmax_runs = 7\n')
+    monkeypatch.setenv('PILOOP_CAMPAIGN_STOP__MAX_RUNS', '3')
+    monkeypatch.setenv('PILOOP_CAMPAIGN_CONFIDENCE', '0.8')
+    with pytest.warns(PiloopDeprecationWarning) as record:
+        cfg = load_campaign_config(campaign_path)
+    assert STOP_RULES.selected(cfg.plugins) == Limits(max_runs=3)
+    assert VERDICT_RULES.selected(cfg.plugins) == Bootstrap(confidence=0.8)
+    assert sorted(str(w.message) for w in record) == [
+        'PILOOP_CAMPAIGN_CONFIDENCE is deprecated; set PILOOP_CAMPAIGN_PLUGINS__VERDICT_RULE__CONFIDENCE; removed in'
+        ' piloop 0.4.0',
+        'PILOOP_CAMPAIGN_STOP__MAX_RUNS is deprecated; set PILOOP_CAMPAIGN_PLUGINS__STOP_RULE__MAX_RUNS; removed in'
+        ' piloop 0.4.0',
+    ]
+    toml = campaign_path / 'piloop.toml'
+    toml.write_text('plugins = 3\n' + toml.read_text().replace('[plugins.stop_rule]\nmax_runs = 7\n', ''))
+    with pytest.warns(PiloopDeprecationWarning), pytest.raises(ConfigError, match='plugins'):
+        load_campaign_config(campaign_path)

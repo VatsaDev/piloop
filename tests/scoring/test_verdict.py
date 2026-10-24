@@ -1,6 +1,6 @@
 """The verdict rule on numbers alone: primary superiority by paired cluster bootstrap, guardrail non-inferiority.
 
-Each verdict goes through the host's side of the contract (``ledger.decide``): the track and the confidence of the
+Each verdict goes through the host's side of the contract (``ledger.decide``): the track of the
 config become a ``Case`` of plain data, and the built-in rule's ``Judgement`` becomes the verdict of the database.
 """
 
@@ -18,7 +18,7 @@ from piloop.plugins.host import data_errors
 from piloop.plugins.metric import Direction
 from piloop.plugins.verdict_rule import bootstrap as verdict_module
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap, compare, lower_bound
-from piloop.plugins.verdict_rule.contract import Outcome, Side, VerdictRule
+from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Outcome, Side, VerdictRule
 from piloop.scoring import ledger
 from piloop.scoring.evaluate import Units
 from piloop.scoring.ledger import criterion, same
@@ -38,7 +38,7 @@ def decide(
 ) -> tuple[Verdict, str]:
     """The built-in rule's verdict on a candidate of ``track`` against ``bar``, as the daemon asks for it."""
     return ledger.decide(
-        Bootstrap(), track, confidence, Side('candidate#74', mine, mine_units), Side(bar, theirs, theirs_units)
+        Bootstrap(confidence=confidence), track, Side('candidate#74', mine, mine_units), Side(bar, theirs, theirs_units)
     )
 
 
@@ -48,13 +48,15 @@ def config(*guardrails: Metric, confidence: float = 0.95) -> CampaignConfig:
         metrics=[Metric(name='accuracy', direction=Direction.HIGHER, role=MetricRole.PRIMARY), *guardrails],
         evaluate=['true'],
         model={'pi': 'm'},
-        confidence=confidence,
+        plugins={'verdict_rule': Bootstrap(confidence=confidence)},
     )
 
 
 def rule(cfg: CampaignConfig) -> tuple[Track, float]:
-    """What ``decide`` takes of a one-track config: its track and the confidence."""
-    return cfg.all_tracks[0], cfg.confidence
+    """What ``decide`` takes of a one-track config: its track and the confidence of its ``bootstrap``."""
+    selected = VERDICT_RULES.selected(cfg.plugins)
+    assert isinstance(selected, Bootstrap)
+    return cfg.all_tracks[0], selected.confidence
 
 
 def records(diffs: list[int], base: int = 1) -> tuple[dict[str, float], dict[str, float]]:
@@ -217,13 +219,12 @@ def test_pairs_judge_a_metric_without_units_on_the_worst_case_of_the_mean_pair_d
     )
     track, confidence = rule(config(SECONDS))
     unpaired = ledger.decide(
-        Bootstrap(), track, confidence, Side('candidate#74', stale[0], {}), Side(BAR, stale[1], {})
+        Bootstrap(confidence=confidence), track, Side('candidate#74', stale[0], {}), Side(BAR, stale[1], {})
     )
     assert unpaired[0] is Verdict.INTERESTING
     paired = ledger.decide(
-        Bootstrap(),
+        Bootstrap(confidence=confidence),
         track,
-        confidence,
         Side('candidate#74', stale[0], {}, pairs[0]),
         Side(BAR, stale[1], {}, pairs[1]),
     )
@@ -242,7 +243,7 @@ def test_units_decide_a_metric_that_has_them_also_when_it_has_pairs() -> None:
     samples = ({'accuracy': [mine['accuracy']] * 3}, {'accuracy': [theirs['accuracy']] * 3})
     verdict, reason = ledger.decide(
         Bootstrap(),
-        *rule(config()),
+        rule(config())[0],
         Side('candidate#74', mine, mine_units, samples[0]),
         Side(BAR, theirs, theirs_units, samples[1]),
     )
@@ -257,9 +258,8 @@ def test_units_decide_a_metric_that_has_them_also_when_it_has_pairs() -> None:
 def test_samples_of_one_side_only_are_no_pairs() -> None:
     track, confidence = rule(config())
     only = ledger.decide(
-        Bootstrap(),
+        Bootstrap(confidence=confidence),
         track,
-        confidence,
         Side('candidate#74', {'accuracy': 2}, {}, {'accuracy': [2.0, 2.0]}),
         Side(BAR, {'accuracy': 1}, {}),
     )
@@ -412,14 +412,15 @@ def test_the_contract_of_a_rule_is_data_in_data_out_and_its_verdicts_are_verdict
     )
 
 
-def test_the_built_in_rule_imports_only_the_standard_library_its_contract_and_the_metric_types() -> None:
-    """``bootstrap`` is a pure provider like a plugin's: it reads nothing of piloop's state."""
+def test_the_built_in_rule_imports_only_the_standard_library_pydantic_its_contract_and_the_metric_types() -> None:
+    """``bootstrap`` is a pure provider like a plugin's: it reads nothing of piloop's state. pydantic declares its
+    parameters."""
     tree = ast.parse(Path(verdict_module.__file__).read_text())
     imported = {a.name for n in ast.walk(tree) if isinstance(n, ast.Import) for a in n.names} | {
         n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module is not None
     }
     outside = {m for m in imported if m.split('.')[0] not in sys.stdlib_module_names}
-    assert outside == {'piloop.plugins.verdict_rule.contract', 'piloop.plugins.metric'}
+    assert outside == {'piloop.plugins.verdict_rule.contract', 'piloop.plugins.metric', 'pydantic'}
 
 
 def test_the_example_rule_min_gain_delegates_to_bootstrap_and_holds_back_a_small_gain() -> None:
@@ -427,7 +428,7 @@ def test_the_example_rule_min_gain_delegates_to_bootstrap_and_holds_back_a_small
     track = rule(config(COVERAGE))[0]
 
     def judged(mine: dict[str, float], theirs: dict[str, float], with_rule: VerdictRule) -> tuple[Verdict, str]:
-        return ledger.decide(with_rule, track, 0.95, Side('candidate#74', mine, {}), Side(BAR, theirs, {}))
+        return ledger.decide(with_rule, track, Side('candidate#74', mine, {}), Side(BAR, theirs, {}))
 
     bar = {'accuracy': 10.0, 'coverage': 1000.0}
     for mine, theirs in [

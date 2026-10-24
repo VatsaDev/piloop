@@ -19,10 +19,11 @@ Code, Codex and pi. piloop writes the totals to `agent_sessions.usage`:
 
 - `piloop status` and `piloop watch` show the tokens of each campaign.
 - The kept lineage shows the tokens that each candidate cost.
-- `[stop] max_tokens` ends the campaign when the agents of the campaign have used that many tokens in total.
+- `max_tokens` in `[plugins.stop_rule]` ends the campaign when the agents of the campaign have used that many tokens in
+  total.
 
 ```toml
-[stop]
+[plugins.stop_rule]
 max_tokens = 50_000_000
 ```
 
@@ -31,43 +32,46 @@ the cached input. `total` is the harness's own count of the session's tokens.
 
 ## Stop conditions
 
-The `[stop]` table ends the campaign when one of its conditions holds:
+`[plugins.stop_rule]` sets the limits of the built-in stop rule, `limits`. Any one of them ends the campaign:
 
 <Stop />
 
-When a condition holds, the campaign becomes `stopped`. The daemon tells the running implementers to commit and
+When a limit is reached, the campaign becomes `stopped`. The daemon tells the running implementers to commit and
 stop, ends them 10 minutes later, and scores what they committed. It drops the queued runs and the requested agents,
-and the watchdog's closing review writes the closing report. Without a `[stop]` table, the campaign has no end.
+and the watchdog's closing review writes the closing report. Without a limit, the campaign has no end.
 
 `piloop campaign stop <campaign>` stops a campaign by hand, the same way. `piloop stop` stops the daemon, not the
-campaign. To resume a stopped campaign, change its `[stop]` table and run `piloop init`.
+campaign. To resume a stopped campaign, change its limits and run `piloop init`.
 
-These limits are the built-in stop rule, `limits`. A plugin can add another:
+A plugin can add another stop rule, which `provider` in `[plugins.stop_rule]` selects:
 [Stop conditions](/architecture/extension-points#stop-conditions) has an example.
 
 ## Spend outside piloop
 
-`[spend]` is a hard limit in US dollars on what the campaign costs outside piloop. piloop knows no vendor, so you give
-it a command that prints the spend so far:
+`[spend]` reads what the campaign costs outside piloop, in US dollars, and `max_spend` in `[plugins.stop_rule]` is a hard
+limit on it. piloop knows no vendor, so you give it a command that prints the spend so far:
 
 ```toml
 [spend]
 command = ["uv", "run", "scripts/spend.py"]   # prints one number: the spend so far in USD
-limit = 1000                                  # nothing new starts at this spend
 notices = [300, 600]                          # each one posts a note to the inbox when crossed
+
+[plugins.stop_rule]
+max_spend = 1000                              # nothing new starts at this spend
 ```
 
 The daemon runs the command every `interval` seconds, at the root of the repo, with its own environment: give it its
 keys there ([Secrets](/guides/secrets)). The [configuration reference](/reference/configuration#spend) lists the keys.
 
-The campaign is **held** while the spend is at `limit` or above, while the command fails, and before it first prints
+The campaign is **held** while the spend is at `max_spend` or above, while the command fails, and before it first prints
 a spend: an unknown spend is never read as zero. At the limit, and for each series of failures, the daemon posts one
 escalation at priority 0. While the campaign is held, the daemon starts no agent and no evaluation for it. Agents and
-evaluations that already run finish, and their commits are scored.
+evaluations that already run finish, and their commits are scored. A stop rule that reads the spend needs `[spend]`, or
+piloop refuses the configuration.
 
 A hold is not a stop: nothing is dropped. The hold ends on the first tick after the cause ends. To resume after the
-limit, raise `limit` in `piloop.toml` and run `piloop init`. After a failure, fix the command; it runs again every
-`interval`. A `[stop]` limit does not stop a held campaign.
+limit, raise `max_spend` in `piloop.toml` and run `piloop init`. After a failure, fix the command; it runs again every
+`interval`. A limit does not stop a held campaign.
 
 `piloop campaign stop` stops a held campaign on the next tick. `closing_review` in `[spend]` says what happens to the
 closing review of that stop:
@@ -82,4 +86,4 @@ A paused campaign that you stop starts its closing review at once: a pause does 
 
 `piloop status` shows the spend as `$412.30/$1,000.00 spend`, and why the campaign is held:
 `$1,012.00/$1,000.00 spend (launches held: spend limit reached)`. Tokens are not part of the spend, because piloop has no
-price table. Use `[stop] max_tokens` for them.
+price table. Use `max_tokens` for them.

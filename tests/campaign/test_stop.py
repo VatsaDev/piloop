@@ -1,4 +1,4 @@
-"""Each ``[stop]`` condition ends the campaign exactly as the configuration reference says. A stopped campaign requests nothing."""
+"""Each limit of the stop rule ends the campaign exactly as the configuration reference says. A stopped campaign requests nothing."""
 
 import ast
 import re
@@ -57,8 +57,8 @@ from piloop.plugins import host
 from piloop.plugins.host import data_errors
 from piloop.plugins.metric import Direction
 from piloop.plugins.stop_rule import limits as limits_module
-from piloop.plugins.stop_rule.contract import GO, STOP_RULES, Fact, Hold, Limits, Progress, Stop, StopCase, StopRule
-from piloop.plugins.stop_rule.limits import FirstLimit
+from piloop.plugins.stop_rule.contract import GO, STOP_RULES, Fact, Hold, Progress, Stop, StopCase, StopRule
+from piloop.plugins.stop_rule.limits import Limits
 from piloop.reports.overview import progress
 from piloop.scoring.ledger import SKIPPED
 from tests.conftest import (
@@ -88,7 +88,7 @@ def configure(
 ) -> CampaignConfig:
     write_toml(Path(campaign.path), harness, max_implementers=max_implementers)
     with db.session() as s:
-        cfg = load_campaign_config(Path(campaign.path), stop=stop, roles=roles)
+        cfg = load_campaign_config(Path(campaign.path), plugins={'stop_rule': stop}, roles=roles)
         s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
         s.commit()
     return cfg
@@ -231,7 +231,7 @@ def test_target_on_the_best_kept_candidate_in_the_metric_direction(db: Database,
 
 def test_target_lower_is_better(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
-        cfg = load_campaign_config(Path(campaign.path), metrics=LOWER_PRIMARY, stop={'target': 5})
+        cfg = load_campaign_config(Path(campaign.path), metrics=LOWER_PRIMARY, plugins={'stop_rule': {'target': 5}})
         s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
         s.commit()
     assert reason(db, campaign) == 'target: size 5 ≤ 5', "the baseline's solve.txt is five bytes"
@@ -467,7 +467,11 @@ def test_the_stall_mark_is_half_the_plateau_else_two_rounds_of_the_implementer_s
         'evaluate': ['true'],
         'model': {'pi': 'm'},
     }
-    assert stall(CampaignConfig.model_validate({**bare, 'stop': {'plateau': 15}})) == (8, 'half of [stop] plateau = 15')
+    plateau = {**bare, 'plugins': {'stop_rule': {'plateau': 15}}}
+    assert stall(CampaignConfig.model_validate(plateau)) == (
+        8,
+        "half of the stop rule's limit of 15 runs without a keep",
+    )
     agent_sessions = CampaignConfig.model_validate({**bare, 'roles': {'implementer': {'max_concurrent': 3}}})
     assert stall(agent_sessions) == (6, 'two rounds of [roles.implementer] max_concurrent = 3')
     quick = {'implementer': {'max_concurrent': 3}, 'quick': {'runs': True, 'max_concurrent': 2}}
@@ -591,8 +595,9 @@ def stop_while_held(db: Database, campaign: Campaign, hold: str, review: str | N
     """
     configure(db, campaign)
     if hold == 'spend':
-        budget = {'command': ['cat', str(Path(campaign.path).parent / 'bill')], 'limit': 10}
-        set_config(db, campaign, spend=budget | ({'closing_review': review} if review else {}))
+        budget = {'command': ['cat', str(Path(campaign.path).parent / 'bill')]}
+        spend = budget | ({'closing_review': review} if review else {})
+        set_config(db, campaign, spend=spend, plugins={'stop_rule': {'max_spend': 10}})
     (idea,) = add_ideas(db, campaign, 'queued before the stop')
     with db.session() as s:
         s.get_one(Idea, idea).status = IdeaStatus.SCHEDULED
@@ -759,7 +764,9 @@ def test_a_stop_syncs_the_memory_documents_before_the_closing_watchdog_whose_bri
 ) -> None:
     write_toml(Path(campaign.path), HARNESS_NOOP)
     with db.session() as s:
-        cfg = load_campaign_config(Path(campaign.path), stop={'max_runs': 1}, memory={'documents': ['docs/*.md']})
+        cfg = load_campaign_config(
+            Path(campaign.path), plugins={'stop_rule': {'max_runs': 1}}, memory={'documents': ['docs/*.md']}
+        )
         s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
         s.commit()
     add_run(db, campaign)
@@ -796,7 +803,9 @@ def test_a_stop_whose_document_sync_fails_still_stops_and_launches_the_closing_w
     """Greptile on hiloopai/piloop#7: a sync that raised rolled the stop back and ended the daemon."""
     write_toml(Path(campaign.path), HARNESS_NOOP)
     with db.session() as s:
-        cfg = load_campaign_config(Path(campaign.path), stop={'max_runs': 1}, memory={'documents': ['docs/*.md']})
+        cfg = load_campaign_config(
+            Path(campaign.path), plugins={'stop_rule': {'max_runs': 1}}, memory={'documents': ['docs/*.md']}
+        )
         s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
         s.commit()
     add_run(db, campaign)
@@ -827,25 +836,27 @@ def imports_outside_the_standard_library(module: object) -> set[str]:
     return {m for m in imported if m.split('.')[0] not in sys.stdlib_module_names}
 
 
-def test_the_built_in_stop_rule_imports_only_the_standard_library_its_contract_and_the_metric_types() -> None:
-    """``limits`` is a pure provider: it reads nothing of piloop's state. test_capabilities checks the example."""
-    contracts = {'piloop.plugins.stop_rule.contract', 'piloop.plugins.metric'}
+def test_the_built_in_stop_rule_imports_only_the_standard_library_pydantic_its_contract_and_the_metric_types() -> None:
+    """``limits`` is a pure provider: it reads nothing of piloop's state. pydantic declares its parameters.
+    test_capabilities checks the example."""
+    contracts = {'piloop.plugins.stop_rule.contract', 'piloop.plugins.metric', 'pydantic'}
     assert imports_outside_the_standard_library(limits_module) == contracts
 
 
 def test_limits_holds_while_the_spend_is_unknown_or_at_its_limit_and_a_hold_comes_before_a_stop() -> None:
-    """``[spend] limit`` is ``max_spend``. A hold releases itself: the next check that sees a spend below it goes on.
+    """``max_spend`` holds. A hold releases itself: the next check that sees a spend below it goes on.
 
     A held campaign does not stop: a stop requests the closing review, and nothing may launch while the spend is
     unknown or at its limit.
     """
-    limits = Limits(max_runs=3, max_spend=300)
-    assert FirstLimit().reads(limits) == [Fact.RUNS, Fact.SPEND]
-    assert Fact.SPEND not in FirstLimit().reads(Limits(max_runs=3)), 'no [spend]: no spend to read'
+    rule = Limits(max_runs=3, max_spend=300)
+    assert rule.limits() == {Fact.RUNS: 3, Fact.SPEND: 300}
+    assert rule.reads() == [Fact.RUNS, Fact.SPEND]
+    assert Fact.SPEND not in Limits(max_runs=3).reads(), 'no limit on the spend: no spend to read'
 
     def check(spend: float | None, *, runs: int = 1, spend_error: str | None = None) -> object:
         progress = Progress(runs=runs, unsettled=0, spend=spend, spend_error=spend_error)
-        return FirstLimit().check(StopCase('score', Direction.HIGHER, limits, progress))
+        return rule.check(StopCase('score', Direction.HIGHER, progress))
 
     assert check(spend=299.99) == GO
     assert check(spend=None) == Hold('spend not read yet')
@@ -855,16 +866,15 @@ def test_limits_holds_while_the_spend_is_unknown_or_at_its_limit_and_a_hold_come
     assert check(spend=12.0, runs=3) == Stop('max_runs: 3 runs')
 
 
-def test_the_example_stop_rule_ends_after_its_keeps_or_at_its_cost_limits() -> None:
-    """``examples/plugins/stop-after-keeps``: it reads only the facts that it needs, and the built-in ``limits`` keeps
-    ``max_hours``, ``max_tokens`` and ``[spend]``."""
-    capped = Limits(max_hours=12, max_tokens=1000, plateau=5, max_spend=300)
-    rule = AfterKeeps(keeps=3)
-    assert rule.reads(Limits(plateau=5)) == [Fact.KEEPS]
-    assert rule.reads(capped) == [Fact.KEEPS, Fact.HOURS, Fact.TOKENS, Fact.SPEND]
+def test_the_example_stop_rule_ends_after_its_keeps_or_at_a_limit_of_limits() -> None:
+    """``examples/plugins/stop-after-keeps``: ``limits`` with one more limit, so it reads only the facts that it
+    limits, and every limit of ``limits`` still applies."""
+    rule = AfterKeeps(keeps=3, max_hours=12, max_tokens=1000, max_spend=300)
+    assert AfterKeeps(keeps=3).reads() == [Fact.KEEPS]
+    assert rule.limits() == {Fact.HOURS: 12, Fact.TOKENS: 1000, Fact.SPEND: 300, Fact.KEEPS: 3}
 
     def check(progress: Progress) -> object:
-        return rule.check(StopCase('score', Direction.HIGHER, capped, progress))
+        return rule.check(StopCase('score', Direction.HIGHER, progress))
 
     assert check(Progress(keeps=2, hours=1, tokens=10, spend=12)) == GO
     assert check(Progress(keeps=3, hours=1, tokens=10, spend=12)) == Stop('after_keeps: 3 keeps')
@@ -874,21 +884,16 @@ def test_the_example_stop_rule_ends_after_its_keeps_or_at_its_cost_limits() -> N
     assert check(Progress(keeps=0, hours=1, tokens=10)) == Hold('spend not read yet')
 
 
-def test_a_spend_limit_needs_a_stop_rule_that_reads_the_spend(
+def test_a_rule_that_reads_the_spend_needs_spend_and_spend_alone_only_posts_notices(
     campaign: Campaign, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Only the stop rule holds launches at ``[spend] limit``. A rule that does not read the spend would drop the limit
-    without a word, so piloop refuses the configuration."""
+    """The spend fact comes from ``[spend] command``: a rule that reads it without one would hold forever."""
     installed(monkeypatch, [EntryPoint('goes_on', f'{PLUGIN}:GoesOn', STOP_RULES.group)])
     try:
-        plugin = {'stop_rule': {'provider': 'goes_on'}}
-        load_campaign_config(Path(campaign.path), plugins=plugin)
-        budget = {'command': ['true'], 'limit': 10}
-        load_campaign_config(Path(campaign.path), plugins={'stop_rule': {'provider': 'limits'}}, spend=budget)
-        with pytest.raises(
-            ConfigError, match=re.escape("[spend] limit holds only through the stop rule, and 'goes_on'")
-        ):
-            load_campaign_config(Path(campaign.path), plugins=plugin, spend=budget)
+        budget = {'command': ['true'], 'notices': [10]}
+        load_campaign_config(Path(campaign.path), plugins={'stop_rule': {'provider': 'goes_on'}}, spend=budget)
+        with pytest.raises(ConfigError, match=re.escape("the stop rule 'limits' reads the spend: add [spend]")):
+            load_campaign_config(Path(campaign.path), plugins={'stop_rule': {'max_spend': 10}})
     finally:
         host.close()
 
@@ -898,7 +903,7 @@ def test_a_stop_rule_from_a_plugin_replaces_the_built_in_one_through_piloop_toml
 ) -> None:
     """The example plugin ``examples/plugins/stop-after-keeps``, installed, is selected by ``[plugins.stop_rule]``.
 
-    Without ``[stop]``, ``limits`` never ends the campaign; ``after_keeps`` ends it once its first run keeps.
+    Without a limit, ``limits`` never ends the campaign; ``after_keeps`` ends it once its first run keeps.
     """
     example(tmp_path / 'site', 'stop-after-keeps')
     monkeypatch.syspath_prepend(tmp_path / 'site')

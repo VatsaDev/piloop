@@ -664,7 +664,9 @@ def test_low_water_wants_no_more_ideas_than_max_runs_leaves_to_run(
 ) -> None:
     release = tmp_path / 'release'
     write_toml(Path(campaign.path), BLOCKING.format(release=release))
-    cfg = load_campaign_config(Path(campaign.path), roles={'research': {'max_ideas': 1}}, stop={'max_runs': 3})
+    cfg = load_campaign_config(
+        Path(campaign.path), roles={'research': {'max_ideas': 1}}, plugins={'stop_rule': {'max_runs': 3}}
+    )
     with db.session() as s:
         s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
         s.commit()

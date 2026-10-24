@@ -2,7 +2,7 @@
 
 On each tick of the daemon, piloop asks the stop rule of each active campaign whether the campaign goes on, holds, or
 stops. It asks in two steps. First it calls ``reads``: the rule names the facts that it needs. piloop gets only those
-facts. Then it calls ``check`` with a ``StopCase``: the limits and those facts. The rule returns one answer:
+facts. Then it calls ``check`` with a ``StopCase``: those facts. The rule returns one answer:
 
 - ``Go``: piloop starts what the campaign needs.
 - ``Hold``: piloop starts no agent and no evaluation for the campaign. Work that runs finishes. The hold is not a
@@ -10,7 +10,9 @@ facts. Then it calls ``check`` with a ``StopCase``: the limits and those facts. 
 - ``Stop``: piloop stops the campaign.
 
 The rule reads nothing else: it is a pure provider. ``[plugins.stop_rule] provider`` in ``piloop.toml`` selects the
-rule, and the other keys of that table are its fields. Without the table, the rule is ``limits``.
+rule, and the other keys of that table are its fields, its limits among them. Without the table, the rule is
+``limits``. piloop reads the limits too, by fact (``limits``): it starts no more runs than a limit on ``runs``, research
+pivots at half a limit on ``without_keep``, and a limit on ``spend`` escalates when the spend reaches it.
 
 This module imports only the Python standard library, the plugin host, and the metric types (``piloop.plugins.metric``).
 A rule imports this module, and nothing else of piloop.
@@ -22,19 +24,6 @@ from enum import StrEnum
 
 from piloop.plugins.host import Capability, Choice, Parameters, Scope, Tier
 from piloop.plugins.metric import Direction
-
-
-@dataclass(frozen=True)
-class Limits:
-    """The keys of ``[stop]``, and ``[spend] limit``. None is no limit."""
-
-    target: float | None = None
-    max_runs: int | None = None
-    max_hours: float | None = None
-    max_tokens: int | None = None
-    plateau: int | None = None
-    max_spend: float | None = None
-    """``[spend] limit``: the spend in USD at which launches hold. None without ``[spend]``."""
 
 
 class Fact(StrEnum):
@@ -85,7 +74,6 @@ class StopCase:
     primary: str
     """The name of the primary metric of the campaign's first track."""
     direction: Direction
-    limits: Limits
     progress: Progress
 
 
@@ -117,8 +105,12 @@ class StopRule(Parameters, ABC):
     """A stop rule: its fields are its parameters. A rule has no error: it answers every case."""
 
     @abstractmethod
-    def reads(self, limits: Limits) -> list[Fact]:
-        """Return the facts that ``check`` reads with these limits. piloop gets only those."""
+    def limits(self) -> dict[Fact, float]:
+        """Return the limit that the rule sets on each fact that it limits."""
+
+    def reads(self) -> list[Fact]:
+        """Return the facts that ``check`` reads. piloop gets only those. By default, the facts that it limits."""
+        return list(self.limits())
 
     @abstractmethod
     def check(self, case: StopCase) -> Go | Hold | Stop:

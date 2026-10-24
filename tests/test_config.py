@@ -6,13 +6,15 @@ from pathlib import Path
 import pytest
 from inline_snapshot import snapshot
 
-from piloop.config import CampaignConfig, ConfigError, Metric, MetricRole, Roles, Stop, load_campaign_config
+from piloop.config import CampaignConfig, ConfigError, Metric, MetricRole, Roles, load_campaign_config
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.ids import BUILT_IN_ROLES, RESEARCH, WATCHDOG, RoleName, TrackName
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import Files, ImplementerRole
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.watchdog import WatchdogRole
+from piloop.plugins.stop_rule.contract import STOP_RULES, StopRule
+from piloop.plugins.stop_rule.limits import Limits
 from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.trigger.seed import SeedTrigger
@@ -134,21 +136,25 @@ def test_an_unknown_harness_key_in_the_file_fails_loudly(campaign_path: Path) ->
         load_campaign_config(campaign_path)
 
 
-def test_stop_conditions_are_optional_and_validated(campaign_path: Path) -> None:
-    assert load_campaign_config(campaign_path).stop == Stop(), 'no [stop] table: open-ended'
-    cfg = load_campaign_config(campaign_path, stop={'target': 0.85, 'max_runs': 200, 'max_hours': 12, 'plateau': 25})
-    assert cfg.stop == snapshot(Stop(target=0.85, max_runs=200, max_hours=12.0, plateau=25))
-    assert CampaignConfig.model_validate(cfg.model_dump(mode='json')).stop == cfg.stop
-    with pytest.raises(ValueError, match='stop.target'):
-        load_campaign_config(campaign_path, stop={'target': 'high'})
-    with pytest.raises(ValueError, match='stop.max_runs'):
-        load_campaign_config(campaign_path, stop={'max_runs': 0})
-    with pytest.raises(ValueError, match='stop.plateau'):
-        load_campaign_config(campaign_path, stop={'plateau': 0})
-    with pytest.raises(ValueError, match='stop.max_hours'):
-        load_campaign_config(campaign_path, stop={'max_hours': 0})
-    with pytest.raises(ValueError, match='stop.budget'):
-        load_campaign_config(campaign_path, stop={'budget': 3})
+def test_the_limits_of_the_stop_rule_are_optional_and_validated(campaign_path: Path) -> None:
+    def rule(cfg: CampaignConfig) -> StopRule:
+        return STOP_RULES.selected(cfg.plugins)
+
+    assert rule(load_campaign_config(campaign_path)).limits() == {}, 'no limit: open-ended'
+    limits = {'target': 0.85, 'max_runs': 200, 'max_hours': 12, 'plateau': 25}
+    cfg = load_campaign_config(campaign_path, plugins={'stop_rule': limits})
+    assert rule(cfg) == Limits(target=0.85, max_runs=200, max_hours=12.0, plateau=25)
+    assert rule(CampaignConfig.model_validate(cfg.model_dump(mode='json'))) == rule(cfg)
+    with pytest.raises(ValueError, match='plugins.stop_rule.target'):
+        load_campaign_config(campaign_path, plugins={'stop_rule': {'target': 'high'}})
+    with pytest.raises(ValueError, match='plugins.stop_rule.max_runs'):
+        load_campaign_config(campaign_path, plugins={'stop_rule': {'max_runs': 0}})
+    with pytest.raises(ValueError, match='plugins.stop_rule.plateau'):
+        load_campaign_config(campaign_path, plugins={'stop_rule': {'plateau': 0}})
+    with pytest.raises(ValueError, match='plugins.stop_rule.max_hours'):
+        load_campaign_config(campaign_path, plugins={'stop_rule': {'max_hours': 0}})
+    with pytest.raises(ValueError, match='plugins.stop_rule.budget'):
+        load_campaign_config(campaign_path, plugins={'stop_rule': {'budget': 3}})
 
 
 def test_an_invalid_piloop_toml_names_the_file_each_key_its_value_and_the_fix(campaign_path: Path) -> None:
@@ -229,11 +235,7 @@ def test_metric_roles_are_validated(campaign_path: Path) -> None:
     assert (track.name, track.primary.name, track.share, track.addendum) == ('score', 'score', 1, None), (
         'one primary is one track named after it, with nothing to configure'
     )
-    assert ([m.name for m in cfg.guardrails], [m.name for m in track.guardrails], cfg.confidence) == (
-        ['size'],
-        ['size'],
-        0.95,
-    )
+    assert ([m.name for m in cfg.guardrails], [m.name for m in track.guardrails]) == (['size'], ['size'])
     assert not cfg.multitrack and cfg.track(TrackName('score')) == track
     assert cfg.guardrails[0].gain(9, 10) == 1 and track.primary.gain(9, 10) == -1
     with pytest.raises(KeyError, match="no track 'speed' in piloop.toml; tracks: score"):
@@ -252,8 +254,8 @@ def test_metric_roles_are_validated(campaign_path: Path) -> None:
         ValueError, match=r'metrics\[0\]\.primary = True: Extra inputs are not permitted\. Fix: delete the key'
     ):
         load_campaign_config(campaign_path, metrics=[{'name': 'score', 'direction': 'higher', 'primary': True}])
-    with pytest.raises(ValueError, match='confidence'):
-        load_campaign_config(campaign_path, confidence=1)
+    with pytest.raises(ValueError, match='plugins.verdict_rule.confidence'):
+        load_campaign_config(campaign_path, plugins={'verdict_rule': {'confidence': 1}})
 
 
 ACCURACY = {'name': 'score', 'direction': 'higher', 'role': 'primary', 'track': 'accuracy', 'margin': 1, 'floor': 2}
@@ -280,7 +282,10 @@ def test_tracks_are_primaries_each_with_a_margin_a_table_and_a_share(campaign_pa
         },
         'track shares sum to 0.9, not 1': {**tracks, 'tracks': {**SHARES, 'serving': {'share': 0.15}}},
         r'track shares sum to 0.5, not 1': {'tracks': {'score': {'share': 0.5}}},
-        r'\[stop\] target needs a campaign of one track': {**tracks, 'stop': {'target': 3}},
+        "the stop rule 'limits' limits the head, which needs a campaign of one track": {
+            **tracks,
+            'plugins': {'stop_rule': {'target': 3}},
+        },
         "'briefs/../x' must be a relative path inside the repo": {
             **tracks,
             'tracks': {**SHARES, 'serving': {'share': 0.25, 'addendum': 'briefs/../x'}},
@@ -304,7 +309,7 @@ def test_the_evaluator_is_what_scores_not_how_the_verdict_reads_it(campaign_path
     ]
     guarded = load_campaign_config(
         campaign_path,
-        confidence=0.9,
+        plugins={'verdict_rule': {'confidence': 0.9}},
         metrics=[
             {'name': 'score', 'direction': 'higher', 'role': 'primary'},
             {'name': 'size', 'direction': 'lower', 'role': 'guardrail', 'margin': 3},

@@ -11,12 +11,14 @@ watchdog requests an incident sweep. An ``anomaly.reported`` event on the row of
 (see ``reported`` and ``assigned``). So each anomaly is investigated once, and a daemon restart does not repeat it.
 """
 
+import math
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from statistics import median
+from typing import assert_never
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
@@ -26,7 +28,7 @@ from piloop.campaign import inbox
 from piloop.campaign.anomaly import AnomalyKind, AnomalyReported
 from piloop.campaign.ideas import defined_by, links, runnable, superseded_by, yields
 from piloop.campaign.inbox import campaign_of
-from piloop.campaign.stop import attempt, held, hours, runs, runs_without_keep
+from piloop.campaign.stop import attempt, held, hours, kept, limits, runs, runs_without_keep
 from piloop.config import TRANSCRIPT, CampaignConfig, Metric, Track, harness_of
 from piloop.db.events import in_order
 from piloop.db.models import (
@@ -57,6 +59,7 @@ from piloop.db.models import (
 from piloop.ids import AgentSessionId, CampaignId, EvaluatorId, TargetKind, TargetRef
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import Files
+from piloop.plugins.stop_rule.contract import Fact
 from piloop.plugins.vcs.contract import VCS, prompted
 from piloop.reports.history import IDEAS_IN_HISTORY
 from piloop.runtime.factory import handle_for, runtime_for
@@ -251,30 +254,44 @@ def paused(campaign: Campaign) -> str:
 
 
 def progress(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> str:
-    """Return the runs and hours so far, with each ``[stop]`` condition against its limit: ``run 7/200 · 2.1h/12h``.
+    """Return the runs and hours so far, then each limit of the stop rule against its fact: ``run 7/200 · 2.1h/12h``.
 
-    If there is a ``[spend]`` budget, the spend follows (``$412.30/$1,000.00 spend``). When the stop rule holds
-    launches, the line ends with why: `` (launches held: spend limit reached)``.
+    A limit on the spend shows it: ``$412.30/$1,000.00 spend``. When the stop rule holds launches, the line ends with
+    why: `` (launches held: spend limit reached)``.
     """
-    stop = cfg.stop
-    parts = [
-        f'run {runs(s, campaign)}{"" if stop.max_runs is None else f"/{stop.max_runs}"}',
-        f'{hours(s, campaign, now) or 0:.1f}h{"" if stop.max_hours is None else f"/{stop.max_hours:g}h"}',
-    ]
-    if stop.max_tokens is not None:
-        parts.append(f'{human(campaign_tokens(s, campaign.id))}/{human(stop.max_tokens)} tok')
-    if stop.plateau is not None:
-        parts.append(f'{runs_without_keep(s, campaign)}/{stop.plateau} runs without a keep')
-    if stop.target is not None:  # A target is only allowed with one track.
-        at = head_scores(s, campaign, cfg)
-        value = at[1][0][1] if at is not None else None
-        sign = '≥' if cfg.all_tracks[0].primary.direction is Direction.HIGHER else '≤'
-        parts.append(f'target {sign} {metric(stop.target)} (head {_num(value)})')
-    if (budget := cfg.spend) is not None:
-        usd = '$?' if campaign.spend_usd is None else f'${campaign.spend_usd:,.2f}'
-        parts.append(f'{usd}/${budget.limit:,.2f} spend')
+    limited = limits(cfg)
+    shown = [Fact.RUNS, Fact.HOURS, *(fact for fact in limited if fact not in (Fact.RUNS, Fact.HOURS))]
+    parts = [_against(s, campaign, cfg, now, fact, limited.get(fact)) for fact in shown]
     hold = held(s, campaign, cfg)
     return ' · '.join(parts) + (f' (launches held: {hold})' if hold is not None else '')
+
+
+def _against(
+    s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime, fact: Fact, limit: float | None
+) -> str:
+    """One fact of the campaign, against its limit when there is one."""
+    of = '' if limit is None else f'/{limit:g}'
+    match fact:
+        case Fact.RUNS:
+            return f'run {runs(s, campaign)}{of}'
+        case Fact.HOURS:
+            return f'{hours(s, campaign, now) or 0:.1f}h{of}{"" if limit is None else "h"}'
+        case Fact.TOKENS:
+            return f'{human(campaign_tokens(s, campaign.id))}{"" if limit is None else f"/{human(round(limit))}"} tok'
+        case Fact.WITHOUT_KEEP:
+            return f'{runs_without_keep(s, campaign)}{of} runs without a keep'
+        case Fact.KEEPS:
+            return f'{kept(s, campaign)}{of} keeps'
+        case Fact.HEAD:  # A limit on the head is only allowed with one track.
+            at = head_scores(s, campaign, cfg)
+            value = at[1][0][1] if at is not None else None
+            sign = '≥' if cfg.all_tracks[0].primary.direction is Direction.HIGHER else '≤'
+            return f'head {_num(value)}' if limit is None else f'target {sign} {metric(limit)} (head {_num(value)})'
+        case Fact.SPEND:
+            usd = '$?' if campaign.spend_usd is None else f'${campaign.spend_usd:,.2f}'
+            return f'{usd}{"" if limit is None else f"/${limit:,.2f}"} spend'
+        case _:
+            assert_never(fact)
 
 
 def produced(campaign: Campaign) -> Select[Candidate]:
@@ -421,9 +438,7 @@ def _goal(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) ->
     state = f'stopped — {campaign.stopped_reason}' if campaign.status is CampaignStatus.STOPPED else 'active'
     if campaign.paused is not None:
         state += f', {paused(campaign)}'
-    stop = cfg.stop
-    limits = (stop.target, stop.max_runs, stop.max_hours, stop.max_tokens, stop.plateau)
-    open_ended = '' if any(v is not None for v in limits) else ' (no [stop] condition: open-ended)'
+    open_ended = '' if limits(cfg).keys() - {Fact.SPEND} else ' (no limit stops it: open-ended)'
     if cfg.multitrack:
         tracks = '; '.join(f'{t.name} ({_metric(t.primary)}, share {t.share:g})' for t in cfg.all_tracks)
         objective = f'- Tracks, each a primary its keeps improve while holding the others: {tracks}{also}'
@@ -824,8 +839,8 @@ def _idle_queue(s: Session, campaign: Campaign, cfg: CampaignConfig) -> list[Ano
         return []
     open_runs = campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS))
     free = cfg.run_slots - count(s, open_runs)
-    if cfg.stop.max_runs is not None:
-        free = min(free, cfg.stop.max_runs - runs(s, campaign))
+    if (max_runs := limits(cfg).get(Fact.RUNS)) is not None:
+        free = min(free, math.floor(max_runs) - runs(s, campaign))
     ready = count(s, select(Idea).where(Idea.campaign_id == campaign.id, runnable()))
     if free <= 0 or ready:
         return []

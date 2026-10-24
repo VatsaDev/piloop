@@ -37,6 +37,7 @@ from piloop.config import CampaignConfig, MetricRole
 from piloop.db.models import Campaign, Candidate, Comment, CommentKind, Idea, IdeaStatus, Verdict
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.ids import TargetKind
+from piloop.plugins.verdict_rule.contract import VERDICT_RULES
 from piloop.reports.history import BRIEF_WIDTH, comment_line, renderables as history, text_row, titled_table
 from piloop.scoring.ledger import head, metrics
 from piloop.text import HEADING, NONE, cell, metric
@@ -113,8 +114,10 @@ def _metrics(s: Session, campaign: Campaign, cfg: CampaignConfig, table_box: box
     start_ref = f'candidate#{start.id}' if start is not None else 'no candidate'
     head_ref = f'candidate#{trunk.id}' if trunk is not None else 'no trunk keep'
     tracks = {t.primary.name: t.name for t in cfg.all_tracks}
+    rule = VERDICT_RULES.selected(cfg.plugins)
+    judged = ', '.join([VERDICT_RULES.name_of(rule), *(f'{k} = {v}' for k, v in rule.model_dump(mode='json').items())])
     table = titled_table(
-        f'{heading}Research pack: metrics (confidence {cfg.confidence:g}; start {start_ref}, head {head_ref})',
+        f'{heading}Research pack: metrics (verdict rule {judged}; start {start_ref}, head {head_ref})',
         [
             'metric',
             'role',

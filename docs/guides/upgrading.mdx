@@ -250,9 +250,10 @@ it loads the file. A plugin of 0.2.0 fails to load until you change it:
 | The entry point names an instance: `MIN_GAIN = MinGain()` | The entry point names the class: `piloop_min_gain:MinGain` |
 | `Parameters = Parameters`, then `json.loads(case.parameters)` | A field, `min_gain: float`, read as `self.min_gain` |
 | `class MinGain:` that calls `BOOTSTRAP.decide(case)` | `class MinGain(Bootstrap):` that calls `super().decide(case)` |
-| `class AfterKeeps:` that calls `LIMITS` | `class AfterKeeps(FirstLimit):` that calls `super()` |
-| `reads(self, limits, parameters)` | `reads(self, limits)` |
-| `Case.parameters`, `StopCase.parameters` | The rule's fields |
+| `class AfterKeeps:` that calls `LIMITS` | `class AfterKeeps(Limits):` that adds `{Fact.KEEPS: self.keeps}` to `super().limits()` |
+| `reads(self, limits, parameters)` | `limits()`, the limit on each fact, and `reads()`, by default the facts of `limits()` |
+| `Case.parameters`, `StopCase.parameters`, `StopCase.limits`, the `Limits` dataclass | The rule's fields |
+| `Case.confidence` | `self.confidence` of `Bootstrap` |
 | A role's entry point names `SweepRole(...)` | A subclass of `SweepRole` or `ImplementerRole` whose fields have the role's defaults |
 | `Capability(noun, group=..., check=...)`, `PureCapability(noun, group=..., contract=...)` | `Capability(name, contract)`, `tier=Tier.PURE` for a pure one: `name` is its entry point in `piloop.capabilities`, and its providers are in `piloop.<name>s` |
 | `get(name)` returns the provider | `get(name).model` is the provider's class |
@@ -269,6 +270,23 @@ A `[plugins.<name>]` table without `provider` now sets the parameters of the def
 An entry of `[roles.<name>] triggers` names its trigger with `provider`, as a `[plugins.<name>]` table does:
 `triggers = [{ provider = "cron" }]`. `kind` still works, with a warning, until 0.4.0. The upgrade changes the stored
 configs.
+
+### Limits and confidence are parameters of the rules
+
+The limits are fields of the stop rule, and `confidence` is a field of the verdict rule:
+
+| Before 0.3.0 | Since 0.3.0 |
+|---|---|
+| `[stop] <key>` | `[plugins.stop_rule] <key>` |
+| `[spend] limit` | `[plugins.stop_rule] max_spend` |
+| `confidence` | `[plugins.verdict_rule] confidence` |
+| `PILOOP_CAMPAIGN_STOP__<KEY>` | `PILOOP_CAMPAIGN_PLUGINS__STOP_RULE__<KEY>` |
+| `PILOOP_CAMPAIGN_CONFIDENCE` | `PILOOP_CAMPAIGN_PLUGINS__VERDICT_RULE__CONFIDENCE` |
+| `PILOOP_CAMPAIGN_SPEND__LIMIT` | `PILOOP_CAMPAIGN_PLUGINS__STOP_RULE__MAX_SPEND` |
+
+The old keys and variables still work, with a warning, until 0.4.0. `PILOOP_CAMPAIGN_SPEND__LIMIT` does not: it fails
+as an unknown key. A stop rule of a plugin that is not a subclass of `Limits` refuses the old `[stop]` keys. The
+upgrade rewrites the stored configs.
 
 ### Archived manifests
 

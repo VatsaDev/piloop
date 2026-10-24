@@ -1,32 +1,25 @@
-"""``after_keeps``: stop the campaign after ``keeps`` keeps. The built-in rule keeps the cost limits. No state, no I/O.
+"""``after_keeps``: stop the campaign after ``keeps`` keeps, or at a limit of the built-in rule. No state, no I/O.
 
 Use it for a campaign that wants a few good changes and no more, for example "make the build pass on the new
-compiler". It stops when enough candidates are kept. The rule is the built-in rule ``limits`` for ``max_hours``,
-``max_tokens`` and ``[spend]``, so they still limit the cost.
+compiler". It stops when enough candidates are kept. The rule is the built-in rule ``limits`` with one more limit, so
+``max_hours``, ``max_tokens``, ``max_spend`` and the others still apply.
 """
 
-from dataclasses import replace
-
-from piloop.capabilities import Fact, FirstLimit, Go, Hold, Limits, Stop, StopCase
+from piloop.capabilities import Fact, Go, Hold, Limits, Stop, StopCase
 
 
-class AfterKeeps(FirstLimit):
-    """The campaign ends after ``keeps`` keeps. ``limits`` holds it and stops it at its cost limits."""
+class AfterKeeps(Limits):
+    """The campaign ends after ``keeps`` keeps. ``limits`` holds it and stops it at its own limits."""
 
     keeps: int
     """The number of keeps that ends the campaign."""
 
-    def reads(self, limits: Limits) -> list[Fact]:
-        return [Fact.KEEPS, *super().reads(costs(limits))]
+    def limits(self) -> dict[Fact, float]:
+        return super().limits() | {Fact.KEEPS: self.keeps}
 
     def check(self, case: StopCase) -> Go | Hold | Stop:
-        answer = super().check(replace(case, limits=costs(case.limits)))
+        answer = super().check(case)
         keeps = case.progress.keeps
-        if isinstance(answer, Hold) or keeps is None or keeps < self.keeps:
+        if not isinstance(answer, Go) or keeps is None or keeps < self.keeps:
             return answer
         return Stop(f'after_keeps: {keeps} keeps')
-
-
-def costs(limits: Limits) -> Limits:
-    """Only the limits on what the campaign costs: ``max_hours``, ``max_tokens`` and ``[spend] limit``."""
-    return Limits(max_hours=limits.max_hours, max_tokens=limits.max_tokens, max_spend=limits.max_spend)

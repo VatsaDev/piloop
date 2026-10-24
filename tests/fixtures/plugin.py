@@ -9,7 +9,7 @@ from piloop.plugins.host import Capability, Parameters, Tier
 from piloop.plugins.role.contract import ImplementerRole, SweepRole
 from piloop.plugins.runtime.contract import RUNTIMES, Handle, RuntimeName
 from piloop.plugins.runtime.subprocess import Subprocess, SubprocessRuntime
-from piloop.plugins.stop_rule.contract import GO, Fact, Go, Hold, Limits, Stop, StopCase, StopRule
+from piloop.plugins.stop_rule.contract import GO, Fact, Go, Hold, Stop, StopCase, StopRule
 from piloop.plugins.trigger.contract import Fire, Tick, Trigger, TriggerEntry
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap
 from piloop.plugins.verdict_rule.contract import Case, Judgement, Outcome, VerdictRule
@@ -48,10 +48,10 @@ class ShownRuntime(SubprocessRuntime):
 
 
 class GoesOn(StopRule):
-    """``goes_on``: a stop rule that reads no fact, so it never holds or stops a campaign."""
+    """``goes_on``: a stop rule without limits, so it reads no fact and never holds or stops a campaign."""
 
-    def reads(self, limits: Limits) -> list[Fact]:
-        return []
+    def limits(self) -> dict[Fact, float]:
+        return {}
 
     def check(self, case: StopCase) -> Go | Hold | Stop:
         return GO

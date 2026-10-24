@@ -72,7 +72,7 @@ A plugin can also do two more things:
 | [MCP servers](#mcp-servers) | `[roles.<name>] mcp` | configuration: `[mcp.<name>]` |
 | [The evaluate command](#the-evaluate-command) | `evaluate` | your command |
 | [Usage readers and MCP renderers](#usage-readers-and-mcp-renderers) | `[harness.<name>]` | built-in ones only |
-| [Stop conditions](#stop-conditions) | `[stop]`, `[plugins.stop_rule] provider` | a plugin: `piloop.stop_rules` |
+| [Stop conditions](#stop-conditions) | `[plugins.stop_rule] provider` | a plugin: `piloop.stop_rules` |
 | [A capability of your own](#let-other-plugins-extend-your-plugin) | where your plugin uses it | a plugin: `piloop.capabilities` |
 
 ## Runtimes
@@ -305,7 +305,6 @@ A verdict rule is a [pure](#pure-plugins) provider, a subclass of `VerdictRule` 
 
 - `Case.primary`: the primary metric of the candidate's track, as a `Criterion` (name, direction, margin, floor).
 - `Case.guardrails`: the guardrail metrics, each a `Criterion`.
-- `Case.confidence`: `confidence` in `piloop.toml`.
 - `Case.candidate` and `Case.bar`: each a `Side`. A `Side` has a name for the reason (`candidate#73`), the mean of
   each metric, the per-unit results of the metrics that have them, and the samples that ran in pairs with the other
   side's.
@@ -327,7 +326,8 @@ The rule decides only the verdict. piloop does the rest, whatever the rule:
 `bootstrap` is the rule of a campaign without `[plugins.verdict_rule]`. [The verdict](/concepts/verdict#the-verdict)
 describes it:
 
-- The primary metric must beat the bar at the `confidence` level of a paired bootstrap.
+- The primary metric must beat the bar at the `confidence` level of a paired bootstrap, a field of the rule
+  (`[plugins.verdict_rule] confidence`, 0.95 by default).
 - Each guardrail metric can get worse by at most its margin.
 - No guardrail metric can pass its floor.
 
@@ -578,8 +578,8 @@ one.
 ## Stop conditions
 
 On each tick (every 2 seconds by default), the daemon asks the stop rule of each active campaign whether the campaign
-goes on, holds, or stops. piloop gives the rule a `StopCase`: the limits, and the facts that the rule asked for. The
-rule returns one of three answers:
+goes on, holds, or stops. piloop gives the rule a `StopCase`: the facts that the rule asked for. The rule returns one
+of three answers:
 
 | Answer | What piloop does |
 |---|---|
@@ -590,13 +590,13 @@ rule returns one of three answers:
 A hold is not a pause. piloop asks the rule again on each tick, and the hold ends when the rule answers `Go`. piloop
 does not stop a paused campaign, but it holds one.
 
-The built-in rule is `limits`. It holds the campaign while the spend of `[spend]` is unknown or at its limit. Else it
-stops the campaign at the first limit of `[stop]` that the campaign reaches.
+The built-in rule is `limits`. It holds the campaign while the spend of `[spend]` is unknown or at `max_spend`. Else
+it stops the campaign at the first of its other limits that the campaign reaches.
 
 ### Example: end the campaign after a number of keeps
 
 This rule stops the campaign after `keeps` candidates are kept. It [calls the built-in rule](#call-a-built-in-provider)
-`limits` for `max_hours` and `max_tokens` of `[stop]`, and for `[spend]`, so these limits still apply:
+`limits` and adds one limit, so the limits of `limits`, such as `max_hours` and `max_spend`, still apply:
 
 <ExampleStopAfterKeeps />
 
@@ -611,15 +611,17 @@ piloop plugins
 [plugins.stop_rule]
 provider = "after_keeps"
 keeps = 3
+max_hours = 12
 ```
 
 ### The contract
 
-A stop rule is a [pure](#pure-plugins) provider, a subclass of `StopRule` with two methods. Import the types from
-`piloop.capabilities`.
+A stop rule is a [pure](#pure-plugins) provider, a subclass of `StopRule`. Its fields are its limits and other
+parameters. Import the types from `piloop.capabilities`.
 
-- `reads(limits) -> list[Fact]`: the facts that the rule needs. Most facts cost database queries on every
-  tick, so piloop gets only these.
+- `limits() -> dict[Fact, float]`: the limit that the rule sets on each fact that it limits.
+- `reads() -> list[Fact]`: the facts that the rule needs. Most facts cost database queries on every tick, so piloop
+  gets only these. By default, the facts of `limits()`.
 - `check(case: StopCase) -> Go | Hold | Stop`: the answer. `Hold` and `Stop` have a `reason`.
 
 The facts are:
@@ -632,29 +634,32 @@ The facts are:
 - `keeps`: the candidates of runs that are kept.
 - `spend`: the spend in USD that the `[spend]` command printed last, and why its last run failed, if it failed.
 
-A `StopCase` has the name and direction of the primary metric, the limits, and the facts that the rule asked for
-(the others are None in `case.progress`). The limits are the keys of `[stop]`, and `max_spend`, the `limit` of
-`[spend]`.
+A `StopCase` has the name and direction of the primary metric, and the facts that the rule asked for (the others are
+None in `case.progress`).
+
+piloop reads the limits too, by fact. It starts no more runs than the limit on `runs` allows. Research pivots at half
+the limit on `without_keep`. The daemon posts an escalation when the spend reaches the limit on `spend`. A limit on
+`head` needs a campaign of one track.
 
 A stop that a person requests (`piloop campaign stop`) stops the campaign whatever the rule answers, also when the
 rule holds it. The closing review of that stop then follows `closing_review` of `[spend]`
 ([Cost and spend limits](/concepts/cost#spend-outside-piloop)).
 
-Only the stop rule holds the campaign at the `limit` of `[spend]`. When `piloop.toml` has a `[spend]` table, the
-rule must ask for `spend`. If it does not, piloop refuses the configuration.
+Only the stop rule holds the campaign at the spend limit. A rule that asks for `spend` needs a `[spend]` table, or
+piloop refuses the configuration.
 
 ### Built in
 
 `limits` is the rule of a campaign without `[plugins.stop_rule]`:
 
 1. It holds the campaign while the `[spend]` command has not printed a spend yet, while its last run failed, or while
-   the spend is at its `limit` or above.
-2. Else it stops the campaign at the first limit of `[stop]` that the campaign reaches.
+   the spend is at `max_spend` or above.
+2. Else it stops the campaign at the first of its other limits that the campaign reaches.
 
-The hold comes first: a limit of `[stop]` does not stop a held campaign.
+The hold comes first: a limit does not stop a held campaign.
 
 ```toml
-[stop]
+[plugins.stop_rule]
 max_hours = 24
 plateau = 30
 ```

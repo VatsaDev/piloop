@@ -74,7 +74,7 @@ Steps:
 6. **Act.** Apply the decision with a piloop command: `piloop idea status|link|base|track`, `piloop candidate
    verdict`, `piloop pause`, sweeps, or `piloop.toml` followed by `piloop init .`. Use `piloop sql` for a write only
    when no command does it.
-   Never raise `[spend] limit` yourself. A `Spend limit reached` escalation belongs to the human.
+   Never raise `max_spend` in `[plugins.stop_rule]` yourself. A `Spend limit reached` escalation belongs to the human.
 7. **Journal** each decision, plan and result as you go, one line with its ids:
    `PILOOP_ACTOR=orchestrator piloop journal 'sync-r1: parked idea#412 (dup of #398); next: compose c#486+c#501'`.
    At most 280 bytes. A session that loses its context (a crash, a full window) starts again from `piloop wake`, so
@@ -100,7 +100,7 @@ It shows:
 - the head (the latest trunk keep) and its delta over the baseline,
 - one line per track when there are several: its primary at the head, the distance to its floor, its trunk keeps, its
   share against what runs,
-- the trajectory of trunk keeps and the progress against `[stop]`,
+- the trajectory of trunk keeps and the progress against the stop rule's limits,
 - open runs and the ready queue,
 - the live agents with their last line,
 - the last 8 candidates with their delta against their parent,
@@ -209,7 +209,7 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
   its ideas as `proposed`. Running work finishes and is scored.
 - A pause raises no escalation. `piloop status` shows it with the reason.
 - No agent launches, the incident watchdog included: an anomaly of the running work waits in `piloop status` until the
-  resume. Watch the running work yourself during a long pause. Paused time does not count toward `[stop] max_hours`.
+  resume. Watch the running work yourself during a long pause. Paused time does not count toward `max_hours`.
 - The daemon still measures what a new evaluator or `piloop candidate remeasure` needs, so the pause ends on a measured
   head. `--evals` holds those measurements too.
 - Never pause with a `[spend]` command that reads a file, nor with a gate idea and `after` links: the `[spend]` hold
@@ -236,7 +236,7 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
 - A run that became redundant: `piloop run cancel <run> --wrap-up`. The implementer is told to commit and stop, and ended
   10 minutes later, with every process it started. Its commits are scored and its idea is parked. Without `--wrap-up`,
   it is ended at once. `piloop agent cancel <agent-session> [--wrap-up]` does the same for an agent of any role, a sweep too.
-- A campaign: `piloop campaign stop <name> --reason '<why>'`. The daemon stops it as a `[stop]` condition does: it
+- A campaign: `piloop campaign stop <name> --reason '<why>'`. The daemon stops it as a limit of the stop rule does: it
   drops queued work, winds the implementers down, scores their commits and launches the closing review. `--kill` ends the
   implementers at once. Never `UPDATE campaigns SET status`: that gets no closing review.
 - Never `pkill` an agent: the cancel ends what it left running, in any session.

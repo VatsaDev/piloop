@@ -172,7 +172,7 @@ renames a table, a column or a value, add the rename to `RENAMES` in that module
 - `piloop/db/actor_triggers.sql`, from `piloop/db/triggers/`.
 - `docs/snippets/generated/`: the generated parts of other pages. These are the diagram of the tables, the values of
   the state enums and the graph of the imports, and the tables of the built-in runtimes, triggers, harnesses,
-  `Runtime` methods and `[stop]` keys. They also include the environment variables of the settings classes. They come
+  `Runtime` methods and the limits of the stop rule. They also include the environment variables of the settings classes. They come
   from the docstrings and the built-in registries, so write those docstrings for the reader of the page. A missing
   docstring stops `make docs`.
 
@@ -207,7 +207,7 @@ Write docs, skills and agent prompts in Simplified Technical English. Less is mo
 can infer, and each mechanism that the reader does not act on. These rules apply, each with an example:
 
 1. Open a page with one sentence that says what it is for, then an example. Before: "A campaign costs money in two
-   ways: …". After: "`[stop] max_tokens` and `[spend]` limit what a campaign costs.", then the TOML.
+   ways: …". After: "`max_tokens` and `max_spend` limit what a campaign costs.", then the TOML.
 2. Show what a command prints, copied from a real run. Before: "To see the progress, run `piloop status enwik8`."
    After: the command, then the lines of its output that the reader looks at.
 3. Use one example on a page, and grow it. Before: `my-campaign`, Titanic and enwik8 on one page. After: enwik8 in

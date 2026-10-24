@@ -176,8 +176,8 @@ ideas. A sweep that is running already files its new and developed ideas as `pro
 goes on, and its commits are scored. Nothing is escalated. The daemon still measures what a new evaluator or
 `piloop candidate remeasure` needs, so the pause can end on a measured head. `--evals` holds those measurements too.
 The pause is a state of the campaign in the database (`campaigns.paused`), not a file, so it holds wherever you run the
-command. `piloop status` shows it with the reason. The paused time does not count toward `[stop] max_hours`, and no
-`[stop]` condition is checked while paused.
+command. `piloop status` shows it with the reason. The paused time does not count toward `max_hours`, and no limit of
+the stop rule is checked while paused.
 
 A pause launches no agent at all, so no watchdog sweep starts for an anomaly of the running work either: the anomaly
 shows in `piloop status`, and the watchdog gets it after `piloop resume`. The running agents keep their timeouts.
@@ -196,7 +196,7 @@ Ends the pause. The daemon queues runs and requests roles again on its next tick
 piloop campaign stop REF [--kill] [--reason TEXT]
 ```
 
-Stops a campaign on the daemon's next tick, as a [`[stop]` condition](/concepts/cost#stop-conditions) does, also a
+Stops a campaign on the daemon's next tick, as a [limit of the stop rule](/concepts/cost#stop-conditions) does, also a
 paused or held one. With `--kill`, the implementers are ended at once, without the prompt to commit and stop, and their
 commits are still scored. On a stopped campaign, `--kill` ends the implementers that are still winding down.
 `--reason` goes into `stopped_reason`.
@@ -388,7 +388,7 @@ piloop status [REF] [--json]
 ```
 
 Prints the daemon's state, then for each campaign: the head, the tracks, the trajectory, the progress against
-`[stop]`, the open runs, the queue, the running agents with their last line, the recent candidates, the anomalies,
+the stop rule's limits, the open runs, the queue, the running agents with their last line, the recent candidates, the anomalies,
 the inbox, the latest decisions and the recent events. The watchdog and research agents get the same overview in
 their brief.
 

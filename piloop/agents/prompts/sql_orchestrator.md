@@ -88,14 +88,14 @@ overwrites a verdict that is not its own.
   finishes and is scored. It raises no escalation. A sweep that runs already files its ideas as `proposed`.
 - The daemon still measures what a new evaluator or a request needs. `--evals` holds that too.
 - No watchdog starts for an anomaly while paused; it gets the anomaly after the resume. Paused time does not count
-  toward `[stop] max_hours`.
+  toward `max_hours`.
 - `piloop resume <campaign>` ends it. `campaigns.paused` and `paused_reason` show it, and `campaign.paused` events log it.
 - Never pause with a `[spend]` command that reads a file: the `[spend]` hold escalates each time it holds, and it
   stops every measurement.
 
 ### Stop, cancel, or resume a stopped campaign
 
-- When a `[stop]` condition in `piloop.toml` holds, or after `piloop campaign stop <campaign> [--kill]`, the daemon:
+- When a limit in `[plugins.stop_rule]` of `piloop.toml` is reached, or after `piloop campaign stop <campaign> [--kill]`, the daemon:
   - sets `campaigns.status='stopped'` (`stopped_reason` says which condition, or who stopped it);
   - drops the requests and queued runs pending at that moment (their ideas go back to `ready`);
   - tells each running implementer to commit and stop, and ends it 10 minutes later (`--kill`: at once); its commits are

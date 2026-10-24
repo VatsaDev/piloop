@@ -68,11 +68,11 @@ def read(command: list[str], cwd: Path) -> float:
     return usd
 
 
-def record(s: Session, campaign: Campaign, spend: Spend, reading: float | SpendError) -> None:
+def record(s: Session, campaign: Campaign, spend: Spend, limit: float | None, reading: float | SpendError) -> None:
     """Store a reading on the campaign row and post the notes and escalations that it causes. The caller commits.
 
     A reading posts a note for each ``notices`` threshold that it crossed since the previous reading. It posts an
-    escalation if it crossed ``limit``. The first reading crosses every threshold below it. Because only a crossing
+    escalation if it crossed ``limit``, the stop rule's limit on the spend. The first reading crosses every threshold below it. Because only a crossing
     posts, a raised limit escalates again when the spend reaches it. A failed reading escalates only if the previous
     reading did not fail.
     """
@@ -84,12 +84,13 @@ def record(s: Session, campaign: Campaign, spend: Spend, reading: float | SpendE
         return
     before = campaign.spend_usd if campaign.spend_usd is not None else -math.inf
     campaign.spend_usd, campaign.spend_error = reading, None
+    of = f' The limit is ${limit:,.2f}.' if limit is not None else ''
     for threshold in spend.notices:
         if before < threshold <= reading:
-            body = f'Spend notice: ${reading:,.2f} spent, past the ${threshold:,.2f} notice. The limit is ${spend.limit:,.2f}.'
+            body = f'Spend notice: ${reading:,.2f} spent, past the ${threshold:,.2f} notice.{of}'
             _post(s, campaign, CommentKind.NOTE, NOTICE_PRIORITY, body)
-    if before < spend.limit <= reading:
-        _post(s, campaign, CommentKind.ESCALATION, ESCALATION_PRIORITY, _limited(reading, spend.limit))
+    if limit is not None and before < limit <= reading:
+        _post(s, campaign, CommentKind.ESCALATION, ESCALATION_PRIORITY, _limited(reading, limit))
 
 
 def _failed(error: SpendError) -> str:
@@ -103,7 +104,8 @@ def _failed(error: SpendError) -> str:
 def _limited(usd: float, limit: float) -> str:
     return (
         f'Spend limit reached: ${usd:,.2f} spent, limit ${limit:,.2f}. Nothing launches and no evaluation starts.'
-        ' Runs in progress finish and are scored. To resume, raise [spend] limit in piloop.toml and run `piloop init`.'
+        ' Runs in progress finish and are scored. To resume, raise [plugins.stop_rule] max_spend in piloop.toml and run'
+        ' `piloop init`.'
     )
 
 

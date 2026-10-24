@@ -3,24 +3,26 @@
 Mark each piece of compat code with ``until``: the release that deletes it and what to delete. A test finds every
 marker and fails once ``pyproject.toml`` reaches its release, so the code goes before that release ships.
 
-A deprecated key still loads, with a warning, until that release. To deprecate a key, add a bridge to ``BRIDGES``. A
-bridge is a function that takes the file path and the parsed TOML, changes the old key to the new form in place and
-calls ``warn``. Mark it with ``until``. Its docstring is its entry under "Deprecated keys" in the generated
-configuration reference (``docs/reference/configuration.mdx``). The release notes list it under ``Deprecated``.
+A deprecated key still loads, with a warning, until that release. To deprecate a key, write a bridge: a function that
+takes the file path, the parsed TOML and the release that removes the key, changes the old key to the new form in place
+and calls ``warn`` with that release. Declare it with ``bridge``, which marks it as ``until`` does and registers it.
+Its docstring is its entry under "Deprecated keys" in the generated configuration reference
+(``docs/reference/configuration.mdx``). The release notes list it under ``Deprecated``.
 
-When its marker fails, delete the bridge's function, its ``BRIDGES`` entry and its tests, and run ``make docs``. The
-release notes list the key under ``Removed``. The old key then fails as an unknown key.
+When its marker fails, delete the bridge's function and its tests, and run ``make docs``. The old key then fails as an
+unknown key, and the release notes list it under ``Removed``.
 """
 
+import os
+import re
 import warnings
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from piloop.actor import Agent
 from piloop.version import Version
-
-Bridge = Callable[[Path, dict[str, object]], None]
 
 
 class Marked(Protocol):
@@ -49,6 +51,43 @@ def until(version: str, reason: str) -> Marked:
     return _same
 
 
+type Rewrite = Callable[[Path, dict[str, object], Version], None]
+"""The body of a bridge: it rewrites the parsed file in place, and warns that the old key goes in the given release."""
+
+
+@dataclass(frozen=True)
+class Bridge:
+    """A bridge that ``apply`` runs on a parsed file: its rewrite, and the release that removes it."""
+
+    rewrite: Rewrite
+    removed_in: Version
+
+    def __call__(self, toml: Path, raw: dict[str, object]) -> None:
+        self.rewrite(toml, raw, self.removed_in)
+
+
+BRIDGES: list[Bridge] = []
+"""The bridges of ``piloop.toml``, in the order that they run: the order of their definitions."""
+CONFIG_BRIDGES: list[Bridge] = []
+"""The bridges of ``config.toml``, the global settings file (``piloop.settings.config_file``)."""
+
+
+def bridge(version: str, reason: str, into: list[Bridge] = BRIDGES) -> Callable[[Rewrite], Bridge]:
+    """Declare a bridge that piloop keeps until release ``version``, as ``until`` marks code, and register it in ``into``.
+
+    The bridge gets ``version`` to pass to ``warn``. ``tests/test_deprecated.py`` reads every call, as it does
+    ``until``'s.
+    """
+    removed_in = Version.parse(version)
+
+    def register(rewrite: Rewrite) -> Bridge:
+        found = Bridge(rewrite, removed_in)
+        into.append(found)
+        return found
+
+    return register
+
+
 # Where the ``default`` action records the warnings it showed, so a file loaded twice in one process warns once.
 _shown: dict[str | tuple[str, type[Warning], int], int] = {}
 
@@ -57,10 +96,6 @@ class PiloopDeprecationWarning(DeprecationWarning):
     """A deprecated piloop key that still works until the release that removes it. The CLI shows each one once."""
 
 
-REMOVED_IN = Version(0, 3, 0)
-"""The release that ``warn`` names for the keys that 0.2.0 deprecates."""
-MAX_EVALUATIONS_REMOVED_IN = Version(0, 4, 0)
-"""The release that ``warn`` names for ``max_evaluations``, which 0.2.0 configs set."""
 SCOUT_SHARED = ('runtime', 'harnesses', 'model', 'timeout', 'mcp', 'addendum')
 """The keys of ``[roles.research]`` that a scout sweep used before the scout was a role of its own."""
 
@@ -71,46 +106,6 @@ def _table(raw: dict[str, object], *path: str) -> dict[str, object] | None:
     for key in path:
         table = table.get(key) if isinstance(table, dict) else None
     return table if isinstance(table, dict) else None
-
-
-@until('0.3.0', '[roles.research.scout] is [roles.scout]: delete the research_scout bridge')
-def research_scout(toml: Path, raw: dict[str, object]) -> None:
-    """``[roles.research.scout]`` is ``[roles.scout]``, a role of its own.
-
-    The keys of ``[roles.research]`` that the scout used (``runtime``, ``harnesses``, ``model``, ``timeout``, ``mcp``
-    and ``addendum``) are copied into it, unless ``[roles.scout]`` sets them.
-    """
-    research = _table(raw, 'roles', 'research')
-    if research is None or (scout := research.pop('scout', None)) is None:
-        return
-    roles = _table(raw, 'roles')
-    assert roles is not None  # research is in it
-    shared = {k: research[k] for k in SCOUT_SHARED if k in research}
-    roles['scout'] = shared | (scout if isinstance(scout, dict) else {}) | (_table(roles, 'scout') or {})
-    warn(
-        toml,
-        'roles.research.scout',
-        '[roles.research.scout] is deprecated; write [roles.scout], a role of its own, with the keys of'
-        ' [roles.research] that it needs (mcp, harnesses, …)',
-        removed_in=REMOVED_IN,
-    )
-
-
-@until('0.3.0', 'the scout trigger of [roles.research] is gone: delete the scout_trigger bridge')
-def scout_trigger(toml: Path, raw: dict[str, object]) -> None:
-    """The ``scout`` trigger of ``[roles.research] triggers`` is gone: the scout is a role with its own ``cron``."""
-    research = _table(raw, 'roles', 'research')
-    triggers = research.get('triggers') if research is not None else None
-    if research is None or not isinstance(triggers, list) or not any(_is(t, 'scout') for t in triggers):
-        return
-    research['triggers'] = [t for t in triggers if not _is(t, 'scout')]
-    warn(
-        toml,
-        'roles.research.triggers',
-        'the scout trigger is deprecated; delete it: the scout is [roles.scout], with its own cron trigger',
-        removed_in=REMOVED_IN,
-        nth=_nth(toml, 'roles.research', 'triggers'),
-    )
 
 
 def _is(trigger: object, name: str) -> bool:
@@ -125,12 +120,8 @@ def _nth(toml: Path, table: str, key: str) -> int:
     return sum(line.partition('=')[0].strip() == key for line in lines[:header])
 
 
-TRIGGER_KIND_REMOVED_IN = Version(0, 4, 0)
-"""The release that ``warn`` names for ``kind`` in a trigger entry, which 0.2.0 configs set."""
-
-
-@until('0.4.0', 'kind in a trigger entry is provider: delete the trigger_kind bridge and TRIGGER_KIND_REMOVED_IN')
-def trigger_kind(toml: Path, raw: dict[str, object]) -> None:
+@bridge('0.4.0', 'kind in a trigger entry is provider: delete the trigger_kind bridge')
+def trigger_kind(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
     """``kind`` in an entry of ``[roles.<name>] triggers`` is ``provider``: ``{ provider = "cron" }``."""
     for name in _table(raw, 'roles') or {}:
         role = _table(raw, 'roles', name)
@@ -149,7 +140,7 @@ def trigger_kind(toml: Path, raw: dict[str, object]) -> None:
             toml,
             f'roles.{name}.triggers',
             'kind in a trigger is deprecated; write { provider = "<trigger>", … }',
-            removed_in=TRIGGER_KIND_REMOVED_IN,
+            removed_in=removed_in,
             nth=_nth(toml, f'roles.{name}', 'triggers'),
         )
 
@@ -158,8 +149,61 @@ RESEARCH_TRIGGERS = ({'provider': 'low_water'}, {'provider': 'seed'}, {'provider
 """The default triggers of research."""
 
 
-@until('0.3.0', '[roles.research] buffer is a low_water trigger buffer: delete the research_buffer bridge')
-def research_buffer(toml: Path, raw: dict[str, object]) -> None:
+@bridge('0.3.0', '[roles.worker] is [roles.implementer]: delete the worker_role bridge')
+def worker_role(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
+    """``[roles.worker]`` is ``[roles.implementer]``: the role that runs one idea in its own worktree.
+
+    A key that ``[roles.implementer]`` sets too keeps its value there.
+    """
+    roles = _table(raw, 'roles')
+    if roles is None or (old := roles.pop('worker', None)) is None:
+        return
+    roles['implementer'] = (old if isinstance(old, dict) else {}) | (_table(roles, 'implementer') or {})
+    warn(toml, 'roles.worker', '[roles.worker] is deprecated; write [roles.implementer]', removed_in=removed_in)
+
+
+@bridge('0.3.0', '[roles.research.scout] is [roles.scout]: delete the research_scout bridge')
+def research_scout(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
+    """``[roles.research.scout]`` is ``[roles.scout]``, a role of its own.
+
+    The keys of ``[roles.research]`` that the scout used (``runtime``, ``harnesses``, ``model``, ``timeout``, ``mcp``
+    and ``addendum``) are copied into it, unless ``[roles.scout]`` sets them.
+    """
+    research = _table(raw, 'roles', 'research')
+    if research is None or (scout := research.pop('scout', None)) is None:
+        return
+    roles = _table(raw, 'roles')
+    assert roles is not None  # research is in it
+    shared = {k: research[k] for k in SCOUT_SHARED if k in research}
+    roles['scout'] = shared | (scout if isinstance(scout, dict) else {}) | (_table(roles, 'scout') or {})
+    warn(
+        toml,
+        'roles.research.scout',
+        '[roles.research.scout] is deprecated; write [roles.scout], a role of its own, with the keys of'
+        ' [roles.research] that it needs (mcp, harnesses, …)',
+        removed_in=removed_in,
+    )
+
+
+@bridge('0.3.0', 'the scout trigger of [roles.research] is gone: delete the scout_trigger bridge')
+def scout_trigger(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
+    """The ``scout`` trigger of ``[roles.research] triggers`` is gone: the scout is a role with its own ``cron``."""
+    research = _table(raw, 'roles', 'research')
+    triggers = research.get('triggers') if research is not None else None
+    if research is None or not isinstance(triggers, list) or not any(_is(t, 'scout') for t in triggers):
+        return
+    research['triggers'] = [t for t in triggers if not _is(t, 'scout')]
+    warn(
+        toml,
+        'roles.research.triggers',
+        'the scout trigger is deprecated; delete it: the scout is [roles.scout], with its own cron trigger',
+        removed_in=removed_in,
+        nth=_nth(toml, 'roles.research', 'triggers'),
+    )
+
+
+@bridge('0.3.0', '[roles.research] buffer is a low_water trigger buffer: delete the research_buffer bridge')
+def research_buffer(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
     """``[roles.research] buffer`` is the ``buffer`` of research's ``low_water`` trigger.
 
     Without ``triggers`` in the table, research gets its default triggers with that ``buffer``.
@@ -176,12 +220,12 @@ def research_buffer(toml: Path, raw: dict[str, object]) -> None:
         'roles.research.buffer',
         '[roles.research] buffer is deprecated; write triggers ='
         ' [{ provider = "low_water", buffer = … }, { provider = "seed" }, { provider = "stalled" }]',
-        removed_in=REMOVED_IN,
+        removed_in=removed_in,
     )
 
 
-@until('0.3.0', '[roles.research] context is the top-level context: delete the research_context bridge')
-def research_context(toml: Path, raw: dict[str, object]) -> None:
+@bridge('0.3.0', '[roles.research] context is the top-level context: delete the research_context bridge')
+def research_context(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
     """``[roles.research] context`` is the top-level ``context``: every sweep's research pack lists the files."""
     research = _table(raw, 'roles', 'research')
     if research is None or 'context' not in research:
@@ -193,7 +237,7 @@ def research_context(toml: Path, raw: dict[str, object]) -> None:
         toml,
         'roles.research.context',
         '[roles.research] context is deprecated; write context = [...] at the top of the file',
-        removed_in=REMOVED_IN,
+        removed_in=removed_in,
     )
 
 
@@ -203,8 +247,8 @@ USAGE_PLACEHOLDERS = {
 }
 
 
-@until('0.3.0', '{claude_config_dir} and {codex_home} are {env:…} placeholders: delete the usage_dirs bridge')
-def usage_dirs(toml: Path, raw: dict[str, object]) -> None:
+@bridge('0.3.0', '{claude_config_dir} and {codex_home} are {env:…} placeholders: delete the usage_dirs bridge')
+def usage_dirs(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
     """``{claude_config_dir}`` and ``{codex_home}`` in ``[harness.<name>.usage] file`` are ``{env:…}`` placeholders.
 
     ``{claude_config_dir}`` is ``{env:CLAUDE_CONFIG_DIR:~/.claude}``, and ``{codex_home}`` is
@@ -223,36 +267,91 @@ def usage_dirs(toml: Path, raw: dict[str, object]) -> None:
             toml,
             f'harness.{name}.usage.file',
             f'{{claude_config_dir}} and {{codex_home}} are deprecated; write {glob!r}',
-            removed_in=REMOVED_IN,
+            removed_in=removed_in,
         )
 
 
-@until('0.3.0', '[roles.worker] is [roles.implementer]: delete the worker_role bridge')
-def worker_role(toml: Path, raw: dict[str, object]) -> None:
-    """``[roles.worker]`` is ``[roles.implementer]``: the role that runs one idea in its own worktree.
+@bridge('0.4.0', '[stop] is the limits of [plugins.stop_rule]: delete the stop_table bridge')
+def stop_table(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
+    """``[stop] <key>`` is ``[plugins.stop_rule] <key>``, a limit of the stop rule. A rule without that key refuses it.
 
-    A key that ``[roles.implementer]`` sets too keeps its value there.
+    A key that ``[plugins.stop_rule]`` sets too keeps its value there.
     """
-    roles = _table(raw, 'roles')
-    if roles is None or (old := roles.pop('worker', None)) is None:
+    if not isinstance(old := raw.get('stop'), dict):
         return
-    roles['implementer'] = (old if isinstance(old, dict) else {}) | (_table(roles, 'implementer') or {})
-    warn(toml, 'roles.worker', '[roles.worker] is deprecated; write [roles.implementer]', removed_in=REMOVED_IN)
+    del raw['stop']
+    _into(raw, 'stop_rule', old)
+    warn(toml, 'stop', '[stop] is deprecated; write its keys in [plugins.stop_rule]', removed_in=removed_in)
 
 
-BRIDGES: tuple[Bridge, ...] = (
-    trigger_kind,
-    worker_role,
-    research_scout,
-    scout_trigger,
-    research_buffer,
-    research_context,
-    usage_dirs,
+@bridge('0.4.0', '[spend] limit is [plugins.stop_rule] max_spend: delete the spend_limit bridge')
+def spend_limit(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
+    """``[spend] limit`` is ``[plugins.stop_rule] max_spend``. A value that ``[plugins.stop_rule]`` sets too wins."""
+    spend = _table(raw, 'spend')
+    if spend is None or 'limit' not in spend:
+        return
+    _into(raw, 'stop_rule', {'max_spend': spend.pop('limit')})
+    warn(
+        toml,
+        'spend.limit',
+        '[spend] limit is deprecated; write max_spend in [plugins.stop_rule]',
+        removed_in=removed_in,
+        nth=_nth(toml, 'spend', 'limit'),
+    )
+
+
+@bridge('0.4.0', 'confidence is [plugins.verdict_rule] confidence: delete the confidence bridge')
+def confidence(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
+    """The top-level ``confidence`` is ``[plugins.verdict_rule] confidence``. A value that the table sets too wins."""
+    if 'confidence' not in raw:
+        return
+    _into(raw, 'verdict_rule', {'confidence': raw.pop('confidence')})
+    warn(toml, 'confidence', 'confidence is deprecated; write it in [plugins.verdict_rule]', removed_in=removed_in)
+
+
+OLD_RULE_ENV = re.compile(r'PILOOP_CAMPAIGN_(?:STOP__(?P<stop>\w+)|(?P<confidence>CONFIDENCE))', re.IGNORECASE)
+"""The variable of a key of ``[stop]``, or of ``confidence``: those keys are in a rule's table now. ``[spend] limit`` has
+none: ``[spend]`` is still a table, so its variable fails as an unknown key."""
+
+
+@bridge('0.4.0', "the variables of [stop] and confidence are the rules': delete rule_env and OLD_RULE_ENV")
+def rule_env(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
+    """``PILOOP_CAMPAIGN_STOP__<KEY>`` and ``PILOOP_CAMPAIGN_CONFIDENCE`` set keys of the rules' tables.
+
+    They are ``PILOOP_CAMPAIGN_PLUGINS__STOP_RULE__<KEY>`` and ``PILOOP_CAMPAIGN_PLUGINS__VERDICT_RULE__CONFIDENCE``. The
+    old variable still wins over the file.
+    """
+    for name, value in sorted(os.environ.items()):
+        if (old := OLD_RULE_ENV.fullmatch(name)) is None:
+            continue
+        rule, key = ('stop_rule', old['stop'].lower()) if old['stop'] else ('verdict_rule', 'confidence')
+        if (table := _rule(raw, rule)) is not None:
+            table[key] = value
+        new = f'PILOOP_CAMPAIGN_PLUGINS__{rule.upper()}__{key.upper()}'
+        warn(toml, name, f'{name} is deprecated; set {new}', removed_in=removed_in)
+
+
+def _into(raw: dict[str, object], rule: str, keys: Mapping[str, object]) -> None:
+    """Add ``keys`` to ``[plugins.<rule>]`` of the parsed file, under the keys that the table sets."""
+    if (table := _rule(raw, rule)) is not None:
+        for key, value in keys.items():
+            table.setdefault(key, value)
+
+
+def _rule(raw: dict[str, object], rule: str) -> dict[str, object] | None:
+    """``[plugins.<rule>]`` of the parsed file, added when it is missing.
+
+    None when a value on its way is not a table: the validation refuses it.
+    """
+    plugins = raw.setdefault('plugins', {})
+    table = plugins.setdefault(rule, {}) if isinstance(plugins, dict) else None
+    return table if isinstance(table, dict) else None
+
+
+@bridge(
+    '0.3.0', '[storage.remote] in config.toml is [storage.backend]: delete the storage_remote bridge', CONFIG_BRIDGES
 )
-
-
-@until('0.3.0', '[storage.remote] in config.toml is [storage.backend]: delete the storage_remote bridge')
-def storage_remote(toml: Path, raw: dict[str, object]) -> None:
+def storage_remote(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
     """In ``config.toml``, ``[storage.remote]`` is ``[storage.backend]``: the storage backend that mirrors the store.
 
     A key that ``[storage.backend]`` sets too keeps its value there.
@@ -261,11 +360,15 @@ def storage_remote(toml: Path, raw: dict[str, object]) -> None:
     if storage is None or (old := storage.pop('remote', None)) is None:
         return
     storage['backend'] = (old if isinstance(old, dict) else {}) | (_table(storage, 'backend') or {})
-    warn(toml, 'storage.remote', '[storage.remote] is deprecated; write [storage.backend]', removed_in=REMOVED_IN)
+    warn(toml, 'storage.remote', '[storage.remote] is deprecated; write [storage.backend]', removed_in=removed_in)
 
 
-@until('0.4.0', '[storage.backend] and its eviction keys are [plugins.cas] cached: delete the storage_backend bridge')
-def storage_backend(toml: Path, raw: dict[str, object]) -> None:
+@bridge(
+    '0.4.0',
+    '[storage.backend] and its eviction keys are [plugins.cas] cached: delete the storage_backend bridge',
+    CONFIG_BRIDGES,
+)
+def storage_backend(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
     """In ``config.toml``, ``[storage.backend]`` is the ``remote`` of ``[plugins.cas] provider = "cached"``.
 
     Its ``kind`` is the remote's ``provider``. ``evict_after_days`` and ``local_max_gb`` of ``[storage]`` move with
@@ -287,15 +390,16 @@ def storage_backend(toml: Path, raw: dict[str, object]) -> None:
         'storage.backend',
         '[storage.backend] is deprecated; write [plugins.cas] provider = "cached" and remote = { provider = <its kind>,'
         ' <its keys> }, with evict_after_days and local_max_gb there too',
-        removed_in=Version(0, 4, 0),
+        removed_in=removed_in,
     )
 
 
-@until(
+@bridge(
     '0.4.0',
     'max_evaluations in config.toml is [plugins.executor.pools.serve] evaluations: delete the max_evaluations bridge',
+    CONFIG_BRIDGES,
 )
-def max_evaluations(toml: Path, raw: dict[str, object]) -> None:
+def max_evaluations(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
     """In ``config.toml``, ``max_evaluations`` is ``evaluations`` in ``[plugins.executor.pools.serve]``.
 
     A value that ``[plugins.executor.pools.serve]`` sets too wins.
@@ -307,7 +411,7 @@ def max_evaluations(toml: Path, raw: dict[str, object]) -> None:
         toml,
         'max_evaluations',
         'max_evaluations is deprecated; write evaluations in [plugins.executor.pools.serve]',
-        removed_in=MAX_EVALUATIONS_REMOVED_IN,
+        removed_in=removed_in,
     )
 
 
@@ -328,7 +432,7 @@ def max_evaluations_env(environ: Mapping[str, str], raw: dict[str, object]) -> d
     _slots(raw, old)
     warnings.warn(
         f'{OLD_MAX_EVALUATIONS_ENV} is deprecated; set PILOOP_PLUGINS__EXECUTOR__POOLS__SERVE__EVALUATIONS;'
-        f' removed in piloop {MAX_EVALUATIONS_REMOVED_IN}',
+        ' removed in piloop 0.4.0',
         PiloopDeprecationWarning,
         stacklevel=2,
     )
@@ -351,10 +455,6 @@ def _slots(raw: dict[str, object], old: object) -> None:
         serve = pools.setdefault('serve', {}) if isinstance(pools, dict) else None
         if isinstance(serve, dict):
             serve.setdefault('evaluations', old)
-
-
-CONFIG_BRIDGES: tuple[Bridge, ...] = (storage_remote, storage_backend, max_evaluations)
-"""The bridges of ``config.toml``, the global settings file (``piloop.settings.config_file``)."""
 
 
 HERDR = 'herdr'
@@ -408,7 +508,7 @@ def old_env(toml: Path, environ: Mapping[str, str]) -> None:
     """Warn for each ``PILOOP_PROJECT_<KEY>`` variable: it still overrides its key, after ``PILOOP_CAMPAIGN_<KEY>``."""
     for name in sorted(n for n in environ if n.upper().startswith(OLD_ENV_PREFIX)):
         new = 'PILOOP_CAMPAIGN_' + name[len(OLD_ENV_PREFIX) :]
-        warn(toml, name, f'{name} is deprecated; set {new}', removed_in=REMOVED_IN)
+        warn(toml, name, f'{name} is deprecated; set {new}', removed_in=Version(0, 3, 0))
 
 
 OLD_SIGNATURE = 'worker#'
@@ -433,7 +533,7 @@ def old_actor(actor: str) -> str:
         return actor
     new = 'implementer#' + actor.removeprefix(OLD_SIGNATURE)
     warnings.warn(
-        f'PILOOP_ACTOR={actor} is deprecated; the daemon signs an implementer {new}; removed in piloop {REMOVED_IN}',
+        f'PILOOP_ACTOR={actor} is deprecated; the daemon signs an implementer {new}; removed in piloop 0.3.0',
         PiloopDeprecationWarning,
         stacklevel=2,
     )
@@ -462,7 +562,7 @@ def warn(toml: Path, key: str, message: str, *, removed_in: Version, nth: int = 
     warnings.warn_explicit(text, PiloopDeprecationWarning, str(toml), lineno, registry=_shown)
 
 
-def bridge(toml: Path, raw: dict[str, object], bridges: tuple[Bridge, ...] = BRIDGES) -> None:
+def apply(toml: Path, raw: dict[str, object], bridges: list[Bridge] = BRIDGES) -> None:
     """Run every bridge on the parsed file. ``config.load_campaign_config`` calls this before it validates the file."""
     for b in bridges:
         b(toml, raw)

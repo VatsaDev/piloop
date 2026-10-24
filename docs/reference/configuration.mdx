@@ -22,7 +22,6 @@ section.
 | `name` | string | required | A short name for the campaign. piloop names its git refs after it. |
 | `metrics` | list\[[Metric](#metric)\] | required | Every metric the evaluate command prints, each with its `role`. Each track has one `primary`, so a campaign with one track has exactly one. |
 | `tracks` | dict\[string, [TrackConfig](#trackconfig)\] | `{}` | `[tracks.<name>]`: the share and addendum of each track. Needed only with several primaries. |
-| `confidence` | number | `0.95` | The confidence level of the paired bootstrap behind the verdict. For a `keep`, the lower bound of the primary's gain must be above zero at this level. A guardrail's margin is tested on the bound at this level too. |
 | `evaluate` | list\[string\] | required | The command (argv) that scores a commit. It runs in a clean worktree of the commit and must print `METRIC <name>=<value>` lines. |
 | `runtime` | string | `"subprocess"` | Where the agents run: the name of a runtime, which starts, watches, steers and stops them. A package can add a runtime with a `piloop.runtimes` entry point. A role can override it (`[roles.<name>] runtime`). Built in: `subprocess`. |
 | `harnesses` | list\[string\] | `["pi"]` | The enabled harnesses. Runs use them in turn, unless an idea pins one. Built in: `claude`, `codex`, `pi`. |
@@ -34,8 +33,7 @@ section.
 | `link` | list\[string\] | `[]` | Repo-relative paths, ignored by git, that piloop puts into every worktree read-only, for example data or virtual environments. Each job gets them as they are when it is made. |
 | `context` | list\[string\] | `[]` | Repo-relative files or globs (for example `docs/error-analysis-*.md`) that hold the campaign's analysis: error analyses, comparisons with a reference, evaluation reports. The research pack lists each one with its outline, newest first, so that every sweep that reads the pack reads them before it proposes work. |
 | `mcp` | dict\[string, [McpServer](#mcpserver)\] | `{}` | `[mcp.<name>]`: the MCP servers that a role can list in `[roles.<name>] mcp`. |
-| `stop` | [Stop](#stop) | `{}` | `[stop]`: conditions that end the campaign. None by default. |
-| `spend` | [Spend](#spend) \| null | `null` | `[spend]`: a hard budget on what the campaign spends outside piloop. None by default. |
+| `spend` | [Spend](#spend) \| null | `null` | `[spend]`: how the daemon reads what the campaign spends outside piloop. None by default. |
 | `memory` | [Memory](#memory) | `{}` | `[memory]`: documents to search and the lessons overview in briefs. |
 | `plugins` | dict\[string, object\] | `{}` | `[plugins.<capability>]`: the provider of each capability of the campaign, by its name (`provider`), and its parameters, the other keys of the table. A capability without a table, or a table without `provider`, has its default provider. |
 
@@ -246,53 +244,20 @@ daemon's environment to the agent, and the harness puts their values into the he
 | `command` | list\[string\] \| null | `null` | The command (argv) of a stdio server, for example `["python3", "/path/to/server.py"]`. |
 | `env` | list\[string\] | `[]` | stdio only. The environment variables that the server reads, for example `["XAI_API_KEY"]`. |
 
-## Stop
-
-`[stop]`: conditions that end the campaign. One is enough. Without the table, the campaign has no end.
-
-The daemon checks the conditions on every tick, before it requests anything. When one holds, the campaign is
-`stopped` (`campaigns.status`, `stopped_reason`). Running implementers are told to commit and stop, and are ended
-10 minutes later. What they committed is scored. Most harnesses read the message only when the turn
-ends: an implementer that is ended before it left its finding ends its run `campaign_stopped`, which does not
-count toward `max_runs` or `plateau`. Pending requests and queued runs are dropped
-(`campaign_stopped`). The `stopped` triggers fire once, which by default requests the watchdog's closing
-review, and the triggers request nothing more. The daemon files no seeds for the campaign either. An agent that you
-request with `piloop launch` after the stop still starts.
-
-`piloop campaign stop` stops a campaign the same way on the next tick, whatever this table says. With `--kill`,
-the implementers are ended at once instead of told. `piloop init` resumes a stopped campaign when this table changed.
-
-`max_runs` and `plateau` count the same runs: those that reached the evaluator, with a candidate that is
-measured or waits for its measurement. A run that ended at a cheap check with no commit, with only
-`Piloop-Eval: skip` commits, or before it committed because of a harness or host fault, says nothing about the
-metric, so it counts toward neither. A run that a daemon stop, a daemon crash or a campaign stop ended does not
-count either. `[spend]`, `max_tokens` and `max_hours` stay hard limits on what all runs cost.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `target` | number \| null | `null` | Stop when the primary metric at the head (the latest keep on the trunk) reaches this value, in its direction. Only for a campaign with one track. |
-| `max_runs` | integer \| null | `null` | Stop after this many runs that count, once none is queued, running or being scored. A run counts when it reached the evaluator, and also while it is queued, running or being scored, so piloop never starts more runs than this. A finished run that does not count frees its place, and piloop starts another run in it. |
-| `max_hours` | number \| null | `null` | Stop after this many hours of wall-clock time since the first run of the campaign started. The time that the campaign was paused (`piloop pause`) does not count. |
-| `max_tokens` | integer \| null | `null` | Stop when all the agents of the campaign together spent this many tokens (the `total` of `agent_sessions.usage`), summed over the agents that ended. |
-| `plateau` | integer \| null | `null` | Stop after this many finished runs that reached the evaluator without a new `keep` candidate. The count starts again at each keep, and when the campaign is set `active` after a stop (`piloop init`, or an UPDATE of `campaigns.status`), so a reactivated campaign gets this many runs again. A new evaluator alone does not reset it. |
-
 ## Spend
 
-`[spend]`: a hard budget in USD on what the campaign costs outside piloop, for example GPUs or APIs.
+`[spend]`: what the campaign costs outside piloop, for example GPUs or APIs, in USD.
 
 Every `interval` seconds, the daemon runs `command` to read the spend from the campaign (`campaigns.spend_usd`,
 `spend_error`, `spend_at`). When the spend passes a `notices` threshold, the daemon posts one note to the
-inbox at priority 1. At `limit`, the daemon posts one escalation at priority 0, and the stop rule holds the
-campaign: the daemon launches no agent and starts no evaluation (no request, no re-measure). Work that already
-runs finishes and is scored. A command that fails holds the campaign in the same way, with one escalation for each
-series of failures: an unknown spend is never read as $0. To resume, raise `limit` and run `piloop init`. The
-built-in stop rule `limits` holds; a stop rule of a plugin must read the spend, or `piloop.toml` is refused.
+inbox at priority 1. `[plugins.stop_rule] max_spend` is the limit: there, the daemon posts one escalation at
+priority 0, and the stop rule holds the campaign. A command that fails holds the campaign in the same way, with one
+escalation for each series of failures: an unknown spend is never read as $0.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `command` | list\[string\] | required | The command (argv) that prints the campaign's spend so far in USD, as one number. It runs at the repo root with the daemon's environment, which is where its secrets come from. It must exit with code 0 within one minute. Example: `["uv", "run", "scripts/spend.py"]`. |
-| `limit` | number | required | The spend in USD at which launches and evaluations hold. |
-| `notices` | list\[number\] | `[]` | Amounts in USD below `limit`. When the spend passes one, the daemon posts one note to the inbox. |
+| `notices` | list\[number\] | `[]` | Amounts in USD below the spend limit. When the spend passes one, the daemon posts one note to the inbox. |
 | `interval` | number | `300` | The number of seconds between two runs of `command`. |
 | `closing_review` | `run` \| `skip` \| `wait` | `"run"` | What happens to the closing review when the campaign stops while launches are held (`piloop campaign stop`): `run` it anyway, `skip` it, or `wait` until the hold ends. |
 
@@ -523,6 +488,10 @@ These keys still work. Each one shows a `PiloopDeprecationWarning` that names th
 - `[roles.research] buffer` is the `buffer` of research's `low_water` trigger. Without `triggers` in the table, research gets its default triggers with that `buffer`.
 - `[roles.research] context` is the top-level `context`: every sweep's research pack lists the files.
 - `{claude_config_dir}` and `{codex_home}` in `[harness.<name>.usage] file` are `{env:…}` placeholders. `{claude_config_dir}` is `{env:CLAUDE_CONFIG_DIR:~/.claude}`, and `{codex_home}` is `{env:CODEX_HOME:~/.codex}`.
+- `[stop] <key>` is `[plugins.stop_rule] <key>`, a limit of the stop rule. A rule without that key refuses it. A key that `[plugins.stop_rule]` sets too keeps its value there.
+- `[spend] limit` is `[plugins.stop_rule] max_spend`. A value that `[plugins.stop_rule]` sets too wins.
+- The top-level `confidence` is `[plugins.verdict_rule] confidence`. A value that the table sets too wins.
+- `PILOOP_CAMPAIGN_STOP__<KEY>` and `PILOOP_CAMPAIGN_CONFIDENCE` set keys of the rules' tables. They are `PILOOP_CAMPAIGN_PLUGINS__STOP_RULE__<KEY>` and `PILOOP_CAMPAIGN_PLUGINS__VERDICT_RULE__CONFIDENCE`. The old variable still wins over the file.
 - In `config.toml`, `[storage.remote]` is `[storage.backend]`: the storage backend that mirrors the store. A key that `[storage.backend]` sets too keeps its value there.
 - In `config.toml`, `[storage.backend]` is the `remote` of `[plugins.cas] provider = "cached"`. Its `kind` is the remote's `provider`. `evict_after_days` and `local_max_gb` of `[storage]` move with it. A `[plugins.cas]` table of the file wins: the old keys then go, with the warning, and change nothing.
 - In `config.toml`, `max_evaluations` is `evaluations` in `[plugins.executor.pools.serve]`. A value that `[plugins.executor.pools.serve]` sets too wins.

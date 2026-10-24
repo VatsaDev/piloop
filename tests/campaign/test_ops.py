@@ -396,7 +396,7 @@ def test_a_measurement_by_hand_says_when_the_daemon_judges_again_and_waits_for_a
             'once campaign demo is resumed (its evaluations are paused)'
         )
         ops.resume(s, CampaignId(1))
-        p.config = {**p.config, 'spend': {'command': ['true'], 'limit': 10.0}}
+        p.config = {**p.config, 'spend': {'command': ['true']}, 'plugins': {'stop_rule': {'max_spend': 10.0}}}
         assert ops.add_measurement(s, crashed, report, actor=ACTOR).effect.endswith(
             'once the stop rule no longer holds it (spend not read yet)'
         )

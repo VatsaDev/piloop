@@ -93,7 +93,7 @@ def test_the_pack_of_a_campaign(db: Database, campaign: Campaign, tmp_path: Path
     head, rest = text.split('## History: ideas', 1)
     _, tail = rest.split('## History: findings on the campaign (last 10)\n', 1)
     assert head == snapshot("""\
-## Research pack: metrics (confidence 0.95; start candidate#1, head candidate#2)
+## Research pack: metrics (verdict rule bootstrap, confidence = 0.95; start candidate#1, head candidate#2)
 
 | metric | role | better | margin | floor | start | head | gain |
 |---|---|---|---|---|---|---|---|

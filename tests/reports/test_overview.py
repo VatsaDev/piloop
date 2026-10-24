@@ -204,7 +204,7 @@ def test_the_overview_of_a_campaign(db: Database, campaign: Campaign) -> None:
 demo · head score 3 (candidate#2, +2 vs baseline) · 2 kept / 3 candidates · 4k tok · evaluator #1, 0s old
 ### Goal
 - Primary metric: score, higher is better; also measured: size (lower, watch)
-- Campaign: active. Progress: run 2 · 1.9h (no [stop] condition: open-ended).
+- Campaign: active. Progress: run 2 · 1.9h (no limit stops it: open-ended).
 - The goal in words is the campaign's brief.md: weigh the metric against it.
 ### Trajectory
 - Start candidate#1, head candidate#2: score 1 → 3 (+2, +200.0%); 1 trunk keeps.
@@ -244,7 +244,7 @@ demo · head score 3 (candidate#2, +2 vs baseline) · 2 kept / 3 candidates · 4
 def test_stop_conditions_say_how_far_each_one_is(db: Database, campaign: Campaign) -> None:
     live_campaign(db, campaign)
     stop = {'target': 5, 'max_runs': 10, 'max_hours': 4, 'max_tokens': 1_000_000, 'plateau': 3}
-    cfg = load_campaign_config(Path(campaign.path), stop=stop)
+    cfg = load_campaign_config(Path(campaign.path), plugins={'stop_rule': stop})
     [line] = [x for x in render(db, campaign, cfg).splitlines() if x.startswith('- Campaign:')]
     assert line == snapshot(
         '- Campaign: active. Progress: run 2/10 · 1.9h/4h · 4k/1.0M tok · 0/3 runs without a keep · target ≥ 5 (head 3).'
@@ -259,7 +259,7 @@ def test_stop_conditions_say_how_far_each_one_is(db: Database, campaign: Campaig
 def test_a_fresh_campaign_has_little_to_say(db: Database, campaign: Campaign) -> None:
     """A campaign with no run, no comment and no trunk keep shows no trajectory and reports an idle queue."""
     stop = {'max_hours': 4, 'plateau': 2}
-    cfg = load_campaign_config(Path(campaign.path), stop=stop)
+    cfg = load_campaign_config(Path(campaign.path), plugins={'stop_rule': stop})
     with db.session() as s:
         s.get_one(Campaign, campaign.id).created_at = T
         s.get_one(Candidate, 1).verdict = Verdict.PENDING
@@ -296,7 +296,9 @@ def test_the_idle_queue_counts_from_the_last_run_and_names_pending_research(db: 
 def test_max_runs_reached_is_not_idle(db: Database, campaign: Campaign) -> None:
     """Two runs count toward ``max_runs``. The run that failed with no candidate does not count."""
     live_campaign(db, campaign)
-    cfg = load_campaign_config(Path(campaign.path), stop={'max_runs': 2}, roles={'implementer': {'max_concurrent': 4}})
+    cfg = load_campaign_config(
+        Path(campaign.path), plugins={'stop_rule': {'max_runs': 2}}, roles={'implementer': {'max_concurrent': 4}}
+    )
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         assert AnomalyKind.IDLE_QUEUE not in {a.kind for a in anomalies(s, p, cfg)}
@@ -606,7 +608,7 @@ def test_a_row_holding_a_blob_renders_as_a_placeholder_with_one_warning_naming_i
 def test_progress_lists_only_the_configured_conditions(db: Database, campaign: Campaign) -> None:
     def config(stop: dict[str, object], direction: str = 'higher') -> CampaignConfig:
         metrics = [{'name': 'score', 'direction': direction, 'role': 'primary'}, {'name': 'size', 'direction': 'lower'}]
-        return CampaignConfig.model_validate({**campaign.config, 'stop': stop, 'metrics': metrics})
+        return CampaignConfig.model_validate({**campaign.config, 'plugins': {'stop_rule': stop}, 'metrics': metrics})
 
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)

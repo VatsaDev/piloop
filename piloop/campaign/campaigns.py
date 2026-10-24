@@ -23,6 +23,7 @@ from piloop.db.session import Database
 from piloop.ids import CampaignId, CandidateId, TargetKind, TargetRef
 from piloop.plugins.cas.contract import CAS, Cas
 from piloop.plugins.executor.contract import RepoId, Source, Workspace
+from piloop.plugins.stop_rule.contract import STOP_RULES
 from piloop.plugins.vcs.contract import VCS, Repository, Revision, Vcs
 from piloop.proc import child_env
 from piloop.scoring.evaluate import run_evaluate
@@ -257,14 +258,16 @@ def checked_out(s: Session, path: Path) -> Campaign | None:
 def sync(s: Session, campaign: Campaign) -> CampaignConfig:
     """Read the repo's ``piloop.toml`` into the campaign row again.
 
-    A change to ``evaluate``, ``metrics`` or ``link`` makes a new evaluator. A stopped campaign whose ``[stop]`` table
-    changed becomes active again, because the human changed the stop conditions. The repo's identity is read again
+    A change to ``evaluate``, ``metrics`` or ``link`` makes a new evaluator. A stopped campaign whose stop rule or its
+    limits changed becomes active again, because the human changed the stop conditions. The repo's identity is read again
     too, because a remote may have been added since.
     """
     cfg = load_campaign_config(Path(campaign.path))
     campaign.repo = VCS.selected(cfg.plugins).identity(Path(campaign.path))
     config = cfg.model_dump(mode='json')
-    if campaign.status is CampaignStatus.STOPPED and config['stop'] != campaign.config.get('stop'):
+    stored = campaign.config.get('plugins')
+    was = stored.get(STOP_RULES.name) if isinstance(stored, dict) else None
+    if campaign.status is CampaignStatus.STOPPED and config['plugins'].get(STOP_RULES.name) != was:
         campaign.status, campaign.stopped_reason = CampaignStatus.ACTIVE, None
     campaign.config = config
     current_evaluator(s, campaign, cfg)

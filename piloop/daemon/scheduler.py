@@ -52,6 +52,7 @@ from piloop.campaign.stop import (
     asked,
     attempts,
     check as check_stop,
+    limits,
     park_cancelled,
     requested,
     requested_stop,
@@ -105,7 +106,7 @@ from piloop.plugins.executor.contract import AgentKey, LeftJob, Prompt
 from piloop.plugins.role.contract import Files, ImplementerRole, SweepRole, ideas_taken
 from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.role.scout import ScoutRole
-from piloop.plugins.stop_rule.contract import GO, Go, Hold, Stop
+from piloop.plugins.stop_rule.contract import GO, Fact, Go, Hold, Stop
 from piloop.plugins.trigger.contract import TRIGGERS, Backlog, Fire, Incident, TrackBacklog
 from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.vcs.contract import NotARepository, Revision
@@ -417,7 +418,7 @@ class Scheduler:
         nothing and is measured again only on request (``ledger.due``). Then the tick asks the stop rule
         (``piloop.campaign.stop.check``) of each active campaign, and of each stopped one whose closing review waits
         for a hold (``spend.review_waits``). A campaign that it holds gets only the first step. A paused campaign
-        (``piloop pause``) gets no triggers, does not stop at a ``[stop]`` limit, and launches nothing, and with
+        (``piloop pause``) gets no triggers, does not stop at a limit of its stop rule, and launches nothing, and with
         ``all`` it is not measured again either. A stop request stops a held or paused campaign too. A stopped
         campaign launches its closing review, and what a human requests, whatever the pause; while the stop rule
         holds, as ``[spend] closing_review`` says (``launches``). The
@@ -486,7 +487,7 @@ class Scheduler:
         holds the campaign while it is unknown or at the limit.
         """
         with self._db.session() as s:
-            todo: list[tuple[int, Path, Spend]] = []
+            todo: list[tuple[int, Path, Spend, float | None]] = []
             for campaign in s.scalars(select(Campaign)):
                 try:
                     cfg = config_of(campaign)
@@ -495,14 +496,14 @@ class Scheduler:
                 if cfg.spend is None or not spend.due(campaign, cfg.spend):
                     continue
                 if campaign.status is CampaignStatus.ACTIVE or spend.review_waits(s, campaign, cfg):
-                    todo.append((campaign.id, Path(campaign.path), cfg.spend))
-        for campaign_id, path, budget in todo:
+                    todo.append((campaign.id, Path(campaign.path), cfg.spend, limits(cfg).get(Fact.SPEND)))
+        for campaign_id, path, budget, limit in todo:
             try:
                 reading: float | SpendError = spend.read(budget.command, path)
             except SpendError as e:
                 reading = e
             with self._db.session() as s:
-                spend.record(s, s.get_one(Campaign, campaign_id), budget, reading)
+                spend.record(s, s.get_one(Campaign, campaign_id), budget, limit, reading)
                 s.commit()
             self._tracer.event('spend.read', campaign=campaign_id, reading=str(reading))
 
@@ -849,8 +850,8 @@ class Scheduler:
     def _backlog(self, s: Session, campaign: Campaign, cfg: CampaignConfig, name: RoleName, buffer: int) -> Backlog:
         """Return the campaign's backlog as role ``name`` fills it: ``buffer`` beyond the run slots, its own sweeps."""
         target = cfg.run_slots + buffer
-        if cfg.stop.max_runs is not None:
-            target = min(target, cfg.stop.max_runs - runs(s, campaign))
+        if (max_runs := limits(cfg).get(Fact.RUNS)) is not None:
+            target = min(target, math.floor(max_runs) - runs(s, campaign))
         sweeps = count(
             s,
             select(AgentSession).where(
@@ -886,23 +887,23 @@ class Scheduler:
     ) -> int:
         """Return the runs that ``roles`` can start now.
 
-        For each role, this is its ``max_concurrent`` minus its open runs. The sum is never more than ``max_runs``
-        allows.
+        For each role, this is its ``max_concurrent`` minus its open runs. The sum is never more than the stop rule's
+        limit on runs allows.
         """
         open_runs = campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS))
         free = sum(
             max(role.max_concurrent - count(s, open_runs.where(done_by(name))), 0) for name, role in roles.items()
         )
-        if cfg.stop.max_runs is not None:
-            free = min(free, cfg.stop.max_runs - runs(s, campaign))
+        if (max_runs := limits(cfg).get(Fact.RUNS)) is not None:
+            free = min(free, math.floor(max_runs) - runs(s, campaign))
         return max(free, 0)
 
     def _queue(self, s: Session, campaign: Campaign, cfg: CampaignConfig) -> None:
-        """Queue a run, and request its agent, for each free slot with a runnable idea, within ``[stop] max_runs``.
+        """Queue a run, and request its agent, for each free slot with a runnable idea, within the limit on runs.
 
         Each role that does runs fills its own slots with the ideas that it takes (``takes``), in the order of
         ``Roles.doing_runs``. Its open runs count against its own ``max_concurrent``. Its ``explore_every`` and the
-        track shares apply to its own runs. ``max_runs`` and the attempts of an idea count the runs of every role.
+        track shares apply to its own runs. The limit on runs and the attempts of an idea count the runs of every role.
 
         A ``ready`` idea with an ``after`` link to an idea that is not ``done`` is skipped and not changed. It stays
         ``ready`` and is taken when every prerequisite has finished. A runnable idea whose track is not in

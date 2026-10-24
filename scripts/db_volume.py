@@ -296,7 +296,7 @@ class HotPaths:
         s = self._session
         rows = [(p, config_of(p)) for p in s.scalars(select(Campaign).order_by(Campaign.id))]
         stopping = load_campaign_config(
-            BLANK, stop={'target': 1.0, 'max_runs': 10**6, 'max_hours': 10**6, 'plateau': 10**6}
+            BLANK, plugins={'stop_rule': {'target': 1.0, 'max_runs': 10**6, 'max_hours': 10**6, 'plateau': 10**6}}
         )
         scheduler = self._scheduler
 

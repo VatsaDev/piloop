@@ -91,7 +91,7 @@ The verdict says why:
 against candidate#1: bytes 2720458 vs 3688775 (-968317; 95% worst case -968317 over 3 pairs); guardrails: seconds 10.9 vs 0.8467 (+10.05; 95% worst case +10.28 over 3 pairs) within its margin 60
 ```
 
-The example stops after 20 scored runs (`[stop] max_runs`). See [the verdict](/concepts/verdict) for the rules.
+The example stops after 20 scored runs (`[plugins.stop_rule] max_runs`). See [the verdict](/concepts/verdict) for the rules.
 
 To let an agent answer the escalations, open your coding agent in `~/piloop-enwik8` and ask it to "orchestrate the
 piloop campaign". See [The orchestrator and the inbox](/concepts/orchestrator).

@@ -5,7 +5,7 @@ ty models pydantic's lax mode, which turns a string into a float, so the wrong p
 
 from piloop_min_gain import MinGain
 
-from piloop.capabilities import Bootstrap, Case, FirstLimit, VerdictRule
+from piloop.capabilities import Bootstrap, Case, Limits, VerdictRule
 
 
 class Late(Bootstrap):
@@ -14,4 +14,4 @@ class Late(Bootstrap):
 
 
 MinGain(min_gain=None)  # wrong
-rule: VerdictRule = FirstLimit()  # wrong
+rule: VerdictRule = Limits()  # wrong

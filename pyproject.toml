@@ -86,7 +86,7 @@ sql = "piloop.plugins.trigger.sql:SqlTrigger"
 bootstrap = "piloop.plugins.verdict_rule.bootstrap:Bootstrap"
 
 [project.entry-points."piloop.stop_rules"]
-limits = "piloop.plugins.stop_rule.limits:FirstLimit"
+limits = "piloop.plugins.stop_rule.limits:Limits"
 
 [project.entry-points."piloop.executors"]
 workers = "piloop.plugins.executor.workers:Workers"
