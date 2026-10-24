@@ -10,7 +10,6 @@ from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 
-from piloop import deprecated
 from piloop.harnesses import fill
 from piloop.plugins.runtime.contract import (
     MESSAGES_ENV,
@@ -26,7 +25,7 @@ from piloop.plugins.runtime.contract import (
     put,
     take,
 )
-from piloop.plugins.runtime.kit.tags import kill_tagged, kill_tree
+from piloop.plugins.runtime.kit.tags import kill_tagged
 from piloop.proc import alive, child_env, kill_group, started
 
 STDOUT = 'agent_session.stdout'
@@ -42,9 +41,6 @@ on instead of queueing messages that no turn would take."""
 CURRENT = 'agent_session.current'
 """Under the agent's log directory: the pid and start time of the process of the agent's latest turn, once a resumed
 turn replaced the first process. Every instance reads it, so ``kill`` and ``status`` reach the agent's live process."""
-deprecated.until('0.3.0', 'worker.current of an agent that 0.1.0 resumed: delete OLD_CURRENT and its read in _current')
-OLD_CURRENT = 'worker.current'
-"""``CURRENT`` before 0.2.0: an agent that an older daemon resumed outlives an upgrade with it."""
 
 
 class Subprocess(RuntimeConfig):
@@ -214,20 +210,14 @@ class SubprocessRuntime:
         The handle keeps the tag under its ``token`` key: a handle is stored, and its agent can outlive an upgrade.
 
         Harnesses run tool commands in sessions of their own (Claude Code's Bash calls), outside the group, and those
-        outlive the agent. A group or a process that is already gone is not an error. A handle from before the tag
-        (0.1.0's) has its agent's descendants killed instead, while the agent still lives to name them.
+        outlive the agent. A group or a process that is already gone is not an error.
         """
-        token = handle.data.get('token')
-        if token is None:
-            deprecated.until('0.3.0', 'a handle that 0.1.0 started has no tag: delete this branch and kill_tree')
-            kill_tree(*_current(handle))
         if self._alive(handle):
             with suppress(ProcessLookupError):
                 os.killpg(_current(handle)[0], signal.SIGKILL)  # each process leads its own group: pgid = pid
                 while self._alive(handle):
                     time.sleep(POLL_SECONDS)
-        if token is not None:
-            kill_tagged(f'{TAG_ENV}={token}')
+        kill_tagged(f'{TAG_ENV}={handle.data["token"]}')
 
     def _alive(self, handle: Handle) -> bool:
         proc = self._procs.get(_pid(handle))
@@ -246,8 +236,8 @@ def _pid(handle: Handle) -> int:
 
 def _current(handle: Handle) -> tuple[int, float]:
     """The pid and start time of the agent's latest process: ``CURRENT`` once a turn was resumed, else the handle's."""
-    path = next((p for p in (_log_dir(handle) / n for n in (CURRENT, OLD_CURRENT)) if p.is_file()), None)
-    data = json.loads(path.read_text()) if path is not None else handle.data
+    path = _log_dir(handle) / CURRENT
+    data = json.loads(path.read_text()) if path.is_file() else handle.data
     return int(str(data['pid'])), float(str(data['start_time']))
 
 

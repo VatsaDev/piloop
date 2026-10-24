@@ -58,12 +58,63 @@ def test_a_piloop_toml_on_the_removed_herdr_runtime_says_where_to_read_why(campa
 
 def test_a_piloop_toml_with_the_removed_entire_agent_says_where_to_read_why(campaign_path: Path) -> None:
     gone = re.escape(
-        'entire_agent is removed in piloop 0.3.0, with Entire: delete the key'
-        ' (https://piloop.autoresearch.inc/guides/upgrading#entire)'
+        'entire_agent: removed in piloop 0.3.0; delete the key (https://piloop.autoresearch.inc/guides/upgrading#entire)'
     )
     harness = {'executable': 'x', 'headless': ['{prompt}'], 'entire_agent': 'pi'}
     with pytest.raises(ConfigError, match=f'  harness.x: .*{gone}'):
         load_campaign_config(campaign_path, harness={'x': harness})
+
+
+def test_a_harness_key_that_only_herdr_read_says_where_to_read_why(campaign_path: Path) -> None:
+    with pytest.raises(
+        ConfigError,
+        match=re.escape(
+            '  harness.script: interactive, queue_key: removed in piloop 0.3.0; delete the key'
+            ' (https://piloop.autoresearch.inc/guides/upgrading#the-herdr-runtime); entire_agent: removed in piloop'
+            ' 0.3.0; delete the key (https://piloop.autoresearch.inc/guides/upgrading#entire)'
+        ),
+    ):
+        load_campaign_config(
+            campaign_path,
+            harness={
+                'script': {
+                    'executable': 'x',
+                    'headless': ['{prompt}'],
+                    'entire_agent': 'pi',
+                    'interactive': ['x'],
+                    'queue_key': 'Tab',
+                }
+            },
+        )
+
+
+def test_a_usage_file_with_a_removed_placeholder_fails_with_the_one_to_write(campaign_path: Path) -> None:
+    old = '{claude_config_dir}/projects/{cwd}/{session_id}.jsonl'
+    usage = {'file': old, 'cwd': 'dash_non_alnum', 'tally': 'claude'}
+    with pytest.raises(
+        ConfigError,
+        match=re.escape(
+            "{claude_config_dir}: removed in piloop 0.3.0; write '{env:CLAUDE_CONFIG_DIR:~/.claude}/projects/{cwd}/"
+            "{session_id}.jsonl' (https://piloop.autoresearch.inc/guides/upgrading#removed-keys)"
+        ),
+    ):
+        load_campaign_config(
+            campaign_path, harness={'script': {'executable': 'x', 'headless': ['{prompt}'], 'usage': usage}}
+        )
+
+
+def test_a_piloop_project_variable_fails_with_its_new_name(
+    campaign_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv('PILOOP_PROJECT_EVALUATE_TIMEOUT', '9')
+    with pytest.raises(
+        ConfigError,
+        match=re.escape(
+            'is not loaded: PILOOP_PROJECT_EVALUATE_TIMEOUT is PILOOP_CAMPAIGN_EVALUATE_TIMEOUT: PILOOP_PROJECT_<KEY> is'
+            ' removed in piloop 0.3.0; rename or unset it (https://piloop.autoresearch.inc/guides/upgrading#removed-keys)'
+        ),
+    ):
+        load_campaign_config(campaign_path)
 
 
 def test_roles_are_typed_per_kind(campaign_path: Path) -> None:
@@ -435,6 +486,9 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
     )
     assert cfg.roles.sweeping()[RoleName('reviewer')].max_ideas == 1, 'any sweeping role can fill the backlog'
     assert filler.roles.sweeping()[RoleName('reviewer')].triggers == [LowWaterTrigger(buffer=1)]
+    assert fails({'worker': {'max_concurrent': 2}}) == snapshot(
+        '  roles: [roles.worker] is removed in piloop 0.3.0: rename the table [roles.implementer] (https://piloop.autoresearch.inc/guides/upgrading#removed-keys). Fix: https://piloop.autoresearch.inc/reference/configuration describes the key'
+    ), 'not a new sweeping role named worker'
     for workdir in ('repo', 'head'):
         assert fails(reviewer(workdir=workdir)) == snapshot(
             '  roles.reviewer: workdir is removed in piloop 0.3.0: every agent works in a worktree of its own, never in the campaign checkout. Delete the key (https://piloop.autoresearch.inc/guides/upgrading#workdir). Fix: https://piloop.autoresearch.inc/reference/configuration describes the key'
@@ -442,9 +496,6 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
     for query, error in {
         'DELETE FROM ideas': 'not authorized',
         'SELECT nope FROM ideas': 'no such column: nope',
-        'SELECT 1 FROM projects': 'no such table: projects: `projects` is `campaigns` since piloop 0.2.0; see https://',
-        'SELECT i.PROJECT_ID FROM ideas i': 'no such column: i.PROJECT_ID: `project_id` is `campaign_id`',
-        'SELECT 1 FROM Workers': 'no such table: Workers: `workers` is `agent_sessions` since piloop 0.2.0',
         'SELECT 1 FROM ideas WHERE id = :idea': 'You did not supply a value for binding parameter :idea',
         'SELECT 1; SELECT 2': 'You can only execute one statement at a time',
     }.items():
@@ -486,9 +537,6 @@ def test_a_table_with_runs_defines_a_role_that_does_runs_with_the_implementer_de
         'priority >>= 3'
     )
     assert 'no such column: nope' in refused('nope = 1')
-    assert '`project_id` is `campaign_id` since piloop 0.2.0; see https://piloop.autoresearch.inc/guides/upgrading' in (
-        refused('project_id = 1')
-    )
     assert 'You did not supply a value for binding parameter :campaign' in refused('campaign_id = :campaign')
     assert 'roles.quick.triggers: Extra inputs are not permitted' in fails({'quick': {'runs': True, 'triggers': []}})
     assert "roles.quick.takes = 'priority > 1': Extra inputs are not permitted" in fails(

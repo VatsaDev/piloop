@@ -12,11 +12,8 @@ from collections.abc import Callable
 
 import psutil
 
-from piloop.plugins.runtime.contract import OLD_TAG_ENV, TAG_ENV
-from piloop.proc import alive
-
 KILL_SCANS = 50
-"""How many rounds ``kill_tagged`` and ``kill_tree`` make, at most, to end the processes that a tree forks meanwhile."""
+"""How many rounds ``kill_tagged`` makes, at most, to end the processes that a tree forks meanwhile."""
 KILL_POLL_SECONDS = 0.05
 """How long ``kill_tagged`` lets the processes of one round exit before it reads the process table again."""
 
@@ -47,21 +44,6 @@ def kill_tagged(marker: str) -> None:
     _kill(lambda: _tagged(marker))
 
 
-def kill_tree(pid: int, start: float) -> None:
-    """End ``pid``, if it is still the process that started at ``start``, and all its descendants, in any session.
-
-    For an agent whose processes carry no tag: one that 0.1.0 started. A descendant is found by its parent, and the
-    child of a killed process goes to init, out of reach. So the scan stops the root, then the children of each
-    stopped process, until it finds no new one, and only then are they killed, as ``kill_tagged`` kills. A descendant
-    whose parent exited before the kill is with init already, and is not found.
-    """
-    try:
-        root = psutil.Process(pid)
-    except psutil.Error:
-        return
-    _kill(lambda: _stopped_tree(root) if alive(pid, start) else [])
-
-
 def _kill(find: Callable[[], list[psutil.Process]]) -> None:
     for _ in range(KILL_SCANS):
         found = find()
@@ -76,27 +58,12 @@ def _kill(find: Callable[[], list[psutil.Process]]) -> None:
         time.sleep(KILL_POLL_SECONDS)
 
 
-def _stopped_tree(root: psutil.Process) -> list[psutil.Process]:
-    """Stop ``root`` and its descendants, each level before the next is read, so none forks unseen. Return them."""
-    tree: list[psutil.Process] = []
-    level = [root]
-    while level:
-        for proc in level:
-            with contextlib.suppress(psutil.Error):
-                proc.suspend()
-        tree += level
-        parents = {proc.pid for proc in level}
-        level = [proc for proc in psutil.process_iter(['ppid']) if proc.info['ppid'] in parents]
-    return tree
-
-
 def _tagged(marker: str) -> list[psutil.Process]:
     name, _, value = marker.partition('=')
-    names = (name, OLD_TAG_ENV) if name == TAG_ENV else (name,)
     found: list[psutil.Process] = []
     for proc in psutil.process_iter():
         try:
-            if proc.status() != psutil.STATUS_ZOMBIE and value in (proc.environ().get(n) for n in names):
+            if proc.status() != psutil.STATUS_ZOMBIE and proc.environ().get(name) == value:
                 found.append(proc)
         except psutil.Error:
             continue

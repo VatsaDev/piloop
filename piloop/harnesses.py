@@ -157,7 +157,7 @@ class Harness(BaseModel):
     @model_validator(mode='before')
     @classmethod
     def _removed(cls, data: object) -> object:
-        if isinstance(data, Mapping) and (removed := deprecated.removed_entire_agent(data)) is not None:
+        if isinstance(data, Mapping) and (removed := deprecated.removed_harness_keys(data)) is not None:
             raise ValueError(removed)
         return data
 

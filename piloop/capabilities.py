@@ -2,7 +2,7 @@
 
 # ruff: noqa: F401  # this module only re-exports: every import is unused here
 
-from piloop.plugins.host import Capability, Tier, Parameters, Choice, Scope, Check
+from piloop.plugins.host import Capability, Tier, Parameters, Choice, Scope, Check, Severity
 from piloop.plugins.host import MissingProvider, Provider, PythonSource, ContractBroken
 from piloop.plugins.host import Live
 from piloop.plugins.host import Entry, Named, Tables

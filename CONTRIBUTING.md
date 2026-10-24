@@ -125,8 +125,8 @@ These tests carry the `e2e` marker. The pytest configuration leaves this marker 
 scenario (`tests/e2e/test_lifecycle.py`) takes about 3 minutes on `claude-haiku-4-5-20251001`. Its three agents use
 about 1 million tokens, most of them cache reads. That is about 0.3 USD at API prices. The upgrade scenario
 (`tests/e2e/test_upgrade.py`) installs the last release from PyPI, runs a small campaign on it, upgrades to your
-checkout while an agent works, and checks that no row, ref, commit or file was lost. It takes about 13 minutes and
-0.5 USD, with Claude only. To pick another harness or model:
+checkout while an agent works, and checks that no row, ref, commit or file was lost. It takes about 5 minutes and
+0.2 USD, with Claude only. To pick another harness or model:
 
 ```bash
 uv run pytest -m e2e tests/e2e -rA --e2e-harness claude --e2e-model <model>
@@ -263,8 +263,8 @@ function or a class, or call it where the code is:
 from piloop import deprecated
 
 
-@deprecated.until('0.3.0', '[roles.research] context is the top-level context: delete the research_context bridge')
-def research_context(toml, raw): ...
+@deprecated.until('0.4.0', '[storage.backend] is [plugins.cas] cached: delete the storage_backend bridge')
+def storage_backend(toml, raw): ...
 
 
 if not handle.data.get('tag'):

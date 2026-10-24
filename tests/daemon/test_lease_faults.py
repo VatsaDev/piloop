@@ -15,7 +15,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Generator, Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 import psutil
@@ -50,9 +50,10 @@ from piloop.db.session import Database
 from piloop.ids import RunId, TargetKind
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import CAS
-from piloop.plugins.executor.contract import AgentFinished, AgentReport, EvaluationReport
+from piloop.plugins.executor.contract import AgentFinished, AgentReport, EvaluationReport, Source
 from piloop.plugins.executor.kit.leases import NOT_TAKEN, SERVE, Leases, StaleReport, Timing
 from piloop.plugins.executor.workers import Workers
+from piloop.plugins.vcs.contract import Revision
 from piloop.plugins.vcs.git import bundles as store_commits
 from piloop.proc import alive, started
 from piloop.settings import Settings
@@ -450,7 +451,7 @@ def test_a_real_daemon_killed_during_a_run_is_followed_by_one_that_finishes_it_o
 
 @pytest.mark.parametrize('agent', ['run', 'sweep'])
 def test_an_agent_that_a_daemon_before_leases_started_is_adopted_and_its_work_scored(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, agent: str
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, agent: str, mocker: MockerFixture
 ) -> None:
     """An upgrade hands over to a daemon with leases: each running agent without one gets one, keeps running, and its
     run is scored. A run's implementer and a sweep."""
@@ -470,7 +471,23 @@ def test_an_agent_that_a_daemon_before_leases_started_is_adopted_and_its_work_sc
         s.execute(delete(Lease))
         s.commit()
     second = next_daemon(db, tmp_path)
+    sources = second._controller.sources
+    snapshot = sources.source
+    blocked: list[str] = []
+
+    def source(campaign: Campaign, revision: Revision) -> Source:
+        """Store the links, as the adoption does, while a command writes: a write lock held here would block it."""
+        with closing(sqlite3.connect(db.engine.url.database or '', timeout=0)) as con:
+            try:
+                con.execute("UPDATE campaigns SET updated_by = 'human'")
+                con.commit()
+            except sqlite3.OperationalError as e:
+                blocked.append(str(e))
+        return snapshot(campaign, revision)
+
+    mocker.patch.object(sources, 'source', source)
     second.reap()
+    assert blocked == [], 'the reap stores the linked inputs of an adopted agent without holding the write lock'
     with db.session() as s:
         [adopted] = s.scalars(select(Lease)).all()
         assert (adopted.agent_session_id, adopted.state, adopted.worker) == (1, LeaseState.RUNNING, SERVE)

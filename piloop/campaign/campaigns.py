@@ -47,7 +47,7 @@ class CampaignAdded(EventModel):
 
 WORKSPACE = 'workspace'
 """A per-campaign directory, linked into every worktree, for files that runs share. It is never committed."""
-deprecated.until('0.3.0', 'campaign directories keep their 0.1.0 name: move projects/ to campaigns/, delete PROJECTS')
+deprecated.until('0.4.0', 'campaign directories keep their 0.1.0 name: move projects/ to campaigns/, delete PROJECTS')
 PROJECTS = 'projects'
 """The directory under the piloop home that holds each campaign's directory."""
 GITIGNORE = 'data\n.venv\nworkspace\n__pycache__/\n'

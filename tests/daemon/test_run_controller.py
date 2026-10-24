@@ -1635,19 +1635,17 @@ def test_a_startup_death_during_a_stop_leaves_the_run_to_the_stop(
         assert s.scalar(select(func.count()).select_from(AgentSession).where(AgentSession.run_id == run_id)) == 1
 
 
-@pytest.mark.parametrize('role', ['implementer', 'worker'])
 def test_a_finding_without_a_commit_is_a_result(
-    role: str, db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
     """A run that posts a finding and commits nothing succeeds, and its idea is not retried.
 
-    Some plans, such as an audit, produce a finding and no code. A 0.1.0 agent that outlives the upgrade signs its
-    finding ``worker#<id>``, as its brief told it, and the finding still counts.
+    Some plans, such as an audit, produce a finding and no code.
     """
     run_id = make_run(db, campaign, max_runs=2)
     with db.session() as s:
         idea_id, agent_session_id = run_row(db, run_id).idea_id, s.scalars(select(AgentSession.id)).one()
-    finding = f"INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES ('idea', {idea_id}, '{role}#{agent_session_id}', 'finding', 'arm B: no effect')"
+    finding = f"INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES ('idea', {idea_id}, 'implementer#{agent_session_id}', 'finding', 'arm B: no effect')"
     write_toml(Path(campaign.path), f'#!/bin/sh\n{SQL_HINT} "{finding}"\n')
     reload_campaign(db, campaign)
     execute(controller(db, runtime, tmp_path), db, run_id)
@@ -1789,10 +1787,9 @@ def test_an_implementer_that_left_its_finding_has_finished_its_run_however_its_p
         assert [c.verdict for c in s.scalars(select(Candidate).where(Candidate.run_id == run_id))] == [Outcome.KEEP]
 
 
-@pytest.mark.parametrize('role', ['implementer', 'worker'])
 @pytest.mark.parametrize('reported', [True, False])
 def test_an_implementer_that_stops_on_its_open_escalation_is_blocked_and_its_idea_waits_for_the_answer(
-    role: str, db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, reported: bool
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, reported: bool
 ) -> None:
     """An implementer that asks for a decision and stops before it comes did not succeed, and its idea is not done.
 
@@ -1805,11 +1802,11 @@ def test_an_implementer_that_stops_on_its_open_escalation_is_blocked_and_its_ide
         idea_id, agent_session_id = run_row(db, run_id).idea_id, s.scalars(select(AgentSession.id)).one()
     ask = (
         'INSERT INTO comments (target_kind, target_id, author, kind, priority, body) VALUES'
-        f" ('idea', {idea_id}, '{role}#{agent_session_id}', 'escalation', 1, 'run the audit that I cannot run')"
+        f" ('idea', {idea_id}, 'implementer#{agent_session_id}', 'escalation', 1, 'run the audit that I cannot run')"
     )
     report = (
         'INSERT INTO comments (target_kind, target_id, author, kind, body) VALUES'
-        f" ('idea', {idea_id}, '{role}#{agent_session_id}', 'finding', 'blocked on the audit')"
+        f" ('idea', {idea_id}, 'implementer#{agent_session_id}', 'finding', 'blocked on the audit')"
     )
     write_toml(
         Path(campaign.path),

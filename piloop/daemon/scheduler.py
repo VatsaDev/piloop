@@ -255,11 +255,14 @@ class Scheduler:
         what still needs a measurement asks again.
         """
         with self._tracer.span('piloop.reap'):
+            # only reads: a job of an adopted agent stores its linked inputs, which can take a while, and a write
+            # lock held meanwhile would make every command that writes fail with "database is locked"
             with self._db.session() as s:
-                s.execute(delete(Evaluation))
                 live = s.scalars(select(AgentSession).where(AgentSession.state.in_(LIVE))).all()
                 runs = {w.id: w.run_id for w in live}
                 left = [self._left(s, w) for w in live]
+            with self._db.session() as s:
+                s.execute(delete(Evaluation))
                 s.commit()
             refused = set(self._controller.executor.adopt(left))
             adopted = [
@@ -288,7 +291,8 @@ class Scheduler:
         return LeftJob(AgentKey(w.id))
 
     @deprecated.until(
-        '0.3.0', 'an agent that a daemon before leases started: delete _running with Launcher.left and LeftJob.job'
+        '0.4.0',
+        'an agent that a 0.2 daemon started (before leases): delete _running with Launcher.left and LeftJob.job',
     )
     def _running(self, s: Session, w: AgentSession) -> LeftJob | None:
         """The ``LeftJob`` of a running agent with its job, if its worktree exists, for an executor to adopt it.
@@ -404,7 +408,9 @@ class Scheduler:
         for checkout in repo.checkouts(agent_dir):
             repo.discard(checkout)
 
-    @deprecated.until('0.3.0', 'a kill of an agent that no executor holds: delete _kill_stale with _running')
+    @deprecated.until(
+        '0.4.0', 'a kill of an agent that a 0.2 daemon started (before leases): delete _kill_stale with _running'
+    )
     def _kill_stale(self, s: Session, agent_session: AgentSession) -> None:
         """Ask the runtime to kill an agent that no executor adopted, which outlives its daemon. Best effort.
 
@@ -580,7 +586,7 @@ class Scheduler:
         own comments are not sent back. An implementer signs as ``implementer#<id>`` (its ``PILOOP_ACTOR``) or ``run#<id>``.
         """
         on_agent = (Comment.target_kind == TargetKind.AGENT_SESSION) & (Comment.target_id == agent_session.id)
-        own = deprecated.signatures(Agent(role=agent_session.kind, session=agent_session.id))
+        own: tuple[str, ...] = (Agent(role=agent_session.kind, session=agent_session.id).signature,)
         since = agent_session.started_at
         run = s.get(Run, agent_session.run_id) if agent_session.run_id is not None else None
         if run is not None:

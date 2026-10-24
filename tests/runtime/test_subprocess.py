@@ -143,23 +143,6 @@ def test_kill_ends_an_escaped_child_after_the_agent_itself_exited(tmp_path: Path
             os.kill(pid, signal.SIGKILL)
 
 
-def test_kill_ends_what_an_agent_without_a_tag_started_in_a_session_of_its_own(tmp_path: Path) -> None:
-    """0.1.0 gave an agent no process tag. After an upgrade, a cancel of such an agent reached only its group, and its Bash
-    calls, each in a session of its own, kept running (#140). The kill ends the agent's descendants as well."""
-    starter = Subprocess().open()
-    handle = starter.start(spec(tmp_path, script(tmp_path, f'{ESCAPE}sleep 30')))
-    pid, start = escaped(tmp_path)
-    legacy = Handle(handle.runtime, {k: v for k, v in handle.data.items() if k != 'token'})
-    try:
-        assert os.getsid(pid) != handle.data['pid'], 'the child left the group that killpg reaches'
-        Subprocess().open().kill(legacy)  # the daemon after the upgrade: another instance, the handle from its row
-        assert gone(pid, start), 'the escaped child dies with the agent'
-        assert starter.wait(handle, timeout=5).status is ExitStatus.EXITED
-    finally:
-        if alive(pid, start):
-            os.kill(pid, signal.SIGKILL)
-
-
 def test_session_id_is_read_from_stdout_while_the_process_still_runs(tmp_path: Path) -> None:
     rt = Subprocess().open()
     exe = script(tmp_path, 'sleep 0.3; echo \'{"type":"thread.started","thread_id":"abc-123"}\'; sleep 5')
@@ -192,7 +175,7 @@ def test_rehydrated_handle_is_observable_without_an_exit_code(tmp_path: Path) ->
     starter = Subprocess().open()
     handle = starter.start(spec(tmp_path, script(tmp_path, 'sleep 5')))
     other = Subprocess().open()  # another process would rebuild the handle from the database
-    rehydrated = Handle(handle.runtime, {k: v for k, v in handle.data.items() if k != 'token'})  # a row from before it
+    rehydrated = Handle(handle.runtime, dict(handle.data))
     assert other._alive(rehydrated)
     other.kill(rehydrated)
     starter.wait(handle, timeout=5)
@@ -308,9 +291,6 @@ def test_a_resumed_turn_is_the_one_kill_and_status_reach_from_any_instance(tmp_p
     assert rt._resume(handle), 'the launcher filled in the minted session id'
     elsewhere = Subprocess().open()
     assert elsewhere._alive(handle), 'the resumed process, from agent_session.current'
-    logs = tmp_path / 'logs'
-    (logs / 'agent_session.current').rename(logs / 'worker.current')
-    assert elsewhere._alive(handle), 'its 0.1.0 name, from a daemon before the upgrade'
     elsewhere.kill(handle)
     assert not elsewhere._alive(handle) and not rt._alive(handle)
 

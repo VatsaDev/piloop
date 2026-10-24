@@ -53,7 +53,7 @@ class Release:
     head: Revision
 
 
-RELEASES = (Release(Version(0, 1, 0), Revision('0001')),)
+RELEASES = (Release(Version(0, 1, 0), Revision('0001')), Release(Version(0, 2, 0), Revision('0018')))
 """Every minor release, oldest first. The newest is the floor: this piloop migrates a database from its head or from a
 newer revision, never from an older one, so a database upgrades one minor release at a time.
 

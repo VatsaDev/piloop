@@ -14,10 +14,11 @@ from alembic.script import ScriptDirectory
 from pytest_mock import MockerFixture
 
 from piloop.cli import doctor, skills, upgrade
-from piloop.cli.doctor import Check, checks, report
+from piloop.cli.doctor import checks, report
 from piloop.config import CampaignConfig
-from piloop.db.models import Campaign
+from piloop.db.models import Campaign, CampaignStatus
 from piloop.db.session import Database
+from piloop.plugins.host import Check, Severity
 from piloop.settings import Settings
 from piloop.version import Version, code_digest, installed
 from tests.cli.test_cli import git_check
@@ -177,6 +178,26 @@ def test_a_campaign_whose_toml_is_gone_invalid_or_whose_stored_copy_no_longer_va
         f'`piloop init {campaign.path}`',
     )
     assert by_name(cfg)['harnesses'].found == 'on PATH: none configured', 'no valid stored config, no harness to check'
+
+
+def test_the_toml_of_a_stopped_campaign_that_does_not_load_is_a_warning(
+    cfg: Settings, db: Database, campaign: Campaign
+) -> None:
+    """The daemon schedules a campaign from its stored copy: a stopped one reads its file again only at ``piloop init``."""
+    toml = Path(campaign.path) / 'piloop.toml'
+    toml.write_text(toml.read_text().replace('role = "primary"', 'role = "boss"'))
+    with db.session() as s:
+        s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
+        s.commit()
+    found = by_name(cfg)['campaign demo']
+    assert (found.severity, found.fails, found.fix) == (
+        Severity.WARN,
+        False,
+        f'fix {toml}, then `piloop init {campaign.path}` re-reads it',
+    )
+    assert next(line for line in report([found])).startswith(
+        f'WARN  campaign demo: {toml} is not a valid piloop config'
+    )
 
 
 def test_a_missing_harness_is_named(cfg: Settings, db: Database, campaign: Campaign) -> None:

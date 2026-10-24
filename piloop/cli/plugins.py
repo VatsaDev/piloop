@@ -46,9 +46,9 @@ def selections(cfg: Settings) -> list[str]:
     """
     config = cfg.home / CONFIG_FILE
     campaigns = [
-        (f'in the config of {name} that the last `piloop init` stored from {Path(path)}/piloop.toml', campaign)
-        for name, path, campaign in stored_campaigns(cfg.home / 'piloop.db')
-        if isinstance(campaign, CampaignConfig)  # else piloop doctor says why the stored config does not load
+        (f'in the config of {c.name} that the last `piloop init` stored from {Path(c.path)}/piloop.toml', c.config)
+        for c in stored_campaigns(cfg.home / 'piloop.db')
+        if isinstance(c.config, CampaignConfig)  # else piloop doctor says why the stored config does not load
     ]
     found: list[str] = []
     for capability in declared():

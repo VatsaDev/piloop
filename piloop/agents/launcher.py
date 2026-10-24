@@ -203,8 +203,8 @@ class Launcher:
             return job
 
     @deprecated.until(
-        '0.3.0',
-        'an agent that a daemon before leases started: delete Launcher.left, Scheduler._left, LeftJob.job and'
+        '0.4.0',
+        'an agent that a 0.2 daemon started (before leases): delete Launcher.left, Scheduler._left, LeftJob.job and'
         ' LeftJob.handle, and a None AgentJob.spec',
     )
     def left(self, s: Session, w: AgentSession, artifact: Source, place: str, commits: Commits | None) -> LeftJob:

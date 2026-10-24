@@ -14,7 +14,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import Annotated, Self
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter, model_validator
 from pydantic_settings import (
     BaseSettings,
     InitSettingsSource,
@@ -74,11 +74,6 @@ class Settings(BaseSettings):
     actor: Annotated[Actor, NoDecode] = System.HUMAN
     """Who this process is. Every row it updates records this value in ``updated_by``. The daemon launches each agent
     with ``<role>#<agent_session_id>``, for example ``implementer#12`` or ``scout#7``."""
-
-    @field_validator('actor', mode='before')
-    @classmethod
-    def _actor(cls, actor: object) -> object:
-        return deprecated.old_actor(actor) if isinstance(actor, str) else actor
 
     messages: Path | None = None
     """The queue of messages for this agent's turn, set by a runtime that keeps one. ``piloop agent messages`` takes

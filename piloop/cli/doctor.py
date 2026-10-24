@@ -12,7 +12,7 @@ import shutil
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -25,9 +25,9 @@ from piloop.cli import skills, upgrade
 from piloop.config import CampaignConfig, ConfigError, explain, load_campaign_config
 from piloop.daemon.main import preflight, unbound_failures
 from piloop.daemon.serve import SECRETS_COMMAND_ENV, SecretsError, running_pid, secrets
-from piloop.db.models import utcnow
+from piloop.db.models import CampaignStatus, utcnow
 from piloop.db.session import head, schema_mismatch
-from piloop.plugins.host import Check, PluginError, declared
+from piloop.plugins.host import Check, PluginError, Severity, declared
 from piloop.plugins.vcs.contract import VCS
 from piloop.proc import child_env, environment
 from piloop.reports.overview import age
@@ -35,6 +35,17 @@ from piloop.settings import Settings
 from piloop.version import code_digest, direct_url, installed
 
 CHANGELOG = 'https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md'
+
+
+@dataclass(frozen=True)
+class StoredCampaign:
+    """A registered campaign as ``piloop doctor`` reads it: its repo, its status and its stored config."""
+
+    name: str
+    path: str
+    status: CampaignStatus
+    config: CampaignConfig | ValidationError
+    """The stored copy (``campaigns.config``), or why it does not validate."""
 
 
 def checks(cfg: Settings) -> list[Check]:
@@ -53,16 +64,16 @@ def checks(cfg: Settings) -> list[Check]:
         composed,
         found_secrets,
     ]
-    if composed.fix is not None:
+    if composed.fails:
         found = [*first, *_skills(cfg)]
     else:
         campaigns = stored_campaigns(cfg.home / 'piloop.db')
-        stored = [c for _, _, c in campaigns if isinstance(c, CampaignConfig)]
+        stored = [c.config for c in campaigns if isinstance(c.config, CampaignConfig)]
         env = whose, names | supplied
         found = [
             *first,
-            *(_campaign(name, path, c) for name, path, c in campaigns),
-            *(_mcp(name, c, env) for name, _, c in campaigns if isinstance(c, CampaignConfig) and c.mcp),
+            *map(_campaign, campaigns),
+            *(_mcp(c.name, c.config, env) for c in campaigns if isinstance(c.config, CampaignConfig) and c.config.mcp),
             *_skills(cfg),
             _harnesses(stored),
             *(check for provider in VCS.providers().values() for check in provider.model.checks()),
@@ -134,16 +145,22 @@ def _database(path: Path, daemon: int | None, actor: Actor) -> Check:
     return Check('database', f'{path} at schema {head()}, current')
 
 
-def _campaign(name: str, path: str, stored: CampaignConfig | ValidationError) -> Check:
-    """Check that the repo's ``piloop.toml`` loads, and that the stored copy (``campaigns.config``) validates."""
-    what = f'campaign {name}'
+def _campaign(campaign: StoredCampaign) -> Check:
+    """Check that the repo's ``piloop.toml`` loads, and that the stored copy (``campaigns.config``) validates.
+
+    The daemon schedules from the stored copy, and reads the repo's file only at ``piloop init``. So a stopped
+    campaign's file that does not load is a warning: it matters once ``piloop init`` resumes the campaign.
+    """
+    path, stored = campaign.path, campaign.config
+    what = f'campaign {campaign.name}'
     reread = f'fix {path}/piloop.toml, then `piloop init {path}` re-reads it'
+    severity = Severity.WARN if campaign.status is CampaignStatus.STOPPED else Severity.FAIL
     try:
         check_takes(Path(path), load_campaign_config(Path(path)))
     except FileNotFoundError:
-        return Check(what, f'no piloop.toml in {path}', f'restore it, then `piloop init {path}`')
+        return Check(what, f'no piloop.toml in {path}', f'restore it, then `piloop init {path}`', severity)
     except ConfigError as e:
-        return Check(what, str(e), reread)
+        return Check(what, str(e), reread, severity)
     if isinstance(stored, ValidationError):
         return Check(
             what,
@@ -241,16 +258,16 @@ def _harnesses(configs: list[CampaignConfig]) -> Check:
     return Check('harnesses', f'on PATH: {", ".join(sorted(executables.values())) or "none configured"}')
 
 
-def stored_campaigns(path: Path) -> list[tuple[str, str, CampaignConfig | ValidationError]]:
-    """Return the name, repo path and stored config of each registered campaign, or why the config does not validate."""
+def stored_campaigns(path: Path) -> list[StoredCampaign]:
+    """Return each registered campaign of the database at ``path``, oldest first."""
     if not path.is_file():
         return []
     with closing(_read_only(path)) as con:
         try:
-            rows = con.execute('SELECT name, path, config FROM campaigns ORDER BY id').fetchall()
+            rows = con.execute('SELECT name, path, status, config FROM campaigns ORDER BY id').fetchall()
         except sqlite3.OperationalError:  # never migrated, so there is no campaigns table
             return []
-    return [(name, repo, _stored(config)) for name, repo, config in rows]
+    return [StoredCampaign(name, repo, CampaignStatus(status), _stored(config)) for name, repo, status, config in rows]
 
 
 def _stored(config: str) -> CampaignConfig | ValidationError:
@@ -269,8 +286,8 @@ def _ago(mtime: float) -> str:
 
 
 def report(results: list[Check]) -> Iterator[str]:
-    """Yield ``ok    <name>: <found>`` for a pass, or ``FAIL  <name>: <found>`` and an indented ``fix:`` line."""
+    """Yield ``ok    <name>: <found>`` for a pass, else ``FAIL`` or ``WARN`` in place of ``ok`` and a ``fix:`` line."""
     for c in results:
-        yield f'{"ok  " if c.fix is None else "FAIL"}  {c.name}: {c.found}'
+        yield f'{"ok  " if c.fix is None else c.severity}  {c.name}: {c.found}'
         if c.fix is not None:
             yield f'      fix: {c.fix}'

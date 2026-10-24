@@ -462,7 +462,7 @@ def test_a_database_that_a_build_before_fingerprints_migrated_is_trusted_at_a_kn
     tmp_path: Path,
 ) -> None:
     path = tmp_path / 'piloop.db'
-    command.upgrade(alembic(path), '0005')
+    command.upgrade(alembic(path), '0018')
     with closing(sqlite3.connect(path)) as con:
         con.execute('PRAGMA user_version = 0')
     engine = create_engine(f'sqlite:///{path}')
@@ -483,16 +483,16 @@ def test_a_migration_first_backs_up_the_database_and_keeps_the_newest_backups(tm
     path = tmp_path / 'piloop.db'
     engine = create_engine(f'sqlite:///{path}')
     assert migrate(engine, backups=2, daemon=None) is None, 'a new database has nothing to lose'
-    command.downgrade(alembic(path), '0016')
+    command.downgrade(alembic(path), '0018')
     with closing(sqlite3.connect(path)) as con:
         con.execute("INSERT INTO campaigns (name, path, config) VALUES ('kept', '/p', '{}')")
         con.commit()
     for old in ('0001-20250101T000000Z', '0002-20250102T000000Z'):
         (tmp_path / f'piloop.db.bak-{old}').write_bytes(b'an older backup')
     backup = migrate(engine, backups=2, daemon=None)
-    assert backup is not None and re.fullmatch(r'piloop\.db\.bak-0016-\d{8}T\d{6}Z', backup.name), backup
+    assert backup is not None and re.fullmatch(r'piloop\.db\.bak-0018-\d{8}T\d{6}Z', backup.name), backup
     with closing(sqlite3.connect(f'file:{backup}?mode=ro', uri=True)) as con:
-        assert con.execute('SELECT version_num FROM alembic_version').fetchall() == [('0016',)]
+        assert con.execute('SELECT version_num FROM alembic_version').fetchall() == [('0018',)]
         assert con.execute('SELECT name FROM campaigns').fetchall() == [('kept',)]
         assert con.execute('PRAGMA integrity_check').fetchone() == ('ok',)
     assert sorted(p.name for p in tmp_path.glob('piloop.db.bak-*')) == [
@@ -500,7 +500,7 @@ def test_a_migration_first_backs_up_the_database_and_keeps_the_newest_backups(tm
         backup.name,
     ]
     assert migrate(engine, backups=2, daemon=None) is None, 'at head: nothing to back up'
-    command.downgrade(alembic(path), '0016')
+    command.downgrade(alembic(path), '0018')
     assert migrate(engine, backups=0, daemon=None) is None and len(list(tmp_path.glob('piloop.db.bak-*'))) == 2
     assert revision(path) == ScriptDirectory.from_config(alembic(path)).get_current_head()
     engine.dispose()
@@ -509,7 +509,7 @@ def test_a_migration_first_backs_up_the_database_and_keeps_the_newest_backups(tm
 def test_a_backup_that_fails_leaves_the_database_unmigrated_and_no_partial_copy(tmp_path: Path) -> None:
     """A full disk, as a limit on the size of the files this process writes: the copy fails, nothing is migrated."""
     path = tmp_path / 'piloop.db'
-    command.upgrade(alembic(path), '0016')
+    command.upgrade(alembic(path), '0018')
     engine = create_engine(f'sqlite:///{path}')
     limit = resource.getrlimit(resource.RLIMIT_FSIZE)
     previous = signal.signal(signal.SIGXFSZ, signal.SIG_IGN)  # a write past the limit fails instead of killing
@@ -520,7 +520,7 @@ def test_a_backup_that_fails_leaves_the_database_unmigrated_and_no_partial_copy(
     finally:
         resource.setrlimit(resource.RLIMIT_FSIZE, limit)
         signal.signal(signal.SIGXFSZ, previous)
-    assert revision(path) == '0016' and list(tmp_path.glob('piloop.db.bak-*')) == []
+    assert revision(path) == '0018' and list(tmp_path.glob('piloop.db.bak-*')) == []
     engine.dispose()
 
 
@@ -895,8 +895,11 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
 
 
 def upgraded(config: dict[str, object]) -> object:
-    """``config`` as revisions 0034 (no herdr), 0035 (no ``workdir``), 0036 (no Entire), 0038 (a trigger's
-    ``provider``) and 0039 (the rules' limits) store it, so that today's piloop reads it."""
+    """``config`` as revisions 0018 (``roles.implementer``), 0034 (no herdr), 0035 (no ``workdir``), 0036 (no Entire),
+    0038 (a trigger's ``provider``) and 0039 (the rules' limits) store it, so that today's piloop reads it."""
+    roles = config.get('roles')
+    if isinstance(roles, dict) and 'worker' in roles:
+        roles['implementer'] = roles.pop('worker')
     revisions = ScriptDirectory(str(MIGRATIONS))
     config = revisions.get_revision('0034').module.upgraded(config, stopped=False)
     config = revisions.get_revision('0035').module.upgraded(config)

@@ -20,7 +20,9 @@ from functools import cache
 from pathlib import Path
 from typing import Protocol, Self
 
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+
+from piloop import deprecated
 
 
 class Usage(BaseModel):
@@ -77,6 +79,13 @@ class UsageSpec(BaseModel):
     tally: str | None = None
     """For ``jsonl``: the file format, which says which records have token counts, how they add up, and which
     records hold the agent's own text."""
+
+    @field_validator('file')
+    @classmethod
+    def _no_removed_placeholders(cls, file: str | None) -> str | None:
+        if file is not None and (removed := deprecated.removed_placeholders(file)) is not None:
+            raise ValueError(removed)
+        return file
 
     @model_validator(mode='after')
     def _check(self) -> Self:

@@ -1231,7 +1231,7 @@ def finding_of(s: Session, run: Run, agent_session: AgentSession) -> Comment | N
     """
     on_idea = Comment.target == TargetRef(TargetKind.IDEA, run.idea_id)
     on_run = Comment.target == TargetRef(TargetKind.RUN, run.id)
-    signed = (*deprecated.signatures(Agent(role=agent_session.kind, session=agent_session.id)), f'run#{run.id}')
+    signed = (Agent(role=agent_session.kind, session=agent_session.id).signature, f'run#{run.id}')
     return s.scalars(
         select(Comment)
         .where(on_idea | on_run, Comment.kind == CommentKind.FINDING, Comment.author.in_(signed))
@@ -1321,7 +1321,7 @@ def open_escalation(s: Session, run: Run) -> CommentId | None:
     same idea do not block the run.
     """
     sessions = s.scalars(select(AgentSession).where(AgentSession.run_id == run.id)).all()
-    signed = [name for w in sessions for name in deprecated.signatures(Agent(role=w.kind, session=w.id))]
+    signed = [Agent(role=w.kind, session=w.id).signature for w in sessions]
     on_idea = Comment.target == TargetRef(TargetKind.IDEA, run.idea_id)
     on_run = Comment.target == TargetRef(TargetKind.RUN, run.id)
     asked = s.scalars(

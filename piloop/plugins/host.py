@@ -129,9 +129,16 @@ class PythonSource:
         return self.release if self.built_in else f'{self.release}, entry point {self.entry_point}'
 
 
+class Severity(StrEnum):
+    """What a check that did not pass means: a failure of ``piloop doctor``, or a warning that changes nothing now."""
+
+    FAIL = 'FAIL'
+    WARN = 'WARN'
+
+
 @dataclass(frozen=True)
 class Check:
-    """One line of the report of ``piloop doctor``: what was checked, what was found and, for a failure, the fix.
+    """One line of the report of ``piloop doctor``: what was checked, what was found and, when it did not pass, the fix.
 
     A provider that checks the machine it works on returns these (``Vcs.checks``).
     """
@@ -140,6 +147,12 @@ class Check:
     found: str
     fix: str | None = None
     """None when the check passed."""
+    severity: Severity = Severity.FAIL
+    """What a check with a fix means."""
+
+    @property
+    def fails(self) -> bool:
+        return self.fix is not None and self.severity is Severity.FAIL
 
 
 class Live:

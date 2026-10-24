@@ -89,21 +89,20 @@ def test_an_env_placeholder_is_the_variable_or_its_default_in_the_home(monkeypat
 def test_the_storage_backend_of_config_toml_is_the_remote_of_a_cached_cas(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """0.2.0 wrote the remote as ``[storage.backend]``, and builds of main before it as ``[storage.remote]``."""
+    """0.2.0 wrote the remote as ``[storage.backend]``."""
     monkeypatch.setenv('PILOOP_HOME', str(tmp_path))
-    for old in ('backend', 'remote'):
-        (tmp_path / 'config.toml').write_text(
-            f'[storage]\nevict_after_days = 3\nmin_free_gb = 9\n\n[storage.{old}]\nkind = "s3"\nurl = "s3://b/p"\n'
-        )
-        with pytest.warns(PiloopDeprecationWarning) as w:
-            given = Settings()
-        assert str(w[-1].message).startswith('[storage.backend] is deprecated; write [plugins.cas] provider = "cached"')
-        assert given.storage == StorageSettings(min_free_gb=9)
-        assert given.plugins['cas'] == {
-            'provider': 'cached',
-            'remote': {'provider': 's3', 'url': 's3://b/p'},
-            'evict_after_days': 3,
-        }
+    (tmp_path / 'config.toml').write_text(
+        '[storage]\nevict_after_days = 3\nmin_free_gb = 9\n\n[storage.backend]\nkind = "s3"\nurl = "s3://b/p"\n'
+    )
+    with pytest.warns(PiloopDeprecationWarning) as w:
+        given = Settings()
+    assert str(w[-1].message).startswith('[storage.backend] is deprecated; write [plugins.cas] provider = "cached"')
+    assert given.storage == StorageSettings(min_free_gb=9)
+    assert given.plugins['cas'] == {
+        'provider': 'cached',
+        'remote': {'provider': 's3', 'url': 's3://b/p'},
+        'evict_after_days': 3,
+    }
     (tmp_path / 'config.toml').write_text(
         '[storage]\nlocal_max_gb = 1\n[storage.backend]\nkind = "s3"\nurl = "s3://b/p"\n'
         '[plugins.cas]\nprovider = "disk"\n'
@@ -127,13 +126,9 @@ def test_a_runtimes_value_that_is_no_table_of_tables_is_refused(
             Settings()
 
 
-def test_the_signature_of_an_implementer_from_before_0_2_0_is_its_new_signature(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An agent that an older daemon started outlives an upgrade, signed ``worker#<id>``."""
-    monkeypatch.setenv('PILOOP_ACTOR', 'worker#12')
-    with pytest.warns(PiloopDeprecationWarning, match=r'PILOOP_ACTOR=worker#12 is deprecated; .* implementer#12'):
-        assert Settings(home=tmp_path).actor == Agent(role='implementer', session=12)
+def test_the_actor_is_read_from_its_signature(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv('PILOOP_ACTOR', 'implementer#12')
+    assert Settings(home=tmp_path).actor == Agent(role='implementer', session=12)
     monkeypatch.setenv('PILOOP_ACTOR', 'scout#3')
     assert Settings(home=tmp_path).actor == Agent(role='scout', session=3)
     monkeypatch.setenv('PILOOP_ACTOR', 'scout#')

@@ -489,16 +489,9 @@ The settings of the runtime `<name>` on this machine: the fields of its provider
 These keys still work. Each one shows a `PiloopDeprecationWarning` that names the file, the key, its replacement and the release that removes it. The changelog lists them too.
 
 - `kind` in an entry of `[roles.<name>] triggers` is `provider`: `{ provider = "cron" }`.
-- `[roles.worker]` is `[roles.implementer]`: the role that runs one idea in its own worktree. A key that `[roles.implementer]` sets too keeps its value there.
-- `[roles.research.scout]` is `[roles.scout]`, a role of its own. The keys of `[roles.research]` that the scout used (`runtime`, `harnesses`, `model`, `timeout`, `mcp` and `addendum`) are copied into it, unless `[roles.scout]` sets them.
-- The `scout` trigger of `[roles.research] triggers` is gone: the scout is a role with its own `cron`.
-- `[roles.research] buffer` is the `buffer` of research's `low_water` trigger. Without `triggers` in the table, research gets its default triggers with that `buffer`.
-- `[roles.research] context` is the top-level `context`: every sweep's research pack lists the files.
-- `{claude_config_dir}` and `{codex_home}` in `[harness.<name>.usage] file` are `{env:…}` placeholders. `{claude_config_dir}` is `{env:CLAUDE_CONFIG_DIR:~/.claude}`, and `{codex_home}` is `{env:CODEX_HOME:~/.codex}`.
 - `[stop] <key>` is `[plugins.stop_rule] <key>`, a limit of the stop rule. A rule without that key refuses it. A key that `[plugins.stop_rule]` sets too keeps its value there.
 - `[spend] limit` is `[plugins.stop_rule] max_spend`. A value that `[plugins.stop_rule]` sets too wins.
 - The top-level `confidence` is `[plugins.verdict_rule] confidence`. A value that the table sets too wins.
 - `PILOOP_CAMPAIGN_STOP__<KEY>` and `PILOOP_CAMPAIGN_CONFIDENCE` set keys of the rules' tables. They are `PILOOP_CAMPAIGN_PLUGINS__STOP_RULE__<KEY>` and `PILOOP_CAMPAIGN_PLUGINS__VERDICT_RULE__CONFIDENCE`. The old variable still wins over the file.
-- In `config.toml`, `[storage.remote]` is `[storage.backend]`: the storage backend that mirrors the store. A key that `[storage.backend]` sets too keeps its value there.
 - In `config.toml`, `[storage.backend]` is the `remote` of `[plugins.cas] provider = "cached"`. Its `kind` is the remote's `provider`. `evict_after_days` and `local_max_gb` of `[storage]` move with it. A `[plugins.cas]` table of the file wins: the old keys then go, with the warning, and change nothing.
 - In `config.toml`, `max_evaluations` is `evaluations` in `[plugins.executor.pools.serve]`. A value that `[plugins.executor.pools.serve]` sets too wins.

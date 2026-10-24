@@ -926,7 +926,7 @@ def _unanswered() -> ColumnElement[bool]:
     return Event.kind.not_in(LeasePrompted.kinds()) | ~answered
 
 
-@deprecated.until('0.3.0', 'an agent that a daemon before leases started: delete _adopt_running')
+@deprecated.until('0.4.0', 'an agent that a 0.2 daemon started (before leases): delete _adopt_running')
 def _adopt_running(s: Session, left: LeftJob, worker: str, timing: Timing) -> bool:
     """Put a running agent that a daemon before leases started on a live lease of ``worker``, and return True.
 

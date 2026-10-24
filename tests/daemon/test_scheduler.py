@@ -1926,7 +1926,6 @@ def test_an_implementers_own_comments_are_not_echoed_back(
     executor = prompted(db, scheduler, mocker)
     comment(db, 'finding', 'idea', idea, 'what I tried', author='implementer#1')
     comment(db, 'note', 'run', 1, 'signed the other documented way', author='run#1')
-    comment(db, 'note', 'idea', idea, 'a 0.1.0 agent signs as before the upgrade', author='worker#1')
     scheduler.tick()
     assert executor.prompts == [] and settled(db, 'comment.queued') == []
     comment(db, 'note', 'idea', idea, 'a sibling implementer is not the author', author='implementer#2')

@@ -29,7 +29,6 @@ SQL function ``blake3(text)`` (``install_functions``).
 """
 
 import os
-import re
 import sqlite3
 from dataclasses import dataclass
 from functools import cache
@@ -41,7 +40,6 @@ from sqlalchemy import MetaData
 from sqlalchemy.dialects import sqlite
 from sqlalchemy.schema import CreateIndex, CreateTable
 
-from piloop import deprecated
 from piloop.actor import Actor, Agent, System
 from piloop.db.models import Base
 from piloop.db.triggers import EVENT_TRIGGER_NAMES
@@ -302,27 +300,6 @@ class Result:
     truncated: bool
 
 
-deprecated.until('0.3.0', 'the hint for a 0.1.0 table or column name: delete RENAMED, with_renamed and their callers')
-RENAMED = {
-    'projects': 'campaigns',
-    'project_id': 'campaign_id',
-    'workers': 'agent_sessions',
-}
-"""The names of the schema of 0.1.0 that 0.2.0 renamed, with the new ones. ``with_renamed`` names the new one in an
-error."""
-UPGRADE_NOTES = 'https://piloop.autoresearch.inc/guides/upgrading#renamed-tables-columns-and-commands'
-MISSING = re.compile(r'no such (?:table|column): (?:\w+\.)?(?P<name>\w+)')
-
-
-def with_renamed(error: str) -> str:
-    """Return ``error`` from SQL that piloop did not write, with the new name when it names a renamed one."""
-    missing = MISSING.match(error)
-    old = None if missing is None else missing['name'].lower()
-    if old not in RENAMED:
-        return error
-    return f'{error.rstrip(".")}: `{old}` is `{RENAMED[old]}` since piloop 0.2.0; see {UPGRADE_NOTES}'
-
-
 DOT_COMMAND = (
     '{command} is a command of the sqlite3 shell, not SQL: `PRAGMA table_list` lists the tables, and'
     ' `PRAGMA table_info(<table>)` gives the columns of one'
@@ -378,7 +355,7 @@ def sql_error(statement: str, parameters: tuple[str, ...] = ()) -> str | None:
         con.set_authorizer(authorize)
         con.execute(f'EXPLAIN {statement}', dict.fromkeys(parameters, 0))
     except sqlite3.Error as e:
-        return with_renamed(str(e))
+        return str(e)
     finally:
         con.close()
     return None

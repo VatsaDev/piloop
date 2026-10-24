@@ -23,17 +23,6 @@ from piloop.harnesses import fill
 from piloop.plugins.host import Capability, Parameters
 
 
-@deprecated.until('0.3.0', 'AgentStatus, which a 0.2.0 runtime returned from status and wait: delete it with Outcome')
-class AgentStatus(StrEnum):
-    """The state that a 0.2.0 runtime reported for an agent. ``Outcome`` reads the one that its ``wait`` returned."""
-
-    WORKING = 'working'
-    IDLE = 'idle'
-    BLOCKED = 'blocked'
-    EXITED = 'exited'
-    TIMED_OUT = 'timed_out'
-
-
 class ExitStatus(StrEnum):
     """How an agent process ended (``AgentExit``). A runtime maps its own ends onto these, and the error says why."""
 
@@ -144,13 +133,6 @@ class Runtime(Protocol):
         ...
 
 
-@deprecated.until('0.3.0', 'Outcome of piloop.plugins.runtime.contract is AgentExit with an ExitStatus: delete Outcome')
-def Outcome(status: AgentStatus, seconds: float, exit_code: int | None = None, error: str | None = None) -> AgentExit:
-    """Return the ``AgentExit`` of a 0.2.0 runtime's ``wait``, whose status was an ``AgentStatus``."""
-    end = ExitStatus.TIMED_OUT if status is AgentStatus.TIMED_OUT else ExitStatus.EXITED
-    return AgentExit(end, seconds, exit_code, error)
-
-
 TAG_ENV = 'PILOOP_PROCESS_TAG'
 """The variable that holds an agent's process tag."""
 MESSAGES_ENV = 'PILOOP_MESSAGES'
@@ -198,12 +180,6 @@ def locked(log_dir: Path) -> Generator[None]:
             yield
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
-
-
-deprecated.until('0.3.0', 'PILOOP_WORKER_TOKEN of an agent that 0.1.0 started: delete OLD_TAG_ENV and its uses')
-OLD_TAG_ENV = 'PILOOP_WORKER_TOKEN'
-"""``TAG_ENV`` before 0.2.0. ``tagged`` still finds the processes of an agent that an older daemon started: the agent
-outlives an upgrade."""
 
 
 class RuntimeConfig(Parameters, ABC):

@@ -98,7 +98,7 @@ def doctor_cmd() -> None:
     """
     results = doctor_module.checks(common.settings)
     common.console.print('\n'.join(doctor_module.report(results)), markup=False, highlight=False, soft_wrap=True)
-    if any(c.fix is not None for c in results):
+    if any(c.fails for c in results):
         raise SystemExit(1)
 
 

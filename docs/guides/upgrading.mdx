@@ -148,6 +148,23 @@ one. The [changelog](https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md) 
 
 ## Upgrading to 0.3.0
 
+### First, piloop 0.2.1
+
+A 0.2.0 daemon stops, with its agents, when 0.3.0 is installed under it. 0.2.1 fixes that, so upgrade to it first,
+with the daemon running:
+
+```bash
+uv tool install 'piloop==0.2.1'
+piloop restart
+```
+
+The running agents keep going. Then move your campaigns off herdr, as the next section says, and upgrade to 0.3.0:
+
+```bash
+uv tool install piloop
+piloop upgrade
+```
+
 ### The herdr runtime
 
 The `herdr` runtime is removed. Agents run on `subprocess`, as background processes. Before you upgrade, with piloop
@@ -158,15 +175,16 @@ The `herdr` runtime is removed. Agents run on `subprocess`, as background proces
 2. Run `piloop init <repo>`.
 3. Let its herdr agents end, or end them with `piloop agent cancel <agent-session-id>`.
 
-While an active campaign or a live agent is on herdr, `piloop upgrade` refuses and says what to do. The stopped
-campaigns move to `subprocess` by themselves. A `piloop.toml` that still says `herdr` fails at `piloop init`, with a
-link to this section.
+While an active campaign or a live agent is on herdr, `piloop upgrade` refuses and says what to do. The upgrade
+moves the stored config of each stopped campaign to `subprocess`, but not its `piloop.toml`: `piloop doctor` warns
+about each such file, and `piloop init`, which resumes a campaign, fails on it with a link to this section. Change it
+before you resume the campaign.
 
 - Delete `[runtimes.herdr]` from `config.toml`, and any `PILOOP_RUNTIMES__HERDR__<KEY>` variable: the daemon does not
   start with them. Delete the `herdr_<key>` keys of `config.toml` too. The `PILOOP_HERDR_<KEY>` variables have no
   effect.
 - Delete `interactive`, `startup_dialogs`, `busy_screens`, `failed_turn_screens`, `queue_key` and `composer` from
-  each `[harness.<name>]` table.
+  each `[harness.<name>]` table. A table that still has one fails, with a link to this section.
 - An agent has no terminal pane to read and type into. `piloop attach <agent-session-id>` prints its last lines, and
   `piloop prompt` or `s` in `piloop watch` sends it a message.
 
@@ -196,6 +214,18 @@ piloop no longer attaches agent sessions to Entire. The harness's own file holds
 
 - An executor plugin: `Host.entire_version`, `Control.entire_version`, `AgentFinished.checkpoint` and
   `AgentJob.captures_session` are gone. `AgentJob.needs_session_id` says whether the session id is needed.
+
+### Removed keys
+
+The keys that 0.2.0 deprecated are removed: [Deprecated keys and variables](#deprecated-keys-and-variables) says what
+to write instead. A `piloop.toml` that still sets one fails at `piloop init` and in `piloop doctor`; the stored configs
+were converted when you upgraded to 0.2.0. While a `PILOOP_PROJECT_<KEY>` variable is set, no `piloop.toml` loads.
+`[storage.remote]` in `config.toml` is removed too: write `[plugins.cas]`, as [The CAS](#the-cas) says.
+
+### Deprecated keys
+
+`[storage.backend]` and `max_evaluations` of `config.toml` still load, with a warning, until 0.4.0.
+[Deprecated keys](/reference/configuration#deprecated-keys) says what to write instead.
 
 ### How a run ended
 
@@ -320,6 +350,9 @@ After the schema, `piloop migrate` and the daemon's start store each archive man
 value. A manifest that is only on the remote is read from there. When one cannot be read, `piloop migrate` names the
 archive and exits non-zero, and the next run tries again. The old manifests stay, so a restored backup still works.
 
+The CIDs come from [covalence](https://pypi.org/project/covalence/), which has no prebuilt wheel for Intel macOS. There,
+the install builds it from source, which needs a Rust toolchain.
+
 ### The CAS
 
 `[plugins.cas]` in `config.toml` selects where the blobs go. A store mirrored with `[storage.backend]` still loads, with
@@ -350,6 +383,7 @@ agent started, and what the agent writes there goes into the shared workspace wh
 - When two agents change one file, the first one's stays, and the second one's goes beside it, as
   `NOTES.md.implementer-12`.
 - The evaluate command gets no `./workspace/`. Keep what it reads in a `link` input.
+- The `link` inputs are read-only in a worktree too: a write in place to a linked file fails.
 
 ### Linked inputs
 
@@ -400,13 +434,13 @@ A query with an old name fails, and the error names the new one. A query on old 
 | New column | none | `evaluators.runner`, `process` for every evaluator |
 | `target_kind` of comments and events | `project`, `worker` | `campaign`, `agent_session` |
 | Role, in `agent_sessions.kind` and `runs.role` | `worker` | `implementer` |
-| Role table of `piloop.toml` | `[roles.worker]` (still works, with a warning) | `[roles.implementer]` |
+| Role table of `piloop.toml` | `[roles.worker]` (worked, with a warning, until 0.3.0) | `[roles.implementer]` |
 | Signature, in `PILOOP_ACTOR` and the `*_by` columns | `worker#<id>` | `implementer#<id>` |
 | Event kinds | `project.added`, `project.status`, `project.stopped`, `project.invalid_config` | `campaign.added`, `campaign.status`, `campaign.stopped`, `campaign.invalid_config` |
 | Event kind of a session | `worker.wrap_up` | `agent_session.wrap_up` |
 | Event kinds of the role | `worker.started`, `worker.finished` | `implementer.started`, `implementer.finished` |
-| Environment variable | `PILOOP_PROJECT_<KEY>` (still works, with a warning) | `PILOOP_CAMPAIGN_<KEY>` |
-| Environment variable of an agent, its process tag | `PILOOP_WORKER_TOKEN` (an agent that an older daemon started is still found) | `PILOOP_PROCESS_TAG` |
+| Environment variable | `PILOOP_PROJECT_<KEY>` (worked, with a warning, until 0.3.0) | `PILOOP_CAMPAIGN_<KEY>` |
+| Environment variable of an agent, its process tag | `PILOOP_WORKER_TOKEN` (an agent that an older daemon started was found until 0.3.0) | `PILOOP_PROCESS_TAG` |
 | Verdict of a `Piloop-Eval: skip` commit | `discard` | `unmeasured` (the upgrade converts the stored ones) |
 
 The payloads of old events keep their text, so an old payload may have `project` keys. A signature in a payload and
@@ -425,6 +459,7 @@ Each of these still works in 0.2.0, with a `PiloopDeprecationWarning`. piloop 0.
 | `[roles.research.scout]` | `[roles.scout]`. The keys of `[roles.research]` that the scout used (`runtime`, `harnesses`, `model`, `timeout`, `mcp`, `addendum`) move with it. |
 | `[roles.research] buffer` | `buffer` on research's `low_water` trigger: `triggers = [{ provider = "low_water", buffer = 2 }, { provider = "seed" }, { provider = "stalled" }]` |
 | `[roles.research] context` | The top-level `context` |
+| `{ kind = "scout" }` in `[roles.research] triggers` | Nothing: the scout has its own `cron` trigger |
 | `{claude_config_dir}` in `[harness.<name>.usage] file` | `{env:CLAUDE_CONFIG_DIR:~/.claude}` |
 | `{codex_home}` in `[harness.<name>.usage] file` | `{env:CODEX_HOME:~/.codex}` |
 | An agent that 0.1.0 started and that signs `worker#<id>` | Nothing: restart it. Until then, piloop counts its rows as the implementer's. |

@@ -29,7 +29,6 @@ from pydantic import (
 )
 from pydantic_settings import (
     BaseSettings,
-    EnvSettingsSource,
     InitSettingsSource,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
@@ -244,6 +243,13 @@ class Roles(RootModel[dict[str, RoleConfig]]):
 
     model_config = ConfigDict(frozen=True)
     root: Annotated[dict[str, RoleConfig], ROLES.tables(new=new_role)] = Field(default={}, validate_default=True)
+
+    @model_validator(mode='before')
+    @classmethod
+    def _no_worker(cls, data: object) -> object:
+        if isinstance(data, dict) and 'worker' in data:
+            raise ValueError(deprecated.removed_worker())
+        return data
 
     @model_validator(mode='after')
     def _check(self) -> Self:
@@ -538,8 +544,9 @@ def load_campaign_config(campaign: Path, **overrides: object) -> CampaignConfig:
         raw = tomllib.loads(toml.read_text())
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f'{toml} is not valid TOML: {e}') from e
+    if (removed := deprecated.removed_env(os.environ)) is not None:
+        raise ConfigError(f'{toml} is not loaded: {removed}')
     deprecated.apply(toml, raw)
-    deprecated.old_env(toml, os.environ)
 
     class _Loader(BaseSettings, CampaignConfig):
         model_config = SettingsConfigDict(env_prefix='PILOOP_CAMPAIGN_', env_nested_delimiter='__', extra='forbid')
@@ -553,13 +560,7 @@ def load_campaign_config(campaign: Path, **overrides: object) -> CampaignConfig:
             dotenv_settings: PydanticBaseSettingsSource,
             file_secret_settings: PydanticBaseSettingsSource,
         ) -> tuple[PydanticBaseSettingsSource, ...]:
-            deprecated.until(
-                '0.3.0', 'PILOOP_PROJECT_<KEY> still applies after PILOOP_CAMPAIGN_<KEY>: delete this source'
-            )
-            old = EnvSettingsSource(
-                settings_cls, env_prefix=deprecated.OLD_ENV_PREFIX, env_nested_delimiter='__', case_sensitive=False
-            )
-            return init_settings, env_settings, old, InitSettingsSource(settings_cls, raw)
+            return init_settings, env_settings, InitSettingsSource(settings_cls, raw)
 
     # pydantic validates the values; the cast only tells the type checker to let them through
     kwargs = cast(dict[str, Any], {k: v for k, v in overrides.items() if v is not None})

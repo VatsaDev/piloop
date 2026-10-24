@@ -53,8 +53,7 @@ def sql_cmd(
             result = sql.run(con, statement)
         except sqlite3.Error as e:
             holder = sql.lock_holder(e, database)
-            error = sql.with_renamed(str(e))
-            raise SystemExit(f'sql error: {error}' if holder is None else f'sql error: {error} ({holder})') from e
+            raise SystemExit(f'sql error: {e}' if holder is None else f'sql error: {e} ({holder})') from e
     if result.columns:
         table = Table(*result.columns, show_lines=False)
         for row in result.rows:

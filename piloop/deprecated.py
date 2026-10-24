@@ -11,17 +11,20 @@ Its docstring is its entry under "Deprecated keys" in the generated configuratio
 
 When its marker fails, delete the bridge's function and its tests, and run ``make docs``. The old key then fails as an
 unknown key, and the release notes list it under ``Removed``.
+
+Where an unknown-key error would mislead, a ``removed_<key>`` guard fails with a link to the upgrading guide instead,
+marked with ``until`` for the release after: a key that would load as something else (``[roles.worker]`` as a new
+role), one that would silently change nothing (a ``PILOOP_PROJECT_<KEY>`` variable), or a key of a removed feature.
 """
 
 import os
 import re
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from piloop.actor import Agent
 from piloop.version import Version
 
 
@@ -96,21 +99,12 @@ class PiloopDeprecationWarning(DeprecationWarning):
     """A deprecated piloop key that still works until the release that removes it. The CLI shows each one once."""
 
 
-SCOUT_SHARED = ('runtime', 'harnesses', 'model', 'timeout', 'mcp', 'addendum')
-"""The keys of ``[roles.research]`` that a scout sweep used before the scout was a role of its own."""
-
-
 def _table(raw: dict[str, object], *path: str) -> dict[str, object] | None:
     """Return the table at ``path`` in the parsed file, or None. A value that is not a table is left to validation."""
     table: object = raw
     for key in path:
         table = table.get(key) if isinstance(table, dict) else None
     return table if isinstance(table, dict) else None
-
-
-def _is(trigger: object, name: str) -> bool:
-    """Whether ``trigger`` is an entry of the trigger ``name``: ``trigger_kind`` has made ``kind`` its ``provider``."""
-    return isinstance(trigger, dict) and trigger.get('provider') == name
 
 
 def _nth(toml: Path, table: str, key: str) -> int:
@@ -142,132 +136,6 @@ def trigger_kind(toml: Path, raw: dict[str, object], removed_in: Version) -> Non
             'kind in a trigger is deprecated; write { provider = "<trigger>", … }',
             removed_in=removed_in,
             nth=_nth(toml, f'roles.{name}', 'triggers'),
-        )
-
-
-RESEARCH_TRIGGERS = ({'provider': 'low_water'}, {'provider': 'seed'}, {'provider': 'stalled'})
-"""The default triggers of research."""
-
-
-@bridge('0.3.0', '[roles.worker] is [roles.implementer]: delete the worker_role bridge')
-def worker_role(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
-    """``[roles.worker]`` is ``[roles.implementer]``: the role that runs one idea in its own worktree.
-
-    A key that ``[roles.implementer]`` sets too keeps its value there.
-    """
-    roles = _table(raw, 'roles')
-    if roles is None or (old := roles.pop('worker', None)) is None:
-        return
-    roles['implementer'] = (old if isinstance(old, dict) else {}) | (_table(roles, 'implementer') or {})
-    warn(toml, 'roles.worker', '[roles.worker] is deprecated; write [roles.implementer]', removed_in=removed_in)
-
-
-@bridge('0.3.0', '[roles.research.scout] is [roles.scout]: delete the research_scout bridge')
-def research_scout(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
-    """``[roles.research.scout]`` is ``[roles.scout]``, a role of its own.
-
-    The keys of ``[roles.research]`` that the scout used (``runtime``, ``harnesses``, ``model``, ``timeout``, ``mcp``
-    and ``addendum``) are copied into it, unless ``[roles.scout]`` sets them.
-    """
-    research = _table(raw, 'roles', 'research')
-    if research is None or (scout := research.pop('scout', None)) is None:
-        return
-    roles = _table(raw, 'roles')
-    assert roles is not None  # research is in it
-    shared = {k: research[k] for k in SCOUT_SHARED if k in research}
-    roles['scout'] = shared | (scout if isinstance(scout, dict) else {}) | (_table(roles, 'scout') or {})
-    warn(
-        toml,
-        'roles.research.scout',
-        '[roles.research.scout] is deprecated; write [roles.scout], a role of its own, with the keys of'
-        ' [roles.research] that it needs (mcp, harnesses, …)',
-        removed_in=removed_in,
-    )
-
-
-@bridge('0.3.0', 'the scout trigger of [roles.research] is gone: delete the scout_trigger bridge')
-def scout_trigger(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
-    """The ``scout`` trigger of ``[roles.research] triggers`` is gone: the scout is a role with its own ``cron``."""
-    research = _table(raw, 'roles', 'research')
-    triggers = research.get('triggers') if research is not None else None
-    if research is None or not isinstance(triggers, list) or not any(_is(t, 'scout') for t in triggers):
-        return
-    research['triggers'] = [t for t in triggers if not _is(t, 'scout')]
-    warn(
-        toml,
-        'roles.research.triggers',
-        'the scout trigger is deprecated; delete it: the scout is [roles.scout], with its own cron trigger',
-        removed_in=removed_in,
-        nth=_nth(toml, 'roles.research', 'triggers'),
-    )
-
-
-@bridge('0.3.0', '[roles.research] buffer is a low_water trigger buffer: delete the research_buffer bridge')
-def research_buffer(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
-    """``[roles.research] buffer`` is the ``buffer`` of research's ``low_water`` trigger.
-
-    Without ``triggers`` in the table, research gets its default triggers with that ``buffer``.
-    """
-    research = _table(raw, 'roles', 'research')
-    if research is None or 'buffer' not in research:
-        return
-    buffer = research.pop('buffer')
-    triggers = research.get('triggers', RESEARCH_TRIGGERS)
-    if isinstance(triggers, list | tuple):
-        research['triggers'] = [t | {'buffer': buffer} if _is(t, 'low_water') else t for t in triggers]
-    warn(
-        toml,
-        'roles.research.buffer',
-        '[roles.research] buffer is deprecated; write triggers ='
-        ' [{ provider = "low_water", buffer = … }, { provider = "seed" }, { provider = "stalled" }]',
-        removed_in=removed_in,
-    )
-
-
-@bridge('0.3.0', '[roles.research] context is the top-level context: delete the research_context bridge')
-def research_context(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
-    """``[roles.research] context`` is the top-level ``context``: every sweep's research pack lists the files."""
-    research = _table(raw, 'roles', 'research')
-    if research is None or 'context' not in research:
-        return
-    old = research.pop('context')
-    top = raw.get('context', [])
-    raw['context'] = [*top, *old] if isinstance(top, list) and isinstance(old, list) else old
-    warn(
-        toml,
-        'roles.research.context',
-        '[roles.research] context is deprecated; write context = [...] at the top of the file',
-        removed_in=removed_in,
-    )
-
-
-USAGE_PLACEHOLDERS = {
-    '{claude_config_dir}': '{env:CLAUDE_CONFIG_DIR:~/.claude}',
-    '{codex_home}': '{env:CODEX_HOME:~/.codex}',
-}
-
-
-@bridge('0.3.0', '{claude_config_dir} and {codex_home} are {env:…} placeholders: delete the usage_dirs bridge')
-def usage_dirs(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
-    """``{claude_config_dir}`` and ``{codex_home}`` in ``[harness.<name>.usage] file`` are ``{env:…}`` placeholders.
-
-    ``{claude_config_dir}`` is ``{env:CLAUDE_CONFIG_DIR:~/.claude}``, and ``{codex_home}`` is
-    ``{env:CODEX_HOME:~/.codex}``.
-    """
-    harnesses = _table(raw, 'harness') or {}
-    for name in harnesses:
-        usage = _table(raw, 'harness', name, 'usage')
-        glob = usage.get('file') if usage is not None else None
-        if usage is None or not isinstance(glob, str) or not any(old in glob for old in USAGE_PLACEHOLDERS):
-            continue
-        for old, new in USAGE_PLACEHOLDERS.items():
-            glob = glob.replace(old, new)
-        usage['file'] = glob
-        warn(
-            toml,
-            f'harness.{name}.usage.file',
-            f'{{claude_config_dir}} and {{codex_home}} are deprecated; write {glob!r}',
-            removed_in=removed_in,
         )
 
 
@@ -346,21 +214,6 @@ def _rule(raw: dict[str, object], rule: str) -> dict[str, object] | None:
     plugins = raw.setdefault('plugins', {})
     table = plugins.setdefault(rule, {}) if isinstance(plugins, dict) else None
     return table if isinstance(table, dict) else None
-
-
-@bridge(
-    '0.3.0', '[storage.remote] in config.toml is [storage.backend]: delete the storage_remote bridge', CONFIG_BRIDGES
-)
-def storage_remote(toml: Path, raw: dict[str, object], removed_in: Version) -> None:
-    """In ``config.toml``, ``[storage.remote]`` is ``[storage.backend]``: the storage backend that mirrors the store.
-
-    A key that ``[storage.backend]`` sets too keeps its value there.
-    """
-    storage = _table(raw, 'storage')
-    if storage is None or (old := storage.pop('remote', None)) is None:
-        return
-    storage['backend'] = (old if isinstance(old, dict) else {}) | (_table(storage, 'backend') or {})
-    warn(toml, 'storage.remote', '[storage.remote] is deprecated; write [storage.backend]', removed_in=removed_in)
 
 
 @bridge(
@@ -489,55 +342,74 @@ def removed_workdir() -> str:
 
 ENTIRE_UPGRADE = 'https://piloop.autoresearch.inc/guides/upgrading#entire'
 """What to do about ``entire_agent``, which 0.3.0 removed with Entire."""
+REMOVED_HARNESS_KEYS = {
+    **dict.fromkeys(
+        ('interactive', 'startup_dialogs', 'busy_screens', 'failed_turn_screens', 'queue_key', 'composer'),
+        HERDR_UPGRADE,
+    ),
+    'entire_agent': ENTIRE_UPGRADE,
+}
+"""The keys of a ``[harness.<name>]`` table that 0.3.0 removed, with what to do about each: the keys that only the
+herdr runtime read, and ``entire_agent``."""
 
 
-@until('0.4.0', 'entire_agent of a 0.2 piloop.toml: delete removed_entire_agent, ENTIRE_UPGRADE and its call')
-def removed_entire_agent(harness: Mapping[str, object]) -> str | None:
-    """Why a ``[harness.<name>]`` table does not load when it sets ``entire_agent``, else None."""
-    if 'entire_agent' not in harness:
+@until('0.4.0', 'the keys of a 0.2 harness table: delete removed_harness_keys, REMOVED_HARNESS_KEYS, ENTIRE_UPGRADE')
+def removed_harness_keys(harness: Collection[str]) -> str | None:
+    """Why a ``[harness.<name>]`` table with a key that 0.3.0 removed does not load, else None."""
+    by_link: dict[str, list[str]] = {}
+    for key in (k for k in REMOVED_HARNESS_KEYS if k in harness):
+        by_link.setdefault(REMOVED_HARNESS_KEYS[key], []).append(key)
+    if not by_link:
         return None
-    return f'entire_agent is removed in piloop 0.3.0, with Entire: delete the key ({ENTIRE_UPGRADE})'
+    return '; '.join(
+        f'{", ".join(keys)}: removed in piloop 0.3.0; delete the key ({link})' for link, keys in by_link.items()
+    )
+
+
+REMOVED_KEYS = 'https://piloop.autoresearch.inc/guides/upgrading#removed-keys'
+"""The keys that 0.2.0 deprecated and 0.3.0 removed."""
+
+
+@until('0.4.0', '[roles.worker] of a 0.2 piloop.toml: delete removed_worker and its call in Roles')
+def removed_worker() -> str:
+    """Why ``[roles.worker]`` does not load: it would define a new role, not set the implementer's keys."""
+    return f'[roles.worker] is removed in piloop 0.3.0: rename the table [roles.implementer] ({REMOVED_KEYS})'
+
+
+USAGE_PLACEHOLDERS = {
+    '{claude_config_dir}': '{env:CLAUDE_CONFIG_DIR:~/.claude}',
+    '{codex_home}': '{env:CODEX_HOME:~/.codex}',
+}
+"""The placeholders of a ``[harness.<name>.usage] file`` that 0.3.0 removed, with what to write instead."""
+
+
+@until('0.4.0', '{claude_config_dir} and {codex_home} of a 0.2 usage file: delete removed_placeholders and its call')
+def removed_placeholders(glob: str) -> str | None:
+    """Why a usage ``file`` with a placeholder that 0.3.0 removed does not load, else None.
+
+    Without this, the glob would match no session file, and no agent's tokens would be recorded.
+    """
+    if not (found := [old for old in USAGE_PLACEHOLDERS if old in glob]):
+        return None
+    for old in found:
+        glob = glob.replace(old, USAGE_PLACEHOLDERS[old])
+    return f'{" and ".join(found)}: removed in piloop 0.3.0; write {glob!r} ({REMOVED_KEYS})'
 
 
 OLD_ENV_PREFIX = 'PILOOP_PROJECT_'
-"""The prefix of the environment variables that override ``piloop.toml`` before 0.2.0. ``PILOOP_CAMPAIGN_`` now."""
+"""The prefix of the variables that override ``piloop.toml`` before 0.2.0. ``PILOOP_CAMPAIGN_`` since."""
 
 
-@until('0.3.0', 'PILOOP_PROJECT_<KEY> is PILOOP_CAMPAIGN_<KEY>: delete old_env and OLD_ENV_PREFIX')
-def old_env(toml: Path, environ: Mapping[str, str]) -> None:
-    """Warn for each ``PILOOP_PROJECT_<KEY>`` variable: it still overrides its key, after ``PILOOP_CAMPAIGN_<KEY>``."""
-    for name in sorted(n for n in environ if n.upper().startswith(OLD_ENV_PREFIX)):
-        new = 'PILOOP_CAMPAIGN_' + name[len(OLD_ENV_PREFIX) :]
-        warn(toml, name, f'{name} is deprecated; set {new}', removed_in=Version(0, 3, 0))
+@until('0.4.0', 'PILOOP_PROJECT_<KEY> of a 0.2 environment: delete removed_env, OLD_ENV_PREFIX and its call')
+def removed_env(environ: Mapping[str, str]) -> str | None:
+    """Why ``piloop.toml`` does not load while a ``PILOOP_PROJECT_<KEY>`` variable is set, else None.
 
-
-OLD_SIGNATURE = 'worker#'
-"""The signature of an implementer before 0.2.0, ``worker#<id>``. An agent that an older daemon started outlives an
-upgrade with it: in its ``PILOOP_ACTOR``, and in the SQL that its brief told it to write (``'<you>'``)."""
-
-
-@until('0.3.0', 'a 0.1.0 implementer signs worker#<id>: delete signatures and OLD_SIGNATURE, match <kind>#<id>')
-def signatures(agent: Agent) -> tuple[str, ...]:
-    """Return the signatures of an agent session's rows: ``<kind>#<id>``, and an implementer's ``worker#<id>`` too.
-
-    The checks that find an agent's own rows (its work at startup, its finding, its open escalation, its own comments,
-    its silence) match authors against these, so a row that a 0.1.0 agent signs after the upgrade still counts.
+    Without this, the variable would change nothing, silently.
     """
-    return (agent.signature, f'{OLD_SIGNATURE}{agent.session}') if agent.role == 'implementer' else (agent.signature,)
-
-
-@until('0.3.0', 'PILOOP_ACTOR=worker#<id> of a 0.1.0 agent: delete old_actor and its call in Settings.actor')
-def old_actor(actor: str) -> str:
-    """Return ``actor`` with the implementer's signature for ``worker#<id>``, with a warning; else ``actor`` as it is."""
-    if not actor.startswith(OLD_SIGNATURE):
-        return actor
-    new = 'implementer#' + actor.removeprefix(OLD_SIGNATURE)
-    warnings.warn(
-        f'PILOOP_ACTOR={actor} is deprecated; the daemon signs an implementer {new}; removed in piloop 0.3.0',
-        PiloopDeprecationWarning,
-        stacklevel=2,
-    )
-    return new
+    if not (found := sorted(n for n in environ if n.upper().startswith(OLD_ENV_PREFIX))):
+        return None
+    renamed = ', '.join(f'{n} is {"PILOOP_CAMPAIGN_" + n[len(OLD_ENV_PREFIX) :]}' for n in found)
+    return f'{renamed}: PILOOP_PROJECT_<KEY> is removed in piloop 0.3.0; rename or unset it ({REMOVED_KEYS})'
 
 
 def show_in_cli() -> None:

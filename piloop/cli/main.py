@@ -29,7 +29,7 @@ from piloop.cli import (
     worker,
 )
 from piloop.config import ConfigError
-from piloop.plugins.runtime.contract import OLD_TAG_ENV, TAG_ENV
+from piloop.plugins.runtime.contract import TAG_ENV
 from piloop.version import installed
 
 app = cyclopts.App(name='piloop', help='Run autoresearch campaigns with coding agents.', version=installed)
@@ -84,8 +84,7 @@ def main() -> None:
     deprecated.show_in_cli()
     # what an agent's piloop command starts, a daemon or an evaluation, must not die with the agent. The command itself
     # does: a process's environment as the OS shows it, which the runtime's kill reads, is the one it started with.
-    for name in (TAG_ENV, OLD_TAG_ENV):
-        os.environ.pop(name, None)
+    os.environ.pop(TAG_ENV, None)
     try:
         app()
     except ConfigError as e:
