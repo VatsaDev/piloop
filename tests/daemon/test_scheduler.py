@@ -23,7 +23,7 @@ from pytest_mock import MockerFixture
 from sqlalchemy import func, select
 from sqlalchemy.exc import OperationalError
 
-from piloop import git, proc
+from piloop import proc
 from piloop.actor import System
 from piloop.agents.results import (
     AgentEnded,
@@ -89,6 +89,7 @@ from piloop.plugins.executor.kit.leases import SERVE
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.runtime.contract import Handle
 from piloop.plugins.trigger.low_water import LowWaterTrigger
+from piloop.plugins.vcs.git import GitRepository, commands as git
 from piloop.scoring.ledger import current_evaluator, due, head, import_reference, request_remeasure
 from tests.conftest import (
     HARNESS_APPEND,
@@ -1228,7 +1229,7 @@ def test_a_wait_that_runs_out_names_what_is_still_in_flight(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     gate = Gate()
-    monkeypatch.setattr('piloop.plugins.executor.kit.jobs.git.add_worktree', gate.wrap(git.add_worktree))
+    monkeypatch.setattr('piloop.plugins.vcs.git.commands.add_worktree', gate.wrap(git.add_worktree))
     scheduler = make_scheduler(db, runtime, tmp_path)
     add_ideas(db, campaign, 'x')
     assert scheduler.tick() == [1]
@@ -1250,7 +1251,7 @@ def test_stop_before_the_implementer_starts_never_starts_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     gate = Gate()
-    monkeypatch.setattr('piloop.plugins.executor.kit.jobs.git.add_worktree', gate.wrap(git.add_worktree))
+    monkeypatch.setattr('piloop.plugins.vcs.git.commands.add_worktree', gate.wrap(git.add_worktree))
     scheduler = make_scheduler(db, runtime, tmp_path, tracer)
     (idea,) = add_ideas(db, campaign, 'x')
     scheduler.tick()
@@ -1581,7 +1582,9 @@ def test_an_imported_reference_is_measured_by_the_daemon_and_stays_a_reference(
     with db.session() as s:
         proj = s.get_one(Campaign, campaign.id)
         cfg = load_campaign_config(Path(campaign.path))
-        reference = import_reference(s, proj, cfg, repo, 'elsewhere', summary=None, actor=System.ORCHESTRATOR).id
+        reference = import_reference(
+            s, proj, cfg, GitRepository(repo), 'elsewhere', summary=None, actor=System.ORCHESTRATOR
+        ).id
         evaluator = proj.evaluator_id
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)

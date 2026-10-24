@@ -20,7 +20,6 @@ from opentelemetry.trace import StatusCode
 from pytest_mock import MockerFixture
 from sqlalchemy import func, insert, select
 
-from piloop import git
 from piloop.actor import System
 from piloop.agents.results import NEVER_WORKED, Ended, Lost, NotStarted, StartupAnomaly
 from piloop.agents.roles import SQL_HINT
@@ -62,7 +61,6 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.git import pin as git_pin
 from piloop.harnesses import SESSION_ENV
 from piloop.ids import (
     IMPLEMENTER,
@@ -77,12 +75,15 @@ from piloop.ids import (
 )
 from piloop.otel import Span, Tracer
 from piloop.plugins import host
-from piloop.plugins.executor.contract import GitSource
+from piloop.plugins.executor.contract import Source
 from piloop.plugins.executor.kit import jobs
 from piloop.plugins.executor.kit.jobs import CHANGED_INPUTS, INPUTS_CHANGED, INPUTS_REBUILT
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.executor.workers.worker import _Control
 from piloop.plugins.runtime.contract import AgentExit, Handle
+from piloop.plugins.vcs.contract import Revision
+from piloop.plugins.vcs.git import GitRepository, commands as git
+from piloop.plugins.vcs.git.commands import pin as git_pin
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES
 from piloop.scoring.ledger import (
     DAEMON,
@@ -381,8 +382,7 @@ def test_every_commit_of_a_run_is_a_candidate_before_the_first_is_measured(
         run: RunId | None,
         campaign_id: CampaignId,
         cfg: CampaignConfig,
-        repo: Repo,
-        sha: str,
+        sha: Revision,
         candidate_id: CandidateId,
         evaluator_id: EvaluatorId,
         eval_dir: Path,
@@ -393,7 +393,7 @@ def test_every_commit_of_a_run_is_a_candidate_before_the_first_is_measured(
         with db.session() as s:
             rows = s.scalars(select(Candidate).where(Candidate.run_id == run_id).order_by(Candidate.id)).all()
             seen.append([(c.summary, c.verdict, c.parent_id) for c in rows])
-        return measure(run, campaign_id, cfg, repo, sha, candidate_id, evaluator_id, eval_dir, bar=bar, repeats=repeats)
+        return measure(run, campaign_id, cfg, sha, candidate_id, evaluator_id, eval_dir, bar=bar, repeats=repeats)
 
     monkeypatch.setattr(ex, '_measure', watched)
     execute(ex, db, run_id)
@@ -1415,7 +1415,7 @@ def test_a_worktree_that_cannot_be_made_is_a_failed_start_that_frees_the_slot(
 ) -> None:
     """A run whose worktree cannot be made closes its implementer as a failed start, so the implementer holds no slot."""
     full = GitCommandError(['git', 'worktree', 'add'], 128, b'fatal: Could not write new index file')
-    mocker.patch('piloop.git.add_worktree', side_effect=full)
+    mocker.patch('piloop.plugins.vcs.git.commands.add_worktree', side_effect=full)
     run_id = make_run(db, campaign, max_runs=1)
     ex = controller(db, runtime, tmp_path)
     for _ in range(3):
@@ -1433,7 +1433,7 @@ def test_a_run_that_fails_before_its_agent_starts_closes_its_implementer(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
 ) -> None:
     """A fault of the daemon before the launch fails the run and closes its implementer, which then holds no slot."""
-    mocker.patch('piloop.git.open_repo', side_effect=RuntimeError('repo gone'))
+    mocker.patch('piloop.plugins.vcs.git.commands.open_repo', side_effect=RuntimeError('repo gone'))
     run_id = make_run(db, campaign)
     execute(controller(db, runtime, tmp_path), db, run_id)
     with db.session() as s:
@@ -2294,7 +2294,9 @@ def import_empty_solution(db: Database, campaign: Campaign) -> CandidateId:
     with db.session() as s:
         proj = s.get_one(Campaign, campaign.id)
         cfg = load_campaign_config(Path(campaign.path))
-        reference = import_reference(s, proj, cfg, repo, 'elsewhere', summary=None, actor=System.ORCHESTRATOR).id
+        reference = import_reference(
+            s, proj, cfg, GitRepository(repo), 'elsewhere', summary=None, actor=System.ORCHESTRATOR
+        ).id
         s.commit()
     return reference
 
@@ -2400,7 +2402,7 @@ def keep_elsewhere(
         sha = repo.head.commit.hexsha
         repo.git.checkout('-q', 'main')
         git_pin(repo, f'refs/piloop/demo/elsewhere/{summary.replace(" ", "-")}', sha)
-        candidate, _ = resolve(s, campaign.id, repo, sha, parent=parent, run_id=run_id)
+        candidate, _ = resolve(s, campaign.id, GitRepository(repo).version(sha), parent=parent, run_id=run_id)
         candidate.verdict, candidate.verdict_by = verdict, 'orchestrator'
         evaluator_id = s.get_one(Campaign, campaign.id).evaluator_id
         assert evaluator_id is not None
@@ -2650,9 +2652,9 @@ def test_two_sessions_that_register_one_new_tree_share_one_candidate(
             return None
 
         monkeypatch.setattr(b, 'scalar', stale)
-        first, _ = resolve(a, campaign.id, repo, sha, parent=parent, run_id=None)
+        first, _ = resolve(a, campaign.id, GitRepository(repo).version(sha), parent=parent, run_id=None)
         a.commit()
-        found, created = resolve(b, campaign.id, repo, sha, parent=parent, run_id=None)
+        found, created = resolve(b, campaign.id, GitRepository(repo).version(sha), parent=parent, run_id=None)
         b.commit()
         assert (found.id, created) == (first.id, False)
     with db.session() as s:
@@ -2824,8 +2826,7 @@ def test_a_merge_a_stop_left_unjudged_is_measured_and_judged_when_the_run_resume
         run: RunId | None,
         campaign_id: CampaignId,
         cfg: CampaignConfig,
-        repo: Repo,
-        sha: str,
+        sha: Revision,
         candidate_id: CandidateId,
         evaluator_id: EvaluatorId,
         eval_dir: Path,
@@ -2835,7 +2836,7 @@ def test_a_merge_a_stop_left_unjudged_is_measured_and_judged_when_the_run_resume
     ) -> bool:
         if candidate_id == merged_id:
             return False  # what a stop does to an evaluation in flight
-        return measure(run, campaign_id, cfg, repo, sha, candidate_id, evaluator_id, eval_dir, bar=bar, repeats=repeats)
+        return measure(run, campaign_id, cfg, sha, candidate_id, evaluator_id, eval_dir, bar=bar, repeats=repeats)
 
     monkeypatch.setattr(ex, '_measure', stopped_at_the_merge)
     execute(ex, db, run_id)
@@ -3022,10 +3023,10 @@ def test_linked_inputs_go_into_the_store_while_no_transaction_holds_the_write_lo
 ) -> None:
     """The first snapshot of a large ``link`` takes minutes: the daemon's other writers must not wait on it."""
     ex = controller(db, runtime, tmp_path)
-    real = ex.sources.git
+    real = ex.sources.source
     locked: list[bool] = []
 
-    def git_source(c: Campaign, commit: str) -> GitSource:
+    def git_source(c: Campaign, commit: Revision) -> Source:
         # another thread's write (the worker's heartbeat) ends within the wait; one of this thread's never would
         other = sqlite3.connect(db.engine.url.database or '', timeout=5)
         try:
@@ -3037,7 +3038,7 @@ def test_linked_inputs_go_into_the_store_while_no_transaction_holds_the_write_lo
             other.close()
         return real(c, commit)
 
-    mocker.patch.object(ex.sources, 'git', side_effect=git_source)
+    mocker.patch.object(ex.sources, 'source', side_effect=git_source)
     ex.remeasure(baseline(db, campaign.id).id)
     assert locked == [False]
 

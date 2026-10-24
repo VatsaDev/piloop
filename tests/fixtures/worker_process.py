@@ -12,7 +12,7 @@ from pathlib import Path
 
 from piloop.actor import System
 from piloop.agents.results import CampaignResults
-from piloop.campaign.campaigns import checkout_of
+from piloop.campaign.campaigns import checkout_of, record_of
 from piloop.db.session import Database
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import CAS
@@ -28,7 +28,7 @@ def main() -> None:
     db = Database(url, actor=System.DAEMON)
     cas = CAS.selected({}).open(home)
     results = CampaignResults(db, Tracer(None), home, cas, lambda: False)
-    site = local_site(home, cas, partial(checkout_of, db), reserve=0)
+    site = local_site(home, cas, partial(checkout_of, db), partial(record_of, db), reserve=0)
     worker = Worker(Local(Leases(db, results, timing), worker_id), Tracer(None), site)
     worker.start()
     print('ready', flush=True)

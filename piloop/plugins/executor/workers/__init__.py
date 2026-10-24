@@ -88,14 +88,14 @@ class WorkersExecutor:
         self.leases = Leases(host.db, host.results, timing, config.pools)
         self._changed = host.db.changed
         self._cas = host.cas
-        self._bundle = partial(jobs.bundle_of_record, host.cas, host.repos)
-        """What the ``bundle`` route does: a bundle from the repo of record, into the CAS."""
+        self._send = partial(jobs.send_of_record, host.cas, host.records)
+        """What the ``send`` route does: versions from the repo of record, into the CAS."""
         self._cli = Runner(host.db, host.home, host.repos)
         """What the ``cli`` route does: an agent's relayed call, run here."""
         self.worker = Worker(
             Local(self.leases, SERVE),
             host.tracer,
-            jobs.local_site(host.home, host.cas, host.repos, host.reserve),
+            jobs.local_site(host.home, host.cas, host.repos, host.records, host.reserve),
             runtime_factory=host.runtimes,
         )
         """The worker inside ``piloop serve``, in the pool ``serve``."""
@@ -131,7 +131,7 @@ class WorkersExecutor:
 
     def routes(self) -> Sequence[Route]:
         """The lease routes (``remote.lease_routes``), which workers on other machines call (``piloop worker``)."""
-        return lease_routes(self.leases, self._changed, self._cas, self._bundle, self._cli)
+        return lease_routes(self.leases, self._changed, self._cas, self._send, self._cli)
 
     def tick(self, now: datetime) -> datetime | None:
         """Expire the leases of a silent worker (``Leases.expire``), and return the next expiry."""
@@ -166,7 +166,7 @@ def remote_worker(
     again once ``stop`` is set. Its agents' ``piloop`` calls go to the server through it (``relay``).
     """
     client = Remote(http, stop, tracer)
-    site = jobs.remote_site(home, cas, client.bundle, reserve)
+    site = jobs.remote_site(home, cas, client.send, reserve)
     return Worker(client, tracer, site, pool=pool, relay=Relay(home, client.cli))
 
 

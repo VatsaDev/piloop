@@ -13,13 +13,13 @@ from pathlib import Path
 
 from piloop.actor import System
 from piloop.agents.results import CampaignResults
-from piloop.campaign.campaigns import checkout_of
+from piloop.campaign.campaigns import checkout_of, record_of
 from piloop.db.session import Database
 from piloop.net.server import Server, app
 from piloop.net.tokens import Tokens
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import CAS
-from piloop.plugins.executor.kit.jobs import bundle_of_record
+from piloop.plugins.executor.kit.jobs import send_of_record
 from piloop.plugins.executor.kit.leases import Leases, Timing
 from piloop.plugins.executor.kit.relay import Runner
 from piloop.plugins.executor.kit.remote import lease_routes
@@ -39,7 +39,7 @@ def main() -> None:
     network = Https.model_validate({'listen': '127.0.0.1:0'}).open(NetworkHost(Tokens(db)))
     listener = network.listener()
     assert listener is not None
-    bundle = partial(bundle_of_record, cas, partial(checkout_of, db))
+    bundle = partial(send_of_record, cas, partial(record_of, db))
     cli = Runner(db, home, partial(checkout_of, db))
     Server(app(network, lease_routes(leases, db.changed, cas, bundle, cli)), listener).start()
     print(f'ready {listener.socket.getsockname()[1]}', flush=True)

@@ -1,0 +1,219 @@
+"""``git``: the default vcs provider. A version is a commit of the campaign's git repository, and its revision the SHA.
+
+Agents work in detached worktrees and save their work as commits, with trailers for what they ask of piloop
+(``Piloop-Eval: skip``, ``Piloop-Note``). Commits travel between a worker's clone and the repo of record as git bundles
+in the CAS (``bundles``). Refs under ``refs/piloop/`` keep the commits that piloop needs from garbage collection, so
+``git show <sha>`` keeps working.
+"""
+
+import re
+import subprocess
+from collections.abc import Sequence
+from contextlib import suppress
+from pathlib import Path
+from typing import assert_never
+
+from covalence import Cid
+from git import Repo
+from git.exc import BadName, GitError, InvalidGitRepositoryError, NoSuchPathError
+
+from piloop.ids import RunId
+from piloop.plugins.cas.contract import Cas
+from piloop.plugins.host import Check
+from piloop.plugins.vcs.contract import (
+    Conflicts,
+    Fetch,
+    Keep,
+    NotARepository,
+    RebaseVersion,
+    ReferenceVersion,
+    Repository,
+    Revision,
+    RunVersion,
+    Transfer,
+    UnknownRevision,
+    Vcs,
+    VcsError,
+    Version,
+)
+from piloop.plugins.vcs.git import bundles, commands as git
+
+NEEDED = (2, 40)
+"""The oldest git that the provider works with: it merges by tree with ``git merge-tree --merge-base``, new in 2.40."""
+SKIP = 'Piloop-Eval'
+"""The trailer of a commit not to measure: ``Piloop-Eval: skip``."""
+NOTE = 'Piloop-Note'
+"""The trailer of a note on a commit, applied when it is judged."""
+RECOVERED = 'Piloop-Recovered'
+"""The trailer of the commit that ``capture`` makes of what an agent left uncommitted: ``Piloop-Recovered: run#<id>``."""
+FETCHED = 'refs/piloop/fetched/'
+"""Where a clone pins each commit that came as a bundle: it stays, and the next fetch names it as a commit it has."""
+
+
+def ref(why: Keep) -> str:
+    """The ref that pins a commit kept for ``why``."""
+    match why:
+        case RunVersion(campaign=campaign, run=run, index=index):
+            return f'{runs(campaign, run)}{index}'
+        case RebaseVersion(campaign=campaign, candidate=candidate):
+            return f'refs/piloop/{campaign}/rebase/{candidate}'
+        case ReferenceVersion(campaign=campaign, candidate=candidate):
+            return f'refs/piloop/{campaign}/reference/{candidate}'
+        case _:
+            assert_never(why)
+
+
+def runs(campaign: str, run: RunId) -> str:
+    """The prefix of the refs that pin a run's commits, ``<prefix><n>``."""
+    return f'refs/piloop/{campaign}/r{run}/'
+
+
+class GitRepository(Repository):
+    """A git checkout: the repo of record, a worker's clone, or a worktree of either."""
+
+    def __init__(self, repo: Repo) -> None:
+        self.repo = repo
+
+    def head(self) -> Version:
+        return self._version(self.repo.head.commit.hexsha)
+
+    def version(self, native: str) -> Version:
+        try:
+            sha = self.repo.commit(native).hexsha
+        except (BadName, ValueError) as e:
+            raise UnknownRevision(f'{native!r} names no commit in {self.repo.working_dir}: {e}') from e
+        return self._version(sha)
+
+    def _version(self, sha: str) -> Version:
+        text = git.message(self.repo, sha)
+        return Version(
+            revision=Revision(sha),
+            tree=git.tree_sha(self.repo, sha),
+            summary=git.subject_line(self.repo, sha),
+            skip=any(value.lower() == 'skip' for value in git.trailers(text, SKIP)),
+            notes=tuple(git.trailers(text, NOTE)),
+            recovered=bool(git.trailers(text, RECOVERED)),
+        )
+
+    def receive(self, cas: Cas, transfer: Transfer, base: Revision) -> list[Version]:
+        """Unbundle, and return the first-parent history from ``base``.
+
+        A line that the agent merged in is not its own: a merge's parent is the commit that it merged onto, and the
+        merged line is not scored again.
+        """
+        bundles.unbundle(cas, self.repo, transfer.blob, [transfer.head])
+        line = self.repo.iter_commits(f'{base}..{transfer.head}', first_parent=True)
+        return [self._version(c.hexsha) for c in line][::-1]
+
+    def send(self, cas: Cas, revisions: Sequence[Revision], have: Sequence[Revision]) -> Cid | None:
+        return bundles.bundle(cas, self.repo, revisions, have)
+
+    def fetch(self, cas: Cas, revisions: Sequence[Revision], ask: Fetch) -> None:
+        """The clone names the commits that it has, as git's have/want does, and pins those that came (``FETCHED``)."""
+        if not (missing := [sha for sha in dict.fromkeys(revisions) if not git.has(self.repo, sha)]):
+            return
+        have = [Revision(sha) for sha in self.repo.git.for_each_ref('--format=%(objectname)').split()]
+        blob = ask(missing, have)
+        if blob is not None:
+            bundles.unbundle(cas, self.repo, blob, missing)
+            for sha in missing:
+                if git.has(self.repo, sha):  # the repo of record leaves out a commit that it lacks
+                    git.pin(self.repo, f'{FETCHED}{sha}', sha)
+
+    def merge(self, onto: Revision, other: Revision, message: str) -> Version | Conflicts:
+        merged = git.merge(self.repo, onto, other, message)
+        return Conflicts(tuple(merged)) if isinstance(merged, list) else self._version(merged)
+
+    def contains(self, revision: Revision, ancestor: Revision) -> bool:
+        try:
+            return git.contains(self.repo, revision, ancestor)
+        except GitError as e:
+            raise VcsError(str(e)) from e
+
+    def keep(self, revision: Revision, why: Keep) -> None:
+        git.pin(self.repo, ref(why), revision)
+
+    def kept(self, campaign: str, run: RunId) -> list[Version]:
+        return [self._version(sha) for sha in git.pinned(self.repo, runs(campaign, run))]
+
+    def checkout(self, revision: Revision, path: Path) -> None:
+        """A detached worktree."""
+        git.add_worktree(self.repo, path, revision, {})
+
+    def discard(self, path: Path) -> None:
+        git.remove_worktree(self.repo, path)
+
+    def checkouts(self, root: Path) -> list[Path]:
+        return git.worktrees_under(self.repo, root)
+
+    def untracked(self, revision: Revision, names: Sequence[str]) -> list[str]:
+        return git.untracked(self.repo, revision, names)
+
+    def capture(self, cas: Cas, base: Revision, summary: str, run: RunId, ignore: Sequence[str]) -> Transfer | None:
+        """Commit what the agent left uncommitted on its own, never amended into its last commit, then bundle them."""
+        if git.is_dirty(self.repo, list(ignore)):
+            git.commit_all(self.repo, f'{summary}\n\n{RECOVERED}: run#{run}', list(ignore))
+        head = self.repo.head.commit.hexsha
+        if head == base:
+            return None
+        blob = bundles.bundle(cas, self.repo, [head], [base])
+        return Transfer(blob=blob, head=Revision(head)) if blob is not None else None
+
+
+class Git(Vcs):
+    """Keep versions as commits of a git repository, git 2.40 or later."""
+
+    def init(self, path: Path, template: str, owned: Sequence[str]) -> None:
+        repo = Repo.init(path, initial_branch='main') if not (path / '.git').exists() else Repo(path)
+        if not repo.head.is_valid():
+            repo.git.add('-A')
+            repo.git.commit('-qm', f'{template}: baseline')
+            return
+        # git status leaves out what the repo's ignore file ignores, which git add would refuse to take by name
+        # and --no-renames reports a rename as its two paths, not as one "old -> new" record
+        status = repo.git.status('--porcelain', '-z', '--no-renames', '--untracked-files=all', '--', *owned)
+        entries = [entry for entry in status.split('\0') if entry]
+        changed = sorted(entry[3:] for entry in entries)
+        # only what the work tree changed: git add refuses a path whose deletion is staged already
+        if unstaged := sorted(entry[3:] for entry in entries if entry[1] != ' '):
+            repo.git.add('-A', '--', *unstaged)
+        if changed:
+            repo.git.commit('-qm', f'piloop init: {", ".join(changed)}', '--', *changed)
+
+    def open(self, path: Path) -> GitRepository:
+        try:
+            return GitRepository(git.open_repo(path))
+        except (InvalidGitRepositoryError, NoSuchPathError) as e:
+            raise NotARepository(f'{path} is not a git checkout: {type(e).__name__}: {e}') from e
+
+    def clone(self, path: Path) -> GitRepository:
+        if not (path / '.git').is_dir():
+            Repo.init(path)
+        return self.open(path)
+
+    def identity(self, path: Path) -> str:
+        return git.identity(path)
+
+    @classmethod
+    def root(cls, path: Path) -> Path | None:
+        with suppress(InvalidGitRepositoryError, NoSuchPathError):
+            return Path(Repo(path, search_parent_directories=True).common_dir).resolve().parent
+        return None
+
+    def changed(self, path: Path, ignore: Sequence[str]) -> bool:
+        """A commit or a reset moved HEAD (the reflog has more than one entry), or the worktree is dirty."""
+        return git.changed(path, list(ignore))
+
+    @classmethod
+    def checks(cls) -> list[Check]:
+        """The git on ``PATH``, which every campaign and the daemon run, is at least ``NEEDED``."""
+        fix = 'install git 2.40 or later'
+        try:
+            found = subprocess.run(
+                ['git', '--version'], capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=10, check=True
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError) as e:
+            return [Check('git', f'`git --version` failed: {e}', fix)]
+        if tuple(int(n) for n in re.findall(r'\d+', found)[:2]) < NEEDED:
+            return [Check('git', f'{found}; piloop needs 2.40 or later', fix)]
+        return [Check('git', found)]

@@ -32,18 +32,19 @@ from piloop.plugins.executor.contract import (
     AgentKey,
     AgentNotStarted,
     AgentReport,
-    Bundle,
     EvaluationJob,
     EvaluationKey,
     EvaluationReport,
-    GitSource,
     MissingBlobs,
     RepoId,
     Sample,
     Settled,
+    Source,
     Workspace,
 )
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
+from piloop.plugins.vcs.contract import Transfer
+from piloop.plugins.vcs.git import Git
 from piloop.store.tree import put_tree
 from tests.agents.test_launcher import MINTED_HARNESS, agent_session, launch, request, use_harness
 from tests.conftest import HARNESS_PROMPT_TO_FILE, ScriptRuntime, baseline, disk
@@ -65,7 +66,7 @@ def test_an_evaluation_that_left_the_queue_or_never_started_is_settled(
         evaluation=waiting,
         candidate=base.id,
         runner='process',
-        artifact=GitSource(repo=RepoId(campaign.id), commit=base.commit_sha),
+        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.commit_sha),
         place='eval',
         command=['true'],
         timeout=60,
@@ -121,7 +122,7 @@ def test_the_finished_event_of_an_agent_says_the_state_of_its_closed_row(
     job = AgentJob(
         agent_session=agent_session_id,
         runtime='subprocess',
-        artifact=GitSource(repo=RepoId(campaign.id), commit=baseline(db, campaign.id).commit_sha),
+        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=baseline(db, campaign.id).commit_sha),
         place='agent',
         timeout=60,
         brief=None,
@@ -151,7 +152,7 @@ def test_two_results_for_one_job_in_plain_sessions_close_its_row_once_and_measur
     agent = AgentJob(
         agent_session=agent_session_id,
         runtime='subprocess',
-        artifact=GitSource(repo=RepoId(campaign.id), commit=baseline(db, campaign.id).commit_sha),
+        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=baseline(db, campaign.id).commit_sha),
         place='agent',
         timeout=60,
         brief=None,
@@ -161,7 +162,7 @@ def test_two_results_for_one_job_in_plain_sessions_close_its_row_once_and_measur
         evaluation=evaluation_id,
         candidate=base.id,
         runner='process',
-        artifact=GitSource(repo=RepoId(campaign.id), commit=base.commit_sha),
+        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.commit_sha),
         place='eval',
         command=['true'],
         timeout=60,
@@ -221,7 +222,7 @@ def agent_job(campaign: Campaign, agent_session_id: AgentSessionId, tmp_path: Pa
     return AgentJob(
         agent_session=agent_session_id,
         runtime='subprocess',
-        artifact=GitSource(repo=RepoId(campaign.id), commit=Repo(campaign.path).head.commit.hexsha),
+        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=Repo(campaign.path).head.commit.hexsha),
         place='agent',
         timeout=60,
         brief=None,
@@ -355,7 +356,7 @@ def test_a_report_naming_a_blob_the_cas_lacks_is_refused_until_it_is_there_then_
         evaluation=evaluation_id,
         candidate=base.id,
         runner='process',
-        artifact=GitSource(repo=RepoId(campaign.id), commit=base.commit_sha),
+        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.commit_sha),
         place='runs/1/eval-0',
         command=['true'],
         timeout=60,
@@ -380,7 +381,7 @@ def test_the_blobs_of_a_report_are_its_files_and_its_bundle(tmp_path: Path) -> N
     notes = cas.put(b'notes')
     finished = AgentFinished(
         process=AgentExit(ExitStatus.EXITED, 1),
-        commits=Bundle(blob=bundle, head='h'),
+        commits=Transfer(blob=bundle, head='h'),
         files={'brief.md': brief},
         workspace={'NOTES.md': notes},
     )
@@ -411,7 +412,7 @@ def test_two_agents_that_change_one_workspace_file_keep_the_first_ones_and_the_s
         job = AgentJob(
             agent_session=agent,
             runtime='subprocess',
-            artifact=GitSource(repo=RepoId(campaign.id), commit=base.commit_sha, workspace=workspace),
+            artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.commit_sha, workspace=workspace),
             place=f'agent_sessions/{agent}',
             timeout=60,
             brief=None,

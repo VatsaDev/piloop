@@ -34,8 +34,9 @@ from piloop.mcp import McpServer
 from piloop.net import Route
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import BlobAddress, Cas
-from piloop.plugins.host import Capability, Choice, Parameters, Scope
+from piloop.plugins.host import Capability, Choice, Chosen, Parameters, Scope
 from piloop.plugins.runtime.contract import AgentExit, AgentStart
+from piloop.plugins.vcs.contract import VCS, Repository, Revision, Transfer, Vcs
 from piloop.runtime.factory import RuntimeFactory
 from piloop.usage import UsageSpec
 
@@ -52,7 +53,7 @@ what comes back under its own. A runner's ``_work/<name>``: the job names the di
 
 RepoId = NewType('RepoId', CampaignId)
 """A repo of record: the campaign whose checkout it is. Two campaigns on clones of one project have two, and so do
-two tenants' forks: git's own identity (a root commit) is the same for all of them."""
+two tenants' forks: a vcs's own identity (git's root commit) is the same for all of them."""
 
 
 class Workspace(BaseModel):
@@ -69,30 +70,23 @@ class Workspace(BaseModel):
     """Its tree in the CAS when the job was made."""
 
 
-class GitSource(BaseModel):
-    """An artifact: the tree of ``commit`` in ``repo``, as a worktree at the job's place, with ``links`` in it."""
+class Source(BaseModel):
+    """An artifact: the files of ``revision`` in ``repo``, checked out at the job's place, with ``links`` in it."""
 
     model_config = ConfigDict(frozen=True)
 
+    vcs: Annotated[Vcs, Chosen(VCS)]
+    """The campaign's vcs provider, with its parameters (``[plugins.vcs]``): the worker checks out with it."""
     repo: RepoId
-    commit: str
+    revision: Revision
     links: dict[str, BlobAddress] = Field(default_factory=dict)
-    """Inputs that are not committed (data, environments), by name in the worktree: each the manifest of its tree in
-    the CAS, put there read-only (``piloop.store.tree.Copies``)."""
+    """Inputs that no version holds (data, environments), by name in the checkout: each the manifest of its tree in the
+    CAS, put there read-only (``piloop.store.tree.Copies``)."""
     workspace: Workspace | None = None
-    """The campaign's shared workspace, put into the worktree as ``workspace/``. None: an evaluation's, which has none."""
-    history: list[str] = Field(default_factory=list)
-    """Other commits of ``repo`` that the worktree's repo holds: the campaign's candidates, which an agent reads with
-    ``git show`` and ``git cherry-pick``."""
-
-
-class Bundle(BaseModel):
-    """Commits in the CAS: a git bundle of what ``head`` has beyond the job's commit."""
-
-    model_config = ConfigDict(frozen=True)
-
-    blob: BlobAddress
-    head: str
+    """The campaign's shared workspace, put into the checkout as ``workspace/``. None: an evaluation's, which has none."""
+    history: list[Revision] = Field(default_factory=list)
+    """Other versions of ``repo`` that the checkout's repository holds: the campaign's candidates, which an agent reads
+    and composes."""
 
 
 class MissingBlobs(Exception):
@@ -103,12 +97,14 @@ class MissingBlobs(Exception):
 
 
 class Commits(BaseModel):
-    """How an agent's commits come back: what it left uncommitted is committed on its own, then they go as a bundle."""
+    """How an agent's versions come back: what it left unsaved as a version of its own (``Repository.capture``)."""
 
     model_config = ConfigDict(frozen=True)
 
-    message: str
-    """The message of the commit of what the agent left uncommitted."""
+    summary: str
+    """The summary of the version of what the agent left unsaved."""
+    run: RunId
+    """The run that the version of what the agent left unsaved is recovered for."""
 
 
 DEADLINE_ENV = 'PILOOP_DEADLINE'
@@ -130,7 +126,7 @@ class AgentJob(BaseModel):
     agent_session: AgentSessionId
     runtime: str
     """The runtime that starts the agent on the worker's host (``runtime`` in ``piloop.toml``)."""
-    artifact: GitSource
+    artifact: Source
     place: Place
     timeout: float
     """The seconds the agent may run, counted from its start, also across a restart of its worker."""
@@ -149,7 +145,7 @@ class AgentJob(BaseModel):
     session_id: str | None = None
     """The session id the launcher made for the argv (``{session_id}``), or None when the runtime reports it."""
     commits: Commits | None = None
-    """Bring the agent's commits back. None for a sweep: nothing that it commits comes back."""
+    """Bring the agent's versions back. None for a sweep: nothing that it saves comes back."""
 
     @property
     def needs_session_id(self) -> bool:
@@ -163,7 +159,7 @@ class Bar(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     candidate: CandidateId
-    artifact: GitSource
+    artifact: Source
 
 
 class EvaluationJob(BaseModel):
@@ -180,10 +176,10 @@ class EvaluationJob(BaseModel):
     evaluation: int
     candidate: CandidateId
     run: RunId | None = None
-    """The run whose commit it measures, named on the measurement's event. None for a measurement on request."""
+    """The run whose version it measures, named on the measurement's event. None for a measurement on request."""
     runner: str
     """The evaluator runner (``evaluators.runner``). A worker takes only jobs of the runners that it has."""
-    artifact: GitSource
+    artifact: Source
     place: Place
     """Its log directory under the worker's home: each run of the evaluator has a directory of its own in it."""
     command: list[str]
@@ -208,9 +204,9 @@ class AgentFinished(BaseModel):
     session_id: str | None = None
     usage: Usage | None = None
     changed: bool = True
-    """Whether the agent changed its checkout: a commit, or an uncommitted change outside the links."""
-    commits: Bundle | None = None
-    """Its commits, when the job asked for them back and there are some."""
+    """Whether the agent changed its checkout: a saved version, or an unsaved change outside the links."""
+    commits: Transfer | None = None
+    """Its versions, when the job asked for them back and there are some."""
     files: dict[str, BlobAddress] = Field(default_factory=dict)
     """Its log directory's files by relative path: core puts them in the job's place under its own home."""
     read: list[CommentId] = Field(default_factory=list)
@@ -392,7 +388,10 @@ class Host:
     cas: Cas
     """The CAS that jobs' inputs and results go through: a job names blobs, never paths."""
     repos: Callable[[RepoId], Path]
-    """The checkout of a repo of record (``GitSource.repo``). Raises ``KeyError`` for a campaign that is gone."""
+    """The checkout of a repo of record (``Source.repo``). Raises ``KeyError`` for a campaign that is gone."""
+    records: Callable[[RepoId], Repository]
+    """A repo of record, opened with its campaign's vcs provider: what a worker that lacks versions is sent from. Raises
+    ``KeyError`` for a campaign that is gone."""
     runtimes: RuntimeFactory
     """Makes the runtime of a job (``AgentJob.runtime``) on this machine."""
     reserve: int

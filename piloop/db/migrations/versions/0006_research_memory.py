@@ -5,7 +5,7 @@ whose first line is ``family: <family> | status: dead|promising|untested | best:
 here). Batch mode rebuilds the table. It keeps the row ids, so ``comments_fts`` stays valid, and drops the table's
 triggers, so ``recreate`` puts them back.
 
-``projects.repo``: the repository that a project works on, the same for every clone (``piloop.git.identity``). It is
+``projects.repo``: the repository that a project works on, the same for every clone (``identity``). It is
 filled from each project's checkout as it is now.
 
 ``documents``: text documents for agents to search, with its full-text index, empty at first. ``journal``: the
@@ -20,16 +20,18 @@ Revises: 0005
 """
 
 import json
+import re
 from collections.abc import Sequence
 from pathlib import Path
 
 import sqlalchemy as sa
 from alembic import op
+from git import Repo
+from git.exc import InvalidGitRepositoryError, NoSuchPathError
 
 import piloop.db.models
 from piloop.db.triggers import recreate
 from piloop.db.triggers.fts import fts_table
-from piloop.git import identity
 
 revision: str = '0006'
 down_revision: str | None = '0005'
@@ -61,6 +63,24 @@ def _timestamp(name: str) -> sa.Column[object]:
     )
 
 
+def identity(path: Path) -> str:
+    """The URL of the git checkout's ``origin`` remote (else of its first remote) as ``host/owner/name``, else its path.
+
+    Frozen here, as of this revision, when every project was a git checkout.
+    """
+    try:
+        remotes = {remote.name: remote for remote in Repo(path).remotes}
+    except InvalidGitRepositoryError, NoSuchPathError:
+        return str(path.resolve())
+    name = 'origin' if 'origin' in remotes else min(remotes, default=None)
+    if name is None:
+        return str(path.resolve())
+    url = remotes[name].url.strip().rstrip('/').removesuffix('.git')
+    url = re.sub(r'^[a-z+]+://', '', url)
+    url = re.sub(r'^[^@/]+@', '', url)
+    return re.sub(r'^([^/:]+):(?!\d+/)', r'\1/', url)
+
+
 def upgrade() -> None:
     with op.batch_alter_table('comments', schema=None, recreate='always') as batch_op:
         batch_op.drop_constraint('commentkind', type_='check')
@@ -72,7 +92,8 @@ def upgrade() -> None:
     con = op.get_bind()
     for project_id, path in con.execute(sa.text('SELECT id, path FROM projects')).all():
         con.execute(
-            sa.text('UPDATE projects SET repo = :repo WHERE id = :id'), {'repo': identity(Path(path)), 'id': project_id}
+            sa.text('UPDATE projects SET repo = :repo WHERE id = :id'),
+            {'repo': identity(Path(path)), 'id': project_id},
         )
     op.create_table(
         'documents',

@@ -10,10 +10,11 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from opentelemetry.trace import StatusCode
 from pytest_mock import MockerFixture
 
-from piloop import git, otel
+from piloop import otel
 from piloop.db.models import AgentSession, AgentSessionState
 from piloop.ids import RESEARCH
 from piloop.otel import Tracer
+from piloop.plugins.vcs.git import commands as git
 from piloop.runtime.factory import handle_for
 from piloop.settings import Settings
 from tests.conftest import console_lines

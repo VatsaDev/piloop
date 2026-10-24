@@ -1129,7 +1129,7 @@ class Document(Tracked, Base):
         CheckConstraint(
             "length(hash) = 64 AND hash NOT GLOB '*[^0-9a-f]*'", name='documents.hash is the blake3 hex digest of body'
         ),
-        *text_checks('documents', 'path', 'title', 'body', 'created_by', nullable=('commit_sha',)),
+        *text_checks('documents', 'path', 'title', 'body', 'created_by'),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -1141,8 +1141,6 @@ class Document(Tracked, Base):
     title: Mapped[str]
     """Its first heading, or else the file name."""
     body: Mapped[str]
-    commit_sha: Mapped[str | None]
-    """The commit that last changed the file, when the sync read a clean, tracked file. NULL otherwise."""
     created_by: Mapped[str]
     """Who inserted it: the actor of ``piloop init``, or the daemon, for a synced file. Else the agent's signature."""
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)

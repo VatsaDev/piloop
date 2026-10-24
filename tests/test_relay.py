@@ -203,7 +203,7 @@ def test_the_shim_of_a_worker_elsewhere_relays_a_call_and_reads_the_agents_queue
     from piloop.plugins.executor.kit.jobs import remote_site
     from tests.conftest import disk
 
-    site = remote_site(tmp_path, disk(tmp_path), lambda repo, commit, have: None, reserve=0)
+    site = remote_site(tmp_path, disk(tmp_path), lambda repo, revisions, have: None, reserve=0)
     done = subprocess.run([site.cli, 'sql', 'SELECT 1'], capture_output=True, text=True, env={'PATH': '/usr/bin:/bin'})
     assert done.returncode == 1 and 'relays the calls of an agent, and human is none' in done.stderr
     log_dir = tmp_path / 'runs' / '1'

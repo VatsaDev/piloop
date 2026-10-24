@@ -49,7 +49,7 @@ class InlineExecutor:
 
     def __init__(self, host: Host) -> None:
         self.host = host
-        self.site = local_site(host.home, host.cas, host.repos, host.reserve)
+        self.site = local_site(host.home, host.cas, host.repos, host.records, host.reserve)
         self._lock = threading.Lock()
         self._jobs: dict[JobKey, _Job] = {}
         self.stopping = False

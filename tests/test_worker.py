@@ -20,10 +20,9 @@ from pytest_mock import MockerFixture
 from sqlalchemy import delete, select
 from sqlalchemy.exc import OperationalError
 
-from piloop import git
 from piloop.actor import System
 from piloop.agents.results import CampaignResults, DaemonStopped, Ended, Lost, NotStarted, PromptOutcome, Ran
-from piloop.campaign.campaigns import checkout_of
+from piloop.campaign.campaigns import checkout_of, record_of
 from piloop.daemon.run_controller import RunController
 from piloop.db.events import emit, in_order
 from piloop.db.models import (
@@ -41,7 +40,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, AgentSessionId, CommentId, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, AgentSessionId, CommentId, RunId, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import (
     AgentJob,
@@ -49,14 +48,14 @@ from piloop.plugins.executor.contract import (
     AgentReport,
     Commits,
     EvaluationReport,
-    GitSource,
     MissingBlobs,
     Prompt,
+    Source,
 )
 from piloop.plugins.executor.kit.capacity import HostSample, sample
 from piloop.plugins.executor.kit.client import Dismissed, Local, Registration, WorkerInfo
 from piloop.plugins.executor.kit.door import AgentCall, Relayed
-from piloop.plugins.executor.kit.jobs import bundle_of_record, local_site, remote_site
+from piloop.plugins.executor.kit.jobs import local_site, remote_site, send_of_record
 from piloop.plugins.executor.kit.leases import (
     SERVE,
     Answer,
@@ -78,6 +77,7 @@ from piloop.plugins.executor.kit.relay import Relay
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.executor.workers.worker import WORKER_ANOMALY, Unsent, Worker
 from piloop.plugins.runtime.contract import QUEUE, ExitStatus, Handle, put, take
+from piloop.plugins.vcs.git import commands as git
 from piloop.settings import INPUTS_DIR
 from piloop.store import tree as tree_module
 from tests.conftest import (
@@ -113,11 +113,11 @@ def request_agent(db: Database, campaign: Campaign) -> AgentSessionId:
         return w.id
 
 
-def head_of(ex: RunController, agent_session_id: AgentSessionId) -> GitSource:
+def head_of(ex: RunController, agent_session_id: AgentSessionId) -> Source:
     """The HEAD of the agent's campaign, as its artifact."""
     with ex.launcher.db.session() as s:
         campaign = s.get_one(Campaign, s.get_one(AgentSession, agent_session_id).campaign_id)
-        return ex.sources.git(campaign, Repo(campaign.path).head.commit.hexsha)
+        return ex.sources.source(campaign, Repo(campaign.path).head.commit.hexsha)
 
 
 def launch(ex: RunController, agent_session_id: AgentSessionId, tmp_path: Path) -> Ended:
@@ -379,7 +379,7 @@ def test_an_agent_that_removes_its_own_worktree_is_still_reported(
         brief='b',
         place='logs',
         artifact=head_of(ex, agent_session_id),
-        commits=Commits(message='leftovers'),
+        commits=Commits(summary='leftovers', run=RunId(1)),
     )
     assert isinstance(outcome, Ran) and outcome.process.error is not None and outcome.commits is None, (
         'the report says what is known'
@@ -421,7 +421,7 @@ def test_an_evaluation_whose_lease_expired_before_its_evaluator_started_kills_it
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     gate = Gate()
-    monkeypatch.setattr('piloop.plugins.executor.kit.jobs.git.add_worktree', gate.wrap(git.add_worktree))
+    monkeypatch.setattr('piloop.plugins.vcs.git.commands.add_worktree', gate.wrap(git.add_worktree))
     ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     measuring = threading.Thread(target=ex.remeasure, args=(baseline(db, campaign.id).id,))
     measuring.start()
@@ -454,7 +454,7 @@ def test_a_stale_evaluation_never_touches_the_files_of_the_lease_that_replaced_i
             release.wait(10)
         return add_worktree(repo, path, sha, links)
 
-    monkeypatch.setattr('piloop.plugins.executor.kit.jobs.git.add_worktree', first_held)
+    monkeypatch.setattr('piloop.plugins.vcs.git.commands.add_worktree', first_held)
     ex = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     candidate = baseline(db, campaign.id).id
     measuring = threading.Thread(target=ex.remeasure, args=(candidate,))
@@ -651,7 +651,7 @@ def test_a_worker_killed_between_the_start_and_its_record_leaves_no_worktree(
         brief=None,
         spec=None,
     )
-    git.add_worktree(git.open_repo(repo), cwd, source.commit, {})
+    git.add_worktree(git.open_repo(repo), cwd, source.revision, {})
     with db.session() as s:
         enqueue(s, job)
         s.commit()
@@ -1102,7 +1102,7 @@ def test_a_dismissed_worker_stops_its_job_keeps_an_unsent_report_in_its_spool_an
     worker = Worker(
         client,
         Tracer(None),
-        local_site(tmp_path, disk(tmp_path), partial(checkout_of, db), reserve=0),
+        local_site(tmp_path, disk(tmp_path), partial(checkout_of, db), partial(record_of, db), reserve=0),
         runners=('process',),
     )
     worker.start()
@@ -1129,7 +1129,7 @@ def test_a_worker_elsewhere_short_of_disk_drops_the_input_copies_that_no_worktre
         (inputs / name).write_bytes(os.urandom(1000))
     os.link(inputs / 'used', worktree / 'data')  # a job that still runs links it
     monkeypatch.setattr(tree_module, 'free', lambda _: 0)  # always short: only the linked copy may stay
-    site = remote_site(home, cas, partial(bundle_of_record, cas, partial(checkout_of, db)), reserve=1)
+    site = remote_site(home, cas, partial(send_of_record, cas, partial(record_of, db)), reserve=1)
     worker = Worker(Local(leases, 'w1'), Tracer(None), site, runners=('process',))
     job = evaluation_job(db, campaign, tmp_path)
     with db.session() as s:
@@ -1166,7 +1166,7 @@ def test_a_worker_whose_registration_failed_registers_on_a_later_turn_and_a_stop
     worker = Worker(
         client,
         Tracer(None),
-        local_site(tmp_path, disk(tmp_path), partial(checkout_of, db), reserve=0),
+        local_site(tmp_path, disk(tmp_path), partial(checkout_of, db), partial(record_of, db), reserve=0),
         runners=('process',),
     )
     worker.start()  # its own try, then the loop's first
@@ -1190,7 +1190,7 @@ def test_a_worker_dismissed_while_it_reports_a_job_it_cannot_find_again_ends(
     worker = Worker(
         client,
         Tracer(None),
-        local_site(tmp_path, disk(tmp_path), partial(checkout_of, db), reserve=0),
+        local_site(tmp_path, disk(tmp_path), partial(checkout_of, db), partial(record_of, db), reserve=0),
         runners=('process',),
     )
     worker.start()

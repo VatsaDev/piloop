@@ -45,11 +45,12 @@ from piloop.plugins.executor.contract import (
     AgentKey,
     Capacity,
     EvaluationJob,
-    GitSource,
     Prompt,
     RepoId,
+    Source,
 )
 from piloop.plugins.runtime.contract import Handle
+from piloop.plugins.vcs.git import Git
 from piloop.scoring.ledger import request_remeasure
 from piloop.settings import Settings
 from tests.conftest import (
@@ -91,7 +92,7 @@ def launch_in_thread(
         s.add(w)
         s.commit()
         agent_session_id = w.id
-    source = ex.sources.git(campaign, Repo(campaign.path).head.commit.hexsha)
+    source = ex.sources.source(campaign, Repo(campaign.path).head.commit.hexsha)
     ended: list[Ended] = []
 
     def launch() -> None:
@@ -339,7 +340,7 @@ def test_a_place_is_a_relative_path_that_stays_inside_a_home(place: str) -> None
             evaluation=1,
             candidate=1,
             runner='process',
-            artifact=GitSource(repo=RepoId(CampaignId(1)), commit='c'),
+            artifact=Source(vcs=Git(), repo=RepoId(CampaignId(1)), revision='c'),
             place=place,
             command=['true'],
             timeout=1,
@@ -358,8 +359,8 @@ def test_two_campaigns_on_clones_of_one_repo_get_their_own_checkouts(
         s.add(other)
         s.commit()
         sources = Sources(disk(tmp_path), tmp_path, db)
-        first = sources.git(s.get_one(Campaign, campaign.id), Repo(campaign.path).head.commit.hexsha)
-        second = sources.git(other, Repo(clone).head.commit.hexsha)
+        first = sources.source(s.get_one(Campaign, campaign.id), Repo(campaign.path).head.commit.hexsha)
+        second = sources.source(other, Repo(clone).head.commit.hexsha)
     assert first.repo != second.repo
     assert (checkout_of(db, first.repo), checkout_of(db, second.repo)) == (Path(campaign.path), clone)
     with pytest.raises(KeyError, match='is gone'):

@@ -76,6 +76,13 @@ HELPERS: set[object] = {
     capabilities.StaleLease,
     capabilities.WorkersExecutor,  # what a built-in provider's open makes, which a plugin's may wrap
     capabilities.HttpsNetwork,
+    capabilities.Revision,  # a NewType
+    capabilities.Fetch,  # type aliases
+    capabilities.Keep,
+    capabilities.VcsError,  # what a vcs provider raises
+    capabilities.NotARepository,
+    capabilities.UnknownRevision,
+    capabilities.GitRepository,  # what a built-in provider's open makes
 }
 """What a provider raises, calls or returns that no signature of a contract names."""
 WITHHELD: set[type] = {Selection}

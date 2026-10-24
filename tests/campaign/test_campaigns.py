@@ -247,3 +247,18 @@ def test_init_takes_a_staged_rename_between_owned_files(tmp_path: Path) -> None:
     assert create_campaign_repo(dest, BLANK, {}) == []
     assert repo.head.commit.summary == 'piloop init: brief.md, evaluate.py'
     assert not repo.is_dirty()
+
+
+def test_a_baseline_whose_tree_tracks_workspace_is_scored_on_its_own_file(db: Database, campaign_path: Path) -> None:
+    """The shared workspace is linked into the baseline's checkout only where its tree has no ``workspace``."""
+    (campaign_path / 'workspace').write_text('a file of the tree\n')
+    script = campaign_path.parent / 'evaluate.sh'
+    script.write_text('test -f workspace && echo METRIC score=1 && echo METRIC size=5\n')
+    write_toml(campaign_path, HARNESS_APPEND, evaluate=['sh', str(script)])
+    repo = Repo(campaign_path)
+    repo.git.add('-A')
+    repo.git.add('-f', 'workspace')
+    repo.git.commit('-qm', 'a tracked workspace file')
+    with db.session() as s:
+        _, measurement = register(s, campaign_path, System.HUMAN)
+    assert measurement.metrics == {'score': 1.0, 'size': 5.0}

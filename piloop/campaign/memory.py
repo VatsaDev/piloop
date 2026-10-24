@@ -8,8 +8,6 @@ content (``UNIQUE (campaign_id, path, hash)``), so running it again does nothing
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from git import Repo
-from git.exc import InvalidGitRepositoryError, NoSuchPathError
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import Session
 
@@ -43,7 +41,6 @@ class Synced:
 def sync_documents(s: Session, campaign: Campaign, cfg: CampaignConfig, actor: Actor) -> Synced:
     """Insert every file under the repo that ``cfg.memory.documents`` matches and that is not in yet. It only flushes."""
     root = Path(campaign.path).resolve()
-    repo = _repo(root)
     synced = Synced()
     for rel in _matches(root, cfg.memory.documents):
         path = root / rel
@@ -64,7 +61,6 @@ def sync_documents(s: Session, campaign: Campaign, cfg: CampaignConfig, actor: A
             'hash': digest(text),
             'title': title_of(text, rel),
             'body': text,
-            'commit_sha': _commit(repo, rel) if repo is not None else None,
             'created_by': actor.signature,
         }
         inserted = s.scalar(insert(Document).values(values).on_conflict_do_nothing().returning(Document.id))
@@ -75,17 +71,3 @@ def sync_documents(s: Session, campaign: Campaign, cfg: CampaignConfig, actor: A
 def _matches(root: Path, globs: list[str]) -> list[str]:
     """The repo-relative paths of the files that the globs match, each once, sorted."""
     return sorted({str(p.relative_to(root)) for pattern in globs for p in root.glob(pattern) if p.is_file()})
-
-
-def _repo(path: Path) -> Repo | None:
-    try:
-        return Repo(path)
-    except InvalidGitRepositoryError, NoSuchPathError:
-        return None
-
-
-def _commit(repo: Repo, rel: str) -> str | None:
-    """The commit that last changed ``rel``, when the file is tracked and clean. None otherwise."""
-    if repo.is_dirty(path=rel) or not repo.git.ls_files('--', rel):
-        return None
-    return repo.git.log('-1', '--format=%H', '--', rel) or None

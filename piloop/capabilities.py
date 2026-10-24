@@ -2,7 +2,7 @@
 
 # ruff: noqa: F401  # this module only re-exports: every import is unused here
 
-from piloop.plugins.host import Capability, Tier, Parameters, Choice, Scope
+from piloop.plugins.host import Capability, Tier, Parameters, Choice, Scope, Check
 from piloop.plugins.host import MissingProvider, Provider, PythonSource
 from piloop.plugins.host import Live
 
@@ -62,7 +62,7 @@ from piloop.plugins.executor.contract import AgentReport, EvaluationReport, Samp
 from piloop.plugins.executor.contract import AgentFinished, AgentNotStarted
 from piloop.plugins.executor.contract import AgentKey, EvaluationKey, JobKey
 from piloop.plugins.executor.contract import key_of, Capacity, Prompt
-from piloop.plugins.executor.contract import GitSource, Commits, Bar, RepoId, Bundle, MissingBlobs, Workspace
+from piloop.plugins.executor.contract import Source, Commits, Bar, RepoId, MissingBlobs, Workspace
 from piloop.plugins.executor.kit.jobs import Control, Site, local_site, run_agent, remove
 from piloop.plugins.executor.kit.jobs import run_evaluation
 from piloop.plugins.executor.kit.leases import Leases, Timing, Grant, Answer
@@ -80,3 +80,8 @@ from piloop.plugins.network.contract import NetworkConfig, Address
 from piloop.plugins.network.contract import Listener, NoCredential, Peer, Refused
 from piloop.net.tokens import Caller, Tokens
 from piloop.plugins.network.https import Https, HttpsNetwork
+
+from piloop.plugins.vcs.contract import VCS, Vcs, Repository, Version, Revision, Conflicts, Transfer, Fetch
+from piloop.plugins.vcs.contract import Keep, RunVersion, RebaseVersion, ReferenceVersion
+from piloop.plugins.vcs.contract import VcsError, NotARepository, UnknownRevision
+from piloop.plugins.vcs.git import Git, GitRepository

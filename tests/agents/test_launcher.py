@@ -38,11 +38,12 @@ from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, AgentSessionId, RoleName, TargetKind, TargetRef
 from piloop.mcp import MCP
 from piloop.otel import Tracer
-from piloop.plugins.executor.contract import GitSource, RepoId
+from piloop.plugins.executor.contract import RepoId, Source
 from piloop.plugins.executor.kit.capacity import HostSample
 from piloop.plugins.executor.kit.leases import Answer, LeaseQueued, Leases
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus
+from piloop.plugins.vcs.git import Git
 from piloop.usage.jsonl import CWD_ENCODERS
 from tests.conftest import (
     HARNESS_FAILS,
@@ -108,11 +109,11 @@ def exit_of(ended: Ended) -> AgentExit:
     return ended.process
 
 
-def checkout(campaign: Campaign) -> GitSource:
+def checkout(campaign: Campaign) -> Source:
     """The campaign's head as the artifact: the agent runs in a worktree of it, and what the test harnesses write there
     is ignored by git, so it is no change of the agent's."""
     (Path(campaign.path) / '.git' / 'info' / 'exclude').write_text('*.txt\njson.py\npiloop/\n')
-    return GitSource(repo=RepoId(campaign.id), commit=Repo(campaign.path).head.commit.hexsha)
+    return Source(vcs=Git(), repo=RepoId(campaign.id), revision=Repo(campaign.path).head.commit.hexsha)
 
 
 def worktree(tmp_path: Path) -> Path:
@@ -437,11 +438,9 @@ def test_a_cwd_that_cannot_be_made_is_a_failed_start(
     brief = compose_brief(
         role_in(campaign), campaign, Agent(role='watchdog', session=agent_session_id), reason='test', context=''
     )
-    mocker.patch(
-        'piloop.plugins.executor.kit.clones.git.add_worktree', side_effect=OSError(28, 'No space left on device')
-    )
+    mocker.patch('piloop.plugins.vcs.git.commands.add_worktree', side_effect=OSError(28, 'No space left on device'))
     lc = launcher(db, runtime, tmp_path)
-    artifact = GitSource(repo=RepoId(campaign.id), commit=Repo(campaign.path).head.commit.hexsha)
+    artifact = Source(vcs=Git(), repo=RepoId(campaign.id), revision=Repo(campaign.path).head.commit.hexsha)
     outcome = lc.launch(agent_session_id, brief=brief, place='w', artifact=artifact)
     w = agent_session(db, agent_session_id)
     assert (isinstance(outcome, NotStarted), w.state, w.error) == (

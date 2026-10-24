@@ -53,9 +53,9 @@ from piloop.plugins.cas.contract import CAS
 from piloop.plugins.executor.contract import AgentFinished, AgentReport, EvaluationReport
 from piloop.plugins.executor.kit.leases import NOT_TAKEN, SERVE, Leases, StaleReport, Timing
 from piloop.plugins.executor.workers import Workers
+from piloop.plugins.vcs.git import bundles as store_commits
 from piloop.proc import alive, started
 from piloop.settings import Settings
-from piloop.store import commits as store_commits
 from tests.conftest import (
     WRITE_PID,
     ScriptRuntime,

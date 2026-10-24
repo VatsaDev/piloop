@@ -2,19 +2,17 @@
 
 The checks note a newer piloop at the source of the CLI, and find what can break after an upgrade: a daemon that still
 runs the old code, a database behind the code, a secrets command that fails, a ``piloop.toml`` that the new code refuses,
-an MCP server that cannot start, skills that are missing or out of date, a missing harness, and a git older than
-piloop needs. Nothing here writes: the database is opened read-only, and nothing starts. The check of the source asks the network (``git ls-remote`` or the package index). The commands that the
+an MCP server that cannot start, skills that are missing or out of date, a missing harness, and what each vcs provider
+checks itself (``Vcs.checks``). Nothing here writes: the database is opened read-only, and nothing starts. The check of the source asks the network (``git ls-remote`` or the package index). The commands that the
 lines name use ``Settings.cli``. ``piloop upgrade`` runs the checks last.
 """
 
 import json
-import re
 import shutil
 import sqlite3
-import subprocess
 from collections.abc import Iterator
 from contextlib import closing
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -29,31 +27,21 @@ from piloop.daemon.main import preflight, unbound_failures
 from piloop.daemon.serve import SECRETS_COMMAND_ENV, SecretsError, running_pid, secrets
 from piloop.db.models import utcnow
 from piloop.db.session import head, schema_mismatch
-from piloop.plugins.host import PluginError, declared
+from piloop.plugins.host import Check, PluginError, declared
+from piloop.plugins.vcs.contract import VCS
 from piloop.proc import child_env, environment
 from piloop.reports.overview import age
 from piloop.settings import Settings
 from piloop.version import direct_url, installed
 
 CHANGELOG = 'https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md'
-GIT_NEEDED = (2, 40)
-"""The oldest git that piloop works with: it merges by tree with ``git merge-tree --merge-base``, new in git 2.40."""
-
-
-@dataclass(frozen=True)
-class Check:
-    """One line of the report: what was checked, what was found and, for a failure, the fix."""
-
-    name: str
-    found: str
-    fix: str | None = None
-    """None when the check passed."""
 
 
 def checks(cfg: Settings) -> list[Check]:
     """Run every check, in the best order to debug a broken upgrade: daemon, database, plugins, configs, skills, tools.
 
-    When the plugins do not compose, the checks of the campaigns and harnesses, which use them, do not run.
+    When the plugins do not compose, the checks of the campaigns, harnesses and vcs providers, which use them, do not
+    run.
     """
     composed = _plugins(cfg)
     whose, names, command = _daemon_env(cfg)
@@ -77,9 +65,10 @@ def checks(cfg: Settings) -> list[Check]:
             *(_mcp(name, c, env) for name, _, c in campaigns if isinstance(c, CampaignConfig) and c.mcp),
             *_skills(cfg),
             _harnesses(stored),
+            *(check for provider in VCS.providers().values() for check in provider.model.checks()),
         ]
     # the commands that the lines name are this install's, which a second install (piloop-canary) runs under its name
-    return [replace(c, found=_named(c.found, cfg), fix=c.fix and _named(c.fix, cfg)) for c in [*found, _git()]]
+    return [replace(c, found=_named(c.found, cfg), fix=c.fix and _named(c.fix, cfg)) for c in found]
 
 
 def _named(text: str, cfg: Settings) -> str:
@@ -101,21 +90,6 @@ def _cli(cfg: Settings) -> Check:
         else f'ask the human before `piloop upgrade` (PILOOP_AUTO_UPGRADE is off); changes: {CHANGELOG}'
     )
     return Check('cli', f'{installed()}; {found} is out: {policy}')
-
-
-def _git() -> Check:
-    """The git on ``PATH``, which every campaign and the daemon run, is at least ``GIT_NEEDED``."""
-    fix = 'install git 2.40 or later'
-    try:
-        done = subprocess.run(
-            ['git', '--version'], capture_output=True, stdin=subprocess.DEVNULL, text=True, timeout=10, check=True
-        )
-    except (OSError, subprocess.SubprocessError) as e:
-        return Check('git', f'`git --version` failed: {e}', fix)
-    found = done.stdout.strip()
-    if tuple(int(n) for n in re.findall(r'\d+', found)[:2]) < GIT_NEEDED:
-        return Check('git', f'{found}; piloop needs 2.40 or later', fix)
-    return Check('git', found)
 
 
 def _daemon(cfg: Settings) -> Check:

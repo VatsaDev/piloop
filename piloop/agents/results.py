@@ -58,11 +58,9 @@ from piloop.plugins.executor.contract import (
     AgentKey,
     AgentNotStarted,
     AgentReport,
-    Bundle,
     EvaluationJob,
     EvaluationKey,
     EvaluationReport,
-    GitSource,
     Guard,
     JobKey,
     MissingBlobs,
@@ -71,6 +69,7 @@ from piloop.plugins.executor.contract import (
     Workspace,
 )
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
+from piloop.plugins.vcs.contract import Transfer
 from piloop.scoring.ledger import MeasurementRecorded, save_units
 from piloop.settings import TMP_DIR, UNITS_DIR
 from piloop.store.tree import Manifest, Staged, merge, stage, write_files
@@ -202,8 +201,8 @@ class Ran:
     """The agent started to work, and its process ended."""
 
     process: AgentExit
-    commits: Bundle | None = None
-    """Its commits in the CAS, when it was asked for them and made some."""
+    commits: Transfer | None = None
+    """Its versions in the CAS, when it was asked for them and made some."""
     kind: Literal['ran'] = 'ran'
 
 
@@ -231,8 +230,8 @@ class Lost:
 class DaemonStopped:
     """The daemon stopped before the agent started or while it ran. The stop writes the rows."""
 
-    commits: Bundle | None = None
-    """Its commits in the CAS, when it ran, was asked for them and made some."""
+    commits: Transfer | None = None
+    """Its versions in the CAS, when it ran, was asked for them and made some."""
     kind: Literal['daemon_stopped'] = 'daemon_stopped'
 
 
@@ -352,9 +351,7 @@ class CampaignResults:
         """
         if missing := self._cas.missing(report.blobs()):
             raise MissingBlobs(f'its report names blobs that the CAS lacks: {", ".join(map(str, missing))}')
-        workspace = (
-            job.artifact.workspace if isinstance(job, AgentJob) and isinstance(job.artifact, GitSource) else None
-        )
+        workspace = job.artifact.workspace if isinstance(job, AgentJob) else None
         changed = report.workspace if isinstance(report, AgentFinished) and workspace is not None else {}
         # read from the CAS before the write lock: a workspace file can be large, and a remote CAS slow
         base = Manifest.get(self._cas, workspace.manifest) if workspace is not None and changed else None
@@ -491,7 +488,7 @@ class CampaignResults:
         return scratch
 
     @staticmethod
-    def _stopped(s: Session, w: AgentSession, commits: Bundle | None) -> None:
+    def _stopped(s: Session, w: AgentSession, commits: Transfer | None) -> None:
         w.state, w.error = AgentSessionState.KILLED, RunEnd.DAEMON_STOPPED
         session_finished(s, w)
         _ended(s, w.id, DaemonStopped(commits))

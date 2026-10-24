@@ -30,7 +30,7 @@ from piloop.db.session import Database
 from piloop.harnesses import SESSION_ENV, SESSION_ID, fill, takes_session_id
 from piloop.ids import AgentSessionId, TargetKind, TargetRef
 from piloop.otel import Span, Tracer
-from piloop.plugins.executor.contract import AgentJob, AgentKey, Commits, Executor, ExecutorConfig, GitSource, LeftJob
+from piloop.plugins.executor.contract import AgentJob, AgentKey, Commits, Executor, ExecutorConfig, LeftJob, Source
 from piloop.plugins.runtime.contract import AgentStart
 
 PROMPT = 'Your brief is in {path}. Read all of it, in parts if a read comes back cut short, then follow it.'
@@ -76,7 +76,7 @@ class Launcher:
         *,
         brief: str,
         place: str,
-        artifact: GitSource,
+        artifact: Source,
         commits: Commits | None = None,
     ) -> Ended:
         """Run agent session row ``agent_session_id`` to the end on the executor, and return how it ended.
@@ -138,7 +138,7 @@ class Launcher:
         span: Span,
         brief: str,
         place: str,
-        artifact: GitSource,
+        artifact: Source,
         commits: Commits | None,
     ) -> AgentJob:
         """Fill in the row, mark it ``starting``, emit ``<kind>.started``, and return the agent's job.
@@ -206,7 +206,7 @@ class Launcher:
         'an agent that a daemon before leases started: delete Launcher.left, Scheduler._left, LeftJob.job and'
         ' LeftJob.handle, and a None AgentJob.spec',
     )
-    def left(self, s: Session, w: AgentSession, artifact: GitSource, place: str, commits: Commits | None) -> LeftJob:
+    def left(self, s: Session, w: AgentSession, artifact: Source, place: str, commits: Commits | None) -> LeftJob:
         """The ``LeftJob`` of a running agent, with its job as its row has it: no spec, so it is re-attached, never started.
 
         Only an agent that a daemon before leases started needs it: an executor finds its own jobs again.

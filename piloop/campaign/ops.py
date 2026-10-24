@@ -12,18 +12,16 @@ into a ``note`` on the row. An operation emits the events of the changes that no
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Annotated, assert_never
 
-from git import GitError
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from piloop import git
 from piloop.actor import Actor, Agent, System
 from piloop.agents.roles import files_of
+from piloop.campaign.campaigns import repository
 from piloop.campaign.ideas import Definition, NotASeed, develop
 from piloop.campaign.stop import held
 from piloop.config import CampaignConfig, config_of
@@ -46,6 +44,7 @@ from piloop.db.models import (
 )
 from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TargetRef, TrackName
 from piloop.plugins.role.contract import Files
+from piloop.plugins.vcs.contract import Revision, VcsError
 from piloop.scoring.ledger import (
     IdeaCreated,
     MeasurementRecorded,
@@ -202,11 +201,11 @@ def missing_head(s: Session, candidate: Candidate) -> Candidate | None:
     """Return the head if a keep of ``candidate`` would be a trunk keep without it, else None.
 
     A candidate builds on the head when the head is among its ancestors (``parent_id``): a commit of a run that
-    started from it. Else git decides (``git.contains``): a merge onto the head, or a compose that cherry-picked it.
+    started from it. Else the vcs decides (``Repository.contains``): a merge onto the head, or a compose that took it.
     A candidate of a branch run is a branch keep, which never moves the head.
 
     Raises:
-        Refused: git cannot tell, for example because the campaign repo is gone.
+        Refused: the vcs cannot tell, for example because the campaign repo is gone.
     """
     if candidate.run is not None and candidate.run.branch:
         return None
@@ -218,10 +217,10 @@ def missing_head(s: Session, candidate: Candidate) -> Candidate | None:
     if trunk is None or ancestor is not None:
         return None
     try:
-        builds = git.contains(git.open_repo(Path(campaign.path)), candidate.commit_sha, trunk.commit_sha)
-    except GitError as e:
+        builds = repository(campaign).contains(Revision(candidate.commit_sha), Revision(trunk.commit_sha))
+    except VcsError as e:
         raise Refused(
-            f'git cannot tell if candidate#{candidate.id} builds on the head candidate#{trunk.id}: {e}'
+            f'the vcs cannot tell if candidate#{candidate.id} builds on the head candidate#{trunk.id}: {e}'
         ) from e
     return None if builds else trunk
 

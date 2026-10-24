@@ -9,7 +9,6 @@ from git import Repo
 from pytest_mock import MockerFixture
 from sqlalchemy import delete, select
 
-from piloop import git
 from piloop.actor import System
 from piloop.daemon.run_controller import RunController
 from piloop.db.models import Campaign, Candidate, Evaluation, Run, RunStatus, Verdict, utcnow
@@ -17,6 +16,7 @@ from piloop.db.session import Database
 from piloop.ids import CandidateId, RunId
 from piloop.otel import Tracer
 from piloop.plugins.executor.workers import Workers
+from piloop.plugins.vcs.git import commands as git
 from piloop.scoring import queue
 from piloop.scoring.ledger import measured, request_remeasure
 from tests.conftest import ScriptRuntime, baseline, factory, serving, workers_of, write_script
@@ -112,7 +112,7 @@ def test_a_shared_evaluation_that_cannot_start_is_a_crash_for_every_request(
         until(lambda: waits.call_count == 2, 'the second request')
         raise RuntimeError('cannot check out the commit')
 
-    mocker.patch('piloop.plugins.executor.kit.jobs.git.add_worktree', side_effect=cannot_check_out)
+    mocker.patch('piloop.plugins.vcs.git.commands.add_worktree', side_effect=cannot_check_out)
     first, second = make_run(db, campaign), make_run(db, campaign, title='the same line')
     one = in_thread(lambda: execute(ex, db, first))
     until(lambda: len(rows(db)) == 1, 'the first request')
@@ -320,7 +320,7 @@ def test_a_remeasure_whose_repo_is_gone_is_a_crash(
     base = baseline(db, campaign.id).id
     queued_executor(db, runtime, tmp_path, slots=1).remeasure(base)
     found, verdict = errors(db, base)
-    assert found[-1] is not None and found[-1].startswith('NoSuchPathError'), 'it cannot start: a crash, asked again'
+    assert found[-1] is not None and found[-1].startswith('NotARepository'), 'it cannot start: a crash, asked again'
     assert verdict is Verdict.KEEP, "a keep's verdict stays"
     assert rows(db) == []
 

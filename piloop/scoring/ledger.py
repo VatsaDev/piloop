@@ -12,14 +12,11 @@ from pathlib import Path
 from statistics import fmean
 from typing import Literal
 
-from git import Repo
-from git.exc import BadName
 from pydantic import Field
 from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from piloop import git
 from piloop.actor import Actor, System
 from piloop.config import CampaignConfig, Metric, Track
 from piloop.db.events import emit, has, latest
@@ -40,6 +37,15 @@ from piloop.db.models import (
     latest_agent_session,
 )
 from piloop.ids import CampaignId, CandidateId, EvaluatorId, MeasurementId, RunId, TargetKind, TargetRef, TrackName
+from piloop.plugins.vcs.contract import (
+    Conflicts,
+    RebaseVersion,
+    ReferenceVersion,
+    Repository,
+    Revision,
+    UnknownRevision,
+    Version,
+)
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Case, Criterion, Side, VerdictRule
 from piloop.scoring.evaluate import UNITS, Units
 from piloop.text import metric
@@ -523,22 +529,25 @@ MOVED = 'keeps against its own bar, but the head moved on to candidate#{head}: '
 """How the reason of a candidate to rebase starts. The candidate is ``interesting``, never a keep off the trunk."""
 
 
-def rebase(s: Session, cfg: CampaignConfig, repo: Repo, candidate: Candidate, onto: Candidate) -> Candidate | None:
-    """Merge ``candidate``'s commit onto the head ``onto``. Return the merged candidate to measure and judge, or None.
+def rebase(
+    s: Session, cfg: CampaignConfig, repo: Repository, candidate: Candidate, onto: Candidate
+) -> Candidate | None:
+    """Merge ``candidate``'s version onto the head ``onto``. Return the merged candidate to measure and judge, or None.
 
     ``candidate`` kept against its own bar after the head moved on. So it is ``interesting`` (``MOVED``), and its
-    reason ends with the result of the merge. The merge is a commit with both as parents, made without a worktree
-    (``git.merge``) and pinned at ``refs/piloop/<campaign>/rebase/<candidate id>``. A new tree becomes a pending
+    reason ends with the result of the merge. The merge is a version made without a checkout (``Repository.merge``),
+    and kept (``RebaseVersion``). A new tree becomes a pending
     candidate of the same run, with ``onto`` as its parent. A merge that conflicts files a seed on the run's track to
     compose the two by hand, unless the campaign stopped. The seed is not pinned, so it runs from the head
     (``follow_up``). A merged tree that is already a candidate (the head had the change) gives no new candidate. Emits
     ``Rebased``.
     """
     subject = REBASED_SUFFIX.sub('', candidate.summary or '')
-    merged = git.merge(repo, onto.commit_sha, candidate.commit_sha, f'{subject} (rebased onto candidate#{onto.id})')
+    message = f'{subject} (rebased onto candidate#{onto.id})'
+    merged = repo.merge(Revision(onto.commit_sha), Revision(candidate.commit_sha), message)
     found: Candidate | None = None
-    if isinstance(merged, list):
-        paths = ', '.join(merged)
+    if isinstance(merged, Conflicts):
+        paths = ', '.join(merged.paths)
         why = (
             f'it kept against its own bar but its merge onto the head candidate#{onto.id} conflicts in {paths}:'
             f' from the head, git merge {candidate.commit_sha} and resolve the conflicts'
@@ -560,10 +569,10 @@ def rebase(s: Session, cfg: CampaignConfig, repo: Repo, candidate: Candidate, on
         )
         filed = f': seed idea#{seeds[0].id} composes it by hand' if seeds else ''
         candidate.verdict_reason = f'{candidate.verdict_reason}; its merge onto the head conflicts in {paths}{filed}'
-        rebased = Rebased(head=onto.id, conflicts=merged)
+        rebased = Rebased(head=onto.id, conflicts=list(merged.paths))
     else:
-        git.pin(repo, f'refs/piloop/{cfg.name}/rebase/{candidate.id}', merged)
-        found, created = resolve(s, candidate.campaign_id, repo, merged, parent=onto, run_id=candidate.run_id)
+        repo.keep(merged.revision, RebaseVersion(cfg.name, candidate.id))
+        found, created = resolve(s, candidate.campaign_id, merged, parent=onto, run_id=candidate.run_id)
         if created:
             candidate.verdict_reason = f'{candidate.verdict_reason}; rebased onto the head as candidate#{found.id}'
             rebased = Rebased(head=onto.id, rebased=found.id)
@@ -609,16 +618,15 @@ def reproposed(candidate: Candidate, run: Run) -> bool:
 
 
 def resolve(
-    s: Session, campaign_id: CampaignId, repo: Repo, sha: str, *, parent: Candidate | None, run_id: RunId | None
+    s: Session, campaign_id: CampaignId, version: Version, *, parent: Candidate | None, run_id: RunId | None
 ) -> tuple[Candidate, bool]:
-    """Return the candidate for the tree of ``sha``: the existing one, or a new row with ``parent`` as its parent.
+    """Return the candidate for the tree of ``version``: the existing one, or a new row with ``parent`` as its parent.
 
-    Returns ``(candidate, created)``. An existing candidate is returned unchanged: a commit that reverts to a known
-    state is that state, whatever run or commit reached it. Two runs that reach one new tree at once share it: the
+    Returns ``(candidate, created)``. An existing candidate is returned unchanged: a version that reverts to a known
+    state is that state, whatever run or version reached it. Two runs that reach one new tree at once share it: the
     insert that loses the race on ``UNIQUE(campaign_id, tree_sha)`` returns the winner's row.
     """
-    tree = git.tree_sha(repo, sha)
-    known = select(Candidate).where(Candidate.campaign_id == campaign_id, Candidate.tree_sha == tree)
+    known = select(Candidate).where(Candidate.campaign_id == campaign_id, Candidate.tree_sha == version.tree)
     found = s.scalar(known)
     if found is not None:
         return found, False
@@ -626,9 +634,9 @@ def resolve(
         campaign_id=campaign_id,
         run_id=run_id,
         parent_id=parent.id if parent else None,
-        tree_sha=tree,
-        commit_sha=sha,
-        summary=git.subject_line(repo, sha),
+        tree_sha=version.tree,
+        commit_sha=version.revision,
+        summary=version.summary,
     )
     try:
         with s.begin_nested():
@@ -643,27 +651,35 @@ class ImportRefused(Exception):
 
 
 def import_reference(
-    s: Session, campaign: Campaign, cfg: CampaignConfig, repo: Repo, ref: str, *, summary: str | None, actor: Actor
+    s: Session,
+    campaign: Campaign,
+    cfg: CampaignConfig,
+    repo: Repository,
+    ref: str,
+    *,
+    summary: str | None,
+    actor: Actor,
 ) -> Candidate:
-    """Register the tree of ``ref`` (a commit, branch or tag in the campaign's repo) as a ``reference`` candidate.
+    """Register the tree of ``ref`` (a version of the campaign's repo, in its vcs's terms) as a ``reference`` candidate.
 
-    Like the baseline, it has no run and no parent. The commit is pinned at ``refs/piloop/<campaign>/reference/<id>``,
-    so it outlives its branch. The daemon measures it under the current evaluator (``unmeasured``).
+    Like the baseline, it has no run and no parent. The version is kept (``ReferenceVersion``), so it outlives what named it.
+    The daemon measures it under the current evaluator (``unmeasured``).
 
     Raises:
-        ImportRefused: ``ref`` names no commit, or its tree is already a candidate of the campaign.
+        ImportRefused: ``ref`` names no version, or its tree is already a candidate of the campaign.
     """
     try:
-        sha = repo.commit(ref).hexsha
-    except (BadName, ValueError) as e:
-        raise ImportRefused(f'{ref!r} names no commit in {repo.working_dir}: {e}') from e
-    candidate, created = resolve(s, campaign.id, repo, sha, parent=None, run_id=None)
+        version = repo.version(ref)
+    except UnknownRevision as e:
+        raise ImportRefused(str(e)) from e
+    sha = version.revision
+    candidate, created = resolve(s, campaign.id, version, parent=None, run_id=None)
     if not created:
         raise ImportRefused(f'the tree of {ref!r} already is candidate#{candidate.id} ({candidate.verdict})')
     candidate.summary = summary or candidate.summary
     candidate.verdict, candidate.verdict_by = Verdict.REFERENCE, actor.signature
     candidate.verdict_reason = f'imported from {ref} ({sha[:7]})'
-    git.pin(repo, f'refs/piloop/{cfg.name}/reference/{candidate.id}', sha)
+    repo.keep(sha, ReferenceVersion(cfg.name, candidate.id))
     imported = CandidateImported(ref=ref, commit=sha)
     emit(s, imported, TargetRef(TargetKind.CANDIDATE, candidate.id), actor)
     return candidate

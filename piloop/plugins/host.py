@@ -124,6 +124,19 @@ class PythonSource:
         return self.release if self.built_in else f'{self.release}, entry point {self.entry_point}'
 
 
+@dataclass(frozen=True)
+class Check:
+    """One line of the report of ``piloop doctor``: what was checked, what was found and, for a failure, the fix.
+
+    A provider that checks the machine it works on returns these (``Vcs.checks``).
+    """
+
+    name: str
+    found: str
+    fix: str | None = None
+    """None when the check passed."""
+
+
 class Live:
     """Marks a parameter of a provider that ``piloop limits set`` may change while the daemon runs.
 
@@ -364,6 +377,38 @@ type Plugins = dict[str, Parameters]
 
 
 @dataclass(frozen=True)
+class Chosen[P]:
+    """``Annotated[P, Chosen(capability)]``: a provider of ``capability`` with its parameters, as its table.
+
+    The table is a ``[plugins.<name>]`` table: its ``provider`` key and its parameters. Data that a file's choice reaches
+    carries it so, as a job carries the campaign's vcs provider to its worker (``Source.vcs``).
+    """
+
+    capability: Capability[P]
+
+    def __get_pydantic_core_schema__(self, source: object, handler: GetCoreSchemaHandler) -> CoreSchema:
+        return core_schema.no_info_plain_validator_function(
+            self.validate,
+            serialization=core_schema.plain_serializer_function_ser_schema(self.dump, info_arg=True),
+        )
+
+    def validate(self, value: object) -> P:
+        """The provider that the table's ``provider`` key names, with its parameters (``Capability.validated``)."""
+        if isinstance(value, self.capability.contract):
+            return value
+        found = self.capability.validated(value)
+        assert isinstance(found, self.capability.contract)  # it validates as the provider that the table names
+        return found
+
+    def dump(self, provider: P, info: core_schema.SerializationInfo) -> dict[str, object]:
+        assert isinstance(provider, Parameters)  # a chosen contract subclasses it (Capability.__init__)
+        return {
+            'provider': self.capability.name_of(provider),
+            **provider.model_dump(mode=info.mode, exclude_unset=True),
+        }
+
+
+@dataclass(frozen=True)
 class PluginTables:
     """``Annotated[Plugins, PluginTables(scope)]``: ``[plugins]`` of the file of ``scope``.
 
@@ -409,19 +454,13 @@ class PluginTables:
     def _table(known: Mapping[str, Capability[object]], name: str, table: object) -> Parameters:
         if (capability := known.get(name)) is None:
             raise ValueError(f'no capability has that name; there is {", ".join(sorted(known)) or "none"}')
-        if isinstance(table, Parameters) and isinstance(table, capability.contract):
-            return table
-        return capability.validated(table)
+        found = Chosen(capability).validate(table)
+        assert isinstance(found, Parameters)  # a chosen contract subclasses it (Capability.__init__)
+        return found
 
     def dump(self, plugins: Plugins, info: core_schema.SerializationInfo) -> dict[str, dict[str, object]]:
         known = self._capabilities()
-        return {
-            name: {
-                'provider': known[name].name_of(provider),
-                **provider.model_dump(mode=info.mode, exclude_unset=True),
-            }
-            for name, provider in plugins.items()
-        }
+        return {name: Chosen(known[name]).dump(provider, info) for name, provider in plugins.items()}
 
 
 CORE_ERRORS = frozenset(get_args(ErrorType))

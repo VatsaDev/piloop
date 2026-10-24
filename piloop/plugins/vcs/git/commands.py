@@ -1,4 +1,4 @@
-"""Git operations on the campaign repo and its worktrees."""
+"""Git operations on a repository and its worktrees: what the ``git`` provider runs."""
 
 import re
 import shutil
@@ -200,13 +200,13 @@ def subject_line(repo: Repo, sha: str) -> str:
     return str(repo.commit(sha).summary)
 
 
-def eval_skipped(repo: Repo, sha: str) -> bool:
-    """Whether the commit's own message has a ``Piloop-Eval: skip`` trailer. Keys are not case-sensitive, as in git."""
-    return any(value.lower() == 'skip' for value in trailers(repo, sha, 'Piloop-Eval'))
+def message(repo: Repo, sha: str) -> str:
+    """The message of a commit."""
+    return str(repo.git.show('-s', '--format=%B', sha))
 
 
-def trailers(repo: Repo, sha: str, key: str) -> list[str]:
-    """The values of the commit's own ``key`` trailers, in order. Keys are not case-sensitive, as in git.
+def trailers(message: str, key: str) -> list[str]:
+    """The values of the ``key`` trailers of a commit's ``message``, in order. Keys are not case-sensitive, as in git.
 
     A trailer is a ``key: value`` line anywhere after the subject. Git reads trailers only in the last paragraph, but
     a harness adds its own (``Co-Authored-By``, a "Generated with" line) in paragraphs after the implementer's. A line that
@@ -215,7 +215,7 @@ def trailers(repo: Repo, sha: str, key: str) -> list[str]:
     line = re.compile(rf'{re.escape(key)}[ \t]*:(.*)', re.IGNORECASE)
     found: list[list[str]] = []
     folding = False
-    for text in repo.git.show('-s', '--format=%B', sha).splitlines()[1:]:
+    for text in message.splitlines()[1:]:
         if folding and text[:1].isspace() and text.strip():
             found[-1].append(text.strip())
         elif match := line.fullmatch(text):

@@ -14,7 +14,7 @@ body says. A refusal has a typed body, ``RefusalBody``. What ``Remote`` does wit
 
 After the GitHub Actions runner (``acquirejob``, ``renewjob``) and Buildkite agent v3 (``accept``, ``start``,
 ``finish``). A job names its data by address in the CAS, which the worker reads and writes itself: no bytes come through
-these routes. ``bundle`` asks the server to put a commit that the worker's clone lacks into the CAS, and answers its
+these routes. ``send`` asks the server to put a version that the worker's clone lacks into the CAS, and answers its
 address.
 """
 
@@ -56,6 +56,7 @@ from piloop.plugins.executor.kit.leases import (
     Work,
 )
 from piloop.plugins.executor.kit.relay import LeaseCall, Run
+from piloop.plugins.vcs.contract import Revision
 
 FIRST_BACKOFF = 0.2
 MAX_BACKOFF = 5.0
@@ -156,24 +157,24 @@ class Queued(BaseModel):
     error: str | None
 
 
-class BundleAsked(BaseModel):
-    """The body of ``bundle``: commits of a repo of record, and the commits that the worker's clone has."""
+class SendAsked(BaseModel):
+    """The body of ``send``: versions of a repo of record, and the versions that the worker's clone has."""
 
     repo: RepoId
-    commits: list[str]
-    have: list[str]
+    revisions: list[Revision]
+    have: list[Revision]
 
 
-class BundleMade(RootModel[BlobAddress | None]):
-    """The answer of ``bundle``: the bundle's address in the CAS, or None when the clone has the commit already."""
+class Sent(RootModel[BlobAddress | None]):
+    """The answer of ``send``: the transfer's address in the CAS, or None when the clone has the version already."""
 
 
-def lease_routes(leases: Leases, changed: Changed, cas: Cas, bundle: Fetch, cli: Run) -> list[Route]:
-    """The routes of the ``LeaseClient`` calls, each made on ``Local`` as the caller, ``bundle`` and ``cli``.
+def lease_routes(leases: Leases, changed: Changed, cas: Cas, send: Fetch, cli: Run) -> list[Route]:
+    """The routes of the ``LeaseClient`` calls, each made on ``Local`` as the caller, ``send`` and ``cli``.
 
     ``changed`` is ``Database.changed`` of the leases' database: what ``messages`` awaits between two reads.
-    ``cas`` is the server's, which ``register`` checks that the worker shares (``WorkerInfo.cas_probe``). ``bundle``
-    builds a bundle from the repo of record into it (``jobs.bundle_of_record``). ``cli`` runs a relayed call of an
+    ``cas`` is the server's, which ``register`` checks that the worker shares (``WorkerInfo.cas_probe``). ``send``
+    puts versions from the repo of record into it (``jobs.send_of_record``). ``cli`` runs a relayed call of an
     agent, on a live lease of the caller (``relay.Runner``).
     """
     return [
@@ -185,7 +186,7 @@ def lease_routes(leases: Leases, changed: Changed, cas: Cas, bundle: Fetch, cli:
         Route('lost', Lost, _as_caller(leases, _lost)),
         Route.long_poll('messages', Read, _as_caller(leases, _messages), changed),
         Route('queued', Queued, _as_caller(leases, _queued)),
-        Route('bundle', BundleAsked, partial(_bundle, bundle)),
+        Route('send', SendAsked, partial(_send, send)),
         Route('cli', LeaseCall, _as_caller(leases, partial(_cli, cli))),
     ]
 
@@ -194,8 +195,8 @@ def _cli(run: Run, worker: Local, body: LeaseCall) -> Relayed:
     return run(worker.relayed(body.lease), body)
 
 
-def _bundle(bundle: Fetch, caller: Caller, body: BundleAsked) -> BundleMade:
-    return BundleMade(bundle(body.repo, body.commits, body.have))
+def _send(send: Fetch, caller: Caller, body: SendAsked) -> Sent:
+    return Sent(send(body.repo, body.revisions, body.have))
 
 
 def _as_caller[I: BaseModel](
@@ -331,10 +332,10 @@ class Remote:
     def queued(self, message: int, error: str | None) -> None:
         self._post('queued', Queued(message=message, error=error))
 
-    def bundle(self, repo: RepoId, commits: Sequence[str], have: Sequence[str]) -> Cid | None:
-        """``Clones``' fetch: the server puts a bundle of ``commits`` beyond ``have`` into the CAS, and names it."""
-        return BundleMade.model_validate_json(
-            self._post('bundle', BundleAsked(repo=repo, commits=list(commits), have=list(have)))
+    def send(self, repo: RepoId, revisions: Sequence[Revision], have: Sequence[Revision]) -> Cid | None:
+        """``Clones``' fetch: the server puts what ``revisions`` have beyond ``have`` into the CAS, and names it."""
+        return Sent.model_validate_json(
+            self._post('send', SendAsked(repo=repo, revisions=list(revisions), have=list(have)))
         ).root
 
     def _unanswered(self, path: str, error: Exception) -> None:

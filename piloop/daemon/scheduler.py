@@ -28,12 +28,11 @@ from functools import partial
 from pathlib import Path
 from typing import Literal
 
-from git.exc import GitError, InvalidGitRepositoryError, NoSuchPathError
 from pydantic import Field, ValidationError
 from sqlalchemy import Boolean, ColumnElement, Select, delete, exists, func, or_, select
 from sqlalchemy.orm import Session
 
-from piloop import deprecated, git
+from piloop import deprecated
 from piloop.actor import Agent, System
 from piloop.agents import scout
 from piloop.agents.launcher import rotate
@@ -42,7 +41,7 @@ from piloop.agents.results import AgentEnded, PromptOutcome, StartupAnomaly, Wra
 from piloop.agents.roles import compose_brief, role_of
 from piloop.campaign import spend
 from piloop.campaign.anomaly import AnomalyReported
-from piloop.campaign.campaigns import WORKSPACE, workspace_dir
+from piloop.campaign.campaigns import WORKSPACE, vcs_of, workspace_dir
 from piloop.campaign.ideas import defined_by, park_stranded, runnable, supersede, waiting
 from piloop.campaign.memory import sync_documents
 from piloop.campaign.spend import SpendError
@@ -109,6 +108,7 @@ from piloop.plugins.role.scout import ScoutRole
 from piloop.plugins.stop_rule.contract import GO, Go, Hold, Stop
 from piloop.plugins.trigger.contract import Backlog, Fire, Incident, TrackBacklog
 from piloop.plugins.trigger.low_water import LowWaterTrigger
+from piloop.plugins.vcs.contract import NotARepository, Revision
 from piloop.reports.overview import anomalies, assigned, overview, reported
 from piloop.reports.pack import pack
 from piloop.reports.wake import lessons_overview
@@ -296,11 +296,11 @@ class Scheduler:
             run = s.get_one(Run, w.run_id)
             if run.status is not RunStatus.RUNNING or not (self._runs_dir / str(w.run_id) / 'worktree').is_dir():
                 return None
-            artifact = sources.git(campaign, run.base.commit_sha)
+            artifact = sources.source(campaign, Revision(run.base.commit_sha))
             return self._controller.launcher.left(s, w, artifact, run_place(w.run_id), commits_of(w.run_id))
         if not (self._agent_sessions_dir / str(w.id) / 'worktree').is_dir():
             return None
-        artifact = sources.git(campaign, checkout_candidate(s, campaign).commit_sha)
+        artifact = sources.source(campaign, Revision(checkout_candidate(s, campaign).commit_sha))
         return self._controller.launcher.left(s, w, artifact, sweep_place(w.id), None)
 
     def _fail_open(self, end: RunEnd, *, reaped: bool, sparing: Collection[AgentSessionId] = ()) -> None:
@@ -323,14 +323,14 @@ class Scheduler:
             for run in s.scalars(select(Run).where(in_flight | Run.id.in_(launched))).all():
                 self._fail_run(s, run, end)
                 if reaped:
-                    self._remove_worktrees(self._runs_dir / str(run.id), Path(run.idea.campaign.path))
+                    self._remove_checkouts(self._runs_dir / str(run.id), run.idea.campaign)
             for agent_session in s.scalars(select(AgentSession).where(AgentSession.state.in_(LIVE), ~spared)):
                 # a ``starting`` row that its daemon left before its start window has no process
                 if reaped and agent_session.runtime is not None:
                     self._kill_stale(s, agent_session)
                 if reaped and agent_session.run_id is None and agent_session.campaign_id is not None:
-                    campaign_path = Path(s.get_one(Campaign, agent_session.campaign_id).path)
-                    self._remove_worktrees(self._agent_sessions_dir / str(agent_session.id), campaign_path)
+                    campaign = s.get_one(Campaign, agent_session.campaign_id)
+                    self._remove_checkouts(self._agent_sessions_dir / str(agent_session.id), campaign)
                 self._close(s, agent_session, end)
             s.commit()
 
@@ -386,15 +386,15 @@ class Scheduler:
         elif found is not None:
             self._tracer.event('agent_session.usage_unknown', agent_session=agent_session.id, error=str(found))
 
-    def _remove_worktrees(self, agent_dir: Path, campaign_path: Path) -> None:
-        """Remove the worktrees under a run's or a sweep's directory. If the campaign is gone, record an event."""
+    def _remove_checkouts(self, agent_dir: Path, campaign: Campaign) -> None:
+        """Remove the checkouts under a run's or a sweep's directory. If the campaign's repo is gone, record an event."""
         try:
-            repo = git.open_repo(campaign_path)
-        except NoSuchPathError, InvalidGitRepositoryError:
-            self._tracer.event('worktrees.orphaned', agent_dir=str(agent_dir), campaign_path=str(campaign_path))
+            repo = vcs_of(campaign).open(Path(campaign.path))
+        except NotARepository:
+            self._tracer.event('worktrees.orphaned', agent_dir=str(agent_dir), campaign_path=campaign.path)
             return
-        for wt in git.worktrees_under(repo, agent_dir):
-            git.remove_worktree(repo, wt)
+        for checkout in repo.checkouts(agent_dir):
+            repo.discard(checkout)
 
     @deprecated.until('0.3.0', 'a kill of an agent that no executor holds: delete _kill_stale with _running')
     def _kill_stale(self, s: Session, agent_session: AgentSession) -> None:
@@ -745,7 +745,7 @@ class Scheduler:
         try:
             with s.begin_nested():
                 synced = sync_documents(s, campaign, cfg, DAEMON_ACTOR)
-        except (OSError, GitError) as e:  # the repo could not be read: the stop and the closing review still happen
+        except OSError as e:  # the repo could not be read: the stop and the closing review still happen
             self._tracer.event('documents.sync_failed', campaign=campaign.name, error=f'{type(e).__name__}: {e}')
         else:
             self._tracer.event('documents.synced', campaign=campaign.name, result=synced.line())
@@ -1308,7 +1308,7 @@ class Scheduler:
                 wake=lessons_overview(s, campaign, cfg.wake_budget(role.kind)),
             )
         sources = self._controller.sources  # outside the session: it puts the linked inputs into the CAS
-        artifact = sources.agent(campaign, base.commit_sha)
+        artifact = sources.agent(campaign, Revision(base.commit_sha))
         place = sweep_place(agent_session_id)
         self._controller.launcher.launch(agent_session_id, brief=brief, place=place, artifact=artifact)
 

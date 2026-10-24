@@ -4,7 +4,7 @@ import pytest
 from git import Repo
 from git.exc import GitCommandError
 
-from piloop import git
+from piloop.plugins.vcs.git import GitRepository, commands as git
 
 
 def test_merge_and_contains_raise_on_a_commit_the_repo_does_not_have(campaign_path: Path) -> None:
@@ -110,9 +110,9 @@ def test_piloop_trailers_count_on_any_line_after_the_subject(campaign_path: Path
     the last paragraph. A line that only mentions a trailer is not one."""
     repo = Repo(campaign_path)
     repo.git.commit('-q', '--allow-empty', '-m', message)
-    sha = repo.head.commit.hexsha
-    assert git.eval_skipped(repo, sha)
-    assert git.trailers(repo, sha, 'Piloop-Note') == ['a lead']
+    version = GitRepository(repo).head()
+    assert version.skip
+    assert version.notes == ('a lead',)
 
 
 def test_a_line_that_mentions_a_trailer_or_the_subject_is_not_one(campaign_path: Path) -> None:
@@ -120,9 +120,9 @@ def test_a_line_that_mentions_a_trailer_or_the_subject_is_not_one(campaign_path:
     repo.git.commit(
         '-q', '--allow-empty', '-m', 'Piloop-Eval: skip\n\nThe trailer Piloop-Eval: skip is for scaffolding.'
     )
-    sha = repo.head.commit.hexsha
-    assert not git.eval_skipped(repo, sha)
-    assert git.trailers(repo, sha, 'Piloop-Eval') == []
+    version = GitRepository(repo).head()
+    assert not version.skip
+    assert git.trailers(git.message(repo, version.revision), 'Piloop-Eval') == []
 
 
 def test_a_checkout_changed_by_an_edit_a_new_file_or_a_commit_not_by_what_was_linked_into_it(

@@ -15,6 +15,7 @@ from piloop.db.events import in_order
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, Candidate, Comment, IdeaStatus, Verdict
 from piloop.db.session import Database
 from piloop.ids import CampaignId, TargetKind
+from piloop.plugins.vcs.git import GitRepository
 from piloop.scoring.ledger import DAEMON, RejudgeFailed, head, import_reference, rejudges
 from tests.conftest import HARNESS_WORSE, Gate, ScriptRuntime, write_script
 from tests.daemon.test_run_controller import candidates, controller, execute, make_run
@@ -61,7 +62,9 @@ def test_a_pause_still_measures_what_the_evaluator_needs_unless_it_holds_the_eva
     with db.session() as s:
         proj = s.get_one(Campaign, campaign.id)
         cfg = load_campaign_config(Path(campaign.path))
-        reference = import_reference(s, proj, cfg, repo, 'elsewhere', summary=None, actor=System.ORCHESTRATOR).id
+        reference = import_reference(
+            s, proj, cfg, GitRepository(repo), 'elsewhere', summary=None, actor=System.ORCHESTRATOR
+        ).id
         s.commit()
     sched = make_scheduler(db, runtime, tmp_path)
     pause(db, evals=True)
@@ -124,7 +127,7 @@ def test_a_judgement_again_that_fails_answers_the_request_with_the_error(
     with db.session() as s:
         ops.add_measurement(s, worse.id, ops.Report(metrics={'score': 5.0, 'size': 1.0}), actor=System.ORCHESTRATOR)
         s.commit()
-    mocker.patch('piloop.daemon.run_controller.git.open_repo', side_effect=OSError('the repo is gone'))
+    mocker.patch('piloop.plugins.vcs.git.commands.open_repo', side_effect=OSError('the repo is gone'))
     ex.rejudge(worse.id)
     with db.session() as s:
         [(failed, payload)] = in_order(s, RejudgeFailed)

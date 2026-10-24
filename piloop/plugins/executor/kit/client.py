@@ -27,7 +27,7 @@ from piloop.plugins.executor.kit.leases import (
     Work,
 )
 
-PROTOCOL = 2
+PROTOCOL = 3
 """The version of the ``LeaseClient`` calls on the wire."""
 
 

@@ -1,13 +1,12 @@
 """The ``piloop candidate`` commands: import, measure again, note a regressed result, or override a verdict."""
 
-from pathlib import Path
 from typing import Annotated
 
 import cyclopts
 from cyclopts import validators
 
-from piloop import git
 from piloop.campaign import ops
+from piloop.campaign.campaigns import repository
 from piloop.cli import common
 from piloop.cli.common import CampaignRef
 from piloop.config import config_of
@@ -53,7 +52,7 @@ def candidate_import(
                 s,
                 campaign,
                 cfg,
-                git.open_repo(Path(campaign.path)),
+                repository(campaign),
                 commit,
                 summary=summary,
                 actor=common.settings.actor,

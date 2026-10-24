@@ -43,13 +43,13 @@ from piloop.plugins.executor.contract import (
     EvaluationJob,
     EvaluationKey,
     EvaluationReport,
-    GitSource,
     Guard,
     JobKey,
     Prompt,
     RepoId,
     Sample,
     Settled,
+    Source,
 )
 from piloop.plugins.executor.kit.capacity import GB, HostSample, Pool
 from piloop.plugins.executor.kit.client import Local, Registration, WorkerInfo
@@ -75,6 +75,7 @@ from piloop.plugins.executor.kit.leases import (
 )
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
+from piloop.plugins.vcs.git import Git
 from tests.conftest import baseline
 
 HANDLE = AgentHandle(runtime='subprocess', data={})
@@ -173,7 +174,7 @@ def agent_job(db: Database, campaign: Campaign, tmp_path: Path) -> AgentJob:
     return AgentJob(
         agent_session=agent_session_id,
         runtime='subprocess',
-        artifact=GitSource(repo=RepoId(campaign.id), commit=baseline(db, campaign.id).commit_sha),
+        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=baseline(db, campaign.id).commit_sha),
         place='logs',
         timeout=60,
         brief='b',
@@ -192,7 +193,7 @@ def evaluation_job(db: Database, campaign: Campaign, tmp_path: Path, runner: str
         evaluation=evaluation_id,
         candidate=base.id,
         runner=runner,
-        artifact=GitSource(repo=RepoId(campaign.id), commit=base.commit_sha),
+        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.commit_sha),
         place='eval',
         command=['true'],
         timeout=60,
@@ -389,7 +390,7 @@ def evaluation_job_for_another_candidate(db: Database, campaign: Campaign, tmp_p
         evaluation=evaluation_id,
         candidate=candidate_id,
         runner='process',
-        artifact=GitSource(repo=RepoId(campaign.id), commit=base.commit_sha),
+        artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.commit_sha),
         place='eval2',
         command=['true'],
         timeout=60,

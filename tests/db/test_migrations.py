@@ -1574,3 +1574,57 @@ def test_0035_adds_the_machine_of_an_agent_leaves_out_the_workspace_place_and_st
     command.downgrade(cfg, '0034')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert 'machine' not in [row[1] for row in con.execute('PRAGMA table_info(agent_sessions)')]
+
+
+def test_0037_names_the_vcs_and_the_revision_of_each_jobs_artifact_drops_documents_commit_sha_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0036')
+    source = {'repo': 1, 'commit': 'c1', 'links': {}, 'workspace': None, 'history': ['c0']}
+    agent = {'kind': 'agent', 'artifact': source, 'commits': {'message': 'left\n\nPiloop-Recovered: run#12'}}
+    evaluation = {
+        'kind': 'evaluation',
+        'artifact': {**source, 'kind': 'git'},  # a job before 0035 kept the artifact's kind
+        'bar': {'candidate': 3, 'artifact': {**source, 'commit': 'c0'}},
+    }
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
+        for kind, job in [('agent', agent), ('evaluation', evaluation)]:
+            con.execute(
+                'INSERT INTO leases (kind, agent_session_id, evaluation_id, job) VALUES (?, ?, ?, ?)',
+                (kind, 1 if kind == 'agent' else None, 1 if kind == 'evaluation' else None, dumps(job)),
+            )
+        con.execute(
+            'INSERT INTO documents (campaign_id, path, hash, title, body, commit_sha, created_by)'
+            f" VALUES (1, 'a.md', '{'0' * 64}', 'a', 'a', 'c1', 'human')"
+        )
+    command.upgrade(cfg, '0037')
+    upgraded = {
+        'repo': 1,
+        'links': {},
+        'workspace': None,
+        'history': ['c0'],
+        'revision': 'c1',
+        'vcs': {'provider': 'git'},
+    }
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        jobs = [loads(job) for (job,) in con.execute('SELECT job FROM leases ORDER BY id')]
+        assert jobs == [
+            {'kind': 'agent', 'artifact': upgraded, 'commits': {'summary': 'left', 'run': 12}},
+            {
+                'kind': 'evaluation',
+                'artifact': upgraded,
+                'bar': {'candidate': 3, 'artifact': {**upgraded, 'revision': 'c0'}},
+            },
+        ]
+        assert 'commit_sha' not in [c[1] for c in con.execute('PRAGMA table_info(documents)')]
+        con.execute("INSERT INTO documents_fts (documents_fts) VALUES ('integrity-check')")
+    command.downgrade(cfg, '0036')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert [loads(job) for (job,) in con.execute('SELECT job FROM leases ORDER BY id')] == [
+            agent,
+            {**evaluation, 'artifact': source},
+        ]
+        assert con.execute('SELECT commit_sha FROM documents').fetchall() == [(None,)]

@@ -42,6 +42,7 @@ from piloop.plugins.executor.kit.leases import (
 from piloop.plugins.executor.kit.remote import Remote, lease_routes
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import Https, HttpsNetwork
+from piloop.plugins.vcs.contract import Revision
 from tests.conftest import Dial, disk, wait_until
 from tests.fixtures.netfault import CutResponse, Proxy
 from tests.test_lease import (
@@ -64,7 +65,7 @@ type Connect = Callable[[str], LeaseClient]
 INFO = WorkerInfo(version='0.2.0', pool='test', runners=['process'], sample=HOST, cas_probe=PROBE)
 
 
-BUNDLES: list[tuple[RepoId, list[str], list[str]]] = []
+SENT: list[tuple[RepoId, list[str], list[str]]] = []
 
 
 def echoed(job: AgentJob, call: Call) -> Relayed:
@@ -72,10 +73,10 @@ def echoed(job: AgentJob, call: Call) -> Relayed:
     return Relayed(stdout=f'{job.agent_session}: {" ".join(call.argv)} <{call.stdin}>', exit_code=3)
 
 
-def bundled(repo: RepoId, commits: Sequence[str], have: Sequence[str]) -> Cid | None:
-    """The server's half of ``bundle``, which records what it was asked: commits that the caller has are None."""
-    BUNDLES.append((repo, list(commits), list(have)))
-    return None if set(commits) <= set(have) else Cid.of(''.join(commits).encode())
+def bundled(repo: RepoId, revisions: Sequence[Revision], have: Sequence[Revision]) -> Cid | None:
+    """The server's half of ``send``, which records what it was asked: versions that the caller has are None."""
+    SENT.append((repo, list(revisions), list(have)))
+    return None if set(revisions) <= set(have) else Cid.of(''.join(revisions).encode())
 
 
 @pytest.fixture
@@ -318,7 +319,7 @@ def test_a_revoked_token_and_the_servers_own_name_are_dismissed(remote: Callable
 
 def test_a_worker_of_another_protocol_is_dismissed_with_the_servers_version(remote: Callable[..., Remote]) -> None:
     with pytest.raises(
-        Dismissed, match=r'\(426\): the server runs piloop .+, with protocol 2, and the worker protocol 1'
+        Dismissed, match=r'\(426\): the server runs piloop .+, with protocol 3, and the worker protocol 1'
     ):
         remote().register(INFO.model_copy(update={'protocol': 1}))
 
@@ -441,13 +442,14 @@ def test_a_long_poll_waits_no_longer_than_the_server_holds_one() -> None:
     assert json.loads(sent[0].content) == {'wait': 25, 'after': 0}
 
 
-def test_a_worker_asks_the_server_for_a_bundle_and_gets_its_address_in_the_cas(remote: Callable[..., Remote]) -> None:
+def test_a_worker_asks_the_server_for_versions_and_gets_their_address_in_the_cas(remote: Callable[..., Remote]) -> None:
     """No bytes come through the route: the server puts the bundle in the CAS, and the worker reads it from there."""
     worker = remote('w1')
-    BUNDLES.clear()
-    assert worker.bundle(RepoId(CampaignId(3)), ['c2', 'c3'], ['c1']) == Cid.of(b'c2c3')
-    assert worker.bundle(RepoId(CampaignId(3)), ['c1'], ['c1']) is None, 'the clone has it'
-    assert BUNDLES == [(3, ['c2', 'c3'], ['c1']), (3, ['c1'], ['c1'])]
+    SENT.clear()
+    c1, c2, c3 = Revision('c1'), Revision('c2'), Revision('c3')
+    assert worker.send(RepoId(CampaignId(3)), [c2, c3], [c1]) == Cid.of(b'c2c3')
+    assert worker.send(RepoId(CampaignId(3)), [c1], [c1]) is None, 'the clone has it'
+    assert SENT == [(3, ['c2', 'c3'], ['c1']), (3, ['c1'], ['c1'])], "the server knows the campaign's vcs provider"
 
 
 def test_an_agents_relayed_call_runs_on_its_live_lease_only_and_a_lost_answer_is_not_sent_again(

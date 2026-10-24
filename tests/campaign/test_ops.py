@@ -292,7 +292,7 @@ def test_a_hand_keep_builds_on_the_head_by_git_where_the_parent_links_miss_it(me
         assert now is not None and now.id == merged, f'a trunk keep newer than candidate#{trunk}'
         lost = run_candidate(me, campaign, Verdict.DISCARD)
         with pytest.raises(
-            ops.Refused, match=f'git cannot tell if candidate#{lost} builds on the head candidate#{merged}'
+            ops.Refused, match=f'the vcs cannot tell if candidate#{lost} builds on the head candidate#{merged}'
         ):
             ops.set_verdict(s, lost, Verdict.KEEP, reason='its commit is gone', actor=ACTOR)
 

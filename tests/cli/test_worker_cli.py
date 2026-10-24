@@ -21,13 +21,14 @@ from piloop.plugins.executor.kit.leases import Leases
 from piloop.plugins.executor.kit.remote import lease_routes
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import TOKEN_ENV, Https
+from piloop.plugins.vcs.contract import Revision
 from piloop.settings import Settings
 from tests.cli.test_cli import run_cli
 from tests.conftest import disk, wait_until
 from tests.test_lease import Recorder
 
 
-def no_bundle(repo: RepoId, commits: Sequence[str], have: Sequence[str]) -> Cid | None:
+def no_send(repo: RepoId, revisions: Sequence[Revision], have: Sequence[Revision]) -> Cid | None:
     return None
 
 
@@ -42,7 +43,7 @@ def server(db: Database, tmp_path: Path) -> Generator[str]:
     listener = network.listener()
     assert listener is not None
     leases = Leases(db, Recorder(db), pools={'gpu': Pool()})
-    routes = lease_routes(leases, db.changed, disk(tmp_path / 'worker'), no_bundle, echoed)
+    routes = lease_routes(leases, db.changed, disk(tmp_path / 'worker'), no_send, echoed)
     server = Server(app(network, routes), listener)
     server.start()
     yield server.url

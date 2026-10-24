@@ -8,8 +8,8 @@ from pathlib import Path
 from covalence import Cid
 from git import Repo
 
-from piloop import git
 from piloop.plugins.cas.contract import Cas
+from piloop.plugins.vcs.git import commands as git
 from piloop.store.tree import Missing
 
 

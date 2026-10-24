@@ -9,4 +9,5 @@
 | runtime: `RUNTIMES` (`piloop.runtimes`) | host | `runtime` | `subprocess`: `SubprocessRuntime` |
 | stop rule: `STOP_RULES` (`piloop.stop_rules`) | pure | `[plugins.stop_rule] provider` | `limits`: `FirstLimit` |
 | trigger: `TRIGGERS` (`piloop.triggers`) | host | its name, where the configuration uses it | `anomaly`: `AnomalyTrigger`<br/>`cron`: `CronTrigger`<br/>`low_water`: `LowWaterTrigger`<br/>`seed`: `SeedTrigger`<br/>`sql`: `SqlTrigger`<br/>`stalled`: `StalledTrigger`<br/>`stopped`: `StoppedTrigger` |
+| vcs: `VCS` (`piloop.vcs`) | host | `[plugins.vcs] provider` | `git`: `Git` |
 | verdict rule: `VERDICT_RULES` (`piloop.verdict_rules`) | pure | `[plugins.verdict_rule] provider` | `bootstrap`: `Bootstrap` |

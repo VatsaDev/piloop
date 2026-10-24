@@ -339,7 +339,7 @@ what that review said.
 
 The package has one subpackage for each concern. Imports only point down this list:
 
-1. `db/`: storage, the SQL gate for agents, the events feed. `store/`: trees and commits in the CAS.
+1. `db/`: storage, the SQL gate for agents, the events feed. `store/`: trees in the CAS.
 2. `mcp/`, `usage/`, and `config.py` with `harnesses.py`: MCP servers, token usage, the campaign configuration.
    `net/`: the server of `piloop serve --listen` and its bearer tokens.
 3. `runtime/`: the runtime of an agent session. The runtimes themselves are plugins (`plugins/runtime/`).
@@ -350,7 +350,7 @@ The package has one subpackage for each concern. Imports only point down this li
 8. `daemon/`: the process, the scheduler, the run controller.
 9. `watch/` and `cli/`.
 
-The top-level modules `ids`, `actor`, `settings`, `otel`, `git`, `proc`, `text`, `version` and `deprecated` are leaves
+The top-level modules `ids`, `actor`, `settings`, `otel`, `proc`, `text`, `version` and `deprecated` are leaves
 that every subpackage may use.
 
 `plugins/` is everything about plugins. `plugins/host.py` loads, checks and shows them, and imports nothing else of

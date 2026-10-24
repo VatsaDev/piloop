@@ -306,6 +306,11 @@ agent started, and what the agent writes there goes into the shared workspace wh
 The `link` paths are read-only in a worktree, as they were when the job was made. A write in place to a linked file
 fails, and a new file stays in the worktree. An evaluation that changes a linked input anyway is a `crash`.
 
+### Versions
+
+`[plugins.vcs]` in `piloop.toml` selects how a campaign saves versions. `git` is the default, and a git campaign does
+not change. `documents.commit_sha` is gone: no code read it.
+
 ## Upgrading to 0.2.0
 
 Read this before you upgrade from 0.1.0.

@@ -8,7 +8,6 @@ from importlib.metadata import EntryPoint
 from pathlib import Path
 
 import pytest
-from git.exc import GitCommandError
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from piloop_stop_after_keeps import AfterKeeps
 from sqlalchemy import func, select
@@ -803,7 +802,7 @@ def test_a_stop_whose_document_sync_fails_still_stops_and_launches_the_closing_w
     add_run(db, campaign)
 
     def broken(*_args: object) -> None:
-        raise GitCommandError(['git', 'log'], 128, b'fatal: bad object')
+        raise PermissionError(13, 'Permission denied', 'docs')
 
     monkeypatch.setattr('piloop.daemon.scheduler.sync_documents', broken)
     sched = make_scheduler(db, runtime, tmp_path, tracer)
@@ -814,7 +813,7 @@ def test_a_stop_whose_document_sync_fails_still_stops_and_launches_the_closing_w
         assert s.get_one(Campaign, campaign.id).status is CampaignStatus.STOPPED
         assert s.get_one(AgentSession, watchdog).reason == 'campaign stopped: max_runs: 1 runs'
     error = dict(span_named(spans, 'documents.sync_failed').attributes or {})['error']
-    assert isinstance(error, str) and error.startswith('GitCommandError: Cmd')
+    assert isinstance(error, str) and error.startswith('PermissionError: [Errno 13]')
 
 
 def test_the_contract_of_a_stop_rule_is_data_in_data_out() -> None:

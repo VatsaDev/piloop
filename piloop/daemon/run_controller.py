@@ -13,12 +13,11 @@ from functools import partial
 from pathlib import Path
 from typing import Literal, assert_never
 
-from git import Repo
 from pydantic import ValidationError
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
-from piloop import deprecated, git
+from piloop import deprecated
 from piloop.actor import Actor, Agent, System
 from piloop.agents.launcher import Launcher
 from piloop.agents.results import (
@@ -32,7 +31,7 @@ from piloop.agents.results import (
     record,
 )
 from piloop.agents.roles import compose_brief, role
-from piloop.campaign.campaigns import WORKSPACE, Sources, campaign_dir, checkout_of
+from piloop.campaign.campaigns import WORKSPACE, Sources, campaign_dir, checkout_of, record_of, repository, vcs_of
 from piloop.campaign.stop import attempts, park_cancelled, run_cancel
 from piloop.config import TRANSCRIPT, CampaignConfig, Track, config_of
 from piloop.db.events import emit, has
@@ -78,7 +77,6 @@ from piloop.plugins.executor.contract import (
     DEADLINE_ENV,
     EXECUTORS,
     Bar,
-    Bundle,
     Commits,
     EvaluationJob,
     EvaluationKey,
@@ -88,6 +86,7 @@ from piloop.plugins.executor.contract import (
     Sample,
 )
 from piloop.plugins.runtime.contract import ExitStatus
+from piloop.plugins.vcs.contract import Repository, Revision, RunVersion, Transfer, Version
 from piloop.reports.history import history
 from piloop.reports.wake import lessons_overview
 from piloop.runtime.factory import RuntimeFactory, make_runtime
@@ -115,11 +114,9 @@ from piloop.scoring.ledger import (
     skipped,
 )
 from piloop.settings import StorageSettings
-from piloop.store import commits as store_commits
 
 UNCOMMITTED_SUMMARY = 'piloop: uncommitted implementer changes'
-RECOVERED_TRAILER = 'Piloop-Recovered'
-"""The trailer of the commit the daemon makes of what an implementer left uncommitted: ``Piloop-Recovered: run#<id>``."""
+"""The summary of the version that the worker saves of what an implementer left unsaved (``commits_of``)."""
 RECOVERED_REASON = 'recovered: what the implementer of run#{run} left uncommitted, never declared ready; not measured'
 CUT_REASON = 'recovered: where run#{run} was when a daemon stop cut it, never declared ready; not measured'
 NO_CHANGES = 'implementer produced no commits'
@@ -207,7 +204,17 @@ class RunController:
         self._limits: tuple[tuple[str, str, datetime], ...] = ()
         """The limits that the executor has, as read: ``configure`` hands it the parameters when they change."""
         results = CampaignResults(db, tracer, home, self._cas, lambda: self.launcher.cancelled.is_set())
-        host = Host(db, results, tracer, home, self._cas, partial(checkout_of, db), runtime_factory, reserve)
+        host = Host(
+            db,
+            results,
+            tracer,
+            home,
+            self._cas,
+            partial(checkout_of, db),
+            partial(record_of, db),
+            runtime_factory,
+            reserve,
+        )
         self.executor: Executor[ExecutorConfig] = self._config.open(host)
         self.launcher = Launcher(db, tracer, home, self.executor)
         self.configure()
@@ -393,16 +400,11 @@ class RunController:
             run = s.get_one(Run, run_id)
             campaign = run.idea.campaign
             cfg = config_of(campaign)
-            base_sha = s.get_one(Candidate, run.base_candidate_id).commit_sha
-            harness, model, campaign_path, idea_id, campaign_id = (
-                run.harness,
-                run.model,
-                Path(campaign.path),
-                run.idea_id,
-                campaign.id,
-            )
+            base_sha = Revision(s.get_one(Candidate, run.base_candidate_id).commit_sha)
+            harness, model, idea_id, campaign_id = run.harness, run.model, run.idea_id, campaign.id
+            vcs, campaign_path = vcs_of(campaign), Path(campaign.path)
         log_dir = self._runs_dir / str(run_id)
-        repo = git.open_repo(campaign_path)
+        repo = vcs.open(campaign_path)
         span.set(idea=idea_id, agent_session=agent_session_id, harness=harness, model=model)
         if brief is None:
             ended = self.launcher.reattach(agent_session_id)
@@ -446,13 +448,13 @@ class RunController:
         idea_id: IdeaId,
         agent_session_id: AgentSessionId,
         name: str,
-        repo: Repo,
-        base_sha: str,
-        commits: Bundle | None,
+        repo: Repository,
+        base_sha: Revision,
+        commits: Transfer | None,
     ) -> None:
         """Keep the work of a run that a daemon stop cut (``_keep_cut_work``). The stop writes the rows."""
         cut = not self._left_finding(run_id, idea_id, agent_session_id)  # else the stop closed it as handed off
-        self._keep_cut_work(run_id, name, repo, base_sha, self._commits(repo, base_sha, commits), cut=cut)
+        self._keep_cut_work(run_id, name, repo, self._commits(repo, base_sha, commits), cut=cut)
         self._stopped(span, run_id)
 
     def _stopped(self, span: Span, run_id: RunId) -> None:
@@ -472,14 +474,14 @@ class RunController:
         idea_id: IdeaId,
         campaign_id: CampaignId,
         agent_session_id: AgentSessionId,
-        repo: Repo,
-        base_sha: str,
+        repo: Repository,
+        base_sha: Revision,
         ended: Ran,
         log_dir: Path,
     ) -> None:
-        """Close the run of an agent that worked (``run_outcome``), score its commits and settle its idea."""
+        """Close the run of an agent that worked (``run_outcome``), score its versions and settle its idea."""
         outcome = ended.process
-        shas = self._commits(repo, base_sha, ended.commits)
+        versions = self._commits(repo, base_sha, ended.commits)
         finding = self._left_finding(run_id, idea_id, agent_session_id)
         with self._db.session() as s:
             asked = open_escalation(s, s.get_one(Run, run_id))
@@ -496,13 +498,13 @@ class RunController:
             timed_out=outcome.status is ExitStatus.TIMED_OUT,
             error=outcome.error,
             asked=asked,
-            commits=len(shas),
-            recovered_only=bool(shas) and all(repo.commit(sha).summary == UNCOMMITTED_SUMMARY for sha in shas),
+            commits=len(versions),
+            recovered_only=bool(versions) and all(v.recovered for v in versions),
         )
         end, error = run_outcome(facts)
         self._close(span, run_id, end, error)
         # Score all commits, even if the implementer then timed out or crashed.
-        last = self._score(run_id, campaign_id, repo, shas, log_dir) if shas else None
+        last = self._score(run_id, campaign_id, repo, versions, log_dir) if versions else None
         self._settle(span, run_id, idea_id, end, startup_failed=False, last=last)
 
     def _relaunch(self, span: Span, run_id: RunId, agent_session_id: AgentSessionId, log_dir: Path) -> bool:
@@ -545,30 +547,27 @@ class RunController:
         span.set(status='relaunched')
         return True
 
-    def _keep_cut_work(
-        self, run_id: RunId, name: str, repo: Repo, base_sha: str, shas: list[str], *, cut: bool
-    ) -> None:
-        """Pin the work of a run that a daemon stop interrupted, uncommitted work included.
+    def _keep_cut_work(self, run_id: RunId, name: str, repo: Repository, versions: list[Version], *, cut: bool) -> None:
+        """Keep the work of a run that a daemon stop interrupted, unsaved work included.
 
-        What the agent left uncommitted was committed on its own (``commits_of``).
+        What the agent left unsaved was saved on its own (``commits_of``).
 
         The stop owns the run's row. A run that the stop ``cut`` is not an attempt (``RunEnd.attempt``), so its
         commits are not measured: each new one is a ``recovered`` candidate (``CUT_REASON``), and its idea is requeued
         from the last one (``_requeue``), as after a timed-out run. A run whose implementer had left its finding was
         handed off: the stop closed it as finished, and the next daemon scores the pinned commits (``resume``).
         """
-        if not shas:
+        if not versions:
             return
-        prefix = f'refs/piloop/{name}/r{run_id}/'
-        for i, sha in enumerate(shas):
-            git.pin(repo, f'{prefix}{i}', sha)
+        for i, version in enumerate(versions):
+            repo.keep(version.revision, RunVersion(name, run_id, i))
         if not cut:
             return
         with self._db.session() as s:
             run = s.get_one(Run, run_id)
             candidate = run.base
-            for sha in shas:
-                candidate, created = resolve(s, run.idea.campaign_id, repo, sha, parent=candidate, run_id=run_id)
+            for version in versions:
+                candidate, created = resolve(s, run.idea.campaign_id, version, parent=candidate, run_id=run_id)
                 if created:
                     candidate.verdict, candidate.verdict_by = Verdict.RECOVERED, DAEMON
                     candidate.verdict_reason = CUT_REASON.format(run=run_id)
@@ -578,18 +577,15 @@ class RunController:
                 _requeue(s, run, candidate, RunEnd.DAEMON_STOPPED)
             s.commit()
 
-    def _commits(self, repo: Repo, base_sha: str, commits: Bundle | None) -> list[str]:
-        """Import the run's commits into the repo of record (``commits.unbundle``), and return them, oldest first.
+    def _commits(self, repo: Repository, base_sha: Revision, commits: Transfer | None) -> list[Version]:
+        """Take the run's versions into the repo of record (``Repository.receive``), and return them, oldest first.
 
-        They are the first-parent history from the base: a line that the implementer merges in is not the run's, so a
-        merge's parent is the commit that it merged onto, and the merged line's commits are not scored again. The
-        worker committed the uncommitted work first, on its own commit with the ``RECOVERED_TRAILER``, so its
-        candidate is ``recovered`` (``_score``).
+        The worker saved the unsaved work first, as a version of its own, so its candidate is ``recovered``
+        (``_score``).
         """
         if commits is None:
             return []
-        store_commits.unbundle(self._cas, repo, commits.blob, [commits.head])
-        return [c.hexsha for c in repo.iter_commits(f'{base_sha}..{commits.head}', first_parent=True)][::-1]
+        return repo.receive(self._cas, commits, base_sha)
 
     def _campaign(self, campaign_id: CampaignId) -> Campaign:
         """The campaign's row, for ``Sources``, which runs outside every transaction: minutes the first time."""
@@ -612,13 +608,13 @@ class RunController:
                 run = s.get_one(Run, run_id)
                 campaign = run.idea.campaign
                 end, idea_id, campaign_id = run.end, run.idea_id, campaign.id
-                name, campaign_path = config_of(campaign).name, Path(campaign.path)
+                name, vcs, campaign_path = config_of(campaign).name, vcs_of(campaign), Path(campaign.path)
             last = None
             try:
-                repo = git.open_repo(campaign_path)
-                shas = git.pinned(repo, f'refs/piloop/{name}/r{run_id}/')
-                span.set(commits=len(shas))
-                last = self._score(run_id, campaign_id, repo, shas, self._runs_dir / str(run_id))
+                repo = vcs.open(campaign_path)
+                versions = repo.kept(name, run_id)
+                span.set(commits=len(versions))
+                last = self._score(run_id, campaign_id, repo, versions, self._runs_dir / str(run_id))
             except Exception as e:
                 span.error(e)
                 end = RunEnd.FAILED
@@ -645,12 +641,13 @@ class RunController:
             parent = candidate.parent
             bar = bar_of(parent).id if asked is not None and parent is not None else None
             repeats = asked.repeats if asked is not None else 1
-            campaign_id, campaign_path, sha = campaign.id, Path(campaign.path), candidate.commit_sha
+            campaign_id, sha = campaign.id, Revision(candidate.commit_sha)
+            vcs, campaign_path = vcs_of(campaign), Path(campaign.path)
         eval_dir = campaign_dir(self._home, campaign_id) / 'measure' / f'{candidate_id}-e{evaluator_id}'
         try:
-            repo = git.open_repo(campaign_path)
+            repo = vcs.open(campaign_path)
             if not self._measure(
-                None, campaign_id, cfg, repo, sha, candidate_id, evaluator_id, eval_dir, bar=bar, repeats=repeats
+                None, campaign_id, cfg, sha, candidate_id, evaluator_id, eval_dir, bar=bar, repeats=repeats
             ):
                 return  # a stop killed the evaluator: there is nothing new to judge
         except Exception as e:
@@ -669,10 +666,11 @@ class RunController:
         """
         with self._db.session() as s:
             candidate = s.get_one(Candidate, candidate_id)
-            campaign_id, campaign_path = candidate.campaign_id, Path(s.get_one(Campaign, candidate.campaign_id).path)
+            campaign = s.get_one(Campaign, candidate.campaign_id)
+            campaign_id, vcs, campaign_path = campaign.id, vcs_of(campaign), Path(campaign.path)
         try:
             eval_dir = campaign_dir(self._home, campaign_id) / 'measure' / f'{candidate_id}-rejudge'
-            self._rejudge(candidate_id, git.open_repo(campaign_path), eval_dir)
+            self._rejudge(candidate_id, vcs.open(campaign_path), eval_dir)
         except Exception as e:
             with self._db.session() as s:
                 failed = RejudgeFailed(error=f'{type(e).__name__}: {e}')
@@ -680,7 +678,7 @@ class RunController:
                 s.commit()
             self._tracer.event(failed.kind, candidate=candidate_id, error=str(e))
 
-    def _rejudge(self, candidate_id: CandidateId, repo: Repo, log_dir: Path) -> None:
+    def _rejudge(self, candidate_id: CandidateId, repo: Repository, log_dir: Path) -> None:
         """Judge again a run's candidate that is ``rejudgeable``, now that it has a new measurement.
 
         It is judged as its run would have judged it (``_judge``): against the bar of its parent, a keep moves the head
@@ -706,7 +704,7 @@ class RunController:
             s.commit()
             bar_id, sha = bar_of(candidate.parent).id, candidate.commit_sha
         with self._tracer.span('piloop.candidate', run=scope.run_id, commit=sha, candidate=candidate_id) as span:
-            notes = git.trailers(repo, sha, 'Piloop-Note')
+            notes = list(repo.version(Revision(sha)).notes)
             judged = self._judge(
                 scope, candidate_id, bar_id, span, judge_now=True, skip=False, recovered=False, notes=notes
             )
@@ -714,9 +712,9 @@ class RunController:
             self._follow(scope, judged.merged, log_dir)
 
     def _score(
-        self, run_id: RunId, campaign_id: CampaignId, repo: Repo, shas: list[str], log_dir: Path
+        self, run_id: RunId, campaign_id: CampaignId, repo: Repository, versions: list[Version], log_dir: Path
     ) -> CandidateId | None:
-        """Turn each new commit into a candidate, or find its existing candidate, then measure and judge it.
+        """Turn each new version into a candidate, or find its existing candidate, then measure and judge it.
 
         Return the id of the candidate of the run's last commit, unless scoring was cancelled. A tree that is already a candidate keeps that candidate, and its verdict unless another run
         proposes it again (``ledger.reproposed``).
@@ -735,12 +733,11 @@ class RunController:
         keeps its verdict, unless another run reached it (``ledger.reproposed``): then it is judged again on this
         run's bar.
 
-        A commit with ``Piloop-Eval: skip`` is not measured. A new candidate gets the daemon's ``unmeasured``
-        verdict, which moves no bar. So a later commit without the trailer that has the same tree is measured and
-        judged like a new one. ``Piloop-Note`` trailers are applied when the commit is judged
-        (``_judge``). The commit the daemon made of the implementer's uncommitted work (``RECOVERED_TRAILER``) is not
-        measured either: it gets the daemon's ``recovered`` verdict, which moves no bar, and the same tree committed
-        later is measured and judged like a new one.
+        A version that asks to be skipped (``Version.skip``) is not measured. A new candidate gets the daemon's
+        ``unmeasured`` verdict, which moves no bar. So a later version that does not ask, with the same tree, is
+        measured and judged like a new one. Its notes are applied when it is judged (``_judge``). The version the worker
+        saved of the implementer's unsaved work (``Version.recovered``) is not measured either: it gets the daemon's
+        ``recovered`` verdict, which moves no bar, and the same tree saved later is measured and judged like a new one.
         """
         with self._db.session() as s:
             run = s.get_one(Run, run_id)
@@ -757,15 +754,14 @@ class RunController:
             bar_id = bar_of(run.base).id
             candidate = run.base
             ids: list[CandidateId] = []
-            for sha in shas:
-                candidate, _ = resolve(s, campaign_id, repo, sha, parent=candidate, run_id=run_id)
+            for version in versions:
+                candidate, _ = resolve(s, campaign_id, version, parent=candidate, run_id=run_id)
                 ids.append(candidate.id)
             s.commit()
-        for i, sha in enumerate(shas):
-            git.pin(repo, f'refs/piloop/{cfg.name}/r{run_id}/{i}', sha)
-        for i, (sha, candidate_id) in enumerate(zip(shas, ids, strict=True)):
-            skip = git.eval_skipped(repo, sha)
-            recovered = bool(git.trailers(repo, sha, RECOVERED_TRAILER))
+        for i, version in enumerate(versions):
+            repo.keep(version.revision, RunVersion(cfg.name, run_id, i))
+        for i, (version, candidate_id) in enumerate(zip(versions, ids, strict=True)):
+            sha, skip, recovered = version.revision, version.skip, version.recovered
             with self._db.session() as s:
                 candidate = s.get_one(Candidate, candidate_id)
                 unmeasured = skip or recovered
@@ -782,7 +778,6 @@ class RunController:
                     run_id,
                     campaign_id,
                     cfg,
-                    repo,
                     sha,
                     candidate_id,
                     scope.evaluator_id,
@@ -800,13 +795,14 @@ class RunController:
                     judge_now=judge_now,
                     skip=skip,
                     recovered=recovered,
-                    notes=git.trailers(repo, sha, 'Piloop-Note'),
+                    notes=list(version.notes),
                 )
             if judged.merged is not None and not self._follow(scope, judged.merged, log_dir):
                 return None
             if judged.advanced:
                 bar_id = candidate_id
         with self._db.session() as s:
+            shas = [v.revision for v in versions]
             mine = (Candidate.run_id == run_id, Candidate.verdict == Verdict.PENDING, Candidate.commit_sha.not_in(shas))
             left = s.scalars(select(Candidate.id).where(*mine).order_by(Candidate.id)).all()
         for candidate_id in left:  # Rebased candidates that a daemon stop left unjudged.
@@ -824,7 +820,7 @@ class RunController:
         while current is not None:
             with self._db.session() as s:
                 candidate = s.get_one(Candidate, current)
-                sha, parent_id = candidate.commit_sha, candidate.parent_id
+                sha, parent_id = Revision(candidate.commit_sha), candidate.parent_id
                 needs_measurement = not measured(candidate, scope.evaluator_id)
                 judge_now = candidate.verdict is Verdict.PENDING
             assert parent_id is not None  # A rebased candidate's parent is the head it was merged onto.
@@ -834,7 +830,6 @@ class RunController:
                     scope.run_id,
                     scope.campaign_id,
                     scope.cfg,
-                    scope.repo,
                     sha,
                     current,
                     scope.evaluator_id,
@@ -855,8 +850,7 @@ class RunController:
         run_id: RunId | None,
         campaign_id: CampaignId,
         cfg: CampaignConfig,
-        repo: Repo,
-        sha: str,
+        sha: Revision,
         candidate_id: CandidateId,
         evaluator_id: EvaluatorId,
         eval_dir: Path,
@@ -875,7 +869,7 @@ class RunController:
         be checked out say, is a crash like one that fails, so every request ends with a measurement. A cancelled
         evaluation records nothing: ``queue.cancel`` recorded its crash.
         """
-        artifact = self.sources.git(self._campaign(campaign_id), sha)
+        artifact = self.sources.source(self._campaign(campaign_id), sha)
         with self.launcher.lock:
             if self.launcher.cancelled.is_set():
                 return False
@@ -886,7 +880,7 @@ class RunController:
                     paired = None
                     if bar is not None:
                         bar_commit = s.get_one(Candidate, bar).commit_sha
-                        paired = Bar(candidate=bar, artifact=artifact.model_copy(update={'commit': bar_commit}))
+                        paired = Bar(candidate=bar, artifact=artifact.model_copy(update={'revision': bar_commit}))
                     job = EvaluationJob(
                         evaluation=evaluation.id,
                         candidate=candidate_id,
@@ -1014,7 +1008,7 @@ class RunController:
         )
         if verdict is not Verdict.KEEP or scope.branch or trunk is None or trunk.id == bar_id:
             return verdict, reason, None
-        if git.contains(scope.repo, candidate.commit_sha, trunk.commit_sha):
+        if scope.repo.contains(Revision(candidate.commit_sha), Revision(trunk.commit_sha)):
             verdict, reason = judge(
                 candidate, trunk, scope.evaluator_id, scope.cfg, scope.track, self._units_dir, head=trunk, branch=False
             )
@@ -1175,7 +1169,7 @@ class Scope:
     campaign_id: CampaignId
     cfg: CampaignConfig
     track: Track
-    repo: Repo
+    repo: Repository
     evaluator_id: EvaluatorId
     branch: bool
 
@@ -1236,7 +1230,7 @@ class RunFacts:
     """The implementer's escalation that waits for an answer (``open_escalation``)."""
     commits: int = 0
     recovered_only: bool = False
-    """There are commits, and each is the daemon's commit of uncommitted work (``UNCOMMITTED_SUMMARY``)."""
+    """There are versions, and each is the one that the worker saved of unsaved work (``Version.recovered``)."""
 
 
 def run_outcome(facts: RunFacts) -> tuple[RunEnd, str | None]:
@@ -1354,19 +1348,19 @@ def branches(campaign: Campaign, pinned: Candidate | None, computed: Candidate |
     """Return True if a run on ``pinned`` is a branch run: the pinned base's bar is not the current head.
 
     A pin to a non-keep whose nearest keep is the head is not a branch. Its run is judged against the head
-    (``ledger.bar_of``). Nor is a pin whose commit has the head's (``git.contains``), such as a compose that
+    (``ledger.bar_of``). Nor is a pin whose version has the head's (``Repository.contains``), such as a compose that
     cherry-picked it: a keep of it builds on the head.
     """
     if pinned is None or computed is None:
         return pinned is not None
     if bar_of(pinned).id == computed.id:
         return False
-    return not git.contains(git.open_repo(Path(campaign.path)), pinned.commit_sha, computed.commit_sha)
+    return not repository(campaign).contains(Revision(pinned.commit_sha), Revision(computed.commit_sha))
 
 
 def commits_of(run_id: RunId) -> Commits:
-    """How a run's implementer's commits come back: the uncommitted work on a commit of its own (``RECOVERED_TRAILER``)."""
-    return Commits(message=f'{UNCOMMITTED_SUMMARY}\n\n{RECOVERED_TRAILER}: run#{run_id}')
+    """How a run's implementer's versions come back: the unsaved work as a ``recovered`` version of its own."""
+    return Commits(summary=UNCOMMITTED_SUMMARY, run=run_id)
 
 
 def run_place(run_id: int) -> str:

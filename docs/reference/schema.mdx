@@ -141,7 +141,6 @@ CREATE TABLE documents (
 	hash VARCHAR NOT NULL,
 	title VARCHAR NOT NULL,
 	body VARCHAR NOT NULL,
-	commit_sha VARCHAR,
 	created_by VARCHAR NOT NULL,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
 	updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -153,7 +152,6 @@ CREATE TABLE documents (
 	CONSTRAINT "documents.title must be a text value" CHECK (typeof(title) IN ('text')),
 	CONSTRAINT "documents.body must be a text value" CHECK (typeof(body) IN ('text')),
 	CONSTRAINT "documents.created_by must be a text value" CHECK (typeof(created_by) IN ('text')),
-	CONSTRAINT "documents.commit_sha must be a text value" CHECK (typeof(commit_sha) IN ('text', 'null')),
 	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE
 );
 CREATE TABLE evaluators (

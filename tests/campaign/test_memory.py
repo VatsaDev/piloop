@@ -15,7 +15,7 @@ from piloop.config import ConfigError, load_campaign_config
 from piloop.db import sql
 from piloop.db.models import Campaign, Document
 from piloop.db.session import Database
-from piloop.git import identity
+from piloop.plugins.vcs.git.commands import identity
 
 REPORT = '# Sync acquisition report\n\nThe clock recovery gained +0.4 gen_frame_correct; candidate#12.\n'
 
@@ -28,9 +28,9 @@ def sync(db: Database, campaign: Campaign, *globs: str, config_from: Path | None
     return line
 
 
-def documents(db: Database) -> list[tuple[str, str, bool, str]]:
+def documents(db: Database) -> list[tuple[str, str, str]]:
     with db.session() as s:
-        return [(d.path, d.title, d.commit_sha is not None, d.created_by) for d in s.scalars(select(Document))]
+        return [(d.path, d.title, d.created_by) for d in s.scalars(select(Document))]
 
 
 def test_a_sync_inserts_each_content_once_and_an_edit_as_a_new_version(db: Database, campaign: Campaign) -> None:
@@ -48,9 +48,9 @@ def test_a_sync_inserts_each_content_once_and_an_edit_as_a_new_version(db: Datab
         'documents: 3 added, 0 unchanged'
     ), 'a file two globs match is synced once'
     assert documents(db) == [
-        ('docs/evidence/sync-r1/draft.md', 'Draft', False, 'human'),
-        ('docs/evidence/sync-r1/notes.md', 'notes', True, 'human'),
-        ('docs/evidence/sync-r1/report.md', 'Sync acquisition report', True, 'human'),
+        ('docs/evidence/sync-r1/draft.md', 'Draft', 'human'),
+        ('docs/evidence/sync-r1/notes.md', 'notes', 'human'),
+        ('docs/evidence/sync-r1/report.md', 'Sync acquisition report', 'human'),
     ]
     assert sync(db, campaign, 'docs/evidence/**/*.md') == 'documents: 0 added, 3 unchanged', 'a re-sync is a no-op'
 
@@ -58,8 +58,7 @@ def test_a_sync_inserts_each_content_once_and_an_edit_as_a_new_version(db: Datab
     assert sync(db, campaign, 'docs/**/*.md') == 'documents: 1 added, 2 unchanged'
     with db.session() as s:
         report = s.scalars(select(Document).where(Document.path.endswith('report.md')).order_by(Document.id)).all()
-        assert [d.commit_sha is not None for d in report] == [True, False], 'the edit is a new row, dirty: no commit'
-        assert report[0].commit_sha == repo.head.commit.hexsha
+        assert [d.body.endswith('dead.\n') for d in report] == [False, True], 'the edit is a new row'
 
     assert sync(db, campaign, 'docs/**/*.bin') == (
         'documents: 0 added, 0 unchanged; skipped docs/evidence/sync-r1/data.bin: not UTF-8 text (invalid start byte at'
@@ -94,7 +93,7 @@ def test_unreadable_files_files_outside_the_repo_and_a_repo_without_git_are_skip
         s.commit()
     campaign.path = str(plain)
     assert sync(db, campaign, '*.md', config_from=config_from) == 'documents: 1 added, 0 unchanged'
-    assert documents(db)[-1] == ('a.md', 'a', False, 'human')
+    assert documents(db)[-1] == ('a.md', 'a', 'human')
 
 
 def test_an_agent_inserts_a_document_with_the_blake3_function_and_searches_it(db: Database, tmp_path: Path) -> None:

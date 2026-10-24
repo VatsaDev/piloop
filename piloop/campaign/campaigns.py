@@ -4,20 +4,17 @@ import os
 import re
 import shutil
 import subprocess
-from contextlib import suppress
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
 import httpx2 as httpx
 from covalence import Cid
-from git import Repo
-from git.exc import InvalidGitRepositoryError, NoSuchPathError
 from rich.console import Console
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from piloop import deprecated, git
+from piloop import deprecated
 from piloop.actor import Actor
 from piloop.config import CONFIG_FILE, CampaignConfig, config_of, load_campaign_config
 from piloop.db.events import emit
@@ -25,7 +22,8 @@ from piloop.db.models import Campaign, CampaignStatus, Candidate, EventModel, Me
 from piloop.db.session import Database
 from piloop.ids import CampaignId, CandidateId, TargetKind, TargetRef
 from piloop.plugins.cas.contract import CAS, Cas
-from piloop.plugins.executor.contract import GitSource, RepoId, Workspace
+from piloop.plugins.executor.contract import RepoId, Source, Workspace
+from piloop.plugins.vcs.contract import VCS, Repository, Revision, Vcs
 from piloop.proc import child_env
 from piloop.scoring.evaluate import run_evaluate
 from piloop.scoring.ledger import DAEMON, current_evaluator, resolve, save_units
@@ -72,23 +70,23 @@ class CampaignError(RuntimeError):
 
 
 def create_campaign_repo(dest: Path, template: Path, data: dict[str, str], *, ignore: str = GITIGNORE) -> list[str]:
-    """Copy ``template`` to ``dest``, download ``data`` and make a git repo with a baseline commit.
+    """Copy ``template`` to ``dest``, download ``data`` and make a repository with a baseline version (``Vcs.init``).
 
     If ``dest`` already has a ``piloop.toml``, it is a campaign: the template is not copied.
     Files that already exist are never overwritten, so a second run is safe and keeps the user's edits.
 
     Args:
-        dest: The campaign repo. It can already exist and can already be a git repo.
+        dest: The campaign repo. It can already exist and can already be a repository.
         template: The directory to copy. ``data/``, ``.git``, ``.venv`` and ``__pycache__`` are not copied.
-        data: ``relative path → URL`` to download into ``dest``. These files are not committed, so ``ignore``
-            must cover them.
+        data: ``relative path → URL`` to download into ``dest``. These files are not saved, so ``ignore`` must cover
+            them.
         ignore: The ``.gitignore`` to write if the campaign has none.
 
     Returns:
         The repo-relative paths that this call wrote.
 
     Raises:
-        ConfigError: ``piloop.toml`` is not a valid config. Nothing is committed then: fix it and run init again.
+        ConfigError: ``piloop.toml`` is not a valid config. Nothing is saved then: fix it and run init again.
     """
     dest.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
@@ -121,26 +119,11 @@ def create_campaign_repo(dest: Path, template: Path, data: dict[str, str], *, ig
     if (template / 'pyproject.toml').is_file():
         # A new campaign has no lockfile yet, so an inherited UV_FROZEN (as in CI) must not apply.
         subprocess.run(['uv', 'sync', '--quiet'], cwd=dest, check=True, env=child_env('UV_FROZEN'))
-    # Only a valid config is committed: it raises ConfigError, and the repo stays as it was, piloop.toml uncommitted.
-    if (dest / CONFIG_FILE).is_file():
-        load_campaign_config(dest)
-    repo = Repo.init(dest, initial_branch='main') if not (dest / '.git').exists() else Repo(dest)
-    if not repo.head.is_valid():
-        repo.git.add('-A')
-        repo.git.commit('-qm', f'{template.name}: baseline')
-        return sorted(written)
-    # Only init's own files: in a shared checkout, other dirty or staged files are someone else's work in progress.
+    # Only a valid config is saved: it raises ConfigError, and the repo stays as it was, piloop.toml unsaved.
+    plugins = load_campaign_config(dest).plugins if (dest / CONFIG_FILE).is_file() else {}
+    # Only init's own files: in a shared checkout, other changed files are someone else's work in progress.
     owned = sorted({*written, '.gitignore', *_template_files(template)})
-    # git status leaves out what the repo's ignore file ignores, which git add would refuse to take by name
-    # and --no-renames reports a rename as its two paths, not as one "old -> new" record
-    status = repo.git.status('--porcelain', '-z', '--no-renames', '--untracked-files=all', '--', *owned)
-    entries = [entry for entry in status.split('\0') if entry]
-    changed = sorted(entry[3:] for entry in entries)
-    # only what the work tree changed: git add refuses a path whose deletion is staged already
-    if unstaged := sorted(entry[3:] for entry in entries if entry[1] != ' '):
-        repo.git.add('-A', '--', *unstaged)
-    if changed:
-        repo.git.commit('-qm', f'piloop init: {", ".join(changed)}', '--', *changed)
+    VCS.selected(plugins).init(dest, template.name, owned)
     return sorted(written)
 
 
@@ -170,7 +153,7 @@ def stub_untouched(path: Path) -> bool:
 
 
 def register(s: Session, path: Path, actor: Actor) -> tuple[Campaign, Measurement]:
-    """Score HEAD in a clean worktree, then insert the campaign row and its baseline measurement.
+    """Score the head version in a clean checkout, then insert the campaign row and its baseline measurement.
 
     The evaluation runs before any write, in a staging directory under ``campaigns_dir``, with no transaction open.
     An evaluation can take an hour, and an open write transaction locks all other clients out of the database.
@@ -185,8 +168,8 @@ def register(s: Session, path: Path, actor: Actor) -> tuple[Campaign, Measuremen
     s.rollback()
     if other is not None:
         raise CampaignError(f'campaign name {cfg.name!r} is already used by {other.path}; change `name` in piloop.toml')
-    repo = git.open_repo(path)
-    sha = repo.head.commit.hexsha
+    repo = VCS.selected(cfg.plugins).open(path)
+    version = repo.head()
     staging = campaigns_dir(settings.home) / f'.registering-{uuid4().hex}'
     log_dir = staging / 'baseline'
     log_dir.mkdir(parents=True)
@@ -195,7 +178,9 @@ def register(s: Session, path: Path, actor: Actor) -> tuple[Campaign, Measuremen
     workspace = staging / WORKSPACE
     workspace.mkdir()
     try:
-        git.add_worktree(repo, wt, sha, {WORKSPACE: workspace})
+        repo.checkout(version.revision, wt)
+        if not (wt / WORKSPACE).exists():
+            (wt / WORKSPACE).symlink_to(workspace)
         copies = Copies(cas, settings.home / INPUTS_DIR)
         for blob in links_of(cas, cfg, path.resolve()).values():
             materialise(cas, Manifest.get(cas, blob), wt, into=copies)
@@ -209,17 +194,20 @@ def register(s: Session, path: Path, actor: Actor) -> tuple[Campaign, Measuremen
             units_file=settings.units_dir / f'{uuid4().hex}.pending',
         )
     finally:
-        git.remove_worktree(repo, wt)
+        repo.discard(wt)
     if result.error is not None:
         raise CampaignError(f'baseline failed to evaluate: {result.error}; its log is in {log_dir}')
     campaign = Campaign(
-        name=cfg.name, path=str(path.resolve()), repo=git.identity(path), config=cfg.model_dump(mode='json')
+        name=cfg.name,
+        path=str(path.resolve()),
+        repo=VCS.selected(cfg.plugins).identity(path),
+        config=cfg.model_dump(mode='json'),
     )
     s.add(campaign)
     s.flush()
     shutil.copytree(staging, campaign_dir(settings.home, campaign.id), symlinks=True, dirs_exist_ok=True)
     shutil.rmtree(staging)
-    baseline, _ = resolve(s, campaign.id, repo, sha, parent=None, run_id=None)
+    baseline, _ = resolve(s, campaign.id, version, parent=None, run_id=None)
     baseline.verdict, baseline.verdict_by = Verdict.KEEP, DAEMON
     measurement = Measurement(
         candidate_id=baseline.id,
@@ -252,14 +240,16 @@ def find(s: Session, ref: str) -> Campaign | None:
 
 
 def checked_out(s: Session, path: Path) -> Campaign | None:
-    """Return the campaign whose repo contains ``path``: the repo, a subdirectory or a linked git worktree.
+    """Return the campaign whose repo contains ``path``: the repo, a subdirectory or a checkout that it made.
 
-    The nearest registered ancestor wins. The main worktree of the repo that contains ``path`` is tried last.
+    The nearest registered ancestor wins. The main checkout that contains ``path``, as each vcs provider finds it
+    (``Vcs.root``), is tried last.
     """
     path = path.resolve()
     roots = [str(p) for p in (path, *path.parents)]
-    with suppress(InvalidGitRepositoryError, NoSuchPathError):
-        roots.append(str(Path(Repo(path, search_parent_directories=True).common_dir).resolve().parent))
+    for provider in VCS.providers().values():
+        if (root := provider.model.root(path)) is not None:
+            roots.append(str(root))
     by_path = {p.path: p for p in s.scalars(select(Campaign).where(Campaign.path.in_(roots)))}
     return next((by_path[root] for root in roots if root in by_path), None)
 
@@ -272,7 +262,7 @@ def sync(s: Session, campaign: Campaign) -> CampaignConfig:
     too, because a remote may have been added since.
     """
     cfg = load_campaign_config(Path(campaign.path))
-    campaign.repo = git.identity(Path(campaign.path))
+    campaign.repo = VCS.selected(cfg.plugins).identity(Path(campaign.path))
     config = cfg.model_dump(mode='json')
     if campaign.status is CampaignStatus.STOPPED and config['stop'] != campaign.config.get('stop'):
         campaign.status, campaign.stopped_reason = CampaignStatus.ACTIVE, None
@@ -333,25 +323,45 @@ class Sources:
         self._seen: Seen = {}
         """The files stored so far: a job made later reads only those that changed."""
 
-    def git(self, campaign: Campaign, commit: str) -> GitSource:
-        """``commit`` of the campaign's repo, with its links: an evaluation's tree."""
-        path = Path(campaign.path)
-        return GitSource(
-            repo=RepoId(campaign.id), commit=commit, links=links_of(self._cas, config_of(campaign), path, self._seen)
+    def source(self, campaign: Campaign, revision: Revision) -> Source:
+        """``revision`` of the campaign's repo, with its links: an evaluation's files."""
+        cfg = config_of(campaign)
+        return Source(
+            vcs=VCS.selected(cfg.plugins),
+            repo=RepoId(campaign.id),
+            revision=revision,
+            links=links_of(self._cas, cfg, Path(campaign.path), self._seen),
         )
 
-    def agent(self, campaign: Campaign, commit: str) -> GitSource:
-        """``git``, with a snapshot of the campaign's shared workspace and every candidate's commit: an agent's tree."""
+    def agent(self, campaign: Campaign, revision: Revision) -> Source:
+        """``source``, with a snapshot of the campaign's shared workspace and every candidate's version: an agent's."""
         workspace = workspace_dir(self._home, campaign.id)
         names = os.listdir(workspace) if workspace.is_dir() else []
         manifest = put_tree(self._cas, workspace, names, seen=self._seen).manifest.put(self._cas)
         place = workspace.relative_to(self._home).as_posix()
         with self._db.session() as s:
-            history = list(
-                s.scalars(select(Candidate.commit_sha).where(Candidate.campaign_id == campaign.id).distinct())
-            )
+            history = [
+                Revision(sha)
+                for sha in s.scalars(
+                    select(Candidate.commit_sha).where(Candidate.campaign_id == campaign.id).distinct()
+                )
+            ]
         update = {'workspace': Workspace(place=place, manifest=manifest), 'history': history}
-        return self.git(campaign, commit).model_copy(update=update)
+        return self.source(campaign, revision).model_copy(update=update)
+
+
+def vcs_of(campaign: Campaign) -> Vcs:
+    """The campaign's vcs provider, with its parameters (``[plugins.vcs]``)."""
+    return VCS.selected(config_of(campaign).plugins)
+
+
+def repository(campaign: Campaign) -> Repository:
+    """The campaign's repo of record, opened with its vcs provider.
+
+    Raises:
+        NotARepository: Its checkout is gone, or is no checkout of the provider.
+    """
+    return vcs_of(campaign).open(Path(campaign.path))
 
 
 def checkout_of(db: Database, repo: RepoId) -> Path:
@@ -361,7 +371,21 @@ def checkout_of(db: Database, repo: RepoId) -> Path:
         KeyError: The campaign is gone.
     """
     with db.session() as s:
-        campaign = s.get(Campaign, CampaignId(repo))
-        if campaign is None:
-            raise KeyError(f'no campaign#{repo}: its repo of record is gone')
-        return Path(campaign.path)
+        return Path(_of_record(s, repo).path)
+
+
+def record_of(db: Database, repo: RepoId) -> Repository:
+    """The repo of record ``repo``, opened with its campaign's vcs provider.
+
+    Raises:
+        KeyError: The campaign is gone.
+        NotARepository: Its checkout is gone, or is no checkout of the provider.
+    """
+    with db.session() as s:
+        return repository(_of_record(s, repo))
+
+
+def _of_record(s: Session, repo: RepoId) -> Campaign:
+    if (campaign := s.get(Campaign, CampaignId(repo))) is None:
+        raise KeyError(f'no campaign#{repo}: its repo of record is gone')
+    return campaign

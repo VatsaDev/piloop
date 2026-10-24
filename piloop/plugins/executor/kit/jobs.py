@@ -5,11 +5,12 @@ can one that runs jobs inline. What the executor does around a job (track it, st
 ``Control``; the machine it runs on is its ``Site``. Like Airflow's ``run_workload``: one way to run a unit of work,
 whichever executor placed it.
 
-The steps of an agent's job: make its place and its artifact (a worktree, ``Clones``), write the brief, render the MCP
+The steps of an agent's job: make its place and its artifact (a checkout, ``Clones``), write the brief, render the MCP
 servers with the variables of this machine, start the agent, watch it to its end, save its transcript, read its
-usage, and bring its commits back as a bundle. What it made goes back by address: the
-report names the bundle, its log files (``Site.files``) and what it wrote in the shared workspace in the CAS. The worktree stays: the executor removes it
-(``remove``) once the report is out, so a worker that restarts in between finds the ended agent there.
+usage, and bring its versions back. What it made goes back by address: the report names
+its versions, its log files (``Site.files``) and what it wrote in the shared workspace in the CAS. The checkout stays:
+the executor removes it (``remove``) once the report is out, so a worker that restarts in between finds the ended agent
+there.
 """
 
 import os
@@ -25,9 +26,7 @@ from pathlib import Path
 from typing import Protocol
 
 from covalence import Cid
-from git import Repo
 
-from piloop import git
 from piloop.config import BRIEF_FILE, TRANSCRIPT
 from piloop.ids import CommentId
 from piloop.mcp import RENDERERS, Launch, expand, forwarded_env
@@ -45,22 +44,22 @@ from piloop.plugins.executor.contract import (
     RepoId,
     Sample,
 )
-from piloop.plugins.executor.kit.clones import Clones, Fetch
+from piloop.plugins.executor.kit.clones import Clones, Fetch, of_record, own_clone
 from piloop.plugins.executor.kit.relay import RELAY_ARGV
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, Handle, Runtime, taken
+from piloop.plugins.vcs.contract import Repository, Revision
 from piloop.proc import PILOOP_ARGV, child_env, kill_group
 from piloop.scoring.evaluate import SENT, EvalResult, run_evaluate
 from piloop.settings import INPUTS_DIR
-from piloop.store import commits
 from piloop.store.tree import Materialised, Seen, evict_unlinked, put_tree
 from piloop.usage import UsageError, read_usage
 
 TRANSCRIPT_LINES = 2000
 STOPPED = 'the worker stopped before the job started'
 WORKTREE = 'worktree'
+"""The checkout of a job's ``Source``, in its place."""
 CLONES = 'clones'
 """Where a worker elsewhere keeps its clones, under its home (``clone_of``)."""
-"""The worktree of a job's ``GitSource``, in its place."""
 INPUTS_REBUILT = 'inputs.rebuilt'
 """An event: a shared copy of a linked input no longer held its blob (a job changed it), and was made again."""
 INPUTS_CHANGED = 'inputs.changed'
@@ -88,7 +87,7 @@ def own_cli(home: Path, argv: Sequence[str]) -> Path:
 
 @dataclass
 class Site:
-    """The machine that runs jobs: its home, under which each job's place is made, its CAS, and its git repos."""
+    """The machine that runs jobs: its home, under which each job's place is made, its CAS, and its clones."""
 
     home: Path
     cas: Cas
@@ -109,7 +108,7 @@ class Site:
         return self.home / job.place
 
     def cwd(self, job: AgentJob | EvaluationJob) -> Path:
-        """Where the job runs: its worktree."""
+        """Where the job runs: its checkout."""
         return self.log_dir(job) / WORKTREE
 
     def env(self) -> dict[str, str]:
@@ -129,19 +128,21 @@ class Site:
         return evict_unlinked(self.home / INPUTS_DIR, self.reserve)
 
     def files(self, job: AgentJob | EvaluationJob) -> dict[str, Cid]:
-        """Put the files of the job's log directory, its worktree aside, into the CAS, and return them by path."""
+        """Put the files of the job's log directory, its checkout aside, into the CAS, and return them by path."""
         log_dir = self.log_dir(job)
         names = [name for name in os.listdir(log_dir) if name != WORKTREE] if log_dir.is_dir() else []
         stored = put_tree(self.cas, log_dir, names, seen=self.seen)
         return {e.path: e.blob for e in stored.manifest.entries if e.blob is not None}
 
 
-def local_site(home: Path, cas: Cas, repos: Callable[[RepoId], Path], reserve: int) -> Site:
+def local_site(
+    home: Path, cas: Cas, repos: Callable[[RepoId], Path], records: Callable[[RepoId], Repository], reserve: int
+) -> Site:
     """The machine of the daemon's own process: its home and CAS, with the repos of record as its clones.
 
-    A commit that a clone lacks is bundled from the repo of record into the CAS, as the server does for a remote worker.
+    A version that a clone lacks goes from the repo of record into the CAS, as the server does for a remote worker.
     """
-    return Site(home, cas, Clones(cas, repos, partial(bundle_of_record, cas, repos), home), reserve)
+    return Site(home, cas, Clones(cas, repos, of_record, partial(send_of_record, cas, records), home), reserve)
 
 
 def remote_site(home: Path, cas: Cas, fetch: Fetch, reserve: int) -> Site:
@@ -149,22 +150,26 @@ def remote_site(home: Path, cas: Cas, fetch: Fetch, reserve: int) -> Site:
 
     Its agents' ``piloop`` is the relay to the server (``door.main``).
     """
-    return Site(home, cas, Clones(cas, partial(clone_of, home), fetch, home), reserve, RELAY_ARGV)
+    return Site(home, cas, Clones(cas, partial(clone_of, home), own_clone, fetch, home), reserve, RELAY_ARGV)
 
 
 def clone_of(home: Path, repo: RepoId) -> Path:
-    """The worker's clone of a repo of record, ``<home>/clones/<repo>``: an empty repo at first, filled from bundles."""
-    path = home / CLONES / str(repo)
-    if not (path / '.git').is_dir():
-        Repo.init(path)
-    return path
+    """Where the worker keeps its clone of a repo of record, ``<home>/clones/<repo>`` (``Vcs.clone``)."""
+    return home / CLONES / str(repo)
 
 
-def bundle_of_record(
-    cas: Cas, repos: Callable[[RepoId], Path], repo: RepoId, heads: Sequence[str], have: Sequence[str]
+def send_of_record(
+    cas: Cas,
+    records: Callable[[RepoId], Repository],
+    repo: RepoId,
+    revisions: Sequence[Revision],
+    have: Sequence[Revision],
 ) -> Cid | None:
-    """What the server does for a worker that lacks a commit: a bundle of it from the repo of record, into the CAS."""
-    return commits.bundle(cas, git.open_repo(repos(repo)), heads, have)
+    """What the server does for a worker that lacks versions: it puts them from the repo of record into the CAS.
+
+    The repo of record is opened with its campaign's own vcs provider (``Host.records``), never one that a worker names.
+    """
+    return records(repo).send(cas, revisions, have)
 
 
 class Control(Protocol):
@@ -328,7 +333,7 @@ def _session(runtime: Runtime, handle: Handle, control: Control, span: Span) -> 
 def _finish(
     job: AgentJob, outcome: AgentExit, session_id: str | None, control: Control, site: Site, span: Span
 ) -> AgentFinished:
-    """Read the usage, bring the commits back, and return the report with its log files."""
+    """Read the usage, bring the versions back, and return the report with its log files."""
     report = AgentFinished(process=outcome, session_id=session_id)
     span.set(session_id=session_id)
     log_dir, cwd = site.log_dir(job), site.cwd(job)
@@ -341,9 +346,9 @@ def _finish(
             error = str(e) if isinstance(e, UsageError) else f'{type(e).__name__}: {e}'
             span.event('agent_session.usage_unknown', agent_session=job.agent_session, error=error)
     try:
-        report.changed = git.changed(cwd, site.clones.ignored(job.artifact))
+        report.changed = job.artifact.vcs.changed(cwd, site.clones.ignored(job.artifact))
         if job.commits is not None:
-            report.commits = site.clones.bring_back(job.artifact, cwd, job.commits.message)
+            report.commits = site.clones.bring_back(job.artifact, cwd, job.commits)
         report.workspace = site.clones.changed(job.artifact, cwd)
     except Exception as e:  # a worktree that is gone: the report says what is known
         span.error(e)
