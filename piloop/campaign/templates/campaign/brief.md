@@ -1,8 +1,8 @@
 # <campaign>: <one line that says what to improve and how it is measured>
 
-Every implementer reads this brief before its idea. Write it to the implementer. Keep it short and concrete. The sections below
-are a suggestion: remove or add sections to fit the problem. `piloop.toml` holds the config. `evaluate.py` gives the
-score.
+Every agent reads this brief, research and the watchdog too. Write the rules to the implementer, but not its role:
+piloop tells each agent what it is. Keep it short and concrete. The sections below are a suggestion: remove or add
+sections to fit the problem. `piloop.toml` holds the config. `evaluate.py` gives the score.
 
 ## 1. Objective
 

@@ -18,7 +18,6 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-import piloop
 from piloop import mcp
 from piloop.actor import Actor
 from piloop.cli import skills, upgrade
@@ -32,7 +31,7 @@ from piloop.plugins.vcs.contract import VCS
 from piloop.proc import child_env, environment
 from piloop.reports.overview import age
 from piloop.settings import Settings
-from piloop.version import direct_url, installed
+from piloop.version import code_digest, direct_url, installed
 
 CHANGELOG = 'https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md'
 
@@ -93,17 +92,19 @@ def _cli(cfg: Settings) -> Check:
 
 
 def _daemon(cfg: Settings) -> Check:
-    """A daemon that started before the installed code changed runs the old code, because uv swaps files in place."""
+    """A daemon runs the code that it started on (``code_file``), and uv swaps the installed files in place."""
     pid = running_pid(cfg)
     if pid is None:
         return Check('daemon', 'not running')
-    started = cfg.pid_file.stat().st_mtime
-    changed = max(p.stat().st_mtime for p in Path(piloop.__file__).parent.rglob('*.py'))
-    if changed > started:
+    try:
+        started_on = cfg.code_file.read_text()
+    except FileNotFoundError:
+        started_on = None  # a daemon from before the code file
+    if started_on != code_digest():
         return Check(
             'daemon',
-            f'pid {pid}, started {_ago(started)} ago, runs older code than the installed {installed()}'
-            f' (changed {_ago(changed)} ago)',
+            f'pid {pid}, started {_ago(cfg.pid_file.stat().st_mtime)} ago, runs other code than the installed'
+            f' {installed()}',
             '`piloop restart` restarts it on the installed code',
         )
     return Check('daemon', f'pid {pid} runs the installed {installed()}')

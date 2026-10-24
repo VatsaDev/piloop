@@ -369,7 +369,7 @@ def inbox_view(
 
 
 def _iso(at: datetime) -> str:
-    return at.astimezone(UTC).isoformat().replace('+00:00', 'Z')
+    return at.astimezone(UTC).isoformat(timespec='microseconds').replace('+00:00', 'Z')
 
 
 def _time(stored: str) -> str | None:

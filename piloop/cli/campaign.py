@@ -38,6 +38,7 @@ from piloop.plugins.limits import Origin
 from piloop.reports import feed
 from piloop.reports.overview import overview, paused
 from piloop.reports.pack import renderables as pack_renderables
+from piloop.text import metric
 from piloop.watch.app import Watch
 
 app = cyclopts.App(name='campaign', help='Act on a campaign as a whole.')
@@ -81,8 +82,8 @@ def init(
             except CampaignError as e:
                 raise SystemExit(str(e)) from e
             common.console.print(
-                f'campaign [bold]{campaign.name}[/] #{campaign.id} registered; baseline candidate#{measurement.candidate_id}'
-                f' {measurement.metrics}'
+                f'campaign [bold]{campaign.name}[/] #{campaign.id} registered; baseline candidate#{measurement.candidate_id}:'
+                f' {", ".join(f"{name} {metric(value)}" for name, value in measurement.metrics.items())}'
             )
             common.console.print(
                 f'next: add ideas: `piloop idea add {campaign.name} "<title>"`; start the daemon: `piloop serve`'
@@ -112,7 +113,7 @@ def history(ref: CampaignRef | None = None, /) -> None:
     """
     with common.session() as s:
         for campaign in common.campaigns(s, ref):
-            common.console.rule(f'[bold]{campaign.name}[/] #{campaign.id}  {campaign.path}')
+            common.heading(f'[bold]{campaign.name}[/] #{campaign.id}  {campaign.path}')
             workspace = workspace_dir(common.settings.home, campaign.id)
             common.console.print(
                 Group(
@@ -145,7 +146,7 @@ def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> Non
         for campaign in common.campaigns(s, ref):
             parent = None if campaign.parent_id is None else s.get_one(Campaign, campaign.parent_id)
             under = '' if parent is None else f'  under {parent.name} #{parent.id}'
-            common.console.rule(f'[bold]{campaign.name}[/] #{campaign.id}  {campaign.path}{under}')
+            common.heading(f'[bold]{campaign.name}[/] #{campaign.id}  {campaign.path}{under}')
             text = overview(s, campaign, config_of(campaign), utcnow(), tools=False)
             common.console.print(text, markup=False, highlight=False, soft_wrap=True)
 
@@ -185,7 +186,17 @@ def resume(ref: CampaignRef, /) -> None:
         common.console.print(f'campaign {campaign.name} resumed; it held {held}', markup=False)
 
 
-def watch_cmd(ref: CampaignRef | None = None, /) -> None:
+def watch_cmd(
+    ref: CampaignRef | None = None,
+    /,
+    *,
+    mouse: Annotated[
+        bool,
+        cyclopts.Parameter(
+            help='Take the mouse. --no-mouse leaves it to the terminal: a multiplexer can misread the mouse of the app.'
+        ),
+    ] = True,
+) -> None:
     """Show the campaign on one screen, with keys to act on it.
 
     It shows every campaign, or one campaign when you name it. A campaign has four panels (inbox, agents, ideas and
@@ -199,7 +210,7 @@ def watch_cmd(ref: CampaignRef | None = None, /) -> None:
         common.known(ref)
     db = Database(common.settings.database_url, actor=common.settings.actor)
     try:
-        Watch(db, common.settings.home / 'piloop.db', ref, common.settings.actor).run()
+        Watch(db, common.settings.home / 'piloop.db', ref, common.settings.actor).run(mouse=mouse)
     finally:
         db.close()
 

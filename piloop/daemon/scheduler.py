@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import partial
 from pathlib import Path
+from queue import Empty, SimpleQueue
 from typing import Literal
 
 from pydantic import Field, ValidationError
@@ -229,6 +230,8 @@ class Scheduler:
         """The comments that this daemon process handed to the executor (``_push_comments``)."""
         """Scoring outside an implementer: a run's resumed scoring by run id, or a campaign's re-measure by campaign id."""
         self._stop = threading.Event()
+        self._wake: SimpleQueue[None] = SimpleQueue()
+        """Ends the wait of ``serve_forever`` between ticks (``interrupt``)."""
         self._archiver = (
             Archiver(db, archiving.cas, home, archiving.policy, tracer, self._pool, self._stop)
             if archiving is not None
@@ -1411,14 +1414,22 @@ class Scheduler:
 
     def serve_forever(self, tick_seconds: float, *, also: Callable[[], object] = lambda: None) -> None:
         """Tick, and call ``also`` after each tick, until ``stop`` or ``interrupt`` is called."""
-        while not self._stop.is_set():
+        while self._wake.empty():
             self.tick()
             also()
-            self._stop.wait(tick_seconds)
+            try:
+                self._wake.get(timeout=tick_seconds)
+            except Empty:
+                continue
+            return
 
     def interrupt(self) -> None:
-        """Make ``serve_forever`` return after the current tick. Idempotent, so it is safe in a signal handler."""
-        self._stop.set()
+        """Make ``serve_forever`` return after its current tick, or at once from its wait. Safe in a signal handler.
+
+        A handler runs on the main thread, also inside the loop's wait. ``Event.set`` there could wait forever for the
+        lock that the interrupted ``Event.wait`` holds. ``SimpleQueue.put`` is reentrant: it cannot.
+        """
+        self._wake.put(None)
 
     def wait(self, timeout: float = WAIT_SECONDS) -> None:
         """Wait for the agents and the scoring in flight to finish. It returns as soon as they have.
@@ -1445,6 +1456,7 @@ class Scheduler:
         also handles it.
         """
         self._stop.set()
+        self.interrupt()
         self._controller.hand_over()
         wait([*self._futures.values(), *self._scoring.values(), *self._archiving()], timeout=timeout)
         self._pool.shutdown(wait=False, cancel_futures=True)
@@ -1461,6 +1473,7 @@ class Scheduler:
         Then the rows that are still open are written here, as ``reap`` does for a crashed daemon.
         """
         self._stop.set()
+        self.interrupt()
         self._controller.stop(timeout)
         self._await_in_flight(timeout)  # what is still open after it is written below
         self._fail_open(RunEnd.DAEMON_STOPPED, reaped=False)

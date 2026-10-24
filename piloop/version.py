@@ -1,8 +1,10 @@
 """Build what ``piloop --version`` prints: the package version, and the git commit when the installer recorded one."""
 
+import hashlib
 import json
 import re
 from importlib.metadata import distribution
+from pathlib import Path
 from typing import NamedTuple
 
 SHORT_SHA = 7
@@ -56,3 +58,16 @@ def installed() -> str:
 def direct_url() -> str | None:
     """Return the PEP 610 ``direct_url.json`` of the piloop that this process runs from. None for an index install."""
     return distribution('piloop').read_text('direct_url.json')
+
+
+def code_digest() -> str:
+    """Return the SHA-256 of the files of the installed piloop package, without the bytecode caches.
+
+    Two digests are equal when the code is the same, whatever the version says: a reinstall of a checkout keeps it.
+    """
+    root = Path(__file__).parent
+    digest = hashlib.sha256()
+    for path in sorted(p for p in root.rglob('*') if p.is_file() and '__pycache__' not in p.parts):
+        digest.update(f'{path.relative_to(root).as_posix()}\0{path.stat().st_size}\0'.encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()

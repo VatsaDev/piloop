@@ -210,8 +210,8 @@ END;\
 CREATE TRIGGER comments_escalation_event AFTER INSERT ON comments
 WHEN NEW.kind = 'escalation'
 BEGIN
-  INSERT INTO events (actor, target_kind, target_id, payload)
-  VALUES (NEW.author, 'comment', NEW.id, json_object('kind', 'comment.' || NEW.kind, 'target_kind', NEW.target_kind, 'target_id', NEW.target_id));
+  INSERT INTO events (at, actor, target_kind, target_id, payload)
+  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), NEW.author, 'comment', NEW.id, json_object('kind', 'comment.' || NEW.kind, 'target_kind', NEW.target_kind, 'target_id', NEW.target_id));
 END;\
 """,
             'idea_links_campaign': """\

@@ -5,6 +5,7 @@ one place.
 """
 
 import json
+import os
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
@@ -32,7 +33,29 @@ from piloop.plugins.cas.contract import CAS, Cas
 from piloop.reports.feed import PROTOCOL
 from piloop.settings import settings
 
-console = Console()
+UNWRAPPED = 1_000_000
+"""The width of the output that is not a terminal, unless ``COLUMNS`` sets one: no cell is wrapped there. Agents and
+scripts read it, and Rich's default of 80 columns wrapped a table's last column to a word a line. A program that needs
+the structure reads ``--json``."""
+
+
+def output_console() -> Console:
+    """Return the console of the commands, on the current ``sys.stdout``, unwrapped when Rich finds no terminal."""
+    found = Console()
+    if not found.is_terminal and 'COLUMNS' not in os.environ:
+        found.width = UNWRAPPED
+    return found
+
+
+def heading(title: str) -> None:
+    """Print ``title`` as a rule across a terminal, or as its own line where the output has no width to fill."""
+    if console.width == UNWRAPPED:
+        console.print(title)
+    else:
+        console.rule(title)
+
+
+console = output_console()
 
 CampaignRef = Annotated[str, cyclopts.Parameter(help='The campaign name, or a path inside its repo.')]
 HARNESS_HELP = 'Use this harness instead of the rotation.'

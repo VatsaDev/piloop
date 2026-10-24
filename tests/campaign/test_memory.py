@@ -151,6 +151,11 @@ def test_a_document_glob_outside_the_repo_is_refused_when_the_config_loads(campa
         ('https://github.com/hiloopai/mudbench', 'github.com/hiloopai/mudbench'),
         ('https://user@github.com/hiloopai/mudbench.git/', 'github.com/hiloopai/mudbench'),
         ('ssh://git@example.com:2222/team/repo.git', 'example.com:2222/team/repo'),
+        ('ssh://git@github.com:22/hiloopai/mudbench.git', 'github.com/hiloopai/mudbench'),
+        ('HTTPS://GitHub.com/hiloopai/mudbench', 'github.com/hiloopai/mudbench'),
+        ('https://github.com:443/hiloopai/mudbench', 'github.com/hiloopai/mudbench'),
+        ('git+ssh://git@github.com/hiloopai/mudbench', 'github.com/hiloopai/mudbench'),
+        ('/srv/git/mudbench.git', '/srv/git/mudbench'),
     ],
 )
 def test_a_repo_is_identified_by_its_remote_whatever_the_clone(tmp_path: Path, url: str, expected: str) -> None:

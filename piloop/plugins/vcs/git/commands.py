@@ -5,6 +5,7 @@ import shutil
 import threading
 from collections.abc import Iterable
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from git import Repo
 from git.exc import GitCommandError, InvalidGitRepositoryError, NoSuchPathError
@@ -254,7 +255,23 @@ def identity(path: Path) -> str:
     name = 'origin' if 'origin' in remotes else min(remotes, default=None)
     if name is None:
         return str(path.resolve())
-    url = remotes[name].url.strip().rstrip('/').removesuffix('.git')
-    url = re.sub(r'^[a-z+]+://', '', url)  # the scheme
-    url = re.sub(r'^[^@/]+@', '', url)  # the user
-    return re.sub(r'^([^/:]+):(?!\d+/)', r'\1/', url)  # scp-like host:owner/name; a host:port/ stays
+    return remote_identity(remotes[name].url)
+
+
+SCP_LIKE = re.compile(r'(?:[^@/]+@)?(?P<host>[^/:]+):(?P<path>.*)')
+"""git's scp-like remote, ``[user@]host:path``: a colon before any slash, and no scheme."""
+DEFAULT_PORTS = {'ssh': 22, 'git+ssh': 22, 'ssh+git': 22, 'git': 9418, 'http': 80, 'https': 443}
+
+
+def remote_identity(url: str) -> str:
+    """Return a remote URL as ``host[:port]/owner/name``: no scheme, user or default port, and the host in lower case."""
+    url = url.strip()
+    if '://' not in url and (scp := SCP_LIKE.fullmatch(url)):
+        host, path = scp['host'].lower(), scp['path']
+    else:
+        parts = urlsplit(url)
+        host, path = parts.hostname or '', parts.path
+        if parts.port is not None and parts.port != DEFAULT_PORTS.get(parts.scheme.lower()):
+            host = f'{host}:{parts.port}'
+    path = path.rstrip('/').removesuffix('.git')
+    return f'{host}/{path.lstrip("/")}' if host else path

@@ -52,7 +52,12 @@ def test_pause_and_resume_hold_the_campaign_say_so_in_status_and_refuse_twice(ca
         ' `piloop resume demo` ends it'
     )
     run_cli(['status', 'demo'])
-    assert '- Campaign: active, paused (launches): evaluator v2 lands at 14:00. Progress:' in out()
+    text = out()
+    assert text.count('evaluator v2 lands at 14:00') == 1, 'the reason is in the headline only'
+    assert (
+        ' · paused (launches): evaluator v2 lands at 14:00\n' in text
+        and '- Campaign: active, paused. Progress:' in text
+    )
     with pytest.raises(SystemExit, match=r'campaign demo is paused already \(launches\)'):
         run_cli(['pause', 'demo', '--reason', 'again'])
     run_cli(['pause', 'demo', '--evals', '--reason', 'the box is busy'])

@@ -1,6 +1,7 @@
 """The public read side: the event feed after a cursor, snapshots with their cursor, and the event envelope."""
 
 import json
+import re
 import sqlite3
 import threading
 from pathlib import Path
@@ -115,6 +116,28 @@ def test_the_envelope_normalizes_history_without_inventing_and_keeps_unknown_kin
     json.dumps(batch, allow_nan=False)
 
 
+def test_every_event_has_one_time_format_whoever_wrote_it(db: Database, campaign: Campaign) -> None:
+    """A trigger's event had whole seconds and the daemon's had microseconds, so a reader that sorted by time erred."""
+    start = newest(db)
+    with db.session() as s:
+        idea = make_idea(campaign.id, 'try it')
+        s.add(idea)
+        s.flush()
+        emit(s, IdeaCreated(), TargetRef(TargetKind.IDEA, idea.id), System.DAEMON)
+        s.commit()
+        idea.status = IdeaStatus.PARKED
+        s.commit()
+    with db.engine.connect() as conn:
+        stored = conn.execute(text("SELECT payload ->> '$.kind', at FROM events WHERE id > :start"), {'start': start})
+        assert all('.' in at for _, at in stored), 'a trigger keeps the milliseconds, as updated_at does'
+    with db.session() as s:
+        times = {e['kind']: e['time'] for e in feed.read(s, start)['events']}
+    assert set(times) == {'idea.created', 'idea.status'}
+    assert all(t is not None and re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z', t) for t in times.values()), (
+        times
+    )
+
+
 def test_a_row_that_an_older_piloop_let_through_never_stops_the_reader(db: Database, campaign: Campaign) -> None:
     start = newest(db)
     with sqlite3.connect(db.engine.url.database or '', isolation_level=None) as con:  # no checks on this connection
@@ -137,9 +160,9 @@ def test_a_row_that_an_older_piloop_let_through_never_stops_the_reader(db: Datab
     assert [(e['kind'], e['time'], e['payload'], e.get('invalid')) for e in batch['events']] == [
         ('a.time', None, {'kind': 'a.time'}, {'time': 'not a date'}),
         ('a.number', None, {'kind': 'a.number'}, {'time': '2460000'}),
-        ('b.blob', '2026-10-20T08:00:00Z', {'kind': 'b.blob'}, None),
-        ('a.huge', '2026-10-20T06:00:00Z', None, {'payload': '{"kind": "a.huge", "v": 1e400}'}),
-        ('a.nan', '2026-10-20T08:00:00Z', None, {'payload': '{"kind": "a.nan", "v": NaN}'}),
+        ('b.blob', '2026-10-20T08:00:00.000000Z', {'kind': 'b.blob'}, None),
+        ('a.huge', '2026-10-20T06:00:00.000000Z', None, {'payload': '{"kind": "a.huge", "v": 1e400}'}),
+        ('a.nan', '2026-10-20T08:00:00.000000Z', None, {'payload': '{"kind": "a.nan", "v": NaN}'}),
     ], 'each field that does not read is null, with its stored text under invalid; the next rows still read'
     assert batch['events'][2]['actor'] == 'x'
     json.dumps(batch, allow_nan=False)

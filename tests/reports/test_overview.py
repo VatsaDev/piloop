@@ -253,7 +253,9 @@ def test_stop_conditions_say_how_far_each_one_is(db: Database, campaign: Campaig
         s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
         s.get_one(Campaign, campaign.id).stopped_reason = 'plateau: 3 runs without a keep'
         s.commit()
-    assert 'Campaign: stopped — plateau: 3 runs without a keep.' in render(db, campaign, cfg)
+    text = render(db, campaign, cfg)
+    assert text.count('plateau: 3 runs without a keep') == 1, 'the reason is in the headline only'
+    assert '- Campaign: stopped. Progress:' in text
 
 
 def test_a_fresh_campaign_has_little_to_say(db: Database, campaign: Campaign) -> None:

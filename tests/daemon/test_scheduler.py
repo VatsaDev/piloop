@@ -1,3 +1,4 @@
+import os
 import re
 import shutil
 import signal
@@ -927,6 +928,45 @@ def test_serve_forever_stops(db: Database, campaign: Campaign, runtime: ScriptRu
     scheduler.stop(timeout=5)
     t.join(timeout=5)
     assert not t.is_alive()
+
+
+class HeldEvent(threading.Event):
+    """A stop event whose lock its loop holds, as inside ``wait``: setting it would wait for that lock forever."""
+
+    def set(self) -> None:
+        raise AssertionError('the lock of the event is held by the thread that the signal interrupted')
+
+
+def test_a_signal_during_the_wait_between_ticks_ends_the_loop_at_once(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A SIGTERM handler runs on the main thread, also while the loop holds its stop event's lock inside ``wait``.
+
+    ``Event.set`` in the handler then waited for that lock forever, and ``piloop stop`` gave up after 30 s.
+    """
+    scheduler = make_scheduler(db, runtime, tmp_path)
+    monkeypatch.setattr(scheduler, '_stop', HeldEvent())
+    previous = signal.signal(signal.SIGUSR2, lambda *_: scheduler.interrupt())
+    started = time.monotonic()
+    try:
+        threading.Timer(0.5, os.kill, (os.getpid(), signal.SIGUSR2)).start()
+        scheduler.serve_forever(30)
+    finally:
+        signal.signal(signal.SIGUSR2, previous)
+    assert time.monotonic() - started < 10, 'the wait ends at the signal, not at the next tick'
+
+
+def test_a_signal_during_start_up_ends_the_loop_before_its_first_tick(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scheduler = make_scheduler(db, runtime, tmp_path)
+
+    def tick() -> list[AgentSessionId]:
+        raise AssertionError('no tick after the signal')
+
+    monkeypatch.setattr(scheduler, 'tick', tick)
+    scheduler.interrupt()
+    scheduler.serve_forever(30)
 
 
 def test_a_dead_thread_is_traced_and_its_row_closed(

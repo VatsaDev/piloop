@@ -31,6 +31,7 @@ from piloop.plugins.network import contract as network
 from piloop.proc import Inherited
 from piloop.runtime.factory import make_runtime, runtimes
 from piloop.settings import CONFIG_FILE, Settings, settings
+from piloop.version import code_digest
 
 if TYPE_CHECKING:
     from piloop.net.server import Server
@@ -155,6 +156,7 @@ class Daemon:
         except SystemExit:
             self.db.close()  # Only the database is open at this point.
             raise
+        self._cfg.code_file.write_text(code_digest())
         previous = signal.signal(signal.SIGTERM, self._on_sigterm)
         previous_restart = signal.signal(RESTART_SIGNAL, self._on_restart)
         try:
@@ -186,6 +188,7 @@ class Daemon:
                     os.execv(self._argv[0], self._argv)
             # Only for tidiness. The lock, not the file, tells which daemon runs.
             self._cfg.pid_file.unlink(missing_ok=True)
+            self._cfg.code_file.unlink(missing_ok=True)
             os.close(lock)
 
     def _load_secrets(self) -> str | None:

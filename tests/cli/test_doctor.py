@@ -19,7 +19,7 @@ from piloop.config import CampaignConfig
 from piloop.db.models import Campaign
 from piloop.db.session import Database
 from piloop.settings import Settings
-from piloop.version import Version, installed
+from piloop.version import Version, code_digest, installed
 from tests.cli.test_cli import git_check
 from tests.conftest import hold_lock
 from tests.db.test_migrations import alembic
@@ -105,15 +105,19 @@ def test_skills_missing_or_stale_for_a_harness_on_path_fail_with_the_install_com
 
 
 def test_a_daemon_started_before_the_code_changed_still_runs_the_old_code(cfg: Settings) -> None:
+    """The daemon's code is what it started on, whatever the file times: a reinstall can finish after a restart."""
     for holder in hold_lock(cfg.pid_file):
+        for started_on in (None, 'another digest'):
+            if started_on is not None:
+                cfg.code_file.write_text(started_on)
+            stale = by_name(cfg)['daemon']
+            assert (
+                stale.found.startswith(f'pid {holder.pid}, started ')
+                and 'runs other code than the installed' in stale.found
+            ), 'a daemon from before the digest, or on other code'
+            assert stale.fix == '`piloop restart` restarts it on the installed code'
+        cfg.code_file.write_text(code_digest())
         os.utime(cfg.pid_file, (0, 0))
-        stale = by_name(cfg)['daemon']
-        assert (
-            stale.found.startswith(f'pid {holder.pid}, started ')
-            and 'runs older code than the installed' in stale.found
-        )
-        assert stale.fix == '`piloop restart` restarts it on the installed code'
-        os.utime(cfg.pid_file, (4e9, 4e9))
         assert by_name(cfg)['daemon'] == Check('daemon', f'pid {holder.pid} runs the installed {installed()}')
 
 

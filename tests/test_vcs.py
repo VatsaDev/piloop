@@ -75,7 +75,7 @@ def test_the_allowed_files_still_need_their_exception() -> None:
 
 
 BEFORE = {
-    'TOOLS.txt': '66fdaa7a94533bed170a1cf9205102d2fcd8565f8d6ec4e8b252ce3cc4233d4e',
+    'TOOLS.txt': '99bce2bfe88bf00959838d10cd28ee1df874305e25fd6242b9137022178ec447',
     'implementer.md': '5d886da05bcee55fb5c87b48df3f69e3b7e08973213322a7f1874c2623de1b2d',
     'research.md': '9e6c8f3071daf8cd35475ce2bc3645d7161650acd1591828328a7b30a012e680',
     'scout.md': '93b669faacc78e1333b5bd71e875e1369923781ff820d30ec5e7bbcd48f38947',

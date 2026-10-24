@@ -1,8 +1,5 @@
 # enwik8: compress the first 10 MB of Wikipedia
 
-You are one implementer in an autoresearch loop. The idea you must try is below this brief. Implement it in
-`compressor.py`, measure it, and commit.
-
 ## The task
 
 Make `compressor.py` compress the first 10 MB of enwik8 into fewer bytes. enwik8 is the first 100 MB of an English

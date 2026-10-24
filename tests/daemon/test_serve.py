@@ -38,6 +38,7 @@ from piloop.plugins.runtime.kit import tags
 from piloop.proc import child_env
 from piloop.settings import DEFAULT_HOME, Settings, env_names
 from piloop.usage import UsageSpec
+from piloop.version import code_digest
 from tests.conftest import at_head, hold_lock, register, wait_for_agent_session_handle, wait_until, write_toml
 from tests.db.test_migrations import alembic
 
@@ -195,6 +196,7 @@ def test_restart_execs_the_same_process_keeping_its_environment(tmp_path: Path) 
     assert (restarted.returncode, restarted.stdout.strip()) == (0, f'daemon pid {pid} restarted')
     assert running_pid(cfg) == pid and alive(pid), 'the same process, so systemd or launchd still holds it'
     assert (proc.environment(pid) or {}).get('PILOOP_TEST_MARKER') == 'from-the-unit'
+    assert cfg.code_file.read_text() == code_digest(), 'the code it runs, for piloop doctor'
     log = cfg.log_file.read_text()
     assert log.count('piloop.start') == 2 and log.count('piloop.shutdown') == 1
     assert piloop(cfg.home, 'stop').returncode == 0

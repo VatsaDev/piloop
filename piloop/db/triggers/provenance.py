@@ -9,6 +9,9 @@ DAEMON_ACTOR = System.DAEMON
 """What the daemon's connections record in ``updated_by``. ``piloop.daemon.main.ACTOR`` has this value."""
 SESSION_ACTOR = '(SELECT actor FROM temp.session_actor)'
 """The actor of the connection, as a SQL expression that a TEMP trigger can read."""
+NOW = "strftime('%Y-%m-%d %H:%M:%f', 'now')"
+"""The time now, with milliseconds. CURRENT_TIMESTAMP cuts to the second, so a row could sort before another row that
+changed earlier in the same second."""
 
 SESSION_ACTOR_TABLE = """\
 -- Who changed each row, for this connection only. piloop.db.sql.install_actor runs this file, then inserts the
@@ -23,8 +26,7 @@ CREATE TEMP TABLE session_actor (actor TEXT NOT NULL PRIMARY KEY, agent_session 
 def updated_at(table: str) -> Trigger:
     """Persistent: set ``updated_at``, with milliseconds, on every UPDATE that does not set it.
 
-    strftime('%f') keeps the milliseconds. CURRENT_TIMESTAMP cuts to the second, so a row could sort before another row
-    that changed earlier in the same second. The WHEN clause lets a statement set updated_at itself, stops the
+    The WHEN clause lets a statement set updated_at itself, stops the
     trigger's own UPDATE from firing it again, and skips the UPDATE of the ``updated_by`` trigger, which would
     otherwise change a timestamp that the statement set.
     """
@@ -33,7 +35,7 @@ def updated_at(table: str) -> Trigger:
         table,
         'AFTER UPDATE',
         when='NEW.updated_at IS OLD.updated_at AND NEW.updated_by IS OLD.updated_by',
-        body=f"UPDATE {table} SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE id = NEW.id",
+        body=f'UPDATE {table} SET updated_at = {NOW} WHERE id = NEW.id',
     )
 
 

@@ -95,7 +95,8 @@ Then edit the files. Put each answer in one place only.
 
 - The eight headings of the template follow the interview topics. Keep the headings that fit. Remove or add
   headings to fit the problem.
-- Write it to the implementer: "you may edit…", "never touch…".
+- Write the rules to the implementer: "you may edit…", "never touch…". Every role reads it, so do not tell the
+  reader that it is an implementer.
 - The editable surface, the prior art and the escalation policy go only here.
 - Keep it under one page.
 

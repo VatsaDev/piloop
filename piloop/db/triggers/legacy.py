@@ -43,8 +43,8 @@ class Stage:
 
 
 EVENT_INSERT = (
-    "INSERT INTO events (actor, target_kind, target_id, payload)\n  VALUES (NEW.author, 'comment', NEW.id,"
-    " json_object('kind', 'comment.' || NEW.kind, "
+    "INSERT INTO events (at, actor, target_kind, target_id, payload)\n  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'),"
+    " NEW.author, 'comment', NEW.id, json_object('kind', 'comment.' || NEW.kind, "
 )
 KNOWN_ROLE = "\nWHEN NEW.campaign_id IS NOT NULL AND (SELECT json_type(config, '$.roles.' || json_quote(NEW.kind))"
 KNOWN_ROLE_ERROR = "a role of the campaign: a key of roles in its config'"

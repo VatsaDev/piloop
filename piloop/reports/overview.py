@@ -435,9 +435,7 @@ def _goal(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) ->
     primaries = {t.primary.name for t in cfg.all_tracks}
     others = ', '.join(f'{m.name} ({m.direction}, {m.role})' for m in cfg.metrics if m.name not in primaries)
     also = f'; also measured: {others}' if others else ''
-    state = f'stopped — {campaign.stopped_reason}' if campaign.status is CampaignStatus.STOPPED else 'active'
-    if campaign.paused is not None:
-        state += f', {paused(campaign)}'
+    state = campaign.status + (', paused' if campaign.paused is not None else '')  # the headline has the reasons
     open_ended = '' if limits(cfg).keys() - {Fact.SPEND} else ' (no limit stops it: open-ended)'
     if cfg.multitrack:
         tracks = '; '.join(f'{t.name} ({_metric(t.primary)}, share {t.share:g})' for t in cfg.all_tracks)
@@ -759,8 +757,7 @@ def _events(s: Session, campaign: Campaign, now: datetime) -> str:
 
 TOOLS = [
     '- `piloop sql "<one statement>"` (the full command is under Context) takes nothing else: no flags, no --help.'
-    ' It prints a table cut to the terminal width, so prefix `COLUMNS=400` for wide rows, or select one'
-    " concatenated column (`a || ' | ' || b`); at most 500 rows.",
+    ' It prints a table of at most 500 rows, and wraps no cell when its output is not a terminal.',
     "- Scores: `json_extract(m.metrics, '$.<metric>')`; a candidate's score is the mean over its measurements with"
     ' `error IS NULL AND evaluator_id = campaigns.evaluator_id`.'
     f' `piloop history` prints the latest {IDEAS_IN_HISTORY} ideas with their outcomes.',

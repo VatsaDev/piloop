@@ -21,7 +21,7 @@ from piloop.db.models import (
     Verdict,
 )
 from piloop.db.triggers.ddl import Event, Trigger
-from piloop.db.triggers.provenance import DAEMON_ACTOR, SESSION_ACTOR
+from piloop.db.triggers.provenance import DAEMON_ACTOR, NOW, SESSION_ACTOR
 from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TrackName
 
 type Row = Literal['NEW', 'OLD']
@@ -193,10 +193,13 @@ def payload(model: type[EventModel], row: Row, kind: str | None = None, **fields
 
 
 def event_insert(actor: str, target_kind: str, target_id: str, payload: str) -> str:
-    """The INSERT that every event trigger runs. Each argument is a SQL expression. The kind is in the payload."""
+    """The INSERT that every event trigger runs. Each argument is a SQL expression. The kind is in the payload.
+
+    The time has milliseconds, as an event that the ORM writes has microseconds.
+    """
     return (
-        'INSERT INTO events (actor, target_kind, target_id, payload)\n'
-        f'VALUES ({actor}, {target_kind}, {target_id}, {payload})'
+        'INSERT INTO events (at, actor, target_kind, target_id, payload)\n'
+        f'VALUES ({NOW}, {actor}, {target_kind}, {target_id}, {payload})'
     )
 
 

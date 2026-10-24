@@ -20,6 +20,7 @@ from alembic.script import ScriptDirectory
 from git import Repo
 from pytest_mock import MockerFixture
 from rich.console import Console
+from rich.table import Table
 from sqlalchemy import create_engine, select
 
 from piloop.actor import Actor, Agent, System
@@ -106,7 +107,7 @@ def out(isolated_home: Console):
 
 def test_campaign_and_idea_lifecycle(campaign_path: Path, out) -> None:
     run_cli(['init', str(campaign_path)])
-    assert out().startswith("campaign demo #1 registered; baseline candidate#1 {'score': 1.0"), (
+    assert out().startswith('campaign demo #1 registered; baseline candidate#1: score 1'), (
         'a hand-made campaign: nothing to write'
     )
 
@@ -426,7 +427,7 @@ def test_init_blank_then_register_then_reread(tmp_path: Path, out) -> None:
     (path / 'evaluate.py').write_text('print("METRIC score=2")\n')
     run_cli(['init', str(path)])
     text = out()
-    assert "campaign fresh #1 registered; baseline candidate#1 {'score': 2.0}" in text and 'wrote' not in text
+    assert 'campaign fresh #1 registered; baseline candidate#1: score 2\n' in text and 'wrote' not in text
     assert 'next: add ideas: `piloop idea add fresh' in text
     assert Repo(path).head.commit.summary == 'piloop init: evaluate.py' and not Repo(path).is_dirty(), (
         'the edit was committed'
@@ -452,7 +453,7 @@ def test_init_example(tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch) -> N
         run_cli(['init', '--example', 'demo', str(tmp_path / 'broken')])
     toml.write_text(toml.read_text().replace('"false"', '"sh"'))
     run_cli(['init', '--example', 'demo', str(tmp_path / 'd')])
-    assert "campaign demo #1 registered; baseline candidate#1 {'score': 3.0}" in out()
+    assert 'campaign demo #1 registered; baseline candidate#1: score 3\n' in out()
     with pytest.raises(SystemExit, match="name 'demo' is already used by"):
         run_cli(['init', '--example', 'demo', str(tmp_path / 'e')])
 
@@ -1643,13 +1644,15 @@ def test_watch_needs_a_terminal_and_runs_the_app_as_the_actor(campaign_path: Pat
     ):
         run_cli(['watch'])
     mocker.patch('piloop.cli.campaign.sys.stdin').isatty.return_value = True
-    ran: list[tuple[str | None, Actor, Path]] = []
-    mocker.patch.object(campaign_cli.Watch, 'run', lambda app: ran.append((app.ref, app.actor, app.db_file)))
+    ran: list[tuple[str | None, Actor, Path, bool]] = []
+    mocker.patch.object(
+        campaign_cli.Watch, 'run', lambda app, *, mouse: ran.append((app.ref, app.actor, app.db_file, mouse))
+    )
     run_cli(['watch', 'demo'])
-    run_cli(['watch'])
+    run_cli(['watch', '--no-mouse'])
     database = common.settings.home / 'piloop.db'
-    assert ran == [('demo', System.HUMAN, database), (None, System.HUMAN, database)], (
-        'without a campaign, every campaign'
+    assert ran == [('demo', System.HUMAN, database, True), (None, System.HUMAN, database, False)], (
+        'without a campaign, every campaign; --no-mouse leaves the mouse to the terminal'
     )
 
 
@@ -1972,3 +1975,22 @@ def test_attach_names_the_worker_of_an_agent_that_runs_elsewhere(campaign_path: 
         SystemExit, match='agent_session#1 runs on the worker gpu1: what it writes is there until it ends'
     ):
         run_cli(['attach', '1'])
+
+
+def test_a_table_piped_to_a_program_never_wraps_a_cell(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An agent reads `piloop inbox` through a pipe, where Rich's default of 80 columns cut its last column to a word."""
+    table = Table('id', 'first line')
+    line = 'a first line that an orchestrator reads to decide, ' * 10
+    table.add_row('1', line.strip())
+    monkeypatch.delenv('COLUMNS', raising=False)
+    monkeypatch.setattr(sys, 'stdout', piped := io.StringIO())
+    monkeypatch.setattr(common, 'console', common.output_console())
+    common.console.print(table)
+    common.heading('demo #1')
+    out = piped.getvalue()
+    assert line.strip() in out, 'one line, however long'
+    assert out.endswith('\ndemo #1\n'), 'a heading in a pipe is its title: no rule as wide as an unbounded line'
+    monkeypatch.setenv('COLUMNS', '60')
+    monkeypatch.setattr(sys, 'stdout', narrow := io.StringIO())
+    common.output_console().print(table)
+    assert line.strip() not in narrow.getvalue(), 'COLUMNS still sets the width'

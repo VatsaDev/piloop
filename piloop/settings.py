@@ -198,6 +198,11 @@ class Settings(BaseSettings):
         return self.home / 'serve.url'
 
     @property
+    def code_file(self) -> Path:
+        """The digest of the code that the running daemon started on (``code_digest``), for ``piloop doctor``."""
+        return self.home / 'serve.code'
+
+    @property
     def log_file(self) -> Path:
         """The file that ``piloop serve --detach`` appends the daemon's stdout and stderr to."""
         return self.home / 'serve.log'
