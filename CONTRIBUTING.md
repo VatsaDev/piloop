@@ -361,6 +361,7 @@ Each capability is one package, `plugins/<capability>/`, with the name of its en
 - Every other module is a built-in provider, with the name of its entry point. Providers are public: a plugin may
   import one to call it.
 - `kit/` has helpers that any provider of the capability may use. Core imports none of them.
+- A directory without Python has resources of the providers, such as the role prompts in `role/prompts/`.
 
 piloop declares its capabilities, and its own providers, with entry points in `pyproject.toml`, in the same groups that
 a plugin uses (`piloop.capabilities`, then each provider group). To add a capability: its package, an entry point in

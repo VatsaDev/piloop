@@ -1,3 +1,4 @@
+from importlib.resources import files
 from typing import ClassVar
 
 from pydantic import Field
@@ -18,7 +19,7 @@ class ScoutRole(SweepRole):
     Experimental: the scout.
     """
 
-    PROMPT: ClassVar[str] = 'scout.md'
+    PROMPT = files(__package__) / 'prompts' / 'scout.md'
     IDEAS: ClassVar[str] = (
         "- File a seed: `{piloop} idea seed {campaign} '<technique: its mechanism, one line>' --from '<link>; targets"
         " <the measured loss it might reduce, with its size>; <its substance: a number, code, an ablation>'`: research"

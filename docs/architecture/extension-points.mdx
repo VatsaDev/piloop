@@ -402,7 +402,7 @@ was kept for some hours. It also adds a role, `auditor`, that uses this trigger:
 
 ```python
 from datetime import timedelta
-from pathlib import Path
+from importlib.resources import files
 
 from sqlalchemy import func, select
 
@@ -429,7 +429,7 @@ class NoKeep(Trigger):
 class Auditor(SweepRole):
     """``auditor``: the role's defaults are its fields' defaults."""
 
-    prompt: str | None = str(Path(__file__).parent / 'auditor.md')
+    PROMPT = files(__package__) / 'auditor.md'  # ships in the package
     triggers: list[TriggerEntry] = [NoKeep()]
     timeout: float = 1800
 ```
@@ -450,7 +450,9 @@ with its table in `piloop.toml` over the package's defaults, at its next `piloop
 A role is a table in `piloop.toml`: its prompt, when it starts (the run queue, or its triggers), where it works, how
 (harnesses, models, MCP servers, timeout, concurrency) and what it may file. A role that does runs (`runs = true`)
 takes ideas from the run queue, and its commits are scored and judged. A sweeping role starts on its triggers, and
-nothing it commits is scored. A plugin's role is a subclass of `SweepRole` or of `ImplementerRole` whose fields have the role's defaults. [Roles](/concepts/roles) describes each key.
+nothing it commits is scored. A plugin's role is a subclass of `SweepRole` or of `ImplementerRole` whose fields have
+the role's defaults, and whose `PROMPT` is the prompt that starts its brief: a file of its package. `prompt` in the
+table overrides it. [Roles](/concepts/roles) describes each key.
 
 ### Built in
 

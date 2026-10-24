@@ -1,4 +1,4 @@
-from typing import ClassVar
+from importlib.resources import files
 
 from pydantic import Field
 
@@ -12,7 +12,7 @@ from piloop.plugins.trigger.stalled import StalledTrigger
 class ResearchRole(SweepRole):
     """``[roles.research]``: research develops seeds and keeps ideas ready for the implementers."""
 
-    PROMPT: ClassVar[str] = 'research.md'
+    PROMPT = files(__package__) / 'prompts' / 'research.md'
 
     triggers: list[TriggerEntry] = [LowWaterTrigger(), SeedTrigger(), StalledTrigger()]
     """A short backlog, a new seed, and a stall."""

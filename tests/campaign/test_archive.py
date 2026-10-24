@@ -39,13 +39,13 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, WATCHDOG, AgentSessionId, CampaignId, IdeaId, RoleName
+from piloop.ids import IMPLEMENTER, AgentSessionId, CampaignId, IdeaId, RoleName
 from piloop.plugins.cas.disk import DiskCas
 from piloop.plugins.cas.kit.objects import ObjectsCas, key
 from piloop.settings import INPUTS_DIR
 from piloop.store import tree as tree_module
 from piloop.store.tree import Manifest, Removed, Stored, Walk
-from tests.conftest import end_of
+from tests.conftest import WATCHDOG, end_of
 
 LIVE = frozenset({'NOTES.md', 'research'})
 LOST = Cid.of(b'lost')

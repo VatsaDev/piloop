@@ -10,10 +10,10 @@ from piloop.cli import agents, common
 from piloop.config import config_of
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, utcnow
 from piloop.db.session import Database
-from piloop.ids import WATCHDOG
 from piloop.plugins.runtime.contract import RUNTIMES
 from piloop.reports.overview import overview
 from piloop.settings import Settings
+from tests.conftest import WATCHDOG
 from tests.daemon.test_roles import PLUGIN, forget_loaded, installed
 
 SHOWN = [EntryPoint('shown', f'{PLUGIN}:Shown', RUNTIMES.group)]

@@ -42,10 +42,10 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, CommentId, IdeaId, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, CommentId, IdeaId, TargetKind, TargetRef
 from piloop.watch.app import CampaignScreen, CampaignsScreen, CandidatesTable, Watch
 from piloop.watch.panels import PANELS, Context, kept_scores
-from tests.conftest import spent, wait_until
+from tests.conftest import RESEARCH, WATCHDOG, spent, wait_until
 from tests.reports.test_history import idea
 
 

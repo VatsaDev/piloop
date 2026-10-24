@@ -5,7 +5,7 @@ from typing import get_args, get_origin
 
 import pytest
 from git import Repo
-from pydantic import BaseModel
+from pydantic import BaseModel, RootModel
 from pytest_mock import MockerFixture
 
 from piloop.actor import System
@@ -14,6 +14,7 @@ from piloop.campaign.campaigns import BLANK, TEMPLATES, create_campaign_repo, re
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
 from piloop.db.session import Database
 from piloop.plugins.host import Scope, declared
+from piloop.plugins.role.contract import ROLES
 from tests.conftest import HARNESS_APPEND, write_toml
 
 
@@ -129,13 +130,16 @@ def unnamed_keys(template: str) -> list[str]:
             )
             if not named:
                 missing.append(where)
-            if (nested := model_in(field.annotation)) is not None:
+            if (nested := model_in(field.annotation)) is not None and not issubclass(nested[0], RootModel):
                 table = full + (r'\.[^.]+' if nested[1] else '')
                 own = ''.join(t for n, t in sections.items() if re.fullmatch(table, n))
                 missing += walk(nested[0], table, where + ('.<name>' if nested[1] else ''), own or text)
         return missing
 
     missing = walk(CampaignConfig, '', '', sections.get('', ''))
+    for name, role in ROLES.builtins().items():
+        table = f'roles.{name}'
+        missing += walk(role, re.escape(table), table, sections.get(table, ''))
     for capability in declared():
         if capability.choice is None or capability.choice.scope is not Scope.CAMPAIGN:
             continue
@@ -155,8 +159,8 @@ def test_the_campaign_template_names_every_key_of_the_config() -> None:
         without = without.replace(old, new)
     assert unnamed_keys(without) == [
         'harness.<name>.usage.tally',
-        'roles.implementer.explore_every',
         'mcp.<name>.bearer_token_env',
+        'roles.implementer.explore_every',
         'plugins.stop_rule.plateau',
     ], 'the check finds a key missing from a table, from a keys: comment, and from a nested table without a header'
 

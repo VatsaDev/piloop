@@ -12,12 +12,11 @@ from pytest_mock import MockerFixture
 
 from piloop import otel
 from piloop.db.models import AgentSession, AgentSessionState
-from piloop.ids import RESEARCH
 from piloop.otel import Tracer
 from piloop.plugins.vcs.git import commands as git
 from piloop.runtime.factory import handle_for
 from piloop.settings import Settings
-from tests.conftest import console_lines
+from tests.conftest import RESEARCH, console_lines
 
 
 def test_settings_derived(tmp_path: Path) -> None:

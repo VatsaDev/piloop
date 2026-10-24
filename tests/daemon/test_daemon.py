@@ -30,11 +30,12 @@ from piloop.db.models import (
     Verdict,
 )
 from piloop.db.session import Database, migrate
-from piloop.ids import RESEARCH, WATCHDOG
 from piloop.proc import Inherited, alive, started
 from piloop.settings import Settings
 from tests.conftest import (
     HARNESS_NOOP,
+    RESEARCH,
+    WATCHDOG,
     WRITE_PID,
     ScriptRuntime,
     console_lines,
@@ -356,7 +357,7 @@ def test_serve_refuses_when_a_daemon_holds_the_pid_file(
 def test_shutdown_fails_open_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     daemon = Daemon(Settings(home=tmp_path / 'home'))
     with daemon.db.session() as s:
-        s.add(Campaign(name='p', path='/p', config={}))
+        s.add(Campaign(name='p', path='/p', config={'roles': {RESEARCH: {}}}))
         s.add(Idea(track='score', campaign_id=1, title='x', hypothesis='x', created_by='t'))
         s.add(Run(idea_id=1, attempt=1, base_candidate_id=1, harness='h', model='m', status=RunStatus.RUNNING))
         s.flush()  # the run first: the unit of work orders unrelated mappers by name

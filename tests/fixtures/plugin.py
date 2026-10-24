@@ -2,7 +2,7 @@
 its own with a provider and a verdict rule that calls it, and objects of the wrong type."""
 
 from abc import ABC, abstractmethod
-from pathlib import Path
+from importlib.resources import files
 from typing import Annotated
 
 from piloop.plugins.host import Capability, Parameters, Tier
@@ -60,7 +60,7 @@ class GoesOn(StopRule):
 class Auditor(SweepRole):
     """``auditor``: a sweep on every tick."""
 
-    prompt: str | None = str(Path(__file__).parent / 'auditor.md')
+    PROMPT = files(__package__) / 'auditor.md'
     triggers: list[TriggerEntry] = [EveryTick(label='audit')]
     timeout: float = 5
 

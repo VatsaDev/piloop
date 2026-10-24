@@ -23,7 +23,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from sqlalchemy import select
 
 from piloop.campaign import archive as archive_module, campaigns as campaign_module
-from piloop.config import load_campaign_config
+from piloop.config import CampaignConfig, load_campaign_config
 from piloop.daemon.main import ACTOR
 from piloop.daemon.run_controller import RunController
 from piloop.db.models import (
@@ -39,13 +39,14 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database, migrate
 from piloop.harnesses import DEFAULT_HARNESSES
-from piloop.ids import CampaignId
+from piloop.ids import CampaignId, RoleName
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import CAS, Cas
 from piloop.plugins.executor.kit.leases import Timing
 from piloop.plugins.executor.workers import Workers, WorkersExecutor
 from piloop.plugins.executor.workers.worker import Worker
 from piloop.plugins.network.https import TOKEN_ENV, Https
+from piloop.plugins.role.contract import RoleConfig
 from piloop.plugins.runtime.contract import Handle, Runtime
 from piloop.plugins.runtime.subprocess import SubprocessRuntime
 from piloop.runtime.factory import RuntimeFactory
@@ -114,6 +115,11 @@ direction = "lower"
 executable = "{script}"
 headless = ["{{prompt}}"]
 """
+
+WATCHDOG = RoleName('watchdog')
+RESEARCH = RoleName('research')
+SCOUT = RoleName('scout')
+"""The names of piloop's sweeping roles. Core names none of its roles but the implementer."""
 
 
 def spent(total: int, turns: int = 1) -> Usage:
@@ -514,3 +520,10 @@ def git_identity(monkeypatch: pytest.MonkeyPatch) -> None:
         'GIT_COMMITTER_EMAIL': 'test@piloop',
     }.items():
         monkeypatch.setenv(key, value)
+
+
+def role_of[R: RoleConfig](cfg: CampaignConfig, kind: type[R]) -> R:
+    """The role of ``cfg`` whose class is ``kind``: a built-in role, by its class."""
+    [found] = [role for role in cfg.roles.all().values() if type(role) is kind]
+    assert isinstance(found, kind)
+    return found

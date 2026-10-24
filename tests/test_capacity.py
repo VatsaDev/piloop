@@ -8,11 +8,11 @@ import pytest
 
 from piloop.db.models import AgentSession, Campaign, LeaseKind, LeaseWorker, NoLease, utcnow
 from piloop.db.session import Database
-from piloop.ids import RESEARCH
 from piloop.plugins.executor.contract import Capacity
 from piloop.plugins.executor.kit.capacity import GB, HostSample, Pool, admits, sample
 from piloop.plugins.executor.kit.leases import SERVE, Grant, Leases
 from piloop.plugins.executor.workers import Workers
+from tests.conftest import RESEARCH
 from tests.test_lease import TIMING, Recorder, agent_job, evaluation_job, queue
 
 HOST = HostSample(at=utcnow(), cpus=4, load1=2.0, memory_available=8 * GB, disk_free=100 * GB)

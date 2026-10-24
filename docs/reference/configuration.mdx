@@ -29,7 +29,7 @@ section.
 | `harness` | dict\[string, [Harness](#harness)\] | `{}` | Harness definitions by name: overrides of the built-in harnesses, or new ones. |
 | `max_concurrent` | dict\[string, integer\] | `{}` | The maximum number of agents of one harness, across all roles of the campaign, that are started or queued to start. Example: `{claude = 2}` when the provider of its model limits the request rate. When it is the turn of a harness at its limit, the slot goes to the next harness of the rotation. An idea or request that pins that harness waits. When unset, only the limits of the roles apply. |
 | `evaluate_timeout` | number | `600` | The number of seconds before the evaluate command is stopped. The evaluation is then a crash. |
-| `roles` | [Roles](#roles) | `{}` | The settings of each role (`[roles.implementer]`, `[roles.watchdog]`, `[roles.research]`, `[roles.scout]`), and the roles that you define (`[roles.<name>]`). |
+| `roles` | dict\[string, object\] | `{}` | `[roles.<name>]`: the table of each role over its defaults: the built-in roles (implementer, watchdog, research, scout), the roles that packages add, and the roles that you define. |
 | `link` | list\[string\] | `[]` | Repo-relative paths, ignored by git, that piloop puts into every worktree read-only, for example data or virtual environments. Each job gets them as they are when it is made. |
 | `context` | list\[string\] | `[]` | Repo-relative files or globs (for example `docs/error-analysis-*.md`) that hold the campaign's analysis: error analyses, comparisons with a reference, evaluation reports. The research pack lists each one with its outline, newest first, so that every sweep that reads the pack reads them before it proposes work. |
 | `mcp` | dict\[string, [McpServer](#mcpserver)\] | `{}` | `[mcp.<name>]`: the MCP servers that a role can list in `[roles.<name>] mcp`. |
@@ -109,28 +109,13 @@ names when the config loads.
 | `cwd` | string | `"none"` | For `jsonl`: how the harness names the folder of the agent's cwd. `dash_separators_wrapped` turns `/home/me/repo` into `--home-me-repo--`. `dash_non_alnum` turns it into `-home-me-repo`. `none` means that the folders are not named after the cwd, and matches any folder (`*`). |
 | `tally` | string \| null | `null` | For `jsonl`: the file format, which says which records have token counts, how they add up, and which records hold the agent's own text. Built in: `claude`, `codex`, `pi`. |
 
-## Roles
-
-One table for each role. A built-in role without a table uses its defaults.
-
-A table with a new name defines a new role: a role that does runs (`ImplementerRole`) with `runs = true`, else a
-sweeping role (`SweepRole`). A role that a package adds with a `piloop.roles` entry point is in the config that
-`piloop init` stores, with its table over its defaults.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `implementer` | [ImplementerRole](#implementerrole) | `{}` | `[roles.implementer]`. |
-| `watchdog` | [WatchdogRole](#watchdogrole) | `{}` | `[roles.watchdog]`. |
-| `research` | [ResearchRole](#researchrole) | `{}` | `[roles.research]`. |
-| `scout` | [ScoutRole](#scoutrole) | `{}` | `[roles.scout]`. |
-
 ## RoleConfig
 
 The keys that every `[roles.<name>]` table accepts. Each role's table below adds keys and sets defaults.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `prompt` | string \| null | `null` | The file that starts the brief of this role: a path relative to the repo root, or an absolute path. When unset, a built-in role uses its built-in prompt. A new role needs it. |
+| `prompt` | string \| null | `null` | The file that starts the brief of this role: a path relative to the repo root, or an absolute path. When unset, the role's own prompt (`PROMPT`). A new role needs it. |
 | `runtime` | string \| null | `null` | Where the agents of this role run. When unset, the role uses the campaign's `runtime`. Built in: `subprocess`. |
 | `harnesses` | list\[string\] \| null | `null` | The harness rotation of this role. When unset, the role uses the campaign's `harnesses`. |
 | `model` | dict\[string, string\] \| null | `null` | The model for each harness in this role. It is merged over the campaign's `model`. |
@@ -142,92 +127,6 @@ The keys that every `[roles.<name>]` table accepts. Each role's table below adds
 | `writes` | list\[string\] | `[]` | What the agents of this role may write, as their brief states it. Only `files` is enforced. |
 | `files` | `nothing` \| `seeds` \| `ideas` | `"seeds"` | What the agents of this role may file with `piloop idea`: `nothing`, `seeds` or `ideas`. The CLI refuses the rest. |
 | `wake_budget` | integer \| null | `null` | The size in tokens of the lessons overview that opens this role's briefs. When unset, `[memory] wake_budget`. 0 turns it off for this role. |
-
-## ImplementerRole
-
-`[roles.implementer]`, and every `[roles.<name>]` table with `runs = true`: a role that does runs.
-
-The run queue starts its agents. Each agent does one idea in a new worktree at its run's base, and its commits are
-scored and judged when it ends. A new role of this kind takes the implementer's defaults, its prompt included.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `timeout` | number | `1800` | The number of seconds one implementer may run before it is stopped. Its brief states it. A quarter of it before, at most 10 minutes, the daemon tells the implementer to wrap up. |
-| `max_concurrent` | integer | `4` | The maximum number of implementers that run at the same time, on all workers together. A run that is being scored after its implementer ended does not count. |
-| `writes` | list\[string\] | `["commits", "comments(finding) on your idea", "comments(note) on your run"]` | What an implementer may write, as its brief states it. |
-| `files` | `nothing` \| `seeds` \| `ideas` | `"nothing"` | An implementer files no ideas and no seeds. Its hunches go in its finding, which research reads. |
-| `runs` | boolean | `true` | The agents of this role do runs. A table without `runs = true` is a sweeping role. |
-| `takes` | string \| null | `null` | The ideas that this role takes: an SQL condition on the `ideas` table, without parameters, for example `priority >= 3` or `track = 'speed'`. When unset, the role takes every runnable idea. A free slot of a role that you define is filled before a slot of the implementer, so the implementer takes what the other roles leave. |
-| `recovery_requeues` | integer | `2` | How many times one idea goes back to the queue from the last commit of a run that did not succeed: a new implementer then starts from that commit to finish the work, also when the idea has no attempts left. When the head moved past the commit, it starts on the head, and a note gives the `git cherry-pick` of the commits. After that, the idea settles as after any failed run, so an idea whose implementers keep dying is not run forever. 0 never requeues. |
-| `explore_every` | integer | `4` | At least one run of this role in this many starts from an alternative starting point. When none of the role's last `explore_every - 1` runs did, the next slot goes to the most urgent ready idea that is pinned to a base other than the head (a reference, an older keep or a note), whatever its priority. Nothing changes while no such idea is ready. 0 turns this off. |
-
-## SweepRole
-
-`[roles.<name>]` of a sweeping role: the watchdog, research, the scout, or a new role that you define.
-
-A sweep is an agent without a run. Its triggers request it, and nothing is scored when it ends. A table with a new
-name defines a new role, and needs `prompt` and `triggers`.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `runs` | boolean | `false` | The agents of this role do no runs. Set `runs = true` in a new table to define a role that does runs. |
-| `triggers` | list\[object\] | required | When the daemon requests an agent of this role: a list of `{ provider = "<trigger>", ... }` entries, checked in order on each tick. A package can add triggers. An empty list means that agents start only on request (`piloop launch`). Built in: `anomaly`, `cron`, `low_water`, `seed`, `sql`, `stalled`, `stopped`. |
-| `interval` | number | `0` | The number of seconds between two routine sweeps of the `cron` trigger, counted from the start of the last one. A sweep that investigates an anomaly is not a routine sweep. 0 turns the timer off. |
-| `max_ideas` | integer | `1` | The maximum number of new ideas one sweep may insert, as its brief states it. The seeds it develops do not count. `low_water` requests enough sweeps to fill the backlog at this many ideas each. 0 pauses the role's new ideas: `low_water` is off, and an idea that a sweep of the role adds (`piloop idea add`) is `proposed`, so it waits for a review, also from a sweep that started before the change. |
-| `incident_prompt` | string \| null | `null` | A file that follows `prompt` in the brief of an incident sweep, a sweep that got anomalies (the `anomaly` trigger): a path relative to the repo root, or an absolute path. When unset, a built-in role uses its built-in file (the watchdog's `watchdog_incident.md`), and another role adds nothing. |
-| `routine_prompt` | string \| null | `null` | A file that follows `prompt` in the brief of every other sweep. When unset, a built-in role uses its built-in file (the watchdog's `watchdog_progress.md`), and another role adds nothing. |
-
-## WatchdogRole
-
-`[roles.watchdog]`: the watchdog investigates the anomalies that the daemon detects and reviews progress.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `writes` | list\[string\] | `["comments(escalation, finding, note)", "lessons on the campaign once it stopped", "seeds via idea seed"]` | What a watchdog may write, as its brief states it. |
-| `wake_budget` | integer \| null | `0` | The size in tokens of the lessons overview that opens a watchdog's brief. Off by default: the closing review reads the lessons itself before it writes its own. |
-| `triggers` | list\[object\] | `[{"provider": "anomaly"}, {"provider": "cron"}, {"provider": "stopped"}]` | An anomaly requests an incident sweep, the timer requests a progress review, and the campaign's stop requests the closing review. |
-| `interval` | number | `1800` | The number of seconds between two progress reviews, counted from the last review. A sweep that investigates an anomaly is not a review. 0 turns the reviews off. |
-
-## Trigger
-
-One entry of `[roles.<name>] triggers`: `{ provider = "<trigger>", <parameter> = <value> }`.
-
-The daemon checks the entries in the order of the list.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-
-## ResearchRole
-
-`[roles.research]`: research develops seeds and keeps ideas ready for the implementers.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `model` | dict\[string, string\] \| null | `{"claude": "claude-opus-5-5", "codex": "gpt-6.1-sol"}` | The model for each harness in this role, merged over the campaign's `model`. A table that you set replaces this one. |
-| `timeout` | number | `900` | The number of seconds one sweep may run before it is stopped. |
-| `max_concurrent` | integer | `1` | The maximum number of sweeps that run at the same time, each on the next harness of the rotation. The default is 1: sweeps that run at the same time read the same evidence and often duplicate each other, and two of them can race to develop the same seed. |
-| `writes` | list\[string\] | `["seeds via idea develop, or their status to rejected with a note", "ideas via idea add", "comments(finding, escalation) on the campaign", "comments(note) on an idea"]` | What a research sweep may write, as its brief states it. |
-| `files` | `nothing` \| `seeds` \| `ideas` | `"ideas"` | Research develops seeds into ideas and adds ideas of its own. |
-| `triggers` | list\[object\] | `[{"provider": "low_water"}, {"provider": "seed"}, {"provider": "stalled"}]` | A short backlog, a new seed, and a stall. |
-
-## ScoutRole
-
-`[roles.scout]`: the scout files outside techniques as seeds for the measured losses. It is off by default.
-
-Every `interval` seconds, a scout sweep states the open problems of the campaign from the evidence, and searches
-X, GitHub and arXiv for outside techniques that address them. It files at most `seeds` of them as seeds, signed
-`scout#<agent session id>`, and puts the rest in the technique library (the `techniques` table). It never files a
-defined idea. The search tool limits what one sweep spends on xAI (`scripts/xai_search_mcp.py --max-usd`).
-
-Experimental: the scout.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `timeout` | number | `900` | The number of seconds one sweep may run before it is stopped. |
-| `writes` | list\[string\] | `["seeds via idea seed (at most the count under Context)", "techniques (the library), by INSERT", "one comments(finding) on the campaign"]` | What a scout sweep may write, as its brief states it. |
-| `triggers` | list\[object\] | `[{"provider": "cron"}]` | The timer: a scout sweep every `interval` seconds. |
-| `interval` | number | `0` | The number of seconds between two scout sweeps, counted from the start of the last one. The first sweep counts from the registration of the campaign. 0 (the default) turns the scout off. |
-| `seeds` | integer | `3` | The maximum number of seeds one scout sweep may file. The other techniques it finds go to the library. |
 
 ## McpServer
 
@@ -269,6 +168,92 @@ escalation for each series of failures: an unknown spend is never read as $0.
 |---|---|---|---|
 | `documents` | list\[string\] | `[]` | Repo-relative globs of text documents, for example `["docs/evidence/**/*.md"]`: campaign reports, orchestrator logs, design notes. `piloop init` and the stop of the campaign copy them into the `documents` table, where every agent of every campaign can search them. Never name a document that is derived from validation or test data. |
 | `wake_budget` | integer | `400` | The size in tokens (about 4 characters each) of the overview that opens the briefs of implementers and research sweeps: the current lesson of each mechanism family on the same repo, from the newest campaign that tried it, one line each. Lessons in the campaign's own metrics come first (`lessons.metric`), then lessons in related metrics, then the rest. Within those, dead or promising come before untested, then the larger effects of each metric, then newer campaigns: effects in different metrics are never compared by size. The brief then says how to read more. A role can change it with `[roles.<kind>] wake_budget`. 0 turns it off. |
+
+## ImplementerRole
+
+`[roles.implementer]`, and every `[roles.<name>]` table with `runs = true`: a role that does runs.
+
+The run queue starts its agents. Each agent does one idea in a new worktree at its run's base, and its commits are
+scored and judged when it ends. A new role of this kind takes the implementer's defaults, its prompt included.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `timeout` | number | `1800` | The number of seconds one implementer may run before it is stopped. Its brief states it. A quarter of it before, at most 10 minutes, the daemon tells the implementer to wrap up. |
+| `max_concurrent` | integer | `4` | The maximum number of implementers that run at the same time, on all workers together. A run that is being scored after its implementer ended does not count. |
+| `writes` | list\[string\] | `["commits", "comments(finding) on your idea", "comments(note) on your run"]` | What an implementer may write, as its brief states it. |
+| `files` | `nothing` \| `seeds` \| `ideas` | `"nothing"` | An implementer files no ideas and no seeds. Its hunches go in its finding, which research reads. |
+| `runs` | boolean | `true` | The agents of this role do runs. A table without `runs = true` is a sweeping role. |
+| `takes` | string \| null | `null` | The ideas that this role takes: an SQL condition on the `ideas` table, without parameters, for example `priority >= 3` or `track = 'speed'`. When unset, the role takes every runnable idea. A free slot of a role that you define is filled before a slot of the implementer, so the implementer takes what the other roles leave. |
+| `recovery_requeues` | integer | `2` | How many times one idea goes back to the queue from the last commit of a run that did not succeed: a new implementer then starts from that commit to finish the work, also when the idea has no attempts left. When the head moved past the commit, it starts on the head, and a note gives the `git cherry-pick` of the commits. After that, the idea settles as after any failed run, so an idea whose implementers keep dying is not run forever. 0 never requeues. |
+| `explore_every` | integer | `4` | At least one run of this role in this many starts from an alternative starting point. When none of the role's last `explore_every - 1` runs did, the next slot goes to the most urgent ready idea that is pinned to a base other than the head (a reference, an older keep or a note), whatever its priority. Nothing changes while no such idea is ready. 0 turns this off. |
+
+## SweepRole
+
+`[roles.<name>]` of a sweeping role: the watchdog, research, the scout, or a new role that you define.
+
+A sweep is an agent without a run. Its triggers request it, and nothing is scored when it ends. A table with a new
+name defines a new role, and needs `prompt` and `triggers`.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `runs` | boolean | `false` | The agents of this role do no runs. Set `runs = true` in a new table to define a role that does runs. |
+| `triggers` | list\[object\] | required | When the daemon requests an agent of this role: a list of `{ provider = "<trigger>", ... }` entries, checked in order on each tick. A package can add triggers. An empty list means that agents start only on request (`piloop launch`). Built in: `anomaly`, `cron`, `low_water`, `seed`, `sql`, `stalled`, `stopped`. |
+| `interval` | number | `0` | The number of seconds between two routine sweeps of the `cron` trigger, counted from the start of the last one. A sweep that investigates an anomaly is not a routine sweep. 0 turns the timer off. |
+| `max_ideas` | integer | `1` | The maximum number of new ideas one sweep may insert, as its brief states it. The seeds it develops do not count. `low_water` requests enough sweeps to fill the backlog at this many ideas each. 0 pauses the role's new ideas: `low_water` is off, and an idea that a sweep of the role adds (`piloop idea add`) is `proposed`, so it waits for a review, also from a sweep that started before the change. |
+| `incident_prompt` | string \| null | `null` | A file that follows `prompt` in the brief of an incident sweep, a sweep that got anomalies (the `anomaly` trigger): a path relative to the repo root, or an absolute path. When unset, the role's own (the watchdog's `watchdog_incident.md`), else nothing. |
+| `routine_prompt` | string \| null | `null` | A file that follows `prompt` in the brief of every other sweep. When unset, the role's own (the watchdog's `watchdog_progress.md`), else nothing. |
+
+## ResearchRole
+
+`[roles.research]`: research develops seeds and keeps ideas ready for the implementers.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `model` | dict\[string, string\] \| null | `{"claude": "claude-opus-5-5", "codex": "gpt-6.1-sol"}` | The model for each harness in this role, merged over the campaign's `model`. A table that you set replaces this one. |
+| `timeout` | number | `900` | The number of seconds one sweep may run before it is stopped. |
+| `max_concurrent` | integer | `1` | The maximum number of sweeps that run at the same time, each on the next harness of the rotation. The default is 1: sweeps that run at the same time read the same evidence and often duplicate each other, and two of them can race to develop the same seed. |
+| `writes` | list\[string\] | `["seeds via idea develop, or their status to rejected with a note", "ideas via idea add", "comments(finding, escalation) on the campaign", "comments(note) on an idea"]` | What a research sweep may write, as its brief states it. |
+| `files` | `nothing` \| `seeds` \| `ideas` | `"ideas"` | Research develops seeds into ideas and adds ideas of its own. |
+| `triggers` | list\[object\] | `[{"provider": "low_water"}, {"provider": "seed"}, {"provider": "stalled"}]` | A short backlog, a new seed, and a stall. |
+
+## ScoutRole
+
+`[roles.scout]`: the scout files outside techniques as seeds for the measured losses. It is off by default.
+
+Every `interval` seconds, a scout sweep states the open problems of the campaign from the evidence, and searches
+X, GitHub and arXiv for outside techniques that address them. It files at most `seeds` of them as seeds, signed
+`scout#<agent session id>`, and puts the rest in the technique library (the `techniques` table). It never files a
+defined idea. The search tool limits what one sweep spends on xAI (`scripts/xai_search_mcp.py --max-usd`).
+
+Experimental: the scout.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `timeout` | number | `900` | The number of seconds one sweep may run before it is stopped. |
+| `writes` | list\[string\] | `["seeds via idea seed (at most the count under Context)", "techniques (the library), by INSERT", "one comments(finding) on the campaign"]` | What a scout sweep may write, as its brief states it. |
+| `triggers` | list\[object\] | `[{"provider": "cron"}]` | The timer: a scout sweep every `interval` seconds. |
+| `interval` | number | `0` | The number of seconds between two scout sweeps, counted from the start of the last one. The first sweep counts from the registration of the campaign. 0 (the default) turns the scout off. |
+| `seeds` | integer | `3` | The maximum number of seeds one scout sweep may file. The other techniques it finds go to the library. |
+
+## WatchdogRole
+
+`[roles.watchdog]`: the watchdog investigates the anomalies that the daemon detects and reviews progress.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| `writes` | list\[string\] | `["comments(escalation, finding, note)", "lessons on the campaign once it stopped", "seeds via idea seed"]` | What a watchdog may write, as its brief states it. |
+| `wake_budget` | integer \| null | `0` | The size in tokens of the lessons overview that opens a watchdog's brief. Off by default: the closing review reads the lessons itself before it writes its own. |
+| `triggers` | list\[object\] | `[{"provider": "anomaly"}, {"provider": "cron"}, {"provider": "stopped"}]` | An anomaly requests an incident sweep, the timer requests a progress review, and the campaign's stop requests the closing review. |
+| `interval` | number | `1800` | The number of seconds between two progress reviews, counted from the last review. A sweep that investigates an anomaly is not a review. 0 turns the reviews off. |
+
+## Trigger
+
+One entry of `[roles.<name>] triggers`: `{ provider = "<trigger>", <parameter> = <value> }`.
+
+The daemon checks the entries in the order of the list.
+
+| Key | Type | Default | Description |
+|---|---|---|---|
 
 ## AnomalyTrigger
 
@@ -362,7 +347,7 @@ is busy, while its `max_ideas` is 0, or while the queue holds its ideas for the 
 
 ## StoppedTrigger
 
-The campaign stopped (`[stop]`). It fires once, on the tick that stops the campaign.
+The campaign stopped (its stop rule, or a request). It fires once, on the tick that stops the campaign.
 
 The daemon checks it after it dropped what was pending, so its row starts. The watchdog's closing review is this
 trigger. The reason is `campaign stopped: <the condition>`.

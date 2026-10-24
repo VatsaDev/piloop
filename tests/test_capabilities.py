@@ -185,7 +185,8 @@ def _imports(path: Path) -> set[str]:
 
 def test_each_capability_is_a_package_of_its_contract_its_built_in_providers_and_its_kit() -> None:
     """``plugins/<capability>/``: ``contract.py`` declares the capability, every other module is a built-in provider
-    by the name of its entry point, and ``kit/`` holds what any provider of the capability may use."""
+    by the name of its entry point, ``kit/`` holds what any provider of the capability may use, and a directory
+    without Python holds the providers' resources (``role/prompts/``)."""
     plugins = Path(capabilities.__file__).parent / 'plugins'
     declared = _own(CAPABILITIES)
     assert {p.name for p in plugins.iterdir() if p.is_dir() and p.name != '__pycache__'} == {c.name for c in declared}
@@ -194,7 +195,12 @@ def test_each_capability_is_a_package_of_its_contract_its_built_in_providers_and
         providers = _own(capability.load().group)
         assert [p.module for p in providers] == [f'piloop.plugins.{capability.name}.{p.name}' for p in providers]
         others = {'__init__.py', '__pycache__', 'contract.py', 'kit'}
-        modules = {p.name.removesuffix('.py') for p in (plugins / capability.name).iterdir() if p.name not in others}
+        resources = {p.name for p in (plugins / capability.name).iterdir() if p.is_dir() and not any(p.rglob('*.py'))}
+        modules = {
+            p.name.removesuffix('.py')
+            for p in (plugins / capability.name).iterdir()
+            if p.name not in others | resources
+        }
         assert modules == {p.name for p in providers}, capability.name
 
 

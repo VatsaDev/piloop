@@ -9,10 +9,10 @@ gets the same treatment. Only the module that defines an entry, and the files li
 import ast
 from pathlib import Path
 
-from piloop.config import Roles
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.mcp import RENDERERS
 from piloop.plugins.host import Tier, data_errors, declared
+from piloop.plugins.role.contract import ROLES
 from piloop.plugins.runtime.contract import RUNTIMES
 from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.usage import READERS
@@ -22,7 +22,7 @@ PACKAGE = Path(__file__).parent.parent / 'piloop'
 NAMES = {
     *DEFAULT_HARNESSES,
     *RUNTIMES.builtins(),
-    *Roles.model_fields,
+    *ROLES.builtins(),
     *TRIGGERS.builtins(),
     *READERS,
     *TALLIES,

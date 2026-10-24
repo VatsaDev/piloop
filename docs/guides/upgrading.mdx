@@ -261,6 +261,7 @@ it loads the file. A plugin of 0.2.0 fails to load until you change it:
 | `runtime_settings(name)` | The runtime's fields |
 | `kind: Literal['<name>']` on a trigger | Nothing: the name of its entry point is its name |
 | `Selection`, `lookup`, `check_selection`, `Capability(check=...)` | The field that names a provider: `Annotated[P, CAP.entry]` for a table, `Annotated[str, CAP.named]` for a name, `Annotated[dict[str, P], CAP.tables()]` for a table of each provider |
+| A role's prompt as a path into its package: `prompt = str(Path(__file__).parent / 'auditor.md')` | `PROMPT = files(__package__) / 'auditor.md'`, a resource of the package; `prompt` in the table still overrides it |
 
 The examples in [`examples/plugins/`](https://github.com/hiloopai/piloop/tree/main/examples/plugins) show each one.
 A `[plugins.<name>]` table without `provider` now sets the parameters of the default provider.

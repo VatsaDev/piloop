@@ -82,7 +82,7 @@ def _type(prop: JsonSchema, defs: JsonSchema) -> str:
 def _default(name: str, prop: JsonSchema, schema: JsonSchema) -> str:
     if name in schema.get('required', []):
         return 'required'
-    if '$ref' in prop and isinstance(prop.get('default'), dict):
+    if '$ref' in prop and isinstance(prop.get('default', {}), dict):
         return '`{}`'  # a nested table left out: every key at the default that its own table shows
     return f'`{json.dumps(prop.get("default"))}`'
 

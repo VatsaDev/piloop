@@ -24,10 +24,10 @@ from piloop.db.models import (
     IdeaStatus,
 )
 from piloop.db.session import Database
-from piloop.ids import RESEARCH, TargetKind
+from piloop.ids import TargetKind
 from piloop.otel import Tracer
 from piloop.plugins.executor.workers import Workers
-from tests.conftest import ScriptRuntime, factory, serving
+from tests.conftest import RESEARCH, ScriptRuntime, factory, serving
 from tests.daemon.test_triggers import add_ideas, configure, finish_a_run, last_reason, low_water, occupy
 
 PYTHON = shlex.quote(sys.executable)

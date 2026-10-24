@@ -5,6 +5,7 @@ Every role shares one lifecycle (``piloop.agents.launcher``). A role differs in 
 """
 
 from dataclasses import dataclass
+from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import assert_never
 
@@ -35,11 +36,11 @@ class Role:
     kind: RoleName
     """The role's name in ``piloop.toml``, and so ``agent_sessions.kind``, the signature of its agents
     (``<kind>#<agent session id>``) and the source of the ideas they file."""
-    prompt: Path
-    """The file that starts the brief."""
-    incident: Path | None
+    prompt: Traversable
+    """The file that starts the brief: in the repo, or a resource of the role's package."""
+    incident: Traversable | None
     """The file that follows ``prompt`` in an incident sweep, one that got anomalies. None: nothing follows."""
-    routine: Path | None
+    routine: Traversable | None
     """The file that follows ``prompt`` in every other sweep. None for a role that does runs, or a role without one."""
     writes: tuple[str, ...]
     """What the role may write. The brief states it."""
@@ -83,7 +84,7 @@ def role(cfg: CampaignConfig, kind: RoleName, repo: Path) -> Role:
     """
     table = cfg.role(kind)
     prompt = _prompt(repo, table.prompt, table.PROMPT)
-    assert prompt is not None  # a table without its own prompt is a built-in role, which has one
+    assert prompt is not None  # RoleConfig refuses a role with neither
     incident = routine = None
     if isinstance(table, SweepRole):
         incident = _prompt(repo, table.incident_prompt, table.INCIDENT_PROMPT)
@@ -92,11 +93,9 @@ def role(cfg: CampaignConfig, kind: RoleName, repo: Path) -> Role:
     return Role(kind, prompt, incident, routine, tuple(table.writes), table.files, ideas)
 
 
-def _prompt(repo: Path, configured: str | None, built_in: str) -> Path | None:
-    """Return the file of a prompt key: the configured file in the repo, else the built-in one, else None."""
-    if configured is not None:
-        return repo / configured
-    return PROMPTS / built_in if built_in else None
+def _prompt(repo: Path, configured: str | None, own: Traversable | None) -> Traversable | None:
+    """Return the file of a prompt key: the configured file in the repo, else the role's own, else None."""
+    return repo / configured if configured is not None else own
 
 
 def role_of(s: Session, agent_session: AgentSession) -> Role:

@@ -24,7 +24,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, AgentSessionId, IdeaId, RunId
+from piloop.ids import IMPLEMENTER, AgentSessionId, IdeaId, RunId
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import (
     AgentFinished,
@@ -47,7 +47,7 @@ from piloop.plugins.vcs.contract import Transfer
 from piloop.plugins.vcs.git import Git
 from piloop.store.tree import put_tree
 from tests.agents.test_launcher import MINTED_HARNESS, agent_session, launch, request, use_harness
-from tests.conftest import HARNESS_PROMPT_TO_FILE, ScriptRuntime, baseline, disk
+from tests.conftest import HARNESS_PROMPT_TO_FILE, RESEARCH, WATCHDOG, ScriptRuntime, baseline, disk
 
 RESEARCH_SESSION = '0c5b9f9e-3a43-4c39-9a51-6f0cfa1a3b0e'
 

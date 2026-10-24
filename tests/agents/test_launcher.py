@@ -28,20 +28,21 @@ from piloop.agents.results import (
     StartupAnomaly,
     WrapUp,
 )
-from piloop.agents.roles import PILOOP_HINT, PROMPTS, SQL_HINT, Role, compose_brief, role
-from piloop.config import CampaignConfig, config_of, load_campaign_config
+from piloop.agents.roles import PILOOP_HINT, SQL_HINT, Role, compose_brief, role
+from piloop.config import CampaignConfig, Roles, config_of, load_campaign_config
 from piloop.daemon.run_controller import RunController
 from piloop.db.events import emit, in_order
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, Event, LeaseKind, Usage
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES
-from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, AgentSessionId, RoleName, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, AgentSessionId, RoleName, TargetKind, TargetRef
 from piloop.mcp import MCP
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import RepoId, Source
 from piloop.plugins.executor.kit.capacity import HostSample
 from piloop.plugins.executor.kit.leases import Answer, LeaseQueued, Leases
 from piloop.plugins.executor.workers import Workers
+from piloop.plugins.role.watchdog import WatchdogRole
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus
 from piloop.plugins.vcs.git import Git
 from piloop.usage.jsonl import CWD_ENCODERS
@@ -49,6 +50,8 @@ from tests.conftest import (
     HARNESS_FAILS,
     HARNESS_PROMPT_TO_FILE,
     HARNESS_SLEEPS,
+    RESEARCH,
+    WATCHDOG,
     ScriptRuntime,
     events,
     factory,
@@ -141,7 +144,8 @@ def test_brief_is_role_prompt_campaign_brief_procedures_then_context(campaign: C
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         brief = compose_brief(role_in(p), p, Agent(role='watchdog', session=7), reason='timer', context='- extra line')
-    assert brief.startswith((PROMPTS / 'watchdog.md').read_text()[:40])
+    assert WatchdogRole.PROMPT is not None
+    assert brief.startswith(WatchdogRole.PROMPT.read_text()[:40])
     assert "The orchestrator's procedures" not in brief and 'piloop pause' not in brief, 'only `piloop schema` has them'
     assert (
         brief.index('# Watchdog')
@@ -700,11 +704,9 @@ def give_watchdog_servers(db: Database, campaign: Campaign, servers: dict[str, o
     """``[mcp.*]`` tables in the stored config, all listed by ``[roles.watchdog] mcp``."""
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        cfg = CampaignConfig.model_validate(p.config)
-        watchdog = cfg.roles.watchdog.model_copy(update={'mcp': list(servers)})
-        roles = cfg.roles.model_copy(update={'watchdog': watchdog})
-        dumped = cfg.model_copy(update={'roles': roles}).model_dump(mode='json') | {'mcp': servers}
-        p.config = CampaignConfig.model_validate(dumped).model_dump(mode='json')
+        roles = dict(CampaignConfig.model_validate(p.config).roles.root)
+        roles[WATCHDOG] = roles[WATCHDOG].model_copy(update={'mcp': list(servers)})
+        p.config = {**p.config, 'roles': Roles(roles).model_dump(mode='json'), 'mcp': servers}
         s.commit()
 
 

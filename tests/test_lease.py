@@ -33,7 +33,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database, write_transaction
-from piloop.ids import WATCHDOG, CommentId, TargetKind, TargetRef
+from piloop.ids import CommentId, TargetKind, TargetRef
 from piloop.plugins.executor.contract import (
     AgentFinished,
     AgentJob,
@@ -76,7 +76,7 @@ from piloop.plugins.executor.kit.leases import (
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
 from piloop.plugins.vcs.git import Git
-from tests.conftest import baseline
+from tests.conftest import WATCHDOG, baseline
 
 HANDLE = AgentHandle(runtime='subprocess', data={})
 TIMING = Timing(renew=10, grace=50, toleration=300)

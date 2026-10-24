@@ -45,10 +45,14 @@ from piloop.db.session import (
 )
 from piloop.db.triggers import PERSISTENT, campaigns, legacy
 from piloop.db.triggers.roles import known_role
+from piloop.plugins.role.research import ResearchRole
+from piloop.plugins.role.scout import ScoutRole
+from piloop.plugins.role.watchdog import WatchdogRole
 from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.trigger.seed import SeedTrigger
 from piloop.version import Version, installed
+from tests.conftest import role_of
 from tests.test_deprecated import piloop_version
 
 INBOX = 'ix_comments_inbox'
@@ -219,9 +223,9 @@ END;\
 """,
             'agent_sessions_kind': """\
 CREATE TRIGGER agent_sessions_kind BEFORE INSERT ON agent_sessions
-WHEN NEW.kind NOT IN ('implementer', 'watchdog', 'research', 'scout') AND (SELECT json_type(config, '$.roles.' || json_quote(NEW.kind)) FROM campaigns WHERE id = NEW.campaign_id) IS NULL
+WHEN NEW.campaign_id IS NOT NULL AND (SELECT json_type(config, '$.roles.' || json_quote(NEW.kind)) FROM campaigns WHERE id = NEW.campaign_id) IS NULL
 BEGIN
-  SELECT RAISE(ABORT, 'agent_sessions.kind must be a role of the campaign: implementer, watchdog, research, scout or a [roles.<name>] table of its piloop.toml');
+  SELECT RAISE(ABORT, 'agent_sessions.kind must be a role of the campaign: a key of roles in its config');
 END;\
 """,
             'campaigns_parent_insert': """\
@@ -857,18 +861,20 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
             'roles': {'research': {'triggers': [{'kind': 'low_water', 'buffer': 3}, {'kind': 'seed'}]}}
         }, "a release's config has no triggers: research's defaults, with its buffer"
         p = CampaignConfig.model_validate(upgraded(stored[0]))
-        assert (p.roles.scout.interval, p.roles.scout.seeds) == (86400, 4)
-        assert (p.roles.scout.mcp, p.roles.scout.timeout, p.roles.scout.addendum) == (['xai'], 1200, 'research.md'), (
-            'the keys of research that the scout used'
-        )
-        assert p.roles.research.triggers == [LowWaterTrigger(buffer=5), SeedTrigger()], (
+        assert (role_of(p, ScoutRole).interval, role_of(p, ScoutRole).seeds) == (86400, 4)
+        assert (role_of(p, ScoutRole).mcp, role_of(p, ScoutRole).timeout, role_of(p, ScoutRole).addendum) == (
+            ['xai'],
+            1200,
+            'research.md',
+        ), 'the keys of research that the scout used'
+        assert role_of(p, ResearchRole).triggers == [LowWaterTrigger(buffer=5), SeedTrigger()], (
             'the scout trigger leaves, and the buffer moves into low_water'
         )
-        assert p.roles.research.max_ideas == 2
+        assert role_of(p, ResearchRole).max_ideas == 2
         assert p.context == ['docs/analysis-*.md'], 'research context is the project context'
         usage = p.harness['mine'].usage
         assert usage is not None and usage.file == '{env:CLAUDE_CONFIG_DIR:~/.claude}/projects/{cwd}/{session_id}.jsonl'
-        assert [TRIGGERS.name_of(t) for t in p.roles.watchdog.triggers] == ['anomaly', 'cron', 'stopped'], (
+        assert [TRIGGERS.name_of(t) for t in role_of(p, WatchdogRole).triggers] == ['anomaly', 'cron', 'stopped'], (
             'the closing review stays'
         )
         con.execute("INSERT INTO workers (kind, project_id) VALUES ('scout', 2)")
@@ -1700,3 +1706,20 @@ def test_0039_moves_the_stop_keys_the_spend_limit_and_the_confidence_into_the_ru
             'stop': {'max_runs': 20, 'plateau': 5},
             'confidence': 0.9,
         }
+
+
+def test_0040_checks_the_role_of_a_row_against_its_campaign_config_alone_and_downgrades(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0040')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute(
+            'INSERT INTO campaigns (name, path, config) VALUES (?, ?, ?)',
+            ('p', '/p', dumps({'roles': {'auditor': {}}})),
+        )
+        con.execute("INSERT INTO agent_sessions (kind, campaign_id) VALUES ('auditor', 1)")
+        with pytest.raises(sqlite3.IntegrityError, match='a role of the campaign: a key of roles in its config'):
+            con.execute("INSERT INTO agent_sessions (kind, campaign_id) VALUES ('research', 1)")
+    command.downgrade(cfg, '0039')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO agent_sessions (kind, campaign_id) VALUES ('research', 1)")

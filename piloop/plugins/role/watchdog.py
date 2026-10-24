@@ -1,4 +1,4 @@
-from typing import ClassVar
+from importlib.resources import files
 
 from pydantic import Field
 
@@ -12,9 +12,9 @@ from piloop.plugins.trigger.stopped import StoppedTrigger
 class WatchdogRole(SweepRole):
     """``[roles.watchdog]``: the watchdog investigates the anomalies that the daemon detects and reviews progress."""
 
-    PROMPT: ClassVar[str] = 'watchdog.md'
-    INCIDENT_PROMPT: ClassVar[str] = 'watchdog_incident.md'
-    ROUTINE_PROMPT: ClassVar[str] = 'watchdog_progress.md'
+    PROMPT = files(__package__) / 'prompts' / 'watchdog.md'
+    INCIDENT_PROMPT = files(__package__) / 'prompts' / 'watchdog_incident.md'
+    ROUTINE_PROMPT = files(__package__) / 'prompts' / 'watchdog_progress.md'
 
     triggers: list[TriggerEntry] = [AnomalyTrigger(), CronTrigger(), StoppedTrigger()]
     """An anomaly requests an incident sweep, the timer requests a progress review, and the campaign's stop requests

@@ -19,6 +19,9 @@ import pytest
 from piloop import deprecated
 from piloop.config import ConfigError, load_campaign_config
 from piloop.deprecated import PiloopDeprecationWarning
+from piloop.plugins.role.contract import ImplementerRole
+from piloop.plugins.role.research import ResearchRole
+from piloop.plugins.role.scout import ScoutRole
 from piloop.plugins.stop_rule.contract import STOP_RULES
 from piloop.plugins.stop_rule.limits import Limits
 from piloop.plugins.trigger.contract import TRIGGERS
@@ -29,7 +32,7 @@ from piloop.plugins.trigger.stalled import StalledTrigger
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES
 from piloop.version import Version
-from tests.conftest import HARNESS_APPEND, write_toml
+from tests.conftest import HARNESS_APPEND, role_of, write_toml
 
 TEST_BRIDGES: list[deprecated.Bridge] = []
 
@@ -106,11 +109,11 @@ def test_research_scout_is_the_scout_role_with_the_research_keys_it_used(campaig
     assert [(w.filename, w.lineno) for w in record] == [
         (str(toml), toml.read_text().splitlines().index('[roles.research.scout]') + 1)
     ]
-    scout = cfg.roles.scout
+    scout = role_of(cfg, ScoutRole)
     assert (scout.interval, scout.seeds, scout.timeout, scout.max_concurrent) == (86400, 4, 1200, 1), (
         "the shared timeout moves with it; max_concurrent is the role's own"
     )
-    assert cfg.roles.research.max_concurrent == 2
+    assert role_of(cfg, ResearchRole).max_concurrent == 2
 
 
 def test_a_scout_table_wins_over_what_the_bridge_copies_from_research(campaign_path: Path) -> None:
@@ -119,7 +122,7 @@ def test_a_scout_table_wins_over_what_the_bridge_copies_from_research(campaign_p
         '[roles.research]\ntimeout = 1200\n\n[roles.research.scout]\ninterval = 60\n\n[roles.scout]\ntimeout = 300\n',
     )
     with pytest.warns(PiloopDeprecationWarning):
-        scout = load_campaign_config(campaign_path).roles.scout
+        scout = role_of(load_campaign_config(campaign_path), ScoutRole)
     assert (scout.interval, scout.timeout) == (60, 300)
 
 
@@ -133,7 +136,7 @@ def test_the_scout_trigger_of_research_goes(campaign_path: Path) -> None:
     )
     with pytest.warns(PiloopDeprecationWarning, match='the scout trigger is deprecated') as record:
         cfg = load_campaign_config(campaign_path)
-    assert [TRIGGERS.name_of(t) for t in cfg.roles.research.triggers] == ['low_water', 'seed']
+    assert [TRIGGERS.name_of(t) for t in role_of(cfg, ResearchRole).triggers] == ['low_water', 'seed']
     assert record[0].lineno == toml.read_text().splitlines().index('[roles.research]') + 2, 'research, not the watchdog'
 
 
@@ -147,7 +150,7 @@ def test_research_buffer_is_the_buffer_of_its_low_water_triggers(campaign_path: 
     deprecated_config(campaign_path, '[roles.research]\nbuffer = 5\n')
     with pytest.warns(PiloopDeprecationWarning, match=r'\[roles.research\] buffer is deprecated'):
         cfg = load_campaign_config(campaign_path)
-    assert cfg.roles.research.triggers == [LowWaterTrigger(buffer=5), SeedTrigger(), StalledTrigger()], (
+    assert role_of(cfg, ResearchRole).triggers == [LowWaterTrigger(buffer=5), SeedTrigger(), StalledTrigger()], (
         'the default triggers, with the buffer'
     )
     deprecated_config(
@@ -155,7 +158,7 @@ def test_research_buffer_is_the_buffer_of_its_low_water_triggers(campaign_path: 
     )
     with pytest.warns(PiloopDeprecationWarning):
         cfg = load_campaign_config(campaign_path)
-    assert cfg.roles.research.triggers == [LowWaterTrigger(buffer=0), CronTrigger()]
+    assert role_of(cfg, ResearchRole).triggers == [LowWaterTrigger(buffer=0), CronTrigger()]
 
 
 def test_research_context_is_the_top_level_context(campaign_path: Path) -> None:
@@ -187,7 +190,7 @@ def test_the_worker_role_is_the_implementer(campaign_path: Path) -> None:
         PiloopDeprecationWarning, match=r'\[roles.worker\] is deprecated; write \[roles.implementer\]'
     ) as w:
         cfg = load_campaign_config(campaign_path)
-    assert cfg.roles.implementer.timeout == 7
+    assert role_of(cfg, ImplementerRole).timeout == 7
     assert 'worker' not in cfg.roles.all(), 'no role of its own'
     assert w[0].lineno == toml.read_text().splitlines().index('[roles.worker]') + 1
 
@@ -219,11 +222,11 @@ def test_a_piloop_toml_that_an_earlier_template_wrote_still_loads(
     (tmp_path / 'piloop.toml').write_text(text)
     with pytest.warns(PiloopDeprecationWarning):
         cfg = load_campaign_config(tmp_path)
-    research = cfg.roles.research
+    research = role_of(cfg, ResearchRole)
     assert [TRIGGERS.name_of(t) for t in research.triggers] == triggers
     assert research.triggers[0] == LowWaterTrigger(buffer=2)
     assert (cfg.context, research.max_ideas) == ([], 1)
-    assert (cfg.roles.scout.interval, cfg.roles.scout.seeds) == ((86400, 3) if scout_table else (0, 3))
+    assert (role_of(cfg, ScoutRole).interval, role_of(cfg, ScoutRole).seeds) == ((86400, 3) if scout_table else (0, 3))
 
 
 def test_a_piloop_project_variable_still_overrides_after_its_campaign_one(

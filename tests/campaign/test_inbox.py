@@ -26,8 +26,9 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.db.triggers.changelog import CommentAcked
-from piloop.ids import WATCHDOG, CommentId, TargetKind, TargetRef
+from piloop.ids import CommentId, TargetKind, TargetRef
 from piloop.scoring.ledger import SKIPPED, CandidateJudged, IdeaCreated
+from tests.conftest import WATCHDOG
 from tests.reports.test_history import idea
 from tests.reports.test_overview import render
 from tests.test_actor import ACTORS

@@ -35,7 +35,7 @@ from piloop.db.models import (
     RunEnd,
 )
 from piloop.db.session import Database
-from piloop.ids import WATCHDOG, AgentSessionId, CampaignId, CommentId
+from piloop.ids import AgentSessionId, CampaignId, CommentId
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins
 from piloop.plugins.executor.contract import (
@@ -55,6 +55,7 @@ from piloop.scoring.ledger import request_remeasure
 from piloop.settings import Settings
 from tests.conftest import (
     HARNESS_SLEEPS,
+    WATCHDOG,
     ScriptRuntime,
     baseline,
     disk,

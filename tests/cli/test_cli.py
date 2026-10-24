@@ -56,14 +56,14 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database, migrate
 from piloop.db.triggers.changelog import CampaignStatusChanged
-from piloop.ids import RESEARCH, WATCHDOG, CampaignId, CandidateId, CommentId, TargetKind, TargetRef
+from piloop.ids import CampaignId, CandidateId, CommentId, TargetKind, TargetRef
 from piloop.plugins import host
 from piloop.plugins.executor.kit.capacity import GB, HostSample
 from piloop.plugins.executor.kit.leases import Leases
 from piloop.scoring.ledger import CandidateImported, RemeasureRequested
 from piloop.settings import Settings
 from piloop.version import direct_url, installed
-from tests.conftest import at_head, example, hold_lock, wait_until
+from tests.conftest import RESEARCH, WATCHDOG, at_head, example, hold_lock, wait_until
 from tests.daemon.test_serve import alive
 from tests.db.test_migrations import TOO_OLD, alembic
 from tests.test_lease import Recorder
@@ -1195,7 +1195,7 @@ def test_launch_requests_an_implementer(campaign_path: Path, out) -> None:
     assert '- Agents live: none; requested: research#1, watchdog#2' in out(), (
         'a request is not an agent until the daemon launches it'
     )
-    with pytest.raises(SystemExit, match="demo has no sweeping role 'janitor'; it has watchdog, research, scout.$"):
+    with pytest.raises(SystemExit, match="demo has no sweeping role 'janitor'; it has research, scout, watchdog.$"):
         run_cli(['launch', 'demo', 'janitor'])
     with pytest.raises(SystemExit, match='The daemon launches implementers by itself, one for each queued run'):
         run_cli(['launch', 'demo', 'implementer'])

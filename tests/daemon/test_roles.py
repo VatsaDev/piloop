@@ -35,7 +35,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import RESEARCH, WATCHDOG, AgentSessionId, RoleName, TargetKind, TargetRef
+from piloop.ids import AgentSessionId, RoleName, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins_module
 from piloop.plugins.cas.contract import CAS
@@ -48,6 +48,8 @@ from piloop.runtime.factory import RuntimeFactory
 from piloop.settings import Settings
 from tests.conftest import (
     HARNESS_APPEND,
+    RESEARCH,
+    WATCHDOG,
     ScriptRuntime,
     console_lines,
     example,
@@ -330,8 +332,8 @@ def test_a_built_in_role_takes_other_triggers(
     assert sched.tick() == [1, 2]
     sched.wait()
     sched.stop(timeout=5)
-    assert agent_sessions(db, WATCHDOG) == [(1, AgentSessionState.EXITED, 'timer: 30s')]
-    assert agent_sessions(db, RESEARCH) == [(2, AgentSessionState.EXITED, f'sql: {REVIEW}')]
+    assert agent_sessions(db, RESEARCH) == [(1, AgentSessionState.EXITED, f'sql: {REVIEW}')]
+    assert agent_sessions(db, WATCHDOG) == [(2, AgentSessionState.EXITED, 'timer: 30s')], 'the roles in their order'
     assert reported_events(db) == [], 'the watchdog got no anomaly'
 
 
@@ -475,8 +477,11 @@ def test_a_package_role_takes_its_defaults_and_a_roles_value_that_is_not_a_table
     toml.write_text(MINIMAL.format(roles='roles = { auditor = 3 }'))
     with pytest.raises(ConfigError, match=r'roles\.auditor = 3: Input should be a valid dictionary'):
         load_campaign_config(campaign_path)
+    toml.write_text(MINIMAL.format(roles='roles = { mine = 3 }'))
+    with pytest.raises(ConfigError, match=r'roles\.mine = 3: a role is a table'):
+        load_campaign_config(campaign_path)
     toml.write_text(MINIMAL.format(roles='roles = 3'))
-    with pytest.raises(ConfigError, match=r'\n  roles = 3: Input should be a valid dictionary'):
+    with pytest.raises(ConfigError, match=r'\n  roles = 3: a table of tables'):
         load_campaign_config(campaign_path)
 
 

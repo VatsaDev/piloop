@@ -1,9 +1,17 @@
-"""The role capability: what the agents of a role do, and the defaults of its ``[roles.<name>]`` table."""
+"""The role capability: what the agents of a role do, and the defaults of its ``[roles.<name>]`` table.
 
+Every role is a provider of ``ROLES``, a built-in one or a package's, and so are its defaults: a subclass of
+``SweepRole`` or of ``ImplementerRole`` whose fields have the role's defaults. Its prompt is a resource of its package
+(``PROMPT``). A table with another name defines a new role (``new_role``).
+"""
+
+from collections.abc import Mapping
 from enum import StrEnum
-from typing import Annotated, ClassVar, Literal, Self
+from importlib.resources import files
+from importlib.resources.abc import Traversable
+from typing import ClassVar, Literal, Self
 
-from pydantic import BeforeValidator, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from piloop import deprecated
 from piloop.db.sql import sql_error
@@ -33,15 +41,16 @@ class RoleConfig(Parameters):
             raise ValueError(deprecated.removed_workdir())
         return data
 
-    PROMPT: ClassVar[str] = ''
-    """The built-in prompt of a built-in role, a file under ``piloop/agents/prompts/``. Empty for other roles."""
+    PROMPT: ClassVar[Traversable | None] = None
+    """The prompt that starts the brief of the role's agents: a resource of the role's package, such as
+    ``files(__package__) / 'auditor.md'``. ``prompt`` in the table overrides it. A role with neither is refused."""
     IDEAS: ClassVar[str] = ''
     """The ideas line of a built-in role's brief when the line for its ``files`` does not fit it. ``{piloop}`` is the CLI
     and ``{campaign}`` is the campaign's name. Empty: the line for ``files`` (``piloop.agents.roles.IDEAS``)."""
 
     prompt: str | None = None
     """The file that starts the brief of this role: a path relative to the repo root, or an absolute path. When unset,
-    a built-in role uses its built-in prompt. A new role needs it."""
+    the role's own prompt (``PROMPT``). A new role needs it."""
     runtime: RuntimeName | None = None
     """Where the agents of this role run. When unset, the role uses the campaign's ``runtime``."""
     harnesses: list[str] | None = Field(default=None, min_length=1)
@@ -79,7 +88,7 @@ class ImplementerRole(RoleConfig):
     scored and judged when it ends. A new role of this kind takes the implementer's defaults, its prompt included.
     """
 
-    PROMPT: ClassVar[str] = 'implementer.md'
+    PROMPT: ClassVar[Traversable | None] = files(__package__) / 'prompts' / 'implementer.md'
 
     runs: Literal[True] = True
     """The agents of this role do runs. A table without ``runs = true`` is a sweeping role."""
@@ -130,10 +139,10 @@ class SweepRole(RoleConfig):
     name defines a new role, and needs ``prompt`` and ``triggers``.
     """
 
-    INCIDENT_PROMPT: ClassVar[str] = ''
-    """The built-in ``incident_prompt`` of a built-in role, a file under ``piloop/agents/prompts/``. Empty: none."""
-    ROUTINE_PROMPT: ClassVar[str] = ''
-    """The built-in ``routine_prompt`` of a built-in role, a file under ``piloop/agents/prompts/``. Empty: none."""
+    INCIDENT_PROMPT: ClassVar[Traversable | None] = None
+    """The role's own ``incident_prompt``: a resource of its package, or None."""
+    ROUTINE_PROMPT: ClassVar[Traversable | None] = None
+    """The role's own ``routine_prompt``: a resource of its package, or None."""
 
     runs: Literal[False] = False
     """The agents of this role do no runs. Set ``runs = true`` in a new table to define a role that does runs."""
@@ -151,29 +160,24 @@ class SweepRole(RoleConfig):
     waits for a review, also from a sweep that started before the change."""
     incident_prompt: str | None = None
     """A file that follows ``prompt`` in the brief of an incident sweep, a sweep that got anomalies (the ``anomaly``
-    trigger): a path relative to the repo root, or an absolute path. When unset, a built-in role uses its built-in
-    file (the watchdog's ``watchdog_incident.md``), and another role adds nothing."""
+    trigger): a path relative to the repo root, or an absolute path. When unset, the role's own (the watchdog's
+    ``watchdog_incident.md``), else nothing."""
     routine_prompt: str | None = None
-    """A file that follows ``prompt`` in the brief of every other sweep. When unset, a built-in role uses its built-in
-    file (the watchdog's ``watchdog_progress.md``), and another role adds nothing."""
+    """A file that follows ``prompt`` in the brief of every other sweep. When unset, the role's own (the watchdog's
+    ``watchdog_progress.md``), else nothing."""
 
     @model_validator(mode='after')
     def _check(self) -> Self:
-        if self.prompt is None and not self.PROMPT:
+        if self.prompt is None and self.PROMPT is None:
             raise ValueError('a new role needs a prompt: the file that starts its brief')
         return self
-
-
-def _role(table: object) -> object:
-    """Validate a ``[roles.<name>]`` table with a new name: a role that does runs with ``runs = true``, else a sweep."""
-    does_runs = isinstance(table, ImplementerRole) or (isinstance(table, dict) and bool(table.get('runs')))
-    return (ImplementerRole if does_runs else SweepRole).model_validate(table)
-
-
-RoleEntry = Annotated[ImplementerRole | SweepRole, BeforeValidator(_role)]
-"""The type of a ``[roles.<name>]`` table with a new name."""
 
 
 ROLES = Capability('role', RoleConfig)
 """Every role by name, with its defaults: the built-in ones, then the ones that packages add. Each entry point of the
 group names a subclass of ``SweepRole`` or of ``ImplementerRole``, whose defaults are the role's."""
+
+
+def new_role(table: Mapping[str, object]) -> type[ImplementerRole] | type[SweepRole]:
+    """The class of a ``[roles.<name>]`` table with a new name: with ``runs = true`` a role that does runs."""
+    return ImplementerRole if table.get('runs') else SweepRole

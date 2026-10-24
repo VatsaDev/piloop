@@ -87,17 +87,22 @@ BEFORE = {
 }
 """The SHA-256 of each built-in prompt, and of the tools of the context, before the ``git`` provider wrote its parts."""
 
+BUILT_IN = sorted(
+    [*PROMPTS.glob('*.md'), *(Path(piloop.__file__).parent / 'plugins' / 'role' / 'prompts').glob('*.md')]
+)
+"""The built-in prompts: the briefs' own, and those of the built-in roles."""
+
 
 def test_the_git_provider_writes_the_built_in_prompts_byte_for_byte_as_they_were() -> None:
     """Moving the git parts into the provider changed no brief. Edit a prompt on purpose: update its line."""
     vcs = VCS.selected({})
-    rendered = {p.name: prompted(p.read_text(), vcs) for p in PROMPTS.glob('*.md')}
+    rendered = {p.name: prompted(p.read_text(), vcs) for p in BUILT_IN}
     rendered['TOOLS.txt'] = '\n'.join(prompted(line, vcs) for line in TOOLS)
     assert {name: hashlib.sha256(text.encode()).hexdigest() for name, text in rendered.items()} == BEFORE
 
 
 def test_each_part_is_in_a_built_in_prompt_and_the_git_provider_writes_each() -> None:
-    texts = '\n'.join([*(p.read_text() for p in PROMPTS.glob('*.md')), *TOOLS])
+    texts = '\n'.join([*(p.read_text() for p in BUILT_IN), *TOOLS])
     assert set(PART.findall(texts)) == set(Part), 'a part that no prompt has is dead'
     assert {p.stem for p in GIT_PROMPTS.glob('*.md')} == set(Part)
 

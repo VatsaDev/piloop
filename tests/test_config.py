@@ -6,12 +6,13 @@ from pathlib import Path
 import pytest
 from inline_snapshot import snapshot
 
-from piloop.config import CampaignConfig, ConfigError, Metric, MetricRole, Roles, load_campaign_config
+from piloop.config import CampaignConfig, ConfigError, Metric, MetricRole, load_campaign_config
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
-from piloop.ids import BUILT_IN_ROLES, RESEARCH, WATCHDOG, RoleName, TrackName
+from piloop.ids import IMPLEMENTER, RoleName, TrackName
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import Files, ImplementerRole
 from piloop.plugins.role.research import ResearchRole
+from piloop.plugins.role.scout import ScoutRole
 from piloop.plugins.role.watchdog import WatchdogRole
 from piloop.plugins.stop_rule.contract import STOP_RULES, StopRule
 from piloop.plugins.stop_rule.limits import Limits
@@ -19,6 +20,7 @@ from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.trigger.seed import SeedTrigger
 from piloop.plugins.trigger.stalled import StalledTrigger
+from tests.conftest import RESEARCH, SCOUT, WATCHDOG, role_of
 
 
 def test_load_precedence(campaign_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -38,7 +40,7 @@ def test_load_precedence(campaign_path: Path, monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv('PILOOP_CAMPAIGN_ROLES__IMPLEMENTER__MAX_CONCURRENT', '3')
     monkeypatch.setenv('PILOOP_CAMPAIGN_EVALUATE_TIMEOUT', '9')
     cfg = load_campaign_config(campaign_path)
-    assert (cfg.roles.implementer.max_concurrent, cfg.evaluate_timeout) == (3, 9)
+    assert (role_of(cfg, ImplementerRole).max_concurrent, cfg.evaluate_timeout) == (3, 9)
     assert load_campaign_config(campaign_path, evaluate_timeout=None).evaluate_timeout == 9
 
 
@@ -65,18 +67,17 @@ def test_a_piloop_toml_with_the_removed_entire_agent_says_where_to_read_why(camp
 
 def test_roles_are_typed_per_kind(campaign_path: Path) -> None:
     cfg = load_campaign_config(campaign_path)
-    assert cfg.roles == snapshot(
-        Roles(
-            implementer=ImplementerRole(timeout=20.0, max_concurrent=1),
-            watchdog=WatchdogRole(harnesses=['script'], model={'script': 'watchdog-model'}, timeout=20.0),
-            research=ResearchRole(timeout=20.0, max_ideas=0, max_concurrent=1),
-        )
-    )
-    assert cfg.role(RESEARCH) is cfg.roles.research
-    assert set(Roles.model_fields) == set(BUILT_IN_ROLES), 'every built-in role has its table'
+    assert cfg.roles.all() == {
+        IMPLEMENTER: ImplementerRole(timeout=20.0, max_concurrent=1),
+        RESEARCH: ResearchRole(timeout=20.0, max_ideas=0, max_concurrent=1),
+        SCOUT: ScoutRole(),
+        WATCHDOG: WatchdogRole(harnesses=['script'], model={'script': 'watchdog-model'}, timeout=20.0),
+    }, 'every role, in the order of its entry point, with its table over its defaults'
+    assert cfg.role(RESEARCH) is role_of(cfg, ResearchRole)
     assert cfg.role_harnesses(RESEARCH) == ['script'], 'unset: the campaign rotation'
     assert cfg.role_models(WATCHDOG) == {'script': 'watchdog-model'}, 'role map over the campaign map'
     assert CampaignConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the campaign row'
+    assert cfg.model_dump(mode='json')['roles']['scout'] == {}, 'a role without a table is stored by its name alone'
     defaults = CampaignConfig(
         name='bare',
         metrics=[Metric(name='a', direction=Direction.HIGHER, role=MetricRole.PRIMARY)],
@@ -84,13 +85,14 @@ def test_roles_are_typed_per_kind(campaign_path: Path) -> None:
         model={'pi': 'm'},
     )
     assert defaults.context == [], 'no analysis artifacts unless the campaign names them'
-    defaults = defaults.roles
-    assert (defaults.implementer.timeout, defaults.implementer.max_concurrent) == (1800, 4)
-    assert (defaults.watchdog.harnesses, defaults.watchdog.model) == (None, None), 'the campaign rotation and models'
-    assert (defaults.watchdog.timeout, defaults.watchdog.interval) == (600, 1800)
-    assert (defaults.research.timeout, defaults.research.max_ideas) == (900, 1)
-    assert defaults.research.triggers == [LowWaterTrigger(buffer=2), SeedTrigger(), StalledTrigger()]
-    assert defaults.research.max_concurrent == 1, 'concurrent sweeps duplicate each other and race on seeds'
+    implementer, watchdog = role_of(defaults, ImplementerRole), role_of(defaults, WatchdogRole)
+    research = role_of(defaults, ResearchRole)
+    assert (implementer.timeout, implementer.max_concurrent) == (1800, 4)
+    assert (watchdog.harnesses, watchdog.model) == (None, None), 'the campaign rotation and models'
+    assert (watchdog.timeout, watchdog.interval) == (600, 1800)
+    assert (research.timeout, research.max_ideas) == (900, 1)
+    assert research.triggers == [LowWaterTrigger(buffer=2), SeedTrigger(), StalledTrigger()]
+    assert research.max_concurrent == 1, 'concurrent sweeps duplicate each other and race on seeds'
 
 
 def test_missing_file(tmp_path: Path) -> None:
@@ -397,8 +399,8 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
     when = 'SELECT 1 FROM ideas WHERE campaign_id = :campaign AND created_at > :since'
     good = {'prompt': 'reviewer.md', 'triggers': [{'provider': 'sql', 'when': when}], 'runtime': 'subprocess'}
     cfg = load_campaign_config(campaign_path, roles={'reviewer': good})
-    assert list(cfg.roles.all()) == ['implementer', 'watchdog', 'research', 'scout', 'reviewer']
-    assert list(cfg.roles.sweeping()) == ['watchdog', 'research', 'scout', 'reviewer'], (
+    assert list(cfg.roles.all()) == ['implementer', 'research', 'scout', 'watchdog', 'reviewer']
+    assert list(cfg.roles.sweeping()) == ['research', 'scout', 'watchdog', 'reviewer'], (
         'the implementer does runs, not sweeps'
     )
     assert cfg.role_runtime(RoleName('reviewer')) == 'subprocess'
@@ -455,12 +457,17 @@ def test_a_table_with_a_new_name_defines_a_role_that_needs_a_prompt_file_and_tri
 def test_a_table_with_runs_defines_a_role_that_does_runs_with_the_implementer_defaults(campaign_path: Path) -> None:
     quick = {'runs': True, 'takes': "priority >= 3 OR track = 'speed'", 'timeout': 60, 'max_concurrent': 1}
     cfg = load_campaign_config(campaign_path, roles={'quick': quick})
-    assert list(cfg.roles.all()) == ['implementer', 'watchdog', 'research', 'scout', 'quick']
+    assert list(cfg.roles.all()) == ['implementer', 'research', 'scout', 'watchdog', 'quick']
     assert list(cfg.roles.doing_runs()) == ['quick', 'implementer'], 'the roles of the file fill their slots first'
-    assert list(cfg.roles.sweeping()) == ['watchdog', 'research', 'scout']
+    assert list(cfg.roles.sweeping()) == ['research', 'scout', 'watchdog']
     role = cfg.roles.doing_runs()[RoleName('quick')]
-    assert (role.prompt, role.PROMPT, role.files, role.explore_every) == (None, 'implementer.md', Files.NOTHING, 4)
-    assert cfg.run_slots == 1 + cfg.roles.implementer.max_concurrent
+    assert (role.prompt, role.PROMPT, role.files, role.explore_every) == (
+        None,
+        ImplementerRole.PROMPT,
+        Files.NOTHING,
+        4,
+    )
+    assert cfg.run_slots == 1 + cfg.roles.doing_runs()[IMPLEMENTER].max_concurrent
     assert CampaignConfig.model_validate(cfg.model_dump(mode='json')) == cfg, 'round-trips through the campaign row'
 
     def fails(roles: dict[str, object]) -> str:

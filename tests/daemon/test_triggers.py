@@ -36,13 +36,15 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, AgentSessionId, IdeaId, RunId, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, AgentSessionId, IdeaId, RunId, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins.executor.workers import Workers
 from piloop.reports.overview import anomalies
 from tests.conftest import (
     HARNESS_NOOP,
     HARNESS_PROMPT_TO_FILE,
+    RESEARCH,
+    WATCHDOG,
     ScriptRuntime,
     end_of,
     factory,

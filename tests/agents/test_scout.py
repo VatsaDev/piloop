@@ -28,12 +28,12 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import RESEARCH, SCOUT, AgentSessionId
+from piloop.ids import AgentSessionId
 from piloop.plugins.role.scout import ScoutRole
 from piloop.plugins.trigger.cron import CronTrigger
 from piloop.reports.history import history
 from piloop.reports.overview import overview
-from tests.conftest import ScriptRuntime, write_toml
+from tests.conftest import RESEARCH, SCOUT, ScriptRuntime, role_of, write_toml
 from tests.daemon.test_triggers import add_ideas, agent_sessions, backdate, configure, occupy, scheduler
 
 PYTHON = shlex.quote(sys.executable)
@@ -58,9 +58,9 @@ def scout_due(db: Database, campaign: Campaign, seconds: float) -> None:
 
 
 def test_the_scout_is_off_until_it_has_an_interval(campaign: Campaign) -> None:
-    scout = load_campaign_config(Path(campaign.path)).roles.scout
+    scout = role_of(load_campaign_config(Path(campaign.path)), ScoutRole)
     assert (scout.interval, scout.seeds, scout.files) == (0, ScoutRole().seeds, 'seeds')
-    on = load_campaign_config(Path(campaign.path), roles={'scout': {'interval': 3600}}).roles.scout
+    on = role_of(load_campaign_config(Path(campaign.path), roles={'scout': {'interval': 3600}}), ScoutRole)
     assert (on.interval, on.triggers) == (3600, [CronTrigger()])
 
 
@@ -119,7 +119,7 @@ def test_a_scout_sweep_reads_its_context_signs_as_a_scout_and_files_only_seeds_a
         assert 'scout 1 ideas, 0 ran' in '; '.join(y.line() for y in yields(s, campaign.id))
         campaign_row = s.get_one(Campaign, campaign.id)
         cfg = load_campaign_config(Path(campaign.path))
-        assert '0 research, 1 scout; 0 of 0 ended research sweeps defined no idea' in overview(
+        assert '0 research, 1 scout, 0 watchdog; 0 of 0 ended research sweeps defined no idea' in overview(
             s, campaign_row, cfg, utcnow()
         )
         assert 'scout#1: Problem statement: digits' in history(s, campaign_row, cfg)

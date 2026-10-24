@@ -316,12 +316,13 @@ class Capability[P: Parameters]:
         except MissingProvider as e:
             raise ValueError(f'{where}{e}') from e
 
-    def tables(self) -> Tables[P]:
+    def tables(self, new: Callable[[Mapping[str, object]], type[P]] | None = None) -> Tables[P]:
         """``Annotated[dict[str, P], CAP.tables()]``: one table for each provider, by its name, over its defaults.
 
-        Every provider is in the result, in registry order. A table with a name that no provider has is refused.
+        Every provider is in the result, in registry order, then each table with another name, in the order of the
+        file. ``new`` gives the class of such a table; without it, such a table is refused.
         """
-        return Tables(self)
+        return Tables(self, new)
 
     def activate(self, stack: ExitStack) -> None:
         """Load and check every provider, then register them all, with their unregistration on ``stack``.
@@ -500,11 +501,13 @@ class Named[P: Parameters]:
 class Tables[P: Parameters]:
     """``Annotated[dict[str, P], CAP.tables()]``: a table for each provider, by its name, over the provider's defaults.
 
-    Every provider is in the result, in registry order. A name that no provider has is refused at its key. The
-    runtimes of ``config.toml`` are tables (``[runtimes.<name>]``).
+    Every provider is in the result, in registry order, then the tables with other names, in their order. The runtimes
+    of ``config.toml`` are tables (``[runtimes.<name>]``), and so are the roles of ``piloop.toml`` (``[roles.<name>]``).
     """
 
     capability: Capability[P]
+    new: Callable[[Mapping[str, object]], type[P]] | None = None
+    """The class of a table with a name that no provider has. None: such a table is refused."""
 
     def __get_pydantic_core_schema__(self, source: object, handler: GetCoreSchemaHandler) -> CoreSchema:
         return core_schema.no_info_plain_validator_function(
@@ -512,27 +515,47 @@ class Tables[P: Parameters]:
             serialization=core_schema.plain_serializer_function_ser_schema(self.dump, info_arg=True),
         )
 
+    def __get_pydantic_json_schema__(self, schema: CoreSchema, handler: GetJsonSchemaHandler) -> JsonSchemaValue:
+        return {'type': 'object', 'additionalProperties': {'type': 'object'}}
+
     def validate(self, value: object) -> dict[str, P]:
         """Validate each table. A refused one is an error at its key: ``<name>.<field>``."""
         if not isinstance(value, Mapping):
             raise ValueError('a table of tables')
-        providers, noun = self.capability.providers(), self.capability.noun
-        unknown = ValueError(f'no {noun} has that name; registered {noun}s: {", ".join(providers)}')
-        errors = [
-            InitErrorDetails(type='value_error', loc=(str(name),), input=table, ctx={'error': unknown})
-            for name, table in value.items()
-            if name not in providers
-        ]
+        providers = self.capability.providers()
+        others = [str(name) for name in value if name not in providers]
         found: dict[str, P] = {}
-        for name in providers:
-            model, table = self.capability.model_of(name), value.get(name, {})
+        errors: list[InitErrorDetails] = []
+        for name in [*providers, *others]:
+            table = value.get(name, {})
             try:
-                found[name] = table if isinstance(table, model) else model.model_validate(table)
+                found[name] = (
+                    table
+                    if isinstance(table, self.capability.contract)
+                    else self._model(name, table).model_validate(table)
+                )
             except ValidationError as e:
                 errors += [_at((name, *err['loc']), err) for err in e.errors()]
+            except ValueError as e:
+                errors.append(InitErrorDetails(type='value_error', loc=(name,), input=table, ctx={'error': e}))
         if errors:
             raise ValidationError.from_exception_data(self.capability.name, errors)
         return found
+
+    def _model(self, name: str, table: object) -> type[P]:
+        """The class of the table ``name``: its provider's, else the class that ``new`` gives it.
+
+        Raises:
+            ValueError: No provider has that name, and there is no ``new``, or the table is not a table.
+        """
+        if name in self.capability.providers():
+            return self.capability.model_of(name)
+        noun = self.capability.noun
+        if self.new is None:
+            raise ValueError(f'no {noun} has that name; registered {noun}s: {", ".join(self.capability.providers())}')
+        if not isinstance(table, Mapping):
+            raise ValueError(f'a {noun} is a table')
+        return self.new(table)
 
     def dump(self, tables: Mapping[str, P], info: core_schema.SerializationInfo) -> dict[str, object]:
         return {name: p.model_dump(mode=info.mode, exclude_unset=True) for name, p in tables.items()}

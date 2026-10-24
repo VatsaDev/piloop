@@ -8,4 +8,4 @@
 | `seed` | A seed was filed after the role's latest agent started, and a slot of the role is free. | none |
 | `sql` | A query on the piloop database returns at least one row. | `when` |
 | `stalled` | The campaign reached a new stall step, and no sweep of the role started in it, however full the backlog is. | none |
-| `stopped` | The campaign stopped (`[stop]`). It fires once, on the tick that stops the campaign. | none |
+| `stopped` | The campaign stopped (its stop rule, or a request). It fires once, on the tick that stops the campaign. | none |

@@ -69,24 +69,14 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.db.triggers.changelog import IdeaStatusChanged
-from piloop.ids import (
-    IMPLEMENTER,
-    RESEARCH,
-    WATCHDOG,
-    AgentSessionId,
-    CandidateId,
-    CommentId,
-    RoleName,
-    RunId,
-    TargetKind,
-    TargetRef,
-)
+from piloop.ids import IMPLEMENTER, AgentSessionId, CandidateId, CommentId, RoleName, RunId, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins
 from piloop.plugins.executor.contract import AgentKey, Capacity, Prompt
 from piloop.plugins.executor.kit.capacity import Pool
 from piloop.plugins.executor.kit.leases import SERVE
 from piloop.plugins.executor.workers import Workers
+from piloop.plugins.role.research import ResearchRole
 from piloop.plugins.runtime.contract import Handle
 from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.vcs.git import GitRepository, commands as git
@@ -95,12 +85,15 @@ from tests.conftest import (
     HARNESS_APPEND,
     HARNESS_SLEEPS,
     HARNESS_TWO_COMMITS,
+    RESEARCH,
+    WATCHDOG,
     Gate,
     ScriptRuntime,
     disk,
     events,
     factory,
     register,
+    role_of,
     serving,
     span_named,
     wait_for_agent_session_handle,
@@ -2503,7 +2496,7 @@ def test_low_water_counts_each_track_short_of_its_share_whatever_the_others_hold
         backlog = scheduler._backlog(s, p, cfg, RESEARCH, 0)
         assert (backlog.runnable, backlog.target, backlog.short) == (6, 4, 1), 'cost is one short; accuracy has 3 spare'
         assert str(backlog) == '6 of 4 runnable ideas (accuracy 6 of 3, cost 0 of 1)'
-        fire = LowWaterTrigger(buffer=0).fire(scheduler._tick(s, p, cfg, RESEARCH, cfg.roles.research))
+        fire = LowWaterTrigger(buffer=0).fire(scheduler._tick(s, p, cfg, RESEARCH, role_of(cfg, ResearchRole)))
         assert fire is not None and fire.reason == str(backlog)
     add_ideas(db, campaign, 'c0', track='cost')
     with db.session() as s:

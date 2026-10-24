@@ -434,7 +434,7 @@ def test_an_agent_whose_session_has_ended_leaves_no_finding(db: Database, tmp_pa
     the run as finished, and it would undo the stop or the cancel. Its notes, and any other actor's finding, still land.
     """
     with db.session() as s:
-        campaign = Campaign(name='p', path='/p', config={})
+        campaign = Campaign(name='p', path='/p', config={'roles': {'implementer': {}}})
         s.add(campaign)
         s.flush()
         s.add_all(AgentSession(kind='implementer', campaign_id=campaign.id, state=state) for state in AgentSessionState)
@@ -461,7 +461,7 @@ def test_an_agent_whose_session_has_ended_leaves_no_finding(db: Database, tmp_pa
 
 def test_only_the_daemon_writes_an_agents_usage(con: sqlite3.Connection) -> None:
     """``agent_sessions.usage`` loads as a ``Usage``: an agent's UPDATE of it is denied, its other columns are not."""
-    sql.run(con, "INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{}')")
+    sql.run(con, """INSERT INTO campaigns (name, path, config) VALUES ('p', '/p', '{"roles": {"watchdog": {}}}')""")
     sql.run(con, "INSERT INTO agent_sessions (kind, campaign_id) VALUES ('watchdog', 1)")
     with pytest.raises(sqlite3.DatabaseError, match='not authorized'):
         sql.run(con, """UPDATE agent_sessions SET usage = '{"total": "many"}' WHERE id = 1""")

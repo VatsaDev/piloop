@@ -51,7 +51,7 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.db.triggers.changelog import CampaignPausedChanged, CampaignStatusChanged
-from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, CandidateId, RunId, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, CandidateId, RunId, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins import host
 from piloop.plugins.host import data_errors
@@ -65,6 +65,8 @@ from tests.conftest import (
     HARNESS_APPEND,
     HARNESS_NOOP,
     HARNESS_WORSE,
+    RESEARCH,
+    WATCHDOG,
     ScriptRuntime,
     end_of,
     example,

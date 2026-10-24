@@ -17,10 +17,9 @@ from piloop.campaign.stop import check
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
 from piloop.db.models import AgentSession, Campaign, CampaignStatus, Comment, Idea, IdeaStatus, Run, RunStatus
 from piloop.db.session import Database
-from piloop.ids import WATCHDOG
 from piloop.plugins.stop_rule.contract import Hold
 from piloop.reports.overview import progress
-from tests.conftest import ScriptRuntime, write_toml
+from tests.conftest import WATCHDOG, ScriptRuntime, write_toml
 from tests.daemon.test_scheduler import add_ideas, make_scheduler, request_watchdog, set_config, stop_campaign
 
 

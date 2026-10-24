@@ -22,6 +22,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    RootModel,
     ValidationError,
     field_validator,
     model_validator,
@@ -38,14 +39,11 @@ from sqlalchemy.orm import Session
 from piloop import deprecated
 from piloop.db.models import AgentSession, Campaign
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
-from piloop.ids import IMPLEMENTER, RESEARCH, ROLE_NAME, SCOUT, WATCHDOG, RoleName, TrackName
+from piloop.ids import IMPLEMENTER, ROLE_NAME, RoleName, TrackName
 from piloop.mcp import McpServer, ServerName
 from piloop.plugins.host import Plugins, PluginTables, Scope
 from piloop.plugins.metric import Direction
-from piloop.plugins.role.contract import ROLES, ImplementerRole, RoleConfig, RoleEntry, SweepRole
-from piloop.plugins.role.research import ResearchRole
-from piloop.plugins.role.scout import ScoutRole
-from piloop.plugins.role.watchdog import WatchdogRole
+from piloop.plugins.role.contract import ROLES, ImplementerRole, RoleConfig, SweepRole, new_role
 from piloop.plugins.runtime.contract import RuntimeName
 from piloop.plugins.stop_rule.contract import STOP_RULES, Fact
 
@@ -238,29 +236,20 @@ class Memory(BaseModel):
         return globs
 
 
-class Roles(BaseModel):
-    """One table for each role. A built-in role without a table uses its defaults.
+class Roles(RootModel[dict[str, RoleConfig]]):
+    """``[roles]``: one table for each role, by its name, over the role's defaults.
 
-    A table with a new name defines a new role: a role that does runs (``ImplementerRole``) with ``runs = true``, else a
-    sweeping role (``SweepRole``). A role that a package adds with a ``piloop.roles`` entry point is in the config that
-    ``piloop init`` stores, with its table over its defaults.
+    Every role is a provider (``ROLES``): piloop's (implementer, watchdog, research, scout) and those that packages add,
+    each with its table over its defaults, then the roles that the file defines. A table with a new name defines a new
+    role: a role that does runs (``ImplementerRole``) with ``runs = true``, else a sweeping role (``SweepRole``).
     """
 
-    model_config = ConfigDict(extra='allow', frozen=True, use_attribute_docstrings=True)
-    __pydantic_extra__: dict[str, RoleEntry] = Field(init=False)
-
-    implementer: ImplementerRole = ImplementerRole()
-    """``[roles.implementer]``."""
-    watchdog: WatchdogRole = WatchdogRole()
-    """``[roles.watchdog]``."""
-    research: ResearchRole = ResearchRole()
-    """``[roles.research]``."""
-    scout: ScoutRole = ScoutRole()
-    """``[roles.scout]``."""
+    model_config = ConfigDict(frozen=True)
+    root: Annotated[dict[str, RoleConfig], ROLES.tables(new=new_role)] = Field(default={}, validate_default=True)
 
     @model_validator(mode='after')
     def _check(self) -> Self:
-        for name in self.__pydantic_extra__:
+        for name in self.root.keys() - ROLES.providers().keys():
             if not re.fullmatch(ROLE_NAME, name) or name in RESERVED_NAMES:
                 raise ValueError(
                     f'{name!r} is not a role name: use lowercase letters, digits, _ and - ({ROLE_NAME}), and none of'
@@ -268,38 +257,22 @@ class Roles(BaseModel):
                 )
         return self
 
-    @property
-    def _defined(self) -> dict[RoleName, RoleEntry]:
-        """The roles that the file defines, in its order. ``_check`` makes each key a ``RoleName``."""
-        return {RoleName(name): role for name, role in self.__pydantic_extra__.items()}
+    def all(self) -> dict[RoleName, RoleConfig]:
+        """Every role by name: the providers, then the roles that the file defines, in its order.
+
+        ``_check`` makes each key a ``RoleName``.
+        """
+        return {RoleName(name): role for name, role in self.root.items()}
 
     def sweeping(self) -> dict[RoleName, SweepRole]:
-        """The sweeping roles by name: the built-in ones, then the sweeping roles of the file in its order."""
-        mine = {name: role for name, role in self._defined.items() if isinstance(role, SweepRole)}
-        return {
-            WATCHDOG: self.watchdog,
-            RESEARCH: self.research,
-            SCOUT: self.scout,
-            **mine,
-        }
+        """The sweeping roles by name, in the order of ``all``."""
+        return {name: role for name, role in self.all().items() if isinstance(role, SweepRole)}
 
     def doing_runs(self) -> dict[RoleName, ImplementerRole]:
-        """The roles that do runs by name, in the order in which they fill their slots.
-
-        The roles that you define come first, in the order of the file, and the implementer comes last.
-        """
-        mine = {name: role for name, role in self._defined.items() if isinstance(role, ImplementerRole)}
-        return {**mine, IMPLEMENTER: self.implementer}
-
-    def all(self) -> dict[RoleName, RoleConfig]:
-        """Every role by name: the built-in roles, then the roles that you define in the order of the file."""
-        return {
-            IMPLEMENTER: self.implementer,
-            WATCHDOG: self.watchdog,
-            RESEARCH: self.research,
-            SCOUT: self.scout,
-            **self._defined,
-        }
+        """The roles that do runs by name, in the order in which they fill their slots: the implementer last."""
+        mine = {name: role for name, role in self.all().items() if isinstance(role, ImplementerRole)}
+        implementer = mine.pop(IMPLEMENTER)
+        return {**mine, IMPLEMENTER: implementer}
 
 
 class CampaignConfig(BaseModel):
@@ -334,9 +307,9 @@ class CampaignConfig(BaseModel):
     waits. When unset, only the limits of the roles apply."""
     evaluate_timeout: float = 600
     """The number of seconds before the evaluate command is stopped. The evaluation is then a crash."""
-    roles: Roles = Roles()
-    """The settings of each role (``[roles.implementer]``, ``[roles.watchdog]``, ``[roles.research]``, ``[roles.scout]``),
-    and the roles that you define (``[roles.<name>]``)."""
+    roles: Roles = Field(default={}, validate_default=True)
+    """``[roles.<name>]``: the table of each role over its defaults: the built-in roles (implementer, watchdog,
+    research, scout), the roles that packages add, and the roles that you define."""
     link: list[str] = []
     """Repo-relative paths, ignored by git, that piloop puts into every worktree read-only, for example data or virtual
     environments. Each job gets them as they are when it is made."""
@@ -560,22 +533,6 @@ def explain(where: object, error: ValidationError) -> str:
     return '\n'.join(lines)
 
 
-def with_registered_roles(raw: dict[str, object]) -> None:
-    """Add each role that a package adds (``ROLES``) to a parsed ``piloop.toml``, its table over its defaults.
-
-    A value that is not a table is left for the validation to refuse.
-    """
-    tables = raw.get('roles', {})
-    added = {name: p.model() for name, p in ROLES.providers().items() if not p.source.built_in}
-    if not added or not isinstance(tables, dict):
-        return
-    merged = dict(tables)
-    for name, role in added.items():
-        table = merged.get(name, {})
-        merged[name] = role.model_dump(mode='json') | table if isinstance(table, dict) else table
-    raw['roles'] = merged
-
-
 def prompt_files(role: RoleConfig) -> dict[str, str]:
     """Return the prompt files that a role's table sets, by key: ``prompt``, and a sweep's two prompts."""
     keys = {'prompt': role.prompt}
@@ -603,7 +560,6 @@ def load_campaign_config(campaign: Path, **overrides: object) -> CampaignConfig:
         raise ConfigError(f'{toml} is not valid TOML: {e}') from e
     deprecated.apply(toml, raw)
     deprecated.old_env(toml, os.environ)
-    with_registered_roles(raw)
 
     class _Loader(BaseSettings, CampaignConfig):
         model_config = SettingsConfigDict(env_prefix='PILOOP_CAMPAIGN_', env_nested_delimiter='__', extra='forbid')

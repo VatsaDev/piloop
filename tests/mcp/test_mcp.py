@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from piloop.config import CampaignConfig
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
-from piloop.ids import IMPLEMENTER, RESEARCH
+from piloop.ids import IMPLEMENTER
 from piloop.mcp import (
     MCP,
     RENDERERS,
@@ -26,7 +26,7 @@ from piloop.mcp import (
     forwarded_env,
     missing_env,
 )
-from tests.conftest import write_script
+from tests.conftest import RESEARCH, write_script
 
 EXA = McpServer(url='https://mcp.exa.ai/mcp', headers_env={'x-api-key': 'EXA_API_KEY'})
 FIRECRAWL = McpServer(url='https://mcp.firecrawl.dev/v2/mcp', bearer_token_env='FIRECRAWL_API_KEY')

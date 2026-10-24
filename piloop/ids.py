@@ -23,12 +23,9 @@ CommentId = NewType('CommentId', int)
 ROLE_NAME = r'^[a-z][a-z0-9_-]{0,19}$'
 """A role's name, which is also its config table, CLI name, signature and pane prefix."""
 RoleName = NewType('RoleName', str)
-"""A role's name: a built-in one or a ``[roles.<name>]`` table. It matches ``ROLE_NAME``."""
+"""A role's name: a role of a package, piloop's included, or a ``[roles.<name>]`` table. It matches ``ROLE_NAME``."""
 IMPLEMENTER: Final = RoleName('implementer')
-WATCHDOG: Final = RoleName('watchdog')
-RESEARCH: Final = RoleName('research')
-SCOUT: Final = RoleName('scout')
-BUILT_IN_ROLES: Final = (IMPLEMENTER, WATCHDOG, RESEARCH, SCOUT)
+"""The role that run slots fill last, and the role of a run whose row predates its role (``runs.role``)."""
 
 TrackName = NewType('TrackName', str)
 """A track's name: its primary's ``track``, or else the primary's name."""

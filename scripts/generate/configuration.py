@@ -3,11 +3,12 @@
 import inspect
 from typing import get_args
 
-from pydantic import BaseModel
+from pydantic import BaseModel, RootModel
 
 from piloop.config import CampaignConfig
 from piloop.deprecated import BRIDGES, CONFIG_BRIDGES
 from piloop.plugins.host import Parameters, Scope, declared
+from piloop.plugins.role.contract import ROLES
 from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.settings import StorageSettings
 from scripts.generate import ROOT, header
@@ -41,7 +42,8 @@ section.
 
 def _section(model: type[BaseModel], defs: JsonSchema, only: set[str] | None = None) -> str:
     schema = json_schema(model)
-    return f'\n## {model.__name__}\n\n{mdx(schema.get("description", ""))}\n\n{table(schema, defs, only)}'
+    own = defs | schema.get('$defs', {})
+    return f'\n## {model.__name__}\n\n{mdx(schema.get("description", ""))}\n\n{table(schema, own, only)}'
 
 
 def _nested(model: type[BaseModel], found: list[type[BaseModel]]) -> list[type[BaseModel]]:
@@ -78,7 +80,7 @@ def generate() -> str:
     shown: list[type[BaseModel]] = []
 
     def show(model: type[BaseModel]) -> str:
-        if model in shown:
+        if model in shown or issubclass(model, RootModel):  # a table of tables: the key above describes it
             return ''
         shown.append(model)
         base = model.__mro__[1]
@@ -86,7 +88,7 @@ def generate() -> str:
             return _section(model, defs)
         return show(base) + _section(model, defs, _own_keys(model, base))
 
-    for model in [*_nested(CampaignConfig, []), *TRIGGERS.builtins().values()]:
+    for model in [*_nested(CampaignConfig, []), *ROLES.builtins().values(), *TRIGGERS.builtins().values()]:
         out += show(model)
     return out + global_section() + deprecated_section()
 

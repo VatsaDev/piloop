@@ -30,11 +30,11 @@ from piloop.db.models import (
     Verdict,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, RoleName, RunId, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, RoleName, RunId, TargetKind, TargetRef
 from piloop.reports import overview as overview_module
 from piloop.reports.overview import LINKED_CHARS, anomalies, block, overview
 from piloop.scoring.ledger import IdeaCreated
-from tests.conftest import end_of, spent
+from tests.conftest import RESEARCH, WATCHDOG, end_of, spent
 
 T = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 NOW = T + timedelta(hours=2)
@@ -217,9 +217,9 @@ demo · head score 3 (candidate#2, +2 vs baseline) · 2 kept / 3 candidates · 4
   - run#3 idea#3 "build on longer lines" (script): running 1h, agent_session#3 ended 1h ago
 - Ideas: 0 runnable, 1 blocked (idea#4 on idea#2 (rejected)); 0 seed, 0 proposed, 1 scheduled, 1 done, 0 parked, 1 rejected.
 - Agents live: none
-- Agents so far: 3 implementer (1 killed), 0 watchdog, 1 research, 0 scout; 0 of 1 ended research sweeps defined no idea.
+- Agents so far: 3 implementer (1 killed), 1 research, 0 scout, 0 watchdog; 0 of 1 ended research sweeps defined no idea.
 - Ideas by source: research 4 ideas, 3 ran → 1 keep, 0 interesting.
-- Tokens: 4k (implementer 3k, watchdog 0, research 500, scout 0); 500 by agents that ended in the last hour.
+- Tokens: 4k (implementer 3k, research 500, scout 0, watchdog 0); 500 by agents that ended in the last hour.
 - Evaluations: 3 (0 crashed); median 3.0 min, first 5 3.0 min, latest 5 3.0 min; 6.0 min in all; 0 candidates waiting for a verdict.
 ### Recent candidates (3 of 3; score, vs parent)
 - candidate#1 keep 1 (—), no run, 0s ago: baseline
@@ -503,9 +503,9 @@ def test_the_queue_the_live_agents_the_inbox_and_the_events(db: Database, campai
   - idea#4 p2 "after the crash" by research#4, 0s ago; after idea#2; superseded by idea#6
 - Agents live: 1; requested: watchdog#6
   - research#5 script/m 5m, on low_water: 2 ready < 10: ran evaluate.py: METRIC score=3
-- Agents so far: 3 implementer (1 killed), 1 watchdog, 2 research, 0 scout; 0 of 1 ended research sweeps defined no idea.
+- Agents so far: 3 implementer (1 killed), 2 research, 0 scout, 1 watchdog; 0 of 1 ended research sweeps defined no idea.
 - Ideas by source: research 6 ideas, 3 ran → 1 keep, 0 interesting.
-- Tokens: 4k (implementer 3k, watchdog 0, research 500, scout 0); 500 by agents that ended in the last hour.
+- Tokens: 4k (implementer 3k, research 500, scout 0, watchdog 0); 500 by agents that ended in the last hour.
 - Evaluations: 3 (0 crashed); median 3.0 min, first 5 3.0 min, latest 5 3.0 min; 6.0 min in all; 0 candidates waiting for a verdict.
 ### Recent candidates (3 of 3; score, vs parent)
 - candidate#1 keep 1 (—), no run, 0s ago: baseline

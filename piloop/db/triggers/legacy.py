@@ -5,7 +5,8 @@ The migrations create the persistent triggers that the package renders today (``
 and the worker role to the implementer. Revision 0028 generated ``events.kind`` from the payload, so an event trigger
 before it inserts the kind itself. A migration before such a change runs on a schema that still has the old form, so
 ``rendered`` gives a trigger its old name, its old identifiers and its old text there. Only identifiers, the role names
-that a trigger lists and the event insert change: any other string literal keeps its text.
+that a trigger lists and the event insert change: any other string literal keeps its text. Revision 0040 took the
+built-in roles out of the role trigger, so a migration before it gets them back.
 """
 
 import re
@@ -45,7 +46,19 @@ EVENT_INSERT = (
     "INSERT INTO events (actor, target_kind, target_id, payload)\n  VALUES (NEW.author, 'comment', NEW.id,"
     " json_object('kind', 'comment.' || NEW.kind, "
 )
+KNOWN_ROLE = "\nWHEN NEW.campaign_id IS NOT NULL AND (SELECT json_type(config, '$.roles.' || json_quote(NEW.kind))"
+KNOWN_ROLE_ERROR = "a role of the campaign: a key of roles in its config'"
 STAGES = (
+    Stage(
+        '0040',
+        "SELECT 1 FROM alembic_version WHERE version_num < '0040'",
+        literals={
+            KNOWN_ROLE: "\nWHEN NEW.kind NOT IN ('implementer', 'watchdog', 'research', 'scout') AND (SELECT"
+            " json_type(config, '$.roles.' || json_quote(NEW.kind))",
+            KNOWN_ROLE_ERROR: 'a role of the campaign: implementer, watchdog, research, scout or a [roles.<name>] table'
+            " of its piloop.toml'",
+        },
+    ),
     Stage(
         '0028',
         "SELECT 1 FROM pragma_table_xinfo('events') WHERE name = 'kind' AND hidden = 0",
