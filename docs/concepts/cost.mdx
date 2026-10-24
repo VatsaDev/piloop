@@ -35,19 +35,15 @@ The `[stop]` table ends the campaign when one of its conditions holds:
 
 <Stop />
 
-When a condition holds, the campaign becomes `stopped`. The daemon tells the running implementers to commit and stop, and
-ends them 10 minutes later. It scores what they committed. It drops the queued runs and the requested agents. Then
-the `stopped` triggers fire once: by default, the watchdog's closing review, which writes the closing report. The
-triggers request nothing more, but an agent that you request with `piloop launch` still starts. Without a `[stop]` table, the campaign has no end.
+When a condition holds, the campaign becomes `stopped`. The daemon tells the running implementers to commit and
+stop, ends them 10 minutes later, and scores what they committed. It drops the queued runs and the requested agents,
+and the watchdog's closing review writes the closing report. Without a `[stop]` table, the campaign has no end.
 
-`piloop campaign stop <campaign>` stops a campaign by hand, the same way. With `--kill`, the implementers are ended at once.
-`piloop stop` stops the daemon, not the campaign.
+`piloop campaign stop <campaign>` stops a campaign by hand, the same way. `piloop stop` stops the daemon, not the
+campaign. To resume a stopped campaign, change its `[stop]` table and run `piloop init`.
 
-To resume a stopped campaign, change its `[stop]` table and run `piloop init`.
-
-These limits are the built-in stop rule, `limits`. On each tick, the daemon asks the stop rule whether the campaign
-goes on, holds, or stops. A plugin can add another stop rule. You select it with `[plugins.stop_rule]` in
-`piloop.toml`. [Stop conditions](/architecture/extension-points#stop-conditions) has an example.
+These limits are the built-in stop rule, `limits`. A plugin can add another:
+[Stop conditions](/architecture/extension-points#stop-conditions) has an example.
 
 ## Spend outside piloop
 
@@ -59,22 +55,15 @@ it a command that prints the spend so far:
 command = ["uv", "run", "scripts/spend.py"]   # prints one number: the spend so far in USD
 limit = 1000                                  # nothing new starts at this spend
 notices = [300, 600]                          # each one posts a note to the inbox when crossed
-interval = 300                                # seconds between two runs of the command
 ```
 
-The daemon runs the command every `interval` seconds, at the root of the repo, with its own environment. The command
-must print one number and exit 0 within a minute. Give it its keys through the daemon's environment; see
-[Secrets](/guides/secrets).
+The daemon runs the command every `interval` seconds, at the root of the repo, with its own environment: give it its
+keys there ([Secrets](/guides/secrets)). The [configuration reference](/reference/configuration#spend) lists the keys.
 
-- When the spend crosses a value in `notices`, the daemon posts one note at priority 1.
-- When the spend reaches `limit`, the daemon posts one escalation at priority 0.
-- When the command fails, the daemon posts one escalation at priority 0 for each series of failures. An unknown spend
-  is never read as zero.
-
-The stop rule reads the spend on each tick. The built-in rule `limits` holds the campaign while the spend is at
-`limit` or above, while the command fails, and before the command first prints a spend. While the campaign is held,
-the daemon starts no agent and no evaluation for it. Agents and evaluations that already run finish, and their commits
-are scored.
+The campaign is **held** while the spend is at `limit` or above, while the command fails, and before it first prints
+a spend: an unknown spend is never read as zero. At the limit, and for each series of failures, the daemon posts one
+escalation at priority 0. While the campaign is held, the daemon starts no agent and no evaluation for it. Agents and
+evaluations that already run finish, and their commits are scored.
 
 A hold is not a stop: nothing is dropped. The hold ends on the first tick after the cause ends. To resume after the
 limit, raise `limit` in `piloop.toml` and run `piloop init`. After a failure, fix the command; it runs again every
@@ -89,17 +78,7 @@ closing review of that stop:
 | `"skip"` | It starts no closing review. The stop ends at once, and the daemon posts an escalation that says so. |
 | `"wait"` | It requests the closing review, and starts it when the hold ends. It goes on reading the spend until then. |
 
-```toml
-[spend]
-command = ["uv", "run", "scripts/spend.py"]
-limit = 1000
-closing_review = "wait"
-```
-
 A paused campaign that you stop starts its closing review at once: a pause does not hold a stopped campaign.
-
-A stop rule from a plugin must read the spend when `piloop.toml` has `[spend]`. If it does not, piloop refuses the
-configuration, because no other part of piloop holds the campaign at the limit.
 
 `piloop status` shows the spend as `$412.30/$1,000.00 spend`, and why the campaign is held:
 `$1,012.00/$1,000.00 spend (launches held: spend limit reached)`. Tokens are not part of the spend, because piloop has no

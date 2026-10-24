@@ -155,7 +155,7 @@ scored and judged when it ends. A new role of this kind takes the implementer's 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `timeout` | number | `1800` | The number of seconds one implementer may run before it is stopped. Its brief states it. A quarter of it before, at most 10 minutes, the daemon tells the implementer to wrap up. |
-| `max_concurrent` | integer | `4` | The maximum number of implementers that run at the same time. Each implementer is one harness process on this machine. A run that is being scored after its implementer ended does not count. |
+| `max_concurrent` | integer | `4` | The maximum number of implementers that run at the same time, on all workers together. A run that is being scored after its implementer ended does not count. |
 | `writes` | list\[string\] | `["commits", "comments(finding) on your idea", "comments(note) on your run"]` | What an implementer may write, as its brief states it. |
 | `files` | `nothing` \| `seeds` \| `ideas` | `"nothing"` | An implementer files no ideas and no seeds. Its hunches go in its finding, which research reads. |
 | `runs` | boolean | `true` | The agents of this role do runs. A table without `runs = true` is a sweeping role. |
@@ -272,10 +272,10 @@ count either. `[spend]`, `max_tokens` and `max_hours` stay hard limits on what a
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `target` | number \| null | `null` | Stop when the primary metric at the head (the latest keep on the trunk) reaches this value, in its direction. Only for a campaign with one track. |
-| `max_runs` | integer \| null | `null` | Stop after this many runs that count (see above), once none is queued, running or being scored. A run also counts while it is queued, running or being scored, so piloop never starts more runs than this. A finished run that does not count frees its place, and piloop starts another run in it. |
+| `max_runs` | integer \| null | `null` | Stop after this many runs that count, once none is queued, running or being scored. A run counts when it reached the evaluator, and also while it is queued, running or being scored, so piloop never starts more runs than this. A finished run that does not count frees its place, and piloop starts another run in it. |
 | `max_hours` | number \| null | `null` | Stop after this many hours of wall-clock time since the first run of the campaign started. The time that the campaign was paused (`piloop pause`) does not count. |
 | `max_tokens` | integer \| null | `null` | Stop when all the agents of the campaign together spent this many tokens (the `total` of `agent_sessions.usage`), summed over the agents that ended. |
-| `plateau` | integer \| null | `null` | Stop after this many finished runs that count (see above) without a new `keep` candidate. The count starts again at each keep, and when the campaign is set `active` after a stop (`piloop init`, or an UPDATE of `campaigns.status`), so a reactivated campaign gets this many runs again. A new evaluator alone does not reset it. |
+| `plateau` | integer \| null | `null` | Stop after this many finished runs that reached the evaluator without a new `keep` candidate. The count starts again at each keep, and when the campaign is set `active` after a stop (`piloop init`, or an UPDATE of `campaigns.status`), so a reactivated campaign gets this many runs again. A new evaluator alone does not reset it. |
 
 ## Spend
 

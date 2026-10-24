@@ -94,8 +94,8 @@ class ImplementerRole(RoleConfig):
     """The number of seconds one implementer may run before it is stopped. Its brief states it. A quarter of it before,
     at most 10 minutes, the daemon tells the implementer to wrap up."""
     max_concurrent: int = Field(default=4, ge=1)
-    """The maximum number of implementers that run at the same time. Each implementer is one harness process on this machine. A
-    run that is being scored after its implementer ended does not count."""
+    """The maximum number of implementers that run at the same time, on all workers together. A run that is being
+    scored after its implementer ended does not count."""
     writes: list[str] = ['commits', 'comments(finding) on your idea', 'comments(note) on your run']
     """What an implementer may write, as its brief states it."""
     files: Files = Files.NOTHING

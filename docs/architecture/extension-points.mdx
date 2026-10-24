@@ -77,8 +77,8 @@ A plugin can also do two more things:
 
 ## Runtimes
 
-piloop starts each agent through a runtime. The runtime starts the agent's process. piloop then asks the runtime if
-the agent still works, sends messages to the agent through it, and stops the agent through it.
+piloop starts each agent through a runtime. The runtime starts the agent's process. piloop then waits for the agent,
+sends it messages and stops it through the runtime.
 
 ### Example: run the agents under `nice`
 
@@ -104,8 +104,7 @@ runtime's settings.
 
 A runtime is a class with the methods of the `Runtime` protocol, and one class attribute: `kind`, its name (the name
 of its entry point). Its constructor takes no arguments. It starts the `headless` argv of a harness, with the first
-prompt in it. The worker and `piloop prompt` call its methods, so a new runtime gets them at once. [Runtimes](/concepts/roles#runtimes) says what a runtime does for
-you.
+prompt in it. [Runtimes](/concepts/roles#runtimes) says what a runtime does for you.
 
 <RuntimeProtocol />
 
@@ -200,7 +199,7 @@ job on this machine.
 ### Built in
 
 `workers`, the default, runs every job on a [lease](/architecture/leases), taken by its worker in `piloop serve` or by
-a [worker on another machine](/architecture/leases#a-worker-on-another-machine). Its routes are the lease calls. Its
+a [worker on another machine](/guides/remote-workers). Its routes are the lease calls. Its
 keys are in the [configuration reference](/reference/configuration#plugins).
 
 ## Networks
@@ -212,7 +211,8 @@ executor with routes needs one.
 
 The entry point names a subclass of `NetworkConfig`, which has `listen`: its fields are the other keys of
 `[plugins.network]`. Its `client(server)` is an HTTP client of the server with this machine's credential, which the
-provider finds itself, or it raises `NoCredential` with what to set: `piloop worker` dials with it. The daemon calls its `open(host)` once, when it starts, to make the server's `Network`:
+provider finds itself, or it raises `NoCredential` with what to set: `piloop worker` dials with it. The daemon calls
+its `open(host)` once, when it starts, to make the server's `Network`:
 
 - `listener()` binds `listen`, and returns the socket with its TLS, or None when `listen` is unset.
 - `identify(headers, peer)` returns the `Caller` of a request, or `Refused` with the reason. The server answers 401.
@@ -221,8 +221,8 @@ provider finds itself, or it raises `NoCredential` with what to set: `piloop wor
 ### Built in
 
 `https`, the default, checks the bearer tokens of `piloop token`, and its client sends the one in
-`PILOOP_HTTPS_TOKEN`. An address that is not loopback needs `tls`: a
-certificate, or `"proxy"` when a reverse proxy or an SSH tunnel ends TLS. Its keys are in the
+`PILOOP_HTTPS_TOKEN`. An address that is not loopback needs `tls`: a certificate, or `"proxy"` when a reverse proxy or
+an SSH tunnel ends TLS. Its keys are in the
 [configuration reference](/reference/configuration#plugins).
 
 ## Pure plugins
@@ -253,8 +253,7 @@ method are data:
 - No part of a type can be of any type: no `Any`, no `object`, no model that allows extra fields.
 - No type can contain itself.
 
-These are the rules of WIT, the interface language of WebAssembly components. A provider returns an error as a
-value, a case of a union of records. It does not raise an exception.
+A provider returns an error as a value, a case of a union of records. It does not raise an exception.
 
 The entry point of a provider names its class. piloop checks that the class subclasses the contract and implements
 each abstract method. A type checker such as ty checks the rest in the provider's own package: the arguments and the
@@ -497,10 +496,9 @@ headless = ["--model", "{model}", "{prompt}"]
 ### The contract
 
 A harness is a coding agent CLI, and a `[harness.<name>]` table says how to start it: the executable and the argv
-(`headless`). piloop fills in
-`{model}`, `{effort}`, `{session_id}`, `{cwd}` and `{prompt}`. To record its tokens and give it MCP servers, it names one of the
-[built-in readers and renderers](#usage-readers-and-mcp-renderers). The
-[configuration reference](/reference/configuration#harness) has every key.
+(`headless`), with placeholders such as `{model}` and `{prompt}`. To record its tokens and give it MCP servers, it
+names one of the [built-in readers and renderers](#usage-readers-and-mcp-renderers). The
+[configuration reference](/reference/configuration#harness) has every key and placeholder.
 
 ### Built in
 
@@ -761,5 +759,5 @@ The **plugin host** is the part of piloop that finds, checks and loads plugins (
   the file, and the capability gets that instance. If no provider has that name, the error names the key and lists the
   names that exist.
 - **Two kinds of contract.** A provider of a `host` capability, such as a runtime, can get live objects of piloop:
-  processes, files, a database session. A provider of a `pure` capability gets data only. piloop loads, selects,
-  lists and unloads both kinds in the same way.
+  processes, files, a database session. A provider of a `pure` capability gets data only. piloop loads, selects and
+  lists both kinds in the same way.

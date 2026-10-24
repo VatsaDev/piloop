@@ -301,6 +301,11 @@ agent started, and what the agent writes there goes into the shared workspace wh
   `NOTES.md.implementer-12`.
 - The evaluate command gets no `./workspace/`. Keep what it reads in a `link` input.
 
+### Linked inputs
+
+The `link` paths are read-only in a worktree, as they were when the job was made. A write in place to a linked file
+fails, and a new file stays in the worktree. An evaluation that changes a linked input anyway is a `crash`.
+
 ## Upgrading to 0.2.0
 
 Read this before you upgrade from 0.1.0.
@@ -373,30 +378,6 @@ Each of these still works in 0.2.0, with a `PiloopDeprecationWarning`. piloop 0.
 
 - `piloop launch <campaign> research --scout`. The scout is a role of its own: `piloop launch <campaign> scout`. It is
   off until you set `[roles.scout] interval`.
-
-### If you ran main after 0.1.0
-
-The names that `main` added after 0.1.0 are renamed too, with no alias: the `campaign_id` of `documents`, `lessons`
-and `archives` (was `project_id`), the events `project.paused`, `project.stop_requested`, `project.type` and
-`project.parent_id`, the events `worker.stop_ended`, `worker.cancel_requested` and `worker.jobs_left` (now
-`agent_session.*`), the parameter `:project` of an `sql` trigger (`@project`, `$project`), `workdir = "project"`
-(now `"repo"`), `piloop project stop` (now `piloop campaign stop`), the `--project` option of `piloop events`, and the
-`projects` and `subject.project` keys of the JSON output. The migration renames those that the database and its
-stored configs hold.
-
-These keys of `main` still work until 0.3.0, with a warning:
-
-- `{ kind = "scout" }` in `[roles.research] triggers`: delete it. The scout has its own `cron` trigger.
-- `[storage.remote]` in `config.toml`: write `[storage.backend]`.
-
-The plugin contracts of `main` changed, with no alias:
-
-- A stop rule's `check` returns `Go()`, `Hold(reason)` or `Stop(reason)`, not a stop reason or none. With `[spend]`
-  set, a stop rule whose `reads` lacks `spend` is refused.
-- The artifact store's plugin capability is the **storage backend**, not the remote backend. A package that adds a
-  backend subclasses `piloop.capabilities.StorageBackendConfig` (was `RemoteConfig`), its `open()` returns a
-  `StorageBackend` (was `Remote`), and its tests call `check_storage_backend` (was
-  `check_remote`). The entry point group stays `piloop.stores`.
 
 ## Other install types
 

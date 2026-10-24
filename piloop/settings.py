@@ -135,7 +135,7 @@ class Settings(BaseSettings):
     of its own, so that its skills do not replace those of the release."""
 
     storage: StorageSettings = StorageSettings()
-    """``[storage]`` in ``config.toml``: where archived workspace files go."""
+    """``[storage]`` in ``config.toml``: how archiving uses the disk of this home."""
 
     runtimes: dict[str, dict[str, object]] = {}
     """``[runtimes.<name>]`` in ``config.toml``: the settings of a runtime that a package adds, which it reads with

@@ -29,9 +29,9 @@ agent or a human that still reads a file, for example to answer an escalation, f
 The daemon removes the workspace copies of an archiving later, and records when in `archives.pruned_at`:
 
 - **By age**: 7 days after the archiving.
-- **Under disk pressure**: while the disk of `PILOOP_HOME` has less than `min_free_gb` (`[storage]`, 20 GB by default)
-  free, the oldest archivings first. Before them go the copies of `link` inputs that no running job uses, oldest
-  first: the next job that needs one makes it again from the store.
+- **Under disk pressure**: while the disk of `PILOOP_HOME` has less than `[storage] min_free_gb` free, the oldest
+  archivings first. Before them go the copies of `link` inputs that no running job uses, oldest first: the next job
+  that needs one makes it again from the store.
 
 It removes only a file that still holds what was stored (same size and hash), and a symlink that still points where
 it did. A file that an agent wrote since stays, and so does its directory. It checks age and pressure every hour,
@@ -76,8 +76,8 @@ Nothing is ever deleted from the store. There is no garbage collection.
 
 ## A remote store
 
-`[plugins.cas]` in `$PILOOP_HOME/config.toml` selects where the blobs go. `disk`, `$PILOOP_HOME/store`, is the
-default. `cached` keeps a local cache over a remote store, such as a bucket:
+`[plugins.cas]` in `$PILOOP_HOME/config.toml` selects where the blobs go. `cached` keeps a local cache over a
+remote store, such as a bucket:
 
 ```toml
 [plugins.cas]
@@ -87,22 +87,15 @@ local_max_gb = 200
 remote = { provider = "s3", url = "s3://my-bucket/piloop" }
 ```
 
-The local cache is `$PILOOP_HOME/store` unless `local` says otherwise, for example
-`local = { provider = "disk", path = "/scratch/piloop-store" }`. `s3` and `gcs` are built in; `gcs` needs the `gcs` extra (`uv tool install --reinstall 'piloop[gcs]'`). A package can
-add a provider: see [CAS providers](/architecture/extension-points#cas-providers). The
-[configuration reference](/reference/configuration) lists the keys of each. `piloop serve`, `piloop restore` and
-`piloop store` fail on a key that the provider does not know.
+The [configuration reference](/reference/configuration#plugins) lists each provider and its keys. `gcs` needs the
+`gcs` extra: `uv tool install --reinstall 'piloop[gcs]'`. A package can add a provider: see
+[CAS providers](/architecture/extension-points#cas-providers).
 
 - **Mirror.** Every blob is uploaded as it is stored. For S3, boto3 finds the credentials (environment, profile or
   instance role).
-- **Storage class.** On S3, each object gets Glacier Instant Retrieval (millisecond reads at a fraction of the price
-  of STANDARD), except objects under `standard_below`: Glacier IR bills each object as at least 128 KB, so small ones
-  are cheaper as STANDARD.
 - **Eviction.** Every hour, before the next archiving, the daemon drops the local copies of blobs that the remote
   holds: those older than `evict_after_days`, then the oldest ones until the local store fits `local_max_gb`.
   `piloop store evict` does the same on demand. It first uploads any blob that was stored before you set the remote.
-- **Remote only.** With `evict_after_days = 0`, the local store keeps nothing: each blob goes to the remote alone,
-  and `piloop restore` downloads it.
 - **One remote per store.** The first upload writes the remote's URL to `$PILOOP_HOME/store/remote.url`. A store
   whose blobs went to one remote refuses to open over another remote, or as `disk`: the blobs it marked as uploaded
   are only in the first one. To move to a new remote, copy the objects there, then write its URL into that file.
@@ -112,18 +105,5 @@ asks the remote for the evicted ones.
 
 ## A store for other machines
 
-`piloop cas serve` serves this home's store over HTTP, so that workers on other machines read and write it. It runs
-apart from the daemon, on its own port, and takes the workers' tokens:
-
-```bash
-piloop cas serve --listen 0.0.0.0:7701       # needs tls in [plugins.network]
-```
-
-On the worker, a local cache over it. The worker dials it as it dials the server, through `[plugins.network]`:
-
-```toml
-[plugins.cas]
-provider = "cached"
-local_max_gb = 50
-remote = { provider = "http", url = "https://cas.example:7701" }
-```
+`piloop cas serve` serves this home's store over HTTP to [workers on other machines](/guides/remote-workers), which
+reach it with the `http` provider.

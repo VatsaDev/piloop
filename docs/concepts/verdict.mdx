@@ -77,11 +77,6 @@ not reach what the evaluate command measures.
 A margin applies to each step. Many keeps that each give up a margin can add up to a large regression. A floor stops
 that. Only an edit of `piloop.toml` moves a floor.
 
-<Note>
-  Put every margin and floor in `piloop.toml`. A limit that is only in `brief.md` is a request to the agents. A limit
-  in `piloop.toml` is enforced by the daemon.
-</Note>
-
 ## Confidence
 
 When the evaluate command writes [per-unit results](/concepts/campaigns#per-unit-results), the verdict uses a paired
@@ -159,12 +154,11 @@ candidate, so the daemon does not measure it again by itself. Ask for it:
 piloop candidate remeasure 42
 ```
 
-The daemon runs the evaluate command on the candidate and on its bar 3 times each (`--repeats`), with the current
-evaluator, after the head and the bars that runs need. The order is candidate, bar, bar, candidate, candidate, bar,
-and it stops at the first run that fails. A `crash`, `discard` or `interesting` that the daemon gave is then judged
-again on these pairs, as its run would have judged it. A keep, and a verdict that someone set, stay. The baseline and
-a reference have no bar: they run alone. A `pending`, `unmeasured` or `recovered` candidate is never measured this
-way.
+The daemon measures the candidate in pairs with its bar, 3 times each (`--repeats`), with the current evaluator,
+after the head and the bars that runs need. It stops at the first run that fails. A `crash`, `discard` or
+`interesting` that the daemon gave is then judged again on these pairs, as its run would have judged it. A keep, and
+a verdict that someone set, stay. The baseline and a reference have no bar: they run alone. A `pending`, `unmeasured`
+or `recovered` candidate is never measured this way.
 
 A stopped campaign is measured too, but only what someone asked for, so you can measure a result again when you
 review a campaign. A campaign paused with `--evals`, or held by its stop rule, is measured once the hold ends. The

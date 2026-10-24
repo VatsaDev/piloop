@@ -14,7 +14,7 @@ from piloop.net.server import Server
 from piloop.net.tokens import Tokens
 from piloop.plugins.network.contract import NETWORKS, Address, NetworkHost
 
-app = cyclopts.App(name='cas', help='The CAS that workers on other machines read and write, in a process of its own.')
+app = cyclopts.App(name='cas')  # its help is where piloop.cli.main registers it lazily
 
 
 @app.command

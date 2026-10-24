@@ -15,4 +15,4 @@
 | `PILOOP_DEBUG` | `false` | Show the full traceback of an unexpected error in the CLI, instead of a short message. |
 | `PILOOP_AGENT_SKILLS_DIR` | `~/.agents/skills` | The user directory of Agent Skills, which Codex, pi, Gemini CLI and Cursor read. piloop installs the orchestrator skills there for them. |
 | `PILOOP_CLAUDE_SKILLS_DIR` | none | The directory in which piloop installs the orchestrator skills for Claude Code. Unset, it is the one Claude Code reads: `skills` in its config directory (`CLAUDE_CONFIG_DIR`, by default `~/.claude`). A second piloop on the same machine, such as a build of `main` next to a release, sets this and `agent_skills_dir` to directories of its own, so that its skills do not replace those of the release. |
-| `PILOOP_STORAGE__<KEY>` | [its table](/reference/configuration#storage) | `[storage]` in `config.toml`: where archived workspace files go. |
+| `PILOOP_STORAGE__<KEY>` | [its table](/reference/configuration#storage) | `[storage]` in `config.toml`: how archiving uses the disk of this home. |

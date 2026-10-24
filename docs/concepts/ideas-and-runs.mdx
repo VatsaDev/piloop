@@ -50,7 +50,7 @@ piloop idea status 2 parked --reason "wait for the results of idea#1"
 A run starts from the **head**, the latest keep. To start from another candidate, pin it with `--base <candidate>`, or
 later with `piloop idea base`. A run from another starting point is a **branch run**: its keeps do not move the head,
 unless its starting point has the head's changes already. At least one run in every `[roles.implementer] explore_every`
-runs (4 by default) starts from a pinned idea when one is ready.
+runs starts from a pinned idea when one is ready.
 
 `piloop candidate import enwik8 <commit>` makes any commit of the repo a **reference**: a starting point from outside
 the campaign, such as a branch. The daemon measures it, and an idea can start from it.
@@ -83,10 +83,11 @@ scores every new commit. piloop commits what the implementer left uncommitted as
 measured.
 
 Then the idea is `done`. When the run failed, timed out or was cut by `piloop stop` after it made commits, the idea
-goes back to `ready`, and the next attempt starts from its last commit, up to `[roles.implementer] recovery_requeues`
-times (2). The commits of a run that `piloop stop` cut are `recovered`, never measured. When the head moved past the
-last commit, the next attempt starts on the head, and a note on the idea gives the `git cherry-pick` of the commits. A run that failed with no commit sends the idea back to `ready` while it has attempts left (2 by default). A run whose agent never started to work is not an attempt. See
-[Run lifecycle](/architecture/run-lifecycle).
+goes back to `ready`, and the next attempt starts from its last commit (`[roles.implementer] recovery_requeues`). The
+commits of a run that `piloop stop` cut are `recovered`, never measured. When the head moved past the last commit, the
+next attempt starts on the head, and a note on the idea gives the `git cherry-pick` of the commits. A run that failed
+with no commit sends the idea back to `ready` while it has attempts left. A run whose agent never started to work is
+not an attempt. See [Run lifecycle](/architecture/run-lifecycle).
 
 An implementer asks for a decision with an `escalation` comment. If it stops while the escalation waits for an answer,
 its run fails and the idea is `parked`. Answer with a `decision` comment on the idea, then set the idea `ready`. The

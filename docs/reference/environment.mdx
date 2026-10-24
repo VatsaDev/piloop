@@ -19,6 +19,7 @@ These are the settings of the daemon and the CLI. The table comes from piloop's 
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Claude Code's configuration directory. `piloop install-skills` writes Claude Code's skills to its `skills/` directory, unless `PILOOP_CLAUDE_SKILLS_DIR` names another one. The usage glob of the `claude` harness reads it (`{env:CLAUDE_CONFIG_DIR:~/.claude}`). |
 | `CODEX_HOME` | `~/.codex` | Codex's home directory. The usage glob of the `codex` harness reads it (`{env:CODEX_HOME:~/.codex}`). |
 | `PI_CODING_AGENT_DIR` | `~/.pi/agent` | pi's agent directory. The usage glob of the `pi` harness reads it (`{env:PI_CODING_AGENT_DIR:~/.pi/agent}`). |
+| `PILOOP_HTTPS_TOKEN` | none | The token that `piloop token create` printed on the server. `piloop worker`, and the `http` CAS provider, send it. See [Workers on other machines](/guides/remote-workers). |
 | `PILOOP_SRC` | PyPI | For `install.sh` only: install piloop from this checkout or pip-style URL instead of from PyPI. |
 
 A usage glob of a harness can read any variable with `{env:NAME:default}`. `piloop service-unit` carries each one that
@@ -29,11 +30,11 @@ the harnesses name.
 | Variable | Set for | Meaning |
 |---|---|---|
 | `PILOOP_ACTOR` | every agent | The agent's signature, `<role>#<agent-session-id>`, for example `implementer#12` or `scout#7`. |
-| `PILOOP_HOME` | every agent | The same directory as the daemon's, so that the agent's `piloop` commands use the same database, also a `piloop` of another install that the agent's shell puts first on the `PATH`. |
-| `PILOOP_BIN` | every agent | `$PILOOP_HOME/bin/piloop`, which runs the daemon's own piloop on the daemon's home. On a [worker on another machine](/architecture/leases#a-worker-on-another-machine), it relays the command to the server. The briefs run piloop with it, so another piloop on your `PATH`, or a harness shell that runs your rc files again, does not matter. |
+| `PILOOP_HOME` | every agent | The home of the daemon, or of the worker on another machine that runs the agent. |
+| `PILOOP_BIN` | every agent | `$PILOOP_HOME/bin/piloop`, which runs the daemon's own piloop on the daemon's home. On a [worker on another machine](/guides/remote-workers), it relays the command to the server. The briefs run piloop with it. |
 | `PATH` | every agent | The daemon's `PATH`, after `$PILOOP_HOME/bin`, so that a plain `piloop` is the daemon's too. |
 | `PILOOP_UNITS_FILE` | the evaluate command, in piloop's own measurements only: the daemon's, and the baseline that `piloop init` measures. Never in an agent's environment. | The path where the evaluate command may write its [per-unit results](/concepts/campaigns#per-unit-results). |
 | `PILOOP_DEADLINE` | every agent | The Unix time at which the role's `timeout` ends the agent. |
 | `PILOOP_MESSAGES` | every agent of the `subprocess` runtime | The file of the messages that wait for the agent. The hook of a Claude agent runs `piloop agent messages` after each tool call when it is not empty. |
-| `PILOOP_PROCESS_TAG` | every agent | A random tag of the agent's own, which its runtime finds the processes that the agent started by, also those in sessions of their own, to end them with the agent. It is not the agent's identity: `PILOOP_ACTOR` is. |
+| `PILOOP_PROCESS_TAG` | every agent | A random tag by which the runtime finds the processes that the agent started, also those in sessions of their own, to end them with the agent. |
 | `CLAUDE_CODE_CHILD_SESSION` | every agent, set to empty | Claude Code sets it for every process that it runs. A Claude Code agent that inherits it saves no transcript, so piloop clears it. |

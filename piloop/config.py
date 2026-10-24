@@ -201,9 +201,9 @@ class Stop(BaseModel):
     """Stop when the primary metric at the head (the latest keep on the trunk) reaches this value, in its direction.
     Only for a campaign with one track."""
     max_runs: int | None = Field(default=None, ge=1)
-    """Stop after this many runs that count (see above), once none is queued, running or being scored. A run also
-    counts while it is queued, running or being scored, so piloop never starts more runs than this. A finished run that
-    does not count frees its place, and piloop starts another run in it."""
+    """Stop after this many runs that count, once none is queued, running or being scored. A run counts when it reached
+    the evaluator, and also while it is queued, running or being scored, so piloop never starts more runs than this. A
+    finished run that does not count frees its place, and piloop starts another run in it."""
     max_hours: float | None = Field(default=None, gt=0)
     """Stop after this many hours of wall-clock time since the first run of the campaign started. The time that the
     campaign was paused (``piloop pause``) does not count."""
@@ -211,7 +211,7 @@ class Stop(BaseModel):
     """Stop when all the agents of the campaign together spent this many tokens (the ``total`` of ``agent_sessions.usage``),
     summed over the agents that ended."""
     plateau: int | None = Field(default=None, ge=1)
-    """Stop after this many finished runs that count (see above) without a new ``keep`` candidate. The count starts
+    """Stop after this many finished runs that reached the evaluator without a new ``keep`` candidate. The count starts
     again at each keep, and when the campaign is set ``active`` after a stop (``piloop init``, or an UPDATE of
     ``campaigns.status``), so a reactivated campaign gets this many runs again. A new evaluator alone does not reset
     it."""

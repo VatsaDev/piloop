@@ -1,0 +1,77 @@
+---
+title: Workers on other machines
+description: Run agents and evaluations on more machines, such as a GPU box, with one daemon.
+---
+
+A **worker** runs the daemon's jobs: agent sessions and evaluations. `piloop serve` has one, and `piloop worker` adds
+one on another machine. A job's code, inputs and results go through the [CAS](/concepts/artifact-store), so the
+worker and the server share one.
+
+## On the server
+
+Give the worker's [pool](/architecture/leases#capacity) its slots in `config.toml`:
+
+```toml
+[plugins.executor.pools.gpu]
+agents = 2
+evaluations = 1
+```
+
+Set `tls` in `[plugins.network]`: a certificate, `tls = { cert = "<cert.pem>", key = "<key.pem>" }`, or `"proxy"`
+when a reverse proxy or an SSH tunnel ends TLS. Only a loopback address may go without it.
+
+Then listen, serve the CAS, and make the worker's token:
+
+```bash
+piloop serve --detach --listen 0.0.0.0:8443
+piloop cas serve --listen 0.0.0.0:7701
+piloop token create gpu1
+```
+
+`piloop cas serve` serves the server's `[plugins.cas]` until you stop it. When that is a bucket that the worker can
+reach, skip it, and give the worker the same `[plugins.cas]`. `token create` prints the token once: piloop keeps only
+its hash.
+
+## On the worker
+
+Install the same piloop as on the server, and log in to the harnesses that its agents use. In its `config.toml`:
+
+```toml
+[plugins.cas]
+provider = "cached"
+local_max_gb = 50
+remote = { provider = "http", url = "https://piloop.example.com:7701" }
+```
+
+Start it with the token:
+
+```bash
+PILOOP_HTTPS_TOKEN=<token> piloop worker --server https://piloop.example.com:8443 --pool gpu
+```
+
+The worker's name is the token's name. It calls the server, and the server never calls it. For a certificate that
+your system does not trust, set `SSL_CERT_FILE`. On the server, `piloop worker list` shows it:
+
+```text
+ worker  pool   seen    load     memory    disk      agents  evaluations  no lease
+ gpu1    gpu    6s ago  21.8/32  103.8 GB  816.4 GB  1       0            nothing
+ serve   serve  6s ago  21.8/32  103.8 GB  816.4 GB  0       0            slots
+```
+
+The server refuses a worker with another piloop protocol, an unknown pool, a revoked token, or a `[plugins.cas]` that
+is not the server's. The worker then stops its jobs and exits with the reason.
+
+## What an agent on a worker gets
+
+- The environment of the worker, with the keys that its [MCP servers](/guides/mcp-servers) need.
+- A clone of the campaign's repo and a copy of the shared [workspace](/concepts/campaigns#shared-files). Its commits
+  and its workspace writes come back when it ends.
+- Its `piloop` commands, which the worker relays to the server while the agent's lease is live.
+
+Until it ends, its output is in the worker's `$PILOOP_HOME`, and `piloop attach` names the worker.
+
+<Warning>
+  An agent on a worker runs as the worker's user, so it holds the worker's token. It can do whatever the worker can
+  do on the server, as an agent of `piloop serve` can open its database. Run a worker as a user that you give that
+  trust.
+</Warning>

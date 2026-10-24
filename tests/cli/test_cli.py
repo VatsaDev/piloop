@@ -1227,7 +1227,7 @@ def test_serve_detach_status_stop(out, monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(SystemExit, match=f'already running \\(pid {pid}'):
         Daemon(common.settings).serve()
     run_cli(['status'])
-    assert out().startswith(f'daemon: pid {pid}, up 0:00:0')
+    assert re.match(rf'daemon: pid {pid}, up 0:\d\d:\d\d\n', out())  # a loaded host can take 10 s to get here
 
     reaper = threading.Thread(target=os.waitpid, args=(pid, 0))
     reaper.start()  # this process is the daemon's parent: reap it, or its zombie keeps looking alive to `stop`

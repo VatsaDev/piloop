@@ -125,8 +125,6 @@ of an idea and the verdict count every run of the campaign. A keep of any role m
 
 ## Scout
 
-<Note>The scout is experimental.</Note>
-
 A **scout** writes the open problems as measured losses, then searches X, GitHub and arXiv for techniques that could
 reduce them. It files the best few as seeds, and keeps the others in the `techniques` table. It is off until you set
 its `interval`:
@@ -150,14 +148,14 @@ harness and model.
 
 ## Runtimes
 
-A **runtime** is where an agent runs. It starts the agent, watches it, sends it messages and stops it. The `runtime` key of `piloop.toml` sets it for the campaign, and `[roles.<name>] runtime` for one role.
+A **runtime** is where an agent runs. It starts the agent, watches it, sends it messages and stops it. The `runtime`
+key of `piloop.toml` sets it for the campaign, and `[roles.<name>] runtime` for one role.
 
 ### Built-in runtimes
 
 <Runtimes />
 
-`subprocess` is the default. Each agent is a background process without a terminal. It needs nothing more than the
-harnesses. A plugin can add a runtime. See [Extension points](/architecture/extension-points#runtimes).
+A plugin can add a runtime. See [Extension points](/architecture/extension-points#runtimes).
 
 ## Look at an agent
 

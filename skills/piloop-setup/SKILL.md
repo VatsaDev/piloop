@@ -11,7 +11,7 @@ You do the setup. The human answers an interview and logs in where a CLI needs a
 - Run every command yourself.
 - After each step, report the result in one line.
 - To try a bundled example, run `piloop init --example enwik8 <dir>` (or `titanic-tracks`). It registers the campaign, so
-  skip steps 2 to 4: fit `harnesses` and `runtime` in `<dir>/piloop.toml` to step 1, run `piloop init <dir>` again, and
+  skip steps 2 to 4: fit `harnesses` in `<dir>/piloop.toml` to step 1, run `piloop init <dir>` again, and
   go on at step 5.
 
 ## 1. Check the machine
@@ -121,6 +121,8 @@ Map each answer to its keys:
   - piloop refuses `[stop] target` when there are several tracks.
 - **Measurement → `evaluate`, `evaluate_timeout`.**
 - **Budget → `[roles.implementer]` `timeout` and `max_concurrent`, and `[roles.research]`.**
+- **Compute on other machines (a GPU box) → a pool in `config.toml`, and `piloop worker` there:**
+  https://piloop.autoresearch.inc/guides/remote-workers.
 - **Prior art → `context`** (a top-level key). List the error analyses and evaluation reports of the repo (where the
   current system loses to a reference). Every sweep that reads the research pack starts from them.
 - **Outside techniques → `[roles.scout]`**, only when the human wants them.
@@ -128,7 +130,7 @@ Map each answer to its keys:
   - The X search needs an `[mcp.xai]` table that runs `scripts/xai_search_mcp.py`
     (https://piloop.autoresearch.inc/guides/mcp-servers), `"xai"` in `[roles.scout] mcp`, and `XAI_API_KEY` in the
     daemon's environment.
-- **Harnesses → `harnesses`, `[model]`, `runtime`.** Remove the harnesses that the human does not have.
+- **Harnesses → `harnesses`, `[model]`.** Remove the harnesses that the human does not have.
 - **`link`:** gitignored data or virtualenvs that the evaluate command needs inside a worktree.
 - **Objective target and budget → `[stop]`:** `target`, `max_runs`, `max_hours`, `max_tokens`, and `plateau` when the
   human wants the campaign to end by itself. Leave `[stop]` out only if the human explicitly wants an open-ended

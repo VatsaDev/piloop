@@ -454,9 +454,9 @@ PILOOP_ACTOR=orchestrator piloop candidate verdict <c> interesting --reason '<wh
   new tree measured.
 - After a new evaluator, the daemon measures only the head and the bars that runs need. An older keep keeps its old
   score until you ask for it with `piloop candidate remeasure <c>`.
-- Evaluations wait for one of the daemon's slots (`evaluations` of `[plugins.executor.pools.serve]`): `piloop eval queue` lists them. `piloop eval cancel
-  <c>` cancels one that is no longer worth its slot; the candidate becomes a `crash` that names you. Never kill an
-  evaluator process by hand.
+- Evaluations wait for a worker's slot (`evaluations` of its pool in `[plugins.executor.pools]`): `piloop eval queue`
+  lists them. `piloop eval cancel <c>` cancels one that is no longer worth its slot; the candidate becomes a `crash`
+  that names you. Never kill an evaluator process by hand.
 
 Rules:
 

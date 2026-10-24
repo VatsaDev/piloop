@@ -45,6 +45,7 @@
         "pages": [
           "guides/running-for-days",
           "guides/secrets",
+          "guides/remote-workers",
           "guides/mcp-servers",
           "guides/upgrading",
           "guides/watch",

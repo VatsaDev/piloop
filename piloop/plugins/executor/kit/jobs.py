@@ -311,7 +311,7 @@ def _watch(
         if not control.handing_over():
             try:
                 (site.log_dir(job) / TRANSCRIPT).write_text(runtime.read(handle, lines=TRANSCRIPT_LINES))
-            except Exception as e:  # the pane can already be gone; a missing transcript is not an error
+            except Exception as e:  # the agent can already be gone; a missing transcript is not an error
                 span.event('agent_session.transcript_lost', error=str(e))
             runtime.kill(handle)
     return outcome, session_id  # after the last ask: a session reported late goes in the report
