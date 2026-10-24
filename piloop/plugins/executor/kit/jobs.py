@@ -7,7 +7,7 @@ whichever executor placed it.
 
 The steps of an agent's job: make its place and its artifact (a worktree, ``Clones``), write the brief, render the MCP
 servers with the variables of this machine, start the agent, watch it to its end, save its transcript, read its
-usage, attach its session to Entire, and bring its commits back as a bundle. What it made goes back by address: the
+usage, and bring its commits back as a bundle. What it made goes back by address: the
 report names the bundle, its log files (``Site.files``) and what it wrote in the shared workspace in the CAS. The worktree stays: the executor removes it
 (``remove``) once the report is out, so a worker that restarts in between finds the ended agent there.
 """
@@ -28,7 +28,6 @@ from covalence import Cid
 from git import Repo
 
 from piloop import git
-from piloop.agents.capture import ENTIRE_INSTALL, MIN_ENTIRE, AttachError, attach_session, usable
 from piloop.config import BRIEF_FILE, TRANSCRIPT
 from piloop.ids import CommentId
 from piloop.mcp import RENDERERS, Launch, expand, forwarded_env
@@ -171,11 +170,6 @@ def bundle_of_record(
 class Control(Protocol):
     """What running one job asks of the executor that runs it."""
 
-    @property
-    def entire_version(self) -> str | None:
-        """What ``entire version`` printed when the daemon started, or None. Below ``MIN_ENTIRE``, nothing attaches."""
-        ...
-
     def begin(self) -> bool:
         """The agent is about to start. False when the executor stops: start nothing."""
         ...
@@ -201,7 +195,7 @@ class Control(Protocol):
         ...
 
     def stopping(self) -> bool:
-        """Whether the executor stops: the session is not attached to Entire then."""
+        """Whether the executor stops: an evaluation runs no more of its repeats then."""
         ...
 
     def handing_over(self) -> bool:
@@ -292,7 +286,7 @@ def _watch(
     because a harness that is slow to start reports its session late.
     """
     session_id = job.session_id
-    reported = not job.captures_session or session_id is not None
+    reported = not job.needs_session_id or session_id is not None
     started_at = time.monotonic()
     try:
         if not reported:
@@ -334,7 +328,7 @@ def _session(runtime: Runtime, handle: Handle, control: Control, span: Span) -> 
 def _finish(
     job: AgentJob, outcome: AgentExit, session_id: str | None, control: Control, site: Site, span: Span
 ) -> AgentFinished:
-    """Read the usage, attach the session, bring the commits back, and return the report with its log files."""
+    """Read the usage, bring the commits back, and return the report with its log files."""
     report = AgentFinished(process=outcome, session_id=session_id)
     span.set(session_id=session_id)
     log_dir, cwd = site.log_dir(job), site.cwd(job)
@@ -348,8 +342,6 @@ def _finish(
             span.event('agent_session.usage_unknown', agent_session=job.agent_session, error=error)
     try:
         report.changed = git.changed(cwd, site.clones.ignored(job.artifact))
-        if not control.stopping():
-            report.checkpoint = _attach(job, cwd, session_id, control.entire_version, span)
         if job.commits is not None:
             report.commits = site.clones.bring_back(job.artifact, cwd, job.commits.message)
         report.workspace = site.clones.changed(job.artifact, cwd)
@@ -360,7 +352,7 @@ def _finish(
     report.files = site.files(job)
     process = report.process
     head = report.commits.head if report.commits is not None else None
-    span.set(status=process.status, error=process.error, head=head, checkpoint=report.checkpoint)
+    span.set(status=process.status, error=process.error, head=head)
     return report
 
 
@@ -378,32 +370,6 @@ def _reads(queued: list[list[Prompt]], log_dir: Path) -> tuple[list[CommentId], 
 def remove(job: AgentJob | EvaluationJob, site: Site) -> None:
     """Remove the job's worktree, if it made one."""
     site.clones.remove(job.artifact, site.cwd(job))
-
-
-def _attach(job: AgentJob, cwd: Path, session_id: str | None, entire_version: str | None, span: Span) -> str | None:
-    """Attach the ended session to Entire from its cwd. A failure is an event, and the checkpoint stays NULL."""
-    if job.entire_agent is None or session_id is None:
-        return None
-    agent_session = job.agent_session
-    if entire_version is not None and not usable(entire_version):
-        error = f'entire {entire_version} is older than {MIN_ENTIRE}; upgrade it: {ENTIRE_INSTALL}'
-        span.event('agent_session.session_unattached', agent_session=agent_session, session_id=session_id, error=error)
-        return None
-    try:
-        attached = attach_session(session_id, job.entire_agent, cwd)
-    except AttachError as e:
-        span.event('agent_session.session_unattached', agent_session=agent_session, session_id=session_id, error=str(e))
-        return None
-    span.event(
-        'agent_session.session_attached',
-        agent_session=agent_session,
-        session_id=session_id,
-        checkpoint=attached.checkpoint_id,
-        agent=attached.agent,
-        tokens=attached.tokens,
-        entire=entire_version,
-    )
-    return attached.checkpoint_id
 
 
 def run_evaluation(job: EvaluationJob, control: Control, site: Site, span: Span) -> EvaluationReport:

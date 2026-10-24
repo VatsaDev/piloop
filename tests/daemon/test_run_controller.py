@@ -22,7 +22,6 @@ from sqlalchemy import func, insert, select
 
 from piloop import git
 from piloop.actor import System
-from piloop.agents.capture import ENTIRE_DIR
 from piloop.agents.results import NEVER_WORKED, Ended, Lost, NotStarted, StartupAnomaly
 from piloop.agents.roles import SQL_HINT
 from piloop.campaign import stop
@@ -130,14 +129,7 @@ from tests.conftest import (
     write_script,
     write_toml,
 )
-from tests.fixtures.fake_entire import CHECKPOINT
 from tests.usage.test_usage import PI_SPEC, SESSIONS
-
-HARNESS_READS_ENTIRE = '#!/bin/sh\ncat .entire/settings.json > seen.json\n'
-HARNESS_COMMITS_ENTIRE = (
-    '#!/bin/sh\nrm -r .entire\nmkdir .entire\necho "{}" > .entire/settings.json\ngit add .entire\n'
-    'git commit -qm "entire settings"\necho more >> solve.txt\n'
-)
 
 
 def make_run(
@@ -2064,63 +2056,6 @@ def test_a_config_change_during_a_run_scores_it_under_the_new_evaluator(
         [added] = candidates(db, run_id)
         assert [m.evaluator_id for m in s.get_one(Candidate, added.id).measurements] == [new_evaluator]
         assert added.metrics['score'] == 4.0, 'measured under the doubled evaluator'
-
-
-def test_entire_settings_reach_a_worktree_whose_tree_lacks_them_without_being_committed(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
-) -> None:
-    repo = Repo(campaign.path)
-    (Path(campaign.path) / ENTIRE_DIR).mkdir()
-    (Path(campaign.path) / ENTIRE_DIR / 'settings.json').write_text('{"enabled":true}')
-    write_toml(Path(campaign.path), HARNESS_READS_ENTIRE)
-    reload_campaign(db, campaign)
-    run_id = make_run(db, campaign)
-    execute(controller(db, runtime, tmp_path), db, run_id)
-    with db.session() as s:
-        sha = s.scalars(select(Candidate.commit_sha).where(Candidate.run_id == run_id)).one()
-    assert repo.git.show(f'{sha}:seen.json') == '{"enabled":true}', 'the worktree saw the campaign settings'
-    assert ENTIRE_DIR not in repo.git.ls_tree('--name-only', sha), 'a link is never committed'
-    write_toml(Path(campaign.path), HARNESS_COMMITS_ENTIRE)
-    reload_campaign(db, campaign)
-    second = make_run(db, campaign, title='commit the settings')
-    execute(controller(db, runtime, tmp_path), db, second)
-    [e] = candidates_measured(db, second)
-    assert e.summary == 'entire settings' and e.metrics['score'] == 1.0, 'the dirt after it is recovered on its own'
-    assert repo.git.show(f'{e.commit_sha}:.entire/settings.json') == '{}', 'a tracked .entire stays in the commit'
-
-
-def test_the_implementer_session_is_attached_inside_the_worktree_before_it_is_removed(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, tracer: Tracer, entire_log
-) -> None:
-    write_toml(Path(campaign.path), HARNESS_APPEND)
-    cfg = load_campaign_config(Path(campaign.path))
-    script = {
-        **cfg.harness['script'].model_dump(mode='json'),
-        'entire_agent': 'claude-code',
-        'headless': ['{session_id}', '{prompt}'],
-    }
-    with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = load_campaign_config(
-            Path(campaign.path), harness={'script': script}
-        ).model_dump(mode='json')
-        s.commit()
-    run_id = make_run(db, campaign)
-    execute(controller(db, runtime, tmp_path, tracer), db, run_id)
-    with db.session() as s:
-        w = s.scalars(select(AgentSession).where(AgentSession.run_id == run_id)).one()
-        assert (w.checkpoint_id, run_row(db, run_id).status) == (CHECKPOINT, RunStatus.SUCCEEDED)
-        assert w.session_id is not None
-        assert entire_log() == [
-            {
-                'argv': ['session', 'attach', w.session_id, '--agent', 'claude-code'],
-                'cwd': str(tmp_path / 'runs' / str(run_id) / 'worktree'),
-            },
-            {
-                'argv': ['session', 'info', w.session_id, '--json'],
-                'cwd': str(tmp_path / 'runs' / str(run_id) / 'worktree'),
-            },
-        ], 'entire ran in the worktree, which only exists until the run is over'
-    assert not (tmp_path / 'runs' / str(run_id) / 'worktree').exists()
 
 
 SPLIT_UNITS = [

@@ -4,14 +4,13 @@ The history has four parts:
 
 - The ideas: who proposed each one, its family, its outcome, and its links to other ideas. Their hypotheses and the
   implementers' findings on them are a query away (``ideas_fts``, ``comments``), so the table leaves them out.
-- The kept lineage: the gain of each keep over its parent, its idea, its commit, the Entire checkpoint of the
-  session that made it, and the tokens that session used. An agent can run ``git show`` and
-  ``entire checkpoint explain`` on these.
+- The kept lineage: the gain of each keep over its parent, its idea, its commit, and the tokens that the session
+  that made it used. An agent can run ``git show`` on the commit.
 - The starting points: imported references that a pinned idea can start from.
 - The latest findings on the campaign, of every role, by id and first line.
 
 The size is bounded. 60 idea rows of about 250 characters and 10 findings of up to about 250 characters come to
-about 18 KB (about 4.5k tokens). Each kept candidate adds one line of about 230 characters.
+about 18 KB (about 4.5k tokens). Each kept candidate adds one line of about 200 characters.
 """
 
 import io
@@ -27,7 +26,7 @@ from piloop.campaign.ideas import links, superseded_by
 from piloop.config import CampaignConfig, Metric
 from piloop.db.models import Campaign, Candidate, Comment, CommentKind, Idea, count
 from piloop.ids import EvaluatorId, TargetKind, TargetRef
-from piloop.scoring.ledger import fallback_track, keeps, references, score, session_checkpoint, session_tokens, track_of
+from piloop.scoring.ledger import fallback_track, keeps, references, score, session_tokens, track_of
 from piloop.text import NONE, cell, metric
 from piloop.usage import human
 
@@ -39,7 +38,7 @@ FIRST_LINE_CHARS = 200
 BRIEF_WIDTH = 1000
 """Wide enough that no bounded cell wraps. A wrapped cell breaks the markdown table."""
 SHORT_SHA = 7
-"""Enough of a commit SHA for ``git show``. Entire checkpoint ids (26-character ULIDs) are shown in full."""
+"""Enough of a commit SHA for ``git show``."""
 
 
 def history(s: Session, campaign: Campaign, cfg: CampaignConfig) -> str:
@@ -119,7 +118,6 @@ def renderables(
             "vs parent (its track's primary)" if cfg.multitrack else 'vs parent',
             'idea (by)',
             'commit',
-            'checkpoint',
             'tokens',
             'summary',
         ],
@@ -136,7 +134,6 @@ def renderables(
             _delta(c, track.primary, evaluator_id),
             f'idea#{c.run.idea.id} ({c.run.idea.created_by})' if c.run is not None else NONE,
             c.commit_sha[:SHORT_SHA],
-            session_checkpoint(s, c) or NONE,
             human(tokens) if tokens is not None else NONE,
             cell(c.summary or NONE),
         )

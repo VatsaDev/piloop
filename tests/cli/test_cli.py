@@ -56,7 +56,7 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database, migrate
 from piloop.db.triggers.changelog import CampaignStatusChanged
-from piloop.ids import IMPLEMENTER, RESEARCH, WATCHDOG, CampaignId, CandidateId, CommentId, TargetKind, TargetRef
+from piloop.ids import RESEARCH, WATCHDOG, CampaignId, CandidateId, CommentId, TargetKind, TargetRef
 from piloop.plugins import host
 from piloop.plugins.executor.kit.capacity import GB, HostSample
 from piloop.plugins.executor.kit.leases import Leases
@@ -106,9 +106,9 @@ def out(isolated_home: Console):
 
 def test_campaign_and_idea_lifecycle(campaign_path: Path, out) -> None:
     run_cli(['init', str(campaign_path)])
-    assert out().startswith(
-        "wrote .entire/.gitignore\nwrote .entire/settings.json\ncampaign demo #1 registered; baseline candidate#1 {'score': 1.0"
-    ), 'a hand-made campaign gets the Entire settings, committed before the baseline is measured'
+    assert out().startswith("campaign demo #1 registered; baseline candidate#1 {'score': 1.0"), (
+        'a hand-made campaign: nothing to write'
+    )
 
     run_cli(['idea', 'add', 'demo', 'more lines', '--hypothesis', 'lines help', '--priority', '1'])
     run_cli(['idea', 'add', str(campaign_path), 'later', '--proposed'])
@@ -124,7 +124,7 @@ def test_campaign_and_idea_lifecycle(campaign_path: Path, out) -> None:
     assert 'History: ideas (3 of 3)' in text and 'History: kept lineage' in text
     assert 'Research pack: metrics' in text and 'Research pack: orchestrator and human digests' in text, 'the pack'
     assert 'more lines' in text and 'blocked by idea#1 (ready), idea#2 (proposed); supersedes idea#2' in text
-    assert 'piloop init: .entire' in text and '## ' not in text, 'a terminal table, not the brief markdown'
+    assert ' baseline ' in text and '## ' not in text, 'a terminal table, not the brief markdown'
 
     run_cli(['status'])
     text = re.sub(r'\b\d+s (old|ago)\b', r'Ns \1', out())  # the second may tick over since init
@@ -420,10 +420,7 @@ def test_init_blank_then_register_then_reread(tmp_path: Path, out) -> None:
     path = tmp_path / 'fresh'
     run_cli(['init', str(path)])
     text = out()
-    assert text.startswith(
-        'wrote .entire/.gitignore\nwrote .entire/settings.json\nwrote .gitignore\nwrote brief.md\nwrote evaluate.py\n'
-        'wrote piloop.toml\n'
-    )
+    assert text.startswith('wrote .gitignore\nwrote brief.md\nwrote evaluate.py\nwrote piloop.toml\n')
     assert 'The evaluate command is the referee' in text and 'still the template stub' in text
     assert Repo(path).head.commit.summary == 'campaign: baseline'
     (path / 'evaluate.py').write_text('print("METRIC score=2")\n')
@@ -1417,40 +1414,6 @@ def fake_bins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         return lambda: [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
     return install
-
-
-def add_candidate_with_agent_session(
-    db: Database, checkpoint: str | None, *, harness: str = 'pi', session_id: str | None = 's', ended: bool = True
-) -> CandidateId:
-    """Add an implementer's run with one candidate, and return the candidate id. The checkpoint is on the implementer."""
-    with db.session() as s:
-        idea = Idea(
-            track='score',
-            campaign_id=1,
-            title=f'idea {checkpoint} {session_id} {harness} {ended}',
-            hypothesis='x',
-            created_by='t',
-        )
-        s.add(idea)
-        s.flush()
-        run = Run(idea_id=idea.id, attempt=1, base_candidate_id=1, harness=harness, model='m')
-        s.add(run)
-        s.flush()
-        s.add(
-            AgentSession(
-                kind=IMPLEMENTER,
-                campaign_id=1,
-                run_id=run.id,
-                harness=harness,
-                session_id=session_id,
-                checkpoint_id=checkpoint,
-                ended_at=utcnow() if ended else None,
-            )
-        )
-        candidate = Candidate(campaign_id=1, run_id=run.id, parent_id=1, tree_sha=f't{run.id}', commit_sha='c' * 40)
-        s.add(candidate)
-        s.commit()
-        return candidate.id
 
 
 @pytest.mark.usefixtures('no_database')

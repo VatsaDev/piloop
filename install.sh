@@ -1,6 +1,6 @@
 #!/bin/sh
-# piloop installer: uv, Entire, the piloop CLI and the orchestrator skills. It needs no sudo and is safe to re-run.
-# Upgrade later with `piloop upgrade`. Entire has its own installer: run the curl line below again to upgrade it.
+# piloop installer: uv, the piloop CLI and the orchestrator skills. It needs no sudo and is safe to re-run.
+# Upgrade later with `piloop upgrade`.
 #
 #   curl -fsSL https://raw.githubusercontent.com/hiloopai/piloop/main/install.sh | sh
 #
@@ -11,7 +11,6 @@ set -eu
 
 PACKAGE='piloop'  # from PyPI
 UV_INSTALL_URL='https://astral.sh/uv/install.sh'
-ENTIRE_INSTALL_URL='https://entire.io/install.sh'
 
 say() { printf '\033[1mpiloop install:\033[0m %s\n' "$*"; }
 
@@ -20,11 +19,6 @@ export PATH="$HOME/.local/bin:$PATH"
 if ! command -v uv >/dev/null 2>&1; then
     say "installing uv"
     curl -LsSf "$UV_INSTALL_URL" | sh
-fi
-
-if ! command -v entire >/dev/null 2>&1; then
-    say "installing Entire (agent session capture)"
-    curl -fsSL "$ENTIRE_INSTALL_URL" | bash
 fi
 
 if [ -n "${PILOOP_SRC:-}" ] && [ -d "$PILOOP_SRC" ]; then

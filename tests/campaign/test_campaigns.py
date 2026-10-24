@@ -9,14 +9,11 @@ from pydantic import BaseModel
 from pytest_mock import MockerFixture
 
 from piloop.actor import System
-from piloop.agents.capture import ENTIRE_DIR
 from piloop.campaign import campaigns as campaign_module
 from piloop.campaign.campaigns import BLANK, TEMPLATES, create_campaign_repo, register, registered, stub_untouched
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
 from piloop.db.session import Database
 from tests.conftest import HARNESS_APPEND, write_toml
-
-ENTIRE_FILES = ['.entire/.gitignore', '.entire/settings.json']
 
 
 def test_create_campaign_repo(tmp_path: Path, mocker: MockerFixture) -> None:
@@ -30,11 +27,11 @@ def test_create_campaign_repo(tmp_path: Path, mocker: MockerFixture) -> None:
     get.return_value.raise_for_status.return_value.content = b'a,b\n'
     dest = tmp_path / 'dest'
     written = create_campaign_repo(dest, template, {'data/train.csv': 'http://example/train.csv'})
-    assert written == [*ENTIRE_FILES, '.gitignore', 'pyproject.toml', 'solve.py']
+    assert written == ['.gitignore', 'pyproject.toml', 'solve.py']
     assert (dest / 'data' / 'train.csv').read_bytes() == b'a,b\n' and not (dest / 'data' / 'ignored.csv').exists()
     repo = Repo(dest)
     assert repo.head.commit.summary == 'template: baseline'
-    assert repo.git.ls_files().splitlines() == [*ENTIRE_FILES, '.gitignore', 'pyproject.toml', 'solve.py', 'uv.lock']
+    assert repo.git.ls_files().splitlines() == ['.gitignore', 'pyproject.toml', 'solve.py', 'uv.lock']
     assert (dest / '.venv').is_dir(), 'uv sync ran because the template has a pyproject'
 
     plain = tmp_path / 'plain'
@@ -58,13 +55,12 @@ def test_blank_template_into_an_existing_repo(tmp_path: Path) -> None:
     repo = Repo.init(dest, initial_branch='main')
     repo.git.add('-A')
     repo.git.commit('-qm', 'first')
-    assert create_campaign_repo(dest, BLANK, {}) == [*ENTIRE_FILES, 'brief.md', 'evaluate.py', 'piloop.toml']
+    assert create_campaign_repo(dest, BLANK, {}) == ['brief.md', 'evaluate.py', 'piloop.toml']
     assert (dest / '.gitignore').read_text() == '*.log\n', 'an existing ignore file is kept'
     assert load_campaign_config(dest).name == 'my-repo', 'the directory name, made ref-safe'
-    assert (
-        repo.head.commit.summary
-        == 'piloop init: .entire/.gitignore, .entire/settings.json, brief.md, evaluate.py, piloop.toml'
-    ), 'not a baseline: the repo had one'
+    assert repo.head.commit.summary == 'piloop init: brief.md, evaluate.py, piloop.toml', (
+        'not a baseline: the repo had one'
+    )
     assert not repo.is_dirty(untracked_files=True)
     assert stub_untouched(dest)
     toml = dest / 'piloop.toml'
@@ -75,34 +71,19 @@ def test_blank_template_into_an_existing_repo(tmp_path: Path) -> None:
     assert not stub_untouched(dest)
 
 
-def test_a_campaign_that_predates_session_capture_gets_the_entire_files_and_nothing_else(tmp_path: Path) -> None:
+def test_a_campaign_is_not_templated_again(tmp_path: Path) -> None:
     dest = tmp_path / 'older'
     create_campaign_repo(dest, BLANK, {})
-    for rel in ENTIRE_FILES:
-        (dest / rel).unlink()
-    (dest / ENTIRE_DIR).rmdir()
-    Repo(dest).git.commit('-qam', 'before session capture')
-    assert create_campaign_repo(dest, BLANK, {}) == ENTIRE_FILES, 'a campaign (it has piloop.toml) is not re-templated'
-    assert Repo(dest).head.commit.summary == 'piloop init: .entire/.gitignore, .entire/settings.json'
-    assert create_campaign_repo(dest, BLANK, {}) == [], 'idempotent'
+    (dest / 'brief.md').unlink()
+    Repo(dest).git.commit('-qam', 'no brief')
+    assert create_campaign_repo(dest, BLANK, {}) == [], 'it has piloop.toml: nothing of the template comes back'
+    assert Repo(dest).head.commit.summary == 'no brief'
 
 
-def test_example_templates_are_campaigns_with_entire_settings() -> None:
+def test_example_templates_are_campaigns() -> None:
     for template in TEMPLATES.iterdir():
         cfg = load_campaign_config(template)
         assert cfg.name == template.name or template == BLANK, template
-        for rel in ENTIRE_FILES:
-            assert (template / rel).read_bytes() == (BLANK / rel).read_bytes(), (template, rel)
-    settings = json.loads((BLANK / ENTIRE_DIR / 'settings.json').read_text())
-    assert settings == {
-        'enabled': True,
-        'strategy_options': {'push_sessions': False},
-        'telemetry': False,
-        'checkpoints': {'primary': {'type': 'git-refs'}},
-    }, 'checkpoints as refs in the repo, nothing pushed, nothing phoned home'
-    assert (
-        BLANK / ENTIRE_DIR / '.gitignore'
-    ).read_text() == 'tmp/\nsettings.local.json\nmetadata/\nlogs/\nredactors/local/\n'
 
 
 HEADER = re.compile(r'^#?\s*\[\[?([^\]]+)\]')
@@ -233,13 +214,13 @@ def test_init_commits_only_the_files_it_owns_never_another_agents_work(tmp_path:
 def test_init_leaves_out_an_owned_file_that_the_repos_ignore_file_ignores(tmp_path: Path) -> None:
     dest = tmp_path / 'ignoring'
     dest.mkdir()
-    (dest / '.gitignore').write_text('.entire/\n')
+    (dest / '.gitignore').write_text('brief.md\n')
     (dest / 'main.py').write_text('x\n')
     repo = Repo.init(dest, initial_branch='main')
     repo.git.add('-A')
     repo.git.commit('-qm', 'first')
-    assert create_campaign_repo(dest, BLANK, {}) == [*ENTIRE_FILES, 'brief.md', 'evaluate.py', 'piloop.toml']
-    assert repo.head.commit.summary == 'piloop init: brief.md, evaluate.py, piloop.toml', 'git refuses to add them'
+    assert create_campaign_repo(dest, BLANK, {}) == ['brief.md', 'evaluate.py', 'piloop.toml']
+    assert repo.head.commit.summary == 'piloop init: evaluate.py, piloop.toml', 'git refuses to add it'
 
 
 def test_init_commits_no_config_that_is_not_valid(tmp_path: Path) -> None:

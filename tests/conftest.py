@@ -1,8 +1,6 @@
 import tests.isolation  # noqa: F401  # first: piloop reads its home from the environment when it is imported
 
 # isort: split
-import json
-import os
 import re
 import shutil
 import stat
@@ -516,20 +514,3 @@ def git_identity(monkeypatch: pytest.MonkeyPatch) -> None:
         'GIT_COMMITTER_EMAIL': 'test@piloop',
     }.items():
         monkeypatch.setenv(key, value)
-
-
-FAKE_ENTIRE = Path(__file__).parent / 'fixtures' / 'fake_entire.py'
-
-
-@pytest.fixture
-def entire_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[[], list[dict[str, object]]]:
-    """Put the fake ``entire`` first on PATH; returns a reader of the ``{argv, cwd}`` records it appends."""
-    bin_dir = tmp_path / 'entire-bin'
-    bin_dir.mkdir()
-    (bin_dir / 'entire').symlink_to(FAKE_ENTIRE)
-    log = tmp_path / 'entire.log'
-    monkeypatch.setenv('PATH', f'{bin_dir}{os.pathsep}{os.environ["PATH"]}')
-    monkeypatch.setenv('FAKE_ENTIRE_LOG', str(log))
-    monkeypatch.delenv('FAKE_ENTIRE_MODE', raising=False)
-    monkeypatch.delenv('FAKE_ENTIRE_VERSION', raising=False)
-    return lambda: [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []

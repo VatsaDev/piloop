@@ -749,7 +749,7 @@ TOOLS = [
     ' `error IS NULL AND evaluator_id = campaigns.evaluator_id`.'
     f' `piloop history` prints the latest {IDEAS_IN_HISTORY} ideas with their outcomes.',
     f'- Transcripts: `<runs.log_dir>/{TRANSCRIPT}` (an implementer), `<agent_sessions.log_dir>/{TRANSCRIPT}` and `brief.md`'
-    ' beside it (any agent); the whole session: `cd <repo> && entire checkpoint explain <agent_sessions.checkpoint_id>`.',
+    " beside it (any agent); the whole session: the harness's own file, `json_extract(agent_sessions.usage, '$.source')`.",
     '- Code: `git -C <repo> show <candidates.commit_sha>`; a candidate against its parent:'
     ' `git -C <repo> diff <parent commit_sha> <commit_sha>`.',
     "- Who changed what: `SELECT at, actor, kind, payload FROM events WHERE target_kind='idea' AND target_id=12`.",

@@ -177,6 +177,26 @@ machine; the campaign checkout is only the repo of record. Delete the key from e
 run `piloop init <repo>`. A `piloop.toml` that still sets it fails, with a link to this section. The stored configs lose
 it at the upgrade, and an agent that worked in the campaign checkout when you upgraded ends.
 
+### Entire
+
+piloop no longer attaches agent sessions to Entire. The harness's own file holds each session: find it by
+`agent_sessions.session_id`, or read its path in `usage->>'$.source'` ([Sessions](/concepts/research-memory#sessions)).
+
+- `agent_sessions.checkpoint_id` and the `checkpoint` column of the kept lineage are gone.
+- Delete `entire_agent` from each `[harness.<name>]` table. A `piloop.toml` that still has it fails at `piloop init`,
+  with a link to this section. The upgrade deletes it from the stored configs.
+- Delete `entire_attach_timeout_seconds` from `config.toml`: the daemon does not start with it.
+- `piloop init` no longer writes `.entire/`. A campaign repo keeps the `.entire/` that it committed, and its
+  checkpoints under `refs/entire/`. To delete the checkpoints of a repo:
+
+  ```bash
+  git -C <repo> for-each-ref --format='%(refname)' refs/entire/
+  git -C <repo> for-each-ref --format='%(refname)' refs/entire/ | xargs -n1 git -C <repo> update-ref -d
+  ```
+
+- An executor plugin: `Host.entire_version`, `Control.entire_version`, `AgentFinished.checkpoint` and
+  `AgentJob.captures_session` are gone. `AgentJob.needs_session_id` says whether the session id is needed.
+
 ### How a run ended
 
 `runs.end` says how a run ended, and `runs.error` only gives the detail. A new run no longer writes the texts below
@@ -381,8 +401,6 @@ The plugin contracts of `main` changed, with no alias:
 ## Other install types
 
 - A checkout that you installed with `uv sync` is not a uv tool. Upgrade it with `git pull`.
-- Entire has its own installer. Run it again to upgrade Entire:
-  `curl -fsSL https://entire.io/install.sh | bash`.
 
 ## When something fails
 

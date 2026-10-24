@@ -191,7 +191,6 @@ class RunController:
         runtime_factory: RuntimeFactory = make_runtime,
         *,
         executor: ExecutorConfig,
-        entire_version: str | None = None,
         cas: Cas | None = None,
         reserve: int = StorageSettings().reserve,
     ) -> None:
@@ -208,9 +207,7 @@ class RunController:
         self._limits: tuple[tuple[str, str, datetime], ...] = ()
         """The limits that the executor has, as read: ``configure`` hands it the parameters when they change."""
         results = CampaignResults(db, tracer, home, self._cas, lambda: self.launcher.cancelled.is_set())
-        host = Host(
-            db, results, tracer, home, self._cas, partial(checkout_of, db), runtime_factory, reserve, entire_version
-        )
+        host = Host(db, results, tracer, home, self._cas, partial(checkout_of, db), runtime_factory, reserve)
         self.executor: Executor[ExecutorConfig] = self._config.open(host)
         self.launcher = Launcher(db, tracer, home, self.executor)
         self.configure()

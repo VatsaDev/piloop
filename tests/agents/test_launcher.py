@@ -1,7 +1,6 @@
 import json
 import os
 import re
-import shutil
 import time
 import tomllib
 from pathlib import Path
@@ -16,8 +15,6 @@ from pytest_mock import MockerFixture
 from sqlalchemy import select
 
 from piloop.actor import Agent, System
-from piloop.agents import capture
-from piloop.agents.capture import ENTIRE_INSTALL, MIN_ENTIRE
 from piloop.agents.launcher import PROMPT, Launcher, fill
 from piloop.agents.results import (
     NEVER_WORKED,
@@ -46,7 +43,6 @@ from piloop.plugins.executor.kit.capacity import HostSample
 from piloop.plugins.executor.kit.leases import Answer, LeaseQueued, Leases
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus
-from piloop.settings import Settings
 from piloop.usage.jsonl import CWD_ENCODERS
 from tests.conftest import (
     HARNESS_FAILS,
@@ -56,16 +52,13 @@ from tests.conftest import (
     events,
     factory,
     serving,
-    workers_of,
     write_toml,
 )
-from tests.fixtures.fake_entire import CHECKPOINT, TOKENS
 from tests.usage.test_usage import PI_SPEC, SESSIONS
 
-MINTED_HARNESS = {
-    'entire_agent': 'pi',
-    'headless': ['--session-id', '{session_id}', '{prompt}'],
-}
+NO_USAGE_FILE = {'file': '/nonexistent/{session_id}.jsonl', 'tally': 'pi'}
+"""A usage spec whose file is never there: it only makes the harness need its session id."""
+MINTED_HARNESS = {'headless': ['--session-id', '{session_id}', '{prompt}'], 'usage': NO_USAGE_FILE}
 CODEX_ID = '01a09262-d574-7e10-9f75-23b0ce9c0a2f'
 CODEX_LIKE = f'#!/bin/sh\necho \'{{"type":"thread.started","thread_id":"{CODEX_ID}"}}\'\nsleep 0.3\necho more\n'
 """``codex exec --json``: the thread id is the first stdout line, then the run's events."""
@@ -104,7 +97,7 @@ def launch(
         )
     ctl = controller(db, runtime, tmp_path, tracer)
     ended = ctl.launcher.launch(agent_session_id, brief=brief, place='w', artifact=checkout(campaign))
-    # its worker heartbeats until it stops: left running, it takes the next launch's job, with this host's entire
+    # its worker heartbeats until it stops: left running, it takes the next launch's job
     ctl.stop(5)
     return ended
 
@@ -469,7 +462,7 @@ def test_nothing_starts_after_cancel(campaign: Campaign, db: Database, runtime: 
     assert not (tmp_path / 'w').exists()
 
 
-def test_a_harness_with_an_entire_agent_gets_a_minted_session_id_in_its_argv_and_on_its_row(
+def test_a_harness_with_a_usage_spec_gets_a_minted_session_id_in_its_argv_and_on_its_row(
     campaign: Campaign,
     db: Database,
     runtime: ScriptRuntime,
@@ -480,7 +473,7 @@ def test_a_harness_with_an_entire_agent_gets_a_minted_session_id_in_its_argv_and
     use_harness(db, campaign, HARNESS_PROMPT_TO_FILE)
     plain = request(db, campaign)
     launch(db, runtime, tmp_path, plain)
-    assert agent_session(db, plain).session_id is None, 'no entire_agent: nothing to attach, no id minted'
+    assert agent_session(db, plain).session_id is None, 'no usage spec: nothing needs the id, none minted'
     use_harness(db, campaign, '#!/bin/sh\nprintf %s "$2" > ../session.txt\n', **MINTED_HARNESS)
     agent_session_id = request(db, campaign)
     launch(db, runtime, tmp_path, agent_session_id, tracer)
@@ -499,12 +492,12 @@ def test_a_harness_that_prints_its_session_id_has_it_read_back_by_the_runtime(
     spans: InMemorySpanExporter,
 ) -> None:
     codex = DEFAULT_HARNESSES['codex']
-    use_harness(db, campaign, CODEX_LIKE, entire_agent='codex', session_id_pattern=codex.session_id_pattern)
+    use_harness(db, campaign, CODEX_LIKE, usage=NO_USAGE_FILE, session_id_pattern=codex.session_id_pattern)
     agent_session_id = request(db, campaign)
     launch(db, runtime, tmp_path, agent_session_id, tracer)
     assert agent_session(db, agent_session_id).session_id == CODEX_ID
     assert span_attributes(spans, 'piloop.job', agent_session_id)['session_id'] == CODEX_ID
-    use_harness(db, campaign, HARNESS_PROMPT_TO_FILE, entire_agent='codex', session_id_pattern=codex.session_id_pattern)
+    use_harness(db, campaign, HARNESS_PROMPT_TO_FILE, usage=NO_USAGE_FILE, session_id_pattern=codex.session_id_pattern)
     silent = request(db, campaign)
     launch(db, runtime, tmp_path, silent, tracer)
     assert agent_session(db, silent).session_id is None
@@ -527,7 +520,7 @@ def test_a_session_reported_late_is_asked_for_again_before_the_agent_is_released
     A failure of that last ask is recorded, and the agent is still released.
     """
     codex = DEFAULT_HARNESSES['codex']
-    use_harness(db, campaign, CODEX_LIKE, entire_agent='codex', session_id_pattern=codex.session_id_pattern)
+    use_harness(db, campaign, CODEX_LIKE, usage=NO_USAGE_FILE, session_id_pattern=codex.session_id_pattern)
     mocker.patch.object(runtime, 'session_id', side_effect=[None, CODEX_ID])
     late = request(db, campaign)
     launch(db, runtime, tmp_path, late, tracer)
@@ -548,7 +541,7 @@ def test_a_session_reported_late_goes_back_in_the_report_not_only_in_a_heartbeat
 ) -> None:
     """The agent can end and report before the next heartbeat would carry the session id that the last ask found."""
     codex = DEFAULT_HARNESSES['codex']
-    use_harness(db, campaign, CODEX_LIKE, entire_agent='codex', session_id_pattern=codex.session_id_pattern)
+    use_harness(db, campaign, CODEX_LIKE, usage=NO_USAGE_FILE, session_id_pattern=codex.session_id_pattern)
     heartbeat = Leases.heartbeat
 
     def no_session_ids(
@@ -561,133 +554,6 @@ def test_a_session_reported_late_goes_back_in_the_report_not_only_in_a_heartbeat
     late = request(db, campaign)
     launch(db, runtime, tmp_path, late, Tracer(None))
     assert agent_session(db, late).session_id == CODEX_ID
-
-
-def test_the_session_is_attached_to_entire_from_the_cwd_when_the_agent_ends(
-    campaign: Campaign,
-    db: Database,
-    runtime: ScriptRuntime,
-    tmp_path: Path,
-    tracer: Tracer,
-    spans: InMemorySpanExporter,
-    entire_log,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    use_harness(db, campaign, HARNESS_PROMPT_TO_FILE)
-    plain = request(db, campaign)
-    launch(db, runtime, tmp_path, plain, tracer)
-    assert entire_log() == [] and agent_session(db, plain).checkpoint_id is None, (
-        'no entire_agent: entire is never called'
-    )
-    use_harness(db, campaign, HARNESS_PROMPT_TO_FILE, **MINTED_HARNESS)
-    agent_session_id = request(db, campaign)
-    launch(db, runtime, tmp_path, agent_session_id, tracer)
-    w = agent_session(db, agent_session_id)
-    assert w.checkpoint_id == CHECKPOINT
-    assert entire_log() == [
-        {'argv': ['session', 'attach', w.session_id, '--agent', 'pi'], 'cwd': str(worktree(tmp_path))},
-        {'argv': ['session', 'info', w.session_id, '--json'], 'cwd': str(worktree(tmp_path))},
-    ], "from the agent's own cwd: pi and claude key their session stores by it; the id comes from info's JSON"
-    assert events(spans, 'agent_session.session_attached') == [
-        {
-            'agent_session': agent_session_id,
-            'session_id': w.session_id,
-            'checkpoint': CHECKPOINT,
-            'agent': 'Pi',
-            'tokens': TOKENS,
-        }
-    ]
-    assert span_attributes(spans, 'piloop.job', agent_session_id)['checkpoint'] == CHECKPOINT
-    with db.session() as s:
-        [(_, finished)] = in_order(s, AgentSessionFinished, Event.target_id == agent_session_id)
-        assert (finished.role, finished.state) == (WATCHDOG, AgentSessionState.EXITED)
-    for mode in ('added', 'existing'):
-        monkeypatch.setenv('FAKE_ENTIRE_MODE', mode)
-        other = request(db, campaign)
-        launch(db, runtime, tmp_path, other, tracer)
-        assert agent_session(db, other).checkpoint_id == CHECKPOINT, (
-            'HEAD carrying a trailer adds the session to that checkpoint; a session entire already knows is not an error'
-        )
-    monkeypatch.setenv('FAKE_ENTIRE_MODE', 'fail')
-    failed = request(db, campaign)
-    launch(db, runtime, tmp_path, failed, tracer)
-    w = agent_session(db, failed)
-    assert (w.state, w.error, w.checkpoint_id) == (AgentSessionState.EXITED, None, None), 'the row is fine'
-    assert events(spans, 'agent_session.session_unattached') == [
-        {
-            'agent_session': failed,
-            'session_id': w.session_id,
-            'error': f'entire session attach exit 1: Error: invalid session ID: {w.session_id}',
-        }
-    ]
-    assert entire_log()[-1]['argv'][:2] == ['session', 'attach'], 'no info call after a failed attach'
-
-
-def test_the_daemons_entire_version_gates_attach_and_is_on_the_event(
-    campaign: Campaign,
-    db: Database,
-    runtime: ScriptRuntime,
-    tmp_path: Path,
-    tracer: Tracer,
-    spans: InMemorySpanExporter,
-    entire_log,
-) -> None:
-    use_harness(db, campaign, HARNESS_PROMPT_TO_FILE, **MINTED_HARNESS)
-    run = controller(db, runtime, tmp_path, tracer)
-    gated = run.launcher
-    workers_of(run).worker.entire_version = '0.10.5'
-    old = request(db, campaign)
-    gated.launch(old, brief='b', place='logs', artifact=checkout(campaign))
-    assert entire_log() == [] and agent_session(db, old).checkpoint_id is None, 'an untested entire is not asked'
-    w = agent_session(db, old)
-    assert events(spans, 'agent_session.session_unattached') == [
-        {
-            'agent_session': old,
-            'session_id': w.session_id,
-            'error': f'entire 0.10.5 is older than {MIN_ENTIRE}; upgrade it: {ENTIRE_INSTALL}',
-        }
-    ], 'nothing is attached until entire is upgraded'
-    workers_of(run).worker.entire_version = '0.11.0'
-    new = request(db, campaign)
-    gated.launch(new, brief='b', place='logs', artifact=checkout(campaign))
-    assert agent_session(db, new).checkpoint_id == CHECKPOINT
-    assert events(spans, 'agent_session.session_attached')[0]['entire'] == '0.11.0'
-
-
-def test_attach_failures_are_events_and_never_touch_the_row(
-    campaign: Campaign,
-    db: Database,
-    runtime: ScriptRuntime,
-    tmp_path: Path,
-    tracer: Tracer,
-    spans: InMemorySpanExporter,
-    entire_log,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    use_harness(db, campaign, HARNESS_PROMPT_TO_FILE, **MINTED_HARNESS)
-    monkeypatch.setattr(capture, 'settings', Settings(home=tmp_path, entire_attach_timeout_seconds=0.3))
-    monkeypatch.setenv('FAKE_ENTIRE_MODE', 'hang')
-    slow = request(db, campaign)
-    launch(db, runtime, tmp_path, slow, tracer)
-    monkeypatch.setenv('FAKE_ENTIRE_MODE', 'silent')
-    silent = request(db, campaign)
-    launch(db, runtime, tmp_path, silent, tracer)
-    only_git = tmp_path / 'only-git'
-    only_git.mkdir()
-    (only_git / 'git').symlink_to(shutil.which('git') or 'git')
-    monkeypatch.setenv('PATH', str(only_git))
-    missing = request(db, campaign)
-    launch(db, runtime, tmp_path, missing, tracer)
-    assert [(e['agent_session'], e['error']) for e in events(spans, 'agent_session.session_unattached')] == [
-        (slow, 'entire session attach timed out after 0.3s'),
-        (silent, f'entire session info reports no checkpoint for session {agent_session(db, silent).session_id}'),
-        (missing, 'entire is not on PATH; install it: curl -fsSL https://entire.io/install.sh | bash'),
-    ]
-    for agent_session_id in (slow, silent, missing):
-        w = agent_session(db, agent_session_id)
-        assert (w.state, w.checkpoint_id) == (AgentSessionState.EXITED, None) and w.session_id is not None, (
-            'the row is fine'
-        )
 
 
 def test_the_agents_token_usage_is_summed_from_its_session_file_when_it_ends(
@@ -711,7 +577,7 @@ def test_the_agents_token_usage_is_summed_from_its_session_file_when_it_ends(
     agent_session_id = request(db, campaign)
     launch(db, runtime, tmp_path, agent_session_id, tracer)
     w = agent_session(db, agent_session_id)
-    assert w.session_id is not None, 'a usage spec alone mints the id: no Entire needed to know what an agent cost'
+    assert w.session_id is not None, 'a usage spec mints the id'
     assert w.usage == Usage(
         input=4,
         output=993,
@@ -741,7 +607,7 @@ def test_the_agents_token_usage_is_summed_from_its_session_file_when_it_ends(
     plain = request(db, campaign)
     launch(db, runtime, tmp_path, plain, tracer)
     assert agent_session(db, plain).usage is None and len(events(spans, 'agent_session.usage_unknown')) == 1, (
-        'no usage spec: nothing to read and nothing to say, like no entire_agent'
+        'no usage spec: nothing to read and nothing to say'
     )
     mocker.patch.object(Launcher, '_prepare', side_effect=RuntimeError('no config'))
     broken = request(db, campaign)

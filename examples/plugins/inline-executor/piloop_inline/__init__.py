@@ -165,10 +165,6 @@ class _Job:
         if (kill := self._kill) is not None:
             kill()
 
-    @property
-    def entire_version(self) -> str | None:
-        return self._executor.host.entire_version
-
     def begin(self) -> bool:
         return not self._executor.stopping
 

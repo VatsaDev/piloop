@@ -1250,12 +1250,9 @@ class AgentSession(Tracked, Base):
     error: Mapped[str | None]
     session_id: Mapped[str | None]
     """The harness's own session id. piloop creates it at launch when the harness takes it as an argument
-    (``{session_id}``), or the runtime reports it after the agent starts. ``entire session attach`` takes it."""
+    (``{session_id}``), or the runtime reports it after the agent starts."""
     machine: Mapped[str | None]
     """The machine that runs the agent, as its executor names it (a worker of ``piloop worker``). NULL: the daemon's."""
-    checkpoint_id: Mapped[str | None]
-    """The Entire checkpoint of this session (``refs/entire/checkpoints/``). ``entire session attach`` writes it when
-    the session ends. NULL when Entire is not installed or the attach failed."""
     usage: Mapped[Usage | None]
     """The tokens the agent spent, added up from the harness's own session file when the agent ended:
     ``{"input", "output", "cache_read", "cache_write", "total", "turns", "source"}``. ``total`` is what the harness

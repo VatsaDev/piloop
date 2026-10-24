@@ -128,9 +128,9 @@ ORDER BY bm25(ideas_fts) LIMIT 20;
 - An implementation to copy, from any campaign: drop the `p.repo` filter, keep what kept or was noted (`JOIN runs r ON
   r.idea_id = i.id JOIN candidates c ON c.run_id = r.id WHERE c.verdict IN ('keep', 'interesting')`) and select
   `p.path, c.commit_sha`. Then `git -C <path> show <commit_sha>`.
-- How a past idea was worked: `SELECT w.id, w.checkpoint_id, w.log_dir FROM agent_sessions w JOIN runs r ON r.id = w.run_id
-  WHERE r.idea_id = <idea>`. `entire checkpoint explain <checkpoint_id>`, run in that campaign's repo
-  (`campaigns.path`), summarises the session. `<log_dir>/transcript.txt` is its screen. An archived workspace can be
+- How a past idea was worked: `SELECT w.id, json_extract(w.usage, '$.source'), w.log_dir FROM agent_sessions w JOIN
+  runs r ON r.id = w.run_id WHERE r.idea_id = <idea>`. The source is the harness's own file of the session.
+  `<log_dir>/transcript.txt` is its screen. An archived workspace can be
   restored with `piloop restore`, once your piloop has it.
 
 Lessons: a row of `lessons` is the standing conclusion about one mechanism family, written when a campaign stops.

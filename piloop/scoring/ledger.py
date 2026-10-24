@@ -785,15 +785,6 @@ def session_agent_session(s: Session, candidate: Candidate) -> AgentSession | No
     return latest_agent_session(s, candidate.run_id) if candidate.run_id is not None else None
 
 
-def session_checkpoint(s: Session, candidate: Candidate) -> str | None:
-    """Return the Entire checkpoint of the session that made ``candidate`` (``agent_sessions.checkpoint_id``).
-
-    None for the baseline, which has no run, and for a run whose agent session was not attached.
-    """
-    agent_session = session_agent_session(s, candidate)
-    return agent_session.checkpoint_id if agent_session is not None else None
-
-
 def session_tokens(s: Session, candidate: Candidate) -> int | None:
     """Return the tokens that the session that made ``candidate`` spent (``agent_sessions.usage`` total). None when unknown."""
     agent_session = session_agent_session(s, candidate)

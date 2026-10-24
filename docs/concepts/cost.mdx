@@ -11,7 +11,7 @@ GPU time or paid APIs. piloop measures the first and enforces a limit on both.
 ## Tokens
 
 When an agent ends, piloop reads the tokens that it used from the harness's own session file. This works for Claude
-Code, Codex and pi, and does not need Entire. piloop writes the totals to `agent_sessions.usage`:
+Code, Codex and pi. piloop writes the totals to `agent_sessions.usage`:
 
 ```json
 {"input": 120345, "output": 18230, "cache_read": 950112, "cache_write": 40211, "total": 1128898, "turns": 41, "source": "…"}

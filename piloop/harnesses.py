@@ -1,11 +1,13 @@
 """Built-in coding-agent harness definitions. A campaign may override any of them in ``piloop.toml``."""
 
 import json
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Self, assert_never
 
 from pydantic import BaseModel, ConfigDict, model_validator
 
+from piloop import deprecated
 from piloop.mcp import MCP, RENDERERS
 from piloop.usage import UsageSpec
 
@@ -109,8 +111,7 @@ class Harness(BaseModel):
 
     When ``headless`` contains ``{session_id}``, piloop creates the session id. Otherwise the runtime
     reports it, or reads it with ``session_id_pattern``.
-    When the agent ends, ``entire session attach`` takes this id, and ``usage`` uses it to find the session file and
-    read the tokens the agent spent.
+    When the agent ends, ``usage`` uses this id to find the session file and read the tokens the agent spent.
     """
 
     model_config = ConfigDict(extra='forbid', use_attribute_docstrings=True)
@@ -124,10 +125,6 @@ class Harness(BaseModel):
     queued for it (comments, ``piloop prompt``), the runtime runs the harness again with these, ``{prompt}`` being the
     messages and ``{session_id}`` the session's id. Must include both. When empty, the agent takes no message while it
     runs."""
-    entire_agent: str | None = None
-    """Entire's name for this agent, as ``entire agent list`` shows it. When it is set and ``entire`` is installed,
-    the agent's session is attached to Entire as a checkpoint when the agent ends. When unset, the session is not
-    captured."""
     session_id_pattern: str | None = None
     """A regex with one group that finds the session id in the first lines of the process's stdout. Use it in a
     harness that cannot take its id as an argument (``{session_id}``). For example, Codex
@@ -153,9 +150,16 @@ class Harness(BaseModel):
         return RENDERERS[self.mcp].refuses(self.headless)
 
     @property
-    def captures_session(self) -> bool:
-        """Whether the agent's session id is needed when it ends: for Entire, for token usage, or for both."""
-        return bool(self.entire_agent or self.usage)
+    def needs_session_id(self) -> bool:
+        """Whether the agent's session id is needed when it ends: ``usage`` finds the session file by it."""
+        return self.usage is not None
+
+    @model_validator(mode='before')
+    @classmethod
+    def _removed(cls, data: object) -> object:
+        if isinstance(data, Mapping) and (removed := deprecated.removed_entire_agent(data)) is not None:
+            raise ValueError(removed)
+        return data
 
     @model_validator(mode='after')
     def _check(self) -> Self:
@@ -165,10 +169,9 @@ class Harness(BaseModel):
             raise ValueError(f'resume must include {SESSION_ID} and {PROMPT}')
         if self.mcp is None and MCP in [*self.headless, *self.resume]:
             raise ValueError(f'{MCP} in the argv needs mcp set to a renderer: {sorted(RENDERERS)}')
-        if self.captures_session and self.session_id_pattern is None and not takes_session_id(self.headless):
+        if self.needs_session_id and self.session_id_pattern is None and not takes_session_id(self.headless):
             raise ValueError(
-                f'headless must pass {SESSION_ID} to the agent or session_id_pattern must be set when entire_agent'
-                ' or usage is set'
+                f'headless must pass {SESSION_ID} to the agent or session_id_pattern must be set when usage is set'
             )
         return self
 
@@ -176,7 +179,7 @@ class Harness(BaseModel):
 DEFAULT_HARNESSES: dict[str, Harness] = {
     'pi': Harness(
         executable='pi',
-        # no --session-dir: entire finds the session only in pi's own store (~/.pi/agent/sessions/<cwd>)
+        # no --session-dir: usage reads the session from pi's own store (~/.pi/agent/sessions/<cwd>)
         headless=[
             '-p',
             '--mode',
@@ -212,7 +215,6 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
             MCP,
             '{prompt}',
         ],
-        entire_agent='pi',
         home=PI_HOME,
         usage=UsageSpec(
             file=f'{PI_HOME}/sessions/{{cwd}}/*_{{session_id}}.jsonl', cwd='dash_separators_wrapped', tally='pi'
@@ -253,7 +255,6 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
             CLAUDE_SETTINGS,
             '{prompt}',
         ],
-        entire_agent='claude-code',
         home=CLAUDE_HOME,
         # measured in the shell of a Claude Code 2.1 session; an agent with all of them empty still saves its transcript
         session_env=[
@@ -311,7 +312,6 @@ DEFAULT_HARNESSES: dict[str, Harness] = {
             SESSION_ID,
             '{prompt}',
         ],
-        entire_agent='codex',
         session_id_pattern=r'"thread_id":"([0-9a-f-]{36})"',
         # codex files its sessions by date, not by cwd; the thread id in the file name finds the file
         home=CODEX_HOME,

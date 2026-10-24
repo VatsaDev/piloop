@@ -93,12 +93,6 @@ A `note` is a log entry. It goes to no inbox, and nobody acts on it. Never ask f
   `SELECT commit_sha FROM candidates WHERE id = <n>` gives the commit of any other.
 - Use `git show <commit_sha>`, `git diff <base> <sha>` and `git cherry-pick <sha>`.
 - Read a candidate's diff before you repeat its mechanism, and take what worked.
-- The kept lineage also lists each candidate's `checkpoint`: the Entire checkpoint of the agent session that made it.
-- Read `entire checkpoint explain <checkpoint>` before you build on a candidate. It summarises that session: intent,
-  prompts, files touched, tokens.
-- `git show refs/entire/checkpoints/<id[-2:]>/<id>:0/full.jsonl` is the full transcript. It is long: use it only for a
-  specific question.
-- Your own session is attached the same way when you end.
 
 ## Messages while you work
 

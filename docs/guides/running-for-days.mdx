@@ -33,7 +33,6 @@ nothing to clean up.
   idea starts from the last one, as after a [run that timed out](/concepts/ideas-and-runs).
 - Requested agents stay requested, and start when the daemon starts again.
 - The campaigns stay `active`. The next `piloop serve` continues them. A campaign ends only at its `[stop]` limits.
-- The sessions of the stopped agents are not attached to Entire.
 
 `piloop restart` keeps the agents running. The daemon stops its loop, and the same process starts the installed
 code again, with the same pid and environment. The new daemon connects to every running agent again, and each agent

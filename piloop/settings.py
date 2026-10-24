@@ -106,10 +106,6 @@ class Settings(BaseSettings):
     otel_exporter_otlp_endpoint: str | None = Field(default=None, validation_alias='OTEL_EXPORTER_OTLP_ENDPOINT')
     """The standard OTLP endpoint. piloop exports traces only when this is set."""
 
-    entire_attach_timeout_seconds: float = 120
-    """The number of seconds that ``entire session attach`` may take to turn the session of an ended agent into a
-    checkpoint. After that, it is stopped and the checkpoint stays NULL."""
-
     uv_tool_dir: Path = Field(default=Path.home() / '.local' / 'share' / 'uv' / 'tools', validation_alias='UV_TOOL_DIR')
     """Where uv keeps its tools (uv's own ``UV_TOOL_DIR``). The default is uv's default when ``XDG_DATA_HOME`` is not
     set. ``piloop upgrade`` reads the ``uv-receipt.toml`` of the piloop tool there to learn where the CLI was installed

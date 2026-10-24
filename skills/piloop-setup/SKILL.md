@@ -26,13 +26,6 @@ Run each check yourself:
   - pi: `pi --version`, and look at `~/.pi/agent/auth.json`.
   - Claude Code: `claude --version` and `claude auth status`.
   - Codex: `codex --version` and `codex login status`.
-- `entire version`. Session capture is on when it prints 0.10.6 or newer.
-  - Session capture keeps the full session of every agent in the repo as an [Entire](https://github.com/entireio/cli)
-    checkpoint. Read one with `entire checkpoint explain <agent_sessions.checkpoint_id>`.
-  - It is on whenever Entire CLI 0.10.6 or newer is installed, for the built-in pi, claude and codex harnesses. You
-    can install or upgrade it later: `curl -fsSL https://entire.io/install.sh | bash`.
-  - There is nothing to configure: `piloop init` writes `.entire/settings.json`. No data leaves the machine.
-  - Tell the human in one line if it is on.
 
 Fix what you can. A broken environment is yours to debug: read the error, fix the cause, check again.
 The only fixes you give to the human are logins: `pi` then `/login`, `claude auth login`, `codex login`.
@@ -92,7 +85,6 @@ When a later choice depends on an answer, quote that answer.
 
 Run `piloop init .`. When there is no `piloop.toml`, it writes `piloop.toml`, `brief.md` and an `evaluate.py` stub.
 
-- It also writes `.entire/settings.json` and `.entire/.gitignore`.
 - It keeps existing files.
 - It runs `git init` and commits when necessary.
 - It stops while `evaluate.py` is the untouched stub.
@@ -209,7 +201,6 @@ scores from the new one.
 - Agents run as background processes. `piloop attach <agent_session_id>` prints the last lines that one wrote.
 - Every commit an implementer makes becomes a candidate (a commit whose tree is already a candidate is that candidate). The
   evaluate command measures it, unless the commit has a `Piloop-Eval: skip` trailer.
-- With `entire` installed, `entire checkpoint explain <id>` on the checkpoint of a session tells why a commit was made.
 - Escalations go to the human's inbox. The orchestrator (any harness that runs `piloop-operate` and wakes on
   `piloop inbox wait`) decides them, with the human when they are present. It records every decision that it takes
   for the human in the inbox.

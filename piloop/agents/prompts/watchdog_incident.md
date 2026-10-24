@@ -5,7 +5,7 @@ Find out why each one happened. Use all the sources:
 
 - the rows and their `events`;
 - the agent's transcript and brief;
-- its session (`entire checkpoint explain`);
+- its session, the harness's own file (`json_extract(agent_sessions.usage, '$.source')`);
 - the process table, for anything still alive;
 - the campaign's git history.
 

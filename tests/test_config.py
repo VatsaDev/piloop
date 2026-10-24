@@ -48,6 +48,16 @@ def test_a_piloop_toml_on_the_removed_herdr_runtime_says_where_to_read_why(campa
         load_campaign_config(campaign_path, roles={'research': {'runtime': 'herdr'}})
 
 
+def test_a_piloop_toml_with_the_removed_entire_agent_says_where_to_read_why(campaign_path: Path) -> None:
+    gone = re.escape(
+        'entire_agent is removed in piloop 0.3.0, with Entire: delete the key'
+        ' (https://piloop.autoresearch.inc/guides/upgrading#entire)'
+    )
+    harness = {'executable': 'x', 'headless': ['{prompt}'], 'entire_agent': 'pi'}
+    with pytest.raises(ConfigError, match=f'  harness.x: .*{gone}'):
+        load_campaign_config(campaign_path, harness={'x': harness})
+
+
 def test_roles_are_typed_per_kind(campaign_path: Path) -> None:
     cfg = load_campaign_config(campaign_path)
     assert cfg.roles == snapshot(
@@ -177,23 +187,19 @@ def test_default_harnesses_have_prompt_placeholder() -> None:
     )
 
 
-def test_default_harnesses_are_entire_agents_and_say_where_their_session_id_comes_from() -> None:
-    capture = {n: (h.entire_agent, h.session_id_pattern) for n, h in DEFAULT_HARNESSES.items()}
-    assert capture == snapshot(
+def test_default_harnesses_need_their_session_id_and_say_where_it_comes_from() -> None:
+    found = {n: (h.needs_session_id, h.session_id_pattern) for n, h in DEFAULT_HARNESSES.items()}
+    assert found == snapshot(
         {
-            'pi': ('pi', None),
-            'claude': ('claude-code', None),
-            'codex': ('codex', '"thread_id":"([0-9a-f-]{36})"'),
+            'pi': (True, None),
+            'claude': (True, None),
+            'codex': (True, '"thread_id":"([0-9a-f-]{36})"'),
         }
     ), 'pi and claude are told their id; codex prints its own, which the subprocess runtime reads back'
     for name in ('pi', 'claude'):
         h = DEFAULT_HARNESSES[name]
         assert '--session-id {session_id}' in ' '.join(h.headless), name
-    assert '--session-dir' not in DEFAULT_HARNESSES['pi'].headless, "entire looks in pi's own session store"
-    with pytest.raises(ValueError, match=r'headless must pass \{session_id\} to the agent or session_id_pattern'):
-        Harness(executable='x', headless=['{prompt}'], entire_agent='pi')
-    Harness(executable='x', headless=['{prompt}', '{session_id}'], entire_agent='pi')
-    Harness(executable='x', headless=['{prompt}'], entire_agent='codex', session_id_pattern='id=(\\w+)')
+    assert '--session-dir' not in DEFAULT_HARNESSES['pi'].headless, "usage reads pi's own session store"
     Harness(executable='x', headless=['{prompt}'])
     for resume in (['{prompt}'], ['--resume', '{session_id}']):
         with pytest.raises(ValueError, match=r'resume must include \{session_id\} and \{prompt\}'):

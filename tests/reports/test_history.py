@@ -66,7 +66,6 @@ def scored(
     row: Idea,
     base: int,
     *outcomes: tuple[Verdict, dict[str, float], str | None],
-    checkpoint: str | None = None,
     tokens: int | None = None,
 ) -> Candidate:
     """Add one run of ``row`` from candidate ``base`` with one measured candidate per outcome. Return the last."""
@@ -75,11 +74,7 @@ def scored(
     s.add(run)
     s.flush()
     usage = None if tokens is None else spent(tokens, 3)
-    s.add(
-        AgentSession(
-            kind=IMPLEMENTER, campaign_id=row.campaign_id, run_id=run.id, checkpoint_id=checkpoint, usage=usage
-        )
-    )
+    s.add(AgentSession(kind=IMPLEMENTER, campaign_id=row.campaign_id, run_id=run.id, usage=usage))
     evaluator_id = row.campaign.evaluator_id
     assert evaluator_id is not None
     parent = base
@@ -133,7 +128,6 @@ def test_history_lists_every_idea_with_its_outcome_the_lineage_and_the_findings(
             kept,
             1,
             (Verdict.KEEP, {'score': 3, 'size': 12}, None),
-            checkpoint='01M29FSXJHMJ9X718SBKJ1K0E2',
             tokens=234_444,
         )
         comment(s, TargetKind.IDEA, kept.id, 'appending works | keep appending\nsecond line is not shown')
@@ -174,11 +168,11 @@ def test_history_lists_every_idea_with_its_outcome_the_lineage_and_the_findings(
 
 ## History: kept lineage
 
-| candidate | parent | score | vs parent | idea (by) | commit | checkpoint | tokens | summary |
-|---|---|---|---|---|---|---|---|---|
-| #1 | — | 1 | — | — | ba5e11a | — | — | baseline |
-| #2 | #1 | 3 | +2 | idea#1 (research#9) | 1100000 | 01M29FSXJHMJ9X718SBKJ1K0E2 | 234k | more lines commit |
-| #6 | #5 | 4 | — | idea#4 (t) | 4410000 | — | — | two commits commit |
+| candidate | parent | score | vs parent | idea (by) | commit | tokens | summary |
+|---|---|---|---|---|---|---|---|
+| #1 | — | 1 | — | — | ba5e11a | — | baseline |
+| #2 | #1 | 3 | +2 | idea#1 (research#9) | 1100000 | 234k | more lines commit |
+| #6 | #5 | 4 | — | idea#4 (t) | 4410000 | — | two commits commit |
 
 
 ## History: findings on the campaign (last 10)
@@ -241,7 +235,7 @@ def test_history_when_a_human_kept_an_unscored_commit_and_an_idea_builds_on_it(
     assert '| 1 | done | t | — | — | 2 | from an unscored base | keep 5 (candidate#3) |' in rendered, (
         'no delta without a base score'
     )
-    assert '| #2 | — | — | — | — | y | — | — | — |' in rendered, 'the unscored base is in the lineage without a value'
+    assert '| #2 | — | — | — | — | y | — | — |' in rendered, 'the unscored base is in the lineage without a value'
     assert '| #3 | #2 | 5 | — | idea#1 (t) |' in rendered, 'no gain over a parent without a score'
 
 

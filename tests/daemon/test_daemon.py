@@ -155,39 +155,6 @@ def test_serve_reaps_the_children_an_in_place_restart_handed_over_on_every_tick(
             os.waitpid(pid, os.WNOHANG)  # already reaped by the daemon
 
 
-def test_serve_checks_entire_once_and_the_worker_learns_the_version(
-    tmp_path: Path,
-    mocker: MockerFixture,
-    entire_log,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    def serve(cfg: Settings) -> Daemon:
-        daemon = Daemon(cfg)
-        mocker.patch.object(daemon.scheduler, 'tick', side_effect=KeyboardInterrupt)
-        daemon.serve()
-        return daemon
-
-    cfg = Settings(home=tmp_path / 'home', tick_seconds=0.01)
-    daemon = serve(cfg)
-    assert workers_of(daemon.controller).worker.entire_version == '0.10.6'
-    assert [c['argv'] for c in entire_log()] == [['version']], 'once per start, not per implementer'
-    assert re.search(
-        rf'piloop\.start \d+\.\ds db={re.escape(cfg.database_url)} entire=0\.10\.6', capsys.readouterr().err
-    )
-    monkeypatch.setenv('FAKE_ENTIRE_VERSION', '0.10.5')
-    assert workers_of(serve(cfg).controller).worker.entire_version == '0.10.5', (
-        'the launcher skips attach below the floor'
-    )
-    assert 'entire.too_old version=0.10.5 min=0.10.6' in capsys.readouterr().err
-    monkeypatch.setenv('PATH', str(tmp_path))
-    assert workers_of(serve(cfg).controller).worker.entire_version is None
-    assert (
-        'entire.missing error=entire is not on PATH; install it: curl -fsSL https://entire.io/install.sh | bash'
-        in capsys.readouterr().err
-    )
-
-
 def test_serve_merges_what_the_secrets_command_prints_into_its_environment_before_anything_runs(
     tmp_path: Path, mocker: MockerFixture, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

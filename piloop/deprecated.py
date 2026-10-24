@@ -351,6 +351,18 @@ def removed_workdir() -> str:
     )
 
 
+ENTIRE_UPGRADE = 'https://piloop.autoresearch.inc/guides/upgrading#entire'
+"""What to do about ``entire_agent``, which 0.3.0 removed with Entire."""
+
+
+@until('0.4.0', 'entire_agent of a 0.2 piloop.toml: delete removed_entire_agent, ENTIRE_UPGRADE and its call')
+def removed_entire_agent(harness: Mapping[str, object]) -> str | None:
+    """Why a ``[harness.<name>]`` table does not load when it sets ``entire_agent``, else None."""
+    if 'entire_agent' not in harness:
+        return None
+    return f'entire_agent is removed in piloop 0.3.0, with Entire: delete the key ({ENTIRE_UPGRADE})'
+
+
 OLD_ENV_PREFIX = 'PILOOP_PROJECT_'
 """The prefix of the environment variables that override ``piloop.toml`` before 0.2.0. ``PILOOP_CAMPAIGN_`` now."""
 

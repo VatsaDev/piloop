@@ -72,21 +72,14 @@ The `piloop-operate` skill runs `piloop wake` first, and writes to the journal a
 ## Sessions
 
 The candidates show what the code was. The **sessions** show what the agents did: their prompts, tool calls and
-reasoning. When [Entire](https://github.com/entireio/cli) 0.10.6 or later is installed (the piloop installer installs
-it), piloop keeps the session of every agent in your repo, as a local git ref. You configure nothing, and no data
-leaves your machine.
+reasoning. Each harness keeps its sessions in its own store, such as `~/.claude/projects/`. piloop records the id of
+each agent's session, and the file that it read the agent's tokens from.
 
-To read the session that made candidate 2:
+To find the session that made candidate 2:
 
 ```bash
-piloop sql "SELECT s.checkpoint_id FROM agent_sessions s JOIN candidates c ON c.run_id = s.run_id WHERE c.id = 2"
-entire checkpoint explain <checkpoint-id>
+piloop sql "SELECT s.session_id, s.usage->>'$.source' FROM agent_sessions s JOIN candidates c ON c.run_id = s.run_id WHERE c.id = 2"
 ```
 
-`entire checkpoint explain` prints the session's first prompt, its tokens, and its transcript: each prompt, tool call
-and answer.
-
-<Warning>
-  A session holds the whole brief and the absolute paths under your home directory. Entire redacts only strings that
-  look like keys. Check a session before you push its ref to a shared remote.
-</Warning>
+The file is the session's transcript, one JSON record for each prompt, tool call and answer. The harness keeps it for as
+long as its own settings say.

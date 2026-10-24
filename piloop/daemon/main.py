@@ -7,7 +7,6 @@ from types import FrameType
 from typing import TYPE_CHECKING
 
 from piloop.actor import System
-from piloop.agents.capture import MIN_ENTIRE, AttachError, entire_version, usable
 from piloop.campaign.archive import ManifestNotMigrated, migrate_manifests
 from piloop.daemon.archiver import ArchivePolicy, Archiving
 from piloop.daemon.run_controller import RunController
@@ -88,14 +87,6 @@ def preflight(cfg: Settings, listen: network.Address | None = None) -> network.N
         raise plugins.PluginError(f'{cfg.home / CONFIG_FILE}: {e}') from e
 
 
-def _entire() -> str | AttachError:
-    """What ``entire version`` prints on this machine, or why it cannot be run."""
-    try:
-        return entire_version()
-    except AttachError as e:
-        return e
-
-
 class Daemon:
     """Everything that a ``piloop serve`` process owns."""
 
@@ -131,13 +122,11 @@ class Daemon:
             raise
         self._cas = cas.CAS.selected(cfg.providers).open(cfg.home)
         self.tracer = tracer()
-        self._entire = _entire()
         self.controller = RunController(
             self.db,
             self.tracer,
             cfg.home,
             executor=EXECUTORS.selected(cfg.providers),
-            entire_version=self._entire if isinstance(self._entire, str) else None,
             cas=self._cas,
             reserve=cfg.storage.reserve,
         )
@@ -172,7 +161,6 @@ class Daemon:
                 secrets=self._supplied,
                 backup=None if self._backup is None else str(self._backup),
             ) as span:
-                self._check_entire(span)
                 self._listen(span)
                 self._migrate_manifests(span)
                 self.scheduler.reap()
@@ -223,17 +211,6 @@ class Daemon:
             span.set(manifests_migrated=migrate_manifests(self.db, self._cas))
         except ManifestNotMigrated as e:
             span.error(e)
-
-    def _check_entire(self, span: Span) -> None:
-        """Record Entire's version on the start span, or an event that says why no session will be attached."""
-        version = self._entire
-        if isinstance(version, AttachError):
-            span.event('entire.missing', error=str(version))
-            return
-        if not usable(version):
-            span.event('entire.too_old', version=version, min=MIN_ENTIRE)
-            return
-        span.set(entire=version)
 
     def _listen(self, span: Span) -> None:
         """Start the server on the network's listener, when it has one, and record its URL on the start span.

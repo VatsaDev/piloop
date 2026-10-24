@@ -312,8 +312,7 @@ writer gave it a priority.
 1. **Read** the thread and the target.
    - `piloop inbox show <id>`.
    - For a run: `SELECT status, end, error, log_dir FROM runs WHERE id = <t>`, and the end of `<log_dir>/transcript.txt`.
-   - With `entire` installed: `SELECT checkpoint_id FROM agent_sessions WHERE run_id = <t>`, then
-     `entire checkpoint explain <checkpoint_id>` for the agent's own session.
+   - The agent's own session: `SELECT usage->>'$.source' FROM agent_sessions WHERE run_id = <t>`, the harness's file.
    - Verify before you build on a theory: the agent's own transcript, `ps`, a new query. Do not guess the mechanism.
 2. **Decide.**
    - If the human is talking to you now, give them the one decision, with the evidence and your recommendation.
@@ -390,14 +389,9 @@ without a priority), out of the inbox.
   - `SELECT commit_sha, summary FROM candidates WHERE id = <c>`, then `git show <commit_sha>`.
   - `git diff <parent commit_sha> <commit_sha>` compares it with its parent (`candidates.parent_id`).
   - `git cherry-pick <commit_sha>` takes it.
-  - The kept lineage in `piloop history` lists the commit and checkpoint of each candidate.
-- Why it was made: run `entire checkpoint explain <id>` on the checkpoint of the agent session that made it. It shows
-  intent, prompts, files touched and tokens.
-  - The checkpoint id is in the kept lineage, or in `agent_sessions.checkpoint_id` of any agent, sweeps included.
-  - `git show refs/entire/checkpoints/<id[-2:]>/<id>:0/full.jsonl` is the full transcript. It is long: read it only
-    for a specific question.
-- Every agent session is attached to Entire when the agent ends, if `entire` is installed
-  (`curl -fsSL https://entire.io/install.sh | bash`). A session that a daemon stop cut short is not attached.
+  - The kept lineage in `piloop history` lists the commit of each candidate.
+- Why it was made: read the session of the agent that made it, the harness's own file. `agent_sessions.usage->>'$.source'`
+  names it, for any agent, sweeps included. It is long: read it only for a specific question.
 
 ## Past research
 

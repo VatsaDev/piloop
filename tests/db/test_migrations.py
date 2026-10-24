@@ -884,10 +884,13 @@ def test_0011_makes_scout_sweeps_scout_rows_and_stored_configs_valid_and_downgra
 
 
 def upgraded(config: dict[str, object]) -> object:
-    """``config`` as revisions 0034 (no herdr) and 0035 (no ``workdir``) store it, so that today's piloop reads it."""
+    """``config`` as revisions 0034 (no herdr), 0035 (no ``workdir``) and 0036 (no Entire) store it, so that today's
+    piloop reads it."""
     revisions = ScriptDirectory(str(MIGRATIONS))
-    return revisions.get_revision('0035').module.upgraded(
-        revisions.get_revision('0034').module.upgraded(config, stopped=False)
+    return revisions.get_revision('0036').module.upgraded(
+        revisions.get_revision('0035').module.upgraded(
+            revisions.get_revision('0034').module.upgraded(config, stopped=False)
+        )
     )
 
 
@@ -1469,6 +1472,30 @@ def test_0034_drops_the_herdr_keys_of_the_stored_configs_and_moves_the_stopped_c
             {'harness': 3},
         ], 'an active campaign keeps herdr, which session.on_herdr refuses before this revision runs'
     command.downgrade(cfg, '0033')
+
+
+def test_0036_drops_the_checkpoint_column_and_entire_agent_of_the_stored_configs(tmp_path: Path) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0035')
+    stored = {'harness': {'c': {'executable': 'claude', 'headless': ['{prompt}'], 'entire_agent': 'claude-code'}}}
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('a', '/a', ?)", (dumps(stored),))
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('q', '/q', '{\"harness\": 3}')")
+        con.execute("INSERT INTO agent_sessions (kind, campaign_id, checkpoint_id) VALUES ('implementer', 1, 'ck')")
+    command.upgrade(cfg, '0036')
+    columns = "SELECT name FROM pragma_table_info('agent_sessions')"
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert [loads(c) for (c,) in con.execute('SELECT config FROM campaigns ORDER BY id')] == [
+            {'harness': {'c': {'executable': 'claude', 'headless': ['{prompt}']}}},
+            {'harness': 3},
+        ]
+        assert 'checkpoint_id' not in [c for (c,) in con.execute(columns)]
+        assert con.execute('SELECT count(*) FROM agent_sessions').fetchone() == (1,), 'the row stays'
+    command.downgrade(cfg, '0035')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert 'checkpoint_id' in [c for (c,) in con.execute(columns)]
+        assert con.execute('SELECT checkpoint_id FROM agent_sessions').fetchall() == [(None,)]
 
 
 def test_a_database_with_work_on_herdr_is_not_migrated_until_that_work_moves_off_it(tmp_path: Path) -> None:

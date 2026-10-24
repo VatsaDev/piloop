@@ -40,7 +40,7 @@ Rules for the whole review:
 | Agent session file | `agent_sessions.usage->>'$.source'` names it |
 | Orchestrator | the harness that ran `piloop-operate`; its writes are signed `orchestrator`. pi: `~/.pi/agent/sessions/--<cwd>--/`, subagents in `~/.pi/agent/pi-subagents/` and `run-history.jsonl`. Claude Code: `$CLAUDE_CONFIG_DIR/projects/<cwd, non-alphanumerics as ->/*.jsonl`, subagents under `<session>/subagents/`. Codex: `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl` |
 | What agents left in `./workspace/` | `<PILOOP_HOME>/projects/<id>/workspace`, once each run ends: a running agent writes its own copy, and conflicts are `agent_session.workspace_conflict` events. A done idea's files, and what a stopped campaign left (except `NOTES.md` and `research/`), are archived (`archives`) and removed from the workspace later (`archives.pruned_at`): `piloop restore <campaign> [<idea>\|<path>]` writes them back |
-| Candidates | the campaign repo: `refs/piloop/<campaign>/r<run>/<n>`, `git show <commit_sha>`; `entire checkpoint explain <agent_sessions.checkpoint_id>` when Entire is on |
+| Candidates | the campaign repo: `refs/piloop/<campaign>/r<run>/<n>`, `git show <commit_sha>` |
 | Side effects outside piloop | `$CLAUDE_CONFIG_DIR/settings.json`, `$CODEX_HOME/config.toml`, `$CLAUDE_CONFIG_DIR/projects/*/memory/` |
 
 Token counts:

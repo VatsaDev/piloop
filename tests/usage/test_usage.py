@@ -123,7 +123,7 @@ def test_cwd_encoders_match_the_stores_on_disk() -> None:
     assert wrapped(Path('/home/me/.piloop/runs/10/worktree')) == '--home-me-.piloop-runs-10-worktree--'
     assert wrapped(Path('/home/me')) == '--home-me--'
     assert non_alnum(Path('/home/me/.piloop/runs/2/worktree')) == '-home-me--piloop-runs-2-worktree'
-    assert non_alnum(Path('/tmp/entire-j-e2e/home/runs/2/worktree')) == '-tmp-entire-j-e2e-home-runs-2-worktree'
+    assert non_alnum(Path('/tmp/piloop-j-e2e/home/runs/2/worktree')) == '-tmp-piloop-j-e2e-home-runs-2-worktree'
     assert none(CWD) == '*', 'a store not keyed by cwd: the session id in the file name is enough'
 
 
@@ -232,10 +232,10 @@ def test_spec_names_are_checked_against_the_registries() -> None:
         UsageSpec(file='x', cwd='hex', tally='pi')
     with pytest.raises(ValidationError, match='unknown usage tally None'):
         UsageSpec(file='x')
-    with pytest.raises(ValueError, match=r'headless must pass \{session_id\}.*when entire_agent or usage is set'):
+    with pytest.raises(ValueError, match=r'headless must pass \{session_id\}.*when usage is set'):
         Harness(executable='x', headless=['{prompt}'], usage=UsageSpec(**PI_SPEC))
-    assert Harness(executable='x', headless=['{prompt}']).captures_session is False
-    assert Harness(executable='x', headless=['{prompt}', '{session_id}'], usage=UsageSpec(**PI_SPEC)).captures_session
+    assert Harness(executable='x', headless=['{prompt}']).needs_session_id is False
+    assert Harness(executable='x', headless=['{prompt}', '{session_id}'], usage=UsageSpec(**PI_SPEC)).needs_session_id
 
 
 @pytest.mark.parametrize(
@@ -330,7 +330,7 @@ def test_a_new_kind_of_source_is_one_reader_registered_by_name() -> None:
 
 
 def test_what_cannot_be_read_is_a_usage_error_or_nothing(home: Path) -> None:
-    assert read_usage(None, PI_ID, CWD, None) is None, 'no spec: nothing to read, like no entire_agent'
+    assert read_usage(None, PI_ID, CWD, None) is None, 'no spec: nothing to read'
     pi = spec_of('pi')
     with pytest.raises(UsageError, match='no session id'):
         read_usage(pi, None, CWD, None)

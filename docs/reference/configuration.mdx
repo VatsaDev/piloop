@@ -83,15 +83,13 @@ after 5 minutes.
 
 When `headless` contains `{session_id}`, piloop creates the session id. Otherwise the runtime
 reports it, or reads it with `session_id_pattern`.
-When the agent ends, `entire session attach` takes this id, and `usage` uses it to find the session file and
-read the tokens the agent spent.
+When the agent ends, `usage` uses this id to find the session file and read the tokens the agent spent.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
 | `executable` | string | required | The program to run. |
 | `headless` | list\[string\] | required | The arguments for a run without a terminal. Must include `{prompt}`. |
 | `resume` | list\[string\] | `[]` | The arguments that continue the session of a run with a new prompt. When the agent's turn ends with messages queued for it (comments, `piloop prompt`), the runtime runs the harness again with these, `{prompt}` being the messages and `{session_id}` the session's id. Must include both. When empty, the agent takes no message while it runs. |
-| `entire_agent` | string \| null | `null` | Entire's name for this agent, as `entire agent list` shows it. When it is set and `entire` is installed, the agent's session is attached to Entire as a checkpoint when the agent ends. When unset, the session is not captured. |
 | `session_id_pattern` | string \| null | `null` | A regex with one group that finds the session id in the first lines of the process's stdout. Use it in a harness that cannot take its id as an argument (`{session_id}`). For example, Codex `exec --json` prints `{"type":"thread.started","thread_id":"<uuid>"}` first. |
 | `usage` | [UsageSpec](#usagespec) \| null | `null` | `[harness.<name>.usage]`: how to read the tokens an agent spent, when it ends, into `agent_sessions.usage`. When unset, token usage is not recorded. |
 | `home` | string \| null | `null` | The directory where the agent keeps its config and sessions, as `{env:NAME:default}`. piloop's tests move it to a temporary directory through `NAME`. |

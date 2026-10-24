@@ -438,7 +438,7 @@ class CampaignResults:
                     else AgentSessionState.EXITED
                 )
                 w.error = w.error if ending else process.error
-                w.checkpoint_id, seconds = report.checkpoint, process.seconds
+                seconds = process.seconds
                 worked = asked or not _never_worked(s, w, report)
                 ended = Ran(process, report.commits) if worked else NotStarted(process.error or NEVER_WORKED)
             case _:

@@ -154,7 +154,7 @@ class Launcher:
             effort = cfg.role(w.kind).effort
             definition = cfg.harness_for(harness)
             runtime_kind = cfg.role_runtime(w.kind)
-            session_id = str(uuid4()) if definition.captures_session and takes_session_id(definition.headless) else None
+            session_id = str(uuid4()) if definition.needs_session_id and takes_session_id(definition.headless) else None
             kind, reason = w.kind, w.reason
             span.set(kind=kind, harness=harness, model=model, reason=reason, session_id=session_id)
             prompt = PROMPT.format(path=f'{{log_dir}}/{BRIEF_FILE}')
@@ -190,8 +190,6 @@ class Launcher:
                 mcp=definition.mcp,
                 servers=cfg.role_servers(kind),
                 usage=definition.usage,
-                entire_agent=definition.entire_agent,
-                captures_session=definition.captures_session,
                 session_id=session_id,
                 commits=commits,
             )
@@ -225,8 +223,6 @@ class Launcher:
             brief=None,
             spec=None,
             usage=definition.usage if definition is not None else None,
-            entire_agent=definition.entire_agent if definition is not None else None,
-            captures_session=definition is not None and definition.captures_session,
             session_id=w.session_id,
             commits=commits,
         )

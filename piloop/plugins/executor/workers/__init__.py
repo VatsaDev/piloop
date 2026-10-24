@@ -97,7 +97,6 @@ class WorkersExecutor:
             host.tracer,
             jobs.local_site(host.home, host.cas, host.repos, host.reserve),
             runtime_factory=host.runtimes,
-            entire_version=host.entire_version,
         )
         """The worker inside ``piloop serve``, in the pool ``serve``."""
 

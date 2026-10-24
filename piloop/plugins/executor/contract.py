@@ -146,14 +146,15 @@ class AgentJob(BaseModel):
     """The MCP servers of the agent's role, which name their variables, never their values."""
     usage: UsageSpec | None = None
     """How to read the session's tokens when it ends (``Harness.usage``)."""
-    entire_agent: str | None = None
-    """The Entire agent to attach the session to when it ends (``Harness.entire_agent``)."""
-    captures_session: bool = False
-    """Whether the session id is needed when the agent ends: the worker asks the runtime for it."""
     session_id: str | None = None
     """The session id the launcher made for the argv (``{session_id}``), or None when the runtime reports it."""
     commits: Commits | None = None
     """Bring the agent's commits back. None for a sweep: nothing that it commits comes back."""
+
+    @property
+    def needs_session_id(self) -> bool:
+        """Whether the session id is needed when the agent ends, for ``usage``: the worker asks the runtime for it."""
+        return self.usage is not None
 
 
 class Bar(BaseModel):
@@ -206,7 +207,6 @@ class AgentFinished(BaseModel):
     process: AgentExit
     session_id: str | None = None
     usage: Usage | None = None
-    checkpoint: str | None = None
     changed: bool = True
     """Whether the agent changed its checkout: a commit, or an uncommitted change outside the links."""
     commits: Bundle | None = None
@@ -354,7 +354,7 @@ class Results(Protocol):
         ...
 
     def session(self, key: AgentKey, session_id: str, *, guard: Guard | None = None) -> None:
-        """The runtime reported the agent's session id: the usage and the Entire attach need it. Raises ``Settled``."""
+        """The runtime reported the agent's session id: the usage needs it. Raises ``Settled``."""
         ...
 
     def finished(
@@ -398,9 +398,6 @@ class Host:
     reserve: int
     """Bytes kept free on the disk of ``home`` (``[storage] min_free_gb``): below it, a job's end evicts the linked
     inputs that no job uses (``Site.evict_inputs``)."""
-    entire_version: str | None = None
-    """What ``entire version`` printed on this machine when the daemon started, or None without ``entire``: the
-    attach is still tried then, and the event says why it failed. Below ``MIN_ENTIRE``, no session is attached."""
 
 
 @dataclass(frozen=True)

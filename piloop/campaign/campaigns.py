@@ -19,7 +19,6 @@ from sqlalchemy.orm import Session
 
 from piloop import deprecated, git
 from piloop.actor import Actor
-from piloop.agents.capture import ENTIRE_DIR
 from piloop.config import CONFIG_FILE, CampaignConfig, config_of, load_campaign_config
 from piloop.db.events import emit
 from piloop.db.models import Campaign, CampaignStatus, Candidate, EventModel, Measurement, Verdict
@@ -75,7 +74,7 @@ class CampaignError(RuntimeError):
 def create_campaign_repo(dest: Path, template: Path, data: dict[str, str], *, ignore: str = GITIGNORE) -> list[str]:
     """Copy ``template`` to ``dest``, download ``data`` and make a git repo with a baseline commit.
 
-    If ``dest`` already has a ``piloop.toml``, it is a campaign: only the missing ``.entire/`` files are copied.
+    If ``dest`` already has a ``piloop.toml``, it is a campaign: the template is not copied.
     Files that already exist are never overwritten, so a second run is safe and keeps the user's edits.
 
     Args:
@@ -107,7 +106,6 @@ def create_campaign_repo(dest: Path, template: Path, data: dict[str, str], *, ig
             copy_function=copy_missing,
             ignore=shutil.ignore_patterns('data', '.git', '.venv', '__pycache__'),
         )
-    shutil.copytree(BLANK / ENTIRE_DIR, dest / ENTIRE_DIR, dirs_exist_ok=True, copy_function=copy_missing)
     if not (dest / '.gitignore').exists():
         (dest / '.gitignore').write_text(ignore)
         written.append('.gitignore')
@@ -132,9 +130,7 @@ def create_campaign_repo(dest: Path, template: Path, data: dict[str, str], *, ig
         repo.git.commit('-qm', f'{template.name}: baseline')
         return sorted(written)
     # Only init's own files: in a shared checkout, other dirty or staged files are someone else's work in progress.
-    owned = sorted(
-        {*written, '.gitignore', *_template_files(template), *_template_files(BLANK / ENTIRE_DIR, ENTIRE_DIR)}
-    )
+    owned = sorted({*written, '.gitignore', *_template_files(template)})
     # git status leaves out what the repo's ignore file ignores, which git add would refuse to take by name
     # and --no-renames reports a rename as its two paths, not as one "old -> new" record
     status = repo.git.status('--porcelain', '-z', '--no-renames', '--untracked-files=all', '--', *owned)
@@ -148,11 +144,11 @@ def create_campaign_repo(dest: Path, template: Path, data: dict[str, str], *, ig
     return sorted(written)
 
 
-def _template_files(template: Path, prefix: str = '') -> list[str]:
+def _template_files(template: Path) -> list[str]:
     """The repo-relative paths of the files that ``template`` provides, as ``create_campaign_repo`` copies them."""
     skipped = {'data', '.git', '.venv', '__pycache__'}
     return [
-        str(Path(prefix) / path.relative_to(template))
+        str(path.relative_to(template))
         for path in template.rglob('*')
         if path.is_file() and not skipped & set(path.relative_to(template).parts)
     ]
@@ -322,14 +318,9 @@ def workspace_dir(home: Path, campaign_id: CampaignId) -> Path:
 def links_of(cas: Cas, cfg: CampaignConfig, path: Path, seen: Seen | None = None) -> dict[str, Cid]:
     """Put the linked inputs of the checkout at ``path`` into ``cas``: each as the manifest of its tree, by name.
 
-    They are the ``link`` paths that exist, and Entire's committed settings (``ENTIRE_DIR``), for a worktree whose
-    tree does not have them, for example a candidate made before ``piloop init`` added them. Entire reads its settings
-    from the worktree it runs in. Without them, it silently falls back to a shadow branch. With ``seen``, a file stored
-    before is not read again.
+    They are the ``link`` paths that exist. With ``seen``, a file stored before is not read again.
     """
-    entire = [rel for rel in _template_files(BLANK / ENTIRE_DIR, ENTIRE_DIR) if (path / rel).is_file()]
-    names = {rel: [rel] for rel in cfg.link if (path / rel).exists()} | ({ENTIRE_DIR: entire} if entire else {})
-    return {name: put_tree(cas, path, rels, seen=seen).manifest.put(cas) for name, rels in names.items()}
+    return {rel: put_tree(cas, path, [rel], seen=seen).manifest.put(cas) for rel in cfg.link if (path / rel).exists()}
 
 
 class Sources:

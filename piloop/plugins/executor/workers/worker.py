@@ -138,7 +138,6 @@ class Worker:
         pool: str = SERVE,
         runtime_factory: RuntimeFactory = make_runtime,
         runners: tuple[str, ...] | None = None,
-        entire_version: str | None = None,
         relay: Relay | None = None,
     ) -> None:
         self.id: str | None = None
@@ -153,8 +152,6 @@ class Worker:
         self._tracer = tracer
         self.runtime_factory = runtime_factory
         self.runners = runners if runners is not None else evaluator_runners()
-        self.entire_version = entire_version
-        """What ``entire version`` printed on this machine (``Host.entire_version``)."""
         self.relay = relay
         """How its agents' ``piloop`` calls reach the server, on a worker elsewhere. None: they run here."""
         self._lock = threading.RLock()
@@ -641,10 +638,6 @@ class _Control:
         self._worker = worker
         self._lease = lease_id
         self._runtime = runtime
-
-    @property
-    def entire_version(self) -> str | None:
-        return self._worker.entire_version
 
     def begin(self) -> bool:
         w = self._worker

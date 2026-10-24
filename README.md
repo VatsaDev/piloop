@@ -46,7 +46,6 @@ The agent sets up the campaign, runs it, and asks you only what needs you. To tr
 - [uv](https://docs.astral.sh/uv/). The installer installs it.
 - At least one of [Claude Code](https://code.claude.com), [Codex](https://github.com/openai/codex) or
   [pi](https://github.com/badlogic/pi-mono), logged in.
-- Optional: [Entire](https://github.com/entireio/cli), to keep the session of each agent in your repo.
 
 ## Documentation
 
