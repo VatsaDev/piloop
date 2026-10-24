@@ -237,7 +237,7 @@ PILOOP_ACTOR=orchestrator piloop resume <name>
   10 minutes later, with every process it started. Its commits are scored and its idea is parked. Without `--wrap-up`,
   it is ended at once. `piloop agent cancel <agent-session> [--wrap-up]` does the same for an agent of any role, a sweep too.
 - A campaign: `piloop campaign stop <name> --reason '<why>'`. The daemon stops it as a limit of the stop rule does: it
-  drops queued work, winds the implementers down, scores their commits and launches the closing review. `--kill` ends the
+  drops queued work, winds the implementers down, scores their commits, then launches the closing review. `--kill` ends the
   implementers at once. Never `UPDATE campaigns SET status`: that gets no closing review.
 - Never `pkill` an agent: the cancel ends what it left running, in any session.
 

@@ -79,7 +79,7 @@ BEFORE = {
     'implementer.md': '5d886da05bcee55fb5c87b48df3f69e3b7e08973213322a7f1874c2623de1b2d',
     'research.md': '9e6c8f3071daf8cd35475ce2bc3645d7161650acd1591828328a7b30a012e680',
     'scout.md': '93b669faacc78e1333b5bd71e875e1369923781ff820d30ec5e7bbcd48f38947',
-    'sql_orchestrator.md': 'cf764a8e7accf6894f2aa24690ad45f70a3f5958aa330bf2edbb5fe946a2e4d0',
+    'sql_orchestrator.md': 'e4f758269f8b4c6db8e2f6f62b5f7d9d8b4920e5581e685d4cbc1987e91641dc',
     'sql_procedures.md': '75c0974dca5fd2fbad83384b186a3bf29ccabb93a918112140a26bda50ebd7c1',
     'watchdog.md': '2278c57e18f1bbfb79f4a4a0f567465141f755acdefd6e38e22a14f4d18fbad1',
     'watchdog_incident.md': '9b3ed86a60bbef091f7327f5c21e1d70be5ab8d97fe6170289b797a35c3d0870',

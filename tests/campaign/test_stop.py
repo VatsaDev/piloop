@@ -11,8 +11,10 @@ import pytest
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from piloop_stop_after_keeps import AfterKeeps
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from piloop.actor import Agent, System
+from piloop.campaign.memory import Synced
 from piloop.campaign.ops import pause
 from piloop.campaign.stop import (
     Ending,
@@ -639,13 +641,21 @@ def test_a_requested_stop_ends_a_held_campaign_and_by_default_its_closing_review
 
 
 def test_closing_review_skip_ends_the_stop_at_once_with_an_escalation(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     stop_while_held(db, campaign, 'spend', 'skip')
+    synced: list[str] = []
+
+    def sync(_s: Session, c: Campaign, *_: object) -> Synced:
+        synced.append(c.name)
+        return Synced()
+
+    monkeypatch.setattr('piloop.daemon.scheduler.sync_documents', sync)
     sched = make_scheduler(db, runtime, tmp_path)
     assert sched.tick() == []
     assert campaign_state(db, campaign) == (CampaignStatus.STOPPED, 'stopped by human: over budget')
     assert closing_reviews(db, campaign) == [], 'no closing review is requested'
+    assert synced == ['demo'], 'the [memory] documents are synced, as at every close'
     with db.session() as s:
         last = s.scalars(select(Comment).order_by(Comment.id.desc()).limit(1)).one()
         assert (last.kind, last.priority, last.author) == (CommentKind.ESCALATION, 0, 'daemon')
@@ -681,6 +691,44 @@ def test_closing_review_wait_starts_the_review_once_the_spend_hold_lifts(
     sched.stop(timeout=5)
 
 
+def test_the_closing_review_waits_until_the_stopped_campaigns_runs_are_judged_and_fires_once_per_stop(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """The wrap-up's last commits are judged first, so the closing review sees the final head.
+
+    The stop is on the feed, so a daemon that restarts in between still requests the review, once.
+    """
+    configure(db, campaign)
+    running = add_run(db, campaign, status=RunStatus.RUNNING, measured=False)
+    with db.session() as s:
+        request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='done', ending=Ending.WRAP_UP)
+        s.commit()
+    sched = make_scheduler(db, runtime, tmp_path)
+    assert sched.tick() == []
+    assert campaign_state(db, campaign) == (CampaignStatus.STOPPED, 'stopped by human: done')
+    assert closing_reviews(db, campaign) == [], 'its run is still open'
+    with db.session() as s:
+        run = s.get_one(Run, running)
+        run.status, run.end, run.finished_at, run.scoring = RunStatus.SUCCEEDED, RunEnd.FINISHED, utcnow(), True
+        s.commit()
+    assert sched.tick() == [], 'its commits are still judged'
+    sched.stop(timeout=5)
+    with db.session() as s:
+        s.get_one(Run, running).scoring = False
+        s.commit()
+    restarted = make_scheduler(db, runtime, tmp_path)
+    assert restarted.tick() == [1], 'settled: the closing review launches'
+    restarted.wait()
+    assert restarted.tick() == [], 'once'
+    with db.session() as s:
+        s.get_one(Campaign, campaign.id).status = CampaignStatus.ACTIVE
+        request_stop(s, s.get_one(Campaign, campaign.id), System.HUMAN, reason='again', ending=Ending.WRAP_UP)
+        s.commit()
+    assert restarted.tick() == [2], 'stopped again: a closing review again'
+    restarted.wait()
+    restarted.stop(timeout=5)
+
+
 def test_the_closing_sweep_is_each_stopped_trigger_and_none_without_one(
     db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
 ) -> None:
@@ -694,7 +742,7 @@ def test_the_closing_sweep_is_each_stopped_trigger_and_none_without_one(
     sched.wait()
     assert sched.tick() == [2], 'the closer, and no watchdog'
     sched.wait()
-    assert sched.tick() == [], 'it fires on the tick that stops the campaign only'
+    assert sched.tick() == [], 'it fires once'
     sched.stop(timeout=5)
     with db.session() as s:
         rows = [(w.kind, w.reason) for w in s.scalars(select(AgentSession).where(AgentSession.id > 1))]

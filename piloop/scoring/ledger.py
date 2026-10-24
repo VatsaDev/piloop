@@ -31,7 +31,9 @@ from piloop.db.models import (
     Event,
     EventModel,
     Idea,
+    IdeaLink,
     IdeaStatus,
+    LinkKind,
     Run,
     Verdict,
     latest_agent_session,
@@ -538,8 +540,9 @@ def rebase(
     and kept (``RebaseVersion``). A new tree becomes a pending
     candidate of the same run, with ``onto`` as its parent. A merge that conflicts files a seed on the run's track to
     compose the two by hand, unless the campaign stopped. The seed is not pinned, so it runs from the head
-    (``follow_up``). A merged tree that is already a candidate (the head had the change) gives no new candidate. Emits
-    ``Rebased``.
+    (``follow_up``). It supersedes the compose seeds of the run's earlier candidates that ``candidate`` contains
+    (``supersede_composed``). A merged tree that is already a candidate (the head had the change) gives no new
+    candidate. Emits ``Rebased``.
     """
     subject = REBASED_SUFFIX.sub('', candidate.summary or '')
     message = f'{subject} (rebased onto candidate#{onto.id})'
@@ -566,6 +569,8 @@ def rebase(
                 pin=False,
             )
         )
+        for seed in seeds:
+            supersede_composed(s, repo, candidate, seed)
         filed = f': seed idea#{seeds[0].id} composes it by hand' if seeds else ''
         candidate.verdict_reason = f'{candidate.verdict_reason}; its merge onto the head conflicts in {paths}{filed}'
         rebased = Rebased(head=onto.id, conflicts=list(merged.paths))
@@ -583,6 +588,26 @@ def rebase(
             found = None
     emit(s, rebased, TargetRef(TargetKind.CANDIDATE, candidate.id), System.DAEMON)
     return found
+
+
+def supersede_composed(s: Session, repo: Repository, candidate: Candidate, seed: Idea) -> None:
+    """Link ``seed`` as superseding each compose seed of the run's earlier candidates that ``candidate`` contains.
+
+    Composing ``candidate`` composes those too, so ``ideas.supersede`` rejects each one that is still a seed. A run of
+    four chained commits that each conflict on the head then leaves one seed, not four.
+    """
+    earlier = select(Candidate).where(Candidate.run_id == candidate.run_id, Candidate.id != candidate.id)
+    by_provenance = {str(TargetRef(TargetKind.CANDIDATE, c.id)): c for c in s.scalars(earlier)}
+    composes = select(Idea).where(
+        Idea.campaign_id == candidate.campaign_id,
+        Idea.status == IdeaStatus.SEED,
+        Idea.created_by == DAEMON,
+        Idea.provenance.in_(by_provenance),
+    )
+    for old in s.scalars(composes):
+        assert old.provenance is not None  # the IN clause matched it
+        if repo.contains(Revision(candidate.commit_sha), Revision(by_provenance[old.provenance].commit_sha)):
+            s.add(IdeaLink(idea_id=seed.id, target_id=old.id, kind=LinkKind.SUPERSEDES))
 
 
 def skipped(candidate: Candidate) -> bool:

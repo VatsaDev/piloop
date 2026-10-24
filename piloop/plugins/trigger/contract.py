@@ -2,8 +2,9 @@
 
 A trigger is a provider of ``TRIGGERS``: its fields are its parameters, from its entry in ``[roles.<name>] triggers``. On each
 tick, for each campaign and each sweeping role without a pending request, the scheduler calls ``Trigger.fire`` of each
-trigger of the role, in the order of the list. On the tick that stops the campaign, it calls only the triggers with
-``ON_STOP``, and while the campaign runs, only the others. A package adds a trigger with an entry point in the group of ``TRIGGERS``.
+trigger of the role, in the order of the list. Once a stopped campaign's last runs are judged, it calls only the
+triggers with ``ON_STOP``, and while the campaign runs, only the others. A package adds a trigger with an entry point
+in the group of ``TRIGGERS``.
 """
 
 from abc import ABC, abstractmethod
@@ -211,7 +212,8 @@ class Trigger(Parameters, ABC):
     """
 
     ON_STOP: ClassVar[bool] = False
-    """The daemon checks the trigger once, on the tick that stops the campaign, instead of on every tick while it runs."""
+    """The daemon checks the trigger once after each stop, when the stopped campaign's last runs are judged, instead of
+    on every tick while it runs."""
     INVESTIGATES: ClassVar[bool] = False
     """The agent that the trigger requests gets incidents to investigate. An agent of a role with such a trigger that
     dies at startup is then no incident: the agent that it would request could die the same way, and so on."""

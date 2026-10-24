@@ -143,7 +143,8 @@ The daemon then merges the second candidate onto the new head, as a commit with 
 candidate of the same run, and the daemon measures and judges it against the new head. A run that started from a
 rebased copy of a head (the same tree under another commit) merges only its own changes. If the merge has conflicts,
 the daemon files a seed `Compose candidate#N onto the head` instead, once per candidate: a seed you rejected is not
-filed again when the candidate is judged again.
+filed again when the candidate is judged again. The seed of a run's later commit supersedes the seeds of the run's
+earlier commits that it contains.
 
 ## Measure a candidate again
 

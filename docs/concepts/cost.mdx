@@ -37,10 +37,12 @@ the cached input. `total` is the harness's own count of the session's tokens.
 <Stop />
 
 When a limit is reached, the campaign becomes `stopped`. The daemon tells the running implementers to commit and
-stop, ends them 10 minutes later, and scores what they committed. It drops the queued runs and the requested agents,
-and the watchdog's closing review writes the closing report. Without a limit, the campaign has no end.
+stop, ends them 10 minutes later, and scores what they committed. It drops the queued runs and the requested agents.
+Once the commits are scored, the watchdog's closing review writes the closing report. Without a limit, the campaign
+has no end.
 
-`piloop campaign stop <campaign>` stops a campaign by hand, the same way. `piloop stop` stops the daemon, not the
+`piloop campaign stop <campaign>` stops a campaign by hand, the same way. A stop written with raw SQL
+(`UPDATE campaigns SET status = 'stopped'`) skips the closing review. `piloop stop` stops the daemon, not the
 campaign. To resume a stopped campaign, change its limits and run `piloop init`.
 
 A plugin can add another stop rule, which `provider` in `[plugins.stop_rule]` selects:

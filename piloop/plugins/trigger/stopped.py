@@ -4,10 +4,10 @@ from piloop.plugins.trigger.contract import Fire, Tick, Trigger
 
 
 class StoppedTrigger(Trigger):
-    """The campaign stopped (its stop rule, or a request). It fires once, on the tick that stops the campaign.
+    """The campaign stopped. It fires once, when the runs that the stop wound down are judged.
 
-    The daemon checks it after it dropped what was pending, so its row starts. The watchdog's closing review is this
-    trigger. The reason is ``campaign stopped: <the condition>``.
+    The stop came from its stop rule or a request. So the closing review sees the final head. The watchdog's closing review is this trigger. The reason is ``campaign
+    stopped: <the condition>``.
     """
 
     ON_STOP: ClassVar[bool] = True

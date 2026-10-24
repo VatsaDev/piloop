@@ -650,9 +650,8 @@ def test_a_prerequisite_that_ended_without_a_keep_parks_the_ideas_after_it_with_
                         verdict=verdict,
                     )
                 )
-        p = s.get_one(Campaign, campaign.id)
-        p.status, p.stopped_reason = CampaignStatus.STOPPED, 'by the test'  # bookkeeping happens, nothing launches
         s.commit()
+    stop_by_hand(tmp_path, campaign)  # bookkeeping happens, nothing launches
     stranded = add_ideas(db, campaign, 'after cancelled', after=(parked,))
     stranded += add_ideas(db, campaign, 'after rejected', after=(rejected,))
     stranded += add_ideas(db, campaign, 'after kept nothing', after=(nothing, kept))
@@ -746,9 +745,8 @@ def test_a_superseded_idea_that_never_ran_is_rejected_on_tick_and_one_that_ran_i
                 end=RunEnd.FAILED,
             )
         )
-        p = s.get_one(Campaign, campaign.id)
-        p.status, p.stopped_reason = CampaignStatus.STOPPED, 'by the test'  # bookkeeping happens, nothing launches
         s.commit()
+    stop_by_hand(tmp_path, campaign)  # bookkeeping happens, nothing launches
     add_ideas(db, campaign, 'sharper than both', supersedes=(ready, proposed))
     add_ideas(db, campaign, 'sharper done', supersedes=(done,))
     add_ideas(db, campaign, 'sharper parked', supersedes=(parked,))
@@ -1954,6 +1952,14 @@ def test_a_run_frees_its_slot_when_its_implementer_ends_and_its_idea_settles_onc
 def candidate_rows(db: Database, run_id: RunId) -> int:
     with db.session() as s:
         return len(s.scalars(select(Candidate).where(Candidate.run_id == run_id)).all())
+
+
+def stop_by_hand(tmp_path: Path, campaign: Campaign) -> None:
+    """Stop the campaign as a person's UPDATE does: not the daemon's stop, so it gets no closing sweep."""
+    with closing(sql.connect(tmp_path / 'piloop.db', actor=System.HUMAN)) as con:
+        sql.run(
+            con, f"UPDATE campaigns SET status = 'stopped', stopped_reason = 'by the test' WHERE id = {campaign.id}"
+        )
 
 
 def stop_campaign(db: Database, campaign: Campaign, reason: str) -> None:

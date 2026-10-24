@@ -20,7 +20,7 @@ import os
 import sys
 import threading
 from collections import Counter
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -46,19 +46,23 @@ from piloop.campaign.ideas import defined_by, park_stranded, runnable, supersede
 from piloop.campaign.memory import sync_documents
 from piloop.campaign.spend import SpendError
 from piloop.campaign.stop import (
+    CampaignClosed,
     CancelRequested,
     Ending,
     agent_cancel,
     asked,
     attempts,
     check as check_stop,
+    held as held_now,
     limits,
     park_cancelled,
     requested,
     requested_stop,
     runs,
     runs_without_keep,
+    settled,
     stall,
+    unclosed,
 )
 from piloop.config import CampaignConfig, ClosingReview, Spend, config_of
 from piloop.daemon.archiver import Archiver, Archiving
@@ -459,6 +463,9 @@ class Scheduler:
                     elif not isinstance(answer, Hold) and campaign.paused is None:
                         self._triggers(s, campaign, cfg, answer, None)
                 s.flush()
+                if campaign.status is CampaignStatus.STOPPED and unclosed(s, campaign) and settled(s, campaign):
+                    self._close_campaign(s, campaign, cfg, cfg.roles.sweeping())
+                    held = held_now(s, campaign, cfg)  # a closing review may wait for the hold
                 if launches(campaign, cfg, held):
                     launching.append((campaign, cfg))
             launched = self._launch(s, launching)
@@ -725,14 +732,13 @@ class Scheduler:
         """Stop the campaign if the answer is a stop. Otherwise queue runs and check every role's triggers.
 
         ``held`` is why the stop rule holds launches: then only a stop request gets here. ``[spend] closing_review
-        = "skip"`` then requests no closing review and posts an escalation instead.
+        = "skip"`` then closes the campaign with no closing review (``CampaignClosed``) and posts an escalation.
 
         Triggers requested everything that is pending when the campaign stops, so it is all cancelled. Requested rows
-        are closed and queued runs end ``RunEnd.CAMPAIGN_STOPPED``. Their ideas go back to ``ready``. The
-        ``[memory]`` documents are synced, so that the closing sweep can search the campaign's reports. Then the
-        ``stopped`` triggers fire once (``Trigger.ON_STOP``): by default, the watchdog's closing review. A stopped
-        campaign gets nothing more from the triggers. Rows that a human inserts after the stop still launch. Implementers in
-        flight are told to stop (``_wind_down``), and their commits are scored.
+        are closed and queued runs end ``RunEnd.CAMPAIGN_STOPPED``. Their ideas go back to ``ready``. Implementers in
+        flight are told to stop (``_wind_down``), and their commits are scored. Then the daemon closes the campaign
+        (``_close_campaign``). A stopped campaign gets nothing more from the triggers. Rows that a human inserts after
+        the stop still launch.
         """
         if isinstance(answer, Go):
             self._queue(s, campaign, cfg)
@@ -743,18 +749,31 @@ class Scheduler:
         campaign.status, campaign.stopped_reason = CampaignStatus.STOPPED, reason
         self._tracer.event('campaign.stopped', campaign=campaign.name, reason=reason)
         self._drain(s, campaign)
+        if held is not None and cfg.spend is not None and cfg.spend.closing_review is ClosingReview.SKIP:
+            spend.review_skipped(s, campaign, held)
+            self._close_campaign(s, campaign, cfg, {})
+
+    def _close_campaign(
+        self, s: Session, campaign: Campaign, cfg: CampaignConfig, sweeping: Mapping[RoleName, SweepRole]
+    ) -> None:
+        """Close a stopped campaign: sync its ``[memory]`` documents, fire the ``stopped`` triggers of ``sweeping``.
+
+        The tick closes a campaign that the daemon stopped once it ``settled``, with every sweeping role: by default,
+        the watchdog's closing review, which can then search the campaign's reports. ``[spend] closing_review =
+        "skip"`` closes it at the stop, with none. The stop and the close are events (``unclosed``), so a daemon that
+        restarts in between still closes it, once.
+        """
         try:
             with s.begin_nested():
                 synced = sync_documents(s, campaign, cfg, DAEMON_ACTOR)
-        except OSError as e:  # the repo could not be read: the stop and the closing review still happen
+        except OSError as e:  # the repo could not be read: the closing review still happens
             self._tracer.event('documents.sync_failed', campaign=campaign.name, error=f'{type(e).__name__}: {e}')
         else:
             self._tracer.event('documents.synced', campaign=campaign.name, result=synced.line())
-        if held is not None and cfg.spend is not None and cfg.spend.closing_review is ClosingReview.SKIP:
-            spend.review_skipped(s, campaign, held)
-            return
-        for name, role in cfg.roles.sweeping().items():
+        for name, role in sweeping.items():
             self._request(s, campaign, cfg, name, role, stopping=True)
+        s.flush()  # the status change's event first: the close comes after the stop
+        emit(s, CampaignClosed(), TargetRef(TargetKind.CAMPAIGN, campaign.id), System.DAEMON)
 
     def _drain(self, s: Session, campaign: Campaign) -> None:
         mine = Idea.campaign_id == campaign.id

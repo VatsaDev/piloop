@@ -134,6 +134,35 @@ def requested_stop(s: Session, campaign: Campaign) -> tuple[Event, StopRequested
     return latest(s, StopRequested, on_campaign, Event.id > (reactivated or 0))
 
 
+class CampaignClosed(EventModel):
+    """The daemon closed a stopped campaign: it requested the closing sweeps, the ``stopped`` triggers.
+
+    It closes a campaign once the runs that the stop wound down ended and their commits are judged (``settled``), so
+    the closing review sees the final head. ``[spend] closing_review = "skip"`` closes it at the stop, with no sweep.
+    """
+
+    kind: Literal['campaign.closed'] = 'campaign.closed'
+
+
+def unclosed(s: Session, campaign: Campaign) -> bool:
+    """Whether the daemon stopped ``campaign`` after it last closed it (``CampaignClosed``).
+
+    A ``stopped`` that someone set by hand (an UPDATE of ``campaigns.status``) is not the daemon's stop: it gets no
+    closing sweep.
+    """
+    on_campaign = Event.target == TargetRef(TargetKind.CAMPAIGN, campaign.id)
+    last = select(func.max(Event.id)).where(on_campaign)
+    stopped = s.scalar(last.where(Event.actor == DAEMON_ACTOR, has(CampaignStatusChanged, new=CampaignStatus.STOPPED)))
+    closed = s.scalar(last.where(has(CampaignClosed)))
+    return stopped is not None and stopped > (closed or 0)
+
+
+def settled(s: Session, campaign: Campaign) -> bool:
+    """Whether no run of ``campaign`` is open, and the commits of each one that ended are judged."""
+    busy = select(Run.id).join(Idea).where(Idea.campaign_id == campaign.id, Run.status.in_(OPEN_RUNS) | Run.scoring)
+    return s.scalar(busy.limit(1)) is None
+
+
 def request_cancel(s: Session, target: Run | AgentSession, actor: Actor, *, ending: Ending) -> None:
     """Ask the daemon to cancel a run or an agent (``CancelRequested``). The caller commits."""
     on = (

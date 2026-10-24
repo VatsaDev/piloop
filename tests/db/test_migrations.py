@@ -1723,3 +1723,22 @@ def test_0040_checks_the_role_of_a_row_against_its_campaign_config_alone_and_dow
     command.downgrade(cfg, '0039')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         con.execute("INSERT INTO agent_sessions (kind, campaign_id) VALUES ('research', 1)")
+
+
+def test_0041_closes_each_stopped_campaign_whose_closing_sweeps_an_older_daemon_requested_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    before = str(ScriptDirectory(str(MIGRATIONS)).get_revision('0041').down_revision)
+    command.upgrade(cfg, before)
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute("INSERT INTO campaigns (name, path, config, status) VALUES ('s', '/s', '{}', 'stopped')")
+        con.execute("INSERT INTO campaigns (name, path, config) VALUES ('a', '/a', '{}')")
+    command.upgrade(cfg, '0041')
+    closed = "SELECT actor, target_kind, target_id FROM events WHERE kind = 'campaign.closed'"
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute(closed).fetchall() == [('daemon', 'campaign', 1)]
+    command.downgrade(cfg, before)
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute(closed).fetchall() == []

@@ -474,8 +474,8 @@ trigger is a subclass of `Trigger`: its fields are its parameters. On each tick,
 without a pending request, the daemon calls `fire(tick)` of each trigger of the role in order. It returns a `Fire`
 (the reason, how many agents) or None, and reads with `tick` (a `Tick`: the session, the campaign, the role and the
 queries of the built-in triggers). The rows that it reads are the models of `piloop.db.models`, the
-[data model](/architecture/data-model). A trigger with `ON_STOP` fires only on the tick that stops the
-campaign.
+[data model](/architecture/data-model). A trigger with `ON_STOP` fires only once after a stop, when the
+campaign's last runs are judged.
 
 ### Built in
 

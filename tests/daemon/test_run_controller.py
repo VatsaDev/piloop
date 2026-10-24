@@ -26,6 +26,7 @@ from piloop.agents.results import NEVER_WORKED, Ended, Lost, NotStarted, Startup
 from piloop.agents.roles import SQL_HINT
 from piloop.campaign import stop
 from piloop.campaign.campaigns import sync
+from piloop.campaign.ideas import supersede
 from piloop.campaign.ops import Report, add_measurement, set_verdict
 from piloop.cli.plugins import selections
 from piloop.config import CampaignConfig, ConfigError, config_of, load_campaign_config
@@ -102,6 +103,7 @@ from piloop.scoring.ledger import (
     requested,
     resolve,
     save_units,
+    supersede_composed,
     units,
 )
 from piloop.settings import Settings
@@ -2595,6 +2597,33 @@ def test_a_keep_whose_merge_onto_the_head_conflicts_stays_interesting_and_files_
         assert (event.target_id, event.payload) == (x.id, Rebased(head=h2, conflicts=['solve.txt']))
         trunk = head(s, s.get_one(Campaign, campaign.id))
         assert trunk is not None and trunk.id == h2
+
+
+def test_a_run_whose_chained_commits_each_conflict_on_the_head_leaves_one_compose_seed(
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+) -> None:
+    """The seed of the run's later commit composes the earlier one too, so it supersedes the earlier one's seed."""
+    write_toml(
+        Path(campaign.path),
+        '#!/bin/sh\necho a >> solve.txt\ngit commit -qam first\necho b >> solve.txt\ngit commit -qam second\n',
+    )
+    reload_campaign(db, campaign)
+    run_id = make_run(db, campaign)
+    keep_elsewhere(db, campaign, 'other line', {'solve.txt': 'base\nother\n'}, {'score': 2.0, 'size': 11.0})
+    execute(controller(db, runtime, tmp_path), db, run_id)
+    with db.session() as s:
+        first, second = candidates(db, run_id)
+        seeds = s.scalars(select(Idea).where(Idea.provenance.is_not(None)).order_by(Idea.id)).all()
+        assert [(i.provenance, [o.id for o in i.supersedes]) for i in seeds] == [
+            (f'candidate#{first.id}', []),
+            (f'candidate#{second.id}', [seeds[0].id]),
+        ]
+        supersede_composed(s, GitRepository(Repo(campaign.path)), s.get_one(Candidate, first.id), seeds[0])
+        assert seeds[0].supersedes == [], 'the earlier commit does not compose the later one'
+        assert list(supersede(s, campaign.id)) == [seeds[0].id]
+        s.commit()
+        live = s.scalars(select(Idea.provenance).where(Idea.status == IdeaStatus.SEED)).all()
+    assert live == [f'candidate#{second.id}']
 
 
 def test_a_conflicting_merge_in_a_stopped_campaign_files_no_seed(
