@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 from inline_snapshot import snapshot
 
+from piloop.campaign.campaigns import check_takes
 from piloop.config import CampaignConfig, ConfigError, Metric, MetricRole, load_campaign_config
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.ids import IMPLEMENTER, RoleName, TrackName
@@ -475,17 +476,20 @@ def test_a_table_with_runs_defines_a_role_that_does_runs_with_the_implementer_de
             load_campaign_config(campaign_path, roles=roles)
         return str(e.value).split('\n', 1)[1]
 
-    assert "roles.quick.takes = 'priority >>= 3': the condition does not run on the ideas table" in fails(
-        {'quick': {'runs': True, 'takes': 'priority >>= 3'}}
+    def refused(takes: str) -> str:
+        cfg = load_campaign_config(campaign_path, roles={'quick': {'runs': True, 'takes': takes}})
+        with pytest.raises(ConfigError) as e:
+            check_takes(campaign_path, cfg)
+        return str(e.value).split('\n', 1)[1]
+
+    assert "roles.quick.takes = 'priority >>= 3': the condition does not run on the ideas table" in refused(
+        'priority >>= 3'
     )
-    assert 'no such column: nope' in fails({'quick': {'runs': True, 'takes': 'nope = 1'}})
-    assert (
-        '`project_id` is `campaign_id` since piloop 0.2.0; see https://piloop.autoresearch.inc/guides/upgrading'
-        in fails({'quick': {'runs': True, 'takes': 'project_id = 1'}})
+    assert 'no such column: nope' in refused('nope = 1')
+    assert '`project_id` is `campaign_id` since piloop 0.2.0; see https://piloop.autoresearch.inc/guides/upgrading' in (
+        refused('project_id = 1')
     )
-    assert 'You did not supply a value for binding parameter :campaign' in fails(
-        {'quick': {'runs': True, 'takes': 'campaign_id = :campaign'}}
-    )
+    assert 'You did not supply a value for binding parameter :campaign' in refused('campaign_id = :campaign')
     assert 'roles.quick.triggers: Extra inputs are not permitted' in fails({'quick': {'runs': True, 'triggers': []}})
     assert "roles.quick.takes = 'priority > 1': Extra inputs are not permitted" in fails(
         {'quick': {'takes': 'priority > 1', 'triggers': []}}

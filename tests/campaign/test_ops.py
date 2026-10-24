@@ -53,7 +53,7 @@ from piloop.scoring.ledger import (
     head,
     rejudges,
 )
-from tests.conftest import end_of
+from tests.conftest import end_of, reconfigured
 
 ACTOR = System.ORCHESTRATOR
 
@@ -394,7 +394,7 @@ def test_a_measurement_by_hand_says_when_the_daemon_judges_again_and_waits_for_a
             'once campaign demo is resumed (its evaluations are paused)'
         )
         ops.resume(s, CampaignId(1))
-        p.config = {**p.config, 'spend': {'command': ['true']}, 'plugins': {'stop_rule': {'max_spend': 10.0}}}
+        p.config = reconfigured(p.config, spend={'command': ['true']}, plugins={'stop_rule': {'max_spend': 10.0}})
         assert ops.add_measurement(s, crashed, report, actor=ACTOR).effect.endswith(
             'once the stop rule no longer holds it (spend not read yet)'
         )
@@ -552,7 +552,7 @@ def test_a_track_must_be_in_the_config_and_its_move_says_why(me: Database, campa
             ],
             tracks={'score': {'share': 0.5}, 'size': {'share': 0.5}},
         )
-        s.get_one(Campaign, 1).config = two.model_dump(mode='json')
+        s.get_one(Campaign, 1).config = two
         s.commit()
     idea = add_idea(me, CampaignId(1), 'smaller')
     running = add_idea(me, CampaignId(1), 'running', IdeaStatus.SCHEDULED)

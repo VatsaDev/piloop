@@ -52,7 +52,7 @@ from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.trigger.seed import SeedTrigger
 from piloop.version import Version, installed
-from tests.conftest import role_of
+from tests.conftest import bare_config, role_of
 from tests.test_deprecated import piloop_version
 
 INBOX = 'ix_comments_inbox'
@@ -562,8 +562,8 @@ def test_idea_links_stay_inside_the_campaign_never_point_at_the_idea_itself_and_
 def test_idea_titles_are_unique_per_campaign(db: Database) -> None:
     """Concurrent research sweeps that land on the same title collide at insert; another campaign may reuse it."""
     with db.session() as s:
-        s.add(Campaign(name='a', path='/a', config={}))
-        s.add(Campaign(name='b', path='/b', config={}))
+        s.add(Campaign(name='a', path='/a', config=bare_config('a')))
+        s.add(Campaign(name='b', path='/b', config=bare_config('b')))
         s.commit()
         s.add(Idea(track='score', campaign_id=1, title='target encoding', hypothesis='x', created_by='research#1'))
         s.add(Idea(track='score', campaign_id=2, title='target encoding', hypothesis='x', created_by='research#2'))

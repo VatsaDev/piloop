@@ -10,12 +10,14 @@ in the group of ``TRIGGERS``.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Annotated, ClassVar, NamedTuple, Protocol
+from typing import TYPE_CHECKING, Annotated, ClassVar, NamedTuple, Protocol
 
-from sqlalchemy.orm import Session
-
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, EventModel
 from piloop.plugins.host import Capability, Parameters
+
+if TYPE_CHECKING:  # piloop.db.models types campaigns.config with the triggers: only the annotations name the rows
+    from sqlalchemy.orm import Session
+
+    from piloop.db.models import AgentSession, AgentSessionState, Campaign, EventModel
 
 
 class Incident(NamedTuple):

@@ -3,10 +3,7 @@ from importlib.resources import files
 from pydantic import Field
 
 from piloop.plugins.role.contract import SweepRole
-from piloop.plugins.trigger.anomaly import AnomalyTrigger
 from piloop.plugins.trigger.contract import TriggerEntry
-from piloop.plugins.trigger.cron import CronTrigger
-from piloop.plugins.trigger.stopped import StoppedTrigger
 
 
 class WatchdogRole(SweepRole):
@@ -16,7 +13,9 @@ class WatchdogRole(SweepRole):
     INCIDENT_PROMPT = files(__package__) / 'prompts' / 'watchdog_incident.md'
     ROUTINE_PROMPT = files(__package__) / 'prompts' / 'watchdog_progress.md'
 
-    triggers: list[TriggerEntry] = [AnomalyTrigger(), CronTrigger(), StoppedTrigger()]
+    triggers: list[TriggerEntry] = Field(
+        default=[{'provider': 'anomaly'}, {'provider': 'cron'}, {'provider': 'stopped'}], validate_default=True
+    )
     """An anomaly requests an incident sweep, the timer requests a progress review, and the campaign's stop requests
     the closing review."""
     interval: float = Field(default=1800, ge=0)

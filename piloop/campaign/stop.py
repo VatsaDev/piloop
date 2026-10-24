@@ -44,7 +44,7 @@ from piloop.ids import RunId, TargetKind, TargetRef
 from piloop.plugins.stop_rule.contract import STOP_RULES, Fact, Go, Hold, Progress, Stop, StopCase
 from piloop.scoring.ledger import head, keeps, score
 from piloop.scoring.verdict import pending_clause
-from piloop.usage import campaign_tokens
+from piloop.usage.totals import campaign_tokens
 
 
 class Ending(StrEnum):

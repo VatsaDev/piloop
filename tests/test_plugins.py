@@ -317,7 +317,7 @@ def test_a_pure_plugin_is_installed_selected_by_config_and_answers_with_data(
     home = Settings(home=tmp_path)
     assert not any(line.startswith('demo: verdict rule') for line in selections(home)), 'demo selects none yet'
     with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
     assert (
         'demo: verdict rule min_gain, from piloop-min-gain 0.1.0 ([plugins.verdict_rule] provider, in the'

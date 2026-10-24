@@ -4,9 +4,6 @@ from pydantic import Field
 
 from piloop.plugins.role.contract import Files, SweepRole
 from piloop.plugins.trigger.contract import TriggerEntry
-from piloop.plugins.trigger.low_water import LowWaterTrigger
-from piloop.plugins.trigger.seed import SeedTrigger
-from piloop.plugins.trigger.stalled import StalledTrigger
 
 
 class ResearchRole(SweepRole):
@@ -14,7 +11,9 @@ class ResearchRole(SweepRole):
 
     PROMPT = files(__package__) / 'prompts' / 'research.md'
 
-    triggers: list[TriggerEntry] = [LowWaterTrigger(), SeedTrigger(), StalledTrigger()]
+    triggers: list[TriggerEntry] = Field(
+        default=[{'provider': 'low_water'}, {'provider': 'seed'}, {'provider': 'stalled'}], validate_default=True
+    )
     """A short backlog, a new seed, and a stall."""
     writes: list[str] = [
         'seeds via idea develop, or their status to rejected with a note',

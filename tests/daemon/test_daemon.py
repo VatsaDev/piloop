@@ -38,6 +38,7 @@ from tests.conftest import (
     WATCHDOG,
     WRITE_PID,
     ScriptRuntime,
+    bare_config,
     console_lines,
     factory,
     register,
@@ -71,7 +72,7 @@ def test_daemon_end_to_end(
 
     write_toml(campaign_path, HARNESS_NOOP)
     with daemon.db.session() as s:
-        s.get_one(Campaign, campaign.id).config = load_campaign_config(campaign_path).model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = load_campaign_config(campaign_path)
         s.add(Idea(track='score', campaign_id=campaign.id, title='bad', hypothesis='bad', created_by='t', max_runs=1))
         s.commit()
     assert daemon.scheduler.tick() == [2]
@@ -120,7 +121,7 @@ def test_a_start_stores_the_manifests_of_0_2_again_and_goes_on_when_one_cannot_b
     shutil.copytree(FIXTURE / 'local', home / 'store')
     daemon = Daemon(Settings(home=home, tick_seconds=0.01))
     with daemon.db.session() as s:
-        s.add(Campaign(name='c', path='/c', config={}))
+        s.add(Campaign(name='c', path='/c', config=bare_config('c')))
         s.flush()
         s.add_all([Archive(campaign_id=1, manifest=MANIFEST), Archive(campaign_id=1, manifest=Cid.of(b'gone'))])
         s.commit()
@@ -357,7 +358,7 @@ def test_serve_refuses_when_a_daemon_holds_the_pid_file(
 def test_shutdown_fails_open_runs(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     daemon = Daemon(Settings(home=tmp_path / 'home'))
     with daemon.db.session() as s:
-        s.add(Campaign(name='p', path='/p', config={'roles': {RESEARCH: {}}}))
+        s.add(Campaign(name='p', path='/p', config=bare_config('p')))
         s.add(Idea(track='score', campaign_id=1, title='x', hypothesis='x', created_by='t'))
         s.add(Run(idea_id=1, attempt=1, base_candidate_id=1, harness='h', model='m', status=RunStatus.RUNNING))
         s.flush()  # the run first: the unit of work orders unrelated mappers by name

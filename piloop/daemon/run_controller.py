@@ -15,7 +15,7 @@ from typing import Final, Literal, assert_never
 
 from pydantic import ValidationError
 from sqlalchemy import func, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, undefer
 
 from piloop import deprecated
 from piloop.actor import Actor, Agent, System
@@ -34,7 +34,7 @@ from piloop.agents.results import (
 from piloop.agents.roles import compose_brief, role
 from piloop.campaign.campaigns import WORKSPACE, Sources, campaign_dir, checkout_of, record_of, repository, vcs_of
 from piloop.campaign.stop import attempts, park_cancelled, run_cancel
-from piloop.config import TRANSCRIPT, CampaignConfig, Track, config_of
+from piloop.config import TRANSCRIPT, CampaignConfig, Track
 from piloop.db.events import emit, has, in_order, latest
 from piloop.db.models import (
     AgentSession,
@@ -370,7 +370,7 @@ class RunController:
                 run = s.get_one(Run, run_id)
                 idea = run.idea
                 campaign = idea.campaign
-                cfg = config_of(campaign)
+                cfg = campaign.config
                 base = s.get_one(Candidate, run.base_candidate_id)
                 brief = run.brief or compose_brief(
                     role(cfg, run.role, Path(campaign.path)),
@@ -411,7 +411,7 @@ class RunController:
         with self._db.session() as s:
             run = s.get_one(Run, run_id)
             campaign = run.idea.campaign
-            cfg = config_of(campaign)
+            cfg = campaign.config
             base_sha = Revision(s.get_one(Candidate, run.base_candidate_id).commit_sha)
             harness, model, idea_id, campaign_id = run.harness, run.model, run.idea_id, campaign.id
             vcs, campaign_path = vcs_of(campaign), Path(campaign.path)
@@ -604,7 +604,7 @@ class RunController:
     def _campaign(self, campaign_id: CampaignId) -> Campaign:
         """The campaign's row, for ``Sources``, which runs outside every transaction: minutes the first time."""
         with self._db.session() as s:
-            return s.get_one(Campaign, campaign_id)
+            return s.get_one(Campaign, campaign_id, options=[undefer(Campaign.config)])
 
     def _left_finding(self, run_id: RunId, idea_id: IdeaId, agent_session_id: AgentSessionId) -> bool:
         """Return True if the agent signed a ``finding`` on its idea or its run (``finding_of``)."""
@@ -622,7 +622,7 @@ class RunController:
                 run = s.get_one(Run, run_id)
                 campaign = run.idea.campaign
                 end, idea_id, campaign_id = run.end, run.idea_id, campaign.id
-                name, vcs, campaign_path = config_of(campaign).name, vcs_of(campaign), Path(campaign.path)
+                name, vcs, campaign_path = campaign.config.name, vcs_of(campaign), Path(campaign.path)
                 received = latest(s, RunReceived, Event.target == TargetRef(TargetKind.RUN, run_id))
             last = None
             try:
@@ -652,7 +652,7 @@ class RunController:
         with self._db.session() as s:
             candidate = s.get_one(Candidate, candidate_id)
             campaign = s.get_one(Campaign, candidate.campaign_id)
-            cfg = config_of(campaign)
+            cfg = campaign.config
             evaluator_id = current_evaluator(s, campaign, cfg).id
             s.commit()
             asked = remeasure_asked(s, campaign, candidate)
@@ -709,7 +709,7 @@ class RunController:
             if run is None or not rejudgeable(candidate):
                 return
             assert candidate.parent is not None  # a run's candidate descends from the run's base
-            cfg = config_of(run.idea.campaign)
+            cfg = run.idea.campaign.config
             scope = Scope(
                 run.id,
                 candidate.campaign_id,
@@ -757,7 +757,7 @@ class RunController:
         """
         with self._db.session() as s:
             run = s.get_one(Run, run_id)
-            cfg = config_of(run.idea.campaign)
+            cfg = run.idea.campaign.config
             scope = Scope(
                 run_id,
                 campaign_id,
@@ -1346,7 +1346,7 @@ def _requeuable(s: Session, run: Run) -> bool:
     The idea is still ``scheduled`` (a human may have parked it meanwhile), and the run's role allows one more requeue.
     A role that ``piloop init`` removed while the run ran requeues nothing.
     """
-    role = config_of(run.idea.campaign).roles.doing_runs().get(run.role)
+    role = run.idea.campaign.config.roles.doing_runs().get(run.role)
     scheduled = run.idea.status is IdeaStatus.SCHEDULED
     return scheduled and role is not None and _requeues(s, run.idea) < role.recovery_requeues
 

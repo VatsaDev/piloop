@@ -71,7 +71,7 @@ def configure(db: Database, campaign: Campaign, harness_body: str = HARNESS_NOOP
     write_toml(Path(campaign.path), harness_body)
     with db.session() as s:
         cfg = load_campaign_config(Path(campaign.path), roles=roles)
-        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
 
 
@@ -573,7 +573,7 @@ def test_low_water_sizes_the_batch_to_the_shortfall_net_of_the_sweeps_in_flight(
         },
     )
     with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
     sched = scheduler(db, runtime, tmp_path)
     assert sched.tick() == [1, 2, 3]
@@ -670,7 +670,7 @@ def test_low_water_wants_no_more_ideas_than_max_runs_leaves_to_run(
         Path(campaign.path), roles={'research': {'max_ideas': 1}}, plugins={'stop_rule': {'max_runs': 3}}
     )
     with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
     finish_a_run(db, campaign, 'one')
     add_ideas(db, campaign, 2)

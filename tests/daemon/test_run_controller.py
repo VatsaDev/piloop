@@ -29,7 +29,7 @@ from piloop.campaign.campaigns import sync
 from piloop.campaign.ideas import supersede
 from piloop.campaign.ops import Report, add_measurement, set_verdict
 from piloop.cli.plugins import selections
-from piloop.config import CampaignConfig, ConfigError, config_of, load_campaign_config
+from piloop.config import CampaignConfig, ConfigError, load_campaign_config
 from piloop.daemon.run_controller import (
     INTERRUPTED,
     NO_CHANGES,
@@ -208,7 +208,7 @@ def controller(db: Database, runtime: ScriptRuntime, tmp_path: Path, tracer: Tra
 def reload_campaign(db: Database, campaign: Campaign) -> None:
 
     with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = load_campaign_config(Path(campaign.path)).model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = load_campaign_config(Path(campaign.path))
         s.commit()
 
 
@@ -478,7 +478,7 @@ def test_a_verdict_rule_from_a_plugin_replaces_the_built_in_one_through_piloop_t
             cfg = load_campaign_config(
                 Path(campaign.path), plugins={'verdict_rule': {'provider': 'min_gain', 'min_gain': 2}}
             )
-            s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+            s.get_one(Campaign, campaign.id).config = cfg
             s.commit()
         run_id = make_run(db, campaign)
         execute(controller(db, runtime, tmp_path), db, run_id)
@@ -706,7 +706,7 @@ def test_recovery_requeues_0_leaves_recovered_work_to_the_orchestrator(
     with db.session() as s:
         s.get_one(Campaign, campaign.id).config = load_campaign_config(
             Path(campaign.path), roles={'implementer': {'recovery_requeues': 0}}
-        ).model_dump(mode='json')
+        )
         s.commit()
     run_id = make_run(db, campaign, max_runs=1)
     execute(controller(db, runtime, tmp_path), db, run_id)
@@ -722,9 +722,7 @@ def test_the_role_of_the_run_caps_its_recovery_requeues(
     write_toml(Path(campaign.path), HARNESS_FORGETS_COMMIT)
     roles = {'implementer': {'recovery_requeues': 0}, 'quick': {'runs': True, 'recovery_requeues': 1}}
     with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = load_campaign_config(Path(campaign.path), roles=roles).model_dump(
-            mode='json'
-        )
+        s.get_one(Campaign, campaign.id).config = load_campaign_config(Path(campaign.path), roles=roles)
         s.commit()
     run_id = make_run(db, campaign, max_runs=1)
     with db.session() as s:
@@ -787,7 +785,7 @@ def test_evaluate_failure_is_a_crash_verdict(
         evaluate=['sh', '-c', 'test $(wc -l < solve.txt) -eq 1 && echo METRIC score=1 && echo METRIC size=1 || exit 9'],
     )
     with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
     run_id = make_run(db, campaign)
     execute(controller(db, runtime, tmp_path), db, run_id)
@@ -1118,9 +1116,7 @@ def test_an_implementer_brief_opens_with_the_current_lessons_of_the_repo_within_
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
         p.repo = 'github.com/o/r'
-        p.config = load_campaign_config(Path(campaign.path), roles={'implementer': {'wake_budget': budget}}).model_dump(
-            mode='json'
-        )
+        p.config = load_campaign_config(Path(campaign.path), roles={'implementer': {'wake_budget': budget}})
         s.add(
             Lesson(
                 campaign_id=campaign.id,
@@ -2117,9 +2113,7 @@ SPLIT_UNITS = [
 
 def set_config(db: Database, campaign: Campaign, **overrides: object) -> None:
     with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = load_campaign_config(Path(campaign.path), **overrides).model_dump(
-            mode='json'
-        )
+        s.get_one(Campaign, campaign.id).config = load_campaign_config(Path(campaign.path), **overrides)
         s.commit()
 
 
@@ -2130,7 +2124,7 @@ def test_per_unit_results_decide_the_verdict_and_live_outside_the_database(
     with db.session() as s:
         proj = s.get_one(Campaign, campaign.id)
         cfg = load_campaign_config(Path(campaign.path), evaluate=SPLIT_UNITS)
-        proj.config = cfg.model_dump(mode='json')
+        proj.config = cfg
         bar = Measurement(
             candidate_id=baseline(db, campaign.id).id,
             evaluator_id=current_evaluator(s, proj, cfg).id,
@@ -3032,7 +3026,7 @@ def test_a_keep_on_one_track_must_hold_the_other_track_primaries_and_its_brief_c
         'tracks': {'accuracy': {'share': 0.5, 'addendum': 'briefs/accuracy.md'}, 'cost': {'share': 0.5}},
     }
     with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = load_campaign_config(path, **tracks).model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = load_campaign_config(path, **tracks)
         s.commit()
     run_id = make_run(db, campaign, track='accuracy')
     execute(controller(db, runtime, tmp_path), db, run_id)
@@ -3073,12 +3067,12 @@ def test_every_evaluator_has_the_process_runner_and_an_uninstalled_runner_is_ref
 ) -> None:
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
-        evaluator = current_evaluator(s, row, config_of(row))
+        evaluator = current_evaluator(s, row, row.config)
         assert evaluator.runner == 'process', 'what piloop init records'
         evaluator.runner = 'lean'
         s.flush()
         with pytest.raises(ValueError, match=r"has the evaluator runner 'lean', which is not installed: process$"):
-            current_evaluator(s, row, config_of(row))
+            current_evaluator(s, row, row.config)
 
 
 def test_a_stop_that_comes_just_after_the_report_leaves_the_run_to_the_stop(
@@ -3097,7 +3091,7 @@ def test_a_stop_that_comes_just_after_the_report_leaves_the_run_to_the_stop(
     run_id = make_run(db, campaign)
     execute(ex, db, run_id)
     assert run_row(db, run_id).status is RunStatus.RUNNING, 'stop() writes the row, not the run thread'
-    assert git.pinned(git.open_repo(Path(campaign.path)), f'refs/piloop/{config_of(campaign).name}/r{run_id}/'), (
+    assert git.pinned(git.open_repo(Path(campaign.path)), f'refs/piloop/{campaign.config.name}/r{run_id}/'), (
         'its commit is kept'
     )
 

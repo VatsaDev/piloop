@@ -202,9 +202,7 @@ def test_with_several_tracks_research_reads_them_and_which_are_short_of_their_sh
             'tracks': {'accuracy': {'share': 0.5}, 'cost': {'share': 0.5}},
             'roles': {'research': {'max_ideas': 1, 'timeout': 20}, 'implementer': {'max_concurrent': 2}},
         }
-        s.get_one(Campaign, campaign.id).config = load_campaign_config(Path(campaign.path), **tracks).model_dump(
-            mode='json'
-        )
+        s.get_one(Campaign, campaign.id).config = load_campaign_config(Path(campaign.path), **tracks)
         s.commit()
     controller = serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers()))
     scheduler = Scheduler(db, controller, Tracer(None), tmp_path, factory(runtime))

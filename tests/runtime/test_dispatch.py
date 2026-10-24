@@ -7,13 +7,12 @@ from pathlib import Path
 import pytest
 
 from piloop.cli import agents, common
-from piloop.config import config_of
 from piloop.db.models import AgentSession, AgentSessionState, Campaign, utcnow
 from piloop.db.session import Database
 from piloop.plugins.runtime.contract import RUNTIMES
 from piloop.reports.overview import overview
 from piloop.settings import Settings
-from tests.conftest import WATCHDOG
+from tests.conftest import WATCHDOG, reconfigured
 from tests.daemon.test_roles import PLUGIN, forget_loaded, installed
 
 SHOWN = [EntryPoint('shown', f'{PLUGIN}:Shown', RUNTIMES.group)]
@@ -31,7 +30,7 @@ def test_attach_and_status_read_the_output_through_a_runtime_that_a_package_adds
     db: Database, campaign: Campaign, shown: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = {**campaign.config, 'runtime': 'shown'}
+        s.get_one(Campaign, campaign.id).config = reconfigured(campaign.config, runtime='shown')
         agent_session = AgentSession(
             kind=WATCHDOG,
             campaign_id=campaign.id,
@@ -45,7 +44,7 @@ def test_attach_and_status_read_the_output_through_a_runtime_that_a_package_adds
         s.add(agent_session)
         s.commit()
         row = s.get_one(Campaign, campaign.id)
-        assert ', on ' in (text := overview(s, row, config_of(row), utcnow())) and ': pane 7' in text
+        assert ', on ' in (text := overview(s, row, row.config, utcnow())) and ': pane 7' in text
     monkeypatch.setattr(common, 'settings', Settings(home=tmp_path))
     printed: list[object] = []
     monkeypatch.setattr(common.console, 'print', lambda line, **_: printed.append(line))

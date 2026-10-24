@@ -18,7 +18,7 @@ from piloop.plugins.cas.kit.objects import key
 from piloop.settings import Settings
 from tests.campaign.test_archive import add_idea, add_run, files, write
 from tests.cli.test_cli import run_cli
-from tests.conftest import at_head
+from tests.conftest import at_head, bare_config
 from tests.store.test_0_2_0_store import FIXTURE, MANIFEST
 
 
@@ -153,7 +153,7 @@ def test_migrate_stores_each_manifest_of_0_2_again_and_names_one_that_it_cannot_
     shutil.copytree(FIXTURE / 'local', common.settings.home / 'store')
     db = Database(common.settings.database_url, actor=common.settings.actor)
     with db.session() as s:
-        s.add(Campaign(name='c', path='/c', config={}))
+        s.add(Campaign(name='c', path='/c', config=bare_config('c')))
         s.flush()
         s.add(Archive(campaign_id=1, manifest=MANIFEST))
         s.commit()

@@ -26,7 +26,6 @@ from sqlalchemy.orm import Session
 
 from piloop.campaign import inbox
 from piloop.campaign.inbox import campaign_of
-from piloop.config import config_of
 from piloop.db import feed as db_feed
 from piloop.db.models import OPEN_RUNS, Campaign, CommentKind, Event, Idea, IdeaStatus, Run, campaign_runs, count
 from piloop.db.session import Database
@@ -43,7 +42,7 @@ from piloop.ids import (
 )
 from piloop.reports.overview import head_scores, live_agent_sessions, produced, queued_ideas
 from piloop.scoring.ledger import keeps
-from piloop.usage import campaign_tokens
+from piloop.usage.totals import campaign_tokens
 
 PROTOCOL = 1
 """The version of the documents and of the event envelope. A field may be added within a version, and readers ignore
@@ -252,7 +251,7 @@ def status_view(s: Session, campaigns: Sequence[Campaign]) -> list[CampaignState
     """The state of each campaign, as ``piloop status`` shows it. Call it inside a snapshot for one consistent view."""
     states = []
     for campaign in campaigns:
-        at = head_scores(s, campaign, config_of(campaign))
+        at = head_scores(s, campaign, campaign.config)
         by_status = select(Idea.status, func.count()).where(Idea.campaign_id == campaign.id).group_by(Idea.status)
         counts: dict[IdeaStatus, int] = {status: n for status, n in s.execute(by_status)}
         open_runs = s.scalars(campaign_runs(campaign.id).where(Run.status.in_(OPEN_RUNS)).order_by(Run.id)).all()

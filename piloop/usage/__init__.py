@@ -10,7 +10,7 @@ under ``piloop/usage/tallies/`` that register themselves.
 So the usage of a new harness is a spec in ``piloop.toml``. A new file format is one tally module. A new kind of
 source (a stdout log, an API) is one reader.
 
-The result is a ``Usage`` (``piloop.db.models``), with the same meaning for every harness, so one ``json_extract``
+The result is a ``Usage``, with the same meaning for every harness, so one ``json_extract``
 reads it in SQL and the harnesses compare. ``input`` is the uncached input, ``cache_read`` and ``cache_write`` are the input read
 from and written to the prompt cache. ``total`` is what the harness itself counts as the session's tokens.
 """
@@ -21,11 +21,26 @@ from pathlib import Path
 from typing import Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, model_validator
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session
 
-from piloop.db.models import AgentSession, Usage
-from piloop.ids import CampaignId
+
+class Usage(BaseModel):
+    """The token usage of one agent session, as ``agent_sessions.usage`` stores it. A usage reader returns it."""
+
+    model_config = ConfigDict(frozen=True, use_attribute_docstrings=True)
+
+    input: int
+    """The input tokens that the prompt cache did not serve."""
+    output: int
+    cache_read: int
+    """The input tokens that the prompt cache served."""
+    cache_write: int
+    """The input tokens written to the prompt cache."""
+    total: int
+    """What the harness counts as the session's tokens."""
+    turns: int
+    """The number of model responses (API calls) in the session."""
+    source: str
+    """Where the numbers came from: the session file that was read."""
 
 
 class UsageError(RuntimeError):
@@ -132,14 +147,6 @@ def read_usage(spec: UsageSpec | None, session_id: str | None, cwd: Path | None,
     if spec is None:
         return None
     return spec.resolved.read(session_id, cwd, log_dir)
-
-
-def campaign_tokens(s: Session, campaign_id: CampaignId) -> int:
-    """The tokens that all agents of the campaign spent: ``SUM(json_extract(usage, '$.total'))`` over its agent sessions."""
-    total = s.scalar(
-        select(func.sum(AgentSession.usage['total'].as_integer())).where(AgentSession.campaign_id == campaign_id)
-    )
-    return int(total or 0)
 
 
 def human(tokens: int) -> str:

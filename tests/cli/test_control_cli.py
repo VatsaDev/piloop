@@ -20,7 +20,7 @@ from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import RejudgeRequested
 from piloop.settings import Settings
 from tests.cli.test_cli import research_files, run_cli
-from tests.conftest import at_head
+from tests.conftest import at_head, bare_config
 
 
 @pytest.fixture(autouse=True)
@@ -238,7 +238,7 @@ def test_a_seed_developed_with_a_link_that_closes_a_cycle_is_refused_whole(campa
 def test_campaign_parent_puts_a_campaign_under_another_and_campaign_tree_shows_them(campaign_path: Path, out) -> None:
     run_cli(['init', str(campaign_path)])
     with database() as db, db.session() as s:
-        s.add_all(Campaign(name=name, path=f'/{name}', config={}) for name in ('umbrella', 'side'))
+        s.add_all(Campaign(name=name, path=f'/{name}', config=bare_config(name)) for name in ('umbrella', 'side'))
         s.commit()
     out()
     run_cli(['campaign', 'parent', 'demo', 'umbrella'])

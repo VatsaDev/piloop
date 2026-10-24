@@ -29,10 +29,10 @@ from piloop.agents.results import (
     WrapUp,
 )
 from piloop.agents.roles import PILOOP_HINT, SQL_HINT, Role, compose_brief, role
-from piloop.config import CampaignConfig, Roles, config_of, load_campaign_config
+from piloop.config import CampaignConfig, Roles, load_campaign_config
 from piloop.daemon.run_controller import RunController
 from piloop.db.events import emit, in_order
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, Event, LeaseKind, Usage
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, Event, LeaseKind
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.ids import IMPLEMENTER, AgentSessionId, RoleName, TargetKind, TargetRef
@@ -45,6 +45,7 @@ from piloop.plugins.executor.workers import Workers
 from piloop.plugins.role.watchdog import WatchdogRole
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus
 from piloop.plugins.vcs.git import Git
+from piloop.usage import Usage
 from piloop.usage.jsonl import CWD_ENCODERS
 from tests.conftest import (
     HARNESS_FAILS,
@@ -71,7 +72,7 @@ UUID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 
 
 def role_in(campaign: Campaign, kind: RoleName = WATCHDOG) -> Role:
-    return role(config_of(campaign), kind, Path(campaign.path))
+    return role(campaign.config, kind, Path(campaign.path))
 
 
 def request(db: Database, campaign: Campaign, kind: RoleName = WATCHDOG, **fields: object) -> AgentSessionId:
@@ -134,9 +135,7 @@ def use_harness(db: Database, campaign: Campaign, body: str, **definition: objec
     write_toml(Path(campaign.path), body)
     script = {**load_campaign_config(Path(campaign.path)).harness['script'].model_dump(mode='json'), **definition}
     with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = load_campaign_config(
-            Path(campaign.path), harness={'script': script}
-        ).model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = load_campaign_config(Path(campaign.path), harness={'script': script})
         s.commit()
 
 
@@ -176,9 +175,7 @@ def test_a_roles_addendum_follows_the_campaign_brief_in_that_roles_briefs_only(
     (Path(campaign.path) / 'research.md').write_text('# Search wide first\n')
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        p.config = load_campaign_config(
-            Path(campaign.path), roles={'research': {'addendum': 'research.md'}}
-        ).model_dump(mode='json')
+        p.config = load_campaign_config(Path(campaign.path), roles={'research': {'addendum': 'research.md'}})
         research = compose_brief(role_in(p, RESEARCH), p, Agent(role='research', session=7), reason='timer', context='')
         watchdog = compose_brief(role_in(p), p, Agent(role='watchdog', session=8), reason='timer', context='')
     assert (
@@ -247,7 +244,7 @@ def test_rotation_over_the_role_harnesses_unless_pinned(
         roles={'watchdog': {'harnesses': ['script', 'pi'], 'model': {'pi': 'wp'}}},
     )
     with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
     ids = [request(db, campaign), request(db, campaign), request(db, campaign, harness='script', model='pinned')]
     request(db, campaign, kind=RESEARCH)  # another kind: not in this rotation
@@ -322,7 +319,7 @@ def test_timeout_kills_and_records(campaign: Campaign, db: Database, runtime: Sc
     write_toml(Path(campaign.path), HARNESS_SLEEPS)
     cfg = load_campaign_config(Path(campaign.path), roles={'watchdog': {'timeout': 0.3}})
     with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
     agent_session_id = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, agent_session_id)
@@ -633,9 +630,9 @@ def test_a_killed_agents_usage_is_read_too(
     use_harness(db, campaign, writes_then_hangs, headless=['--session-id', '{session_id}', '{prompt}'], usage=PI_SPEC)
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        config = CampaignConfig.model_validate(p.config).model_dump(mode='json')
+        config = p.config.model_dump(mode='json')
         config['roles']['watchdog']['timeout'] = 0.5
-        p.config = config
+        p.config = CampaignConfig.model_validate(config)
         s.commit()
     agent_session_id = request(db, campaign)
     outcome = launch(db, runtime, tmp_path, agent_session_id)
@@ -704,9 +701,11 @@ def give_watchdog_servers(db: Database, campaign: Campaign, servers: dict[str, o
     """``[mcp.*]`` tables in the stored config, all listed by ``[roles.watchdog] mcp``."""
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        roles = dict(CampaignConfig.model_validate(p.config).roles.root)
+        cfg = p.config
+        roles = dict(cfg.roles.root)
         roles[WATCHDOG] = roles[WATCHDOG].model_copy(update={'mcp': list(servers)})
-        p.config = {**p.config, 'roles': Roles(roles).model_dump(mode='json'), 'mcp': servers}
+        dumped = cfg.model_dump(mode='json') | {'roles': Roles(roles).model_dump(mode='json'), 'mcp': servers}
+        p.config = CampaignConfig.model_validate(dumped)
         s.commit()
 
 
@@ -834,7 +833,7 @@ def research_argv(
     )
     assert cfg.role_models(IMPLEMENTER)[harness] == 'the-campaigns-model'
     with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
     start = mocker.spy(runtime, 'start')
     launch(db, runtime, tmp_path, request(db, campaign, kind=RESEARCH))

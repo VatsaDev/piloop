@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 from piloop.actor import Actor
 from piloop.campaign import inbox
 from piloop.campaign.ideas import links, superseded_by
-from piloop.config import CampaignConfig, config_of
+from piloop.config import CampaignConfig
 from piloop.db.models import AgentSession, Campaign, CampaignStatus, Candidate, Comment, Idea, IdeaStatus, Origin
 from piloop.ids import CampaignId, TargetKind, TargetRef
 from piloop.reports.overview import (
@@ -41,7 +41,8 @@ from piloop.reports.overview import (
 from piloop.scoring.ledger import metrics, references, score, track_of, trunk_keeps
 from piloop.scoring.verdict import label
 from piloop.text import NONE, cell, metric
-from piloop.usage import campaign_tokens, human
+from piloop.usage import human
+from piloop.usage.totals import campaign_tokens
 
 AGENT_LINES = 60
 """How many lines of the selected agent's own output its detail shows."""
@@ -106,7 +107,7 @@ def campaigns(s: Session, now: datetime, me: Actor) -> list[Item]:
     rows = []
     every = sorted(s.scalars(select(Campaign)).all(), key=lambda p: (p.status is not CampaignStatus.ACTIVE, p.id))
     for p in every:
-        cfg = config_of(p)
+        cfg = p.config
         at = head_scores(s, p, cfg)
         values = at[1] if at is not None else []
         _, ready = queued_ideas(s, p)

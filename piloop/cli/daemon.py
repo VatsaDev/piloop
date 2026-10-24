@@ -9,7 +9,6 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from piloop.cli import common
-from piloop.config import config_of
 from piloop.daemon.main import Daemon, preflight
 from piloop.daemon.serve import (
     listening,
@@ -137,7 +136,7 @@ def service_unit_cmd() -> None:
     harnesses = list(DEFAULT_HARNESSES.values())
     with common.session() as s:
         for campaign in s.scalars(select(Campaign)):
-            harnesses += config_of(campaign).harness.values()
+            harnesses += campaign.config.harness.values()
     unit = service_unit(common.settings, harnesses)
     common.console.print(unit, end='', markup=False, highlight=False, soft_wrap=True)
 

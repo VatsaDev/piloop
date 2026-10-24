@@ -9,7 +9,6 @@ from piloop.agents import results
 from piloop.campaign.stop import CANCELLABLE, Ending, request_cancel
 from piloop.cli import common
 from piloop.cli.common import HARNESS_HELP, CampaignRef
-from piloop.config import config_of
 from piloop.db.events import has, latest
 from piloop.db.models import LIVE, OPEN_RUNS, AgentSession, Event, Run, TargetKind
 from piloop.db.session import Database
@@ -45,7 +44,7 @@ def launch(
     """
     with common.session() as s:
         campaign = common.campaign(s, ref)
-        roles = config_of(campaign).roles
+        roles = campaign.config.roles
         sweeping = roles.sweeping()
         if role not in sweeping:
             agent_sessions = (

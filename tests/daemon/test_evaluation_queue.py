@@ -20,7 +20,7 @@ from piloop.plugins.vcs.git import commands as git
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring import queue
 from piloop.scoring.ledger import measured, request_remeasure
-from tests.conftest import ScriptRuntime, baseline, factory, serving, workers_of, write_script
+from tests.conftest import ScriptRuntime, bare_config, baseline, factory, serving, workers_of, write_script
 from tests.daemon.test_run_controller import execute, make_run, set_config
 from tests.daemon.test_scheduler import add_ideas, make_scheduler
 
@@ -204,7 +204,7 @@ def test_a_stop_ends_the_waiting_evaluations_and_records_nothing(
 def add_campaign(db: Database, name: str, trees: int) -> list[CandidateId]:
     """A second campaign with ``trees`` candidates, none kept."""
     with db.session() as s:
-        other = Campaign(name=name, path=f'/{name}', config={})
+        other = Campaign(name=name, path=f'/{name}', config=bare_config(name))
         s.add(other)
         s.flush()
         made = [Candidate(campaign_id=other.id, tree_sha=f'{name}{i}', commit_sha=f'{name}{i}') for i in range(trees)]

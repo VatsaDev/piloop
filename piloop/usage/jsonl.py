@@ -18,9 +18,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
 
-from piloop.db.models import Usage
 from piloop.settings import expand_env
-from piloop.usage import UsageError, UsageSpec, reader
+from piloop.usage import Usage, UsageError, UsageSpec, reader
 
 type Record = dict[str, object]
 """One line of a session file, as ``json.loads`` gives it. The shapes inside are the harness's own."""

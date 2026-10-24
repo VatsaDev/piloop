@@ -18,7 +18,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from piloop.campaign import inbox
-from piloop.config import CampaignConfig, config_of
+from piloop.config import CampaignConfig
 from piloop.db.models import Campaign, CampaignStatus, Journal, Lesson, LessonStatus
 from piloop.reports.overview import summary
 from piloop.text import metric as number
@@ -178,7 +178,7 @@ def lessons_overview(s: Session, campaign: Campaign, budget: int) -> str:
 
     Empty when the budget is 0, when there are no lessons, or when not one line fits after the heading.
     """
-    lessons = current_lessons(s, [campaign.repo], Relevance([config_of(campaign)])) if budget else []
+    lessons = current_lessons(s, [campaign.repo], Relevance([campaign.config])) if budget else []
     head = [
         '# What past campaigns on this repo concluded',
         '',
@@ -229,11 +229,11 @@ def orchestrator_overview(s: Session, budget: int, now: datetime) -> str:
     active = s.scalars(select(Campaign).where(Campaign.status == CampaignStatus.ACTIVE).order_by(Campaign.id)).all()
     campaigns_title = f'## Active campaigns ({len(active)})'
     campaign_lines = fitted(
-        [f'- {summary(s, p, config_of(p))}' for p in active], _room(campaigns_title, other_share), 'piloop status'
+        [f'- {summary(s, p, p.config)}' for p in active], _room(campaigns_title, other_share), 'piloop status'
     )
 
     repos = sorted({p.repo for p in active if p.repo is not None})
-    lessons = current_lessons(s, repos, Relevance([config_of(p) for p in active]))
+    lessons = current_lessons(s, repos, Relevance([p.config for p in active]))
     lessons_title = f'## Current lessons on their repos ({len(lessons)})'
     lesson_lines = fitted(
         [lesson_line(lesson, name) for lesson, name in lessons], _room(lessons_title, other_share), LESSONS_MORE

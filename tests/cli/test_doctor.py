@@ -21,7 +21,7 @@ from piloop.db.session import Database
 from piloop.settings import Settings
 from piloop.version import Version, code_digest, installed
 from tests.cli.test_cli import git_check
-from tests.conftest import hold_lock
+from tests.conftest import hold_lock, reconfigured, store_config
 from tests.db.test_migrations import alembic
 
 HEAD = ScriptDirectory.from_config(alembic(Path('unused.db'))).get_current_head()
@@ -167,10 +167,7 @@ def test_a_campaign_whose_toml_is_gone_invalid_or_whose_stored_copy_no_longer_va
         'campaign demo', f'no piloop.toml in {campaign.path}', f'restore it, then `piloop init {campaign.path}`'
     )
     toml.write_text(text)
-    with db.session() as s:
-        stale: dict[str, object] = {'name': 'demo'}
-        s.get_one(Campaign, campaign.id).config = stale
-        s.commit()
+    store_config(db, campaign.id, {'name': 'demo'})
     assert by_name(cfg)['campaign demo'] == Check(
         'campaign demo',
         'its stored copy (campaigns.config, what the daemon schedules from) is not a valid piloop config (3 problem(s)):\n'
@@ -185,7 +182,7 @@ def test_a_campaign_whose_toml_is_gone_invalid_or_whose_stored_copy_no_longer_va
 def test_a_missing_harness_is_named(cfg: Settings, db: Database, campaign: Campaign) -> None:
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
-        row.config = {**row.config, 'harnesses': ['script', 'codex'], 'model': {'script': 'm', 'codex': 'm'}}
+        row.config = reconfigured(row.config, harnesses=['script', 'codex'], model={'script': 'm', 'codex': 'm'})
         s.commit()
     assert by_name(cfg)['harnesses'] == Check(
         'harnesses',
@@ -203,7 +200,7 @@ def test_mcp_servers_are_checked_for_their_commands_and_the_variables_they_name_
     }
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
-        row.config = {**row.config, 'mcp': servers}
+        row.config = reconfigured(row.config, mcp=servers)
         s.commit()
     assert 'mcp demo' not in by_name(Settings(home=tmp_path / 'empty')), 'no campaigns, nothing to check'
     assert by_name(cfg)['mcp demo'] == Check(
@@ -229,7 +226,7 @@ def test_mcp_servers_are_checked_for_their_commands_and_the_variables_they_name_
         roles = CampaignConfig.model_validate(row.config).roles.model_dump(mode='json')
         roles['watchdog']['mcp'] = ['exa', 'xai']
         script = {'executable': 'script', 'headless': ['{mcp}', '{prompt}'], 'mcp': 'claude'}
-        row.config = {**row.config, 'harness': {'script': script}, 'roles': roles, 'harnesses': ['script']}
+        row.config = reconfigured(row.config, harness={'script': script}, roles=roles, harnesses=['script'])
         s.commit()
     found = by_name(cfg)['mcp demo']
     assert found == Check('mcp demo', '2 server(s) (watchdog: exa, xai), 2 variable(s) set in this shell'), (
@@ -243,7 +240,7 @@ def test_secrets_come_from_the_daemons_secrets_command_which_doctor_runs_reporti
 ) -> None:
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
-        row.config = {**row.config, 'mcp': {'xai': {'command': ['sh'], 'env': ['XAI_API_KEY', 'EXA_API_KEY']}}}
+        row.config = reconfigured(row.config, mcp={'xai': {'command': ['sh'], 'env': ['XAI_API_KEY', 'EXA_API_KEY']}})
         s.commit()
     shell = Settings(home=cfg.home, secrets_command="printf 'XAI_API_KEY=%s%s' xai value")
     found = by_name(shell)

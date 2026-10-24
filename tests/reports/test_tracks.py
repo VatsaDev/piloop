@@ -11,6 +11,7 @@ from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.history import history
 from piloop.reports.pack import pack
 from piloop.watch.panels import PANELS, Context, campaigns, header
+from tests.conftest import reconfigured
 from tests.reports.test_overview import NOW, candidate, live_campaign, render
 
 TRACKS = {
@@ -28,8 +29,8 @@ def two_tracks(db: Database, campaign: Campaign) -> CampaignConfig:
     live_campaign(db, campaign)
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        cfg = CampaignConfig.model_validate({**p.config, **TRACKS})
-        p.config = cfg.model_dump(mode='json')
+        cfg = reconfigured(p.config, **TRACKS)
+        p.config = cfg
         lighter = Run(idea_id=3, attempt=2, base_candidate_id=2, harness='script', model='m')
         s.add(lighter)
         s.flush()

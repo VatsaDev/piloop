@@ -54,7 +54,9 @@ from tests.conftest import (
     example,
     package,
     piloop_entry_points,
+    reconfigured,
     serving,
+    store_config,
     wait_until,
     write_toml,
 )
@@ -85,7 +87,7 @@ def configure(db: Database, campaign: Campaign, harness_body: str, **roles: dict
     write_toml(Path(campaign.path), harness_body)
     with db.session() as s:
         cfg = load_campaign_config(Path(campaign.path), roles=roles)
-        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
 
 
@@ -547,7 +549,7 @@ def test_example_plugins_replace_the_built_in_runtime_and_cas_through_the_config
     write_toml(Path(campaign.path), HARNESS_NICENESS)
     with db.session() as s:
         cfg = load_campaign_config(Path(campaign.path), runtime='nice', roles={'watchdog': {'runtime': 'nice'}})
-        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = cfg
         s.add(AgentSession(kind=WATCHDOG, campaign_id=campaign.id, reason='by hand'))
         s.commit()
     cas = f'[plugins.cas]\nprovider = "sqlite"\npath = "{tmp_path / "blobs.sqlite"}"\n'
@@ -587,13 +589,11 @@ def test_example_plugins_replace_the_built_in_runtime_and_cas_through_the_config
     ]
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
-        row.config = {**row.config, 'runtime': 'subprocess'}
+        row.config = reconfigured(row.config, runtime='subprocess')
         s.commit()
     built_in = RUNTIMES.sources()['subprocess'].release
     assert selections(home)[1] == f'demo: runtime subprocess, from {built_in} (runtime, {stored})'
-    with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = {}
-        s.commit()
+    store_config(db, campaign.id, {})
     assert selections(home) == [store], 'a stored config that does not load binds nothing; piloop doctor says why'
     forget_loaded()
 

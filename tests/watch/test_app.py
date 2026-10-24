@@ -46,7 +46,7 @@ from piloop.ids import IMPLEMENTER, CommentId, IdeaId, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.watch.app import CampaignScreen, CampaignsScreen, CandidatesTable, Watch
 from piloop.watch.panels import PANELS, Context, kept_scores
-from tests.conftest import RESEARCH, WATCHDOG, spent, wait_until
+from tests.conftest import RESEARCH, WATCHDOG, reconfigured, spent, wait_until
 from tests.reports.test_history import idea
 
 
@@ -107,7 +107,7 @@ def live_campaign(db: Database, campaign: Campaign, tmp_path: Path) -> Campaign:
     (implementer_log / 'agent_session.stdout').write_text('hello from the agent\n')
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        p.config = {**p.config, 'plugins': {'stop_rule': STOP}}
+        p.config = reconfigured(p.config, plugins={'stop_rule': STOP})
         s.get_one(Candidate, 1).created_at = ago(hours=3)
         done = idea(s, p, 'more lines', IdeaStatus.DONE, created_at=ago(hours=3))
         run = Run(

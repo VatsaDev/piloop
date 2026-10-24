@@ -65,7 +65,7 @@ from piloop.campaign.stop import (
     stall,
     unclosed,
 )
-from piloop.config import CampaignConfig, ClosingReview, Spend, config_of
+from piloop.config import CampaignConfig, ClosingReview, Spend
 from piloop.daemon.archiver import Archiver, Archiving
 from piloop.daemon.run_controller import (
     RUNS,
@@ -98,7 +98,6 @@ from piloop.db.models import (
     Run,
     RunEnd,
     RunStatus,
-    Usage,
     campaign_runs,
     count,
     utcnow,
@@ -120,6 +119,7 @@ from piloop.reports.pack import pack
 from piloop.reports.wake import lessons_overview
 from piloop.runtime.factory import RuntimeFactory, handle_for, make_runtime, runtime_for
 from piloop.scoring.ledger import checkout_candidate, due, head, head_unmeasured, rejudges, score
+from piloop.usage import Usage
 
 AGENT_SESSIONS = 'agent_sessions'
 """The directory under the home of each sweep's place: ``agent_sessions/<id>``."""
@@ -446,7 +446,7 @@ class Scheduler:
         with self._db.session() as s:
             for campaign in s.scalars(select(Campaign)).all():
                 try:
-                    cfg = config_of(campaign)
+                    cfg = campaign.config
                 except ValidationError as e:
                     self._tracer.event('campaign.invalid_config', campaign=campaign.name, error=str(e))
                     continue
@@ -500,7 +500,7 @@ class Scheduler:
             todo: list[tuple[int, Path, Spend, float | None]] = []
             for campaign in s.scalars(select(Campaign)):
                 try:
-                    cfg = config_of(campaign)
+                    cfg = campaign.config
                 except ValidationError:
                     continue  # The tick records this error for each campaign.
                 if cfg.spend is None or not spend.due(campaign, cfg.spend):
@@ -693,7 +693,7 @@ class Scheduler:
     @staticmethod
     def _time_left(s: Session, implementer: AgentSession) -> TimeLeft | None:
         """The time an implementer that was not told to wrap up has left, once it is ``wrap_up_lead`` or less."""
-        role = config_of(s.get_one(Campaign, implementer.campaign_id)).roles.doing_runs().get(implementer.kind)
+        role = s.get_one(Campaign, implementer.campaign_id).config.roles.doing_runs().get(implementer.kind)
         told = select(Event.id).where(Event.target == TargetRef(TargetKind.AGENT_SESSION, implementer.id), has(WrapUp))
         if role is None or implementer.started_at is None or s.scalar(told.limit(1)) is not None:
             return None
@@ -1295,7 +1295,7 @@ class Scheduler:
         with self._db.session() as s:
             agent_session = s.get_one(AgentSession, agent_session_id)
             campaign = s.get_one(Campaign, agent_session.campaign_id)
-            cfg = config_of(campaign)
+            cfg = campaign.config
             role = role_of(s, agent_session)
             base = checkout_candidate(s, campaign)
             values = ', '.join(

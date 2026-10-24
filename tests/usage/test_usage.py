@@ -13,13 +13,14 @@ from sqlalchemy import select, text
 from piloop.agents import refill as refill_module
 from piloop.agents.refill import usage_of
 from piloop.config import ConfigError, load_campaign_config
-from piloop.db.models import AgentSession, AgentSessionState, Campaign, Usage, utcnow
+from piloop.db.models import AgentSession, AgentSessionState, Campaign, utcnow
 from piloop.db.session import Database
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.ids import IMPLEMENTER
 from piloop.settings import env_names, expand_env
 from piloop.usage import (
     READERS,
+    Usage,
     UsageError,
     UsageSpec,
     human,
@@ -28,7 +29,7 @@ from piloop.usage import (
     reader,
 )
 from piloop.usage.jsonl import CWD_ENCODERS, SAID, TALLIES, JsonlReader, last_said
-from tests.conftest import WATCHDOG
+from tests.conftest import WATCHDOG, bare_config
 
 SESSIONS = Path(__file__).parent.parent / 'fixtures' / 'sessions'
 """Redacted heads of real session files: the records that carry usage, with the prompts and outputs cut."""
@@ -389,7 +390,7 @@ def test_the_usage_column_holds_a_usage_and_an_unknown_usage_is_null(db: Databas
     the agents whose usage is unknown. A stored value of another shape fails the load of its row."""
     usage = Usage(input=1, output=2, cache_read=3, cache_write=4, total=10, turns=1, source='s.jsonl')
     with db.session() as s:
-        s.add(Campaign(name='p', path='/p', config={'roles': {WATCHDOG: {}}}))
+        s.add(Campaign(name='p', path='/p', config=bare_config('p')))
         s.flush()
         s.add_all([AgentSession(kind=WATCHDOG, campaign_id=1, usage=usage), AgentSession(kind=WATCHDOG, campaign_id=1)])
         s.flush()

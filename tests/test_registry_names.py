@@ -41,7 +41,9 @@ LEAVES: dict[str, frozenset[str] | None] = {
     'usage/jsonl.py': frozenset({'jsonl'}),
     'usage/tallies/*.py': None,
     'config.py': frozenset({'subprocess', 'pi'}),
-    'plugins/role/research.py': frozenset({'claude', 'codex'}),
+    'plugins/role/research.py': frozenset({'claude', 'codex', 'low_water', 'seed', 'stalled'}),
+    'plugins/role/watchdog.py': frozenset({'anomaly', 'cron', 'stopped'}),
+    'plugins/role/scout.py': frozenset({'cron'}),
     'deprecated.py': None,
     'cli/skills.py': frozenset({'claude', 'codex', 'pi'}),
     'cli/idea.py': frozenset({'seed'}),
@@ -56,6 +58,8 @@ LEAVES: dict[str, frozenset[str] | None] = {
 - ``db/models.py``: the states ``seed`` and ``stopped``, which share a name with a trigger.
 - ``config.py``: the defaults of ``runtime`` and ``harnesses``.
 - ``plugins/role/research.py``: the default ``model`` of research.
+- ``plugins/role/``: the default ``triggers`` of the built-in roles, named by kind as in ``piloop.toml``: a class
+  would load its provider, and with it the database, when the config models load.
 - ``deprecated.py``: the bridges rewrite the keys of earlier releases, which named built-in roles and triggers.
 - ``cli/skills.py``: the skill folder of each agent CLI, which is not the harness registry.
 - ``cli/idea.py``, ``cli/main.py`` and ``plugins/executor/kit/relay.py``: the commands ``piloop idea seed`` and

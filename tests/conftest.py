@@ -1,6 +1,7 @@
 import tests.isolation  # noqa: F401  # first: piloop reads its home from the environment when it is imported
 
 # isort: split
+import json
 import re
 import shutil
 import stat
@@ -36,7 +37,6 @@ from piloop.db.models import (
     Origin,
     RunEnd,
     RunStatus,
-    Usage,
 )
 from piloop.db.session import Database, migrate
 from piloop.harnesses import DEFAULT_HARNESSES
@@ -56,6 +56,7 @@ from piloop.scoring.evaluate import Measured, run_evaluate
 from piloop.scoring.ledger import current_evaluator
 from piloop.settings import Settings, env_names
 from piloop.store import tree as tree_module
+from piloop.usage import Usage
 
 # Harness stand-ins: any argv that edits the worktree and commits.
 HARNESS_APPEND = '#!/bin/sh\necho line >> solve.txt\ngit commit -qam "add a line"\n'
@@ -303,7 +304,7 @@ def register(db: Database, campaign_path: Path) -> Campaign:
     )
     assert isinstance(result, Measured), result
     with db.session() as s:
-        proj = Campaign(name=cfg.name, path=str(campaign_path), config=cfg.model_dump(mode='json'))
+        proj = Campaign(name=cfg.name, path=str(campaign_path), config=cfg)
         s.add(proj)
         s.flush()
         evaluator = current_evaluator(s, proj, cfg)
@@ -321,6 +322,26 @@ def register(db: Database, campaign_path: Path) -> Campaign:
         s.add(Measurement(candidate_id=base.id, evaluator_id=evaluator.id, metrics=result.metrics))
         s.commit()
         return proj
+
+
+def store_config(db: Database, campaign_id: CampaignId, raw: dict[str, object]) -> None:
+    """Store ``raw`` as the campaign's config, as an older piloop or a removed package left it: unvalidated."""
+    with db.session() as s:
+        s.connection().exec_driver_sql('UPDATE campaigns SET config = ? WHERE id = ?', (json.dumps(raw), campaign_id))
+        s.commit()
+
+
+def reconfigured(cfg: CampaignConfig, **keys: object) -> CampaignConfig:
+    """Return ``cfg`` with ``keys`` in place of its top-level keys of the same name, validated again."""
+    return CampaignConfig.model_validate(cfg.model_dump(mode='json') | keys)
+
+
+def bare_config(name: str) -> CampaignConfig:
+    """Return the smallest valid config: for a campaign row that a test needs, with no repo behind it."""
+    metric = {'name': 'score', 'direction': 'higher', 'role': 'primary'}
+    return CampaignConfig.model_validate(
+        {'name': name, 'evaluate': ['true'], 'metrics': [metric], 'model': {'pi': 'm'}}
+    )
 
 
 def baseline(db: Database, campaign_id: CampaignId) -> Candidate:

@@ -93,7 +93,7 @@ def configure(
     write_toml(Path(campaign.path), harness, max_implementers=max_implementers)
     with db.session() as s:
         cfg = load_campaign_config(Path(campaign.path), plugins={'stop_rule': stop}, roles=roles)
-        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
     return cfg
 
@@ -244,7 +244,7 @@ def test_target_on_the_best_kept_candidate_in_the_metric_direction(db: Database,
 def test_target_lower_is_better(db: Database, campaign: Campaign) -> None:
     with db.session() as s:
         cfg = load_campaign_config(Path(campaign.path), metrics=LOWER_PRIMARY, plugins={'stop_rule': {'target': 5}})
-        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
     assert reason(db, campaign) == 'target: size 5 ≤ 5', "the baseline's solve.txt is five bytes"
 
@@ -825,7 +825,7 @@ def test_a_stop_syncs_the_memory_documents_before_the_closing_watchdog_whose_bri
         cfg = load_campaign_config(
             Path(campaign.path), plugins={'stop_rule': {'max_runs': 1}}, memory={'documents': ['docs/*.md']}
         )
-        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
     add_run(db, campaign)
     Path(campaign.path, 'docs').mkdir()
@@ -864,7 +864,7 @@ def test_a_stop_whose_document_sync_fails_still_stops_and_launches_the_closing_w
         cfg = load_campaign_config(
             Path(campaign.path), plugins={'stop_rule': {'max_runs': 1}}, memory={'documents': ['docs/*.md']}
         )
-        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
     add_run(db, campaign)
 
@@ -982,7 +982,7 @@ def test_a_stop_rule_from_a_plugin_replaces_the_built_in_one_through_piloop_toml
             cfg = load_campaign_config(
                 Path(campaign.path), plugins={'stop_rule': {'provider': 'after_keeps', 'keeps': 1}}
             )
-            s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+            s.get_one(Campaign, campaign.id).config = cfg
             s.commit()
         add_ideas(db, campaign, 'a', 'b')
         sched = make_scheduler(db, runtime, tmp_path)

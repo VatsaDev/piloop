@@ -35,7 +35,7 @@ from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports import overview as overview_module
 from piloop.reports.overview import LINKED_CHARS, anomalies, block, overview
 from piloop.scoring.ledger import IdeaCreated
-from tests.conftest import RESEARCH, WATCHDOG, end_of, spent
+from tests.conftest import RESEARCH, WATCHDOG, end_of, reconfigured, spent
 
 T = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
 NOW = T + timedelta(hours=2)
@@ -611,7 +611,7 @@ def test_a_row_holding_a_blob_renders_as_a_placeholder_with_one_warning_naming_i
 def test_progress_lists_only_the_configured_conditions(db: Database, campaign: Campaign) -> None:
     def config(stop: dict[str, object], direction: str = 'higher') -> CampaignConfig:
         metrics = [{'name': 'score', 'direction': direction, 'role': 'primary'}, {'name': 'size', 'direction': 'lower'}]
-        return CampaignConfig.model_validate({**campaign.config, 'plugins': {'stop_rule': stop}, 'metrics': metrics})
+        return reconfigured(campaign.config, plugins={'stop_rule': stop}, metrics=metrics)
 
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)

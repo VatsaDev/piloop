@@ -29,7 +29,6 @@ from piloop.campaign.stop import Ending, request_stop
 from piloop.cli import common, limits as limits_cli
 from piloop.cli.common import CampaignRef, JsonFlag
 from piloop.cli.daemon import daemon_line
-from piloop.config import config_of
 from piloop.daemon.serve import listening, running_pid
 from piloop.db import feed as db_feed
 from piloop.db.models import Campaign, CampaignStatus, utcnow
@@ -98,7 +97,7 @@ def init(
             common.console.print(
                 f'campaign {campaign.name} #{campaign.id} already registered; config re-read from piloop.toml{resumed}'
             )
-        synced = sync_documents(s, campaign, config_of(campaign), common.settings.actor)
+        synced = sync_documents(s, campaign, campaign.config, common.settings.actor)
         s.commit()
         if synced.added or synced.unchanged or synced.skipped:
             common.console.print(synced.line(), markup=False, highlight=False, soft_wrap=True)
@@ -116,9 +115,7 @@ def history(ref: CampaignRef | None = None, /) -> None:
             common.heading(f'[bold]{campaign.name}[/] #{campaign.id}  {campaign.path}')
             workspace = workspace_dir(common.settings.home, campaign.id)
             common.console.print(
-                Group(
-                    *pack_renderables(s, campaign, config_of(campaign), table_box=box.SIMPLE_HEAD, workspace=workspace)
-                )
+                Group(*pack_renderables(s, campaign, campaign.config, table_box=box.SIMPLE_HEAD, workspace=workspace))
             )
 
 
@@ -147,7 +144,7 @@ def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> Non
             parent = None if campaign.parent_id is None else s.get_one(Campaign, campaign.parent_id)
             under = '' if parent is None else f'  under {parent.name} #{parent.id}'
             common.heading(f'[bold]{campaign.name}[/] #{campaign.id}  {campaign.path}{under}')
-            text = overview(s, campaign, config_of(campaign), utcnow(), tools=False)
+            text = overview(s, campaign, campaign.config, utcnow(), tools=False)
             common.console.print(text, markup=False, highlight=False, soft_wrap=True)
 
 

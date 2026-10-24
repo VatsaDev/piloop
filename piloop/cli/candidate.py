@@ -9,7 +9,6 @@ from piloop.campaign import ops
 from piloop.campaign.campaigns import repository
 from piloop.cli import common
 from piloop.cli.common import CampaignRef
-from piloop.config import config_of
 from piloop.db.models import Campaign, Candidate
 from piloop.ids import CandidateId, TrackName
 from piloop.plugins.verdict_rule.contract import Outcome
@@ -47,7 +46,7 @@ def candidate_import(
     """
     with common.session() as s:
         campaign = common.campaign(s, ref)
-        cfg = config_of(campaign)
+        cfg = campaign.config
         try:
             candidate = import_reference(
                 s,
@@ -96,7 +95,7 @@ def candidate_remeasure(
             raise SystemExit(str(e)) from e
         s.commit()
         campaign = s.get_one(Campaign, candidate.campaign_id)
-        later = ops.measuring_held(s, campaign, config_of(campaign))
+        later = ops.measuring_held(s, campaign, campaign.config)
         bar = f'next to its bar candidate#{bar_of(candidate.parent).id}' if candidate.parent is not None else 'alone'
         effect = 'then judges it again' if rejudgeable(candidate) else 'its verdict stays'
         common.console.print(

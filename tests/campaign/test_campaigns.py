@@ -5,17 +5,27 @@ from typing import get_args, get_origin
 
 import pytest
 from git import Repo
-from pydantic import BaseModel, RootModel
+from pydantic import BaseModel, RootModel, ValidationError
 from pytest_mock import MockerFixture
+from sqlalchemy import select
 
 from piloop.actor import System
 from piloop.campaign import campaigns as campaign_module
-from piloop.campaign.campaigns import BLANK, TEMPLATES, create_campaign_repo, register, registered, stub_untouched
+from piloop.campaign.campaigns import (
+    BLANK,
+    TEMPLATES,
+    create_campaign_repo,
+    register,
+    registered,
+    stub_untouched,
+    sync,
+)
 from piloop.config import CampaignConfig, ConfigError, load_campaign_config
+from piloop.db.models import Campaign, CampaignStatus
 from piloop.db.session import Database
 from piloop.plugins.host import Scope, declared
 from piloop.plugins.role.contract import ROLES
-from tests.conftest import HARNESS_APPEND, write_toml
+from tests.conftest import HARNESS_APPEND, store_config, write_toml
 
 
 def test_create_campaign_repo(tmp_path: Path, mocker: MockerFixture) -> None:
@@ -274,3 +284,33 @@ def test_a_baseline_whose_tree_tracks_workspace_is_scored_on_its_own_file(db: Da
     with db.session() as s:
         _, measurement = register(s, campaign_path, System.HUMAN)
     assert measurement.metrics == {'score': 1.0, 'size': 5.0}
+
+
+def test_a_stored_config_loads_typed_and_one_that_no_longer_validates_fails_only_its_read(
+    db: Database, campaign: Campaign
+) -> None:
+    with db.session() as s:
+        assert s.get_one(Campaign, campaign.id).config == load_campaign_config(Path(campaign.path))
+    store_config(db, campaign.id, {'name': 'demo'})
+    with db.session() as s:
+        row = s.scalars(select(Campaign)).one()
+        assert row.name == 'demo', 'the row loads without its config'
+        with pytest.raises(ValidationError, match='evaluate'):
+            _ = row.config
+
+
+def test_init_replaces_a_stored_config_that_no_longer_validates_and_a_stopped_campaign_stays_stopped(
+    db: Database, campaign: Campaign
+) -> None:
+    store_config(db, campaign.id, {'name': 'demo'})
+    with db.session() as s:
+        row = s.get_one(Campaign, campaign.id)
+        row.status, row.stopped_reason = CampaignStatus.STOPPED, 'target: score 3.0000 ≥ 3'
+        cfg = sync(s, row)
+        s.commit()
+    with db.session() as s:
+        row = s.get_one(Campaign, campaign.id)
+        assert row.config == cfg
+        assert (row.status, row.stopped_reason) == (CampaignStatus.STOPPED, 'target: score 3.0000 ≥ 3'), (
+            'an old [stop] that no longer loads is not a changed one'
+        )

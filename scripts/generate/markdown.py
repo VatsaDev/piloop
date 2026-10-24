@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel
 from pydantic.json_schema import GenerateJsonSchema, JsonSchemaValue
-from pydantic_core import SchemaSerializer, core_schema
+from pydantic_core import SchemaSerializer, SchemaValidator, core_schema
 from pydantic_settings import BaseSettings
 
 from piloop.harnesses import DEFAULT_HARNESSES
@@ -117,7 +117,8 @@ def meanings(model: type[BaseModel], only: Iterable[str] | None = None) -> str:
 class AsDumped(GenerateJsonSchema):
     """Each default of a field with a serializer of its own as the field dumps it: a ``CAP.entry`` with its ``provider``.
 
-    pydantic encodes a default by its own type, which leaves the field's serializer out.
+    pydantic encodes a default by its own type, which leaves the field's serializer out. A default that the field
+    validates (``validate_default``) is shown as it validates.
     """
 
     def default_schema(self, schema: core_schema.WithDefaultSchema) -> JsonSchemaValue:
@@ -125,7 +126,10 @@ class AsDumped(GenerateJsonSchema):
         inner = schema['schema']
         items = inner.get('items_schema', {}) if inner['type'] == 'list' else {}
         if 'default' in found and ('serialization' in inner or 'serialization' in items):
-            found['default'] = SchemaSerializer(inner).to_python(self.get_default_value(schema), mode='json')
+            default = self.get_default_value(schema)
+            if schema.get('validate_default'):  # a default written as data, such as a provider entry
+                default = SchemaValidator(inner).validate_python(default)
+            found['default'] = SchemaSerializer(inner).to_python(default, mode='json')
         return found
 
 

@@ -34,10 +34,8 @@ from pydantic_settings import (
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
-from sqlalchemy.orm import Session
 
 from piloop import deprecated
-from piloop.db.models import AgentSession, Campaign
 from piloop.harnesses import DEFAULT_HARNESSES, Harness
 from piloop.ids import IMPLEMENTER, ROLE_NAME, RoleName, TrackName
 from piloop.mcp import McpServer, ServerName
@@ -490,24 +488,6 @@ class CampaignConfig(BaseModel):
     def harness_for(self, name: str) -> Harness:
         """The harness definition in use: the campaign's override, or else the built-in one."""
         return self.harness.get(name) or DEFAULT_HARNESSES[name]
-
-
-def config_of(campaign: Campaign) -> CampaignConfig:
-    """The config the daemon schedules from: the copy of ``piloop.toml`` that the last ``piloop init`` stored."""
-    return CampaignConfig.model_validate(campaign.config)
-
-
-def harness_of(s: Session, agent_session: AgentSession) -> Harness | None:
-    """The definition of the harness that an agent session row runs, from its campaign's config.
-
-    None before the launcher picks a harness, and when ``piloop.toml`` no longer names it (a row keeps only the name).
-    """
-    if agent_session.harness is None or agent_session.campaign_id is None:
-        return None
-    try:
-        return config_of(s.get_one(Campaign, agent_session.campaign_id)).harness_for(agent_session.harness)
-    except KeyError:
-        return None
 
 
 class ConfigError(ValueError):

@@ -20,6 +20,7 @@ from pydantic import ValidationError
 
 from piloop import mcp
 from piloop.actor import Actor
+from piloop.campaign.campaigns import check_takes
 from piloop.cli import skills, upgrade
 from piloop.config import CampaignConfig, ConfigError, explain, load_campaign_config
 from piloop.daemon.main import preflight, unbound_failures
@@ -138,7 +139,7 @@ def _campaign(name: str, path: str, stored: CampaignConfig | ValidationError) ->
     what = f'campaign {name}'
     reread = f'fix {path}/piloop.toml, then `piloop init {path}` re-reads it'
     try:
-        load_campaign_config(Path(path))
+        check_takes(Path(path), load_campaign_config(Path(path)))
     except FileNotFoundError:
         return Check(what, f'no piloop.toml in {path}', f'restore it, then `piloop init {path}`')
     except ConfigError as e:

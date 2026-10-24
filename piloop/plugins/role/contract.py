@@ -11,10 +11,9 @@ from importlib.resources import files
 from importlib.resources.abc import Traversable
 from typing import ClassVar, Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, model_validator
 
 from piloop import deprecated
-from piloop.db.sql import sql_error
 from piloop.plugins.host import Capability, Parameters
 from piloop.plugins.runtime.contract import RuntimeName
 from piloop.plugins.trigger.contract import TriggerEntry
@@ -118,13 +117,6 @@ class ImplementerRole(RoleConfig):
     last ``explore_every - 1`` runs did, the next slot goes to the most urgent ready idea that is pinned to a base
     other than the head (a reference, an older keep or a note), whatever its priority. Nothing changes while no such
     idea is ready. 0 turns this off."""
-
-    @field_validator('takes')
-    @classmethod
-    def _reads_ideas(cls, takes: str | None) -> str | None:
-        if takes is not None and (error := sql_error(ideas_taken(takes))) is not None:
-            raise ValueError(f'the condition does not run on the ideas table: {error}')
-        return takes
 
 
 def ideas_taken(takes: str) -> str:

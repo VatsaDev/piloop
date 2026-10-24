@@ -23,7 +23,8 @@ from piloop.agents.results import (
     learn,
     session_finished,
 )
-from piloop.config import BRIEF_FILE, config_of, harness_of
+from piloop.agents.roles import harness_of
+from piloop.config import BRIEF_FILE
 from piloop.db.events import emit
 from piloop.db.models import LIVE, AgentSession, AgentSessionState, Campaign, utcnow
 from piloop.db.session import Database
@@ -148,7 +149,7 @@ class Launcher:
         with self.db.session() as s:
             w = s.get_one(AgentSession, agent_session_id)
             campaign = s.get_one(Campaign, w.campaign_id)
-            cfg = config_of(campaign)
+            cfg = campaign.config
             harness = w.harness or rotate(s, w, cfg.role_harnesses(w.kind))
             model = w.model or cfg.role_models(w.kind)[harness]
             effort = cfg.role(w.kind).effort
@@ -211,7 +212,7 @@ class Launcher:
 
         Only an agent that a daemon before leases started needs it: an executor finds its own jobs again.
         """
-        cfg = config_of(s.get_one(Campaign, w.campaign_id))
+        cfg = s.get_one(Campaign, w.campaign_id).config
         definition = harness_of(s, w)
         assert w.runtime is not None and w.log_dir is not None  # a running row was launched
         job = AgentJob(

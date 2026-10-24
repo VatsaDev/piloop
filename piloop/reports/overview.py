@@ -25,12 +25,13 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from piloop.agents.results import StartupAnomaly
+from piloop.agents.roles import harness_of
 from piloop.campaign import inbox
 from piloop.campaign.anomaly import AnomalyKind, AnomalyReported
 from piloop.campaign.ideas import defined_by, links, runnable, superseded_by, yields
 from piloop.campaign.inbox import campaign_of
 from piloop.campaign.stop import attempt, held, hours, kept, limits, runs, runs_without_keep
-from piloop.config import TRANSCRIPT, CampaignConfig, Metric, Track, harness_of
+from piloop.config import TRANSCRIPT, CampaignConfig, Metric, Track
 from piloop.db.events import in_order
 from piloop.db.models import (
     ENDED,
@@ -80,7 +81,8 @@ from piloop.scoring.ledger import (
 )
 from piloop.scoring.verdict import label, pending_clause
 from piloop.text import NONE, cell, metric
-from piloop.usage import campaign_tokens, human
+from piloop.usage import human
+from piloop.usage.totals import campaign_tokens
 
 STEPS_SHOWN = 8
 ANOMALIES_SHOWN = 12

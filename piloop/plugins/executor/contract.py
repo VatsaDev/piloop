@@ -27,7 +27,6 @@ from covalence import Cid
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, TypeAdapter
 from sqlalchemy.orm import Session
 
-from piloop.db.models import Usage
 from piloop.db.session import Database
 from piloop.ids import AgentSessionId, CampaignId, CandidateId, CommentId, RunId
 from piloop.mcp import McpServer
@@ -38,7 +37,7 @@ from piloop.plugins.host import Capability, Choice, Chosen, Parameters, Scope
 from piloop.plugins.runtime.contract import AgentExit, AgentStart
 from piloop.plugins.vcs.contract import VCS, Repository, Revision, Transfer, Vcs
 from piloop.runtime.factory import RuntimeFactory
-from piloop.usage import UsageSpec
+from piloop.usage import Usage, UsageSpec
 
 
 def _relative(place: str) -> str:

@@ -12,8 +12,9 @@ from typing import assert_never
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor, Agent, System
-from piloop.config import BRIEF_FILE, CampaignConfig, Track, config_of
+from piloop.config import BRIEF_FILE, CampaignConfig, Track
 from piloop.db.models import AgentSession, Campaign
+from piloop.harnesses import Harness
 from piloop.ids import RoleName
 from piloop.plugins.role.contract import Files, SweepRole
 from piloop.plugins.vcs.contract import VCS, prompted
@@ -101,7 +102,20 @@ def _prompt(repo: Path, configured: str | None, own: Traversable | None) -> Trav
 def role_of(s: Session, agent_session: AgentSession) -> Role:
     """Return the role of a row: the role of its kind in its campaign."""
     campaign = s.get_one(Campaign, agent_session.campaign_id)
-    return role(config_of(campaign), agent_session.kind, Path(campaign.path))
+    return role(campaign.config, agent_session.kind, Path(campaign.path))
+
+
+def harness_of(s: Session, agent_session: AgentSession) -> Harness | None:
+    """Return the definition of the harness that a row runs, from its campaign's config.
+
+    None before the launcher picks a harness, and when ``piloop.toml`` no longer names it (a row keeps only the name).
+    """
+    if agent_session.harness is None or agent_session.campaign_id is None:
+        return None
+    try:
+        return s.get_one(Campaign, agent_session.campaign_id).config.harness_for(agent_session.harness)
+    except KeyError:
+        return None
 
 
 def files_of(cfg: CampaignConfig, actor: Actor) -> Files | None:
@@ -138,7 +152,7 @@ def compose_brief(
     """
     author = agent.signature
     repo = Path(campaign.path)
-    cfg = config_of(campaign)
+    cfg = campaign.config
     addendum = cfg.role(role.kind).addendum
     follows = role.incident if incident else role.routine
     vcs = VCS.selected(cfg.plugins)

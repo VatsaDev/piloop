@@ -11,6 +11,7 @@ import subprocess
 import sys
 import types
 import typing
+from annotationlib import Format
 from collections.abc import Iterable
 from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
@@ -21,8 +22,10 @@ import piloop_min_gain
 import piloop_nice
 import piloop_sqlite_cas
 import piloop_stop_after_keeps
+from sqlalchemy.orm import Session
 
 from piloop import capabilities
+from piloop.db import models
 from piloop.plugins import metric
 from piloop.plugins.host import BUILT_IN, CAPABILITIES, Capability, Parameters, Tier
 from piloop.plugins.runtime.contract import NotSteerable
@@ -108,15 +111,19 @@ def _types(hint: object) -> set[type]:
     return {t for part in parts for t in _types(part)}
 
 
+ROWS = {**vars(models), 'Session': Session}
+"""The rows that a contract names in annotations only (the trigger contract loads below the database)."""
+
+
 def _named(cls: type) -> set[type]:
     """The classes that ``cls`` names in its fields, and in the signatures of its own methods and properties."""
-    hints = list(get_type_hints(cls).values())
+    hints = list(get_type_hints(cls, localns=ROWS, format=Format.FORWARDREF).values())
     for name, member in vars(cls).items():
         if name.startswith('_') and name != '__init__':
             continue
         function = member.fget if isinstance(member, property) else getattr(member, '__func__', member)
         if inspect.isfunction(function):
-            hints += get_type_hints(function).values()
+            hints += get_type_hints(function, localns=ROWS, format=Format.FORWARDREF).values()
     return {t for hint in hints for t in _types(hint)}
 
 

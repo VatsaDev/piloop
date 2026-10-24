@@ -10,19 +10,22 @@ from uuid import uuid4
 
 import httpx2 as httpx
 from covalence import Cid
+from pydantic import ValidationError
 from rich.console import Console
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from piloop import deprecated
 from piloop.actor import Actor, System
-from piloop.config import CONFIG_FILE, CampaignConfig, config_of, load_campaign_config
+from piloop.config import CONFIG_FILE, CampaignConfig, ConfigError, load_campaign_config
 from piloop.db.events import emit
 from piloop.db.models import Campaign, CampaignStatus, Candidate, EventModel, Measurement, Origin
 from piloop.db.session import Database
+from piloop.db.sql import sql_error
 from piloop.ids import CampaignId, CandidateId, TargetKind, TargetRef
 from piloop.plugins.cas.contract import CAS, Cas
 from piloop.plugins.executor.contract import RepoId, Source, Workspace
+from piloop.plugins.role.contract import ideas_taken
 from piloop.plugins.stop_rule.contract import STOP_RULES
 from piloop.plugins.vcs.contract import VCS, Repository, Revision, Vcs
 from piloop.plugins.verdict_rule.contract import Outcome
@@ -154,6 +157,26 @@ def stub_untouched(path: Path) -> bool:
     )
 
 
+def check_takes(path: Path, cfg: CampaignConfig) -> None:
+    """Refuse the ``takes`` condition of a role that does not run on the ``ideas`` table.
+
+    The check reads the schema, whose models type ``campaigns.config`` with the config models, so it runs here and
+    not in the role's model.
+
+    Raises:
+        ConfigError: one line for each bad condition, as ``load_campaign_config`` gives one for each bad key.
+    """
+    bad = [
+        f'  roles.{name}.takes = {role.takes!r}: the condition does not run on the ideas table: {error}'
+        for name, role in cfg.roles.doing_runs().items()
+        if role.takes is not None and (error := sql_error(ideas_taken(role.takes))) is not None
+    ]
+    if bad:
+        raise ConfigError(
+            '\n'.join([f'{path / CONFIG_FILE} is not a valid piloop config ({len(bad)} problem(s)):', *bad])
+        )
+
+
 def register(s: Session, path: Path, actor: Actor) -> tuple[Campaign, Measurement]:
     """Score the head version in a clean checkout, then insert the campaign row and its baseline measurement.
 
@@ -166,6 +189,7 @@ def register(s: Session, path: Path, actor: Actor) -> tuple[Campaign, Measuremen
         CampaignError: Another repo uses the name, or the evaluate command failed on HEAD.
     """
     cfg = load_campaign_config(path)
+    check_takes(path, cfg)
     other = s.scalars(select(Campaign).where(Campaign.name == cfg.name)).first()
     s.rollback()
     if other is not None:
@@ -208,7 +232,7 @@ def register(s: Session, path: Path, actor: Actor) -> tuple[Campaign, Measuremen
         name=cfg.name,
         path=str(path.resolve()),
         repo=VCS.selected(cfg.plugins).identity(path),
-        config=cfg.model_dump(mode='json'),
+        config=cfg,
     )
     s.add(campaign)
     s.flush()
@@ -265,17 +289,20 @@ def sync(s: Session, campaign: Campaign) -> CampaignConfig:
     """Read the repo's ``piloop.toml`` into the campaign row again.
 
     A change to ``evaluate``, ``metrics`` or ``link`` makes a new evaluator. A stopped campaign whose stop rule or its
-    limits changed becomes active again, because the human changed the stop conditions. The repo's identity is read again
-    too, because a remote may have been added since.
+    limits changed becomes active again, because the human changed the stop conditions. A stored copy that no longer
+    validates is replaced, and its stop rule counts as unchanged. The repo's identity is read again too, because a
+    remote may have been added since.
     """
     cfg = load_campaign_config(Path(campaign.path))
+    check_takes(Path(campaign.path), cfg)
     campaign.repo = VCS.selected(cfg.plugins).identity(Path(campaign.path))
-    config = cfg.model_dump(mode='json')
-    stored = campaign.config.get('plugins')
-    was = stored.get(STOP_RULES.name) if isinstance(stored, dict) else None
-    if campaign.status is CampaignStatus.STOPPED and config['plugins'].get(STOP_RULES.name) != was:
+    try:
+        changed = cfg.plugins.get(STOP_RULES.name) != campaign.config.plugins.get(STOP_RULES.name)
+    except ValidationError:
+        changed = False  # the copy is replaced below; what it said about the stop rule is unknown
+    if campaign.status is CampaignStatus.STOPPED and changed:
         campaign.status, campaign.stopped_reason = CampaignStatus.ACTIVE, None
-    campaign.config = config
+    campaign.config = cfg
     current_evaluator(s, campaign, cfg)
     return cfg
 
@@ -334,7 +361,7 @@ class Sources:
 
     def source(self, campaign: Campaign, revision: Revision) -> Source:
         """``revision`` of the campaign's repo, with its links: an evaluation's files."""
-        cfg = config_of(campaign)
+        cfg = campaign.config
         return Source(
             vcs=VCS.selected(cfg.plugins),
             repo=RepoId(campaign.id),
@@ -361,7 +388,7 @@ class Sources:
 
 def vcs_of(campaign: Campaign) -> Vcs:
     """The campaign's vcs provider, with its parameters (``[plugins.vcs]``)."""
-    return VCS.selected(config_of(campaign).plugins)
+    return VCS.selected(campaign.config.plugins)
 
 
 def repository(campaign: Campaign) -> Repository:

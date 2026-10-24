@@ -5,7 +5,6 @@ from pydantic import Field
 
 from piloop.plugins.role.contract import SweepRole
 from piloop.plugins.trigger.contract import TriggerEntry
-from piloop.plugins.trigger.cron import CronTrigger
 
 
 class ScoutRole(SweepRole):
@@ -29,7 +28,7 @@ class ScoutRole(SweepRole):
         " '<your signature>')` into `{piloop} sql -`."
     )
 
-    triggers: list[TriggerEntry] = [CronTrigger()]
+    triggers: list[TriggerEntry] = Field(default=[{'provider': 'cron'}], validate_default=True)
     """The timer: a scout sweep every ``interval`` seconds."""
     interval: float = Field(default=0, ge=0)
     """The number of seconds between two scout sweeps, counted from the start of the last one. The first sweep counts

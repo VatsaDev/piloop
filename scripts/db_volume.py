@@ -26,7 +26,7 @@ from piloop.campaign import inbox
 from piloop.campaign.campaigns import BLANK
 from piloop.campaign.stop import check
 from piloop.cli.database import ORCHESTRATOR_PROCEDURES
-from piloop.config import CampaignConfig, config_of, load_campaign_config
+from piloop.config import CampaignConfig, load_campaign_config
 from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
 from piloop.db.models import Campaign, utcnow
@@ -294,7 +294,7 @@ class HotPaths:
 
     def __enter__(self) -> dict[str, Callable[[], object]]:
         s = self._session
-        rows = [(p, config_of(p)) for p in s.scalars(select(Campaign).order_by(Campaign.id))]
+        rows = [(p, p.config) for p in s.scalars(select(Campaign).order_by(Campaign.id))]
         stopping = load_campaign_config(
             BLANK, plugins={'stop_rule': {'target': 1.0, 'max_runs': 10**6, 'max_hours': 10**6, 'plateau': 10**6}}
         )

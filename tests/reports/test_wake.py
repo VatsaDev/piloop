@@ -110,7 +110,7 @@ def test_lessons_in_the_campaigns_metrics_outrank_larger_effects_in_other_units(
     ]
     with db.session() as s:
         p = s.get_one(Campaign, campaign.id)
-        p.config = load_campaign_config(Path(campaign.path), metrics=metrics).model_dump(mode='json')
+        p.config = load_campaign_config(Path(campaign.path), metrics=metrics)
         sibling, _ = clones(s, campaign)
         lesson(s, sibling.id, 'cross-tree-replay', 'promising', -1182.8, 'postproc_seconds')
         lesson(s, sibling.id, 'stack-composition', 'promising', -1071.1, 'full_eval_seconds')

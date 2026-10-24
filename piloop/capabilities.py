@@ -71,7 +71,7 @@ from piloop.plugins.executor.workers import Workers, WorkersExecutor
 from piloop.otel import Tracer, Span, ConsoleProcessor
 from piloop.runtime.factory import RuntimeFactory
 from piloop.mcp import McpServer
-from piloop.usage import UsageSpec, UsageReader
+from piloop.usage import Usage, UsageSpec, UsageReader
 from piloop.net import Route
 
 from piloop.plugins.network.contract import NETWORKS, Network, NetworkHost

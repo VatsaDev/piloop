@@ -33,7 +33,6 @@ from piloop.agents.results import queue_prompt
 from piloop.campaign import inbox, ops
 from piloop.campaign.campaigns import find
 from piloop.campaign.ideas import reprioritise
-from piloop.config import config_of
 from piloop.db.models import Idea, IdeaStatus, utcnow
 from piloop.db.session import Database
 from piloop.ids import AgentSessionId, CommentId, IdeaId
@@ -398,7 +397,7 @@ class CampaignScreen(Screen[None]):
         campaign = find(s, self.ref)
         if campaign is None:
             return None
-        return Context(campaign, config_of(campaign), utcnow(), self.actor)
+        return Context(campaign, campaign.config, utcnow(), self.actor)
 
     def focused_table(self) -> PanelTable:
         focused = self.focused

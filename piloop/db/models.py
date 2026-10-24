@@ -44,6 +44,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, composite, mapped_c
 from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.types import TypeDecorator
 
+from piloop.config import CampaignConfig
 from piloop.ids import (
     IMPLEMENTER,
     AgentSessionId,
@@ -60,6 +61,7 @@ from piloop.ids import (
     TrackName,
 )
 from piloop.plugins.verdict_rule.contract import Outcome
+from piloop.usage import Usage
 
 
 def utcnow() -> datetime:
@@ -365,26 +367,6 @@ def text_checks(table: str, *columns: str, nullable: tuple[str, ...] = ()) -> tu
     )
 
 
-class Usage(BaseModel):
-    """The token usage of one agent session, as ``agent_sessions.usage`` stores it. A usage reader returns it."""
-
-    model_config = ConfigDict(frozen=True, use_attribute_docstrings=True)
-
-    input: int
-    """The input tokens that the prompt cache did not serve."""
-    output: int
-    cache_read: int
-    """The input tokens that the prompt cache served."""
-    cache_write: int
-    """The input tokens written to the prompt cache."""
-    total: int
-    """What the harness counts as the session's tokens."""
-    turns: int
-    """The number of model responses (API calls) in the session."""
-    source: str
-    """Where the numbers came from: the session file that was read."""
-
-
 class EventModel(BaseModel):
     """The payload of one kind of event, with its ``kind``: one model for each kind, or for a few that share a shape.
 
@@ -500,6 +482,7 @@ class Base(DeclarativeBase):
         dict[str, float]: JSON,
         dict[str, object]: JSON,
         Usage: PydanticJSON(TypeAdapter(Usage)),
+        CampaignConfig: PydanticJSON(TypeAdapter(CampaignConfig)),
         EventModel: PydanticJSON(EVENT),
         list[str]: JSON,
         CampaignStatus: _values(CampaignStatus),
@@ -555,8 +538,10 @@ class Campaign(Tracked, Base):
     name: Mapped[str] = mapped_column(unique=True)
     path: Mapped[str]
     """The absolute path of the repository. ``piloop.toml`` is at its root."""
-    config: Mapped[dict[str, object]]
-    """The ``CampaignConfig`` as the last ``piloop init`` stored it."""
+    config: Mapped[CampaignConfig] = mapped_column(deferred=True)
+    """The ``piloop.toml`` as the last ``piloop init`` stored it: the config that the daemon schedules from. It loads
+    when it is first read, so a copy that no longer validates (a trigger of a package that is not installed) fails
+    only that read."""
     evaluator_id: Mapped[EvaluatorId | None]
     """The ``evaluators.id`` that the config describes now. Measurements under older evaluators stay, but no longer
     decide verdicts. A plain integer, not a foreign key, because evaluators reference campaigns."""

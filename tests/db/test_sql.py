@@ -19,7 +19,7 @@ from piloop.daemon.main import ACTOR
 from piloop.db import sql
 from piloop.db.models import JOURNAL_LINE_BYTES, AgentSession, AgentSessionState, Base, Campaign, CommentKind
 from piloop.db.session import Database
-from tests.conftest import WRITER
+from tests.conftest import WRITER, bare_config
 
 
 @pytest.fixture
@@ -434,7 +434,7 @@ def test_an_agent_whose_session_has_ended_leaves_no_finding(db: Database, tmp_pa
     the run as finished, and it would undo the stop or the cancel. Its notes, and any other actor's finding, still land.
     """
     with db.session() as s:
-        campaign = Campaign(name='p', path='/p', config={'roles': {'implementer': {}}})
+        campaign = Campaign(name='p', path='/p', config=bare_config('p'))
         s.add(campaign)
         s.flush()
         s.add_all(AgentSession(kind='implementer', campaign_id=campaign.id, state=state) for state in AgentSessionState)

@@ -37,7 +37,7 @@ from piloop.agents.results import (
 from piloop.agents.roles import SQL_HINT, compose_brief
 from piloop.campaign.campaigns import sync
 from piloop.campaign.stop import Ending, request_cancel, request_stop, runs
-from piloop.config import CampaignConfig, config_of, load_campaign_config
+from piloop.config import CampaignConfig, load_campaign_config
 from piloop.daemon.run_controller import UNCOMMITTED_SUMMARY, RunController, wrap_up_lead
 from piloop.daemon.scheduler import STARTUP_BREAKER, STARTUP_WINDOW, RunQueued, RunRerouted, Scheduler
 from piloop.db import sql
@@ -98,6 +98,7 @@ from tests.conftest import (
     role_of,
     serving,
     span_named,
+    store_config,
     wait_for_agent_session_handle,
     wait_until,
     workers_of,
@@ -164,9 +165,7 @@ def statuses(db: Database) -> list[IdeaStatus]:
 
 def set_config(db: Database, campaign: Campaign, **overrides: object) -> None:
     with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = load_campaign_config(Path(campaign.path), **overrides).model_dump(
-            mode='json'
-        )
+        s.get_one(Campaign, campaign.id).config = load_campaign_config(Path(campaign.path), **overrides)
         s.commit()
 
 
@@ -292,7 +291,7 @@ def test_a_sweep_checks_out_the_head(db: Database, campaign: Campaign, runtime: 
     evaluate = f'while [ -f {hold} ]; do sleep 0.05; done; echo METRIC score=9; echo METRIC size=9'
     with db.session() as s:
         cfg = load_campaign_config(Path(campaign.path), evaluate=['sh', '-c', evaluate])
-        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = cfg
         current_evaluator(s, s.get_one(Campaign, campaign.id), cfg)
         s.commit()
     again = request_watchdog(db, campaign)
@@ -320,7 +319,7 @@ def test_harness_rotation_and_pinning(db: Database, campaign: Campaign, runtime:
         roles={'implementer': {'max_concurrent': 3}},
     )
     with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = cfg.model_dump(mode='json')
+        s.get_one(Campaign, campaign.id).config = cfg
         s.commit()
     add_ideas(db, campaign, 'a', 'b')
     add_ideas(db, campaign, 'c', harness='script')
@@ -1019,9 +1018,7 @@ def test_invalid_campaign_config_is_skipped_not_fatal(
     tracer: Tracer,
     spans: InMemorySpanExporter,
 ) -> None:
-    with db.session() as s:
-        s.get_one(Campaign, campaign.id).config = {}
-        s.commit()
+    store_config(db, campaign.id, {})
     assert make_scheduler(db, runtime, tmp_path, tracer).tick() == []
     assert dict(span_named(spans, 'campaign.invalid_config').attributes or {})['campaign'] == 'demo'
 
@@ -1132,7 +1129,7 @@ def test_a_cut_run_whose_role_allows_no_requeue_keeps_its_base_and_a_known_tree_
     with db.session() as s:
         s.get_one(Campaign, campaign.id).config = load_campaign_config(
             Path(campaign.path), roles={'implementer': {'recovery_requeues': 0}}
-        ).model_dump(mode='json')
+        )
         s.commit()
     (idea,) = add_ideas(db, campaign, 'long')
     scheduler = make_scheduler(db, runtime, tmp_path)
@@ -2572,7 +2569,7 @@ def test_an_implementer_is_told_once_to_wrap_up_before_its_timeout(
     scheduler = make_scheduler(db, runtime, tmp_path)
     fake = prompted(db, scheduler, mocker)
     with db.session() as s:
-        timeout = config_of(s.get_one(Campaign, campaign.id)).role(IMPLEMENTER).timeout
+        timeout = s.get_one(Campaign, campaign.id).config.role(IMPLEMENTER).timeout
     lead = wrap_up_lead(timeout)
 
     def started(ago: float) -> None:

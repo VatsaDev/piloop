@@ -45,7 +45,7 @@ from piloop.plugins.cas.kit.objects import ObjectsCas, key
 from piloop.settings import INPUTS_DIR
 from piloop.store import tree as tree_module
 from piloop.store.tree import Manifest, Removed, Stored, Walk
-from tests.conftest import WATCHDOG, end_of
+from tests.conftest import WATCHDOG, bare_config, end_of
 
 LIVE = frozenset({'NOTES.md', 'research'})
 LOST = Cid.of(b'lost')
@@ -114,7 +114,7 @@ def test_an_entry_belongs_to_an_idea_by_its_name(db: Database, campaign: Campaig
     other = add_idea(db, campaign.id, 'two')
     agent_session = add_run(db, idea)
     with db.session() as s:
-        alien = Campaign(name='alien', path='/alien', config={})
+        alien = Campaign(name='alien', path='/alien', config=bare_config('alien'))
         s.add(alien)
         s.flush()
         stranger = Idea(campaign_id=alien.id, track='t', title='x', hypothesis='h', created_by='t')

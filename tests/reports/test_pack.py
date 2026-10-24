@@ -33,7 +33,7 @@ JAN_1 = 1_767_225_600
 def configure(db: Database, campaign: Campaign, **keys: object) -> None:
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)
-        row.config = load_campaign_config(Path(campaign.path), **keys).model_dump(mode='json')
+        row.config = load_campaign_config(Path(campaign.path), **keys)
         s.commit()
 
 

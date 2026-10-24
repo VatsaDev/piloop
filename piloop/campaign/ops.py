@@ -24,7 +24,7 @@ from piloop.agents.roles import files_of
 from piloop.campaign.campaigns import repository
 from piloop.campaign.ideas import Definition, NotASeed, develop
 from piloop.campaign.stop import held
-from piloop.config import CampaignConfig, config_of
+from piloop.config import CampaignConfig
 from piloop.db.events import emit
 from piloop.db.models import (
     OPEN_RUNS,
@@ -144,7 +144,7 @@ def review_first(campaign: Campaign, actor: Actor, *, new: bool) -> str | None:
     """
     match actor:
         case Agent(role=name):
-            role = config_of(campaign).roles.sweeping().get(name)
+            role = campaign.config.roles.sweeping().get(name)
         case System():
             return None
         case _:
@@ -280,7 +280,7 @@ def add_measurement(s: Session, candidate_id: CandidateId, report: Report, *, ac
         raise Refused(f'campaign {campaign.name} has no evaluator yet: run `piloop init`')
     if pending(candidate):
         raise Refused(f'candidate#{candidate.id} is pending: the daemon judges it now; add the measurement after that')
-    cfg = config_of(campaign)
+    cfg = campaign.config
     names = {m.name for m in cfg.metrics}
     if unknown := sorted(report.metrics.keys() - names):
         raise Refused(f'piloop.toml has no metric {", ".join(unknown)}: its metrics are {", ".join(sorted(names))}')
@@ -329,7 +329,7 @@ def files(campaign: Campaign, actor: Actor) -> Files | None:
     Raises:
         Refused: the actor's role files nothing.
     """
-    filed = files_of(config_of(campaign), actor)
+    filed = files_of(campaign.config, actor)
     if filed is Files.NOTHING:
         raise Refused(
             f"{actor} files no ideas or seeds: say the hunch in your run's finding, with pointers."
@@ -489,7 +489,7 @@ def note_candidate(
     if follow_ups:
         files(campaign, actor)
     set_verdict(s, candidate.id, Outcome.INTERESTING, cause=Cause.NOTE, reason=reason, actor=actor)
-    on = track_for(campaign, track) if track is not None else track_of(config_of(campaign), candidate).name
+    on = track_for(campaign, track) if track is not None else track_of(campaign.config, candidate).name
     return candidate, follow_up(s, candidate, follow_ups, reason, actor, track=on)
 
 
@@ -697,7 +697,7 @@ def track_for(campaign: Campaign, track: TrackName | None) -> TrackName:
     Raises:
         Refused: no track is given and the campaign has several, or the campaign has no such track.
     """
-    tracks = [t.name for t in config_of(campaign).all_tracks]
+    tracks = [t.name for t in campaign.config.all_tracks]
     if track is None and len(tracks) == 1:
         return tracks[0]
     if track is None or track not in tracks:

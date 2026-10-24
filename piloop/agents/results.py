@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from piloop import deprecated
 from piloop.actor import Agent, SignedAgent, System
-from piloop.config import harness_of
+from piloop.agents.roles import harness_of
 from piloop.db.events import emit, has, latest
 from piloop.db.models import (
     LIVE,
