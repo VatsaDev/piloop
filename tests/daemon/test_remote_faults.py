@@ -284,7 +284,9 @@ def test_a_report_whose_answer_was_cut_is_sent_again_with_its_request_id_and_app
     net.proxy.toxic = CutResponse(b'POST /v1/executor/report')
     hold.unlink()
     measuring.join(30)
-    assert not measuring.is_alive() and net.proxy.cuts == 1
+    assert not measuring.is_alive()
+    # the server records the report before it answers: the cut of the answer and the resend come after the measurement
+    wait_until(lambda: net.proxy is not None and net.proxy.cuts == 1 and not (net.spool / '1.json').exists())
     assert state(db, 1) is LeaseState.REPORTED and measured(db, held) == 2
     assert stale_reports(db) == [], 'the resend got the receipt, not a refusal'
 

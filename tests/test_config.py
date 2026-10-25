@@ -21,7 +21,7 @@ from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.trigger.seed import SeedTrigger
 from piloop.plugins.trigger.stalled import StalledTrigger
-from tests.conftest import RESEARCH, SCOUT, WATCHDOG, role_of
+from tests.conftest import AGENT_TIMEOUT, RESEARCH, SCOUT, WATCHDOG, role_of
 
 
 def test_load_precedence(campaign_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -120,10 +120,10 @@ def test_a_piloop_project_variable_fails_with_its_new_name(
 def test_roles_are_typed_per_kind(campaign_path: Path) -> None:
     cfg = load_campaign_config(campaign_path)
     assert cfg.roles.all() == {
-        IMPLEMENTER: ImplementerRole(timeout=20.0, max_concurrent=1),
-        RESEARCH: ResearchRole(timeout=20.0, max_ideas=0, max_concurrent=1),
+        IMPLEMENTER: ImplementerRole(timeout=AGENT_TIMEOUT, max_concurrent=1),
+        RESEARCH: ResearchRole(timeout=AGENT_TIMEOUT, max_ideas=0, max_concurrent=1),
         SCOUT: ScoutRole(),
-        WATCHDOG: WatchdogRole(harnesses=['script'], model={'script': 'watchdog-model'}, timeout=20.0),
+        WATCHDOG: WatchdogRole(harnesses=['script'], model={'script': 'watchdog-model'}, timeout=AGENT_TIMEOUT),
     }, 'every role, in the order of its entry point, with its table over its defaults'
     assert cfg.role(RESEARCH) is role_of(cfg, ResearchRole)
     assert cfg.role_harnesses(RESEARCH) == ['script'], 'unset: the campaign rotation'

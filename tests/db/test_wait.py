@@ -103,11 +103,19 @@ def test_a_closed_database_makes_its_waiters_give_up(db: Database) -> None:
 
 
 def test_a_waiter_gives_up_when_asked(db: Database) -> None:
-    asked = threading.Event()
+    """Whoever sets what ``give_up`` reads calls ``notify``: a waiter that checked it already waits for a wake."""
+    asked, checked = threading.Event(), threading.Event()
+
+    def give_up() -> bool:
+        checked.set()
+        return asked.is_set()
+
     seen: list[bool] = []
-    waiting = threading.Thread(target=lambda: seen.append(db.wait_until(lambda _s: False, give_up=asked.is_set)))
+    waiting = threading.Thread(target=lambda: seen.append(db.wait_until(lambda _s: False, give_up=give_up)))
     waiting.start()
+    assert checked.wait(10)  # it checked before it was asked, and waits for a wake now
     asked.set()
+    db.notify()
     waiting.join(10)
     assert seen == [False]
 

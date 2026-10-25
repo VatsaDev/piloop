@@ -98,10 +98,10 @@ max_concurrent = {max_implementers}
 [roles.watchdog]
 harnesses = ["script"]
 model = {{ script = "watchdog-model" }}
-timeout = 20
+timeout = {sweep_timeout}
 
 [roles.research]
-timeout = 20
+timeout = {sweep_timeout}
 max_ideas = 0
 max_concurrent = 1
 
@@ -143,6 +143,11 @@ def end_of(status: RunStatus) -> RunEnd | None:
             return RunEnd.FAILED
 
 
+AGENT_TIMEOUT = 120
+"""The role timeout of a test's scripted agents: far past what a loaded host takes to run a script, so only a test of
+a timeout, which sets its own, ever reaches it."""
+
+
 def write_script(path: Path, body: str) -> Path:
     path.write_text(body)
     path.chmod(path.stat().st_mode | stat.S_IEXEC)
@@ -154,7 +159,7 @@ def write_toml(
     harness_body: str,
     *,
     max_implementers: int = 1,
-    implementer_timeout: float = 20,
+    implementer_timeout: float = AGENT_TIMEOUT,
     evaluate: list[str] = EVALUATE,
 ) -> None:
     script = write_script(campaign.parent / 'harness.sh', harness_body)
@@ -162,6 +167,7 @@ def write_toml(
         TOML.format(
             evaluate=repr(evaluate).replace("'", '"'),
             implementer_timeout=implementer_timeout,
+            sweep_timeout=AGENT_TIMEOUT,
             max_implementers=max_implementers,
             script=script,
         )

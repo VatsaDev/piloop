@@ -38,7 +38,7 @@ import pytest
 import tomli_w
 from covalence import Cid
 
-from piloop.db.models import EVENT, UnknownEvent
+from piloop.db.models import EVENT, JUDGED, UnknownEvent
 from piloop.plugins.runtime.kit.tags import tagged
 from piloop.store.tree import DRISL
 from tests.conftest import wait_until
@@ -54,8 +54,11 @@ RELEASE_HEAD = '0018'
 STEP_VERSION = '0.2.1'
 STEP = f'piloop=={STEP_VERSION}'
 """The release that the guide says to upgrade to first: its daemon keeps running while this checkout is installed."""
-RENAMES = Renames(columns={'brief': 'brief_cid'}, blobs=frozenset({('runs', 'brief_cid')}))
-"""The renames since ``RELEASE`` that the upgrading guide documents. A rename of a later release goes here."""
+RENAMES = Renames(
+    columns={'brief': 'brief_cid', 'candidates.commit_sha': 'revision'}, blobs=frozenset({('runs', 'brief_cid')})
+)
+"""The renames since ``RELEASE`` that the upgrading guide documents (``candidates.commit_sha``: 0045). A rename of a
+later release goes here."""
 CONFIG_REWRITES = (
     *(f'harness.*.{key}' for key in ('interactive', 'startup_dialogs', 'busy_screens', 'failed_turn_screens')),
     'harness.*.queue_key',
@@ -499,8 +502,8 @@ def test_the_run_in_flight_is_scored_by_the_new_code(upgrade: Upgrade) -> None:
     wait_until(done, timeout=600)
     run = done()
     assert run is not None and run['status'] == 'succeeded', run and dict(run)
-    judged = smoke.sql('SELECT id, verdict FROM candidates WHERE run_id = ?', upgrade.in_flight)
-    assert judged and all(r['verdict'] != 'pending' for r in judged), [dict(r) for r in judged]
+    judged = smoke.sql('SELECT id, origin, verdict FROM candidates WHERE run_id = ?', upgrade.in_flight)
+    assert judged and not any(r['verdict'] is None and r['origin'] in JUDGED for r in judged), [dict(r) for r in judged]
     print(
         f'run {upgrade.in_flight} {run["status"]}: ' + ', '.join(f'candidate#{r["id"]} {r["verdict"]}' for r in judged)
     )

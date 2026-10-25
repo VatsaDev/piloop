@@ -37,6 +37,7 @@ class Renames:
 
     tables: Mapping[str, str] = field(default_factory=dict)
     columns: Mapping[str, str] = field(default_factory=dict)
+    """A renamed column: ``<table>.<column>`` for one table, or ``<column>`` for every table that has it."""
     target_kinds: Mapping[str, str] = field(default_factory=dict)
     """Values of ``comments.target_kind`` and ``events.target_kind``."""
     event_prefixes: Mapping[str, str] = field(default_factory=dict)
@@ -53,7 +54,8 @@ class Renames:
 
     def row(self, table: str, row: Row) -> Row:
         """``row`` of ``table`` (its new name) in the new names."""
-        return {self.columns.get(c, c): self.value(table, self.columns.get(c, c), v) for c, v in row.items()}
+        named = {c: self.columns.get(f'{table}.{c}', self.columns.get(c, c)) for c in row}
+        return {named[c]: self.value(table, named[c], v) for c, v in row.items()}
 
     def value(self, table: str, column: str, value: object) -> object:
         if not isinstance(value, str):

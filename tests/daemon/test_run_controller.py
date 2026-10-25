@@ -1098,10 +1098,10 @@ def test_brief_carries_history_and_comments(
     assert 'Tried so far' not in brief
     assert '"$PILOOP_BIN" sql' in brief and "'implementer#2', 'finding'" in brief
     assert (
-        '- Your session ends 0.3 minutes after it starts, at `$PILOOP_DEADLINE` (Unix time). The daemon tells you to'
-        ' wrap up 0.1 minutes before, but a message reaches you only between two tool calls: start no command that'
+        '- Your session ends 2 minutes after it starts, at `$PILOOP_DEADLINE` (Unix time). The daemon tells you to'
+        ' wrap up 0.5 minutes before, but a message reaches you only between two tool calls: start no command that'
         ' can run past the deadline. Save each step that runs, and leave your finding before the end.\n' in brief
-    ), 'the role timeout of 20s'
+    ), 'the role timeout of 120s'
     assert "VALUES ('idea', 2, 'implementer#2', 'escalation', 1, '...')" in brief, (
         'a request is an escalation, never a note'
     )
@@ -1838,6 +1838,8 @@ def test_an_implementer_that_stops_on_its_open_escalation_is_blocked_and_its_ide
             + (f'{SQL_HINT} "{report}"\n' if reported else '')
             + 'echo line >> solve.txt\ngit commit -qam "a line"\n'
         ),
+        # the script runs two `piloop sql` processes before it commits: on a loaded host they outlast 20 s
+        implementer_timeout=600,
     )
     reload_campaign(db, campaign)
     execute(controller(db, runtime, tmp_path), db, run_id)
@@ -3284,6 +3286,6 @@ def test_a_run_that_starts_near_the_campaigns_stop_is_told_it_ends_with_the_stop
     launched = mocker.spy(Launcher, 'launch')
     execute(controller(db, runtime, tmp_path), db, run_id)
     assert '- Your session ends 0.1 minutes after it starts' in brief_of(db, run_id), (
-        'the role timeout of 20s, cut at the stop 7.2s away'
+        'the role timeout of 120s, cut at the stop 7.2s away'
     )
     assert launched.call_args.kwargs['timeout'] == pytest.approx(7.2, abs=1), 'from its launch to the stop'

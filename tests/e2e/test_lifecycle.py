@@ -19,6 +19,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from piloop.db.models import JUDGED
 from piloop.plugins.runtime.contract import TAG_ENV
 from piloop.plugins.runtime.kit.tags import tagged
 from tests.conftest import wait_until
@@ -26,6 +27,8 @@ from tests.e2e.campaign import OPEN, Smoke, needs
 from tests.e2e.conftest import MakeCampaign
 
 pytestmark = pytest.mark.e2e
+PENDING = f'verdict IS NULL AND origin IN ({", ".join(repr(str(o)) for o in sorted(JUDGED))})'
+"""The candidates that wait for their verdict, as SQL."""
 
 MAX_EVALUATIONS = 1
 """One evaluation slot, so that the evaluation queue has something to order."""
@@ -204,8 +207,10 @@ def test_commits_are_judged(live_campaign: Smoke) -> None:
     assert run is not None
 
     def verdicts() -> list[sqlite3.Row] | None:
-        rows = live_campaign.sql('SELECT id, verdict, verdict_reason FROM candidates WHERE run_id = ?', run['id'])
-        return rows if rows and all(r['verdict'] != 'pending' for r in rows) else None
+        rows = live_campaign.sql(
+            'SELECT id, origin, verdict, verdict_reason FROM candidates WHERE run_id = ?', run['id']
+        )  # a candidate that waits for its verdict has none yet
+        return rows if rows and not any(r['verdict'] is None and r['origin'] in JUDGED for r in rows) else None
 
     wait_until(verdicts, timeout=300)
     rows = verdicts()
@@ -245,7 +250,7 @@ def test_graceful_stop(live_campaign: Smoke) -> None:
         open_ = live_campaign.sql(
             "SELECT (SELECT count(*) FROM runs WHERE status IN ('queued', 'running') OR scoring)"
             " + (SELECT count(*) FROM agent_sessions WHERE state IN ('requested', 'starting', 'running'))"
-            " + (SELECT count(*) FROM candidates WHERE verdict = 'pending')"
+            f' + (SELECT count(*) FROM candidates WHERE {PENDING})'
             ' + (SELECT count(*) FROM evaluations) AS n'
         )
         return open_[0]['n'] == 0

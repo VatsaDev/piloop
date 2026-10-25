@@ -26,7 +26,7 @@ from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.plugins.verdict_rule.bootstrap import Bootstrap
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES
 from piloop.version import Version
-from tests.conftest import HARNESS_APPEND, role_of, write_toml
+from tests.conftest import AGENT_TIMEOUT, HARNESS_APPEND, role_of, write_toml
 
 TEST_BRIDGES: list[deprecated.Bridge] = []
 
@@ -87,7 +87,9 @@ def deprecated_config(campaign_path: Path, tables: str) -> Path:
     """Write the test campaign's piloop.toml with ``tables`` in place of its research table."""
     write_toml(campaign_path, HARNESS_APPEND)
     toml = campaign_path / 'piloop.toml'
-    text = toml.read_text().replace('[roles.research]\ntimeout = 20\nmax_ideas = 0\nmax_concurrent = 1\n', '')
+    text = toml.read_text().replace(
+        f'[roles.research]\ntimeout = {AGENT_TIMEOUT}\nmax_ideas = 0\nmax_concurrent = 1\n', ''
+    )
     toml.write_text(text + tables)
     return toml
 
