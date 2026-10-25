@@ -1,5 +1,7 @@
 """The API: who may call it on each listener, what it answers, how its long-poll waits, and its OpenAPI document."""
 
+import errno
+import os
 import threading
 import time
 from contextlib import closing
@@ -9,8 +11,10 @@ from typing import Annotated, get_args, get_origin, get_type_hints
 import httpx2 as httpx
 import pytest
 from fastapi.routing import APIRoute
+from pytest_mock import MockerFixture
 
 from piloop.actor import System
+from piloop.api import client as client_module
 from piloop.api.client import Client, NoDaemon, Refused
 from piloop.api.contract import Access, EventsQuery, InboxQuery, Params, Problem, Selection
 from piloop.api.views import Status
@@ -148,6 +152,20 @@ def test_a_route_that_crashes_is_an_answer_that_says_so(db: Database, cfg: Setti
             Client.on(cfg.socket_file) as client,
         ):
             client.status(Selection())
+
+
+@pytest.mark.parametrize(('code', 'answers'), [(errno.ENOTSOCK, False), (errno.EACCES, None)])
+def test_a_file_that_is_no_socket_is_no_daemon_as_macos_says_it(
+    tmp_path: Path, mocker: MockerFixture, code: int, answers: bool | None
+) -> None:
+    """macOS refuses to connect to a file that is no socket with ``ENOTSOCK``, where Linux refuses the connection.
+    Another error is raised."""
+    mocker.patch.object(client_module.sockets.socket, 'connect', side_effect=OSError(code, os.strerror(code)))
+    if answers is None:
+        with pytest.raises(PermissionError):
+            client_module.answers(tmp_path / 'piloop.sock')
+    else:
+        assert client_module.answers(tmp_path / 'piloop.sock') is answers
 
 
 def test_without_a_daemon_the_client_says_how_to_start_one(cfg: Settings) -> None:

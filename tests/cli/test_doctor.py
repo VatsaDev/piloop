@@ -204,6 +204,20 @@ def test_the_toml_of_a_stopped_campaign_that_does_not_load_is_a_warning(
     )
 
 
+def test_a_secret_that_a_stopped_campaign_lacks_is_a_warning(
+    cfg: Settings, db: Database, campaign: Campaign, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As its ``piloop.toml``: a stopped campaign runs no agent that needs the secret until ``piloop init`` resumes it."""
+    give_watchdog(db, campaign, {}, {'GATEWAY_KEY': {'secret': 'TEAM_KEY'}})
+    monkeypatch.delenv('TEAM_KEY', raising=False)
+    assert by_name(cfg)['secrets demo'].fails, 'an active campaign needs it now'
+    with db.session() as s:
+        s.get_one(Campaign, campaign.id).status = CampaignStatus.STOPPED
+        s.commit()
+    found = by_name(cfg)['secrets demo']
+    assert (found.found, found.severity, found.fails) == ('not set: TEAM_KEY', Severity.WARN, False)
+
+
 def test_a_missing_harness_is_named(cfg: Settings, db: Database, campaign: Campaign) -> None:
     with db.session() as s:
         row = s.get_one(Campaign, campaign.id)

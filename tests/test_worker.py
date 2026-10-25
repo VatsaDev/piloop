@@ -84,7 +84,7 @@ from piloop.plugins.executor.workers import Workers
 from piloop.plugins.executor.workers.worker import WORKER_ANOMALY, Unsent, Worker
 from piloop.plugins.runtime.contract import QUEUE, ExitStatus, Handle, put, take
 from piloop.plugins.vcs.git import commands as git
-from piloop.settings import INPUTS_DIR
+from piloop.settings import INPUTS_DIR, Settings
 from piloop.store import tree as tree_module
 from tests.conftest import (
     Gate,
@@ -282,7 +282,9 @@ def test_a_worker_with_a_relay_relays_each_agent_while_its_job_runs(
     use(db, campaign, HOLD.format(hold=hold))
     ex = RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers())
     worker = workers_of(ex).worker
-    relay = worker.relay = Relay(tmp_path / 'relay-home', lambda lease, call: Relayed(exit_code=0))
+    relay = worker.relay = Relay(
+        Settings(home=tmp_path / 'relay-home').relay_file, lambda lease, call: Relayed(exit_code=0)
+    )
     ex.executor.adopt([])
     agent_session_id = request_agent(db, campaign)
 
@@ -295,7 +297,9 @@ def test_a_worker_with_a_relay_relays_each_agent_while_its_job_runs(
     ex.hand_over()  # as a worker that restarts: the next one finds the agent on its lease, and relays for it again
     launching.join(30)
     ex = RunController(db, Tracer(None), tmp_path, factory(runtime), executor=Workers())
-    relay = workers_of(ex).worker.relay = Relay(tmp_path / 'relay-home', lambda lease, call: Relayed(exit_code=0))
+    relay = workers_of(ex).worker.relay = Relay(
+        Settings(home=tmp_path / 'relay-home').relay_file, lambda lease, call: Relayed(exit_code=0)
+    )
     workers_of(ex).leases.renew_all()
     ex.executor.adopt([])
     wait_until(lambda: relayed(agent_session_id))

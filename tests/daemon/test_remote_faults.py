@@ -42,12 +42,12 @@ from piloop.net import tokens
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentKey, Prompt
 from piloop.plugins.executor.kit.capacity import Pool
-from piloop.plugins.executor.kit.door import SOCKET, AgentCall, Call
+from piloop.plugins.executor.kit.door import AgentCall, Call
 from piloop.plugins.executor.kit.leases import StaleLease, StaleReport, read_job
 from piloop.plugins.executor.kit.remote import Remote
 from piloop.plugins.executor.workers import Workers
 from piloop.proc import alive
-from piloop.settings import STORE_DIR
+from piloop.settings import STORE_DIR, Settings
 from tests.agents.test_launcher import MINTED_HARNESS, use_harness
 from tests.conftest import Dial, ScriptRuntime, baseline, factory, home_cas, wait_until, workers_of, write_toml
 from tests.daemon.test_evaluation_queue import held_evaluate
@@ -445,7 +445,7 @@ def test_a_prompt_reaches_a_remote_implementer_within_a_round_trip_and_its_relay
     assert not running.is_alive()
     workspace = tmp_path / 'projects' / str(campaign.id) / 'workspace'
     assert (workspace / 'prompt.txt').read_text() == 'try lzma', 'its next turn took the prompt'
-    with httpx.Client(transport=httpx.HTTPTransport(uds=str(net.home / SOCKET))) as relay:
+    with httpx.Client(transport=httpx.HTTPTransport(uds=str(Settings(home=net.home).relay_file))) as relay:
         refused = relay.post(
             'http://worker/v1/cli', content=AgentCall(agent=AgentSessionId(1), argv=[]).model_dump_json()
         )

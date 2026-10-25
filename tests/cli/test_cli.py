@@ -1259,7 +1259,9 @@ def test_serve_builds_a_daemon(mocker: MockerFixture) -> None:
 
 
 def test_serve_detach_status_stop(out, monkeypatch: pytest.MonkeyPatch) -> None:
-    with pytest.raises(SystemExit, match=rf'^no daemon serves {re.escape(str(common.settings.home))}: start it with'):
+    with pytest.raises(
+        SystemExit, match=rf'^no daemon listens on {re.escape(str(common.settings.socket_file))}: start it with'
+    ):
         run_cli(['status'])
     run_cli(['serve', '--detach'])
     text = out().strip()
@@ -1346,7 +1348,7 @@ def test_stop_and_status_do_not_mistake_a_reused_pid_for_the_daemon(out) -> None
     common.settings.pid_file.parent.mkdir(parents=True, exist_ok=True)
     common.settings.pid_file.write_text(str(sleeper.pid))
     try:
-        with pytest.raises(SystemExit, match='^no daemon serves'):
+        with pytest.raises(SystemExit, match='^no daemon listens on'):
             run_cli(['status'])
         with pytest.raises(SystemExit, match='no daemon is running'):
             run_cli(['stop'])

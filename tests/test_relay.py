@@ -24,7 +24,7 @@ from piloop.db.session import Database
 from piloop.ids import AgentSessionId
 from piloop.plugins.executor.kit import door as door_module, relay as relay_module
 from piloop.plugins.executor.kit.client import Dismissed
-from piloop.plugins.executor.kit.door import SOCKET, AgentCall, Call, Relayed, main
+from piloop.plugins.executor.kit.door import AgentCall, Call, Relayed, main
 from piloop.plugins.executor.kit.leases import StaleLease
 from piloop.plugins.executor.kit.relay import RELAYED, Relay, Runner
 from piloop.plugins.runtime.contract import MESSAGES_ENV, QUEUE, put
@@ -123,7 +123,7 @@ def call(agent: int = AGENT, argv: list[str] | None = None) -> str:
 
 def test_the_relay_takes_an_agents_calls_on_its_lease_while_its_job_runs_on_this_worker(tmp_path: Path) -> None:
     server = Server()
-    relay = Relay(tmp_path, server)
+    relay = Relay(Settings(home=tmp_path).relay_file, server)
     relay.start()
     assert relay.path.parent.stat().st_mode & 0o077 == 0, "only the worker's user reaches its socket"
     assert post(relay, call()).status_code == 404, 'no job of this agent runs here'
@@ -153,20 +153,20 @@ def test_the_relay_takes_an_agents_calls_on_its_lease_while_its_job_runs_on_this
     assert post(relay, call()).status_code == 404, 'its job ended'
     relay.stop()
     assert not relay.path.exists()
-    restarted = Relay(tmp_path, server)
-    (tmp_path / SOCKET).touch()  # what a worker that was killed leaves
+    restarted = Relay(Settings(home=tmp_path).relay_file, server)
+    restarted.path.touch()  # what a worker that was killed leaves
     restarted.start()
     restarted.open({AGENT: 4})
     assert post(restarted, call()).status_code == 200, 'a re-attached agent relays again, on the same path'
     restarted.stop()
-    Relay(tmp_path, server).stop()
+    Relay(Settings(home=tmp_path).relay_file, server).stop()
 
 
 def test_the_piloop_of_an_agent_elsewhere_prints_what_the_call_printed_and_exits_with_its_code(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], mocker: MockerFixture
 ) -> None:
     server = Server()
-    relay = Relay(tmp_path, server)
+    relay = Relay(Settings(home=tmp_path).relay_file, server)
     relay.start()
     agent = Agent(role='implementer', session=AGENT)
     monkeypatch.setattr(door_module, 'settings', Settings(home=tmp_path, actor=agent))
@@ -184,7 +184,7 @@ def test_the_piloop_of_an_agent_elsewhere_prints_what_the_call_printed_and_exits
     with pytest.raises(SystemExit, match='no worker relays on .*, and the call did not run'):
         main()
     with socket.socket(socket.AF_UNIX) as hung:  # a worker that dies while it reads the call
-        hung.bind(str(tmp_path / SOCKET))
+        hung.bind(str(relay.path))
         hung.listen()
         threading.Thread(target=lambda: hung.accept()[0].close(), daemon=True).start()
         with pytest.raises(SystemExit, match='the relay of this worker did not answer, and the call did not run'):

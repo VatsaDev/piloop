@@ -1,16 +1,22 @@
 """The daemon's server: it starts on the home's Unix socket and the network's listener, and its shutdown closes them."""
 
+import os
+import re
 import socket
+import tempfile
+from collections.abc import Iterator
 from pathlib import Path
 
 import httpx2 as httpx
 import pytest
 from pydantic import ValidationError
 
+from piloop import settings as settings_module
 from piloop.api.client import Client
 from piloop.api.contract import Selection
 from piloop.cli import common
 from piloop.daemon.main import Daemon
+from piloop.net.server import local_listener
 from piloop.plugins.network.contract import Address
 from piloop.settings import Settings
 from tests.cli.test_cli import run_cli
@@ -91,11 +97,57 @@ def test_a_tls_file_that_does_not_exist_is_a_validation_error_at_its_key(tmp_pat
         _ = Settings(home=tmp_path).providers
 
 
-def test_a_socket_path_too_long_for_the_system_stops_the_start_with_the_reason(tmp_path: Path) -> None:
-    daemon = Daemon(Settings(home=tmp_path / ('h' * 120)))
+@pytest.fixture
+def short_sockets(monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """macOS's limit of 104 bytes for a socket's path, on any system, and a directory of short paths of this test."""
+    monkeypatch.setattr(settings_module, 'SUN_PATH', 104)
+    with tempfile.TemporaryDirectory(dir='/tmp') as short:
+        monkeypatch.setattr(settings_module, 'SHORT_SOCKETS', Path(short))
+        yield Path(short)
+
+
+def test_a_home_whose_socket_does_not_fit_serves_on_a_short_path_that_its_clients_find(
+    tmp_path: Path, short_sockets: Path
+) -> None:
+    """A home deep in a temporary directory, as pytest's are on macOS: ``<home>/piloop.sock`` needs 104 bytes or more."""
+    home = tmp_path / ('h' * max(1, 105 - len(f'{tmp_path}//piloop.sock')))
+    cfg = Settings(home=home)
+    assert len(str(home / 'piloop.sock')) >= 104, 'too long for macOS; on Linux, short enough for its own 108'
+    assert cfg.socket_file.parent == short_sockets / f'piloop-{os.getuid()}'
+    assert len(str(cfg.socket_file)) < 104 and Settings(home=home).socket_file == cfg.socket_file, 'one path per home'
+    assert Settings(home=tmp_path / 'other' / home.name).socket_file != cfg.socket_file
+    daemon = Daemon(cfg)
+    with daemon.tracer.span('test') as span:
+        daemon._listen(span)
+    assert cfg.socket_file.parent.stat().st_mode & 0o777 == 0o700, 'only the user of the home reaches it'
+    with Client.on(cfg.socket_file) as client:
+        assert client.status(Selection()).campaigns == [], 'a client finds the daemon from the home alone'
+    daemon.shutdown(timeout=5)
+    assert not cfg.socket_file.exists()
+
+
+def test_a_socket_path_that_the_system_refuses_stops_the_start_with_the_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings_module, 'SUN_PATH', 1000)  # no short path: the system's own limit refuses it
+    cfg = Settings(home=tmp_path / ('h' * 120))
+    daemon = Daemon(cfg)
     with (
         daemon.tracer.span('test') as span,
-        pytest.raises(SystemExit, match='the daemon does not listen on .*piloop.sock: '),
+        pytest.raises(SystemExit, match=f'the daemon does not listen on {re.escape(str(cfg.socket_file))}: '),
     ):
         daemon._listen(span)
     daemon.shutdown(timeout=5)
+
+
+def test_a_short_socket_directory_that_others_reach_is_refused(tmp_path: Path, short_sockets: Path) -> None:
+    cfg = Settings(home=tmp_path / ('h' * 120))
+    cfg.socket_file.parent.mkdir(mode=0o755)
+    cfg.socket_file.parent.chmod(0o755)
+    with pytest.raises(PermissionError, match='is not a directory that only this user reaches'):
+        local_listener(cfg.socket_file)
+    cfg.socket_file.parent.rmdir()
+    (tmp_path / 'elsewhere').mkdir(mode=0o700)
+    cfg.socket_file.parent.symlink_to(tmp_path / 'elsewhere')
+    with pytest.raises(PermissionError, match='is not a directory that only this user reaches'):
+        local_listener(cfg.socket_file)

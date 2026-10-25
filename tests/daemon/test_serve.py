@@ -164,7 +164,7 @@ def test_detach_survives_the_cli_and_stop_ends_it(tmp_path: Path) -> None:
     assert 'piloop.start' in log and 'piloop.shutdown' in log
     nothing = piloop(cfg.home, 'stop')
     assert (nothing.returncode, nothing.stderr.strip()) == (1, 'no daemon is running')
-    assert piloop(cfg.home, 'status').stderr.startswith(f'no daemon serves {cfg.home}: start it with')
+    assert piloop(cfg.home, 'status').stderr.startswith(f'no daemon listens on {cfg.socket_file}: start it with')
 
 
 def test_a_daemon_backs_up_a_database_behind_it_before_it_migrates_and_logs_where(tmp_path: Path) -> None:

@@ -4,6 +4,7 @@ The models are the ones that the routes use (``piloop.api.contract``, ``piloop.a
 second set. ``tests/net/test_api.py`` checks each method's method, path and models against the server's routes.
 """
 
+import errno
 import socket as sockets
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -49,7 +50,7 @@ class Client:
         """
         if not answers(socket):
             raise NoDaemon(
-                f'no daemon serves {socket.parent}: start it with `piloop serve --detach`, or set PILOOP_HOME;'
+                f'no daemon listens on {socket}: start it with `piloop serve --detach`, or set PILOOP_HOME;'
                 ' a daemon of an older piloop serves no socket: `piloop restart`'
             )
         with httpx.Client(transport=httpx.HTTPTransport(uds=str(socket)), base_url='http://piloop') as http:
@@ -121,5 +122,9 @@ def answers(socket: Path) -> bool:
         try:
             probe.connect(str(socket))
         except FileNotFoundError, ConnectionRefusedError:
+            return False
+        except OSError as e:
+            if e.errno != errno.ENOTSOCK:  # macOS, for a file that is no socket; Linux refuses the connection
+                raise
             return False
     return True

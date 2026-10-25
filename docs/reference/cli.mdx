@@ -83,8 +83,10 @@ daemon: pid 1754168, up 0:00:05, listening on http://127.0.0.1:35601
 #### The API
 
 The daemon serves an HTTP API, `/v1`, on the Unix socket `$PILOOP_HOME/piloop.sock`, which only your user can open.
-A call there needs no token. `GET /v1/openapi.json` describes every route. With `--listen`, other machines call the
-same routes with a token of `piloop token` whose access reads (`read`, `act` or `admin`).
+When that path is too long for a socket (104 bytes on macOS, 108 on Linux), the socket is
+`/tmp/piloop-<uid>/<hash>.sock`, a hash of the home. A call there needs no token. `GET /v1/openapi.json` describes
+every route. With `--listen`, other machines call the same routes with a token of `piloop token` whose access reads
+(`read`, `act` or `admin`).
 
 ```bash
 curl --unix-socket ~/.piloop/piloop.sock 'http://piloop/v1/status?campaign=enwik8'

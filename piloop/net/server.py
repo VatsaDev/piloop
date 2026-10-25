@@ -26,6 +26,7 @@ from piloop.api.contract import GRANTS, Access
 from piloop.net import Changed, InvalidBody, Refusal, Route
 from piloop.net.tokens import PREFIX, Caller, Tokens
 from piloop.plugins.network.contract import Address, Listener, Network, Peer, Refused
+from piloop.settings import socket_dir
 
 GRACE_SECONDS = 5
 """How long ``Server.close`` lets the requests in flight finish."""
@@ -249,8 +250,10 @@ class _Protocol(H11Protocol):
 def local_listener(path: Path) -> Listener:
     """Listen on the Unix socket ``path``, which only this user may open, in place of one that an earlier daemon left.
 
-    The caller holds the daemon's lock, so a socket that is there is stale. Its directory is the home, of mode 0700.
+    The caller holds the daemon's lock, so a socket that is there is stale. Its directory is the home, of mode 0700, or
+    a short one that only this user reaches (``socket_dir``).
     """
+    socket_dir(path)
     path.unlink(missing_ok=True)
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:

@@ -15,8 +15,6 @@ from piloop.ids import AgentSessionId
 from piloop.proc import PILOOP_ARGV
 from piloop.settings import settings
 
-SOCKET = 'relay/piloop.sock'
-"""``<home>/relay/piloop.sock``: the worker's relay, in a directory that only the worker's user reaches."""
 RELAY_SECONDS = 120.0
 """The longest that a relayed call runs on the server before it is stopped."""
 
@@ -59,7 +57,7 @@ def main() -> None:
             agent = session
         case actor:
             raise SystemExit(f'piloop: this piloop relays the calls of an agent, and {actor} is none')
-    socket = settings.home / SOCKET
+    socket = settings.relay_file
     if not socket.exists():
         raise SystemExit(f'piloop: no worker relays on {socket}, and the call did not run')
     stdin = sys.stdin.read() if '-' in argv and not sys.stdin.isatty() else None

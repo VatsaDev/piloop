@@ -36,9 +36,10 @@ from piloop.ids import AgentSessionId
 from piloop.plugins.executor.contract import AgentJob, RepoId
 from piloop.plugins.executor.kit import door as agent_end
 from piloop.plugins.executor.kit.client import Dismissed
-from piloop.plugins.executor.kit.door import RELAY_SECONDS, SOCKET, AgentCall, Call, Relayed
+from piloop.plugins.executor.kit.door import RELAY_SECONDS, AgentCall, Call, Relayed
 from piloop.plugins.executor.kit.leases import StaleLease
 from piloop.proc import ACTOR_ENV, PILOOP_ARGV, child_env
+from piloop.settings import socket_dir
 
 RELAYED: frozenset[tuple[str, ...]] = frozenset(
     {
@@ -119,8 +120,9 @@ class Relay:
     and the worker imports no web framework for it.
     """
 
-    def __init__(self, home: Path, send: Send) -> None:
-        self.path = home / SOCKET
+    def __init__(self, path: Path, send: Send) -> None:
+        self.path = path
+        """The socket: ``Settings.relay_file``."""
         self._send = send
         self._lock = threading.Lock()
         self._leases: dict[AgentSessionId, int] = {}
@@ -129,8 +131,7 @@ class Relay:
 
     def start(self) -> None:
         """Serve on the socket, in place of one that an earlier process of this worker left."""
-        self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        self.path.parent.chmod(0o700)
+        socket_dir(self.path)
         self.path.unlink(missing_ok=True)
         self._server = ThreadingUnixStreamServer(str(self.path), _handler(self))
         threading.Thread(target=self._server.serve_forever, name='relay', daemon=True).start()

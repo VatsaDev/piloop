@@ -317,7 +317,9 @@ def reflink(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def clone(fd: int, request: int, src: int) -> None:
         assert request == tree_module.FICLONE
-        os.sendfile(fd, src, 0, os.fstat(src).st_size)
+        data = memoryview(os.pread(src, os.fstat(src).st_size, 0))  # not sendfile: macOS sends to a socket only
+        while data:
+            data = data[os.write(fd, data) :]
 
     monkeypatch.setattr(tree_module.fcntl, 'ioctl', clone)
 

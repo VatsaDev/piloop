@@ -49,7 +49,16 @@ def run(
         cas = CAS.selected(settings.providers).open(settings.home)
         reserve = settings.storage.reserve
         worker = remote_worker(
-            http, stopping, tracer(), settings.home, cas, pool, reserve, once=once, orphan_exit=orphan_exit
+            http,
+            stopping,
+            tracer(),
+            settings.home,
+            cas,
+            pool,
+            reserve,
+            settings.relay_file,
+            once=once,
+            orphan_exit=orphan_exit,
         )
 
         def stop(signum: int, frame: FrameType | None) -> None:

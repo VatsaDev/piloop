@@ -196,6 +196,7 @@ def remote_worker(
     cas: Cas,
     pool: str,
     reserve: int,
+    relay: Path,
     *,
     once: bool = False,
     orphan_exit: float | None = None,
@@ -204,13 +205,12 @@ def remote_worker(
 
     It reads and writes ``cas``, the CAS that the server shares, and keeps clones of its own. After each job it keeps
     ``reserve`` bytes free on its home's disk (``Site.evict_inputs``). Its calls give up trying
-    again once ``stop`` is set. Its agents' ``piloop`` calls go to the server through it (``relay``). With ``once``, it
+    again once ``stop`` is set. Its agents' ``piloop`` calls go to the server through the socket ``relay``. With ``once``, it
     takes one lease and ends once it reported. With ``orphan_exit``, it ends after that many seconds without an answer of the server.
     """
     client = Remote(http, stop, tracer)
     site = jobs.remote_site(home, cas, client.send, reserve)
-    relay = Relay(home, client.cli)
-    return Worker(client, tracer, site, pool=pool, relay=relay, once=once, orphan_exit=orphan_exit)
+    return Worker(client, tracer, site, pool=pool, relay=Relay(relay, client.cli), once=once, orphan_exit=orphan_exit)
 
 
 @dataclass(frozen=True)

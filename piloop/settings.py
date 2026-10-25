@@ -6,9 +6,12 @@ wins over the file, and a nested key is ``PILOOP_<TABLE>__<KEY>`` (``PILOOP_STOR
 in (``expand_env``).
 """
 
+import hashlib
 import os
 import pwd
 import re
+import stat
+import sys
 import tomllib
 from functools import cached_property
 from pathlib import Path
@@ -58,6 +61,47 @@ class StorageSettings(BaseModel):
     def reserve(self) -> int:
         """``min_free_gb`` in bytes."""
         return int(self.min_free_gb * GB)
+
+
+SUN_PATH = 104 if sys.platform == 'darwin' else 108
+"""The bytes of a Unix socket's path, its NUL included (``sockaddr_un.sun_path``): 104 on macOS, 108 on Linux."""
+SHORT_SOCKETS = Path('/tmp')
+"""Where a socket goes whose path in its home is too long: ``/tmp/piloop-<uid>/``, as tmux keeps ``/tmp/tmux-<uid>/``."""
+RELAY_SOCKET = 'relay/piloop.sock'
+"""``<home>/relay/piloop.sock``: a worker's relay, in a directory that only the worker's user reaches."""
+
+
+def socket_at(path: Path) -> Path:
+    """``path``, or when it does not fit in a Unix socket address, a short path that only it maps to.
+
+    The short one is ``SHORT_SOCKETS/piloop-<uid>/<hash of path>.sock``, so the server and its clients find it from the
+    home alone, whatever their environment. ``socket_dir`` makes its directory.
+    """
+    if len(os.fsencode(path)) < SUN_PATH:
+        return path
+    digest = hashlib.blake2b(os.fsencode(path), digest_size=10).hexdigest()
+    return SHORT_SOCKETS / f'piloop-{os.getuid()}' / f'{digest}.sock'
+
+
+def socket_dir(path: Path) -> None:
+    """Make the directory of the socket ``path`` (``socket_at``), and check a short one.
+
+    ``SHORT_SOCKETS`` is shared with other users, so a short socket's directory must be this user's, reached by it only.
+
+    Raises:
+        PermissionError: The short directory is a link, another user's, or open to others: someone else could take
+            the socket's place.
+    """
+    directory = path.parent
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if directory.parent != SHORT_SOCKETS:
+        return
+    found = directory.lstat()
+    if not stat.S_ISDIR(found.st_mode) or found.st_uid != os.getuid() or found.st_mode & 0o077:
+        raise PermissionError(
+            f'{directory} is not a directory that only this user reaches (mode {stat.filemode(found.st_mode)}, owner'
+            f' {found.st_uid}): remove it, and piloop makes it again'
+        )
 
 
 class Settings(BaseSettings):
@@ -184,8 +228,16 @@ class Settings(BaseSettings):
 
     @property
     def socket_file(self) -> Path:
-        """The Unix socket that the running daemon serves the API on, to this user only. Every client command calls it."""
-        return self.home / 'piloop.sock'
+        """The Unix socket that the running daemon serves the API on, to this user only. Every client command calls it.
+
+        ``<home>/piloop.sock``, or a short path for it when that is too long for a socket (``socket_at``).
+        """
+        return socket_at(self.home / 'piloop.sock')
+
+    @property
+    def relay_file(self) -> Path:
+        """The Unix socket of this home's worker relay, which its agents' ``piloop`` calls go through (``socket_at``)."""
+        return socket_at(self.home / RELAY_SOCKET)
 
     @property
     def code_file(self) -> Path:

@@ -52,6 +52,11 @@ class StoredCampaign:
     config: CampaignConfig | ValidationError
     """The stored copy (``campaigns.config``), or why it does not validate."""
 
+    @property
+    def severity(self) -> Severity:
+        """What a problem of the campaign's own means: a warning while it is stopped, as it runs nothing until then."""
+        return Severity.WARN if self.status is CampaignStatus.STOPPED else Severity.FAIL
+
 
 def checks(cfg: Settings) -> list[Check]:
     """Run every check, in the best order to debug a broken upgrade: daemon, database, plugins, configs, skills, tools.
@@ -159,13 +164,13 @@ def _database(path: Path, daemon: int | None, actor: Actor) -> Check:
 def _campaign(campaign: StoredCampaign) -> Check:
     """Check that the repo's ``piloop.toml`` loads, and that the stored copy (``campaigns.config``) validates.
 
-    The daemon schedules from the stored copy, and reads the repo's file only at ``piloop init``. So a stopped
-    campaign's file that does not load is a warning: it matters once ``piloop init`` resumes the campaign.
+    The daemon schedules from the stored copy, and reads the repo's file only at ``piloop init``: a stopped campaign's
+    file that does not load is a warning (``StoredCampaign.severity``).
     """
     path, stored = campaign.path, campaign.config
     what = f'campaign {campaign.name}'
     reread = f'fix {path}/piloop.toml, then `piloop init {path}` re-reads it'
-    severity = Severity.WARN if campaign.status is CampaignStatus.STOPPED else Severity.FAIL
+    severity = campaign.severity
     try:
         check_takes(Path(path), load_campaign_config(Path(path)))
     except FileNotFoundError:
@@ -246,14 +251,15 @@ def _needed(config: CampaignConfig) -> list[str]:
 def _secrets_of(campaign: StoredCampaign, needed: list[str], held: list[SecretKey], env: tuple[str, set[str]]) -> Check:
     """Check that the secrets that the campaign's agents need are set, by name, never by value.
 
-    A secret that only the environment of the daemon has works until 0.5.0.
+    A missing one of a stopped campaign is a warning (``StoredCampaign.severity``). A secret that only the environment
+    of the daemon has works until 0.5.0.
     """
     what = f'secrets {campaign.name}'
     have = {k.name for k in held if k.owner in (None, campaign.id)}
     whose, environ = env
     missing = [n for n in needed if n not in have and n not in environ]
     if missing:
-        return Check(what, f'not set: {", ".join(missing)}', '`piloop secret set <NAME>` for each')
+        return Check(what, f'not set: {", ".join(missing)}', '`piloop secret set <NAME>` for each', campaign.severity)
     if from_env := [n for n in needed if n not in have]:
         return Check(
             what,
