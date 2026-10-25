@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "piloop"
-version = "0.2.0"
+version = "0.3.0"
 description = "Autoresearch for any repo: coding agents try ideas, piloop scores every commit and keeps what wins"
 readme = "README.md"
 requires-python = ">=3.14"

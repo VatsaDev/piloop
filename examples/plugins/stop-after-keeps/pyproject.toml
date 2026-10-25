@@ -1,7 +1,7 @@
 [project]
 name = "piloop-stop-after-keeps"
 version = "0.1.0"
-description = "A piloop stop rule that ends a campaign after a number of keeps, or at the first limit of [stop]"
+description = "A piloop stop rule that ends a campaign after a number of keeps, or at the first limit of the built-in rule"
 requires-python = ">=3.14"
 dependencies = ["piloop"]
 

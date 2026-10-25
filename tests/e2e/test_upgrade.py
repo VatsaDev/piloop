@@ -71,12 +71,19 @@ CONFIG_REWRITES = (
     'confidence',
     'plugins.stop_rule.*',
     'plugins.verdict_rule.*',
+    'memory.wake_budget',
+    'roles.*.wake_budget',
+    'roles.*.sections',
+    'status.*',
 )
 """The keys of the stored ``piloop.toml`` that a migration may change, as patterns: it deletes the harness keys that
 only herdr read (revision 0034), ``workdir`` (0035) and ``entire_agent`` (0036), renames a trigger's ``kind`` to
-``provider`` (0038), and moves ``[stop]``, ``[spend] limit`` and ``confidence`` into the rules' tables (0039)."""
+``provider`` (0038), moves ``[stop]``, ``[spend] limit`` and ``confidence`` into the rules' tables (0039), and turns
+``wake_budget`` into the lessons entry of a role's ``sections`` and lists the overview's in ``[status]`` (0053)."""
 DROPPED = {'agent_sessions.checkpoint_id', 'documents.commit_sha'}
 """The columns that this checkout dropped, as the upgrading guide lists them."""
+CURRENT_EVALUATOR = 'current evaluator'
+"""The mark of a campaign's current evaluator in ``opened``: revision 0052 gives it a key without the watch metrics."""
 QUEUE = re.compile(r'evaluations#\d+: |home/runs/\d+/eval-\d+/')
 """The evaluation queue, rows and worktrees: a daemon's start empties it, and what still needs a measurement asks
 again (``Scheduler.reap``)."""
@@ -606,7 +613,7 @@ def idea_status(smoke: Smoke, key: str) -> str:
 
 def opened(inventory: Inventory) -> set[tuple[str, object]]:
     """``(table, rowid)`` of the rows that the campaign still changes: open runs, live agents, scheduled ideas, pending
-    candidates, and the campaign row."""
+    candidates, and the campaign row; and ``(CURRENT_EVALUATOR, rowid)`` of each campaign's current evaluator."""
     rows = {('campaigns', r['__rowid']) for r in inventory.tables['campaigns']}
     for table, column, values in (
         ('runs', 'status', OPEN),
@@ -615,13 +622,14 @@ def opened(inventory: Inventory) -> set[tuple[str, object]]:
         ('candidates', 'verdict', {'pending'}),
     ):
         rows |= {(table, r['__rowid']) for r in inventory.tables[table] if r[column] in values}
-    return rows
+    evaluators = {r['id']: r['__rowid'] for r in inventory.tables['evaluators']}
+    return rows | {(CURRENT_EVALUATOR, evaluators[r['evaluator_id']]) for r in inventory.tables['campaigns']}
 
 
 def allowed(change: Changed, open_rows: set[tuple[str, object]]) -> bool:
     """A change of a row the campaign still changes; for the campaign row, only its time, signer and the documented
     rewrite of its stored config; for an event, the documented rewrite to its model; for an archive, its manifest's
-    address as a CID."""
+    address as a CID; for a campaign's current evaluator, its key and definition, which revision 0052 recomputes."""
     match change.table, change.column:
         case 'campaigns', 'config':
             return all(
@@ -633,6 +641,8 @@ def allowed(change: Changed, open_rows: set[tuple[str, object]]) -> bool:
             return typed(change)
         case 'archives', 'manifest':
             return is_cid(str(change.after))
+        case 'evaluators', 'key' | 'definition':
+            return (CURRENT_EVALUATOR, change.rowid) in open_rows
         case table, _:
             return (table, change.rowid) in open_rows
 

@@ -5,6 +5,111 @@ All notable changes to piloop are in this file. The format follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html). Before 1.0, a minor release may contain breaking changes.
 A deprecated configuration key shows a warning for at least one minor release before it is removed.
 
+## [0.3.0](https://github.com/hiloopai/piloop/compare/v0.2.1...v0.3.0) - 2026-10-25
+
+This release has breaking changes, marked **Breaking** below. Read
+[Upgrading](https://piloop.autoresearch.inc/guides/upgrading) before you upgrade: upgrade to 0.2.1 first, and move
+every active campaign off the herdr runtime with piloop 0.2, or the upgrade refuses.
+
+The upgrade migrates the database from 0.2.0 or newer only. A 0.1.0 database upgrades through 0.2 first.
+
+piloop 0.3.0 pins `covalence==0.1.0.dev6`, a pre-release of the library that computes the blob addresses. It has no
+prebuilt wheel for Intel macOS, where the install builds it from source with a Rust toolchain.
+
+### Added
+
+- Remote workers. `piloop serve --listen` serves leases over HTTPS, with bearer tokens (`piloop token create`), and
+  `piloop worker --server` takes them on another machine. `piloop cas serve` shares the home's CAS with it, and
+  implementers run there, with the workspace through the CAS. A proxy network trusts what an authenticating proxy
+  stamps.
+- A pool's provisioner starts its workers on demand; `modal` is the first.
+- The executor capability: dispatch is a provider, and `workers` is the built-in one. Pools bound the agents and the
+  evaluations of each worker, `piloop worker list` shows why one got no lease, and `piloop limits` changes a live key.
+- The CAS capability: `[plugins.cas]` in `config.toml` selects `disk`, `cached`, `s3` or `gcs`.
+- The vcs capability: `[plugins.vcs]` selects how a campaign saves versions; `git` is the default and only provider.
+- Secrets for agents: `piloop secret`, and secret references in `[harness.<name>] env`.
+- The daemon serves an HTTP API on its Unix socket. `piloop status`, `inbox` and `events` are its clients.
+- `piloop prompt` leaves a note that the daemon delivers through the executor.
+- A remeasure, and a metric with repeats, judge on pairs of the candidate and its bar.
+- An `agent_session.identified` event once an agent's harness session is known.
+- Each role sets its reasoning effort. Research defaults to Opus 5.5 and GPT-6.1-Sol.
+- `piloop.capabilities` is the one module that a plugin imports, and every role is a provider: a plugin role ships its
+  prompt.
+- `piloop status`, the API's overview and the briefs are made of sections, which `[status] sections` and
+  `[roles.<name>] sections` list, and which a plugin can add. The watchdog's brief has the lessons too.
+
+### Changed
+
+- **Breaking:** The herdr runtime is removed. Agents run on `subprocess`, and the upgrade refuses an active campaign
+  or a live agent on herdr.
+- **Breaking:** `[roles.<name>] workdir` is removed: every agent works in a worktree of its own.
+- **Breaking:** `./workspace/` is a read-only copy of the shared workspace as of the agent's start; its writes and
+  removals land when it ends, and the evaluate command gets none. Linked inputs are read-only too.
+- **Breaking:** Entire is removed: `entire_agent`, `entire_attach_timeout_seconds`, `agent_sessions.checkpoint_id` and
+  the kept lineage's `checkpoint`. piloop finds each session by its session id.
+- **Breaking:** `runs.end` says how a run ended. Compare it, not `runs.error`.
+- **Breaking:** A candidate's verdict is only a judgement. `pending`, `reference`, `unmeasured` and `recovered` are
+  `origin` and `cause` now, and the CLI says `skipped` for `unmeasured`.
+- **Breaking:** `candidates.commit_sha` is `candidates.revision`, and `documents.commit_sha` is gone.
+- **Breaking:** A run's brief is in the CAS: `runs.brief` is `runs.brief_cid`, and the brief is in
+  `<runs.log_dir>/brief.md`.
+- **Breaking:** Event payloads are typed and hold their `kind`. The upgrade rewrites the old events, and `piloop sql`
+  refuses an `INSERT INTO events`. `comment.delivered` means the agent read the prompt; what it meant before is
+  `comment.queued`.
+- **Breaking:** Blob addresses are CIDs, and archive manifests are DASL values. The upgrade stores each manifest again.
+- **Breaking:** `piloop status`, `inbox` and `events` need a running daemon.
+- **Breaking:** A `[harness.<built-in>]` table merges over the built-in's keys. A full override takes a name of its own.
+- **Breaking:** Every plugin contract changed: a provider is its own parameters, and its class subclasses its
+  capability's contract. Runtimes, triggers, stop rules, verdict rules, roles and executors change shape.
+- **Breaking:** A watch metric is not part of an evaluator's identity. Adding, removing or changing one measures
+  nothing again, and making one a guardrail or a primary, or the reverse, makes a new evaluator. The upgrade gives
+  each campaign's current evaluator its new key.
+- The daemon wakes on the event feed and on the times its rules name, not on a 2-second tick.
+- A database upgrades one minor release at a time.
+
+### Deprecated
+
+These still load, with a warning, until 0.4.0:
+
+- `[stop]`, `[spend] limit` and `confidence`: write them in `[plugins.stop_rule]` (`max_spend`) and
+  `[plugins.verdict_rule]`. `PILOOP_CAMPAIGN_SPEND__LIMIT` is not bridged.
+- `kind` in a trigger entry: write `provider`.
+- `[storage.backend]` in `config.toml`: write `[plugins.cas] provider = "cached"`.
+- `max_evaluations` and `PILOOP_MAX_EVALUATIONS`: write `evaluations` in `[plugins.executor.pools.serve]`.
+- `tick_seconds` in `config.toml`: delete it.
+
+Until 0.5.0:
+
+- `PILOOP_SECRETS_COMMAND`: keep the secrets with `piloop secret set`.
+- `[memory] wake_budget` and `[roles.<name>] wake_budget`: write the `budget` of the `lessons` entry of the role's
+  `sections`.
+
+### Removed
+
+- The keys that 0.2.0 deprecated: `[roles.worker]`, `[roles.research.scout]`, the `scout` trigger,
+  `[roles.research] buffer` and `context`, `{claude_config_dir}` and `{codex_home}`, `[storage.remote]` and
+  `PILOOP_PROJECT_<KEY>`. Each fails with a link to the upgrading guide.
+- The compat code for agents that 0.1.0 started.
+
+### Fixed
+
+- Runs end cleanly: a finding ends the run, the brief states the deadline with a wrap-up, Claude reads messages
+  mid-turn, and a failed run retries from its last commit. A run's deadline stops at `max_hours`.
+- An agent that the daemon ended can no longer leave a finding, and an answer to an escalation is no longer lost.
+- The closing review waits for the stopped campaign's last commits.
+- Research may add its own idea when the campaign has stalled, even with a full backlog.
+- A hand keep off the head is rebased, and a skipped commit is measured on request.
+- `piloop doctor` warns, and does not fail, on the `piloop.toml` and the missing secrets of a stopped campaign.
+- A home whose socket path is too long for the system, as a deep `PILOOP_HOME` on macOS is, serves its API on a
+  short path in `/tmp/piloop-<uid>/`.
+- A failed evaluation's measurement keeps the `METRIC` lines that it printed.
+- `piloop sql` explains a sqlite3 dot-command, and event times have one format.
+- A database that another piloop build migrated is refused, even at a revision id that this build also has.
+- `piloop watch <campaign>` refuses a home without that campaign before it opens the database.
+- Linked inputs keep their modification times, so a linked venv's bytecode stays current.
+- The examples measure time that load does not inflate.
+- The database closes every connection that it handed out.
+
 ## [0.2.1](https://github.com/hiloopai/piloop/compare/v0.2.0...v0.2.1) - 2026-10-24
 
 Upgrade to 0.2.1 before you upgrade to 0.3.0: `uv tool install 'piloop==0.2.1'`, then `piloop restart`. The running

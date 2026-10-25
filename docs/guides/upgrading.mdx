@@ -226,7 +226,9 @@ were converted when you upgraded to 0.2.0. While a `PILOOP_PROJECT_<KEY>` variab
 
 ### Deprecated keys
 
-`[storage.backend]` and `max_evaluations` of `config.toml` still load, with a warning, until 0.4.0.
+`[storage.backend]` and `max_evaluations` of `config.toml` still load, with a warning, until 0.4.0, and so does
+`tick_seconds`, which does nothing: the daemon wakes on events. So do `[stop]`, `[spend] limit`, `confidence` and a
+trigger's `kind` in `piloop.toml`, as the sections below say.
 [Deprecated keys](/reference/configuration#deprecated-keys) says what to write instead.
 
 `PILOOP_SECRETS_COMMAND` works until 0.5.0. [Secrets](/guides/secrets#piloop_secrets_command) says how to move its keys.
@@ -245,6 +247,15 @@ lessons too.
 A `[harness.<name>]` table for a built-in harness keeps the built-in's keys that it does not set. Before, it replaced
 the built-in, and a key that it left out took its default: no `resume`, no `usage`, no `mcp`. To define a harness from
 scratch, give it a name of its own.
+
+A table that sets its own `headless` now gets the built-in's `usage` too, which needs the session id: when its
+`headless` has no `{session_id}`, the file fails to load. Add `{session_id}` as the built-in does, or rename the table.
+
+### Status, inbox and events ask the daemon
+
+`piloop status`, `piloop inbox` and `piloop events` read through the daemon's API. Without a running daemon they stop
+and say to run `piloop serve --detach`, and `daemon` in `piloop status --json` is never null. `piloop sql` still reads
+the database without a daemon.
 
 ### How a run ended
 
@@ -333,6 +344,8 @@ it loads the file. A plugin of 0.2.0 fails to load until you change it:
 | `kind: Literal['<name>']` on a trigger | Nothing: the name of its entry point is its name |
 | `Selection`, `lookup`, `check_selection`, `Capability(check=...)` | The field that names a provider: `Annotated[P, CAP.entry]` for a table, `Annotated[str, CAP.named]` for a name, `Annotated[dict[str, P], CAP.tables()]` for a table of each provider |
 | A role's prompt as a path into its package: `prompt = str(Path(__file__).parent / 'auditor.md')` | `PROMPT = files(__package__) / 'auditor.md'`, a resource of the package; `prompt` in the table still overrides it |
+| A trigger's `fire(self, tick: Tick)` | `fire(self, p: Pass)`, and `due_in(self, p: Pass)`: how long until time alone can change the answer, or None |
+| A runtime's `wait` returns an `Outcome` with an `AgentStatus`; `status(handle)` | `wait` returns an `AgentExit` with an `ExitStatus`; `status` is gone |
 
 The examples in [`examples/plugins/`](https://github.com/hiloopai/piloop/tree/main/examples/plugins) show each one.
 A `[plugins.<name>]` table without `provider` now sets the parameters of the default provider.
@@ -402,7 +415,6 @@ agent started, and what the agent writes there goes into the shared workspace wh
 - When two agents change one file, the first one's stays, and the second one's goes beside it, as
   `NOTES.md.implementer-12`.
 - The evaluate command gets no `./workspace/`. Keep what it reads in a `link` input.
-- The `link` inputs are read-only in a worktree too: a write in place to a linked file fails.
 
 ### Linked inputs
 
