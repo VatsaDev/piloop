@@ -9,6 +9,8 @@ import signal
 import subprocess
 import sys
 import threading
+from dataclasses import dataclass
+from typing import assert_never
 
 import psutil
 
@@ -25,10 +27,42 @@ PILOOP_ARGV = (sys.executable, '-P', '-m', 'piloop')
 campaign's worktree, and its own ``json.py`` or ``piloop/`` would otherwise shadow piloop's imports."""
 
 
-def kill_group(proc: subprocess.Popen[bytes]) -> None:
-    """Send SIGKILL to the whole session of the child, which is its leader. Do nothing if the group is already gone."""
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(proc.pid, signal.SIGKILL)
+@dataclass(frozen=True)
+class Started:
+    """A process that is no child of this one: its pid, and the start time that tells it from a reused pid."""
+
+    pid: int
+    start: float
+
+
+type Leader = subprocess.Popen[bytes] | Started
+"""The process that leads a group: a child of this process, or one that ``Started`` names."""
+
+
+def kill_group(leader: Leader) -> None:
+    """Send SIGKILL to the whole group of ``leader``. Do nothing if the group is already gone.
+
+    macOS answers EPERM, not ESRCH, to a group whose processes all exited but are not reaped yet. EPERM is gone too
+    when the leader exited (a child is reaped then); while it runs, EPERM is a real permission error, and raised.
+    """
+    try:
+        os.killpg(leader.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except PermissionError:
+        if running(leader):
+            raise
+
+
+def running(leader: Leader) -> bool:
+    """Whether ``leader`` has not exited. A child that exited is reaped."""
+    match leader:
+        case subprocess.Popen():
+            return leader.poll() is None
+        case Started(pid=pid, start=start):
+            return alive(pid, start)
+        case _:
+            assert_never(leader)
 
 
 def child_env(*drop: str) -> dict[str, str]:

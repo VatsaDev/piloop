@@ -3,15 +3,52 @@ import subprocess
 import sys
 import time
 
+import psutil
 import pytest
 
-from piloop.proc import UNITS_ENV, Inherited, child_env, kill_group
+from piloop.proc import UNITS_ENV, Inherited, Started, child_env, kill_group, started
 
 
 def test_kill_group_tolerates_a_reaped_child() -> None:
     proc = subprocess.Popen(['true'], start_new_session=True)
     proc.wait()
     kill_group(proc)
+
+
+def test_kill_group_takes_eperm_for_gone_when_the_child_exited(monkeypatch: pytest.MonkeyPatch) -> None:
+    """macOS answers EPERM, not ESRCH, to a group whose processes all exited but are not reaped yet."""
+    proc = subprocess.Popen(['true'], start_new_session=True)
+    deadline = time.monotonic() + 10
+    while psutil.Process(proc.pid).status() != psutil.STATUS_ZOMBIE and time.monotonic() < deadline:
+        time.sleep(0.01)
+    monkeypatch.setattr(os, 'killpg', _eperm)
+    kill_group(proc)
+    assert proc.returncode == 0, 'reaped'
+
+
+def test_kill_group_raises_eperm_while_the_child_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    proc = subprocess.Popen(['sleep', '30'], start_new_session=True)
+    try:
+        monkeypatch.setattr(os, 'killpg', _eperm)
+        with pytest.raises(PermissionError):
+            kill_group(proc)
+    finally:
+        monkeypatch.undo()
+        kill_group(proc)
+        proc.wait()
+
+
+def test_kill_group_of_a_process_that_is_no_child_takes_eperm_for_gone_once_it_exited(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(os, 'killpg', _eperm)
+    kill_group(Started(os.getpid(), -1.0))  # a reused pid: the process that it named exited
+    with pytest.raises(PermissionError):
+        kill_group(Started(os.getpid(), started(os.getpid()) or -1.0))
+
+
+def _eperm(*_: object) -> None:
+    raise PermissionError(1, 'Operation not permitted')
 
 
 def test_no_child_inherits_a_units_path(monkeypatch: pytest.MonkeyPatch) -> None:

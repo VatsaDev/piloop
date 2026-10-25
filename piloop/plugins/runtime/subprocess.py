@@ -1,12 +1,9 @@
 """Agents as plain background processes: the built-in runtime."""
 
 import json
-import os
 import re
-import signal
 import subprocess
 import time
-from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 
@@ -26,7 +23,7 @@ from piloop.plugins.runtime.contract import (
     take,
 )
 from piloop.plugins.runtime.kit.tags import kill_tagged
-from piloop.proc import alive, child_env, kill_group, started
+from piloop.proc import Leader, Started, child_env, kill_group, running, started
 
 STDOUT = 'agent_session.stdout'
 STDERR = 'agent_session.stderr'
@@ -213,17 +210,18 @@ class SubprocessRuntime:
         outlive the agent. A group or a process that is already gone is not an error.
         """
         if self._alive(handle):
-            with suppress(ProcessLookupError):
-                os.killpg(_current(handle)[0], signal.SIGKILL)  # each process leads its own group: pgid = pid
-                while self._alive(handle):
-                    time.sleep(POLL_SECONDS)
+            kill_group(self._leader(handle))  # each process leads its own group: pgid = pid
+            while self._alive(handle):
+                time.sleep(POLL_SECONDS)
         kill_tagged(f'{TAG_ENV}={handle.data["token"]}')
 
     def _alive(self, handle: Handle) -> bool:
+        return running(self._leader(handle))
+
+    def _leader(self, handle: Handle) -> Leader:
+        """The agent's latest process: its ``Popen`` when this instance started it."""
         proc = self._procs.get(_pid(handle))
-        if proc is not None:
-            return proc.poll() is None
-        return alive(*_current(handle))
+        return proc if proc is not None else Started(*_current(handle))
 
     def _exit_code(self, handle: Handle) -> int | None:
         proc = self._procs.get(_pid(handle))

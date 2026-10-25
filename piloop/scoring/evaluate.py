@@ -55,14 +55,16 @@ def _run(
         proc = subprocess.Popen(
             cmd, cwd=cwd, stdout=out, stderr=err, stdin=subprocess.DEVNULL, env=env, start_new_session=True
         )
-        track(proc)
+        rc: int | None = None
         try:
-            rc: int | None = proc.wait(timeout=timeout)
+            track(proc)
+            rc = proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            kill_group(proc)
-            proc.wait()
-            rc = None
+            pass
         finally:
+            if proc.returncode is None:  # timed out, or ``track`` raised: kill it, and reap it on every path
+                kill_group(proc)
+                proc.wait()
             track(None)
     return Completed(rc, time.monotonic() - started)
 

@@ -16,14 +16,11 @@ and ends. A drained one (``Drain``, ``NoLease.DRAINING``), one that runs ``once`
 ``orphan_exit`` seconds (its server did not answer), takes no more jobs, and ends once each job reported.
 """
 
-import os
-import signal
 import subprocess
 import threading
 import time
 import uuid
 from collections.abc import Callable
-from contextlib import suppress
 from dataclasses import dataclass, field
 from functools import partial
 from importlib.metadata import version
@@ -66,7 +63,7 @@ from piloop.plugins.executor.kit.leases import (
 )
 from piloop.plugins.executor.kit.relay import Relay
 from piloop.plugins.runtime.contract import Handle, Runtime
-from piloop.proc import alive, kill_group, started
+from piloop.proc import Started, alive, kill_group, started
 from piloop.runtime.factory import RuntimeFactory, make_runtime
 from piloop.scoring.ledger import evaluator_runners
 
@@ -602,8 +599,7 @@ class Worker:
         if isinstance(job, EvaluationJob):
             match grant.handle:
                 case ProcessHandle(pgid=pgid, start_time=float(start)) if alive(pgid, start):
-                    with suppress(ProcessLookupError):
-                        os.killpg(pgid, signal.SIGKILL)
+                    kill_group(Started(pgid, start))
             self._lost(grant.lease, GONE.format(what='evaluator'))
             jobs.remove(job, self.site)  # its worktree is this lease's own: no later lease removes it
             return
