@@ -6,6 +6,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from covalence import Cid
 from dirty_equals import IsFloat
 from git import Repo
 from inline_snapshot import snapshot
@@ -29,7 +30,7 @@ from piloop.agents.results import (
     StartupAnomaly,
     WrapUp,
 )
-from piloop.agents.roles import PILOOP_HINT, SQL_HINT, Role, compose_brief, role
+from piloop.agents.roles import PILOOP_HINT, SQL_HINT, Role, compose_brief, read_brief, role
 from piloop.config import CampaignConfig, Roles, load_campaign_config
 from piloop.daemon.run_controller import RunController
 from piloop.db.events import emit, in_order
@@ -60,6 +61,7 @@ from tests.conftest import (
     ScriptRuntime,
     events,
     factory,
+    home_cas,
     role_timeout,
     serving,
     write_toml,
@@ -109,7 +111,7 @@ def launch(
     ctl = controller(db, runtime, tmp_path, tracer)
     ended = ctl.launcher.launch(
         agent_session_id,
-        brief=brief,
+        brief=ctl.cas.put(brief.encode()),
         place='w',
         artifact=checkout(campaign),
         timeout=role_timeout(db, agent_session_id),
@@ -475,7 +477,9 @@ def test_a_cwd_that_cannot_be_made_is_a_failed_start(
     mocker.patch('piloop.plugins.vcs.git.commands.add_worktree', side_effect=OSError(28, 'No space left on device'))
     lc = launcher(db, runtime, tmp_path)
     artifact = Source(vcs=Git(), repo=RepoId(campaign.id), revision=Repo(campaign.path).head.commit.hexsha)
-    outcome = lc.launch(agent_session_id, brief=brief, place='w', artifact=artifact, timeout=60)
+    outcome = lc.launch(
+        agent_session_id, brief=home_cas(db).put(brief.encode()), place='w', artifact=artifact, timeout=60
+    )
     w = agent_session(db, agent_session_id)
     assert (isinstance(outcome, NotStarted), w.state, w.error) == (
         True,
@@ -485,11 +489,29 @@ def test_a_cwd_that_cannot_be_made_is_a_failed_start(
     assert [target for target, _ in anomalies(db)] == [agent_session_id] and not start.called
 
 
+def test_a_brief_that_the_cas_lacks_is_a_failed_start(
+    campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path, mocker: MockerFixture
+) -> None:
+    start = mocker.spy(runtime, 'start')
+    agent_session_id = request(db, campaign)
+    missing = Cid.of(b'a brief that nobody stored')
+    outcome = launcher(db, runtime, tmp_path).launch(
+        agent_session_id, brief=missing, place='w', artifact=checkout(campaign), timeout=60
+    )
+    w = agent_session(db, agent_session_id)
+    assert (isinstance(outcome, NotStarted), w.error) == (True, f'LookupError: the CAS lacks the brief {missing}')
+    assert not start.called
+    with pytest.raises(LookupError, match='the CAS lacks the brief'):
+        read_brief(home_cas(db), missing)
+
+
 def test_nothing_starts_after_cancel(campaign: Campaign, db: Database, runtime: ScriptRuntime, tmp_path: Path) -> None:
     agent_session_id = request(db, campaign)
     lc = launcher(db, runtime, tmp_path)
     lc.cancel()
-    outcome = lc.launch(agent_session_id, brief='x', place='w', artifact=checkout(campaign), timeout=60)
+    outcome = lc.launch(
+        agent_session_id, brief=home_cas(db).put(b'x'), place='w', artifact=checkout(campaign), timeout=60
+    )
     w = agent_session(db, agent_session_id)
     assert (outcome, w.state, w.harness) == (DaemonStopped(), AgentSessionState.REQUESTED, None), 'stop() closes rows'
     assert not (tmp_path / 'w').exists()
@@ -723,7 +745,11 @@ def test_a_brief_past_the_limit_of_one_argument_reaches_the_agent_as_a_file(
     use_harness(db, campaign, RECORDS_ARGV_AND_ENV)
     brief = 'x' * 200 * 1024 + '\n'
     outcome = launcher(db, runtime, tmp_path).launch(
-        request(db, campaign), brief=brief, place='w', artifact=checkout(campaign), timeout=60
+        request(db, campaign),
+        brief=home_cas(db).put(brief.encode()),
+        place='w',
+        artifact=checkout(campaign),
+        timeout=60,
     )
     assert (exit_of(outcome).status, exit_of(outcome).error) == (ExitStatus.EXITED, None)
     assert (tmp_path / 'w' / 'argv.txt').read_text().splitlines() == [PROMPT.format(path=tmp_path / 'w' / 'brief.md')]

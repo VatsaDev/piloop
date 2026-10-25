@@ -13,9 +13,9 @@ body says. A refusal has a typed body, ``RefusalBody``. What ``Remote`` does wit
 ``messages`` is a long-poll: the server awaits a commit between two reads (``Route.long_poll``), and holds no thread.
 
 After the GitHub Actions runner (``acquirejob``, ``renewjob``) and Buildkite agent v3 (``accept``, ``start``,
-``finish``). A job names its data by address in the CAS, which the worker reads and writes itself: no bytes come through
-these routes. ``send`` asks the server to put a version that the worker's clone lacks into the CAS, and answers its
-address.
+``finish``). A grant names its job by address in the CAS, and the job names its data so: the worker reads and writes the
+CAS itself, and no bytes come through these routes. ``send`` asks the server to put a version that the worker's clone
+lacks into the CAS, and answers its address.
 """
 
 import math

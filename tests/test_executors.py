@@ -49,6 +49,7 @@ from piloop.plugins.executor.contract import (
     RepoId,
     Source,
 )
+from piloop.plugins.executor.kit.leases import read_job
 from piloop.plugins.runtime.contract import Handle
 from piloop.plugins.vcs.git import Git
 from piloop.scoring.ledger import request_remeasure
@@ -101,7 +102,7 @@ def launch_in_thread(
         ended.append(
             ex.launcher.launch(
                 agent_session_id,
-                brief='b',
+                brief=ex.cas.put(b'b'),
                 place='w',
                 artifact=source,
                 timeout=role_timeout(ex.launcher.db, agent_session_id),
@@ -333,7 +334,7 @@ def test_a_job_that_the_daemon_queues_names_no_path_under_its_home(
     ex = controller(db, runtime, home, 'workers')
     execute(ex, db, run_id)
     with db.session() as s:
-        jobs = [JOB.validate_python(lease.job) for lease in s.scalars(select(Lease).order_by(Lease.id))]
+        jobs = [read_job(disk(home), lease.id, lease.job_cid) for lease in s.scalars(select(Lease).order_by(Lease.id))]
     assert {job.kind for job in jobs} == {'agent', 'evaluation'}
     assert (
         run_row(db, run_id).status.value == 'succeeded' and (home / 'runs' / str(run_id) / 'transcript.txt').is_file()

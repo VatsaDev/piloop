@@ -47,6 +47,8 @@ from piloop.db.models import (
     LIVE_LEASES,
     Comment,
     CommentKind,
+    Evaluation,
+    Evaluator,
     EventModel,
     InstanceEnd,
     Lease,
@@ -528,10 +530,13 @@ def _read(db: Database, now: datetime) -> Seen:
         ended = s.execute(
             select(Lease.worker, func.max(Lease.ended_at)).where(Lease.worker.is_not(None)).group_by(Lease.worker)
         ).all()
-        queued = [
+        queued: list[tuple[LeaseKind, str | None]] = [  # an agent's lease has no evaluator: None
             (kind, runner)
             for kind, runner in s.execute(
-                select(Lease.kind, Lease.job['runner'].as_string()).where(Lease.state == LeaseState.QUEUED)
+                select(Lease.kind, Evaluator.runner)
+                .outerjoin(Evaluation, Evaluation.id == Lease.evaluation_id)
+                .outerjoin(Evaluator, Evaluator.id == Evaluation.evaluator_id)
+                .where(Lease.state == LeaseState.QUEUED)
             )
         ]
         recent = s.scalars(

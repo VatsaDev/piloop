@@ -24,7 +24,7 @@ from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import TOKEN_ENV, Https
 from piloop.settings import Settings
 from tests.cli.test_cli import run_cli
-from tests.conftest import disk, wait_until
+from tests.conftest import disk, home_cas, wait_until
 from tests.test_lease import Recorder
 
 
@@ -42,7 +42,7 @@ def server(db: Database, tmp_path: Path) -> Generator[str]:
     network = Https.model_validate({'listen': '127.0.0.1:0'}).open(NetworkHost(Tokens(db)))
     listener = network.listener()
     assert listener is not None
-    leases = Leases(db, Recorder(db), pools={'gpu': Pool()})
+    leases = Leases(db, Recorder(db), home_cas(db), pools={'gpu': Pool()})
     routes = lease_routes(leases, db.changed, disk(tmp_path / 'worker'), no_send, echoed)
     server = Server(app(network, routes), listener)
     server.start()

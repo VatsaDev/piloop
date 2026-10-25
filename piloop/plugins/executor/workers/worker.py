@@ -1,7 +1,8 @@
 """A worker of the ``workers`` executor: takes leases (``piloop.plugins.executor.kit.leases``) and runs their jobs on this machine (``piloop.plugins.executor.kit.jobs``).
 
 ``piloop serve`` runs one (``SERVE``). It reports each job when it ends. It reads no campaign table: everything
-comes in the job's description, and everything goes back in the report, by address in the CAS (``jobs.Site``).
+comes in the job's description, which it reads from the CAS, and everything goes back in the report, by address in the
+CAS (``jobs.Site``).
 
 It talks to its control plane only through a ``LeaseClient``: ``Local`` in ``piloop serve``, ``Remote`` in ``piloop
 worker --server``. One thread sends a heartbeat with a host sample (``Timing.renew``), takes new jobs and resends
@@ -58,6 +59,7 @@ from piloop.plugins.executor.kit.leases import (
     Revoke,
     StaleLease,
     Work,
+    read_job,
 )
 from piloop.plugins.executor.kit.relay import Relay
 from piloop.plugins.runtime.contract import Handle, Runtime
@@ -246,8 +248,6 @@ class Worker:
             self._tracer.event('worker.turn_failed', worker=self.id, error=f'{type(e).__name__}: {e}')
             return False
         self.id, self.timing, self._registered = registration.worker, registration.timing, True
-        if self.relay is not None:  # a re-attached agent goes on relaying
-            self.relay.open({g.job.agent_session: g.lease for g in registration.held if isinstance(g.job, AgentJob)})
         spooled = self.spool.leases()
         for grant in registration.held:
             if grant.lease not in spooled:  # a job that ended: the loop sends its report
@@ -487,8 +487,7 @@ class Worker:
         while not self._stopping and not self._draining:
             match self.client.acquire(uuid.uuid4().hex, host):
                 case Grant() as grant:
-                    body = self._agent if isinstance(grant.job, AgentJob) else self._evaluation
-                    self._spawn(grant, partial(body, grant))
+                    self._spawn(grant, partial(self._run, grant))
                     if self.once:
                         self._drain()
                 case NoLease.DRAINING:
@@ -523,9 +522,8 @@ class Worker:
             running.killed = True
 
     def _spawn(self, grant: Grant, body: Callable[[], None]) -> None:
-        kind = 'agent' if isinstance(grant.job, AgentJob) else 'evaluation'
         thread = threading.Thread(
-            target=self._guarded, args=(grant.lease, body), name=f'{kind}-{grant.lease}', daemon=True
+            target=self._guarded, args=(grant.lease, body), name=f'lease-{grant.lease}', daemon=True
         )
         with self._lock:
             self._threads[grant.lease] = thread
@@ -590,9 +588,13 @@ class Worker:
         self._jobs[lease_id] = running
         return running
 
+    def _job(self, grant: Grant) -> AgentJob | EvaluationJob:
+        """The job of ``grant``, read from this worker's CAS. Raises ``MissingJob``: the job is then lost."""
+        return read_job(self.site.cas, grant.lease, grant.job_cid)
+
     def _recover(self, grant: Grant) -> None:
         """Watch a job of this worker's that an earlier process of it started, or report it gone."""
-        job = grant.job
+        job = self._job(grant)
         if isinstance(job, EvaluationJob):
             match grant.handle:
                 case ProcessHandle(pgid=pgid, start_time=float(start)) if alive(pgid, start):
@@ -601,6 +603,8 @@ class Worker:
             self._lost(grant.lease, GONE.format(what='evaluator'))
             jobs.remove(job, self.site)  # its worktree is this lease's own: no later lease removes it
             return
+        if self.relay is not None:  # a re-attached agent goes on relaying
+            self.relay.open({job.agent_session: grant.lease})
         if grant.started_at is None or not isinstance(grant.handle, AgentHandle):  # it never started, or unrecorded
             jobs.remove(job, self.site)
             self._lost(grant.lease, GONE.format(what='agent'))
@@ -636,13 +640,21 @@ class Worker:
     def _runtime(self, job: AgentJob) -> Runtime:
         return self.runtime_factory(job.runtime)
 
-    def _agent(self, grant: Grant) -> None:
+    def _run(self, grant: Grant) -> None:
+        """Read the job of a new lease, and run it."""
+        match self._job(grant):
+            case AgentJob() as job:
+                self._agent(grant, job)
+            case EvaluationJob() as job:
+                self._evaluation(grant, job)
+            case never:
+                assert_never(never)
+
+    def _agent(self, grant: Grant, job: AgentJob) -> None:
         """Run an agent's job (``jobs.run_agent``), and report it once the job's span ends.
 
         So what waits for the report reads a finished span.
         """
-        job = grant.job
-        assert isinstance(job, AgentJob)
         runtime = self._runtime(job)
         if self.relay is not None:
             self.relay.open({job.agent_session: grant.lease})
@@ -651,10 +663,8 @@ class Worker:
         if report is not None:
             self._report(grant.lease, report, job)
 
-    def _evaluation(self, grant: Grant) -> None:
+    def _evaluation(self, grant: Grant, job: EvaluationJob) -> None:
         """Run an evaluation's job (``jobs.run_evaluation``), and report what it measured."""
-        job = grant.job
-        assert isinstance(job, EvaluationJob)
         with self._lock:  # a stop that comes before the evaluator starts kills it when it starts
             self._register(grant.lease, None, evaluation=True)
         with self._tracer.span('piloop.job', lease=grant.lease, evaluation=job.evaluation) as span:

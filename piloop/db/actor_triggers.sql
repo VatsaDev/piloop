@@ -93,11 +93,11 @@ BEGIN
   INSERT INTO events (at, actor, target_kind, target_id, payload)
   VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), (SELECT actor FROM temp.session_actor), 'candidate', NEW.id, json_object('kind', 'candidate.origin', 'old', OLD.origin, 'new', NEW.origin));
 END;
-CREATE TEMP TRIGGER runs_brief_event AFTER UPDATE OF brief ON runs
-WHEN OLD.brief IS NOT NEW.brief AND NOT (OLD.brief IS NULL AND (SELECT actor FROM temp.session_actor) = 'daemon')
+CREATE TEMP TRIGGER runs_brief_cid_event AFTER UPDATE OF brief_cid ON runs
+WHEN OLD.brief_cid IS NOT NEW.brief_cid AND NOT (OLD.brief_cid IS NULL AND (SELECT actor FROM temp.session_actor) = 'daemon')
 BEGIN
   INSERT INTO events (at, actor, target_kind, target_id, payload)
-  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), (SELECT actor FROM temp.session_actor), 'run', NEW.id, json_object('kind', 'run.brief', 'old_length', length(OLD.brief), 'new_length', length(NEW.brief)));
+  VALUES (strftime('%Y-%m-%d %H:%M:%f', 'now'), (SELECT actor FROM temp.session_actor), 'run', NEW.id, json_object('kind', 'run.brief_cid', 'old', OLD.brief_cid, 'new', NEW.brief_cid));
 END;
 CREATE TEMP TRIGGER campaigns_status_event AFTER UPDATE OF status ON campaigns
 WHEN OLD.status IS NOT NEW.status

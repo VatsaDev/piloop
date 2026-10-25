@@ -28,6 +28,7 @@ from piloop.config import CampaignConfig
 from piloop.db import session
 from piloop.db.models import Campaign, Idea
 from piloop.db.session import (
+    CAS_ATTRIBUTE,
     MIGRATIONS,
     RELEASES,
     BackupFailed,
@@ -52,7 +53,7 @@ from piloop.plugins.trigger.contract import TRIGGERS
 from piloop.plugins.trigger.low_water import LowWaterTrigger
 from piloop.plugins.trigger.seed import SeedTrigger
 from piloop.version import Version, installed
-from tests.conftest import bare_config, role_of
+from tests.conftest import bare_config, disk, role_of
 from tests.test_deprecated import piloop_version
 
 INBOX = 'ix_comments_inbox'
@@ -71,9 +72,11 @@ INBOX_WHERE = 'priority IS NOT NULL AND acked_at IS NULL'
 
 
 def alembic(path: Path) -> AlembicConfig:
+    """The Alembic config of the database at ``path``, with the CAS of its home, as ``migrate`` makes it."""
     cfg = AlembicConfig()
     cfg.set_main_option('script_location', str(MIGRATIONS))
     cfg.set_main_option('sqlalchemy.url', f'sqlite:///{path}')
+    cfg.attributes[CAS_ATTRIBUTE] = disk(path.parent)
     return cfg
 
 
@@ -323,7 +326,7 @@ END;\
 def test_a_database_at_a_revision_this_build_does_not_have_is_refused_and_left_as_it_was(tmp_path: Path) -> None:
     path = tmp_path / 'piloop.db'
     engine = create_engine(f'sqlite:///{path}')
-    migrate(engine, backups=0, daemon=None)
+    migrate(engine, cas=disk(tmp_path), backups=0, daemon=None)
     head = ScriptDirectory.from_config(alembic(path)).get_current_head()
     with closing(sqlite3.connect(path)) as con:
         con.execute("UPDATE alembic_version SET version_num = '0006_role_keys'")
@@ -336,7 +339,7 @@ def test_a_database_at_a_revision_this_build_does_not_have_is_refused_and_left_a
         rf'the history of this {this}, which knows up to {head}\): install the piloop that migrated it \(`piloop '
         r'upgrade` for a newer release\), or set PILOOP_HOME to another directory$',
     ):
-        migrate(engine, backups=2, daemon=None)
+        migrate(engine, cas=disk(tmp_path), backups=2, daemon=None)
     assert schema_mismatch(path, None, System.HUMAN) is not None
     assert path.read_bytes() == before and list(tmp_path.glob('piloop.db.bak-*')) == []
     engine.dispose()
@@ -372,7 +375,7 @@ def test_a_database_older_than_the_previous_release_is_refused_and_left_as_it_wa
         rf' piloop 0\.3 \(schema revision 0003\) or newer: upgrade one release at a time: {steps}, then install this'
         r' piloop again and run `piloop upgrade`$',
     ):
-        migrate(engine, backups=3, daemon=None)
+        migrate(engine, cas=disk(tmp_path), backups=3, daemon=None)
     engine.dispose()
     assert path.read_bytes() == before, 'not migrated'
     assert sorted(p.name for p in tmp_path.iterdir()) == ['piloop.db', 'piloop.db.migrate.lock'], 'no backup, no WAL'
@@ -383,7 +386,7 @@ def test_a_database_at_the_previous_release_or_newer_migrates(tmp_path: Path, mo
     path = tmp_path / 'piloop.db'
     command.upgrade(alembic(path), '0003')
     engine = create_engine(f'sqlite:///{path}')
-    migrate(engine, backups=0, daemon=None)
+    migrate(engine, cas=disk(tmp_path), backups=0, daemon=None)
     engine.dispose()
     assert revision(path) == session.head()
 
@@ -400,7 +403,7 @@ def test_a_database_from_before_the_first_recorded_release_names_every_stop(
         match=r' is from a piloop before 0\.2 \(schema revision 0001\), .*: install piloop 0\.2 .*,'
         r' then install piloop 0\.3 ',
     ):
-        migrate(engine, backups=0, daemon=None)
+        migrate(engine, cas=disk(tmp_path), backups=0, daemon=None)
     engine.dispose()
 
 
@@ -452,7 +455,7 @@ def test_a_database_that_another_branch_migrated_to_a_revision_of_the_same_id_is
     assert revision(path) == '0006'
     refused = r'revision 0006 is not in the history of this .*: this build has a different 0006 or one before it\)'
     with pytest.raises(SchemaAhead, match=refused):
-        migrate(engine, backups=2, daemon=None)
+        migrate(engine, cas=disk(tmp_path), backups=2, daemon=None)
     assert re.search(refused, str(schema_mismatch(path, None, System.HUMAN)))
     assert path.read_bytes() == before and schema(path) == tables and list(tmp_path.glob('piloop.db.bak-*')) == []
     engine.dispose()
@@ -466,7 +469,7 @@ def test_a_database_that_a_build_before_fingerprints_migrated_is_trusted_at_a_kn
     with closing(sqlite3.connect(path)) as con:
         con.execute('PRAGMA user_version = 0')
     engine = create_engine(f'sqlite:///{path}')
-    migrate(engine, backups=0, daemon=None)
+    migrate(engine, cas=disk(tmp_path), backups=0, daemon=None)
     head = list(fingerprints(ScriptDirectory(str(MIGRATIONS))).values())[-1]
     with closing(sqlite3.connect(path)) as con:
         assert con.execute('PRAGMA user_version').fetchone() == (head,)
@@ -482,14 +485,14 @@ def test_a_migration_first_backs_up_the_database_and_keeps_the_newest_backups(tm
     is at, and removes the oldest copies beyond ``backups``. Nothing pending, a new database or ``backups=0``: none."""
     path = tmp_path / 'piloop.db'
     engine = create_engine(f'sqlite:///{path}')
-    assert migrate(engine, backups=2, daemon=None) is None, 'a new database has nothing to lose'
+    assert migrate(engine, cas=disk(tmp_path), backups=2, daemon=None) is None, 'a new database has nothing to lose'
     command.downgrade(alembic(path), '0018')
     with closing(sqlite3.connect(path)) as con:
         con.execute("INSERT INTO campaigns (name, path, config) VALUES ('kept', '/p', '{}')")
         con.commit()
     for old in ('0001-20250101T000000Z', '0002-20250102T000000Z'):
         (tmp_path / f'piloop.db.bak-{old}').write_bytes(b'an older backup')
-    backup = migrate(engine, backups=2, daemon=None)
+    backup = migrate(engine, cas=disk(tmp_path), backups=2, daemon=None)
     assert backup is not None and re.fullmatch(r'piloop\.db\.bak-0018-\d{8}T\d{6}Z', backup.name), backup
     with closing(sqlite3.connect(f'file:{backup}?mode=ro', uri=True)) as con:
         assert con.execute('SELECT version_num FROM alembic_version').fetchall() == [('0018',)]
@@ -499,9 +502,12 @@ def test_a_migration_first_backs_up_the_database_and_keeps_the_newest_backups(tm
         'piloop.db.bak-0002-20250102T000000Z',
         backup.name,
     ]
-    assert migrate(engine, backups=2, daemon=None) is None, 'at head: nothing to back up'
+    assert migrate(engine, cas=disk(tmp_path), backups=2, daemon=None) is None, 'at head: nothing to back up'
     command.downgrade(alembic(path), '0018')
-    assert migrate(engine, backups=0, daemon=None) is None and len(list(tmp_path.glob('piloop.db.bak-*'))) == 2
+    assert (
+        migrate(engine, cas=disk(tmp_path), backups=0, daemon=None) is None
+        and len(list(tmp_path.glob('piloop.db.bak-*'))) == 2
+    )
     assert revision(path) == ScriptDirectory.from_config(alembic(path)).get_current_head()
     engine.dispose()
 
@@ -516,7 +522,7 @@ def test_a_backup_that_fails_leaves_the_database_unmigrated_and_no_partial_copy(
     resource.setrlimit(resource.RLIMIT_FSIZE, (64 * 1024, limit[1]))
     try:
         with pytest.raises(BackupFailed, match=r'could not back up .*, so it was not migrated: free some space'):
-            migrate(engine, backups=3, daemon=None)
+            migrate(engine, cas=disk(tmp_path), backups=3, daemon=None)
     finally:
         resource.setrlimit(resource.RLIMIT_FSIZE, limit)
         signal.signal(signal.SIGXFSZ, previous)
@@ -596,8 +602,12 @@ def test_concurrent_migrations_of_a_fresh_database_run_one_at_a_time(
 
     monkeypatch.setattr(command, 'upgrade', gated)
     engines = [create_engine(f'sqlite:///{path}') for _ in range(2)]
-    first = threading.Thread(target=migrate, args=(engines[0],), kwargs={'backups': 0, 'daemon': None}, name='first')
-    second = threading.Thread(target=migrate, args=(engines[1],), kwargs={'backups': 0, 'daemon': None}, name='second')
+    first = threading.Thread(
+        target=migrate, args=(engines[0],), kwargs={'cas': disk(tmp_path), 'backups': 0, 'daemon': None}, name='first'
+    )
+    second = threading.Thread(
+        target=migrate, args=(engines[1],), kwargs={'cas': disk(tmp_path), 'backups': 0, 'daemon': None}, name='second'
+    )
     first.start()
     assert inside.wait(5)
     second.start()
@@ -1534,7 +1544,7 @@ def test_a_database_with_work_on_herdr_is_not_migrated_until_that_work_moves_off
             )
     engine = create_engine(f'sqlite:///{path}')
     with pytest.raises(SchemaMismatch) as refused:
-        migrate(engine, backups=0, daemon=None)
+        migrate(engine, cas=disk(tmp_path), backups=0, daemon=None)
     assert str(refused.value) == (
         f'{path} has work on the herdr runtime, which piloop 0.3.0 removes: campaign mixed, agent_session#1: with'
         ' piloop 0.2 (`uv tool install \'piloop==0.2.*\'`), set runtime = "subprocess" in the piloop.toml of each such'
@@ -1545,7 +1555,7 @@ def test_a_database_with_work_on_herdr_is_not_migrated_until_that_work_moves_off
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         con.execute("UPDATE campaigns SET config = '{}' WHERE name = 'mixed'")
         con.execute("UPDATE agent_sessions SET state = 'exited' WHERE id = 1")
-    migrate(engine, backups=0, daemon=None)
+    migrate(engine, cas=disk(tmp_path), backups=0, daemon=None)
     assert revision(path) == revisions()[-1]
     engine.dispose()
 
@@ -2032,3 +2042,70 @@ def test_0047_admits_events_on_the_home_keeps_every_event_its_id_and_its_indexes
     command.downgrade(cfg, '0046')
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         assert con.execute('SELECT id FROM events').fetchall() == [(7,)], 'the events on the home go'
+
+
+def test_0048_puts_each_lease_job_and_run_brief_in_the_cas_keeps_the_fencing_tokens_and_downgrades(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    before = str(ScriptDirectory(str(MIGRATIONS)).get_revision('0048').down_revision)
+    command.upgrade(cfg, before)
+    agent, evaluation = {'kind': 'agent', 'brief': 'b' * 1000}, {'kind': 'evaluation', 'candidate': 3}
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute('INSERT INTO campaigns (name, path, config) VALUES (?, ?, ?)', ('p', '/p', '{"roles": {"w": {}}}'))
+        con.execute("INSERT INTO agent_sessions (kind, campaign_id) VALUES ('w', 1)")
+        con.execute("INSERT INTO leases (kind, agent_session_id, job) VALUES ('agent', 1, ?)", (dumps(agent),))
+        for _ in range(2):  # an evaluation queued again: the same job
+            con.execute(
+                "INSERT INTO leases (kind, evaluation_id, job) VALUES ('evaluation', 7, ?)", (dumps(evaluation),)
+            )
+        con.execute("INSERT INTO leases (kind, evaluation_id, job) VALUES ('evaluation', 8, '{}')")
+        con.execute('DELETE FROM leases WHERE id = 4')
+        con.execute(
+            "INSERT INTO ideas (campaign_id, title, hypothesis, track, created_by) VALUES (1, 'i', 'h', 't', 'h')"
+        )
+        for attempt, brief in [(1, 'b' * 1000), (2, None)]:
+            con.execute(
+                'INSERT INTO runs (idea_id, attempt, base_candidate_id, harness, model, brief, updated_at)'
+                " VALUES (1, ?, 1, 'pi', 'm', ?, '2026-01-01 00:00:00')",
+                (attempt, brief),
+            )
+    command.upgrade(cfg, '0048')
+    cas, address = disk(tmp_path), Cid.of(b'b' * 1000)
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert 'brief' not in [c[1] for c in con.execute('PRAGMA table_info(runs)')]
+        runs = con.execute('SELECT brief_cid, updated_at FROM runs ORDER BY id').fetchall()
+        assert runs[0][0] == str(address), "the run's brief and its job's are one blob"
+        assert [(cas.get(Cid(c)) if c else None, at) for c, at in runs] == [
+            (b'b' * 1000, '2026-01-01 00:00:00'),
+            (None, '2026-01-01 00:00:00'),
+        ], 'the move is not an update of a run'
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert 'job' not in [c[1] for c in con.execute('PRAGMA table_info(leases)')]
+        cids = [Cid(c) for (c,) in con.execute('SELECT job_cid FROM leases ORDER BY id')]
+        by_address = {'kind': 'agent', 'brief_cid': str(address)}
+        assert [loads(cas.get(c) or b'') for c in cids] == [by_address, evaluation, evaluation], 'its brief by address'
+        assert cids[1] == cids[2], 'one job, one blob'
+        with pytest.raises(sqlite3.IntegrityError, match='NOT NULL constraint failed: leases.job_cid'):
+            con.execute("INSERT INTO leases (kind, evaluation_id) VALUES ('evaluation', 9)")
+        con.execute("INSERT INTO leases (kind, evaluation_id, job_cid) VALUES ('evaluation', 9, ?)", (str(cids[1]),))
+        assert con.execute('SELECT max(id) FROM leases').fetchone() == (5,), 'a fencing token is never used again'
+        with pytest.raises(sqlite3.IntegrityError, match='CHECK constraint failed: leases.a lease has the job'):
+            con.execute("INSERT INTO leases (kind, agent_session_id, job_cid) VALUES ('evaluation', 1, 'c')")
+    command.downgrade(cfg, before)
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        jobs = [loads(job) for (job,) in con.execute('SELECT job FROM leases ORDER BY id')]
+        assert jobs == [agent, evaluation, evaluation, evaluation]
+        assert 'job_cid' not in [c[1] for c in con.execute('PRAGMA table_info(leases)')]
+        assert con.execute('SELECT brief, updated_at FROM runs ORDER BY id').fetchall() == [
+            ('b' * 1000, '2026-01-01 00:00:00'),
+            (None, '2026-01-01 00:00:00'),
+        ]
+        con.execute("UPDATE leases SET job = '{}' WHERE id = 5")
+    command.upgrade(cfg, '0048')
+    (tmp_path / 'store').rename(tmp_path / 'lost')
+    with pytest.raises(
+        RuntimeError, match=r'the brief of runs row 1 is \S+, which the CAS lacks: restore the database'
+    ):
+        command.downgrade(cfg, before)

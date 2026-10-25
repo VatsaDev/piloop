@@ -42,7 +42,7 @@ from piloop.plugins.executor.kit.leases import (
 from piloop.plugins.executor.kit.remote import Remote, lease_routes
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import Https, HttpsNetwork
-from tests.conftest import Dial, disk, wait_until
+from tests.conftest import Dial, disk, home_cas, wait_until
 from tests.fixtures.netfault import CutResponse, Proxy
 from tests.test_lease import (
     DONE,
@@ -85,7 +85,7 @@ def recorder(db: Database) -> Recorder:
 
 @pytest.fixture
 def leases(db: Database, recorder: Recorder) -> Leases:
-    return Leases(db, recorder, TIMING, POOLS)
+    return Leases(db, recorder, home_cas(db), TIMING, POOLS)
 
 
 @pytest.fixture
@@ -141,7 +141,7 @@ def test_a_worker_registers_as_its_own_name_and_finds_its_leases_again_with_thei
     assert isinstance(grant, Grant)
     w1.started(grant.lease, HANDLE, 'session-1')
     [held] = w1.register(INFO).held
-    assert (held.lease, held.handle, held.job) == (grant.lease, HANDLE, grant.job)
+    assert (held.lease, held.handle, held.job_cid) == (grant.lease, HANDLE, grant.job_cid)
 
 
 def test_an_acquire_sent_again_with_its_request_id_gets_the_same_lease_and_takes_no_other(
@@ -318,7 +318,7 @@ def test_a_revoked_token_and_the_servers_own_name_are_dismissed(remote: Callable
 
 def test_a_worker_of_another_protocol_is_dismissed_with_the_servers_version(remote: Callable[..., Remote]) -> None:
     with pytest.raises(
-        Dismissed, match=r'\(426\): the server runs piloop .+, with protocol 4, and the worker protocol 1'
+        Dismissed, match=r'\(426\): the server runs piloop .+, with protocol 5, and the worker protocol 1'
     ):
         remote().register(INFO.model_copy(update={'protocol': 1}))
 

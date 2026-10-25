@@ -18,8 +18,17 @@ from piloop.plugins.executor.kit.client import Local
 from piloop.plugins.executor.kit.leases import Grant, Leases
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.host import Live, Parameters
-from tests.conftest import ScriptRuntime, factory, serving, workers_of
-from tests.test_lease import HOST, MEASURED, TIMING, Recorder, evaluation_job, join, queue
+from tests.conftest import ScriptRuntime, factory, home_cas, serving, workers_of
+from tests.test_lease import (
+    HOST,
+    MEASURED,
+    TIMING,
+    Recorder,
+    evaluation_job,
+    evaluation_job_for_another_candidate,
+    join,
+    queue,
+)
 
 KEY = 'executor.pools.serve.evaluations'
 GPU = {'executor': Workers.model_validate({'pools': {'gpu': {'evaluations': 4}}})}
@@ -76,12 +85,12 @@ def test_with_two_evaluations_running_a_lowered_limit_starts_no_third_until_none
     db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
     """#108's second capacity gate: ``evaluations`` lowered from 2 to 1 while 2 run."""
-    leases = Leases(db, Recorder(db), TIMING, {'serve': Pool(evaluations=2)})
+    leases = Leases(db, Recorder(db), home_cas(db), TIMING, {'serve': Pool(evaluations=2)})
     worker = Local(leases, 'serve')
     join(leases, 'serve', ['process'], pool='serve')
-    job = evaluation_job(db, campaign, tmp_path)
-    for n in range(3):
-        queue(db, job.model_copy(update={'evaluation': job.evaluation + n}))
+    queue(db, evaluation_job(db, campaign, tmp_path))
+    for tree in ('t2', 't3'):
+        queue(db, evaluation_job_for_another_candidate(db, campaign, tmp_path, tree))
     first, second = worker.acquire(uuid4().hex, HOST), worker.acquire(uuid4().hex, HOST)
     assert isinstance(first, Grant) and isinstance(second, Grant) and worker.acquire(uuid4().hex, HOST) is NoLease.SLOTS
     applied = limits.applied(Workers(), [Limit(key=KEY, value=1)], 'executor')

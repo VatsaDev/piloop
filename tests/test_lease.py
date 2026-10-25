@@ -20,10 +20,12 @@ from piloop.agents.results import PromptOutcome
 from piloop.db import feed
 from piloop.db.events import emit, has, in_order
 from piloop.db.models import (
+    PROCESS,
     AgentSession,
     Campaign,
     Candidate,
     Evaluation,
+    Evaluator,
     Event,
     EventModel,
     Lease,
@@ -35,6 +37,7 @@ from piloop.db.models import (
 from piloop.db.session import Database, write_transaction
 from piloop.ids import CommentId, TargetKind, TargetRef
 from piloop.plugins.executor.contract import (
+    JOB,
     AgentFinished,
     AgentJob,
     AgentKey,
@@ -50,6 +53,7 @@ from piloop.plugins.executor.contract import (
     Sample,
     Settled,
     Source,
+    key_of,
 )
 from piloop.plugins.executor.kit.capacity import GB, HostSample, Pool
 from piloop.plugins.executor.kit.client import Local, Registration, WorkerInfo
@@ -73,12 +77,13 @@ from piloop.plugins.executor.kit.leases import (
     Work,
     cancel,
     enqueue,
+    read_job,
     revoke,
 )
 from piloop.plugins.executor.workers import Workers
 from piloop.plugins.runtime.contract import AgentExit, ExitStatus
 from piloop.plugins.vcs.git import Git
-from tests.conftest import WATCHDOG, baseline
+from tests.conftest import WATCHDOG, baseline, home_cas
 
 HANDLE = AgentHandle(runtime='subprocess', data={})
 TIMING = Timing(renew=10, grace=50, toleration=300)
@@ -164,7 +169,7 @@ def recorder(db: Database) -> Recorder:
 
 @pytest.fixture
 def leases(db: Database, recorder: Recorder) -> Leases:
-    return Leases(db, recorder, TIMING, POOLS)
+    return Leases(db, recorder, home_cas(db), TIMING, POOLS)
 
 
 def agent_job(db: Database, campaign: Campaign, tmp_path: Path) -> AgentJob:
@@ -179,15 +184,22 @@ def agent_job(db: Database, campaign: Campaign, tmp_path: Path) -> AgentJob:
         artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=baseline(db, campaign.id).revision),
         place='logs',
         timeout=60,
-        brief='b',
+        brief_cid=None,
         spec=None,
     )
 
 
 def evaluation_job(db: Database, campaign: Campaign, tmp_path: Path, runner: str = 'process') -> EvaluationJob:
+    """An evaluation of the baseline, under the campaign's evaluator, or under one of its own for another runner."""
     base = baseline(db, campaign.id)
     with db.session() as s:
-        evaluation = Evaluation(candidate_id=base.id, evaluator_id=s.get_one(Campaign, campaign.id).evaluator_id)
+        evaluator_id = s.get_one(Campaign, campaign.id).evaluator_id
+        if runner != PROCESS:
+            evaluator = Evaluator(campaign_id=campaign.id, key=runner, definition={}, runner=runner)
+            s.add(evaluator)
+            s.flush()
+            evaluator_id = evaluator.id
+        evaluation = Evaluation(candidate_id=base.id, evaluator_id=evaluator_id)
         s.add(evaluation)
         s.commit()
         evaluation_id = evaluation.id
@@ -205,9 +217,14 @@ def evaluation_job(db: Database, campaign: Campaign, tmp_path: Path, runner: str
 
 def queue(db: Database, job: AgentJob | EvaluationJob) -> int:
     with db.session() as s:
-        lease = enqueue(s, job)
+        lease = enqueue(s, home_cas(db), job)
         s.commit()
         return lease.id
+
+
+def granted(db: Database, grant: Grant) -> AgentJob | EvaluationJob:
+    """The job of ``grant``, as its worker reads it from the home's CAS."""
+    return read_job(home_cas(db), grant.lease, grant.job_cid)
 
 
 def worker_row(db: Database, worker: str) -> LeaseWorker:
@@ -241,13 +258,22 @@ def test_the_timing_is_kubernetes_two_stages_and_the_parameters_name_it_and_refu
         Workers(grace_seconds=400)
 
 
+def test_a_lease_names_its_job_by_address_and_a_job_queued_again_is_one_blob(
+    db: Database, campaign: Campaign, tmp_path: Path
+) -> None:
+    """The row stays small: the job is a blob of the CAS, stored once however often it is queued."""
+    job = evaluation_job(db, campaign, tmp_path)
+    first, again = lease_row(db, queue(db, job)), lease_row(db, queue(db, job))
+    assert first.job_cid == again.job_cid and JOB.validate_json(home_cas(db).get(first.job_cid) or b'') == job
+
+
 def test_a_lease_is_acquired_started_renewed_and_reported_once_with_its_receipt(
     db: Database, campaign: Campaign, tmp_path: Path, leases: Leases, recorder: Recorder
 ) -> None:
     job = agent_job(db, campaign, tmp_path)
     lease_id = queue(db, job)
     grant = take(leases, 'w1', ['process'])
-    assert grant is not None and (grant.lease, grant.job) == (lease_id, job)
+    assert grant is not None and (grant.lease, granted(db, grant)) == (lease_id, job)
     assert take(leases, 'w2', ['process']) is None, 'a job goes to one worker'
     handle = AgentHandle(runtime='subprocess', data={'pid': 7})
     Local(leases, 'w1').started(lease_id, handle, None)
@@ -355,7 +381,7 @@ def test_a_revoked_lease_is_answered_revoked_and_still_reports(
     lease_id = queue(db, agent_job(db, campaign, tmp_path))
     take(leases, 'w1', [])
     with db.session() as s:
-        revoke(s, s.get_one(Lease, lease_id))
+        revoke(s, home_cas(db), s.get_one(Lease, lease_id))
         s.commit()
     assert Local(leases, 'w1').heartbeat({lease_id: None}, HOST) == {lease_id: Answer.REVOKED}
     assert Local(leases, 'w1').report(lease_id, 'r', DONE) == RECEIPT
@@ -371,16 +397,18 @@ def test_an_evaluation_goes_to_a_worker_with_its_runner_in_the_order_in_which_it
     job = evaluation_job_for_another_candidate(db, campaign, tmp_path)
     queue(db, job)
     grant = take(leases, 'w1', ['process'])
-    assert grant is not None and isinstance(grant.job, EvaluationJob) and grant.job.evaluation == job.evaluation
+    assert grant is not None and key_of(granted(db, grant)) == key_of(job)
     second = take(leases, 'w2', ['process', 'gpu-runner'])
-    assert second is not None and isinstance(second.job, EvaluationJob) and second.job.evaluation == other.evaluation
+    assert second is not None and key_of(granted(db, second)) == key_of(other)
 
 
-def evaluation_job_for_another_candidate(db: Database, campaign: Campaign, tmp_path: Path) -> EvaluationJob:
-    """An evaluation of a second candidate: one candidate and evaluator have one evaluation."""
+def evaluation_job_for_another_candidate(
+    db: Database, campaign: Campaign, tmp_path: Path, tree: str = 't2'
+) -> EvaluationJob:
+    """An evaluation of another candidate, of ``tree``: one candidate and evaluator have one evaluation."""
     base = baseline(db, campaign.id)
     with db.session() as s:
-        candidate = Candidate(campaign_id=campaign.id, tree_sha='t2', revision=base.revision, parent_id=base.id)
+        candidate = Candidate(campaign_id=campaign.id, tree_sha=tree, revision=base.revision, parent_id=base.id)
         s.add(candidate)
         s.flush()
         evaluation = Evaluation(candidate_id=candidate.id, evaluator_id=s.get_one(Campaign, campaign.id).evaluator_id)
@@ -407,7 +435,11 @@ def test_a_worker_finds_its_live_leases_again_with_their_handles(
     take(leases, 'w1', [])
     Local(leases, 'w1').started(lease_id, AgentHandle(runtime='subprocess', data={'pid': 1}), None)
     [grant] = join(leases, 'w1', []).held
-    assert (grant.lease, grant.job, grant.handle) == (lease_id, job, AgentHandle(runtime='subprocess', data={'pid': 1}))
+    assert (grant.lease, granted(db, grant), grant.handle) == (
+        lease_id,
+        job,
+        AgentHandle(runtime='subprocess', data={'pid': 1}),
+    )
     assert grant.started_at is not None and join(leases, 'w2', []).held == []
     Local(leases, 'w1').lost(lease_id, 'gone')
     assert join(leases, 'w1', []).held == [] and lease_row(db, lease_id).receipt == {'lost': 'gone'}
@@ -419,7 +451,7 @@ def test_a_revoke_or_a_cancel_changes_only_a_lease_it_applies_to(
     """A queued lease has no worker to revoke; a reported one is over, and a cancel leaves it as it is."""
     queued = queue(db, agent_job(db, campaign, tmp_path))
     with db.session() as s:
-        revoke(s, s.get_one(Lease, queued))
+        revoke(s, home_cas(db), s.get_one(Lease, queued))
         s.commit()
     assert lease_row(db, queued).revoked_at is None
     take(leases, 'w1', [])
@@ -441,7 +473,7 @@ def test_the_fence_and_the_write_are_one_transaction_so_an_expiry_cannot_slip_be
 ) -> None:
     """An expiry that comes while a report applies waits for it, then finds the lease reported: one of them applies."""
     other = Recorder(db)
-    expiring = Leases(db, other, TIMING, POOLS)
+    expiring = Leases(db, other, home_cas(db), TIMING, POOLS)
     expiries: list[threading.Thread] = []
 
     class Slow(Recorder):
@@ -458,7 +490,7 @@ def test_the_fence_and_the_write_are_one_transaction_so_an_expiry_cannot_slip_be
 
             super().finished(job, report, guard=slow)
 
-    leases = Leases(db, Slow(db), TIMING, POOLS)
+    leases = Leases(db, Slow(db), home_cas(db), TIMING, POOLS)
     job = evaluation_job(db, campaign, tmp_path)
     lease_id = queue(db, job)
     take(leases, 'w1', ['process'])
@@ -499,7 +531,7 @@ def test_capacity_counts_a_lease_that_a_worker_takes_while_it_reads_once(
     db: Database, campaign: Campaign, tmp_path: Path, recorder: Recorder
 ) -> None:
     """Its reads are one snapshot: a lease that moves from queued to live between two of them is counted once."""
-    leases = Leases(db, recorder, TIMING, {'test': Pool(agents=2)})
+    leases = Leases(db, recorder, home_cas(db), TIMING, {'test': Pool(agents=2)})
     join(leases, 'w1', [])
     queue(db, agent_job(db, campaign, tmp_path))
     assert leases.capacity().agents == 1, 'two slots, one taken by the queued job'
@@ -530,7 +562,7 @@ def test_a_job_whose_row_is_settled_is_refused_as_stale_and_its_lease_ends_all_t
     db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
     """Core refuses a result for a closed row (``Settled``): the fence treats it as stale, and nothing else changes."""
-    leases = Leases(db, Settles(db), TIMING, POOLS)
+    leases = Leases(db, Settles(db), home_cas(db), TIMING, POOLS)
     job = agent_job(db, campaign, tmp_path)
     lease_id = queue(db, job)
     take(leases, 'w1', [])
@@ -588,7 +620,7 @@ def test_a_stop_leaves_an_agent_lease_that_a_worker_took_meanwhile_to_its_report
             super().finished(job, report, guard=guard)
 
     recorder = TakenFirst(db)
-    leases = Leases(db, recorder, TIMING, POOLS)
+    leases = Leases(db, recorder, home_cas(db), TIMING, POOLS)
     lease_id = queue(db, agent_job(db, campaign, tmp_path))
     leases.stop_untaken()
     assert (lease_row(db, lease_id).state, recorder.calls) == (LeaseState.ACQUIRED, [])
@@ -599,13 +631,13 @@ def test_a_prompt_handed_over_again_is_not_written_again_and_survives_the_proces
 ) -> None:
     """Core hands an unanswered prompt over again after a daemon restart: the lease has it already."""
     job = agent_job(db, campaign, tmp_path)
-    first = Leases(db, recorder, TIMING, POOLS)
+    first = Leases(db, recorder, home_cas(db), TIMING, POOLS)
     start = join(first, 'w1', []).cursor
     queue(db, job)
     grant = Local(first, 'w1').acquire(uuid4().hex, HOST)
     assert isinstance(grant, Grant)
     first.prompt(AgentKey(job.agent_session), Prompt(CommentId(7), 'try lzma'))
-    second = Leases(db, recorder, TIMING, POOLS)  # the next daemon process
+    second = Leases(db, recorder, home_cas(db), TIMING, POOLS)  # the next daemon process
     second.prompt(AgentKey(job.agent_session), Prompt(CommentId(7), 'try lzma'))
     assert [p.comment for _, _, p in events(db, LeasePrompted)] == [7]
     [_, prompt] = Local(second, 'w1').messages(start, 5)
@@ -644,8 +676,8 @@ def test_a_change_that_rolls_back_leaves_no_message(
     lease_id = queue(db, agent_job(db, campaign, tmp_path))
     take(leases, 'w1', [])
     with db.session() as s:
-        enqueue(s, agent_job(db, campaign, tmp_path))
-        revoke(s, s.get_one(Lease, lease_id))
+        enqueue(s, home_cas(db), agent_job(db, campaign, tmp_path))
+        revoke(s, home_cas(db), s.get_one(Lease, lease_id))
         s.rollback()
     assert lease_row(db, lease_id).revoked_at is None
     assert [p.lease for _, _, p in events(db, LeaseQueued)] == [lease_id]
@@ -691,7 +723,7 @@ def test_a_report_sent_again_while_the_first_applies_gets_its_receipt_and_is_not
 ) -> None:
     """A worker that gave up waiting for an answer sends its report again while the server still applies the first."""
     recorder = Overtaken(db)
-    leases = Leases(db, recorder, TIMING, POOLS)
+    leases = Leases(db, recorder, home_cas(db), TIMING, POOLS)
     join(leases, 'w1', [])
     lease = queue(db, agent_job(db, campaign, tmp_path))
     w1 = Local(leases, 'w1')
@@ -706,7 +738,7 @@ def test_a_worker_whose_slots_count_again_says_so_on_the_home(
     db: Database, campaign: Campaign, tmp_path: Path, recorder: Recorder
 ) -> None:
     """The daemon wakes on these: a worker that joins, one heard again after its silence, one whose host recovers."""
-    leases = Leases(db, recorder, TIMING, {'test': Pool(evaluations=99, max_load=1.0)})
+    leases = Leases(db, recorder, home_cas(db), TIMING, {'test': Pool(evaluations=99, max_load=1.0)})
     join(leases, 'w1', [])
     assert events(db, LeaseWorkerJoined) == [(TargetKind.HOME, 1, LeaseWorkerJoined(worker='w1', pool='test'))]
     with db.session() as s:

@@ -217,13 +217,14 @@ def run_agent(job: AgentJob, runtime: Runtime, control: Control, site: Site, spa
     None when there is nothing to report: the job is no longer the executor's, or the daemon hands it over.
     """
     # only an agent that a previous daemon left has neither, and it is re-attached (``watch_agent``)
-    assert job.spec is not None and job.brief is not None
+    assert job.spec is not None and job.brief_cid is not None
     started_at = time.monotonic()
     log_dir, cwd = site.log_dir(job), site.cwd(job)
     try:
         _rebuilt(site.clones.checkout(job.artifact, cwd), span)
         log_dir.mkdir(parents=True, exist_ok=True)
-        (log_dir / BRIEF_FILE).write_text(job.brief)
+        if site.cas.get_file(job.brief_cid, log_dir / BRIEF_FILE) is None:
+            raise LookupError(f'the CAS lacks the brief {job.brief_cid}')
         spec = rendered(job, job.spec.at(cwd, log_dir, site.env()))
     except Exception as e:  # a full disk, a locked index, a missing variable: a fault of the host, not of the agent
         span.error(e)

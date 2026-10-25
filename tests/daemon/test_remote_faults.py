@@ -44,13 +44,13 @@ from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentKey, Prompt
 from piloop.plugins.executor.kit.capacity import Pool
 from piloop.plugins.executor.kit.door import SOCKET, AgentCall, Call
-from piloop.plugins.executor.kit.leases import StaleLease, StaleReport
+from piloop.plugins.executor.kit.leases import StaleLease, StaleReport, read_job
 from piloop.plugins.executor.kit.remote import Remote
 from piloop.plugins.executor.workers import Workers
 from piloop.proc import alive
 from piloop.settings import STORE_DIR
 from tests.agents.test_launcher import MINTED_HARNESS, use_harness
-from tests.conftest import Dial, ScriptRuntime, baseline, factory, wait_until, workers_of, write_toml
+from tests.conftest import Dial, ScriptRuntime, baseline, factory, home_cas, wait_until, workers_of, write_toml
 from tests.daemon.test_evaluation_queue import held_evaluate
 from tests.daemon.test_run_controller import candidates, execute, make_run, reload_campaign, run_row, set_config
 from tests.fixtures.netfault import Blackhole, CutResponse, Latency, Proxy
@@ -227,7 +227,7 @@ def test_a_remote_worker_measures_an_evaluation_once_and_its_logs_are_on_the_ser
     assert measured(db, held) == 2, 'the baseline, then one measurement'
     row = lease(db, 1)
     assert row is not None and (row.state, row.worker) == (LeaseState.REPORTED, WORKER)
-    place = f'{row.job["place"]}/lease-1'
+    place = read_job(home_cas(db), row.id, row.job_cid).place
     assert list((net.tmp_path / place).glob('*/eval.stdout')), "the evaluator's logs, back through the CAS"
     assert list((net.tmp_path / 'worker' / place).glob('*/eval.stdout')), 'where the worker wrote them'
     assert list((net.tmp_path / 'worker' / 'clones').iterdir()), 'its own clone, filled from a bundle in the CAS'

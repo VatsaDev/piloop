@@ -18,8 +18,11 @@ from sqlalchemy import select
 
 from piloop.db.models import (
     Campaign,
+    Candidate,
     Comment,
     CommentKind,
+    Evaluation,
+    Evaluator,
     InstanceEnd,
     LeaseWorker,
     NoLease,
@@ -44,7 +47,7 @@ from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import TOKEN_ENV, Https
 from piloop.plugins.provisioner.contract import InstanceState, Launch
 from piloop.plugins.vcs.git import Git
-from tests.conftest import ACTOR, at_head, baseline, package
+from tests.conftest import ACTOR, at_head, baseline, home_cas, package
 from tests.fixtures.provisioner import PLATFORMS, Machine, Platform
 from tests.test_lease import HOST, MEASURED, TIMING, Recorder, events, join, queue
 
@@ -99,7 +102,7 @@ class Server:
 
 def server(db: Database, home: Path, found: Mapping[str, Pool]) -> Server:
     network = Https(url=URL).open(NetworkHost(Tokens(db)))
-    leases = Leases(db, Recorder(db), TIMING, found)
+    leases = Leases(db, Recorder(db), home_cas(db), TIMING, found)
     return Server(db, leases, Scaler.of(db, lambda: leases.pools, network, Tracer(None), TIMING, home, _worker_argv))
 
 
@@ -107,19 +110,37 @@ EVALUATIONS = count(1000)
 
 
 def waiting(db: Database, campaign: Campaign, tmp_path: Path, n: int = 1, runner: str = 'process') -> None:
-    """Queue ``n`` evaluations of ``runner``, on leases: their queue rows do not matter here."""
+    """Queue ``n`` evaluations of ``runner`` on leases, each of a candidate of its own."""
     base = baseline(db, campaign.id)
-    for _ in range(n):
-        job = EvaluationJob(
-            evaluation=next(EVALUATIONS),
-            candidate=base.id,
-            runner=runner,
-            artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.revision),
-            place='eval',
-            command=['true'],
-            timeout=60,
-            required=['score'],
-        )
+    with db.session() as s:
+        evaluator = s.scalar(select(Evaluator).where(Evaluator.campaign_id == campaign.id, Evaluator.runner == runner))
+        if evaluator is None:
+            evaluator = Evaluator(campaign_id=campaign.id, key=runner, definition={}, runner=runner)
+            s.add(evaluator)
+            s.flush()
+        jobs = []
+        for _ in range(n):
+            tree = f't{next(EVALUATIONS)}'
+            candidate = Candidate(campaign_id=campaign.id, tree_sha=tree, revision=base.revision, parent_id=base.id)
+            s.add(candidate)
+            s.flush()
+            evaluation = Evaluation(candidate_id=candidate.id, evaluator_id=evaluator.id)
+            s.add(evaluation)
+            s.flush()
+            jobs.append(
+                EvaluationJob(
+                    evaluation=evaluation.id,
+                    candidate=candidate.id,
+                    runner=runner,
+                    artifact=Source(vcs=Git(), repo=RepoId(campaign.id), revision=base.revision),
+                    place='eval',
+                    command=['true'],
+                    timeout=60,
+                    required=['score'],
+                )
+            )
+        s.commit()
+    for job in jobs:
         queue(db, job)
 
 

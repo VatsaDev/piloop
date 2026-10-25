@@ -9,6 +9,7 @@ from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import assert_never
 
+from covalence import Cid
 from sqlalchemy.orm import Session
 
 from piloop.actor import Actor, Agent, System
@@ -16,6 +17,7 @@ from piloop.config import BRIEF_FILE, CampaignConfig, Track
 from piloop.db.models import AgentSession, Campaign
 from piloop.harnesses import Harness
 from piloop.ids import RoleName
+from piloop.plugins.cas.contract import Cas
 from piloop.plugins.role.contract import Files, SweepRole
 from piloop.plugins.vcs.contract import VCS, prompted
 
@@ -131,6 +133,17 @@ def files_of(cfg: CampaignConfig, actor: Actor) -> Files | None:
             return None
         case _:
             assert_never(actor)
+
+
+def read_brief(cas: Cas, brief: Cid) -> str:
+    """The text of the brief at ``brief`` in ``cas``.
+
+    Raises:
+        LookupError: the CAS lacks it.
+    """
+    if (data := cas.get(brief)) is None:
+        raise LookupError(f'the CAS lacks the brief {brief}')
+    return data.decode()
 
 
 def compose_brief(

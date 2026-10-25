@@ -21,7 +21,7 @@ stateDiagram-v2
 
 | Word | Meaning |
 |---|---|
-| Job | One agent session or one evaluation: what to check out, what to run, what to bring back. It names no path: its commit, its inputs and its results go by address in the [CAS](/concepts/artifact-store). |
+| Job | One agent session or one evaluation: what to check out, what to run, what to bring back. It is a blob in the [CAS](/concepts/artifact-store), and its lease names it by address. It names no path: its commit, its inputs and its results go by address too. |
 | Worker | A process that takes leases and runs their jobs. `piloop serve` has one, called `serve`. |
 | Pool | The slots and thresholds of each worker in it: `[plugins.executor.pools.<name>]`. |
 | Heartbeat | The worker renews its leases every `renew_seconds`. |

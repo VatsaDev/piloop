@@ -24,7 +24,7 @@ from sqlalchemy import func, insert, select
 from piloop.actor import System
 from piloop.agents.launcher import Launcher
 from piloop.agents.results import NEVER_WORKED, Ended, Lost, NotStarted, PromptOutcome, StartupAnomaly
-from piloop.agents.roles import SQL_HINT
+from piloop.agents.roles import SQL_HINT, read_brief
 from piloop.campaign import stop
 from piloop.campaign.campaigns import sync
 from piloop.campaign.ideas import park_stranded, runnable, supersede
@@ -134,6 +134,7 @@ from tests.conftest import (
     events,
     example,
     factory,
+    home_cas,
     serving,
     span_named,
     wait_until,
@@ -240,6 +241,12 @@ def candidates_measured(db: Database, run_id: RunId) -> list[Scored]:
         return [Scored(c) for c in rows if c.measurements]
 
 
+def brief_of(db: Database, run_id: RunId) -> str:
+    """The text of the run's brief, from the home's CAS, or '' before the run starts."""
+    brief = run_row(db, run_id).brief_cid
+    return read_brief(home_cas(db), brief) if brief is not None else ''
+
+
 def run_row(db: Database, run_id: RunId) -> Run:
     with db.session() as s:
         return s.get_one(Run, run_id)
@@ -297,8 +304,9 @@ def test_successful_run_scores_the_commit(
 
     run = run_row(db, run_id)
     assert (run.status, run.error) == (RunStatus.SUCCEEDED, None)
-    assert run.brief is not None and run.brief.startswith('# Implementer') and '### Plan\nappend one line' in run.brief
-    assert 'lines are good\n\nProposed by test, prompted by: finding comment#3: short files lose\n' in run.brief
+    brief = brief_of(db, run_id)
+    assert brief.startswith('# Implementer') and '### Plan\nappend one line' in brief
+    assert 'lines are good\n\nProposed by test, prompted by: finding comment#3: short files lose\n' in brief
     [e] = candidates(db, run_id)
     assert (e.verdict, e.summary, e.metrics) == (Outcome.KEEP, 'add a line', {'score': 2.0, 'size': IsPositive()})
     assert e.parent_id == baseline(db, campaign.id).id
@@ -557,9 +565,7 @@ def test_work_a_stopped_implementer_left_uncommitted_is_recovered_and_a_new_run_
     ex = controller(db, runtime, tmp_path)
     execute(ex, db, finishing)
     with db.session() as s:
-        assert '- candidate#' in (s.get_one(Run, finishing).brief or '') and 'It was never measured.' in (
-            s.get_one(Run, finishing).brief or ''
-        )
+        assert '- candidate#' in brief_of(db, finishing) and 'It was never measured.' in (brief_of(db, finishing))
     [done] = candidates(db, finishing)
     assert (done.summary, done.verdict, done.metrics['score'], done.parent_id) == (
         'add a line',
@@ -1068,7 +1074,7 @@ def test_brief_carries_history_and_comments(
         s.add(Comment(target=TargetRef(TargetKind.RUN, first), author='pi', body='about another idea'))
         s.commit()
     execute(controller(db, runtime, tmp_path), db, second)
-    brief = run_row(db, second).brief or ''
+    brief = brief_of(db, second)
     order = [
         '# Implementer',
         '# Demo',
@@ -1115,7 +1121,7 @@ def test_an_implementer_brief_names_its_checkout_as_the_place_to_work_and_the_ca
     mocker.patch.object(Git, 'prompt', marked)
     run_id = make_run(db, campaign)
     execute(controller(db, runtime, tmp_path), db, run_id)
-    brief = run_row(db, run_id).brief or ''
+    brief = brief_of(db, run_id)
     assert (
         '- Your cwd is your checkout: make every edit, run every evaluation and save every version there.'
         f' Only its versions are scored. The campaign repo, {campaign.path}, is read-only for you: read its history'
@@ -1146,7 +1152,7 @@ def test_an_implementer_brief_opens_with_the_current_lessons_of_the_repo_within_
         s.commit()
     run_id = make_run(db, campaign)
     execute(controller(db, runtime, tmp_path), db, run_id)
-    brief = run_row(db, run_id).brief or ''
+    brief = brief_of(db, run_id)
     line = '- [demo] voting | dead | +0 score (lesson#1)'
     if budget:
         assert brief.index('# Implementer') < brief.index(line) < brief.index('# Demo'), (
@@ -1163,7 +1169,7 @@ def test_pre_written_brief_is_used_verbatim(
 ) -> None:
     run_id = make_run(db, campaign)
     with db.session() as s:
-        s.get_one(Run, run_id).brief = 'custom brief'
+        s.get_one(Run, run_id).brief_cid = home_cas(db).put(b'custom brief')
         s.commit()
     execute(controller(db, runtime, tmp_path), db, run_id)
     assert (tmp_path / 'runs' / str(run_id) / 'brief.md').read_text() == 'custom brief'
@@ -1572,8 +1578,8 @@ def test_a_relaunched_implementer_signs_as_itself_and_its_finding_without_a_comm
         ).all()
         [author] = s.scalars(select(Comment.author).where(Comment.kind == 'finding')).all()
         assert author == f'implementer#{replacement}'
-        assert f'implementer#{dead}' not in (run.brief or '') and f'You are implementer#{replacement},' in (
-            run.brief or ''
+        assert f'implementer#{dead}' not in brief_of(db, run.id) and f'You are implementer#{replacement},' in brief_of(
+            db, run.id
         )
         assert s.get_one(Idea, idea_id).status is IdeaStatus.DONE
 
@@ -2537,7 +2543,7 @@ def test_a_run_pinned_to_a_non_keep_is_judged_against_its_nearest_keep_on_every_
     with db.session() as s:
         trunk = head(s, s.get_one(Campaign, campaign.id))
         assert trunk is not None and trunk.parent_id == lead, 'a trunk run: its keep is the new head'
-        brief = s.get_one(Run, run_id).brief or ''
+        brief = brief_of(db, run_id)
     assert f'- candidate#{lead} is no keep: your versions are judged against candidate#1, its nearest keep' in brief
 
 
@@ -3073,7 +3079,7 @@ def test_a_keep_on_one_track_must_hold_the_other_track_primaries_and_its_brief_c
     execute(controller(db, runtime, tmp_path), db, run_id)
     [(_, verdict, reason, _, _)] = scored(db, run_id)
     assert (verdict, reason) == (Outcome.DISCARD, 'floor: size 10 past its floor 8'), 'score 2 > 1, but size 10 > 8'
-    brief = run_row(db, run_id).brief or ''
+    brief = brief_of(db, run_id)
     assert '# Accuracy track\nOnly add lines that are right.' in brief, "the track's addendum"
     assert (
         '- Your track is accuracy: a keep must improve score (higher is better) with confidence and hold size'
@@ -3255,7 +3261,7 @@ def test_a_run_that_starts_near_the_campaigns_stop_is_told_it_ends_with_the_stop
     run_id = make_run(db, campaign)
     launched = mocker.spy(Launcher, 'launch')
     execute(controller(db, runtime, tmp_path), db, run_id)
-    assert '- Your session ends 0.1 minutes after it starts' in (run_row(db, run_id).brief or ''), (
+    assert '- Your session ends 0.1 minutes after it starts' in brief_of(db, run_id), (
         'the role timeout of 20s, cut at the stop 7.2s away'
     )
     assert launched.call_args.kwargs['timeout'] == pytest.approx(7.2, abs=1), 'from its launch to the stop'

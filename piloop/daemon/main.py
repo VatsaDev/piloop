@@ -102,11 +102,6 @@ class Daemon:
         self._inherited = inherited or Inherited(set())
         """The children an in-place restart handed over (``piloop.proc.Inherited``): reaped as each one exits."""
         self.db = Database(cfg.database_url, actor=ACTOR)
-        try:
-            self._backup = migrate(self.db.engine, backups=cfg.migration_backups, daemon=running_pid(cfg))
-        except OlderDaemon, SchemaMismatch, BackupFailed:
-            self.db.close()
-            raise
         self._cfg = cfg
         self._argv = serve_argv(listen)
         """What an in-place restart execs."""
@@ -122,6 +117,13 @@ class Daemon:
             self.db.close()
             raise
         self._cas = cas.CAS.selected(cfg.providers).open(cfg.home)
+        try:  # after the CAS opens: a revision may move data into it
+            self._backup = migrate(
+                self.db.engine, cas=self._cas, backups=cfg.migration_backups, daemon=running_pid(cfg)
+            )
+        except OlderDaemon, SchemaMismatch, BackupFailed:
+            self.db.close()
+            raise
         self.tracer = tracer()
         opened = partial(make_runtime, cfg=cfg)
         self.controller = RunController(

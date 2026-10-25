@@ -29,7 +29,7 @@ def main() -> None:
     cas = CAS.selected({}).open(home)
     results = CampaignResults(db, Tracer(None), home, cas, lambda: False)
     site = local_site(home, cas, partial(checkout_of, db), partial(record_of, db), reserve=0)
-    worker = Worker(Local(Leases(db, results, timing), worker_id), Tracer(None), site)
+    worker = Worker(Local(Leases(db, results, cas, timing), worker_id), Tracer(None), site)
     worker.start()
     print('ready', flush=True)
     threading.Event().wait()  # the worker's loop looks for jobs on every heartbeat

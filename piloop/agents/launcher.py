@@ -8,6 +8,7 @@ import threading
 from pathlib import Path
 from uuid import uuid4
 
+from covalence import Cid
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -76,7 +77,7 @@ class Launcher:
         self,
         agent_session_id: AgentSessionId,
         *,
-        brief: str,
+        brief: Cid,
         place: str,
         artifact: Source,
         timeout: float,
@@ -140,7 +141,7 @@ class Launcher:
         self,
         agent_session_id: AgentSessionId,
         span: Span,
-        brief: str,
+        brief: Cid,
         place: str,
         artifact: Source,
         timeout: float,
@@ -190,7 +191,7 @@ class Launcher:
                 artifact=artifact,
                 place=place,
                 timeout=timeout,
-                brief=brief,
+                brief_cid=brief,
                 spec=spec,
                 mcp=definition.mcp,
                 servers=cfg.role_servers(kind),
@@ -225,7 +226,7 @@ class Launcher:
             artifact=artifact,
             place=place,
             timeout=cfg.role(w.kind).timeout,
-            brief=None,
+            brief_cid=None,
             spec=None,
             usage=definition.usage if definition is not None else None,
             session_id=w.session_id,

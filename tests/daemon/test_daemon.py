@@ -41,6 +41,7 @@ from tests.conftest import (
     ScriptRuntime,
     bare_config,
     console_lines,
+    disk,
     factory,
     register,
     wait_until,
@@ -337,7 +338,7 @@ def test_serve_refuses_when_a_daemon_holds_the_pid_file(
     cfg = Settings(home=tmp_path)
     engine = create_engine(cfg.database_url)
     migrate(
-        engine, backups=0, daemon=None
+        engine, cas=disk(tmp_path), backups=0, daemon=None
     )  # as the running daemon left it: under an older one, Daemon() refuses before it migrates
     engine.dispose()
     daemon = Daemon(cfg)

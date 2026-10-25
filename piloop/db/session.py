@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NewType, assert_never
 
-from alembic import command
+from alembic import command, context
 from alembic.config import Config as AlembicConfig
 from alembic.script import ScriptDirectory
 from sqlalchemy import Connection, Engine, create_engine, event, make_url
@@ -37,9 +37,12 @@ from piloop import deprecated
 from piloop.actor import Actor, Agent, System
 from piloop.db.models import utcnow
 from piloop.db.sql import CONNECTION_PRAGMAS, install_actor, install_functions, lock_holder, optimize
+from piloop.plugins.cas.contract import Cas
 from piloop.version import Version, installed
 
 MIGRATIONS = Path(__file__).parent / 'migrations'
+CAS_ATTRIBUTE = 'cas'
+"""The key of the home's CAS in the Alembic config's ``attributes``, for ``migration_cas``."""
 BACKUP_INFIX = '.bak-'
 MigrationRevision = NewType('MigrationRevision', str)
 """An Alembic revision id of ``MIGRATIONS``, such as ``0001``."""
@@ -134,10 +137,11 @@ class BackupFailed(RuntimeError):
     """The copy of the database before a migration could not be written, so nothing was migrated."""
 
 
-def migrate(engine: Engine, *, backups: int, daemon: int | None) -> Path | None:
+def migrate(engine: Engine, *, cas: Cas, backups: int, daemon: int | None) -> Path | None:
     """Migrate the database to the latest Alembic revision. Create it if it does not exist.
 
-    This is the only function that changes the schema. ``daemon`` is the pid that holds the daemon's lock
+    This is the only function that changes the schema. ``cas`` is the home's CAS, for a revision that moves data into
+    it or out of it (``migration_cas``). ``daemon`` is the pid that holds the daemon's lock
     (``piloop.daemon.serve.running_pid``), whoever started it: a shell, systemd or launchd. When it is another process
     and the database is behind this piloop, that daemon runs an older piloop (a daemon migrates when it starts), and
     the new schema would break it, so this refuses. An in-place restart holds the lock itself, and migrates.
@@ -160,6 +164,7 @@ def migrate(engine: Engine, *, backups: int, daemon: int | None) -> Path | None:
     cfg = AlembicConfig()
     cfg.set_main_option('script_location', str(MIGRATIONS))
     cfg.set_main_option('sqlalchemy.url', engine.url.render_as_string(hide_password=False))
+    cfg.attributes[CAS_ATTRIBUTE] = cas
     copy = None
     with _migration_lock(path):
         if (refused := unmigratable(path)) is not None:
@@ -176,6 +181,12 @@ def migrate(engine: Engine, *, backups: int, daemon: int | None) -> Path | None:
             copy = _backup(path, at, backups)
         command.upgrade(cfg, 'head')
     return copy
+
+
+def migration_cas() -> Cas:
+    """The home's CAS, in a revision that ``migrate`` runs."""
+    cas: Cas = context.config.attributes[CAS_ATTRIBUTE]
+    return cas
 
 
 def unmigratable(database: Path) -> SchemaMismatch | None:

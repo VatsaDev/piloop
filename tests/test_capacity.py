@@ -12,8 +12,8 @@ from piloop.plugins.executor.contract import Capacity
 from piloop.plugins.executor.kit.capacity import GB, HostSample, Pool, admits, sample
 from piloop.plugins.executor.kit.leases import SERVE, Grant, Leases
 from piloop.plugins.executor.workers import Workers
-from tests.conftest import RESEARCH
-from tests.test_lease import TIMING, Recorder, agent_job, evaluation_job, queue
+from tests.conftest import RESEARCH, home_cas
+from tests.test_lease import TIMING, Recorder, agent_job, evaluation_job, granted, queue
 
 HOST = HostSample(at=utcnow(), cpus=4, load1=2.0, memory_available=8 * GB, disk_free=100 * GB)
 IDLE = Capacity(0, 0)
@@ -63,7 +63,7 @@ def test_a_worker_takes_no_job_over_its_slots_or_under_pressure_and_its_row_says
     db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
     pools = {'small': Pool(agents=1, evaluations=1, min_memory_gb=4)}
-    leases = Leases(db, Recorder(db), TIMING, pools)
+    leases = Leases(db, Recorder(db), home_cas(db), TIMING, pools)
     with pytest.raises(ValueError, match="no pool 'big'"):
         leases.register('w1', 'big', '0.2.0', ['process'], HOST)
     leases.register('w1', 'small', '0.2.0', ['process'], HOST)
@@ -74,9 +74,9 @@ def test_a_worker_takes_no_job_over_its_slots_or_under_pressure_and_its_row_says
         queue(db, agent_job(db, campaign, tmp_path / 'a'))
     queue(db, evaluation_job(db, campaign, tmp_path))
     assert isinstance(leases.acquire('w1', uuid4().hex, HOST), Grant)
-    assert isinstance(grant := leases.acquire('w1', uuid4().hex, HOST), Grant) and grant.job.kind == 'evaluation', (
-        'agents full'
-    )
+    assert (
+        isinstance(grant := leases.acquire('w1', uuid4().hex, HOST), Grant) and granted(db, grant).kind == 'evaluation'
+    ), 'agents full'
     assert leases.acquire('w1', uuid4().hex, HOST) is NoLease.SLOTS
     with db.session() as s:
         assert s.get_one(LeaseWorker, 'w1').no_lease == NoLease.SLOTS
@@ -87,7 +87,7 @@ def test_a_worker_whose_slots_are_full_says_slots_while_core_holds_back_a_job_fo
     db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
     """Core submits a job only to a free slot, so a full worker sees no queued lease: the jobs wait in core."""
-    leases = Leases(db, Recorder(db), TIMING, {'full': Pool(agents=0, evaluations=0)})
+    leases = Leases(db, Recorder(db), home_cas(db), TIMING, {'full': Pool(agents=0, evaluations=0)})
     leases.register('w1', 'full', '0.2.0', ['process'], HOST)
     leases.register('w2', 'full', '0.2.0', ['gpu'], HOST)
     assert leases.acquire('w1', uuid4().hex, HOST) is NoLease.NOTHING
@@ -102,7 +102,7 @@ def test_a_worker_whose_slots_are_full_says_slots_while_core_holds_back_a_job_fo
 
 def test_capacity_sums_the_slots_of_the_reachable_workers_that_are_not_under_pressure(db: Database) -> None:
     pools = {SERVE: Pool(agents=2), 'gpu': Pool(agents=0, evaluations=1, max_load=1.0)}
-    leases = Leases(db, Recorder(db), TIMING, pools)
+    leases = Leases(db, Recorder(db), home_cas(db), TIMING, pools)
     assert leases.capacity() == Capacity(0, 0), 'no worker yet'
     leases.register(SERVE, SERVE, '0.2.0', ['process'], HOST)
     assert leases.capacity() == Capacity(2, 2)
@@ -115,9 +115,9 @@ def test_capacity_sums_the_slots_of_the_reachable_workers_that_are_not_under_pre
         s.get_one(LeaseWorker, 'gpu1').seen_at = utcnow() - timedelta(seconds=TIMING.grace + 1)
         s.commit()
     assert leases.capacity() == Capacity(2, 2), 'unreachable: zero'
-    unbounded = Leases(db, Recorder(db), TIMING, {SERVE: Pool(), 'gpu': Pool()})
+    unbounded = Leases(db, Recorder(db), home_cas(db), TIMING, {SERVE: Pool(), 'gpu': Pool()})
     assert unbounded.capacity() == Capacity(None, 4)
-    without_gpu = Leases(db, Recorder(db), TIMING, {SERVE: Pool()})
+    without_gpu = Leases(db, Recorder(db), home_cas(db), TIMING, {SERVE: Pool()})
     assert without_gpu.capacity() == Capacity(None, 2), 'a pool that the configuration no longer has counts zero'
 
 
@@ -125,7 +125,7 @@ def test_capacity_is_the_free_slots_and_a_worker_under_pressure_starves_no_other
     db: Database, campaign: Campaign, tmp_path: Path
 ) -> None:
     """Two workers of two agent slots. The jobs of one take nothing from the other's slots, also under pressure."""
-    leases = Leases(db, Recorder(db), TIMING, {'pair': Pool(agents=2, min_memory_gb=4)})
+    leases = Leases(db, Recorder(db), home_cas(db), TIMING, {'pair': Pool(agents=2, min_memory_gb=4)})
     for name in ('w1', 'w2'):
         leases.register(name, 'pair', '0.2.0', ['process'], HOST)
     assert leases.capacity().agents == 4

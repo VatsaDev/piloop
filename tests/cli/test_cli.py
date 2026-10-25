@@ -69,7 +69,7 @@ from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import CandidateImported, RemeasureRequested
 from piloop.settings import Settings
 from piloop.version import direct_url, installed
-from tests.conftest import RESEARCH, WATCHDOG, at_head, example, hold_lock, wait_until
+from tests.conftest import RESEARCH, WATCHDOG, at_head, disk, example, hold_lock, wait_until
 from tests.daemon.test_serve import alive
 from tests.db.test_migrations import TOO_OLD, alembic
 from tests.test_lease import Recorder
@@ -821,7 +821,7 @@ def test_worker_list_shows_each_worker_its_sample_its_jobs_and_why_it_got_no_lea
     run_cli(['worker', 'list'])
     assert out().strip() == 'no worker yet: `piloop serve` starts one'
     with closing(Database(common.settings.database_url, actor=System.HUMAN)) as db:
-        leases = Leases(db, Recorder(db))
+        leases = Leases(db, Recorder(db), disk(common.settings.home))
         host = HostSample(at=utcnow(), cpus=4, load1=2.0, memory_available=8 * GB, disk_free=100 * GB)
         leases.register('serve', 'serve', '0.2.0', ['process'], host)
         leases.acquire('serve', uuid4().hex, host)
@@ -1787,7 +1787,12 @@ def test_an_in_place_restart_holds_the_lock_itself_and_migrates() -> None:
     command.downgrade(alembic(database), '0018')
     fd = acquire(common.settings)
     try:
-        migrate(create_engine(f'sqlite:///{database}'), backups=0, daemon=running_pid(common.settings))
+        migrate(
+            create_engine(f'sqlite:///{database}'),
+            cas=disk(common.settings.home),
+            backups=0,
+            daemon=running_pid(common.settings),
+        )
     finally:
         os.close(fd)
     assert revision_of(database) == HEAD

@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import shutil
@@ -100,6 +101,7 @@ from tests.conftest import (
     disk,
     events,
     factory,
+    home_cas,
     register,
     role_of,
     serving,
@@ -1776,7 +1778,7 @@ def lease_running(db: Database) -> None:
         ).all()
         for w in rows:
             now = utcnow()
-            job = {'kind': 'agent', 'agent_session': w.id}
+            job = home_cas(db).put(json.dumps({'kind': 'agent', 'agent_session': w.id}).encode())
             handle: dict[str, object] = {'runtime': w.runtime, 'data': w.handle}
             s.add(
                 Lease(
@@ -1784,7 +1786,7 @@ def lease_running(db: Database) -> None:
                     agent_session_id=w.id,
                     state=LeaseState.RUNNING,
                     worker='elsewhere',
-                    job=job,
+                    job_cid=job,
                     handle=handle,
                     renewed_at=now,
                     expires_at=now + timedelta(hours=1),

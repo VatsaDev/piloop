@@ -17,6 +17,7 @@ from piloop.db.models import Base
 from piloop.db.session import migrate
 from piloop.db.triggers import PERSISTENT, TEMP, Trigger, changelog, provenance
 from piloop.ids import TargetKind
+from tests.conftest import disk
 
 
 def trigger_names(con: sqlite3.Connection, schema: str = 'main') -> list[str]:
@@ -36,7 +37,7 @@ def test_every_trigger_is_one_statement_named_table_what_and_references_real_col
     """sqlite3 executes one statement at a time, so each render must be exactly one; the names are the convention."""
     path = tmp_path / 'piloop.db'
     engine = create_engine(f'sqlite:///{path}')
-    migrate(engine, backups=0, daemon=None)
+    migrate(engine, cas=disk(tmp_path), backups=0, daemon=None)
     engine.dispose()
     with closing(sqlite3.connect(path, isolation_level=None)) as con:
         con.execute(provenance.SESSION_ACTOR_TABLE)
@@ -95,7 +96,7 @@ def test_every_trigger_is_one_statement_named_table_what_and_references_real_col
             'idea_links_unlinked_event',
             'candidates_verdict_event',
             'candidates_origin_event',
-            'runs_brief_event',
+            'runs_brief_cid_event',
             'campaigns_status_event',
             'campaigns_type_event',
             'campaigns_parent_id_event',
@@ -132,7 +133,7 @@ def test_the_change_log_is_the_event_kinds_the_feed_documents() -> None:
             "'idea.unlinked'",
             "'candidate.verdict'",
             "'candidate.origin'",
-            "'run.brief'",
+            "'run.brief_cid'",
             "'campaign.status'",
             "'campaign.type'",
             "'campaign.parent_id'",
@@ -168,7 +169,7 @@ def test_recreate_is_a_filter_over_persistent_that_honours_requires(
     """
     path = tmp_path / 'piloop.db'
     engine = create_engine(f'sqlite:///{path}')
-    migrate(engine, backups=0, daemon=None)
+    migrate(engine, cas=disk(tmp_path), backups=0, daemon=None)
     with engine.begin() as conn:
         op = Operations(MigrationContext.configure(conn))
         for t in PERSISTENT:

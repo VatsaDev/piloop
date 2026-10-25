@@ -11,7 +11,10 @@ minutes and 0.1 USD.
 from collections.abc import Iterator
 
 import pytest
+from covalence import Cid
 
+from piloop.agents.roles import read_brief
+from piloop.plugins.cas.contract import CAS
 from piloop.plugins.runtime.contract import TAG_ENV
 from piloop.plugins.runtime.kit.tags import tagged
 from tests.conftest import wait_until
@@ -47,7 +50,8 @@ def test_the_brief_states_the_deadline(campaign: Smoke) -> None:
     wait_until(lambda: campaign.run_in('long', {'running'}) is not None, timeout=120)
     run = campaign.run_of('long')
     assert run is not None
-    assert '- Your session ends 5 minutes after it starts, at `$PILOOP_DEADLINE`' in run['brief']
+    brief = read_brief(CAS.selected({}).open(campaign.home), Cid(run['brief_cid']))  # a worker elsewhere has brief.md
+    assert '- Your session ends 5 minutes after it starts, at `$PILOOP_DEADLINE`' in brief
 
 
 @needs(test_the_brief_states_the_deadline)

@@ -120,9 +120,9 @@ class AgentJob(BaseModel):
     place: Place
     timeout: float
     """The seconds the agent may run, counted from its start, also across a restart of its worker."""
-    brief: str | None
-    """The agent's brief, which the worker writes to its log directory before the start: its first prompt names the
-    file."""
+    brief_cid: BlobAddress | None
+    """The agent's brief, a text blob in the CAS, which the worker writes to its log directory before the start: its
+    first prompt names the file."""
     spec: AgentStart | None
     """What the runtime starts, once the worker fills in its places. None for an agent that a previous daemon process
     left (``LeftJob``): it is re-attached, never started."""

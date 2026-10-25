@@ -820,8 +820,8 @@ class Run(Tracked, Base):
     """Whether the daemon scores the run's commits now. It is set when the implementer ends and the run gets its final
     ``status``, and cleared when the commits are judged and the idea moved on, whatever the idea's status. While it is
     set, the run keeps its place under ``[stop] max_runs``, and a restarted daemon resumes the scoring."""
-    brief: Mapped[str | None]
-    """The exact prompt that the implementer got."""
+    brief_cid: Mapped[Cid | None] = mapped_column(CidText)
+    """The exact prompt that the implementer got, a text blob in the CAS. NULL until the run starts."""
     started_at: Mapped[datetime | None]
     finished_at: Mapped[datetime | None]
     end: Mapped[RunEnd | None]
@@ -964,7 +964,7 @@ class Evaluation(Base):
 class Lease(Base):
     """A lease (``piloop.plugins.executor.kit.leases``): a time-limited claim on one job by one worker (``piloop.plugins.executor.kit.leases``).
 
-    The table is in core's schema until a plugin can own tables. ``WorkersExecutor.submit`` inserts a ``queued`` lease with its job description (``job``). A worker acquires it, starts the job and
+    The table is in core's schema until a plugin can own tables. ``WorkersExecutor.submit`` inserts a ``queued`` lease that names its job by address (``job_cid``). A worker acquires it, starts the job and
     renews the lease with a heartbeat every ``renew_seconds``. The id is the **fencing token**: it only grows, and
     a job's next lease always has a larger one. A report applies only on the live, newest lease of its job, so a worker
     that was presumed dead cannot overwrite newer work. Rows are kept: a refused report stays as a
@@ -996,8 +996,9 @@ class Lease(Base):
     state: Mapped[LeaseState] = mapped_column(default=LeaseState.QUEUED, server_default=LeaseState.QUEUED.value)
     worker: Mapped[str | None]
     """The worker that acquired it. NULL while it is queued."""
-    job: Mapped[dict[str, object]] = mapped_column(default=dict, server_default=EMPTY_JSON)
-    """The job description (``AgentJob``, ``EvaluationJob``): what to materialize, what to run, and what to return."""
+    job_cid: Mapped[Cid] = mapped_column(CidText)
+    """The job description (``AgentJob``, ``EvaluationJob``), a JSON blob in the CAS: what to materialize, what to run,
+    and what to return. One job queued again on a new lease is one blob."""
     handle: Mapped[dict[str, object]] = mapped_column(default=dict, server_default=EMPTY_JSON)
     """What the worker needs to find its job again after a restart: the runtime's handle of an agent, or the process
     group of an evaluator."""

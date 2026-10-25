@@ -25,6 +25,7 @@ from piloop.db.models import (
 from piloop.db.triggers.ddl import Event, Trigger
 from piloop.db.triggers.provenance import DAEMON_ACTOR, NOW, SESSION_ACTOR
 from piloop.ids import HOME, CampaignId, CandidateId, IdeaId, RoleName, TargetKind, TrackName
+from piloop.plugins.cas.contract import BlobAddress
 from piloop.plugins.verdict_rule.contract import Outcome
 
 type Row = Literal['NEW', 'OLD']
@@ -122,12 +123,13 @@ class CommentAcked(Changed[datetime]):
     acked_by: str | None
 
 
-class RunBriefChanged(EventModel):
-    """A brief was written or replaced: a steer. The lengths only, because a brief has thousands of characters."""
+class RunBriefChanged(Changed[BlobAddress]):
+    """A brief was written or replaced: a steer. ``old`` and ``new`` are the briefs' addresses: the text is in the CAS."""
 
-    kind: Literal['run.brief'] = 'run.brief'
-    old_length: Annotated[int | None, Sql('length(OLD.brief)')]
-    new_length: Annotated[int | None, Sql('length(NEW.brief)')]
+    kind: Literal['run.brief_cid'] = 'run.brief_cid'
+
+
+EventModel.retire('run.brief')  # 0.2.0 logged the lengths of runs.brief; the brief is a blob in the CAS now
 
 
 class IdeaLinked(EventModel):
@@ -322,12 +324,14 @@ def escalation() -> Trigger:
 # The one exception to `changed`: when the daemon writes a brief where there was none, the run starts (`run.started`),
 # and that is not a steer. Anyone else who writes a brief, or the daemon replacing one, steers the run.
 RUN_BRIEF = Trigger(
-    'runs_brief_event',
+    'runs_brief_cid_event',
     'runs',
     'AFTER UPDATE',
-    of=('brief',),
-    when=f"OLD.brief IS NOT NEW.brief AND NOT (OLD.brief IS NULL AND {SESSION_ACTOR} = '{DAEMON_ACTOR}')",
-    body=event_insert(SESSION_ACTOR, "'run'", 'NEW.id', payload(RunBriefChanged, 'NEW')),
+    of=('brief_cid',),
+    when=f"OLD.brief_cid IS NOT NEW.brief_cid AND NOT (OLD.brief_cid IS NULL AND {SESSION_ACTOR} = '{DAEMON_ACTOR}')",
+    body=event_insert(
+        SESSION_ACTOR, "'run'", 'NEW.id', payload(RunBriefChanged, 'NEW', old='OLD.brief_cid', new='NEW.brief_cid')
+    ),
     temp=True,
 )
 

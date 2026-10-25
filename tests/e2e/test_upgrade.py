@@ -54,7 +54,7 @@ RELEASE_HEAD = '0018'
 STEP_VERSION = '0.2.1'
 STEP = f'piloop=={STEP_VERSION}'
 """The release that the guide says to upgrade to first: its daemon keeps running while this checkout is installed."""
-RENAMES = Renames()
+RENAMES = Renames(columns={'brief': 'brief_cid'}, blobs=frozenset({('runs', 'brief_cid')}))
 """The renames since ``RELEASE`` that the upgrading guide documents. A rename of a later release goes here."""
 CONFIG_REWRITES = (
     *(f'harness.*.{key}' for key in ('interactive', 'startup_dialogs', 'busy_screens', 'failed_turn_screens')),

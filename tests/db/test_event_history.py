@@ -374,7 +374,7 @@ def test_the_shapes_of_0_1_0_are_rewritten_to_the_models(tmp_path: Path) -> None
                 'OriginChanged',
                 '{"kind":"candidate.origin","old":"run","new":"reference"}',
             ),
-            ('RunBriefChanged', '{"old_length":null,"new_length":12,"kind":"run.brief"}'),
+            ('UnknownEvent', '{"old_length":null,"new_length":12,"kind":"run.brief"}'),
             (
                 'CampaignStatusChanged',
                 '{"old":"active","new":"stopped","stopped_reason":"target","kind":"campaign.status"}',

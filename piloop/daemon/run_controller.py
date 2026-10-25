@@ -13,6 +13,7 @@ from functools import partial
 from pathlib import Path
 from typing import Final, Literal, assert_never
 
+from covalence import Cid
 from pydantic import ValidationError
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, undefer
@@ -30,7 +31,7 @@ from piloop.agents.results import (
     Ran,
     record,
 )
-from piloop.agents.roles import compose_brief, role
+from piloop.agents.roles import compose_brief, read_brief, role
 from piloop.campaign.campaigns import WORKSPACE, Sources, campaign_dir, checkout_of, record_of, repository, vcs_of
 from piloop.campaign.stop import attempts, park_cancelled, run_cancel, timeout as agent_timeout
 from piloop.config import TRANSCRIPT, CampaignConfig, Track
@@ -210,21 +211,21 @@ class RunController:
         self._runs_dir = home / RUNS
         self._home = home
         self._units_dir = home / 'units'
-        self._cas = cas if cas is not None else CAS.selected({}).open(home)
-        self.sources = Sources(self._cas, home, db)
+        self.cas = cas if cas is not None else CAS.selected({}).open(home)
+        self.sources = Sources(self.cas, home, db)
         """The artifacts of jobs: a campaign's repo of record, and its linked inputs in the CAS."""
         self._config = executor
         """The executor's ``[plugins.executor]``, as ``config.toml`` has it."""
         self._limits: tuple[tuple[str, str, datetime], ...] = ()
         """The limits that the executor has, as read: ``configure`` hands it the parameters when they change."""
-        results = CampaignResults(db, tracer, home, self._cas, lambda: self.launcher.cancelled.is_set())
+        results = CampaignResults(db, tracer, home, self.cas, lambda: self.launcher.cancelled.is_set())
         network = network if network is not None else NETWORKS.selected({}).open(NetworkHost(Tokens(db)))
         host = Host(
             db,
             results,
             tracer,
             home,
-            self._cas,
+            self.cas,
             partial(checkout_of, db),
             partial(record_of, db),
             runtime_factory,
@@ -376,23 +377,25 @@ class RunController:
                 campaign = idea.campaign
                 cfg = campaign.config
                 base = s.get_one(Candidate, run.base_candidate_id)
-                brief = run.brief or compose_brief(
-                    role(cfg, run.role, Path(campaign.path)),
-                    campaign,
-                    Agent(role=run.role, session=agent_session_id),
-                    reason=f'idea#{idea.id} is ready',
-                    context=self._context(
-                        s,
-                        cfg,
-                        idea,
-                        base,
-                        Agent(role=run.role, session=agent_session_id).signature,
-                        agent_timeout(s, campaign, cfg, cfg.role(run.role).timeout, utcnow()),
-                    ),
-                    track=cfg.track(idea.track),
-                    wake=lessons_overview(s, campaign, cfg.wake_budget(run.role)),
-                )
-                run.brief = brief
+                if run.brief_cid is None:
+                    composed = compose_brief(
+                        role(cfg, run.role, Path(campaign.path)),
+                        campaign,
+                        Agent(role=run.role, session=agent_session_id),
+                        reason=f'idea#{idea.id} is ready',
+                        context=self._context(
+                            s,
+                            cfg,
+                            idea,
+                            base,
+                            Agent(role=run.role, session=agent_session_id).signature,
+                            agent_timeout(s, campaign, cfg, cfg.role(run.role).timeout, utcnow()),
+                        ),
+                        track=cfg.track(idea.track),
+                        wake=lessons_overview(s, campaign, cfg.wake_budget(run.role)),
+                    )
+                    run.brief_cid = self.cas.put(composed.encode())
+                brief = run.brief_cid
                 run.status = RunStatus.RUNNING
                 # A relaunch keeps the start time, so comments since then are sent to the new implementer again.
                 run.started_at = run.started_at or utcnow()
@@ -406,7 +409,7 @@ class RunController:
                 s.commit()
         self._finish(run_id, agent_session_id, brief, span)
 
-    def _finish(self, run_id: RunId, agent_session_id: AgentSessionId, brief: str | None, span: Span) -> None:
+    def _finish(self, run_id: RunId, agent_session_id: AgentSessionId, brief: Cid | None, span: Span) -> None:
         """Run the agent, then record the outcome, score the commits and settle the idea.
 
         With a ``brief``, a new agent starts in a new worktree. With None, the daemon re-attaches to the agent that is
@@ -553,9 +556,11 @@ class RunController:
                 )
                 s.add(agent_session)
                 s.flush()
-                # Edit the brief, do not compose it again: a human may have changed it (``UPDATE runs SET brief``).
+                # Edit the brief, do not compose it again: a human may have changed it (``UPDATE runs SET brief_cid``).
                 signed = rf'\b({re.escape(run.role)})#{agent_session_id}\b'
-                run.brief = re.sub(signed, rf'\g<1>#{agent_session.id}', run.brief or '')
+                assert run.brief_cid is not None  # the launch that failed wrote it
+                resigned = re.sub(signed, rf'\g<1>#{agent_session.id}', read_brief(self.cas, run.brief_cid))
+                run.brief_cid = self.cas.put(resigned.encode())
                 relaunched = RunRelaunched(agent_session=agent_session_id, launches=launches)
                 emit(s, relaunched, TargetRef(TargetKind.RUN, run_id), System.DAEMON)
                 s.commit()
@@ -602,7 +607,7 @@ class RunController:
         They are recorded (``RunReceived``), for ``resume``. The worker saved the unsaved work first, as a version of its own, so its candidate is ``recovered``
         (``_score``).
         """
-        versions = repo.receive(self._cas, work, base_revision) if work is not None else []
+        versions = repo.receive(self.cas, work, base_revision) if work is not None else []
         with self._db.session() as s:
             received = RunReceived(revisions=[v.revision for v in versions])
             emit(s, received, TargetRef(TargetKind.RUN, run_id), System.DAEMON)

@@ -218,7 +218,7 @@ Roles, tracks, margins and floors are in `campaigns.config`.
 - The same triggers keep a change log in `events`, signed by the same actor. Each payload has its `kind`, and these have
   `old` and `new`:
   `idea.status`, `idea.priority`, `idea.track`, `idea.base_candidate_id`, `candidate.verdict` (with `verdict_by` and
-  `verdict_reason`), `candidate.origin`, `run.brief` (lengths only), `campaign.status` (with `stopped_reason`), `campaign.paused` (with
+  `verdict_reason`), `candidate.origin`, `run.brief_cid` (the old and new brief's CID), `campaign.status` (with `stopped_reason`), `campaign.paused` (with
   `paused_reason`). An inserted or deleted `idea_links` row is `idea.linked` or `idea.unlinked` on its idea, with the
   target and the kind.
 - A DELETE of an idea, comment or candidate leaves a `<kind>.deleted` event with the row's key columns.

@@ -94,7 +94,7 @@ class WorkersExecutor:
 
     def __init__(self, host: Host, config: Workers) -> None:
         timing = Timing(config.renew_seconds, config.grace_seconds, config.toleration_seconds)
-        self.leases = Leases(host.db, host.results, timing, config.pools)
+        self.leases = Leases(host.db, host.results, host.cas, timing, config.pools)
         self._changed = host.db.changed
         self._cas = host.cas
         self._send = partial(jobs.send_of_record, host.cas, host.records)

@@ -10,6 +10,7 @@ from contextlib import closing
 from pathlib import Path
 
 import pytest
+from covalence import Cid
 from inline_snapshot import snapshot
 from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
@@ -312,6 +313,12 @@ def test_one_update_of_a_tracked_column_is_one_event_and_the_provenance_stamps_s
     ]
 
 
+MINE, COMPOSED, REVISED = (
+    str(Cid.of(text)) for text in (b'do it my way', b'the composed brief', b'the brief, revised')
+)
+"""Briefs' addresses: a brief's text is in the CAS."""
+
+
 def test_verdict_brief_and_campaign_status_changes_carry_what_the_feed_needs(
     db: Database, tmp_path: Path, con: sqlite3.Connection
 ) -> None:
@@ -325,7 +332,7 @@ def test_verdict_brief_and_campaign_status_changes_carry_what_the_feed_needs(
         con,
         "UPDATE candidates SET verdict = 'interesting', verdict_by = 'human', verdict_reason = 'not a win, a lead' WHERE id = 1",
     )
-    sql.run(con, "UPDATE runs SET brief = 'do it my way' WHERE id = 1")
+    sql.run(con, f"UPDATE runs SET brief_cid = '{MINE}' WHERE id = 1")
     sql.run(con, "UPDATE campaigns SET status = 'stopped', stopped_reason = 'enough' WHERE id = 1")
     sql.run(con, "UPDATE campaigns SET status = 'active', stopped_reason = NULL WHERE id = 1")
     assert events(con) == snapshot(
@@ -338,7 +345,7 @@ def test_verdict_brief_and_campaign_status_changes_carry_what_the_feed_needs(
                 1,
                 '{"kind":"candidate.verdict","old":null,"new":"interesting","verdict_by":"human","verdict_reason":"not a win, a lead"}',
             ),
-            ('run.brief', 'human', 'run', 1, '{"kind":"run.brief","old_length":null,"new_length":12}'),
+            ('run.brief_cid', 'human', 'run', 1, f'{{"kind":"run.brief_cid","old":null,"new":"{MINE}"}}'),
             (
                 'campaign.status',
                 'human',
@@ -356,14 +363,14 @@ def test_verdict_brief_and_campaign_status_changes_carry_what_the_feed_needs(
         ]
     )
     with closing(sql.connect(tmp_path / 'piloop.db', actor=ACTOR)) as daemon:
-        sql.run(daemon, 'UPDATE runs SET brief = NULL WHERE id = 1')
-        sql.run(daemon, "UPDATE runs SET brief = 'the composed brief' WHERE id = 1")
+        sql.run(daemon, 'UPDATE runs SET brief_cid = NULL WHERE id = 1')
+        sql.run(daemon, f"UPDATE runs SET brief_cid = '{COMPOSED}' WHERE id = 1")
         assert events(daemon, since=5) == snapshot(
-            [('run.brief', 'daemon', 'run', 1, '{"kind":"run.brief","old_length":12,"new_length":null}')]
+            [('run.brief_cid', 'daemon', 'run', 1, f'{{"kind":"run.brief_cid","old":"{MINE}","new":null}}')]
         ), 'the daemon composing a brief where there was none is the run starting, not a steer; replacing one is'
-        sql.run(daemon, "UPDATE runs SET brief = 'the brief, revised' WHERE id = 1")
+        sql.run(daemon, f"UPDATE runs SET brief_cid = '{REVISED}' WHERE id = 1")
         assert events(daemon, since=6) == snapshot(
-            [('run.brief', 'daemon', 'run', 1, '{"kind":"run.brief","old_length":18,"new_length":18}')]
+            [('run.brief_cid', 'daemon', 'run', 1, f'{{"kind":"run.brief_cid","old":"{COMPOSED}","new":"{REVISED}"}}')]
         )
     assert f"= '{ACTOR}'" in sql.ACTOR_TRIGGERS, 'the SQL names the daemon by its actor string'
 

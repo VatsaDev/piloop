@@ -244,7 +244,7 @@ def schema(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """
     path = tmp_path_factory.mktemp('schema') / 'piloop.db'
     database = Database(f'sqlite:///{path}', actor=ACTOR)
-    migrate(database.engine, backups=0, daemon=None)
+    migrate(database.engine, cas=disk(path.parent), backups=0, daemon=None)
     database.close()
     return path
 
@@ -276,7 +276,7 @@ def workers(monkeypatch: pytest.MonkeyPatch) -> weakref.WeakSet[Worker]:
 def db(tmp_path: Path, schema: Path, workers: weakref.WeakSet[Worker]) -> Iterator[Database]:
     database = Database(f'sqlite:///{at_head(schema, tmp_path / "piloop.db")}', actor=ACTOR)
     migrate(
-        database.engine, backups=0, daemon=None
+        database.engine, cas=disk(tmp_path), backups=0, daemon=None
     )  # a no-op at head, as when a client opens a database the daemon created
     yield database
     for worker in list(workers):  # a job that the test left running ends before its database closes
@@ -521,6 +521,11 @@ def workers_of(controller: RunController) -> WorkersExecutor:
 def disk(home: Path) -> Cas:
     """The default CAS of the home ``home``: ``disk``, under ``<home>/store``."""
     return CAS.selected({}).open(home)
+
+
+def home_cas(db: Database) -> Cas:
+    """The default CAS of the home of ``db``, the directory of its file."""
+    return disk(Path(db.engine.url.database or '').parent)
 
 
 def factory(rt: Runtime) -> RuntimeFactory:

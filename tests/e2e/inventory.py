@@ -16,6 +16,8 @@ from contextlib import closing
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from covalence import Cid
+
 type Row = dict[str, object]
 
 SKIPPED_FILES = frozenset({'piloop.db', 'piloop.db-wal', 'piloop.db-shm', 'serve.log', 'serve.pid'})
@@ -46,6 +48,8 @@ class Renames:
     ``[roles.<role>]`` table of a stored config."""
     payload_keys: Mapping[str, str] = field(default_factory=dict)
     """A renamed top-level key of an event's payload."""
+    blobs: frozenset[tuple[str, str]] = frozenset()
+    """``(table, column)``, in the new names, whose text moved into the CAS: the new value is the text's CID."""
 
     def row(self, table: str, row: Row) -> Row:
         """``row`` of ``table`` (its new name) in the new names."""
@@ -54,6 +58,8 @@ class Renames:
     def value(self, table: str, column: str, value: object) -> object:
         if not isinstance(value, str):
             return value
+        if (table, column) in self.blobs:
+            return str(Cid.of(value.encode()))
         if column == 'target_kind':
             value = self.target_kinds.get(value, value)
         if table == 'events' and column == 'kind':

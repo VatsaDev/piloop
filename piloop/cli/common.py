@@ -172,7 +172,7 @@ def migrate(db: Database) -> Path | None:
     and when the backup fails.
     """
     try:
-        return migrate_schema(db.engine, backups=settings.migration_backups, daemon=running_pid(settings))
+        return migrate_schema(db.engine, cas=cas(), backups=settings.migration_backups, daemon=running_pid(settings))
     except (OlderDaemon, SchemaMismatch, BackupFailed) as e:
         db.close()
         raise SystemExit(str(e)) from e

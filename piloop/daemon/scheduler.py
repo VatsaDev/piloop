@@ -1625,7 +1625,13 @@ class Scheduler:
         sources = self._controller.sources  # outside the session: it puts the linked inputs into the CAS
         artifact = sources.agent(campaign, base.revision)
         place = sweep_place(agent_session_id)
-        self._controller.launcher.launch(agent_session_id, brief=brief, place=place, artifact=artifact, timeout=timeout)
+        self._controller.launcher.launch(
+            agent_session_id,
+            brief=self._controller.cas.put(brief.encode()),
+            place=place,
+            artifact=artifact,
+            timeout=timeout,
+        )
 
     def _context(
         self, s: Session, campaign: Campaign, cfg: CampaignConfig, agent_session: AgentSession, now: datetime
