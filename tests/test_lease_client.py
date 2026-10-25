@@ -15,6 +15,7 @@ import httpx2 as httpx
 import pytest
 from covalence import Cid
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from pydantic import ValidationError
 from pytest_mock import MockerFixture
 
 from piloop.db.models import Campaign, LeaseState, NoLease, TokenScope
@@ -27,6 +28,7 @@ from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentJob, AgentKey, MissingBlobs, Prompt, RepoId
 from piloop.plugins.executor.kit import remote as remote_module
 from piloop.plugins.executor.kit.client import Dismissed, LeaseClient, Local, WorkerInfo
+from piloop.plugins.executor.kit.clones import NotSent
 from piloop.plugins.executor.kit.door import Call, Relayed
 from piloop.plugins.executor.kit.leases import (
     Answer,
@@ -39,9 +41,10 @@ from piloop.plugins.executor.kit.leases import (
     StaleReport,
     Work,
 )
-from piloop.plugins.executor.kit.remote import Remote, lease_routes
+from piloop.plugins.executor.kit.remote import Remote, SendAsked, lease_routes
 from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import Https, HttpsNetwork
+from piloop.plugins.vcs.contract import MAX_HAVE
 from tests.conftest import Dial, disk, home_cas, wait_until
 from tests.fixtures.netfault import CutResponse, Proxy
 from tests.test_lease import (
@@ -72,10 +75,10 @@ def echoed(job: AgentJob, call: Call) -> Relayed:
     return Relayed(stdout=f'{job.agent_session}: {" ".join(call.argv)} <{call.stdin}>', exit_code=3)
 
 
-def bundled(repo: RepoId, revisions: Sequence[Revision], have: Sequence[Revision]) -> Cid | None:
-    """The server's half of ``send``, which records what it was asked: versions that the caller has are None."""
+def bundled(repo: RepoId, revisions: Sequence[Revision], have: Sequence[Revision]) -> list[Cid]:
+    """The server's half of ``send``, which records what it was asked: versions that the caller has are none."""
     SENT.append((repo, list(revisions), list(have)))
-    return None if set(revisions) <= set(have) else Cid.of(''.join(revisions).encode())
+    return [] if set(revisions) <= set(have) else [Cid.of(''.join(revisions).encode())]
 
 
 @pytest.fixture
@@ -318,7 +321,7 @@ def test_a_revoked_token_and_the_servers_own_name_are_dismissed(remote: Callable
 
 def test_a_worker_of_another_protocol_is_dismissed_with_the_servers_version(remote: Callable[..., Remote]) -> None:
     with pytest.raises(
-        Dismissed, match=r'\(426\): the server runs piloop .+, with protocol 5, and the worker protocol 1'
+        Dismissed, match=r'\(426\): the server runs piloop .+, with protocol 6, and the worker protocol 1'
     ):
         remote().register(INFO.model_copy(update={'protocol': 1}))
 
@@ -441,14 +444,25 @@ def test_a_long_poll_waits_no_longer_than_the_server_holds_one() -> None:
     assert json.loads(sent[0].content) == {'wait': 25, 'after': 0}
 
 
+def test_a_worker_asks_for_versions_again_while_the_server_builds_them_until_it_stops() -> None:
+    w1, sent = answering(httpx.Response(204), httpx.Response(204), httpx.Response(200, json=[str(Cid.of(b'c1'))]))
+    assert w1.send(RepoId(CampaignId(3)), [Revision('c1')], []) == [Cid.of(b'c1')] and len(sent) == 3
+    w1, sent = answering(httpx.Response(204))
+    w1._stop.set()
+    with pytest.raises(NotSent, match='the worker stops'):
+        w1.send(RepoId(CampaignId(3)), [Revision('c1')], [])
+
+
 def test_a_worker_asks_the_server_for_versions_and_gets_their_address_in_the_cas(remote: Callable[..., Remote]) -> None:
     """No bytes come through the route: the server puts the bundle in the CAS, and the worker reads it from there."""
     worker = remote('w1')
     SENT.clear()
     c1, c2, c3 = Revision('c1'), Revision('c2'), Revision('c3')
-    assert worker.send(RepoId(CampaignId(3)), [c2, c3], [c1]) == Cid.of(b'c2c3')
-    assert worker.send(RepoId(CampaignId(3)), [c1], [c1]) is None, 'the clone has it'
+    assert worker.send(RepoId(CampaignId(3)), [c2, c3], [c1]) == [Cid.of(b'c2c3')]
+    assert worker.send(RepoId(CampaignId(3)), [c1], [c1]) == [], 'the clone has it'
     assert SENT == [(3, ['c2', 'c3'], ['c1']), (3, ['c1'], ['c1'])], "the server knows the campaign's vcs provider"
+    with pytest.raises(ValidationError, match='too_long'):  # the route's body: the server refuses it too (422)
+        SendAsked(repo=RepoId(CampaignId(3)), revisions=[c2], have=[c1] * (MAX_HAVE + 1), wait=0)
 
 
 def test_an_agents_relayed_call_runs_on_its_live_lease_only_and_a_lost_answer_is_not_sent_again(

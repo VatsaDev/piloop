@@ -26,11 +26,15 @@ from piloop.store.tree import Copies, Copy, Manifest, Materialised, Seen, change
 WORKSPACE = 'workspace'
 """Where the campaign's shared workspace goes in a checkout (``Source.workspace``)."""
 
-type Fetch = Callable[[RepoId, Sequence[Revision], Sequence[Revision]], Cid | None]
-"""Ask the server to put what ``revisions`` of ``repo`` have beyond the revisions ``have`` into the CAS, and return its
-address: ``Remote.send``."""
+type Fetch = Callable[[RepoId, Sequence[Revision], Sequence[Revision]], list[Cid]]
+"""Ask the server to put what ``revisions`` of ``repo`` have beyond the revisions ``have`` into the CAS, and return the
+addresses to take, in order: ``Remote.send``. Raises ``NotSent``."""
 type Opener = Callable[[Vcs, Path], Repository]
 """How a machine opens its clone of a repo of record: ``of_record`` or ``own_clone``."""
+
+
+class NotSent(Exception):
+    """The server could not put the versions that a clone lacks into the CAS. The message says why."""
 
 
 def of_record(vcs: Vcs, path: Path) -> Repository:

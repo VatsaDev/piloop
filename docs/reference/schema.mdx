@@ -185,6 +185,15 @@ CREATE TABLE evaluators (
 	UNIQUE (campaign_id, "key"),
 	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE
 );
+CREATE TABLE first_transfers (
+	campaign_id INTEGER NOT NULL,
+	revision VARCHAR NOT NULL,
+	blob VARCHAR NOT NULL,
+	PRIMARY KEY (campaign_id),
+	CONSTRAINT "first_transfers.revision must be a text value" CHECK (typeof(revision) IN ('text')),
+	CONSTRAINT "first_transfers.blob must be a text value" CHECK (typeof(blob) IN ('text')),
+	FOREIGN KEY(campaign_id) REFERENCES campaigns (id) ON DELETE CASCADE
+);
 CREATE TABLE ideas (
 	id INTEGER NOT NULL,
 	campaign_id INTEGER NOT NULL,

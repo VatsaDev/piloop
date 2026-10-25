@@ -2,8 +2,9 @@
 
 import re
 import shutil
+import subprocess
 import threading
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -41,10 +42,18 @@ def add_worktree(repo: Repo, path: Path, sha: str, links: dict[str, Path]) -> Re
     return Repo(path)
 
 
-def has(repo: Repo, sha: str) -> bool:
-    """Whether ``repo`` has commit ``sha``."""
-    status, _, _ = repo.git.cat_file('-e', f'{sha}^{{commit}}', with_extended_output=True, with_exceptions=False)
-    return status == 0
+def commits(repo: Repo, shas: Sequence[str]) -> list[str]:
+    """Those of ``shas`` that are commits in ``repo``, in one ``git cat-file``: a campaign can name thousands."""
+    if not shas:
+        return []
+    checked = subprocess.run(
+        ['git', 'cat-file', '--batch-check=%(objecttype)'],
+        cwd=repo.common_dir,
+        input=''.join(f'{sha}^{{commit}}\n' for sha in shas).encode(),
+        capture_output=True,
+        check=True,
+    )
+    return [sha for sha, kind in zip(shas, checked.stdout.decode().splitlines(), strict=True) if kind == 'commit']
 
 
 def untracked(repo: Repo, sha: str, names: Iterable[str]) -> list[str]:
@@ -93,6 +102,13 @@ def _worktrees_under(repo: Repo, root: Path) -> list[Path]:
 def pin(repo: Repo, ref: str, sha: str) -> None:
     """Point ``ref`` at ``sha``, so that garbage collection keeps the commit without adding a branch."""
     repo.git.update_ref(ref, sha)
+
+
+def pin_all(repo: Repo, refs: Mapping[str, str]) -> None:
+    """``pin`` each ref at its commit, in one ``git update-ref``."""
+    if refs:
+        lines = ''.join(f'update {ref} {sha}\n' for ref, sha in refs.items())
+        subprocess.run(['git', 'update-ref', '--stdin'], cwd=repo.common_dir, input=lines.encode(), check=True)
 
 
 def pinned(repo: Repo, prefix: str) -> list[str]:

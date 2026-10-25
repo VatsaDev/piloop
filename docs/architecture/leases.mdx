@@ -79,7 +79,8 @@ piloop limits unset executor.pools.serve.evaluations
 ## A worker on another machine
 
 `piloop worker` takes the leases of its pool over HTTPS. It reads and writes the CAS itself, and keeps clones of the
-campaign's repo under its home, filled from the CAS. [Workers on other machines](/guides/remote-workers) sets one up.
+campaign's repo under its home, filled from the CAS. A new clone starts from a copy of the whole repo that the server
+builds once per campaign, then takes only what is newer. [Workers on other machines](/guides/remote-workers) sets one up.
 
 ## Workers that the server starts
 

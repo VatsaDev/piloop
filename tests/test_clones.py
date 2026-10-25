@@ -3,6 +3,7 @@
 import subprocess
 import threading
 from collections.abc import Sequence
+from functools import partial
 from pathlib import Path
 
 import pytest
@@ -14,9 +15,10 @@ from piloop.plugins.cas.contract import Cas
 from piloop.plugins.executor.contract import RepoId, Source, Workspace
 from piloop.plugins.executor.kit.clones import WORKSPACE, Clones, Fetch, of_record, own_clone
 from piloop.plugins.executor.kit.jobs import remote_site
+from piloop.plugins.vcs.contract import MAX_HAVE
 from piloop.plugins.vcs.git import FETCHED, Git
 from piloop.plugins.vcs.git.bundles import bundle, unbundle
-from piloop.plugins.vcs.git.commands import has
+from piloop.plugins.vcs.git.commands import commits
 from piloop.store.tree import Manifest, Missing, put_tree
 from tests.conftest import disk
 
@@ -78,10 +80,10 @@ def test_a_bundle_that_needs_a_commit_the_repo_lacks_is_refused(tmp_path: Path, 
 
 
 def fetch_from(store: Cas, origin: Path, asked: list[Sequence[str]]) -> Fetch:
-    def fetch(repo: RepoId, revisions: Sequence[Revision], have: Sequence[Revision]) -> Cid | None:
+    def fetch(repo: RepoId, revisions: Sequence[Revision], have: Sequence[Revision]) -> list[Cid]:
         assert repo == REPO
         asked.append(have)
-        return bundle(store, Repo(origin), revisions, have)
+        return [blob] if (blob := bundle(store, Repo(origin), revisions, have)) is not None else []
 
     return fetch
 
@@ -100,6 +102,22 @@ def test_a_clone_that_lacks_the_commit_is_filled_from_a_bundle(tmp_path: Path, o
     clones.remove(source, tmp_path / 'wt')
     clones.checkout(source, tmp_path / 'wt')
     assert len(asked) == 1, 'it has the commit now'
+
+
+def test_a_clone_names_only_its_newest_commits_as_those_it_has(tmp_path: Path, origin: Path, store: Cas) -> None:
+    """A clone pins every commit that it fetched: over a campaign, it would name thousands."""
+    mine = clone(origin, tmp_path / 'clone')
+    pins = []
+    for i in range(MAX_HAVE + 5):
+        when = {'GIT_COMMITTER_DATE': f'{1_700_000_000 + i} +0000'}
+        sha = Repo(mine).git.commit_tree('HEAD^{tree}', '-p', 'HEAD', '-m', str(i), env=when)
+        Repo(mine).git.update_ref(f'{FETCHED}{sha}', sha)
+        pins.append(sha)
+    head = commit(origin, 'b.txt', 'b')
+    asked: list[Sequence[str]] = []
+    Git().open(mine).fetch(store, [Revision(head)], partial(fetch_from(store, origin, asked), REPO))
+    assert len(asked[0]) == MAX_HAVE and pins[-1] in asked[0] and pins[0] not in asked[0]
+    assert commits(Repo(mine), [head])
 
 
 def workspace_of(store: Cas, root: Path, files: dict[str, str]) -> Workspace:
@@ -124,13 +142,13 @@ def test_a_clone_gets_the_commits_of_the_earlier_candidates_that_an_agent_reads_
     Repo(mine).git.reset('-q', '--hard', base)
     Repo(mine).git.reflog('expire', '--expire=now', '--all')
     Repo(mine).git.gc('-q', '--prune=now')
-    assert not has(Repo(mine), sibling)
+    assert not commits(Repo(mine), [sibling])
     clones = Clones(store, {REPO: mine}.__getitem__, of_record, fetch_from(store, origin, []), tmp_path)
     source = Source(vcs=Git(), repo=REPO, revision=head, history=[sibling, head, Revision('f' * 40)])
     clones.checkout(source, tmp_path / 'wt')
     assert Repo(tmp_path / 'wt').git.show(f'{sibling}:sibling.txt') == 'a candidate of another run'
     assert Repo(mine).git.rev_parse(f'{FETCHED}{sibling}') == sibling
-    assert not has(Repo(mine), 'f' * 40), 'one that the server lacks is left out'
+    assert not commits(Repo(mine), ['f' * 40]), 'one that the server lacks is left out'
 
 
 def test_links_and_the_workspace_are_put_read_only(tmp_path: Path, origin: Path, store: Cas) -> None:
@@ -163,8 +181,8 @@ def test_bring_back_is_none_without_a_commit(tmp_path: Path, origin: Path, store
 
 
 def test_a_commit_that_the_server_cannot_bundle_fails_the_checkout(tmp_path: Path, origin: Path, store: Cas) -> None:
-    def nothing(repo: RepoId, revisions: Sequence[Revision], have: Sequence[Revision]) -> Cid | None:
-        return None
+    def nothing(repo: RepoId, revisions: Sequence[Revision], have: Sequence[Revision]) -> list[Cid]:
+        return []
 
     clones = Clones(store, {REPO: origin}.__getitem__, of_record, nothing, tmp_path)
     with pytest.raises(GitCommandError):

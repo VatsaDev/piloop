@@ -28,8 +28,8 @@ from tests.conftest import disk, home_cas, wait_until
 from tests.test_lease import Recorder
 
 
-def no_send(repo: RepoId, revisions: Sequence[Revision], have: Sequence[Revision]) -> Cid | None:
-    return None
+def no_send(repo: RepoId, revisions: Sequence[Revision], have: Sequence[Revision]) -> list[Cid]:
+    return []
 
 
 def echoed(job: AgentJob, call: Call) -> Relayed:

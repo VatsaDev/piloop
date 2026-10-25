@@ -6,16 +6,17 @@ body says. A refusal has a typed body, ``RefusalBody``. What ``Remote`` does wit
 
 | Status | The worker |
 |---|---|
-| 409 with an ``error`` of ``CONFLICTS`` | raises its exception: ``StaleLease`` stops the job, ``NotAddressed`` drops an answer to a message that was not its, ``MissingBlobs`` loses the job whose report names blobs that the server's CAS lacks, ``Dismissed`` ends the worker (no such pool) |
+| 409 with an ``error`` of ``CONFLICTS`` | raises its exception: ``StaleLease`` stops the job, ``NotAddressed`` drops an answer to a message that was not its, ``MissingBlobs`` loses the job whose report names blobs that the server's CAS lacks, ``NotSent`` fails the job whose versions the server could not send, ``Dismissed`` ends the worker (no such pool) |
 | 408, 429, 5xx, or no answer (``RETRIED``) | tries again with backoff, with the same body and so the same request id |
 | any other 4xx | ``Dismissed``: stops its jobs, keeps their reports, and exits. 401: the token is unknown or revoked. 403: a token named ``serve``. 404: the server's executor takes no workers. 412: the worker's CAS is not the server's. 422 or 426: another piloop |
 
-``messages`` is a long-poll: the server awaits a commit between two reads (``Route.long_poll``), and holds no thread.
+``messages`` and ``send`` are long-polls: the server awaits a commit between two reads (``Route.long_poll``), and holds
+no thread.
 
 After the GitHub Actions runner (``acquirejob``, ``renewjob``) and Buildkite agent v3 (``accept``, ``start``,
 ``finish``). A grant names its job by address in the CAS, and the job names its data so: the worker reads and writes the
-CAS itself, and no bytes come through these routes. ``send`` asks the server to put a version that the worker's clone
-lacks into the CAS, and answers its address.
+CAS itself, and no bytes come through these routes. ``send`` asks the server to put the versions that the worker's
+clone lacks into the CAS, and answers their addresses (``transfers``).
 """
 
 import math
@@ -29,7 +30,7 @@ from time import monotonic
 
 import httpx2 as httpx
 from covalence import Cid
-from pydantic import BaseModel, RootModel, ValidationError
+from pydantic import BaseModel, Field, RootModel, ValidationError
 
 from piloop.db.models import NoLease
 from piloop.ids import Revision
@@ -40,7 +41,7 @@ from piloop.plugins.cas.contract import BlobAddress, Cas
 from piloop.plugins.executor.contract import AgentReport, EvaluationReport, MissingBlobs, RepoId, Report
 from piloop.plugins.executor.kit.capacity import HostSample
 from piloop.plugins.executor.kit.client import PROTOCOL, Dismissed, Local, Registration, WorkerInfo
-from piloop.plugins.executor.kit.clones import Fetch
+from piloop.plugins.executor.kit.clones import NotSent
 from piloop.plugins.executor.kit.door import RELAY_SECONDS, Call, Relayed
 from piloop.plugins.executor.kit.leases import (
     DEFAULT_TIMING,
@@ -58,6 +59,8 @@ from piloop.plugins.executor.kit.leases import (
     Work,
 )
 from piloop.plugins.executor.kit.relay import LeaseCall, Run
+from piloop.plugins.executor.kit.transfers import Send
+from piloop.plugins.vcs.contract import MAX_HAVE
 
 FIRST_BACKOFF = 0.2
 MAX_BACKOFF = 5.0
@@ -74,6 +77,7 @@ class Failure(StrEnum):
     STALE_LEASE = 'stale_lease'
     NOT_ADDRESSED = 'not_addressed'
     MISSING_BLOBS = 'missing_blobs'
+    NOT_SENT = 'not_sent'
     DISMISSED = 'dismissed'
     RESERVED = 'reserved'
     PROTOCOL = 'protocol'
@@ -84,6 +88,7 @@ CONFLICTS: dict[type[Exception], Failure] = {
     StaleLease: Failure.STALE_LEASE,
     NotAddressed: Failure.NOT_ADDRESSED,
     MissingBlobs: Failure.MISSING_BLOBS,
+    NotSent: Failure.NOT_SENT,
     Dismissed: Failure.DISMISSED,
 }
 """What a lease call raises, and the ``error`` of the 409 that it becomes. ``Remote`` raises it again."""
@@ -158,24 +163,24 @@ class Queued(BaseModel):
     error: str | None
 
 
-class SendAsked(BaseModel):
-    """The body of ``send``: versions of a repo of record, and the versions that the worker's clone has."""
+class SendAsked(Polled):
+    """The body of ``send``: versions of a repo of record, the versions that the worker's clone has, and the wait."""
 
     repo: RepoId
     revisions: list[Revision]
-    have: list[Revision]
+    have: list[Revision] = Field(max_length=MAX_HAVE)
 
 
-class Sent(RootModel[BlobAddress | None]):
-    """The answer of ``send``: the transfer's address in the CAS, or None when the clone has the version already."""
+class Sent(RootModel[list[BlobAddress]]):
+    """The answer of ``send``: the addresses in the CAS to take, in order. Empty: the clone has the versions already."""
 
 
-def lease_routes(leases: Leases, changed: Changed, cas: Cas, send: Fetch, cli: Run) -> list[Route]:
+def lease_routes(leases: Leases, changed: Changed, cas: Cas, send: Send, cli: Run) -> list[Route]:
     """The routes of the ``LeaseClient`` calls, each made on ``Local`` as the caller, ``send`` and ``cli``.
 
-    ``changed`` is ``Database.changed`` of the leases' database: what ``messages`` awaits between two reads.
-    ``cas`` is the server's, which ``register`` checks that the worker shares (``WorkerInfo.cas_probe``). ``send``
-    puts versions from the repo of record into it (``jobs.send_of_record``). ``cli`` runs a relayed call of an
+    ``changed`` is ``Database.changed`` of the leases' database: what ``messages`` and ``send`` await between two
+    reads. ``cas`` is the server's, which ``register`` checks that the worker shares (``WorkerInfo.cas_probe``).
+    ``send`` puts versions from the repo of record into it (``FirstTransfers.send``). ``cli`` runs a relayed call of an
     agent, on a live lease of the caller (``relay.Runner``).
     """
     return [
@@ -187,7 +192,7 @@ def lease_routes(leases: Leases, changed: Changed, cas: Cas, send: Fetch, cli: R
         Route('lost', Lost, _as_caller(leases, _lost)),
         Route.long_poll('messages', Read, _as_caller(leases, _messages), changed),
         Route('queued', Queued, _as_caller(leases, _queued)),
-        Route('send', SendAsked, partial(_send, send)),
+        Route.long_poll('send', SendAsked, partial(_send, send), changed),
         Route('cli', LeaseCall, _as_caller(leases, partial(_cli, cli))),
     ]
 
@@ -196,8 +201,12 @@ def _cli(run: Run, worker: Local, body: LeaseCall) -> Relayed:
     return run(worker.relayed(body.lease), body)
 
 
-def _send(send: Fetch, caller: Caller, body: SendAsked) -> Sent:
-    return Sent(send(body.repo, body.revisions, body.have))
+def _send(send: Send, caller: Caller, body: SendAsked) -> Sent | None:
+    try:
+        sent = send(body.repo, body.revisions, body.have)
+    except NotSent as e:
+        raise Refusal(HTTPStatus.CONFLICT, Failure.NOT_SENT, str(e)) from e
+    return None if sent is None else Sent(sent)
 
 
 def _as_caller[I: BaseModel](
@@ -333,11 +342,16 @@ class Remote:
     def queued(self, message: int, error: str | None) -> None:
         self._post('queued', Queued(message=message, error=error))
 
-    def send(self, repo: RepoId, revisions: Sequence[Revision], have: Sequence[Revision]) -> Cid | None:
-        """``Clones``' fetch: the server puts what ``revisions`` have beyond ``have`` into the CAS, and names it."""
-        return Sent.model_validate_json(
-            self._post('send', SendAsked(repo=repo, revisions=list(revisions), have=list(have)))
-        ).root
+    def send(self, repo: RepoId, revisions: Sequence[Revision], have: Sequence[Revision]) -> list[Cid]:
+        """``Clones``' fetch: the server puts what ``revisions`` have beyond ``have`` into the CAS, and names it.
+
+        It asks again while the server builds the repo's first transfer, until the worker stops. Raises ``NotSent``.
+        """
+        body = SendAsked(repo=repo, revisions=list(revisions), have=list(have), wait=MAX_POLL_SECONDS)
+        while not (answer := self._post('send', body, body.wait)):
+            if self._stop.is_set():
+                raise NotSent(f'the worker stops while the server builds the first transfer of repo {repo}')
+        return Sent.model_validate_json(answer).root
 
     def _unanswered(self, path: str, error: Exception) -> None:
         """Say that the server did not answer: at the first try of an outage, then every ``UNREACHABLE_EVERY``."""

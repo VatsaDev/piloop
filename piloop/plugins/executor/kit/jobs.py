@@ -28,7 +28,7 @@ from typing import Protocol, assert_never
 from covalence import Cid
 
 from piloop.config import BRIEF_FILE, TRANSCRIPT
-from piloop.ids import CommentId, Revision
+from piloop.ids import CommentId
 from piloop.mcp import RENDERERS, Launch, expand, forwarded_env
 from piloop.otel import Span
 from piloop.plugins.cas.contract import Cas
@@ -46,6 +46,7 @@ from piloop.plugins.executor.contract import (
 )
 from piloop.plugins.executor.kit.clones import Clones, Fetch, of_record, own_clone
 from piloop.plugins.executor.kit.relay import RELAY_ARGV
+from piloop.plugins.executor.kit.transfers import send_of_record
 from piloop.plugins.runtime.contract import AgentExit, AgentSpec, ExitStatus, Handle, Runtime, taken
 from piloop.plugins.vcs.contract import Repository
 from piloop.proc import PILOOP_ARGV, child_env, kill_group
@@ -155,20 +156,6 @@ def remote_site(home: Path, cas: Cas, fetch: Fetch, reserve: int) -> Site:
 def clone_of(home: Path, repo: RepoId) -> Path:
     """Where the worker keeps its clone of a repo of record, ``<home>/clones/<repo>`` (``Vcs.clone``)."""
     return home / CLONES / str(repo)
-
-
-def send_of_record(
-    cas: Cas,
-    records: Callable[[RepoId], Repository],
-    repo: RepoId,
-    revisions: Sequence[Revision],
-    have: Sequence[Revision],
-) -> Cid | None:
-    """What the server does for a worker that lacks versions: it puts them from the repo of record into the CAS.
-
-    The repo of record is opened with its campaign's own vcs provider (``Host.records``), never one that a worker names.
-    """
-    return records(repo).send(cas, revisions, have)
 
 
 class Control(Protocol):

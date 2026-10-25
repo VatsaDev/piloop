@@ -159,6 +159,11 @@ erDiagram
         datetime ended_at
         InstanceEnd end
     }
+    first_transfers {
+        integer campaign_id PK,FK
+        varchar revision
+        varchar blob
+    }
     limits {
         varchar key PK
         json value
@@ -274,6 +279,7 @@ erDiagram
     candidates ||--o{ evaluations : "candidate_id"
     evaluators ||--o{ evaluations : "evaluator_id"
     agent_sessions |o--o{ leases : "agent_session_id"
+    campaigns ||--o{ first_transfers : "campaign_id"
     campaigns ||--o{ techniques : "campaign_id"
     campaigns ||--o{ lessons : "campaign_id"
     campaigns ||--o{ documents : "campaign_id"

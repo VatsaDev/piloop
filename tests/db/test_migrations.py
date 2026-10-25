@@ -107,6 +107,7 @@ def test_head_has_every_table_and_trigger_and_matches_the_models(tmp_path: Path)
             'evaluations',
             'evaluators',
             'events',
+            'first_transfers',
             'idea_links',
             'ideas',
             'ideas_fts',

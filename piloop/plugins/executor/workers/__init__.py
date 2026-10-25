@@ -11,7 +11,6 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from functools import partial
 from pathlib import Path
 from typing import Self
 
@@ -49,6 +48,7 @@ from piloop.plugins.executor.kit.leases import (
 from piloop.plugins.executor.kit.relay import Relay, Runner
 from piloop.plugins.executor.kit.remote import Remote, lease_routes
 from piloop.plugins.executor.kit.scaling import Scaler
+from piloop.plugins.executor.kit.transfers import FirstTransfers
 from piloop.plugins.executor.workers.worker import Worker
 
 
@@ -97,7 +97,7 @@ class WorkersExecutor:
         self.leases = Leases(host.db, host.results, host.cas, timing, config.pools)
         self._changed = host.db.changed
         self._cas = host.cas
-        self._send = partial(jobs.send_of_record, host.cas, host.records)
+        self._send = FirstTransfers(host.db, host.cas, host.records, host.tracer)
         """What the ``send`` route does: versions from the repo of record, into the CAS."""
         self._cli = Runner(host.db, host.home, host.repos)
         """What the ``cli`` route does: an agent's relayed call, run here."""
@@ -144,7 +144,7 @@ class WorkersExecutor:
 
     def routes(self) -> Sequence[Route]:
         """The lease routes (``remote.lease_routes``), which workers on other machines call (``piloop worker``)."""
-        return lease_routes(self.leases, self._changed, self._cas, self._send, self._cli)
+        return lease_routes(self.leases, self._changed, self._cas, self._send.send, self._cli)
 
     def capacity_events(self) -> frozenset[type[EventModel]]:
         """A worker that joins or comes back, and one whose host is no longer under pressure."""

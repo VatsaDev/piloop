@@ -89,9 +89,12 @@ class ReferenceVersion:
 type Keep = RunVersion | RebaseVersion | ReferenceVersion
 """Why a version must outlive whatever named it first (a branch, an agent's worktree): ``Repository.keep``."""
 
-type Fetch = Callable[[Sequence[Revision], Sequence[Revision]], Cid | None]
+type Fetch = Callable[[Sequence[Revision], Sequence[Revision]], list[Cid]]
 """Ask the repo of record to put what ``revisions`` have beyond the revisions that a clone has into the CAS, and return
-its address (``Repository.send``). None: nothing is missing."""
+the addresses to take, in order: each one is what a ``Repository.send`` put there. Empty: nothing is missing."""
+MAX_HAVE = 64
+"""The most revisions that a clone names as those it has, when it fetches: its newest. Older ones rarely save a byte,
+and each one adds to the server's work: git's own negotiation stops after 256 haves that find nothing new."""
 
 
 class Part(StrEnum):
@@ -168,7 +171,8 @@ class Repository(Protocol):
     def fetch(self, cas: Cas, revisions: Sequence[Revision], ask: Fetch) -> None:
         """Take those of ``revisions`` that the repository lacks: ``ask`` puts them into ``cas``.
 
-        One that the repo of record lacks too stays missing.
+        It names at most ``MAX_HAVE`` revisions that the repository has. One that the repo of record lacks too stays
+        missing.
         """
         ...
 

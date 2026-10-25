@@ -21,7 +21,7 @@ def bundle(cas: Cas, repo: Repo, heads: Sequence[str], have: Sequence[str]) -> C
     by hand around ``git pack-objects``, because ``git bundle create`` needs a ref to name each head, and the repo of
     record is not given one.
     """
-    wanted, known = _commits_of(repo, heads), _commits_of(repo, have)
+    wanted, known = git.commits(repo, heads), git.commits(repo, have)
     if not wanted or int(repo.git.rev_list('--count', *wanted, *(f'^{sha}' for sha in known))) == 0:
         return None
     header = '# v3 git bundle\n'
@@ -45,20 +45,6 @@ def bundle(cas: Cas, repo: Repo, heads: Sequence[str], have: Sequence[str]) -> C
         return cas.put_file(tmp)
 
 
-def _commits_of(repo: Repo, shas: Sequence[str]) -> list[str]:
-    """Those of ``shas`` that are commits in ``repo``, in one ``git cat-file``: a worker names every commit it has."""
-    if not shas:
-        return []
-    checked = subprocess.run(
-        ['git', 'cat-file', '--batch-check=%(objecttype)'],
-        cwd=repo.common_dir,
-        input=''.join(f'{sha}^{{commit}}\n' for sha in shas).encode(),
-        capture_output=True,
-        check=True,
-    )
-    return [sha for sha, kind in zip(shas, checked.stdout.decode().splitlines(), strict=True) if kind == 'commit']
-
-
 def unbundle(cas: Cas, repo: Repo, blob: Cid, heads: Sequence[str]) -> None:
     """Import the commits of the bundle ``blob`` up to ``heads`` into ``repo``, unless it has them all. No ref changes.
 
@@ -66,7 +52,7 @@ def unbundle(cas: Cas, repo: Repo, blob: Cid, heads: Sequence[str]) -> None:
         GitCommandError: The bundle needs a commit that ``repo`` lacks, or it is not a bundle.
         Missing: The CAS does not hold it.
     """
-    if all(git.has(repo, head) for head in heads):
+    if len(git.commits(repo, heads)) == len(heads):
         return
     with tempfile.TemporaryDirectory(dir=repo.common_dir) as scratch:
         tmp = Path(scratch) / 'bundle'

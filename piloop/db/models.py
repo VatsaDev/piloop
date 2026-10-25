@@ -1100,6 +1100,23 @@ class WorkerInstance(Base):
     end: Mapped[InstanceEnd | None]
 
 
+class FirstTransfer(Base):
+    """What a worker's empty clone of a repo of record starts from: its versions up to ``revision``, as one blob.
+
+    The server builds it once per repo (``piloop.plugins.executor.kit.transfers``). The table is in core's schema until
+    a plugin can own tables, as the leases are.
+    """
+
+    __tablename__ = 'first_transfers'
+    __table_args__ = (*text_checks('first_transfers', 'revision', 'blob'),)
+
+    campaign_id: Mapped[CampaignId] = mapped_column(ForeignKey('campaigns.id', ondelete='CASCADE'), primary_key=True)
+    """The repo of record (``RepoId``)."""
+    revision: Mapped[Revision]
+    """The head of the repo of record when it was built."""
+    blob: Mapped[Cid] = mapped_column(CidText)
+
+
 class Limit(Base):
     """A live limit (``piloop limits set``): a value for one ``Live`` key of a provider's parameters, over ``config.toml``.
 

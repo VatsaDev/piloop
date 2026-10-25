@@ -21,6 +21,7 @@ from piloop.ids import Revision, RunId
 from piloop.plugins.cas.contract import Cas
 from piloop.plugins.host import Check
 from piloop.plugins.vcs.contract import (
+    MAX_HAVE,
     Conflicts,
     Fetch,
     Keep,
@@ -114,16 +115,16 @@ class GitRepository(Repository):
         return bundles.bundle(cas, self.repo, revisions, have)
 
     def fetch(self, cas: Cas, revisions: Sequence[Revision], ask: Fetch) -> None:
-        """The clone names the commits that it has, as git's have/want does, and pins those that came (``FETCHED``)."""
-        if not (missing := [sha for sha in dict.fromkeys(revisions) if not git.has(self.repo, sha)]):
+        """The clone names its newest commits, as git's have/want does, and pins those that came (``FETCHED``)."""
+        wanted = list(dict.fromkeys(revisions))
+        held = set(git.commits(self.repo, wanted))
+        if not (missing := [sha for sha in wanted if sha not in held]):
             return
-        have = [Revision(sha) for sha in self.repo.git.for_each_ref('--format=%(objectname)').split()]
-        blob = ask(missing, have)
-        if blob is not None:
+        newest = self.repo.git.for_each_ref('--sort=-committerdate', f'--count={MAX_HAVE}', '--format=%(objectname)')
+        for blob in ask(missing, [Revision(sha) for sha in newest.split()]):
             bundles.unbundle(cas, self.repo, blob, missing)
-            for sha in missing:
-                if git.has(self.repo, sha):  # the repo of record leaves out a commit that it lacks
-                    git.pin(self.repo, f'{FETCHED}{sha}', sha)
+        came = git.commits(self.repo, missing)  # the repo of record leaves out a commit that it lacks
+        git.pin_all(self.repo, {f'{FETCHED}{sha}': sha for sha in came})
 
     def merge(self, onto: Revision, other: Revision, message: str) -> Version | Conflicts:
         merged = git.merge(self.repo, onto, other, message)
