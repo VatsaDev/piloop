@@ -1,0 +1,1265 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "piloop",
+    "version": "1"
+  },
+  "paths": {
+    "/v1/status": {
+      "get": {
+        "summary": "Status",
+        "description": "The main facts of each campaign, at a cursor.",
+        "operationId": "status",
+        "parameters": [
+          {
+            "name": "campaign",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The campaign's name, or a path inside its repo.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name, or a path inside its repo."
+          },
+          {
+            "name": "cwd",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Where the client runs, as an absolute path: a relative path in ``campaign`` is from there.",
+              "title": "Cwd"
+            },
+            "description": "Where the client runs, as an absolute path: a relative path in ``campaign`` is from there."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/overview": {
+      "get": {
+        "summary": "Overview",
+        "description": "The overview of each campaign, as text, and the live keys that config.toml or a limit sets.",
+        "operationId": "overview",
+        "parameters": [
+          {
+            "name": "campaign",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The campaign's name, or a path inside its repo.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name, or a path inside its repo."
+          },
+          {
+            "name": "cwd",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Where the client runs, as an absolute path: a relative path in ``campaign`` is from there.",
+              "title": "Cwd"
+            },
+            "description": "Where the client runs, as an absolute path: a relative path in ``campaign`` is from there."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Overview"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/inbox": {
+      "get": {
+        "summary": "Inbox",
+        "description": "The inbox items and the seeds, at a cursor.",
+        "operationId": "inbox",
+        "parameters": [
+          {
+            "name": "campaign",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The campaign's name, or a path inside its repo.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name, or a path inside its repo."
+          },
+          {
+            "name": "cwd",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Where the client runs, as an absolute path: a relative path in ``campaign`` is from there.",
+              "title": "Cwd"
+            },
+            "description": "Where the client runs, as an absolute path: a relative path in ``campaign`` is from there."
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/CommentKind"
+              },
+              "description": "Only the items of these kinds.",
+              "default": [],
+              "title": "Kind"
+            },
+            "description": "Only the items of these kinds."
+          },
+          {
+            "name": "acked",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "The acknowledged items too.",
+              "default": false,
+              "title": "Acked"
+            },
+            "description": "The acknowledged items too."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Inbox"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/events": {
+      "get": {
+        "summary": "Events",
+        "description": "The events after a cursor. With wait, it answers once an event matches, or at the end of the wait with none.",
+        "operationId": "events",
+        "parameters": [
+          {
+            "name": "campaign",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The campaign's name, or a path inside its repo.",
+              "title": "Campaign"
+            },
+            "description": "The campaign's name, or a path inside its repo."
+          },
+          {
+            "name": "cwd",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Where the client runs, as an absolute path: a relative path in ``campaign`` is from there.",
+              "title": "Cwd"
+            },
+            "description": "Where the client runs, as an absolute path: a relative path in ``campaign`` is from there."
+          },
+          {
+            "name": "wait",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "number",
+              "maximum": 25,
+              "minimum": 0,
+              "description": "Seconds to hold the request while there is nothing to answer yet.",
+              "default": 0,
+              "title": "Wait"
+            },
+            "description": "Seconds to hold the request while there is nothing to answer yet."
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "The cursor to read after: the ``next`` of the last read, or the ``cursor`` of a snapshot.",
+              "default": 0,
+              "title": "After"
+            },
+            "description": "The cursor to read after: the ``next`` of the last read, or the ``cursor`` of a snapshot."
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Only the events of these kinds.",
+              "default": [],
+              "title": "Kind"
+            },
+            "description": "Only the events of these kinds."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "description": "The most events to answer.",
+              "default": 100,
+              "title": "Limit"
+            },
+            "description": "The most events to answer."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Batch"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Batch": {
+        "properties": {
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/Envelope"
+            },
+            "type": "array",
+            "title": "Events"
+          },
+          "next": {
+            "type": "integer",
+            "title": "Next"
+          },
+          "more": {
+            "type": "boolean",
+            "title": "More"
+          }
+        },
+        "type": "object",
+        "required": [
+          "events",
+          "next",
+          "more"
+        ],
+        "title": "Batch",
+        "description": "The result of a read."
+      },
+      "CampaignOverview": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Named"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "text": {
+            "type": "string",
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "path",
+          "parent",
+          "text"
+        ],
+        "title": "CampaignOverview",
+        "description": "A campaign's overview: the text that a sweep reads in its brief."
+      },
+      "CampaignState": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "path": {
+            "type": "string",
+            "title": "Path"
+          },
+          "parent": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Named"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "stopped_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stopped Reason"
+          },
+          "paused": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paused"
+          },
+          "paused_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Paused Reason"
+          },
+          "evaluator": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evaluator"
+          },
+          "head": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Head"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kept": {
+            "type": "integer",
+            "title": "Kept"
+          },
+          "candidates": {
+            "type": "integer",
+            "title": "Candidates"
+          },
+          "ideas": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Ideas"
+          },
+          "runnable": {
+            "type": "integer",
+            "title": "Runnable"
+          },
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/OpenRun"
+            },
+            "type": "array",
+            "title": "Runs"
+          },
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/LiveAgent"
+            },
+            "type": "array",
+            "title": "Agents"
+          },
+          "inbox": {
+            "type": "integer",
+            "title": "Inbox"
+          },
+          "tokens": {
+            "type": "integer",
+            "title": "Tokens"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "path",
+          "parent",
+          "status",
+          "stopped_reason",
+          "paused",
+          "paused_reason",
+          "evaluator",
+          "head",
+          "kept",
+          "candidates",
+          "ideas",
+          "runnable",
+          "runs",
+          "agents",
+          "inbox",
+          "tokens"
+        ],
+        "title": "CampaignState",
+        "description": "What ``piloop status`` shows of a campaign, as data."
+      },
+      "CommentKind": {
+        "type": "string",
+        "enum": [
+          "note",
+          "finding",
+          "decision",
+          "escalation"
+        ],
+        "title": "CommentKind",
+        "description": "Why a comment was written. An ``escalation`` asks for a decision and is always in the human's inbox."
+      },
+      "DaemonState": {
+        "properties": {
+          "pid": {
+            "type": "integer",
+            "title": "Pid"
+          },
+          "started": {
+            "type": "string",
+            "title": "Started"
+          },
+          "listen": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Listen"
+          }
+        },
+        "type": "object",
+        "required": [
+          "pid",
+          "started",
+          "listen"
+        ],
+        "title": "DaemonState",
+        "description": "The daemon that answers: its process, and where it listens."
+      },
+      "Envelope": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/Subject"
+          },
+          "actor": {
+            "type": "string",
+            "title": "Actor"
+          },
+          "time": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Time"
+          },
+          "payload": {
+            "$ref": "#/components/schemas/Json"
+          },
+          "invalid": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object",
+            "title": "Invalid"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "subject",
+          "actor",
+          "time",
+          "payload"
+        ],
+        "title": "Envelope",
+        "description": "One event, as every reader sees it."
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "Head": {
+        "properties": {
+          "candidate": {
+            "type": "integer",
+            "title": "Candidate"
+          },
+          "tracks": {
+            "items": {
+              "$ref": "#/components/schemas/TrackScore"
+            },
+            "type": "array",
+            "title": "Tracks"
+          }
+        },
+        "type": "object",
+        "required": [
+          "candidate",
+          "tracks"
+        ],
+        "title": "Head",
+        "description": "The head of the trunk: the latest keep."
+      },
+      "Inbox": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Item"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "seeds": {
+            "items": {
+              "$ref": "#/components/schemas/Seed"
+            },
+            "type": "array",
+            "title": "Seeds"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "items",
+          "seeds"
+        ],
+        "title": "Inbox",
+        "description": "What ``piloop inbox`` lists, read at ``cursor``."
+      },
+      "Item": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "priority": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Priority"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "campaign": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign"
+          },
+          "campaign_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Name"
+          },
+          "target": {
+            "$ref": "#/components/schemas/Target"
+          },
+          "author": {
+            "type": "string",
+            "title": "Author"
+          },
+          "created": {
+            "type": "string",
+            "title": "Created"
+          },
+          "acked_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acked At"
+          },
+          "acked_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Acked By"
+          },
+          "body": {
+            "type": "string",
+            "title": "Body"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "priority",
+          "kind",
+          "campaign",
+          "campaign_name",
+          "target",
+          "author",
+          "created",
+          "acked_at",
+          "acked_by",
+          "body"
+        ],
+        "title": "Item",
+        "description": "An inbox item: a comment with a priority."
+      },
+      "Json": {
+        "anyOf": [
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "integer"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "string"
+          },
+          {
+            "items": {
+              "$ref": "#/components/schemas/Json"
+            },
+            "type": "array"
+          },
+          {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/Json"
+            },
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "LiveAgent": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "state": {
+            "type": "string",
+            "title": "State"
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "run": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "state",
+          "harness",
+          "model",
+          "run"
+        ],
+        "title": "LiveAgent",
+        "description": "An agent that is starting or running."
+      },
+      "LiveKey": {
+        "properties": {
+          "key": {
+            "type": "string",
+            "title": "Key"
+          },
+          "value": {
+            "$ref": "#/components/schemas/Json"
+          },
+          "origin": {
+            "type": "string",
+            "title": "Origin"
+          },
+          "actor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Actor"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "origin",
+          "actor",
+          "reason"
+        ],
+        "title": "LiveKey",
+        "description": "A live key of a provider of the home (``piloop limits``), and where its value comes from."
+      },
+      "Named": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "name": {
+            "type": "string",
+            "title": "Name"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "Named",
+        "description": "A campaign, by its id and its name."
+      },
+      "OpenRun": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "idea": {
+            "type": "integer",
+            "title": "Idea"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "harness": {
+            "type": "string",
+            "title": "Harness"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "idea",
+          "title",
+          "harness",
+          "model",
+          "status"
+        ],
+        "title": "OpenRun",
+        "description": "A run that is queued or running."
+      },
+      "Overview": {
+        "properties": {
+          "daemon": {
+            "$ref": "#/components/schemas/DaemonState"
+          },
+          "limits": {
+            "items": {
+              "$ref": "#/components/schemas/LiveKey"
+            },
+            "type": "array",
+            "title": "Limits"
+          },
+          "campaigns": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignOverview"
+            },
+            "type": "array",
+            "title": "Campaigns"
+          }
+        },
+        "type": "object",
+        "required": [
+          "daemon",
+          "limits",
+          "campaigns"
+        ],
+        "title": "Overview",
+        "description": "What ``piloop status`` prints: the daemon, the live keys that ``config.toml`` or a limit sets, and each overview."
+      },
+      "Seed": {
+        "properties": {
+          "idea": {
+            "type": "integer",
+            "title": "Idea"
+          },
+          "campaign": {
+            "type": "integer",
+            "title": "Campaign"
+          },
+          "campaign_name": {
+            "type": "string",
+            "title": "Campaign Name"
+          },
+          "created_by": {
+            "type": "string",
+            "title": "Created By"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "provenance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provenance"
+          }
+        },
+        "type": "object",
+        "required": [
+          "idea",
+          "campaign",
+          "campaign_name",
+          "created_by",
+          "title",
+          "provenance"
+        ],
+        "title": "Seed",
+        "description": "A seed that waits for research."
+      },
+      "Status": {
+        "properties": {
+          "cursor": {
+            "type": "integer",
+            "title": "Cursor"
+          },
+          "daemon": {
+            "$ref": "#/components/schemas/DaemonState"
+          },
+          "campaigns": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignState"
+            },
+            "type": "array",
+            "title": "Campaigns"
+          }
+        },
+        "type": "object",
+        "required": [
+          "cursor",
+          "daemon",
+          "campaigns"
+        ],
+        "title": "Status",
+        "description": "What ``piloop status --json`` prints: the daemon, and each campaign read at ``cursor``."
+      },
+      "Subject": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "campaign": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "id",
+          "campaign"
+        ],
+        "title": "Subject",
+        "description": "The row that an event is about."
+      },
+      "Target": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          }
+        },
+        "type": "object",
+        "required": [
+          "kind",
+          "id"
+        ],
+        "title": "Target",
+        "description": "The row that a comment is about."
+      },
+      "TrackScore": {
+        "properties": {
+          "track": {
+            "type": "string",
+            "title": "Track"
+          },
+          "metric": {
+            "type": "string",
+            "title": "Metric"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          },
+          "delta": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Delta"
+          }
+        },
+        "type": "object",
+        "required": [
+          "track",
+          "metric",
+          "value",
+          "delta"
+        ],
+        "title": "TrackScore",
+        "description": "The head on one track."
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      }
+    }
+  }
+}

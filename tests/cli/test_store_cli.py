@@ -10,7 +10,7 @@ from sqlalchemy import select
 from piloop.campaign import campaigns as campaign_module
 from piloop.campaign.archive import Job, archive, prune
 from piloop.campaign.campaigns import workspace_dir
-from piloop.cli import common
+from piloop.cli import common, local
 from piloop.db.models import Archive, Campaign, IdeaStatus
 from piloop.db.session import Database
 from piloop.ids import CampaignId
@@ -53,7 +53,7 @@ def archived(campaign_path: Path, out) -> tuple[Database, int, dict[str, bytes]]
     write(workspace / f'idea{idea}-run.log', 'ok\n')
     write(workspace / 'scratch.md', '# Notes\n')
     before = files(workspace)
-    store, home = common.cas(), common.settings.home
+    store, home = local.cas(), common.settings.home
     for job in (Job(CampaignId(1), idea), Job(CampaignId(1), None)):
         for row in archive(db, store, home, job, live=(), reserve=0).rows:
             prune(db, store, home, row.id)
@@ -88,7 +88,7 @@ def test_restore_lists_at_most_ten_kept_files(campaign_path: Path, out) -> None:
     workspace = workspace_dir(common.settings.home, CampaignId(1))
     for n in range(12):
         write(workspace / 'notes' / f'{n:02}.md', 'a')
-    archive(db, common.cas(), common.settings.home, Job(CampaignId(1), None), live=(), reserve=0)
+    archive(db, local.cas(), common.settings.home, Job(CampaignId(1), None), live=(), reserve=0)
     for n in range(12):
         write(workspace / 'notes' / f'{n:02}.md', 'b')
     out()

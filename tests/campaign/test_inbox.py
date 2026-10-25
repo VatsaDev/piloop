@@ -17,7 +17,6 @@ from piloop.db.models import (
     Campaign,
     CampaignStatus,
     Comment,
-    CommentKind,
     Event,
     Idea,
     IdeaStatus,
@@ -27,7 +26,7 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.db.triggers.changelog import CommentAcked, IdeaCreated
-from piloop.ids import CommentId, TargetKind, TargetRef
+from piloop.ids import CommentId, CommentKind, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import CandidateJudged
 from tests.conftest import WATCHDOG

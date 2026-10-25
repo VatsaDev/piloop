@@ -25,6 +25,7 @@ from scripts.generate import (
     harnesses,
     imports,
     mcp_keys,
+    openapi,
     readers,
     renderers,
     roles,
@@ -65,6 +66,7 @@ GENERATORS = (
     example_stop_after_keeps,
     example_inline_executor,
     capabilities,
+    openapi,
 )
 
 

@@ -22,7 +22,7 @@ from typing import Literal, Self, assert_never
 import httpx2 as httpx
 from pydantic import BaseModel, ConfigDict, FilePath, SecretStr, model_validator
 
-from piloop.db.models import TokenScope
+from piloop.api.contract import Access
 from piloop.net.tokens import Caller
 from piloop.plugins.network.contract import (
     Enrollment,
@@ -107,17 +107,16 @@ class HttpsNetwork:
                 assert_never(self.config.tls)
 
     def identify(self, headers: Mapping[str, str], peer: Peer) -> Caller | Refused:
-        scheme, _, secret = headers.get('authorization', '').partition(' ')
-        if scheme.lower() != 'bearer' or not secret:
-            return Refused('no bearer token: send Authorization: Bearer <token> (piloop token create)')
-        caller = self.host.tokens.verify(secret)
-        return caller if caller is not None else Refused('the token is unknown or revoked')
+        """No caller: ``https`` knows only piloop's tokens, which core verifies before it asks the network."""
+        if headers.get('authorization'):
+            return Refused('the credential is not a piloop token (plt_…): send Authorization: Bearer <token>')
+        return Refused('no bearer token: send Authorization: Bearer <token> (piloop token create)')
 
-    def enroll(self, principal: str, scope: TokenScope) -> Enrollment:
+    def enroll(self, principal: str, access: Access) -> Enrollment:
         """A token called ``principal``, in place of the one that has that name, in ``TOKEN_ENV``."""
         if self.config.url is None:
             raise NotEnrolled('set url in [plugins.network] to where other machines reach this server')
-        secret = self.host.tokens.mint(principal, scope)
+        secret = self.host.tokens.mint(principal, access)
         return Enrollment(server=self.config.url, env={TOKEN_ENV: SecretStr(secret)})
 
     def revoke(self, principal: str) -> None:

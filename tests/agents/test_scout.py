@@ -17,7 +17,6 @@ from piloop.db.models import (
     Campaign,
     Candidate,
     Comment,
-    CommentKind,
     Idea,
     IdeaStatus,
     Run,
@@ -27,7 +26,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import AgentSessionId
+from piloop.ids import AgentSessionId, CommentKind
 from piloop.plugins.role.scout import ScoutRole
 from piloop.plugins.trigger.cron import CronTrigger
 from piloop.plugins.verdict_rule.contract import Outcome

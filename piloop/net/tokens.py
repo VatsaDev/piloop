@@ -1,7 +1,8 @@
-"""Bearer tokens of ``piloop serve --listen`` and ``piloop cas serve``: ``piloop token create|list|revoke``.
+"""Bearer tokens of ``piloop serve`` and ``piloop cas serve``: ``piloop token create|list|revoke``.
 
 A secret is ``plt_`` and 32 random bytes. It is shown once, when it is made: the ``tokens`` table keeps its SHA-256
-only. A token's name is the caller's name, and its scope says which routes it may call.
+only. A token's name is the caller's name, and its access says which routes it may call. Core verifies a token on
+every network, before the network identifies a caller that sends none (``piloop.net.server.authorized``).
 """
 
 import hashlib
@@ -12,7 +13,8 @@ from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from piloop.db.models import Token, TokenScope
+from piloop.api.contract import Access
+from piloop.db.models import Token
 from piloop.db.session import Database
 
 PREFIX = 'plt_'
@@ -23,7 +25,7 @@ class Caller:
     """Who calls the server: the name of the token's caller, and what it may call."""
 
     name: str
-    scope: TokenScope
+    access: Access
 
 
 class NameTaken(ValueError):
@@ -38,10 +40,10 @@ def _sha256(secret: str) -> str:
     return hashlib.sha256(secret.encode()).hexdigest()
 
 
-def create(s: Session, name: str, scope: TokenScope) -> str:
+def create(s: Session, name: str, access: Access) -> str:
     """Add a token called ``name`` and return its secret, which nothing keeps. Raises ``NameTaken``."""
     secret = PREFIX + secrets.token_urlsafe(32)
-    s.add(Token(name=name, scope=scope, sha256=_sha256(secret)))
+    s.add(Token(name=name, access=access, sha256=_sha256(secret)))
     try:
         s.flush()
     except IntegrityError as e:
@@ -58,7 +60,7 @@ def revoke(s: Session, name: str) -> None:
 def verify(s: Session, secret: str) -> Caller | None:
     """The caller that ``secret`` is the token of, or None for an unknown or revoked one."""
     token = s.scalar(select(Token).where(Token.sha256 == _sha256(secret)))
-    return Caller(token.name, token.scope) if token is not None else None
+    return Caller(token.name, token.access) if token is not None else None
 
 
 @dataclass(frozen=True)
@@ -72,11 +74,11 @@ class Tokens:
         with self.db.session() as s:
             return verify(s, secret)
 
-    def mint(self, name: str, scope: TokenScope) -> str:
+    def mint(self, name: str, access: Access) -> str:
         """Add a token called ``name`` in place of the one that has that name, and return its secret."""
         with self.db.session() as s:
             s.execute(delete(Token).where(Token.name == name))
-            secret = create(s, name, scope)
+            secret = create(s, name, access)
             s.commit()
         return secret
 

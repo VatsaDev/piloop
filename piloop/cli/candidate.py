@@ -7,7 +7,7 @@ from cyclopts import validators
 
 from piloop.campaign import ops
 from piloop.campaign.campaigns import repository
-from piloop.cli import common
+from piloop.cli import common, local
 from piloop.cli.common import CampaignRef
 from piloop.db.models import Campaign, Candidate
 from piloop.ids import CandidateId, TrackName
@@ -22,10 +22,7 @@ from piloop.scoring.ledger import (
 )
 from piloop.scoring.verdict import label, rejudgeable
 
-app = cyclopts.App(
-    name='candidate',
-    help='Import a starting point, measure a candidate again, keep a regressed result in view, or override a verdict.',
-)
+app = cyclopts.App(name='candidate')  # its help is where piloop.cli.main registers it
 
 
 @app.command(name='import')
@@ -47,8 +44,8 @@ def candidate_import(
     It does not count in the kept total, the sparkline or a stop condition. To import a candidate of another campaign,
     bring its `revision` into this campaign's repo first.
     """
-    with common.session() as s:
-        campaign = common.campaign(s, ref)
+    with local.session() as s:
+        campaign = local.campaign(s, ref)
         cfg = campaign.config
         try:
             candidate = import_reference(
@@ -88,7 +85,7 @@ def candidate_remeasure(
     is paused with `--evals`, or held by its stop rule. A commit that the daemon never measured, `skipped` or
     `recovered`, is measured and judged. A pending candidate is refused: its run measures and judges it.
     """
-    with common.session() as s:
+    with local.session() as s:
         candidate = s.get(Candidate, candidate_id)
         if candidate is None:
             raise SystemExit(f'no candidate#{candidate_id}')
@@ -135,7 +132,7 @@ def candidate_note(
     candidate. An implementer files no follow-ups. When its candidate does not exist yet, an implementer notes the
     version that it saves instead, and the daemon applies the note when it judges the version.
     """
-    with common.refused(), common.session() as s:
+    with local.refused(), local.session() as s:
         candidate, ideas = ops.note_candidate(
             s, candidate_id, reason, actor=common.settings.actor, follow_ups=follow_ups, track=track
         )
@@ -163,7 +160,7 @@ def candidate_verdict(
     kept. So the candidate becomes `interesting`, and its merge onto the head is a new candidate that the daemon
     measures and judges against the head, as for its own keeps. A merge that conflicts files a seed to compose it.
     """
-    with common.refused(), common.session() as s:
+    with local.refused(), local.session() as s:
         done = ops.set_verdict(s, candidate_id, verdict, reason=reason, actor=common.settings.actor)
         s.commit()
         candidate = s.get_one(Candidate, candidate_id)

@@ -8,13 +8,15 @@ so a busy GPU takes fewer evaluations without a restart.
 Only a key that the provider marks ``Live`` takes a limit, and only a value that its parameters accept.
 """
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from enum import StrEnum
 
 from pydantic import BaseModel, JsonValue, ValidationError
+from pydantic_core import to_jsonable_python
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from piloop.api.views import LiveKey
 from piloop.db.models import Limit, utcnow
 from piloop.plugins.host import Choice, Live, Parameters, Scope, declared
 
@@ -134,6 +136,21 @@ def sources(s: Session, plugins: Mapping[str, Parameters]) -> list[tuple[str, ob
                 case _:
                     out.append((key, value, Origin.DEFAULT, None))
     return out
+
+
+def live_keys(s: Session, plugins: Mapping[str, Parameters], origins: Collection[Origin]) -> list[LiveKey]:
+    """``sources`` whose value comes from one of ``origins``, as the API answers them."""
+    return [
+        LiveKey(
+            key=key,
+            value=to_jsonable_python(value),
+            origin=str(origin),
+            actor=None if limit is None else limit.actor,
+            reason=None if limit is None else limit.reason,
+        )
+        for key, value, origin, limit in sources(s, plugins)
+        if origin in origins
+    ]
 
 
 def _has(raw: object, path: list[str]) -> bool:

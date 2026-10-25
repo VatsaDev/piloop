@@ -164,7 +164,7 @@ def test_detach_survives_the_cli_and_stop_ends_it(tmp_path: Path) -> None:
     assert 'piloop.start' in log and 'piloop.shutdown' in log
     nothing = piloop(cfg.home, 'stop')
     assert (nothing.returncode, nothing.stderr.strip()) == (1, 'no daemon is running')
-    assert piloop(cfg.home, 'status').stdout.startswith('daemon: not running')
+    assert piloop(cfg.home, 'status').stderr.startswith(f'no daemon serves {cfg.home}: start it with')
 
 
 def test_a_daemon_backs_up_a_database_behind_it_before_it_migrates_and_logs_where(tmp_path: Path) -> None:
@@ -201,8 +201,9 @@ def test_restart_execs_the_same_process_keeping_its_environment(tmp_path: Path) 
     assert running_pid(cfg) == pid and alive(pid), 'the same process, so systemd or launchd still holds it'
     assert (proc.environment(pid) or {}).get('PILOOP_TEST_MARKER') == 'from-the-unit'
     assert cfg.code_file.read_text() == code_digest(), 'the code it runs, for piloop doctor'
-    log = cfg.log_file.read_text()
-    assert log.count('piloop.start') == 2 and log.count('piloop.shutdown') == 1
+    # it answers on its socket inside its start span, which the log gets when the span ends
+    wait_until(lambda: cfg.log_file.read_text().count('piloop.start') == 2)
+    assert cfg.log_file.read_text().count('piloop.shutdown') == 1
     assert piloop(cfg.home, 'stop').returncode == 0
     wait_until(lambda: not alive(pid))  # stop returns once the lock is free; the process exits just after
     nothing = piloop(cfg.home, 'restart')

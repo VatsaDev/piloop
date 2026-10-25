@@ -1,6 +1,7 @@
-"""Short text: one line of free text that fits in a table cell, a tab title or an inbox line, and markdown headings."""
+"""Short text: one line of free text that fits in a table cell, a tab title or an inbox line, markdown headings, ages."""
 
 import re
+from datetime import datetime
 
 CELL_CHARS = 100
 NONE = '—'
@@ -25,3 +26,15 @@ def metric(value: float, *, signed: bool = False) -> str:
     if size.is_integer() or size >= 1e4:
         return f'{sign}{size:.0f}'
     return f'{sign}{size:.4g}'
+
+
+def age(then: datetime, now: datetime) -> str:
+    """Format an age as ``12s``, ``3m``, ``2h`` or ``1d``, in the largest whole unit, rounded down.
+
+    A clock skew gives ``0s``, not a negative age.
+    """
+    seconds = max(0, int((now - then).total_seconds()))
+    for unit, size in (('d', 86400), ('h', 3600), ('m', 60)):
+        if seconds >= size:
+            return f'{seconds // size}{unit}'
+    return f'{seconds}s'

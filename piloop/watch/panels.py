@@ -23,7 +23,6 @@ from piloop.config import CampaignConfig
 from piloop.db.models import AgentSession, Campaign, CampaignStatus, Candidate, Comment, Idea, IdeaStatus, Origin
 from piloop.ids import CampaignId, TargetKind, TargetRef
 from piloop.reports.overview import (
-    age,
     agent_output,
     head_scores,
     item_lines,
@@ -40,7 +39,7 @@ from piloop.reports.overview import (
 )
 from piloop.scoring.ledger import metrics, references, score, track_of, trunk_keeps
 from piloop.scoring.verdict import label
-from piloop.text import NONE, cell, metric
+from piloop.text import NONE, age, cell, metric
 from piloop.usage import human
 from piloop.usage.totals import campaign_tokens
 

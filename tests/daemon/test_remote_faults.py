@@ -21,13 +21,13 @@ import pytest
 from sqlalchemy import func, select
 
 from piloop.agents.results import PromptOutcome, queue_prompt
+from piloop.api.contract import Access
 from piloop.daemon.run_controller import RunController
 from piloop.db.events import in_order
 from piloop.db.models import (
     AgentSession,
     Campaign,
     Comment,
-    CommentKind,
     Event,
     Lease,
     LeaseKind,
@@ -35,10 +35,9 @@ from piloop.db.models import (
     LeaseWorker,
     Measurement,
     RunStatus,
-    TokenScope,
 )
 from piloop.db.session import Database
-from piloop.ids import AgentSessionId, CandidateId, CommentId, TargetKind
+from piloop.ids import AgentSessionId, CandidateId, CommentId, CommentKind, TargetKind
 from piloop.net import tokens
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import AgentKey, Prompt
@@ -138,7 +137,7 @@ def _kill(proc: subprocess.Popen[str]) -> None:
 @pytest.fixture
 def net(db: Database, tmp_path: Path) -> Generator[Net]:
     with db.session() as s:
-        secret = tokens.create(s, WORKER, TokenScope.WORKER)
+        secret = tokens.create(s, WORKER, Access.WORKER)
         s.commit()
     net = Net(db, tmp_path, secret)
     net.start_server()
@@ -353,7 +352,7 @@ def test_a_worker_whose_token_is_revoked_stops_its_evaluation_and_exits_non_zero
     assert 'the server refused this worker (401): the token is unknown or revoked' in worker.stdout.read()
     assert not alive(pgid, start) and (net.spool / '1.json').exists()
     with db.session() as s:
-        net.token = tokens.create(s, WORKER, TokenScope.WORKER)
+        net.token = tokens.create(s, WORKER, Access.WORKER)
         s.commit()
     net.start_worker()
     measuring.join(30)

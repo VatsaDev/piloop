@@ -42,7 +42,7 @@ def serving(db: Database, store: Cas, scratch: Path, **keys: object) -> Generato
     network = Https.model_validate({'listen': '127.0.0.1:0', **keys}).open(NetworkHost(Tokens(db)))
     listener = network.listener()
     assert listener is not None
-    server = Server(cas_server.app(network, store, scratch), listener)
+    server = Server(cas_server.app(Tokens(db), network, store, scratch), listener)
     server.start()
     try:
         yield server

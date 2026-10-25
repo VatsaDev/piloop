@@ -19,6 +19,7 @@ from sqlalchemy import ColumnElement, ScalarSelect, case, select
 from sqlalchemy.orm import Mapped, Session, aliased
 
 from piloop.actor import Actor
+from piloop.api.views import Seed, seed_line
 from piloop.campaign.anomaly import AnomalyReported
 from piloop.db import feed as db_feed
 from piloop.db.models import (
@@ -27,7 +28,6 @@ from piloop.db.models import (
     CampaignStatus,
     Candidate,
     Comment,
-    CommentKind,
     Event,
     Idea,
     IdeaStatus,
@@ -36,7 +36,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.triggers.changelog import CampaignStatusChanged, Commented, IdeaCreated
-from piloop.ids import CampaignId, CommentId, TargetKind, TargetRef
+from piloop.ids import CampaignId, CommentId, CommentKind, TargetKind, TargetRef
 from piloop.scoring.ledger import CandidateJudged
 from piloop.text import cell
 
@@ -76,9 +76,16 @@ def seeds(s: Session, *, campaign_id: CampaignId | None = None) -> list[tuple[Id
     return [(i, p) for i, p in s.execute(query)]
 
 
-def seed_line(idea: Idea, campaign: Campaign) -> str:
-    """Format one seed as the inbox prints it: who filed it, its title and its provenance."""
-    return f'seed idea#{idea.id} ({campaign.name}) by {idea.created_by}: {cell(idea.title)} — {cell(idea.provenance or "")}'
+def seed_of(idea: Idea, campaign: Campaign) -> Seed:
+    """A seed of ``campaign``, as the inbox lists it."""
+    return Seed(
+        idea=idea.id,
+        campaign=campaign.id,
+        campaign_name=campaign.name,
+        created_by=idea.created_by,
+        title=idea.title,
+        provenance=idea.provenance,
+    )
 
 
 WAKES: Final = tuple(
@@ -132,7 +139,7 @@ def _lines(s: Session, events: Sequence[Event], campaign_id: CampaignId | None, 
             case IdeaCreated() if e.actor != me.signature:
                 idea = s.get(Idea, e.target_id)
                 if idea is not None and idea.status is IdeaStatus.SEED and campaign_id in (None, idea.campaign_id):
-                    lines.append(seed_line(idea, idea.campaign))
+                    lines.append(seed_line(seed_of(idea, idea.campaign)))
             case CandidateJudged(verdict=verdict, reason=reason):
                 candidate = s.get(Candidate, e.target_id)
                 if candidate is not None and campaign_id in (None, candidate.campaign_id):

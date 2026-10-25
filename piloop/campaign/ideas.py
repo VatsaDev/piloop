@@ -22,10 +22,10 @@ from sqlalchemy import ColumnElement, case, distinct, exists, func, select
 from sqlalchemy.orm import Session, aliased
 
 from piloop.db.events import has
-from piloop.db.models import Candidate, Comment, CommentKind, Event, Idea, IdeaLink, IdeaStatus, LinkKind, Run
+from piloop.db.models import Candidate, Comment, Event, Idea, IdeaLink, IdeaStatus, LinkKind, Run
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.db.triggers.changelog import IdeaStatusChanged
-from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TargetRef
+from piloop.ids import CampaignId, CandidateId, CommentKind, IdeaId, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import NEVER_RAN
 

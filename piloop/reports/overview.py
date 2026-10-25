@@ -46,7 +46,6 @@ from piloop.db.models import (
     Candidate,
     Cause,
     Comment,
-    CommentKind,
     Event,
     Idea,
     IdeaStatus,
@@ -59,7 +58,7 @@ from piloop.db.models import (
     count,
     latest_agent_session,
 )
-from piloop.ids import AgentSessionId, CampaignId, EvaluatorId, TargetKind, TargetRef
+from piloop.ids import AgentSessionId, CampaignId, CommentKind, EvaluatorId, TargetKind, TargetRef
 from piloop.plugins.metric import Direction
 from piloop.plugins.role.contract import Files
 from piloop.plugins.stop_rule.contract import Fact
@@ -80,7 +79,7 @@ from piloop.scoring.ledger import (
     trunk_keeps,
 )
 from piloop.scoring.verdict import label, pending_clause
-from piloop.text import NONE, cell, metric
+from piloop.text import NONE, age, cell, metric
 from piloop.usage import human
 from piloop.usage.totals import campaign_tokens
 
@@ -174,18 +173,6 @@ def overview(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime,
     if tools:
         sections += ['### Tools', *(prompted(line, VCS.selected(cfg.plugins)) for line in TOOLS), *_schema()]
     return '\n'.join(sections) + '\n'
-
-
-def age(then: datetime, now: datetime) -> str:
-    """Format an age as ``12s``, ``3m``, ``2h`` or ``1d``, in the largest whole unit, rounded down.
-
-    A clock skew gives ``0s``, not a negative age.
-    """
-    seconds = max(0, int((now - then).total_seconds()))
-    for unit, size in (('d', 86400), ('h', 3600), ('m', 60)):
-        if seconds >= size:
-            return f'{seconds // size}{unit}'
-    return f'{seconds}s'
 
 
 def headline(s: Session, campaign: Campaign, cfg: CampaignConfig, now: datetime) -> str:

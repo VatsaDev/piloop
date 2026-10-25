@@ -3,13 +3,13 @@
 import json
 import re
 import sqlite3
-import threading
 from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select, text, update
 
 from piloop.actor import System
+from piloop.api.contract import MAX_LIMIT
 from piloop.campaign import ops
 from piloop.db import feed as db_feed
 from piloop.db.events import emit
@@ -19,7 +19,6 @@ from piloop.db.models import (
     Campaign,
     Candidate,
     Comment,
-    CommentKind,
     Event,
     Idea,
     IdeaStatus,
@@ -28,7 +27,7 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database
 from piloop.db.triggers.changelog import IdeaCreated
-from piloop.ids import CampaignId, TargetKind, TargetRef
+from piloop.ids import CampaignId, CommentKind, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports import feed
 
@@ -247,21 +246,9 @@ def test_a_cursor_ahead_of_the_feed_asks_for_a_new_snapshot_and_bad_bounds_are_r
             feed.read(s, end + 5)
         with pytest.raises(ValueError, match='cursor must be 0 or more'):
             feed.read(s, -1)
-        for limit in (0, feed.MAX_LIMIT + 1):
-            with pytest.raises(ValueError, match=f'limit must be from 1 to {feed.MAX_LIMIT}'):
+        for limit in (0, MAX_LIMIT + 1):
+            with pytest.raises(ValueError, match=f'limit must be from 1 to {MAX_LIMIT}'):
                 feed.read(s, 0, limit=limit)
-
-
-def test_follow_wakes_on_a_matching_event_and_otherwise_returns_at_its_timeout(
-    db: Database, campaign: Campaign
-) -> None:
-    start = newest(db)
-    noise = raw(db, 'noise', '{}')
-    quiet = feed.follow(db, start, kinds=['wanted'], timeout=0)
-    assert quiet == {'events': [], 'next': noise, 'more': False}, 'the timeout still hands back the advanced cursor'
-    threading.Timer(0.2, emitted, [db, 'wanted']).start()
-    woke = feed.follow(db, quiet['next'], kinds=['wanted'], timeout=30)
-    assert [e['kind'] for e in woke['events']] == ['wanted'], 'a commit of this process wakes it before its poll'
 
 
 def emitted(db: Database, kind: str) -> None:
@@ -307,13 +294,14 @@ def test_snapshots_carry_the_cursor_they_were_read_at(db: Database, campaign: Ca
             other.add(escalation(campaign.id, 'after the cursor'))
             other.commit()
             [state] = feed.status_view(s, [s.get_one(Campaign, campaign.id)])
-            inbox = feed.inbox_view(s)
+            inbox = feed.inbox_view(s, cursor)
         assert feed.read(s, cursor)['events'][0]['kind'] == 'comment.escalation', 'what the snapshot missed follows it'
     idea_id, seed_id, candidate_id, run_id, agent_session_id = ids
     assert state == {
         'id': campaign.id,
         'name': 'demo',
         'path': campaign.path,
+        'parent': None,
         'status': 'active',
         'stopped_reason': None,
         'paused': None,
@@ -344,11 +332,19 @@ def test_snapshots_carry_the_cursor_they_were_read_at(db: Database, campaign: Ca
         'tokens': 0,
     }, 'the escalation written after the cursor is not in the snapshot'
     [item] = inbox['items']
-    assert item['kind'] == 'escalation' and item['body'] == 'look' and item['campaign'] == campaign.id
+    assert inbox['cursor'] == cursor and item['kind'] == 'escalation' and item['body'] == 'look'
+    assert (item['campaign'], item['campaign_name']) == (campaign.id, 'demo')
     assert item['target'] == {'kind': 'campaign', 'id': campaign.id} and item['acked_at'] is None
     assert item['priority'] == 1 and item['created'].endswith('Z')
     assert inbox['seeds'] == [
-        {'idea': seed_id, 'campaign': campaign.id, 'created_by': 'scout#3', 'title': 'a hunch', 'provenance': 'a paper'}
+        {
+            'idea': seed_id,
+            'campaign': campaign.id,
+            'campaign_name': 'demo',
+            'created_by': 'scout#3',
+            'title': 'a hunch',
+            'provenance': 'a paper',
+        }
     ]
     json.dumps([state, inbox])
 

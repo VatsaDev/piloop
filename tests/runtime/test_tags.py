@@ -19,6 +19,7 @@ def test_nothing_that_an_agents_piloop_command_starts_carries_its_tag(monkeypatc
     monkeypatch.setenv(TAG_ENV, 'w-1')
     seen: list[dict[str, str]] = []
     monkeypatch.setattr(cli_main, 'app', lambda: seen.append(child_env()))
+    monkeypatch.setattr(cli_main, 'load_for_help', lambda argv: None)
     cli_main.main()
     assert TAG_ENV not in seen[0]
 

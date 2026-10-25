@@ -19,7 +19,7 @@ from typing import Annotated, Protocol
 import httpx2 as httpx
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, WithJsonSchema, model_validator
 
-from piloop.db.models import TokenScope
+from piloop.api.contract import Access
 from piloop.net.tokens import Caller, Tokens
 from piloop.plugins.host import Capability, Choice, Parameters, Scope
 
@@ -112,7 +112,7 @@ class NetworkHost:
     """What piloop gives a network provider."""
 
     tokens: Tokens
-    """The bearer tokens of ``piloop token``, to verify a caller's secret against."""
+    """The bearer tokens of ``piloop token``, which ``enroll`` mints and ``revoke`` deletes."""
 
 
 class Network(Protocol):
@@ -123,11 +123,15 @@ class Network(Protocol):
         ...
 
     def identify(self, headers: Mapping[str, str], peer: Peer) -> Caller | Refused:
-        """Who sends a request with these headers (their names in lower case), from ``peer``."""
+        """Who sends a request with these headers (their names in lower case), from ``peer``.
+
+        Core verifies a piloop token (``Bearer plt_…``) itself, on every network, and a call on the home's Unix socket is
+        its owner. Every other request comes here, with its headers as sent: another bearer, such as an edge's key, too.
+        """
         ...
 
-    def enroll(self, principal: str, scope: TokenScope) -> Enrollment:
-        """Give the machine called ``principal`` a credential of ``scope``, in place of any that it had.
+    def enroll(self, principal: str, access: Access) -> Enrollment:
+        """Give the machine called ``principal`` a credential of ``access``, in place of any that it had.
 
         ``identify`` then knows its calls as ``principal``'s. A provisioner's instance gets one when it starts (ARC's
         just-in-time runner config).

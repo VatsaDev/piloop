@@ -16,23 +16,22 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
+from piloop.api.contract import Access
 from piloop.db.models import (
     Campaign,
     Candidate,
     Comment,
-    CommentKind,
     Evaluation,
     Evaluator,
     InstanceEnd,
     LeaseWorker,
     NoLease,
-    TokenScope,
     WorkerInstance,
     WorkerInstanceState,
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import TargetKind
+from piloop.ids import CommentKind, TargetKind
 from piloop.net.tokens import Caller, Tokens
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins
@@ -180,7 +179,7 @@ def test_queued_leases_start_workers_up_to_max_each_with_a_credential_of_its_own
     for name, machine in machines.items():
         assert name.startswith('gpu-')
         assert machine.launch.argv == ['piloop', 'worker', '--server', URL, '--pool', 'gpu', '--orphan-exit', '600']
-        assert Tokens(db).verify(machine.launch.env[TOKEN_ENV].get_secret_value()) == Caller(name, TokenScope.WORKER)
+        assert Tokens(db).verify(machine.launch.env[TOKEN_ENV].get_secret_value()) == Caller(name, Access.WORKER)
     s.scaler.reconcile(utcnow())
     assert len(PLATFORMS[platform].starts) == 2, 'none more while they start'
     for name in machines:
@@ -333,7 +332,7 @@ def test_a_restarted_server_stops_its_orphans_and_starts_what_it_asked_for_and_d
     assert set(PLATFORMS[platform].machines) == {started, 'gpu-unstarted', 'gpu-ended'}, 'an ended one is left be'
     assert PLATFORMS[platform].starts.count(started) == 1, 'the one that it lists runs: it is not started again'
     secret = PLATFORMS[platform].machines['gpu-unstarted'].launch.env[TOKEN_ENV].get_secret_value()
-    assert Tokens(db).verify(secret) == Caller('gpu-unstarted', TokenScope.WORKER)
+    assert Tokens(db).verify(secret) == Caller('gpu-unstarted', Access.WORKER)
 
 
 def test_two_servers_on_one_account_never_stop_each_others_instances(
@@ -470,7 +469,7 @@ def test_a_start_that_fails_on_the_way_is_started_again_after_a_list_with_a_new_
     s.scaler.reconcile(utcnow())
     assert PLATFORMS[platform].starts == [row.name, row.name] and len(s.live()) == 1
     secret = PLATFORMS[platform].machines[row.name].launch.env[TOKEN_ENV].get_secret_value()
-    assert Tokens(db).verify(secret) == Caller(row.name, TokenScope.WORKER)
+    assert Tokens(db).verify(secret) == Caller(row.name, Access.WORKER)
 
 
 def test_a_pool_with_a_provisioner_names_its_runners_and_min_is_at_most_max(platform: str) -> None:

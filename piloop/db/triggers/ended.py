@@ -1,7 +1,8 @@
 """An agent whose session has ended leaves no finding: a TEMP trigger on ``comments``."""
 
-from piloop.db.models import ENDED, AgentSessionState, CommentKind
+from piloop.db.models import ENDED, AgentSessionState
 from piloop.db.triggers.ddl import Trigger
+from piloop.ids import CommentKind
 
 NO_FINDING = ', '.join(f"'{state}'" for state in (AgentSessionState.ENDING, *ENDED))
 """The states of an agent session whose findings are refused, as a SQL list."""

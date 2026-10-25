@@ -256,15 +256,50 @@ def registered(s: Session, path: Path) -> Campaign | None:
     return s.scalars(select(Campaign).where(Campaign.path == str(path.resolve()))).first()
 
 
-def find(s: Session, ref: str) -> Campaign | None:
-    """Find a campaign by name, else by a path inside its repo.
+def find(s: Session, ref: str, cwd: Path | None = None) -> Campaign | None:
+    """Find a campaign by name, else by a path inside its repo, relative to ``cwd`` (default: this process's).
 
     The name is tried first, because a bare name can also be a directory in the current directory.
     """
     campaign = s.scalars(select(Campaign).where(Campaign.name == ref)).first()
-    if campaign is None and Path(ref).exists():
-        campaign = checked_out(s, Path(ref))
+    if campaign is None and (path := _path(ref, cwd)).exists():
+        campaign = checked_out(s, path)
     return campaign
+
+
+def _path(ref: str, cwd: Path | None) -> Path:
+    return Path(ref) if cwd is None else cwd / ref
+
+
+class UnknownCampaign(LookupError):
+    """No campaign of the home has that name or holds that path."""
+
+    def __init__(self, ref: str, cwd: Path | None = None) -> None:
+        where = f'at {ref}' if _path(ref, cwd).exists() else repr(ref)
+        super().__init__(
+            f'no campaign {where} in {settings.home}; is PILOOP_HOME right? `piloop init <path>` registers one'
+        )
+
+
+def named(s: Session, ref: str, cwd: Path | None = None) -> Campaign:
+    """The campaign that ``ref`` names (``find``). Raises ``UnknownCampaign``."""
+    if (found := find(s, ref, cwd)) is None:
+        raise UnknownCampaign(ref, cwd)
+    return found
+
+
+def selected(s: Session, ref: str | None, cwd: Path | None) -> list[Campaign]:
+    """The campaign that ``ref`` names, else the one ``cwd`` is in, else the only active one, else every campaign.
+
+    Raises:
+        UnknownCampaign: ``ref`` names none.
+    """
+    if ref:
+        return [named(s, ref, cwd)]
+    if cwd is not None and (here := checked_out(s, cwd)):
+        return [here]
+    active = s.scalars(select(Campaign).where(Campaign.status == CampaignStatus.ACTIVE)).all()
+    return list(active) if len(active) == 1 else list(s.scalars(select(Campaign)).all())
 
 
 def checked_out(s: Session, path: Path) -> Campaign | None:

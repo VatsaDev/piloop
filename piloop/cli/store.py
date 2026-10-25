@@ -11,15 +11,13 @@ from sqlalchemy import func, select
 
 from piloop.campaign import archive
 from piloop.campaign.campaigns import workspace_dir
-from piloop.cli import common
+from piloop.cli import common, local
 from piloop.cli.common import CampaignRef
 from piloop.db.models import Archive, Campaign
 from piloop.plugins.cas.contract import CAS, Integrity, Upkeep, integrity
 from piloop.store.tree import Manifest
 
-app = cyclopts.App(
-    name='store', help='The artifact store that archived workspace files live in: what it holds, eviction, checks.'
-)
+app = cyclopts.App(name='store')  # its help is where piloop.cli.main registers it
 
 
 def restore(
@@ -41,9 +39,9 @@ def restore(
     """
     idea = target.removeprefix('idea#') if target is not None else None
     parsed: int | str | None = int(idea) if idea is not None and idea.isdigit() else target
-    with common.session() as s:
-        campaign = common.campaign(s, ref)
-        restored = archive.restore(s, common.cas(), common.settings.home, campaign, parsed)
+    with local.session() as s:
+        campaign = local.campaign(s, ref)
+        restored = archive.restore(s, local.cas(), common.settings.home, campaign, parsed)
     done = restored.done
     if done.written + done.same + len(done.kept) == 0:
         what = f'idea#{parsed}' if isinstance(parsed, int) else parsed or 'anything'
@@ -67,7 +65,7 @@ def restore(
 @app.command(name='status')
 def store_status() -> None:
     """What the store holds, where, and how much of each campaign's workspace was archived into it."""
-    cas = common.cas()
+    cas = local.cas()
     line = f'cas: {CAS.name_of(CAS.selected(common.settings.providers))}'
     if isinstance(cas, Upkeep):
         usage = cas.usage()
@@ -77,7 +75,7 @@ def store_status() -> None:
         )
     common.console.print(line, markup=False, highlight=False, soft_wrap=True)
     table = Table('campaign', 'archives', 'files', 'archived', box=box.SIMPLE_HEAD)
-    with common.session() as s:
+    with local.session() as s:
         rows = s.execute(
             select(Campaign.name, func.count(Archive.id), func.sum(Archive.files), func.sum(Archive.bytes))
             .join(Archive, Archive.campaign_id == Campaign.id)
@@ -100,7 +98,7 @@ def store_status() -> None:
 @app.command(name='evict')
 def store_evict() -> None:
     """Upload what the remote lacks, then drop local copies as `[plugins.cas]` says; the daemon does it hourly too."""
-    cas = common.cas()
+    cas = local.cas()
     if not isinstance(cas, Upkeep):
         raise SystemExit('the CAS keeps no local copies to evict: only a cache over a remote does')
     done = cas.flush(evict=True)
@@ -113,11 +111,11 @@ def store_verify(ref: CampaignRef | None = None, /) -> None:
 
     Exits non-zero when one is missing or corrupt.
     """
-    cas = common.cas()
-    with common.session() as s:
+    cas = local.cas()
+    with local.session() as s:
         query = select(Archive.manifest).where(Archive.manifest.is_not(None))
         if ref is not None:
-            query = query.where(Archive.campaign_id == common.campaign(s, ref).id)
+            query = query.where(Archive.campaign_id == local.campaign(s, ref).id)
         manifests = [m for m in s.scalars(query).all() if m is not None]
     cids = set(manifests)
     for manifest in manifests:

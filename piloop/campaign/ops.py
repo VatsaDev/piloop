@@ -33,7 +33,6 @@ from piloop.db.models import (
     Candidate,
     Cause,
     Comment,
-    CommentKind,
     Idea,
     IdeaLink,
     IdeaStatus,
@@ -42,7 +41,7 @@ from piloop.db.models import (
     Pause,
     Run,
 )
-from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TargetRef, TrackName
+from piloop.ids import CampaignId, CandidateId, CommentKind, IdeaId, TargetKind, TargetRef, TrackName
 from piloop.plugins.role.contract import Files
 from piloop.plugins.vcs.contract import VcsError
 from piloop.plugins.verdict_rule.contract import Outcome

@@ -7,10 +7,10 @@ import cyclopts
 from pydantic import ValidationError
 
 from piloop.campaign import ops
-from piloop.cli import common
+from piloop.cli import common, local
 from piloop.ids import CandidateId
 
-app = cyclopts.App(name='measurement', help='Record a measurement made outside the daemon.')
+app = cyclopts.App(name='measurement')  # its help is where piloop.cli.main registers it
 
 
 @app.command(name='add')
@@ -36,7 +36,7 @@ def measurement_add(
         parsed = ops.Report.model_validate_json(report.read_text())
     except ValidationError as e:
         raise SystemExit(f'the report is not {{"metrics": {{…}}, "seconds": …, "error": …}}: {e}') from e
-    with common.refused(), common.session() as s:
+    with local.refused(), local.session() as s:
         added = ops.add_measurement(s, candidate_id, parsed, actor=common.settings.actor)
         s.commit()
         common.console.print(

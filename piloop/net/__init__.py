@@ -1,39 +1,80 @@
-"""The server of ``piloop serve --listen``: the routes that other machines call, and who may call each one.
+"""The server of ``piloop serve``: the routes that clients and workers call, and who may call each one.
 
-The network capability (``piloop.plugins.network.contract``) says how machines reach the server and who a caller is.
-What a caller may do is core's: every token is a worker's (``TokenScope``), and a worker may call every route. The
-server is FastAPI on uvicorn (``piloop.net.server``), and it serves the routes of the executor (``Executor.routes``). Data never
-goes through it: workers read and write the artifact store's remote directly, and the routes pass only hashes.
+The network capability (``piloop.plugins.network.contract``) says how other machines reach the server and who a caller
+is. What a caller may do is core's: the access of its credential (``piloop.api.contract.Access``) must grant the
+route's. The server is FastAPI on uvicorn (``piloop.net.server``). It serves the API (``Served`` endpoints of
+``piloop.api.contract``) and the routes of the executor (``Executor.routes``). Data never goes through it: workers read
+and write the artifact store's remote directly, and the routes pass only hashes.
 """
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import partial
 from http import HTTPStatus
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, TypeAdapter, ValidationError
 
+from piloop.api.contract import Endpoint, Params, Polled
 from piloop.net.tokens import Caller
-
-MAX_POLL_SECONDS = 25
-"""The longest that the server holds a long-poll (``Polled.wait``), as the GitHub Actions runner's."""
 
 type Changed = Callable[[int, float], Awaitable[int]]
 """``Database.changed``: the count of wakes once it passes the one seen, or at the timeout."""
 
 
-class Polled(BaseModel):
-    """The body of a long-poll: the server holds it up to ``wait`` seconds for an answer."""
+@dataclass(frozen=True)
+class Pending[P: Params, A]:
+    """A long-poll's answer while there is nothing new: the server awaits a change, then calls again with ``again``.
 
-    wait: float = Field(ge=0, le=MAX_POLL_SECONDS)
+    At the end of the wait it sends ``answer``, so a cursor still moves over what the filters left out.
+    """
+
+    answer: A
+    again: P
 
 
 @dataclass(frozen=True)
-class Call:
+class Step:
+    """One call of an endpoint's handler: the answer, as JSON, and the next call of a long-poll that has nothing new."""
+
+    answer: bytes
+    again: Callable[[], Step] | None
+
+
+class Served:
+    """An endpoint of the API, and the function that answers it.
+
+    ``handle`` runs in a thread of the server's pool, so it must not wait. A long-poll answers ``Pending`` until there
+    is something new, and ``changed`` is what the server awaits in between, outside the pool.
+    """
+
+    def __init__[P: Params, A](
+        self, endpoint: Endpoint[P, A], handle: Callable[[Caller, P], A | Pending[P, A]], changed: Changed | None = None
+    ) -> None:
+        self.endpoint: Endpoint[Params, object] = endpoint
+        self.changed = changed
+        answers = TypeAdapter(endpoint.answer)
+
+        def step(caller: Caller, params: P) -> Step:
+            match handle(caller, params):
+                case Pending(answer=answer, again=again):
+                    return Step(answers.dump_json(answer), partial(step, caller, again))
+                case answer:
+                    return Step(answers.dump_json(answer), None)
+
+        def bind(caller: Caller, query: Mapping[str, object]) -> Call[Step]:
+            params = endpoint.params.model_validate(query)
+            return Call(partial(step, caller, params), params.wait if isinstance(params, Polled) else 0)
+
+        self.bind: Callable[[Caller, Mapping[str, object]], Call[Step]] = bind
+        """Bind the handler to a request's parameters, which the server has validated."""
+
+
+@dataclass(frozen=True)
+class Call[T]:
     """A request whose body is valid: its handler, bound to the caller and the body, and how long it may wait."""
 
-    handle: Callable[[], BaseModel | None]
+    handle: Callable[[], T]
     wait: float
 
 
@@ -46,10 +87,10 @@ class Route:
     def __init__[I: BaseModel](self, path: str, body: type[I], handle: Callable[[Caller, I], BaseModel | None]) -> None:
         self.path = path
 
-        def bind(caller: Caller, raw: bytes) -> Call:
+        def bind(caller: Caller, raw: bytes) -> Call[BaseModel | None]:
             return Call(partial(handle, caller, _parsed(body, raw)), 0)
 
-        self.bind: Callable[[Caller, bytes], Call] = bind
+        self.bind: Callable[[Caller, bytes], Call[BaseModel | None]] = bind
         """Validate a request's body, and bind the handler to it. Raises ``InvalidBody``."""
         self.changed: Changed | None = None
         """What the server awaits between the calls of a long-poll's handler. None for any other route."""
@@ -68,7 +109,7 @@ class Route:
         """
         route = cls(path, body, handle)
 
-        def bind(caller: Caller, raw: bytes) -> Call:
+        def bind(caller: Caller, raw: bytes) -> Call[BaseModel | None]:
             parsed = _parsed(body, raw)
             return Call(partial(handle, caller, parsed), parsed.wait)
 

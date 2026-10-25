@@ -15,7 +15,6 @@ from pydantic import JsonValue
 
 from piloop.db.models import (
     CampaignStatus,
-    CommentKind,
     EventModel,
     IdeaStatus,
     LinkKind,
@@ -24,7 +23,7 @@ from piloop.db.models import (
 )
 from piloop.db.triggers.ddl import Event, Trigger
 from piloop.db.triggers.provenance import DAEMON_ACTOR, NOW, SESSION_ACTOR
-from piloop.ids import HOME, CampaignId, CandidateId, IdeaId, RoleName, TargetKind, TrackName
+from piloop.ids import HOME, CampaignId, CandidateId, CommentKind, IdeaId, RoleName, TargetKind, TrackName
 from piloop.plugins.cas.contract import BlobAddress
 from piloop.plugins.verdict_rule.contract import Outcome
 

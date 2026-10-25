@@ -34,8 +34,8 @@ from piloop.plugins.host import Check, PluginError, Severity, declared
 from piloop.plugins.secrets.contract import SECRETS, SecretKey
 from piloop.plugins.vcs.contract import VCS
 from piloop.proc import child_env, environment
-from piloop.reports.overview import age
 from piloop.settings import Settings
+from piloop.text import age
 from piloop.version import code_digest, direct_url, installed
 
 CHANGELOG = 'https://github.com/hiloopai/piloop/blob/main/CHANGELOG.md'

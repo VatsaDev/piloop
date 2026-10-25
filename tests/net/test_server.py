@@ -17,10 +17,11 @@ import pytest
 from covalence import Cid
 from pydantic import BaseModel, ValidationError
 
+from piloop.api.contract import Access, Polled
 from piloop.daemon.main import preflight
-from piloop.db.models import Campaign, TokenScope
+from piloop.db.models import Campaign
 from piloop.db.session import Database
-from piloop.net import Polled, Route, cas_server, tokens
+from piloop.net import Route, cas_server, tokens
 from piloop.net.cas import route
 from piloop.net.server import App, Server, app
 from piloop.net.tokens import Caller, Tokens
@@ -36,6 +37,7 @@ from piloop.plugins.network.contract import (
     NetworkHost,
     NotEnrolled,
     Peer,
+    Refused,
 )
 from piloop.plugins.network.https import Https
 from piloop.settings import Settings
@@ -81,6 +83,23 @@ def test_a_caller_without_a_known_token_gets_401_and_a_revoked_token_stops_worki
         assert (revoked.status_code, revoked.json()) == (401, {'detail': 'the token is unknown or revoked'})
 
 
+def test_core_verifies_a_piloop_token_before_the_network_and_a_token_of_another_access_gets_403(
+    serving: Serving, token: Callable[..., str], dial: Dial
+) -> None:
+    with serving([ECHO]) as server:
+        with dial(server.url, token('ana', Access.READ)) as reader:
+            refused = reader.post(ECHOED, json=HI)
+            assert (refused.status_code, refused.json()) == (
+                403,
+                {'detail': 'ana has read access, and this route needs worker'},
+            )
+        with dial(server.url, 'hil_someone_elses') as foreign:
+            unknown = foreign.post(ECHOED, json=HI)
+            assert unknown.json() == {
+                'detail': 'the credential is not a piloop token (plt_…): send Authorization: Bearer <token>'
+            }, 'https knows no other credential'
+
+
 def test_an_executor_route_takes_its_model_and_answers_with_its_model_or_204(
     serving: Serving, token: Callable[..., str], dial: Dial
 ) -> None:
@@ -116,9 +135,9 @@ class Recording:
 
     def identify(self, headers: Mapping[str, str], peer: Peer) -> Caller:
         self.peers.append(peer)
-        return Caller('gpu1', TokenScope.WORKER)
+        return Caller('gpu1', Access.WORKER)
 
-    def enroll(self, principal: str, scope: TokenScope) -> Enrollment:
+    def enroll(self, principal: str, access: Access) -> Enrollment:
         raise NotEnrolled('it admits every caller')
 
     def revoke(self, principal: str) -> None:
@@ -129,19 +148,19 @@ class Recording:
 class Served:
     """A server's app over a network, and a request that the network must admit, with the status that answers it."""
 
-    app: Callable[[Network, Path], App]
+    app: Callable[[Tokens, Network, Path], App]
     method: str
     path: str
     status: int
     body: str | None = None
 
 
-def _control_plane(network: Network, tmp: Path) -> App:
-    return app(network, [ECHO])
+def _control_plane(tokens: Tokens, network: Network, tmp: Path) -> App:
+    return app(tokens, network, [ECHO], ())
 
 
-def _cas(network: Network, tmp: Path) -> App:
-    return cas_server.app(network, DiskCas(tmp / 'cas'), tmp / 'scratch')
+def _cas(tokens: Tokens, network: Network, tmp: Path) -> App:
+    return cas_server.app(tokens, network, DiskCas(tmp / 'cas'), tmp / 'scratch')
 
 
 SERVED = {
@@ -150,9 +169,9 @@ SERVED = {
 }
 
 
-def _peer_of(served: Served, network: Recording, tmp: Path, client: ssl.SSLContext | None) -> Address:
+def _peer_of(served: Served, tokens: Tokens, network: Recording, tmp: Path, client: ssl.SSLContext | None) -> Address:
     """Send ``served``'s request through a server over ``network``, and return the address that it came from."""
-    with closing(Server(served.app(network, tmp), network.listener())) as server:
+    with closing(Server(served.app(tokens, network, tmp), network.listener())) as server:
         server.start()
         host, port = server.listener.socket.getsockname()[:2]
         connection = (
@@ -170,10 +189,10 @@ def _peer_of(served: Served, network: Recording, tmp: Path, client: ssl.SSLConte
 
 @pytest.mark.parametrize('served', SERVED.values(), ids=SERVED.keys())
 def test_the_server_tells_the_network_the_peer_address_and_its_tls_certificate(
-    served: Served, certificate: dict[str, str], tmp_path: Path
+    served: Served, certificate: dict[str, str], tmp_path: Path, db: Database
 ) -> None:
     plain = Recording(None)
-    sent = _peer_of(served, plain, tmp_path, None)
+    sent = _peer_of(served, Tokens(db), plain, tmp_path, None)
     assert plain.peers == [Peer(address=sent, certificate=None)]
 
     tls = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
@@ -183,7 +202,7 @@ def test_the_server_tells_the_network_the_peer_address_and_its_tls_certificate(
     mutual = Recording(tls)
     client = ssl.create_default_context(cafile=certificate['cert'])
     client.load_cert_chain(certificate['cert'], certificate['key'])
-    sent = _peer_of(served, mutual, tmp_path, client)
+    sent = _peer_of(served, Tokens(db), mutual, tmp_path, client)
     der = ssl.PEM_cert_to_DER_cert(Path(certificate['cert']).read_text())
     assert mutual.peers == [Peer(address=sent, certificate=der)]
 
@@ -316,10 +335,10 @@ def test_https_enrolls_a_machine_with_a_token_that_its_client_dials_with_until_i
     db: Database, serving: Serving, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     with pytest.raises(NotEnrolled, match='set url'):
-        Https().open(NetworkHost(Tokens(db))).enroll('gpu-1', TokenScope.WORKER)
+        Https().open(NetworkHost(Tokens(db))).enroll('gpu-1', Access.WORKER)
     with serving([ECHO]) as server:
         network = Https(url=server.url).open(NetworkHost(Tokens(db)))
-        enrolled = network.enroll('gpu-1', TokenScope.WORKER)
+        enrolled = network.enroll('gpu-1', Access.WORKER)
         for name, value in enrolled.env.items():
             monkeypatch.setenv(name, value.get_secret_value())
         with Https().client(enrolled.server) as client:
@@ -327,3 +346,43 @@ def test_https_enrolls_a_machine_with_a_token_that_its_client_dials_with_until_i
             network.revoke('gpu-1')
             network.revoke('gpu-1')
             assert client.post(ECHOED, json=HI).status_code == 401
+
+
+class TrustedHeaders:
+    """A network behind an edge that checks its own keys and stamps who calls: ``x-user`` and ``x-access``."""
+
+    def __init__(self) -> None:
+        self.asked: list[str] = []
+
+    def listener(self) -> Listener:
+        return Listener(socket.create_server(('127.0.0.1', 0)), None)
+
+    def identify(self, headers: Mapping[str, str], peer: Peer) -> Caller | Refused:
+        self.asked.append(headers.get('authorization', ''))
+        if (user := headers.get('x-user')) is None:
+            return Refused('the edge stamped no x-user')
+        return Caller(user, Access(headers.get('x-access', 'read')))
+
+    def enroll(self, principal: str, access: Access) -> Enrollment:
+        raise NotEnrolled('the edge gives keys')
+
+    def revoke(self, principal: str) -> None:
+        raise NotEnrolled('the edge gives keys')
+
+
+def test_a_bearer_that_is_not_a_piloop_token_reaches_the_network_which_identifies_the_caller(db: Database) -> None:
+    network = TrustedHeaders()
+    with closing(Server(app(Tokens(db), network, [ECHO], ()), network.listener())) as server:
+        server.start()
+        stamped = {'Authorization': 'Bearer hil_abc', 'x-user': 'gpu7', 'x-access': 'worker'}
+        answered = httpx.post(server.url + ECHOED, json=HI, headers=stamped)
+        assert (answered.status_code, answered.json()) == (200, {'text': 'hi', 'caller': 'gpu7'})
+        unstamped = httpx.post(server.url + ECHOED, json=HI, headers={'Authorization': 'Bearer hil_abc'})
+        assert (unstamped.status_code, unstamped.json()) == (401, {'detail': 'the edge stamped no x-user'})
+        reader = httpx.post(server.url + ECHOED, json=HI, headers={**stamped, 'x-access': 'read'})
+        assert reader.status_code == 403, 'core checks the access of whoever the network names'
+        forged = httpx.post(server.url + ECHOED, json=HI, headers={**stamped, 'Authorization': 'Bearer plt_guessed'})
+        assert (forged.status_code, forged.json()) == (401, {'detail': 'the token is unknown or revoked'})
+    assert network.asked == ['Bearer hil_abc'] * 3, (
+        'core verifies only a piloop token, and leaves every other call to the network'
+    )

@@ -26,14 +26,24 @@ from sqlalchemy.orm import Session
 
 from piloop.actor import Actor, Agent, System
 from piloop.agents.results import PromptOutcome
+from piloop.api.client import Client, NoDaemon
+from piloop.api.contract import STATUS, Selection
 from piloop.campaign import campaigns as campaign_module, inbox
 from piloop.campaign.campaigns import CampaignAdded
 from piloop.campaign.ideas import defined_by, runnable
 from piloop.campaign.stop import CancelRequested, Ending, StopRequested
-from piloop.cli import agents as agents_cli, campaign as campaign_cli, common, inbox as inbox_cli, install, main as cli
+from piloop.cli import (
+    agents as agents_cli,
+    campaign as campaign_cli,
+    common,
+    inbox as inbox_cli,
+    install,
+    main as cli,
+    views,
+)
 from piloop.config import ConfigError
 from piloop.daemon.main import Daemon
-from piloop.daemon.serve import acquire, listening, running_pid
+from piloop.daemon.serve import acquire, running_pid
 from piloop.db import feed as db_feed, session, sql
 from piloop.db.events import emit, has
 from piloop.db.models import (
@@ -43,7 +53,6 @@ from piloop.db.models import (
     CampaignStatus,
     Candidate,
     Comment,
-    CommentKind,
     Evaluation,
     Event,
     Idea,
@@ -61,7 +70,7 @@ from piloop.db.models import (
 )
 from piloop.db.session import Database, migrate
 from piloop.db.triggers.changelog import CampaignConfigChanged, CampaignStatusChanged
-from piloop.ids import CampaignId, CandidateId, CommentId, TargetKind, TargetRef
+from piloop.ids import CampaignId, CandidateId, CommentId, CommentKind, TargetKind, TargetRef
 from piloop.plugins import host
 from piloop.plugins.executor.kit.capacity import GB, HostSample
 from piloop.plugins.executor.kit.leases import Leases
@@ -110,6 +119,7 @@ def out(isolated_home: Console):
     return read
 
 
+@pytest.mark.usefixtures('api')
 def test_campaign_and_idea_lifecycle(campaign_path: Path, out) -> None:
     run_cli(['init', str(campaign_path)])
     assert out().startswith('campaign demo #1 registered; baseline candidate#1: score 1'), (
@@ -143,6 +153,7 @@ def test_campaign_and_idea_lifecycle(campaign_path: Path, out) -> None:
     assert out().strip() == 'campaign demo #1 already registered; config re-read from piloop.toml'
 
 
+@pytest.mark.usefixtures('api')
 def test_every_role_but_the_implementer_files_a_seed_and_only_research_the_orchestrator_and_humans_add_ideas(
     campaign_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -302,6 +313,7 @@ def test_a_sweep_files_its_new_ideas_as_proposed_while_its_role_may_file_none(
     db.close()
 
 
+@pytest.mark.usefixtures('api')
 def test_status_shows_why_a_campaign_stopped_and_init_resumes_it_when_the_stop_table_changes(
     campaign_path: Path, out
 ) -> None:
@@ -365,6 +377,7 @@ def test_status_shows_why_a_campaign_stopped_and_init_resumes_it_when_the_stop_t
     db.close()
 
 
+@pytest.mark.usefixtures('api')
 def test_a_subdirectory_or_worktree_of_a_campaign_resolves_to_it(
     campaign_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -385,6 +398,7 @@ def test_a_subdirectory_or_worktree_of_a_campaign_resolves_to_it(
     assert f' demo #1  {campaign_path} ' in out(), 'cwd in a linked worktree outside the repo'
 
 
+@pytest.mark.usefixtures('api')
 def test_outside_every_campaign_the_only_active_one_is_meant_else_all_of_them(
     campaign_path: Path, tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -426,6 +440,7 @@ def test_outside_every_campaign_the_only_active_one_is_meant_else_all_of_them(
     db.close()
 
 
+@pytest.mark.usefixtures('api')
 def test_init_blank_then_register_then_reread(tmp_path: Path, out) -> None:
     path = tmp_path / 'fresh'
     run_cli(['init', str(path)])
@@ -467,6 +482,7 @@ def test_init_example(tmp_path: Path, out, monkeypatch: pytest.MonkeyPatch) -> N
         run_cli(['init', '--example', 'demo', str(tmp_path / 'e')])
 
 
+@pytest.mark.usefixtures('api')
 def test_sql_and_status_while_another_client_holds_the_write_lock(
     writer: subprocess.Popen[str], monkeypatch: pytest.MonkeyPatch, out
 ) -> None:
@@ -474,7 +490,7 @@ def test_sql_and_status_while_another_client_holds_the_write_lock(
     monkeypatch.setattr(sql, 'CONNECTION_PRAGMAS', ('busy_timeout=0', *sql.CONNECTION_PRAGMAS[1:]))
     run_cli(['sql', 'SELECT count(*) FROM campaigns'])
     run_cli(['status'])
-    assert out().endswith('│ 0        │\n└──────────┘\ndaemon: not running\n')
+    assert re.search(r'│ 0        │\n└──────────┘\ndaemon: pid \d+, up 0:00:\d\d\n$', out())
     holder = rf' \(pid {writer.pid} holds the write lock: ' if sys.platform == 'linux' else ''  # from /proc/locks
     with pytest.raises(SystemExit, match=rf'^sql error: database is locked{holder}'):
         run_cli(['sql', "UPDATE campaigns SET name = 'x'"])
@@ -597,6 +613,7 @@ def test_journal_lines_come_back_in_wake(campaign_path: Path, out, monkeypatch: 
     assert out() == ''
 
 
+@pytest.mark.usefixtures('api')
 def test_inbox_lists_what_waits_shows_one_with_its_thread_and_acknowledges(
     campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -606,7 +623,8 @@ def test_inbox_lists_what_waits_shows_one_with_its_thread_and_acknowledges(
     toml.write_text(re.sub(r'(?m)^name = .*$', 'name = "other"', toml.read_text(), count=1))
     run_cli(['init', str(other)])
     now = datetime(2026, 10, 7, 12, tzinfo=UTC)
-    monkeypatch.setattr(inbox_cli, 'utcnow', lambda: now)  # what the ages count from
+    monkeypatch.setattr(views, 'clock', lambda: now)  # what the ages count from
+    monkeypatch.setattr(inbox_cli, 'utcnow', lambda: now)
     monkeypatch.setattr(inbox, 'utcnow', lambda: now)  # when an item is acknowledged
     insert = 'INSERT INTO comments (target_kind, target_id, author, kind, body, priority, created_at) VALUES '
     at = f"'{now:%Y-%m-%d %H:%M:%S}'"
@@ -720,6 +738,7 @@ def test_cli_writes_as_the_actor_from_the_environment(
     assert 'watchdog#4' in out(), 'ORM writes carry the same actor'
 
 
+@pytest.mark.usefixtures('api')
 def test_candidate_import_registers_a_reference_shown_apart_and_refuses_a_bad_ref_or_a_known_tree(
     campaign_path: Path, out
 ) -> None:
@@ -775,6 +794,7 @@ def test_candidate_import_registers_a_reference_shown_apart_and_refuses_a_bad_re
         run_cli(['candidate', 'import', 'demo', 'nope'])
 
 
+@pytest.mark.usefixtures('api')
 def test_candidate_remeasure_asks_the_daemon_to_measure_a_candidate_again_and_refuses_what_is_never_measured(
     campaign_path: Path, out
 ) -> None:
@@ -868,6 +888,7 @@ def test_worker_list_says_when_another_executor_is_selected(
     assert out().splitlines()[0] == 'the executor is inline, not workers: these workers take no job'
 
 
+@pytest.mark.usefixtures('api')
 def test_limits_set_a_live_key_that_status_shows_with_its_source_and_unset_removes_it(campaign_path: Path, out) -> None:
     run_cli(['init', str(campaign_path)])
     out()
@@ -889,6 +910,7 @@ def test_limits_set_a_live_key_that_status_shows_with_its_source_and_unset_remov
         run_cli(['limits', 'unset', 'executor.pools.serve.evaluations'])
 
 
+@pytest.mark.usefixtures('api')
 def test_eval_queue_lists_the_running_then_the_waiting_evaluations_and_eval_cancel_cancels_one(
     campaign_path: Path, out
 ) -> None:
@@ -1004,6 +1026,7 @@ def test_baseline_must_evaluate(campaign_path: Path) -> None:
         run_cli(['init', str(campaign_path)])
 
 
+@pytest.mark.usefixtures('api')
 def test_attach_prints_the_last_lines_that_an_agent_wrote(campaign_path: Path, out, tmp_path: Path) -> None:
     """A running agent's output, an ended agent's transcript, and why there is nothing to print."""
     run_cli(['init', str(campaign_path)])
@@ -1196,6 +1219,7 @@ def test_campaign_stop_and_cancels_are_requests_that_the_daemon_acts_on(campaign
     assert out().strip() == 'stop requested for demo: the daemon ends its implementers now'
 
 
+@pytest.mark.usefixtures('api')
 def test_launch_requests_an_implementer(campaign_path: Path, out) -> None:
     run_cli(['init', str(campaign_path)])
     out()
@@ -1237,8 +1261,8 @@ def test_serve_builds_a_daemon(mocker: MockerFixture) -> None:
 
 
 def test_serve_detach_status_stop(out, monkeypatch: pytest.MonkeyPatch) -> None:
-    run_cli(['status'])
-    assert out().strip() == 'daemon: not running'
+    with pytest.raises(SystemExit, match=rf'^no daemon serves {re.escape(str(common.settings.home))}: start it with'):
+        run_cli(['status'])
     run_cli(['serve', '--detach'])
     text = out().strip()
     match = re.fullmatch(rf'daemon started: pid (\d+), log {re.escape(str(common.settings.log_file))}', text)
@@ -1250,7 +1274,7 @@ def test_serve_detach_status_stop(out, monkeypatch: pytest.MonkeyPatch) -> None:
         run_cli(['serve', '--detach'])
     with pytest.raises(SystemExit, match=f'already running \\(pid {pid}'):
         Daemon(common.settings).serve()
-    run_cli(['status'])
+    run_cli(['status'])  # at once: `serve --detach` returns once the daemon answers
     assert re.match(rf'daemon: pid {pid}, up 0:\d\d:\d\d\n', out())  # a loaded host can take 10 s to get here
 
     reaper = threading.Thread(target=os.waitpid, args=(pid, 0))
@@ -1258,7 +1282,7 @@ def test_serve_detach_status_stop(out, monkeypatch: pytest.MonkeyPatch) -> None:
     run_cli(['stop'])
     reaper.join()
     assert out().strip() == f'daemon pid {pid} stopped'
-    assert not alive(pid) and not common.settings.pid_file.exists()
+    assert not alive(pid) and not common.settings.pid_file.exists() and not common.settings.socket_file.exists()
     with pytest.raises(SystemExit, match='no daemon is running'):
         run_cli(['stop'])
 
@@ -1270,20 +1294,29 @@ def test_status_shows_where_the_daemon_listens_and_a_restart_keeps_a_free_port(
     pid = int(out().split()[3].rstrip(','))
     reaper = threading.Thread(target=os.waitpid, args=(pid, 0))
     reaper.start()
-    wait_until(lambda: running_pid(common.settings) == pid and listening(common.settings) is not None)
-    url = listening(common.settings)
+    wait_until(lambda: running_pid(common.settings) == pid and listening() is not None)
+    url = listening()
     assert url is not None and re.fullmatch(r'http://127\.0\.0\.1:\d+', url) and not url.endswith(':0')
     run_cli(['status'])
     assert out().splitlines()[0].endswith(f', listening on {url}')
     run_cli(['status', '--json'])
-    assert json.loads(out())['daemon'] == {'pid': pid, 'listen': url}
+    assert json.loads(out())['daemon'] | {'started': None} == {'pid': pid, 'started': None, 'listen': url}
     run_cli(['restart', '--timeout', '300'])  # the suite loads the host: a restart takes longer than 30 s there
     out()
-    wait_until(lambda: listening(common.settings) is not None)
-    assert listening(common.settings) == url, 'the port that :0 took'
+    wait_until(lambda: listening() is not None)
+    assert listening() == url, 'the port that :0 took'
     run_cli(['stop'])
     reaper.join()
-    assert listening(common.settings) is None
+    assert listening() is None and not common.settings.socket_file.exists()
+
+
+def listening() -> str | None:
+    """The URL that the home's daemon serves other machines on, or None when no daemon answers or it serves none."""
+    try:
+        with Client(common.settings.socket_file) as client:
+            return client.call(STATUS, Selection())['daemon']['listen']
+    except NoDaemon:
+        return None
 
 
 @pytest.mark.usefixtures('no_database')
@@ -1315,8 +1348,8 @@ def test_stop_and_status_do_not_mistake_a_reused_pid_for_the_daemon(out) -> None
     common.settings.pid_file.parent.mkdir(parents=True, exist_ok=True)
     common.settings.pid_file.write_text(str(sleeper.pid))
     try:
-        run_cli(['status'])
-        assert out().startswith('daemon: not running')
+        with pytest.raises(SystemExit, match='^no daemon serves'):
+            run_cli(['status'])
         with pytest.raises(SystemExit, match='no daemon is running'):
             run_cli(['stop'])
         assert sleeper.poll() is None, 'the lock is free: nothing is ours to signal'
@@ -1339,6 +1372,7 @@ def test_service_unit_prints_a_systemd_unit_on_linux(tmp_path: Path, out) -> Non
     )
 
 
+@pytest.mark.usefixtures('api')
 def test_the_service_unit_carries_what_the_usage_globs_of_a_campaigns_harnesses_name(
     campaign_path: Path, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1357,6 +1391,7 @@ def test_the_service_unit_carries_what_the_usage_globs_of_a_campaigns_harnesses_
     assert 'SCRIPT_HOME' in unit and '/somewhere/script' in unit, 'a harness of a registered campaign'
 
 
+@pytest.mark.usefixtures('api')
 def test_status_without_results(campaign_path: Path, out, mocker: MockerFixture) -> None:
     run_cli(['init', str(campaign_path)])
     db = Database(common.settings.database_url, actor=common.settings.actor)
@@ -1450,7 +1485,7 @@ def test_migrate_reports_the_schema_change_and_a_newer_database_is_refused(out) 
         con.execute("UPDATE alembic_version SET version_num = '9999_from_the_future'")
         con.commit()
     with pytest.raises(SystemExit, match='revision 9999_from_the_future.*`piloop upgrade`'):
-        run_cli(['status'])
+        run_cli(['campaign', 'tree'])
     with pytest.raises(SystemExit, match='revision 9999_from_the_future.*`piloop upgrade`'):
         run_cli(['serve'])
     assert running_pid(common.settings) is None, 'the daemon refused before taking the pid file'
@@ -1693,14 +1728,16 @@ def test_watch_refuses_a_campaign_that_the_home_does_not_have_before_it_opens_th
     assert database.read_bytes() == before and not database.with_name('piloop.db-wal').exists()
 
 
+@pytest.mark.usefixtures('api')
 def test_a_command_names_the_home_that_has_no_such_campaign(campaign_path: Path) -> None:
     home = re.escape(str(common.settings.home))
     with pytest.raises(SystemExit, match=rf'^no campaign at {re.escape(str(campaign_path))} in {home}; is PILOOP_HOME'):
         run_cli(['resume', str(campaign_path)])
-    with pytest.raises(
-        SystemExit, match=rf"^no campaign 'nope' in {home}; is PILOOP_HOME right\? `piloop init <path>`"
-    ):
-        run_cli(['status', 'nope'])
+    for asked in (['status', 'nope'], ['history', 'nope']):  # the daemon, and a command that reads the database
+        with pytest.raises(
+            SystemExit, match=rf"^no campaign 'nope' in {home}; is PILOOP_HOME right\? `piloop init <path>`"
+        ):
+            run_cli(asked)
 
 
 def test_schema_prints_the_procedures_and_tables_pi_puts_in_its_sql_tool(out) -> None:
@@ -1799,11 +1836,10 @@ def test_an_in_place_restart_holds_the_lock_itself_and_migrates() -> None:
 
 
 READERS = (
-    ['status'],
+    ['history'],
     ['sql', 'SELECT 1'],
     ['watch'],
-    ['inbox'],
-    ['events'],
+    ['inbox', 'show', '1'],
     ['campaign', 'tree'],
     ['idea', 'add', 'demo', 'a title'],
 )
@@ -1851,7 +1887,7 @@ def test_an_agent_is_told_to_retry_while_the_daemon_upgrades_and_never_migrates_
     monkeypatch.setattr(common, 'settings', Settings(home=home, uv_tool_dir=tools, actor='implementer#3'))
     behind = rf'^{re.escape(str(database))} is at schema revision 0018, and this piloop .* knows {HEAD}'
     retry = rf'{behind}: the daemon is being upgraded; retry in a minute$'
-    refuse_each((['sql', 'SELECT 1'], ['status']), database, retry)
+    refuse_each((['sql', 'SELECT 1'], ['history']), database, retry)
     for _ in hold_lock(common.settings.pid_file):
         refuse_each((['sql', 'SELECT 1'],), database, retry)
     calls = fake_bins('uv')
@@ -1977,7 +2013,7 @@ def test_serve_and_migrate_refuse_under_a_daemon_that_a_service_manager_started(
     [backup] = database.parent.glob('piloop.db.bak-0018-*')
     assert out().strip() == f'schema: 0018 → {HEAD}; backup of 0018: {backup}', 'without the daemon, it migrates'
     for _ in hold_lock(common.settings.pid_file):
-        run_cli(['status'])  # at head: a daemon of the same piloop is no reason to refuse
+        run_cli(['campaign', 'tree'])  # at head: a daemon of the same piloop is no reason to refuse
 
 
 def test_attach_names_the_worker_of_an_agent_that_runs_elsewhere(campaign_path: Path) -> None:
@@ -2020,3 +2056,13 @@ def test_a_table_piped_to_a_program_never_wraps_a_cell(monkeypatch: pytest.Monke
     monkeypatch.setattr(sys, 'stdout', narrow := io.StringIO())
     common.output_console().print(table)
     assert line.strip() not in narrow.getvalue(), 'COLUMNS still sets the width'
+
+
+def test_a_help_loads_the_commands_that_it_lists_for_their_lines(capsys: pytest.CaptureFixture[str]) -> None:
+    cli.load_for_help(['status'])
+    cli.load_for_help(['inbox', '--help'])
+    run_cli(['inbox', '--help'])
+    assert 'Acknowledge items to say that you have seen them.' in capsys.readouterr().out
+    cli.load_for_help([])
+    run_cli(['--help'])
+    assert 'Print the last lines that an agent wrote' in capsys.readouterr().out

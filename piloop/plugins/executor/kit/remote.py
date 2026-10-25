@@ -34,10 +34,11 @@ import httpx2 as httpx
 from covalence import Cid
 from pydantic import BaseModel, Field, PlainSerializer, RootModel, SecretStr, ValidationError
 
+from piloop.api.contract import MAX_POLL_SECONDS, Polled
 from piloop.db.models import NoLease
 from piloop.ids import Revision
 from piloop.mcp import EnvName
-from piloop.net import MAX_POLL_SECONDS, Changed, Polled, Refusal, Route
+from piloop.net import Changed, Refusal, Route
 from piloop.net.tokens import Caller
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import BlobAddress, Cas

@@ -11,11 +11,11 @@ from sqlalchemy import func, select
 from piloop.actor import System
 from piloop.db import sql
 from piloop.db.events import emit, has, in_order, latest, payload_of
-from piloop.db.models import EVENT, Campaign, CommentKind, Event, EventModel, UnknownEvent
+from piloop.db.models import EVENT, Campaign, Event, EventModel, UnknownEvent
 from piloop.db.session import Database
 from piloop.db.triggers import changelog
 from piloop.db.triggers.changelog import IdeaCreated
-from piloop.ids import Ref, TargetKind, TargetRef
+from piloop.ids import CommentKind, Ref, TargetKind, TargetRef
 
 
 class Probed(EventModel):

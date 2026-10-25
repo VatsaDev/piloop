@@ -28,7 +28,6 @@ from piloop.db.models import (
     CampaignStatus,
     Candidate,
     Comment,
-    CommentKind,
     Event,
     EventModel,
     Idea,
@@ -42,7 +41,7 @@ from piloop.db.models import (
 from piloop.db.requests import answer, pending
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.db.triggers.changelog import CampaignPausedChanged, CampaignStatusChanged
-from piloop.ids import RunId, TargetKind, TargetRef
+from piloop.ids import CommentKind, RunId, TargetKind, TargetRef
 from piloop.plugins.stop_rule.contract import STOP_RULES, Fact, Go, Hold, Progress, Stop, StopCase
 from piloop.scoring.ledger import head, keeps, score
 from piloop.scoring.verdict import pending_clause

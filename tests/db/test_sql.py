@@ -18,8 +18,9 @@ from sqlalchemy.exc import OperationalError
 from piloop.actor import Agent, System
 from piloop.daemon.main import ACTOR
 from piloop.db import sql
-from piloop.db.models import JOURNAL_LINE_BYTES, AgentSession, AgentSessionState, Base, Campaign, CommentKind
+from piloop.db.models import JOURNAL_LINE_BYTES, AgentSession, AgentSessionState, Base, Campaign
 from piloop.db.session import Database
+from piloop.ids import CommentKind
 from tests.conftest import WRITER, bare_config
 
 

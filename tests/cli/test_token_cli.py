@@ -1,10 +1,11 @@
 from pathlib import Path
 
+import cyclopts
 import pytest
 from rich.console import Console
 
+from piloop.api.contract import Access
 from piloop.cli import common
-from piloop.db.models import TokenScope
 from piloop.db.session import Database
 from piloop.net.tokens import Caller, Tokens
 from piloop.settings import Settings
@@ -26,7 +27,7 @@ def test_create_prints_the_secret_once_list_never_shows_it_and_revoke_ends_it(ou
     secret = out().strip()
     db = Database(common.settings.database_url, actor=common.settings.actor)
     try:
-        assert Tokens(db).verify(secret) == Caller('gpu1', TokenScope.WORKER)
+        assert Tokens(db).verify(secret) == Caller('gpu1', Access.WORKER)
         with pytest.raises(SystemExit, match="a token is called 'gpu1' already"):
             run_cli(['token', 'create', 'gpu1'])
         run_cli(['token', 'list'])
@@ -39,3 +40,15 @@ def test_create_prints_the_secret_once_list_never_shows_it_and_revoke_ends_it(ou
             run_cli(['token', 'revoke', 'gpu1'])
     finally:
         db.close()
+
+
+def test_create_takes_the_access_of_its_caller(out) -> None:
+    run_cli(['token', 'create', 'ana', '--access', 'read'])
+    secret = out().strip()
+    db = Database(common.settings.database_url, actor=common.settings.actor)
+    try:
+        assert Tokens(db).verify(secret) == Caller('ana', Access.READ)
+    finally:
+        db.close()
+    with pytest.raises(cyclopts.CoercionError):
+        run_cli(['token', 'create', 'bo', '--access', 'owner'])

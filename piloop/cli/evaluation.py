@@ -6,14 +6,13 @@ import cyclopts
 from rich.table import Table
 from rich.text import Text
 
-from piloop.cli import common
+from piloop.cli import common, local
 from piloop.db.models import Campaign, Candidate, utcnow
 from piloop.ids import CandidateId
-from piloop.reports.overview import age
 from piloop.scoring import queue
-from piloop.text import cell
+from piloop.text import age, cell
 
-app = cyclopts.App(name='eval', help='List or cancel the evaluations that the daemon runs or that wait for a slot.')
+app = cyclopts.App(name='eval')  # its help is where piloop.cli.main registers it
 
 
 @app.command(name='queue')
@@ -23,7 +22,7 @@ def eval_queue() -> None:
     The last line counts them. A free slot of the executor goes to the campaign with the fewest running evaluations,
     and in that campaign to its head first, then to the oldest request. A requested remeasure shows as waiting at once.
     """
-    with common.session() as s:
+    with local.session() as s:
         now = utcnow()
         evaluations = queue.listing(s)
         rows: list[tuple[Candidate, str]] = []
@@ -60,7 +59,7 @@ def eval_cancel(
     candidate is judged a `crash`, and a daemon restart does not run it again. It is evaluated again only when someone
     asks (`piloop candidate remeasure`).
     """
-    with common.session() as s:
+    with local.session() as s:
         if not queue.cancel(s, candidate_id, common.settings.actor):
             raise SystemExit(f'candidate#{candidate_id} has no evaluation that waits or runs: see `piloop eval queue`')
         s.commit()

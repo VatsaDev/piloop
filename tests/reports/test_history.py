@@ -9,7 +9,6 @@ from piloop.db.models import (
     Campaign,
     Candidate,
     Comment,
-    CommentKind,
     Idea,
     IdeaLink,
     IdeaStatus,
@@ -20,7 +19,7 @@ from piloop.db.models import (
     RunStatus,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, Revision, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, CommentKind, Revision, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports.history import (
     FINDINGS_IN_HISTORY,

@@ -5,11 +5,11 @@ import signal
 import sys
 from functools import partial
 from types import FrameType
-from typing import TYPE_CHECKING
 
 from piloop import deprecated
 from piloop.actor import System
 from piloop.campaign.archive import ManifestNotMigrated, migrate_manifests
+from piloop.daemon.api import endpoints
 from piloop.daemon.archiver import ArchivePolicy, Archiving
 from piloop.daemon.run_controller import RunController
 from piloop.daemon.scheduler import Scheduler
@@ -22,7 +22,9 @@ from piloop.daemon.serve import (
     secrets,
     serve_argv,
 )
+from piloop.db.models import utcnow
 from piloop.db.session import BackupFailed, Database, OlderDaemon, SchemaMismatch, migrate
+from piloop.net.server import Server, app, local_listener, url
 from piloop.net.tokens import Tokens
 from piloop.otel import Span, tracer
 from piloop.plugins import host as plugins
@@ -31,12 +33,10 @@ from piloop.plugins.executor.contract import EXECUTORS
 from piloop.plugins.network import contract as network
 from piloop.plugins.secrets.contract import SECRETS
 from piloop.proc import Inherited
+from piloop.reports.feed import iso
 from piloop.runtime.factory import make_runtime, runtimes
 from piloop.settings import CONFIG_FILE, Settings, settings
 from piloop.version import code_digest
-
-if TYPE_CHECKING:
-    from piloop.net.server import Server
 
 ACTOR = System.DAEMON
 """The actor that the daemon's connections record in ``updated_by``. The change-log triggers use this name."""
@@ -109,8 +109,9 @@ class Daemon:
         """What an in-place restart execs."""
         self._address = served.listen
         """Where the server listens, as asked."""
-        self.network = served.open(network.NetworkHost(Tokens(self.db)))
-        self._server: Server | None = None
+        self._tokens = Tokens(self.db)
+        self.network = served.open(network.NetworkHost(self._tokens))
+        self._servers: list[Server] = []
         try:
             # Before the remote opens: its credentials can come from the secrets. And before the lock, because
             # `serve --detach` reports a start when the child holds it, so a failing secrets command must fail first.
@@ -226,30 +227,34 @@ class Daemon:
             span.error(e)
 
     def _listen(self, span: Span) -> None:
-        """Start the server on the network's listener, when it has one, and record its URL on the start span.
+        """Serve the API on the home's Unix socket, and on the network's listener when it has one.
 
-        The URL also goes to ``listen_file``, for ``piloop status``. An in-place restart listens on the port that port
-        0 took, so a worker that has the URL keeps its server.
+        The network's URL goes on the start span. An in-place restart listens on the port that port 0 took, so a worker
+        that has the URL keeps its server.
         """
-        self._cfg.listen_file.unlink(missing_ok=True)
+        try:
+            local = local_listener(self._cfg.socket_file)
+        except OSError as e:
+            raise SystemExit(f'the daemon does not listen on {self._cfg.socket_file}: {e}') from e
         try:
             listener = self.network.listener()
         except OSError as e:
+            local.socket.close()
             raise SystemExit(f'the daemon does not listen: {e}') from e
-        if listener is None:
-            return
-        assert self._address is not None  # a network binds nothing without ``listen``
-        from piloop.net.server import Server, app  # FastAPI takes a third of a second to import: only a server needs it
-
-        self._server = Server(app(self.network, self.controller.executor.routes()), listener)
-        self._server.start()
-        if self._address.port == 0:
-            port = listener.socket.getsockname()[1]
-            self._argv = serve_argv(self._address.model_copy(update={'port': port}))
-        written = self._cfg.listen_file.with_name(f'{self._cfg.listen_file.name}.new')
-        written.write_text(self._server.url)
-        written.replace(self._cfg.listen_file)  # a rename: ``piloop status`` never reads a file that is half written
-        span.set(listen=self._server.url)
+        listeners = [local] if listener is None else [local, listener]
+        listen = None if listener is None else url(listener)
+        api = endpoints(self.db, self._cfg, iso(utcnow()), listen)
+        routes = self.controller.executor.routes()
+        # one app for each server: a server's shutdown ends the long-polls of its own app
+        self._servers = [Server(app(self._tokens, self.network, routes, api), each) for each in listeners]
+        for server in self._servers:
+            server.start()
+        if listener is not None:
+            assert self._address is not None  # a network binds nothing without ``listen``
+            if self._address.port == 0:
+                port = listener.socket.getsockname()[1]
+                self._argv = serve_argv(self._address.model_copy(update={'port': port}))
+            span.set(listen=listen)
 
     def _on_sigterm(self, signum: int, frame: FrameType | None) -> None:
         """Treat a service manager's stop as Ctrl-C: the loop ends and ``shutdown`` kills the running agents."""
@@ -263,9 +268,9 @@ class Daemon:
         """Stop the scheduler and flush traces. An in-place restart hands the agents over. Any other stop kills them."""
         with self.tracer.span('piloop.shutdown'):
             (self.scheduler.hand_over if self._restart else self.scheduler.stop)(timeout)
-            if self._server is not None:
-                self._server.close()
-                self._cfg.listen_file.unlink(missing_ok=True)
+            for server in self._servers:
+                server.close()
+            self._cfg.socket_file.unlink(missing_ok=True)
         self.controller.close()
         self.tracer.shutdown()
         self.db.close()

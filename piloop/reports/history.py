@@ -24,8 +24,8 @@ from sqlalchemy.orm import Session
 
 from piloop.campaign.ideas import links, superseded_by
 from piloop.config import CampaignConfig, Metric
-from piloop.db.models import Campaign, Candidate, Comment, CommentKind, Idea, count
-from piloop.ids import EvaluatorId, TargetKind, TargetRef
+from piloop.db.models import Campaign, Candidate, Comment, Idea, count
+from piloop.ids import CommentKind, EvaluatorId, TargetKind, TargetRef
 from piloop.scoring.ledger import fallback_track, keeps, references, score, session_tokens, track_of
 from piloop.scoring.verdict import label
 from piloop.text import NONE, cell, metric

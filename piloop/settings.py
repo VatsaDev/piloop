@@ -183,9 +183,9 @@ class Settings(BaseSettings):
         return self.home / 'serve.pid'
 
     @property
-    def listen_file(self) -> Path:
-        """The file with the URL that the running daemon's server listens on. The daemon writes it once it listens."""
-        return self.home / 'serve.url'
+    def socket_file(self) -> Path:
+        """The Unix socket that the running daemon serves the API on, to this user only. Every client command calls it."""
+        return self.home / 'piloop.sock'
 
     @property
     def code_file(self) -> Path:

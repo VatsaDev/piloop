@@ -8,8 +8,9 @@ from pathlib import Path
 import pytest
 from covalence import Cid
 
+from piloop.api.contract import Access
 from piloop.cli import common
-from piloop.db.models import LeaseWorker, TokenScope
+from piloop.db.models import LeaseWorker
 from piloop.db.session import Database
 from piloop.ids import Revision
 from piloop.net import tokens
@@ -44,7 +45,7 @@ def server(db: Database, tmp_path: Path) -> Generator[str]:
     assert listener is not None
     leases = Leases(db, Recorder(db), home_cas(db), pools={'gpu': Pool()})
     routes = lease_routes(leases, db.changed, disk(tmp_path / 'worker'), no_send, echoed)
-    server = Server(app(network, routes), listener)
+    server = Server(app(Tokens(db), network, routes, ()), listener)
     server.start()
     yield server.url
     server.close()
@@ -57,7 +58,7 @@ def as_worker(tmp_path: Path, db: Database, monkeypatch: pytest.MonkeyPatch) -> 
 
     def token() -> None:
         with db.session() as s:
-            secret = tokens.create(s, 'gpu1', TokenScope.WORKER)
+            secret = tokens.create(s, 'gpu1', Access.WORKER)
             s.commit()
         monkeypatch.setenv(TOKEN_ENV, secret)
         monkeypatch.setattr(common, 'settings', Settings(home=tmp_path / 'worker'))

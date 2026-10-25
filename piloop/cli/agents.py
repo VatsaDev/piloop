@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from piloop.agents import results
 from piloop.campaign.stop import CANCELLABLE, Ending, request_cancel
-from piloop.cli import common
+from piloop.cli import common, local
 from piloop.cli.common import HARNESS_HELP, CampaignRef
 from piloop.db.events import has, latest
 from piloop.db.models import LIVE, OPEN_RUNS, AgentSession, Event, Run, TargetKind
@@ -17,8 +17,8 @@ from piloop.ids import AgentSessionId, CommentId, RoleName, RunId, TargetRef
 from piloop.plugins.runtime.contract import MESSAGES_ENV, take
 from piloop.reports.overview import agent_output
 
-agent_app = cyclopts.App(name='agent', help='Act on one agent.')
-run_app = cyclopts.App(name='run', help='Act on one run.')
+agent_app = cyclopts.App(name='agent')  # their help is where piloop.cli.main registers them
+run_app = cyclopts.App(name='run')
 
 
 def launch(
@@ -42,8 +42,8 @@ def launch(
 
     The daemon launches it at once, within the role's `max_concurrent`.
     """
-    with common.session() as s:
-        campaign = common.campaign(s, ref)
+    with local.session() as s:
+        campaign = local.campaign(s, ref)
         roles = campaign.config.roles
         sweeping = roles.sweeping()
         if role not in sweeping:
@@ -77,7 +77,7 @@ def prompt(
     The message is a note on the agent. The daemon queues it through the agent's executor and its runtime. When it
     cannot, the command says why. After 20 seconds without an outcome, the daemon still queues it once the agent runs.
     """
-    with common.session() as s:
+    with local.session() as s:
         comment_id = results.queue_prompt(s, agent_session_id, text, common.settings.actor.signature)
         if comment_id is None:
             raise SystemExit(f'agent_session#{agent_session_id} is not running')
@@ -124,7 +124,7 @@ def attach(agent_session_id: Annotated[AgentSessionId, cyclopts.Parameter(help='
     An agent is a background process, with no terminal to type into: `piloop prompt` sends it a message.
     An agent on a worker elsewhere writes there until it ends: the command names the worker.
     """
-    with common.session() as s:
+    with local.session() as s:
         agent_session = s.get(AgentSession, agent_session_id)
         if agent_session is None:
             raise SystemExit(f'no agent_session#{agent_session_id}')
@@ -178,7 +178,7 @@ def agent_cancel(
     A requested agent never starts. A running one is ended with every process that it started, at once or, with
     `--wrap-up`, after it was told to save its work and stop. For an implementer, this cancels its run (`piloop run cancel`).
     """
-    with common.session() as s:
+    with local.session() as s:
         agent_session = s.get(AgentSession, agent_session_id)
         if agent_session is None or agent_session.state not in CANCELLABLE:
             raise SystemExit(f'agent_session#{agent_session_id} is not requested, starting or running')
@@ -198,7 +198,7 @@ def run_cancel(
     closes as `cancelled`, unless the implementer left its finding before the daemon ended it: a later finding is
     refused. Its commits are scored, and its idea is parked: set it `ready` to run it again.
     """
-    with common.session() as s:
+    with local.session() as s:
         run = s.get(Run, run_id)
         if run is None or run.status not in OPEN_RUNS:
             raise SystemExit(f'run#{run_id} is not queued or running')

@@ -1,4 +1,4 @@
-"""The ids of the rows that agents and the daemon refer to, the names of roles and tracks, and what a row is about.
+"""The ids of rows, the names of roles and tracks, what a row is about, and why a comment was written.
 
 Each id is a ``NewType`` of ``int``, so an idea's id does not type-check where a candidate's id goes. A name is a
 ``NewType`` of ``str``. A ``TargetRef`` is a kind and an id, written ``idea#12``.
@@ -79,3 +79,12 @@ def _parsed(value: object) -> object:
 
 type Ref = Annotated[TargetRef, BeforeValidator(_parsed), PlainSerializer(str, return_type=str)]
 """A ``TargetRef`` that a model holds as its text, ``idea#12``."""
+
+
+class CommentKind(StrEnum):
+    """Why a comment was written. An ``escalation`` asks for a decision and is always in the human's inbox."""
+
+    NOTE = 'note'
+    FINDING = 'finding'
+    DECISION = 'decision'
+    ESCALATION = 'escalation'

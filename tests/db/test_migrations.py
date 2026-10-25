@@ -2111,3 +2111,30 @@ def test_0048_puts_each_lease_job_and_run_brief_in_the_cas_keeps_the_fencing_tok
         RuntimeError, match=r'the brief of runs row 1 is \S+, which the CAS lacks: restore the database'
     ):
         command.downgrade(cfg, before)
+
+
+def test_0051_renames_the_scope_of_a_token_its_access_admits_those_of_people_and_drops_the_lease_tokens(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'piloop.db'
+    cfg = alembic(path)
+    command.upgrade(cfg, '0050')
+    insert = 'INSERT INTO tokens (name, scope, sha256) VALUES (?, ?, ?)'
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        con.execute(insert, ('gpu1', 'worker', 'a'))
+        con.execute(insert, ('job-7', 'lease', 'b'))
+        with pytest.raises(sqlite3.IntegrityError, match='tokenscope'):
+            con.execute(insert, ('ana', 'read', 'c'))
+    command.upgrade(cfg, '0051')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT name, access FROM tokens').fetchall() == [('gpu1', 'worker')], (
+            'no release made a lease token'
+        )
+        given = 'INSERT INTO tokens (name, access, sha256) VALUES (?, ?, ?)'
+        for name, access in (('ana', 'read'), ('bo', 'act'), ('ci', 'admin')):
+            con.execute(given, (name, access, name))
+        with pytest.raises(sqlite3.IntegrityError, match='access'):
+            con.execute(given, ('job-8', 'lease', 'd'))
+    command.downgrade(cfg, '0050')
+    with closing(sqlite3.connect(path, isolation_level=None)) as con:
+        assert con.execute('SELECT name FROM tokens').fetchall() == [('gpu1',)], 'the older code reads only workers'

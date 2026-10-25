@@ -1,4 +1,4 @@
-"""The commands about campaigns: ``init``, ``status``, ``history``, ``watch``, ``pause``, ``resume``, ``campaign stop``."""
+"""The commands about campaigns: ``init``, ``history``, ``watch``, ``pause``, ``resume``, ``campaign stop``."""
 
 import sys
 from pathlib import Path
@@ -26,21 +26,16 @@ from piloop.campaign.campaigns import (
 )
 from piloop.campaign.memory import sync_documents
 from piloop.campaign.stop import Ending, request_stop
-from piloop.cli import common, limits as limits_cli
-from piloop.cli.common import CampaignRef, JsonFlag
-from piloop.cli.daemon import daemon_line
-from piloop.daemon.serve import listening, running_pid
-from piloop.db import feed as db_feed
-from piloop.db.models import Campaign, CampaignStatus, utcnow
+from piloop.cli import common, local
+from piloop.cli.common import CampaignRef
+from piloop.db.models import CampaignStatus
 from piloop.db.session import Database
-from piloop.plugins.limits import Origin
-from piloop.reports import feed
-from piloop.reports.overview import overview, paused
+from piloop.reports.overview import paused
 from piloop.reports.pack import renderables as pack_renderables
 from piloop.text import metric
 from piloop.watch.app import Watch
 
-app = cyclopts.App(name='campaign', help='Act on a campaign as a whole.')
+app = cyclopts.App(name='campaign')  # its help is where piloop.cli.main registers it
 
 
 def init(
@@ -73,7 +68,7 @@ def init(
             f' METRIC lines that piloop.toml names. Describe the goal in brief.md. Then run `piloop init {path}` again.'
         )
         return
-    with common.session(create=True) as s:
+    with local.session(create=True) as s:
         campaign = registered(s, path)
         if campaign is None:
             try:
@@ -110,42 +105,13 @@ def history(ref: CampaignRef | None = None, /) -> None:
     outcomes, the kept lineage, the findings and the digests. Without a campaign, it uses the campaign that the current
     directory is in, else the only active campaign, else every campaign.
     """
-    with common.session() as s:
-        for campaign in common.campaigns(s, ref):
+    with local.session() as s:
+        for campaign in local.campaigns(s, ref):
             common.heading(f'[bold]{campaign.name}[/] #{campaign.id}  {campaign.path}')
             workspace = workspace_dir(common.settings.home, campaign.id)
             common.console.print(
                 Group(*pack_renderables(s, campaign, campaign.config, table_box=box.SIMPLE_HEAD, workspace=workspace))
             )
-
-
-def status(ref: CampaignRef | None = None, /, *, json_: JsonFlag = False) -> None:
-    """Print the state of the daemon and the live keys that `config.toml` or a limit sets, then each campaign.
-
-    The overview is what a sweep reads in its brief, without the tool guide. It shows the head, the tracks, the
-    trajectory, the progress against [stop], the open runs, the queue, the live agents with their last line, the
-    recent candidates, the anomalies, the inbox, the latest decisions and the recent events. Without a campaign, it
-    uses the campaign that the current directory is in, else the only active campaign, else every campaign.
-
-    With --json, it prints the daemon's pid and the URL it listens on, and the main facts of each campaign, read at one cursor: follow them with
-    `piloop events --after <cursor>`.
-    """
-    if json_:
-        with common.session() as s, db_feed.snapshot(s) as cursor:
-            states = feed.status_view(s, common.campaigns(s, ref))
-        daemon = {'pid': running_pid(common.settings), 'listen': listening(common.settings)}
-        common.print_json({'cursor': cursor, 'daemon': daemon, 'campaigns': states})
-        return
-    common.console.print(daemon_line())
-    with common.session() as s:
-        for line in limits_cli.lines(s, (Origin.CONFIG, Origin.LIMIT)):
-            common.console.print(f'limit: {line}', markup=False)
-        for campaign in common.campaigns(s, ref):
-            parent = None if campaign.parent_id is None else s.get_one(Campaign, campaign.parent_id)
-            under = '' if parent is None else f'  under {parent.name} #{parent.id}'
-            common.heading(f'[bold]{campaign.name}[/] #{campaign.id}  {campaign.path}{under}')
-            text = overview(s, campaign, campaign.config, utcnow(), tools=False)
-            common.console.print(text, markup=False, highlight=False, soft_wrap=True)
 
 
 def pause(
@@ -165,8 +131,8 @@ def pause(
     measures again what a new evaluator or `piloop candidate remeasure` needs, so the pause can end on a measured head.
     `--evals` holds those measurements too. The pause is in the database: it holds wherever you run the command.
     """
-    with common.refused(), common.session() as s:
-        campaign = ops.pause(s, common.campaign(s, ref).id, evals=evals, reason=reason)
+    with local.refused(), local.session() as s:
+        campaign = ops.pause(s, local.campaign(s, ref).id, evals=evals, reason=reason)
         s.commit()
         common.console.print(
             f'campaign {campaign.name} {paused(campaign)}; running work goes on; `piloop resume {campaign.name}` ends it',
@@ -176,8 +142,8 @@ def pause(
 
 def resume(ref: CampaignRef, /) -> None:
     """Resume a paused campaign. The daemon queues runs and requests roles again at once."""
-    with common.refused(), common.session() as s:
-        campaign = common.campaign(s, ref)
+    with local.refused(), local.session() as s:
+        campaign = local.campaign(s, ref)
         held = ops.resume(s, campaign.id)
         s.commit()
         common.console.print(f'campaign {campaign.name} resumed; it held {held}', markup=False)
@@ -202,9 +168,9 @@ def watch_cmd(
     """
     if not sys.stdin.isatty():
         raise SystemExit('piloop watch reads keys from a terminal; `piloop status` prints the same once')
-    common.refuse_other_schema()
+    local.refuse_other_schema()
     if ref is not None:
-        common.known(ref)
+        local.known(ref)
     db = Database(common.settings.database_url, actor=common.settings.actor)
     try:
         Watch(db, common.settings.home / 'piloop.db', ref, common.settings.actor).run(mouse=mouse)
@@ -227,9 +193,9 @@ def parent(
     """
     if (parent_ref is None) is not clear:
         raise SystemExit('name the parent or --clear, not both' if clear else 'name the parent, or --clear')
-    with common.refused(), common.session() as s:
-        above = None if parent_ref is None else common.campaign(s, parent_ref)
-        campaign = ops.set_parent(s, common.campaign(s, ref).id, None if above is None else above.id)
+    with local.refused(), local.session() as s:
+        above = None if parent_ref is None else local.campaign(s, parent_ref)
+        campaign = ops.set_parent(s, local.campaign(s, ref).id, None if above is None else above.id)
         s.commit()
         where = 'a root' if above is None else f'under {above.name} #{above.id}'
         common.console.print(f'{campaign.name} #{campaign.id} is {where}', markup=False)
@@ -238,7 +204,7 @@ def parent(
 @app.command(name='tree')
 def tree() -> None:
     """Print every campaign under its parent, with its type and its status."""
-    with common.session() as s:
+    with local.session() as s:
         for depth, campaign in campaign_tree(s):
             line = f'{"  " * depth}{campaign.name} #{campaign.id}  {campaign.type}  {campaign.status}'
             common.console.print(line, markup=False, highlight=False)
@@ -263,8 +229,8 @@ def stop(
     With `--kill`, the implementers are ended at once, and what they committed is still scored. On a stopped campaign,
     `--kill` ends the implementers that are still winding down. The campaign's `piloop.toml` is not changed.
     """
-    with common.session() as s:
-        campaign = common.campaign(s, ref)
+    with local.session() as s:
+        campaign = local.campaign(s, ref)
         if campaign.status is CampaignStatus.STOPPED and not kill:
             raise SystemExit(
                 f'{campaign.name} is stopped already ({campaign.stopped_reason}); --kill ends its implementers at once'

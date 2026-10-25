@@ -80,6 +80,7 @@ from piloop.plugins.network.contract import NetworkConfig, Address
 from piloop.plugins.network.contract import Listener, NoCredential, Peer, Refused
 from piloop.plugins.network.contract import Enrollment, NotEnrolled
 from piloop.net.tokens import Caller, Tokens
+from piloop.api.contract import Access
 from piloop.plugins.network.https import Https, HttpsNetwork
 
 from piloop.ids import Revision

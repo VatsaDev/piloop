@@ -70,14 +70,24 @@ Runs the daemon in the foreground. `--detach` starts it in the background, with 
 daemon checks when it starts, its plugins and what `config.toml` binds, and fails with the reason when it would not
 start. See [How piloop loads plugins](/architecture/extension-points#how-piloop-loads-plugins).
 
-`--listen` serves the routes of the [executor](/architecture/extension-points#executors) to other machines on
-`HOST:PORT`, in place of `[plugins.network] listen` in `config.toml`: for `workers`, the lease calls of
-[`piloop worker`](#piloop-worker). Each caller sends a token of `piloop token`. An address that is not loopback needs
+`--listen` serves [the API](#the-api) and the routes of the [executor](/architecture/extension-points#executors) to
+other machines on `HOST:PORT`, in place of `[plugins.network] listen` in `config.toml`: for `workers`, the lease calls
+of [`piloop worker`](#piloop-worker). Each caller sends a token of `piloop token`. An address that is not loopback needs
 `tls`: see [Networks](/architecture/extension-points#networks). Port 0 takes a free port, which `piloop restart`
 keeps. `piloop status` shows the URL:
 
 ```text
 daemon: pid 1754168, up 0:00:05, listening on http://127.0.0.1:35601
+```
+
+#### The API
+
+The daemon serves an HTTP API, `/v1`, on the Unix socket `$PILOOP_HOME/piloop.sock`, which only your user can open.
+A call there needs no token. `GET /v1/openapi.json` describes every route. With `--listen`, other machines call the
+same routes with a token of `piloop token` whose access reads (`read`, `act` or `admin`).
+
+```bash
+curl --unix-socket ~/.piloop/piloop.sock 'http://piloop/v1/status?campaign=enwik8'
 ```
 
 ### piloop cas serve
@@ -93,11 +103,12 @@ TLS is that of `[plugins.network]`: an address that is not loopback needs `tls`.
 ### piloop token
 
 ```text
-piloop token create NAME | list | revoke NAME
+piloop token create NAME [--access read|act|admin|worker] | list | revoke NAME
 ```
 
-`create` prints a new token for the worker `NAME`, which calls `piloop serve --listen` and `piloop cas serve`. Copy it
-then: piloop keeps only its hash. `list` shows the names, never the tokens. `revoke` deletes a token, and its next call
+`create` prints a new token for the caller `NAME`. Copy it then: piloop keeps only its hash. `--access` says what its
+caller may do. `worker`, the default, calls the routes of `piloop worker` and `piloop cas serve`. `read` reads, `act`
+also acts on campaigns, and `admin` also changes the home. `list` shows the names, never the tokens. `revoke` deletes a token, and its next call
 gets 401.
 
 ### piloop secret
@@ -404,6 +415,8 @@ their brief.
 
 `--json` prints one JSON document instead: the daemon's pid and the main facts of each campaign, read at one cursor of
 the [event feed](/reference/event-feed).
+
+`status`, `inbox` and `events` ask the daemon. Without one, they stop and say to run `piloop serve --detach`.
 
 ### piloop events
 

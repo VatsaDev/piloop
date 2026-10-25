@@ -44,6 +44,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, composite, mapped_c
 from sqlalchemy.orm.attributes import set_committed_value
 from sqlalchemy.types import TypeDecorator
 
+from piloop.api.contract import Access
 from piloop.config import CampaignConfig
 from piloop.ids import (
     IMPLEMENTER,
@@ -51,6 +52,7 @@ from piloop.ids import (
     CampaignId,
     CandidateId,
     CommentId,
+    CommentKind,
     EvaluatorId,
     IdeaId,
     MeasurementId,
@@ -244,15 +246,6 @@ class Cause(StrEnum):
     MOVED = 'moved'
 
 
-class CommentKind(StrEnum):
-    """Why a comment was written. An ``escalation`` asks for a decision and is always in the human's inbox."""
-
-    NOTE = 'note'
-    FINDING = 'finding'
-    DECISION = 'decision'
-    ESCALATION = 'escalation'
-
-
 class LessonStatus(StrEnum):
     """What a lesson concludes about its mechanism family."""
 
@@ -285,13 +278,6 @@ class LeaseKind(StrEnum):
 
     AGENT = 'agent'
     EVALUATION = 'evaluation'
-
-
-class TokenScope(StrEnum):
-    """What a bearer token (``piloop token``) lets its caller do on the server of ``piloop serve --listen``."""
-
-    WORKER = 'worker'
-    """A worker's calls: take leases, heartbeat, report, relay its agents' ``piloop`` calls, and the CAS."""
 
 
 class LeaseState(StrEnum):
@@ -556,7 +542,7 @@ class Base(DeclarativeBase):
         AgentSessionState: _values(AgentSessionState),
         LeaseKind: _values(LeaseKind),
         LeaseState: _values(LeaseState),
-        TokenScope: _values(TokenScope),
+        Access: _values(Access),
         NoLease: _values(NoLease),
         WorkerInstanceState: _values(WorkerInstanceState),
         InstanceEnd: _values(InstanceEnd),
@@ -1021,7 +1007,7 @@ class Lease(Base):
 
 
 class Token(Base):
-    """A bearer token of the server that ``piloop serve --listen`` runs (``piloop.net.tokens``).
+    """A bearer token of the server of ``piloop serve`` and ``piloop cas serve`` (``piloop.net.tokens``).
 
     Only the SHA-256 of the secret is kept: the secret is shown once, when the token is created. ``piloop sql`` cannot
     write this table, so an agent cannot add a token. Revoking a token deletes its row.
@@ -1031,8 +1017,8 @@ class Token(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(unique=True)
-    """The caller's name: a worker's id."""
-    scope: Mapped[TokenScope]
+    """The caller's name, such as a worker's id."""
+    access: Mapped[Access]
     sha256: Mapped[str] = mapped_column(unique=True)
     """The hex SHA-256 of the secret."""
     created_at: Mapped[datetime] = mapped_column(default=utcnow, server_default=NOW)

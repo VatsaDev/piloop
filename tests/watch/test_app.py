@@ -30,7 +30,6 @@ from piloop.db.models import (
     CampaignStatus,
     Candidate,
     Comment,
-    CommentKind,
     Event,
     Idea,
     IdeaStatus,
@@ -42,7 +41,7 @@ from piloop.db.models import (
     utcnow,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, CommentId, IdeaId, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, CommentId, CommentKind, IdeaId, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.watch.app import CampaignScreen, CampaignsScreen, CandidatesTable, Watch
 from piloop.watch.panels import PANELS, Context, kept_scores

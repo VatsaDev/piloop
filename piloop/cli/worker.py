@@ -9,16 +9,16 @@ import cyclopts
 from rich.filesize import decimal
 from rich.table import Table
 
-from piloop.cli import common
+from piloop.cli import common, local
 from piloop.db.models import utcnow
 from piloop.otel import tracer
 from piloop.plugins.cas.contract import CAS
 from piloop.plugins.executor.contract import EXECUTORS
 from piloop.plugins.executor.workers import Workers, instances, remote_worker, seen
 from piloop.plugins.network.contract import NETWORKS, NoCredential
-from piloop.reports.overview import age
+from piloop.text import age
 
-app = cyclopts.App(name='worker', help='The workers that run jobs on leases.')
+app = cyclopts.App(name='worker')  # its help is where piloop.cli.main registers it
 
 
 @app.default
@@ -70,7 +70,7 @@ def worker_list() -> None:
 
     Then each worker that a provisioner starts, until it ends: its pool, its state, and when it was asked for.
     """
-    with common.session() as s:
+    with local.session() as s:
         now = utcnow()
         workers = seen(s)
         started = instances(s)

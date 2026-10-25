@@ -46,6 +46,7 @@ def database() -> closing[Database]:
     return closing(Database(common.settings.database_url, actor=System.HUMAN))
 
 
+@pytest.mark.usefixtures('api')
 def test_pause_and_resume_hold_the_campaign_say_so_in_status_and_refuse_twice(campaign_path: Path, out) -> None:
     run_cli(['init', str(campaign_path)])
     out()
@@ -285,6 +286,7 @@ def test_a_seed_developed_with_a_link_that_closes_a_cycle_is_refused_whole(campa
         run_cli(['idea', 'add', 'demo', 'after nothing', '--after', '9'])
 
 
+@pytest.mark.usefixtures('api')
 def test_campaign_parent_puts_a_campaign_under_another_and_campaign_tree_shows_them(campaign_path: Path, out) -> None:
     run_cli(['init', str(campaign_path)])
     with database() as db, db.session() as s:

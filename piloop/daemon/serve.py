@@ -13,6 +13,7 @@ import time
 import warnings
 from collections.abc import Iterable
 
+from piloop.api.client import answers
 from piloop.harnesses import Harness
 from piloop.plugins.network.contract import Address
 from piloop.proc import PILOOP_ARGV, child_env, kill_group
@@ -119,16 +120,6 @@ def running_pid(cfg: Settings) -> int | None:
     return int(text) if text.isdigit() else None
 
 
-def listening(cfg: Settings) -> str | None:
-    """Return the URL that the running daemon listens on, or None when no daemon runs or it does not listen."""
-    if running_pid(cfg) is None:
-        return None
-    try:
-        return cfg.listen_file.read_text().strip()
-    except FileNotFoundError:
-        return None
-
-
 class SecretsError(Exception):
     """The secrets command failed or printed something other than ``NAME=value`` lines. It never contains a value."""
 
@@ -179,8 +170,8 @@ def secrets(command: str) -> dict[str, str]:
 def spawn_detached(cfg: Settings, listen: Address | None = None) -> int:
     """Start ``piloop serve`` in its own session, append its output to the log file, and return its pid.
 
-    The child takes the lock itself (``acquire``). This function waits until the child holds the lock. If the child
-    was refused or died, it exits with the reason. Nothing ever waits for the daemon process, and ``Popen``'s
+    The child takes the lock itself (``acquire``). This function waits until the child holds the lock and answers on
+    the home's socket, so the next command reaches it. If the child was refused or died, it exits with the reason. Nothing ever waits for the daemon process, and ``Popen``'s
     finaliser reports that as a leak. The handle is dropped on purpose, with that one warning silenced.
     """
     cfg.home.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -193,7 +184,7 @@ def spawn_detached(cfg: Settings, listen: Address | None = None) -> int:
             start_new_session=True,
             env=child_env() | {'PILOOP_HOME': str(cfg.home)},
         )
-    while running_pid(cfg) != daemon.pid:
+    while running_pid(cfg) != daemon.pid or not answers(cfg.socket_file):
         if daemon.poll() is not None:
             if (holder := running_pid(cfg)) is not None:
                 raise SystemExit(_already_running(cfg, holder))
@@ -222,14 +213,15 @@ def terminate(cfg: Settings, pid: int, timeout: float) -> bool:
 def restart(cfg: Settings, pid: int, timeout: float) -> int | None:
     """Ask the lock holder to restart in place. Return the pid that holds the lock again, or None after ``timeout``.
 
-    The stop takes as long as a stop on SIGTERM. A rewritten pid file under a held lock means the new daemon started.
+    The stop takes as long as a stop on SIGTERM. A rewritten pid file under a held lock, and an answer on the home's
+    socket, mean the new daemon started.
     The pid is usually the same. It differs if an old daemon without the signal handler died of the signal and the
     service manager started a new one.
     """
     before = _mtime_ns(cfg)
     os.kill(pid, RESTART_SIGNAL)
     deadline = time.monotonic() + timeout
-    while (holder := running_pid(cfg)) is None or _mtime_ns(cfg) == before:
+    while (holder := running_pid(cfg)) is None or _mtime_ns(cfg) == before or not answers(cfg.socket_file):
         if time.monotonic() > deadline:
             return None
         time.sleep(POLL_SECONDS)

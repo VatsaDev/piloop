@@ -40,13 +40,13 @@ from typing import Literal
 from sqlalchemy import func, select
 
 from piloop.actor import System
+from piloop.api.contract import Access
 from piloop.db import feed
 from piloop.db.events import emit
 from piloop.db.feed import Topic
 from piloop.db.models import (
     LIVE_LEASES,
     Comment,
-    CommentKind,
     Evaluation,
     Evaluator,
     EventModel,
@@ -55,13 +55,12 @@ from piloop.db.models import (
     LeaseKind,
     LeaseState,
     LeaseWorker,
-    TokenScope,
     WorkerInstance,
     WorkerInstanceState,
     utcnow,
 )
 from piloop.db.session import Database, read_transaction, write_transaction
-from piloop.ids import TargetKind, TargetRef
+from piloop.ids import CommentKind, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins.executor.contract import Capacity
 from piloop.plugins.executor.kit import leases
@@ -428,7 +427,7 @@ class Scaler:
         """
         backoff = self._backoff[row.pool]
         try:
-            enrolled = self.network.enroll(row.name, TokenScope.WORKER)
+            enrolled = self.network.enroll(row.name, Access.WORKER)
             argv = self.argv(enrolled.server, row.pool, self._policy(row.pool))
             provisioning.start(Launch(name=row.name, pool=row.pool, argv=argv, env=enrolled.env))
         except (StartRefused, NotEnrolled) as e:

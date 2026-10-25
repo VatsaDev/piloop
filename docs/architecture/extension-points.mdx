@@ -220,12 +220,12 @@ provider finds itself, or it raises `NoCredential` with what to set: `piloop wor
 its `open(host)` once, when it starts, to make the server's `Network`:
 
 - `listener()` binds `listen`, and returns the socket with its TLS, or None when `listen` is unset.
-- `identify(headers, peer)` returns the `Caller` of a request, or `Refused` with the reason. The server answers 401.
-  `peer` is the other end of the connection: its `address`, and the `certificate` that it presented over TLS, if any.
+- `identify(headers, peer)` returns the `Caller` of a request that sends no token of `piloop token`, or `Refused`
+  with the reason. The server answers 401. piloop checks its own tokens itself, on every network. `peer` is the other end of the connection: its `address`, and the `certificate` that it presented over TLS, if any.
 
 ### Built in
 
-`https`, the default, checks the bearer tokens of `piloop token`, and its client sends the one in
+`https`, the default, knows no caller other than the tokens of `piloop token`, and its client sends the one in
 `PILOOP_HTTPS_TOKEN`. An address that is not loopback needs `tls`: a certificate, or `"proxy"` when a reverse proxy or
 an SSH tunnel ends TLS. Its keys are in the
 [configuration reference](/reference/configuration#plugins).

@@ -18,7 +18,6 @@ from piloop.db.models import (
     Candidate,
     Cause,
     Comment,
-    CommentKind,
     Event,
     Idea,
     IdeaLink,
@@ -30,7 +29,7 @@ from piloop.db.models import (
     RunStatus,
 )
 from piloop.db.session import Database
-from piloop.ids import IMPLEMENTER, RoleName, RunId, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, CommentKind, RoleName, RunId, TargetKind, TargetRef
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.reports import overview as overview_module
 from piloop.reports.overview import LINKED_CHARS, anomalies, block, overview

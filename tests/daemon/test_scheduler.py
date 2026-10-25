@@ -51,7 +51,6 @@ from piloop.db.models import (
     CampaignStatus,
     Candidate,
     Comment,
-    CommentKind,
     Evaluation,
     Event,
     EventModel,
@@ -72,7 +71,17 @@ from piloop.db.models import (
 from piloop.db.session import Database
 from piloop.db.triggers import DAEMON_ACTOR
 from piloop.db.triggers.changelog import IdeaStatusChanged
-from piloop.ids import IMPLEMENTER, AgentSessionId, CandidateId, CommentId, RoleName, RunId, TargetKind, TargetRef
+from piloop.ids import (
+    IMPLEMENTER,
+    AgentSessionId,
+    CandidateId,
+    CommentId,
+    CommentKind,
+    RoleName,
+    RunId,
+    TargetKind,
+    TargetRef,
+)
 from piloop.otel import Tracer
 from piloop.plugins import host as plugins
 from piloop.plugins.executor.contract import AgentKey, Capacity, Prompt

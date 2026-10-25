@@ -19,10 +19,11 @@ from pydantic import SecretStr, ValidationError
 from pytest_mock import MockerFixture
 
 from piloop.actor import System
-from piloop.db.models import Campaign, LeaseState, NoLease, TokenScope
+from piloop.api.contract import MAX_POLL_SECONDS, Access
+from piloop.db.models import Campaign, LeaseState, NoLease
 from piloop.db.session import Database
 from piloop.ids import CampaignId, CommentId, Revision
-from piloop.net import MAX_POLL_SECONDS, tokens
+from piloop.net import tokens
 from piloop.net.server import Server, app
 from piloop.net.tokens import Tokens
 from piloop.otel import Tracer
@@ -104,15 +105,15 @@ def server(network: HttpsNetwork, leases: Leases, db: Database, tmp_path: Path) 
     assert listener is not None
     cas = disk(tmp_path / 'server')
     assert cas.put(b'piloop worker cas probe\n') == PROBE, 'the workers share it'
-    server = Server(app(network, lease_routes(leases, db.changed, cas, bundled, echoed)), listener)
+    server = Server(app(Tokens(db), network, lease_routes(leases, db.changed, cas, bundled, echoed), ()), listener)
     server.start()
     yield server
     server.close()
 
 
-def secret(db: Database, name: str, scope: TokenScope = TokenScope.WORKER) -> str:
+def secret(db: Database, name: str, access: Access = Access.WORKER) -> str:
     with db.session() as s:
-        made = tokens.create(s, name, scope)
+        made = tokens.create(s, name, access)
         s.commit()
     return made
 
@@ -323,8 +324,8 @@ def test_a_report_on_a_lease_that_never_was_is_stale(connect: Connect) -> None:
 def remote(db: Database, server: Server, dial: Dial) -> Generator[Callable[..., Remote]]:
     clients: list[httpx.Client] = []
 
-    def make(name: str = 'w1', url: str | None = None, scope: TokenScope = TokenScope.WORKER) -> Remote:
-        clients.append(http := dial(url or server.url, secret(db, name, scope)))
+    def make(name: str = 'w1', url: str | None = None, access: Access = Access.WORKER) -> Remote:
+        clients.append(http := dial(url or server.url, secret(db, name, access)))
         return Remote(http, threading.Event(), Tracer(None))
 
     yield make

@@ -11,7 +11,8 @@ import threading
 import time
 import tomllib
 import weakref
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Generator, Iterator
+from contextlib import contextmanager
 from importlib.metadata import EntryPoint, entry_points
 from pathlib import Path
 from typing import Concatenate
@@ -26,6 +27,7 @@ from sqlalchemy import select
 from piloop.actor import System
 from piloop.campaign import archive as archive_module, campaigns as campaign_module
 from piloop.config import CampaignConfig, load_campaign_config
+from piloop.daemon.api import endpoints
 from piloop.daemon.main import ACTOR
 from piloop.daemon.run_controller import RunController
 from piloop.db.models import (
@@ -37,20 +39,25 @@ from piloop.db.models import (
     Origin,
     RunEnd,
     RunStatus,
+    utcnow,
 )
 from piloop.db.session import Database, migrate
 from piloop.harnesses import DEFAULT_HARNESSES
 from piloop.ids import CampaignId, RoleName
+from piloop.net.server import Server, app, local_listener, url
+from piloop.net.tokens import Tokens
 from piloop.otel import Tracer
 from piloop.plugins.cas.contract import CAS, Cas
 from piloop.plugins.executor.kit.leases import Timing
 from piloop.plugins.executor.workers import Workers, WorkersExecutor
 from piloop.plugins.executor.workers.worker import Worker
+from piloop.plugins.network.contract import NetworkHost
 from piloop.plugins.network.https import TOKEN_ENV, Https
 from piloop.plugins.role.contract import RoleConfig
 from piloop.plugins.runtime.contract import Handle, Runtime
 from piloop.plugins.runtime.subprocess import SubprocessRuntime
 from piloop.plugins.verdict_rule.contract import Outcome
+from piloop.reports.feed import iso
 from piloop.runtime.factory import RuntimeFactory
 from piloop.scoring.evaluate import Measured, run_evaluate
 from piloop.scoring.ledger import current_evaluator
@@ -570,3 +577,23 @@ def role_of[R: RoleConfig](cfg: CampaignConfig, kind: type[R]) -> R:
     [found] = [role for role in cfg.roles.all().values() if type(role) is kind]
     assert isinstance(found, kind)
     return found
+
+
+@contextmanager
+def serving_api(cfg: Settings, listen: str | None = None) -> Generator[list[Server]]:
+    """Serve the API of ``cfg``'s home, as the daemon does: on its socket, and on ``listen`` with ``https``."""
+    db = Database(cfg.database_url, actor=ACTOR)
+    tokens = Tokens(db)
+    network = Https.model_validate({'listen': listen}).open(NetworkHost(tokens))
+    listener = network.listener()
+    listeners = [local_listener(cfg.socket_file), *([] if listener is None else [listener])]
+    api = endpoints(db, cfg, iso(utcnow()), None if listener is None else url(listener))
+    servers = [Server(app(tokens, network, (), api), each) for each in listeners]
+    for server in servers:
+        server.start()
+    try:
+        yield servers
+    finally:
+        for server in servers:
+            server.close()
+        db.close()

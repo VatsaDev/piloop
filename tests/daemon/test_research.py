@@ -19,12 +19,11 @@ from piloop.db.models import (
     Campaign,
     Candidate,
     Comment,
-    CommentKind,
     Idea,
     IdeaStatus,
 )
 from piloop.db.session import Database
-from piloop.ids import TargetKind
+from piloop.ids import CommentKind, TargetKind
 from piloop.otel import Tracer
 from piloop.plugins.executor.workers import Workers
 from tests.conftest import RESEARCH, ScriptRuntime, factory, serving

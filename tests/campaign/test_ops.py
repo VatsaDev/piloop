@@ -22,7 +22,6 @@ from piloop.db.models import (
     Candidate,
     Cause,
     Comment,
-    CommentKind,
     Event,
     EventModel,
     Idea,
@@ -47,7 +46,7 @@ from piloop.db.triggers.changelog import (
     IdeaTrackChanged,
     VerdictChanged,
 )
-from piloop.ids import CampaignId, CandidateId, IdeaId, TargetKind, TrackName
+from piloop.ids import CampaignId, CandidateId, CommentKind, IdeaId, TargetKind, TrackName
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring.ledger import (
     MeasurementRecorded,

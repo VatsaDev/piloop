@@ -41,7 +41,7 @@ def main() -> None:
     assert listener is not None
     bundle = partial(send_of_record, cas, partial(record_of, db))
     cli = Runner(db, home, partial(checkout_of, db))
-    Server(app(network, lease_routes(leases, db.changed, cas, bundle, cli)), listener).start()
+    Server(app(Tokens(db), network, lease_routes(leases, db.changed, cas, bundle, cli), ()), listener).start()
     print(f'ready {listener.socket.getsockname()[1]}', flush=True)
     threading.Event().wait()
 

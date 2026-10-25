@@ -13,7 +13,7 @@ from rich.text import Text
 
 from piloop.agents.roles import PROCEDURES, PROMPTS
 from piloop.campaign.archive import ManifestNotMigrated, migrate_manifests
-from piloop.cli import common
+from piloop.cli import common, local
 from piloop.db import sql
 from piloop.db.session import Database, backups, revision
 from piloop.plugins.vcs.contract import VCS, prompted
@@ -46,7 +46,7 @@ def sql_cmd(
             raise SystemExit('piloop sql - read no statement from stdin')
     if (shell := sql.dot_command(statement)) is not None:
         raise SystemExit(f'sql error: {shell}')
-    common.refuse_other_schema()
+    local.refuse_other_schema()
     database = common.settings.home / 'piloop.db'
     with closing(sql.connect(database, actor=common.settings.actor)) as con:
         try:
@@ -96,10 +96,10 @@ def migrate_cmd() -> None:
     db = Database(common.settings.database_url, actor=common.settings.actor)
     try:
         old = revision(common.settings.home / 'piloop.db')
-        backup = common.migrate(db)
+        backup = local.migrate(db)
         _print_schema(old, revision(common.settings.home / 'piloop.db'), backup)
         try:
-            manifests = migrate_manifests(db, common.cas())
+            manifests = migrate_manifests(db, local.cas())
         except ManifestNotMigrated as e:
             raise SystemExit(str(e)) from e
     finally:

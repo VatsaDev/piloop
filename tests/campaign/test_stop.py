@@ -39,7 +39,6 @@ from piloop.db.models import (
     CampaignStatus,
     Candidate,
     Comment,
-    CommentKind,
     Document,
     Event,
     Idea,
@@ -55,7 +54,7 @@ from piloop.db.models import (
 from piloop.db.requests import RequestAnswered, pending
 from piloop.db.session import Database
 from piloop.db.triggers.changelog import CampaignPausedChanged, CampaignStatusChanged
-from piloop.ids import IMPLEMENTER, CandidateId, RunId, TargetKind, TargetRef
+from piloop.ids import IMPLEMENTER, CandidateId, CommentKind, RunId, TargetKind, TargetRef
 from piloop.otel import Tracer
 from piloop.plugins import host
 from piloop.plugins.host import data_errors

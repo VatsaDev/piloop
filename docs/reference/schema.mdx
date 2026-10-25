@@ -114,12 +114,12 @@ CREATE TABLE limits (
 CREATE TABLE tokens (
 	id INTEGER NOT NULL,
 	name VARCHAR NOT NULL,
-	scope VARCHAR(16) NOT NULL,
+	access VARCHAR(16) NOT NULL,
 	sha256 VARCHAR NOT NULL,
 	created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
 	PRIMARY KEY (id),
 	UNIQUE (name),
-	CONSTRAINT tokenscope CHECK (scope IN ('worker')),
+	CONSTRAINT access CHECK (access IN ('read', 'act', 'admin', 'worker')),
 	UNIQUE (sha256)
 );
 CREATE TABLE worker_instances (

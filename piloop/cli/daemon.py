@@ -1,17 +1,14 @@
 """The commands that run the daemon: ``serve``, ``stop``, ``restart`` and ``service-unit``."""
 
-import time
-from datetime import timedelta
 from typing import Annotated
 
 import cyclopts
 from pydantic import ValidationError
 from sqlalchemy import select
 
-from piloop.cli import common
+from piloop.cli import common, local
 from piloop.daemon.main import Daemon, preflight
 from piloop.daemon.serve import (
-    listening,
     restart as restart_in_place,
     running_pid,
     service_unit,
@@ -134,18 +131,8 @@ def service_unit_cmd() -> None:
     harnesses and of the registered campaigns' harnesses name.
     """
     harnesses = list(DEFAULT_HARNESSES.values())
-    with common.session() as s:
+    with local.session() as s:
         for campaign in s.scalars(select(Campaign)):
             harnesses += campaign.config.harness.values()
     unit = service_unit(common.settings, harnesses)
     common.console.print(unit, end='', markup=False, highlight=False, soft_wrap=True)
-
-
-def daemon_line() -> str:
-    """One line on the daemon: its pid and uptime, or that it is not running."""
-    pid = running_pid(common.settings)
-    if pid is None:
-        return 'daemon: not running'
-    up = timedelta(seconds=int(time.time() - common.settings.pid_file.stat().st_mtime))
-    url = listening(common.settings)
-    return f'daemon: pid {pid}, up {up}' + (f', listening on {url}' if url is not None else '')

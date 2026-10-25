@@ -34,9 +34,9 @@ from sqlalchemy.orm import Session
 
 from piloop.campaign.inbox import campaign_of
 from piloop.config import CampaignConfig, MetricRole
-from piloop.db.models import Campaign, Candidate, Comment, CommentKind, Idea, IdeaStatus, Origin
+from piloop.db.models import Campaign, Candidate, Comment, Idea, IdeaStatus, Origin
 from piloop.db.triggers import DAEMON_ACTOR
-from piloop.ids import TargetKind
+from piloop.ids import CommentKind, TargetKind
 from piloop.plugins.verdict_rule.contract import VERDICT_RULES, Outcome
 from piloop.reports.history import BRIEF_WIDTH, comment_line, renderables as history, text_row, titled_table
 from piloop.scoring.ledger import head, metrics

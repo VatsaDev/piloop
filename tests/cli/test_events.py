@@ -16,12 +16,13 @@ from pydantic import TypeAdapter
 from rich.console import Console
 from sqlalchemy import select, text
 
+from piloop.api import views
 from piloop.campaign import campaigns as campaign_module, ops
-from piloop.cli import common, main as cli
-from piloop.db.models import Campaign, Comment, CommentKind, Event, Idea, IdeaStatus
+from piloop.cli import common, main as cli, views as cli_views
+from piloop.db.models import Campaign, Comment, Event, Idea, IdeaStatus
 from piloop.db.session import Database
-from piloop.ids import CampaignId, IdeaId, TargetKind, TargetRef
-from piloop.reports import feed
+from piloop.ids import CampaignId, CommentKind, IdeaId, TargetKind, TargetRef
+from piloop.net.server import Server
 from piloop.settings import Settings
 
 EVENT = "INSERT INTO events (actor, target_kind, target_id, payload) VALUES ('acme', 'campaign', 1, '{}')"
@@ -53,22 +54,24 @@ def out(isolated_home: Console):
 
 
 class Daemon(TypedDict):
-    pid: int | None
+    pid: int
+    started: str
+    listen: str | None
 
 
 class StatusDocument(TypedDict):
     protocol: Literal[1]
     cursor: int
     daemon: Daemon
-    campaigns: list[feed.CampaignState]
+    campaigns: list[views.CampaignState]
 
 
-class InboxDocument(feed.Inbox):
+class InboxDocument(views.Inbox):
     protocol: Literal[1]
     cursor: int
 
 
-class EventsDocument(feed.Batch):
+class EventsDocument(views.Batch):
     protocol: Literal[1]
 
 
@@ -107,7 +110,7 @@ def event_ids(db: Database, after: int) -> list[int]:
 
 
 def test_status_and_inbox_print_one_json_document_with_the_cursor_they_were_read_at(
-    db: Database, campaign: Campaign, out
+    db: Database, campaign: Campaign, api: Server, out
 ) -> None:
     with db.session() as s:
         s.add(
@@ -125,7 +128,7 @@ def test_status_and_inbox_print_one_json_document_with_the_cursor_they_were_read
 
     run_cli(['status', '--json'])
     status = document(StatusDocument, out())
-    assert status['cursor'] == end and status['daemon'] == {'pid': None}
+    assert status['cursor'] == end and (status['daemon']['pid'], status['daemon']['listen']) == (os.getpid(), None)
     [state] = status['campaigns']
     assert state['name'] == 'demo' and state['paused'] == 'all' and state['paused_reason'] == 'budget review'
     assert state['inbox'] == 1 and state['head'] is not None
@@ -139,7 +142,7 @@ def test_status_and_inbox_print_one_json_document_with_the_cursor_they_were_read
 
 
 def test_events_reads_after_a_cursor_with_filters_and_says_how_to_read_on(
-    db: Database, campaign: Campaign, out
+    db: Database, campaign: Campaign, api: Server, out, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     first = add_idea(db, campaign.id, 'one')
     write(db, UNKNOWN)
@@ -174,10 +177,16 @@ def test_events_reads_after_a_cursor_with_filters_and_says_how_to_read_on(
     assert parked['subject']['campaign'] == campaign.id
     run_cli(['events', '--after', str(parked['id']), '--follow', '--timeout', '0'])
     assert out().splitlines() == [f'next: piloop events --after {parked["id"]}']
+    write(db, UNKNOWN)
+    monkeypatch.setattr(cli_views, 'MAX_POLL_SECONDS', 0.1)
+    run_cli(['events', '--after', str(parked['id']), '--follow', '--timeout', '0.5', '--kind', 'x'])
+    assert out().splitlines() == [f'next: piloop events --after {parked["id"] + 1} --kind x'], (
+        'it asks again after each long-poll, until its own timeout, from the cursor that the last one moved'
+    )
 
 
 def test_a_payload_that_json_cannot_say_prints_as_stored_text_never_as_infinity(
-    db: Database, campaign: Campaign, out
+    db: Database, campaign: Campaign, api: Server, out
 ) -> None:
     write(db, HUGE)
     run_cli(['events', '--json'])
@@ -191,7 +200,9 @@ def test_a_payload_that_json_cannot_say_prints_as_stored_text_never_as_infinity(
     )
 
 
-def test_a_cursor_ahead_of_the_feed_is_an_error_a_program_can_act_on(db: Database, campaign: Campaign, out) -> None:
+def test_a_cursor_ahead_of_the_feed_is_an_error_a_program_can_act_on(
+    db: Database, campaign: Campaign, api: Server, out
+) -> None:
     with pytest.raises(SystemExit, match='cursor 99 is ahead of the feed, which ends at 0: read a new snapshot'):
         run_cli(['events', '--after', '99', '--json'])
     error = document(ErrorDocument, out())['error']
@@ -219,7 +230,7 @@ def one_document[T](shape: type[T], proc: subprocess.CompletedProcess[str]) -> T
 
 
 def test_a_separate_process_joins_a_snapshot_to_the_feed_and_resumes_after_a_disconnect_without_loss(
-    db: Database, campaign: Campaign, tmp_path: Path
+    db: Database, campaign: Campaign, api: Server, tmp_path: Path
 ) -> None:
     before = add_idea(db, campaign.id, 'before the snapshot')
     with db.session() as s:

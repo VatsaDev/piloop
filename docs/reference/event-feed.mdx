@@ -4,7 +4,7 @@ description: Read the state of a campaign and follow its events from another pro
 ---
 
 A program that watches or drives a campaign, such as a dashboard, a bot or your own controller, reads piloop with
-three commands. Each prints one JSON document on stdout. Messages go to stderr.
+three commands. Each prints one JSON document on stdout. Messages go to stderr. Each asks the daemon, which must run.
 
 | Command | What it prints |
 |---|---|
@@ -68,14 +68,19 @@ A read of events:
 | `next` | The cursor for the next read. |
 | `more` | Newer events exist already. They may not match your filters. |
 
-`piloop status --json` has `cursor`, `daemon` (`pid`, null when the daemon is not running) and `campaigns`. Each campaign
-has its `id`, `name`, `path`, `status` and `stopped_reason`, `paused` (`launches`, `all` or null) and
+`piloop status --json` has `cursor`, `daemon` (`pid`, `started`, and `listen`, the URL that other machines reach it on,
+or null) and `campaigns`. Each campaign has its `id`, `name`, `path`, `parent` (`id` and `name`, or null),
+`status` and `stopped_reason`, `paused` (`launches`, `all` or null) and
 `paused_reason`, the current `evaluator`, the `head` (its candidate, and for each track the primary metric, its value
 and its delta against the baseline; null when there is no keep yet), the `kept` and `candidates` counts, the number of
 `ideas` in each status, the `runnable` ideas, the open `runs`, the live `agents`, the unacknowledged `inbox` items and
 the `tokens` spent. It covers the campaigns that `piloop status` would show.
 
-`piloop inbox --json` has `cursor`, `items` and `seeds`, with the filters of `piloop inbox`.
+`piloop inbox --json` has `cursor`, `items` and `seeds`, with the filters of `piloop inbox`. Each item and seed has its
+`campaign` and its `campaign_name`.
+
+A program can also call the daemon's HTTP API, which answers the same documents without `protocol`: see
+[the API](/reference/cli#the-api).
 
 ## The event envelope
 
