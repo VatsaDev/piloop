@@ -1,7 +1,6 @@
 """The evaluation queue: one evaluation per tree, a cap on the evaluations that run, a fair order, and cancels."""
 
 import threading
-import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -20,7 +19,7 @@ from piloop.plugins.vcs.git import commands as git
 from piloop.plugins.verdict_rule.contract import Outcome
 from piloop.scoring import queue
 from piloop.scoring.ledger import measured, request_remeasure
-from tests.conftest import ScriptRuntime, bare_config, baseline, factory, serving, workers_of, write_script
+from tests.conftest import ScriptRuntime, bare_config, baseline, factory, serving, wait_until, workers_of, write_script
 from tests.daemon.test_run_controller import execute, make_run, set_config
 from tests.daemon.test_scheduler import add_ideas, make_scheduler
 
@@ -33,13 +32,6 @@ def held_evaluate(tmp_path: Path, then: str = SCORE) -> list[str]:
     """An evaluate command that logs its commit in ``evaluated``, waits while ``hold`` exists, then runs ``then``."""
     log, hold = tmp_path / 'evaluated', tmp_path / 'hold'
     return ['sh', '-c', f'git rev-parse HEAD >> {log}; while [ -f {hold} ]; do sleep 0.05; done; {then}']
-
-
-def until(check: Callable[[], bool], what: str) -> None:
-    deadline = time.monotonic() + 20
-    while not check():
-        assert time.monotonic() < deadline, f'timed out waiting for {what}'
-        time.sleep(0.02)
 
 
 def rows(db: Database) -> list[tuple[int, bool, str | None]]:
@@ -86,9 +78,9 @@ def test_two_runs_that_reach_one_tree_share_one_evaluation_and_its_crash(
     waits = mocker.spy(queue, 'request')
     first, second = make_run(db, campaign), make_run(db, campaign, title='the same line')
     one = in_thread(lambda: execute(ex, db, first))
-    until(lambda: len(evaluated(tmp_path)) == 1, 'the first evaluation')
+    wait_until(lambda: len(evaluated(tmp_path)) == 1, 'the first evaluation')
     two = in_thread(lambda: execute(ex, db, second))
-    until(lambda: waits.call_count == 2, 'the second request')
+    wait_until(lambda: waits.call_count == 2, 'the second request')
     (tmp_path / 'hold').unlink()
     one.join(30)
     two.join(30)
@@ -110,13 +102,13 @@ def test_a_shared_evaluation_that_cannot_start_is_a_crash_for_every_request(
     def cannot_check_out(repo: Repo, path: Path, sha: str, links: dict[str, Path]) -> Repo:
         if 'eval-' not in str(path):  # the implementer's worktree
             return add_worktree(repo, path, sha, links)
-        until(lambda: waits.call_count == 2, 'the second request')
+        wait_until(lambda: waits.call_count == 2, 'the second request')
         raise RuntimeError('cannot check out the commit')
 
     mocker.patch('piloop.plugins.vcs.git.commands.add_worktree', side_effect=cannot_check_out)
     first, second = make_run(db, campaign), make_run(db, campaign, title='the same line')
     one = in_thread(lambda: execute(ex, db, first))
-    until(lambda: len(rows(db)) == 1, 'the first request')
+    wait_until(lambda: len(rows(db)) == 1, 'the first request')
     two = in_thread(lambda: execute(ex, db, second))
     one.join(30)
     two.join(30)
@@ -137,9 +129,9 @@ def test_a_cancelled_evaluation_is_a_crash_that_names_who_cancelled_it_at_once(
     ex = queued_executor(db, runtime, tmp_path, slots=1)
     first, second = make_run(db, campaign), make_run(db, campaign, title='another line')
     one = in_thread(lambda: execute(ex, db, first))
-    until(lambda: len(evaluated(tmp_path)) == 1, 'the first evaluation')
+    wait_until(lambda: len(evaluated(tmp_path)) == 1, 'the first evaluation')
     two = in_thread(lambda: execute(ex, db, second))
-    until(lambda: len(rows(db)) == 2, 'the second evaluation to wait')
+    wait_until(lambda: len(rows(db)) == 2, 'the second evaluation to wait')
     [running] = run_candidates(db, first)
     [waiting] = run_candidates(db, second)
     with db.session() as s:
@@ -186,9 +178,9 @@ def test_a_stop_ends_the_waiting_evaluations_and_records_nothing(
     ex = queued_executor(db, runtime, tmp_path, slots=1)
     first, second = make_run(db, campaign), make_run(db, campaign, title='another line')
     threads = [in_thread(lambda: execute(ex, db, first))]
-    until(lambda: len(evaluated(tmp_path)) == 1, 'the first evaluation')
+    wait_until(lambda: len(evaluated(tmp_path)) == 1, 'the first evaluation')
     threads.append(in_thread(lambda: execute(ex, db, second)))
-    until(lambda: len(rows(db)) == 2, 'the second evaluation to wait')
+    wait_until(lambda: len(rows(db)) == 2, 'the second evaluation to wait')
     ex.stop(30)
     for thread in threads:
         thread.join(30)
@@ -301,7 +293,7 @@ def test_evaluations_that_wait_for_a_slot_never_hold_back_an_agent_launch(
         assert len(scheduler.run_all()) == 1
         with db.session() as s:
             [run_id] = s.scalars(select(Run.id)).all()
-        until(lambda: run_status(db, run_id) is not RunStatus.QUEUED, 'the agent to start')
+        wait_until(lambda: run_status(db, run_id) is not RunStatus.QUEUED, 'the agent to start')
     finally:
         release.set()
     assert all(f.result(5) for f in waiting)

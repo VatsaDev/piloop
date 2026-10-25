@@ -7,7 +7,7 @@ and it still reports, and a stop closes a running agent as stopped.
 
 import subprocess
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import is_dataclass
 from pathlib import Path, PurePath
 from typing import get_args, get_type_hints
@@ -82,9 +82,26 @@ def provider(request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest
     plugins.close()
 
 
-def controller(db: Database, runtime: ScriptRuntime, tmp_path: Path, provider: str) -> RunController:
-    executor = EXECUTORS.get(provider).model()
-    return serving(RunController(db, Tracer(None), tmp_path, factory(runtime), executor=executor))
+type Controller = Callable[[Path, str, ScriptRuntime], RunController]
+
+
+@pytest.fixture
+def controller(db: Database) -> Iterator[Controller]:
+    """Make a controller with the executor ``provider`` and ``runtime``, home at ``home``.
+
+    Its executor stops before the database closes, as the daemon's does: a job that reported can still be removing its
+    worktree, which reads the database.
+    """
+    made: list[RunController] = []
+
+    def make(home: Path, provider: str, runtime: ScriptRuntime) -> RunController:
+        executor = EXECUTORS.get(provider).model()
+        made.append(serving(RunController(db, Tracer(None), home, factory(runtime), executor=executor)))
+        return made[-1]
+
+    yield make
+    for ex in made:
+        ex.executor.stop(10)
 
 
 def launch_in_thread(
@@ -114,10 +131,10 @@ def launch_in_thread(
 
 
 def test_a_run_brings_its_commits_back_and_is_scored(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, provider: str
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, provider: str, controller: Controller
 ) -> None:
     run_id = make_run(db, campaign)
-    ex = controller(db, runtime, tmp_path, provider)
+    ex = controller(tmp_path, provider, runtime)
     execute(ex, db, run_id)
     assert run_row(db, run_id).status.value == 'succeeded'
     with db.session() as s:
@@ -130,9 +147,9 @@ def test_a_run_brings_its_commits_back_and_is_scored(
 
 
 def test_an_evaluation_records_its_measurement(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, provider: str
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, provider: str, controller: Controller
 ) -> None:
-    ex = controller(db, runtime, tmp_path, provider)
+    ex = controller(tmp_path, provider, runtime)
     candidate = baseline(db, campaign.id).id
     ex.remeasure(candidate)
     with db.session() as s:
@@ -141,9 +158,9 @@ def test_an_evaluation_records_its_measurement(
 
 
 def test_a_paired_evaluation_records_each_sample_with_its_pair(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, provider: str
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, provider: str, controller: Controller
 ) -> None:
-    ex = controller(db, runtime, tmp_path, provider)
+    ex = controller(tmp_path, provider, runtime)
     execute(ex, db, make_run(db, campaign))
     with db.session() as s:
         candidate = s.scalars(select(Candidate).where(Candidate.run_id.is_not(None))).one()
@@ -157,11 +174,11 @@ def test_a_paired_evaluation_records_each_sample_with_its_pair(
 
 
 def test_a_cancelled_agent_is_stopped_and_still_reports(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, provider: str
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, provider: str, controller: Controller
 ) -> None:
     write_toml(Path(campaign.path), HARNESS_SLEEPS)
     reload_campaign(db, campaign)
-    ex = controller(db, runtime, tmp_path, provider)
+    ex = controller(tmp_path, provider, runtime)
     agent_session_id, ended = launch_in_thread(ex, db, campaign, tmp_path)
     wait_for_agent_session_handle_of(db, agent_session_id)
     ex.executor.cancel(AgentKey(agent_session_id))
@@ -172,11 +189,11 @@ def test_a_cancelled_agent_is_stopped_and_still_reports(
 
 
 def test_a_stop_closes_a_running_agent_as_stopped(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, provider: str
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, provider: str, controller: Controller
 ) -> None:
     write_toml(Path(campaign.path), HARNESS_SLEEPS)
     reload_campaign(db, campaign)
-    ex = controller(db, runtime, tmp_path, provider)
+    ex = controller(tmp_path, provider, runtime)
     agent_session_id, ended = launch_in_thread(ex, db, campaign, tmp_path)
     wait_for_agent_session_handle_of(db, agent_session_id)
     ex.stop(30)
@@ -199,12 +216,12 @@ class Steerable(ScriptRuntime):
 
 
 def test_a_prompt_reaches_the_running_agent_and_its_outcome_is_recorded(
-    db: Database, campaign: Campaign, tmp_path: Path, provider: str
+    db: Database, campaign: Campaign, tmp_path: Path, provider: str, controller: Controller
 ) -> None:
     runtime = Steerable()
     write_toml(Path(campaign.path), HARNESS_SLEEPS)
     reload_campaign(db, campaign)
-    ex = controller(db, runtime, tmp_path, provider)
+    ex = controller(tmp_path, provider, runtime)
     agent_session_id, ended = launch_in_thread(ex, db, campaign, tmp_path)
     wait_for_agent_session_handle_of(db, agent_session_id)
     ex.executor.prompt(AgentKey(agent_session_id), Prompt(CommentId(41), 'try lzma'))
@@ -249,9 +266,9 @@ def test_config_toml_selects_the_executor_and_the_daemon_refuses_a_parameter_it_
 
 
 def test_a_cancel_of_a_job_that_the_executor_does_not_have_changes_nothing(
-    db: Database, runtime: ScriptRuntime, tmp_path: Path, provider: str
+    db: Database, runtime: ScriptRuntime, tmp_path: Path, provider: str, controller: Controller
 ) -> None:
-    controller(db, runtime, tmp_path, provider).executor.cancel(AgentKey(AgentSessionId(999)))
+    controller(tmp_path, provider, runtime).executor.cancel(AgentKey(AgentSessionId(999)))
 
 
 def test_an_entry_point_that_is_not_an_executor_class_is_refused(
@@ -270,11 +287,11 @@ def test_an_entry_point_that_is_not_an_executor_class_is_refused(
 
 
 def test_the_capacity_is_the_slots_of_the_executor_now(
-    db: Database, runtime: ScriptRuntime, tmp_path: Path, provider: str
+    db: Database, runtime: ScriptRuntime, tmp_path: Path, provider: str, controller: Controller
 ) -> None:
     """``workers``: the defaults of the pool ``serve``, once its worker registered. ``inline``: no bound."""
     expected = {'workers': Capacity(agents=None, evaluations=2), 'inline': Capacity(agents=None, evaluations=None)}
-    assert controller(db, runtime, tmp_path, provider).executor.capacity() == expected[provider]
+    assert controller(tmp_path, provider, runtime).executor.capacity() == expected[provider]
 
 
 def test_config_toml_refuses_a_plugins_table_that_no_capability_of_the_home_declares(tmp_path: Path) -> None:
@@ -326,12 +343,12 @@ def strings(value: object) -> Iterator[str]:
 
 
 def test_a_job_that_the_daemon_queues_names_no_path_under_its_home(
-    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path
+    db: Database, campaign: Campaign, runtime: ScriptRuntime, tmp_path: Path, controller: Controller
 ) -> None:
     """The jobs of a run and of its measurement, as they are queued: no string of theirs names the daemon's home."""
     run_id = make_run(db, campaign)
     home = tmp_path / 'home'
-    ex = controller(db, runtime, home, 'workers')
+    ex = controller(home, 'workers', runtime)
     execute(ex, db, run_id)
     with db.session() as s:
         jobs = [read_job(disk(home), lease.id, lease.job_cid) for lease in s.scalars(select(Lease).order_by(Lease.id))]

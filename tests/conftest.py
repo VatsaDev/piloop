@@ -463,15 +463,15 @@ def role_timeout(db: Database, agent_session_id: int) -> float:
         return s.get_one(Campaign, agent_session.campaign_id).config.role(agent_session.kind).timeout
 
 
-def wait_until(predicate: Callable[[], object], *, timeout: float = 30) -> None:
-    """Poll ``predicate`` until it is true; fail the test once ``timeout`` passes.
+def wait_until(predicate: Callable[[], object], what: str = 'the condition', *, timeout: float = 30) -> None:
+    """Poll ``predicate`` until it is true; fail the test, naming ``what`` it waited for, once ``timeout`` passes.
 
     The timeout only bounds a test that would fail anyway, so it is generous: the suite runs in parallel, often on a
     loaded host, where a step that takes a second alone can take ten.
     """
     deadline = time.monotonic() + timeout
     while not predicate():
-        assert time.monotonic() < deadline, 'condition not met in time'
+        assert time.monotonic() < deadline, f'timed out waiting for {what}'
         time.sleep(0.05)
 
 
